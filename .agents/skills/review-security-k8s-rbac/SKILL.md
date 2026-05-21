@@ -1,6 +1,6 @@
 ---
 name: review-security-k8s-rbac
-description: Reviews Kubernetes Role-Based Access Control (RBAC) configurations for security vulnerabilities.
+description: Reviews Kubernetes RBAC configurations for permissions and privilege escalation risks.
 ---
 # Task
 Review Kubernetes RBAC configurations for vulnerabilities, prioritizing GKE best practices and advanced attack vectors.

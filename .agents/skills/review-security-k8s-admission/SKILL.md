@@ -1,6 +1,6 @@
 ---
 name: review-security-k8s-admission
-description: Reviews Kubernetes Admission Control (Webhooks and ValidatingAdmissionPolicies) for security vulnerabilities, bypasses, and failure modes.
+description: Reviews Kubernetes Admission Control (Webhooks, VAP/MAP) for vulnerabilities.
 ---
 # Task
 Review Kubernetes Admission Control (`ValidatingWebhookConfiguration`, `MutatingWebhookConfiguration`, `ValidatingAdmissionPolicy`, `MutatingAdmissionPolicy`).

@@ -1,6 +1,6 @@
 ---
 name: review-security-k8s-storage
-description: Reviews Kubernetes Storage configurations, PersistentVolumes, and VolumeMounts for security vulnerabilities and data leakage risks.
+description: Reviews Kubernetes storage configurations, PVs, and VolumeMounts for data leakage and privilege escalation risks.
 ---
 # Task
 Review storage configurations (`StorageClass`, `PersistentVolume`, `PVC`), Volumes, and `VolumeMounts` to prevent data leaks and privilege escalation.

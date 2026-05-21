@@ -1,6 +1,6 @@
 ---
 name: review-security-k8s-namespaces
-description: Reviews Kubernetes namespace configurations and structural boundaries for workload isolation and security issues.
+description: Reviews Kubernetes namespace configurations for workload isolation, multi-tenancy, and boundary defense.
 ---
 # Task
 Review Kubernetes namespace configs/resources for structural boundaries, workload isolation, and defense-in-depth security.

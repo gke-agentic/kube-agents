@@ -1,6 +1,6 @@
 ---
 name: review-security-k8s-agents-credentials
-description: Highly rigorous, deterministic security review skill for AI Agent Kubernetes configurations, targeting credential management, LLM API key security, least privilege, and prompt injection mitigation.
+description: Reviews AI agent Kubernetes configurations for credentials exposed to agents.
 ---
 # Task
 Review K8s configurations tailored to unique AI agent risks (prompt injection, RCE, credential exfiltration).

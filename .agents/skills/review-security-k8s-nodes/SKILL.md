@@ -1,6 +1,6 @@
 ---
 name: review-security-k8s-nodes
-description: Reviews Kubernetes YAML manifests for node boundary violations and node-to-cluster escalation risks.
+description: Reviews Kubernetes manifests for node boundary violations and risks of node-to-cluster privilege escalation.
 ---
 # Task
 Review K8s manifests for node boundary violations allowing compromised nodes/pods to escalate privileges cluster-wide.

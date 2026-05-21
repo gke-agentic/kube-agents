@@ -1,6 +1,6 @@
 ---
 name: review-security-k8s-gateway
-description: Reviews Kubernetes Gateway API configurations for security issues.
+description: Reviews Kubernetes Gateway API configs (Gateway, HTTPRoute, etc.) for security risks.
 ---
 # Task
 Review Kubernetes Gateway API configurations (`Gateway`, `HTTPRoute`, `TCPRoute`, `TLSRoute`, `ReferenceGrant`) for vulnerabilities.

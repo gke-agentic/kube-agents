@@ -1,6 +1,6 @@
 ---
 name: review-security-k8s-network
-description: Reviews Kubernetes network configurations, access controls, and routing boundaries for security vulnerabilities.
+description: Reviews Kubernetes network configurations (NetworkPolicies, Services, Ingress) for isolation and exposure risks.
 ---
 # Task
 Review Kubernetes network configurations (`NetworkPolicies`, `Services`, `Ingresses`, Service Mesh) for vulnerabilities.

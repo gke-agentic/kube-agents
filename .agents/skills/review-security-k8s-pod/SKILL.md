@@ -1,6 +1,6 @@
 ---
 name: review-security-k8s-pod
-description: Reviews Kubernetes Pod security configurations for workload-level vulnerabilities.
+description: Reviews Kubernetes Pod security contexts for workload-level isolation and privilege escalation risks.
 ---
 # Task
 Review Pod configurations (`PodSecurityContext`, `SecurityContext`) for workload vulnerabilities.

@@ -1,6 +1,6 @@
 ---
 name: review-security-k8s-agents-prompt-injection
-description: Reviews configurations and architectures for AI agents to identify prompt injection risks and inadequate sandboxing.
+description: Reviews AI agent architectures (API gateways, WAFs, input sanitization) for prompt injection risks.
 ---
 # Task
 Review configurations, API gateways, and input architectures for prompt injection and malicious payload vulnerabilities.

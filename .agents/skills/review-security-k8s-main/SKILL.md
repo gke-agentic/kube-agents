@@ -1,6 +1,6 @@
 ---
 name: review-security-k8s-main
-description: Orchestrates the execution of Kubernetes security review agents and aggregates their findings.
+description: Orchestrates comprehensive Kubernetes security reviews.
 ---
 # Task
 Coordinate Kubernetes security review sub-agents, gather findings, and produce a summarized JSON report.

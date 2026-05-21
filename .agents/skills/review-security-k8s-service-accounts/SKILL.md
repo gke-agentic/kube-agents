@@ -1,6 +1,6 @@
 ---
 name: review-security-k8s-service-accounts
-description: Reviews Kubernetes ServiceAccount configurations and identity management for security vulnerabilities.
+description: Reviews Kubernetes ServiceAccount configurations for identity management and least privilege boundaries.
 ---
 # Task
 Review Kubernetes ServiceAccount resources/configurations to ensure least privilege and strict identity boundaries.

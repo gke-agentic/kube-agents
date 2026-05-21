@@ -1,6 +1,6 @@
 ---
 name: review-security-k8s-agents-main
-description: Orchestrates the execution of Kubernetes security review agents specifically tailored for AI agent workloads.
+description: Orchestrates comprehensive Kubernetes security audits specifically tailored for AI agent workloads.
 ---
 # Task
 Coordinate AI agent security review sub-agents, gather findings, and produce a summarized JSON report.

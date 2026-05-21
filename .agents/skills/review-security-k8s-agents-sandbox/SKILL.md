@@ -1,6 +1,6 @@
 ---
 name: review-security-k8s-agents-sandbox
-description: Reviews configurations for AI agent execution sandboxes to prevent code escape and lateral movement.
+description: Reviews AI agent execution sandboxes for code escape and lateral movement risks.
 ---
 # Task
 Review execution sandboxes (e.g., Python REPLs, bash tools, WASM) for LLM agents. Treat as highly hostile due to prompt injection risks.

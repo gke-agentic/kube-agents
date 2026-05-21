@@ -1,6 +1,6 @@
 ---
 name: review-security-k8s-agents-audit-logs
-description: Performs rigorous verification of Kubernetes and application-level audit logging tailored for AI agents, ensuring complete, tamper-proof observability of agent actions, prompts, and outputs.
+description: Reviews Kubernetes and application audit logging for AI agents, ensuring tamper-proof observability.
 ---
 # Task
 Review manifests, logging architecture, and agent configs to guarantee tamper-proof, comprehensive logging of AI agent activities.

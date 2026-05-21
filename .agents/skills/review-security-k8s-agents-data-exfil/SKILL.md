@@ -1,6 +1,6 @@
 ---
 name: review-security-k8s-agents-data-exfil
-description: Reviews configurations and architectures to prevent data exfiltration by AI agents.
+description: Reviews Kubernetes configurations to prevent data exfiltration by AI agents.
 ---
 # Task
 Review infrastructure for AI agent data exfiltration risks (e.g. via prompt injection).

@@ -1,6 +1,6 @@
 ---
 name: skill-review
-description: Reviews other agent skill definitions for token efficiency, clarity, and standardized formatting.
+description: Reviews agent skill definitions for token efficiency, clarity, and standardized formatting.
 ---
 # Task
 Review agent skill definitions (`SKILL.md` files) to enforce maximum token efficiency, eliminate conversational fluff, and ensure standardized formatting without losing functional fidelity.

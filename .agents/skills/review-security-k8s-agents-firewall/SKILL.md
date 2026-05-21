@@ -1,6 +1,6 @@
 ---
 name: review-security-k8s-agents-firewall
-description: Reviews Kubernetes configurations for AI agent and sandbox firewall security.
+description: Reviews Kubernetes network and firewall configurations specifically for AI agent execution sandboxes.
 ---
 # Task
 Review network policies and firewall configs for AI agent control loops and execution sandboxes.

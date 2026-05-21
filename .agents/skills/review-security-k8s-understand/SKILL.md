@@ -1,6 +1,6 @@
 ---
 name: review-security-k8s-understand
-description: Reads the details of the project and tries to build a reasonable understanding for context when doing security reviews.
+description: Analyzes Kubernetes project architecture and resources to build context before performing specific security reviews.
 ---
 # Task
 Analyze the Kubernetes project/repository to build comprehensive architectural and security context for specialized review agents.
