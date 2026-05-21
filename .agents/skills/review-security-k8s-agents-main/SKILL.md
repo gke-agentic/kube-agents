@@ -26,8 +26,8 @@ Launch in parallel:
 
 ## 3. Triage & Filtering
 Evaluate the raw findings against the project context to determine actual risk. Filter out findings that are functionally required by the workload's specific role or adequately mitigated by broader architectural controls. 
-- *Example:* Filter out `hostPath` or `privileged` warnings for recognized infrastructure daemonsets (e.g., CSI drivers).
-- *Example:* Downgrade or filter missing `NetworkPolicy` warnings if the context confirms a strict Service Mesh is handling all routing and authorization.
+- *Example:* Filter out missing egress proxy warnings if the agent's execution sandbox is completely air-gapped and the main control loop is strictly allowlisted to a single LLM API.
+- *Example:* Downgrade root execution warnings *inside* the execution sandbox if the context confirms the sandbox utilizes a secure VM-based `RuntimeClass` (e.g., Kata Containers) providing a hardware-level isolation boundary.
 
 ## 4. Aggregation
 Merge the filtered findings into a single JSON array. Output MUST be valid JSON string (markdown blocks okay). Omit agents with no findings or return empty `findings`.
