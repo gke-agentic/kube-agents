@@ -21,3 +21,6 @@ Review Pod configurations (`PodSecurityContext`, `SecurityContext`) for workload
 - **Default Account**: Flag use of the `default` service account.
 - **Token Automounting**: Require `automountServiceAccountToken: false` unless API access is explicitly needed.
 - **Token Storage**: Flag static Secret-based service account tokens. Require ephemeral `TokenRequest` volume mounts.
+
+## 4. Supply Chain & Immutability
+- **Image Digests**: Require container images to be pinned via immutable SHA digests (`@sha256:...`) instead of mutable tags.
