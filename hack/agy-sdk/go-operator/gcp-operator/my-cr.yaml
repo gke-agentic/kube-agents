@@ -1,0 +1,6 @@
+apiVersion: batch.mycompany.com/v1
+kind: MyOwnCronJob
+metadata:
+  name: test-log-cronjob
+spec:
+  text: "Hello from Custom Go Operator inside GCP!"
