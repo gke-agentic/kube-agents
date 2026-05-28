@@ -25,37 +25,19 @@ import (
 
 // HermesAgentSpec defines the desired state of HermesAgent
 type HermesAgentSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
-
-	// foo is an example field of HermesAgent. Edit hermesagent_types.go to remove/update
-	// +optional
-	Foo *string `json:"foo,omitempty"`
+	ProjectID              string `json:"projectId"`
+	ImageURI               string `json:"imageUri"`
+	ChatTopicName          string `json:"chatTopicName"`
+	ChatSubName            string `json:"chatSubName"`
+	GSAName                string `json:"gsaName"`
+	KSAName                string `json:"ksaName"`
+	GoogleChatAllowedUsers string `json:"googleChatAllowedUsers"`
+	GoogleChatHomeChannel  string `json:"googleChatHomeChannel"`
 }
 
 // HermesAgentStatus defines the observed state of HermesAgent.
 type HermesAgentStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-
-	// For Kubernetes API conventions, see:
-	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
-
-	// conditions represent the current state of the HermesAgent resource.
-	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
-	//
-	// Standard condition types include:
-	// - "Available": the resource is fully functional
-	// - "Progressing": the resource is being created or updated
-	// - "Degraded": the resource failed to reach or maintain its desired state
-	//
-	// The status of each condition is one of True, False, or Unknown.
-	// +listType=map
-	// +listMapKey=type
-	// +optional
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
+	Phase string `json:"phase,omitempty"` // e.g., "Provisioning", "Ready"
 }
 
 // +kubebuilder:object:root=true
