@@ -70,11 +70,14 @@ Instead of compiling locally, we run a **unified parallel pipeline completely in
 #### 🔑 One-Time GCP Bootstrap Setup (Registry & IAM Permissions)
 *Note: This is a one-time bootstrap step. You must run these commands to enable required GCP services, create the registry, and grant appropriate storage/logging permissions to the automated Cloud Build executor.*
 
-1. **Enable the required GCP Service APIs** (Cloud Build, Artifact Registry, and GKE Fleet Hub) in your project:
+1. **Enable the required GCP Service APIs** (Cloud Build, Artifact Registry, GKE Fleet Hub, Secret Manager, Gsuite Addons, and Vertex AI) in your project:
    ```bash
    gcloud services enable cloudbuild.googleapis.com \
                           artifactregistry.googleapis.com \
                           gkehub.googleapis.com \
+                          secretmanager.googleapis.com \
+                          gsuiteaddons.googleapis.com \
+                          aiplatform.googleapis.com \
                           --project=${GCP_PROJECT_ID}
    ```
 
@@ -86,8 +89,8 @@ Instead of compiling locally, we run a **unified parallel pipeline completely in
        --project=${GCP_PROJECT_ID}
    ```
 
-3. **Configure IAM Permissions for the automated Cloud Build runner**:
-   Cloud Build runs using your project's default Compute Engine Service Account. We must grant it access to read the source tarball from Cloud Storage and write logs:
+3. **Configure IAM Permissions for GKE and Cloud Build system agents**:
+   We must grant appropriate access permissions to Google's default Compute and GKE Hub service agents on the project level:
    ```bash
    # Resolve your GCP Project Number dynamically
    export GCP_PROJECT_NUMBER=$(gcloud projects describe ${GCP_PROJECT_ID} --format="value(projectNumber)")
@@ -109,6 +112,13 @@ Instead of compiling locally, we run a **unified parallel pipeline completely in
        --member="serviceAccount:service-${GCP_PROJECT_NUMBER}@gcp-sa-gkehub.iam.gserviceaccount.com" \
        --role="roles/gkehub.serviceAgent" \
        --condition=None
+   ```
+
+4. **Create GCP Secret Manager Placeholders**:
+   The operator dynamically reads your Gemini and Gchat credentials from Secret Manager. Create these two secure placeholder keys using a dummy `"placeholder"` string (you can update them securely in the GCP Console browser later):
+   ```bash
+   echo "placeholder" | gcloud secrets create GEMINI_API_KEY --data-file=- --replication-policy="automatic" --project=${GCP_PROJECT_ID}
+   echo "placeholder" | gcloud secrets create GCP_API_KEY --data-file=- --replication-policy="automatic" --project=${GCP_PROJECT_ID}
    ```
 
 ---
@@ -145,6 +155,18 @@ Whenever you make changes to the chatbot application (`hack/gchat/app`) or the o
 ---
 
 ### Step 1: Enable Config Sync on your GKE Cluster
+
+> [!IMPORTANT]
+> **GKE Standard Clusters Workload Identity Prerequisite:**
+> If you are using a **GKE Standard Cluster** (unlike GKE Autopilot, which has it active by default), Workload Identity **MUST** be explicitly enabled on your GKE cluster master *before* applying any Fleet sync configs. 
+> Run this GKE update command to enable the Identity Pool:
+> ```bash
+> gcloud container clusters update ${GKE_CLUSTER_NAME} \
+>     --region=${GKE_REGION} \
+>     --project=${GCP_PROJECT_ID} \
+>     --workload-pool=${GCP_PROJECT_ID}.svc.id.goog
+> ```
+
 Using the loaded environment variables, natively register the cluster to your project fleet and enable Config Sync:
 
 ```bash
