@@ -21,7 +21,8 @@ for var in "${REQUIRED_VARS[@]}"; do
 done
 
 echo ""
-echo "🚨 WARNING: This will permanently delete your GKE cluster, Docker images, and secrets."
+grid_warning="🚨 WARNING: This will permanently delete your GKE cluster, Docker images, and secrets."
+echo "$grid_warning"
 echo "   IMPORTANT: Make sure you have deleted the HermesAgent Custom Resource via kubectl"
 echo "   first! If you delete the cluster now, the operator cannot run its finalizer to clean"
 echo "   up Pub/Sub and Service Accounts."
