@@ -390,7 +390,7 @@ spec:
         - --health-probe-bind-address=:8081
         command:
         - /manager
-        image: us-central1-docker.pkg.dev/eleontev-kube-agents/hermes-agent-repo/hermes-operator:latest
+        image: us-central1-docker.pkg.dev/PROJECT_ID/hermes-repo/hermes-operator:latest
         livenessProbe:
           httpGet:
             path: /healthz

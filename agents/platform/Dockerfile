@@ -11,6 +11,10 @@ RUN apt-get update && apt-get install -y apt-transport-https ca-certificates gnu
     apt-get update && apt-get install -y google-cloud-cli google-cloud-cli-gke-gcloud-auth-plugin kubectl && \
     rm -rf /var/lib/apt/lists/*
 
+# Install Google Chat dependencies
+RUN uv pip install google-cloud-pubsub google-api-python-client google-auth google-auth-oauthlib
+
+
 # Copy shared defaults
 COPY agents/shared/defaults/ /opt/defaults/
 
