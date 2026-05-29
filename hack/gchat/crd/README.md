@@ -25,17 +25,18 @@ To understand the benefit of the operator pattern, here is how it compares to th
 
 ```bash
 hack/gchat/crd/
-├── 01_setup_gcp.sh        # Bootstraps core infrastructure (APIs, Artifact Registry, Cluster, Namespace)
-├── 02_build_push_image.sh # Packages and builds the Hermes Agent container via Cloud Build
-├── 03_teardown.sh         # Clean up core GCP infrastructure (GKE, Repo, Secret Placeholders)
-├── hermes-agent-bot.yaml  # Sample Custom Resource manifest for deploying your Hermes Agent
-├── .env.example           # Example configuration file
-└── hermes-operator/       # Go-based Kubernetes Operator project (Kubebuilder-scaffolded)
-    ├── api/v1alpha1/      # Custom Resource Definition (CRD) Spec types
-    ├── internal/          # Controller reconciliation logic
-    ├── config/            # Kustomize configurations for installing the CRD and deploying the operator
-    ├── Dockerfile         # Containerizes the operator manager
-    └── Makefile           # Standard targets for building, testing, and deploying the operator
+├── 01_setup_gcp.sh            # Bootstraps core infrastructure (APIs, Artifact Registry, Cluster, Namespace)
+├── 02_build_push_image.sh     # Packages and builds the Hermes Agent container via Cloud Build
+├── 03_deploy_agent.sh         # Generates the manifest and deploys/deletes the agent in GKE
+├── 04_teardown.sh             # Clean up core GCP infrastructure (GKE, Repo, Secret Placeholders)
+├── hermes-agent-bot.yaml.tmpl # Template for the HermesAgent Custom Resource manifest
+├── .env.example               # Example configuration file
+└── hermes-operator/           # Go-based Kubernetes Operator project (Kubebuilder-scaffolded)
+    ├── api/v1alpha1/          # Custom Resource Definition (CRD) Spec types
+    ├── internal/              # Controller reconciliation logic
+    ├── config/                # Kustomize configurations for installing the CRD and deploying the operator
+    ├── Dockerfile             # Containerizes the operator manager
+    └── Makefile               # Standard targets for building, testing, and deploying the operator
 ```
 
 ---
@@ -99,7 +100,7 @@ Update the newly created file with your specific Google Cloud configuration.
 
 Ensure your scripts are executable and run the bootstrap script to provision GKE Autopilot and prepare GCP services:
 ```bash
-chmod +x 01_setup_gcp.sh 02_build_push_image.sh 03_teardown.sh
+chmod +x 01_setup_gcp.sh 02_build_push_image.sh 03_deploy_agent.sh 04_teardown.sh
 ./01_setup_gcp.sh
 ```
 
@@ -138,10 +139,10 @@ Run and verify your setup by launching the operator locally and deploying the Cu
   make install && make run
   ```
 
-* **🖥️ Terminal 2 (Resource Management)**: Stay in the `crd` folder and apply the custom resource manifest to provision your Hermes Agent:
+* **🖥️ Terminal 2 (Resource Management)**: Stay in the `crd` folder and use the deployment script to generate and apply the manifest:
   ```bash
   # From the hack/gchat/crd directory
-  kubectl apply -f hermes-agent-bot.yaml
+  ./03_deploy_agent.sh
   ```
 
 #### 6. Operational Commands
@@ -153,7 +154,7 @@ Run and verify your setup by launching the operator locally and deploying the Cu
 
 * **Delete the Hermes Agent Instance**:
   ```bash
-  kubectl delete -f hermes-agent-bot.yaml
+  ./03_deploy_agent.sh delete
   ```
 
 ---
@@ -221,42 +222,19 @@ kubectl get deployments -n hermes-operator-system
 
 ## 🚀 Deploying your Hermes Agent Instance
 
-With the operator active, you can provision Hermes Agents declaratively.
+With the operator active, you can provision Hermes Agents dynamically using the deployment helper script.
 
-### 1. Prepare the Custom Resource Manifest
+### 1. Configure the Template
+Your deployment is configured via the `.env` file you set up in Step 1. The manifest template is located at `hermes-agent-bot.yaml.tmpl`. You do not need to edit the template directly; the deployment script will inject the values from your `.env` automatically.
 
-Navigate back to the `crd` folder:
-
-```bash
-cd ..
-```
-
-Open `hermes-agent-bot.yaml` and configure it to match your deployment:
-
-```yaml
-apiVersion: agent.hermes.io/v1alpha1
-kind: HermesAgent
-metadata:
-  name: hermes-gateway
-  namespace: hermes
-spec:
-  projectId: "your-project-id"
-  imageUri: "us-central1-docker.pkg.dev/your-project-id/hermes-agent-repo/hermes-agent:latest"
-  chatTopicName: "hermes-chat-events"
-  chatSubName: "hermes-chat-events-sub"
-  gsaName: "hermes-chat-bot"
-  ksaName: "hermes-chat-bot"
-  googleChatAllowedUsers: "your-email@google.com"
-  googleChatHomeChannel: "spaces/your-default-chat-space-id"
-```
-
-### 2. Apply the Custom Resource
-
-Apply the manifest to the cluster:
+### 2. Deploy the Agent
+Run the deployment script to generate the dynamic manifest and apply it to your cluster:
 
 ```bash
-kubectl apply -f hermes-agent-bot.yaml
+./03_deploy_agent.sh
 ```
+
+*This will generate `hermes-agent-bot.yaml` (which is git-ignored) and apply it using `kubectl`.*
 
 Monitor the reconciliation:
 
@@ -305,7 +283,7 @@ The operator leverages Kubernetes Finalizers. When you delete the `HermesAgent` 
 ### Step 1: Delete the Hermes Agent CR
 
 ```bash
-kubectl delete -f hermes-agent-bot.yaml
+./03_deploy_agent.sh delete
 ```
 
 *Verify that the GCP Service Account and Pub/Sub resources have been deleted via the GCP Console.*
@@ -324,5 +302,5 @@ cd ..
 Safely destroy the Artifact Registry, Secret Manager secrets, and GKE Autopilot Cluster:
 
 ```bash
-./03_teardown.sh
+./04_teardown.sh
 ```
