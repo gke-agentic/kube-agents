@@ -1,0 +1,14 @@
+apiVersion: agent.hermes.io/v1alpha1
+kind: HermesAgent
+metadata:
+  name: hermes-gateway
+  namespace: ${NAMESPACE}
+spec:
+  projectId: "${PROJECT_ID}"
+  imageUri: "${IMAGE_URI}"
+  chatTopicName: "${CHAT_TOPIC_NAME}"
+  chatSubName: "${CHAT_SUB_NAME}"
+  gsaName: "${GSA_NAME}"
+  ksaName: "${KSA_NAME}"
+  googleChatAllowedUsers: "${GOOGLE_CHAT_ALLOWED_USERS}"
+  googleChatHomeChannel: "${GOOGLE_CHAT_HOME_CHANNEL}"
