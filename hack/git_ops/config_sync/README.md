@@ -158,14 +158,23 @@ Whenever you make changes to the chatbot application (`hack/gchat/app`) or the o
 
 > [!IMPORTANT]
 > **GKE Standard Clusters Workload Identity Prerequisite:**
-> If you are using a **GKE Standard Cluster** (unlike GKE Autopilot, which has it active by default), Workload Identity **MUST** be explicitly enabled on your GKE cluster master *before* applying any Fleet sync configs. 
-> Run this GKE update command to enable the Identity Pool:
-> ```bash
-> gcloud container clusters update ${GKE_CLUSTER_NAME} \
->     --region=${GKE_REGION} \
->     --project=${GCP_PROJECT_ID} \
->     --workload-pool=${GCP_PROJECT_ID}.svc.id.goog
-> ```
+> If you are using a **GKE Standard Cluster** (unlike GKE Autopilot, which has it active by default), you **MUST** explicitly enable Workload Identity on both the cluster master AND your node pools before applying Fleet sync configs:
+> 
+> 1. **Enable Workload Identity on Cluster Master**:
+>    ```bash
+>    gcloud container clusters update ${GKE_CLUSTER_NAME} \
+>        --region=${GKE_REGION} \
+>        --project=${GCP_PROJECT_ID} \
+>        --workload-pool=${GCP_PROJECT_ID}.svc.id.goog
+>    ```
+> 2. **Enable GKE Metadata Server on Node Pools**:
+>    ```bash
+>    gcloud container node-pools update default-pool \
+>        --cluster=${GKE_CLUSTER_NAME} \
+>        --region=${GKE_REGION} \
+>        --project=${GCP_PROJECT_ID} \
+>        --workload-metadata=GKE_METADATA
+>    ```
 
 Using the loaded environment variables, natively register the cluster to your project fleet and enable Config Sync:
 
