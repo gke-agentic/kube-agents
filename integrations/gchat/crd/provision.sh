@@ -281,7 +281,7 @@ execute_kcc_identity() {
   print_info "Binding GKE KCC system controller to KCC GSA via Workload Identity..."
   gcloud iam service-accounts add-iam-policy-binding \
       "platform-agent-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
-      --member="serviceAccount:${PROJECT_ID}.svc.id.goog[cnrm-system/cnrm-controller-manager]" \
+      --member="serviceAccount:${PROJECT_ID}.svc.id.goog[cnrm-system/cnrm-controller-manager-${NAMESPACE}]" \
       --role="roles/iam.workloadIdentityUser" \
       --project="$PROJECT_ID"
 }
