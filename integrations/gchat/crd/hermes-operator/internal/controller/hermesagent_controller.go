@@ -53,7 +53,6 @@ type HermesAgentReconciler struct {
 // +kubebuilder:rbac:groups=iam.cnrm.cloud.google.com,resources=iamserviceaccounts;iampolicymembers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=pubsub.cnrm.cloud.google.com,resources=pubsubtopics;pubsubsubscriptions,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=get;list;watch;create;update;patch;delete;bind;escalate
-
 func (r *HermesAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
