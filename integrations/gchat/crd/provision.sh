@@ -280,6 +280,13 @@ execute_kcc_identity() {
       --member="serviceAccount:${PROJECT_ID}.svc.id.goog[cnrm-system/cnrm-controller-manager]" \
       --role="roles/iam.workloadIdentityUser" \
       --project="$PROJECT_ID"
+  
+  print_info "Binding GKE KCC namespaced controller (namespace: ${NAMESPACE}) to KCC GSA via Workload Identity..."
+  gcloud iam service-accounts add-iam-policy-binding \
+      "hermes-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
+      --member="serviceAccount:${PROJECT_ID}.svc.id.goog[cnrm-system/cnrm-controller-manager-${NAMESPACE}]" \
+      --role="roles/iam.workloadIdentityUser" \
+      --project="$PROJECT_ID"
 }
 
 
