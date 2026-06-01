@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # =====================================================================
-# Hermes GCP & GKE Infrastructure Bootstrap Script
+# Platform Agent GCP & GKE Infrastructure Bootstrap Script
 # =====================================================================
 
 echo "=== 0. Environment Setup ==="
@@ -76,7 +76,7 @@ fi
 # 4. Configure Secret Manager Placeholders
 # =====================================================================
 echo "=== 4. Configuring Secret Manager ==="
-SECRETS_TO_CREATE=("GCP_API_KEY" "GEMINI_API_KEY")
+SECRETS_TO_CREATE=("GEMINI_API_KEY")
 for SECRET in "${SECRETS_TO_CREATE[@]}"; do
     if gcloud secrets describe "$SECRET" > /dev/null 2>&1; then
         echo " -> [OK] Secret '$SECRET' already exists."
@@ -102,13 +102,11 @@ kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -
 # =====================================================================
 echo "=== 6. Create Kubernetes Secret ==="
 echo " -> [WAIT] Resolving deployment secrets from GCP Secret Manager..."
-RESOLVED_GCP_API_KEY="${GCP_API_KEY:-$(gcloud secrets versions access latest --secret="GCP_API_KEY" --project="$PROJECT_ID" 2>/dev/null || echo "")}"
 RESOLVED_GEMINI_API_KEY="${GEMINI_API_KEY:-$(gcloud secrets versions access latest --secret="GEMINI_API_KEY" --project="$PROJECT_ID" 2>/dev/null || echo "")}"
 
-echo " -> [WAIT] Creating/Updating Kubernetes Secret 'hermes-secrets'..."
-kubectl create secret generic hermes-secrets \
+echo " -> [WAIT] Creating/Updating Kubernetes Secret 'platform-agent-secrets'..."
+kubectl create secret generic platform-agent-secrets \
   --namespace="$NAMESPACE" \
-  --from-literal=GCP_API_KEY="$RESOLVED_GCP_API_KEY" \
   --from-literal=GEMINI_API_KEY="$RESOLVED_GEMINI_API_KEY" \
   --dry-run=client -o yaml | kubectl apply -f -
 

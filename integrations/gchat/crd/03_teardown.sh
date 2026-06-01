@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # =====================================================================
-# Hermes GCP & GKE Infrastructure Teardown Script
+# Platform Agent GCP & GKE Infrastructure Teardown Script
 # =====================================================================
 
 echo "=== 0. Environment Setup ==="
@@ -22,7 +22,7 @@ done
 
 echo ""
 echo "🚨 WARNING: This will permanently delete your GKE cluster, Docker images, and secrets."
-echo "   IMPORTANT: Make sure you have deleted the HermesAgent Custom Resource via kubectl"
+echo "   IMPORTANT: Make sure you have deleted the PlatformAgent Custom Resource via kubectl"
 echo "   first! If you delete the cluster now, the operator cannot run its finalizer to clean"
 echo "   up Pub/Sub and Service Accounts."
 echo ""
@@ -50,7 +50,7 @@ fi
 # 2. Delete Secret Manager Placeholders
 # =====================================================================
 echo "=== 2. Tearing Down Secret Manager Placeholders ==="
-SECRETS_TO_DELETE=("GCP_API_KEY" "GEMINI_API_KEY")
+SECRETS_TO_DELETE=("GEMINI_API_KEY")
 for SECRET in "${SECRETS_TO_DELETE[@]}"; do
     if gcloud secrets describe "$SECRET" > /dev/null 2>&1; then
         echo " -> [WAIT] Deleting Secret '$SECRET'..."

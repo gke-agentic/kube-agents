@@ -1,4 +1,4 @@
-FROM nousresearch/hermes-agent:sha-bec2250d2c8349fc85201bcd1aa39bcaa766a555
+FROM nousresearch/platform-agent:sha-bec2250d2c8349fc85201bcd1aa39bcaa766a555
 
 USER root
 
