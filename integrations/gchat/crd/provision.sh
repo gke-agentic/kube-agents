@@ -399,7 +399,7 @@ execute_agent_image() {
   (
     cd "$SCRIPT_DIR/../../.."
     gcloud builds submit \
-        --config="hack/gchat/app/cloudbuild.yaml" \
+        --config="integrations/gchat/app/cloudbuild.yaml" \
         --substitutions="_IMAGE_URI=$REGION-docker.pkg.dev/$PROJECT_ID/$REPO_NAME/hermes-agent:latest" \
         --project "$PROJECT_ID" \
         .
