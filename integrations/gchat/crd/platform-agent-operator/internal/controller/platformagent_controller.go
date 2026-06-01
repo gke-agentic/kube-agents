@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
@@ -39,6 +40,8 @@ import (
 
 	agentv1alpha1 "github.com/gke-agentic/platform-agent-operator/api/v1alpha1"
 )
+
+const platformAgentFinalizer = "agent.platform.io/finalizer"
 
 // PlatformAgentReconciler reconciles a PlatformAgent object
 type PlatformAgentReconciler struct {
@@ -68,6 +71,33 @@ func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
+	// 1.5. Handle finalizer registration and deletion lifecycle hooks
+	// Check if the instance is marked for deletion (DeletionTimestamp is set)
+	if !instance.ObjectMeta.DeletionTimestamp.IsZero() {
+		if containsString(instance.ObjectMeta.Finalizers, platformAgentFinalizer) {
+			// Run custom cleanup logic for cluster-scoped resources (ClusterRoleBinding)
+			if err := r.deleteExternalResources(ctx, instance); err != nil {
+				return ctrl.Result{}, err
+			}
+
+			// Remove finalizer string from GMeta list
+			instance.ObjectMeta.Finalizers = removeString(instance.ObjectMeta.Finalizers, platformAgentFinalizer)
+			if err := r.Update(ctx, instance); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// Register finalizer if not already present in metadata
+	if !containsString(instance.ObjectMeta.Finalizers, platformAgentFinalizer) {
+		instance.ObjectMeta.Finalizers = append(instance.ObjectMeta.Finalizers, platformAgentFinalizer)
+		if err := r.Update(ctx, instance); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+
 	log.Info("Reconciling PlatformAgent", "name", instance.Name)
 
 	// Update status phase to Provisioning if empty
@@ -76,6 +106,7 @@ func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		if err := r.Status().Update(ctx, instance); err != nil {
 			return ctrl.Result{}, err
 		}
+		return ctrl.Result{}, nil
 	}
 
 	// 2. Reconcile KCC GCP Identity (GSA), Topic, Subscription, and IAM bindings
@@ -226,8 +257,32 @@ func (r *PlatformAgentReconciler) createOrUpdateUnstructured(ctx context.Context
 		}
 	}
 
-	// If the spec did NOT change and this is an IAMPolicyMember, we MUST skip Update to avoid GKE webhook denials!
+	// If the spec did NOT change and this is an IAMPolicyMember, we MUST skip to avoid GKE webhook denials!
 	if !specChanged && obj.GetKind() == "IAMPolicyMember" {
+		return false, nil
+	}
+
+	desiredLabels := obj.GetLabels()
+	foundLabels := found.GetLabels()
+	labelsChanged := false
+	for k, v := range desiredLabels {
+		if foundLabels == nil || foundLabels[k] != v {
+			labelsChanged = true
+			break
+		}
+	}
+
+	desiredAnnotations := obj.GetAnnotations()
+	foundAnnotations := found.GetAnnotations()
+	annotationsChanged := false
+	for k, v := range desiredAnnotations {
+		if foundAnnotations == nil || foundAnnotations[k] != v {
+			annotationsChanged = true
+			break
+		}
+	}
+
+	if !specChanged && !labelsChanged && !annotationsChanged {
 		return false, nil
 	}
 
@@ -244,8 +299,6 @@ func (r *PlatformAgentReconciler) createOrUpdateUnstructured(ctx context.Context
 	}
 
 	// 3. Merge Labels
-	desiredLabels := obj.GetLabels()
-	foundLabels := found.GetLabels()
 	if foundLabels == nil {
 		foundLabels = make(map[string]string)
 	}
@@ -253,8 +306,6 @@ func (r *PlatformAgentReconciler) createOrUpdateUnstructured(ctx context.Context
 	found.SetLabels(foundLabels)
 
 	// 4. Merge Annotations
-	desiredAnnotations := obj.GetAnnotations()
-	foundAnnotations := found.GetAnnotations()
 	if foundAnnotations == nil {
 		foundAnnotations = make(map[string]string)
 	}
@@ -566,7 +617,9 @@ func (r *PlatformAgentReconciler) reconcileDeployment(ctx context.Context, insta
 				Spec: corev1.PodSpec{
 					ServiceAccountName: instance.Spec.KSAName,
 					SecurityContext: &corev1.PodSecurityContext{
-						FSGroup: &fsGroup,
+						FSGroup:        &fsGroup,
+						RunAsNonRoot:   func(b bool) *bool { return &b }(true),
+						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},
 					Containers: []corev1.Container{
 						{
@@ -667,6 +720,12 @@ func (r *PlatformAgentReconciler) reconcileDeployment(ctx context.Context, insta
 									SubPath:   "config.yaml",
 								},
 							},
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: func(b bool) *bool { return &b }(false),
+								Capabilities: &corev1.Capabilities{
+									Drop: []corev1.Capability{"ALL"},
+								},
+							},
 						},
 					},
 					Volumes: []corev1.Volume{
@@ -712,9 +771,12 @@ func (r *PlatformAgentReconciler) reconcileDeployment(ctx context.Context, insta
 		return err
 	}
 
-	found.Spec = deploy.Spec
-	found.Labels = deploy.Labels
-	return r.Update(ctx, found)
+	if !reflect.DeepEqual(found.Spec, deploy.Spec) || !reflect.DeepEqual(found.Labels, deploy.Labels) {
+		found.Spec = deploy.Spec
+		found.Labels = deploy.Labels
+		return r.Update(ctx, found)
+	}
+	return nil
 }
 
 func (r *PlatformAgentReconciler) reconcileClusterRoleBinding(ctx context.Context, instance *agentv1alpha1.PlatformAgent) error {
@@ -745,9 +807,12 @@ func (r *PlatformAgentReconciler) reconcileClusterRoleBinding(ctx context.Contex
 		return err
 	}
 
-	found.Subjects = crb.Subjects
-	found.RoleRef = crb.RoleRef
-	return r.Update(ctx, found)
+	if !reflect.DeepEqual(found.Subjects, crb.Subjects) || !reflect.DeepEqual(found.RoleRef, crb.RoleRef) {
+		found.Subjects = crb.Subjects
+		found.RoleRef = crb.RoleRef
+		return r.Update(ctx, found)
+	}
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -760,4 +825,42 @@ func (r *PlatformAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.ConfigMap{}).
 		Named("platformagent").
 		Complete(r)
+}
+
+func (r *PlatformAgentReconciler) deleteExternalResources(ctx context.Context, instance *agentv1alpha1.PlatformAgent) error {
+	log := logf.FromContext(ctx)
+	crbName := instance.Namespace + "-" + instance.Name + "-cluster-viewer"
+
+	crb := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: crbName,
+		},
+	}
+
+	log.Info("Deleting associated ClusterRoleBinding during finalizer cleanup", "name", crbName)
+	err := r.Delete(ctx, crb)
+	if err != nil && !errors.IsNotFound(err) {
+		return err
+	}
+	return nil
+}
+
+func containsString(slice []string, s string) bool {
+	for _, item := range slice {
+		if item == s {
+			return true
+		}
+	}
+	return false
+}
+
+func removeString(slice []string, s string) []string {
+	var result []string
+	for _, item := range slice {
+		if item == s {
+			continue
+		}
+		result = append(result, item)
+	}
+	return result
 }
