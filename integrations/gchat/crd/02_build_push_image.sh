@@ -44,10 +44,14 @@ echo "=== 2. Building Image via Cloud Build ==="
 echo " -> [WAIT] Submitting build with root context to Google Cloud Build..."
 echo " -> [INFO] Target Image: $IMAGE_URI"
 
-gcloud builds submit \
-    --tag "$IMAGE_URI" \
-    --project "$PROJECT_ID" \
-    "$REPO_ROOT"
+(
+  cd ../../..
+  gcloud builds submit \
+      --config="integrations/gchat/app/cloudbuild.yaml" \
+      --substitutions="_IMAGE_URI=$IMAGE_URI" \
+      --project "$PROJECT_ID" \
+      .
+)
 
 echo "=== 3. Verifying Deployment ==="
 echo " -> [WAIT] Verifying image exists in Artifact Registry..."

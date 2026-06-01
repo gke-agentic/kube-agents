@@ -3,7 +3,7 @@ steps:
   args: [
     'build',
     '-t', '$_IMAGE_URI',
-    '-f', 'hack/gchat/app/Dockerfile',
+    '-f', 'integrations/gchat/app/Dockerfile',
     '.'
   ]
 images:

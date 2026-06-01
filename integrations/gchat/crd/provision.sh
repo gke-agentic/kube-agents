@@ -314,19 +314,19 @@ execute_kubeconfig() {
 
 # Step 5.5: Configure KCC Namespaced Mode & Target Project Annotations
 verify_kcc_namespaced() {
-  kubectl get configconnector configconnector.core.cnrm.cloud.google.com >/dev/null 2>&1 && \
+  kubectl get configconnectorcontext configconnectorcontext.core.cnrm.cloud.google.com -n "$NAMESPACE" >/dev/null 2>&1 && \
   kubectl get namespace "$NAMESPACE" -o jsonpath='{.metadata.annotations.cnrm\.cloud\.google\.com/project-id}' 2>/dev/null | grep -q "$PROJECT_ID"
 }
 execute_kcc_namespaced() {
-  print_info "1/2. Applying ConfigConnector custom resource namespaced configuration..."
+  print_info "1/2. Applying ConfigConnectorContext in namespace '$NAMESPACE'..."
   local KCC_CR=$(mktemp)
   cat <<EOF > "$KCC_CR"
 apiVersion: core.cnrm.cloud.google.com/v1beta1
-kind: ConfigConnector
+kind: ConfigConnectorContext
 metadata:
-  name: configconnector.core.cnrm.cloud.google.com
+  name: configconnectorcontext.core.cnrm.cloud.google.com
+  namespace: ${NAMESPACE}
 spec:
-  mode: namespaced
   googleServiceAccount: hermes-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com
 EOF
   kubectl apply -f "$KCC_CR"
@@ -377,7 +377,7 @@ execute_agent_image() {
   (
     cd "$SCRIPT_DIR/../../.."
     gcloud builds submit \
-        --config="hack/gchat/app/cloudbuild.yaml" \
+        --config="integrations/gchat/app/cloudbuild.yaml" \
         --substitutions="_IMAGE_URI=$REGION-docker.pkg.dev/$PROJECT_ID/$REPO_NAME/hermes-agent:latest" \
         --project "$PROJECT_ID" \
         .
