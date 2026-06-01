@@ -258,7 +258,7 @@ execute_kcc_addon() {
 # Step 3.6: Configure KCC GCP Identity (GSA & Workload Identity)
 verify_kcc_identity() {
   gcloud iam service-accounts describe "hermes-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com" --project="$PROJECT_ID" >/dev/null 2>&1 && \
-  gcloud projects get-iam-policy "$PROJECT_ID" --format=json 2>/dev/null | grep -q "hermes-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com"
+  gcloud iam service-accounts get-iam-policy "hermes-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com" --project="$PROJECT_ID" --format=json 2>/dev/null | grep -q "cnrm-controller-manager-${NAMESPACE}"
 }
 execute_kcc_identity() {
   # 1. Create GSA if not exists
@@ -278,6 +278,13 @@ execute_kcc_identity() {
   gcloud iam service-accounts add-iam-policy-binding \
       "hermes-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
       --member="serviceAccount:${PROJECT_ID}.svc.id.goog[cnrm-system/cnrm-controller-manager]" \
+      --role="roles/iam.workloadIdentityUser" \
+      --project="$PROJECT_ID"
+
+  print_info "Binding GKE KCC namespaced system controller to KCC GSA via Workload Identity..."
+  gcloud iam service-accounts add-iam-policy-binding \
+      "hermes-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
+      --member="serviceAccount:${PROJECT_ID}.svc.id.goog[cnrm-system/cnrm-controller-manager-${NAMESPACE}]" \
       --role="roles/iam.workloadIdentityUser" \
       --project="$PROJECT_ID"
 }
@@ -315,10 +322,11 @@ execute_kubeconfig() {
 # Step 5.5: Configure KCC Namespaced Mode & Target Project Annotations
 verify_kcc_namespaced() {
   kubectl get configconnector configconnector.core.cnrm.cloud.google.com >/dev/null 2>&1 && \
-  kubectl get namespace "$NAMESPACE" -o jsonpath='{.metadata.annotations.cnrm\.cloud\.google\.com/project-id}' 2>/dev/null | grep -q "$PROJECT_ID"
+  kubectl get namespace "$NAMESPACE" -o jsonpath='{.metadata.annotations.cnrm\.cloud\.google\.com/project-id}' 2>/dev/null | grep -q "$PROJECT_ID" && \
+  kubectl get configconnectorcontext configconnectorcontext.core.cnrm.cloud.google.com -n "$NAMESPACE" >/dev/null 2>&1
 }
 execute_kcc_namespaced() {
-  print_info "1/2. Applying ConfigConnector custom resource namespaced configuration..."
+  print_info "1/3. Applying ConfigConnector custom resource namespaced configuration..."
   local KCC_CR=$(mktemp)
   cat <<EOF > "$KCC_CR"
 apiVersion: core.cnrm.cloud.google.com/v1beta1
@@ -332,8 +340,22 @@ EOF
   kubectl apply -f "$KCC_CR"
   rm -f "$KCC_CR"
 
-  print_info "2/2. Annotating target namespace '$NAMESPACE' with GCP project ID..."
+  print_info "2/3. Annotating target namespace '$NAMESPACE' with GCP project ID..."
   kubectl annotate namespace "$NAMESPACE" cnrm.cloud.google.com/project-id="$PROJECT_ID" --overwrite
+
+  print_info "3/3. Applying ConfigConnectorContext to target namespace '$NAMESPACE'..."
+  local KCC_CONTEXT=$(mktemp)
+  cat <<EOF > "$KCC_CONTEXT"
+apiVersion: core.cnrm.cloud.google.com/v1beta1
+kind: ConfigConnectorContext
+metadata:
+  name: configconnectorcontext.core.cnrm.cloud.google.com
+  namespace: ${NAMESPACE}
+spec:
+  googleServiceAccount: hermes-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com
+EOF
+  kubectl apply -f "$KCC_CONTEXT"
+  rm -f "$KCC_CONTEXT"
 }
 
 
