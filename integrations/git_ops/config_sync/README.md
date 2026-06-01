@@ -1,6 +1,6 @@
 # GitOps Integration: GCP Config Sync for `kube-agents`
 
-This directory contains instructions and manifests for integrating the `kube-agents` repository with **GCP Config Sync** (GKE's GitOps engine). Using Config Sync allows GKE to automatically watch this repository and sync your Custom Resource Definitions (CRDs), operator deployments, and Custom Resources (`HermesAgent`) in real-time.
+This directory contains instructions and manifests for integrating the `kube-agents` repository with **GCP Config Sync** (GKE's GitOps engine). Using Config Sync allows GKE to automatically watch this repository and sync your Custom Resource Definitions (CRDs), operator deployments, and Custom Resources (`PlatformAgent`) in real-time.
 
 ---
 
@@ -35,9 +35,9 @@ kube-agents/
         └── config_sync/
             └── manifests/
                 ├── system/
-                │   └── hermes-operator.yaml                   # Consolidated Operator manifest (Namespace, RBAC, CRD, Deployment)
+                │   └── platform-agent-operator.yaml                   # Consolidated Operator manifest (Namespace, RBAC, CRD, Deployment)
                 └── apps/
-                    └── hermes-agent-bot.yaml                  # Custom Resource (CR) instances for your bot
+                    └── platform-agent-bot.yaml                  # Custom Resource (CR) instances for your bot
 ```
 
 ---
@@ -80,7 +80,7 @@ Instead of compiling locally, we run a **unified parallel pipeline completely in
 
 2. **Create the Google Artifact Registry repository**:
    ```bash
-   gcloud artifacts repositories create hermes-agent-repo \
+   gcloud artifacts repositories create platform-agent-repo \
        --repository-format=docker \
        --location=${GKE_REGION} \
        --project=${GCP_PROJECT_ID}
@@ -114,7 +114,7 @@ Instead of compiling locally, we run a **unified parallel pipeline completely in
 ---
 
 #### ⚡ The Single-Command Parallel Build Workflow
-Whenever you make changes to the chatbot application (`hack/gchat/app`) or the operator code (`hack/gchat/crd/hermes-operator`), you can build, package, and release **both** images in parallel with **one command**:
+Whenever you make changes to the chatbot application (`hack/gchat/app`) or the operator code (`hack/gchat/crd/platform-agent-operator`), you can build, package, and release **both** images in parallel with **one command**:
 
 1. **Submit the parallel build to Google Cloud Build**:
    Run this command from the **root** of the repository:
@@ -133,13 +133,13 @@ Whenever you make changes to the chatbot application (`hack/gchat/app`) or the o
    > 1. You are releasing a new version tag (e.g., changing the tag from `:v1.0.0` to `:v1.1.0`).
    > 2. You modified GKE-specific settings for the operator (such as RBAC roles, ServiceAccounts, CPU/Memory requests, or added new fields in `_types.go` schemas) under the `config/` folder.
    ```bash
-   export IMG="${GKE_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/hermes-agent-repo/hermes-operator:latest"
+   export IMG="${GKE_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/platform-agent-repo/platform-agent-operator:latest"
    
-   cd hack/gchat/crd/hermes-operator
+   cd hack/gchat/crd/platform-agent-operator
    make build-installer IMG=$IMG
    
    # Overwrite the GitOps deployment manifest
-   cp dist/install.yaml ../../../git_ops/config_sync/manifests/system/hermes-operator.yaml
+   cp dist/install.yaml ../../../git_ops/config_sync/manifests/system/platform-agent-operator.yaml
    ```
 
 ---
@@ -251,8 +251,8 @@ Once synced, verify that Config Sync has automatically applied the Custom Resour
 
 ```bash
 # Check if the CRD is present
-kubectl get crds | grep hermesagents
+kubectl get crds | grep platformagents
 
 # Check if the workloads are synced and healthy
-kubectl get hermesagents
+kubectl get platformagents
 ```
