@@ -27,7 +27,8 @@ COPY agents/platform/config.yaml /tmp/platform-config.yaml
 # Dynamically merge config.yamls using the virtual environment's python binary (which has PyYAML installed)
 RUN /opt/hermes/.venv/bin/python3 -c "import yaml; s=yaml.safe_load(open('/opt/defaults/config.yaml')) or {}; p=yaml.safe_load(open('/tmp/platform-config.yaml')) or {}; s.update(p); yaml.safe_dump(s, open('/opt/defaults/config.yaml', 'w'))" && rm /tmp/platform-config.yaml
 
-RUN chmod -R a+rX /opt/defaults
+# Drop container root privileges before running the agent
+USER hermes
 
 WORKDIR /opt/data
 CMD ["hermes", "gateway", "run"]
