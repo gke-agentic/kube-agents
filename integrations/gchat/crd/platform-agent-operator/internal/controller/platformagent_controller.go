@@ -598,8 +598,16 @@ func (r *PlatformAgentReconciler) reconcileDeployment(ctx context.Context, insta
 									Value: "1",
 								},
 								{
-									Name:  "API_SERVER_KEY",
-									Value: "platform_agent_gke_internal_api_key_392859",
+									Name: "API_SERVER_KEY",
+									ValueFrom: &corev1.EnvVarSource{
+										SecretKeyRef: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{
+												Name: "platform-agent-secrets",
+											},
+											Key:      "API_SERVER_KEY",
+											Optional: func(b bool) *bool { return &b }(true),
+										},
+									},
 								},
 								{
 									Name:  "GKE_CLUSTER_NAME",

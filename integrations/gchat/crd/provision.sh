@@ -124,6 +124,9 @@ if [ ! -f "$VARS_FILE" ]; then
   read -r INPUT_USER
   export ALLOWED_USER="${INPUT_USER:-$DEFAULT_USER}"
 
+  # 6.5. Generate secure random API Server auth key
+  export API_SERVER_KEY=$(openssl rand -hex 16)
+
   # 7. Write state file
   cat <<EOF > "$VARS_FILE"
 # SRE Sourced Variables for GKE & GCP Setup
@@ -138,6 +141,7 @@ export CHAT_TOPIC_NAME="platform-agent-chat-events"
 export CHAT_SUB_NAME="platform-agent-chat-events-sub"
 export GSA_NAME="platform-agent-bot-platform-agent"
 export KSA_NAME="platform-agent-platform-sa"
+export API_SERVER_KEY="${API_SERVER_KEY}"
 EOF
   print_success "Created configuration state file at $VARS_FILE"
 fi
@@ -357,10 +361,18 @@ execute_k8s_secrets() {
     fi
   fi
 
+  # Self-healing check: Generate API_SERVER_KEY if missing from stale vars.sh cache
+  if [ -z "${API_SERVER_KEY:-}" ]; then
+    print_info "API_SERVER_KEY not found in vars.sh state. Generating a secure random key..."
+    export API_SERVER_KEY=$(openssl rand -hex 16)
+    echo "export API_SERVER_KEY=\"${API_SERVER_KEY}\"" >> "$VARS_FILE"
+  fi
+
   print_info "Writing Kubernetes Secret 'platform-agent-secrets' into '$NAMESPACE'..."
   kubectl create secret generic platform-agent-secrets \
       --namespace="$NAMESPACE" \
       --from-literal=GEMINI_API_KEY="$GEMINI_KEY" \
+      --from-literal=API_SERVER_KEY="$API_SERVER_KEY" \
       --dry-run=client -o yaml | kubectl apply -f -
 }
 
