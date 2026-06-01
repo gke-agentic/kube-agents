@@ -25,6 +25,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -51,6 +52,7 @@ type HermesAgentReconciler struct {
 // +kubebuilder:rbac:groups="",resources=serviceaccounts;persistentvolumeclaims;configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=iam.cnrm.cloud.google.com,resources=iamserviceaccounts;iampolicymembers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=pubsub.cnrm.cloud.google.com,resources=pubsubtopics;pubsubsubscriptions,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
 
 func (r *HermesAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -124,6 +126,12 @@ func (r *HermesAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// 6. Reconcile Kubernetes Service Account (KSA)
 	if err := r.reconcileKSA(ctx, instance); err != nil {
 		log.Error(err, "Failed to reconcile KSA")
+		return ctrl.Result{}, err
+	}
+
+	// 6.5. Reconcile ClusterRoleBinding for GKE cluster-wide viewer capabilities
+	if err := r.reconcileClusterRoleBinding(ctx, instance); err != nil {
+		log.Error(err, "Failed to reconcile ClusterRoleBinding")
 		return ctrl.Result{}, err
 	}
 
@@ -525,8 +533,11 @@ platforms:
 		return err
 	}
 
-	found.Data = configMap.Data
-	return r.Update(ctx, found)
+	if found.Data == nil || found.Data["config.yaml"] != configMap.Data["config.yaml"] {
+		found.Data = configMap.Data
+		return r.Update(ctx, found)
+	}
+	return nil
 }
 
 func (r *HermesAgentReconciler) reconcileDeployment(ctx context.Context, instance *agentv1alpha1.HermesAgent) error {
@@ -701,13 +712,52 @@ func (r *HermesAgentReconciler) reconcileDeployment(ctx context.Context, instanc
 	err := r.Get(ctx, client.ObjectKey{Name: deploy.Name, Namespace: deploy.Namespace}, found)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			return r.Create(ctx, deploy)
+			createErr := r.Create(ctx, deploy)
+			if createErr != nil && !errors.IsAlreadyExists(createErr) {
+				return createErr
+			}
+			return nil
 		}
 		return err
 	}
 
 	found.Spec = deploy.Spec
 	found.Labels = deploy.Labels
+	return r.Update(ctx, found)
+}
+
+
+
+func (r *HermesAgentReconciler) reconcileClusterRoleBinding(ctx context.Context, instance *agentv1alpha1.HermesAgent) error {
+	crb := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: instance.Name + "-cluster-viewer",
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      instance.Spec.KSAName,
+				Namespace: instance.Namespace,
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "ClusterRole",
+			Name:     "view",
+		},
+	}
+
+	found := &rbacv1.ClusterRoleBinding{}
+	err := r.Get(ctx, client.ObjectKey{Name: crb.Name}, found)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return r.Create(ctx, crb)
+		}
+		return err
+	}
+
+	found.Subjects = crb.Subjects
+	found.RoleRef = crb.RoleRef
 	return r.Update(ctx, found)
 }
 
