@@ -32,7 +32,7 @@ echo " -> [INFO] Target Image: $IMAGE_URI"
 (
   cd ../../..
   gcloud builds submit \
-      --config="hack/gchat/app/cloudbuild.yaml" \
+      --config="integrations/gchat/app/cloudbuild.yaml" \
       --substitutions="_IMAGE_URI=$IMAGE_URI" \
       --project "$PROJECT_ID" \
       .
