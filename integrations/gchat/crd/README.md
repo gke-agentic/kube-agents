@@ -1,6 +1,6 @@
 # 🤖 Platform Agent Operator-based GKE Deployment (`crd`)
 
-This module provides a declarative, **operator-based** approach to provisioning, deploying, and managing the **Platform Agent Bot** on Google Kubernetes Engine (GKE) Autopilot. 
+This module provides a declarative, **operator-based** approach to provisioning, deploying, and managing the **Platform Agent Bot** on Google Kubernetes Engine (GKE) Autopilot.
 
 Instead of relying on local, imperative bash scripts to configure GCP infrastructure and Kubernetes resources, this module leverages a custom Kubernetes Controller (**`platform-agent-operator`**) and a Custom Resource Definition (**`PlatformAgent`**). The operator continuously reconciles the state of your deployment to match your desired configuration.
 
@@ -32,7 +32,7 @@ flowchart TD
     B -- Yes --> C[Run GCP Teardown via Finalizer]
     C --> D[Delete GCP Pub/Sub & IAM SA]
     D --> E[Remove Finalizer & Delete CR]
-    
+
     B -- No --> F[Add Finalizer agent.platform.io/finalizer]
     F --> G[Provision GCP Pub/Sub Topic & Subscription]
     G --> H[Create GCP Service Account & Workload Identity Bridge]
@@ -45,10 +45,10 @@ flowchart TD
 1. **Finalizer Registration**: Registers `agent.platform.io/finalizer` on the CR to prevent deletion until external GCP resources are safely cleaned up.
 2. **GCP Pub/Sub Provisioning**: Automatically creates the target GCP Pub/Sub Topic and Subscription for Google Chat events if they do not already exist.
 3. **Identity & Access (Workload Identity)**:
-   * Creates a GCP Service Account (GSA) for the bot.
-   * Binds the GSA to the Kubernetes Service Account (KSA) using Workload Identity (`roles/iam.workloadIdentityUser`).
-   * Binds GCP IAM role `roles/aiplatform.user` to the GSA to enable native, keyless Vertex AI/Gemini API access.
-   * Grants the GSA subscriber access to the Pub/Sub subscription and publish rights for Google Chat systems on the Pub/Sub topic.
+   - Creates a GCP Service Account (GSA) for the bot.
+   - Binds the GSA to the Kubernetes Service Account (KSA) using Workload Identity (`roles/iam.workloadIdentityUser`).
+   - Binds GCP IAM role `roles/aiplatform.user` to the GSA to enable native, keyless Vertex AI/Gemini API access.
+   - Grants the GSA subscriber access to the Pub/Sub subscription and publish rights for Google Chat systems on the Pub/Sub topic.
 4. **Secret Synchronization**: Resolves the latest active version of `GEMINI_API_KEY` from GCP Secret Manager and populates it into a local Kubernetes Secret `platform-agent-secrets` mapped directly to the pod environment.
 5. **Workload Deployment**: Deploys the standard Kubernetes workloads (ConfigMap `platform-agent-config`, PVC `platform-agent-data`, ServiceAccount, and the Deployment `platform-agent-gateway` container).
 
@@ -61,32 +61,39 @@ flowchart TD
 The easiest way to get started is using the interactive `provision.sh` script. It automates GKE cluster setup, enables APIs, creates Artifact Registry, generates keys in Secret Manager, builds the agent container, builds and deploys the controller operator, and provisions a live `PlatformAgent` custom resource!
 
 #### 1. Start the Provisioner
+
 Run the provisioner from the `crd` directory:
+
 ```bash
 cd integrations/gchat/crd
 ./provision.sh
 ```
 
 The script will ask you for:
-* Target GCP Project ID
-* Target GKE GCP Region (default: `us-central1`)
-* GKE Cluster Name (default: `platform-agent-host`)
-* Target Namespace (default: `platform-agent`)
-* Allowed Google Chat User Email
+
+- Target GCP Project ID
+- Target GKE GCP Region (default: `us-central1`)
+- GKE Cluster Name (default: `platform-agent-host`)
+- Target Namespace (default: `platform-agent`)
+- Allowed Google Chat User Email
 
 #### 2. Verify Operator & Workload Rollout
+
 Once the script completes, check that the operator and gateway are rolling out:
+
 ```bash
 kubectl get deployments -n platform-agent-operator-system
 kubectl get pods -n platform-agent
 ```
 
 You can track the reconciliation phase of your `PlatformAgent` custom resource:
+
 ```bash
 kubectl get platformagent platform-agent-gateway -n platform-agent
 ```
 
 #### 3. Populate API Secrets (Optional but Recommended)
+
 If you chose not to supply your Gemini API key during the interactive setup, you should edit the GCP Secret Manager secret `GEMINI_API_KEY` in the Google Cloud Console with your live key.
 
 ---
@@ -94,7 +101,9 @@ If you chose not to supply your Gemini API key during the interactive setup, you
 ## 🔌 Access and Administration
 
 ### 1. Access the Local Dashboard
+
 Port-forward the dashboard to your local machine:
+
 ```bash
 kubectl port-forward -n platform-agent deployment/platform-agent-gateway 9119:9119
 ```
@@ -102,7 +111,9 @@ kubectl port-forward -n platform-agent deployment/platform-agent-gateway 9119:91
 Open your browser and navigate to `http://localhost:9119` to view the Platform Agent Visual Dashboard.
 
 ### 2. Approve Google Chat Integrations
+
 To approve a pairing code and complete Google Chat setup:
+
 ```bash
 kubectl exec -it deploy/platform-agent-gateway -n platform-agent -c hermes -- hermes pairing approve google_chat <PAIRING_CODE>
 ```
@@ -114,6 +125,7 @@ kubectl exec -it deploy/platform-agent-gateway -n platform-agent -c hermes -- he
 The `teardown.sh` script deletes the custom resource (triggering Config Connector to clean up GSA, Pub/Sub, and IAM policies), undeploys the Operator, removes KCC configurations, destroys the Secret Manager secrets, removes the Artifact Registry repository, and tears down the GKE cluster.
 
 Run the teardown script from the `crd` directory:
+
 ```bash
 cd integrations/gchat/crd
 ./teardown.sh

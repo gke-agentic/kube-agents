@@ -13,15 +13,15 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: platformagent-admin-role
 rules:
-- apiGroups:
-  - agent.platform.io
-  resources:
-  - platformagents
-  verbs:
-  - '*'
-- apiGroups:
-  - agent.platform.io
-  resources:
-  - platformagents/status
-  verbs:
-  - get
+  - apiGroups:
+      - agent.platform.io
+    resources:
+      - platformagents
+    verbs:
+      - "*"
+  - apiGroups:
+      - agent.platform.io
+    resources:
+      - platformagents/status
+    verbs:
+      - get

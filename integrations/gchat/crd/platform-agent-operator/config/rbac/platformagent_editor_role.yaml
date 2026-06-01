@@ -13,21 +13,21 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: platformagent-editor-role
 rules:
-- apiGroups:
-  - agent.platform.io
-  resources:
-  - platformagents
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - agent.platform.io
-  resources:
-  - platformagents/status
-  verbs:
-  - get
+  - apiGroups:
+      - agent.platform.io
+    resources:
+      - platformagents
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - agent.platform.io
+    resources:
+      - platformagents/status
+    verbs:
+      - get
