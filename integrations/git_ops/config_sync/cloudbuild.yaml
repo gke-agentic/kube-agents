@@ -9,28 +9,28 @@ steps:
   # ----------------------------------------------------------------------------
   # Step 1: Build the Go Operator Image
   # ----------------------------------------------------------------------------
-  - name: 'gcr.io/cloud-builders/docker'
+  - name: "gcr.io/cloud-builders/docker"
     args:
-      - 'build'
-      - '-t'
-      - 'us-central1-docker.pkg.dev/$PROJECT_ID/hermes-agent-repo/hermes-operator:latest'
-      - './hack/gchat/crd/hermes-operator'
-    id: 'build-operator'
-    waitFor: ['-'] # Starts immediately (does not wait for other steps)
+      - "build"
+      - "-t"
+      - "us-central1-docker.pkg.dev/$PROJECT_ID/platform-agent-repo/platform-agent-operator:latest"
+      - "./hack/gchat/crd/platform-agent-operator"
+    id: "build-operator"
+    waitFor: ["-"] # Starts immediately (does not wait for other steps)
 
   # ----------------------------------------------------------------------------
   # Step 2: Build the Chatbot Agent Image
   # ----------------------------------------------------------------------------
-  - name: 'gcr.io/cloud-builders/docker'
+  - name: "gcr.io/cloud-builders/docker"
     args:
-      - 'build'
-      - '-t'
-      - 'us-central1-docker.pkg.dev/$PROJECT_ID/hermes-agent-repo/hermes-agent:latest'
-      - './hack/gchat/app'
-    id: 'build-agent'
-    waitFor: ['-'] # Starts immediately (runs in parallel with the operator build)
+      - "build"
+      - "-t"
+      - "us-central1-docker.pkg.dev/$PROJECT_ID/platform-agent-repo/platform-agent:latest"
+      - "./integrations/gchat/app"
+    id: "build-agent"
+    waitFor: ["-"] # Starts immediately (runs in parallel with the operator build)
 
 # Push both completed images to Google Artifact Registry automatically
 images:
-  - 'us-central1-docker.pkg.dev/$PROJECT_ID/hermes-agent-repo/hermes-operator:latest'
-  - 'us-central1-docker.pkg.dev/$PROJECT_ID/hermes-agent-repo/hermes-agent:latest'
+  - "us-central1-docker.pkg.dev/$PROJECT_ID/platform-agent-repo/platform-agent-operator:latest"
+  - "us-central1-docker.pkg.dev/$PROJECT_ID/platform-agent-repo/platform-agent:latest"
