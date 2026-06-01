@@ -258,7 +258,8 @@ execute_kcc_addon() {
 # Step 3.6: Configure KCC GCP Identity (GSA & Workload Identity)
 verify_kcc_identity() {
   gcloud iam service-accounts describe "hermes-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com" --project="$PROJECT_ID" >/dev/null 2>&1 && \
-  gcloud projects get-iam-policy "$PROJECT_ID" --format=json 2>/dev/null | grep -q "hermes-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com"
+  gcloud projects get-iam-policy "$PROJECT_ID" --format=json 2>/dev/null | grep -q "hermes-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com" && \
+  gcloud iam service-accounts get-iam-policy "hermes-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com" --project="$PROJECT_ID" --format=json 2>/dev/null | grep -q "${PROJECT_ID}.svc.id.goog\[cnrm-system/cnrm-controller-manager-${NAMESPACE}\]"
 }
 execute_kcc_identity() {
   # 1. Create GSA if not exists
@@ -273,11 +274,11 @@ execute_kcc_identity() {
       --member="serviceAccount:hermes-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
       --role="roles/owner"
 
-  # 3. Bind Workload Identity (GKE KCC pod cnrm-controller-manager to GCP GSA)
-  print_info "Binding GKE KCC system controller to KCC GSA via Workload Identity..."
+  # 3. Bind Workload Identity (GKE namespaced KCC pod cnrm-controller-manager-NAMESPACE to GCP GSA)
+  print_info "Binding GKE namespaced KCC system controller to KCC GSA via Workload Identity..."
   gcloud iam service-accounts add-iam-policy-binding \
       "hermes-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
-      --member="serviceAccount:${PROJECT_ID}.svc.id.goog[cnrm-system/cnrm-controller-manager]" \
+      --member="serviceAccount:${PROJECT_ID}.svc.id.goog[cnrm-system/cnrm-controller-manager-${NAMESPACE}]" \
       --role="roles/iam.workloadIdentityUser" \
       --project="$PROJECT_ID"
 }
@@ -314,19 +315,19 @@ execute_kubeconfig() {
 
 # Step 5.5: Configure KCC Namespaced Mode & Target Project Annotations
 verify_kcc_namespaced() {
-  kubectl get configconnector configconnector.core.cnrm.cloud.google.com >/dev/null 2>&1 && \
+  kubectl get configconnectorcontext configconnectorcontext.core.cnrm.cloud.google.com -n "$NAMESPACE" >/dev/null 2>&1 && \
   kubectl get namespace "$NAMESPACE" -o jsonpath='{.metadata.annotations.cnrm\.cloud\.google\.com/project-id}' 2>/dev/null | grep -q "$PROJECT_ID"
 }
 execute_kcc_namespaced() {
-  print_info "1/2. Applying ConfigConnector custom resource namespaced configuration..."
+  print_info "1/2. Applying ConfigConnectorContext in namespace '$NAMESPACE'..."
   local KCC_CR=$(mktemp)
   cat <<EOF > "$KCC_CR"
 apiVersion: core.cnrm.cloud.google.com/v1beta1
-kind: ConfigConnector
+kind: ConfigConnectorContext
 metadata:
-  name: configconnector.core.cnrm.cloud.google.com
+  name: configconnectorcontext.core.cnrm.cloud.google.com
+  namespace: ${NAMESPACE}
 spec:
-  mode: namespaced
   googleServiceAccount: hermes-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com
 EOF
   kubectl apply -f "$KCC_CR"
@@ -377,7 +378,7 @@ execute_agent_image() {
   (
     cd "$SCRIPT_DIR/../../.."
     gcloud builds submit \
-        --config="hack/gchat/app/cloudbuild.yaml" \
+        --config="integrations/gchat/app/cloudbuild.yaml" \
         --substitutions="_IMAGE_URI=$REGION-docker.pkg.dev/$PROJECT_ID/$REPO_NAME/hermes-agent:latest" \
         --project "$PROJECT_ID" \
         .
