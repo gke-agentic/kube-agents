@@ -12,6 +12,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VARS_FILE="${SCRIPT_DIR}/vars.sh"
 
 # ─── ANSI Colors ──────────────────────────────────────────────────────────────
+# ─── ANSI Colors ──────────────────────────────────────────────────────────────
 C_CYAN='\033[96m'
 C_GREEN='\033[92m'
 C_YELLOW='\033[93m'
@@ -52,12 +53,12 @@ else
   export CLUSTER_NAME="${INPUT_CLUSTER:-$DEFAULT_CLUSTER}"
 
   # 4. Get Namespace
-  DEFAULT_NAMESPACE="agent-system"
+  DEFAULT_NAMESPACE="platform-agent"
   echo -ne "  ${C_CYAN}Enter GKE Target Namespace [${C_WHITE}${DEFAULT_NAMESPACE}${C_CYAN}]: ${C_RESET}"
   read -r INPUT_NAMESPACE
   export NAMESPACE="${INPUT_NAMESPACE:-$DEFAULT_NAMESPACE}"
 
-  export REPO_NAME="hermes-agent-repo"
+  export REPO_NAME="platform-agent-repo"
 fi
 
 # ─── Confirmation Prompt ──────────────────────────────────────────────────────
@@ -93,48 +94,48 @@ fi
 
 # ─── Step 2: Delete Custom Resource ───────────────────────────────────────────
 if [ -n "$CLUSTER_EXISTS" ]; then
-  echo -e "\n${C_BOLD}=== 2. Tearing Down HermesAgent Custom Resource ===${C_RESET}"
+  echo -e "\n${C_BOLD}=== 2. Tearing Down PlatformAgent Custom Resource ===${C_RESET}"
   
   # Check if CRD is registered
-  CRD_EXISTS=$(kubectl get crd hermesagents.agent.hermes.io --ignore-not-found 2>/dev/null || echo "")
+  CRD_EXISTS=$(kubectl get crd platformagents.agent.platform.io --ignore-not-found 2>/dev/null || echo "")
   if [ -n "$CRD_EXISTS" ]; then
     # Check if resource exists
-    CR_EXISTS=$(kubectl get hermesagent platform-agent -n "$NAMESPACE" --ignore-not-found 2>/dev/null || echo "")
+    CR_EXISTS=$(kubectl get platformagent platform-agent -n "$NAMESPACE" --ignore-not-found 2>/dev/null || echo "")
     if [ -n "$CR_EXISTS" ]; then
-      echo -e "  ${C_CYAN}ℹ Deleting HermesAgent 'platform-agent' (this will trigger Config Connector to delete GCP GSAs, Pub/Sub topics/subscriptions, and IAM bindings)...${C_RESET}"
-      kubectl delete hermesagent platform-agent -n "$NAMESPACE" --timeout=180s || {
-        echo -e "  ${C_YELLOW}⚠ Timeout waiting for HermesAgent deletion. Force removing finalizers if present...${C_RESET}"
-        kubectl patch hermesagent platform-agent -n "$NAMESPACE" -p '{"metadata":{"finalizers":null}}' --type=merge || true
-        kubectl delete hermesagent platform-agent -n "$NAMESPACE" --ignore-not-found || true
+      echo -e "  ${C_CYAN}ℹ Deleting PlatformAgent 'platform-agent' (this will trigger Config Connector to delete GCP GSAs, Pub/Sub topics/subscriptions, and IAM bindings)...${C_RESET}"
+      kubectl delete platformagent platform-agent -n "$NAMESPACE" --timeout=180s || {
+        echo -e "  ${C_YELLOW}⚠ Timeout waiting for PlatformAgent deletion. Force removing finalizers if present...${C_RESET}"
+        kubectl patch platformagent platform-agent -n "$NAMESPACE" -p '{"metadata":{"finalizers":null}}' --type=merge || true
+        kubectl delete platformagent platform-agent -n "$NAMESPACE" --ignore-not-found || true
       }
-      echo -e "  ${C_GREEN}✓ HermesAgent 'platform-agent' successfully deleted.${C_RESET}"
+      echo -e "  ${C_GREEN}✓ PlatformAgent 'platform-agent' successfully deleted.${C_RESET}"
     else
-      echo -e "  ${C_GREEN}✓ HermesAgent 'platform-agent' does not exist.${C_RESET}"
+      echo -e "  ${C_GREEN}✓ PlatformAgent 'platform-agent' does not exist.${C_RESET}"
     fi
   else
-    echo -e "  ${C_GREEN}✓ CRD 'hermesagents.agent.hermes.io' is not registered.${C_RESET}"
+    echo -e "  ${C_GREEN}✓ CRD 'platformagents.agent.platform.io' is not registered.${C_RESET}"
   fi
 fi
 
 # ─── Step 3: Undeploy Go Operator ─────────────────────────────────────────────
 if [ -n "$CLUSTER_EXISTS" ]; then
   echo -e "\n${C_BOLD}=== 3. Tearing Down Go Operator ===${C_RESET}"
-  if [ -d "${SCRIPT_DIR}/hermes-operator" ]; then
+  if [ -d "${SCRIPT_DIR}/platform-agent-operator" ]; then
     echo -e "  ${C_CYAN}ℹ Running make undeploy & make uninstall...${C_RESET}"
     (
-      cd "${SCRIPT_DIR}/hermes-operator"
+      cd "${SCRIPT_DIR}/platform-agent-operator"
       make undeploy ignore-not-found=true || true
       make uninstall ignore-not-found=true || true
     )
     echo -e "  ${C_GREEN}✓ Go Operator successfully undeployed.${C_RESET}"
   else
-    echo -e "  ${C_YELLOW}⚠ hermes-operator directory not found. Skipping Operator cleanup.${C_RESET}"
+    echo -e "  ${C_YELLOW}⚠ platform-agent-operator directory not found. Skipping Operator cleanup.${C_RESET}"
   fi
 fi
 
 # ─── Step 4: Clean up KCC GSA and Bindings ────────────────────────────────────
 echo -e "\n${C_BOLD}=== 4. Tearing Down KCC GCP Identity ===${C_RESET}"
-KCC_GSA="hermes-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com"
+KCC_GSA="platform-agent-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com"
 GSA_EXISTS=$(gcloud iam service-accounts list --filter="email=${KCC_GSA}" --format="value(email)" --project="${PROJECT_ID}" 2>/dev/null || echo "")
 if [ -n "$GSA_EXISTS" ]; then
   echo -e "  ${C_CYAN}ℹ Removing Owner role from KCC GSA...${C_RESET}"
@@ -152,7 +153,7 @@ fi
 
 # ─── Step 5: Delete Secret Manager Placeholders ───────────────────────────────
 echo -e "\n${C_BOLD}=== 5. Tearing Down Secret Manager Placeholders ===${C_RESET}"
-SECRETS_TO_DELETE=("GCP_API_KEY" "GEMINI_API_KEY")
+SECRETS_TO_DELETE=("GEMINI_API_KEY")
 for SECRET in "${SECRETS_TO_DELETE[@]}"; do
   SECRET_EXISTS=$(gcloud secrets list --filter="name:${SECRET}" --format="value(name)" --project="${PROJECT_ID}" 2>/dev/null || echo "")
   if [ -n "$SECRET_EXISTS" ]; then
@@ -175,6 +176,7 @@ else
   echo -e "  ${C_GREEN}✓ Repository '$REPO_NAME' already deleted or does not exist.${C_RESET}"
 fi
 
+# ─── Step 7: Delete GKE Cluster ───────────────────────────────────────────────
 # ─── Step 7: Delete GKE Cluster ───────────────────────────────────────────────
 echo -e "\n${C_BOLD}=== 7. Tearing Down GKE Cluster ===${C_RESET}"
 if [ -n "$CLUSTER_EXISTS" ]; then

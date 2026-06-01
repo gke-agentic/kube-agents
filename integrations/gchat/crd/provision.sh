@@ -133,11 +133,11 @@ export REGION="${REGION}"
 export CLUSTER_NAME="${CLUSTER_NAME}"
 export NAMESPACE="${NAMESPACE}"
 export ALLOWED_USER="${ALLOWED_USER}"
-export REPO_NAME="hermes-agent-repo"
-export CHAT_TOPIC_NAME="hermes-chat-events"
-export CHAT_SUB_NAME="hermes-chat-events-sub"
-export GSA_NAME="hermes-bot-platform-agent"
-export KSA_NAME="hermes-platform-sa"
+export REPO_NAME="platform-agent-repo"
+export CHAT_TOPIC_NAME="platform-agent-chat-events"
+export CHAT_SUB_NAME="platform-agent-chat-events-sub"
+export GSA_NAME="platform-agent-bot-platform-agent"
+export KSA_NAME="platform-agent-platform-sa"
 EOF
   print_success "Created configuration state file at $VARS_FILE"
 fi
@@ -257,26 +257,26 @@ execute_kcc_addon() {
 
 # Step 3.6: Configure KCC GCP Identity (GSA & Workload Identity)
 verify_kcc_identity() {
-  gcloud iam service-accounts describe "hermes-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com" --project="$PROJECT_ID" >/dev/null 2>&1 && \
-  gcloud projects get-iam-policy "$PROJECT_ID" --format=json 2>/dev/null | grep -q "hermes-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com"
+  gcloud iam service-accounts describe "platform-agent-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com" --project="$PROJECT_ID" >/dev/null 2>&1 && \
+  gcloud projects get-iam-policy "$PROJECT_ID" --format=json 2>/dev/null | grep -q "platform-agent-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com"
 }
 execute_kcc_identity() {
   # 1. Create GSA if not exists
-  if ! gcloud iam service-accounts describe "hermes-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com" --project="$PROJECT_ID" >/dev/null 2>&1; then
-    print_info "Creating GCP GSA hermes-kcc-sa..."
-    gcloud iam service-accounts create "hermes-kcc-sa" --project="$PROJECT_ID"
+  if ! gcloud iam service-accounts describe "platform-agent-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com" --project="$PROJECT_ID" >/dev/null 2>&1; then
+    print_info "Creating GCP GSA platform-agent-kcc-sa..."
+    gcloud iam service-accounts create "platform-agent-kcc-sa" --project="$PROJECT_ID"
   fi
 
   # 2. Grant Owner role to KCC GSA
   print_info "Binding Owner role to KCC GSA..."
   gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-      --member="serviceAccount:hermes-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
+      --member="serviceAccount:platform-agent-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
       --role="roles/owner"
 
   # 3. Bind Workload Identity (GKE KCC pod cnrm-controller-manager to GCP GSA)
   print_info "Binding GKE KCC system controller to KCC GSA via Workload Identity..."
   gcloud iam service-accounts add-iam-policy-binding \
-      "hermes-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
+      "platform-agent-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
       --member="serviceAccount:${PROJECT_ID}.svc.id.goog[cnrm-system/cnrm-controller-manager]" \
       --role="roles/iam.workloadIdentityUser" \
       --project="$PROJECT_ID"
@@ -285,11 +285,10 @@ execute_kcc_identity() {
 
 # Step 4: Secret Manager Placeholders
 verify_secrets() {
-  gcloud secrets describe "GCP_API_KEY" --project="$PROJECT_ID" >/dev/null 2>&1 && \
   gcloud secrets describe "GEMINI_API_KEY" --project="$PROJECT_ID" >/dev/null 2>&1
 }
 execute_secrets() {
-  for SECRET in "GCP_API_KEY" "GEMINI_API_KEY"; do
+  for SECRET in "GEMINI_API_KEY"; do
     if ! gcloud secrets describe "$SECRET" --project="$PROJECT_ID" >/dev/null 2>&1; then
       echo -ne "  ${C_CYAN}Secret '$SECRET' not found in cloud. Enter actual key value now (or press ENTER to create empty placeholder): ${C_RESET}"
       read -s -r INPUT_KEY
@@ -327,7 +326,7 @@ metadata:
   name: configconnectorcontext.core.cnrm.cloud.google.com
   namespace: ${NAMESPACE}
 spec:
-  googleServiceAccount: hermes-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com
+  googleServiceAccount: platform-agent-kcc-sa@${PROJECT_ID}.iam.gserviceaccount.com
 EOF
   kubectl apply -f "$KCC_CR"
   rm -f "$KCC_CR"
@@ -339,11 +338,10 @@ EOF
 
 # Step 6: Synchronize Secrets to GKE Namespace
 verify_k8s_secrets() {
-  kubectl get secret hermes-secrets -n "$NAMESPACE" >/dev/null 2>&1
+  kubectl get secret platform-agent-secrets -n "$NAMESPACE" >/dev/null 2>&1
 }
 execute_k8s_secrets() {
   print_info "Resolving keys from GCP Secret Manager..."
-  local GCP_KEY=$(gcloud secrets versions access latest --secret="GCP_API_KEY" --project="$PROJECT_ID" 2>/dev/null || echo "placeholder")
   local GEMINI_KEY=$(gcloud secrets versions access latest --secret="GEMINI_API_KEY" --project="$PROJECT_ID" 2>/dev/null || echo "placeholder")
   
   if [ "$GEMINI_KEY" = "placeholder" ]; then
@@ -359,18 +357,17 @@ execute_k8s_secrets() {
     fi
   fi
 
-  print_info "Writing Kubernetes Secret 'hermes-secrets' into '$NAMESPACE'..."
-  kubectl create secret generic hermes-secrets \
+  print_info "Writing Kubernetes Secret 'platform-agent-secrets' into '$NAMESPACE'..."
+  kubectl create secret generic platform-agent-secrets \
       --namespace="$NAMESPACE" \
-      --from-literal=GCP_API_KEY="$GCP_KEY" \
       --from-literal=GEMINI_API_KEY="$GEMINI_KEY" \
       --dry-run=client -o yaml | kubectl apply -f -
 }
 
 # Step 7: Build and Push Custom GChat Platform Agent Image
 verify_agent_image() {
-  # We check if the image 'hermes-agent' exists in registry
-  gcloud artifacts docker images list "$REGION-docker.pkg.dev/$PROJECT_ID/$REPO_NAME/hermes-agent" --project="$PROJECT_ID" --format="value(image)" 2>/dev/null | grep -q "hermes-agent"
+  # We check if the image 'platform-agent' exists in registry
+  gcloud artifacts docker images list "$REGION-docker.pkg.dev/$PROJECT_ID/$REPO_NAME/platform-agent" --project="$PROJECT_ID" --format="value(image)" 2>/dev/null | grep -q "platform-agent"
 }
 execute_agent_image() {
   print_info "Building custom, unpatched GChat Platform Agent container via Google Cloud Build..."
@@ -378,7 +375,7 @@ execute_agent_image() {
     cd "$SCRIPT_DIR/../../.."
     gcloud builds submit \
         --config="integrations/gchat/app/cloudbuild.yaml" \
-        --substitutions="_IMAGE_URI=$REGION-docker.pkg.dev/$PROJECT_ID/$REPO_NAME/hermes-agent:latest" \
+        --substitutions="_IMAGE_URI=$REGION-docker.pkg.dev/$PROJECT_ID/$REPO_NAME/platform-agent:latest" \
         --project "$PROJECT_ID" \
         .
   )
@@ -386,20 +383,20 @@ execute_agent_image() {
 
 # Step 8: Build, Push, and Deploy Go Operator
 verify_operator() {
-  kubectl get deployment hermes-operator-controller-manager -n hermes-operator-system >/dev/null 2>&1 && \
-  gcloud artifacts docker images list "$REGION-docker.pkg.dev/$PROJECT_ID/$REPO_NAME/hermes-operator" --project="$PROJECT_ID" --format="value(image)" 2>/dev/null | grep -q "hermes-operator"
+  kubectl get deployment platform-agent-operator-controller-manager -n platform-agent-operator-system >/dev/null 2>&1 && \
+  gcloud artifacts docker images list "$REGION-docker.pkg.dev/$PROJECT_ID/$REPO_NAME/platform-agent-operator" --project="$PROJECT_ID" --format="value(image)" 2>/dev/null | grep -q "platform-agent-operator"
 }
 execute_operator() {
-  local OPERATOR_IMG="$REGION-docker.pkg.dev/$PROJECT_ID/$REPO_NAME/hermes-operator:latest"
+  local OPERATOR_IMG="$REGION-docker.pkg.dev/$PROJECT_ID/$REPO_NAME/platform-agent-operator:latest"
   print_info "1/2. Building and pushing Go Operator image via Google Cloud Build..."
   (
-    cd "$SCRIPT_DIR/hermes-operator"
+    cd "$SCRIPT_DIR/platform-agent-operator"
     gcloud builds submit --tag "$OPERATOR_IMG" --project "$PROJECT_ID" .
   )
   
-  print_info "2/2. Registering CRD & deploying Operator Controller in namespace hermes-operator-system..."
+  print_info "2/2. Registering CRD & deploying Operator Controller in namespace platform-agent-operator-system..."
   (
-    cd "$SCRIPT_DIR/hermes-operator"
+    cd "$SCRIPT_DIR/platform-agent-operator"
     # deploy automatically runs 'make install' (CRD registration) first!
     make deploy IMG="$OPERATOR_IMG"
   )
@@ -407,15 +404,15 @@ execute_operator() {
 
 # Step 9: Apply Custom Resource Manifest
 verify_custom_resource() {
-  kubectl get hermesagent platform-agent -n "$NAMESPACE" >/dev/null 2>&1
+  kubectl get platformagent platform-agent -n "$NAMESPACE" >/dev/null 2>&1
 }
 execute_custom_resource() {
   print_info "Generating custom resource manifest 'platform-agent.yaml'..."
   local CR_MANIFEST="$SCRIPT_DIR/platform-agent.yaml"
   
   cat <<EOF > "$CR_MANIFEST"
-apiVersion: agent.hermes.io/v1alpha1
-kind: HermesAgent
+apiVersion: agent.platform.io/v1alpha1
+kind: PlatformAgent
 metadata:
   name: platform-agent
   namespace: ${NAMESPACE}
@@ -424,7 +421,7 @@ spec:
   numericProjectId: "${PROJECT_NUMBER}"
   clusterName: "${CLUSTER_NAME}"
   location: "${REGION}"
-  imageUri: "${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/hermes-agent:latest"
+  imageUri: "${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/platform-agent:latest"
   chatTopicName: "${CHAT_TOPIC_NAME}"
   chatSubName: "${CHAT_SUB_NAME}"
   gsaName: "${GSA_NAME}"
@@ -449,7 +446,7 @@ run_step "8. Setup Secret Manager Placeholders" verify_secrets execute_secrets 0
 run_step "9. Sync API Keys to GKE Namespace Secrets" verify_k8s_secrets execute_k8s_secrets 0
 run_step "10. Package & Build GChat Agent via Cloud Build" verify_agent_image execute_agent_image 0
 run_step "11. Build & Deploy Go Operator Controller" verify_operator execute_operator 10
-run_step "12. Declaratively Apply HermesAgent Custom Resource" verify_custom_resource execute_custom_resource 0
+run_step "12. Declaratively Apply PlatformAgent Custom Resource" verify_custom_resource execute_custom_resource 0
 
 # ─── Conclusion Copy-Paste Checklist ──────────────────────────────────────────
 print_step "Infrastructure & Operator Provisioned Successfully!"
@@ -460,15 +457,15 @@ echo -e "Recommend you copy-paste this final step checklist to complete setup:\n
 
 echo -e "[ ] 1. Configure GChat bot connection in GCP Console:"
 echo -e "       ${C_WHITE}https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat?project=${PROJECT_ID}${C_RESET}"
-echo -e "       - Name: ${C_GREEN}GKE Hermes Platform Bot${C_RESET}"
-echo -e "       - Avatar: ${C_GREEN}https://hermes-agent.nousresearch.com/docs/img/logo.png${C_RESET}"
+echo -e "       - Name: ${C_GREEN}GKE Platform Agent Bot${C_RESET}"
+echo -e "       - Avatar: ${C_GREEN}https://platform-agent.nousresearch.com/docs/img/logo.png${C_RESET}"
 echo -e "       - Connection Settings: Select ${C_BOLD}Cloud Pub/Sub${C_RESET}"
 echo -e "       - Pub/Sub Topic Name: ${C_GREEN}projects/${PROJECT_ID}/topics/${CHAT_TOPIC_NAME}${C_RESET}"
 echo -e "       - Under Visibility, check: ${C_GREEN}Only specific people (add your email ${ALLOWED_USER})${C_RESET}"
 
 echo -e ""
 echo -e "[ ] 2. Monitor Operator and Gateway pods rollout progress:"
-echo -e "       ${C_WHITE}kubectl get pods -n hermes-operator-system${C_RESET}"
+echo -e "       ${C_WHITE}kubectl get pods -n platform-agent-operator-system${C_RESET}"
 echo -e "       ${C_WHITE}kubectl get pods -n ${NAMESPACE}${C_RESET}"
 
 echo -e ""
