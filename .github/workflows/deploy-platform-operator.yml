@@ -34,6 +34,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Get short SHA
+        id: slug
+        run: echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Authenticate to Google Cloud
         id: auth
         uses: google-github-actions/auth@v2
@@ -50,4 +54,5 @@ jobs:
           gcloud builds submit \
             --config=integrations/operators/platform/cloudbuild.yaml \
             --project=${{ env.GCP_PROJECT_ID }} \
+            --substitutions=_IMAGE_TAG=${{ steps.slug.outputs.sha }} \
             integrations/operators/platform/

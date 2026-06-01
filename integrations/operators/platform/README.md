@@ -1,13 +1,18 @@
-# hermes-operator
-// TODO(user): Add simple overview of use/purpose
+# Platform Operator
 
 ## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+The Platform Operator is a core component of the `kube-agents` cooperative multi-agent harness. It dynamically orchestrates and reconciles Custom Resources of kind `PlatformAgent` to provision isolated SRE and SRE-assistant agent environments within a GKE cluster.
+
+It dynamically sets up:
+- Kubernetes Service Accounts (KSA) with Workload Identity bindings.
+- GCP Identity (GSA), Pub/Sub Topics, and Subscriptions for Google Chat event routing.
+- PVC storage for agent memory and workspace state.
+- isolated agent Deployments pre-loaded with agent configurations.
 
 ## Getting Started
 
 ### Prerequisites
-- go version v1.24.6+
+- go version v1.25.7+
 - docker version 17.03+.
 - kubectl version v1.11.3+.
 - Access to a Kubernetes v1.11.3+ cluster.
@@ -16,7 +21,7 @@
 **Build and push your image to the location specified by `IMG`:**
 
 ```sh
-make docker-build docker-push IMG=<some-registry>/hermes-operator:tag
+make docker-build docker-push IMG=<some-registry>/platform-operator:tag
 ```
 
 **NOTE:** This image ought to be published in the personal registry you specified.
@@ -32,11 +37,11 @@ make install
 **Deploy the Manager to the cluster with the image specified by `IMG`:**
 
 ```sh
-make deploy IMG=<some-registry>/hermes-operator:tag
+make deploy IMG=<some-registry>/platform-operator:tag
 ```
 
 > **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
+> privileges or be logged in as admin.
 
 **Create instances of your solution**
 You can apply the samples (examples) from the config/sample:
@@ -75,7 +80,7 @@ Following the options to release and provide this solution to the users.
 1. Build the installer for the image built and published in the registry:
 
 ```sh
-make build-installer IMG=<some-registry>/hermes-operator:tag
+make build-installer IMG=<some-registry>/platform-operator:tag
 ```
 
 **NOTE:** The makefile target mentioned above generates an 'install.yaml'
@@ -89,7 +94,7 @@ Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
 the project, i.e.:
 
 ```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/hermes-operator/<tag or branch>/dist/install.yaml
+kubectl apply -f https://raw.githubusercontent.com/<org>/platform-operator/<tag or branch>/dist/install.yaml
 ```
 
 ### By providing a Helm Chart
@@ -111,7 +116,7 @@ previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml
 is manually re-applied afterwards.
 
 ## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
+Please follow the rules in `AGENTS.md` and the project guidelines under the repository root.
 
 **NOTE:** Run `make help` for more information on all potential `make` targets
 

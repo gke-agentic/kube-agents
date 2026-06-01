@@ -1,7 +1,7 @@
-# This rule is not used by the project hermes-operator itself.
+# This rule is not used by the project platform-operator itself.
 # It is provided to allow the cluster admin to help manage permissions for users.
 #
-# Grants read-only access to agent.hermes.io resources.
+# Grants read-only access to agent.platform.io resources.
 # This role is intended for users who need visibility into these resources
 # without permissions to modify them. It is ideal for monitoring purposes and limited-access viewing.
 
@@ -9,21 +9,21 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   labels:
-    app.kubernetes.io/name: hermes-operator
+    app.kubernetes.io/name: platform-operator
     app.kubernetes.io/managed-by: kustomize
-  name: hermesagent-viewer-role
+  name: platformagent-viewer-role
 rules:
 - apiGroups:
-  - agent.hermes.io
+  - agent.platform.io
   resources:
-  - hermesagents
+  - platformagents
   verbs:
   - get
   - list
   - watch
 - apiGroups:
-  - agent.hermes.io
+  - agent.platform.io
   resources:
-  - hermesagents/status
+  - platformagents/status
   verbs:
   - get

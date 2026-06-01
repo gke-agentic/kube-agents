@@ -1,4 +1,4 @@
-# hermes-operator - AI Agent Guide
+# platform-operator - AI Agent Guide
 
 ## Project Structure
 

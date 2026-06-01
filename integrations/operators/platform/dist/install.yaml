@@ -101,7 +101,7 @@ kind: ServiceAccount
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: hermes-operator
+    app.kubernetes.io/name: platform-operator
   name: platform-operator-controller-manager
   namespace: platform-operator-system
 ---
@@ -110,7 +110,7 @@ kind: Role
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: hermes-operator
+    app.kubernetes.io/name: platform-operator
   name: platform-operator-leader-election-role
   namespace: platform-operator-system
 rules:
@@ -145,77 +145,6 @@ rules:
   verbs:
   - create
   - patch
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  labels:
-    app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: hermes-operator
-  name: platform-operator-hermesagent-admin-role
-rules:
-- apiGroups:
-  - agent.hermes.io
-  resources:
-  - hermesagents
-  verbs:
-  - '*'
-- apiGroups:
-  - agent.hermes.io
-  resources:
-  - hermesagents/status
-  verbs:
-  - get
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  labels:
-    app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: hermes-operator
-  name: platform-operator-hermesagent-editor-role
-rules:
-- apiGroups:
-  - agent.hermes.io
-  resources:
-  - hermesagents
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - agent.hermes.io
-  resources:
-  - hermesagents/status
-  verbs:
-  - get
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  labels:
-    app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: hermes-operator
-  name: platform-operator-hermesagent-viewer-role
-rules:
-- apiGroups:
-  - agent.hermes.io
-  resources:
-  - hermesagents
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - agent.hermes.io
-  resources:
-  - hermesagents/status
-  verbs:
-  - get
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -342,11 +271,82 @@ rules:
   - get
 ---
 apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: platform-operator
+  name: platform-operator-platformagent-admin-role
+rules:
+- apiGroups:
+  - agent.platform.io
+  resources:
+  - platformagents
+  verbs:
+  - '*'
+- apiGroups:
+  - agent.platform.io
+  resources:
+  - platformagents/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: platform-operator
+  name: platform-operator-platformagent-editor-role
+rules:
+- apiGroups:
+  - agent.platform.io
+  resources:
+  - platformagents
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - agent.platform.io
+  resources:
+  - platformagents/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: platform-operator
+  name: platform-operator-platformagent-viewer-role
+rules:
+- apiGroups:
+  - agent.platform.io
+  resources:
+  - platformagents
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - agent.platform.io
+  resources:
+  - platformagents/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: hermes-operator
+    app.kubernetes.io/name: platform-operator
   name: platform-operator-leader-election-rolebinding
   namespace: platform-operator-system
 roleRef:
@@ -363,7 +363,7 @@ kind: ClusterRoleBinding
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: hermes-operator
+    app.kubernetes.io/name: platform-operator
   name: platform-operator-manager-rolebinding
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -392,7 +392,7 @@ kind: Service
 metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: hermes-operator
+    app.kubernetes.io/name: platform-operator
     control-plane: controller-manager
   name: platform-operator-controller-manager-metrics-service
   namespace: platform-operator-system
@@ -403,7 +403,7 @@ spec:
     protocol: TCP
     targetPort: 8443
   selector:
-    app.kubernetes.io/name: hermes-operator
+    app.kubernetes.io/name: platform-operator
     control-plane: controller-manager
 ---
 apiVersion: apps/v1

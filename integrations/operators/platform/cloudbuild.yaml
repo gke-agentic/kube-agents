@@ -13,10 +13,13 @@ steps:
     args:
       - 'build'
       - '-t'
-      - 'us-central1-docker.pkg.dev/$PROJECT_ID/hermes-agent-repo/platform_agent:latest'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/hermes-agent-repo/platform_agent:$_IMAGE_TAG'
       - '.'
     id: 'build-operator'
 
 # Push the completed image to Google Artifact Registry automatically
 images:
-  - 'us-central1-docker.pkg.dev/$PROJECT_ID/hermes-agent-repo/platform_agent:latest'
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/hermes-agent-repo/platform_agent:$_IMAGE_TAG'
+
+substitutions:
+  _IMAGE_TAG: 'latest'
