@@ -1,0 +1,23 @@
+apiVersion: operator.platform.io/v1alpha1
+kind: OperatorAgent
+metadata:
+  labels:
+    app.kubernetes.io/name: operator-agent-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: operator-agent-sample
+spec:
+  imageUri: "gke-agentic/operator-agent:latest"
+  # Optional Model Config (showing defaults)
+  # modelName: "gemini-model"
+  # modelBaseUrl: "http://litellm.agent-system.svc.cluster.local/v1"
+  # modelApiKey: "none"
+  # storageSize: "10Gi"
+  # apiServerKeySecretRef: "operator-agent-secrets"
+
+  # Optional GCP/GKE Context & Workload Identity
+  # projectId: "gcp-project-id"
+  # numericProjectId: "1234567890"
+  # clusterName: "operator-agent-host"
+  # location: "us-central1"
+  # gsaName: "operator-agent-gcp-sa"
+  # ksaName: "operator-agent-ksa"
