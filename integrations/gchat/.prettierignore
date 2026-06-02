@@ -1,2 +1,2 @@
-# Ignore kubebuilder/kustomize generated config files for platform-agent-operator
-integrations/gchat/crd/platform-agent-operator/config/
+# Ignore kubebuilder/kustomize generated config files for any operator under crd/
+integrations/gchat/crd/*/config/
