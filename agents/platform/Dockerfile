@@ -11,6 +11,10 @@ RUN apt-get update && apt-get install -y apt-transport-https ca-certificates gnu
     apt-get update && apt-get install -y google-cloud-cli google-cloud-cli-gke-gcloud-auth-plugin kubectl && \
     rm -rf /var/lib/apt/lists/*
 
+# Install Google Chat dependencies in the virtualenv using uv
+RUN /usr/local/bin/uv pip install google-cloud-pubsub==2.38.0 --python /opt/hermes/.venv/bin/python
+
+
 # Copy shared defaults
 COPY agents/shared/defaults/ /opt/defaults/
 
