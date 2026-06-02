@@ -30,10 +30,11 @@ The entire deployment is driven by a custom Kubernetes controller (**`hermes-ope
 ## 🛠️ Prerequisite Tools
 
 Ensure the following tools are installed on your local terminal:
-*   `gcloud` (Google Cloud SDK authenticated to your project)
-*   `kubectl` (Kubernetes CLI)
-*   `make` & `go` (For building the Go Operator codebase)
-*   `docker` (For compiling the controller containers)
+
+- `gcloud` (Google Cloud SDK authenticated to your project)
+- `kubectl` (Kubernetes CLI)
+- `make` & `go` (For building the Go Operator codebase)
+- `docker` (For compiling the controller containers)
 
 ---
 
@@ -45,7 +46,7 @@ To bootstrap the entire environment in minutes:
 
 1.  Navigate to your CRD folder:
     ```bash
-    cd hack/gchat/crd
+    cd integrations/gchat/crd
     ```
 2.  Run the SRE bootstrap script:
     ```bash
@@ -60,34 +61,43 @@ To bootstrap the entire environment in minutes:
 For SRE auditing purposes, here is the exact sequence of operations executed dynamically by the SRE script and Go Operator:
 
 ### 1. GCP API Enablement
+
 Enables all mandatory APIs required for the GKE platform to function:
-*   `container.googleapis.com` (GKE Engine)
-*   `artifactregistry.googleapis.com` (Docker Registries)
-*   `cloudbuild.googleapis.com` (Google Cloud Build)
-*   `secretmanager.googleapis.com` (API Secret Vaults)
-*   `pubsub.googleapis.com` (Google Chat Event Bus)
-*   `chat.googleapis.com` & `gsuiteaddons.googleapis.com` (GSuite permissions)
-*   `aiplatform.googleapis.com` (Vertex AI/Gemini keyless API access)
+
+- `container.googleapis.com` (GKE Engine)
+- `artifactregistry.googleapis.com` (Docker Registries)
+- `cloudbuild.googleapis.com` (Google Cloud Build)
+- `secretmanager.googleapis.com` (API Secret Vaults)
+- `pubsub.googleapis.com` (Google Chat Event Bus)
+- `chat.googleapis.com` & `gsuiteaddons.googleapis.com` (GSuite permissions)
+- `aiplatform.googleapis.com` (Vertex AI/Gemini keyless API access)
 
 ### 2. Artifact Registry Repository
+
 Provisions a secure Docker repository `hermes-agent-repo` in your region to host the operator and agent images.
 
 ### 3. GKE Standard Cluster & Workload Identity
+
 Creates a GKE Standard cluster with GKE **Workload Identity** enabled (`--workload-pool=<project-id>.svc.id.goog`), allowing Kubernetes pods to securely authenticate against GCP resources without requiring JSON service account keys!
 
 ### 4. Secret Manager Vaults
+
 Bootstraps Google Secret Manager placeholders `GCP_API_KEY` and `GEMINI_API_KEY` to securely store your AI Studio and Vertex access keys in the cloud.
 
 ### 5. Secret Synchronization
+
 Pulls the latest key values from Secret Manager and synchronizes them into a local Kubernetes Secret `hermes-secrets` inside the target GKE namespace.
 
 ### 6. Custom Chat-Enabled Agent Container (Cloud Build)
-Uses Google Cloud Build to package, compile, and push a custom **unpatched** platform agent container `hermes-agent:latest` using [`hack/gchat/app/cloudbuild.yaml`](file:///usr/local/google/home/mklinowski/Projects/kube-agents-team-fork/hack/gchat/app/cloudbuild.yaml) and [`hack/gchat/app/Dockerfile`](file:///usr/local/google/home/mklinowski/Projects/kube-agents-team-fork/hack/gchat/app/Dockerfile). This container packages `google-cloud-pubsub` and GKE utilities cleanly in the isolated team directory.
+
+Uses Google Cloud Build to package, compile, and push a custom **unpatched** platform agent container `hermes-agent:latest` using [`integrations/gchat/app/cloudbuild.yaml`](file:///usr/local/google/home/mklinowski/Projects/kube-agents-team-fork/integrations/gchat/app/cloudbuild.yaml) and [`integrations/gchat/app/Dockerfile`](file:///usr/local/google/home/mklinowski/Projects/kube-agents-team-fork/integrations/gchat/app/Dockerfile). This container packages `google-cloud-pubsub` and GKE utilities cleanly in the isolated team directory.
 
 ### 7. Operator Controller Manager Deployment
+
 Registers the custom resource definition (`make install`) and deploys the custom controller pod `hermes-operator-controller-manager` inside the `hermes-operator-system` namespace.
 
 ### 8. Custom Resource Manifest Generation & Apply
+
 Generates a clean, declarative `platform-agent.yaml` Custom Resource manifest and applies it to GKE:
 
 ```yaml
@@ -117,7 +127,7 @@ spec:
 Once your pods rollout successfully, configure the Bot webhook connection in GCP Console:
 
 1.  Go to the **Google Cloud Console** ➡️ **Google Chat API** ➡️ **Configuration**.
-2.  Disable *"Build this chat app as a workspace-addon"*.
+2.  Disable _"Build this chat app as a workspace-addon"_.
 3.  Set App Name: `GKE Hermes Platform Bot`
 4.  Under **Connection Settings**, select **Cloud Pub/Sub**.
 5.  Cloud Pub/Sub Topic Name: `projects/<project-id>/topics/hermes-chat-events`
