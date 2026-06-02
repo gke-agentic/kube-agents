@@ -55,7 +55,7 @@ spec:
                   If provided, the operator will annotate the KSA with this GSA to enable Workload Identity.
                 type: string
               imageUri:
-                description: ImageURI is the container image for the operator agent.
+                description: ImageURI is the container image for the agent.
                 type: string
               ksaName:
                 description: KSAName is the Kubernetes Service Account Name. Defaults

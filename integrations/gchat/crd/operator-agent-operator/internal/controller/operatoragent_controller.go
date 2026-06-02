@@ -18,20 +18,17 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"reflect"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	shared "github.com/gke-agentic/kube-agents/integrations/gchat/crd/shared"
 	operatorv1alpha1 "github.com/gke-agentic/operator-agent-operator/api/v1alpha1"
 )
 
@@ -115,18 +112,7 @@ func (r *OperatorAgentReconciler) reconcileKSA(ctx context.Context, instance *op
 		ksaName = instance.Name
 	}
 
-	ksa := &corev1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      ksaName,
-			Namespace: instance.Namespace,
-		},
-	}
-
-	if instance.Spec.GSAName != "" && instance.Spec.ProjectID != "" {
-		ksa.Annotations = map[string]string{
-			"iam.gke.io/gcp-service-account": fmt.Sprintf("%s@%s.iam.gserviceaccount.com", instance.Spec.GSAName, instance.Spec.ProjectID),
-		}
-	}
+	ksa := shared.BuildKSA(ksaName, instance.Namespace, instance.Spec.GSAName, instance.Spec.ProjectID)
 
 	if err := ctrl.SetControllerReference(instance, ksa, r.Scheme); err != nil {
 		return err
@@ -150,25 +136,7 @@ func (r *OperatorAgentReconciler) reconcileKSA(ctx context.Context, instance *op
 }
 
 func (r *OperatorAgentReconciler) reconcilePVC(ctx context.Context, instance *operatorv1alpha1.OperatorAgent) error {
-	storageSize := instance.Spec.StorageSize
-	if storageSize == "" {
-		storageSize = "10Gi"
-	}
-
-	pvc := &corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      instance.Name + "-pvc",
-			Namespace: instance.Namespace,
-		},
-		Spec: corev1.PersistentVolumeClaimSpec{
-			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-			Resources: corev1.VolumeResourceRequirements{
-				Requests: corev1.ResourceList{
-					corev1.ResourceStorage: resource.MustParse(storageSize),
-				},
-			},
-		},
-	}
+	pvc := shared.BuildPVC(instance.Name+"-pvc", instance.Namespace, instance.Spec.StorageSize)
 
 	if err := ctrl.SetControllerReference(instance, pvc, r.Scheme); err != nil {
 		return err
@@ -187,143 +155,27 @@ func (r *OperatorAgentReconciler) reconcilePVC(ctx context.Context, instance *op
 }
 
 func (r *OperatorAgentReconciler) reconcileDeployment(ctx context.Context, instance *operatorv1alpha1.OperatorAgent) error {
-	replicas := int32(1)
-	if instance.Spec.Replicas != nil {
-		replicas = *instance.Spec.Replicas
-	}
-
-	secretRef := instance.Spec.ApiServerKeySecretRef
-	if secretRef == "" {
-		secretRef = "operator-agent-secrets"
-	}
-
 	ksaName := instance.Spec.KSAName
 	if ksaName == "" {
 		ksaName = instance.Name
 	}
 
-	deploy := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      instance.Name,
-			Namespace: instance.Namespace,
-			Labels: map[string]string{
-				"app": instance.Name,
-			},
-		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"app": instance.Name,
-				},
-			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app": instance.Name,
-					},
-				},
-				Spec: corev1.PodSpec{
-					ServiceAccountName: ksaName,
-					Containers: []corev1.Container{
-						{
-							Name:  "operator-agent",
-							Image: instance.Spec.ImageURI,
-							Ports: []corev1.ContainerPort{
-								{
-									Name:          "api",
-									ContainerPort: 8642,
-								},
-								{
-									Name:          "dashboard",
-									ContainerPort: 9119,
-								},
-							},
-							Resources: corev1.ResourceRequirements{
-								Requests: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("2"),
-									corev1.ResourceMemory: resource.MustParse("2Gi"),
-								},
-								Limits: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("4"),
-									corev1.ResourceMemory: resource.MustParse("4Gi"),
-								},
-							},
-							Env: []corev1.EnvVar{
-								{
-									Name:  "API_SERVER_ENABLED",
-									Value: "true",
-								},
-								{
-									Name:  "HERMES_DASHBOARD",
-									Value: "1",
-								},
-								{
-									Name:  "API_SERVER_HOST",
-									Value: "0.0.0.0",
-								},
-								{
-									Name: "API_SERVER_KEY",
-									ValueFrom: &corev1.EnvVarSource{
-										SecretKeyRef: &corev1.SecretKeySelector{
-											LocalObjectReference: corev1.LocalObjectReference{
-												Name: secretRef,
-											},
-											Key: "api-server-key",
-										},
-									},
-								},
-								{
-									Name:  "MODEL_NAME",
-									Value: instance.Spec.ModelName,
-								},
-								{
-									Name:  "MODEL_BASE_URL",
-									Value: instance.Spec.ModelBaseURL,
-								},
-								{
-									Name:  "MODEL_API_KEY",
-									Value: instance.Spec.ModelAPIKey,
-								},
-								{
-									Name:  "GKE_CLUSTER_NAME",
-									Value: instance.Spec.ClusterName,
-								},
-								{
-									Name:  "GKE_LOCATION",
-									Value: instance.Spec.Location,
-								},
-								{
-									Name:  "GCP_PROJECT_ID",
-									Value: instance.Spec.ProjectID,
-								},
-								{
-									Name:  "PROJECT_ID",
-									Value: instance.Spec.ProjectID,
-								},
-							},
-							VolumeMounts: []corev1.VolumeMount{
-								{
-									Name:      "data-volume",
-									MountPath: "/opt/data",
-								},
-							},
-						},
-					},
-					Volumes: []corev1.Volume{
-						{
-							Name: "data-volume",
-							VolumeSource: corev1.VolumeSource{
-								PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-									ClaimName: instance.Name + "-pvc",
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
+	deploy := shared.BuildDeployment(shared.DeploymentConfig{
+		Name:                  instance.Name,
+		Namespace:             instance.Namespace,
+		ImageURI:              instance.Spec.ImageURI,
+		Replicas:              instance.Spec.Replicas,
+		KSAName:               ksaName,
+		ContainerName:         "operator-agent",
+		ApiServerKeySecretRef: instance.Spec.ApiServerKeySecretRef,
+		ModelName:             instance.Spec.ModelName,
+		ModelBaseURL:          instance.Spec.ModelBaseURL,
+		ModelAPIKey:           instance.Spec.ModelAPIKey,
+		ClusterName:           instance.Spec.ClusterName,
+		Location:              instance.Spec.Location,
+		ProjectID:             instance.Spec.ProjectID,
+		PVCName:               instance.Name + "-pvc",
+	})
 
 	if err := ctrl.SetControllerReference(instance, deploy, r.Scheme); err != nil {
 		return err
@@ -347,32 +199,7 @@ func (r *OperatorAgentReconciler) reconcileDeployment(ctx context.Context, insta
 }
 
 func (r *OperatorAgentReconciler) reconcileService(ctx context.Context, instance *operatorv1alpha1.OperatorAgent) error {
-	svc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      instance.Name,
-			Namespace: instance.Namespace,
-		},
-		Spec: corev1.ServiceSpec{
-			Selector: map[string]string{
-				"app": instance.Name,
-			},
-			Ports: []corev1.ServicePort{
-				{
-					Name:       "api",
-					Protocol:   corev1.ProtocolTCP,
-					Port:       8642,
-					TargetPort: intstr.FromInt(8642),
-				},
-				{
-					Name:       "dashboard",
-					Protocol:   corev1.ProtocolTCP,
-					Port:       9119,
-					TargetPort: intstr.FromInt(9119),
-				},
-			},
-			Type: corev1.ServiceTypeClusterIP,
-		},
-	}
+	svc := shared.BuildService(instance.Name, instance.Namespace)
 
 	if err := ctrl.SetControllerReference(instance, svc, r.Scheme); err != nil {
 		return err

@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	shared "github.com/gke-agentic/kube-agents/integrations/gchat/crd/shared"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -25,35 +26,7 @@ import (
 
 // OperatorAgentSpec defines the desired state of OperatorAgent
 type OperatorAgentSpec struct {
-	// ImageURI is the container image for the operator agent.
-	ImageURI string `json:"imageUri"`
-
-	// Replicas is the number of desired pods. Defaults to 1.
-	// +optional
-	// +kubebuilder:default=1
-	Replicas *int32 `json:"replicas,omitempty"`
-
-	// StorageSize is the size of the persistent volume claim. Defaults to "10Gi".
-	// +optional
-	// +kubebuilder:default="10Gi"
-	StorageSize string `json:"storageSize,omitempty"`
-
-	// --- Model Config (AI) ---
-
-	// ModelName is the name of the Gemini model to use. Defaults to "gemini-model".
-	// +optional
-	// +kubebuilder:default="gemini-model"
-	ModelName string `json:"modelName,omitempty"`
-
-	// ModelBaseURL is the base URL for the model API. Defaults to "http://litellm.agent-system.svc.cluster.local/v1".
-	// +optional
-	// +kubebuilder:default="http://litellm.agent-system.svc.cluster.local/v1"
-	ModelBaseURL string `json:"modelBaseUrl,omitempty"`
-
-	// ModelAPIKey is the API key for the model. Defaults to "none".
-	// +optional
-	// +kubebuilder:default="none"
-	ModelAPIKey string `json:"modelApiKey,omitempty"`
+	shared.CommonAgentSpec `json:",inline"`
 
 	// ApiServerKeySecretRef is a reference to the Secret containing the API server key.
 	// The secret must contain a key named "api-server-key".
@@ -61,35 +34,6 @@ type OperatorAgentSpec struct {
 	// +optional
 	// +kubebuilder:default="operator-agent-secrets"
 	ApiServerKeySecretRef string `json:"apiServerKeySecretRef,omitempty"`
-
-	// --- GCP / GKE Context ---
-
-	// ProjectID is the target GCP Project ID.
-	// +optional
-	ProjectID string `json:"projectId,omitempty"`
-
-	// NumericProjectID is the target GCP Project Number.
-	// +optional
-	NumericProjectID string `json:"numericProjectId,omitempty"`
-
-	// ClusterName is the host GKE Cluster Name.
-	// +optional
-	ClusterName string `json:"clusterName,omitempty"`
-
-	// Location is the host GKE Cluster Location.
-	// +optional
-	Location string `json:"location,omitempty"`
-
-	// --- Identity (Workload Identity) ---
-
-	// GSAName is the GCP Service Account Name to bind to.
-	// If provided, the operator will annotate the KSA with this GSA to enable Workload Identity.
-	// +optional
-	GSAName string `json:"gsaName,omitempty"`
-
-	// KSAName is the Kubernetes Service Account Name. Defaults to the CR name.
-	// +optional
-	KSAName string `json:"ksaName,omitempty"`
 }
 
 // OperatorAgentStatus defines the observed state of OperatorAgent.

@@ -19,7 +19,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"maps"
 	"os"
 	"reflect"
 	"strings"
@@ -38,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	shared "github.com/gke-agentic/kube-agents/integrations/gchat/crd/shared"
 	agentv1alpha1 "github.com/gke-agentic/platform-agent-operator/api/v1alpha1"
 )
 
@@ -197,124 +197,6 @@ func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	return ctrl.Result{}, nil
 }
 
-// Intelligent diff check helper: returns true if desired map is a subset of found map.
-func isMapSubset(desired, found map[string]any) bool {
-	for k, desiredVal := range desired {
-		foundVal, exists := found[k]
-		if !exists {
-			logf.Log.V(1).Info("isMapSubset diff: Key missing in found", "key", k)
-			return false
-		}
-		desiredMap, desiredIsMap := desiredVal.(map[string]any)
-		foundMap, foundIsMap := foundVal.(map[string]any)
-
-		if desiredIsMap && foundIsMap {
-			if !isMapSubset(desiredMap, foundMap) {
-				return false
-			}
-		} else {
-			desiredStr := fmt.Sprintf("%v", desiredVal)
-			foundStr := fmt.Sprintf("%v", foundVal)
-			if desiredStr != foundStr {
-				logf.Log.V(1).Info("isMapSubset diff: Values differ", "key", k, "desired", desiredStr, "found", foundStr)
-				return false
-			}
-		}
-	}
-	return true
-}
-
-// Robust merge-based update for unstructured objects.
-// Implements Delete-and-Recreate with Requeue signal (returns requeue=true) for immutable resources.
-func (r *PlatformAgentReconciler) createOrUpdateUnstructured(ctx context.Context, obj *unstructured.Unstructured) (bool, error) {
-	log := logf.FromContext(ctx)
-	found := &unstructured.Unstructured{}
-	found.SetGroupVersionKind(obj.GroupVersionKind())
-	err := r.Get(ctx, client.ObjectKey{Name: obj.GetName(), Namespace: obj.GetNamespace()}, found)
-	if err != nil {
-		if errors.IsNotFound(err) {
-			return false, r.Create(ctx, obj)
-		}
-		return false, err
-	}
-
-	// 1. Check if Spec has changed
-	desiredSpec, desiredSpecExists, _ := unstructured.NestedMap(obj.Object, "spec")
-	foundSpec, foundSpecExists, _ := unstructured.NestedMap(found.Object, "spec")
-
-	specChanged := false
-	if desiredSpecExists && foundSpecExists {
-		if !isMapSubset(desiredSpec, foundSpec) {
-			specChanged = true
-			// Spec differs! For immutable IAMPolicyMember, we MUST delete and request requeue.
-			if obj.GetKind() == "IAMPolicyMember" {
-				log.Info("Spec of immutable IAMPolicyMember changed. Deleting and requesting requeue...", "name", obj.GetName())
-				if err := r.Delete(ctx, found); err != nil {
-					return false, err
-				}
-				return true, nil
-			}
-		}
-	}
-
-	// If the spec did NOT change and this is an IAMPolicyMember, we MUST skip to avoid GKE webhook denials!
-	if !specChanged && obj.GetKind() == "IAMPolicyMember" {
-		return false, nil
-	}
-
-	desiredLabels := obj.GetLabels()
-	foundLabels := found.GetLabels()
-	labelsChanged := false
-	for k, v := range desiredLabels {
-		if foundLabels == nil || foundLabels[k] != v {
-			labelsChanged = true
-			break
-		}
-	}
-
-	desiredAnnotations := obj.GetAnnotations()
-	foundAnnotations := found.GetAnnotations()
-	annotationsChanged := false
-	for k, v := range desiredAnnotations {
-		if foundAnnotations == nil || foundAnnotations[k] != v {
-			annotationsChanged = true
-			break
-		}
-	}
-
-	if !specChanged && !labelsChanged && !annotationsChanged {
-		return false, nil
-	}
-
-	// 2. Merge Spec (for mutable resources)
-	if desiredSpecExists {
-		if !foundSpecExists {
-			foundSpec = make(map[string]any)
-		}
-		maps.Copy(foundSpec, desiredSpec)
-		err = unstructured.SetNestedMap(found.Object, foundSpec, "spec")
-		if err != nil {
-			return false, err
-		}
-	}
-
-	// 3. Merge Labels
-	if foundLabels == nil {
-		foundLabels = make(map[string]string)
-	}
-	maps.Copy(foundLabels, desiredLabels)
-	found.SetLabels(foundLabels)
-
-	// 4. Merge Annotations
-	if foundAnnotations == nil {
-		foundAnnotations = make(map[string]string)
-	}
-	maps.Copy(foundAnnotations, desiredAnnotations)
-	found.SetAnnotations(foundAnnotations)
-
-	return false, r.Update(ctx, found)
-}
-
 func (r *PlatformAgentReconciler) reconcileGSA(ctx context.Context, instance *agentv1alpha1.PlatformAgent) (bool, error) {
 	gsa := &unstructured.Unstructured{}
 	gsa.SetGroupVersionKind(schema.GroupVersionKind{
@@ -332,7 +214,7 @@ func (r *PlatformAgentReconciler) reconcileGSA(ctx context.Context, instance *ag
 		return false, err
 	}
 
-	return r.createOrUpdateUnstructured(ctx, gsa)
+	return shared.CreateOrUpdateUnstructured(ctx, r.Client, gsa)
 }
 
 func (r *PlatformAgentReconciler) reconcileTopic(ctx context.Context, instance *agentv1alpha1.PlatformAgent) (bool, error) {
@@ -349,7 +231,7 @@ func (r *PlatformAgentReconciler) reconcileTopic(ctx context.Context, instance *
 		return false, err
 	}
 
-	return r.createOrUpdateUnstructured(ctx, topic)
+	return shared.CreateOrUpdateUnstructured(ctx, r.Client, topic)
 }
 
 func (r *PlatformAgentReconciler) reconcileSubscription(ctx context.Context, instance *agentv1alpha1.PlatformAgent) (bool, error) {
@@ -372,7 +254,7 @@ func (r *PlatformAgentReconciler) reconcileSubscription(ctx context.Context, ins
 		return false, err
 	}
 
-	return r.createOrUpdateUnstructured(ctx, sub)
+	return shared.CreateOrUpdateUnstructured(ctx, r.Client, sub)
 }
 
 func (r *PlatformAgentReconciler) reconcileIAMPolicyMember(ctx context.Context, instance *agentv1alpha1.PlatformAgent, name string, resourceRef map[string]any, role string, member string) (bool, error) {
@@ -394,7 +276,7 @@ func (r *PlatformAgentReconciler) reconcileIAMPolicyMember(ctx context.Context, 
 		return false, err
 	}
 
-	return r.createOrUpdateUnstructured(ctx, iam)
+	return shared.CreateOrUpdateUnstructured(ctx, r.Client, iam)
 }
 
 func (r *PlatformAgentReconciler) reconcileIAMBindings(ctx context.Context, instance *agentv1alpha1.PlatformAgent) (bool, error) {
@@ -483,16 +365,7 @@ func (r *PlatformAgentReconciler) reconcileIAMBindings(ctx context.Context, inst
 }
 
 func (r *PlatformAgentReconciler) reconcileKSA(ctx context.Context, instance *agentv1alpha1.PlatformAgent) error {
-	gsaEmail := fmt.Sprintf("%s@%s.iam.gserviceaccount.com", instance.Spec.GSAName, instance.Spec.ProjectID)
-	ksa := &corev1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      instance.Spec.KSAName,
-			Namespace: instance.Namespace,
-			Annotations: map[string]string{
-				"iam.gke.io/gcp-service-account": gsaEmail,
-			},
-		},
-	}
+	ksa := shared.BuildKSA(instance.Spec.KSAName, instance.Namespace, instance.Spec.GSAName, instance.Spec.ProjectID)
 
 	if err := ctrl.SetControllerReference(instance, ksa, r.Scheme); err != nil {
 		return err
@@ -507,28 +380,15 @@ func (r *PlatformAgentReconciler) reconcileKSA(ctx context.Context, instance *ag
 		return err
 	}
 
-	if found.Annotations == nil {
-		found.Annotations = make(map[string]string)
+	if !reflect.DeepEqual(found.Annotations, ksa.Annotations) {
+		found.Annotations = ksa.Annotations
+		return r.Update(ctx, found)
 	}
-	found.Annotations["iam.gke.io/gcp-service-account"] = gsaEmail
-	return r.Update(ctx, found)
+	return nil
 }
 
 func (r *PlatformAgentReconciler) reconcilePVC(ctx context.Context, instance *agentv1alpha1.PlatformAgent) error {
-	pvc := &corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      instance.Name + "-data",
-			Namespace: instance.Namespace,
-		},
-		Spec: corev1.PersistentVolumeClaimSpec{
-			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-			Resources: corev1.VolumeResourceRequirements{
-				Requests: corev1.ResourceList{
-					corev1.ResourceStorage: resource.MustParse("10Gi"),
-				},
-			},
-		},
-	}
+	pvc := shared.BuildPVC(instance.Name+"-data", instance.Namespace, "10Gi")
 
 	if err := ctrl.SetControllerReference(instance, pvc, r.Scheme); err != nil {
 		return err
