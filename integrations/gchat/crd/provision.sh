@@ -391,6 +391,7 @@ execute_agent_image() {
         --config="integrations/gchat/app/cloudbuild.yaml" \
         --substitutions="_IMAGE_URI=$REGION-docker.pkg.dev/$PROJECT_ID/$REPO_NAME/platform-agent:latest" \
         --project "$PROJECT_ID" \
+        --default-buckets-behavior=regional-user-owned-bucket \
         .
   )
 }
@@ -405,7 +406,7 @@ execute_operator() {
   print_info "1/2. Building and pushing Go Operator image via Google Cloud Build..."
   (
     cd "$SCRIPT_DIR/platform-agent-operator"
-    gcloud builds submit --tag "$OPERATOR_IMG" --project "$PROJECT_ID" .
+    gcloud builds submit --tag "$OPERATOR_IMG" --project "$PROJECT_ID" --default-buckets-behavior=regional-user-owned-bucket .
   )
   
   print_info "2/2. Registering CRD & deploying Operator Controller in namespace platform-agent-operator-system..."
