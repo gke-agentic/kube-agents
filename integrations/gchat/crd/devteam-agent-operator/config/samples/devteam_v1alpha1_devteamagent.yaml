@@ -1,0 +1,25 @@
+apiVersion: devteam.platform.io/v1alpha1
+kind: DevTeamAgent
+metadata:
+  labels:
+    app.kubernetes.io/name: devteam-agent-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: devteam-agent-sample
+spec:
+  imageUri: "gke-agentic/devteam-agent:latest"
+  # Optional Model Config (showing defaults)
+  # modelName: "gemini-model"
+  # modelBaseUrl: "http://litellm.agent-system.svc.cluster.local/v1"
+  # modelApiKey: "none"
+  # storageSize: "10Gi"
+  # apiServerKeySecretRef: "devteam-agent-secrets"
+
+  # Optional GCP/GKE Context & Workload Identity
+  # projectId: "gcp-project-id"
+  # numericProjectId: "1234567890"
+  # clusterName: "devteam-agent-host"
+  # location: "us-central1"
+  # gsaName: "devteam-agent-gcp-sa"
+  # ksaName: "devteam-agent-ksa"
+
+

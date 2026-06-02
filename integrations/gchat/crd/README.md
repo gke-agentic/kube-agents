@@ -12,12 +12,14 @@ Instead of relying on local, imperative bash scripts to configure GCP infrastruc
 integrations/gchat/crd/
 ├── provision.sh           # Idempotent, interactive setup to provision GKE, APIs, secrets, build agent, operator, and custom resource
 ├── teardown.sh            # Idempotent, interactive cleanup to tear down all GKE, operator, and GCP resources in reverse
-├── platform-agent-operator/ # Go-based Kubernetes Operator project (Kubebuilder-scaffolded)
+├── platform-agent-operator/ # Go-based Operator for PlatformAgent (Kubebuilder-scaffolded)
+└── devteam-agent-operator/  # Go-based Operator for DevTeamAgent (Kubebuilder-scaffolded)
+    # Both operators share a standard Kubebuilder structure:
     ├── api/v1alpha1/      # Custom Resource Definition (CRD) Spec types
     ├── internal/          # Controller reconciliation logic
-    ├── config/            # Kustomize configurations for installing the CRD and deploying the operator
+    ├── config/            # Kustomize configurations (CRD, RBAC, Manager)
     ├── Dockerfile         # Containerizes the operator manager
-    └── Makefile           # Standard targets for building, testing, and deploying the operator
+    └── Makefile           # Standard build/deploy targets
 ```
 
 ---
@@ -129,4 +131,83 @@ Run the teardown script from the `crd` directory:
 ```bash
 cd integrations/gchat/crd
 ./teardown.sh
+```
+
+---
+
+## 🤖 DevTeam Agent Operator
+
+The `devteam-agent-operator` is a dedicated operator for managing the lifecycle of `DevTeamAgent` instances. It is simpler than the Platform Agent Operator as it does not require GCP/KCC infrastructure reconciliation, focusing entirely on Kubernetes-native resources.
+
+### Reconciliation Lifecycle
+
+When you apply a `DevTeamAgent` Custom Resource, the operator ensures the following resources are provisioned and matched to your spec:
+
+1. **ServiceAccount (KSA)**: A `<name>` ServiceAccount (or as specified by `ksaName`). If `gsaName` and `projectId` are provided, it annotates the KSA to enable Workload Identity.
+2. **PersistentVolumeClaim (PVC)**: A `<name>-pvc` claim (default: `10Gi`) for persistent agent data storage.
+3. **Deployment**: A `<name>` deployment running the `devteam-agent` image, configured with the requested replicas, resource limits, model environment variables, GKE/GCP context env vars, using the reconciled ServiceAccount, and mounting the PVC.
+4. **Service**: A `<name>` ClusterIP service exposing ports `8642` (API) and `9119` (Dashboard).
+
+### DevTeamAgent Custom Resource Spec
+
+The `DevTeamAgent` spec allows configuring the following fields:
+
+- `imageUri` (Required): The container image for the devteam agent.
+- `replicas` (Optional, default: `1`): Number of desired pods.
+- `storageSize` (Optional, default: `"10Gi"`): Size of the PVC.
+- **Model Config (AI)**:
+  - `modelName` (Optional, default: `"gemini-model"`): Name of the model to use.
+  - `modelBaseUrl` (Optional, default: `"http://litellm.agent-system.svc.cluster.local/v1"`): Model API base URL.
+  - `modelApiKey` (Optional, default: `"none"`): Model API key.
+  - `apiServerKeySecretRef` (Optional, default: `"devteam-agent-secrets"`): Secret containing the `api-server-key`.
+- **GCP / GKE Context**:
+  - `projectId` (Optional): Target GCP Project ID.
+  - `numericProjectId` (Optional): Target GCP Project Number.
+  - `clusterName` (Optional): Host GKE Cluster Name.
+  - `location` (Optional): Host GKE Cluster Location.
+- **Identity (Workload Identity)**:
+  - `gsaName` (Optional): GCP Service Account Name to bind to.
+  - `ksaName` (Optional, default: CR name): Kubernetes Service Account Name.
+
+### Build and Deploy
+
+To build and deploy the DevTeam Agent Operator:
+
+#### 1. Build the Operator Image
+
+```bash
+cd integrations/gchat/crd/devteam-agent-operator
+make docker-build IMG=<your-registry>/devteam-agent-operator:latest
+```
+
+#### 2. Deploy to Cluster
+
+Ensure you have configured `kubectl` to point to your target cluster, then:
+
+```bash
+# Install CRD
+make install
+
+# Deploy Controller
+make deploy IMG=<your-registry>/devteam-agent-operator:latest
+```
+
+#### 3. Create a DevTeam Agent Instance
+
+Create a file `my-devteam-agent.yaml`:
+
+```yaml
+apiVersion: devteam.platform.io/v1alpha1
+kind: DevTeamAgent
+metadata:
+  name: devteam-agent
+  namespace: agent-system
+spec:
+  imageUri: "gke-agentic/devteam-agent:latest"
+```
+
+Apply it to your cluster:
+
+```bash
+kubectl apply -f my-devteam-agent.yaml
 ```
