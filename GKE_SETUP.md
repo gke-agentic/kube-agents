@@ -90,7 +90,7 @@ Pulls the latest key values from Secret Manager and synchronizes them into a loc
 
 ### 6. Custom Chat-Enabled Agent Container (Cloud Build)
 
-Uses Google Cloud Build to package, compile, and push a custom **unpatched** platform agent container `hermes-agent:latest` using [`integrations/gchat/app/cloudbuild.yaml`](file:///usr/local/google/home/mklinowski/Projects/kube-agents-team-fork/integrations/gchat/app/cloudbuild.yaml) and [`integrations/gchat/app/Dockerfile`](file:///usr/local/google/home/mklinowski/Projects/kube-agents-team-fork/integrations/gchat/app/Dockerfile). This container packages `google-cloud-pubsub` and GKE utilities cleanly in the isolated team directory.
+Uses Google Cloud Build to package, compile, and push a custom **unpatched** platform agent container `hermes-agent:latest` using [`integrations/gchat/crd/cloudbuild.yaml`](file:///usr/local/google/home/sergiuspiridon/kube-agents/integrations/gchat/crd/cloudbuild.yaml) and [`agents/platform/Dockerfile`](file:///usr/local/google/home/sergiuspiridon/kube-agents/agents/platform/Dockerfile). This container packages GKE utilities cleanly.
 
 ### 7. Operator Controller Manager Deployment
 

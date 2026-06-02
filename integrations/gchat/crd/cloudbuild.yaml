@@ -6,7 +6,9 @@ steps:
         "-t",
         "$_IMAGE_URI",
         "-f",
-        "integrations/gchat/app/Dockerfile",
+        "agents/platform/Dockerfile",
+        "--build-arg",
+        "HERMES_AGENT_TAG=$_HERMES_AGENT_TAG",
         ".",
       ]
 images:
