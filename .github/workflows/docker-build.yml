@@ -1,10 +1,11 @@
 name: Docker Build
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -23,7 +24,8 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: agents/devteam/Dockerfile
+          file: agents/Dockerfile
+          target: devteam
           push: false
           tags: devteam-agent:latest
           build-args: |
@@ -33,7 +35,8 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: agents/operator/Dockerfile
+          file: agents/Dockerfile
+          target: operator
           push: false
           tags: operator-agent:latest
           build-args: |
@@ -43,7 +46,8 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: agents/platform/Dockerfile
+          file: agents/Dockerfile
+          target: platform
           push: false
           tags: platform-agent:latest
           build-args: |
