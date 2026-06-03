@@ -1,0 +1,19 @@
+steps:
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      [
+        "build",
+        "-t",
+        "$_IMAGE_URI",
+        "-f",
+        "agents/Dockerfile",
+        "--target",
+        "platform",
+        "--build-arg",
+        "HERMES_AGENT_TAG=$_HERMES_AGENT_TAG",
+        "--build-arg",
+        "EXTRA_PIP_PACKAGES=google-cloud-pubsub==2.38.0",
+        ".",
+      ]
+images:
+  - "$_IMAGE_URI"

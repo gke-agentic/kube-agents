@@ -712,6 +712,7 @@ func (r *PlatformAgentReconciler) reconcileDeployment(ctx context.Context, insta
 					ServiceAccountName: instance.Spec.KSAName,
 					SecurityContext: &corev1.PodSecurityContext{
 						FSGroup:        &fsGroup,
+						RunAsUser:      func(i int64) *int64 { return &i }(1000),
 						RunAsNonRoot:   func(b bool) *bool { return &b }(true),
 						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},
