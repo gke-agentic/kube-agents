@@ -43,6 +43,8 @@ type PlatformAgentStatus struct {
 	Phase string `json:"phase,omitempty"` // e.g., "Provisioning", "Ready"
 }
 
+// TODO: Trigger (Remove)
+
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 
