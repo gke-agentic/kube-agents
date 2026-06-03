@@ -626,16 +626,16 @@ func (r *PlatformAgentReconciler) reconcileConfigMap(ctx context.Context, instan
 			Namespace: instance.Namespace,
 		},
 		Data: map[string]string{
-			"config.yaml": `model:
-  default: "gemini-3.1-flash-lite"
-  provider: "gemini"
+			"config.yaml": fmt.Sprintf(`model:
+  default: "%s"
+  provider: "%s"
 terminal:
   backend: "local"
   cwd: "/opt/data"
 platforms:
   google_chat:
     enabled: true
-`,
+`, instance.Spec.Model.Default, instance.Spec.Model.Provider),
 		},
 	}
 
