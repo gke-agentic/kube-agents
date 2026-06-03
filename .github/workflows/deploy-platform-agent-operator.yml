@@ -24,7 +24,7 @@ env:
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
-    environment: dharb-dev
+    environment: staging
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
