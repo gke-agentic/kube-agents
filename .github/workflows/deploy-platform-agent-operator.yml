@@ -2,7 +2,7 @@ name: Deploy Platform Agent Operator
 
 on:
   push:
-    branches: [main]
+    branches: [agents]
     paths:
       - "integrations/gchat/crd/platform-agent-operator/**"
       - ".github/workflows/deploy-platform-agent-operator.yml"
