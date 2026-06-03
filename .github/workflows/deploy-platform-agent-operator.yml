@@ -56,6 +56,7 @@ jobs:
           context: integrations/gchat/crd/platform-agent-operator
           file: integrations/gchat/crd/platform-agent-operator/Dockerfile
           push: true
+          provenance: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
           tags: |
