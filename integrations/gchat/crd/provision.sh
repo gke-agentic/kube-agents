@@ -127,7 +127,19 @@ if [ ! -f "$VARS_FILE" ]; then
   # 6.5. Generate secure random API Server auth key
   export API_SERVER_KEY=$(openssl rand -hex 16)
 
-  # 7. Write state file
+  # 7. Get Model Default Name
+  DEFAULT_MODEL_NAME="gemini-3.1-flash-lite"
+  echo -ne "  ${C_CYAN}Enter Model Default Name [${C_WHITE}${DEFAULT_MODEL_NAME}${C_CYAN}]: ${C_RESET}"
+  read -r INPUT_MODEL_NAME
+  export MODEL_DEFAULT_NAME="${INPUT_MODEL_NAME:-$DEFAULT_MODEL_NAME}"
+
+  # 8. Get Model Provider
+  DEFAULT_MODEL_PROVIDER="gemini"
+  echo -ne "  ${C_CYAN}Enter Model Provider [${C_WHITE}${DEFAULT_MODEL_PROVIDER}${C_CYAN}]: ${C_RESET}"
+  read -r INPUT_MODEL_PROVIDER
+  export MODEL_PROVIDER="${INPUT_MODEL_PROVIDER:-$DEFAULT_MODEL_PROVIDER}"
+
+  # 9. Write state file
   cat <<EOF > "$VARS_FILE"
 # SRE Sourced Variables for GKE & GCP Setup
 export PROJECT_ID="${PROJECT_ID}"
@@ -136,6 +148,8 @@ export REGION="${REGION}"
 export CLUSTER_NAME="${CLUSTER_NAME}"
 export NAMESPACE="${NAMESPACE}"
 export ALLOWED_USER="${ALLOWED_USER}"
+export MODEL_DEFAULT_NAME="${MODEL_DEFAULT_NAME}"
+export MODEL_PROVIDER="${MODEL_PROVIDER}"
 export REPO_NAME="platform-agent-repo"
 export CHAT_TOPIC_NAME="platform-agent-chat-events"
 export CHAT_SUB_NAME="platform-agent-chat-events-sub"
@@ -455,6 +469,9 @@ spec:
   ksaName: "${KSA_NAME}"
   googleChatAllowedUsers: "${ALLOWED_USER}"
   googleChatHomeChannel: ""
+  model:
+    default: "${MODEL_DEFAULT_NAME}"
+    provider: "${MODEL_PROVIDER}"
 EOF
   
   print_info "Applying 'platform-agent' Custom Resource to the GKE cluster..."
