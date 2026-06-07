@@ -2,7 +2,7 @@ name: Deploy Platform Agent
 
 on:
   push:
-    branches: [platform-agent-action]
+    branches: [main]
     paths:
       - "integrations/gchat/crd/platform-agent-operator/**"
       - "integrations/gchat/app/**"
@@ -171,10 +171,11 @@ jobs:
           location: ${{ env.GCP_REGION }}
           project_id: ${{ env.GCP_PROJECT_ID }}
 
-      - name: Restart Platform Agent Deployment & Wait for Rollout
+      - name: Update Platform Agent Image & Wait for Rollout
         run: |
-          echo "Restarting platform-agent-gateway deployment to pick up the new container image..."
-          kubectl rollout restart deployment/platform-agent-gateway -n agent-system
+          IMAGE_URI="${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.IMAGE_NAME }}:sha-${{ steps.vars.outputs.sha_short }}"
+          echo "Patching PlatformAgent custom resource with new image: $IMAGE_URI"
+          kubectl patch platformagent platform-agent -n agent-system --type='merge' -p "{\"spec\":{\"imageUri\":\"$IMAGE_URI\"}}"
 
           echo "Waiting for rollout of platform-agent-gateway..."
           kubectl rollout status deployment/platform-agent-gateway -n agent-system --timeout=180s
