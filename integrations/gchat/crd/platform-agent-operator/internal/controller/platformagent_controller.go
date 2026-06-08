@@ -626,16 +626,16 @@ func (r *PlatformAgentReconciler) reconcileConfigMap(ctx context.Context, instan
 			Namespace: instance.Namespace,
 		},
 		Data: map[string]string{
-			"config.yaml": `model:
-  default: "gemini-3.1-flash-lite"
-  provider: "gemini"
+			"config.yaml": fmt.Sprintf(`model:
+  default: %s
+  provider: %s
 terminal:
   backend: "local"
   cwd: "/opt/data"
 platforms:
   google_chat:
     enabled: true
-`,
+`, marshalString(instance.Spec.Model.Default), marshalString(instance.Spec.Model.Provider)),
 		},
 	}
 
@@ -712,6 +712,7 @@ func (r *PlatformAgentReconciler) reconcileDeployment(ctx context.Context, insta
 					ServiceAccountName: instance.Spec.KSAName,
 					SecurityContext: &corev1.PodSecurityContext{
 						FSGroup:        &fsGroup,
+						RunAsUser:      func(i int64) *int64 { return &i }(1000),
 						RunAsNonRoot:   func(b bool) *bool { return &b }(true),
 						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},
@@ -720,8 +721,9 @@ func (r *PlatformAgentReconciler) reconcileDeployment(ctx context.Context, insta
 							Name:            "platform-agent",
 							Image:           instance.Spec.ImageURI,
 							ImagePullPolicy: corev1.PullAlways,
-							Args:            []string{"gateway", "run"},
-							Ports: []corev1.ContainerPort{
+							Command:         []string{"hermes"}, 
+        			Args:            []string{"gateway", "run"},
+        			Ports: []corev1.ContainerPort{
 								{
 									Name:          "dashboard",
 									ContainerPort: 9119,
@@ -966,4 +968,9 @@ func removeString(slice []string, s string) []string {
 		result = append(result, item)
 	}
 	return result
+}
+
+func marshalString(v string) string {
+	b, _ := json.Marshal(v)
+	return string(b)
 }
