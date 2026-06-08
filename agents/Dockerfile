@@ -29,11 +29,28 @@ RUN ARCH=$(dpkg --print-architecture) && \
     && dpkg -i /tmp/gh.deb \
     && rm /tmp/gh.deb
 
+RUN /usr/local/bin/uv pip install --python /opt/hermes/.venv/bin/python \
+    google-api-python-client \
+    google-auth \
+    google-cloud-pubsub \
+    "hermes-agent[google_chat]"
+
 # 4. Apply the common stage2-hook patch
 COPY agents/shared/stage2-hook.patch /tmp/stage2-hook.patch
 RUN patch /opt/hermes/docker/stage2-hook.sh < /tmp/stage2-hook.patch && rm /tmp/stage2-hook.patch
 
-# 5. Create base defaults directory and copy shared defaults
+# 5. Clone and build mcp-remote proxy
+RUN git clone https://github.com/bradhoekstra/mcp-remote.git /opt/mcp-remote && \
+    cd /opt/mcp-remote && \
+    git checkout 2ff8f16753d8c744e6982b99e6ed5ab62f44f311 && \
+    npm install && \
+    npm run build && \
+    npm prune --production && \
+    npm cache clean --force && \
+    rm -rf .git
+
+
+# 6. Create base defaults directory and copy shared defaults
 RUN mkdir -p /opt/defaults
 COPY agents/shared/defaults/ /opt/defaults/
 
@@ -41,12 +58,13 @@ COPY agents/shared/defaults/ /opt/defaults/
 COPY --chown=hermes:hermes agents/shared/skills/ /opt/hermes/skills/
 
 
-# 6. Expose ports shared by all agent gateways
+# 7. Expose ports shared by all agent gateways
 EXPOSE 8642
 EXPOSE 9119
 
-# 7. Default command
+# 8. Default command
 CMD ["hermes", "gateway", "run"]
+
 
 
 # --- DEVTEAM AGENT TARGET ---
@@ -92,6 +110,9 @@ COPY --chmod=644 agents/platform/config.yaml /tmp/platform-config.yaml
 
 # Copy devteam deployment template
 COPY --chmod=644 agents/devteam/deployment.yaml /opt/defaults/templates/devteam/deployment.yaml
+
+# Copy operator deployment template
+COPY --chmod=644 agents/operator/deployment.yaml /opt/defaults/templates/operator/deployment.yaml
 
 # Dynamically merge config.yamls using virtualenv python
 RUN /opt/hermes/.venv/bin/python3 -c "import pathlib, yaml; p1=pathlib.Path('/opt/defaults/config.yaml'); p2=pathlib.Path('/tmp/platform-config.yaml'); s=yaml.safe_load(p1.read_text()) if p1.exists() else {}; p=yaml.safe_load(p2.read_text()) if p2.exists() else {}; s.update(p); p1.write_text(yaml.safe_dump(s))" && rm -f /tmp/platform-config.yaml
