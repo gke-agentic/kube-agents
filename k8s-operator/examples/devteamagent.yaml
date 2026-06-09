@@ -1,6 +1,6 @@
 apiVersion: kubeagents.x-k8s.io/v1alpha1
-kind: PlatformAgent
+kind: DevTeamAgent
 metadata:
-  name: platformagent-sample
+  name: devteamagent-sample
   namespace: kubeagents-system
 spec: {}
