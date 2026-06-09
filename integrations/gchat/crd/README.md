@@ -124,7 +124,7 @@ kubectl exec -it deploy/platform-agent-gateway -n platform-agent -c hermes -- he
 
 ## 🧹 Clean Up & Teardown
 
-The `teardown.sh` script deletes the custom resource (triggering Config Connector to clean up GSA, Pub/Sub, and IAM policies), undeploys the Operator, removes KCC configurations, destroys the Secret Manager secrets, removes the Artifact Registry repository, and tears down the GKE cluster.
+The `teardown.sh` script deletes the custom resource (triggering the operator cleanup of the ClusterRoleBinding), undeploys the Operator, removes the Operator & Bot GCP GSAs, destroys the Secret Manager secrets, removes the Artifact Registry repository, and tears down the GKE cluster.
 
 Run the teardown script from the `crd` directory:
 
