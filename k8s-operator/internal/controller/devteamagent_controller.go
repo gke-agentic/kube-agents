@@ -41,9 +41,9 @@ type DevTeamAgentReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=platform.io,resources=devteamagents,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=platform.io,resources=devteamagents/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=platform.io,resources=devteamagents/finalizers,verbs=update
+// +kubebuilder:rbac:groups=kubeagents.x-k8s.io,resources=devteamagents,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=kubeagents.x-k8s.io,resources=devteamagents/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=kubeagents.x-k8s.io,resources=devteamagents/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims;services;serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 
