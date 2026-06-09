@@ -150,3 +150,9 @@ mv "$(LOCALBIN)/$$(basename "$(1)")" "$(1)-$(3)" ;\
 } ;\
 ln -sf "$$(realpath "$(1)-$(3)")" "$(1)"
 endef
+
+prettier-check:
+	npx prettier --check "**/*.md" "**/*.yaml" "**/*.yml"
+
+prettier-write:
+	npx prettier --write "**/*.md" "**/*.yaml" "**/*.yml"
