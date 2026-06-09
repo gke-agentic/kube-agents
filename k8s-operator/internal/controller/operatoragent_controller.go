@@ -41,9 +41,9 @@ type OperatorAgentReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=platform.io,resources=operatoragents,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=platform.io,resources=operatoragents/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=platform.io,resources=operatoragents/finalizers,verbs=update
+// +kubebuilder:rbac:groups=kubeagents.x-k8s.io,resources=operatoragents,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=kubeagents.x-k8s.io,resources=operatoragents/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=kubeagents.x-k8s.io,resources=operatoragents/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims;services;serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 

@@ -160,7 +160,7 @@ func main() {
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "c5a0294c.platform.io",
+		LeaderElectionID:       "c5a0294c.kubeagents.x-k8s.io",
 	})
 	if err != nil {
 		setupLog.Error(err, "Failed to start manager")
