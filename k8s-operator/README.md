@@ -80,8 +80,6 @@ make uninstall
 
 When you are ready to deploy the operator as a deployment inside the cluster, use the following steps.
 
-> [!WARNING]
-> The `make deploy` and `make undeploy` targets require `config/manager` and `config/default` directories, which are not present in this minimal configuration. If you need to deploy the operator inside the cluster, you must first generate these manifests (e.g., using `kubebuilder init` templates) or deploy using a custom Helm chart/manifest.
 
 ### Step 1: Build and Push the Docker Image
 
