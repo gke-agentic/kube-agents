@@ -84,15 +84,31 @@ When you are ready to deploy the operator as a deployment inside the cluster, us
 > The `make deploy` and `make undeploy` targets require `config/manager` and `config/default` directories, which are not present in this minimal configuration. If you need to deploy the operator inside the cluster, you must first generate these manifests (e.g., using `kubebuilder init` templates) or deploy using a custom Helm chart/manifest.
 
 ### Step 1: Build and Push the Docker Image
-Build the container image and push it to a container registry (e.g., Google Artifact Registry) accessible by your GKE cluster:
+
+Build the container image and push it to a container registry (e.g., Google Artifact Registry) accessible by your GKE cluster.
+
+#### 1. Authenticate Docker with the Registry
+Before pushing, ensure your local Docker client is authenticated with Google Cloud's container registries. Run the command matching your registry domain:
+
+```bash
+# For Google Artifact Registry (recommended, e.g. us-central1 region)
+gcloud auth configure-docker us-central1-docker.pkg.dev
+
+# For Google Container Registry (legacy)
+gcloud auth configure-docker gcr.io
+```
+
+#### 2. Build and Push
+Set the image target URL and run the build/push targets:
+
 ```bash
 # Replace with your actual registry and image tag
-export IMG=gcr.io/<PROJECT_ID>/kube-agents-operator:v1.0.0
+export IMG=us-central1-docker.pkg.dev/ai-platform-1-464114/k8s-harness-poc/kube-agents-operator:v1.0.0
 
 # Build the image
 make docker-build IMG=$IMG
 
-# Push the image
+# Push the image to the registry
 make docker-push IMG=$IMG
 ```
 
