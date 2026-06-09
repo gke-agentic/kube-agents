@@ -55,14 +55,16 @@ go run ./cmd/main.go
 > This compiles and runs the entry point [main.go](file:///usr/local/google/home/fatoshoti/playground/kube-agents/k8s-operator/cmd/main.go). The process runs in the foreground, prints reconciliation logs, and watches for custom resource events in the cluster.
 
 ### Step 4: Apply Sample Custom Resources
-In another terminal window, apply a sample custom resource to test the controllers:
+In another terminal window, apply the sample custom resources to test the controllers:
 ```bash
 kubectl apply -f examples/platformagent.yaml
+kubectl apply -f examples/clusteroperatoragent.yaml
+kubectl apply -f examples/devteamagent.yaml
 ```
 
-Verify that the resource is created and recognized:
+Verify that the resources are created and recognized:
 ```bash
-kubectl get platformagents --all-namespaces
+kubectl get platformagents,operatoragent,devteamagent --all-namespaces
 ```
 
 You should see reconciliation logs printed in the terminal where the operator process is running.
