@@ -1,6 +1,6 @@
 apiVersion: kubeagents.x-k8s.io/v1alpha1
-kind: PlatformAgent
+kind: OperatorAgent
 metadata:
-  name: platformagent-sample
+  name: clusteroperatoragent-sample
   namespace: kubeagents-system
 spec: {}
