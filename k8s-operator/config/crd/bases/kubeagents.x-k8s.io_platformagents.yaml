@@ -14,41 +14,216 @@ spec:
     singular: platformagent
   scope: Namespaced
   versions:
-    - name: v1alpha1
-      schema:
-        openAPIV3Schema:
-          description: PlatformAgent is the Schema for the platformagents API
-          properties:
-            apiVersion:
-              description: |-
-                APIVersion defines the versioned schema of this representation of an object.
-                Servers should convert recognized schemas to the latest internal value, and
-                may reject unrecognized values.
-                More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
-              type: string
-            kind:
-              description: |-
-                Kind is a string value representing the REST resource this object represents.
-                Servers may infer this from the endpoint the client submits requests to.
-                Cannot be updated.
-                In CamelCase.
-                More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
-              type: string
-            metadata:
-              type: object
-            spec:
-              description: spec defines the desired state of PlatformAgent
-              type: object
-            status:
-              description: status defines the observed state of PlatformAgent
-              properties:
-                phase:
-                  type: string
-              type: object
-          required:
-            - spec
-          type: object
-      served: true
-      storage: true
-      subresources:
-        status: {}
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: PlatformAgent is the Schema for the platformagents API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of PlatformAgent
+            properties:
+              deployment:
+                description: Deployment abstracts the Kubernetes Pod/Deployment configuration.
+                properties:
+                  image:
+                    description: Image specifies the container image repository.
+                    type: string
+                  imagePullPolicy:
+                    default: IfNotPresent
+                    description: ImagePullPolicy specifies if the image should be
+                      pulled.
+                    type: string
+                  tag:
+                    default: latest
+                    description: Tag specifies the container image tag.
+                    type: string
+                required:
+                - image
+                type: object
+              harness:
+                description: Harness configures the core execution environment and
+                  framework-level settings.
+                properties:
+                  clusterName:
+                    description: ClusterName is the logical name of the cluster where
+                      the agent is running.
+                    type: string
+                  hermes:
+                    description: Hermes configures the internal event-routing or agent
+                      framework.
+                    properties:
+                      apiServerSecretRef:
+                        description: ApiServerSecretRef securely references a Secret
+                          containing the API_SERVER_KEY.
+                        properties:
+                          key:
+                            description: The key of the secret to select from.  Must
+                              be a valid secret key.
+                            type: string
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                          optional:
+                            description: Specify whether the Secret or its key must
+                              be defined
+                            type: boolean
+                        required:
+                        - key
+                        type: object
+                        x-kubernetes-map-type: atomic
+                      dashboardEnabled:
+                        default: true
+                        description: DashboardEnabled toggles the PLATFORM_AGENT_DASHBOARD
+                          environment variable.
+                        type: boolean
+                      platformAgentHome:
+                        default: /opt/data
+                        description: PlatformAgentHome is the path to the PLATFORM_AGENT_HOME
+                          directory.
+                        type: string
+                      pluginsDebug:
+                        default: false
+                        description: PluginsDebug toggles the PLATFORM_AGENT_PLUGINS_DEBUG
+                          environment variable.
+                        type: boolean
+                    type: object
+                  location:
+                    description: Location is the geographical location or cloud region.
+                    type: string
+                type: object
+              integration:
+                description: Integration configures platform-specific external connections.
+                properties:
+                  googleChat:
+                    description: GoogleChat configures the Google Chat integration.
+                    properties:
+                      allowedUsers:
+                        description: AllowedUsers is a list of allowed users. If not
+                          present, all users will be allowed.
+                        items:
+                          type: string
+                        type: array
+                      enabled:
+                        default: false
+                        description: Enabled toggles the Google Chat integration.
+                        type: boolean
+                      homeChannel:
+                        description: HomeChannel is the home channel Chat address.
+                        type: string
+                      projectId:
+                        description: ProjectID is the target GCP Project ID for Pub/Sub.
+                        type: string
+                      subscriptionName:
+                        description: SubscriptionName is the GCP Chat Subscription
+                          Name.
+                        type: string
+                      topicName:
+                        description: TopicName is the GCP Chat Topic Name.
+                        type: string
+                    type: object
+                type: object
+              model:
+                description: Model configures the LLM reasoning backend.
+                properties:
+                  default:
+                    description: Default is the primary model to use (e.g., "gemini-3.1-flash-lite").
+                    minLength: 1
+                    type: string
+                  gemini:
+                    description: Gemini configures the Gemini provider.
+                    properties:
+                      apiKeySecretRef:
+                        description: ApiKeySecretRef securely references a Secret
+                          containing the GEMINI_API_KEY.
+                        properties:
+                          key:
+                            description: The key of the secret to select from.  Must
+                              be a valid secret key.
+                            type: string
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                          optional:
+                            description: Specify whether the Secret or its key must
+                              be defined
+                            type: boolean
+                        required:
+                        - key
+                        type: object
+                        x-kubernetes-map-type: atomic
+                    type: object
+                  provider:
+                    description: Provider is the active AI provider (e.g., "gemini").
+                    minLength: 1
+                    type: string
+                required:
+                - default
+                - provider
+                type: object
+              security:
+                description: Security configures RBAC, Pod Security, and Workload
+                  Identity.
+                properties:
+                  serviceAccountName:
+                    description: ServiceAccountName is the Kubernetes Service Account
+                      bound to the Deployment.
+                    type: string
+                  workloadIdentity:
+                    description: WorkloadIdentity maps external IAM to the KSA securely.
+                    properties:
+                      gcp:
+                        description: Gcp configures Google Cloud Workload Identity.
+                        properties:
+                          gsaName:
+                            description: GSAName is the Google Service Account Name.
+                            type: string
+                          projectId:
+                            description: ProjectID is the GCP Project ID mapping the
+                              GSA to the KSA.
+                            type: string
+                        type: object
+                    type: object
+                type: object
+            type: object
+          status:
+            description: status defines the observed state of PlatformAgent
+            properties:
+              phase:
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
