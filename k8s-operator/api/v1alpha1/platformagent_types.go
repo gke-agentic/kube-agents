@@ -95,6 +95,7 @@ type DeploymentSpec struct {
 
 	// ImagePullPolicy specifies if the image should be pulled.
 	// +kubebuilder:default=IfNotPresent
+	// +kubebuilder:validation:Enum=Always;Never;IfNotPresent
 	// +optional
 	ImagePullPolicy *corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
 }
@@ -134,10 +135,12 @@ type GcpWorkloadIdentitySpec struct {
 type ModelSpec struct {
 	// Provider is the active AI provider (e.g., "gemini").
 	// +kubebuilder:validation:MinLength=1
+	// +required
 	Provider string `json:"provider"`
 
 	// Default is the primary model to use (e.g., "gemini-3.1-flash-lite").
 	// +kubebuilder:validation:MinLength=1
+	// +required
 	Default string `json:"default"`
 
 	// Gemini configures the Gemini provider.
@@ -160,6 +163,7 @@ type IntegrationSpec struct {
 
 // GoogleChatSpec contains the configuration for the Google Chat integration,
 // enabling communication and event routing via Google Chat.
+// +kubebuilder:validation:XValidation:rule="!has(self.enabled) || self.enabled == false || (has(self.projectId) && has(self.topicName) && has(self.subscriptionName))",message="projectId, topicName, and subscriptionName are required when Google Chat integration is enabled"
 type GoogleChatSpec struct {
 	// Enabled toggles the Google Chat integration.
 	// +kubebuilder:default=false
@@ -179,6 +183,7 @@ type GoogleChatSpec struct {
 	SubscriptionName string `json:"subscriptionName,omitempty"`
 
 	// AllowedUsers is a list of allowed users. If not present, all users will be allowed.
+	// +listType=set
 	// +optional
 	AllowedUsers []string `json:"allowedUsers,omitempty"`
 
@@ -189,7 +194,51 @@ type GoogleChatSpec struct {
 
 // PlatformAgentStatus defines the observed state of PlatformAgent.
 type PlatformAgentStatus struct {
-	Phase string `json:"phase,omitempty"` // e.g., "Provisioning", "Ready"
+	// Phase is the overall state (Pending, Provisioning, Ready, Failed).
+	// +optional
+	Phase string `json:"phase,omitempty"`
+
+	// LastReconcileTime is the timestamp when the operator last updated this status.
+	// +optional
+	LastReconcileTime *metav1.Time `json:"lastReconcileTime,omitempty"`
+
+	// Conditions represent the latest available observations of the instance's state.
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// DeploymentStatus tracks the state of the underlying compute.
+	// +optional
+	DeploymentStatus DeploymentStatus `json:"deploymentStatus,omitempty"`
+
+	// ServiceStatus holds internal/external endpoints.
+	// +optional
+	ServiceStatus ServiceStatus `json:"serviceStatus,omitempty"`
+
+	// StorageStatus tracks PVC binding state.
+	// +optional
+	StorageStatus StorageStatus `json:"storageStatus,omitempty"`
+}
+
+type DeploymentStatus struct {
+	// Name is the exact name of the underlying Kubernetes Deployment.
+	// +optional
+	Name string `json:"name,omitempty"`
+
+	// ReadyReplicas indicates how many replicas are fully ready.
+	// +optional
+	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
+}
+
+type ServiceStatus struct {
+	// Endpoint is the primary URL or IP to reach the agent.
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
+}
+
+type StorageStatus struct {
+	// Bound indicates if the primary PVC has been successfully provisioned.
+	// +optional
+	Bound bool `json:"bound,omitempty"`
 }
 
 // +kubebuilder:object:root=true
