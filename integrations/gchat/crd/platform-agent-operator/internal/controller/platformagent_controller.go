@@ -340,17 +340,6 @@ func (r *PlatformAgentReconciler) reconcileIAMBindings(ctx context.Context, inst
 		return err
 	}
 
-	// 3.5. GSA Cluster Viewer on Project
-	requeue, err = r.reconcileIAMPolicyMember(ctx, instance, instance.Name+"-cluster-viewer", map[string]any{
-		"kind":     "Project",
-		"external": instance.Spec.ProjectID,
-	}, "roles/container.clusterViewer", "serviceAccount:"+gsaEmail)
-	if err != nil {
-		return false, err
-	}
-	if requeue {
-		return true, nil
-	}
 
 	// 4. GChat System SA Publisher on Topic
 	err = r.addPubSubIAMBinding(ctx, "topic", instance.Spec.ChatTopicName, "roles/pubsub.publisher", "serviceAccount:chat-api-push@system.gserviceaccount.com")

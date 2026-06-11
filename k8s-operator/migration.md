@@ -11,6 +11,7 @@ This plan removes any direct GCP API SDK calls and GKE Config Connector (KCC) de
 Instead of provisioning GCP-specific resources (Service Accounts, Pub/Sub topics, subscriptions) inside the operator, the operator assumes these cloud resources are **externally managed** (e.g. via Terraform, Crossplane, or pre-provisioned by platform administrators).
 
 The operator's role is strictly limited to reconciling standard Kubernetes resources:
+
 - `ServiceAccount` (with Workload Identity annotations mapping to pre-existing GSAs/roles)
 - `ConfigMap` (containing the agent's application config)
 - `PersistentVolumeClaim` (data volume)
@@ -18,6 +19,7 @@ The operator's role is strictly limited to reconciling standard Kubernetes resou
 - `ClusterRoleBinding` (for cluster visibility)
 
 ### Key Benefits:
+
 - **100% Cloud Agnostic**: Zero dependency on Google Cloud SDK or GKE-specific CRDs at compile or run time.
 - **Simplified Security**: The operator does not need GCP IAM permissions to create service accounts or policy bindings.
 - **High Testability**: Since the operator only manages core Kubernetes resources, unit tests can run offline against standard controller-runtime fake clients or envtest with zero mocks required.
@@ -29,7 +31,9 @@ The operator's role is strictly limited to reconciling standard Kubernetes resou
 The operator reads cloud-specific parameters from the `PlatformAgent` CR and translates them to standard Kubernetes workload configurations:
 
 ### 2.1 Workload Identity
+
 Instead of calling GCP APIs to bind a Google Service Account (GSA) to the Kubernetes Service Account (KSA), the operator simply annotates the KSA based on the spec:
+
 ```go
 func buildServiceAccount(agent *agentv1alpha1.PlatformAgent) *corev1.ServiceAccount {
 	sa := &corev1.ServiceAccount{
@@ -58,6 +62,7 @@ func buildServiceAccount(agent *agentv1alpha1.PlatformAgent) *corev1.ServiceAcco
 ```
 
 ### 2.2 Integration Environment Variables
+
 For integrations like Google Chat, the operator maps spec values directly to container environment variables inside `buildDeployment`:
 
 ```go
@@ -97,7 +102,7 @@ To ensure maximum testability, we separate **Pure Manifest Generation** from **K
 graph TD
     Reconcile[Reconcile Loop] --> Fetch[Fetch PlatformAgent CR]
     Fetch --> SubReconcilers[Sub-Reconciler pipeline]
-    
+
     subgraph Sub-Reconcilers [Sub-Reconcilers]
         CM[Reconcile ConfigMap]
         PVC[Reconcile PVC]
@@ -105,17 +110,18 @@ graph TD
         RBAC[Reconcile ClusterRoleBindings]
         DEP[Reconcile Deployment]
     end
-    
+
     CM -.-> CMBuilder[CM Builder: Pure Function]
     DEP -.-> DEPBuilder[Deployment Builder: Pure Function]
     SA -.-> SABuilder[SA Builder: Pure Function]
-    
+
     style CMBuilder fill:#e1f5fe,stroke:#01579b
     style DEPBuilder fill:#e1f5fe,stroke:#01579b
     style SABuilder fill:#e1f5fe,stroke:#01579b
 ```
 
 ### 3.1 Pure Manifest Builders (No Client/API Dependencies)
+
 Define helper functions that take a `*agentv1alpha1.PlatformAgent` (and optional state, such as ConfigMap hash) and return the structured resource manifest. These functions do NOT call any API and are easily testable.
 
 ```go
@@ -154,50 +160,60 @@ func buildConfigMap(agent *agentv1alpha1.PlatformAgent) *corev1.ConfigMap {
 ## 4. Production-Grade Refinement Practices
 
 ### 4.1 Deterministic Naming for Cluster-Scoped Resources
+
 Because `ClusterRoleBindings` live at the cluster root, their names must be globally unique to avoid collisions (e.g. if two namespaces deploy a `PlatformAgent` named `analytics-agent`).
-*   **Implementation Rule**: Construct the binding name using both namespace and resource name:
-    ```go
-    bindingName := fmt.Sprintf("kubeagents:%s:%s", agent.Namespace, agent.Name)
-    ```
+
+- **Implementation Rule**: Construct the binding name using both namespace and resource name:
+  ```go
+  bindingName := fmt.Sprintf("kubeagents:%s:%s", agent.Namespace, agent.Name)
+  ```
 
 ### 4.2 Pod Template ConfigMap Hash Injection & Deployment Deadlock
+
 Ensure that the `configMapHash` is injected inside the **Pod Template Spec** metadata (`spec.template.metadata.annotations`), rather than just the Deployment-level metadata.
-*   **Implementation Rule**:
-    ```go
-    PodTemplate: corev1.PodTemplateSpec{
-        ObjectMeta: metav1.ObjectMeta{
-            Annotations: map[string]string{
-                "kubeagents.x-k8s.io/config-hash": configHash,
-            },
-        },
-        Spec: // ...
-    }
-    ```
-*   **Deployment Strategy (Recreate)**: Because the Deployment utilizes a ReadWriteOnce (RWO) Persistent Volume Claim, standard rolling updates will deadlock (new pod cannot mount storage locked by terminating pod). The Deployment strategy must be explicitly configured as `Recreate`:
-    ```go
-    Spec: appsv1.DeploymentSpec{
-        Strategy: appsv1.DeploymentStrategy{
-            Type: appsv1.RecreateDeploymentStrategyType,
-        },
-    }
-    ```
+
+- **Implementation Rule**:
+  ```go
+  PodTemplate: corev1.PodTemplateSpec{
+      ObjectMeta: metav1.ObjectMeta{
+          Annotations: map[string]string{
+              "kubeagents.x-k8s.io/config-hash": configHash,
+          },
+      },
+      Spec: // ...
+  }
+  ```
+- **Deployment Strategy (Recreate)**: Because the Deployment utilizes a ReadWriteOnce (RWO) Persistent Volume Claim, standard rolling updates will deadlock (new pod cannot mount storage locked by terminating pod). The Deployment strategy must be explicitly configured as `Recreate`:
+  ```go
+  Spec: appsv1.DeploymentSpec{
+      Strategy: appsv1.DeploymentStrategy{
+          Type: appsv1.RecreateDeploymentStrategyType,
+      },
+  }
+  ```
 
 ### 4.3 The Cross-Scope OwnerReference Trap
+
 Kubernetes strictly forbids cross-scope `OwnerReferences`. You cannot set a namespace-scoped resource (your `PlatformAgent`) as the owner of a cluster-scoped resource (the `ClusterRoleBinding`).
-*   **Implementation Rule**: 
-    - For SA, PVC, ConfigMap, and Deployment: Use `SetControllerReference`.
-    - For ClusterRoleBinding: **Do not** set an owner reference. Let the finalizer delete the resources during the deletion flow.
+
+- **Implementation Rule**:
+  - For SA, PVC, ConfigMap, and Deployment: Use `SetControllerReference`.
+  - For ClusterRoleBinding: **Do not** set an owner reference. Let the finalizer delete the resources during the deletion flow.
 
 ### 4.4 PersistentVolumeClaim (PVC) Immutability
+
 PVC storage sizes and configurations are mostly immutable. Altering them on the `PlatformAgent` CR will trigger API validation failures, causing a hot-loop crash in reconciliation.
-*   **Implementation Rule**: Reconcile PVC strictly as a "Create if not exists" action, or catch immutable update validation errors and write a user-facing warning to the `PlatformAgent` Conditions Status rather than returning an error.
+
+- **Implementation Rule**: Reconcile PVC strictly as a "Create if not exists" action, or catch immutable update validation errors and write a user-facing warning to the `PlatformAgent` Conditions Status rather than returning an error.
 
 ### 4.5 Server-Side Apply (SSA) with Force Ownership
+
 When patching resources using pure manifests with Server-Side Apply, the operator must overwrite any manual configuration edits.
-*   **Implementation Rule**: Always pass the `client.ForceOwnership` and `client.FieldOwner` options to prevent conflicts with other users or tools (like manual `kubectl edit` actions):
-    ```go
-    err := r.Patch(ctx, resource, client.Apply, client.FieldOwner("kubeagents-operator"), client.ForceOwnership)
-    ```
+
+- **Implementation Rule**: Always pass the `client.ForceOwnership` and `client.FieldOwner` options to prevent conflicts with other users or tools (like manual `kubectl edit` actions):
+  ```go
+  err := r.Patch(ctx, resource, client.Apply, client.FieldOwner("kubeagents-operator"), client.ForceOwnership)
+  ```
 
 ---
 
@@ -245,7 +261,7 @@ func TestBuildServiceAccount(t *testing.T) {
 			},
 		},
 	}
-	
+
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			result := buildServiceAccount(tc.agent)
@@ -377,7 +393,7 @@ func (r *PlatformAgentReconciler) handleDeletion(ctx context.Context, agent *age
 			return ctrl.Result{}, err
 		}
 	}
-	
+
 	// Stop reconciliation as the item is being deleted
 	return ctrl.Result{}, nil
 }
