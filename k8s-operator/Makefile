@@ -155,11 +155,43 @@ endef
 
 .PHONY: provision
 provision: ## Bootstrap GCP, GKE resources, and deploy PlatformAgent.
-	@./provision.sh
+	@chmod +x scripts/*.sh scripts/provision_litellm/*.sh
+	@./scripts/provision.sh $(ARGS)
 
 .PHONY: teardown
 teardown: ## Clean up and delete all provisioned GCP and GKE resources.
-	@./teardown.sh
+	@chmod +x scripts/*.sh
+	@./scripts/teardown.sh
+
+.PHONY: provision-gcp-cluster
+provision-gcp-cluster: ## Step 1: Provision GCP APIs, GKE Cluster, Secret Manager & LiteLLM Gateway.
+	@chmod +x scripts/*.sh scripts/provision_litellm/*.sh
+	@./scripts/provision_01_cluster_and_gcp.sh $(ARGS)
+
+.PHONY: provision-operator-image
+provision-operator-image: ## Step 2: Build and push the operator image via Cloud Build.
+	@chmod +x scripts/*.sh
+	@./scripts/provision_02_build_push_operator.sh $(ARGS)
+
+.PHONY: provision-agent-image
+provision-agent-image: ## Step 3: Build and push the platform agent image via Cloud Build.
+	@chmod +x scripts/*.sh
+	@./scripts/provision_03_build_push_agents.sh $(ARGS)
+
+.PHONY: provision-gchat
+provision-gchat: ## Step 4: Setup GChat integration, Pub/Sub, IAM policies, CRDs, and PlatformAgent CR.
+	@chmod +x scripts/*.sh
+	@./scripts/provision_04_setup_gchat.sh $(ARGS)
+
+.PHONY: teardown-gchat
+teardown-gchat: ## Step 1: Tear down PlatformAgent, Operator, and GCP Google Chat resources.
+	@chmod +x scripts/*.sh
+	@./scripts/teardown_01_gchat.sh $(ARGS)
+
+.PHONY: teardown-gcp-cluster
+teardown-gcp-cluster: ## Step 2: Tear down LiteLLM Gateway, Secret Manager, Registry, GKE Cluster, and local state.
+	@chmod +x scripts/*.sh
+	@./scripts/teardown_02_cluster_and_gcp.sh $(ARGS)
 
 prettier-check:
 	npx prettier --check "**/*.md" "**/*.yaml" "**/*.yml"

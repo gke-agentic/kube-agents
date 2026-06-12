@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# 🤖 GKE Standard & Cloud-Agnostic Operator E2E Provisioner
+# 🤖 Step 1: GCP APIs, GKE Cluster, Secret Manager & LiteLLM Gateway
 # ==============================================================================
-# Idempotent bootstrap script for GCP resources, Artifact Registry, Secrets,
-# GChat agent container build, manual GSA/PubSub setup, and CR application.
+# Idempotent setup script to bootstrap the GCP/GKE infrastructure, secrets,
+# and LiteLLM gateway.
 # ==============================================================================
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "$SCRIPT_DIR" == */scripts ]]; then
+  OPERATOR_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+else
+  OPERATOR_DIR="${SCRIPT_DIR}"
+fi
+VARS_FILE="${SCRIPT_DIR}/vars.sh"
 
 # ─── ANSI Colors ──────────────────────────────────────────────────────────────
 C_CYAN='\033[96m'
@@ -20,8 +26,6 @@ C_RED='\033[91m'
 C_RESET='\033[0m'
 C_BOLD='\033[1m'
 C_WHITE='\033[97m'
-
-VARS_FILE="${SCRIPT_DIR}/vars.sh"
 
 # ─── UI Helpers ───────────────────────────────────────────────────────────────
 print_step() {
@@ -69,11 +73,9 @@ trap cleanup EXIT
 
 # ─── Argument Parsing ─────────────────────────────────────────────────────────
 DRY_RUN=0
-FORCE_BUILD=0
 while [[ "$#" -gt 0 ]]; do
   case $1 in
     --dry-run) DRY_RUN=1 ;;
-    --force-build) FORCE_BUILD=1 ;;
   esac
   shift
 done
@@ -331,149 +333,6 @@ execute_litellm() {
   "${SCRIPT_DIR}/provision_litellm/provision_litellm.sh" --deploy
 }
 
-# Step 8: Package & Build GChat Agent via Cloud Build
-verify_agent_image() {
-  if [ "$FORCE_BUILD" -eq 1 ]; then
-    return 1
-  fi
-  gcloud artifacts docker images list "$REGION-docker.pkg.dev/$PROJECT_ID/$REPO_NAME/platform-agent" --project="$PROJECT_ID" --filter="TAGS:latest" --format="value(image)" 2>/dev/null | grep -q "platform-agent"
-}
-execute_agent_image() {
-  print_info "Building custom, GChat Platform Agent container via Google Cloud Build..."
-  local agent_tag=""
-  if [ -f "$SCRIPT_DIR/../tags.env" ]; then
-    agent_tag=$(grep '^HERMES_AGENT_TAG=' "$SCRIPT_DIR/../tags.env" | cut -d'=' -f2)
-  fi
-  if [ -z "$agent_tag" ]; then
-    print_error "Could not resolve HERMES_AGENT_TAG from tags.env"
-    exit 1
-  fi
-
-  (
-    cd "$SCRIPT_DIR/.."
-    gcloud builds submit \
-        --config="integrations/gchat/crd/cloudbuild.yaml" \
-        --substitutions="_IMAGE_URI=$REGION-docker.pkg.dev/$PROJECT_ID/$REPO_NAME/platform-agent:latest,_HERMES_AGENT_TAG=$agent_tag" \
-        --project "$PROJECT_ID" \
-        .
-  )
-}
-
-# Step 9: Manually Provision GCP Resources & IAM policy bindings
-verify_agent_gcp_resources() {
-  local gsa_email="${GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
-  gcloud iam service-accounts describe "${gsa_email}" --project="${PROJECT_ID}" >/dev/null 2>&1 && \
-  gcloud pubsub topics describe "${CHAT_TOPIC_NAME}" --project="${PROJECT_ID}" >/dev/null 2>&1 && \
-  gcloud pubsub subscriptions describe "${CHAT_SUB_NAME}" --project="${PROJECT_ID}" >/dev/null 2>&1
-}
-execute_agent_gcp_resources() {
-  local gsa_email="${GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
-
-  # 1. Create GSA
-  if ! gcloud iam service-accounts describe "${gsa_email}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
-    print_info "Creating GSA ${GSA_NAME}..."
-    gcloud iam service-accounts create "${GSA_NAME}" \
-        --display-name="Platform Agent Bot GSA" \
-        --project="${PROJECT_ID}"
-  fi
-
-  # 2. Create Pub/Sub Topic
-  if ! gcloud pubsub topics describe "${CHAT_TOPIC_NAME}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
-    print_info "Creating Pub/Sub Topic ${CHAT_TOPIC_NAME}..."
-    gcloud pubsub topics create "${CHAT_TOPIC_NAME}" --project="${PROJECT_ID}"
-  fi
-
-  # 3. Create Pub/Sub Subscription
-  if ! gcloud pubsub subscriptions describe "${CHAT_SUB_NAME}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
-    print_info "Creating Pub/Sub Subscription ${CHAT_SUB_NAME}..."
-    gcloud pubsub subscriptions create "${CHAT_SUB_NAME}" \
-        --topic="${CHAT_TOPIC_NAME}" \
-        --ack-deadline=60 \
-        --project="${PROJECT_ID}"
-  fi
-
-  # 4. IAM Bindings
-  print_info "Applying IAM Policy Bindings..."
-  
-  # GSA Pub/Sub subscriber and viewer
-  gcloud pubsub subscriptions add-iam-policy-binding "${CHAT_SUB_NAME}" \
-      --member="serviceAccount:${gsa_email}" \
-      --role="roles/pubsub.subscriber" \
-      --project="${PROJECT_ID}" \
-      --quiet >/dev/null
-
-  gcloud pubsub subscriptions add-iam-policy-binding "${CHAT_SUB_NAME}" \
-      --member="serviceAccount:${gsa_email}" \
-      --role="roles/pubsub.viewer" \
-      --project="${PROJECT_ID}" \
-      --quiet >/dev/null
-
-  # GSA AI Platform User on Project
-  gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
-      --member="serviceAccount:${gsa_email}" \
-      --role="roles/aiplatform.user" \
-      --quiet >/dev/null
-
-  # GSA Cluster Viewer on Project
-  gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
-      --member="serviceAccount:${gsa_email}" \
-      --role="roles/container.clusterViewer" \
-      --quiet >/dev/null
-
-  # GChat API Publisher on Topic
-  gcloud pubsub topics add-iam-policy-binding "${CHAT_TOPIC_NAME}" \
-      --member="serviceAccount:chat-api-push@system.gserviceaccount.com" \
-      --role="roles/pubsub.publisher" \
-      --project="${PROJECT_ID}" \
-      --quiet >/dev/null
-
-  # Workspace Add-ons Publisher on Topic
-  local gsuite_sa="service-${PROJECT_NUMBER}@gcp-sa-gsuiteaddons.iam.gserviceaccount.com"
-  gcloud pubsub topics add-iam-policy-binding "${CHAT_TOPIC_NAME}" \
-      --member="serviceAccount:${gsuite_sa}" \
-      --role="roles/pubsub.publisher" \
-      --project="${PROJECT_ID}" \
-      --quiet >/dev/null
-
-  # 5. Workload Identity Binding
-  print_info "Applying Workload Identity Policy Binding (GSA -> KSA)..."
-  local wi_member="serviceAccount:${PROJECT_ID}.svc.id.goog[${NAMESPACE}/${KSA_NAME}]"
-  gcloud iam service-accounts add-iam-policy-binding "${gsa_email}" \
-      --role="roles/iam.workloadIdentityUser" \
-      --member="${wi_member}" \
-      --project="${PROJECT_ID}" \
-      --quiet >/dev/null
-}
-
-# Step 10: Install CRDs
-verify_crds() {
-  kubectl get crd platformagents.kubeagents.x-k8s.io >/dev/null 2>&1 && \
-  kubectl get crd operatoragents.kubeagents.x-k8s.io >/dev/null 2>&1 && \
-  kubectl get crd devteamagents.kubeagents.x-k8s.io >/dev/null 2>&1
-}
-execute_crds() {
-  print_info "Registering operator CRDs on GKE cluster..."
-  (
-    cd "$SCRIPT_DIR"
-    make install
-  )
-}
-
-# Step 11: Apply PlatformAgent Custom Resource
-verify_custom_resource() {
-  kubectl get platformagents.kubeagents.x-k8s.io platform-agent -n "$NAMESPACE" >/dev/null 2>&1
-}
-execute_custom_resource() {
-  print_info "Generating custom resource manifest 'platform-agent.yaml' from template..."
-  local CR_TEMPLATE="$SCRIPT_DIR/platform-agent.yaml.template"
-  local CR_MANIFEST="$SCRIPT_DIR/platform-agent.yaml"
-
-  envsubst < "$CR_TEMPLATE" > "$CR_MANIFEST"
-  
-  print_info "Applying 'platform-agent' Custom Resource to the GKE cluster..."
-  kubectl apply -f "$CR_MANIFEST"
-}
-
 # ─── Execution Pipeline ───────────────────────────────────────────────────────
 run_step "1. Enable GCP APIs" verify_apis execute_apis 30
 run_step "2. Create Artifact Registry Repo" verify_registry execute_registry 0
@@ -482,43 +341,3 @@ run_step "4. Connect kubectl & Create Namespace" verify_kubeconfig execute_kubec
 run_step "5. Setup Secret Manager Placeholders" verify_secrets execute_secrets 0
 run_step "6. Sync API Keys to GKE Namespace Secrets" verify_k8s_secrets execute_k8s_secrets 0
 run_step "7. Deploy LiteLLM Gateway" verify_litellm execute_litellm 10
-run_step "8. Package & Build GChat Agent via Cloud Build" verify_agent_image execute_agent_image 0
-run_step "9. Provision GCP Resources for Agent" verify_agent_gcp_resources execute_agent_gcp_resources 5
-run_step "10. Register CRDs on cluster" verify_crds execute_crds 0
-run_step "11. Apply PlatformAgent Custom Resource" verify_custom_resource execute_custom_resource 0
-
-# ─── Conclusion Checklist ─────────────────────────────────────────────────────
-print_step "Infrastructure & Cloud Resources Provisioned Successfully!"
-
-echo -e "${C_YELLOW}${C_BOLD}======================= START COPY&PASTE =======================${C_RESET}"
-echo -e "${C_YELLOW}Your GKE Platform Agent resources have been successfully initialized!${C_RESET}"
-echo -e "Recommend you copy-paste this final step checklist to complete setup:\n"
-
-echo -e "[ ] 1. Configure GChat bot connection in GCP Console:"
-echo -e "       ${C_WHITE}https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat?project=${PROJECT_ID}${C_RESET}"
-echo -e "       - Name: ${C_GREEN}GKE Platform Agent Bot${C_RESET}"
-echo -e "       - Avatar: ${C_GREEN}https://platform-agent.nousresearch.com/docs/img/logo.png${C_RESET}"
-echo -e "       - Connection Settings: Select ${C_BOLD}Cloud Pub/Sub${C_RESET}"
-echo -e "       - Pub/Sub Topic Name: ${C_GREEN}projects/${PROJECT_ID}/topics/${CHAT_TOPIC_NAME}${C_RESET}"
-echo -e "       - Under Visibility, check: ${C_GREEN}Only specific people (add your email ${ALLOWED_USER})${C_RESET}"
-
-echo -e ""
-echo -e "[ ] 2. Run the new Operator manager locally or deploy it:"
-echo -e "       To run locally: ${C_WHITE}ENABLE_WEBHOOKS=false make run${C_RESET} (from k8s-operator directory)"
-echo -e "       To deploy to cluster: ${C_WHITE}make deploy IMG=<OPERATOR_IMAGE>${C_RESET}"
-
-echo -e ""
-echo -e "[ ] 3. Monitor Gateway pod rollout progress:"
-echo -e "       ${C_WHITE}kubectl get pods -n ${NAMESPACE}${C_RESET}"
-
-echo -e ""
-echo -e "[ ] 4. Send a DM to the Bot on Google Chat:"
-echo -e "       Type: ${C_WHITE}\"Hi Hermes\"${C_RESET}"
-
-echo -e ""
-echo -e "[ ] 5. ${C_YELLOW}[Optional]${C_RESET} Approve pairing code in GKE container:"
-echo -e "       ${C_CYAN}(Only required for first-time bot deployments. If the bot responds instantly, skip this!)${C_RESET}"
-echo -e "       ${C_WHITE}kubectl exec -it deploy/platform-agent-gateway -n ${NAMESPACE} -- hermes pairing approve google_chat <PAIRING_CODE>${C_RESET}"
-
-echo -e ""
-echo -e "======================== END COPY&PASTE ========================\n"

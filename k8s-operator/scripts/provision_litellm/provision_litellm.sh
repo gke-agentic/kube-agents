@@ -9,6 +9,8 @@ PARENT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # Source vars if available and not already set
 if [ -f "${PARENT_DIR}/vars.sh" ]; then
   source "${PARENT_DIR}/vars.sh"
+elif [ -f "${PARENT_DIR}/../vars.sh" ]; then
+  source "${PARENT_DIR}/../vars.sh"
 fi
 
 # Validation
