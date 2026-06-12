@@ -77,6 +77,10 @@ spec:
                         Hermes configures the internal event-routing or agent
                         framework.
                       properties:
+                        agentHome:
+                          default: /opt/data
+                          description: AgentHome is the path to the AGENT_HOME directory.
+                          type: string
                         apiServerSecretRef:
                           description:
                             ApiServerSecretRef securely references a Secret
@@ -108,19 +112,13 @@ spec:
                         dashboardEnabled:
                           default: true
                           description:
-                            DashboardEnabled toggles the PLATFORM_AGENT_DASHBOARD
+                            DashboardEnabled toggles the AGENT_DASHBOARD
                             environment variable.
                           type: boolean
-                        platformAgentHome:
-                          default: /opt/data
-                          description:
-                            PlatformAgentHome is the path to the PLATFORM_AGENT_HOME
-                            directory.
-                          type: string
                         pluginsDebug:
                           default: false
                           description:
-                            PluginsDebug toggles the PLATFORM_AGENT_PLUGINS_DEBUG
+                            PluginsDebug toggles the AGENT_PLUGINS_DEBUG
                             environment variable.
                           type: boolean
                       type: object
@@ -307,6 +305,9 @@ spec:
                       - type
                     type: object
                   type: array
+                  x-kubernetes-list-map-keys:
+                    - type
+                  x-kubernetes-list-type: map
                 deploymentStatus:
                   description: DeploymentStatus tracks the state of the underlying compute.
                   properties:
@@ -337,7 +338,9 @@ spec:
                   description: ServiceStatus holds internal/external endpoints.
                   properties:
                     endpoint:
-                      description: Endpoint is the primary URL or IP to reach the agent.
+                      description:
+                        Endpoint is the primary URL or IP (including protocol
+                        and port) to reach the agent.
                       type: string
                   type: object
                 storageStatus:
