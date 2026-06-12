@@ -34,6 +34,10 @@ type DevTeamHarnessSpec struct {
 	// Namespace is the target remote namespace managed by this agent.
 	// +required
 	Namespace string `json:"namespace,omitempty"`
+
+	// Hermes configures the internal event-routing or agent framework.
+	// +optional
+	Hermes *HermesSpec `json:"hermes,omitempty"`
 }
 
 // DevTeamAgentSpec defines the desired state of DevTeamAgent
@@ -41,10 +45,6 @@ type DevTeamAgentSpec struct {
 	// Harness configures the core execution environment and framework-level settings.
 	// +required
 	Harness *DevTeamHarnessSpec `json:"harness,omitempty"`
-
-	// Hermes configures the internal event-routing or agent framework.
-	// +optional
-	Hermes *HermesSpec `json:"hermes,omitempty"`
 
 	// Deployment abstracts the Kubernetes Pod/Deployment configuration.
 	// +optional

@@ -33,6 +33,10 @@ type OperatorHarnessSpec struct {
 	// Location is the geographical location or cloud region of the target cluster.
 	// +required
 	Location string `json:"location,omitempty"`
+
+	// Hermes configures the internal event-routing or agent framework.
+	// +optional
+	Hermes *HermesSpec `json:"hermes,omitempty"`
 }
 
 // OperatorAgentSpec defines the desired state of OperatorAgent
@@ -40,10 +44,6 @@ type OperatorAgentSpec struct {
 	// Harness configures the core execution environment and framework-level settings.
 	// +required
 	Harness *OperatorHarnessSpec `json:"harness,omitempty"`
-
-	// Hermes configures the internal event-routing or agent framework.
-	// +optional
-	Hermes *HermesSpec `json:"hermes,omitempty"`
 
 	// Deployment abstracts the Kubernetes Pod/Deployment configuration.
 	// +optional

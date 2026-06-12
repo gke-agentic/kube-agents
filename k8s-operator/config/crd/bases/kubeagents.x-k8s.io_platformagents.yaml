@@ -305,6 +305,9 @@ spec:
                       - type
                     type: object
                   type: array
+                  x-kubernetes-list-map-keys:
+                    - type
+                  x-kubernetes-list-type: map
                 deploymentStatus:
                   description: DeploymentStatus tracks the state of the underlying compute.
                   properties:
