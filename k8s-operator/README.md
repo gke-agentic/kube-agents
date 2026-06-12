@@ -22,6 +22,34 @@ Before building or deploying the operator, ensure you have the following install
 
 ---
 
+## Bootstrapping GCP & GKE Infrastructure
+
+To simplify development and testing in a real GKE/GCP environment, you can use the automated provisioning and teardown workflow.
+
+### 1. Provision Resources
+
+Bootstrap GCP APIs, a GKE Standard cluster, Artifact Registry, Secrets, Google Chat Pub/Sub resources, and apply the Custom Resource (CR) in one command:
+
+```bash
+make provision
+```
+
+_This script will prompt you for your target GCP project ID, region, cluster name, GChat allowed user, etc., and write your configuration parameters to `vars.sh`. If you want to force rebuilding the hermes agent image on subsequent runs, pass `--force-build`:_
+
+```bash
+./provision.sh --force-build
+```
+
+### 2. Clean Up and Delete Resources
+
+To cleanly tear down and delete all GCP resources (GKE Cluster, secrets, service accounts, Pub/Sub topics):
+
+```bash
+make teardown
+```
+
+---
+
 ## Local Development (Fast Iteration)
 
 For local development and testing, you can run the operator controller as a local Go process on your machine, while pointing it to a remote GKE or local Kubernetes cluster. This bypasses the need to build and push container images on every code change.

@@ -36,6 +36,10 @@ print_info() {
   echo -e "  ${C_CYAN}ℹ $1${C_RESET}"
 }
 
+print_warning() {
+  echo -e "  ${C_YELLOW}⚠ $1${C_RESET}"
+}
+
 print_error() {
   echo -e "  ${C_RED}✗ $1${C_RESET}"
 }
@@ -65,9 +69,11 @@ trap cleanup EXIT
 
 # ─── Argument Parsing ─────────────────────────────────────────────────────────
 DRY_RUN=0
+FORCE_BUILD=0
 while [[ "$#" -gt 0 ]]; do
   case $1 in
     --dry-run) DRY_RUN=1 ;;
+    --force-build) FORCE_BUILD=1 ;;
   esac
   shift
 done
@@ -299,16 +305,7 @@ execute_k8s_secrets() {
   local GEMINI_KEY=$(gcloud secrets versions access latest --secret="GEMINI_API_KEY" --project="$PROJECT_ID" 2>/dev/null || echo "placeholder")
   
   if [ "$GEMINI_KEY" = "placeholder" ]; then
-    print_error "Your GEMINI_API_KEY is currently a placeholder in Secret Manager!"
-    echo -ne "  ${C_CYAN}Please enter your actual Gemini API Key value now to synchronize: ${C_RESET}"
-    read -s -r USER_GEMINI_KEY
-    echo ""
-    if [ -n "$USER_GEMINI_KEY" ]; then
-      # Save to cloud
-      echo -n "$USER_GEMINI_KEY" | gcloud secrets versions add "GEMINI_API_KEY" --data-file=- --project="$PROJECT_ID"
-      GEMINI_KEY="$USER_GEMINI_KEY"
-      print_success "Saved updated Gemini API Key to Secret Manager."
-    fi
+    print_warning "GEMINI_API_KEY is currently a placeholder in GCP Secret Manager. The platform agent will run but cannot authenticate with Gemini until updated."
   fi
 
   # Self-healing check: Generate API_SERVER_KEY if missing
@@ -336,7 +333,10 @@ execute_litellm() {
 
 # Step 8: Package & Build GChat Agent via Cloud Build
 verify_agent_image() {
-  gcloud artifacts docker images list "$REGION-docker.pkg.dev/$PROJECT_ID/$REPO_NAME/platform-agent" --project="$PROJECT_ID" --format="value(image)" 2>/dev/null | grep -q "platform-agent"
+  if [ "$FORCE_BUILD" -eq 1 ]; then
+    return 1
+  fi
+  gcloud artifacts docker images list "$REGION-docker.pkg.dev/$PROJECT_ID/$REPO_NAME/platform-agent" --project="$PROJECT_ID" --filter="TAGS:latest" --format="value(image)" 2>/dev/null | grep -q "platform-agent"
 }
 execute_agent_image() {
   print_info "Building custom, GChat Platform Agent container via Google Cloud Build..."

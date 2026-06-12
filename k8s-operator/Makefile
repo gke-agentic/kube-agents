@@ -151,6 +151,16 @@ mv "$(LOCALBIN)/$$(basename "$(1)")" "$(1)-$(3)" ;\
 ln -sf "$$(realpath "$(1)-$(3)")" "$(1)"
 endef
 
+##@ Setup & Cleanup
+
+.PHONY: provision
+provision: ## Bootstrap GCP, GKE resources, and deploy PlatformAgent.
+	@./provision.sh
+
+.PHONY: teardown
+teardown: ## Clean up and delete all provisioned GCP and GKE resources.
+	@./teardown.sh
+
 prettier-check:
 	npx prettier --check "**/*.md" "**/*.yaml" "**/*.yml"
 
