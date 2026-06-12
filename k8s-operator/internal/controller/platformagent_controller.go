@@ -230,7 +230,11 @@ func (r *PlatformAgentReconciler) updateStatusReady(ctx context.Context, agent *
 		agent.Status.StorageStatus.Bound = (pvc.Status.Phase == corev1.ClaimBound)
 	}
 
-	agent.Status.Phase = "Ready"
+	if err == nil && dep.Status.ReadyReplicas > 0 {
+		agent.Status.Phase = "Ready"
+	} else {
+		agent.Status.Phase = "Provisioning"
+	}
 	now := metav1.Now()
 	agent.Status.LastReconcileTime = &now
 

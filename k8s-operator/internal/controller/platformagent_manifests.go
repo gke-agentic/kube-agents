@@ -73,8 +73,10 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 		} `json:"platforms"`
 	}{}
 
-	cfg.Model.Default = agent.Spec.Model.Default
-	cfg.Model.Provider = agent.Spec.Model.Provider
+	if agent.Spec.Model != nil {
+		cfg.Model.Default = agent.Spec.Model.Default
+		cfg.Model.Provider = agent.Spec.Model.Provider
+	}
 	cfg.Terminal.Backend = "local"
 	cfg.Terminal.Cwd = cwd
 
