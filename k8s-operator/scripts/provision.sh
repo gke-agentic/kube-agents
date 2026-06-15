@@ -10,21 +10,12 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# ─── ANSI Colors ──────────────────────────────────────────────────────────────
-C_MAGENTA='\033[95m'
-C_BOLD='\033[1m'
-C_RESET='\033[0m'
+source "${SCRIPT_DIR}/common.sh" "$@"
 
-# ─── Argument Parsing ─────────────────────────────────────────────────────────
 DRY_RUN_ARG=""
-FORCE_BUILD_ARG=""
-while [[ "$#" -gt 0 ]]; do
-  case $1 in
-    --dry-run) DRY_RUN_ARG="--dry-run" ;;
-    --force-build) FORCE_BUILD_ARG="--force-build" ;;
-  esac
-  shift
-done
+if [ "$DRY_RUN" -eq 1 ]; then
+  DRY_RUN_ARG="--dry-run"
+fi
 
 echo -e "${C_MAGENTA}${C_BOLD}🚀 Starting GKE Platform Agent provisioning pipeline...${C_RESET}"
 
@@ -37,18 +28,9 @@ echo -e "${C_MAGENTA}${C_BOLD}🚀 Starting GKE Platform Agent provisioning pipe
 
 echo -e "\n${C_MAGENTA}${C_BOLD}>>>  Infrastructure & Cloud Resources Provisioned Successfully!  <<<${C_RESET}"
 
-# Sourced variables for the checklist
-if [ -f "${SCRIPT_DIR}/vars.sh" ]; then
-  source "${SCRIPT_DIR}/vars.sh"
-fi
+# Load state/variables via common helper
+load_state
 
-# Define formatting colors locally
-C_YELLOW='\033[93m'
-C_GREEN='\033[92m'
-C_CYAN='\033[96m'
-C_RESET='\033[0m'
-C_BOLD='\033[1m'
-C_WHITE='\033[97m'
 
 echo -e "${C_YELLOW}${C_BOLD}======================= START COPY&PASTE =======================${C_RESET}"
 echo -e "${C_YELLOW}Your Kubernetes Operator and Custom Resources are ready!${C_RESET}"
