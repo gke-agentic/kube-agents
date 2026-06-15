@@ -211,7 +211,7 @@ jobs:
           MODEL_SPEC="{\"default\":\"${{ env.MODEL_DEFAULT_NAME }}\",\"provider\":\"${{ env.MODEL_PROVIDER }}\"}"
 
           echo "Patching PlatformAgent custom resource with new image: $IMAGE_REPO:$IMAGE_TAG"
-          kubectl patch platformagent platform-agent \
+          kubectl patch platformagent.kubeagents.x-k8s.io platform-agent \
             -n kubeagents-system \
             --type='merge' \
             -p "{\"spec\":{\"deployment\":{\"image\":\"$IMAGE_REPO\",\"tag\":\"$IMAGE_TAG\"},\"model\":$MODEL_SPEC}}"
