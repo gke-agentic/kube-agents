@@ -98,20 +98,28 @@ Or run the master teardown script directly:
 
 ```mermaid
 graph TD
-    A[teardown.sh] --> B[teardown_01_gchat.sh]
-    A --> C[teardown_02_cluster_and_gcp.sh]
+    A[teardown.sh] --> B[teardown_05_gcp_deploy.sh]
+    A --> C[teardown_04_gcp_iam.sh]
+    A --> D[teardown_03_gcp_gchat.sh]
+    A --> E[teardown_02_gcp_secrets.sh]
+    A --> F[teardown_01_gcp_cluster.sh]
 ```
 
-1. **[teardown_01_gchat.sh](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8s-operator/scripts/teardown_01_gchat.sh)**:
-   - Tears down the applied `PlatformAgent` Custom Resource (safely handling finalizer blocks if they timeout).
-   - Undeploys the operator deployment and deletes its CRDs.
-   - Cleans up Google Chat Pub/Sub subscriptions/topics and the bot GSA.
+1. **[teardown_05_gcp_deploy.sh](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8s-operator/scripts/teardown_05_gcp_deploy.sh)**:
+   - Deletes the applied `PlatformAgent` Custom Resource (safely handling finalizer blocks if they timeout).
+   - Deletes the local generated `platform-agent.yaml` manifest.
 
-2. **[teardown_02_cluster_and_gcp.sh](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8s-operator/scripts/teardown_02_cluster_and_gcp.sh)**:
-   - Undeploys LiteLLM Gateway pods, services, and configmaps.
-   - Deletes Secret Manager keys.
-   - Deletes the GKE Standard Cluster and Artifact Registry repo.
-   - Deletes local state files (`scripts/vars.sh` and generated platform agent manifests).
+2. **[teardown_04_gcp_iam.sh](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8s-operator/scripts/teardown_04_gcp_iam.sh)**:
+   - Removes GSA project-level IAM bindings (`roles/aiplatform.user`, `roles/container.clusterViewer`) and GKE Workload Identity binding from the Agent GSA.
+
+3. **[teardown_03_gcp_gchat.sh](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8s-operator/scripts/teardown_03_gcp_gchat.sh)**:
+   - Deletes Google Chat Pub/Sub subscriptions, topics, and the agent bot GSA.
+
+4. **[teardown_02_gcp_secrets.sh](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8s-operator/scripts/teardown_02_gcp_secrets.sh)**:
+   - Deletes the GKE secret `platform-agent-secrets` and Google Secret Manager secrets (`GEMINI_API_KEY`).
+
+5. **[teardown_01_gcp_cluster.sh](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8s-operator/scripts/teardown_01_gcp_cluster.sh)**:
+   - Deletes the GKE Standard Cluster and local state files (`scripts/vars.sh`).
 
 ---
 
@@ -165,11 +173,11 @@ You can execute individual provisioning steps in order:
 
 You can clean up specific layers of the deployment:
 
-1. **Step 1: Tear Down GChat Bot & Operator Deployment**
+1. **Step 1: Tear Down GChat Bot & Integration Resources (Steps 5, 4, 3)**
    ```bash
    make teardown-gchat
    ```
-2. **Step 2: Tear Down GKE Cluster, Registry, Secrets & Local State**
+2. **Step 2: Tear Down GKE Cluster, Secrets & Local State (Steps 2, 1)**
    ```bash
    make teardown-gcp-cluster
    ```
@@ -386,8 +394,8 @@ The [Makefile](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8
 | `make provision-agent-image`    | Step 3: Builds and pushes the platform agent image via Cloud Build.     |
 | `make provision-gchat`          | Step 4: Configures GChat Pub/Sub, IAM policies, and applies agent CR.   |
 | `make teardown`                 | Cleans up and deletes all provisioned GKE/GCP integration resources.    |
-| `make teardown-gchat`           | Step 1: Tears down PlatformAgent CR, operator, and GCP GChat resources. |
-| `make teardown-gcp-cluster`     | Step 2: Tears down LiteLLM Gateway, Secrets, GKE Cluster & local state. |
+| `make teardown-gchat`           | Steps 5-3: Tears down PlatformAgent CR, GChat bot GSA, Pub/Sub topic/sub. |
+| `make teardown-gcp-cluster`     | Steps 2-1: Tears down Secrets, GKE Cluster & local state.               |
 | `make manifests`                | Generates WebhookConfiguration, ClusterRole, and CRDs.                  |
 | `make generate`                 | Generates code containing DeepCopy implementations.                     |
 | `make fmt`                      | Formats Go source code using `go fmt`.                                  |

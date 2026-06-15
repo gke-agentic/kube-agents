@@ -3,17 +3,12 @@
 # 🧹 Master GKE Standard & Cloud-Agnostic Operator E2E Teardown Script
 # ==============================================================================
 # Master script to orchestrate the clean up and deletion of all GCP and GKE
-# resources provisioned by the provisioning scripts.
+# resources provisioned by the provisioning scripts in reverse order.
 # ==============================================================================
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ "$SCRIPT_DIR" == */scripts ]]; then
-  OPERATOR_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-else
-  OPERATOR_DIR="${SCRIPT_DIR}"
-fi
 VARS_FILE="${SCRIPT_DIR}/vars.sh"
 
 # ─── ANSI Colors ──────────────────────────────────────────────────────────────
@@ -44,7 +39,7 @@ fi
 
 # ─── Confirmation Prompt ──────────────────────────────────────────────────────
 echo ""
-echo -e "${C_RED}${C_BOLD}🚨 WARNING: This will permanently delete all GChat integration resources, GKE cluster, GCP resources, Secret Manager keys, and docker images.${C_RESET}"
+echo -e "${C_RED}${C_BOLD}🚨 WARNING: This will permanently delete all GChat integration resources, GKE cluster, GCP resources, and Secret Manager keys.${C_RESET}"
 echo -e "${C_YELLOW}==============================================================================${C_RESET}"
 echo -e "  ${C_BOLD}GCP Project:${C_RESET}    ${C_BOLD}${PROJECT_ID}${C_RESET}"
 echo -e "  ${C_BOLD}GKE Cluster:${C_RESET}    ${C_BOLD}${CLUSTER_NAME:-platform-agent-host}${C_RESET}"
@@ -58,11 +53,14 @@ if [[ ! $REPLY =~ ^[Yy]$ ]]; then
     exit 0
 fi
 
-# Execute teardown steps with --no-confirm to avoid sub-script prompts
+# Execute teardown steps in reverse order (05 down to 01)
 echo -e "\n${C_RED}${C_BOLD}🧹 Running Teardown Steps...${C_RESET}"
-"${SCRIPT_DIR}/teardown_01_gchat.sh" --no-confirm
-"${SCRIPT_DIR}/teardown_02_cluster_and_gcp.sh" --no-confirm
+"${SCRIPT_DIR}/teardown_05_gcp_deploy.sh" --no-confirm
+"${SCRIPT_DIR}/teardown_04_gcp_iam.sh" --no-confirm
+"${SCRIPT_DIR}/teardown_03_gcp_gchat.sh" --no-confirm
+"${SCRIPT_DIR}/teardown_02_gcp_secrets.sh" --no-confirm
+"${SCRIPT_DIR}/teardown_01_gcp_cluster.sh" --no-confirm
 
 echo -e "\n${C_GREEN}${C_BOLD}====================================================${C_RESET}"
-echo -e "${C_GREEN}${C_BOLD}✅ Teardown Complete! All GChat GKE & GCP resources clean.${C_RESET}"
+echo -e "${C_GREEN}${C_BOLD}✅ Teardown Complete! All resources cleaned up.${C_RESET}"
 echo -e "${C_GREEN}${C_BOLD}====================================================${C_RESET}"

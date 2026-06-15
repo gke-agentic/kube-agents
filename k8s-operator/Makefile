@@ -205,12 +205,15 @@ provision-gchat: ## Step 4: Setup GChat integration, Pub/Sub, IAM policies, CRDs
 .PHONY: teardown-gchat
 teardown-gchat: ## Step 1: Tear down PlatformAgent, Operator, and GCP Google Chat resources.
 	@chmod +x scripts/*.sh
-	@./scripts/teardown_01_gchat.sh $(ARGS)
+	@./scripts/teardown_05_gcp_deploy.sh $(ARGS)
+	@./scripts/teardown_04_gcp_iam.sh $(ARGS)
+	@./scripts/teardown_03_gcp_gchat.sh $(ARGS)
 
 .PHONY: teardown-gcp-cluster
 teardown-gcp-cluster: ## Step 2: Tear down LiteLLM Gateway, Secret Manager, Registry, GKE Cluster, and local state.
 	@chmod +x scripts/*.sh
-	@./scripts/teardown_02_cluster_and_gcp.sh $(ARGS)
+	@./scripts/teardown_02_gcp_secrets.sh $(ARGS)
+	@./scripts/teardown_01_gcp_cluster.sh $(ARGS)
 
 prettier-check:
 	npx prettier --check "**/*.md" "**/*.yaml" "**/*.yml"
