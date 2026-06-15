@@ -75,13 +75,7 @@ init_var() {
 }
 
 ACTIVE_PROJECT="$(gcloud config get-value project 2>/dev/null || echo "")"
-if [ -z "$ACTIVE_PROJECT" ]; then
-  DEFAULT_PROJECT_ID="$(whoami 2>/dev/null || echo "user")-gkedemos"
-elif [[ "$ACTIVE_PROJECT" == *"-gkedemos" ]]; then
-  DEFAULT_PROJECT_ID="$ACTIVE_PROJECT"
-else
-  DEFAULT_PROJECT_ID="${ACTIVE_PROJECT}-gkedemos"
-fi
+DEFAULT_PROJECT_ID="${ACTIVE_PROJECT:-$(whoami 2>/dev/null || echo "user")}"
 
 init_var "PROJECT_ID" "$DEFAULT_PROJECT_ID" "Enter Target GCP Project ID"
 
@@ -97,7 +91,7 @@ if [ -z "$PROJECT_NUMBER" ]; then
   print_success "Project Number resolved: $PROJECT_NUMBER"
 fi
 
-DEFAULT_USER="$(gcloud config get-value account 2>/dev/null || echo "whoami@google.com")"
+DEFAULT_USER=""
 init_var "ALLOWED_USER" "$DEFAULT_USER" "Enter Allowed Google Chat User Email"
 init_var "CHAT_TOPIC_NAME" "platform-agent-chat-events" "Enter Pub/Sub Topic Name"
 init_var "CHAT_SUB_NAME" "platform-agent-chat-events-sub" "Enter Pub/Sub Subscription Name"

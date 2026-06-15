@@ -74,13 +74,7 @@ init_var() {
 }
 
 ACTIVE_PROJECT="$(gcloud config get-value project 2>/dev/null || echo "")"
-if [ -z "$ACTIVE_PROJECT" ]; then
-  DEFAULT_PROJECT_ID="$(whoami 2>/dev/null || echo "user")-gkedemos"
-elif [[ "$ACTIVE_PROJECT" == *"-gkedemos" ]]; then
-  DEFAULT_PROJECT_ID="$ACTIVE_PROJECT"
-else
-  DEFAULT_PROJECT_ID="${ACTIVE_PROJECT}-gkedemos"
-fi
+DEFAULT_PROJECT_ID="${ACTIVE_PROJECT:-$(whoami 2>/dev/null || echo "user")}"
 
 init_var "PROJECT_ID" "$DEFAULT_PROJECT_ID" "Enter Target GCP Project ID"
 init_var "REGION" "us-east4" "Enter GKE GCP Region"
@@ -94,9 +88,14 @@ init_var "GSA_NAME" "platform-agent-bot" "Enter Service Account Name for the Age
 init_var "KSA_NAME" "platform-agent-platform-sa" "Enter Kubernetes Service Account Name"
 init_var "CHAT_SUB_NAME" "platform-agent-chat-events-sub" "Enter Pub/Sub Subscription Name"
 init_var "CHAT_TOPIC_NAME" "platform-agent-chat-events" "Enter Pub/Sub Topic Name"
-init_var "ALLOWED_USER" "$(gcloud config get-value account 2>/dev/null || echo "whoami@google.com")" "Enter Allowed Google Chat User Email"
-DEFAULT_AGENT_IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME:-platform-agent-repo}/platform-agent"
+init_var "ALLOWED_USER" "" "Enter Allowed Google Chat User Email"
+DEFAULT_AGENT_IMAGE="ghcr.io/gke-labs/kube-agents/platform-agent"
 init_var "AGENT_IMAGE" "$DEFAULT_AGENT_IMAGE" "Enter Platform Agent Image Path"
+
+# If the user did not provide a tag/digest, default to latest
+if [[ "$AGENT_IMAGE" != *":"* && "$AGENT_IMAGE" != *"@"* ]]; then
+  AGENT_IMAGE="${AGENT_IMAGE}:latest"
+fi
 
 # ─── Prerequisites Check ──────────────────────────────────────────────────────
 print_step "Checking Local Prerequisites"
