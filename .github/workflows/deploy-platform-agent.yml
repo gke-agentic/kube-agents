@@ -4,7 +4,7 @@ on:
   push:
     branches: [develop]
     paths:
-      - "integrations/gchat/crd/platform-agent-operator/**"
+      - "k8s-operator/**"
       - "agents/**" # Trigger on any changes to agents (shared, platform, etc.)
       - ".github/workflows/deploy-platform-agent.yml"
   workflow_dispatch:
@@ -42,7 +42,7 @@ jobs:
         with:
           filters: |
             controller:
-              - 'integrations/gchat/crd/platform-agent-operator/**'
+              - 'k8s-operator/**'
               - '.github/workflows/deploy-platform-agent.yml'
             agent:
               - 'agents/shared/**'
@@ -64,7 +64,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: "integrations/gchat/crd/platform-agent-operator/go.mod"
+          go-version-file: "k8s-operator/go.mod"
 
       - name: Authenticate to Google Cloud via WIF
         id: auth
@@ -98,8 +98,8 @@ jobs:
       - name: Build and Push Operator Image
         uses: docker/build-push-action@v7
         with:
-          context: integrations/gchat/crd/platform-agent-operator
-          file: integrations/gchat/crd/platform-agent-operator/Dockerfile
+          context: k8s-operator
+          file: k8s-operator/Dockerfile
           push: true
           provenance: false
           cache-from: type=gha
@@ -121,9 +121,9 @@ jobs:
 
       - name: Redeploy Operator + CRDs (make deploy)
         run: |
-          cd integrations/gchat/crd/platform-agent-operator
+          cd k8s-operator
           make deploy IMG="ghcr.io/gke-agentic/kube-agents/${{ env.IMAGE_NAME }}:sha-${{ steps.vars.outputs.sha_short }}"
-          kubectl rollout status deployment/platform-agent-operator-controller-manager -n platform-agent-operator-system --timeout=90s
+          kubectl rollout status deployment/kubeagents-controller-manager -n kubeagents-system --timeout=90s
 
   deploy-agent:
     needs: [changes, deploy-operator]
