@@ -24,7 +24,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: agents/Dockerfile
+          file: deploy/docker/Dockerfile
           target: devteam
           push: false
           tags: devteam-agent:latest
@@ -35,7 +35,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: agents/Dockerfile
+          file: deploy/docker/Dockerfile
           target: operator
           push: false
           tags: operator-agent:latest
@@ -46,7 +46,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: agents/Dockerfile
+          file: deploy/docker/Dockerfile
           target: platform
           push: false
           tags: platform-agent:latest
