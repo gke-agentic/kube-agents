@@ -95,6 +95,8 @@ init_var "KSA_NAME" "platform-agent-platform-sa" "Enter Kubernetes Service Accou
 init_var "CHAT_SUB_NAME" "platform-agent-chat-events-sub" "Enter Pub/Sub Subscription Name"
 init_var "CHAT_TOPIC_NAME" "platform-agent-chat-events" "Enter Pub/Sub Topic Name"
 init_var "ALLOWED_USER" "$(gcloud config get-value account 2>/dev/null || echo "whoami@google.com")" "Enter Allowed Google Chat User Email"
+DEFAULT_AGENT_IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME:-platform-agent-repo}/platform-agent"
+init_var "AGENT_IMAGE" "$DEFAULT_AGENT_IMAGE" "Enter Platform Agent Image Path"
 
 # ─── Prerequisites Check ──────────────────────────────────────────────────────
 print_step "Checking Local Prerequisites"
@@ -147,7 +149,7 @@ execute_custom_resource() {
   fi
 
   # Ensure variables are explicitly exported so envsubst can access them
-  export PROJECT_ID REGION CLUSTER_NAME NAMESPACE MODEL_DEFAULT_NAME MODEL_PROVIDER GSA_NAME KSA_NAME CHAT_SUB_NAME
+  export PROJECT_ID REGION CLUSTER_NAME NAMESPACE MODEL_DEFAULT_NAME MODEL_PROVIDER GSA_NAME KSA_NAME CHAT_SUB_NAME CHAT_TOPIC_NAME ALLOWED_USER AGENT_IMAGE
 
   envsubst < "$CR_TEMPLATE" > "$CR_MANIFEST"
   
