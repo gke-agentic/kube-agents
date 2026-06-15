@@ -1,0 +1,78 @@
+name: Publish to GCP Artifact Registry
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  publish-gcp:
+    runs-on: ubuntu-latest
+    if: github.repository == 'gke-labs/kube-agents'
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GCP_REGISTRY: us-docker.pkg.dev/kube-agents-prow/kube-agents
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Load tags
+        run: cat tags.env >> "$GITHUB_ENV"
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          token_format: access_token
+          workload_identity_provider: projects/125393897113/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider
+          service_account: github-actions@kube-agents-prow.iam.gserviceaccount.com
+
+      - name: Log in to Google Artifact Registry
+        uses: docker/login-action@v3
+        with:
+          registry: us-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Build and Push DevTeam Agent (GCP Cloud Build)
+        id: gcp-devteam
+        run: |
+          gcloud builds submit \
+            --config=deploy/docker/cloudbuild.yaml \
+            --substitutions=_IMAGE_URI=${{ env.GCP_REGISTRY }}/devteam-agent:${{ github.sha }},_IMAGE_URI_LATEST=${{ env.GCP_REGISTRY }}/devteam-agent:latest,_TARGET=devteam,_HERMES_AGENT_TAG=${{ env.HERMES_AGENT_TAG }} \
+            .
+          DIGEST=$(gcloud artifacts docker images describe "${{ env.GCP_REGISTRY }}/devteam-agent:${{ github.sha }}" --format="value(image_summary.digest)")
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Build and Push Operator Agent (GCP Cloud Build)
+        id: gcp-operator
+        run: |
+          gcloud builds submit \
+            --config=deploy/docker/cloudbuild.yaml \
+            --substitutions=_IMAGE_URI=${{ env.GCP_REGISTRY }}/operator-agent:${{ github.sha }},_IMAGE_URI_LATEST=${{ env.GCP_REGISTRY }}/operator-agent:latest,_TARGET=operator,_HERMES_AGENT_TAG=${{ env.HERMES_AGENT_TAG }} \
+            .
+          DIGEST=$(gcloud artifacts docker images describe "${{ env.GCP_REGISTRY }}/operator-agent:${{ github.sha }}" --format="value(image_summary.digest)")
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Build and Push Platform Agent (GCP Cloud Build)
+        id: gcp-platform
+        run: |
+          gcloud builds submit \
+            --config=deploy/docker/cloudbuild.yaml \
+            --substitutions=_IMAGE_URI=${{ env.GCP_REGISTRY }}/platform-agent:${{ github.sha }},_IMAGE_URI_LATEST=${{ env.GCP_REGISTRY }}/platform-agent:latest,_TARGET=platform,_HERMES_AGENT_TAG=${{ env.HERMES_AGENT_TAG }} \
+            .
+          DIGEST=$(gcloud artifacts docker images describe "${{ env.GCP_REGISTRY }}/platform-agent:${{ github.sha }}" --format="value(image_summary.digest)")
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v4.1.2
+
+      - name: Sign the images
+        run: |
+          cosign sign --yes "${{ env.GCP_REGISTRY }}/devteam-agent@${{ steps.gcp-devteam.outputs.digest }}"
+          cosign sign --yes "${{ env.GCP_REGISTRY }}/operator-agent@${{ steps.gcp-operator.outputs.digest }}"
+          cosign sign --yes "${{ env.GCP_REGISTRY }}/platform-agent@${{ steps.gcp-platform.outputs.digest }}"
