@@ -127,7 +127,7 @@ execute_apis() {
 verify_agent_iam() {
   local gsa_email="${GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
   local wi_member="serviceAccount:${PROJECT_ID}.svc.id.goog[${NAMESPACE}/${KSA_NAME}]"
-  gcloud iam service-accounts get-iam-policy "${gsa_email}" --project="${PROJECT_ID}" --format="json" 2>/dev/null | grep -q "${wi_member}"
+  gcloud iam service-accounts get-iam-policy "${gsa_email}" --project="${PROJECT_ID}" --format="json" 2>/dev/null | grep -F -q "${wi_member}"
 }
 execute_agent_iam() {
   local gsa_email="${GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"

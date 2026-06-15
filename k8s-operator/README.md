@@ -386,29 +386,29 @@ make undeploy-github
 
 The [Makefile](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8s-operator/Makefile) provides several targets to automate development workflows:
 
-| Target                          | Description                                                             |
-| :------------------------------ | :---------------------------------------------------------------------- |
-| `make provision`                | Bootstraps all GCP, GKE resources, build/push images & deploys agent.   |
-| `make provision-gcp-cluster`    | Step 1: Provisions GCP APIs, GKE cluster, Secret Manager & LiteLLM.     |
-| `make provision-operator-image` | Step 2: Builds and pushes the operator image via Cloud Build.           |
-| `make provision-agent-image`    | Step 3: Builds and pushes the platform agent image via Cloud Build.     |
-| `make provision-gchat`          | Step 4: Configures GChat Pub/Sub, IAM policies, and applies agent CR.   |
-| `make teardown`                 | Cleans up and deletes all provisioned GKE/GCP integration resources.    |
+| Target                          | Description                                                               |
+| :------------------------------ | :------------------------------------------------------------------------ |
+| `make provision`                | Bootstraps all GCP, GKE resources, build/push images & deploys agent.     |
+| `make provision-gcp-cluster`    | Step 1: Provisions GCP APIs, GKE cluster, Secret Manager & LiteLLM.       |
+| `make provision-operator-image` | Step 2: Builds and pushes the operator image via Cloud Build.             |
+| `make provision-agent-image`    | Step 3: Builds and pushes the platform agent image via Cloud Build.       |
+| `make provision-gchat`          | Step 4: Configures GChat Pub/Sub, IAM policies, and applies agent CR.     |
+| `make teardown`                 | Cleans up and deletes all provisioned GKE/GCP integration resources.      |
 | `make teardown-gchat`           | Steps 5-3: Tears down PlatformAgent CR, GChat bot GSA, Pub/Sub topic/sub. |
-| `make teardown-gcp-cluster`     | Steps 2-1: Tears down Secrets, GKE Cluster & local state.               |
-| `make manifests`                | Generates WebhookConfiguration, ClusterRole, and CRDs.                  |
-| `make generate`                 | Generates code containing DeepCopy implementations.                     |
-| `make fmt`                      | Formats Go source code using `go fmt`.                                  |
-| `make vet`                      | Examines Go source code and reports suspect constructs.                 |
-| `make test`                     | Runs unit/integration tests with `setup-envtest`.                       |
-| `make build`                    | Compiles the manager binary to `bin/manager`.                           |
-| `make run`                      | Runs the controller locally from your host (with webhooks disabled).    |
-| `make docker-build`             | Builds the Docker image.                                                |
-| `make docker-push`              | Pushes the Docker image to the registry.                                |
-| `make install`                  | Installs the generated CRDs into the cluster.                           |
-| `make uninstall`                | Removes the CRDs from the cluster.                                      |
-| `make deploy`                   | Deploys the controller to the cluster.                                  |
-| `make undeploy`                 | Removes the controller deployment from the cluster.                     |
+| `make teardown-gcp-cluster`     | Steps 2-1: Tears down Secrets, GKE Cluster & local state.                 |
+| `make manifests`                | Generates WebhookConfiguration, ClusterRole, and CRDs.                    |
+| `make generate`                 | Generates code containing DeepCopy implementations.                       |
+| `make fmt`                      | Formats Go source code using `go fmt`.                                    |
+| `make vet`                      | Examines Go source code and reports suspect constructs.                   |
+| `make test`                     | Runs unit/integration tests with `setup-envtest`.                         |
+| `make build`                    | Compiles the manager binary to `bin/manager`.                             |
+| `make run`                      | Runs the controller locally from your host (with webhooks disabled).      |
+| `make docker-build`             | Builds the Docker image.                                                  |
+| `make docker-push`              | Pushes the Docker image to the registry.                                  |
+| `make install`                  | Installs the generated CRDs into the cluster.                             |
+| `make uninstall`                | Removes the CRDs from the cluster.                                        |
+| `make deploy`                   | Deploys the controller to the cluster.                                    |
+| `make undeploy`                 | Removes the controller deployment from the cluster.                       |
 
 ---
 

@@ -10,7 +10,7 @@ spec:
     hermes:
       dashboardEnabled: true
       pluginsDebug: false
-      platformAgentHome: "/opt/data"
+      agentHome: "/opt/data"
       apiServerSecretRef:
         name: platform-agent-secrets
         key: API_SERVER_KEY
