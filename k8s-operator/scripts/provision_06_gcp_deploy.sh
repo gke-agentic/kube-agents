@@ -64,7 +64,7 @@ init_var() {
   local var_name=$1
   local default_val=$2
   local prompt_msg=$3
-  if [ -z "${!var_name}" ]; then
+  if ! declare -p "$var_name" &>/dev/null; then
     echo -ne "  ${C_CYAN}${prompt_msg} [${C_WHITE}${default_val}${C_CYAN}]: ${C_RESET}"
     read -r input_val
     local final_val="${input_val:-$default_val}"
@@ -161,35 +161,4 @@ run_step "1. Connect kubectl" verify_kubeconfig execute_kubeconfig 0
 run_step "2. Apply PlatformAgent Custom Resource" verify_custom_resource execute_custom_resource 0
 
 # ─── Conclusion Checklist ─────────────────────────────────────────────────────
-echo -e "\n${C_MAGENTA}${C_BOLD}>>>  Custom Resource Deployed Successfully!  <<<${C_RESET}"
-
-echo -e "${C_YELLOW}${C_BOLD}======================= START COPY&PASTE =======================${C_RESET}"
-echo -e "${C_YELLOW}Your Kubernetes Operator and Custom Resources are ready!${C_RESET}"
-echo -e "Next steps to run the operator and interact with your bot:\n"
-
-echo -e "[ ] 1. Configure GChat bot connection in GCP Console:"
-echo -e "       ${C_WHITE}https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat?project=${PROJECT_ID}${C_RESET}"
-echo -e "       - Name: ${C_GREEN}GKE Platform Agent Bot${C_RESET}"
-echo -e "       - Avatar: ${C_GREEN}https://platform-agent.nousresearch.com/docs/img/logo.png${C_RESET}"
-echo -e "       - Connection Settings: Select ${C_BOLD}Cloud Pub/Sub${C_RESET}"
-echo -e "       - Pub/Sub Topic Name: ${C_GREEN}projects/${PROJECT_ID}/topics/${CHAT_TOPIC_NAME}${C_RESET}"
-echo -e "       - Under Visibility, check: ${C_GREEN}Only specific people (add your email ${ALLOWED_USER})${C_RESET}"
-
-echo -e ""
-echo -e "[ ] 2. Run the new Operator manager locally or deploy it:"
-echo -e "       To run locally: ${C_WHITE}ENABLE_WEBHOOKS=false make run${C_RESET} (from k8s-operator directory)"
-echo -e "       To deploy to cluster: ${C_WHITE}make deploy IMG=<your-docker-registry>/kube-agents-operator:latest${C_RESET}"
-
-echo -e ""
-echo -e "[ ] 3. Monitor Gateway pod rollout progress:"
-echo -e "       ${C_WHITE}kubectl get pods -n ${NAMESPACE}${C_RESET}"
-
-echo -e ""
-echo -e "[ ] 4. Send a DM to the Bot on Google Chat:"
-echo -e "       Type: ${C_WHITE}\"Hi Hermes\"${C_RESET}"
-
-echo -e ""
-echo -e "[ ] 5. ${C_YELLOW}[Optional]${C_RESET} Approve pairing code in GKE container:"
-echo -e "       ${C_CYAN}(Only required for first-time bot deployments. If the bot responds instantly, skip this!)${C_RESET}"
-echo -e "       ${C_WHITE}kubectl exec -it deploy/platform-agent-gateway -n ${NAMESPACE} -- hermes pairing approve google_chat <PAIRING_CODE>${C_RESET}"
-echo -e "======================== END COPY&PASTE ========================\n"
+echo -e "\n${C_GREEN}${C_BOLD}✓ PlatformAgent Custom Resource applied successfully to GKE!${C_RESET}"
