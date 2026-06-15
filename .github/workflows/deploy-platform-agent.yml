@@ -122,7 +122,7 @@ jobs:
       - name: Redeploy Operator + CRDs (make deploy)
         run: |
           cd integrations/gchat/crd/platform-agent-operator
-          make deploy IMG="${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.IMAGE_NAME }}:sha-${{ steps.vars.outputs.sha_short }}"
+          make deploy IMG="ghcr.io/gke-agentic/kube-agents/${{ env.IMAGE_NAME }}:sha-${{ steps.vars.outputs.sha_short }}"
           kubectl rollout status deployment/platform-agent-operator-controller-manager -n platform-agent-operator-system --timeout=90s
 
   deploy-agent:
@@ -201,7 +201,7 @@ jobs:
 
       - name: Update Platform Agent Image & Wait for Rollout
         run: |
-          IMAGE_URI="${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.IMAGE_NAME }}:sha-${{ steps.vars.outputs.sha_short }}"
+          IMAGE_URI="ghcr.io/gke-agentic/kube-agents/${{ env.IMAGE_NAME }}:sha-${{ steps.vars.outputs.sha_short }}"
           MODEL_SPEC="{\"default\":\"${{ env.MODEL_DEFAULT_NAME }}\",\"provider\":\"${{ env.MODEL_PROVIDER }}\"}"
           echo "Patching PlatformAgent custom resource with new image: $IMAGE_URI"
           kubectl patch platformagent platform-agent \
