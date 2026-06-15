@@ -31,52 +31,52 @@ To simplify development and testing in a real GKE/GCP environment, you can use t
 To bootstrap GCP APIs, a GKE Standard cluster, Artifact Registry, Secrets, Google Chat Pub/Sub resources, build and push containers, and apply the Custom Resource (CR) in one command:
 
 ```bash
-make provision
+make gcp-provision
 ```
 
 Or execute the master script directly from the scripts folder:
 
 ```bash
-./scripts/provision.sh [--force-build] [--dry-run]
+./scripts/provision.sh [--dry-run]
 ```
 
 #### How it Works & Modular Sub-scripts
 
-The master `provision.sh` script orchestrates four modular sub-scripts sequentially. Each sub-script is idempotent: it verifies the state of its resources before executing any action. If a resource already exists or a step was already completed, it is skipped.
+The master [provision.sh](scripts/provision.sh) script orchestrates six modular sub-scripts sequentially. Each sub-script is idempotent: it verifies the state of its resources before executing any action. If a resource already exists or a step was already completed, it is skipped.
 
 ```mermaid
 graph TD
-    A[provision.sh] --> B[01_provision_cluster_and_gcp.sh]
-    A --> C[02_build_push_operator.sh]
-    A --> D[03_build_push_agents.sh]
-    A --> E[04_setup_gchat.sh]
+    A[provision.sh] --> B[provision_01_gcp_cluster.sh]
+    A --> C[provision_02_gcp_secrets.sh]
+    A --> D[provision_03_gcp_gchat.sh]
+    A --> E[provision_04_gcp_iam.sh]
+    A --> F[provision_05_gcp_operator.sh]
+    A --> G[provision_06_gcp_deploy.sh]
 ```
 
-1. **[01_provision_cluster_and_gcp.sh](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8s-operator/scripts/provision_01_cluster_and_gcp.sh)**:
-   - Sets up configuration state (prompts for GCP Project ID, region, cluster name, GChat allowed user, default model configuration) and writes parameters to [scripts/vars.sh](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8s-operator/scripts/vars.sh).
+1. **[provision_01_gcp_cluster.sh](scripts/provision_01_gcp_cluster.sh)**:
+   - Sets up configuration state (prompts for GCP Project ID, region, cluster name, GChat allowed user, default model configuration) and writes parameters to [scripts/vars.sh](scripts/vars.sh).
    - Enables all necessary GCP Service APIs.
-   - Creates a Google Artifact Registry docker repository.
    - Provisions a GKE Standard Cluster with Workload Identity.
    - Configures `kubectl` credentials and creates the target namespace.
+
+2. **[provision_02_gcp_secrets.sh](scripts/provision_02_gcp_secrets.sh)**:
    - Creates empty placeholders in GCP Secret Manager (e.g. `GEMINI_API_KEY`) if they do not exist.
    - Synchronizes secret keys to the GKE Namespace as Kubernetes Secrets (`platform-agent-secrets`).
-   - Deploys the LiteLLM Gateway in the GKE cluster.
 
-2. **[02_build_push_operator.sh](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8s-operator/scripts/provision_02_build_push_operator.sh)**:
-   - Builds the operator controller manager Docker image via Google Cloud Build.
-   - Pushes the image to Google Artifact Registry.
-
-3. **[03_build_push_agents.sh](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8s-operator/scripts/provision_03_build_push_agents.sh)**:
-   - Checks the required Hermes agent version from `tags.env`.
-   - Builds the GChat Platform Agent gateway container via Google Cloud Build.
-   - Pushes the image to Google Artifact Registry.
-
-4. **[04_setup_gchat.sh](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8s-operator/scripts/provision_04_setup_gchat.sh)**:
+3. **[provision_03_gcp_gchat.sh](scripts/provision_03_gcp_gchat.sh)**:
    - Creates a Google Service Account (GSA) for the Platform Agent bot.
    - Creates the Pub/Sub Chat Event Topic and Subscriber Subscription.
+
+4. **[provision_04_gcp_iam.sh](scripts/provision_04_gcp_iam.sh)**:
    - Binds IAM policy permissions to the GSA (Pub/Sub subscription access, Vertex AI user, container viewer) and Google Chat APIs.
+
+5. **[provision_05_gcp_operator.sh](scripts/provision_05_gcp_operator.sh)**:
    - Registers operator CRDs onto the GKE cluster.
-   - Generates [scripts/platform-agent.yaml](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8s-operator/scripts/platform-agent.yaml) from its template and applies the Custom Resource (CR) to deploy the Platform Agent.
+   - Deploys the Operator controller manager.
+
+6. **[provision_06_gcp_deploy.sh](scripts/provision_06_gcp_deploy.sh)**:
+   - Generates [scripts/platform-agent.yaml](scripts/platform-agent.yaml) from its template and applies the Custom Resource (CR) to deploy the Platform Agent.
 
 ---
 
@@ -85,7 +85,7 @@ graph TD
 To cleanly tear down and delete all provisioned GCP and GKE resources:
 
 ```bash
-make teardown
+make gcp-teardown
 ```
 
 Or run the master teardown script directly:
@@ -98,34 +98,38 @@ Or run the master teardown script directly:
 
 ```mermaid
 graph TD
-    A[teardown.sh] --> B[teardown_05_gcp_deploy.sh]
-    A --> C[teardown_04_gcp_iam.sh]
-    A --> D[teardown_03_gcp_gchat.sh]
-    A --> E[teardown_02_gcp_secrets.sh]
-    A --> F[teardown_01_gcp_cluster.sh]
+    A[teardown.sh] --> B[teardown_06_gcp_deploy.sh]
+    A --> C[teardown_05_gcp_operator.sh]
+    A --> D[teardown_04_gcp_iam.sh]
+    A --> E[teardown_03_gcp_gchat.sh]
+    A --> F[teardown_02_gcp_secrets.sh]
+    A --> G[teardown_01_gcp_cluster.sh]
 ```
 
-1. **[teardown_05_gcp_deploy.sh](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8s-operator/scripts/teardown_05_gcp_deploy.sh)**:
+1. **[teardown_06_gcp_deploy.sh](scripts/teardown_06_gcp_deploy.sh)**:
    - Deletes the applied `PlatformAgent` Custom Resource (safely handling finalizer blocks if they timeout).
    - Deletes the local generated `platform-agent.yaml` manifest.
 
-2. **[teardown_04_gcp_iam.sh](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8s-operator/scripts/teardown_04_gcp_iam.sh)**:
+2. **[teardown_05_gcp_operator.sh](scripts/teardown_05_gcp_operator.sh)**:
+   - Removes the Operator controller manager deployment and CRDs.
+
+3. **[teardown_04_gcp_iam.sh](scripts/teardown_04_gcp_iam.sh)**:
    - Removes GSA project-level IAM bindings (`roles/aiplatform.user`, `roles/container.clusterViewer`) and GKE Workload Identity binding from the Agent GSA.
 
-3. **[teardown_03_gcp_gchat.sh](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8s-operator/scripts/teardown_03_gcp_gchat.sh)**:
+4. **[teardown_03_gcp_gchat.sh](scripts/teardown_03_gcp_gchat.sh)**:
    - Deletes Google Chat Pub/Sub subscriptions, topics, and the agent bot GSA.
 
-4. **[teardown_02_gcp_secrets.sh](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8s-operator/scripts/teardown_02_gcp_secrets.sh)**:
+5. **[teardown_02_gcp_secrets.sh](scripts/teardown_02_gcp_secrets.sh)**:
    - Deletes the GKE secret `platform-agent-secrets` and Google Secret Manager secrets (`GEMINI_API_KEY`).
 
-5. **[teardown_01_gcp_cluster.sh](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8s-operator/scripts/teardown_01_gcp_cluster.sh)**:
+6. **[teardown_01_gcp_cluster.sh](scripts/teardown_01_gcp_cluster.sh)**:
    - Deletes the GKE Standard Cluster and local state files (`scripts/vars.sh`).
 
 ---
 
 ### 3. Sourcing Variables & Configuration State
 
-On the first execution of `make provision` (or `provision_01_cluster_and_gcp.sh`), you will be prompted for target values. These are saved to **[scripts/vars.sh](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8s-operator/scripts/vars.sh)**.
+On the first execution of `make gcp-provision` (or `provision_01_gcp_cluster.sh`), you will be prompted for target values. These are saved to **[scripts/vars.sh](scripts/vars.sh)**.
 
 Subsequent script runs will skip the interactive configuration and automatically load variables from `vars.sh`. To re-configure or customize settings, you can edit `vars.sh` directly or delete it to be prompted again.
 
@@ -135,11 +139,7 @@ Subsequent script runs will skip the interactive configuration and automatically
 
 - **Dry-Run Mode**: To print the actions that would be executed without modifying any cloud resources, pass `ARGS="--dry-run"`:
   ```bash
-  make provision ARGS="--dry-run"
-  ```
-- **Force Rebuild**: To force rebuilding and pushing new container images even if they already exist in Google Artifact Registry, pass `ARGS="--force-build"`:
-  ```bash
-  make provision ARGS="--force-build"
+  make gcp-provision ARGS="--dry-run"
   ```
 
 ---
@@ -152,34 +152,58 @@ Each sub-step in the pipeline is standalone, idempotent, and automatically sourc
 
 You can execute individual provisioning steps in order:
 
-1. **Step 1: Provision GKE & GCP Resources**
+1. **Step 1: Provision GKE cluster and initial GCP environment**
    ```bash
-   make provision-gcp-cluster
+   make gcp-provision-01-cluster
    ```
-2. **Step 2: Build & Push Operator Image** (supports `ARGS="--force-build"`)
+2. **Step 2: Configure secrets**
    ```bash
-   make provision-operator-image [ARGS="--force-build"]
+   make gcp-provision-02-secrets
    ```
-3. **Step 3: Build & Push Agent Image** (supports `ARGS="--force-build"`)
+3. **Step 3: Setup Google Chat Pub/Sub resources**
    ```bash
-   make provision-agent-image [ARGS="--force-build"]
+   make gcp-provision-03-gchat
    ```
-4. **Step 4: Setup GChat & Apply Platform Agent CR**
+4. **Step 4: Configure IAM service accounts and Workload Identity**
    ```bash
-   make provision-gchat
+   make gcp-provision-04-iam
+   ```
+5. **Step 5: Install operator CRDs and deploy controller manager**
+   ```bash
+   make gcp-provision-05-operator
+   ```
+6. **Step 6: Deploy PlatformAgent Custom Resource**
+   ```bash
+   make gcp-provision-06-deploy
    ```
 
 #### Teardown Targets
 
 You can clean up specific layers of the deployment:
 
-1. **Step 1: Tear Down GChat Bot & Integration Resources (Steps 5, 4, 3)**
+1. **Step 6 Teardown: Delete Custom Resource**
    ```bash
-   make teardown-gchat
+   make gcp-teardown-06-deploy
    ```
-2. **Step 2: Tear Down GKE Cluster, Secrets & Local State (Steps 2, 1)**
+2. **Step 5 Teardown: Undeploy the operator**
    ```bash
-   make teardown-gcp-cluster
+   make gcp-teardown-05-operator
+   ```
+3. **Step 4 Teardown: Remove IAM bindings**
+   ```bash
+   make gcp-teardown-04-iam
+   ```
+4. **Step 3 Teardown: Delete Pub/Sub resources**
+   ```bash
+   make gcp-teardown-03-gchat
+   ```
+5. **Step 2 Teardown: Clean up Secret Manager and GKE secrets**
+   ```bash
+   make gcp-teardown-02-secrets
+   ```
+6. **Step 1 Teardown: Delete GKE cluster & state file**
+   ```bash
+   make gcp-teardown-01-cluster
    ```
 
 ---
@@ -226,7 +250,7 @@ ENABLE_WEBHOOKS=false go run ./cmd/main.go
 ```
 
 > [!TIP]
-> This compiles and runs the entry point [main.go](file:///usr/local/google/home/fatoshoti/playground/kube-agents/k8s-operator/cmd/main.go) with webhooks disabled. The process runs in the foreground, prints reconciliation logs, and watches for custom resource events in the cluster.
+> This compiles and runs the entry point [main.go](cmd/main.go) with webhooks disabled. The process runs in the foreground, prints reconciliation logs, and watches for custom resource events in the cluster.
 
 ### Step 4: Apply Sample Custom Resources
 
@@ -384,40 +408,46 @@ make undeploy-github
 
 ## Makefile Reference
 
-The [Makefile](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8s-operator/Makefile) provides several targets to automate development workflows:
+The [Makefile](Makefile) provides several targets to automate development workflows:
 
-| Target                          | Description                                                               |
-| :------------------------------ | :------------------------------------------------------------------------ |
-| `make provision`                | Bootstraps all GCP, GKE resources, build/push images & deploys agent.     |
-| `make provision-gcp-cluster`    | Step 1: Provisions GCP APIs, GKE cluster, Secret Manager & LiteLLM.       |
-| `make provision-operator-image` | Step 2: Builds and pushes the operator image via Cloud Build.             |
-| `make provision-agent-image`    | Step 3: Builds and pushes the platform agent image via Cloud Build.       |
-| `make provision-gchat`          | Step 4: Configures GChat Pub/Sub, IAM policies, and applies agent CR.     |
-| `make teardown`                 | Cleans up and deletes all provisioned GKE/GCP integration resources.      |
-| `make teardown-gchat`           | Steps 5-3: Tears down PlatformAgent CR, GChat bot GSA, Pub/Sub topic/sub. |
-| `make teardown-gcp-cluster`     | Steps 2-1: Tears down Secrets, GKE Cluster & local state.                 |
-| `make manifests`                | Generates WebhookConfiguration, ClusterRole, and CRDs.                    |
-| `make generate`                 | Generates code containing DeepCopy implementations.                       |
-| `make fmt`                      | Formats Go source code using `go fmt`.                                    |
-| `make vet`                      | Examines Go source code and reports suspect constructs.                   |
-| `make test`                     | Runs unit/integration tests with `setup-envtest`.                         |
-| `make build`                    | Compiles the manager binary to `bin/manager`.                             |
-| `make run`                      | Runs the controller locally from your host (with webhooks disabled).      |
-| `make docker-build`             | Builds the Docker image.                                                  |
-| `make docker-push`              | Pushes the Docker image to the registry.                                  |
-| `make install`                  | Installs the generated CRDs into the cluster.                             |
-| `make uninstall`                | Removes the CRDs from the cluster.                                        |
-| `make deploy`                   | Deploys the controller to the cluster.                                    |
-| `make undeploy`                 | Removes the controller deployment from the cluster.                       |
+| Target                           | Description                                                              |
+| :------------------------------- | :----------------------------------------------------------------------- |
+| `make gcp-provision`             | Bootstraps all GCP, GKE resources, and deploys the PlatformAgent.        |
+| `make gcp-teardown`              | Cleans up and deletes all provisioned GKE/GCP resources.                 |
+| `make gcp-provision-01-cluster`  | Step 1: Provision GKE cluster and initial GCP environment.               |
+| `make gcp-provision-02-secrets`  | Step 2: Configure secrets in GCP Secret Manager and sync to GKE.         |
+| `make gcp-provision-03-gchat`    | Step 3: Setup Google Chat Pub/Sub topic and subscription.                |
+| `make gcp-provision-04-iam`      | Step 4: Configure IAM service accounts and Workload Identity.            |
+| `make gcp-provision-05-operator` | Step 5: Install operator CRDs and deploy controller manager.             |
+| `make gcp-provision-06-deploy`   | Step 6: Deploy the PlatformAgent Custom Resource.                        |
+| `make gcp-teardown-06-deploy`    | Teardown Step 6: Delete the PlatformAgent Custom Resource.               |
+| `make gcp-teardown-05-operator`  | Teardown Step 5: Undeploy the operator and CRDs.                         |
+| `make gcp-teardown-04-iam`       | Teardown Step 4: Remove IAM service accounts and policies.               |
+| `make gcp-teardown-03-gchat`     | Teardown Step 3: Delete Google Chat Pub/Sub resources.                   |
+| `make gcp-teardown-02-secrets`   | Teardown Step 2: Clean up Secret Manager secrets and Kubernetes secrets. |
+| `make gcp-teardown-01-cluster`   | Teardown Step 1: Delete GKE cluster and local configuration state.       |
+| `make manifests`                 | Generates WebhookConfiguration, ClusterRole, and CRDs.                   |
+| `make generate`                  | Generates code containing DeepCopy implementations.                      |
+| `make fmt`                       | Formats Go source code using `go fmt`.                                   |
+| `make vet`                       | Examines Go source code and reports suspect constructs.                  |
+| `make test`                      | Runs unit/integration tests with `setup-envtest`.                        |
+| `make build`                     | Compiles the manager binary to `bin/manager`.                            |
+| `make run`                       | Runs the controller locally from your host (with webhooks disabled).     |
+| `make docker-build`              | Builds the Docker image.                                                 |
+| `make docker-push`               | Pushes the Docker image to the registry.                                 |
+| `make install`                   | Installs the generated CRDs into the cluster.                            |
+| `make uninstall`                 | Removes the CRDs from the cluster.                                       |
+| `make deploy`                    | Deploys the controller to the cluster.                                   |
+| `make undeploy`                  | Removes the controller deployment from the cluster.                      |
 
 ---
 
 ## Key Files & Code Pointers
 
-- **Main Entrypoint**: [main.go](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8s-operator/cmd/main.go)
+- **Main Entrypoint**: [main.go](cmd/main.go)
 - **Controllers**:
-  - [PlatformAgent Controller](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8s-operator/internal/controller/platformagent_controller.go)
-  - [DevTeamAgent Controller](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8s-operator/internal/controller/devteamagent_controller.go)
-  - [OperatorAgent Controller](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8s-operator/internal/controller/operatoragent_controller.go)
-- **Example Resource**: [platformagent.yaml](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8s-operator/examples/platformagent.yaml)
-- **Makefile**: [Makefile](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8s-operator/Makefile)
+  - [PlatformAgent Controller](internal/controller/platformagent_controller.go)
+  - [DevTeamAgent Controller](internal/controller/devteamagent_controller.go)
+  - [OperatorAgent Controller](internal/controller/operatoragent_controller.go)
+- **Example Resource**: [platformagent.yaml](examples/platformagent.yaml)
+- **Makefile**: [Makefile](Makefile)

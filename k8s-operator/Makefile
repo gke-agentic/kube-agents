@@ -172,47 +172,74 @@ endef
 
 ##@ Setup & Cleanup
 
-.PHONY: provision
-provision: ## Bootstrap GCP, GKE resources, and deploy PlatformAgent.
-	@chmod +x scripts/*.sh scripts/provision_litellm/*.sh
+.PHONY: provision gcp-provision
+provision gcp-provision: ## Bootstrap GCP, GKE resources, and deploy PlatformAgent.
+	@chmod +x scripts/*.sh
 	@./scripts/provision.sh $(ARGS)
 
-.PHONY: teardown
-teardown: ## Clean up and delete all provisioned GCP and GKE resources.
+.PHONY: teardown gcp-teardown
+teardown gcp-teardown: ## Clean up and delete all provisioned GCP and GKE resources.
 	@chmod +x scripts/*.sh
 	@./scripts/teardown.sh
 
-.PHONY: provision-gcp-cluster
-provision-gcp-cluster: ## Step 1: Provision GCP APIs, GKE Cluster, Secret Manager & LiteLLM Gateway.
-	@chmod +x scripts/*.sh scripts/provision_litellm/*.sh
-	@./scripts/provision_01_cluster_and_gcp.sh $(ARGS)
-
-.PHONY: provision-operator-image
-provision-operator-image: ## Step 2: Build and push the operator image via Cloud Build.
+.PHONY: gcp-provision-01-cluster
+gcp-provision-01-cluster: ## Step 1: Provision GKE cluster and initial GCP environment.
 	@chmod +x scripts/*.sh
-	@./scripts/provision_02_build_push_operator.sh $(ARGS)
+	@./scripts/provision_01_gcp_cluster.sh $(ARGS)
 
-.PHONY: provision-agent-image
-provision-agent-image: ## Step 3: Build and push the platform agent image via Cloud Build.
+.PHONY: gcp-provision-02-secrets
+gcp-provision-02-secrets: ## Step 2: Configure secrets in GCP Secret Manager and sync to GKE.
 	@chmod +x scripts/*.sh
-	@./scripts/provision_03_build_push_agents.sh $(ARGS)
+	@./scripts/provision_02_gcp_secrets.sh $(ARGS)
 
-.PHONY: provision-gchat
-provision-gchat: ## Step 4: Setup GChat integration, Pub/Sub, IAM policies, CRDs, and PlatformAgent CR.
+.PHONY: gcp-provision-03-gchat
+gcp-provision-03-gchat: ## Step 3: Setup Google Chat Pub/Sub topic and subscription.
 	@chmod +x scripts/*.sh
-	@./scripts/provision_04_setup_gchat.sh $(ARGS)
+	@./scripts/provision_03_gcp_gchat.sh $(ARGS)
 
-.PHONY: teardown-gchat
-teardown-gchat: ## Step 1: Tear down PlatformAgent, Operator, and GCP Google Chat resources.
+.PHONY: gcp-provision-04-iam
+gcp-provision-04-iam: ## Step 4: Configure IAM service accounts and Workload Identity.
 	@chmod +x scripts/*.sh
-	@./scripts/teardown_05_gcp_deploy.sh $(ARGS)
+	@./scripts/provision_04_gcp_iam.sh $(ARGS)
+
+.PHONY: gcp-provision-05-operator
+gcp-provision-05-operator: ## Step 5: Install operator CRDs and deploy controller manager.
+	@chmod +x scripts/*.sh
+	@./scripts/provision_05_gcp_operator.sh $(ARGS)
+
+.PHONY: gcp-provision-06-deploy
+gcp-provision-06-deploy: ## Step 6: Deploy the PlatformAgent Custom Resource.
+	@chmod +x scripts/*.sh
+	@./scripts/provision_06_gcp_deploy.sh $(ARGS)
+
+.PHONY: gcp-teardown-06-deploy
+gcp-teardown-06-deploy: ## Teardown Step 6: Delete the PlatformAgent Custom Resource.
+	@chmod +x scripts/*.sh
+	@./scripts/teardown_06_gcp_deploy.sh $(ARGS)
+
+.PHONY: gcp-teardown-05-operator
+gcp-teardown-05-operator: ## Teardown Step 5: Undeploy the operator and CRDs.
+	@chmod +x scripts/*.sh
+	@./scripts/teardown_05_gcp_operator.sh $(ARGS)
+
+.PHONY: gcp-teardown-04-iam
+gcp-teardown-04-iam: ## Teardown Step 4: Remove IAM service accounts and policies.
+	@chmod +x scripts/*.sh
 	@./scripts/teardown_04_gcp_iam.sh $(ARGS)
+
+.PHONY: gcp-teardown-03-gchat
+gcp-teardown-03-gchat: ## Teardown Step 3: Delete Google Chat Pub/Sub resources.
+	@chmod +x scripts/*.sh
 	@./scripts/teardown_03_gcp_gchat.sh $(ARGS)
 
-.PHONY: teardown-gcp-cluster
-teardown-gcp-cluster: ## Step 2: Tear down LiteLLM Gateway, Secret Manager, Registry, GKE Cluster, and local state.
+.PHONY: gcp-teardown-02-secrets
+gcp-teardown-02-secrets: ## Teardown Step 2: Clean up Secret Manager secrets and Kubernetes secrets.
 	@chmod +x scripts/*.sh
 	@./scripts/teardown_02_gcp_secrets.sh $(ARGS)
+
+.PHONY: gcp-teardown-01-cluster
+gcp-teardown-01-cluster: ## Teardown Step 1: Delete GKE cluster and local configuration state.
+	@chmod +x scripts/*.sh
 	@./scripts/teardown_01_gcp_cluster.sh $(ARGS)
 
 prettier-check:
