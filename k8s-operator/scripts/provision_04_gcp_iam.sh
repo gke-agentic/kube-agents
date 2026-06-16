@@ -22,9 +22,9 @@ ACTIVE_PROJECT="$(gcloud config get-value project 2>/dev/null || echo "")"
 DEFAULT_PROJECT_ID="${ACTIVE_PROJECT:-$(whoami 2>/dev/null || echo "user")}"
 
 init_var "PROJECT_ID" "$DEFAULT_PROJECT_ID" "Enter Target GCP Project ID"
-init_var "NAMESPACE" "agent-system" "Enter GKE Target Namespace"
-init_var "GSA_NAME" "platform-agent-bot" "Enter Service Account Name for the Agent"
-init_var "KSA_NAME" "platform-agent-platform-sa" "Enter Kubernetes Service Account Name"
+init_var "NAMESPACE" "kubeagents-system" "Enter GKE Target Namespace"
+init_var "GSA_NAME" "platform-agent-gsa" "Enter Google Service Account Name for the Agent"
+init_var "KSA_NAME" "platform-agent-sa" "Enter Kubernetes Service Account Name"
 
 # ─── Prerequisites Check ──────────────────────────────────────────────────────
 print_step "Checking Local Prerequisites"
@@ -32,13 +32,17 @@ check_prereqs "gcloud"
 
 # ─── Step Implementations ─────────────────────────────────────────────────────
 
-# Step 1: Enable AI Platform API
+# Step 1: Enable APIs
 verify_apis() {
   local out=$(gcloud services list --enabled --project="$PROJECT_ID" --format="value(config.name)" 2>/dev/null || echo "")
-  echo "$out" | grep -q 'aiplatform.googleapis.com'
+  echo "$out" | grep -q 'aiplatform.googleapis.com' && \
+  echo "$out" | grep -q 'cloudresourcemanager.googleapis.com'
 }
 execute_apis() {
-  gcloud services enable aiplatform.googleapis.com --project="$PROJECT_ID"
+  gcloud services enable \
+      aiplatform.googleapis.com \
+      cloudresourcemanager.googleapis.com \
+      --project="$PROJECT_ID"
 }
 
 # Step 2: Bind Agent GSA AI & Workload Identity Permissions
@@ -89,7 +93,7 @@ execute_agent_iam() {
 }
 
 # ─── Execution Pipeline ───────────────────────────────────────────────────────
-run_step "1. Enable AI Platform API" verify_apis execute_apis 10
+run_step "1. Enable APIs" verify_apis execute_apis 10
 run_step "2. Configure Agent Workload Identity & AI Permissions" verify_agent_iam execute_agent_iam 5
 
 echo -e "\n${C_MAGENTA}${C_BOLD}>>>  Agent GCP Permissions Configured Successfully!  <<<${C_RESET}"

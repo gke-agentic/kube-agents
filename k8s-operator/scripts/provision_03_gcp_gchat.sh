@@ -39,11 +39,11 @@ if [ -z "${PROJECT_NUMBER:-}" ]; then
   print_success "Project Number resolved: $PROJECT_NUMBER"
 fi
 
-DEFAULT_USER=""
-init_var "ALLOWED_USER" "$DEFAULT_USER" "Enter Allowed Google Chat User Email"
+DEFAULT_USERS=""
+init_var "ALLOWED_USERS" "$DEFAULT_USERS" "Enter Allowed Google Chat Users Emails (comma separated). Leaving it empty will allow all users."
 init_var "CHAT_TOPIC_NAME" "platform-agent-chat-events" "Enter Pub/Sub Topic Name"
 init_var "CHAT_SUB_NAME" "platform-agent-chat-events-sub" "Enter Pub/Sub Subscription Name"
-init_var "GSA_NAME" "platform-agent-bot" "Enter Service Account Name for the Agent"
+init_var "GSA_NAME" "platform-agent-gsa" "Enter Service Account Name for the Agent"
 
 # ─── Prerequisites Check ──────────────────────────────────────────────────────
 print_step "Checking Local Prerequisites"
@@ -113,7 +113,7 @@ execute_agent_gcp() {
   if ! gcloud iam service-accounts describe "${gsa_email}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
     print_info "Creating GSA ${GSA_NAME}..."
     gcloud iam service-accounts create "${GSA_NAME}" \
-        --display-name="Platform Agent Bot GSA" \
+        --display-name="Platform Agent GSA" \
         --project="${PROJECT_ID}"
   fi
 
@@ -149,5 +149,5 @@ echo -e "       - Name: ${C_GREEN}GKE Platform Agent Bot${C_RESET}"
 echo -e "       - Avatar: ${C_GREEN}https://platform-agent.nousresearch.com/docs/img/logo.png${C_RESET}"
 echo -e "       - Connection Settings: Select ${C_BOLD}Cloud Pub/Sub${C_RESET}"
 echo -e "       - Pub/Sub Topic Name: ${C_GREEN}projects/${PROJECT_ID}/topics/${CHAT_TOPIC_NAME}${C_RESET}"
-echo -e "       - Under Visibility, check: ${C_GREEN}Only specific people (add your email ${ALLOWED_USER})${C_RESET}"
+echo -e "       - Under Visibility, check: ${C_GREEN}Only specific people (add your email/emails: ${ALLOWED_USERS:-your-email})${C_RESET}"
 echo -e "======================== END COPY&PASTE ========================\n"

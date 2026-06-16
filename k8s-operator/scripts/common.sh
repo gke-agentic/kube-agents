@@ -93,11 +93,11 @@ ensure_teardown_state() {
     fi
     export REGION="${REGION:-us-east4}"
     export CLUSTER_NAME="${CLUSTER_NAME:-platform-agent-host}"
-    export NAMESPACE="${NAMESPACE:-agent-system}"
+    export NAMESPACE="${NAMESPACE:-kubeagents-system}"
     export CHAT_TOPIC_NAME="${CHAT_TOPIC_NAME:-platform-agent-chat-events}"
     export CHAT_SUB_NAME="${CHAT_SUB_NAME:-platform-agent-chat-events-sub}"
-    export GSA_NAME="${GSA_NAME:-platform-agent-bot}"
-    export KSA_NAME="${KSA_NAME:-platform-agent-platform-sa}"
+    export GSA_NAME="${GSA_NAME:-platform-agent-gsa}"
+    export KSA_NAME="${KSA_NAME:-platform-agent-sa}"
   fi
 }
 

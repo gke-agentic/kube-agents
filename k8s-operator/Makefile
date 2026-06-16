@@ -95,11 +95,11 @@ undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.
 
 .PHONY: deploy-litellm
 deploy-litellm: kustomize ## Deploy LiteLLM integration.
-	$(KUSTOMIZE) build config/integrations/litellm | envsubst '$$NAMESPACE $$MODEL_PROVIDER $$MODEL_DEFAULT_NAME' | kubectl apply -n $${NAMESPACE:-agent-system} -f -
+	$(KUSTOMIZE) build config/integrations/litellm | envsubst '$$NAMESPACE $$MODEL_PROVIDER $$MODEL_DEFAULT_NAME' | kubectl apply -n $${NAMESPACE:-kubeagents-system} -f -
 
 .PHONY: undeploy-litellm
 undeploy-litellm: kustomize ## Undeploy LiteLLM integration.
-	$(KUSTOMIZE) build config/integrations/litellm | envsubst '$$NAMESPACE $$MODEL_PROVIDER $$MODEL_DEFAULT_NAME' | kubectl delete --ignore-not-found=$(ignore-not-found) -n $${NAMESPACE:-agent-system} -f -
+	$(KUSTOMIZE) build config/integrations/litellm | envsubst '$$NAMESPACE $$MODEL_PROVIDER $$MODEL_DEFAULT_NAME' | kubectl delete --ignore-not-found=$(ignore-not-found) -n $${NAMESPACE:-kubeagents-system} -f -
 
 .PHONY: deploy-github
 deploy-github: kustomize ## Deploy GitHub integration.

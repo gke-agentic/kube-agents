@@ -27,7 +27,7 @@ DEFAULT_PROJECT_ID="${ACTIVE_PROJECT:-$(whoami 2>/dev/null || echo "user")}"
 init_var "PROJECT_ID" "$DEFAULT_PROJECT_ID" "Enter Target GCP Project ID"
 init_var "REGION" "us-east4" "Enter GKE GCP Region"
 init_var "CLUSTER_NAME" "platform-agent-host" "Enter GKE Cluster Name"
-init_var "NAMESPACE" "agent-system" "Enter GKE Target Namespace"
+init_var "NAMESPACE" "kubeagents-system" "Enter GKE Target Namespace"
 
 # ─── Prerequisites Check ──────────────────────────────────────────────────────
 print_step "Checking Local Prerequisites"
@@ -38,13 +38,11 @@ check_prereqs "gcloud" "kubectl"
 # Step 1: Enable APIs
 verify_apis() {
   local out=$(gcloud services list --enabled --project="$PROJECT_ID" --format="value(config.name)" 2>/dev/null || echo "")
-  echo "$out" | grep -q 'container.googleapis.com' && \
-  echo "$out" | grep -q 'cloudresourcemanager.googleapis.com'
+  echo "$out" | grep -q 'container.googleapis.com'
 }
 execute_apis() {
   gcloud services enable \
       container.googleapis.com \
-      cloudresourcemanager.googleapis.com \
       --project="$PROJECT_ID"
 }
 
