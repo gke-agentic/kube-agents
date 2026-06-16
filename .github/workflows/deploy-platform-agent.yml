@@ -4,19 +4,22 @@ on:
   push:
     branches: [main]
     paths:
-      - "integrations/gchat/crd/platform-agent-operator/**"
-      - "agents/**" # Trigger on any changes to agents (shared, platform, etc.)
+      - "k8s-operator/**"
+      - "agents/**"
+      - "deploy/docker/**"
+      - "deploy/shared/**"
+      - "tags.env"
       - ".github/workflows/deploy-platform-agent.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
   id-token: write # Required to fetch OIDC tokens from GitHub
+  packages: write # Required to push to GHCR
 
 env:
   GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
   GCP_REGION: ${{ vars.GCP_REGION }}
-  GAR_REPOSITORY: ${{ vars.GAR_REPOSITORY }}
   GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
   GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
   GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
@@ -41,12 +44,14 @@ jobs:
         with:
           filters: |
             controller:
-              - 'integrations/gchat/crd/platform-agent-operator/**'
+              - 'k8s-operator/**'
               - '.github/workflows/deploy-platform-agent.yml'
             agent:
               - 'agents/shared/**'
               - 'agents/platform/**'
-              - 'agents/Dockerfile'
+              - 'deploy/docker/**'
+              - 'deploy/shared/**'
+              - 'tags.env'
               - '.github/workflows/deploy-platform-agent.yml'
 
   deploy-operator:
@@ -63,7 +68,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: "integrations/gchat/crd/platform-agent-operator/go.mod"
+          go-version-file: "k8s-operator/go.mod"
 
       - name: Authenticate to Google Cloud via WIF
         id: auth
@@ -73,12 +78,12 @@ jobs:
           workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ env.GCP_SERVICE_ACCOUNT }}
 
-      - name: Authenticate Docker to Artifact Registry
+      - name: Log in to GitHub Container Registry
         uses: docker/login-action@v4
         with:
-          registry: ${{ env.GCP_REGION }}-docker.pkg.dev
-          username: oauth2accesstoken
-          password: ${{ steps.auth.outputs.access_token }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -90,15 +95,17 @@ jobs:
       - name: Build and Push Operator Image
         uses: docker/build-push-action@v7
         with:
-          context: integrations/gchat/crd/platform-agent-operator
-          file: integrations/gchat/crd/platform-agent-operator/Dockerfile
+          context: k8s-operator
+          file: k8s-operator/Dockerfile
           push: true
           provenance: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
           tags: |
-            ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.IMAGE_NAME }}:latest
-            ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.IMAGE_NAME }}:sha-${{ steps.vars.outputs.sha_short }}
+            ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:latest
+            ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:sha-${{ steps.vars.outputs.sha_short }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
 
       - name: Authenticate to GKE
         uses: google-github-actions/get-gke-credentials@v3
@@ -109,9 +116,9 @@ jobs:
 
       - name: Redeploy Operator + CRDs (make deploy)
         run: |
-          cd integrations/gchat/crd/platform-agent-operator
-          make deploy IMG="${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.IMAGE_NAME }}:sha-${{ steps.vars.outputs.sha_short }}"
-          kubectl rollout status deployment/platform-agent-operator-controller-manager -n platform-agent-operator-system --timeout=90s
+          cd k8s-operator
+          make deploy IMG="ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:sha-${{ steps.vars.outputs.sha_short }}"
+          kubectl rollout status deployment/kubeagents-controller-manager -n kubeagents-system --timeout=90s
 
   deploy-agent:
     needs: [changes, deploy-operator]
@@ -139,12 +146,12 @@ jobs:
           workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ env.GCP_SERVICE_ACCOUNT }}
 
-      - name: Authenticate Docker to Artifact Registry
+      - name: Log in to GitHub Container Registry
         uses: docker/login-action@v4
         with:
-          registry: ${{ env.GCP_REGION }}-docker.pkg.dev
-          username: oauth2accesstoken
-          password: ${{ steps.auth.outputs.access_token }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -157,7 +164,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: agents/Dockerfile # Path to new central Dockerfile
+          file: deploy/docker/Dockerfile # Path to new central Dockerfile
           target: platform # Specify the target stage in multi-stage build
           push: true
           provenance: false
@@ -166,8 +173,10 @@ jobs:
           build-args: |
             HERMES_AGENT_TAG=${{ env.HERMES_AGENT_TAG }}
           tags: |
-            ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.IMAGE_NAME }}:latest
-            ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.IMAGE_NAME }}:sha-${{ steps.vars.outputs.sha_short }}
+            ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:latest
+            ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:sha-${{ steps.vars.outputs.sha_short }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
 
       - name: Authenticate to GKE
         uses: google-github-actions/get-gke-credentials@v3
@@ -178,13 +187,15 @@ jobs:
 
       - name: Update Platform Agent Image & Wait for Rollout
         run: |
-          IMAGE_URI="${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.IMAGE_NAME }}:sha-${{ steps.vars.outputs.sha_short }}"
+          IMAGE_REPO="ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}"
+          IMAGE_TAG="sha-${{ steps.vars.outputs.sha_short }}"
           MODEL_SPEC="{\"default\":\"${{ env.MODEL_DEFAULT_NAME }}\",\"provider\":\"${{ env.MODEL_PROVIDER }}\"}"
-          echo "Patching PlatformAgent custom resource with new image: $IMAGE_URI"
-          kubectl patch platformagent platform-agent \
-            -n agent-system \
+
+          echo "Patching PlatformAgent custom resource with new image: $IMAGE_REPO:$IMAGE_TAG"
+          kubectl patch platformagent.kubeagents.x-k8s.io platform-agent \
+            -n kubeagents-system \
             --type='merge' \
-            -p "{\"spec\":{\"imageUri\":\"$IMAGE_URI\",\"model\":$MODEL_SPEC}}"
+            -p "{\"spec\":{\"deployment\":{\"image\":\"$IMAGE_REPO\",\"tag\":\"$IMAGE_TAG\"},\"model\":$MODEL_SPEC}}"
 
           echo "Waiting for rollout of platform-agent-gateway..."
-          kubectl rollout status deployment/platform-agent-gateway -n agent-system --timeout=180s
+          kubectl rollout status deployment/platform-agent-gateway -n kubeagents-system --timeout=180s
