@@ -313,3 +313,40 @@ func TestBuildFluentBitConfigMap(t *testing.T) {
 		t.Errorf("expected fluent-bit.conf to contain Input Name tail")
 	}
 }
+
+func TestBuildPlatformService(t *testing.T) {
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-platform-agent",
+			Namespace: "test-ns",
+		},
+	}
+
+	svc := buildPlatformService(agent)
+	if svc.Name != "test-platform-agent" {
+		t.Errorf("expected Service name test-platform-agent, got %s", svc.Name)
+	}
+	if svc.Namespace != "test-ns" {
+		t.Errorf("expected Service namespace test-ns, got %s", svc.Namespace)
+	}
+
+	if len(svc.Spec.Ports) != 2 {
+		t.Errorf("expected 2 service ports, got %d", len(svc.Spec.Ports))
+	}
+
+	portsMap := make(map[string]int32)
+	for _, port := range svc.Spec.Ports {
+		portsMap[port.Name] = port.Port
+	}
+
+	if portsMap["api"] != 8642 {
+		t.Errorf("expected api port 8642, got %d", portsMap["api"])
+	}
+	if portsMap["dashboard"] != 9119 {
+		t.Errorf("expected dashboard port 9119, got %d", portsMap["dashboard"])
+	}
+
+	if svc.Spec.Selector["app"] != "test-platform-agent-gateway" {
+		t.Errorf("expected selector app=test-platform-agent-gateway, got %s", svc.Spec.Selector["app"])
+	}
+}

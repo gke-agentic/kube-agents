@@ -61,6 +61,14 @@ func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// Validate Spec
+	if instance.Spec.Deployment == nil || instance.Spec.Deployment.Image == "" {
+		log.Error(nil, "spec.deployment.image is required but not specified")
+		instance.Status.Phase = "Failed"
+		_ = r.Status().Update(ctx, instance)
+		return ctrl.Result{}, nil
+	}
+
 	log.Info("Reconciling PlatformAgent", "name", instance.Name, "namespace", instance.Namespace)
 
 	// 1. Intercept Deletion
@@ -107,6 +115,11 @@ func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	// 7. Reconcile Deployment (with pod template hash annotation)
 	if err := r.reconcileDeployment(ctx, instance, configMapHash, fluentBitHash); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Reconcile Service
+	if err := r.reconcileService(ctx, instance); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -216,6 +229,14 @@ func (r *PlatformAgentReconciler) reconcileDeployment(ctx context.Context, agent
 	return r.Patch(ctx, dep, client.Apply, client.ForceOwnership, client.FieldOwner("platformagent-controller"))
 }
 
+func (r *PlatformAgentReconciler) reconcileService(ctx context.Context, agent *agentv1alpha1.PlatformAgent) error {
+	svc := buildPlatformService(agent)
+	if err := ctrl.SetControllerReference(agent, svc, r.Scheme); err != nil {
+		return err
+	}
+	return r.Patch(ctx, svc, client.Apply, client.ForceOwnership, client.FieldOwner("platformagent-controller"))
+}
+
 func (r *PlatformAgentReconciler) reconcileRBAC(ctx context.Context, agent *agentv1alpha1.PlatformAgent) error {
 	viewerBindingName := fmt.Sprintf("kubeagents:viewer:%s:%s", agent.Namespace, agent.Name)
 	crbViewer := buildClusterRoleBinding(agent, viewerBindingName, "view")
@@ -242,19 +263,26 @@ func (r *PlatformAgentReconciler) reconcileRBAC(ctx context.Context, agent *agen
 
 func (r *PlatformAgentReconciler) updateStatusReady(ctx context.Context, agent *agentv1alpha1.PlatformAgent) error {
 	dep := &appsv1.Deployment{}
-	err := r.Get(ctx, types.NamespacedName{Namespace: agent.Namespace, Name: agent.Name + "-gateway"}, dep)
-	if err == nil {
+	errDep := r.Get(ctx, types.NamespacedName{Namespace: agent.Namespace, Name: agent.Name + "-gateway"}, dep)
+	if errDep == nil {
 		agent.Status.DeploymentStatus.Name = dep.Name
 		agent.Status.DeploymentStatus.ReadyReplicas = dep.Status.ReadyReplicas
 	}
 
 	pvc := &corev1.PersistentVolumeClaim{}
-	err = r.Get(ctx, types.NamespacedName{Namespace: agent.Namespace, Name: agent.Name + "-data"}, pvc)
-	if err == nil {
+	errPVC := r.Get(ctx, types.NamespacedName{Namespace: agent.Namespace, Name: agent.Name + "-data"}, pvc)
+	if errPVC == nil {
 		agent.Status.StorageStatus.Bound = (pvc.Status.Phase == corev1.ClaimBound)
 	}
 
-	if err == nil && dep.Status.ReadyReplicas > 0 {
+	svc := &corev1.Service{}
+	errSvc := r.Get(ctx, types.NamespacedName{Namespace: agent.Namespace, Name: agent.Name}, svc)
+	if errSvc == nil {
+		agent.Status.ServiceStatus.Endpoint = fmt.Sprintf("http://%s.%s.svc.cluster.local:8642", svc.Name, svc.Namespace)
+		agent.Status.Address = fmt.Sprintf("%s.%s.svc.cluster.local", svc.Name, svc.Namespace)
+	}
+
+	if errDep == nil && dep.Status.ReadyReplicas > 0 {
 		agent.Status.Phase = "Ready"
 	} else {
 		agent.Status.Phase = "Provisioning"
@@ -273,6 +301,7 @@ func (r *PlatformAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.ServiceAccount{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&corev1.ConfigMap{}).
+		Owns(&corev1.Service{}).
 		Watches(
 			&rbacv1.ClusterRoleBinding{},
 			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {

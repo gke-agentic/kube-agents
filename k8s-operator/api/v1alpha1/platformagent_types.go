@@ -103,6 +103,10 @@ type PlatformAgentStatus struct {
 	// +optional
 	Phase string `json:"phase,omitempty"`
 
+	// Address is the fully qualified domain name (FQDN) of the platform agent service.
+	// +optional
+	Address string `json:"address,omitempty"`
+
 	// LastReconcileTime is the timestamp when the operator last updated this status.
 	// +optional
 	LastReconcileTime *metav1.Time `json:"lastReconcileTime,omitempty"`

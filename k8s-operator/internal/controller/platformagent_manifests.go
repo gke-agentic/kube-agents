@@ -27,6 +27,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/yaml"
 
@@ -548,6 +549,37 @@ func buildFluentBitConfigMap(agent *agentv1alpha1.PlatformAgent) *corev1.ConfigM
     Match             agent.logs
     Format            json_lines
 `,
+		},
+	}
+}
+
+// buildPlatformService generates the Service manifest for PlatformAgent
+func buildPlatformService(agent *agentv1alpha1.PlatformAgent) *corev1.Service {
+	return &corev1.Service{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "Service",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      agent.Name,
+			Namespace: agent.Namespace,
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{
+				"app": agent.Name + "-gateway",
+			},
+			Ports: []corev1.ServicePort{
+				{
+					Name:       "api",
+					Port:       8642,
+					TargetPort: intstr.FromString("api"),
+				},
+				{
+					Name:       "dashboard",
+					Port:       9119,
+					TargetPort: intstr.FromString("dashboard"),
+				},
+			},
 		},
 	}
 }

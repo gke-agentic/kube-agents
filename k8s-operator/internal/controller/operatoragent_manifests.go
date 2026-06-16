@@ -407,7 +407,6 @@ func buildOperatorDeployment(agent *agentv1alpha1.OperatorAgent, configHash, flu
 	}
 }
 
-
 // buildOperatorFluentBitConfigMap generates the ConfigMap manifest containing fluent-bit.conf
 func buildOperatorFluentBitConfigMap(agent *agentv1alpha1.OperatorAgent) *corev1.ConfigMap {
 	return &corev1.ConfigMap{

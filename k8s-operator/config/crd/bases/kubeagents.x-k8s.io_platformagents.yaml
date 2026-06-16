@@ -252,6 +252,11 @@ spec:
             status:
               description: status defines the observed state of PlatformAgent
               properties:
+                address:
+                  description:
+                    Address is the fully qualified domain name (FQDN) of
+                    the platform agent service.
+                  type: string
                 conditions:
                   description:
                     Conditions represent the latest available observations

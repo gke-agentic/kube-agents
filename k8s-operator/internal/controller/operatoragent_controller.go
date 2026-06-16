@@ -28,13 +28,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	agentv1alpha1 "github.com/gke-labs/kube-agents/k8s-operator/api/v1alpha1"
 )
-
-const operatorAgentFinalizer = "kubeagents.x-k8s.io/operator-finalizer"
 
 // OperatorAgentReconciler reconciles a OperatorAgent object
 type OperatorAgentReconciler struct {
@@ -57,19 +54,11 @@ func (r *OperatorAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	log.Info("Reconciling OperatorAgent", "name", instance.Name, "namespace", instance.Namespace)
-
-	// 1. Intercept Deletion
-	if !instance.ObjectMeta.DeletionTimestamp.IsZero() {
-		return r.handleDeletion(ctx, instance)
-	}
-
-	// 2. Add Finalizer if not present
-	if !controllerutil.ContainsFinalizer(instance, operatorAgentFinalizer) {
-		controllerutil.AddFinalizer(instance, operatorAgentFinalizer)
-		if err := r.Update(ctx, instance); err != nil {
-			return ctrl.Result{}, err
-		}
+	// Validate Spec
+	if instance.Spec.Deployment == nil || instance.Spec.Deployment.Image == "" {
+		log.Error(nil, "spec.deployment.image is required but not specified")
+		instance.Status.Phase = "Failed"
+		_ = r.Status().Update(ctx, instance)
 		return ctrl.Result{}, nil
 	}
 
@@ -107,17 +96,6 @@ func (r *OperatorAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	// 8. Update status phase to Ready
 	return ctrl.Result{}, r.updateStatusReady(ctx, instance)
-}
-
-func (r *OperatorAgentReconciler) handleDeletion(ctx context.Context, agent *agentv1alpha1.OperatorAgent) (ctrl.Result, error) {
-	if controllerutil.ContainsFinalizer(agent, operatorAgentFinalizer) {
-		// Resource is deleted. Safe to remove finalizer and update.
-		controllerutil.RemoveFinalizer(agent, operatorAgentFinalizer)
-		if err := r.Update(ctx, agent); err != nil {
-			return ctrl.Result{}, err
-		}
-	}
-	return ctrl.Result{}, nil
 }
 
 func (r *OperatorAgentReconciler) reconcileServiceAccount(ctx context.Context, agent *agentv1alpha1.OperatorAgent) error {
@@ -197,19 +175,17 @@ func (r *OperatorAgentReconciler) reconcileService(ctx context.Context, agent *a
 	return r.Patch(ctx, svc, client.Apply, client.ForceOwnership, client.FieldOwner("operatoragent-controller"))
 }
 
-
-
 func (r *OperatorAgentReconciler) updateStatusReady(ctx context.Context, agent *agentv1alpha1.OperatorAgent) error {
 	dep := &appsv1.Deployment{}
-	err := r.Get(ctx, types.NamespacedName{Namespace: agent.Namespace, Name: agent.Name + "-gateway"}, dep)
-	if err == nil {
+	errDep := r.Get(ctx, types.NamespacedName{Namespace: agent.Namespace, Name: agent.Name + "-gateway"}, dep)
+	if errDep == nil {
 		agent.Status.DeploymentStatus.Name = dep.Name
 		agent.Status.DeploymentStatus.ReadyReplicas = dep.Status.ReadyReplicas
 	}
 
 	pvc := &corev1.PersistentVolumeClaim{}
-	err = r.Get(ctx, types.NamespacedName{Namespace: agent.Namespace, Name: agent.Name + "-data"}, pvc)
-	if err == nil {
+	errPVC := r.Get(ctx, types.NamespacedName{Namespace: agent.Namespace, Name: agent.Name + "-data"}, pvc)
+	if errPVC == nil {
 		agent.Status.StorageStatus.Bound = (pvc.Status.Phase == corev1.ClaimBound)
 	}
 
@@ -220,7 +196,7 @@ func (r *OperatorAgentReconciler) updateStatusReady(ctx context.Context, agent *
 		agent.Status.Address = fmt.Sprintf("%s.%s.svc.cluster.local", svc.Name, svc.Namespace)
 	}
 
-	if err == nil && dep.Status.ReadyReplicas > 0 {
+	if errDep == nil && dep.Status.ReadyReplicas > 0 {
 		agent.Status.Phase = "Ready"
 	} else {
 		agent.Status.Phase = "Provisioning"
