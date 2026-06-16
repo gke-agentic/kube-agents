@@ -1,0 +1,110 @@
+name: Staging Redeploy on Registry Change
+
+on:
+  registry_package:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  GCP_REGION: ${{ vars.GCP_REGION }}
+  GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+  GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+  GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
+  MODEL_DEFAULT_NAME: ${{ vars.MODEL_DEFAULT_NAME }}
+  MODEL_PROVIDER: ${{ vars.MODEL_PROVIDER }}
+
+jobs:
+  redeploy-controller:
+    runs-on: ubuntu-latest
+    if: |
+      github.repository == 'gke-labs/kube-agents' &&
+      github.event.registry_package.package_type == 'container' &&
+      github.event.registry_package.package_version.container_metadata.tag.name != '' &&
+      github.event.registry_package.package_version.container_metadata.tag.name != 'latest' &&
+      endsWith(github.event.registry_package.name, 'k8s-operator')
+    environment: staging
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: "k8s-operator/go.mod"
+
+      - name: Authenticate to Google Cloud via WIF
+        uses: google-github-actions/auth@v3
+        with:
+          token_format: "access_token"
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_SERVICE_ACCOUNT }}
+
+      - name: Authenticate to GKE
+        uses: google-github-actions/get-gke-credentials@v3
+        with:
+          cluster_name: ${{ env.GKE_CLUSTER_NAME }}
+          location: ${{ env.GCP_REGION }}
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Set Image Env
+        run: |
+          OWNER_DOWNCASE=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "IMAGE_REPO=ghcr.io/${OWNER_DOWNCASE}/${{ github.event.registry_package.name }}" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=${{ github.event.registry_package.package_version.container_metadata.tag.name }}" >> "$GITHUB_ENV"
+
+      - name: Perform Controller Redeployment
+        run: |
+          echo "Redeploying controller package: ${{ github.event.registry_package.name }} with tag: $IMAGE_TAG from repo: $IMAGE_REPO"
+          cd k8s-operator
+          make deploy IMG="${IMAGE_REPO}:${IMAGE_TAG}"
+          kubectl rollout status deployment/kubeagents-controller-manager -n kubeagents-system --timeout=90s
+
+  redeploy-agent:
+    runs-on: ubuntu-latest
+    if: |
+      github.repository == 'gke-labs/kube-agents' &&
+      github.event.registry_package.package_type == 'container' &&
+      github.event.registry_package.package_version.container_metadata.tag.name != '' &&
+      github.event.registry_package.package_version.container_metadata.tag.name != 'latest' &&
+      endsWith(github.event.registry_package.name, 'platform-agent')
+    environment: staging
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Authenticate to Google Cloud via WIF
+        uses: google-github-actions/auth@v3
+        with:
+          token_format: "access_token"
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_SERVICE_ACCOUNT }}
+
+      - name: Authenticate to GKE
+        uses: google-github-actions/get-gke-credentials@v3
+        with:
+          cluster_name: ${{ env.GKE_CLUSTER_NAME }}
+          location: ${{ env.GCP_REGION }}
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Set Image Env
+        run: |
+          OWNER_DOWNCASE=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "IMAGE_REPO=ghcr.io/${OWNER_DOWNCASE}/${{ github.event.registry_package.name }}" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=${{ github.event.registry_package.package_version.container_metadata.tag.name }}" >> "$GITHUB_ENV"
+
+      - name: Perform Agent Redeployment
+        run: |
+          echo "Redeploying agent package: ${{ github.event.registry_package.name }} with tag: $IMAGE_TAG from repo: $IMAGE_REPO"
+          MODEL_SPEC="{\"default\":\"${{ env.MODEL_DEFAULT_NAME }}\",\"provider\":\"${{ env.MODEL_PROVIDER }}\"}"
+
+          kubectl patch platformagent.kubeagents.x-k8s.io platform-agent \
+            -n kubeagents-system \
+            --type='merge' \
+            -p "{\"spec\":{\"deployment\":{\"image\":\"$IMAGE_REPO\",\"tag\":\"$IMAGE_TAG\"},\"model\":$MODEL_SPEC}}"
+
+          echo "Waiting for rollout of platform-agent-gateway..."
+          kubectl rollout status deployment/platform-agent-gateway -n kubeagents-system --timeout=180s
