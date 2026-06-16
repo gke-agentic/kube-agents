@@ -45,14 +45,6 @@ cleanup_agent_iam() {
         --project="${PROJECT_ID}" \
         --quiet || true
 
-    for role in "${roles[@]}"; do
-      echo -e "  ${C_CYAN}ℹ Removing role ${role} for ${gsa_name}...${C_RESET}"
-      gcloud projects remove-iam-policy-binding "${PROJECT_ID}" \
-          --member="serviceAccount:${gsa_email}" \
-          --role="${role}" \
-          --quiet || true
-    done
-
     echo -e "  ${C_CYAN}ℹ Deleting GSA ${gsa_name}...${C_RESET}"
     gcloud iam service-accounts delete "${gsa_email}" --project="${PROJECT_ID}" --quiet || true
     echo -e "  ${C_GREEN}✓ GSA '${gsa_name}' successfully removed.${C_RESET}"

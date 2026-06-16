@@ -43,7 +43,7 @@ DEFAULT_USERS=""
 init_var "ALLOWED_USERS" "$DEFAULT_USERS" "Enter Allowed Google Chat Users Emails (comma separated). Leaving it empty will allow all users."
 init_var "CHAT_TOPIC_NAME" "platform-agent-chat-events" "Enter Pub/Sub Topic Name"
 init_var "CHAT_SUB_NAME" "platform-agent-chat-events-sub" "Enter Pub/Sub Subscription Name"
-init_var "GSA_NAME" "platform-agent-gsa" "Enter Service Account Name for the Agent"
+
 
 # ─── Prerequisites Check ──────────────────────────────────────────────────────
 print_step "Checking Local Prerequisites"
@@ -102,20 +102,12 @@ execute_pubsub_setup() {
 
 # Step 3: Agent GSA Creation & PubSub Message Read Access
 verify_agent_gcp() {
-  local gsa_email="${GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
+  local gsa_email="${PLATFORM_AGENT_GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
   gcloud iam service-accounts describe "${gsa_email}" --project="${PROJECT_ID}" >/dev/null 2>&1 && \
   gcloud pubsub subscriptions get-iam-policy "${CHAT_SUB_NAME}" --project="${PROJECT_ID}" --format="json" 2>/dev/null | grep -F -q "${gsa_email}"
 }
 execute_agent_gcp() {
-  local gsa_email="${GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
-
-  # 1. Create the Bot's Service Account
-  if ! gcloud iam service-accounts describe "${gsa_email}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
-    print_info "Creating GSA ${GSA_NAME}..."
-    gcloud iam service-accounts create "${GSA_NAME}" \
-        --display-name="Platform Agent GSA" \
-        --project="${PROJECT_ID}"
-  fi
+  local gsa_email="${PLATFORM_AGENT_GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 
   print_info "Applying Pub/Sub Subscriber Role for Agent GSA..."
   

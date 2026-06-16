@@ -37,10 +37,7 @@ init_var "ALLOWED_USERS" "" "Enter Allowed Google Chat Users Emails (comma separ
 DEFAULT_AGENT_IMAGE="ghcr.io/gke-labs/kube-agents/platform-agent:latest"
 init_var "AGENT_IMAGE" "$DEFAULT_AGENT_IMAGE" "Enter Platform Agent Image Path"
 
-# If the user did not provide a tag/digest, default to latest
-if [[ "$AGENT_IMAGE" != *":"* && "$AGENT_IMAGE" != *"@"* ]]; then
-  AGENT_IMAGE="${AGENT_IMAGE}"
-fi
+
 
 # ─── Prerequisites Check ──────────────────────────────────────────────────────
 print_step "Checking Local Prerequisites"

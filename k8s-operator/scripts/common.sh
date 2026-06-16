@@ -110,7 +110,14 @@ ensure_teardown_state() {
       exit 1
     fi
     export REGION="${REGION:-us-east4}"
+    echo -ne "  ${C_CYAN}Enter GKE GCP Region [${C_WHITE}${REGION}${C_CYAN}]: ${C_RESET}"
+    read -r INPUT_REGION
+    export REGION="${INPUT_REGION:-$REGION}"
+
     export CLUSTER_NAME="${CLUSTER_NAME:-platform-agent-host}"
+    echo -ne "  ${C_CYAN}Enter GKE Cluster Name [${C_WHITE}${CLUSTER_NAME}${C_CYAN}]: ${C_RESET}"
+    read -r INPUT_CLUSTER_NAME
+    export CLUSTER_NAME="${INPUT_CLUSTER_NAME:-$CLUSTER_NAME}"
     export NAMESPACE="kubeagents-system"
     export CHAT_TOPIC_NAME="${CHAT_TOPIC_NAME:-platform-agent-chat-events}"
     export CHAT_SUB_NAME="${CHAT_SUB_NAME:-platform-agent-chat-events-sub}"

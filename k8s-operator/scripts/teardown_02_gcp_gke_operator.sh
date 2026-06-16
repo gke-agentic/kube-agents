@@ -41,7 +41,7 @@ fi
 OPERATOR_DEPLOYED=$(kubectl get deployment kubeagents-controller-manager -n "${NAMESPACE}" --ignore-not-found 2>/dev/null || echo "")
 if [ -n "$OPERATOR_DEPLOYED" ]; then
   echo -e "  ${C_CYAN}ℹ Undeploying Operator Controller Manager from GKE cluster...${C_RESET}"
-  make -C "$OPERATOR_DIR" undeploy
+  make -C "$OPERATOR_DIR" undeploy ignore-not-found=true
   echo -e "  ${C_GREEN}✓ Operator Controller Manager undeployed successfully.${C_RESET}"
 else
   echo -e "  ${C_GREEN}✓ Operator Controller Manager is already undeployed.${C_RESET}"
@@ -51,7 +51,7 @@ fi
 CRDS_INSTALLED=$(kubectl get crds -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | grep -o 'platformagents.kubeagents.x-k8s.io' || echo "")
 if [ -n "$CRDS_INSTALLED" ]; then
   echo -e "  ${C_CYAN}ℹ Uninstalling CRDs from GKE cluster...${C_RESET}"
-  make -C "$OPERATOR_DIR" uninstall
+  make -C "$OPERATOR_DIR" uninstall ignore-not-found=true
   echo -e "  ${C_GREEN}✓ CRDs uninstalled successfully.${C_RESET}"
 else
   echo -e "  ${C_GREEN}✓ CRDs are already uninstalled.${C_RESET}"

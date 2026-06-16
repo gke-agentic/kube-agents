@@ -17,11 +17,10 @@ source "${SCRIPT_DIR}/common.sh" "$@"
 ensure_teardown_state
 
 # ─── Confirmation Prompt ──────────────────────────────────────────────────────
-confirm_action "This will permanently delete GChat Pub/Sub topic, subscription, and the Bot Service Account." \
+confirm_action "This will permanently delete GChat Pub/Sub topic and subscription." \
   "GCP Project:$PROJECT_ID" \
   "Pub/Sub Topic:$CHAT_TOPIC_NAME" \
-  "Pub/Sub Sub:$CHAT_SUB_NAME" \
-  "Agent GSA:$GSA_NAME"
+  "Pub/Sub Sub:$CHAT_SUB_NAME"
 
 gcloud config set project "$PROJECT_ID" --quiet
 
@@ -43,15 +42,4 @@ if [ -n "$TOPIC_EXISTS" ]; then
   echo -e "  ${C_GREEN}✓ Pub/Sub Topic successfully removed.${C_RESET}"
 else
   echo -e "  ${C_GREEN}✓ Pub/Sub Topic '${CHAT_TOPIC_NAME}' does not exist.${C_RESET}"
-fi
-
-# ─── Step 3: Delete Agent GSA ─────────────────────────────────────────────────
-gsa_email="${GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
-GSA_EXISTS=$(gcloud iam service-accounts list --filter="email=${gsa_email}" --format="value(email)" --project="${PROJECT_ID}" 2>/dev/null || echo "")
-if [ -n "$GSA_EXISTS" ]; then
-  echo -e "  ${C_CYAN}ℹ Deleting Bot GSA '${gsa_email}'...${C_RESET}"
-  gcloud iam service-accounts delete "${gsa_email}" --project="${PROJECT_ID}" --quiet || true
-  echo -e "  ${C_GREEN}✓ Bot GSA successfully removed.${C_RESET}"
-else
-  echo -e "  ${C_GREEN}✓ Bot GSA '${gsa_email}' does not exist.${C_RESET}"
 fi
