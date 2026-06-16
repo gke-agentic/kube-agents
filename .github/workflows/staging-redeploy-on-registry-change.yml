@@ -21,12 +21,12 @@ jobs:
   redeploy-controller:
     runs-on: ubuntu-latest
     if: |
-      github.repository == 'gke-labs/kube-agents' &&
+      github.repository == 'gke-agentic/kube-agents' &&
       github.event.registry_package.package_type == 'container' &&
       github.event.registry_package.package_version.container_metadata.tag.name != '' &&
       github.event.registry_package.package_version.container_metadata.tag.name != 'latest' &&
       endsWith(github.event.registry_package.name, 'k8s-operator')
-    environment: staging
+    environment: dharb-dev
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -66,12 +66,12 @@ jobs:
   redeploy-agent:
     runs-on: ubuntu-latest
     if: |
-      github.repository == 'gke-labs/kube-agents' &&
+      github.repository == 'gke-agentic/kube-agents' &&
       github.event.registry_package.package_type == 'container' &&
       github.event.registry_package.package_version.container_metadata.tag.name != '' &&
       github.event.registry_package.package_version.container_metadata.tag.name != 'latest' &&
       endsWith(github.event.registry_package.name, 'platform-agent')
-    environment: staging
+    environment: dharb-dev
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
