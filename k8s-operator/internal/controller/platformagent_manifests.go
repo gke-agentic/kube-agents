@@ -61,6 +61,9 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 		Model struct {
 			Default  string `json:"default"`
 			Provider string `json:"provider"`
+			Model    string `json:"model,omitempty"`
+			BaseURL  string `json:"base_url,omitempty"`
+			APIKey   string `json:"api_key,omitempty"`
 		} `json:"model"`
 		Terminal struct {
 			Backend string `json:"backend"`
@@ -76,6 +79,12 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 	if agent.Spec.Model != nil {
 		cfg.Model.Default = agent.Spec.Model.Default
 		cfg.Model.Provider = agent.Spec.Model.Provider
+		if agent.Spec.Model.Provider == "litellm" || agent.Spec.Model.Provider == "custom" {
+			cfg.Model.Provider = "custom"
+			cfg.Model.Model = agent.Spec.Model.Default
+			cfg.Model.BaseURL = fmt.Sprintf("http://litellm.%s.svc.cluster.local/v1", agent.Namespace)
+			cfg.Model.APIKey = "none"
+		}
 	}
 	cfg.Terminal.Backend = "local"
 	cfg.Terminal.Cwd = cwd

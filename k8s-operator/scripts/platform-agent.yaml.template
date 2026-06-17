@@ -27,10 +27,10 @@ spec:
   model:
     provider: "${MODEL_PROVIDER}"
     default: "${MODEL_DEFAULT_NAME}"
-    gemini:
+    ${MODEL_PROVIDER}:
       apiKeySecretRef:
         name: platform-agent-secrets
-        key: GEMINI_API_KEY
+        key: ${MODEL_PROVIDER_UPPER}_API_KEY
   integration:
     googleChat:
       enabled: true
