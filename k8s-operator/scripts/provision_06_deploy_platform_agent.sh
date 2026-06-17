@@ -9,6 +9,11 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "$SCRIPT_DIR" == */scripts ]]; then
+  OPERATOR_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+else
+  OPERATOR_DIR="${SCRIPT_DIR}"
+fi
 VARS_FILE="${SCRIPT_DIR}/vars.sh"
 
 # ─── ANSI Colors ──────────────────────────────────────────────────────────────
@@ -54,7 +59,19 @@ execute_kubeconfig() {
   connect_cluster
 }
 
-# Step 2: Apply PlatformAgent Custom Resource
+# Step 2: Deploy LiteLLM Gateway
+verify_litellm() {
+  kubectl get configmap litellm-config -n "${NAMESPACE}" >/dev/null 2>&1 && \
+  kubectl get deployment litellm -n "${NAMESPACE}" >/dev/null 2>&1 && \
+  kubectl get service litellm -n "${NAMESPACE}" >/dev/null 2>&1
+}
+execute_litellm() {
+  print_info "Deploying LiteLLM Gateway into GKE..."
+  export NAMESPACE MODEL_PROVIDER MODEL_DEFAULT_NAME
+  make -C "${OPERATOR_DIR}" deploy-litellm || return 1
+}
+
+# Step 3: Apply PlatformAgent Custom Resource
 verify_custom_resource() {
   # Always return false to ensure configuration updates are applied to the Custom Resource
   return 1
@@ -69,6 +86,8 @@ execute_custom_resource() {
     exit 1
   fi
 
+  export MODEL_PROVIDER_UPPER=$(echo "$MODEL_PROVIDER" | tr '[:lower:]' '[:upper:]')
+
   # Ensure variables are explicitly exported so envsubst can access them
   export PROJECT_ID REGION CLUSTER_NAME MODEL_DEFAULT_NAME MODEL_PROVIDER GSA_NAME CHAT_SUB_NAME CHAT_TOPIC_NAME ALLOWED_USERS AGENT_IMAGE NAMESPACE KSA_NAME
 
@@ -80,7 +99,8 @@ execute_custom_resource() {
 
 # ─── Execution Pipeline ───────────────────────────────────────────────────────
 run_step "1. Connect kubectl" verify_kubeconfig execute_kubeconfig 0
-run_step "2. Apply PlatformAgent Custom Resource" verify_custom_resource execute_custom_resource 0
+run_step "2. Deploy LiteLLM Gateway" verify_litellm execute_litellm 0
+run_step "3. Apply PlatformAgent Custom Resource" verify_custom_resource execute_custom_resource 0
 
 # ─── Conclusion Checklist ─────────────────────────────────────────────────────
 echo -e "\n${C_GREEN}${C_BOLD}✓ PlatformAgent Custom Resource applied successfully to GKE!${C_RESET}"

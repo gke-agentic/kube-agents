@@ -313,3 +313,63 @@ func TestBuildFluentBitConfigMap(t *testing.T) {
 		t.Errorf("expected fluent-bit.conf to contain Input Name tail")
 	}
 }
+
+func TestBuildConfigMapCustomProvider(t *testing.T) {
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+		},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			Model: &agentv1alpha1.ModelSpec{
+				Provider: "custom",
+				Default:  "model-default",
+			},
+		},
+	}
+
+	cm := buildConfigMap(agent)
+	yamlContent := cm.Data["config.yaml"]
+	if !strings.Contains(yamlContent, "provider: custom") {
+		t.Errorf("expected config to contain provider: custom, got:\n%s", yamlContent)
+	}
+	if !strings.Contains(yamlContent, "model: model-default") {
+		t.Errorf("expected config to contain model: model-default, got:\n%s", yamlContent)
+	}
+	if !strings.Contains(yamlContent, "base_url: http://litellm.test-ns.svc.cluster.local/v1") {
+		t.Errorf("expected config to contain correct base_url, got:\n%s", yamlContent)
+	}
+	if !strings.Contains(yamlContent, "api_key: none") {
+		t.Errorf("expected config to contain api_key: none, got:\n%s", yamlContent)
+	}
+}
+
+func TestBuildConfigMapLiteLLMProvider(t *testing.T) {
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+		},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			Model: &agentv1alpha1.ModelSpec{
+				Provider: "litellm",
+				Default:  "model-default",
+			},
+		},
+	}
+
+	cm := buildConfigMap(agent)
+	yamlContent := cm.Data["config.yaml"]
+	if !strings.Contains(yamlContent, "provider: custom") {
+		t.Errorf("expected config to map to provider: custom, got:\n%s", yamlContent)
+	}
+	if !strings.Contains(yamlContent, "model: model-default") {
+		t.Errorf("expected config to contain model: model-default, got:\n%s", yamlContent)
+	}
+	if !strings.Contains(yamlContent, "base_url: http://litellm.test-ns.svc.cluster.local/v1") {
+		t.Errorf("expected config to contain correct base_url, got:\n%s", yamlContent)
+	}
+	if !strings.Contains(yamlContent, "api_key: none") {
+		t.Errorf("expected config to contain api_key: none, got:\n%s", yamlContent)
+	}
+}
