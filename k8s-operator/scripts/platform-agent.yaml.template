@@ -27,10 +27,6 @@ spec:
   model:
     provider: "${MODEL_PROVIDER}"
     default: "${MODEL_DEFAULT_NAME}"
-    ${MODEL_PROVIDER}:
-      apiKeySecretRef:
-        name: platform-agent-secrets
-        key: ${MODEL_PROVIDER_UPPER}_API_KEY
   integration:
     googleChat:
       enabled: true

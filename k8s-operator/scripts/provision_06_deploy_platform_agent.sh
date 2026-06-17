@@ -86,8 +86,6 @@ execute_custom_resource() {
     exit 1
   fi
 
-  export MODEL_PROVIDER_UPPER=$(echo "$MODEL_PROVIDER" | tr '[:lower:]' '[:upper:]')
-
   # Ensure variables are explicitly exported so envsubst can access them
   export PROJECT_ID REGION CLUSTER_NAME MODEL_DEFAULT_NAME MODEL_PROVIDER GSA_NAME CHAT_SUB_NAME CHAT_TOPIC_NAME ALLOWED_USERS AGENT_IMAGE NAMESPACE KSA_NAME
 
