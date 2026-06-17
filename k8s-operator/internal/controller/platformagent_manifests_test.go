@@ -57,11 +57,20 @@ func TestBuildConfigMap(t *testing.T) {
 	}
 
 	yamlContent := cm.Data["config.yaml"]
-	if !strings.Contains(yamlContent, "provider: gemini") {
-		t.Errorf("expected config to contain provider: gemini, got:\n%s", yamlContent)
+	if !strings.Contains(yamlContent, "provider: custom") {
+		t.Errorf("expected config to contain provider: custom, got:\n%s", yamlContent)
 	}
-	if !strings.Contains(yamlContent, "default: gemini-2.5-flash") {
-		t.Errorf("expected config to contain default model, got:\n%s", yamlContent)
+	if !strings.Contains(yamlContent, "default: model-default") {
+		t.Errorf("expected config to contain default: model-default, got:\n%s", yamlContent)
+	}
+	if !strings.Contains(yamlContent, "model: model-default") {
+		t.Errorf("expected config to contain model: model-default, got:\n%s", yamlContent)
+	}
+	if !strings.Contains(yamlContent, "base_url: http://litellm.test-ns.svc.cluster.local/v1") {
+		t.Errorf("expected config to contain correct base_url, got:\n%s", yamlContent)
+	}
+	if !strings.Contains(yamlContent, "api_key: none") {
+		t.Errorf("expected config to contain api_key: none, got:\n%s", yamlContent)
 	}
 	if !strings.Contains(yamlContent, "cwd: /custom/home") {
 		t.Errorf("expected config to contain custom home path, got:\n%s", yamlContent)
