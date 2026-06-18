@@ -62,11 +62,6 @@ func (r *OperatorAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, nil
 	}
 
-	// 3. Reconcile K8s Service Account
-	if err := r.reconcileServiceAccount(ctx, instance); err != nil {
-		return ctrl.Result{}, err
-	}
-
 	// 5. Reconcile PVC for agent persistent data
 	if err := r.reconcilePVC(ctx, instance); err != nil {
 		return ctrl.Result{}, err
@@ -96,14 +91,6 @@ func (r *OperatorAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	// 8. Update status phase to Ready
 	return ctrl.Result{}, r.updateStatusReady(ctx, instance)
-}
-
-func (r *OperatorAgentReconciler) reconcileServiceAccount(ctx context.Context, agent *agentv1alpha1.OperatorAgent) error {
-	sa := buildOperatorServiceAccount(agent)
-	if err := ctrl.SetControllerReference(agent, sa, r.Scheme); err != nil {
-		return err
-	}
-	return r.Patch(ctx, sa, client.Apply, client.ForceOwnership, client.FieldOwner("operatoragent-controller"))
 }
 
 func (r *OperatorAgentReconciler) reconcilePVC(ctx context.Context, agent *agentv1alpha1.OperatorAgent) error {

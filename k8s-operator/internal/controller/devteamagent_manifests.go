@@ -97,35 +97,6 @@ func renderDevTeamSettingsMD(agent *agentv1alpha1.DevTeamAgent) string {
 `, clusterName, location, namespace)
 }
 
-// buildDevTeamServiceAccount generates the ServiceAccount manifest for DevTeamAgent (with Workload Identity annotation)
-func buildDevTeamServiceAccount(agent *agentv1alpha1.DevTeamAgent) *corev1.ServiceAccount {
-	saName := agent.Name
-	if agent.Spec.Security != nil && agent.Spec.Security.ServiceAccountName != "" {
-		saName = agent.Spec.Security.ServiceAccountName
-	}
-
-	sa := &corev1.ServiceAccount{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "v1",
-			Kind:       "ServiceAccount",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        saName,
-			Namespace:   agent.Namespace,
-			Annotations: make(map[string]string),
-		},
-	}
-
-	if agent.Spec.Security != nil && agent.Spec.Security.WorkloadIdentity != nil {
-		if gcp := agent.Spec.Security.WorkloadIdentity.Gcp; gcp != nil && gcp.GSAName != "" && gcp.ProjectID != "" {
-			gsaEmail := fmt.Sprintf("%s@%s.iam.gserviceaccount.com", gcp.GSAName, gcp.ProjectID)
-			sa.Annotations["iam.gke.io/gcp-service-account"] = gsaEmail
-		}
-	}
-
-	return sa
-}
-
 // buildDevTeamPVC generates the PVC manifest for DevTeamAgent data persistence
 func buildDevTeamPVC(agent *agentv1alpha1.DevTeamAgent) *corev1.PersistentVolumeClaim {
 	return &corev1.PersistentVolumeClaim{
@@ -151,12 +122,9 @@ func buildDevTeamPVC(agent *agentv1alpha1.DevTeamAgent) *corev1.PersistentVolume
 // buildDevTeamDeployment generates the Deployment manifest for DevTeamAgent
 func buildDevTeamDeployment(agent *agentv1alpha1.DevTeamAgent, configHash, fluentBitHash string) *appsv1.Deployment {
 	replicas := int32(1)
-	fsGroup := int64(10000)
+	fsGroup := int64(1000)
 
-	saName := agent.Name
-	if agent.Spec.Security != nil && agent.Spec.Security.ServiceAccountName != "" {
-		saName = agent.Spec.Security.ServiceAccountName
-	}
+	saName := "kubeagents-devteam-agent"
 
 	image := ""
 	if agent.Spec.Deployment != nil {
@@ -216,6 +184,10 @@ func buildDevTeamDeployment(agent *agentv1alpha1.DevTeamAgent, configHash, fluen
 		{
 			Name:  "API_SERVER_HOST",
 			Value: "0.0.0.0",
+		},
+		{
+			Name:  "PLATFORM_API_URL",
+			Value: "http://platform-agent.kubeagents-system.svc.cluster.local:8642/v1",
 		},
 	}
 

@@ -79,35 +79,6 @@ func renderOperatorConfigYAML(agent *agentv1alpha1.OperatorAgent) string {
 	return string(data)
 }
 
-// buildOperatorServiceAccount generates the ServiceAccount manifest for OperatorAgent (with Workload Identity annotation)
-func buildOperatorServiceAccount(agent *agentv1alpha1.OperatorAgent) *corev1.ServiceAccount {
-	saName := agent.Name
-	if agent.Spec.Security != nil && agent.Spec.Security.ServiceAccountName != "" {
-		saName = agent.Spec.Security.ServiceAccountName
-	}
-
-	sa := &corev1.ServiceAccount{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "v1",
-			Kind:       "ServiceAccount",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        saName,
-			Namespace:   agent.Namespace,
-			Annotations: make(map[string]string),
-		},
-	}
-
-	if agent.Spec.Security != nil && agent.Spec.Security.WorkloadIdentity != nil {
-		if gcp := agent.Spec.Security.WorkloadIdentity.Gcp; gcp != nil && gcp.GSAName != "" && gcp.ProjectID != "" {
-			gsaEmail := fmt.Sprintf("%s@%s.iam.gserviceaccount.com", gcp.GSAName, gcp.ProjectID)
-			sa.Annotations["iam.gke.io/gcp-service-account"] = gsaEmail
-		}
-	}
-
-	return sa
-}
-
 // buildOperatorPVC generates the PVC manifest for OperatorAgent data persistence
 func buildOperatorPVC(agent *agentv1alpha1.OperatorAgent) *corev1.PersistentVolumeClaim {
 	return &corev1.PersistentVolumeClaim{
@@ -133,12 +104,9 @@ func buildOperatorPVC(agent *agentv1alpha1.OperatorAgent) *corev1.PersistentVolu
 // buildOperatorDeployment generates the Deployment manifest for OperatorAgent
 func buildOperatorDeployment(agent *agentv1alpha1.OperatorAgent, configHash, fluentBitHash string) *appsv1.Deployment {
 	replicas := int32(1)
-	fsGroup := int64(10000)
+	fsGroup := int64(1000)
 
-	saName := agent.Name
-	if agent.Spec.Security != nil && agent.Spec.Security.ServiceAccountName != "" {
-		saName = agent.Spec.Security.ServiceAccountName
-	}
+	saName := "kubeagents-operator-agent"
 
 	image := ""
 	if agent.Spec.Deployment != nil {
