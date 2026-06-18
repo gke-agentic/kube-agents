@@ -8,10 +8,16 @@ USER root
 RUN apt-get update && apt-get install -y \
     apt-transport-https \
     ca-certificates \
-    gnupg \
     curl \
-    patch \
+    dnsutils \
     git \
+    gnupg \
+    iputils-ping \
+    jq \
+    nano \
+    patch \
+    vim \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. Install google-cloud-cli and kubectl natively using the Google Cloud apt repository
@@ -23,11 +29,20 @@ RUN curl -sSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dear
     kubectl \
     && rm -rf /var/lib/apt/lists/*
 
-# 3. Install GitHub CLI (gh)
+# 3. Install GitHub CLI (gh), yq, k9s, and helm
 RUN ARCH=$(dpkg --print-architecture) && \
     curl -fL -o /tmp/gh.deb "https://github.com/cli/cli/releases/download/v2.92.0/gh_2.92.0_linux_${ARCH}.deb" \
     && dpkg -i /tmp/gh.deb \
-    && rm /tmp/gh.deb
+    && rm /tmp/gh.deb && \
+    curl -sSLf -o /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_${ARCH}" && \
+    chmod +x /usr/local/bin/yq && \
+    curl -sSLf -o /tmp/k9s.tar.gz "https://github.com/derailed/k9s/releases/download/v0.51.0/k9s_Linux_${ARCH}.tar.gz" && \
+    tar -xzf /tmp/k9s.tar.gz -C /usr/local/bin k9s && \
+    rm /tmp/k9s.tar.gz && \
+    curl -sSLf -o /tmp/helm.tar.gz "https://get.helm.sh/helm-v3.15.2-linux-${ARCH}.tar.gz" && \
+    tar -xzf /tmp/helm.tar.gz -C /tmp && \
+    mv /tmp/linux-${ARCH}/helm /usr/local/bin/helm && \
+    rm -rf /tmp/helm.tar.gz /tmp/linux-${ARCH}
 
 RUN /usr/local/bin/uv pip install --python /opt/hermes/.venv/bin/python \
     ddgs \
@@ -56,6 +71,8 @@ RUN git clone https://github.com/bradhoekstra/mcp-remote.git /opt/mcp-remote && 
 # 6. Create base defaults directory and copy shared defaults
 RUN mkdir -p /opt/defaults && chown hermes:hermes /opt/defaults
 COPY --chown=hermes:hermes deploy/shared/defaults/ /opt/defaults/
+COPY --chown=hermes:hermes docs/glossary.md /opt/defaults/docs/
+
 
 # 6.5. Install and enable hermes-otel plugin in /opt/defaults
 RUN HOME=/opt/defaults HERMES_HOME=/opt/defaults /opt/hermes/.venv/bin/hermes plugins install briancaffey/hermes-otel && \
@@ -63,7 +80,8 @@ RUN HOME=/opt/defaults HERMES_HOME=/opt/defaults /opt/hermes/.venv/bin/hermes pl
     /opt/hermes/.venv/bin/python3 -c "import yaml, pathlib; p = pathlib.Path('/opt/defaults/plugins/hermes_otel/config.yaml'); c = yaml.safe_load(p.read_text()) or {} if p.exists() else {}; c['backends'] = [{'name': 'gke-managed-otel', 'type': 'otlp', 'endpoint': 'http://opentelemetry-collector.gke-managed-otel.svc.cluster.local:4318/v1/traces'}]; p.write_text(yaml.safe_dump(c))"
 
 # Copy shared skills
-COPY --chown=hermes:hermes deploy/shared/skills/ /opt/hermes/skills/
+COPY --chown=hermes:hermes agents/shared/skills/ /opt/hermes/skills/
+
 
 
 # 7. Expose ports shared by all agent gateways
