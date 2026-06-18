@@ -147,7 +147,7 @@ litellmGateway:
     repository: "ghcr.io/berriai/litellm"
     tag: "v1.86.0"
   modelProvider: "gemini"
-  modelName: "ggemini-3.5-flash"
+  modelName: "gemini-3.5-flash"
   useDummySecret: true
   resources:
     requests:
