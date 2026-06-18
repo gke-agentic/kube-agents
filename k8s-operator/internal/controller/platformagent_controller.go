@@ -244,9 +244,15 @@ func (r *PlatformAgentReconciler) reconcileRBAC(ctx context.Context, agent *agen
 func (r *PlatformAgentReconciler) updateStatusReady(ctx context.Context, agent *agentv1alpha1.PlatformAgent) error {
 	dep := &appsv1.Deployment{}
 	depErr := r.Get(ctx, types.NamespacedName{Namespace: agent.Namespace, Name: agent.Name + "-gateway"}, dep)
+	if depErr != nil && !errors.IsNotFound(depErr) {
+		return depErr
+	}
 
 	pvc := &corev1.PersistentVolumeClaim{}
 	pvcErr := r.Get(ctx, types.NamespacedName{Namespace: agent.Namespace, Name: agent.Name + "-data"}, pvc)
+	if pvcErr != nil && !errors.IsNotFound(pvcErr) {
+		return pvcErr
+	}
 
 	newPhase := "Provisioning"
 	if depErr == nil && dep.Status.ReadyReplicas > 0 {
