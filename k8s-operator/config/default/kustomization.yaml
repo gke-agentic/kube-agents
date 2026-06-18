@@ -13,3 +13,4 @@ resources:
   - ../rbac
   - ../manager
   - ../agent_rbac
+  - ../webhook

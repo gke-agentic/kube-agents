@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	agentv1alpha1 "github.com/gke-labs/kube-agents/k8s-operator/api/v1alpha1"
+	"github.com/gke-labs/kube-agents/k8s-operator/internal/cert"
 	"github.com/gke-labs/kube-agents/k8s-operator/internal/controller"
 	agentwebhook "github.com/gke-labs/kube-agents/k8s-operator/internal/webhook"
 	// +kubebuilder:scaffold:imports
@@ -80,6 +81,12 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	var enableInternalCert bool
+	flag.BoolVar(&enableInternalCert, "internal-cert-management", true,
+		"Enable internal cert rotation (OPA rotator) instead of cert-manager.")
+	var bootstrapCertsOnly bool
+	flag.BoolVar(&bootstrapCertsOnly, "bootstrap-certs-only", false,
+		"Only perform certificate bootstrapping and exit.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -87,6 +94,30 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	// Perform bootstrap certificate generation if requested
+	if bootstrapCertsOnly {
+		if os.Getenv("ENABLE_WEBHOOKS") != "false" && enableInternalCert {
+			setupLog.Info("Performing certificate bootstrapping and CA injection, then exiting")
+			if err := cert.BootstrapCerts(
+				ctrl.SetupSignalHandler(),
+				ctrl.GetConfigOrDie(),
+				"/tmp/k8s-webhook-server/serving-certs",
+				"kubeagents-webhook-certs",
+				"kubeagents-webhook-service",
+				"kubeagents-mutating-webhook-configuration",
+				"kubeagents-validating-webhook-configuration",
+			); err != nil {
+				setupLog.Error(err, "Failed to bootstrap certificates")
+				os.Exit(1)
+			}
+			setupLog.Info("Certificate bootstrapping completed successfully. Exiting.")
+			os.Exit(0)
+		} else {
+			setupLog.Info("Bootstrapping requested but webhooks or internal cert management is disabled. Exiting.")
+			os.Exit(0)
+		}
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -118,6 +149,10 @@ func main() {
 			webhookServerOptions.CertDir = webhookCertPath
 			webhookServerOptions.CertName = webhookCertName
 			webhookServerOptions.KeyName = webhookCertKey
+		} else if enableInternalCert {
+			webhookServerOptions.CertDir = "/tmp/k8s-webhook-server/serving-certs"
+			webhookServerOptions.CertName = "tls.crt"
+			webhookServerOptions.KeyName = "tls.key"
 		}
 
 		webhookServer = webhook.NewServer(webhookServerOptions)
@@ -169,6 +204,21 @@ func main() {
 	if err != nil {
 		setupLog.Error(err, "Failed to start manager")
 		os.Exit(1)
+	}
+
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" && enableInternalCert {
+		setupLog.Info("Registering ongoing background cert rotation")
+		if err := cert.ManageCerts(
+			mgr,
+			"/tmp/k8s-webhook-server/serving-certs",
+			"kubeagents-webhook-certs",
+			"kubeagents-webhook-service",
+			"kubeagents-mutating-webhook-configuration",
+			"kubeagents-validating-webhook-configuration",
+		); err != nil {
+			setupLog.Error(err, "Failed to register background cert rotator")
+			os.Exit(1)
+		}
 	}
 
 	if err := (&controller.PlatformAgentReconciler{
