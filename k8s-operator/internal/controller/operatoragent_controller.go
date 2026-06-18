@@ -53,14 +53,7 @@ func (r *OperatorAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if err := r.Get(ctx, req.NamespacedName, instance); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-
-	// Validate Spec
-	if instance.Spec.Deployment == nil || instance.Spec.Deployment.Image == "" {
-		log.Error(nil, "spec.deployment.image is required but not specified")
-		instance.Status.Phase = "Failed"
-		_ = r.Status().Update(ctx, instance)
-		return ctrl.Result{}, nil
-	}
+	log.Info("Reconciling OperatorAgent", "name", instance.Name, "namespace", instance.Namespace)
 
 	// 5. Reconcile PVC for agent persistent data
 	if err := r.reconcilePVC(ctx, instance); err != nil {

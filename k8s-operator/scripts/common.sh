@@ -55,7 +55,16 @@ for arg in "$@"; do
   esac
 done
 
-# ─── State Management ─────────────────────────────────────────────────────────
+save_var() {
+  local var_name=$1
+  local var_val=$2
+  export "${var_name}=${var_val}"
+  if [ -f "$VARS_FILE" ]; then
+    sed -i "/export ${var_name}=/d" "$VARS_FILE" 2>/dev/null || true
+  fi
+  printf "export %s=%q\n" "$var_name" "$var_val" >> "$VARS_FILE"
+}
+
 init_var() {
   local var_name=$1
   local default_val=$2

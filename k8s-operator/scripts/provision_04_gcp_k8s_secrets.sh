@@ -32,43 +32,69 @@ init_var "PROJECT_ID" "$DEFAULT_PROJECT_ID" "Enter Target GCP Project ID"
 init_var "REGION" "us-east4" "Enter GKE GCP Region"
 init_var "CLUSTER_NAME" "platform-agent-host" "Enter GKE Cluster Name"
 
-# Securely prompt for Gemini API Key if not present in environment or state
-if [ -z "${GEMINI_API_KEY:-}" ]; then
-  if [ "${DRY_RUN:-0}" -eq 1 ]; then
-    export GEMINI_API_KEY="placeholder"
-  else
-    echo -ne "  ${C_CYAN}Enter your GEMINI_API_KEY (press ENTER to default to empty placeholder): ${C_RESET}"
-    read -s -r INPUT_KEY
-    echo ""
-    export GEMINI_API_KEY="${INPUT_KEY:-placeholder}"
-    printf "export GEMINI_API_KEY=%q\n" "${GEMINI_API_KEY}" >> "$VARS_FILE"
+# Prompt for Model Provider and Default Name early to determine which API key is required
+init_var "MODEL_PROVIDER" "gemini" "Enter Model Provider (gemini, openai, anthropic)"
+
+case "$MODEL_PROVIDER" in
+  openai)
+    DEFAULT_MODEL="gpt-4o"
+    ;;
+  anthropic)
+    DEFAULT_MODEL="claude-3-5-sonnet"
+    ;;
+  *)
+    DEFAULT_MODEL="gemini-3.5-flash"
+    ;;
+esac
+
+init_var "MODEL_DEFAULT_NAME" "$DEFAULT_MODEL" "Enter Model Default Name"
+
+# Securely prompt for Gemini API Key if Gemini is the provider and it's not set/placeholder
+if [ "$MODEL_PROVIDER" = "gemini" ]; then
+  if [ -z "${GEMINI_API_KEY:-}" ] || [ "${GEMINI_API_KEY}" = "placeholder" ]; then
+    if [ "${DRY_RUN:-0}" -eq 1 ]; then
+      save_var "GEMINI_API_KEY" "placeholder"
+    else
+      echo -ne "  ${C_CYAN}Enter your GEMINI_API_KEY (press ENTER to default to empty placeholder): ${C_RESET}"
+      read -s -r INPUT_KEY
+      echo ""
+      save_var "GEMINI_API_KEY" "${INPUT_KEY:-placeholder}"
+    fi
   fi
+else
+  save_var "GEMINI_API_KEY" "${GEMINI_API_KEY:-placeholder}"
 fi
 
-# Securely prompt for OpenAI API Key if not present in environment or state
-if [ -z "${OPENAI_API_KEY:-}" ]; then
-  if [ "${DRY_RUN:-0}" -eq 1 ]; then
-    export OPENAI_API_KEY="placeholder"
-  else
-    echo -ne "  ${C_CYAN}Enter your OPENAI_API_KEY (press ENTER to default to empty placeholder): ${C_RESET}"
-    read -s -r INPUT_KEY
-    echo ""
-    export OPENAI_API_KEY="${INPUT_KEY:-placeholder}"
-    printf "export OPENAI_API_KEY=%q\n" "${OPENAI_API_KEY}" >> "$VARS_FILE"
+# Securely prompt for OpenAI API Key if OpenAI is the provider and it's not set/placeholder
+if [ "$MODEL_PROVIDER" = "openai" ]; then
+  if [ -z "${OPENAI_API_KEY:-}" ] || [ "${OPENAI_API_KEY}" = "placeholder" ]; then
+    if [ "${DRY_RUN:-0}" -eq 1 ]; then
+      save_var "OPENAI_API_KEY" "placeholder"
+    else
+      echo -ne "  ${C_CYAN}Enter your OPENAI_API_KEY (press ENTER to default to empty placeholder): ${C_RESET}"
+      read -s -r INPUT_KEY
+      echo ""
+      save_var "OPENAI_API_KEY" "${INPUT_KEY:-placeholder}"
+    fi
   fi
+else
+  save_var "OPENAI_API_KEY" "${OPENAI_API_KEY:-placeholder}"
 fi
 
-# Securely prompt for Anthropic API Key if not present in environment or state
-if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-  if [ "${DRY_RUN:-0}" -eq 1 ]; then
-    export ANTHROPIC_API_KEY="placeholder"
-  else
-    echo -ne "  ${C_CYAN}Enter your ANTHROPIC_API_KEY (press ENTER to default to empty placeholder): ${C_RESET}"
-    read -s -r INPUT_KEY
-    echo ""
-    export ANTHROPIC_API_KEY="${INPUT_KEY:-placeholder}"
-    printf "export ANTHROPIC_API_KEY=%q\n" "${ANTHROPIC_API_KEY}" >> "$VARS_FILE"
+# Securely prompt for Anthropic API Key if Anthropic is the provider and it's not set/placeholder
+if [ "$MODEL_PROVIDER" = "anthropic" ]; then
+  if [ -z "${ANTHROPIC_API_KEY:-}" ] || [ "${ANTHROPIC_API_KEY}" = "placeholder" ]; then
+    if [ "${DRY_RUN:-0}" -eq 1 ]; then
+      save_var "ANTHROPIC_API_KEY" "placeholder"
+    else
+      echo -ne "  ${C_CYAN}Enter your ANTHROPIC_API_KEY (press ENTER to default to empty placeholder): ${C_RESET}"
+      read -s -r INPUT_KEY
+      echo ""
+      save_var "ANTHROPIC_API_KEY" "${INPUT_KEY:-placeholder}"
+    fi
   fi
+else
+  save_var "ANTHROPIC_API_KEY" "${ANTHROPIC_API_KEY:-placeholder}"
 fi
 
 if [ -z "${API_SERVER_KEY:-}" ]; then
@@ -96,8 +122,12 @@ verify_k8s_secrets() {
   return 1
 }
 execute_k8s_secrets() {
-  if [ "$GEMINI_API_KEY" = "placeholder" ]; then
+  if [ "$MODEL_PROVIDER" = "gemini" ] && [ "$GEMINI_API_KEY" = "placeholder" ]; then
     print_warning "GEMINI_API_KEY is currently a placeholder. The platform agent will run but cannot authenticate with Gemini until updated."
+  elif [ "$MODEL_PROVIDER" = "openai" ] && [ "$OPENAI_API_KEY" = "placeholder" ]; then
+    print_warning "OPENAI_API_KEY is currently a placeholder. The platform agent will run but cannot authenticate with OpenAI until updated."
+  elif [ "$MODEL_PROVIDER" = "anthropic" ] && [ "$ANTHROPIC_API_KEY" = "placeholder" ]; then
+    print_warning "ANTHROPIC_API_KEY is currently a placeholder. The platform agent will run but cannot authenticate with Anthropic until updated."
   fi
 
   print_info "Writing Kubernetes Secret 'platform-agent-secrets' into '$NAMESPACE'..."
