@@ -34,10 +34,21 @@ spec:
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
-      containers:
-        - command:
-            - /manager
+      initContainers:
+        - name: bootstrap-certs
+          image: controller:latest
           args:
+            - --bootstrap-certs-only
+            - --internal-cert-management=true
+          env:
+            - name: ENABLE_WEBHOOKS
+              value: "true"
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+      containers:
+        - args:
             - --leader-elect
             - --health-probe-bind-address=:8081
             - --metrics-bind-address=0

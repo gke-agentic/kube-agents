@@ -54,6 +54,9 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 }
 
+//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=mutatingwebhookconfigurations;validatingwebhookconfigurations,verbs=get;list;watch;update;patch
+
 // nolint:gocyclo
 func main() {
 	var metricsAddr string
