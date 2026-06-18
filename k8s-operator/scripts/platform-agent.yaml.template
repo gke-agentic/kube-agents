@@ -24,9 +24,7 @@ spec:
       gcp:
         gsaName: "${GSA_NAME}"
         projectId: "${PROJECT_ID}"
-  model:
-    provider: "${MODEL_PROVIDER}"
-    default: "${MODEL_DEFAULT_NAME}"
+
   integration:
     googleChat:
       enabled: true

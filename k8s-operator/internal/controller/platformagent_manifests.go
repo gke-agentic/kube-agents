@@ -76,13 +76,11 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 		} `json:"platforms"`
 	}{}
 
-	if agent.Spec.Model != nil {
-		cfg.Model.Provider = "custom"
-		cfg.Model.Default = "model-default"
-		cfg.Model.Model = "model-default"
-		cfg.Model.BaseURL = fmt.Sprintf("http://litellm.%s.svc.cluster.local/v1", agent.Namespace)
-		cfg.Model.APIKey = "none"
-	}
+	cfg.Model.Provider = "custom"
+	cfg.Model.Default = "model-default"
+	cfg.Model.Model = "model-default"
+	cfg.Model.BaseURL = fmt.Sprintf("http://litellm.%s.svc.cluster.local/v1", agent.Namespace)
+	cfg.Model.APIKey = "none"
 	cfg.Terminal.Backend = "local"
 	cfg.Terminal.Cwd = cwd
 
@@ -254,15 +252,6 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 				},
 			})
 		}
-	}
-
-	if agent.Spec.Model != nil && agent.Spec.Model.Gemini != nil && agent.Spec.Model.Gemini.ApiKeySecretRef != nil {
-		envVars = append(envVars, corev1.EnvVar{
-			Name: "GEMINI_API_KEY",
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: agent.Spec.Model.Gemini.ApiKeySecretRef,
-			},
-		})
 	}
 
 	if integration := agent.Spec.Integration; integration != nil {

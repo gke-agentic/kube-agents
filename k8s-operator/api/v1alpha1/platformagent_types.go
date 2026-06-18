@@ -34,10 +34,6 @@ type PlatformAgentSpec struct {
 	// +optional
 	Security *SecuritySpec `json:"security,omitempty"`
 
-	// Model configures the LLM reasoning backend.
-	// +optional
-	Model *ModelSpec `json:"model,omitempty"`
-
 	// Integration configures platform-specific external connections.
 	// +optional
 	Integration *IntegrationSpec `json:"integration,omitempty"`
