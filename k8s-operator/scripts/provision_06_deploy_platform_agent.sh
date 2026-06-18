@@ -33,7 +33,7 @@ DEFAULT_PROJECT_ID="${ACTIVE_PROJECT:-$(whoami 2>/dev/null || echo "user")}"
 init_var "PROJECT_ID" "$DEFAULT_PROJECT_ID" "Enter Target GCP Project ID"
 init_var "REGION" "us-east4" "Enter GKE GCP Region"
 init_var "CLUSTER_NAME" "platform-agent-host" "Enter GKE Cluster Name"
-init_var "MODEL_DEFAULT_NAME" "gemini-3.1-flash-lite" "Enter Model Default Name"
+init_var "MODEL_DEFAULT_NAME" "gemini-3.5-flash" "Enter Model Default Name"
 init_var "MODEL_PROVIDER" "gemini" "Enter Model Provider"
 
 # Map global state variables to expected template variables

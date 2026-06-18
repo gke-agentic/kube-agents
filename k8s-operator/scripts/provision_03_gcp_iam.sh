@@ -60,6 +60,7 @@ execute_agent_iam() {
     gcloud iam service-accounts create "${gsa_name}" \
         --display-name="${agent_name} GSA" \
         --project="${PROJECT_ID}" || return 1
+    sleep 15
   fi
   
   print_info "Configuring IAM roles for ${gsa_name}..."
