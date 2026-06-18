@@ -37,13 +37,19 @@ verify_agent_iam() {
   local gsa_email="${gsa_name}@${PROJECT_ID}.iam.gserviceaccount.com"
   local wi_member="serviceAccount:${PROJECT_ID}.svc.id.goog[${NAMESPACE}/${ksa_name}]"
   
-  gcloud iam service-accounts get-iam-policy "${gsa_email}" --project="${PROJECT_ID}" --format="json" 2>/dev/null | grep -F -q "${wi_member}" 
+  # Ensure the service account exists
+  gcloud iam service-accounts describe "${gsa_email}" --project="${PROJECT_ID}" >/dev/null 2>&1 || return 1
+  
+  # Ensure Workload Identity binding is present
+  gcloud iam service-accounts get-iam-policy "${gsa_email}" --project="${PROJECT_ID}" --format="json" 2>/dev/null | grep -F -q "${wi_member}" || return 1
   
   local project_roles
   project_roles=$(gcloud projects get-iam-policy "${PROJECT_ID}" --flatten="bindings[].members" --filter="bindings.members:serviceAccount:${gsa_email}" --format="value(bindings.role)" 2>/dev/null)
   for role in "${roles[@]}"; do
-    echo "$project_roles" | grep -q "${role}"
+    echo "$project_roles" | grep -q "${role}" || return 1
   done
+  
+  return 0
 }
 
 execute_agent_iam() {
