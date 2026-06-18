@@ -33,8 +33,21 @@ DEFAULT_PROJECT_ID="${ACTIVE_PROJECT:-$(whoami 2>/dev/null || echo "user")}"
 init_var "PROJECT_ID" "$DEFAULT_PROJECT_ID" "Enter Target GCP Project ID"
 init_var "REGION" "us-east4" "Enter GKE GCP Region"
 init_var "CLUSTER_NAME" "platform-agent-host" "Enter GKE Cluster Name"
-init_var "MODEL_DEFAULT_NAME" "gemini-3.5-flash" "Enter Model Default Name"
-init_var "MODEL_PROVIDER" "gemini" "Enter Model Provider"
+init_var "MODEL_PROVIDER" "gemini" "Enter Model Provider (gemini, openai, anthropic)"
+
+case "$MODEL_PROVIDER" in
+  openai)
+    DEFAULT_MODEL="gpt-4o"
+    ;;
+  anthropic)
+    DEFAULT_MODEL="claude-3-5-sonnet"
+    ;;
+  *)
+    DEFAULT_MODEL="gemini-3.5-flash"
+    ;;
+esac
+
+init_var "MODEL_DEFAULT_NAME" "$DEFAULT_MODEL" "Enter Model Default Name"
 
 # Map global state variables to expected template variables
 export GSA_NAME="${PLATFORM_AGENT_GSA_NAME}"

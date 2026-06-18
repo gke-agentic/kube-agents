@@ -55,7 +55,17 @@ for arg in "$@"; do
   esac
 done
 
-# ─── State Management ─────────────────────────────────────────────────────────
+save_var() {
+  local var_name=$1
+  local var_val=$2
+  export "${var_name}=${var_val}"
+  if [ -f "$VARS_FILE" ]; then
+    grep -v "export ${var_name}=" "$VARS_FILE" > "$VARS_FILE.tmp" 2>/dev/null || true
+    mv "$VARS_FILE.tmp" "$VARS_FILE"
+  fi
+  printf "export %s=%q\n" "$var_name" "$var_val" >> "$VARS_FILE"
+}
+
 init_var() {
   local var_name=$1
   local default_val=$2

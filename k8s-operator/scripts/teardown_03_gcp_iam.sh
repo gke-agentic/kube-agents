@@ -36,26 +36,45 @@ cleanup_agent_iam() {
   
   local gsa_email="${gsa_name}@${PROJECT_ID}.iam.gserviceaccount.com"
   
-  if gcloud iam service-accounts describe "${gsa_email}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  local gsa_exists=0
+  if [ "${DRY_RUN:-0}" -eq 1 ]; then
+    gsa_exists=1
+  elif gcloud iam service-accounts describe "${gsa_email}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+    gsa_exists=1
+  fi
+
+  if [ "$gsa_exists" -eq 1 ]; then
     echo -e "  ${C_CYAN}ℹ Removing project-level IAM policy bindings for ${gsa_name}...${C_RESET}"
     for role in "${roles[@]}"; do
-      gcloud projects remove-iam-policy-binding "${PROJECT_ID}" \
-          --member="serviceAccount:${gsa_email}" \
-          --role="${role}" \
-          --quiet || true
+      if [ "${DRY_RUN:-0}" -eq 1 ]; then
+        echo -e "  ${C_GREEN}[DRY-RUN] Would remove project-level IAM policy binding '${role}' for ${gsa_name}.${C_RESET}"
+      else
+        gcloud projects remove-iam-policy-binding "${PROJECT_ID}" \
+            --member="serviceAccount:${gsa_email}" \
+            --role="${role}" \
+            --quiet 2>/dev/null || true
+      fi
     done
 
     echo -e "  ${C_CYAN}ℹ Removing Workload Identity Policy Binding for ${gsa_name}...${C_RESET}"
     local wi_member="serviceAccount:${PROJECT_ID}.svc.id.goog[${NAMESPACE}/${ksa_name}]"
-    gcloud iam service-accounts remove-iam-policy-binding "${gsa_email}" \
-        --role="roles/iam.workloadIdentityUser" \
-        --member="${wi_member}" \
-        --project="${PROJECT_ID}" \
-        --quiet || true
+    if [ "${DRY_RUN:-0}" -eq 1 ]; then
+      echo -e "  ${C_GREEN}[DRY-RUN] Would remove Workload Identity binding for ${gsa_name} to ${ksa_name}.${C_RESET}"
+    else
+      gcloud iam service-accounts remove-iam-policy-binding "${gsa_email}" \
+          --role="roles/iam.workloadIdentityUser" \
+          --member="${wi_member}" \
+          --project="${PROJECT_ID}" \
+          --quiet 2>/dev/null || true
+    fi
 
     echo -e "  ${C_CYAN}ℹ Deleting GSA ${gsa_name}...${C_RESET}"
-    gcloud iam service-accounts delete "${gsa_email}" --project="${PROJECT_ID}" --quiet || true
-    echo -e "  ${C_GREEN}✓ GSA '${gsa_name}' successfully removed.${C_RESET}"
+    if [ "${DRY_RUN:-0}" -eq 1 ]; then
+      echo -e "  ${C_GREEN}[DRY-RUN] Would delete GSA ${gsa_name}.${C_RESET}"
+    else
+      gcloud iam service-accounts delete "${gsa_email}" --project="${PROJECT_ID}" --quiet || true
+      echo -e "  ${C_GREEN}✓ GSA '${gsa_name}' successfully removed.${C_RESET}"
+    fi
   else
     echo -e "  ${C_GREEN}✓ GSA '${gsa_name}' does not exist. Skipping cleanup.${C_RESET}"
   fi

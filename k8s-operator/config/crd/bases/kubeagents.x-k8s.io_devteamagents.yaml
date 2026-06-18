@@ -202,8 +202,6 @@ spec:
                       default: latest
                       description: Tag specifies the container image tag.
                       type: string
-                  required:
-                    - image
                   type: object
                 harness:
                   description:

@@ -62,14 +62,6 @@ func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Validate Spec
-	if instance.Spec.Deployment == nil || instance.Spec.Deployment.Image == "" {
-		log.Error(nil, "spec.deployment.image is required but not specified")
-		instance.Status.Phase = "Failed"
-		_ = r.Status().Update(ctx, instance)
-		return ctrl.Result{}, nil
-	}
-
 	log.Info("Reconciling PlatformAgent", "name", instance.Name, "namespace", instance.Namespace)
 
 	// 1. Intercept Deletion
