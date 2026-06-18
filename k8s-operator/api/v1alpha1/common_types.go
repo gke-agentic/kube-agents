@@ -94,29 +94,6 @@ type GcpWorkloadIdentitySpec struct {
 	ProjectID string `json:"projectId,omitempty"`
 }
 
-// ModelSpec configures the LLM reasoning backend. By utilizing nested providers,
-// the AI provider is abstracted away from the core deployment logic.
-type ModelSpec struct {
-	// Provider is the active AI provider (e.g., "gemini").
-	// +kubebuilder:validation:MinLength=1
-	// +required
-	Provider string `json:"provider"`
-
-	// Default is the primary model to use (e.g., "gemini-3.1-flash-lite").
-	// +kubebuilder:validation:MinLength=1
-	// +required
-	Default string `json:"default"`
-
-	// Gemini configures the Gemini provider.
-	// +optional
-	Gemini *GeminiSpec `json:"gemini,omitempty"`
-}
-
-type GeminiSpec struct {
-	// ApiKeySecretRef securely references a Secret containing the GEMINI_API_KEY.
-	// +optional
-	ApiKeySecretRef *corev1.SecretKeySelector `json:"apiKeySecretRef,omitempty"`
-}
 type DeploymentStatus struct {
 	// Name is the exact name of the underlying Kubernetes Deployment.
 	// +optional

@@ -24,13 +24,6 @@ spec:
       gcp:
         gsaName: "${GSA_NAME}"
         projectId: "${PROJECT_ID}"
-  model:
-    provider: "${MODEL_PROVIDER}"
-    default: "${MODEL_DEFAULT_NAME}"
-    gemini:
-      apiKeySecretRef:
-        name: platform-agent-secrets
-        key: GEMINI_API_KEY
   integration:
     googleChat:
       enabled: true

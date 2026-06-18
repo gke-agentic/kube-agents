@@ -9,6 +9,11 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "$SCRIPT_DIR" == */scripts ]]; then
+  OPERATOR_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+else
+  OPERATOR_DIR="${SCRIPT_DIR}"
+fi
 VARS_FILE="${SCRIPT_DIR}/vars.sh"
 
 # ─── ANSI Colors ──────────────────────────────────────────────────────────────
@@ -28,7 +33,7 @@ DEFAULT_PROJECT_ID="${ACTIVE_PROJECT:-$(whoami 2>/dev/null || echo "user")}"
 init_var "PROJECT_ID" "$DEFAULT_PROJECT_ID" "Enter Target GCP Project ID"
 init_var "REGION" "us-east4" "Enter GKE GCP Region"
 init_var "CLUSTER_NAME" "platform-agent-host" "Enter GKE Cluster Name"
-init_var "MODEL_DEFAULT_NAME" "gemini-3.1-flash-lite" "Enter Model Default Name"
+init_var "MODEL_DEFAULT_NAME" "gemini-3.5-flash" "Enter Model Default Name"
 init_var "MODEL_PROVIDER" "gemini" "Enter Model Provider"
 
 # Map global state variables to expected template variables
@@ -54,7 +59,19 @@ execute_kubeconfig() {
   connect_cluster
 }
 
-# Step 2: Apply PlatformAgent Custom Resource
+# Step 2: Deploy LiteLLM Gateway
+verify_litellm() {
+  kubectl get configmap litellm-config -n "${NAMESPACE}" >/dev/null 2>&1 && \
+  kubectl get deployment litellm -n "${NAMESPACE}" >/dev/null 2>&1 && \
+  kubectl get service litellm -n "${NAMESPACE}" >/dev/null 2>&1
+}
+execute_litellm() {
+  print_info "Deploying LiteLLM Gateway into GKE..."
+  export NAMESPACE MODEL_PROVIDER MODEL_DEFAULT_NAME
+  make -C "${OPERATOR_DIR}" deploy-litellm || return 1
+}
+
+# Step 3: Apply PlatformAgent Custom Resource
 verify_custom_resource() {
   # Always return false to ensure configuration updates are applied to the Custom Resource
   return 1
@@ -80,7 +97,8 @@ execute_custom_resource() {
 
 # ─── Execution Pipeline ───────────────────────────────────────────────────────
 run_step "1. Connect kubectl" verify_kubeconfig execute_kubeconfig 0
-run_step "2. Apply PlatformAgent Custom Resource" verify_custom_resource execute_custom_resource 0
+run_step "2. Deploy LiteLLM Gateway" verify_litellm execute_litellm 0
+run_step "3. Apply PlatformAgent Custom Resource" verify_custom_resource execute_custom_resource 0
 
 # ─── Conclusion Checklist ─────────────────────────────────────────────────────
 echo -e "\n${C_GREEN}${C_BOLD}✓ PlatformAgent Custom Resource applied successfully to GKE!${C_RESET}"

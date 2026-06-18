@@ -62,6 +62,9 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 		Model struct {
 			Default  string `json:"default"`
 			Provider string `json:"provider"`
+			Model    string `json:"model,omitempty"`
+			BaseURL  string `json:"base_url,omitempty"`
+			APIKey   string `json:"api_key,omitempty"`
 		} `json:"model"`
 		Terminal struct {
 			Backend string `json:"backend"`
@@ -74,10 +77,11 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 		} `json:"platforms"`
 	}{}
 
-	if agent.Spec.Model != nil {
-		cfg.Model.Default = agent.Spec.Model.Default
-		cfg.Model.Provider = agent.Spec.Model.Provider
-	}
+	cfg.Model.Provider = "custom"
+	cfg.Model.Default = "model-default"
+	cfg.Model.Model = "model-default"
+	cfg.Model.BaseURL = fmt.Sprintf("http://litellm.%s.svc.cluster.local/v1", agent.Namespace)
+	cfg.Model.APIKey = "none"
 	cfg.Terminal.Backend = "local"
 	cfg.Terminal.Cwd = cwd
 
@@ -251,15 +255,6 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 		}
 	}
 
-	if agent.Spec.Model != nil && agent.Spec.Model.Gemini != nil && agent.Spec.Model.Gemini.ApiKeySecretRef != nil {
-		envVars = append(envVars, corev1.EnvVar{
-			Name: "GEMINI_API_KEY",
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: agent.Spec.Model.Gemini.ApiKeySecretRef,
-			},
-		})
-	}
-
 	if integration := agent.Spec.Integration; integration != nil {
 		if gchat := integration.GoogleChat; gchat != nil && gchat.Enabled != nil && *gchat.Enabled {
 			envVars = append(envVars, []corev1.EnvVar{
@@ -280,6 +275,12 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 					Value: gchat.HomeChannel,
 				},
 			}...)
+			if len(gchat.AllowedUsers) == 0 {
+				envVars = append(envVars, corev1.EnvVar{
+					Name:  "GOOGLE_CHAT_ALLOW_ALL_USERS",
+					Value: "true",
+				})
+			}
 		}
 	}
 

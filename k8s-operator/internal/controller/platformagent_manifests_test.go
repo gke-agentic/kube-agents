@@ -34,10 +34,6 @@ func TestBuildConfigMap(t *testing.T) {
 			Namespace: "test-ns",
 		},
 		Spec: agentv1alpha1.PlatformAgentSpec{
-			Model: &agentv1alpha1.ModelSpec{
-				Provider: "gemini",
-				Default:  "gemini-2.5-flash",
-			},
 			Harness: &agentv1alpha1.PlatformAgentHarnessSpec{
 				Hermes: &agentv1alpha1.HermesSpec{
 					AgentHome: "/custom/home",
@@ -57,11 +53,20 @@ func TestBuildConfigMap(t *testing.T) {
 	}
 
 	yamlContent := cm.Data["config.yaml"]
-	if !strings.Contains(yamlContent, "provider: gemini") {
-		t.Errorf("expected config to contain provider: gemini, got:\n%s", yamlContent)
+	if !strings.Contains(yamlContent, "provider: custom") {
+		t.Errorf("expected config to contain provider: custom, got:\n%s", yamlContent)
 	}
-	if !strings.Contains(yamlContent, "default: gemini-2.5-flash") {
-		t.Errorf("expected config to contain default model, got:\n%s", yamlContent)
+	if !strings.Contains(yamlContent, "default: model-default") {
+		t.Errorf("expected config to contain default: model-default, got:\n%s", yamlContent)
+	}
+	if !strings.Contains(yamlContent, "model: model-default") {
+		t.Errorf("expected config to contain model: model-default, got:\n%s", yamlContent)
+	}
+	if !strings.Contains(yamlContent, "base_url: http://litellm.test-ns.svc.cluster.local/v1") {
+		t.Errorf("expected config to contain correct base_url, got:\n%s", yamlContent)
+	}
+	if !strings.Contains(yamlContent, "api_key: none") {
+		t.Errorf("expected config to contain api_key: none, got:\n%s", yamlContent)
 	}
 	if !strings.Contains(yamlContent, "cwd: /custom/home") {
 		t.Errorf("expected config to contain custom home path, got:\n%s", yamlContent)
@@ -186,14 +191,7 @@ func TestBuildDeployment(t *testing.T) {
 					},
 				},
 			},
-			Model: &agentv1alpha1.ModelSpec{
-				Gemini: &agentv1alpha1.GeminiSpec{
-					ApiKeySecretRef: &corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: "gemini-secrets"},
-						Key:                  "api-key",
-					},
-				},
-			},
+
 			Integration: &agentv1alpha1.IntegrationSpec{
 				GoogleChat: &agentv1alpha1.GoogleChatSpec{
 					Enabled:          ptr.To(true),
@@ -256,8 +254,8 @@ func TestBuildDeployment(t *testing.T) {
 	if envMap["API_SERVER_KEY"].ValueFrom.SecretKeyRef.Name != "secrets" {
 		t.Errorf("expected API_SERVER_KEY SecretRef secrets, got %s", envMap["API_SERVER_KEY"].ValueFrom.SecretKeyRef.Name)
 	}
-	if envMap["GEMINI_API_KEY"].ValueFrom.SecretKeyRef.Name != "gemini-secrets" {
-		t.Errorf("expected GEMINI_API_KEY SecretRef gemini-secrets, got %s", envMap["GEMINI_API_KEY"].ValueFrom.SecretKeyRef.Name)
+	if _, ok := envMap["GEMINI_API_KEY"]; ok {
+		t.Errorf("expected GEMINI_API_KEY to not be set on platform agent container")
 	}
 	if envMap["GOOGLE_CHAT_PROJECT_ID"].Value != "my-gcp-project" {
 		t.Errorf("expected GOOGLE_CHAT_PROJECT_ID my-gcp-project, got %s", envMap["GOOGLE_CHAT_PROJECT_ID"].Value)
@@ -267,6 +265,9 @@ func TestBuildDeployment(t *testing.T) {
 	}
 	if envMap["GOOGLE_CHAT_ALLOWED_USERS"].Value != "alice,bob" {
 		t.Errorf("expected GOOGLE_CHAT_ALLOWED_USERS alice,bob, got %s", envMap["GOOGLE_CHAT_ALLOWED_USERS"].Value)
+	}
+	if _, ok := envMap["GOOGLE_CHAT_ALLOW_ALL_USERS"]; ok {
+		t.Errorf("expected GOOGLE_CHAT_ALLOW_ALL_USERS not to be set when allowed users is populated")
 	}
 
 	// Verify Fluent Bit container
@@ -288,6 +289,43 @@ func TestBuildDeployment(t *testing.T) {
 	}
 	if _, ok := volumesMap["fluent-bit-state"]; !ok {
 		t.Errorf("expected fluent-bit-state volume, not found")
+	}
+}
+
+func TestBuildDeploymentGoogleChatAllowedUsersEmpty(t *testing.T) {
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-agent",
+			Namespace: "my-ns",
+		},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			Deployment: &agentv1alpha1.DeploymentSpec{
+				Image: "gcr.io/my-proj/agent",
+			},
+			Integration: &agentv1alpha1.IntegrationSpec{
+				GoogleChat: &agentv1alpha1.GoogleChatSpec{
+					Enabled:          ptr.To(true),
+					ProjectID:        "my-gcp-project",
+					SubscriptionName: "chat-sub",
+					AllowedUsers:     []string{},
+					HomeChannel:      "spaces/123",
+				},
+			},
+		},
+	}
+
+	dep := buildDeployment(agent, "abcd1234", "efgh5678")
+	container := dep.Spec.Template.Spec.Containers[0]
+	envMap := make(map[string]corev1.EnvVar)
+	for _, env := range container.Env {
+		envMap[env.Name] = env
+	}
+
+	if envMap["GOOGLE_CHAT_ALLOWED_USERS"].Value != "" {
+		t.Errorf("expected GOOGLE_CHAT_ALLOWED_USERS empty, got %s", envMap["GOOGLE_CHAT_ALLOWED_USERS"].Value)
+	}
+	if envMap["GOOGLE_CHAT_ALLOW_ALL_USERS"].Value != "true" {
+		t.Errorf("expected GOOGLE_CHAT_ALLOW_ALL_USERS true, got %s", envMap["GOOGLE_CHAT_ALLOW_ALL_USERS"].Value)
 	}
 }
 

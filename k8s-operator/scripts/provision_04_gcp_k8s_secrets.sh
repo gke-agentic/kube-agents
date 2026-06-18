@@ -45,6 +45,32 @@ if [ -z "${GEMINI_API_KEY:-}" ]; then
   fi
 fi
 
+# Securely prompt for OpenAI API Key if not present in environment or state
+if [ -z "${OPENAI_API_KEY:-}" ]; then
+  if [ "${DRY_RUN:-0}" -eq 1 ]; then
+    export OPENAI_API_KEY="placeholder"
+  else
+    echo -ne "  ${C_CYAN}Enter your OPENAI_API_KEY (press ENTER to default to empty placeholder): ${C_RESET}"
+    read -s -r INPUT_KEY
+    echo ""
+    export OPENAI_API_KEY="${INPUT_KEY:-placeholder}"
+    printf "export OPENAI_API_KEY=%q\n" "${OPENAI_API_KEY}" >> "$VARS_FILE"
+  fi
+fi
+
+# Securely prompt for Anthropic API Key if not present in environment or state
+if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+  if [ "${DRY_RUN:-0}" -eq 1 ]; then
+    export ANTHROPIC_API_KEY="placeholder"
+  else
+    echo -ne "  ${C_CYAN}Enter your ANTHROPIC_API_KEY (press ENTER to default to empty placeholder): ${C_RESET}"
+    read -s -r INPUT_KEY
+    echo ""
+    export ANTHROPIC_API_KEY="${INPUT_KEY:-placeholder}"
+    printf "export ANTHROPIC_API_KEY=%q\n" "${ANTHROPIC_API_KEY}" >> "$VARS_FILE"
+  fi
+fi
+
 if [ -z "${API_SERVER_KEY:-}" ]; then
   print_info "Generating a secure random API_SERVER_KEY..."
   export API_SERVER_KEY=$(openssl rand -hex 16)
@@ -79,8 +105,11 @@ execute_k8s_secrets() {
       --namespace="$NAMESPACE" \
       --from-literal=GEMINI_API_KEY="$GEMINI_API_KEY" \
       --from-literal=API_SERVER_KEY="$API_SERVER_KEY" \
+      --from-literal=OPENAI_API_KEY="$OPENAI_API_KEY" \
+      --from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
       --dry-run=client -o yaml | kubectl apply -f -
 }
+
 
 # ─── Execution Pipeline ───────────────────────────────────────────────────────
 run_step "1. Connect kubectl" verify_kubeconfig execute_kubeconfig 0

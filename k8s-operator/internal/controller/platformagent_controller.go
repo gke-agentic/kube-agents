@@ -288,6 +288,30 @@ func (r *PlatformAgentReconciler) updateStatusReady(ctx context.Context, agent *
 	} else {
 		agent.Status.Phase = "Provisioning"
 	}
+
+	newDeploymentStatusName := ""
+	newDeploymentStatusReadyReplicas := int32(0)
+	if depErr == nil {
+		newDeploymentStatusName = dep.Name
+		newDeploymentStatusReadyReplicas = dep.Status.ReadyReplicas
+	}
+
+	newStorageStatusBound := false
+	if pvcErr == nil {
+		newStorageStatusBound = (pvc.Status.Phase == corev1.ClaimBound)
+	}
+
+	if agent.Status.Phase == newPhase &&
+		agent.Status.DeploymentStatus.Name == newDeploymentStatusName &&
+		agent.Status.DeploymentStatus.ReadyReplicas == newDeploymentStatusReadyReplicas &&
+		agent.Status.StorageStatus.Bound == newStorageStatusBound {
+		return nil
+	}
+
+	agent.Status.Phase = newPhase
+	agent.Status.DeploymentStatus.Name = newDeploymentStatusName
+	agent.Status.DeploymentStatus.ReadyReplicas = newDeploymentStatusReadyReplicas
+	agent.Status.StorageStatus.Bound = newStorageStatusBound
 	now := metav1.Now()
 	agent.Status.LastReconcileTime = &now
 

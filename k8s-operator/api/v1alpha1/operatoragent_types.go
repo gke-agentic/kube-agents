@@ -52,10 +52,6 @@ type OperatorAgentSpec struct {
 	// Security configures RBAC, Pod Security, and Workload Identity.
 	// +optional
 	Security *SecuritySpec `json:"security,omitempty"`
-
-	// Model configures the LLM reasoning backend.
-	// +optional
-	Model *ModelSpec `json:"model,omitempty"`
 }
 
 // OperatorAgentStatus defines the observed state of OperatorAgent.

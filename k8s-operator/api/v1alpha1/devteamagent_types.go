@@ -53,10 +53,6 @@ type DevTeamAgentSpec struct {
 	// Security manages Kubernetes RBAC, Pod Security, and Cloud Workload Identity.
 	// +optional
 	Security *SecuritySpec `json:"security,omitempty"`
-
-	// Model configures the LLM reasoning backend.
-	// +optional
-	Model *ModelSpec `json:"model,omitempty"`
 }
 
 // DevTeamAgentStatus defines the observed state of DevTeamAgent.

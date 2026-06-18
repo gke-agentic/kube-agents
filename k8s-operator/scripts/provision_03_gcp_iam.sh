@@ -37,13 +37,19 @@ verify_agent_iam() {
   local gsa_email="${gsa_name}@${PROJECT_ID}.iam.gserviceaccount.com"
   local wi_member="serviceAccount:${PROJECT_ID}.svc.id.goog[${NAMESPACE}/${ksa_name}]"
   
-  gcloud iam service-accounts get-iam-policy "${gsa_email}" --project="${PROJECT_ID}" --format="json" 2>/dev/null | grep -F -q "${wi_member}" 
+  # Ensure the service account exists
+  gcloud iam service-accounts describe "${gsa_email}" --project="${PROJECT_ID}" >/dev/null 2>&1 || return 1
+  
+  # Ensure Workload Identity binding is present
+  gcloud iam service-accounts get-iam-policy "${gsa_email}" --project="${PROJECT_ID}" --format="json" 2>/dev/null | grep -F -q "${wi_member}" || return 1
   
   local project_roles
   project_roles=$(gcloud projects get-iam-policy "${PROJECT_ID}" --flatten="bindings[].members" --filter="bindings.members:serviceAccount:${gsa_email}" --format="value(bindings.role)" 2>/dev/null)
   for role in "${roles[@]}"; do
-    echo "$project_roles" | grep -q "${role}"
+    echo "$project_roles" | grep -q "${role}" || return 1
   done
+  
+  return 0
 }
 
 execute_agent_iam() {
@@ -60,6 +66,7 @@ execute_agent_iam() {
     gcloud iam service-accounts create "${gsa_name}" \
         --display-name="${agent_name} GSA" \
         --project="${PROJECT_ID}" || return 1
+    sleep 15
   fi
   
   print_info "Configuring IAM roles for ${gsa_name}..."
@@ -85,13 +92,11 @@ execute_agent_iam() {
 verify_apis() {
   local out=$(gcloud services list --enabled --project="$PROJECT_ID" --format="value(config.name)" 2>/dev/null || echo "")
   echo "$out" | grep -q 'container.googleapis.com' && \
-  echo "$out" | grep -q 'aiplatform.googleapis.com' && \
   echo "$out" | grep -q 'cloudresourcemanager.googleapis.com'
 }
 execute_apis() {
   gcloud services enable \
       container.googleapis.com \
-      aiplatform.googleapis.com \
       cloudresourcemanager.googleapis.com \
       --project="$PROJECT_ID" || return 1
 }
@@ -111,7 +116,6 @@ execute_controller() {
 # Step 3: Configure Platform Agent IAM
 verify_platform_agent() {
   verify_agent_iam "${PLATFORM_AGENT_KSA_NAME}" "${PLATFORM_AGENT_GSA_NAME}" \
-      "roles/aiplatform.user" \
       "roles/container.clusterAdmin" \
       "roles/container.admin" \
       "roles/monitoring.admin" \
@@ -119,8 +123,7 @@ verify_platform_agent() {
 }
 execute_platform_agent() {
   execute_agent_iam "Platform Agent" "${PLATFORM_AGENT_KSA_NAME}" "${PLATFORM_AGENT_GSA_NAME}" \
-      "roles/aiplatform.user" \
-      "roles/container.clusterAdmin"\
+      "roles/container.clusterAdmin" \
       "roles/container.admin" \
       "roles/monitoring.admin" \
       "roles/logging.admin"
@@ -129,14 +132,12 @@ execute_platform_agent() {
 # Step 4: Configure Operator Agent IAM
 verify_operator_agent() {
   verify_agent_iam "${OPERATOR_AGENT_KSA_NAME}" "${OPERATOR_AGENT_GSA_NAME}" \
-      "roles/aiplatform.user" \
       "roles/container.clusterViewer" \
       "roles/monitoring.viewer" \
       "roles/logging.viewer"
 }
 execute_operator_agent() {
   execute_agent_iam "Operator Agent" "${OPERATOR_AGENT_KSA_NAME}" "${OPERATOR_AGENT_GSA_NAME}" \
-      "roles/aiplatform.user" \
       "roles/container.clusterViewer" \
       "roles/monitoring.viewer" \
       "roles/logging.viewer"
@@ -145,14 +146,12 @@ execute_operator_agent() {
 # Step 5: Configure DevTeam Agent IAM
 verify_devteam_agent() {
   verify_agent_iam "${DEVTEAM_AGENT_KSA_NAME}" "${DEVTEAM_AGENT_GSA_NAME}" \
-      "roles/aiplatform.user" \
       "roles/container.clusterViewer" \
       "roles/monitoring.viewer" \
       "roles/logging.viewer"
 }
 execute_devteam_agent() {
   execute_agent_iam "DevTeam Agent" "${DEVTEAM_AGENT_KSA_NAME}" "${DEVTEAM_AGENT_GSA_NAME}" \
-      "roles/aiplatform.user" \
       "roles/container.clusterViewer" \
       "roles/monitoring.viewer" \
       "roles/logging.viewer"
