@@ -26,16 +26,32 @@ gcloud config set project "$PROJECT_ID" --quiet
 # ─── Step 1: Connect to GKE Cluster & Delete K8s Secret ───────────────────────
 CLUSTER_EXISTS=$(cluster_exists)
 if [ -n "$CLUSTER_EXISTS" ]; then
-  connect_cluster || true
+  if [ "${DRY_RUN:-0}" -eq 1 ]; then
+    echo -e "  ${C_GREEN}[DRY-RUN] Would connect to GKE cluster and check for K8s secret.${C_RESET}"
+  else
+    connect_cluster || true
+  fi
 
   # Check if Namespace exists
-  NS_EXISTS=$(kubectl get namespace "${NAMESPACE}" --ignore-not-found 2>/dev/null || echo "")
-  if [ -n "$NS_EXISTS" ]; then
-    SECRET_EXISTS=$(kubectl get secret platform-agent-secrets -n "${NAMESPACE}" --ignore-not-found 2>/dev/null || echo "")
-    if [ -n "$SECRET_EXISTS" ]; then
+  NS_EXISTS=""
+  if [ "${DRY_RUN:-0}" -ne 1 ]; then
+    NS_EXISTS=$(kubectl get namespace "${NAMESPACE}" --ignore-not-found 2>/dev/null || echo "")
+  fi
+  
+  if [ "${DRY_RUN:-0}" -eq 1 ] || [ -n "$NS_EXISTS" ]; then
+    SECRET_EXISTS=""
+    if [ "${DRY_RUN:-0}" -ne 1 ]; then
+      SECRET_EXISTS=$(kubectl get secret platform-agent-secrets -n "${NAMESPACE}" --ignore-not-found 2>/dev/null || echo "")
+    fi
+
+    if [ "${DRY_RUN:-0}" -eq 1 ] || [ -n "$SECRET_EXISTS" ]; then
       echo -e "  ${C_CYAN}ℹ Deleting GKE Secret 'platform-agent-secrets' from namespace '${NAMESPACE}'...${C_RESET}"
-      kubectl delete secret platform-agent-secrets -n "${NAMESPACE}" --ignore-not-found || true
-      echo -e "  ${C_GREEN}✓ GKE Secret successfully deleted.${C_RESET}"
+      if [ "${DRY_RUN:-0}" -eq 1 ]; then
+        echo -e "  ${C_GREEN}[DRY-RUN] Would delete GKE Secret 'platform-agent-secrets' from namespace '${NAMESPACE}'.${C_RESET}"
+      else
+        kubectl delete secret platform-agent-secrets -n "${NAMESPACE}" --ignore-not-found || true
+        echo -e "  ${C_GREEN}✓ GKE Secret successfully deleted.${C_RESET}"
+      fi
     else
       echo -e "  ${C_GREEN}✓ GKE Secret 'platform-agent-secrets' does not exist in namespace '${NAMESPACE}'.${C_RESET}"
     fi

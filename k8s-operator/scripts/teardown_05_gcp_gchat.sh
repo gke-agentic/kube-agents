@@ -27,8 +27,12 @@ gcloud config set project "$PROJECT_ID" --quiet
 # ─── Step 1: Delete Pub/Sub Subscription ──────────────────────────────────────
 if gcloud pubsub subscriptions describe "${CHAT_SUB_NAME}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
   echo -e "  ${C_CYAN}ℹ Deleting Pub/Sub Subscription '${CHAT_SUB_NAME}'...${C_RESET}"
-  gcloud pubsub subscriptions delete "${CHAT_SUB_NAME}" --project="${PROJECT_ID}" --quiet || true
-  echo -e "  ${C_GREEN}✓ Pub/Sub Subscription successfully removed.${C_RESET}"
+  if [ "${DRY_RUN:-0}" -eq 1 ]; then
+    echo -e "  ${C_GREEN}[DRY-RUN] Would delete Pub/Sub Subscription '${CHAT_SUB_NAME}'.${C_RESET}"
+  else
+    gcloud pubsub subscriptions delete "${CHAT_SUB_NAME}" --project="${PROJECT_ID}" --quiet || true
+    echo -e "  ${C_GREEN}✓ Pub/Sub Subscription successfully removed.${C_RESET}"
+  fi
 else
   echo -e "  ${C_GREEN}✓ Pub/Sub Subscription '${CHAT_SUB_NAME}' does not exist.${C_RESET}"
 fi
@@ -36,8 +40,12 @@ fi
 # ─── Step 2: Delete Pub/Sub Topic ─────────────────────────────────────────────
 if gcloud pubsub topics describe "${CHAT_TOPIC_NAME}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
   echo -e "  ${C_CYAN}ℹ Deleting Pub/Sub Topic '${CHAT_TOPIC_NAME}'...${C_RESET}"
-  gcloud pubsub topics delete "${CHAT_TOPIC_NAME}" --project="${PROJECT_ID}" --quiet || true
-  echo -e "  ${C_GREEN}✓ Pub/Sub Topic successfully removed.${C_RESET}"
+  if [ "${DRY_RUN:-0}" -eq 1 ]; then
+    echo -e "  ${C_GREEN}[DRY-RUN] Would delete Pub/Sub Topic '${CHAT_TOPIC_NAME}'.${C_RESET}"
+  else
+    gcloud pubsub topics delete "${CHAT_TOPIC_NAME}" --project="${PROJECT_ID}" --quiet || true
+    echo -e "  ${C_GREEN}✓ Pub/Sub Topic successfully removed.${C_RESET}"
+  fi
 else
   echo -e "  ${C_GREEN}✓ Pub/Sub Topic '${CHAT_TOPIC_NAME}' does not exist.${C_RESET}"
 fi

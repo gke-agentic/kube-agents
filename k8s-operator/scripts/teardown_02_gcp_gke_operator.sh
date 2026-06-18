@@ -31,28 +31,48 @@ gcloud config set project "$PROJECT_ID" --quiet
 # ─── Step 1: Connect to GKE Cluster ───────────────────────────────────────────
 CLUSTER_EXISTS=$(cluster_exists)
 if [ -n "$CLUSTER_EXISTS" ]; then
-  connect_cluster || true
+  if [ "${DRY_RUN:-0}" -eq 1 ]; then
+    echo -e "  ${C_GREEN}[DRY-RUN] Would connect to GKE cluster and check for operator deployment.${C_RESET}"
+  else
+    connect_cluster || true
+  fi
 else
   echo -e "  ${C_GREEN}✓ GKE cluster '${CLUSTER_NAME}' does not exist. Skipping operator cleanup.${C_RESET}"
   exit 0
 fi
 
 # ─── Step 2: Undeploy Operator Manager ────────────────────────────────────────
-OPERATOR_DEPLOYED=$(kubectl get deployment kubeagents-controller-manager -n "${NAMESPACE}" --ignore-not-found 2>/dev/null || echo "")
-if [ -n "$OPERATOR_DEPLOYED" ]; then
+OPERATOR_DEPLOYED=""
+if [ "${DRY_RUN:-0}" -ne 1 ]; then
+  OPERATOR_DEPLOYED=$(kubectl get deployment kubeagents-controller-manager -n "${NAMESPACE}" --ignore-not-found 2>/dev/null || echo "")
+fi
+
+if [ "${DRY_RUN:-0}" -eq 1 ] || [ -n "$OPERATOR_DEPLOYED" ]; then
   echo -e "  ${C_CYAN}ℹ Undeploying Operator Controller Manager from GKE cluster...${C_RESET}"
-  make -C "$OPERATOR_DIR" undeploy ignore-not-found=true
-  echo -e "  ${C_GREEN}✓ Operator Controller Manager undeployed successfully.${C_RESET}"
+  if [ "${DRY_RUN:-0}" -eq 1 ]; then
+    echo -e "  ${C_GREEN}[DRY-RUN] Would undeploy Operator Controller Manager.${C_RESET}"
+  else
+    make -C "$OPERATOR_DIR" undeploy ignore-not-found=true
+    echo -e "  ${C_GREEN}✓ Operator Controller Manager undeployed successfully.${C_RESET}"
+  fi
 else
   echo -e "  ${C_GREEN}✓ Operator Controller Manager is already undeployed.${C_RESET}"
 fi
 
 # ─── Step 3: Uninstall Custom Resource Definitions (CRDs) ─────────────────────
-CRDS_INSTALLED=$(kubectl get crds -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | grep -o 'platformagents.kubeagents.x-k8s.io' || echo "")
-if [ -n "$CRDS_INSTALLED" ]; then
+CRDS_INSTALLED=""
+if [ "${DRY_RUN:-0}" -ne 1 ]; then
+  CRDS_INSTALLED=$(kubectl get crds -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | grep -o 'platformagents.kubeagents.x-k8s.io' || echo "")
+fi
+
+if [ "${DRY_RUN:-0}" -eq 1 ] || [ -n "$CRDS_INSTALLED" ]; then
   echo -e "  ${C_CYAN}ℹ Uninstalling CRDs from GKE cluster...${C_RESET}"
-  make -C "$OPERATOR_DIR" uninstall ignore-not-found=true
-  echo -e "  ${C_GREEN}✓ CRDs uninstalled successfully.${C_RESET}"
+  if [ "${DRY_RUN:-0}" -eq 1 ]; then
+    echo -e "  ${C_GREEN}[DRY-RUN] Would uninstall Custom Resource Definitions (CRDs).${C_RESET}"
+  else
+    make -C "$OPERATOR_DIR" uninstall ignore-not-found=true
+    echo -e "  ${C_GREEN}✓ CRDs uninstalled successfully.${C_RESET}"
+  fi
 else
   echo -e "  ${C_GREEN}✓ CRDs are already uninstalled.${C_RESET}"
 fi
