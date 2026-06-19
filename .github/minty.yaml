@@ -1,0 +1,11 @@
+version: 'minty.abcxyz.dev/v2'
+
+platform-agent-scope:
+  repositories:
+    - "gke-agentic/kube-agents"
+  permissions:
+    contents: read
+    pull_requests: write
+    issues: write
+    statuses: write
+    check_runs: write
