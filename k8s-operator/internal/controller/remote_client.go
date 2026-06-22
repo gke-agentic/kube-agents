@@ -37,8 +37,20 @@ import (
 // buildRemoteClientDynamically queries the GKE API to find Cluster B's IP and CA data
 // and constructs a controller-runtime client using Workload Identity.
 func buildRemoteClientDynamically(ctx context.Context, projectID, location, clusterName string) (client.Client, error) {
-	// 1. Get GCP credentials automatically via Workload Identity
-	tokenSource, err := google.DefaultTokenSource(ctx, container.CloudPlatformScope)
+	if projectID == "" {
+		return nil, fmt.Errorf("projectID cannot be empty")
+	}
+	if location == "" {
+		return nil, fmt.Errorf("location cannot be empty")
+	}
+	if clusterName == "" {
+		return nil, fmt.Errorf("clusterName cannot be empty")
+	}
+
+	// 1. Get GCP credentials automatically via Workload Identity.
+	// Use context.Background() because the tokenSource is cached inside the client transport
+	// and needs to outlive the short-lived reconciliation context.
+	tokenSource, err := google.DefaultTokenSource(context.Background(), container.CloudPlatformScope)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get default token source: %w", err)
 	}
@@ -63,6 +75,10 @@ func buildRemoteClientDynamically(ctx context.Context, projectID, location, clus
 	caData, err := base64.StdEncoding.DecodeString(cluster.MasterAuth.ClusterCaCertificate)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode cluster CA cert: %w", err)
+	}
+
+	if cluster.Endpoint == "" {
+		return nil, fmt.Errorf("cluster endpoint is not available")
 	}
 
 	// 5. Build the REST config for Cluster B using the discovered IP (Endpoint)
@@ -203,8 +219,14 @@ func reconcileRoleBinding(ctx context.Context, c client.Client, name, namespace,
 			if err := c.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, existing); err != nil {
 				return err
 			}
+			// RoleRef is immutable. If it changed, we must delete and recreate the RoleBinding.
+			if existing.RoleRef != rb.RoleRef {
+				if err := c.Delete(ctx, existing); err != nil {
+					return fmt.Errorf("failed to delete existing role binding %s due to RoleRef change: %w", name, err)
+				}
+				return c.Create(ctx, rb)
+			}
 			existing.Subjects = rb.Subjects
-			existing.RoleRef = rb.RoleRef
 			return c.Update(ctx, existing)
 		}
 		return fmt.Errorf("failed to create role binding %s: %w", name, err)
@@ -244,8 +266,14 @@ func reconcileRoleBindingToUser(ctx context.Context, c client.Client, name, name
 			if err := c.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, existing); err != nil {
 				return err
 			}
+			// RoleRef is immutable. If it changed, we must delete and recreate the RoleBinding.
+			if existing.RoleRef != rb.RoleRef {
+				if err := c.Delete(ctx, existing); err != nil {
+					return fmt.Errorf("failed to delete existing role binding %s due to RoleRef change: %w", name, err)
+				}
+				return c.Create(ctx, rb)
+			}
 			existing.Subjects = rb.Subjects
-			existing.RoleRef = rb.RoleRef
 			return c.Update(ctx, existing)
 		}
 		return fmt.Errorf("failed to create role binding %s: %w", name, err)
@@ -312,8 +340,14 @@ func reconcileClusterRoleBinding(ctx context.Context, c client.Client, name, saN
 			if err := c.Get(ctx, client.ObjectKey{Name: name}, existing); err != nil {
 				return err
 			}
+			// RoleRef is immutable. If it changed, we must delete and recreate the ClusterRoleBinding.
+			if existing.RoleRef != crb.RoleRef {
+				if err := c.Delete(ctx, existing); err != nil {
+					return fmt.Errorf("failed to delete existing cluster role binding %s due to RoleRef change: %w", name, err)
+				}
+				return c.Create(ctx, crb)
+			}
 			existing.Subjects = crb.Subjects
-			existing.RoleRef = crb.RoleRef
 			return c.Update(ctx, existing)
 		}
 		return fmt.Errorf("failed to create cluster role binding %s: %w", name, err)
@@ -352,8 +386,14 @@ func reconcileClusterRoleBindingToUser(ctx context.Context, c client.Client, nam
 			if err := c.Get(ctx, client.ObjectKey{Name: name}, existing); err != nil {
 				return err
 			}
+			// RoleRef is immutable. If it changed, we must delete and recreate the ClusterRoleBinding.
+			if existing.RoleRef != crb.RoleRef {
+				if err := c.Delete(ctx, existing); err != nil {
+					return fmt.Errorf("failed to delete existing cluster role binding %s due to RoleRef change: %w", name, err)
+				}
+				return c.Create(ctx, crb)
+			}
 			existing.Subjects = crb.Subjects
-			existing.RoleRef = crb.RoleRef
 			return c.Update(ctx, existing)
 		}
 		return fmt.Errorf("failed to create cluster role binding to user %s: %w", name, err)

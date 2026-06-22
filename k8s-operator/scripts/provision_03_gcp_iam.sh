@@ -170,6 +170,6 @@ execute_annotations() {
 run_step "1. Enable APIs" verify_apis execute_apis 10
 run_step "2. Configure Controller Workload Identity & GCP IAM" verify_controller execute_controller 5
 run_step "3. Configure Platform Agent Workload Identity & GCP IAM" verify_platform_agent execute_platform_agent 5
-run_step "6. Annotate GKE ServiceAccounts & Restart Deployment" verify_annotations execute_annotations 5
+run_step "4. Annotate GKE ServiceAccounts & Restart Deployment" verify_annotations execute_annotations 5
 
 echo -e "\n${C_MAGENTA}${C_BOLD}>>>  Controller & Agent GCP Permissions Configured Successfully!  <<<${C_RESET}"

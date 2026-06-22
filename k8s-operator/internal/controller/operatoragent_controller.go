@@ -71,6 +71,13 @@ func (r *OperatorAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			instance.Spec.Security.WorkloadIdentity.Gcp != nil {
 			projectID = instance.Spec.Security.WorkloadIdentity.Gcp.ProjectID
 		}
+		if projectID == "" {
+			err := fmt.Errorf("spec.security.workloadIdentity.gcp.projectId is required for remote cluster provisioning")
+			log.Error(err, "missing GCP project ID")
+			instance.Status.Phase = "Failed"
+			_ = r.Status().Update(ctx, instance)
+			return ctrl.Result{}, err
+		}
 
 		location := instance.Spec.Harness.Location
 		clusterName := instance.Spec.Harness.ClusterName
@@ -307,9 +314,10 @@ func (r *OperatorAgentReconciler) reconcileHostServiceAccount(ctx context.Contex
 
 	gsaEmail := ""
 	if agent.Spec.Security.WorkloadIdentity != nil && agent.Spec.Security.WorkloadIdentity.Gcp != nil {
-		gsaEmail = fmt.Sprintf("%s@%s.iam.gserviceaccount.com",
-			agent.Spec.Security.WorkloadIdentity.Gcp.GSAName,
-			agent.Spec.Security.WorkloadIdentity.Gcp.ProjectID)
+		gcp := agent.Spec.Security.WorkloadIdentity.Gcp
+		if gcp.GSAName != "" && gcp.ProjectID != "" {
+			gsaEmail = fmt.Sprintf("%s@%s.iam.gserviceaccount.com", gcp.GSAName, gcp.ProjectID)
+		}
 	}
 
 	sa := &corev1.ServiceAccount{
