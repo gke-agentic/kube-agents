@@ -193,29 +193,52 @@ func (r *DevTeamAgentReconciler) reconcileService(ctx context.Context, agent *ag
 func (r *DevTeamAgentReconciler) updateStatusReady(ctx context.Context, agent *agentv1alpha1.DevTeamAgent) error {
 	dep := &appsv1.Deployment{}
 	errDep := r.Get(ctx, types.NamespacedName{Namespace: agent.Namespace, Name: agent.Name + "-gateway"}, dep)
+	var newPhase string
+	var readyReplicas int32
 	if errDep == nil {
-		agent.Status.DeploymentStatus.Name = dep.Name
-		agent.Status.DeploymentStatus.ReadyReplicas = dep.Status.ReadyReplicas
+		readyReplicas = dep.Status.ReadyReplicas
+		if dep.Status.ReadyReplicas > 0 {
+			newPhase = "Ready"
+		} else {
+			newPhase = "Provisioning"
+		}
+	} else {
+		newPhase = "Provisioning"
 	}
 
 	pvc := &corev1.PersistentVolumeClaim{}
 	errPVC := r.Get(ctx, types.NamespacedName{Namespace: agent.Namespace, Name: agent.Name + "-data"}, pvc)
+	var pvcBound bool
 	if errPVC == nil {
-		agent.Status.StorageStatus.Bound = (pvc.Status.Phase == corev1.ClaimBound)
+		pvcBound = (pvc.Status.Phase == corev1.ClaimBound)
 	}
 
 	svc := &corev1.Service{}
 	errSvc := r.Get(ctx, types.NamespacedName{Namespace: agent.Namespace, Name: agent.Name}, svc)
+	var newEndpoint, newAddress string
 	if errSvc == nil {
-		agent.Status.ServiceStatus.Endpoint = fmt.Sprintf("http://%s.%s.svc.cluster.local:8642", svc.Name, svc.Namespace)
-		agent.Status.Address = fmt.Sprintf("%s.%s.svc.cluster.local", svc.Name, svc.Namespace)
+		newEndpoint = fmt.Sprintf("http://%s.%s.svc.cluster.local:8642", svc.Name, svc.Namespace)
+		newAddress = fmt.Sprintf("%s.%s.svc.cluster.local", svc.Name, svc.Namespace)
 	}
 
-	if errDep == nil && dep.Status.ReadyReplicas > 0 {
-		agent.Status.Phase = "Ready"
-	} else {
-		agent.Status.Phase = "Provisioning"
+	// Break the infinite reconciliation loop by returning early if status has not changed
+	if agent.Status.Phase == newPhase &&
+		agent.Status.DeploymentStatus.Name == agent.Name+"-gateway" &&
+		agent.Status.DeploymentStatus.ReadyReplicas == readyReplicas &&
+		agent.Status.StorageStatus.Bound == pvcBound &&
+		agent.Status.ServiceStatus.Endpoint == newEndpoint &&
+		agent.Status.Address == newAddress &&
+		agent.Status.LastReconcileTime != nil {
+		return nil
 	}
+
+	agent.Status.DeploymentStatus.Name = agent.Name + "-gateway"
+	agent.Status.DeploymentStatus.ReadyReplicas = readyReplicas
+	agent.Status.StorageStatus.Bound = pvcBound
+	agent.Status.ServiceStatus.Endpoint = newEndpoint
+	agent.Status.Address = newAddress
+	agent.Status.Phase = newPhase
+
 	now := metav1.Now()
 	agent.Status.LastReconcileTime = &now
 

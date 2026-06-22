@@ -134,7 +134,10 @@ func buildDevTeamDeployment(agent *agentv1alpha1.DevTeamAgent, configHash, fluen
 	// UID/GID 10000 matches the canonical unprivileged 'hermes' runtime user created in NousResearch/hermes-agent upstream Dockerfile
 	fsGroup := int64(10000)
 
-	saName := "kubeagents-devteam-agent"
+	saName := agent.Name
+	if agent.Spec.Security != nil && agent.Spec.Security.ServiceAccountName != "" {
+		saName = agent.Spec.Security.ServiceAccountName
+	}
 
 	image := resolveAgentImage(agent.Spec.Deployment, defaultDevTeamAgentImage)
 
@@ -164,7 +167,7 @@ func buildDevTeamDeployment(agent *agentv1alpha1.DevTeamAgent, configHash, fluen
 
 	envVars := []corev1.EnvVar{
 		{
-			Name:  "PLATFORM_AGENT_HOME",
+			Name:  "DEVTEAM_AGENT_HOME",
 			Value: homeDir,
 		},
 		{
