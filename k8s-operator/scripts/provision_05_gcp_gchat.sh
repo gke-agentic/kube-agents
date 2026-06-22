@@ -69,7 +69,19 @@ execute_apis() {
       --project="$PROJECT_ID"
 }
 
-# Step 2: Pub/Sub Setup (Inbound routing from GChat)
+# Step 2: Provision Google Workspace Add-ons Service Identity
+verify_gsuite_identity() {
+  gcloud iam service-accounts describe "service-${PROJECT_NUMBER}@gcp-sa-gsuiteaddons.iam.gserviceaccount.com" --project="$PROJECT_ID" >/dev/null 2>&1
+}
+execute_gsuite_identity() {
+  print_info "Creating service identity for Google Workspace Add-ons..."
+  gcloud beta services identity create \
+      --service=gsuiteaddons.googleapis.com \
+      --project="$PROJECT_ID" \
+      --quiet >/dev/null
+}
+
+# Step 3: Pub/Sub Setup (Inbound routing from GChat)
 verify_pubsub_setup() {
   gcloud pubsub topics describe "${CHAT_TOPIC_NAME}" --project="${PROJECT_ID}" >/dev/null 2>&1 && \
   gcloud pubsub subscriptions describe "${CHAT_SUB_NAME}" --project="${PROJECT_ID}" >/dev/null 2>&1
@@ -103,7 +115,7 @@ execute_pubsub_setup() {
       --quiet >/dev/null || return 1
 }
 
-# Step 3: Agent GSA Creation & PubSub Message Read Access
+# Step 4: Agent GSA Creation & PubSub Message Read Access
 verify_agent_gcp() {
   local gsa_email="${PLATFORM_AGENT_GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
   gcloud iam service-accounts describe "${gsa_email}" --project="${PROJECT_ID}" >/dev/null 2>&1 && \
@@ -130,8 +142,9 @@ execute_agent_gcp() {
 
 # ─── Execution Pipeline ───────────────────────────────────────────────────────
 run_step "1. Enable GCP APIs for Chat & PubSub" verify_apis execute_apis 15
-run_step "2. Provision Pub/Sub Routing (Inbound)" verify_pubsub_setup execute_pubsub_setup 5
-run_step "3. Setup Agent Identity & Message Read Permissions" verify_agent_gcp execute_agent_gcp 5
+run_step "2. Provision Google Workspace Add-ons Service Identity" verify_gsuite_identity execute_gsuite_identity 5
+run_step "3. Provision Pub/Sub Routing (Inbound)" verify_pubsub_setup execute_pubsub_setup 5
+run_step "4. Setup Agent Identity & Message Read Permissions" verify_agent_gcp execute_agent_gcp 5
 
 # ─── Conclusion Checklist ─────────────────────────────────────────────────────
 echo -e "\n${C_MAGENTA}${C_BOLD}>>>  GCP Backend for Google Chat Configured!  <<<${C_RESET}"
