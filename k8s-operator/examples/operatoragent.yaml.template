@@ -15,8 +15,8 @@ spec:
     image: "${OPERATOR_AGENT_IMAGE}"
     tag: "latest"
   security:
-    serviceAccountName: "kubeagents-operator-agent"
+    serviceAccountName: "${TARGET_OP_KSA}"
     workloadIdentity:
       gcp:
-        gsaName: "kubeagents-operator-gsa"
+        gsaName: "${TARGET_OP_GSA}"
         projectId: "${PROJECT_ID}"

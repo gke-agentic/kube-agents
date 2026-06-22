@@ -19,9 +19,11 @@ package controller
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -36,7 +38,8 @@ import (
 // DevTeamAgentReconciler reconciles a DevTeamAgent object
 type DevTeamAgentReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme        *runtime.Scheme
+	RemoteClients sync.Map
 }
 
 // +kubebuilder:rbac:groups=kubeagents.x-k8s.io,resources=devteamagents,verbs=get;list;watch;create;update;patch;delete
@@ -53,10 +56,42 @@ func (r *DevTeamAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := r.Get(ctx, req.NamespacedName, instance); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	log.Info("Reconciling DevTeamAgent", "name", instance.Name, "namespace", instance.Namespace)
+
+	// Validate Spec
+	if instance.Spec.Deployment == nil || instance.Spec.Deployment.Image == "" {
+		log.Error(nil, "spec.deployment.image is required but not specified")
+		instance.Status.Phase = "Failed"
+		_ = r.Status().Update(ctx, instance)
+		return ctrl.Result{}, nil
+	}
+
+	// Reconcile remote cluster namespace/SA/roles if spec.harness.clusterName is specified
+	if instance.Spec.Harness != nil && instance.Spec.Harness.ClusterName != "" {
+		projectID := ""
+		if instance.Spec.Security != nil && instance.Spec.Security.WorkloadIdentity != nil &&
+			instance.Spec.Security.WorkloadIdentity.Gcp != nil {
+			projectID = instance.Spec.Security.WorkloadIdentity.Gcp.ProjectID
+		}
+
+		location := instance.Spec.Harness.Location
+		clusterName := instance.Spec.Harness.ClusterName
+		remoteNamespace := instance.Spec.Harness.Namespace
+		if remoteNamespace == "" {
+			remoteNamespace = instance.Namespace
+		}
+
+		if err := r.reconcileRemoteResources(ctx, instance, projectID, location, clusterName, remoteNamespace); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 
 	// 5. Reconcile PVC for agent persistent data
 	if err := r.reconcilePVC(ctx, instance); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Reconcile Host ServiceAccount for Workload Identity
+	if err := r.reconcileHostServiceAccount(ctx, instance); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -187,6 +222,70 @@ func (r *DevTeamAgentReconciler) updateStatusReady(ctx context.Context, agent *a
 	return r.Status().Update(ctx, agent)
 }
 
+func (r *DevTeamAgentReconciler) reconcileRemoteResources(ctx context.Context, agent *agentv1alpha1.DevTeamAgent, projectID, location, clusterName, namespace string) error {
+	log := logf.FromContext(ctx)
+
+	// 1. Get or build a remote client using the client cache
+	key := fmt.Sprintf("%s/%s/%s", projectID, location, clusterName)
+	var remoteClient client.Client
+	if val, ok := r.RemoteClients.Load(key); ok {
+		remoteClient = val.(client.Client)
+	} else {
+		var err error
+		remoteClient, err = buildRemoteClientDynamically(ctx, projectID, location, clusterName)
+		if err != nil {
+			log.Error(err, "unable to build remote client for Cluster B", "project", projectID, "location", location, "cluster", clusterName)
+			return err
+		}
+		r.RemoteClients.Store(key, remoteClient)
+		log.Info("successfully built remote client for Cluster B", "project", projectID, "location", location, "cluster", clusterName)
+	}
+
+	// 2. Reconcile Namespace on target cluster
+	if err := reconcileNamespace(ctx, remoteClient, namespace); err != nil {
+		return err
+	}
+
+	// 3. Resolve GSA Email
+	gsaName := ""
+	if agent.Spec.Security != nil && agent.Spec.Security.WorkloadIdentity != nil &&
+		agent.Spec.Security.WorkloadIdentity.Gcp != nil {
+		gsaName = agent.Spec.Security.WorkloadIdentity.Gcp.GSAName
+	}
+	gsaEmail := ""
+	if gsaName != "" && projectID != "" {
+		gsaEmail = fmt.Sprintf("%s@%s.iam.gserviceaccount.com", gsaName, projectID)
+	}
+
+	// 4. Reconcile Role on target cluster
+	rules := []rbacv1.PolicyRule{
+		{
+			APIGroups: []string{""},
+			Resources: []string{"namespaces", "pods", "pods/log", "services", "configmaps", "secrets", "events", "persistentvolumeclaims"},
+			Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+		},
+		{
+			APIGroups: []string{"apps"},
+			Resources: []string{"deployments", "daemonsets", "statefulsets"},
+			Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+		},
+	}
+	remoteRoleName := "devteam-agent-role"
+	if err := reconcileRole(ctx, remoteClient, remoteRoleName, namespace, rules); err != nil {
+		return err
+	}
+
+	// 5. Bind the custom Role directly to the GSA User on the remote cluster
+	if gsaEmail != "" {
+		remoteGsaRBName := "devteam-agent-gsa-rolebinding"
+		if err := reconcileRoleBindingToUser(ctx, remoteClient, remoteGsaRBName, namespace, gsaEmail, remoteRoleName); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *DevTeamAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
@@ -198,4 +297,40 @@ func (r *DevTeamAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Service{}).
 		Named("devteamagent").
 		Complete(r)
+}
+
+func (r *DevTeamAgentReconciler) reconcileHostServiceAccount(ctx context.Context, agent *agentv1alpha1.DevTeamAgent) error {
+	if agent.Spec.Security == nil || agent.Spec.Security.ServiceAccountName == "" {
+		return nil
+	}
+
+	gsaEmail := ""
+	if agent.Spec.Security.WorkloadIdentity != nil && agent.Spec.Security.WorkloadIdentity.Gcp != nil {
+		gsaEmail = fmt.Sprintf("%s@%s.iam.gserviceaccount.com",
+			agent.Spec.Security.WorkloadIdentity.Gcp.GSAName,
+			agent.Spec.Security.WorkloadIdentity.Gcp.ProjectID)
+	}
+
+	sa := &corev1.ServiceAccount{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "ServiceAccount",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      agent.Spec.Security.ServiceAccountName,
+			Namespace: agent.Namespace,
+		},
+	}
+
+	if gsaEmail != "" {
+		sa.Annotations = map[string]string{
+			"iam.gke.io/gcp-service-account": gsaEmail,
+		}
+	}
+
+	if err := ctrl.SetControllerReference(agent, sa, r.Scheme); err != nil {
+		return err
+	}
+
+	return r.Client.Patch(ctx, sa, client.Apply, client.ForceOwnership, client.FieldOwner("devteamagent-controller"))
 }
