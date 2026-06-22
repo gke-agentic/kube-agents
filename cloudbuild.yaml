@@ -1,0 +1,40 @@
+steps:
+- name: 'gcr.io/cloud-builders/docker'
+  args: [
+    'build',
+    '--build-arg', 'HERMES_AGENT_TAG=v2026.5.29.2@sha256:2bba4ab37729ebdd864d4caf277b24fec4cd8bfc2855185fd9f4c90f9bf7bfa3',
+    '--target', 'platform',
+    '-t', 'us-central1-docker.pkg.dev/kube-agents-gke/kubeagents-operator-repo/platform-agent:latest',
+    '-f', 'deploy/docker/Dockerfile',
+    '.'
+  ]
+- name: 'gcr.io/cloud-builders/docker'
+  args: [
+    'build',
+    '--build-arg', 'HERMES_AGENT_TAG=v2026.5.29.2@sha256:2bba4ab37729ebdd864d4caf277b24fec4cd8bfc2855185fd9f4c90f9bf7bfa3',
+    '--target', 'operator',
+    '-t', 'us-central1-docker.pkg.dev/kube-agents-gke/kubeagents-operator-repo/operator-agent:latest',
+    '-f', 'deploy/docker/Dockerfile',
+    '.'
+  ]
+- name: 'gcr.io/cloud-builders/docker'
+  args: [
+    'build',
+    '--build-arg', 'HERMES_AGENT_TAG=v2026.5.29.2@sha256:2bba4ab37729ebdd864d4caf277b24fec4cd8bfc2855185fd9f4c90f9bf7bfa3',
+    '--target', 'devteam',
+    '-t', 'us-central1-docker.pkg.dev/kube-agents-gke/kubeagents-operator-repo/devteam-agent:latest',
+    '-f', 'deploy/docker/Dockerfile',
+    '.'
+  ]
+- name: 'gcr.io/cloud-builders/docker'
+  args: [
+    'build',
+    '-t', 'us-central1-docker.pkg.dev/kube-agents-gke/kubeagents-operator-repo/kubeagents-controller:latest',
+    '-f', 'k8s-operator/Dockerfile',
+    'k8s-operator/'
+  ]
+images:
+- 'us-central1-docker.pkg.dev/kube-agents-gke/kubeagents-operator-repo/platform-agent:latest'
+- 'us-central1-docker.pkg.dev/kube-agents-gke/kubeagents-operator-repo/operator-agent:latest'
+- 'us-central1-docker.pkg.dev/kube-agents-gke/kubeagents-operator-repo/devteam-agent:latest'
+- 'us-central1-docker.pkg.dev/kube-agents-gke/kubeagents-operator-repo/kubeagents-controller:latest'
