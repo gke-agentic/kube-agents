@@ -16,8 +16,8 @@ spec:
     image: "${DEVTEAM_AGENT_IMAGE}"
     tag: "latest"
   security:
-    serviceAccountName: "kubeagents-devteam-agent"
+    serviceAccountName: "${TARGET_DT_KSA}"
     workloadIdentity:
       gcp:
-        gsaName: "kubeagents-devteam-gsa"
+        gsaName: "${TARGET_DT_GSA}"
         projectId: "${PROJECT_ID}"
