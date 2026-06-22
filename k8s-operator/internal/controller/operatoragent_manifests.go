@@ -110,6 +110,34 @@ func buildOperatorPVC(agent *agentv1alpha1.OperatorAgent) *corev1.PersistentVolu
 	}
 }
 
+// buildOperatorServiceAccount generates the ServiceAccount manifest (with Workload Identity annotation) for OperatorAgent
+func buildOperatorServiceAccount(agent *agentv1alpha1.OperatorAgent) *corev1.ServiceAccount {
+	saName := "kubeagents-operator-agent"
+	if agent.Spec.Security != nil && agent.Spec.Security.ServiceAccountName != "" {
+		saName = agent.Spec.Security.ServiceAccountName
+	}
+
+	sa := &corev1.ServiceAccount{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "ServiceAccount",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        saName,
+			Namespace:   agent.Namespace,
+			Annotations: make(map[string]string),
+		},
+	}
+
+	if agent.Spec.Security != nil && agent.Spec.Security.ServiceAccountAnnotations != nil {
+		for k, v := range agent.Spec.Security.ServiceAccountAnnotations {
+			sa.Annotations[k] = v
+		}
+	}
+
+	return sa
+}
+
 // buildOperatorDeployment generates the Deployment manifest for OperatorAgent
 func buildOperatorDeployment(agent *agentv1alpha1.OperatorAgent, configHash, fluentBitHash string) *appsv1.Deployment {
 	replicas := int32(1)
@@ -244,7 +272,7 @@ func buildOperatorDeployment(agent *agentv1alpha1.OperatorAgent, configHash, flu
 				Spec: corev1.PodSpec{
 					ServiceAccountName: saName,
 					SecurityContext: &corev1.PodSecurityContext{
-						FSGroup:        &fsGroup,
+						FSGroup: &fsGroup,
 						// UID 10000 matches canonical 'hermes' runtime user in upstream image (NousResearch/hermes-agent Dockerfile line 92)
 						RunAsUser:      ptr.To(int64(10000)),
 						RunAsNonRoot:   ptr.To(true),
