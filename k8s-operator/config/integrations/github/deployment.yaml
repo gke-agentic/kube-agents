@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: github-token-minter
+  namespace: ${NAMESPACE}
   labels:
     app: github-token-minter
 spec:
@@ -14,7 +15,7 @@ spec:
       labels:
         app: github-token-minter
     spec:
-      serviceAccountName: github-token-minter-ksa
+      serviceAccountName: ${GITHUB_MINTER_KSA_NAME}
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -42,16 +43,20 @@ spec:
             - name: CONFIGS_DIR
               value: "/etc/minty"
             - name: ISSUER_ALLOWLIST
-              value: "https://container.googleapis.com/v1/projects/${PROJECT_ID}/locations/${REGION}/clusters/${CLUSTER}"
+              value: "https://container.googleapis.com/v1/projects/${PROJECT_ID}/locations/${REGION}/clusters/${CLUSTER_NAME},https://accounts.google.com"
             - name: GITHUB_APP_ID
               valueFrom:
                 secretKeyRef:
                   name: github-app-credentials
                   key: app-id
             - name: KMS_KEY_NAME
-              value: "projects/${PROJECT_ID}/locations/${REGION}/keyRings/${KEYRING}/cryptoKeys/${KEY}/cryptoKeyVersions/${KEY_VERSION}"
+              value: "projects/${PROJECT_ID}/locations/${REGION}/keyRings/${KMS_KEYRING}/cryptoKeys/${KMS_KEY}/cryptoKeyVersions/${KMS_KEY_VERSION}"
             - name: SOURCE_SYSTEM_AUTH
               value: "gha://$(GITHUB_APP_ID)?kms_id=$(KMS_KEY_NAME)"
+            - name: MINTY_REF
+              value: "${GITHUB_REF}"
+            - name: REF
+              value: "${GITHUB_REF}"
           livenessProbe:
             httpGet:
               path: /version
@@ -84,6 +89,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: github-token-minter
+  namespace: ${NAMESPACE}
 spec:
   selector:
     app: github-token-minter
@@ -97,6 +103,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: github-token-minter-policy
+  namespace: ${NAMESPACE}
 spec:
   podSelector:
     matchLabels:

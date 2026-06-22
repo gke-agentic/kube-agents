@@ -183,7 +183,68 @@ execute_devteam_agent() {
       "roles/iam.serviceAccountUser"
 }
 
-# Step 6: Annotate GKE ServiceAccounts & Restart Controller Manager Deployment
+# Step 6: Configure GitHub Token Minter IAM
+verify_github_minter_iam() {
+  # If GitHub integration is not configured, skip
+  if [ -z "${GITHUB_ORG:-}" ] || [ -z "${GITHUB_REPO:-}" ] || [ -z "${GITHUB_APP_ID:-}" ]; then
+    print_info "GitHub integration not configured. Skipping Minter IAM setup."
+    return 0
+  fi
+
+  local gsa_email="${GITHUB_MINTER_GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
+  local wi_member="serviceAccount:${PROJECT_ID}.svc.id.goog[${NAMESPACE}/${GITHUB_MINTER_KSA_NAME}]"
+  
+  # 1. Ensure the GKE KSA exists
+  kubectl get serviceaccount "${GITHUB_MINTER_KSA_NAME}" -n "${NAMESPACE}" >/dev/null 2>&1 || return 1
+
+  # 2. Ensure the GCP GSA exists
+  gcloud iam service-accounts describe "${gsa_email}" --project="${PROJECT_ID}" >/dev/null 2>&1 || return 1
+  
+  # 3. Ensure Workload Identity binding is present
+  gcloud iam service-accounts get-iam-policy "${gsa_email}" --project="${PROJECT_ID}" --format="json" 2>/dev/null | grep -F -q "${wi_member}" || return 1
+  
+  return 0
+}
+
+execute_github_minter_iam() {
+  if [ -z "${GITHUB_ORG:-}" ] || [ -z "${GITHUB_REPO:-}" ] || [ -z "${GITHUB_APP_ID:-}" ]; then
+    return 0
+  fi
+
+  local gsa_email="${GITHUB_MINTER_GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
+  
+  if ! gcloud iam service-accounts describe "${gsa_email}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+    print_info "Creating GSA ${GITHUB_MINTER_GSA_NAME} for GitHub Token Minter..."
+    gcloud iam service-accounts create "${GITHUB_MINTER_GSA_NAME}" \
+        --display-name="GitHub Token Minter GSA" \
+        --project="${PROJECT_ID}" || return 1
+    sleep 15
+  fi
+
+  print_info "Ensuring GKE namespace '${NAMESPACE}' exists..."
+  kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+
+  print_info "Creating GKE ServiceAccount '${GITHUB_MINTER_KSA_NAME}'..."
+  local GITHUB_INTEGRATION_DIR="${SCRIPT_DIR}/../config/integrations/github"
+  if [ -f "${GITHUB_INTEGRATION_DIR}/serviceaccount.yaml" ]; then
+    # Export variables for envsubst
+    export NAMESPACE GITHUB_MINTER_KSA_NAME GITHUB_MINTER_GSA_NAME PROJECT_ID
+    envsubst < "${GITHUB_INTEGRATION_DIR}/serviceaccount.yaml" | kubectl apply -f -
+  else
+    print_error "Minter serviceaccount.yaml template not found at ${GITHUB_INTEGRATION_DIR}/serviceaccount.yaml"
+    return 1
+  fi
+  
+  print_info "Binding Workload Identity for ${GITHUB_MINTER_GSA_NAME} to ${GITHUB_MINTER_KSA_NAME}..."
+  local wi_member="serviceAccount:${PROJECT_ID}.svc.id.goog[${NAMESPACE}/${GITHUB_MINTER_KSA_NAME}]"
+  gcloud iam service-accounts add-iam-policy-binding "${gsa_email}" \
+      --role="roles/iam.workloadIdentityUser" \
+      --member="${wi_member}" \
+      --project="${PROJECT_ID}" \
+      --quiet >/dev/null || return 1
+}
+
+# Step 7: Annotate GKE ServiceAccounts & Restart Controller Manager Deployment
 verify_annotations() {
   if [ "${DRY_RUN:-0}" -eq 1 ]; then
     return 1
@@ -193,13 +254,23 @@ verify_annotations() {
   verify_ksa_annotation "${CONTROLLER_KSA_NAME}" "${CONTROLLER_GSA_NAME}" || return 1
   verify_ksa_annotation "${PLATFORM_AGENT_KSA_NAME}" "${PLATFORM_AGENT_GSA_NAME}" || return 1
   verify_ksa_annotation "${OPERATOR_AGENT_KSA_NAME}" "${OPERATOR_AGENT_GSA_NAME}" || return 1
-  verify_ksa_annotation "${DEVTEAM_AGENT_KSA_NAME}" "${DEVTEAM_AGENT_GSA_NAME}"
+  verify_ksa_annotation "${DEVTEAM_AGENT_KSA_NAME}" "${DEVTEAM_AGENT_GSA_NAME}" || return 1
+  
+  if [ -n "${GITHUB_ORG:-}" ] && [ -n "${GITHUB_REPO:-}" ] && [ -n "${GITHUB_APP_ID:-}" ]; then
+    verify_ksa_annotation "${GITHUB_MINTER_KSA_NAME}" "${GITHUB_MINTER_GSA_NAME}" || return 1
+  fi
+  
+  return 0
 }
 execute_annotations() {
   annotate_ksa "${CONTROLLER_KSA_NAME}" "${CONTROLLER_GSA_NAME}" || return 1
   annotate_ksa "${PLATFORM_AGENT_KSA_NAME}" "${PLATFORM_AGENT_GSA_NAME}" || return 1
   annotate_ksa "${OPERATOR_AGENT_KSA_NAME}" "${OPERATOR_AGENT_GSA_NAME}" || return 1
   annotate_ksa "${DEVTEAM_AGENT_KSA_NAME}" "${DEVTEAM_AGENT_GSA_NAME}" || return 1
+  
+  if [ -n "${GITHUB_ORG:-}" ] && [ -n "${GITHUB_REPO:-}" ] && [ -n "${GITHUB_APP_ID:-}" ]; then
+    annotate_ksa "${GITHUB_MINTER_KSA_NAME}" "${GITHUB_MINTER_GSA_NAME}" || return 1
+  fi
 
   print_info "Restarting Controller Manager Deployment to apply changes..."
   kubectl rollout restart deployment/kubeagents-controller-manager -n "${NAMESPACE}" || return 1
@@ -216,6 +287,7 @@ run_step "2. Configure Controller Workload Identity & GCP IAM" verify_controller
 run_step "3. Configure Platform Agent Workload Identity & GCP IAM" verify_platform_agent execute_platform_agent 5
 run_step "4. Configure Operator Agent Workload Identity & GCP IAM" verify_operator_agent execute_operator_agent 5
 run_step "5. Configure DevTeam Agent Workload Identity & GCP IAM" verify_devteam_agent execute_devteam_agent 5
-run_step "6. Annotate GKE ServiceAccounts & Restart Deployment" verify_annotations execute_annotations 5
+run_step "6. Configure GitHub Token Minter Workload Identity" verify_github_minter_iam execute_github_minter_iam 5
+run_step "7. Annotate GKE ServiceAccounts & Restart Deployment" verify_annotations execute_annotations 5
 
 echo -e "\n${C_MAGENTA}${C_BOLD}>>>  Controller & Agent GCP Permissions Configured Successfully!  <<<${C_RESET}"

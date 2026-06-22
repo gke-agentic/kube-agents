@@ -37,11 +37,13 @@ init_var "REGION" "us-east4" "Enter GKE GCP Region"
 # Step 1: Enable APIs
 verify_apis() {
   local out=$(gcloud services list --enabled --project="$PROJECT_ID" --format="value(config.name)" 2>/dev/null || echo "")
-  echo "$out" | grep -q 'container.googleapis.com'
+  echo "$out" | grep -q 'container.googleapis.com' && \
+  echo "$out" | grep -q 'cloudkms.googleapis.com'
 }
 execute_apis() {
   gcloud services enable \
       container.googleapis.com \
+      cloudkms.googleapis.com \
       --project="$PROJECT_ID"
 }
 

@@ -99,6 +99,12 @@ load_state() {
   export DEVTEAM_AGENT_GSA_NAME="kubeagents-devteam-gsa"
   export CONTROLLER_KSA_NAME="kubeagents-controller"
   export CONTROLLER_GSA_NAME="kubeagents-controller-gsa"
+  export GITHUB_MINTER_GSA_NAME="github-token-minter-sa"
+  export GITHUB_MINTER_KSA_NAME="github-token-minter-ksa"
+  export KMS_KEYRING="github-token-minter-keyring"
+  export KMS_KEY="github-private-key"
+  export KMS_KEY_VERSION="1"
+  export GITHUB_REF="feature/git-ops-mint"
 }
 
 ensure_teardown_state() {
@@ -113,6 +119,12 @@ ensure_teardown_state() {
     export DEVTEAM_AGENT_GSA_NAME="kubeagents-devteam-gsa"
     export CONTROLLER_KSA_NAME="kubeagents-controller"
     export CONTROLLER_GSA_NAME="kubeagents-controller-gsa"
+    export GITHUB_MINTER_GSA_NAME="github-token-minter-sa"
+    export GITHUB_MINTER_KSA_NAME="github-token-minter-ksa"
+    export KMS_KEYRING="github-token-minter-keyring"
+    export KMS_KEY="github-private-key"
+    export KMS_KEY_VERSION="1"
+    export GITHUB_REF="feature/git-ops-mint"
   else
     echo -e "  ${C_YELLOW}⚠ State file ${VARS_FILE} not found. Prompting for target values...${C_RESET}"
     local ACTIVE_PROJECT
@@ -150,6 +162,12 @@ ensure_teardown_state() {
     export DEVTEAM_AGENT_GSA_NAME="kubeagents-devteam-gsa"
     export CONTROLLER_KSA_NAME="kubeagents-controller"
     export CONTROLLER_GSA_NAME="kubeagents-controller-gsa"
+    export GITHUB_MINTER_GSA_NAME="github-token-minter-sa"
+    export GITHUB_MINTER_KSA_NAME="github-token-minter-ksa"
+    export KMS_KEYRING="github-token-minter-keyring"
+    export KMS_KEY="github-private-key"
+    export KMS_KEY_VERSION="1"
+    export GITHUB_REF="feature/git-ops-mint"
   fi
 }
 

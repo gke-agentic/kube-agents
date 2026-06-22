@@ -84,7 +84,135 @@ execute_litellm() {
   make -C "${OPERATOR_DIR}" deploy-litellm || return 1
 }
 
-# Step 3: Apply PlatformAgent Custom Resource
+# Step 3: Deploy GitHub Token Minter
+verify_github_minter() {
+  if [ -z "${GITHUB_ORG:-}" ] || [ -z "${GITHUB_REPO:-}" ] || [ -z "${GITHUB_APP_ID:-}" ]; then
+    print_info "GitHub integration not configured. Skipping Minter deployment."
+    return 0
+  fi
+
+  # Always return false to ensure configuration updates (like KMS key changes)
+  # are applied to the Deployment workloads.
+  return 1
+}
+
+execute_github_minter() {
+  if [ -z "${GITHUB_ORG:-}" ] || [ -z "${GITHUB_REPO:-}" ] || [ -z "${GITHUB_APP_ID:-}" ]; then
+    return 0
+  fi
+
+  # 1. Create KMS Keyring and Key if they don't exist
+  # We do this here because it's part of the deployment setup, although IAM was done in step 3.
+  # Wait, if GSA was created in step 3, we should have also created the KMS key there?
+  # Actually, step 3 is "IAM", but KMS key creation is resource provisioning.
+  # Let's ensure keyring and key exist.
+  print_info "Ensuring KMS Keyring '${KMS_KEYRING}' exists..."
+  if ! gcloud kms keyrings describe "${KMS_KEYRING}" --location="${REGION}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+    gcloud kms keyrings create "${KMS_KEYRING}" --location="${REGION}" --project="${PROJECT_ID}"
+  fi
+
+  print_info "Ensuring KMS Key '${KMS_KEY}' exists..."
+  if ! gcloud kms keys describe "${KMS_KEY}" --location="${REGION}" --keyring="${KMS_KEYRING}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+    gcloud kms keys create "${KMS_KEY}" \
+        --location="${REGION}" \
+        --keyring="${KMS_KEYRING}" \
+        --purpose=asymmetric-signing \
+        --default-algorithm=rsa-sign-pkcs1-2048-sha256 \
+        --import-only \
+        --skip-initial-version-creation \
+        --project="${PROJECT_ID}"
+  fi
+
+  # Grant roles/cloudkms.signerVerifier to GSA on KMS key (in case it wasn't done, but it should be in step 3 if key existed)
+  # Since key might not have existed in step 3 if we didn't create it there, we must ensure it's bound now.
+  local gsa_email="${GITHUB_MINTER_GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
+  print_info "Ensuring GSA has signer permissions on KMS key..."
+  gcloud kms keys add-iam-policy-binding "${KMS_KEY}" \
+      --location="${REGION}" \
+      --keyring="${KMS_KEYRING}" \
+      --member="serviceAccount:${gsa_email}" \
+      --role="roles/cloudkms.signerVerifier" \
+      --project="${PROJECT_ID}" \
+      --quiet >/dev/null
+
+  # Import PEM if provided and no version exists
+  local versions=$(gcloud kms keys versions list --key="${KMS_KEY}" --keyring="${KMS_KEYRING}" --location="${REGION}" --project="${PROJECT_ID}" --filter="state=ENABLED" --format="value(name)" 2>/dev/null)
+  if [ -z "$versions" ]; then
+    if [ -n "${GITHUB_PEM_PATH}" ] && [ -f "${GITHUB_PEM_PATH}" ]; then
+      print_info "Importing GitHub Private Key PEM into KMS..."
+      
+      local tmp_dir=$(mktemp -d)
+      print_info "Cloning github-token-minter CLI tool (v2.7.1) for secure cryptographic wrapping..."
+      if git clone --depth 1 --branch v2.7.1 https://github.com/abcxyz/github-token-minter.git "$tmp_dir" >/dev/null 2>&1; then
+        local abs_pem=$(realpath "${GITHUB_PEM_PATH}")
+        local import_success=0
+        (
+          cd "$tmp_dir"
+          if go run ./cmd/minty tools import-pk \
+              -project-id="${PROJECT_ID}" \
+              -location="${REGION}" \
+              -key-ring="${KMS_KEYRING}" \
+              -key="${KMS_KEY}" \
+              -private-key="@${abs_pem}"; then
+            exit 0
+          else
+            exit 1
+          fi
+        ) && import_success=1
+        rm -rf "$tmp_dir"
+        
+        if [ "$import_success" -eq 1 ]; then
+          print_success "Successfully imported GitHub Private Key to KMS via Minty CLI."
+        else
+          print_error "Failed to import GitHub Private Key to KMS. You must import it manually."
+          exit 1
+        fi
+      else
+        rm -rf "$tmp_dir"
+        print_error "Failed to clone github-token-minter repo for CLI tools."
+        exit 1
+      fi
+    else
+      print_warning "No GitHub Private Key PEM path provided or file not found."
+      print_warning "KMS Key '${KMS_KEY}' has no active version. Minter will fail to start until you import the key."
+      print_warning "You can import it later manually using Minty CLI:"
+      print_warning "  git clone --depth 1 --branch v2.7.1 https://github.com/abcxyz/github-token-minter.git /tmp/minty && cd /tmp/minty && go run ./cmd/minty tools import-pk -project-id=${PROJECT_ID} -location=${REGION} -key-ring=${KMS_KEYRING} -key=${KMS_KEY} -private-key=@/path/to/pem"
+    fi
+  fi
+
+  # Resolve the latest active (ENABLED) version number dynamically
+  print_info "Resolving active KMS key version number..."
+  local active_version
+  active_version=$(gcloud kms keys versions list --key="${KMS_KEY}" --keyring="${KMS_KEYRING}" --location="${REGION}" --project="${PROJECT_ID}" --filter="state=ENABLED" --format="value(name)" 2>/dev/null | awk -F'/' '{print $NF}' | sort -n | tail -n 1)
+  
+  if [ -n "$active_version" ]; then
+    export KMS_KEY_VERSION="${active_version}"
+    print_success "Resolved active KMS key version: ${KMS_KEY_VERSION}"
+  else
+    print_error "No active (ENABLED) version found for KMS Key '${KMS_KEY}'!"
+    print_error "The Token Minter deployment will fail to sign tokens."
+    exit 1
+  fi
+
+  print_info "Deploying GitHub Token Minter workloads..."
+  local GITHUB_INTEGRATION_DIR="${OPERATOR_DIR}/config/integrations/github"
+  
+  if [ -d "$GITHUB_INTEGRATION_DIR" ]; then
+    # Ensure all variables are exported for envsubst
+    export PROJECT_ID REGION CLUSTER_NAME NAMESPACE GITHUB_MINTER_KSA_NAME GITHUB_MINTER_GSA_NAME KMS_KEYRING KMS_KEY KMS_KEY_VERSION GITHUB_ORG GITHUB_REPO KSA_NAME GITHUB_REF PLATFORM_AGENT_GSA_NAME
+    
+    print_info "Applying configmap.yaml..."
+    envsubst < "${GITHUB_INTEGRATION_DIR}/configmap.yaml" | kubectl apply -f -
+    
+    print_info "Applying deployment.yaml..."
+    envsubst < "${GITHUB_INTEGRATION_DIR}/deployment.yaml" | kubectl apply -f -
+  else
+    print_error "GitHub integration directory not found at ${GITHUB_INTEGRATION_DIR}"
+    exit 1
+  fi
+}
+
+# Step 4: Apply PlatformAgent Custom Resource
 verify_custom_resource() {
   # Always return false to ensure configuration updates are applied to the Custom Resource
   return 1
@@ -111,7 +239,8 @@ execute_custom_resource() {
 # ─── Execution Pipeline ───────────────────────────────────────────────────────
 run_step "1. Connect kubectl" verify_kubeconfig execute_kubeconfig 0
 run_step "2. Deploy LiteLLM Gateway" verify_litellm execute_litellm 0
-run_step "3. Apply PlatformAgent Custom Resource" verify_custom_resource execute_custom_resource 0
+run_step "3. Deploy GitHub Token Minter" verify_github_minter execute_github_minter 10
+run_step "4. Apply PlatformAgent Custom Resource" verify_custom_resource execute_custom_resource 0
 
 # ─── Conclusion Checklist ─────────────────────────────────────────────────────
 echo -e "\n${C_GREEN}${C_BOLD}✓ PlatformAgent Custom Resource applied successfully to GKE!${C_RESET}"

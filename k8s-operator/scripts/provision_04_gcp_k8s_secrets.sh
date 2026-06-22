@@ -103,6 +103,31 @@ if [ -z "${API_SERVER_KEY:-}" ]; then
   printf "export API_SERVER_KEY=%q\n" "${API_SERVER_KEY}" >> "$VARS_FILE"
 fi
 
+# Prompt for GitHub integration variables
+if ! declare -p "GITHUB_ORG" &>/dev/null; then
+  echo -ne "  ${C_CYAN}Enter GitHub Org/Owner (optional, for GitHub Token Minter): ${C_RESET}"
+  read -r INPUT_GITHUB_ORG
+  save_var "GITHUB_ORG" "${INPUT_GITHUB_ORG:-}"
+fi
+
+if ! declare -p "GITHUB_REPO" &>/dev/null; then
+  echo -ne "  ${C_CYAN}Enter GitHub Repo (optional, for GitHub Token Minter): ${C_RESET}"
+  read -r INPUT_GITHUB_REPO
+  save_var "GITHUB_REPO" "${INPUT_GITHUB_REPO:-}"
+fi
+
+if ! declare -p "GITHUB_APP_ID" &>/dev/null; then
+  echo -ne "  ${C_CYAN}Enter GitHub App ID (optional, for GitHub Token Minter): ${C_RESET}"
+  read -r INPUT_GITHUB_APP_ID
+  save_var "GITHUB_APP_ID" "${INPUT_GITHUB_APP_ID:-}"
+fi
+
+if ! declare -p "GITHUB_PEM_PATH" &>/dev/null; then
+  echo -ne "  ${C_CYAN}Enter GitHub App Private Key PEM path (optional, for KMS import): ${C_RESET}"
+  read -r INPUT_GITHUB_PEM_PATH
+  save_var "GITHUB_PEM_PATH" "${INPUT_GITHUB_PEM_PATH:-}"
+fi
+
 # ─── Step Implementations ─────────────────────────────────────────────────────
 
 # Step 1: Connect kubectl
@@ -138,6 +163,14 @@ execute_k8s_secrets() {
       --from-literal=OPENAI_API_KEY="$OPENAI_API_KEY" \
       --from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
       --dry-run=client -o yaml | kubectl apply -f -
+
+  if [ -n "${GITHUB_APP_ID}" ]; then
+    print_info "Writing Kubernetes Secret 'github-app-credentials' into '$NAMESPACE'..."
+    kubectl create secret generic github-app-credentials \
+        --namespace="$NAMESPACE" \
+        --from-literal=app-id="${GITHUB_APP_ID}" \
+        --dry-run=client -o yaml | kubectl apply -f -
+  fi
 }
 
 

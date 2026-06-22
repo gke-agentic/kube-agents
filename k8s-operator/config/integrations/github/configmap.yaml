@@ -2,15 +2,16 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: github-token-minter-config
+  namespace: ${NAMESPACE}
 data:
   ${GITHUB_ORG}-${GITHUB_REPO}.yaml: |
     version: 'minty.abcxyz.dev/v2'
     rule:
-      if: "assertion.iss == 'https://container.googleapis.com/v1/projects/${PROJECT_ID}/locations/${REGION}/clusters/${CLUSTER}'"
+      if: "assertion.iss == 'https://accounts.google.com'"
     scope:
       platform-agent-scope:
         rule:
-          if: "assertion.sub == 'system:serviceaccount:kubeagents-system:kubeagents-platform-agent'"
+          if: "assertion.email == '${PLATFORM_AGENT_GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com'"
         repositories:
           - '${GITHUB_REPO}'
         permissions:
