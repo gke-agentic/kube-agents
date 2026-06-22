@@ -90,7 +90,6 @@ func (r *DevTeamAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
-
 	// 6. Reconcile ConfigMap (config.yaml and SETTINGS.md content)
 	configMapHash, err := r.reconcileConfigMap(ctx, instance)
 	if err != nil {
@@ -329,5 +328,3 @@ func (r *DevTeamAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Named("devteamagent").
 		Complete(r)
 }
-
-

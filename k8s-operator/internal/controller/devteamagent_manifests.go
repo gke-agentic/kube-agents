@@ -128,6 +128,34 @@ func buildDevTeamPVC(agent *agentv1alpha1.DevTeamAgent) *corev1.PersistentVolume
 	}
 }
 
+// buildDevTeamServiceAccount generates the ServiceAccount manifest (with Workload Identity annotation) for DevTeamAgent
+func buildDevTeamServiceAccount(agent *agentv1alpha1.DevTeamAgent) *corev1.ServiceAccount {
+	saName := "kubeagents-devteam-agent"
+	if agent.Spec.Security != nil && agent.Spec.Security.ServiceAccountName != "" {
+		saName = agent.Spec.Security.ServiceAccountName
+	}
+
+	sa := &corev1.ServiceAccount{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "ServiceAccount",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        saName,
+			Namespace:   agent.Namespace,
+			Annotations: make(map[string]string),
+		},
+	}
+
+	if agent.Spec.Security != nil && agent.Spec.Security.ServiceAccountAnnotations != nil {
+		for k, v := range agent.Spec.Security.ServiceAccountAnnotations {
+			sa.Annotations[k] = v
+		}
+	}
+
+	return sa
+}
+
 // buildDevTeamDeployment generates the Deployment manifest for DevTeamAgent
 func buildDevTeamDeployment(agent *agentv1alpha1.DevTeamAgent, configHash, fluentBitHash string) *appsv1.Deployment {
 	replicas := int32(1)
