@@ -111,7 +111,10 @@ func buildOperatorDeployment(agent *agentv1alpha1.OperatorAgent, configHash, flu
 	replicas := int32(1)
 	fsGroup := int64(1000)
 
-	saName := "kubeagents-operator-agent"
+	saName := agent.Name
+	if agent.Spec.Security != nil && agent.Spec.Security.ServiceAccountName != "" {
+		saName = agent.Spec.Security.ServiceAccountName
+	}
 
 	image := resolveAgentImage(agent.Spec.Deployment, defaultOperatorAgentImage)
 
@@ -141,7 +144,7 @@ func buildOperatorDeployment(agent *agentv1alpha1.OperatorAgent, configHash, flu
 
 	envVars := []corev1.EnvVar{
 		{
-			Name:  "PLATFORM_AGENT_HOME",
+			Name:  "OPERATOR_AGENT_HOME",
 			Value: homeDir,
 		},
 		{

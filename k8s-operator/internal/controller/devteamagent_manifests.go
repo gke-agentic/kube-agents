@@ -129,7 +129,10 @@ func buildDevTeamDeployment(agent *agentv1alpha1.DevTeamAgent, configHash, fluen
 	replicas := int32(1)
 	fsGroup := int64(1000)
 
-	saName := "kubeagents-devteam-agent"
+	saName := agent.Name
+	if agent.Spec.Security != nil && agent.Spec.Security.ServiceAccountName != "" {
+		saName = agent.Spec.Security.ServiceAccountName
+	}
 
 	image := resolveAgentImage(agent.Spec.Deployment, defaultDevTeamAgentImage)
 
@@ -159,7 +162,7 @@ func buildDevTeamDeployment(agent *agentv1alpha1.DevTeamAgent, configHash, fluen
 
 	envVars := []corev1.EnvVar{
 		{
-			Name:  "PLATFORM_AGENT_HOME",
+			Name:  "DEVTEAM_AGENT_HOME",
 			Value: homeDir,
 		},
 		{
