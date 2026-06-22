@@ -81,6 +81,11 @@ type SecuritySpec struct {
 	// WorkloadIdentity maps external IAM to the KSA securely.
 	// +optional
 	WorkloadIdentity *WorkloadIdentitySpec `json:"workloadIdentity,omitempty"`
+
+	// ServiceAccountAnnotations defines annotations to copy directly onto the generated ServiceAccount.
+	// This enables provider-agnostic Workload Identity (GCP, AWS, Azure).
+	// +optional
+	ServiceAccountAnnotations map[string]string `json:"serviceAccountAnnotations,omitempty"`
 }
 
 // WorkloadIdentitySpec maps external IAM to the KSA securely.
