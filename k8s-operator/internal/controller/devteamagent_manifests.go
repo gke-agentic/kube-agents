@@ -141,13 +141,13 @@ func buildDevTeamServiceAccount(agent *agentv1alpha1.DevTeamAgent) *corev1.Servi
 			Kind:       "ServiceAccount",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        saName,
-			Namespace:   agent.Namespace,
-			Annotations: make(map[string]string),
+			Name:      saName,
+			Namespace: agent.Namespace,
 		},
 	}
 
-	if agent.Spec.Security != nil && agent.Spec.Security.ServiceAccountAnnotations != nil {
+	if agent.Spec.Security != nil && len(agent.Spec.Security.ServiceAccountAnnotations) > 0 {
+		sa.Annotations = make(map[string]string)
 		for k, v := range agent.Spec.Security.ServiceAccountAnnotations {
 			sa.Annotations[k] = v
 		}
