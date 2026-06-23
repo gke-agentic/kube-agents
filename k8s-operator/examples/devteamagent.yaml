@@ -1,12 +1,13 @@
 apiVersion: kubeagents.x-k8s.io/v1alpha1
 kind: DevTeamAgent
 metadata:
-  name: devteam-agent-autopilot-cluster-1-us-central1-devteam-app-ns
+  name: devteam-agent-ac-3-us-central1-devteam-app-ns
   namespace: kubeagents-system
 spec:
   harness:
-    clusterName: "autopilot-cluster-1"
+    clusterName: "ac-3"
     location: "us-central1"
+    projectId: "kube-agents-gke"
     namespace: "devteam-app-ns"
     hermes:
       apiServerSecretRef:
@@ -16,8 +17,7 @@ spec:
     image: "us-central1-docker.pkg.dev/kube-agents-gke/kubeagents-operator-repo/devteam-agent"
     tag: "latest"
   security:
-    serviceAccountName: "kubeagents-devteam-agent"
-    workloadIdentity:
-      gcp:
-        gsaName: "kubeagents-devteam-gsa"
-        projectId: "kube-agents-gke"
+    serviceAccountName: "devteam-agent-ac-3-devteam-app-ns"
+    serviceAccountAnnotations:
+      iam.gke.io/gcp-service-account: "dt-gsa-ac-3@kube-agents-gke.iam.gserviceaccount.com"
+    remoteIdentitySubject: "dt-gsa-ac-3@kube-agents-gke.iam.gserviceaccount.com"

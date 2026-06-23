@@ -106,8 +106,6 @@ func buildOperatorPVC(agent *agentv1alpha1.OperatorAgent) *corev1.PersistentVolu
 	}
 }
 
-
-
 // buildOperatorDeployment generates the Deployment manifest for OperatorAgent
 func buildOperatorDeployment(agent *agentv1alpha1.OperatorAgent, configHash, fluentBitHash string) *appsv1.Deployment {
 	replicas := int32(1)

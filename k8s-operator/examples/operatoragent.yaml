@@ -1,12 +1,13 @@
 apiVersion: kubeagents.x-k8s.io/v1alpha1
 kind: OperatorAgent
 metadata:
-  name: operator-agent-autopilot-cluster-1-us-central1
+  name: operator-agent-ac-3-us-central1
   namespace: kubeagents-system
 spec:
   harness:
-    clusterName: "autopilot-cluster-1"
+    clusterName: "ac-3"
     location: "us-central1"
+    projectId: "kube-agents-gke"
     hermes:
       apiServerSecretRef:
         name: "platform-agent-secrets"
@@ -15,8 +16,7 @@ spec:
     image: "us-central1-docker.pkg.dev/kube-agents-gke/kubeagents-operator-repo/operator-agent"
     tag: "latest"
   security:
-    serviceAccountName: "kubeagents-operator-agent"
-    workloadIdentity:
-      gcp:
-        gsaName: "kubeagents-operator-gsa"
-        projectId: "kube-agents-gke"
+    serviceAccountName: "operator-agent-ac-3"
+    serviceAccountAnnotations:
+      iam.gke.io/gcp-service-account: "op-gsa-ac-3@kube-agents-gke.iam.gserviceaccount.com"
+    remoteIdentitySubject: "op-gsa-ac-3@kube-agents-gke.iam.gserviceaccount.com"

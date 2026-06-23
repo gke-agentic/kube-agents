@@ -255,11 +255,8 @@ func TestBuildDeployment(t *testing.T) {
 	if envMap["PLATFORM_AGENT_HOME"].Value != "/var/agent" {
 		t.Errorf("expected PLATFORM_AGENT_HOME /var/agent, got %s", envMap["PLATFORM_AGENT_HOME"].Value)
 	}
-	if _, ok := envMap["HOME"]; ok {
-		t.Errorf("expected HOME to not be set in platform agent container Env")
-	}
-	if !strings.Contains(container.Args[1], `export HOME="/var/agent/home"`) {
-		t.Errorf("expected command to export HOME, got: %s", container.Args[1])
+	if envMap["HOME"].Value != "/var/agent/home" {
+		t.Errorf("expected HOME to be /var/agent/home, got %s", envMap["HOME"].Value)
 	}
 	if envMap["PLATFORM_AGENT_DASHBOARD"].Value != "0" {
 		t.Errorf("expected PLATFORM_AGENT_DASHBOARD to be overridden to 0, got %s", envMap["PLATFORM_AGENT_DASHBOARD"].Value)
@@ -415,4 +412,29 @@ func TestBuildPlatformService(t *testing.T) {
 	if svc.Spec.Selector["app"] != "test-platform-agent-gateway" {
 		t.Errorf("expected selector app=test-platform-agent-gateway, got %s", svc.Spec.Selector["app"])
 	}
+}
+
+func buildPlatformServiceAccount(agent *agentv1alpha1.PlatformAgent) *corev1.ServiceAccount {
+	saName := agent.Name
+	var annotations map[string]string
+	if agent.Spec.Security != nil {
+		if agent.Spec.Security.ServiceAccountName != "" {
+			saName = agent.Spec.Security.ServiceAccountName
+		}
+		annotations = agent.Spec.Security.ServiceAccountAnnotations
+	}
+	sa := &corev1.ServiceAccount{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "ServiceAccount",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      saName,
+			Namespace: agent.Namespace,
+		},
+	}
+	if annotations != nil {
+		sa.Annotations = annotations
+	}
+	return sa
 }

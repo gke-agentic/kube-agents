@@ -7,7 +7,6 @@ mcp_servers:
     # 5-minute timeout to support long GKE reasoning chains
     timeout: 300
 
-
 # Explicitly list platform_toolsets
 platform_toolsets:
   cli:
