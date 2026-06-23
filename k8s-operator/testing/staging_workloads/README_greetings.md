@@ -1,15 +1,13 @@
-# Staging Workloads - Greetings & Guidelines for the Dev Team
+# GKE Staging Workloads: Development Team Onboarding & Guidelines
 
-Welcome, Dev Team! 👋
+Welcome to the Multi-Cluster GKE Staging and Testing Environment. This repository contains the configurations and templates required to deploy, test, and validate our agentic GKE cluster operations.
 
-This folder (`k8s-operator/testing/staging_workloads`) hosts the setup for our multi-cluster GKE staging and testing infrastructure. 
+## Operational Readiness & Best Practices
 
-## 🚀 Welcome to GKE Agentic Staging!
-We are excited to build, test, and iterate on autonomous agents and Kubernetes orchestrations together. Let's maintain high quality, follow robust deployment practices, and have fun building the future of agentic GKE cluster operations!
+To ensure stability, efficiency, and resource optimization across our staging infrastructure, all team members are requested to observe the following guidelines:
 
-## 📌 Helpful Staging Practices
-* *Verify Configurations:* Double-check your mappings in `variables.tf` before executing `deploy_infra.sh`.
-* *Test Locally First:* Use dry-runs or smaller cluster scopes to validate changes when possible.
-* *Clean Up:* Use `teardown_infra.sh` when you are done to conserve resources and keep things tidy.
+*   **Configuration Validation:** Verify your parameters within `variables.tf` and related map definitions prior to executing `deploy_infra.sh`.
+*   **Scoped Verification:** Conduct initial dry-runs or target smaller cluster subsets when validating non-trivial or experimental logic.
+*   **Resource Lifecycle Management:** Always execute `teardown_infra.sh` upon completing testing cycles to release cluster allocations and optimize operational costs.
 
-Happy Coding! 💻✨
+Thank you for your dedication to maintaining a robust and stable staging ecosystem. For questions, please reach out via our standard engineering channels.
