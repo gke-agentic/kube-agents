@@ -88,6 +88,11 @@ func (r *DevTeamAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}
 	}
 
+	// 4b. Reconcile Service Account (with Workload Identity annotation)
+	if err := r.reconcileServiceAccount(ctx, instance); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// 5. Reconcile PVC for agent persistent data
 	if err := r.reconcilePVC(ctx, instance); err != nil {
 		return ctrl.Result{}, err
@@ -122,6 +127,17 @@ func (r *DevTeamAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// 8. Update status phase to Ready
 	return ctrl.Result{}, r.updateStatusReady(ctx, instance)
+}
+
+func (r *DevTeamAgentReconciler) reconcileServiceAccount(ctx context.Context, agent *agentv1alpha1.DevTeamAgent) error {
+	if agent.Spec.Security != nil && agent.Spec.Security.ServiceAccountName != "" {
+		return nil
+	}
+	sa := buildDevTeamServiceAccount(agent)
+	if err := ctrl.SetControllerReference(agent, sa, r.Scheme); err != nil {
+		return err
+	}
+	return r.Patch(ctx, sa, client.Apply, client.ForceOwnership, client.FieldOwner("devteamagent-controller"))
 }
 
 func (r *DevTeamAgentReconciler) reconcilePVC(ctx context.Context, agent *agentv1alpha1.DevTeamAgent) error {

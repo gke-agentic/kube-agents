@@ -243,7 +243,7 @@ gcp-teardown-01-cluster: ## Teardown Step 1: Delete GKE cluster and local config
 	@./scripts/teardown_01_gcp_cluster.sh $(ARGS)
 
 prettier-check:
-	npx prettier --check "**/*.md" "**/*.yaml" "**/*.yml"
+	npx prettier --check "**/*.{md,yaml,yml}"
 
 prettier-write:
-	npx prettier --write "**/*.md" "**/*.yaml" "**/*.yml"
+	npx prettier --write "**/*.{md,yaml,yml}"
