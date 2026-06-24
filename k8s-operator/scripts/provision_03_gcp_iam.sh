@@ -125,14 +125,25 @@ execute_apis() {
 verify_controller() {
   verify_agent_iam "${CONTROLLER_KSA_NAME}" "${CONTROLLER_GSA_NAME}" \
       "roles/container.clusterViewer" \
-      "roles/container.admin" \
-      "roles/storage.admin"
+      "roles/container.admin" || return 1
+
+  local gsa_email="${CONTROLLER_GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
+  local bucket_name="${PROJECT_ID}-kube-agents-lock"
+  gcloud storage buckets get-iam-policy "gs://${bucket_name}" --project="${PROJECT_ID}" --format="json" 2>/dev/null | grep -q "${gsa_email}"
 }
 execute_controller() {
   execute_agent_iam "Kubeagents Controller Manager" "${CONTROLLER_KSA_NAME}" "${CONTROLLER_GSA_NAME}" \
       "roles/container.clusterViewer" \
-      "roles/container.admin" \
-      "roles/storage.admin"
+      "roles/container.admin" || return 1
+
+  local gsa_email="${CONTROLLER_GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
+  local bucket_name="${PROJECT_ID}-kube-agents-lock"
+  print_info "Granting storage.admin on gs://${bucket_name} to ${gsa_email}..."
+  gcloud storage buckets add-iam-policy-binding "gs://${bucket_name}" \
+      --member="serviceAccount:${gsa_email}" \
+      --role="roles/storage.admin" \
+      --project="${PROJECT_ID}" \
+      --quiet >/dev/null
 }
 
 # Step 3: Configure Platform Agent IAM

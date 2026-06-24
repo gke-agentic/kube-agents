@@ -47,8 +47,11 @@ if gcloud storage buckets describe "gs://${LOCK_BUCKET}" --project="${PROJECT_ID
     echo -e "  ${C_GREEN}[DRY-RUN] Would delete GCS bucket gs://${LOCK_BUCKET} recursively.${C_RESET}"
   else
     # Force delete all objects and the bucket itself
-    gcloud storage rm -r "gs://${LOCK_BUCKET}" --project="${PROJECT_ID}" --quiet || true
-    echo -e "  ${C_GREEN}✓ GCS lock bucket successfully deleted.${C_RESET}"
+    if gcloud storage rm -r "gs://${LOCK_BUCKET}" --project="${PROJECT_ID}" --quiet; then
+      echo -e "  ${C_GREEN}✓ GCS lock bucket successfully deleted.${C_RESET}"
+    else
+      echo -e "  ${C_YELLOW}⚠ Failed to delete GCS lock bucket. It may need to be cleaned up manually.${C_RESET}"
+    fi
   fi
 else
   echo -e "  ${C_GREEN}✓ GCS lock bucket 'gs://${LOCK_BUCKET}' does not exist.${C_RESET}"

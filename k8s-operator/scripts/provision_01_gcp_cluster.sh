@@ -74,7 +74,8 @@ execute_lock_bucket() {
   gcloud storage buckets create "gs://${bucket_name}" \
       --location="$REGION" \
       --project="$PROJECT_ID" \
-      --uniform-bucket-level-access
+      --uniform-bucket-level-access \
+      --public-access-prevention=enforced
 }
 
 # Step 3: Connect kubectl

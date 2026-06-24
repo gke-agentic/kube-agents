@@ -82,8 +82,7 @@ cleanup_agent_iam() {
 cleanup_agent_iam "${CONTROLLER_KSA_NAME}" "${CONTROLLER_GSA_NAME}" \
     "roles/container.clusterViewer" \
     "roles/container.admin" \
-    "roles/container.clusterAdmin" \
-    "roles/storage.admin"
+    "roles/container.clusterAdmin"
 
 cleanup_agent_iam "${PLATFORM_AGENT_KSA_NAME}" "${PLATFORM_AGENT_GSA_NAME}" \
     "roles/container.clusterAdmin" \
