@@ -92,7 +92,8 @@ cleanup_agent_iam "${PLATFORM_AGENT_KSA_NAME}" "${PLATFORM_AGENT_GSA_NAME}" \
     "roles/monitoring.admin" \
     "roles/logging.admin" \
     "roles/aiplatform.user" \
-    "roles/container.clusterViewer"
+    "roles/container.clusterViewer" \
+    "roles/iam.serviceAccountUser"
 
 cleanup_agent_iam "${OPERATOR_AGENT_KSA_NAME}" "${OPERATOR_AGENT_GSA_NAME}" \
     "roles/container.clusterViewer" \
@@ -100,12 +101,14 @@ cleanup_agent_iam "${OPERATOR_AGENT_KSA_NAME}" "${OPERATOR_AGENT_GSA_NAME}" \
     "roles/logging.viewer" \
     "roles/aiplatform.user" \
     "roles/container.admin" \
-    "roles/container.clusterAdmin"
+    "roles/container.clusterAdmin" \
+    "roles/iam.serviceAccountUser"
 
 cleanup_agent_iam "${DEVTEAM_AGENT_KSA_NAME}" "${DEVTEAM_AGENT_GSA_NAME}" \
     "roles/container.clusterViewer" \
     "roles/monitoring.viewer" \
     "roles/logging.viewer" \
-    "roles/aiplatform.user"
+    "roles/aiplatform.user" \
+    "roles/iam.serviceAccountUser"
 
 echo -e "\n${C_GREEN}${C_BOLD}✅ Controller & Agent GCP IAM configurations fully cleaned up!${C_RESET}"
