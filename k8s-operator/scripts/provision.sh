@@ -25,6 +25,7 @@ echo -e "${C_MAGENTA}${C_BOLD}🚀 Starting GKE Platform Agent provisioning pipe
 "${SCRIPT_DIR}/provision_04_gcp_k8s_secrets.sh" $DRY_RUN_ARG
 "${SCRIPT_DIR}/provision_05_gcp_gchat.sh" $DRY_RUN_ARG
 "${SCRIPT_DIR}/provision_06_deploy_platform_agent.sh" $DRY_RUN_ARG
+"${SCRIPT_DIR}/provision_07_deploy_extra_agents.sh" $DRY_RUN_ARG
 
 echo -e "\n${C_MAGENTA}${C_BOLD}>>>  Infrastructure & Cloud Resources Provisioned Successfully!  <<<${C_RESET}"
 
@@ -45,9 +46,8 @@ echo -e "       - Pub/Sub Topic Name: ${C_GREEN}projects/${PROJECT_ID}/topics/${
 echo -e "       - Under Visibility, check: ${C_GREEN}Only specific people (add your email/emails: ${ALLOWED_USERS:-your-email})${C_RESET}"
 
 echo -e ""
-echo -e "[ ] 2. Run the new Operator manager locally or deploy it:"
-echo -e "       To run locally: ${C_WHITE}ENABLE_WEBHOOKS=false make run${C_RESET} (from k8s-operator directory)"
-echo -e "       To deploy to cluster: ${C_WHITE}make deploy IMG=<your-docker-registry>/kube-agents-operator:latest${C_RESET}"
+echo -e "[ ] 2. The Operator manager has been built and deployed to the GKE cluster."
+echo -e "       To run/debug locally instead: ${C_WHITE}ENABLE_WEBHOOKS=false make run${C_RESET} (from k8s-operator directory)"
 
 echo -e ""
 echo -e "[ ] 3. Monitor Gateway pod rollout progress:"

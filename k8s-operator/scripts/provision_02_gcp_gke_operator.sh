@@ -86,7 +86,8 @@ execute_operator() {
   print_info "Installing Custom Resource Definitions (CRDs)..."
   make -C "$OPERATOR_DIR" install || return 1
   print_info "Deploying Operator Controller Manager to the GKE cluster..."
-  make -C "$OPERATOR_DIR" deploy || return 1
+  local CONTROLLER_IMG="us-central1-docker.pkg.dev/${PROJECT_ID}/kubeagents-operator-repo/kubeagents-controller:latest"
+  make -C "$OPERATOR_DIR" deploy IMG="${CONTROLLER_IMG}" || return 1
 }
 
 # ─── Execution Pipeline ───────────────────────────────────────────────────────

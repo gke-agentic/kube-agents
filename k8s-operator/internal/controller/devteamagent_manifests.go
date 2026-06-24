@@ -167,6 +167,10 @@ func buildDevTeamDeployment(agent *agentv1alpha1.DevTeamAgent, configHash, fluen
 
 	envVars := []corev1.EnvVar{
 		{
+			Name:  "KUBECONFIG",
+			Value: homeDir + "/.kube/config",
+		},
+		{
 			Name:  "DEVTEAM_AGENT_HOME",
 			Value: homeDir,
 		},

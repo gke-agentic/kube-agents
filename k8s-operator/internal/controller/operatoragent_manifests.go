@@ -31,7 +31,7 @@ import (
 	agentv1alpha1 "github.com/gke-labs/kube-agents/k8s-operator/api/v1alpha1"
 )
 
-// buildOperatorConfigMap generates the ConfigMap manifest containing config.yaml for OperatorAgent
+// buildOperatorConfigMap generates the ConfigMap manifest containing config.yaml and SETTINGS.md for OperatorAgent
 func buildOperatorConfigMap(agent *agentv1alpha1.OperatorAgent) *corev1.ConfigMap {
 	return &corev1.ConfigMap{
 		TypeMeta: metav1.TypeMeta{
@@ -44,8 +44,26 @@ func buildOperatorConfigMap(agent *agentv1alpha1.OperatorAgent) *corev1.ConfigMa
 		},
 		Data: map[string]string{
 			"config.yaml": renderOperatorConfigYAML(agent),
+			"SETTINGS.md": renderOperatorSettingsMD(agent),
 		},
 	}
+}
+
+// renderOperatorSettingsMD generates the SETTINGS.md GKE Scope configuration payload for OperatorAgent
+func renderOperatorSettingsMD(agent *agentv1alpha1.OperatorAgent) string {
+	clusterName := ""
+	location := ""
+	projectId := ""
+	if agent.Spec.Harness != nil {
+		clusterName = agent.Spec.Harness.ClusterName
+		location = agent.Spec.Harness.Location
+		projectId = agent.Spec.Harness.ProjectID
+	}
+	return fmt.Sprintf(`# GKE Scope Configuration
+- **Cluster Name:** %s
+- **Cluster Location:** %s
+- **Project ID:** %s
+`, clusterName, location, projectId)
 }
 
 // renderOperatorConfigYAML generates the YAML config payload for OperatorAgent
@@ -148,6 +166,10 @@ func buildOperatorDeployment(agent *agentv1alpha1.OperatorAgent, configHash, flu
 	}
 
 	envVars := []corev1.EnvVar{
+		{
+			Name:  "KUBECONFIG",
+			Value: homeDir + "/.kube/config",
+		},
 		{
 			Name:  "OPERATOR_AGENT_HOME",
 			Value: homeDir,
@@ -285,6 +307,11 @@ func buildOperatorDeployment(agent *agentv1alpha1.OperatorAgent, configHash, flu
 									Name:      "operator-agent-config-vol",
 									MountPath: fmt.Sprintf("%s/config.yaml", homeDir),
 									SubPath:   "config.yaml",
+								},
+								{
+									Name:      "operator-agent-config-vol",
+									MountPath: fmt.Sprintf("%s/SETTINGS.md", homeDir),
+									SubPath:   "SETTINGS.md",
 								},
 							},
 							SecurityContext: &corev1.SecurityContext{

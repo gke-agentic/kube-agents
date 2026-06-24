@@ -92,7 +92,11 @@ execute_extra_agents() {
   export TARGET_CLUSTER_NAME="ac-3"
   export TARGET_CLUSTER_LOCATION="us-central1"
   export TARGET_NAMESPACE="devteam-app-ns"
-  
+
+  # Explicit GCR image paths for Operator and DevTeam Agents
+  export OPERATOR_AGENT_IMAGE="us-central1-docker.pkg.dev/kube-agents-gke/kubeagents-operator-repo/operator-agent"
+  export DEVTEAM_AGENT_IMAGE="us-central1-docker.pkg.dev/kube-agents-gke/kubeagents-operator-repo/devteam-agent"
+
   print_success "Selected Target Cluster: ${TARGET_CLUSTER_NAME} (${TARGET_CLUSTER_LOCATION})"
   print_success "Target Workload Namespace: ${TARGET_NAMESPACE}"
 
