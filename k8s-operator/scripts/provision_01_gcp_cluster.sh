@@ -37,11 +37,13 @@ init_var "REGION" "us-east4" "Enter GKE GCP Region"
 # Step 1: Enable APIs
 verify_apis() {
   local out=$(gcloud services list --enabled --project="$PROJECT_ID" --format="value(config.name)" 2>/dev/null || echo "")
-  echo "$out" | grep -q 'container.googleapis.com'
+  echo "$out" | grep -q 'container.googleapis.com' && \
+  echo "$out" | grep -q 'storage.googleapis.com'
 }
 execute_apis() {
   gcloud services enable \
       container.googleapis.com \
+      storage.googleapis.com \
       --project="$PROJECT_ID"
 }
 
@@ -61,6 +63,20 @@ execute_cluster() {
       --quiet
 }
 
+# Step 2.5: GCS Lock Bucket Provisioning
+verify_lock_bucket() {
+  local bucket_name="${PROJECT_ID}-kube-agents-lock"
+  gcloud storage buckets describe "gs://${bucket_name}" --project="$PROJECT_ID" >/dev/null 2>&1
+}
+execute_lock_bucket() {
+  local bucket_name="${PROJECT_ID}-kube-agents-lock"
+  print_info "Creating GCS lock bucket: gs://${bucket_name}..."
+  gcloud storage buckets create "gs://${bucket_name}" \
+      --location="$REGION" \
+      --project="$PROJECT_ID" \
+      --uniform-bucket-level-access
+}
+
 # Step 3: Connect kubectl
 verify_kubeconfig() {
   local current_ctx
@@ -74,6 +90,7 @@ execute_kubeconfig() {
 # ─── Execution Pipeline ───────────────────────────────────────────────────────
 run_step "1. Enable GCP Cluster APIs" verify_apis execute_apis 30
 run_step "2. Provision GKE Cluster" verify_cluster execute_cluster 10
-run_step "3. Connect kubectl" verify_kubeconfig execute_kubeconfig 5
+run_step "3. Provision GCS Lock Bucket" verify_lock_bucket execute_lock_bucket 5
+run_step "4. Connect kubectl" verify_kubeconfig execute_kubeconfig 5
 
-echo -e "\n${C_MAGENTA}${C_BOLD}>>>  GKE Infrastructure Provisioned Successfully!  <<<${C_RESET}"
+echo -e "\n${C_MAGENTA}${C_BOLD}>>>  GKE Infrastructure & GCS Lock Bucket Provisioned Successfully!  <<<${C_RESET}"

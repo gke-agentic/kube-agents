@@ -125,12 +125,14 @@ execute_apis() {
 verify_controller() {
   verify_agent_iam "${CONTROLLER_KSA_NAME}" "${CONTROLLER_GSA_NAME}" \
       "roles/container.clusterViewer" \
-      "roles/container.admin"
+      "roles/container.admin" \
+      "roles/storage.admin"
 }
 execute_controller() {
   execute_agent_iam "Kubeagents Controller Manager" "${CONTROLLER_KSA_NAME}" "${CONTROLLER_GSA_NAME}" \
       "roles/container.clusterViewer" \
-      "roles/container.admin"
+      "roles/container.admin" \
+      "roles/storage.admin"
 }
 
 # Step 3: Configure Platform Agent IAM

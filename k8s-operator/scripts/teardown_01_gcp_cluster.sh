@@ -39,6 +39,22 @@ else
   echo -e "  ${C_GREEN}✓ GKE Cluster '$CLUSTER_NAME' does not exist.${C_RESET}"
 fi
 
+# ─── Step 1.5: Delete GCS Lock Bucket ─────────────────────────────────────────
+LOCK_BUCKET="${PROJECT_ID}-kube-agents-lock"
+if gcloud storage buckets describe "gs://${LOCK_BUCKET}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  echo -e "  ${C_CYAN}ℹ Deleting GCS lock bucket: gs://${LOCK_BUCKET}...${C_RESET}"
+  if [ "${DRY_RUN:-0}" -eq 1 ]; then
+    echo -e "  ${C_GREEN}[DRY-RUN] Would delete GCS bucket gs://${LOCK_BUCKET} recursively.${C_RESET}"
+  else
+    # Force delete all objects and the bucket itself
+    gcloud storage rm -r "gs://${LOCK_BUCKET}" --project="${PROJECT_ID}" --quiet || true
+    echo -e "  ${C_GREEN}✓ GCS lock bucket successfully deleted.${C_RESET}"
+  fi
+else
+  echo -e "  ${C_GREEN}✓ GCS lock bucket 'gs://${LOCK_BUCKET}' does not exist.${C_RESET}"
+fi
+
+
 # ─── Step 2: Clean up Local State Files ───────────────────────────────────────
 if [ -f "$VARS_FILE" ]; then
   if [ "${DRY_RUN:-0}" -eq 1 ]; then
