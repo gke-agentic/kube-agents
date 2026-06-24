@@ -559,4 +559,3 @@ func buildPlatformService(agent *agentv1alpha1.PlatformAgent) *corev1.Service {
 		},
 	}
 }
-

@@ -57,7 +57,6 @@ func TestAgentsGolden(t *testing.T) {
 				return &controller.OperatorAgentReconciler{Client: c, Scheme: s}
 			},
 		},
-
 	}
 
 	for _, tt := range tests {

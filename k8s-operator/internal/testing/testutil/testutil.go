@@ -24,10 +24,10 @@ import (
 // (Create, Update, Patch) to collect modified resources in their insertion/generation order.
 type TrackingClient struct {
 	client.Client
-	objects []client.Object
-	indices map[string]int
-	scheme  *runtime.Scheme
-	mutated bool
+	objects   []client.Object
+	indices   map[string]int
+	scheme    *runtime.Scheme
+	mutated   bool
 	ignoreKey string
 }
 
