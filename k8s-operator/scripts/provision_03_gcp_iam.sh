@@ -149,7 +149,10 @@ verify_platform_agent() {
       "roles/container.admin" \
       "roles/monitoring.admin" \
       "roles/logging.admin" \
-      "roles/iam.serviceAccountUser"
+      "roles/iam.serviceAccountUser" \
+      "roles/iam.roleViewer" \
+      "roles/iam.securityReviewer"
+
 }
 execute_platform_agent() {
   execute_agent_iam "Platform Agent" "${PLATFORM_AGENT_KSA_NAME}" "${PLATFORM_AGENT_GSA_NAME}" \
@@ -157,7 +160,9 @@ execute_platform_agent() {
       "roles/container.admin" \
       "roles/monitoring.admin" \
       "roles/logging.admin" \
-      "roles/iam.serviceAccountUser"
+      "roles/iam.serviceAccountUser" \
+      "roles/iam.roleViewer" \
+      "roles/iam.securityReviewer"
 }
 
 
