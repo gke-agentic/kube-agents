@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -54,7 +55,6 @@ func (c *TrackingClient) IsMutated() bool {
 }
 
 func (c *TrackingClient) track(obj client.Object) {
-	c.mutated = true
 	copied := obj.DeepCopyObject().(client.Object)
 
 	// Populate TypeMeta dynamically using the scheme
@@ -70,14 +70,56 @@ func (c *TrackingClient) track(obj client.Object) {
 	)
 
 	if key == c.ignoreKey {
+		c.mutated = true // Still mark as mutated for the loop if the target CR itself is updated (e.g. finalizers)
 		return
 	}
 
+	// Clean volatile fields for comparison
+	cleanCopied := copied.DeepCopyObject().(client.Object)
+	cleanCopied.SetResourceVersion("")
+	cleanCopied.SetUID("")
+	cleanCopied.SetCreationTimestamp(metav1.Time{})
+
 	if idx, exists := c.indices[key]; exists {
+		existingClean := c.objects[idx].DeepCopyObject().(client.Object)
+		existingClean.SetResourceVersion("")
+		existingClean.SetUID("")
+		existingClean.SetCreationTimestamp(metav1.Time{})
+
+		if reflect.DeepEqual(cleanCopied, existingClean) {
+			// No semantic change, don't mark as mutated, just update the stored object
+			c.objects[idx] = copied
+			return
+		}
 		c.objects[idx] = copied
 	} else {
 		c.indices[key] = len(c.objects)
 		c.objects = append(c.objects, copied)
+	}
+	c.mutated = true
+}
+
+func (c *TrackingClient) untrack(obj client.Object) {
+	c.mutated = true
+	gvk, err := apiutil.GVKForObject(obj, c.scheme)
+	var kind string
+	if err == nil {
+		kind = gvk.Kind
+	} else {
+		kind = obj.GetObjectKind().GroupVersionKind().Kind
+	}
+	key := fmt.Sprintf("%s/%s/%s", kind, obj.GetNamespace(), obj.GetName())
+	if idx, exists := c.indices[key]; exists {
+		c.objects = append(c.objects[:idx], c.objects[idx+1:]...)
+		delete(c.indices, key)
+		for i := idx; i < len(c.objects); i++ {
+			k := fmt.Sprintf("%s/%s/%s",
+				c.objects[i].GetObjectKind().GroupVersionKind().Kind,
+				c.objects[i].GetNamespace(),
+				c.objects[i].GetName(),
+			)
+			c.indices[k] = i
+		}
 	}
 }
 
@@ -99,6 +141,8 @@ func (c *TrackingClient) Update(ctx context.Context, obj client.Object, opts ...
 
 func (c *TrackingClient) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
 	// Server-Side Apply fallback for fake client
+	// NOTE: This fallback replaces the entire object with the patch object 'obj'.
+	// If partial patches are used in the future, this will cause data loss of other fields.
 	if patch.Type() == types.ApplyPatchType {
 		key := client.ObjectKeyFromObject(obj)
 		existing := obj.DeepCopyObject().(client.Object)
@@ -124,6 +168,14 @@ func (c *TrackingClient) Patch(ctx context.Context, obj client.Object, patch cli
 	err := c.Client.Patch(ctx, obj, patch, opts...)
 	if err == nil {
 		c.track(obj)
+	}
+	return err
+}
+
+func (c *TrackingClient) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
+	err := c.Client.Delete(ctx, obj, opts...)
+	if err == nil {
+		c.untrack(obj)
 	}
 	return err
 }
@@ -195,6 +247,7 @@ func RunOperatorReconcile(
 	}
 
 	maxIterations := 5
+	stabilized := false
 	for i := 0; i < maxIterations; i++ {
 		trackerClient.ResetMutated()
 		_, err := reconciler.Reconcile(ctx, req)
@@ -202,8 +255,12 @@ func RunOperatorReconcile(
 			return nil, err
 		}
 		if !trackerClient.IsMutated() {
+			stabilized = true
 			break
 		}
+	}
+	if !stabilized {
+		return nil, fmt.Errorf("reconciliation did not stabilize after %d iterations; possible infinite loop", maxIterations)
 	}
 
 	return trackerClient.GetObjects(), nil
@@ -258,6 +315,7 @@ func CompareGolden(t *testing.T, actual string, expectedPath string, update bool
 }
 
 func parseMultiDocYAML(t *testing.T, data string) []interface{} {
+	data = strings.ReplaceAll(data, "\r\n", "\n")
 	parts := strings.Split(data, "\n---\n")
 	var docs []interface{}
 	for _, part := range parts {
