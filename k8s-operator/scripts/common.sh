@@ -99,6 +99,8 @@ load_state() {
   export DEVTEAM_AGENT_GSA_NAME="kubeagents-devteam-gsa"
   export CONTROLLER_KSA_NAME="kubeagents-controller"
   export CONTROLLER_GSA_NAME="kubeagents-controller-gsa"
+  export GITHUB_MINTER_KSA_NAME="kubeagents-github-minter"
+  export GITHUB_MINTER_GSA_NAME="kubeagents-github-minter-gsa"
 }
 
 ensure_teardown_state() {
@@ -113,6 +115,8 @@ ensure_teardown_state() {
     export DEVTEAM_AGENT_GSA_NAME="kubeagents-devteam-gsa"
     export CONTROLLER_KSA_NAME="kubeagents-controller"
     export CONTROLLER_GSA_NAME="kubeagents-controller-gsa"
+    export GITHUB_MINTER_KSA_NAME="kubeagents-github-minter"
+    export GITHUB_MINTER_GSA_NAME="kubeagents-github-minter-gsa"
   else
     echo -e "  ${C_YELLOW}⚠ State file ${VARS_FILE} not found. Prompting for target values...${C_RESET}"
     local ACTIVE_PROJECT
@@ -150,6 +154,8 @@ ensure_teardown_state() {
     export DEVTEAM_AGENT_GSA_NAME="kubeagents-devteam-gsa"
     export CONTROLLER_KSA_NAME="kubeagents-controller"
     export CONTROLLER_GSA_NAME="kubeagents-controller-gsa"
+    export GITHUB_MINTER_KSA_NAME="kubeagents-github-minter"
+    export GITHUB_MINTER_GSA_NAME="kubeagents-github-minter-gsa"
   fi
 }
 

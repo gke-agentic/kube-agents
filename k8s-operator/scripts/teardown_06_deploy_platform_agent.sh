@@ -62,17 +62,7 @@ else
   echo -e "  ${C_GREEN}✓ CRD 'platformagents.kubeagents.x-k8s.io' is not registered. Skipping.${C_RESET}"
 fi
 
-# ─── Step 3: Undeploy LiteLLM Gateway ─────────────────────────────────────────
-echo -e "  ${C_CYAN}ℹ Undeploying LiteLLM Gateway...${C_RESET}"
-if [ "${DRY_RUN:-0}" -eq 1 ]; then
-  echo -e "  ${C_GREEN}[DRY-RUN] Would undeploy LiteLLM Gateway in namespace '${NAMESPACE}'.${C_RESET}"
-else
-  export NAMESPACE MODEL_PROVIDER MODEL_DEFAULT_NAME
-  make -C "${OPERATOR_DIR}" undeploy-litellm || true
-  echo -e "  ${C_GREEN}✓ LiteLLM Gateway undeploy command completed.${C_RESET}"
-fi
-
-# ─── Step 4: Clean up Local Manifest File ─────────────────────────────────────
+# ─── Step 3: Clean up Local Manifest File ─────────────────────────────────────
 local_yaml="${SCRIPT_DIR}/platform-agent.yaml"
 if [ -f "$local_yaml" ]; then
   if [ "${DRY_RUN:-0}" -eq 1 ]; then
@@ -82,5 +72,6 @@ if [ -f "$local_yaml" ]; then
     echo -e "  ${C_GREEN}✓ Deleted platform-agent.yaml${C_RESET}"
   fi
 fi
+
 
 echo -e "\n${C_GREEN}${C_BOLD}✅ PlatformAgent Custom Resource successfully cleaned up!${C_RESET}"

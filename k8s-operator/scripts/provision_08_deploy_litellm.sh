@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# 🤖 Step 6: Deploy PlatformAgent Custom Resource Manifest
+# 🤖 Step 8: Deploy LiteLLM Gateway
 # ==============================================================================
-# Idempotent script that connects to GKE, renders the platform-agent.yaml 
-# template, and deploys it to the cluster.
+# Idempotent script that connects to GKE and deploys the LiteLLM Gateway.
 # ==============================================================================
 
 set -e
@@ -55,15 +54,7 @@ esac
 
 init_var "MODEL_DEFAULT_NAME" "$DEFAULT_MODEL" "Enter Model Default Name"
 
-# Map global state variables to expected template variables
-export GSA_NAME="${PLATFORM_AGENT_GSA_NAME}"
-export KSA_NAME="${PLATFORM_AGENT_KSA_NAME}"
 
-init_var "CHAT_SUB_NAME" "platform-agent-chat-events-sub" "Enter Pub/Sub Subscription Name"
-init_var "CHAT_TOPIC_NAME" "platform-agent-chat-events" "Enter Pub/Sub Topic Name"
-init_var "ALLOWED_USERS" "" "Enter Allowed Google Chat Users Emails (comma separated). Leaving it empty will allow all users."
-DEFAULT_AGENT_IMAGE="ghcr.io/gke-labs/kube-agents/platform-agent"
-init_var "AGENT_IMAGE" "$DEFAULT_AGENT_IMAGE" "Enter Platform Agent Image Path"
 
 # ─── Step Implementations ─────────────────────────────────────────────────────
 
@@ -78,34 +69,21 @@ execute_kubeconfig() {
   connect_cluster
 }
 
-
-# Step 2: Apply PlatformAgent Custom Resource
-verify_custom_resource() {
-  # Always return false to ensure configuration updates are applied to the Custom Resource
+# Step 2: Deploy LiteLLM Gateway
+verify_litellm() {
+  # Always return false to ensure that Kustomize builds and configs are applied idempotently on every run
   return 1
 }
-execute_custom_resource() {
-  print_info "Generating custom resource manifest 'platform-agent.yaml' from template..."
-  local CR_TEMPLATE="${SCRIPT_DIR}/platform-agent.yaml.template"
-  local CR_MANIFEST="${SCRIPT_DIR}/platform-agent.yaml"
-
-  if [ ! -f "$CR_TEMPLATE" ]; then
-    print_error "Custom resource template '$CR_TEMPLATE' not found!"
-    exit 1
-  fi
-
-  # Ensure variables are explicitly exported so envsubst can access them
-  export PROJECT_ID REGION CLUSTER_NAME MODEL_DEFAULT_NAME MODEL_PROVIDER GSA_NAME CHAT_SUB_NAME CHAT_TOPIC_NAME ALLOWED_USERS AGENT_IMAGE NAMESPACE KSA_NAME
-
-  envsubst < "$CR_TEMPLATE" > "$CR_MANIFEST"
-  
-  print_info "Applying 'platform-agent' Custom Resource to the GKE cluster..."
-  kubectl apply -f "$CR_MANIFEST"
+execute_litellm() {
+  print_info "Deploying LiteLLM Gateway into GKE..."
+  export NAMESPACE MODEL_PROVIDER MODEL_DEFAULT_NAME
+  make -C "${OPERATOR_DIR}" deploy-litellm || return 1
 }
+
 
 # ─── Execution Pipeline ───────────────────────────────────────────────────────
 run_step "1. Connect kubectl" verify_kubeconfig execute_kubeconfig 0
-run_step "2. Apply PlatformAgent Custom Resource" verify_custom_resource execute_custom_resource 0
+run_step "2. Deploy LiteLLM Gateway" verify_litellm execute_litellm 0
 
 # ─── Conclusion Checklist ─────────────────────────────────────────────────────
-echo -e "\n${C_GREEN}${C_BOLD}✓ PlatformAgent Custom Resource applied successfully to GKE!${C_RESET}"
+echo -e "\n${C_GREEN}${C_BOLD}✓ LiteLLM Gateway deployed successfully to GKE!${C_RESET}"

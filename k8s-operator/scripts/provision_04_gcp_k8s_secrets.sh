@@ -109,6 +109,7 @@ if [ -z "${API_SERVER_KEY:-}" ]; then
   printf "export API_SERVER_KEY=%q\n" "${API_SERVER_KEY}" >> "$VARS_FILE"
 fi
 
+
 # ─── Step Implementations ─────────────────────────────────────────────────────
 
 # Step 1: Connect kubectl
@@ -144,6 +145,14 @@ execute_k8s_secrets() {
       --from-literal=OPENAI_API_KEY="$OPENAI_API_KEY" \
       --from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
       --dry-run=client -o yaml | kubectl apply -f -
+
+  if [ -n "${GITHUB_APP_ID}" ]; then
+    print_info "Writing Kubernetes Secret 'github-app-credentials' into '$NAMESPACE'..."
+    kubectl create secret generic github-app-credentials \
+        --namespace="$NAMESPACE" \
+        --from-literal=app-id="${GITHUB_APP_ID}" \
+        --dry-run=client -o yaml | kubectl apply -f -
+  fi
 }
 
 

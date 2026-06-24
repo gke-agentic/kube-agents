@@ -52,6 +52,9 @@ graph TD
     A --> E[provision_04_gcp_k8s_secrets.sh]
     A --> F[provision_05_gcp_gchat.sh]
     A --> G[provision_06_deploy_platform_agent.sh]
+    A --> H[provision_07_deploy_extra_agents.sh]
+    A --> I[provision_08_deploy_litellm.sh]
+    A --> J[provision_09_deploy_github_minter.sh]
 ```
 
 1. **[provision_01_gcp_cluster.sh](scripts/provision_01_gcp_cluster.sh)**:
@@ -77,8 +80,18 @@ graph TD
    - Creates the Pub/Sub Chat Event Topic and Subscriber Subscription for Google Chat events.
 
 6. **[provision_06_deploy_platform_agent.sh](scripts/provision_06_deploy_platform_agent.sh)**:
-   - Deploys the LiteLLM Gateway to the cluster.
    - Generates [scripts/platform-agent.yaml](scripts/platform-agent.yaml) from its template and applies the Custom Resource (CR) to deploy the Platform Agent.
+
+7. **[provision_07_deploy_extra_agents.sh](scripts/provision_07_deploy_extra_agents.sh)**:
+   - Deploys additional agents into the cluster.
+
+8. **[provision_08_deploy_litellm.sh](scripts/provision_08_deploy_litellm.sh)**:
+   - Deploys the LiteLLM Gateway to the cluster.
+
+9. **[provision_09_deploy_github_minter.sh](scripts/provision_09_deploy_github_minter.sh)**:
+   - Sets up Google Cloud KMS keyrings and keys for token signing.
+   - Deploys the GitHub Token Minter into the cluster with its authorization configs.
+   - For detailed configuration instructions, see the [GitHub Token Minter README](config/integrations/github/README.md).
 
 ---
 
@@ -391,12 +404,17 @@ Run the `make deploy-github` target, passing the required environment variables:
 # 1. Define the GCP and GitHub parameter variables:
 export PROJECT_ID=your-gcp-project-id
 export REGION=your-gcp-region
-export CLUSTER=your-gke-cluster-name
-export KEYRING=your-kms-keyring
-export KEY=your-kms-key
-export KEY_VERSION=your-kms-key-version
+export CLUSTER_NAME=your-gke-cluster-name
+export KMS_KEYRING=your-kms-keyring
+export KMS_KEY=your-kms-key
+export KMS_KEY_VERSION=your-kms-key-version
 export GITHUB_ORG=your-github-org
 export GITHUB_REPO=your-github-repo
+export GITHUB_MINTER_KSA_NAME=kubeagents-github-minter
+export GITHUB_MINTER_GSA_NAME=kubeagents-github-minter-gsa
+export PLATFORM_AGENT_GSA_NAME=kubeagents-platform-agent-gsa
+export OPERATOR_AGENT_GSA_NAME=kubeagents-operator-agent-gsa
+export DEVTEAM_AGENT_GSA_NAME=kubeagents-devteam-agent-gsa
 
 # 2. Deploy GitHub:
 make deploy-github
