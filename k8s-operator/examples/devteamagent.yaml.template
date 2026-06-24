@@ -16,6 +16,7 @@ spec:
   deployment:
     image: "${DEVTEAM_AGENT_IMAGE}"
     tag: "latest"
+    imagePullPolicy: Always
   security:
     serviceAccountName: "${TARGET_DT_KSA}"
     serviceAccountAnnotations:

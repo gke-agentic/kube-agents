@@ -7,6 +7,7 @@ spec:
   harness:
     clusterName: "${CLUSTER_NAME}"
     location: "${REGION}"
+    projectId: "${PROJECT_ID}"
     hermes:
       dashboardEnabled: true
       pluginsDebug: false
@@ -22,6 +23,7 @@ spec:
     serviceAccountName: "${KSA_NAME}"
     serviceAccountAnnotations:
       iam.gke.io/gcp-service-account: "${GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
+    remoteIdentitySubject: "${GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
   integration:
     googleChat:
       enabled: true

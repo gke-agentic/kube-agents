@@ -33,6 +33,122 @@ def get_state_file(agent_id: str) -> Path:
     else:
         return get_hermes_home() / "devteam_agents.jsonl"
 
+def is_matching_id(requested: str, entry: dict) -> bool:
+    """Perform smart normalization and matching for agent IDs against registry entries."""
+    registered_id = entry.get("agent_id", "").lower().strip()
+    req = requested.lower().strip()
+    
+    if req == registered_id:
+        return True
+        
+    # Strip common suffixes
+    for suffix in ["-gateway", "-service", "-pod"]:
+        if req.endswith(suffix):
+            req = req[:-len(suffix)]
+            
+    # Strip common prefixes for comparison
+    for prefix in ["operator-agent-", "operator-", "devteam-agent-", "devteam-"]:
+        if req.startswith(prefix):
+            req = req[len(prefix):]
+            
+    # Clean registered fields for matching
+    cluster_name = entry.get("cluster_name", "").lower().strip()
+    location = entry.get("location", "").lower().strip()
+    namespace = entry.get("namespace", "").lower().strip()
+    
+    # 1. DevTeam Agent matching (namespace-scoped)
+    if namespace:
+        # Check full match: cluster-location-namespace
+        if req == f"{cluster_name}-{location}-{namespace}":
+            return True
+        # Check omitted location match: cluster-namespace
+        if req == f"{cluster_name}-{namespace}":
+            return True
+        # Check if both cluster_name and namespace are present in the request
+        if cluster_name in req and namespace in req:
+            return True
+            
+    # 2. Operator Agent matching (cluster-scoped)
+    else:
+        # Check full match: cluster-location
+        if req == f"{cluster_name}-{location}":
+            return True
+        # Check omitted location match: cluster
+        if req == cluster_name:
+            return True
+        # Check if cluster_name is present in the request
+        if cluster_name in req:
+            return True
+            
+    return False
+
+# =============================================================================
+# Secure completions client Helpers
+# =============================================================================
+
+def resolve_agent_credentials(agent_id: str) -> tuple[str, str]:
+    """Retrieve the target agent's stable K8s Service FQDN from the state registry and shared API key from the environment."""
+    state_file = get_state_file(agent_id)
+    endpoint = ""
+    api_key = "none"
+
+    if state_file.exists():
+        try:
+            with open(state_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    entry = json.loads(line)
+                    if is_matching_id(agent_id, entry):
+                        endpoint = entry.get("endpoint", "")
+                        api_key = os.environ.get("API_SERVER_KEY") or "none"
+                        log(f"Resolved credentials for '{agent_id}' from state registry.")
+                        break
+        except Exception as e:
+            log(f"Warning: Failed to read state file '{state_file}': {e}")
+
+    if not endpoint or api_key == "none":
+        raise ValueError(f"ERROR: Agent '{agent_id}' is not registered or does not exist in the state registry.")
+
+    return endpoint, api_key
+
+def call_agent_api(endpoint: str, api_key: str, query: str, agent_id: str, session_id: str = "") -> str:
+    """Perform the synchronous HTTP POST call to the target agent's completions API using Bearer Token auth."""
+    protocol = "https" if endpoint.startswith("https://") else "http"
+    clean_endpoint = endpoint.replace("http://", "").replace("https://", "")
+    
+    url = f"{protocol}://{clean_endpoint}/v1/chat/completions"
+    
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
+    }
+    clean_session_id = "".join(c for c in str(session_id) if c.isalnum() or c in "-_.").strip() if session_id else ""
+    if clean_session_id:
+        headers["X-Hermes-Session-Id"] = clean_session_id
+    payload = {
+        "model": "hermes-agent",
+        "messages": [{"role": "user", "content": query}]
+    }
+
+    log(f"Sending secure synchronous call to '{agent_id}'")
+    req = urllib.request.Request(
+        url, 
+        data=json.dumps(payload).encode("utf-8"), 
+        headers=headers,
+        method="POST"
+    )
+
+    try:
+        # 5-minute timeout to accommodate GKE Operator/DevTeam reasoning loops
+        with urllib.request.urlopen(req, timeout=300) as response:
+            resp_data = json.loads(response.read().decode("utf-8"))
+            return resp_data["choices"][0]["message"]["content"]
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode("utf-8")
+        return f"ERROR: Target agent returned HTTP {e.code}: {err_body}"
+    except Exception as e:
+        return f"ERROR: Network communication failed: {e}"
 
 # =============================================================================
 # GCP Region Validation Helpers
@@ -118,17 +234,60 @@ def apply_manifest(path: str):
 def delete_cluster_manifest(cluster_name: str):
     """Delete the GKE cluster Custom Resource from the namespace asynchronously."""
     subprocess.run(
-        ["kubectl", "delete", "containercluster", cluster_name, "-n", "agent-system", "--wait=false"],
+        ["kubectl", "delete", "containercluster", cluster_name, "-n", "kubeagents-system", "--wait=false"],
         check=True, capture_output=True, text=True
     )
+
 
 
 # =============================================================================
 # State Registry Mutators
 # =============================================================================
 
+def _update_state_registry(state_file: Path, agent_id: str, entry: dict | None = None) -> bool:
+    """
+    Read, filter (deduplicate or remove), and write back entries to a JSONL state file.
+    If entry is provided, it is added/updated. If entry is None, the agent_id is removed.
+    Returns True if a change was made/written.
+    """
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+
+    entries = []
+    existed = False
+    if state_file.exists():
+        try:
+            with open(state_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    item = json.loads(line)
+                    if item.get("agent_id") == agent_id:
+                        existed = True
+                        continue
+                    entries.append(item)
+        except Exception as e:
+            log(f"Warning: Failed to read state file '{state_file}': {e}")
+
+    if entry is not None:
+        entries.append(entry)
+
+    # Write back if we added a new entry, or if we removed an existing one
+    if entry is not None or existed:
+        try:
+            # Write via a temporary file to prevent corruption on crash/interrupt
+            temp_file = state_file.with_suffix(".tmp")
+            with open(temp_file, "w", encoding="utf-8") as f:
+                for item in entries:
+                    f.write(json.dumps(item) + "\n")
+            temp_file.replace(state_file)
+            return True
+        except Exception as e:
+            log(f"Error: Failed to write state file '{state_file}': {e}")
+            raise
+    return False
+
 def add_operator_to_state(agent_id: str, cluster_name: str, location: str, project_id: str):
-    """Append a new operator entry to the JSONL state file."""
+    """Upsert an operator entry in the JSONL state file, automatically cleaning up duplicates."""
     state_file = get_hermes_home() / "operator_agents.jsonl"
     state_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -139,50 +298,21 @@ def add_operator_to_state(agent_id: str, cluster_name: str, location: str, proje
         "project_id": project_id,
         "created_at": datetime.utcnow().isoformat() + "Z",
         "status": "active",
-        "endpoint": f"operator-agent-{cluster_name}-{location}.agent-system.svc.cluster.local:8642"
+        "endpoint": f"operator-agent-{cluster_name}-{location}.kubeagents-system.svc.cluster.local:8642"
     }
-
-    try:
-        with open(state_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
-        log(f"Registered new agent '{agent_id}' in state registry.")
-    except Exception as e:
-        log(f"Error: Failed to write state entry: {e}")
-        raise
-
+    _update_state_registry(state_file, agent_id, entry)
+    log(f"Successfully registered agent '{agent_id}' in operator state registry.")
 
 def remove_operator_from_state(agent_id: str):
     """Remove the operator entry from the JSONL state file."""
     state_file = get_hermes_home() / "operator_agents.jsonl"
-    if not state_file.exists():
-        return
-
-    lines = []
-    removed = False
-    try:
-        with open(state_file, "r", encoding="utf-8") as f:
-            for line in f:
-                if not line.strip():
-                    continue
-                entry = json.loads(line)
-                if entry.get("agent_id") == agent_id:
-                    removed = True
-                    continue
-                lines.append(line)
-
-        if removed:
-            with open(state_file, "w", encoding="utf-8") as f:
-                f.writelines(lines)
-            log(f"Removed agent '{agent_id}' from state registry.")
-    except Exception as e:
-        log(f"Error: Failed to clean state entry: {e}")
+    if _update_state_registry(state_file, agent_id, None):
+        log(f"Removed agent '{agent_id}' from operator state registry.")
 
 
 def add_devteam_to_state(agent_id: str, cluster_name: str, location: str, namespace: str, project_id: str):
-    """Append a new DevTeam agent entry to the JSONL state file."""
+    """Upsert a DevTeam agent entry in the JSONL state file, automatically cleaning up duplicates."""
     state_file = get_hermes_home() / "devteam_agents.jsonl"
-    state_file.parent.mkdir(parents=True, exist_ok=True)
-
     entry = {
         "agent_id": agent_id,
         "cluster_name": cluster_name,
@@ -191,46 +321,16 @@ def add_devteam_to_state(agent_id: str, cluster_name: str, location: str, namesp
         "project_id": project_id,
         "created_at": datetime.utcnow().isoformat() + "Z",
         "status": "active",
-        "endpoint": f"devteam-{cluster_name}-{location}-{namespace}.agent-system.svc.cluster.local:8642"
+        "endpoint": f"devteam-agent-{cluster_name}-{location}-{namespace}.kubeagents-system.svc.cluster.local:8642"
     }
-
-    try:
-        with open(state_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
-        log(f"Registered new DevTeam agent '{agent_id}' in state registry.")
-    except Exception as e:
-        log(f"Error: Failed to write DevTeam state entry: {e}")
-        raise
-
+    _update_state_registry(state_file, agent_id, entry)
+    log(f"Successfully registered agent '{agent_id}' in devteam state registry.")
 
 def remove_devteam_from_state(agent_id: str):
     """Remove the DevTeam agent entry from the JSONL state file."""
     state_file = get_hermes_home() / "devteam_agents.jsonl"
-    if not state_file.exists():
-        return
-
-    lines = []
-    removed = False
-    try:
-        with open(state_file, "r", encoding="utf-8") as f:
-            for line in f:
-                if not line.strip():
-                    continue
-                entry = json.loads(line)
-                if entry.get("agent_id") == agent_id:
-                    removed = True
-                    continue
-                lines.append(line)
-
-        if removed:
-            temp_file = state_file.with_suffix(".tmp")
-            with open(temp_file, "w", encoding="utf-8") as f:
-                f.writelines(lines)
-            temp_file.replace(state_file)
-            log(f"Removed DevTeam agent '{agent_id}' from state registry.")
-    except Exception as e:
-        log(f"Error: Failed to clean DevTeam state entry: {e}")
-        raise
+    if _update_state_registry(state_file, agent_id, None):
+        log(f"Removed DevTeam agent '{agent_id}' from devteam state registry.")
 
 
 # =============================================================================
@@ -304,7 +404,7 @@ def provision_operator(cluster_name: str, location: str, project_id: str = "") -
 kind: ContainerCluster
 metadata:
   name: {cluster_name}
-  namespace: agent-system
+  namespace: kubeagents-system
   annotations:
     cnrm.cloud.google.com/project-id: "{pid}"
     cnrm.cloud.google.com/remove-default-node-pool: "true"
@@ -369,6 +469,57 @@ def deprovision_operator(cluster_name: str, location: str) -> str:
         return f"ERROR: State cleanup failed: {e}"
 
     return f"SUCCESS: {agent_id} DELETED"
+
+
+@mcp.tool()
+def register_operator(cluster_name: str, location: str, project_id: str = "") -> str:
+    """
+    Natively and dynamically register an already existing GKE Operator Agent in the fleet registry.
+    Use this to register an operator that was provisioned manually or pre-exists.
+
+    Args:
+        cluster_name: The name of the GKE cluster managed by the operator (e.g., 'mercury-02').
+        location: The GCP region or zone of the GKE cluster (e.g., 'us-central1').
+        project_id: Optional GCP Project ID. If omitted, it resolves automatically from the environment.
+    """
+    if not cluster_name or not all(c.islower() or c.isdigit() or c == '-' for c in cluster_name) or len(cluster_name) > 63:
+        return "ERROR: Invalid cluster_name. It must consist of lowercase alphanumeric characters or '-', and be at most 63 characters."
+
+    pid = project_id if project_id else get_project_id()
+    if not pid:
+        return "ERROR: Could not resolve GCP Project ID. Please specify 'project_id'."
+
+    err = validate_location(location, pid)
+    if err:
+        return err
+
+    agent_id = f"operator-{cluster_name}-{location}"
+    try:
+        add_operator_to_state(agent_id, cluster_name, location, pid)
+    except Exception as e:
+        return f"ERROR: Failed to register operator in state registry: {e}"
+
+    return f"SUCCESS: {agent_id} | PROJECT: {pid}"
+
+
+@mcp.tool()
+def deregister_operator(cluster_name: str, location: str) -> str:
+    """
+    Natively and dynamically deregister an active GKE Operator Agent from the fleet registry.
+    This purges its registry record without deleting or modifying the underlying GKE cluster or resources.
+
+    Args:
+        cluster_name: The name of the GKE cluster managed by the operator (e.g., 'mercury-02').
+        location: The GCP region or zone of the GKE cluster (e.g., 'us-central1').
+    """
+    agent_id = f"operator-{cluster_name}-{location}"
+    try:
+        remove_operator_from_state(agent_id)
+    except Exception as e:
+        return f"ERROR: State cleanup failed: {e}"
+
+    return f"SUCCESS: {agent_id} DEREGISTERED"
+
 
 @mcp.tool()
 def list_devteams() -> str:
