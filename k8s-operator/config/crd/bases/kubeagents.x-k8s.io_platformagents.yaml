@@ -210,8 +210,8 @@ spec:
                   properties:
                     clusterName:
                       description:
-                        ClusterName is the logical name of the cluster where
-                        the agent is running or targeting.
+                        ClusterName is the logical name of the cluster (either
+                        where the agent is running or the target cluster).
                       type: string
                     hermes:
                       description:
@@ -269,6 +269,9 @@ spec:
                     projectId:
                       description: ProjectID is the GCP Project ID of the cluster.
                       type: string
+                  required:
+                    - clusterName
+                    - location
                   type: object
                 integration:
                   description: Integration configures platform-specific external connections.
@@ -334,6 +337,8 @@ spec:
                         bound to the Deployment.
                       type: string
                   type: object
+              required:
+                - harness
               type: object
             status:
               description: status defines the observed state of PlatformAgent

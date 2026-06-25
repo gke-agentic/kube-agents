@@ -75,21 +75,21 @@ metadata:
       blockOwnerDeletion: true
       controller: true
       kind: DevTeamAgent
-      name: devteam-agent-autopilot-cluster-1-us-central1-devteam-app-ns
+      name: devteam-agent-sample
       uid: ""
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   creationTimestamp: null
-  name: devteam-agent-autopilot-cluster-1-us-central1-devteam-app-ns-data
+  name: devteam-agent-sample-data
   namespace: kubeagents-system
   ownerReferences:
     - apiVersion: kubeagents.x-k8s.io/v1alpha1
       blockOwnerDeletion: true
       controller: true
       kind: DevTeamAgent
-      name: devteam-agent-autopilot-cluster-1-us-central1-devteam-app-ns
+      name: devteam-agent-sample
       uid: ""
 spec:
   accessModes:
@@ -122,14 +122,14 @@ data:
 kind: ConfigMap
 metadata:
   creationTimestamp: null
-  name: devteam-agent-autopilot-cluster-1-us-central1-devteam-app-ns-config
+  name: devteam-agent-sample-config
   namespace: kubeagents-system
   ownerReferences:
     - apiVersion: kubeagents.x-k8s.io/v1alpha1
       blockOwnerDeletion: true
       controller: true
       kind: DevTeamAgent
-      name: devteam-agent-autopilot-cluster-1-us-central1-devteam-app-ns
+      name: devteam-agent-sample
       uid: ""
 ---
 apiVersion: v1
@@ -179,14 +179,14 @@ data:
 kind: ConfigMap
 metadata:
   creationTimestamp: null
-  name: devteam-agent-autopilot-cluster-1-us-central1-devteam-app-ns-fluent-bit-config
+  name: devteam-agent-sample-fluent-bit-config
   namespace: kubeagents-system
   ownerReferences:
     - apiVersion: kubeagents.x-k8s.io/v1alpha1
       blockOwnerDeletion: true
       controller: true
       kind: DevTeamAgent
-      name: devteam-agent-autopilot-cluster-1-us-central1-devteam-app-ns
+      name: devteam-agent-sample
       uid: ""
 ---
 apiVersion: apps/v1
@@ -194,21 +194,21 @@ kind: Deployment
 metadata:
   creationTimestamp: null
   labels:
-    app: devteam-agent-autopilot-cluster-1-us-central1-devteam-app-ns-gateway
-  name: devteam-agent-autopilot-cluster-1-us-central1-devteam-app-ns-gateway
+    app: devteam-agent-sample-gateway
+  name: devteam-agent-sample-gateway
   namespace: kubeagents-system
   ownerReferences:
     - apiVersion: kubeagents.x-k8s.io/v1alpha1
       blockOwnerDeletion: true
       controller: true
       kind: DevTeamAgent
-      name: devteam-agent-autopilot-cluster-1-us-central1-devteam-app-ns
+      name: devteam-agent-sample
       uid: ""
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: devteam-agent-autopilot-cluster-1-us-central1-devteam-app-ns-gateway
+      app: devteam-agent-sample-gateway
   strategy:
     type: Recreate
   template:
@@ -218,7 +218,7 @@ spec:
         kubeagents.x-k8s.io/fluent-bit-config-hash: 50923ab88e1741b0729c37837bc1c3869161e3161402494a4ee64cda3a2cfab3
       creationTimestamp: null
       labels:
-        app: devteam-agent-autopilot-cluster-1-us-central1-devteam-app-ns-gateway
+        app: devteam-agent-sample-gateway
     spec:
       containers:
         - env:
@@ -231,7 +231,7 @@ spec:
             - name: PLATFORM_AGENT_PLUGINS_DEBUG
               value: "0"
             - name: OTEL_SERVICE_NAME
-              value: devteam-agent-autopilot-cluster-1-us-central1-devteam-app-ns-gateway
+              value: devteam-agent-sample-gateway
             - name: API_SERVER_ENABLED
               value: "true"
             - name: API_SERVER_HOST
@@ -249,7 +249,7 @@ spec:
                 secretKeyRef:
                   key: API_SERVER_KEY
                   name: platform-agent-secrets
-          image: us-central1-docker.pkg.dev/kube-agents-gkedemos/kubeagents-operator-repo/devteam-agent:latest
+          image: ghcr.io/gke-labs/kube-agents/devteam-agent:latest
           imagePullPolicy: Always
           name: devteam-agent
           ports:
@@ -321,14 +321,14 @@ spec:
       volumes:
         - name: devteam-agent-data-vol
           persistentVolumeClaim:
-            claimName: devteam-agent-autopilot-cluster-1-us-central1-devteam-app-ns-data
+            claimName: devteam-agent-sample-data
         - configMap:
             defaultMode: 493
-            name: devteam-agent-autopilot-cluster-1-us-central1-devteam-app-ns-config
+            name: devteam-agent-sample-config
           name: devteam-agent-config-vol
         - configMap:
             defaultMode: 420
-            name: devteam-agent-autopilot-cluster-1-us-central1-devteam-app-ns-fluent-bit-config
+            name: devteam-agent-sample-fluent-bit-config
           name: fluent-bit-config
         - emptyDir: {}
           name: fluent-bit-state
@@ -338,14 +338,14 @@ apiVersion: v1
 kind: Service
 metadata:
   creationTimestamp: null
-  name: devteam-agent-autopilot-cluster-1-us-central1-devteam-app-ns
+  name: devteam-agent-sample
   namespace: kubeagents-system
   ownerReferences:
     - apiVersion: kubeagents.x-k8s.io/v1alpha1
       blockOwnerDeletion: true
       controller: true
       kind: DevTeamAgent
-      name: devteam-agent-autopilot-cluster-1-us-central1-devteam-app-ns
+      name: devteam-agent-sample
       uid: ""
 spec:
   ports:
@@ -356,6 +356,6 @@ spec:
       port: 9119
       targetPort: dashboard
   selector:
-    app: devteam-agent-autopilot-cluster-1-us-central1-devteam-app-ns-gateway
+    app: devteam-agent-sample-gateway
 status:
   loadBalancer: {}

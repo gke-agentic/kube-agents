@@ -45,12 +45,12 @@ type HermesSpec struct {
 // HarnessSpec configures the core execution environment and framework-level settings for the agent.
 // This extracts environmental context that doesn't belong in infrastructure blocks.
 type HarnessSpec struct {
-	// ClusterName is the logical name of the cluster where the agent is running or targeting.
-	// +optional
+	// ClusterName is the logical name of the cluster (either where the agent is running or the target cluster).
+	// +required
 	ClusterName string `json:"clusterName,omitempty"`
 
 	// Location is the geographical location or cloud region.
-	// +optional
+	// +required
 	Location string `json:"location,omitempty"`
 
 	// ProjectID is the GCP Project ID of the cluster.

@@ -25,7 +25,7 @@ type PlatformAgentSpec struct {
 	AgentSpec `json:",inline"`
 
 	// Harness configures the core execution environment and framework-level settings.
-	// +optional
+	// +required
 	Harness *HarnessSpec `json:"harness,omitempty"`
 
 	// Integration configures platform-specific external connections.

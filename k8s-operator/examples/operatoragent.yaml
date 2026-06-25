@@ -1,7 +1,7 @@
 apiVersion: kubeagents.x-k8s.io/v1alpha1
 kind: OperatorAgent
 metadata:
-  name: operator-agent-autopilot-cluster-1-us-central1
+  name: operator-agent-sample
   namespace: kubeagents-system
 spec:
   harness:
@@ -13,7 +13,7 @@ spec:
         name: "platform-agent-secrets"
         key: "API_SERVER_KEY"
   deployment:
-    image: "us-central1-docker.pkg.dev/kube-agents-gkedemos/kubeagents-operator-repo/operator-agent"
+    image: "ghcr.io/gke-labs/kube-agents/operator-agent"
     tag: "latest"
   security:
     serviceAccountName: "kubeagents-operator-agent"
