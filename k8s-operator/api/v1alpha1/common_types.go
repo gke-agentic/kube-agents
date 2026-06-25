@@ -42,6 +42,26 @@ type HermesSpec struct {
 	ApiServerSecretRef *corev1.SecretKeySelector `json:"apiServerSecretRef,omitempty"`
 }
 
+// HarnessSpec configures the core execution environment and framework-level settings for the agent.
+// This extracts environmental context that doesn't belong in infrastructure blocks.
+type HarnessSpec struct {
+	// ClusterName is the logical name of the cluster where the agent is running or targeting.
+	// +optional
+	ClusterName string `json:"clusterName,omitempty"`
+
+	// Location is the geographical location or cloud region.
+	// +optional
+	Location string `json:"location,omitempty"`
+
+	// ProjectID is the GCP Project ID of the cluster.
+	// +optional
+	ProjectID string `json:"projectId,omitempty"`
+
+	// Hermes configures the internal event-routing or agent framework.
+	// +optional
+	Hermes *HermesSpec `json:"hermes,omitempty"`
+}
+
 // DeploymentSpec abstracts the Kubernetes Pod/Deployment configuration,
 // completely decoupling the compute payload from the agent's application logic.
 type DeploymentSpec struct {
@@ -86,6 +106,21 @@ type SecuritySpec struct {
 	// to authorize on the remote cluster.
 	// +optional
 	RemoteIdentitySubject string `json:"remoteIdentitySubject,omitempty"`
+}
+
+// IntegrationSpec isolates common platform-specific external connections.
+type IntegrationSpec struct {
+}
+
+// AgentSpec defines the common infrastructure configuration shared across all agent types.
+type AgentSpec struct {
+	// Deployment abstracts the Kubernetes Pod/Deployment configuration.
+	// +optional
+	Deployment *DeploymentSpec `json:"deployment,omitempty"`
+
+	// Security configures RBAC, Pod Security, and Workload Identity.
+	// +optional
+	Security *SecuritySpec `json:"security,omitempty"`
 }
 
 type DeploymentStatus struct {

@@ -211,7 +211,7 @@ spec:
                     clusterName:
                       description:
                         ClusterName is the logical name of the cluster where
-                        the agent is running.
+                        the agent is running or targeting.
                       type: string
                     hermes:
                       description:

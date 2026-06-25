@@ -209,7 +209,9 @@ spec:
                     framework-level settings.
                   properties:
                     clusterName:
-                      description: ClusterName is the logical name of the target cluster.
+                      description:
+                        ClusterName is the logical name of the cluster where
+                        the agent is running or targeting.
                       type: string
                     hermes:
                       description:
@@ -262,16 +264,14 @@ spec:
                           type: boolean
                       type: object
                     location:
-                      description:
-                        Location is the geographical location or cloud region
-                        of the target cluster.
+                      description: Location is the geographical location or cloud region.
                       type: string
                     projectId:
-                      description: ProjectID is the GCP Project ID of the target cluster.
+                      description: ProjectID is the GCP Project ID of the cluster.
                       type: string
-                  required:
-                    - clusterName
-                    - location
+                  type: object
+                integration:
+                  description: Integration configures platform-specific external connections.
                   type: object
                 security:
                   description:

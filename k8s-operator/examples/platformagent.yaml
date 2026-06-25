@@ -41,7 +41,7 @@ spec:
     # WorkloadIdentity maps external IAM to the KSA securely.
     # +optional
     serviceAccountAnnotations:
-      iam.gke.io/gcp-service-account: "kubeagents-platform-gsa@ai-platform-1-464114.iam.gserviceaccount.com"
+      iam.gke.io/gcp-service-account: "kubeagents-platform-gsa@kube-agents-gkedemos.iam.gserviceaccount.com"
 
   # Integration configures platform-specific external connections.
   # +optional
@@ -55,7 +55,7 @@ spec:
       enabled: true
       # ProjectID is the target GCP Project ID for Pub/Sub. Required if enabled.
       # +optional
-      projectId: "ai-platform-1-464114"
+      projectId: "kube-agents-gkedemos"
       # TopicName is the GCP Chat Topic Name. Required if enabled.
       # +optional
       topicName: "kubeagents-google-chat-events"

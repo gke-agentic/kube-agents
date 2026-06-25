@@ -45,7 +45,10 @@ func TestAgentsGolden(t *testing.T) {
 			expectedPath: filepath.Join("testdata", "devteam", "expected", "devteamagent.yaml"),
 			newAgent:     func() client.Object { return &agentv1alpha1.DevTeamAgent{} },
 			newReconciler: func(c client.Client, s *runtime.Scheme) reconcile.Reconciler {
-				return &controller.DevTeamAgentReconciler{Client: c, Scheme: s}
+				r := &controller.DevTeamAgentReconciler{Client: c, Scheme: s}
+				r.RemoteClients.Store("kube-agents-gkedemos/us-central1/autopilot-cluster-1", c)
+				r.RemoteClients.Store("kube-agents-gke/us-central1/autopilot-cluster-1", c)
+				return r
 			},
 		},
 		{
@@ -54,7 +57,10 @@ func TestAgentsGolden(t *testing.T) {
 			expectedPath: filepath.Join("testdata", "operator", "expected", "operatoragent.yaml"),
 			newAgent:     func() client.Object { return &agentv1alpha1.OperatorAgent{} },
 			newReconciler: func(c client.Client, s *runtime.Scheme) reconcile.Reconciler {
-				return &controller.OperatorAgentReconciler{Client: c, Scheme: s}
+				r := &controller.OperatorAgentReconciler{Client: c, Scheme: s}
+				r.RemoteClients.Store("kube-agents-gkedemos/us-central1/autopilot-cluster-1", c)
+				r.RemoteClients.Store("kube-agents-gke/us-central1/autopilot-cluster-1", c)
+				return r
 			},
 		},
 		{

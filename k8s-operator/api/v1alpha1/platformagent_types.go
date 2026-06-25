@@ -22,45 +22,21 @@ import (
 
 // PlatformAgentSpec defines the desired state of PlatformAgent
 type PlatformAgentSpec struct {
+	AgentSpec `json:",inline"`
+
 	// Harness configures the core execution environment and framework-level settings.
 	// +optional
-	Harness *PlatformAgentHarnessSpec `json:"harness,omitempty"`
-
-	// Deployment abstracts the Kubernetes Pod/Deployment configuration.
-	// +optional
-	Deployment *DeploymentSpec `json:"deployment,omitempty"`
-
-	// Security configures RBAC, Pod Security, and Workload Identity.
-	// +optional
-	Security *SecuritySpec `json:"security,omitempty"`
+	Harness *HarnessSpec `json:"harness,omitempty"`
 
 	// Integration configures platform-specific external connections.
 	// +optional
-	Integration *IntegrationSpec `json:"integration,omitempty"`
+	Integration *PlatformAgentIntegrationSpec `json:"integration,omitempty"`
 }
 
-// PlatformAgentHarnessSpec configures the core execution environment and framework-level settings for the agent.
-// This extracts environmental context that doesn't belong in infrastructure blocks.
-type PlatformAgentHarnessSpec struct {
-	// ClusterName is the logical name of the cluster where the agent is running.
-	// +optional
-	ClusterName string `json:"clusterName,omitempty"`
+// PlatformAgentIntegrationSpec extends common IntegrationSpec with platform-specific connections.
+type PlatformAgentIntegrationSpec struct {
+	IntegrationSpec `json:",inline"`
 
-	// Location is the geographical location or cloud region.
-	// +optional
-	Location string `json:"location,omitempty"`
-
-	// ProjectID is the GCP Project ID of the cluster.
-	// +optional
-	ProjectID string `json:"projectId,omitempty"`
-
-	// Hermes configures the internal event-routing or agent framework.
-	// +optional
-	Hermes *HermesSpec `json:"hermes,omitempty"`
-}
-
-// IntegrationSpec isolates platform-specific external connections.
-type IntegrationSpec struct {
 	// GoogleChat configures the Google Chat integration.
 	// +optional
 	GoogleChat *GoogleChatSpec `json:"googleChat,omitempty"`

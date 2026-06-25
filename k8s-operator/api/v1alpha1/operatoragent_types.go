@@ -23,39 +23,17 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
-// OperatorHarnessSpec configures the target cluster environment and framework-level settings for the operator agent.
-type OperatorHarnessSpec struct {
-
-	// ClusterName is the logical name of the target cluster.
-	// +required
-	ClusterName string `json:"clusterName,omitempty"`
-
-	// Location is the geographical location or cloud region of the target cluster.
-	// +required
-	Location string `json:"location,omitempty"`
-
-	// ProjectID is the GCP Project ID of the target cluster.
-	// +optional
-	ProjectID string `json:"projectId,omitempty"`
-
-	// Hermes configures the internal event-routing or agent framework.
-	// +optional
-	Hermes *HermesSpec `json:"hermes,omitempty"`
-}
-
 // OperatorAgentSpec defines the desired state of OperatorAgent
 type OperatorAgentSpec struct {
+	AgentSpec `json:",inline"`
+
 	// Harness configures the core execution environment and framework-level settings.
 	// +required
-	Harness *OperatorHarnessSpec `json:"harness,omitempty"`
+	Harness *HarnessSpec `json:"harness,omitempty"`
 
-	// Deployment abstracts the Kubernetes Pod/Deployment configuration.
+	// Integration configures platform-specific external connections.
 	// +optional
-	Deployment *DeploymentSpec `json:"deployment,omitempty"`
-
-	// Security configures RBAC, Pod Security, and Workload Identity.
-	// +optional
-	Security *SecuritySpec `json:"security,omitempty"`
+	Integration *IntegrationSpec `json:"integration,omitempty"`
 }
 
 // +kubebuilder:object:root=true

@@ -1,4 +1,84 @@
 apiVersion: v1
+kind: Namespace
+metadata:
+  creationTimestamp: null
+  name: devteam-app-ns
+spec: {}
+status: {}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  creationTimestamp: null
+  name: devteam-agent-role
+  namespace: devteam-app-ns
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - namespaces
+      - pods
+      - pods/log
+      - services
+      - configmaps
+      - secrets
+      - events
+      - persistentvolumeclaims
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  - apiGroups:
+      - apps
+    resources:
+      - deployments
+      - daemonsets
+      - statefulsets
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  creationTimestamp: null
+  name: devteam-agent-gsa-rolebinding
+  namespace: devteam-app-ns
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: devteam-agent-role
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: User
+    name: kubeagents-devteam-gsa@kube-agents-gkedemos.iam.gserviceaccount.com
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  annotations:
+    iam.gke.io/gcp-service-account: kubeagents-devteam-gsa@kube-agents-gkedemos.iam.gserviceaccount.com
+  creationTimestamp: null
+  name: kubeagents-devteam-agent
+  namespace: kubeagents-system
+  ownerReferences:
+    - apiVersion: kubeagents.x-k8s.io/v1alpha1
+      blockOwnerDeletion: true
+      controller: true
+      kind: DevTeamAgent
+      name: devteam-agent-autopilot-cluster-1-us-central1-devteam-app-ns
+      uid: ""
+---
+apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   creationTimestamp: null
@@ -142,7 +222,7 @@ spec:
     spec:
       containers:
         - env:
-            - name: PLATFORM_AGENT_HOME
+            - name: DEVTEAM_AGENT_HOME
               value: /opt/data
             - name: HOME
               value: /opt/data/home
@@ -169,7 +249,7 @@ spec:
                 secretKeyRef:
                   key: API_SERVER_KEY
                   name: platform-agent-secrets
-          image: us-central1-docker.pkg.dev/kube-agents-gke/kubeagents-operator-repo/devteam-agent:latest
+          image: us-central1-docker.pkg.dev/kube-agents-gkedemos/kubeagents-operator-repo/devteam-agent:latest
           imagePullPolicy: Always
           name: devteam-agent
           ports:

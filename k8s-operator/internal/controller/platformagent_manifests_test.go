@@ -34,12 +34,12 @@ func TestBuildConfigMap(t *testing.T) {
 			Namespace: "test-ns",
 		},
 		Spec: agentv1alpha1.PlatformAgentSpec{
-			Harness: &agentv1alpha1.PlatformAgentHarnessSpec{
+			Harness: &agentv1alpha1.HarnessSpec{
 				Hermes: &agentv1alpha1.HermesSpec{
 					AgentHome: "/custom/home",
 				},
 			},
-			Integration: &agentv1alpha1.IntegrationSpec{
+			Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
 				GoogleChat: &agentv1alpha1.GoogleChatSpec{
 					Enabled: ptr.To(true),
 				},
@@ -101,30 +101,32 @@ func TestBuildDeployment(t *testing.T) {
 			Namespace: "my-ns",
 		},
 		Spec: agentv1alpha1.PlatformAgentSpec{
-			Deployment: &agentv1alpha1.DeploymentSpec{
-				Image:           "gcr.io/my-proj/agent",
-				Tag:             ptr.To("v1.0.0"),
-				ImagePullPolicy: ptr.To(corev1.PullAlways),
-				BrowserArgs:     []string{"--no-sandbox", "--disable-gpu"},
-				Env: []corev1.EnvVar{
-					{
-						Name:  "CUSTOM_VAR",
-						Value: "custom-value",
-					},
-					{
-						Name:  "PLATFORM_AGENT_DASHBOARD", // Overriding default
-						Value: "0",
-					},
-					{
-						Name:  "CUSTOM_VAR", // Duplicate custom var, should override previous
-						Value: "new-custom-value",
+			AgentSpec: agentv1alpha1.AgentSpec{
+				Deployment: &agentv1alpha1.DeploymentSpec{
+					Image:           "gcr.io/my-proj/agent",
+					Tag:             ptr.To("v1.0.0"),
+					ImagePullPolicy: ptr.To(corev1.PullAlways),
+					BrowserArgs:     []string{"--no-sandbox", "--disable-gpu"},
+					Env: []corev1.EnvVar{
+						{
+							Name:  "CUSTOM_VAR",
+							Value: "custom-value",
+						},
+						{
+							Name:  "PLATFORM_AGENT_DASHBOARD", // Overriding default
+							Value: "0",
+						},
+						{
+							Name:  "CUSTOM_VAR", // Duplicate custom var, should override previous
+							Value: "new-custom-value",
+						},
 					},
 				},
+				Security: &agentv1alpha1.SecuritySpec{
+					ServiceAccountName: "custom-sa",
+				},
 			},
-			Security: &agentv1alpha1.SecuritySpec{
-				ServiceAccountName: "custom-sa",
-			},
-			Harness: &agentv1alpha1.PlatformAgentHarnessSpec{
+			Harness: &agentv1alpha1.HarnessSpec{
 				ClusterName: "gke-cluster",
 				Location:    "us-east1",
 				Hermes: &agentv1alpha1.HermesSpec{
@@ -138,7 +140,7 @@ func TestBuildDeployment(t *testing.T) {
 				},
 			},
 
-			Integration: &agentv1alpha1.IntegrationSpec{
+			Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
 				GoogleChat: &agentv1alpha1.GoogleChatSpec{
 					Enabled:          ptr.To(true),
 					ProjectID:        "my-gcp-project",
@@ -256,10 +258,12 @@ func TestBuildDeploymentGoogleChatAllowedUsersEmpty(t *testing.T) {
 			Namespace: "my-ns",
 		},
 		Spec: agentv1alpha1.PlatformAgentSpec{
-			Deployment: &agentv1alpha1.DeploymentSpec{
-				Image: "gcr.io/my-proj/agent",
+			AgentSpec: agentv1alpha1.AgentSpec{
+				Deployment: &agentv1alpha1.DeploymentSpec{
+					Image: "gcr.io/my-proj/agent",
+				},
 			},
-			Integration: &agentv1alpha1.IntegrationSpec{
+			Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
 				GoogleChat: &agentv1alpha1.GoogleChatSpec{
 					Enabled:          ptr.To(true),
 					ProjectID:        "my-gcp-project",

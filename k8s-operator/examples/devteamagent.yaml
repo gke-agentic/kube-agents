@@ -7,17 +7,17 @@ spec:
   harness:
     clusterName: "autopilot-cluster-1"
     location: "us-central1"
+    projectId: "kube-agents-gkedemos"
     namespace: "devteam-app-ns"
     hermes:
       apiServerSecretRef:
         name: "platform-agent-secrets"
         key: "API_SERVER_KEY"
   deployment:
-    image: "us-central1-docker.pkg.dev/kube-agents-gke/kubeagents-operator-repo/devteam-agent"
+    image: "us-central1-docker.pkg.dev/kube-agents-gkedemos/kubeagents-operator-repo/devteam-agent"
     tag: "latest"
   security:
     serviceAccountName: "kubeagents-devteam-agent"
-    workloadIdentity:
-      gcp:
-        gsaName: "kubeagents-devteam-gsa"
-        projectId: "kube-agents-gke"
+    serviceAccountAnnotations:
+      iam.gke.io/gcp-service-account: "kubeagents-devteam-gsa@kube-agents-gkedemos.iam.gserviceaccount.com"
+    remoteIdentitySubject: "kubeagents-devteam-gsa@kube-agents-gkedemos.iam.gserviceaccount.com"

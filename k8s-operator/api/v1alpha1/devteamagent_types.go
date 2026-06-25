@@ -22,41 +22,24 @@ import (
 
 // DevTeamHarnessSpec configures the target remote environment and framework-level settings for the devteam agent.
 type DevTeamHarnessSpec struct {
-
-	// ClusterName is the logical name of the target cluster.
-	// +required
-	ClusterName string `json:"clusterName,omitempty"`
-
-	// Location is the geographical location or cloud region of the target cluster.
-	// +required
-	Location string `json:"location,omitempty"`
-
-	// ProjectID is the GCP Project ID of the target cluster.
-	// +optional
-	ProjectID string `json:"projectId,omitempty"`
+	HarnessSpec `json:",inline"`
 
 	// Namespace is the target remote namespace managed by this agent.
 	// +required
 	Namespace string `json:"namespace,omitempty"`
-
-	// Hermes configures the internal event-routing or agent framework.
-	// +optional
-	Hermes *HermesSpec `json:"hermes,omitempty"`
 }
 
 // DevTeamAgentSpec defines the desired state of DevTeamAgent
 type DevTeamAgentSpec struct {
+	AgentSpec `json:",inline"`
+
 	// Harness configures the core execution environment and framework-level settings.
 	// +required
 	Harness *DevTeamHarnessSpec `json:"harness,omitempty"`
 
-	// Deployment abstracts the Kubernetes Pod/Deployment configuration.
+	// Integration configures platform-specific external connections.
 	// +optional
-	Deployment *DeploymentSpec `json:"deployment,omitempty"`
-
-	// Security manages Kubernetes RBAC, Pod Security, and Cloud Workload Identity.
-	// +optional
-	Security *SecuritySpec `json:"security,omitempty"`
+	Integration *IntegrationSpec `json:"integration,omitempty"`
 }
 
 // +kubebuilder:object:root=true

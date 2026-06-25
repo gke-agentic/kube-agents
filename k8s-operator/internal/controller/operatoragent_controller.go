@@ -86,7 +86,6 @@ func (r *OperatorAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
-
 	// 6. Reconcile ConfigMap (config.yaml content)
 	configMapHash, err := r.reconcileConfigMap(ctx, instance)
 	if err != nil {
@@ -307,5 +306,3 @@ func (r *OperatorAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Named("operatoragent").
 		Complete(r)
 }
-
-

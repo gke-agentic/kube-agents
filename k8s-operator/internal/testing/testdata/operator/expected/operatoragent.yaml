@@ -1,4 +1,42 @@
 apiVersion: v1
+kind: Namespace
+metadata:
+  creationTimestamp: null
+  name: kubeagents-system
+spec: {}
+status: {}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  creationTimestamp: null
+  name: operator-agent-gsa-admin-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: User
+    name: kubeagents-operator-gsa@kube-agents-gkedemos.iam.gserviceaccount.com
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  annotations:
+    iam.gke.io/gcp-service-account: kubeagents-operator-gsa@kube-agents-gkedemos.iam.gserviceaccount.com
+  creationTimestamp: null
+  name: kubeagents-operator-agent
+  namespace: kubeagents-system
+  ownerReferences:
+    - apiVersion: kubeagents.x-k8s.io/v1alpha1
+      blockOwnerDeletion: true
+      controller: true
+      kind: OperatorAgent
+      name: operator-agent-autopilot-cluster-1-us-central1
+      uid: ""
+---
+apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   creationTimestamp: null
@@ -137,7 +175,7 @@ spec:
     spec:
       containers:
         - env:
-            - name: PLATFORM_AGENT_HOME
+            - name: OPERATOR_AGENT_HOME
               value: /opt/data
             - name: HOME
               value: /opt/data/home
@@ -162,7 +200,7 @@ spec:
                 secretKeyRef:
                   key: API_SERVER_KEY
                   name: platform-agent-secrets
-          image: us-central1-docker.pkg.dev/kube-agents-gke/kubeagents-operator-repo/operator-agent:latest
+          image: us-central1-docker.pkg.dev/kube-agents-gkedemos/kubeagents-operator-repo/operator-agent:latest
           imagePullPolicy: Always
           name: operator-agent
           ports:
