@@ -25,6 +25,7 @@ import (
 	"sync"
 
 	"cloud.google.com/go/storage"
+	"google.golang.org/api/googleapi"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -249,9 +250,12 @@ func isGCSNotFound(err error) bool {
 	if errors.Is(err, storage.ErrBucketNotExist) || errors.Is(err, storage.ErrObjectNotExist) {
 		return true
 	}
+	var apiErr *googleapi.Error
+	if errors.As(err, &apiErr) && apiErr.Code == 404 {
+		return true
+	}
 	errStr := err.Error()
 	return strings.Contains(errStr, "bucket doesn't exist") ||
-		strings.Contains(errStr, "does not exist") ||
 		strings.Contains(errStr, "404") ||
 		strings.Contains(errStr, "notFound")
 }
