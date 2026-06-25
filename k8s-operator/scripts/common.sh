@@ -85,6 +85,30 @@ init_var() {
   fi
 }
 
+init_var_model_provider() {
+  init_var "MODEL_PROVIDER" "gemini" "Enter Model Provider (gemini, anthropic, chatgpt, openai)"
+
+  MODEL_PROVIDER=$(echo "$MODEL_PROVIDER" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+  if [[ ! "$MODEL_PROVIDER" =~ ^(gemini|anthropic|chatgpt|openai)$ ]]; then
+    print_error "Invalid Model Provider '$MODEL_PROVIDER'. Must be one of: gemini, anthropic, chatgpt, openai."
+    exit 1
+  fi
+
+  case "$MODEL_PROVIDER" in
+    chatgpt|openai)
+      DEFAULT_MODEL="gpt-5.4"
+      ;;
+    anthropic)
+      DEFAULT_MODEL="claude-sonnet-4-5-20250929"
+      ;;
+    *)
+      DEFAULT_MODEL="gemini-3.5-flash"
+      ;;
+  esac
+
+  init_var "MODEL_DEFAULT_NAME" "$DEFAULT_MODEL" "Enter Model Default Name"
+}
+
 load_state() {
   if [ ! -f "$VARS_FILE" ]; then
     echo "# SRE Sourced Variables for GKE & GCP Setup" > "$VARS_FILE"
@@ -99,6 +123,8 @@ load_state() {
   export DEVTEAM_AGENT_GSA_NAME="kubeagents-devteam-gsa"
   export CONTROLLER_KSA_NAME="kubeagents-controller"
   export CONTROLLER_GSA_NAME="kubeagents-controller-gsa"
+  export GITHUB_MINTER_KSA_NAME="kubeagents-github-minter"
+  export GITHUB_MINTER_GSA_NAME="kubeagents-github-minter-gsa"
 }
 
 ensure_teardown_state() {
@@ -113,6 +139,8 @@ ensure_teardown_state() {
     export DEVTEAM_AGENT_GSA_NAME="kubeagents-devteam-gsa"
     export CONTROLLER_KSA_NAME="kubeagents-controller"
     export CONTROLLER_GSA_NAME="kubeagents-controller-gsa"
+    export GITHUB_MINTER_KSA_NAME="kubeagents-github-minter"
+    export GITHUB_MINTER_GSA_NAME="kubeagents-github-minter-gsa"
   else
     echo -e "  ${C_YELLOW}⚠ State file ${VARS_FILE} not found. Prompting for target values...${C_RESET}"
     local ACTIVE_PROJECT
@@ -150,6 +178,8 @@ ensure_teardown_state() {
     export DEVTEAM_AGENT_GSA_NAME="kubeagents-devteam-gsa"
     export CONTROLLER_KSA_NAME="kubeagents-controller"
     export CONTROLLER_GSA_NAME="kubeagents-controller-gsa"
+    export GITHUB_MINTER_KSA_NAME="kubeagents-github-minter"
+    export GITHUB_MINTER_GSA_NAME="kubeagents-github-minter-gsa"
   fi
 }
 
