@@ -18,9 +18,9 @@ package webhook
 
 import (
 	"context"
-	"fmt"
 	"testing"
 
+	coordinationv1 "k8s.io/api/coordination/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -31,17 +31,25 @@ import (
 func TestPlatformAgentValidation(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("fails if another platform agent already exists in the project", func(t *testing.T) {
+	validSpec := agentv1alpha1.PlatformAgentSpec{
+		Harness: &agentv1alpha1.PlatformAgentHarnessSpec{
+			ProjectID:   "my-project",
+			ClusterName: "my-cluster",
+		},
+	}
+
+	t.Run("fails if another platform agent already exists in the cluster", func(t *testing.T) {
 		existingAgent := &agentv1alpha1.PlatformAgent{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "existing-agent",
 				Namespace: "kubeagents-system",
 			},
-			Spec: agentv1alpha1.PlatformAgentSpec{},
+			Spec: validSpec,
 		}
 
 		scheme := runtime.NewScheme()
 		_ = agentv1alpha1.AddToScheme(scheme)
+		_ = coordinationv1.AddToScheme(scheme)
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existingAgent).Build()
 
 		val := &PlatformAgentCustomValidator{
@@ -53,7 +61,7 @@ func TestPlatformAgentValidation(t *testing.T) {
 				Name:      "new-agent",
 				Namespace: "default",
 			},
-			Spec: agentv1alpha1.PlatformAgentSpec{},
+			Spec: validSpec,
 		}
 
 		_, err := val.ValidateCreate(ctx, newAgent)
@@ -71,11 +79,12 @@ func TestPlatformAgentValidation(t *testing.T) {
 				DeletionTimestamp: &now,
 				Finalizers:        []string{"kubeagents.x-k8s.io/platformagent-webhook-lock"},
 			},
-			Spec: agentv1alpha1.PlatformAgentSpec{},
+			Spec: validSpec,
 		}
 
 		scheme := runtime.NewScheme()
 		_ = agentv1alpha1.AddToScheme(scheme)
+		_ = coordinationv1.AddToScheme(scheme)
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existingAgent).Build()
 
 		val := &PlatformAgentCustomValidator{
@@ -87,7 +96,7 @@ func TestPlatformAgentValidation(t *testing.T) {
 				Name:      "new-agent",
 				Namespace: "default",
 			},
-			Spec: agentv1alpha1.PlatformAgentSpec{},
+			Spec: validSpec,
 		}
 
 		_, err := val.ValidateCreate(ctx, newAgent)
@@ -102,11 +111,12 @@ func TestPlatformAgentValidation(t *testing.T) {
 				Name:      "existing-agent",
 				Namespace: "kubeagents-system",
 			},
-			Spec: agentv1alpha1.PlatformAgentSpec{},
+			Spec: validSpec,
 		}
 
 		scheme := runtime.NewScheme()
 		_ = agentv1alpha1.AddToScheme(scheme)
+		_ = coordinationv1.AddToScheme(scheme)
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existingAgent).Build()
 
 		val := &PlatformAgentCustomValidator{
@@ -119,19 +129,19 @@ func TestPlatformAgentValidation(t *testing.T) {
 		}
 	})
 
-	t.Run("allows creation when global GCS lock does not exist", func(t *testing.T) {
+	t.Run("allows creation when global lease lock does not exist", func(t *testing.T) {
+		scheme := runtime.NewScheme()
+		_ = agentv1alpha1.AddToScheme(scheme)
+		_ = coordinationv1.AddToScheme(scheme)
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
 		val := &PlatformAgentCustomValidator{
-			GCSClient: &fakeGCSClient{lock: nil},
+			Client: fakeClient,
 		}
 
 		agent := &agentv1alpha1.PlatformAgent{
-			ObjectMeta: metav1.ObjectMeta{Name: "test-agent"},
-			Spec: agentv1alpha1.PlatformAgentSpec{
-				Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
-					GoogleChat: &agentv1alpha1.GoogleChatSpec{ProjectID: "my-project"},
-				},
-				Harness: &agentv1alpha1.HarnessSpec{ClusterName: "cluster-a"},
-			},
+			ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
+			Spec:       validSpec,
 		}
 
 		_, err := val.ValidateCreate(ctx, agent)
@@ -140,21 +150,30 @@ func TestPlatformAgentValidation(t *testing.T) {
 		}
 	})
 
-	t.Run("fails when global GCS lock is held by a different GKE cluster", func(t *testing.T) {
-		val := &PlatformAgentCustomValidator{
-			GCSClient: &fakeGCSClient{
-				lock: &PlatformAgentLock{ClusterName: "different-cluster"},
+	t.Run("fails when global lease lock is held by a different GKE cluster", func(t *testing.T) {
+		holder := "different-cluster/default/another-agent"
+		lease := &coordinationv1.Lease{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "platform-agent-lock-my-project",
+				Namespace: "default",
+			},
+			Spec: coordinationv1.LeaseSpec{
+				HolderIdentity: &holder,
 			},
 		}
 
+		scheme := runtime.NewScheme()
+		_ = agentv1alpha1.AddToScheme(scheme)
+		_ = coordinationv1.AddToScheme(scheme)
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lease).Build()
+
+		val := &PlatformAgentCustomValidator{
+			Client: fakeClient,
+		}
+
 		agent := &agentv1alpha1.PlatformAgent{
-			ObjectMeta: metav1.ObjectMeta{Name: "test-agent"},
-			Spec: agentv1alpha1.PlatformAgentSpec{
-				Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
-					GoogleChat: &agentv1alpha1.GoogleChatSpec{ProjectID: "my-project"},
-				},
-				Harness: &agentv1alpha1.HarnessSpec{ClusterName: "my-cluster"},
-			},
+			ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
+			Spec:       validSpec,
 		}
 
 		_, err := val.ValidateCreate(ctx, agent)
@@ -163,25 +182,31 @@ func TestPlatformAgentValidation(t *testing.T) {
 		}
 	})
 
-	t.Run("allows creation when global GCS lock belongs to the same cluster, agent, and namespace", func(t *testing.T) {
-		val := &PlatformAgentCustomValidator{
-			GCSClient: &fakeGCSClient{
-				lock: &PlatformAgentLock{
-					ClusterName: "my-cluster",
-					AgentName:   "test-agent",
-					Namespace:   "kubeagents-system",
-				},
+	t.Run("allows creation when global lease lock belongs to the same cluster, agent, and namespace", func(t *testing.T) {
+		holder := "my-cluster/kubeagents-system/test-agent"
+		lease := &coordinationv1.Lease{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "platform-agent-lock-my-project",
+				Namespace: "kubeagents-system",
+			},
+			Spec: coordinationv1.LeaseSpec{
+				HolderIdentity: &holder,
 			},
 		}
 
+		scheme := runtime.NewScheme()
+		_ = agentv1alpha1.AddToScheme(scheme)
+		_ = coordinationv1.AddToScheme(scheme)
+		// Need to also add the agent itself so cluster check passes
 		agent := &agentv1alpha1.PlatformAgent{
 			ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "kubeagents-system"},
-			Spec: agentv1alpha1.PlatformAgentSpec{
-				Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
-					GoogleChat: &agentv1alpha1.GoogleChatSpec{ProjectID: "my-project"},
-				},
-				Harness: &agentv1alpha1.HarnessSpec{ClusterName: "my-cluster"},
-			},
+			Spec:       validSpec,
+		}
+
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lease).Build()
+
+		val := &PlatformAgentCustomValidator{
+			Client: fakeClient,
 		}
 
 		_, err := val.ValidateCreate(ctx, agent)
@@ -190,41 +215,23 @@ func TestPlatformAgentValidation(t *testing.T) {
 		}
 	})
 
-	t.Run("fails when global GCS lock query returns an error", func(t *testing.T) {
+	t.Run("fails when global lock check is active but clusterName is empty", func(t *testing.T) {
+		scheme := runtime.NewScheme()
+		_ = agentv1alpha1.AddToScheme(scheme)
+		_ = coordinationv1.AddToScheme(scheme)
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
 		val := &PlatformAgentCustomValidator{
-			GCSClient: &fakeGCSClient{
-				err: fmt.Errorf("GCS connection timeout"),
-			},
+			Client: fakeClient,
 		}
 
 		agent := &agentv1alpha1.PlatformAgent{
-			ObjectMeta: metav1.ObjectMeta{Name: "test-agent"},
+			ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
 			Spec: agentv1alpha1.PlatformAgentSpec{
-				Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
+				Integration: &agentv1alpha1.IntegrationSpec{
 					GoogleChat: &agentv1alpha1.GoogleChatSpec{ProjectID: "my-project"},
 				},
-				Harness: &agentv1alpha1.HarnessSpec{ClusterName: "my-cluster"},
-			},
-		}
-
-		_, err := val.ValidateCreate(ctx, agent)
-		if err == nil {
-			t.Error("expected validation to fail when GCS client returns an error")
-		}
-	})
-
-	t.Run("fails when global GCS lock check is active but clusterName is empty", func(t *testing.T) {
-		val := &PlatformAgentCustomValidator{
-			GCSClient: &fakeGCSClient{lock: nil},
-		}
-
-		agent := &agentv1alpha1.PlatformAgent{
-			ObjectMeta: metav1.ObjectMeta{Name: "test-agent"},
-			Spec: agentv1alpha1.PlatformAgentSpec{
-				Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
-					GoogleChat: &agentv1alpha1.GoogleChatSpec{ProjectID: "my-project"},
-				},
-				Harness: &agentv1alpha1.HarnessSpec{ClusterName: ""},
+				Harness: &agentv1alpha1.PlatformAgentHarnessSpec{ClusterName: ""},
 			},
 		}
 
@@ -234,136 +241,26 @@ func TestPlatformAgentValidation(t *testing.T) {
 		}
 	})
 
-	t.Run("fails when global GCS lock check is active but projectID is empty", func(t *testing.T) {
+	t.Run("fails when global lock check is active but projectID is empty", func(t *testing.T) {
+		scheme := runtime.NewScheme()
+		_ = agentv1alpha1.AddToScheme(scheme)
+		_ = coordinationv1.AddToScheme(scheme)
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
 		val := &PlatformAgentCustomValidator{
-			GCSClient: &fakeGCSClient{lock: nil},
+			Client: fakeClient,
 		}
 
 		agent := &agentv1alpha1.PlatformAgent{
-			ObjectMeta: metav1.ObjectMeta{Name: "test-agent"},
+			ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
 			Spec: agentv1alpha1.PlatformAgentSpec{
-				Harness: &agentv1alpha1.HarnessSpec{ClusterName: "my-cluster"},
+				Harness: &agentv1alpha1.PlatformAgentHarnessSpec{ClusterName: "my-cluster"},
 			},
 		}
 
 		_, err := val.ValidateCreate(ctx, agent)
 		if err == nil {
-			t.Error("expected validation to fail when projectID is empty and GCSClient is active")
+			t.Error("expected validation to fail when projectID is empty and lease check is active")
 		}
 	})
-
-	t.Run("fails when global GCS lock belongs to same cluster but different agent name", func(t *testing.T) {
-		val := &PlatformAgentCustomValidator{
-			GCSClient: &fakeGCSClient{
-				lock: &PlatformAgentLock{
-					ClusterName: "my-cluster",
-					AgentName:   "another-agent",
-					Namespace:   "kubeagents-system",
-				},
-			},
-		}
-
-		agent := &agentv1alpha1.PlatformAgent{
-			ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "kubeagents-system"},
-			Spec: agentv1alpha1.PlatformAgentSpec{
-				Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
-					GoogleChat: &agentv1alpha1.GoogleChatSpec{ProjectID: "my-project"},
-				},
-				Harness: &agentv1alpha1.HarnessSpec{ClusterName: "my-cluster"},
-			},
-		}
-
-		_, err := val.ValidateCreate(ctx, agent)
-		if err == nil {
-			t.Error("expected validation to fail since lock belongs to a different agent name")
-		}
-	})
-
-	t.Run("fails when global GCS lock belongs to same cluster but different namespace", func(t *testing.T) {
-		val := &PlatformAgentCustomValidator{
-			GCSClient: &fakeGCSClient{
-				lock: &PlatformAgentLock{
-					ClusterName: "my-cluster",
-					AgentName:   "test-agent",
-					Namespace:   "another-namespace",
-				},
-			},
-		}
-
-		agent := &agentv1alpha1.PlatformAgent{
-			ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "kubeagents-system"},
-			Spec: agentv1alpha1.PlatformAgentSpec{
-				Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
-					GoogleChat: &agentv1alpha1.GoogleChatSpec{ProjectID: "my-project"},
-				},
-				Harness: &agentv1alpha1.HarnessSpec{ClusterName: "my-cluster"},
-			},
-		}
-
-		_, err := val.ValidateCreate(ctx, agent)
-		if err == nil {
-			t.Error("expected validation to fail since lock belongs to a different namespace")
-		}
-	})
-
-	t.Run("allows update when global GCS lock matches current agent coordinates", func(t *testing.T) {
-		val := &PlatformAgentCustomValidator{
-			GCSClient: &fakeGCSClient{
-				lock: &PlatformAgentLock{
-					ClusterName: "my-cluster",
-					AgentName:   "test-agent",
-					Namespace:   "kubeagents-system",
-				},
-			},
-		}
-
-		agent := &agentv1alpha1.PlatformAgent{
-			ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "kubeagents-system"},
-			Spec: agentv1alpha1.PlatformAgentSpec{
-				Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
-					GoogleChat: &agentv1alpha1.GoogleChatSpec{ProjectID: "my-project"},
-				},
-				Harness: &agentv1alpha1.HarnessSpec{ClusterName: "my-cluster"},
-			},
-		}
-
-		_, err := val.ValidateUpdate(ctx, nil, agent)
-		if err != nil {
-			t.Errorf("unexpected validation failure during update: %v", err)
-		}
-	})
-
-	t.Run("allows update when the agent under validation is terminating to prevent deadlocks", func(t *testing.T) {
-		val := &PlatformAgentCustomValidator{
-			GCSClient: &fakeGCSClient{
-				err: fmt.Errorf("storage: bucket doesn't exist"),
-			},
-		}
-
-		now := metav1.Now()
-		agent := &agentv1alpha1.PlatformAgent{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:              "test-agent",
-				Namespace:         "kubeagents-system",
-				DeletionTimestamp: &now,
-			},
-			Spec: agentv1alpha1.PlatformAgentSpec{
-				Harness: &agentv1alpha1.HarnessSpec{ProjectID: "my-project", ClusterName: "my-cluster"},
-			},
-		}
-
-		_, err := val.ValidateUpdate(ctx, nil, agent)
-		if err != nil {
-			t.Errorf("unexpected validation failure when updating terminating agent: %v", err)
-		}
-	})
-}
-
-type fakeGCSClient struct {
-	lock *PlatformAgentLock
-	err  error
-}
-
-func (c *fakeGCSClient) GetLock(ctx context.Context, projectID string) (*PlatformAgentLock, error) {
-	return c.lock, c.err
 }

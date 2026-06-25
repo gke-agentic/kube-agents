@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -53,6 +54,7 @@ type PlatformAgentReconciler struct {
 // +kubebuilder:rbac:groups="",resources=serviceaccounts;persistentvolumeclaims;configmaps;services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces;nodes;pods,verbs=get;list
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=get;list;watch;create;update;patch;delete;bind
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 
 func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -77,6 +79,11 @@ func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 		// Return immediately after update to fetch the fresh ResourceVersion, preventing OptimisticLockErrors
 		return ctrl.Result{}, nil
+	}
+
+	// 2b. Reconcile cardinality lock Lease
+	if err := r.reconcileLockLease(ctx, instance); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// 3. Reconcile Service Account (with Workload Identity annotation)
@@ -353,4 +360,53 @@ func (r *PlatformAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		).
 		Named("platformagent").
 		Complete(r)
+}
+
+func (r *PlatformAgentReconciler) reconcileLockLease(ctx context.Context, agent *agentv1alpha1.PlatformAgent) error {
+	projectID := getProjectID(agent)
+	if projectID == "" {
+		return fmt.Errorf("projectID is required for cardinality lock lease")
+	}
+
+	currentCluster := ""
+	if agent.Spec.Harness != nil {
+		currentCluster = agent.Spec.Harness.ClusterName
+	}
+	if currentCluster == "" {
+		return fmt.Errorf("clusterName is required for cardinality lock lease")
+	}
+
+	leaseName := fmt.Sprintf("platform-agent-lock-%s", projectID)
+	leaseNamespace := agent.Namespace
+
+	lease := &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      leaseName,
+			Namespace: leaseNamespace,
+		},
+	}
+
+	expectedHolder := fmt.Sprintf("%s/%s/%s", currentCluster, agent.Namespace, agent.Name)
+
+	_, err := ctrl.CreateOrUpdate(ctx, r.Client, lease, func() error {
+		lease.Spec.HolderIdentity = &expectedHolder
+
+		// Set OwnerReference so it is automatically cleaned up when the PlatformAgent CR is deleted
+		return ctrl.SetControllerReference(agent, lease, r.Scheme)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to reconcile cardinality lock lease: %w", err)
+	}
+
+	return nil
+}
+
+func getProjectID(agent *agentv1alpha1.PlatformAgent) string {
+	if agent.Spec.Harness != nil && agent.Spec.Harness.ProjectID != "" {
+		return agent.Spec.Harness.ProjectID
+	}
+	if agent.Spec.Integration != nil && agent.Spec.Integration.GoogleChat != nil {
+		return agent.Spec.Integration.GoogleChat.ProjectID
+	}
+	return ""
 }

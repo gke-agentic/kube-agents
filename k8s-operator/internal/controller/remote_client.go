@@ -34,9 +34,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// buildRemoteClientDynamically queries the GKE API to find Cluster B's IP and CA data
-// and constructs a controller-runtime client using Workload Identity.
 func buildRemoteClientDynamically(ctx context.Context, projectID, location, clusterName string) (client.Client, error) {
+	return BuildRemoteClientDynamically(ctx, projectID, location, clusterName)
+}
+
+// BuildRemoteClientDynamically queries the GKE API to find Cluster B's IP and CA data
+// and constructs a controller-runtime client using Workload Identity.
+func BuildRemoteClientDynamically(ctx context.Context, projectID, location, clusterName string) (client.Client, error) {
 	if projectID == "" {
 		return nil, fmt.Errorf("projectID cannot be empty")
 	}
@@ -390,4 +394,25 @@ func reconcileClusterRoleBindingToUser(ctx context.Context, c client.Client, nam
 		return fmt.Errorf("failed to create cluster role binding to user %s: %w", name, err)
 	}
 	return nil
+}
+
+// ListGKEClusters lists all GKE clusters in a given GCP project.
+func ListGKEClusters(ctx context.Context, projectID string) ([]*container.Cluster, error) {
+	if projectID == "" {
+		return nil, fmt.Errorf("projectID cannot be empty")
+	}
+	tokenSource, err := google.DefaultTokenSource(ctx, container.CloudPlatformScope)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get default token source: %w", err)
+	}
+	containerSvc, err := container.NewService(ctx, option.WithTokenSource(tokenSource))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GKE container service: %w", err)
+	}
+	parent := fmt.Sprintf("projects/%s/locations/-", projectID)
+	resp, err := containerSvc.Projects.Locations.Clusters.List(parent).Context(ctx).Do()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list GKE clusters: %w", err)
+	}
+	return resp.Clusters, nil
 }

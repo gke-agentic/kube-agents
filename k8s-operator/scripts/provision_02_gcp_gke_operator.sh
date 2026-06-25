@@ -91,7 +91,7 @@ execute_operator() {
 
 # ─── Execution Pipeline ───────────────────────────────────────────────────────
 run_step "1. Connect kubectl" verify_kubeconfig execute_kubeconfig 0
-run_step "2. Ensure cert-manager" verify_cert_manager execute_cert_manager 5
+run_step "2. Ensure cert-manager" verify_cert_manager execute_cert_manager 45
 run_step "3. Deploy Kubernetes Operator" verify_operator execute_operator 0
 
 print_success "Kubernetes Operator deployed successfully!"
