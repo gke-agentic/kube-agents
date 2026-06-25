@@ -91,12 +91,16 @@ func renderOperatorConfigYAML(agent *agentv1alpha1.OperatorAgent) string {
 
 // renderOperatorSettingsMD generates the SETTINGS.md GKE Scope configuration payload for OperatorAgent
 func renderOperatorSettingsMD(agent *agentv1alpha1.OperatorAgent) string {
-	clusterName := ""
-	location := ""
+	clusterName := "None"
+	location := "None"
 	gitRepo := "None"
 	if agent.Spec.Harness != nil {
-		clusterName = agent.Spec.Harness.ClusterName
-		location = agent.Spec.Harness.Location
+		if agent.Spec.Harness.ClusterName != "" {
+			clusterName = agent.Spec.Harness.ClusterName
+		}
+		if agent.Spec.Harness.Location != "" {
+			location = agent.Spec.Harness.Location
+		}
 	}
 	if agent.Spec.Integration != nil && agent.Spec.Integration.GitHub != nil && agent.Spec.Integration.GitHub.GitRepo != "" {
 		gitRepo = agent.Spec.Integration.GitHub.GitRepo
