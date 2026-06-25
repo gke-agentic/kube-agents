@@ -110,6 +110,16 @@ type SecuritySpec struct {
 
 // IntegrationSpec isolates common platform-specific external connections.
 type IntegrationSpec struct {
+	// GitHub configures the GitHub integration.
+	// +optional
+	GitHub *GitHubSpec `json:"github,omitempty"`
+}
+
+// GitHubSpec contains the configuration for the GitHub integration.
+type GitHubSpec struct {
+	// GitRepo is the target GitOps repository URL for the agent environment.
+	// +optional
+	GitRepo string `json:"gitRepo,omitempty"`
 }
 
 // AgentSpec defines the common infrastructure configuration shared across all agent types.

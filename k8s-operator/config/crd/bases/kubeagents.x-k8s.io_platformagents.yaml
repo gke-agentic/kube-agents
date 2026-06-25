@@ -276,6 +276,15 @@ spec:
                 integration:
                   description: Integration configures platform-specific external connections.
                   properties:
+                    github:
+                      description: GitHub configures the GitHub integration.
+                      properties:
+                        gitRepo:
+                          description:
+                            GitRepo is the target GitOps repository URL for
+                            the agent environment.
+                          type: string
+                      type: object
                     googleChat:
                       description: GoogleChat configures the Google Chat integration.
                       properties:

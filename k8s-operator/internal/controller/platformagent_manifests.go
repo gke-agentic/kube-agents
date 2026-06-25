@@ -20,6 +20,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"path"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -47,6 +48,31 @@ func buildConfigMap(agent *agentv1alpha1.PlatformAgent) *corev1.ConfigMap {
 		},
 		Data: map[string]string{
 			"config.yaml": renderConfigYAML(agent),
+		},
+	}
+}
+
+// buildSettingsConfigMap generates the ConfigMap manifest containing SETTINGS.md
+func buildSettingsConfigMap(agent *agentv1alpha1.PlatformAgent) *corev1.ConfigMap {
+	gitRepo := ""
+	if agent.Spec.Integration != nil && agent.Spec.Integration.GitHub != nil {
+		gitRepo = agent.Spec.Integration.GitHub.GitRepo
+	}
+	if gitRepo == "" {
+		gitRepo = "None"
+	}
+	settingsContent := fmt.Sprintf("# GKE Scope Configuration\n- **Git Repo:** %s\n", gitRepo)
+	return &corev1.ConfigMap{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "ConfigMap",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      agent.Name + "-settings",
+			Namespace: agent.Namespace,
+		},
+		Data: map[string]string{
+			"SETTINGS.md": settingsContent,
 		},
 	}
 }
@@ -126,7 +152,7 @@ func buildPVC(agent *agentv1alpha1.PlatformAgent) *corev1.PersistentVolumeClaim 
 }
 
 // buildDeployment generates the Deployment manifest for the agent payload
-func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHash string) *appsv1.Deployment {
+func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHash, settingsConfigHash string) *appsv1.Deployment {
 	replicas := int32(1)
 	// UID/GID 10000 matches the canonical unprivileged 'hermes' runtime user created in NousResearch/hermes-agent upstream Dockerfile
 	fsGroup := int64(10000)
@@ -282,6 +308,7 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 					Annotations: map[string]string{
 						"kubeagents.x-k8s.io/config-hash":            configHash,
 						"kubeagents.x-k8s.io/fluent-bit-config-hash": fluentBitHash,
+						"kubeagents.x-k8s.io/settings-config-hash":   settingsConfigHash,
 					},
 				},
 				Spec: corev1.PodSpec{
@@ -328,6 +355,12 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 									Name:      "platform-agent-config-vol",
 									MountPath: fmt.Sprintf("%s/config.yaml", homeDir),
 									SubPath:   "config.yaml",
+								},
+								{
+									Name:      "settings-volume",
+									MountPath: path.Join(homeDir, "SETTINGS.md"),
+									SubPath:   "SETTINGS.md",
+									ReadOnly:  true,
 								},
 							},
 							SecurityContext: &corev1.SecurityContext{
@@ -422,6 +455,17 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 							Name: "fluent-bit-state",
 							VolumeSource: corev1.VolumeSource{
 								EmptyDir: &corev1.EmptyDirVolumeSource{},
+							},
+						},
+						{
+							Name: "settings-volume",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: agent.Name + "-settings",
+									},
+									DefaultMode: ptr.To(int32(0644)),
+								},
 							},
 						},
 					},

@@ -139,8 +139,12 @@ func TestBuildDeployment(t *testing.T) {
 					},
 				},
 			},
-
 			Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
+				IntegrationSpec: agentv1alpha1.IntegrationSpec{
+					GitHub: &agentv1alpha1.GitHubSpec{
+						GitRepo: "https://github.com/my-org/my-repo.git",
+					},
+				},
 				GoogleChat: &agentv1alpha1.GoogleChatSpec{
 					Enabled:          ptr.To(true),
 					ProjectID:        "my-gcp-project",
@@ -152,7 +156,7 @@ func TestBuildDeployment(t *testing.T) {
 		},
 	}
 
-	dep := buildDeployment(agent, "abcd1234", "efgh5678")
+	dep := buildDeployment(agent, "abcd1234", "efgh5678", "ijkl9012")
 
 	if dep.Name != "my-agent-gateway" {
 		t.Errorf("expected deployment name my-agent-gateway, got %s", dep.Name)
@@ -164,6 +168,10 @@ func TestBuildDeployment(t *testing.T) {
 
 	if dep.Spec.Template.Annotations["kubeagents.x-k8s.io/fluent-bit-config-hash"] != "efgh5678" {
 		t.Errorf("expected fluent-bit-config-hash annotation to be efgh5678, got %s", dep.Spec.Template.Annotations["kubeagents.x-k8s.io/fluent-bit-config-hash"])
+	}
+
+	if dep.Spec.Template.Annotations["kubeagents.x-k8s.io/settings-config-hash"] != "ijkl9012" {
+		t.Errorf("expected settings-config-hash annotation to be ijkl9012, got %s", dep.Spec.Template.Annotations["kubeagents.x-k8s.io/settings-config-hash"])
 	}
 
 	if len(dep.Spec.Template.Spec.Containers) != 2 {
@@ -229,6 +237,26 @@ func TestBuildDeployment(t *testing.T) {
 		t.Errorf("expected GOOGLE_CHAT_ALLOW_ALL_USERS not to be set when allowed users is populated")
 	}
 
+	// Verify volume mounts
+	mountsMap := make(map[string]corev1.VolumeMount)
+	for _, m := range container.VolumeMounts {
+		mountsMap[m.Name] = m
+	}
+	if _, ok := mountsMap["settings-volume"]; !ok {
+		t.Errorf("expected settings-volume mount, not found")
+	} else {
+		m := mountsMap["settings-volume"]
+		if m.MountPath != "/var/agent/SETTINGS.md" {
+			t.Errorf("expected settings-volume mount path /var/agent/SETTINGS.md, got %s", m.MountPath)
+		}
+		if m.SubPath != "SETTINGS.md" {
+			t.Errorf("expected settings-volume subpath SETTINGS.md, got %s", m.SubPath)
+		}
+		if !m.ReadOnly {
+			t.Errorf("expected settings-volume to be read-only")
+		}
+	}
+
 	// Verify Fluent Bit container
 	fbContainer := dep.Spec.Template.Spec.Containers[1]
 	if fbContainer.Name != "fluent-bit" {
@@ -248,6 +276,24 @@ func TestBuildDeployment(t *testing.T) {
 	}
 	if _, ok := volumesMap["fluent-bit-state"]; !ok {
 		t.Errorf("expected fluent-bit-state volume, not found")
+	}
+
+	if _, ok := volumesMap["settings-volume"]; !ok {
+		t.Errorf("expected settings-volume, not found")
+	} else {
+		v := volumesMap["settings-volume"]
+		if v.ConfigMap == nil {
+			t.Errorf("expected settings-volume to be ConfigMap")
+		} else {
+			if v.ConfigMap.Name != "my-agent-settings" {
+				t.Errorf("expected settings-volume ConfigMap name my-agent-settings, got %s", v.ConfigMap.Name)
+			}
+			if v.ConfigMap.DefaultMode == nil {
+				t.Errorf("expected settings-volume ConfigMap DefaultMode to be set, got nil")
+			} else if *v.ConfigMap.DefaultMode != int32(0644) {
+				t.Errorf("expected settings-volume ConfigMap DefaultMode 0644, got %o", *v.ConfigMap.DefaultMode)
+			}
+		}
 	}
 }
 
@@ -275,7 +321,7 @@ func TestBuildDeploymentGoogleChatAllowedUsersEmpty(t *testing.T) {
 		},
 	}
 
-	dep := buildDeployment(agent, "abcd1234", "efgh5678")
+	dep := buildDeployment(agent, "abcd1234", "efgh5678", "ijkl9012")
 	container := dep.Spec.Template.Spec.Containers[0]
 	envMap := make(map[string]corev1.EnvVar)
 	for _, env := range container.Env {
@@ -347,5 +393,115 @@ func TestBuildPlatformService(t *testing.T) {
 
 	if svc.Spec.Selector["app"] != "test-platform-agent-gateway" {
 		t.Errorf("expected selector app=test-platform-agent-gateway, got %s", svc.Spec.Selector["app"])
+	}
+}
+
+func TestBuildSettingsConfigMap(t *testing.T) {
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+		},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
+				IntegrationSpec: agentv1alpha1.IntegrationSpec{
+					GitHub: &agentv1alpha1.GitHubSpec{
+						GitRepo: "https://github.com/my-org/my-repo.git",
+					},
+				},
+			},
+		},
+	}
+
+	cm := buildSettingsConfigMap(agent)
+	if cm.Name != "test-agent-settings" {
+		t.Errorf("expected configmap name test-agent-settings, got %s", cm.Name)
+	}
+	if cm.Namespace != "test-ns" {
+		t.Errorf("expected configmap namespace test-ns, got %s", cm.Namespace)
+	}
+	content, ok := cm.Data["SETTINGS.md"]
+	if !ok {
+		t.Fatalf("expected SETTINGS.md key, not found")
+	}
+	expectedContent := "# GKE Scope Configuration\n- **Git Repo:** https://github.com/my-org/my-repo.git\n"
+	if content != expectedContent {
+		t.Errorf("expected content:\n%q\ngot:\n%q", expectedContent, content)
+	}
+}
+
+func TestBuildSettingsConfigMapEmptyGitRepo(t *testing.T) {
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+		},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
+				IntegrationSpec: agentv1alpha1.IntegrationSpec{
+					GitHub: &agentv1alpha1.GitHubSpec{
+						GitRepo: "",
+					},
+				},
+			},
+		},
+	}
+
+	cm := buildSettingsConfigMap(agent)
+	content, ok := cm.Data["SETTINGS.md"]
+	if !ok {
+		t.Fatalf("expected SETTINGS.md key, not found")
+	}
+	expectedContent := "# GKE Scope Configuration\n- **Git Repo:** None\n"
+	if content != expectedContent {
+		t.Errorf("expected content:\n%q\ngot:\n%q", expectedContent, content)
+	}
+}
+
+func TestBuildSettingsConfigMapNilIntegration(t *testing.T) {
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+		},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			Integration: nil,
+		},
+	}
+
+	cm := buildSettingsConfigMap(agent)
+	content, ok := cm.Data["SETTINGS.md"]
+	if !ok {
+		t.Fatalf("expected SETTINGS.md key, not found")
+	}
+	expectedContent := "# GKE Scope Configuration\n- **Git Repo:** None\n"
+	if content != expectedContent {
+		t.Errorf("expected content:\n%q\ngot:\n%q", expectedContent, content)
+	}
+}
+
+func TestBuildSettingsConfigMapNilGitHub(t *testing.T) {
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+		},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
+				IntegrationSpec: agentv1alpha1.IntegrationSpec{
+					GitHub: nil,
+				},
+			},
+		},
+	}
+
+	cm := buildSettingsConfigMap(agent)
+	content, ok := cm.Data["SETTINGS.md"]
+	if !ok {
+		t.Fatalf("expected SETTINGS.md key, not found")
+	}
+	expectedContent := "# GKE Scope Configuration\n- **Git Repo:** None\n"
+	if content != expectedContent {
+		t.Errorf("expected content:\n%q\ngot:\n%q", expectedContent, content)
 	}
 }

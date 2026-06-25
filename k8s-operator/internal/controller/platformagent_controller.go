@@ -106,8 +106,14 @@ func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
+	// Reconcile Settings ConfigMap
+	settingsHash, err := r.reconcileSettingsConfigMap(ctx, instance)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// 6. Reconcile Deployment (with pod template hash annotation)
-	if err := r.reconcileDeployment(ctx, instance, configMapHash, fluentBitHash); err != nil {
+	if err := r.reconcileDeployment(ctx, instance, configMapHash, fluentBitHash, settingsHash); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -223,8 +229,26 @@ func (r *PlatformAgentReconciler) reconcileFluentBitConfigMap(ctx context.Contex
 	return hash, nil
 }
 
-func (r *PlatformAgentReconciler) reconcileDeployment(ctx context.Context, agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHash string) error {
-	dep := buildDeployment(agent, configHash, fluentBitHash)
+func (r *PlatformAgentReconciler) reconcileSettingsConfigMap(ctx context.Context, agent *agentv1alpha1.PlatformAgent) (string, error) {
+	cm := buildSettingsConfigMap(agent)
+	if err := ctrl.SetControllerReference(agent, cm, r.Scheme); err != nil {
+		return "", err
+	}
+
+	err := r.Patch(ctx, cm, client.Apply, client.ForceOwnership, client.FieldOwner("platformagent-controller"))
+	if err != nil {
+		return "", err
+	}
+
+	hash, err := getConfigMapHash(cm)
+	if err != nil {
+		return "", err
+	}
+	return hash, nil
+}
+
+func (r *PlatformAgentReconciler) reconcileDeployment(ctx context.Context, agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHash, settingsHash string) error {
+	dep := buildDeployment(agent, configHash, fluentBitHash, settingsHash)
 	if err := ctrl.SetControllerReference(agent, dep, r.Scheme); err != nil {
 		return err
 	}
