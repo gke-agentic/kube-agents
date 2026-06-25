@@ -1,4 +1,4 @@
 resources:
-  - serviceaccount.yaml
-  - configmap.yaml
-  - deployment.yaml
+  - serviceaccount.yaml.template
+  - configmap.yaml.template
+  - deployment.yaml.template

@@ -33,27 +33,7 @@ init_var "REGION" "us-east4" "Enter GKE GCP Region"
 init_var "CLUSTER_NAME" "platform-agent-host" "Enter GKE Cluster Name"
 
 # Prompt for Model Provider and Default Name early to determine which API key is required
-init_var "MODEL_PROVIDER" "gemini" "Enter Model Provider (gemini, anthropic, chatgpt, openai)"
-
-MODEL_PROVIDER=$(echo "$MODEL_PROVIDER" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
-if [[ ! "$MODEL_PROVIDER" =~ ^(gemini|anthropic|chatgpt|openai)$ ]]; then
-  print_error "Invalid Model Provider '$MODEL_PROVIDER'. Must be one of: gemini, anthropic, chatgpt, openai."
-  exit 1
-fi
-
-case "$MODEL_PROVIDER" in
-  chatgpt|openai)
-    DEFAULT_MODEL="gpt-5.4"
-    ;;
-  anthropic)
-    DEFAULT_MODEL="claude-sonnet-4-5-20250929"
-    ;;
-  *)
-    DEFAULT_MODEL="gemini-3.5-flash"
-    ;;
-esac
-
-init_var "MODEL_DEFAULT_NAME" "$DEFAULT_MODEL" "Enter Model Default Name"
+init_var_model_provider
 
 # Securely prompt for Gemini API Key if Gemini is the provider and it's not set/placeholder
 if [ "$MODEL_PROVIDER" = "gemini" ]; then
@@ -144,6 +124,14 @@ execute_k8s_secrets() {
       --from-literal=OPENAI_API_KEY="$OPENAI_API_KEY" \
       --from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
       --dry-run=client -o yaml | kubectl apply -f -
+
+  if [ -n "${GITHUB_APP_ID}" ]; then
+    print_info "Writing Kubernetes Secret 'github-app-credentials' into '$NAMESPACE'..."
+    kubectl create secret generic github-app-credentials \
+        --namespace="$NAMESPACE" \
+        --from-literal=app-id="${GITHUB_APP_ID}" \
+        --dry-run=client -o yaml | kubectl apply -f -
+  fi
 }
 
 
