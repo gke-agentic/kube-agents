@@ -32,7 +32,7 @@ echo -e "\n${C_RED}${C_BOLD}🧹 Running Teardown Steps...${C_RESET}"
 "${SCRIPT_DIR}/teardown_08_deploy_github_minter.sh" --no-confirm $DRY_RUN_ARG || true
 "${SCRIPT_DIR}/teardown_07_deploy_litellm.sh" --no-confirm $DRY_RUN_ARG || true
 if [ "${EXTRA_AGENTS_DEPLOYED:-false}" = "true" ] || [ -f "${SCRIPT_DIR}/../examples/operatoragent.yaml" ] || [ -f "${SCRIPT_DIR}/../examples/devteamagent.yaml" ]; then
-  "${SCRIPT_DIR}/teardown_extra_01_deploy_extra_agents.sh" --no-confirm $DRY_RUN_ARG || true
+  "${SCRIPT_DIR}/dev/teardown_extra_01_deploy_extra_agents.sh" --no-confirm $DRY_RUN_ARG || true
 fi
 "${SCRIPT_DIR}/teardown_06_deploy_platform_agent.sh" --no-confirm $DRY_RUN_ARG || true
 "${SCRIPT_DIR}/teardown_05_gcp_gchat.sh" --no-confirm $DRY_RUN_ARG || true
@@ -40,7 +40,7 @@ fi
 "${SCRIPT_DIR}/teardown_03_gcp_iam.sh" --no-confirm $DRY_RUN_ARG || true
 "${SCRIPT_DIR}/teardown_02_gcp_gke_operator.sh" --no-confirm $DRY_RUN_ARG || true
 if [ "${DEV_ARTIFACT_REGISTRY_CREATED:-false}" = "true" ]; then
-  "${SCRIPT_DIR}/teardown_dev_01_gcp_artifact_registry.sh" --no-confirm $DRY_RUN_ARG || true
+  "${SCRIPT_DIR}/dev/teardown_dev_01_gcp_artifact_registry.sh" --no-confirm $DRY_RUN_ARG || true
 fi
 "${SCRIPT_DIR}/teardown_01_gcp_cluster.sh" --no-confirm $DRY_RUN_ARG
 

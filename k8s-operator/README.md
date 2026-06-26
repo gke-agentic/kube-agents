@@ -101,7 +101,7 @@ make dev-rebuild-agent
 make dev-rebuild-agent ARGS="platform"
 ```
 
-- **[dev_rebuild_agent.sh](scripts/dev_rebuild_agent.sh)**:
+- **[dev/dev_rebuild_agent.sh](scripts/dev/dev_rebuild_agent.sh)**:
   - Prompts for or accepts an agent target (`devteam`, `platform`, or `operator`).
   - Ensures the GCP Artifact Registry repository exists.
   - Builds and pushes the updated container image via Google Cloud Build (or locally with `--local`).
@@ -129,13 +129,13 @@ Or run the master teardown script directly:
 graph TD
     A[teardown.sh] --> B[teardown_08_deploy_github_minter.sh]
     A --> C[teardown_07_deploy_litellm.sh]
-    A --> D[teardown_extra_01_deploy_extra_agents.sh]
+    A --> D[dev/teardown_extra_01_deploy_extra_agents.sh]
     A --> E[teardown_06_deploy_platform_agent.sh]
     A --> F[teardown_05_gcp_gchat.sh]
     A --> G[teardown_04_gcp_k8s_secrets.sh]
     A --> H[teardown_03_gcp_iam.sh]
     A --> I[teardown_02_gcp_gke_operator.sh]
-    A --> J[teardown_dev_01_gcp_artifact_registry.sh]
+    A --> J[dev/teardown_dev_01_gcp_artifact_registry.sh]
     A --> K[teardown_01_gcp_cluster.sh]
 ```
 
@@ -145,7 +145,7 @@ graph TD
 2. **[teardown_07_deploy_litellm.sh](scripts/teardown_07_deploy_litellm.sh)**:
    - Undeploys the LiteLLM Gateway from the cluster.
 
-3. **[teardown_extra_01_deploy_extra_agents.sh](scripts/teardown_extra_01_deploy_extra_agents.sh)**:
+3. **[dev/teardown_extra_01_deploy_extra_agents.sh](scripts/dev/teardown_extra_01_deploy_extra_agents.sh)**:
    - Conditionally executed by master teardown if extra agents were deployed; deletes `OperatorAgent` and `DevTeamAgent` CRs and dedicated IAM bindings.
 
 4. **[teardown_06_deploy_platform_agent.sh](scripts/teardown_06_deploy_platform_agent.sh)**:
@@ -164,7 +164,7 @@ graph TD
 8. **[teardown_02_gcp_gke_operator.sh](scripts/teardown_02_gcp_gke_operator.sh)**:
    - Removes the Operator controller manager deployment and CRDs.
 
-9. **[teardown_dev_01_gcp_artifact_registry.sh](scripts/teardown_dev_01_gcp_artifact_registry.sh)**:
+9. **[dev/teardown_dev_01_gcp_artifact_registry.sh](scripts/dev/teardown_dev_01_gcp_artifact_registry.sh)**:
    - Deletes the GCP Artifact Registry repository created during local dev rebuilds.
 
 10. **[teardown_01_gcp_cluster.sh](scripts/teardown_01_gcp_cluster.sh)**:

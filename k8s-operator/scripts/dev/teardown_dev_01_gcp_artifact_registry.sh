@@ -9,10 +9,15 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VARS_FILE="${SCRIPT_DIR}/vars.sh"
+if [[ "$SCRIPT_DIR" == */scripts/dev ]]; then
+  SCRIPTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+else
+  SCRIPTS_DIR="${SCRIPT_DIR}"
+fi
+VARS_FILE="${SCRIPTS_DIR}/vars.sh"
 
 # ─── ANSI Colors ──────────────────────────────────────────────────────────────
-source "${SCRIPT_DIR}/common.sh" "$@"
+source "${SCRIPTS_DIR}/common.sh" "$@"
 
 # ─── Configuration State Restoration ──────────────────────────────────────────
 ensure_teardown_state

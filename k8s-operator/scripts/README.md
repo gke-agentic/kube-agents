@@ -50,20 +50,22 @@ When any script is run:
    - Sets up Google Cloud KMS keyrings and keys for token signing.
    - Deploys the GitHub Token Minter into the cluster.
 
-### Auxiliary Provisioning Scripts
+### Auxiliary & Development Scripts (`dev/`)
 
-- **[provision_extra_01_deploy_extra_agents.sh](provision_extra_01_deploy_extra_agents.sh)**: Standalone auxiliary script that prompts for target cluster configuration and deploys targeted `OperatorAgent` and `DevTeamAgent` custom resources along with their dedicated GSAs.
+- **[dev/provision_extra_01_deploy_extra_agents.sh](dev/provision_extra_01_deploy_extra_agents.sh)**: Standalone auxiliary script that prompts for target cluster configuration and deploys targeted `OperatorAgent` and `DevTeamAgent` custom resources along with their dedicated GSAs.
+- **[dev/dev_rebuild_agent.sh](dev/dev_rebuild_agent.sh)**: Fast local development utility that builds, pushes, and redeploys agent container images.
 
 ### Teardown Steps
 
 - **[teardown_08_deploy_github_minter.sh](teardown_08_deploy_github_minter.sh)**: Cleans up the GitHub Token Minter deployment, GSAs, and KMS resources.
 - **[teardown_07_deploy_litellm.sh](teardown_07_deploy_litellm.sh)**: Undeploys the LiteLLM Gateway from the cluster.
-- **[teardown_extra_01_deploy_extra_agents.sh](teardown_extra_01_deploy_extra_agents.sh)**: Conditionally executed by master teardown if extra agents were deployed; deletes `OperatorAgent` and `DevTeamAgent` CRs and dedicated IAM bindings.
+- **[dev/teardown_extra_01_deploy_extra_agents.sh](dev/teardown_extra_01_deploy_extra_agents.sh)**: Conditionally executed by master teardown if extra agents were deployed; deletes `OperatorAgent` and `DevTeamAgent` CRs and dedicated IAM bindings.
 - **[teardown_06_deploy_platform_agent.sh](teardown_06_deploy_platform_agent.sh)**: Safely deletes the `PlatformAgent` Custom Resource and cleans up local manifests.
 - **[teardown_05_gcp_gchat.sh](teardown_05_gcp_gchat.sh)**: Deletes the Google Chat Pub/Sub topic and subscription.
 - **[teardown_04_gcp_k8s_secrets.sh](teardown_04_gcp_k8s_secrets.sh)**: Deletes the Kubernetes secrets in GKE.
 - **[teardown_03_gcp_iam.sh](teardown_03_gcp_iam.sh)**: Removes all GCP IAM policy bindings, Workload Identity mappings, and deletes the GSAs for the Controller and Agents.
 - **[teardown_02_gcp_gke_operator.sh](teardown_02_gcp_gke_operator.sh)**: Removes the Operator manager deployment and unregisters CRDs.
+- **[dev/teardown_dev_01_gcp_artifact_registry.sh](dev/teardown_dev_01_gcp_artifact_registry.sh)**: Conditionally executed by master teardown if local dev artifact registry was created.
 - **[teardown_01_gcp_cluster.sh](teardown_01_gcp_cluster.sh)**: Deletes the GKE Standard cluster and removes the local state file `vars.sh`.
 
 ---

@@ -9,15 +9,20 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ "$SCRIPT_DIR" == */scripts ]]; then
+if [[ "$SCRIPT_DIR" == */scripts/dev ]]; then
+  SCRIPTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+  OPERATOR_DIR="$(cd "${SCRIPTS_DIR}/.." && pwd)"
+elif [[ "$SCRIPT_DIR" == */scripts ]]; then
+  SCRIPTS_DIR="${SCRIPT_DIR}"
   OPERATOR_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 else
+  SCRIPTS_DIR="${SCRIPT_DIR}"
   OPERATOR_DIR="${SCRIPT_DIR}"
 fi
-VARS_FILE="${SCRIPT_DIR}/vars.sh"
+VARS_FILE="${SCRIPTS_DIR}/vars.sh"
 
 # ─── ANSI Colors ──────────────────────────────────────────────────────────────
-source "${SCRIPT_DIR}/common.sh" "$@"
+source "${SCRIPTS_DIR}/common.sh" "$@"
 
 # ─── Prerequisites Check ──────────────────────────────────────────────────────
 print_step "Checking Local Prerequisites"
