@@ -24,6 +24,7 @@ rules:
       - secrets
       - events
       - persistentvolumeclaims
+      - endpoints
     verbs:
       - get
       - list
@@ -38,6 +39,18 @@ rules:
       - deployments
       - daemonsets
       - statefulsets
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  - apiGroups:
+      - networking.k8s.io
+    resources:
+      - networkpolicies
     verbs:
       - get
       - list

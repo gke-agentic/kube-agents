@@ -291,12 +291,17 @@ func (r *DevTeamAgentReconciler) reconcileRemoteResources(ctx context.Context, a
 	rules := []rbacv1.PolicyRule{
 		{
 			APIGroups: []string{""},
-			Resources: []string{"namespaces", "pods", "pods/log", "services", "configmaps", "secrets", "events", "persistentvolumeclaims"},
+			Resources: []string{"namespaces", "pods", "pods/log", "services", "configmaps", "secrets", "events", "persistentvolumeclaims", "endpoints"},
 			Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
 		},
 		{
 			APIGroups: []string{"apps"},
 			Resources: []string{"deployments", "daemonsets", "statefulsets"},
+			Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+		},
+		{
+			APIGroups: []string{"networking.k8s.io"},
+			Resources: []string{"networkpolicies"},
 			Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
 		},
 	}
