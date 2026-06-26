@@ -92,7 +92,7 @@ init_var "REPO_NAME" "kube-agents" "Enter Artifact Registry Repository Name"
 # Resolve HERMES_AGENT_TAG from tags.env
 HERMES_AGENT_TAG=""
 if [ -f "${REPO_ROOT}/tags.env" ]; then
-  HERMES_AGENT_TAG=$(grep '^HERMES_AGENT_TAG=' "${REPO_ROOT}/tags.env" | cut -d'=' -f2)
+  HERMES_AGENT_TAG=$(grep '^HERMES_AGENT_TAG=' "${REPO_ROOT}/tags.env" | cut -d'=' -f2 | tr -d '\r"' | tr -d "'")
 fi
 if [ -z "$HERMES_AGENT_TAG" ]; then
   print_error "Could not resolve HERMES_AGENT_TAG from ${REPO_ROOT}/tags.env"
@@ -193,9 +193,14 @@ execute_redeploy() {
       if [[ "$dep" == *"${AGENT_TARGET}"* ]]; then
         print_info "Triggering rolling update for Deployment '${dep}' in namespace '${ns}'..."
         # Set image in case it's a standalone deployment not managed by a CR
-        kubectl set image "deployment/${dep}" -n "${ns}" "*=${IMAGE_URI}" 2>/dev/null || true
-        # Restart rollout to ensure fresh pods pull the updated container
-        kubectl rollout restart "deployment/${dep}" -n "${ns}" 2>/dev/null || true
+        # Avoid using '*=' to prevent overwriting sidecar container images
+        local container_name
+        container_name=$(kubectl get deployment "${dep}" -n "${ns}" -o jsonpath='{range .spec.template.spec.containers[*]}{.name}{"\n"}{end}' 2>/dev/null | grep -E "agent|${AGENT_TARGET}" | head -n 1)
+        if [ -n "$container_name" ]; then
+          kubectl set image "deployment/${dep}" -n "${ns}" "${container_name}=${IMAGE_URI}" 2>/dev/null || true
+        else
+          kubectl set image "deployment/${dep}" -n "${ns}" "${AGENT_TARGET}=${IMAGE_URI}" 2>/dev/null || true
+        fi
         dep_found=1
       fi
     done
