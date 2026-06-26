@@ -1,10 +1,8 @@
 name: Staging Redeploy Controller
 
 on:
-  workflow_run:
-    workflows: ["Publish Controller to GHCR"]
-    types:
-      - completed
+  push:
+    branches: [actions-dev]
 
 concurrency:
   group: staging-redeploy-controller
@@ -17,11 +15,7 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    if: |
-      github.repository == 'gke-labs/kube-agents' &&
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch == 'main'
-    environment: staging
+    environment: dharb-dev
     env:
       GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       GCP_REGION: ${{ vars.GCP_REGION }}
@@ -41,7 +35,7 @@ jobs:
   deploy:
     needs: validate
     runs-on: ubuntu-latest
-    environment: staging
+    environment: dharb-dev
     env:
       GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       GCP_REGION: ${{ vars.GCP_REGION }}
@@ -53,7 +47,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.sha }}
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -78,7 +72,7 @@ jobs:
         env:
           REPO_NAME: ${{ github.repository }}
           PACKAGE_NAME: "k8s-operator"
-          TAG_NAME: ${{ github.event.workflow_run.head_sha }}
+          TAG_NAME: ${{ github.sha }}
         run: |
           REPO_DOWNCASE=$(echo "$REPO_NAME" | tr '[:upper:]' '[:lower:]')
           echo "IMAGE_REPO=ghcr.io/${REPO_DOWNCASE}/${PACKAGE_NAME}" >> "$GITHUB_ENV"
