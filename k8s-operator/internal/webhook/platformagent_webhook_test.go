@@ -32,7 +32,7 @@ func TestPlatformAgentValidation(t *testing.T) {
 	ctx := context.Background()
 
 	validSpec := agentv1alpha1.PlatformAgentSpec{
-		Harness: &agentv1alpha1.PlatformAgentHarnessSpec{
+		Harness: &agentv1alpha1.HarnessSpec{
 			ProjectID:   "my-project",
 			ClusterName: "my-cluster",
 		},
@@ -155,7 +155,7 @@ func TestPlatformAgentValidation(t *testing.T) {
 		lease := &coordinationv1.Lease{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "platform-agent-lock-my-project",
-				Namespace: "default",
+				Namespace: "kube-system",
 			},
 			Spec: coordinationv1.LeaseSpec{
 				HolderIdentity: &holder,
@@ -187,7 +187,7 @@ func TestPlatformAgentValidation(t *testing.T) {
 		lease := &coordinationv1.Lease{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "platform-agent-lock-my-project",
-				Namespace: "kubeagents-system",
+				Namespace: "kube-system",
 			},
 			Spec: coordinationv1.LeaseSpec{
 				HolderIdentity: &holder,
@@ -228,10 +228,10 @@ func TestPlatformAgentValidation(t *testing.T) {
 		agent := &agentv1alpha1.PlatformAgent{
 			ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
 			Spec: agentv1alpha1.PlatformAgentSpec{
-				Integration: &agentv1alpha1.IntegrationSpec{
+				Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
 					GoogleChat: &agentv1alpha1.GoogleChatSpec{ProjectID: "my-project"},
 				},
-				Harness: &agentv1alpha1.PlatformAgentHarnessSpec{ClusterName: ""},
+				Harness: &agentv1alpha1.HarnessSpec{ClusterName: ""},
 			},
 		}
 
@@ -254,7 +254,7 @@ func TestPlatformAgentValidation(t *testing.T) {
 		agent := &agentv1alpha1.PlatformAgent{
 			ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
 			Spec: agentv1alpha1.PlatformAgentSpec{
-				Harness: &agentv1alpha1.PlatformAgentHarnessSpec{ClusterName: "my-cluster"},
+				Harness: &agentv1alpha1.HarnessSpec{ClusterName: "my-cluster"},
 			},
 		}
 

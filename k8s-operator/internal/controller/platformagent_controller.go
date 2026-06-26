@@ -151,6 +151,16 @@ func (r *PlatformAgentReconciler) handleDeletion(ctx context.Context, agent *age
 			return ctrl.Result{}, err
 		}
 
+		// Delete cardinality lock Lease from constant kube-system namespace
+		projectID := GetProjectID(agent)
+		if projectID != "" {
+			leaseName := fmt.Sprintf("platform-agent-lock-%s", projectID)
+			lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: leaseName, Namespace: "kube-system"}}
+			if err := client.IgnoreNotFound(r.Delete(ctx, lease)); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+
 		// Resource is deleted. Safe to remove finalizer and update.
 		controllerutil.RemoveFinalizer(agent, platformAgentFinalizer)
 		if err := r.Update(ctx, agent); err != nil {
@@ -363,7 +373,7 @@ func (r *PlatformAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func (r *PlatformAgentReconciler) reconcileLockLease(ctx context.Context, agent *agentv1alpha1.PlatformAgent) error {
-	projectID := getProjectID(agent)
+	projectID := GetProjectID(agent)
 	if projectID == "" {
 		return fmt.Errorf("projectID is required for cardinality lock lease")
 	}
@@ -377,7 +387,7 @@ func (r *PlatformAgentReconciler) reconcileLockLease(ctx context.Context, agent 
 	}
 
 	leaseName := fmt.Sprintf("platform-agent-lock-%s", projectID)
-	leaseNamespace := agent.Namespace
+	leaseNamespace := "kube-system" // Dedicated constant namespace across all clusters
 
 	lease := &coordinationv1.Lease{
 		ObjectMeta: metav1.ObjectMeta{
@@ -390,9 +400,7 @@ func (r *PlatformAgentReconciler) reconcileLockLease(ctx context.Context, agent 
 
 	_, err := ctrl.CreateOrUpdate(ctx, r.Client, lease, func() error {
 		lease.Spec.HolderIdentity = &expectedHolder
-
-		// Set OwnerReference so it is automatically cleaned up when the PlatformAgent CR is deleted
-		return ctrl.SetControllerReference(agent, lease, r.Scheme)
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to reconcile cardinality lock lease: %w", err)
@@ -401,7 +409,7 @@ func (r *PlatformAgentReconciler) reconcileLockLease(ctx context.Context, agent 
 	return nil
 }
 
-func getProjectID(agent *agentv1alpha1.PlatformAgent) string {
+func GetProjectID(agent *agentv1alpha1.PlatformAgent) string {
 	if agent.Spec.Harness != nil && agent.Spec.Harness.ProjectID != "" {
 		return agent.Spec.Harness.ProjectID
 	}

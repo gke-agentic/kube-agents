@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -24,6 +25,7 @@ var (
 
 func init() {
 	_ = agentv1alpha1.AddToScheme(testScheme)
+	_ = coordinationv1.AddToScheme(testScheme)
 	_ = corev1.AddToScheme(testScheme)
 	_ = appsv1.AddToScheme(testScheme)
 	_ = rbacv1.AddToScheme(testScheme)

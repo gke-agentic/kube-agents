@@ -130,7 +130,7 @@ func (v *PlatformAgentCustomValidator) validatePlatformAgent(ctx context.Context
 
 	// 2. Enforce 1 PlatformAgent per project globally (using Kubernetes Lease API)
 	if v.Client != nil {
-		projectID := getProjectID(platformAgent)
+		projectID := controller.GetProjectID(platformAgent)
 		if projectID == "" {
 			return nil, apierrors.NewInvalid(
 				schema.GroupKind{Group: "kubeagents.x-k8s.io", Kind: "PlatformAgent"},
@@ -153,7 +153,7 @@ func (v *PlatformAgentCustomValidator) validatePlatformAgent(ctx context.Context
 
 		// 2a. First, verify the lease in the local cluster (fast check)
 		leaseName := fmt.Sprintf("platform-agent-lock-%s", projectID)
-		leaseNamespace := platformAgent.Namespace // Using the agent's namespace for local dev, or a dedicated lock namespace in prod
+		leaseNamespace := "kube-system" // Using constant well-known namespace across all clusters
 
 		lease := &coordinationv1.Lease{}
 		err := v.Client.Get(ctx, client.ObjectKey{Name: leaseName, Namespace: leaseNamespace}, lease)
@@ -230,14 +230,4 @@ func (v *PlatformAgentCustomValidator) ValidateDelete(ctx context.Context, obj r
 	platformagentlog.Info("validating PlatformAgent deletion", "name", platformAgent.Name)
 
 	return nil, nil
-}
-
-func getProjectID(agent *agentv1alpha1.PlatformAgent) string {
-	if agent.Spec.Harness != nil && agent.Spec.Harness.ProjectID != "" {
-		return agent.Spec.Harness.ProjectID
-	}
-	if agent.Spec.Integration != nil && agent.Spec.Integration.GoogleChat != nil {
-		return agent.Spec.Integration.GoogleChat.ProjectID
-	}
-	return ""
 }
