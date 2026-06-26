@@ -68,6 +68,14 @@ func renderDevTeamConfigYAML(agent *agentv1alpha1.DevTeamAgent) string {
 			Backend string `json:"backend"`
 			Cwd     string `json:"cwd"`
 		} `json:"terminal"`
+		MCPServers       map[string]any      `json:"mcp_servers,omitempty"`
+		PlatformToolsets map[string][]string `json:"platform_toolsets,omitempty"`
+		Approvals        struct {
+			CronMode string `json:"cron_mode,omitempty"`
+		} `json:"approvals,omitempty"`
+		Web struct {
+			Backend string `json:"backend,omitempty"`
+		} `json:"web,omitempty"`
 		Plugins struct {
 			Enabled []string `json:"enabled"`
 		} `json:"plugins"`
@@ -80,6 +88,22 @@ func renderDevTeamConfigYAML(agent *agentv1alpha1.DevTeamAgent) string {
 	cfg.Model.APIKey = "none"
 	cfg.Terminal.Backend = "local"
 	cfg.Terminal.Cwd = cwd
+	cfg.MCPServers = map[string]any{
+		"agent_common": map[string]any{
+			"command": "/opt/hermes/.venv/bin/python3",
+			"args":    []string{"/opt/data/scripts/agent_common_server.py"},
+		},
+		"developer_knowledge": map[string]any{
+			"command": "node",
+			"args":    []string{"/opt/mcp-remote/dist/proxy.js", "https://developerknowledge.googleapis.com/mcp"},
+		},
+	}
+	cfg.PlatformToolsets = map[string][]string{
+		"cli":        {"hermes-cli", "mcp-agent_common", "mcp-developer_knowledge"},
+		"api_server": {"hermes-api-server", "mcp-agent_common", "mcp-developer_knowledge"},
+	}
+	cfg.Approvals.CronMode = "approve"
+	cfg.Web.Backend = "ddgs"
 	cfg.Plugins.Enabled = []string{"hermes_otel"}
 
 	data, err := yaml.Marshal(cfg)
@@ -185,6 +209,14 @@ func buildDevTeamDeployment(agent *agentv1alpha1.DevTeamAgent, configHash, fluen
 		{
 			Name:  "OTEL_SERVICE_NAME",
 			Value: agent.Name + "-gateway",
+		},
+		{
+			Name:  "API_SERVER_ENABLED",
+			Value: "true",
+		},
+		{
+			Name:  "API_SERVER_HOST",
+			Value: "0.0.0.0",
 		},
 		{
 			Name:  "PLATFORM_API_URL",

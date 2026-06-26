@@ -65,18 +65,41 @@ data:
     - **Cluster Location:** us-central1
     - **Git Repo:** None
   config.yaml: |
+    approvals:
+      cron_mode: approve
+    mcp_servers:
+      agent_common:
+        args:
+        - /opt/data/scripts/agent_common_server.py
+        command: /opt/hermes/.venv/bin/python3
+      developer_knowledge:
+        args:
+        - /opt/mcp-remote/dist/proxy.js
+        - https://developerknowledge.googleapis.com/mcp
+        command: node
     model:
       api_key: none
       base_url: http://litellm.kubeagents-system.svc.cluster.local/v1
       default: model-default
       model: model-default
       provider: custom
+    platform_toolsets:
+      api_server:
+      - hermes-api-server
+      - mcp-agent_common
+      - mcp-developer_knowledge
+      cli:
+      - hermes-cli
+      - mcp-agent_common
+      - mcp-developer_knowledge
     plugins:
       enabled:
       - hermes_otel
     terminal:
       backend: local
       cwd: /opt/data
+    web:
+      backend: ddgs
 kind: ConfigMap
 metadata:
   creationTimestamp: null
@@ -172,7 +195,7 @@ spec:
   template:
     metadata:
       annotations:
-        kubeagents.x-k8s.io/config-hash: 6263eaf4277c61fdf4fd371be1689116a67a4fe453802b1e0c5d096d9cfea747
+        kubeagents.x-k8s.io/config-hash: 39a23800da8ded96b2d5f437c5d47c378f1cb83a66cb09c9715cfb8ed9bfa16b
         kubeagents.x-k8s.io/fluent-bit-config-hash: 50923ab88e1741b0729c37837bc1c3869161e3161402494a4ee64cda3a2cfab3
       creationTimestamp: null
       labels:
