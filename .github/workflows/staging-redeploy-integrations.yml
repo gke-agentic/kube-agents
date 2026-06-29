@@ -17,6 +17,7 @@ jobs:
     if: github.repository == 'gke-labs/kube-agents'
     outputs:
       litellm: ${{ steps.filter.outputs.litellm }}
+      github_minter: ${{ steps.filter.outputs.github_minter }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -28,6 +29,8 @@ jobs:
           filters: |
             litellm:
               - 'k8s-operator/config/integrations/litellm/**'
+            github_minter:
+              - 'k8s-operator/config/integrations/github/**'
 
   deploy-litellm:
     needs: detect-changes
@@ -93,5 +96,106 @@ jobs:
             kubectl get pods -n ${{ env.NAMESPACE }} -l app=litellm || true
             kubectl describe pods -n ${{ env.NAMESPACE }} -l app=litellm || true
             kubectl logs -n ${{ env.NAMESPACE }} -l app=litellm --all-containers --tail=50 || true
+            exit 1
+          fi
+
+  deploy-github-minter:
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.github_minter == 'true' }}
+    runs-on: ubuntu-latest
+    environment: staging
+    concurrency:
+      group: staging-redeploy-github-minter
+      cancel-in-progress: true
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
+      NAMESPACE: "kubeagents-system"
+      GH_ORG: ${{ vars.GH_ORG }}
+      GH_REPO: ${{ vars.GH_REPO }}
+      GH_APP_ID: ${{ vars.GH_APP_ID }}
+      KMS_KEYRING: ${{ vars.KMS_KEYRING }}
+      KMS_KEY: ${{ vars.KMS_KEY }}
+    steps:
+      - name: Verify Env Variables
+        shell: bash
+        run: |
+          for var in GCP_PROJECT_ID GCP_REGION GCP_WORKLOAD_IDENTITY_PROVIDER GCP_SERVICE_ACCOUNT GKE_CLUSTER_NAME GH_ORG GH_REPO GH_APP_ID KMS_KEYRING KMS_KEY; do
+            if [ -z "${!var}" ]; then
+              echo "::error::Required environment variable $var is not set."
+              exit 1
+            fi
+          done
+
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: "k8s-operator/go.mod"
+
+      - name: Authenticate to Google Cloud via WIF
+        uses: google-github-actions/auth@v3
+        with:
+          token_format: "access_token"
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_SERVICE_ACCOUNT }}
+
+      - name: Authenticate to GKE
+        uses: google-github-actions/get-gke-credentials@v3
+        with:
+          cluster_name: ${{ env.GKE_CLUSTER_NAME }}
+          location: ${{ env.GCP_REGION }}
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Deploy GitHub Token Minter Workload
+        run: |
+          # 1. Ensure Kubernetes Secret exists for App ID
+          kubectl create secret generic github-app-credentials \
+              --namespace="$NAMESPACE" \
+              --from-literal=app-id="${GH_APP_ID}" \
+              --dry-run=client -o yaml | kubectl apply -f -
+              
+          # 2. Setup environment variables for envsubst deployment
+          export PROJECT_ID="${GCP_PROJECT_ID}"
+          export REGION="${GCP_REGION}"
+          export CLUSTER_NAME="${GKE_CLUSTER_NAME}"
+          export GITHUB_ORG="${GH_ORG}"
+          export GITHUB_REPO="${GH_REPO}"
+          
+          export GITHUB_MINTER_GSA_NAME="kubeagents-github-minter-gsa"
+          export GITHUB_MINTER_KSA_NAME="kubeagents-github-minter"
+          export PLATFORM_AGENT_GSA_NAME="kubeagents-platform-gsa"
+          export OPERATOR_AGENT_GSA_NAME="kubeagents-operator-gsa"
+          export DEVTEAM_AGENT_GSA_NAME="kubeagents-devteam-gsa"
+          
+          # 3. Fetch active KMS Key version (assuming it was uploaded locally by Admin)
+          echo "Resolving active KMS key version number..."
+          ACTIVE_VERSION=$(gcloud kms keys versions list --key="${KMS_KEY}" --keyring="${KMS_KEYRING}" --location="${GCP_REGION}" --project="${GCP_PROJECT_ID}" --filter="state=ENABLED" --format="value(name)" 2>/dev/null | awk -F'/' '{print $NF}' | sort -n | tail -n 1)
+          
+          if [ -n "$ACTIVE_VERSION" ]; then
+            export KMS_KEY_VERSION="${ACTIVE_VERSION}"
+          else
+            echo "::warning::No active (ENABLED) version found for KMS Key '${KMS_KEY}'. Defaulting to '1'. The Token Minter deployment will fail its readiness probes until a key is imported by an Administrator."
+            export KMS_KEY_VERSION="1"
+          fi
+          
+          # 4. Deploy using kustomize and envsubst
+          cd k8s-operator
+          make deploy-github
+
+      - name: Verify GitHub Token Minter Rollout
+        run: |
+          echo "Waiting for rollout of GitHub Token Minter..."
+          if ! kubectl rollout status deployment/github-token-minter -n ${{ env.NAMESPACE }} --timeout=180s; then
+            echo "::error::Rollout failed! Printing debug logs..."
+            kubectl describe deployment/github-token-minter -n ${{ env.NAMESPACE }} || true
+            kubectl get pods -n ${{ env.NAMESPACE }} -l app=github-token-minter || true
+            kubectl describe pods -n ${{ env.NAMESPACE }} -l app=github-token-minter || true
+            kubectl logs -n ${{ env.NAMESPACE }} -l app=github-token-minter --all-containers --tail=50 || true
             exit 1
           fi
