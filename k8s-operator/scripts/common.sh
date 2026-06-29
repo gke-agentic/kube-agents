@@ -166,7 +166,7 @@ ensure_teardown_state() {
     echo -e "  ${C_YELLOW}⚠ State file ${VARS_FILE} not found. Prompting for target values...${C_RESET}"
     local ACTIVE_PROJECT
     ACTIVE_PROJECT="$(gcloud config get-value project 2>/dev/null || echo "")"
-    if [ "${DRY_RUN:-0}" -eq 1 ] || [ "${NO_CONFIRM:-0}" -eq 1 ] || [ "${CI:-false}" = "true" ]; then
+    if [ "${DRY_RUN:-0}" -eq 1 ]; then
       export PROJECT_ID="${ACTIVE_PROJECT:-dummy-project}"
       export REGION="us-east4"
       export CLUSTER_NAME="platform-agent-host"
