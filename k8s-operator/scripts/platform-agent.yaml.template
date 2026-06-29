@@ -16,7 +16,7 @@ spec:
         key: API_SERVER_KEY
   deployment:
     image: "${AGENT_IMAGE}"
-    tag: "latest"
+    tag: "${AGENT_TAG}"
     imagePullPolicy: Always
   security:
     serviceAccountName: "${KSA_NAME}"
