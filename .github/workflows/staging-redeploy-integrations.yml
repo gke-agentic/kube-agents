@@ -1,14 +1,9 @@
-name: Staging Redeploy Integrations
+name: Dharb Dev Redeploy Integrations
 
 on:
   push:
     branches:
-      - main
-    paths:
-      - "k8s-operator/config/integrations/**"
-      - "k8s-operator/scripts/provision_07_deploy_litellm.sh"
-      - "k8s-operator/scripts/provision_08_deploy_github_minter.sh"
-      - "k8s-operator/Makefile"
+      - feature/staging-redeploy-integrations-dev-testing
 
 permissions:
   contents: read
@@ -17,7 +12,6 @@ permissions:
 jobs:
   detect-changes:
     runs-on: ubuntu-latest
-    if: github.repository == 'gke-labs/kube-agents'
     outputs:
       litellm: ${{ steps.filter.outputs.litellm }}
       github: ${{ steps.filter.outputs.github }}
@@ -31,10 +25,12 @@ jobs:
         with:
           filters: |
             litellm:
+              - '.github/workflows/staging-redeploy-integrations.yml'
               - 'k8s-operator/config/integrations/litellm/**'
               - 'k8s-operator/scripts/provision_07_deploy_litellm.sh'
               - 'k8s-operator/Makefile'
             github:
+              - '.github/workflows/staging-redeploy-integrations.yml'
               - 'k8s-operator/config/integrations/github/**'
               - 'k8s-operator/scripts/provision_08_deploy_github_minter.sh'
               - 'k8s-operator/Makefile'
@@ -44,9 +40,9 @@ jobs:
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.litellm == 'true' }}
     runs-on: ubuntu-latest
-    environment: staging
+    environment: dharb-dev
     concurrency:
-      group: staging-redeploy-litellm
+      group: dharb-dev-redeploy-litellm
       cancel-in-progress: true
     env:
       GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
@@ -119,7 +115,7 @@ jobs:
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.github == 'true' }}
     runs-on: ubuntu-latest
-    environment: staging
+    environment: dharb-dev
     outputs:
       configured: ${{ steps.check_vars.outputs.configured }}
     steps:
@@ -158,9 +154,9 @@ jobs:
     needs: [detect-changes, check-github-config]
     if: ${{ needs.detect-changes.outputs.github == 'true' && needs.check-github-config.outputs.configured == 'true' }}
     runs-on: ubuntu-latest
-    environment: staging
+    environment: dharb-dev
     concurrency:
-      group: staging-redeploy-github
+      group: dharb-dev-redeploy-github
       cancel-in-progress: true
     env:
       GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
