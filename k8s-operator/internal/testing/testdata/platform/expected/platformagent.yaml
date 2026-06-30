@@ -89,12 +89,48 @@ status: {}
 apiVersion: v1
 data:
   config.yaml: |
+    approvals:
+      cron_mode: approve
+    mcp_servers:
+      agent_common:
+        args:
+        - /opt/data/scripts/agent_common_server.py
+        command: /opt/hermes/.venv/bin/python3
+      developer_knowledge:
+        args:
+        - /opt/mcp-remote/dist/proxy.js
+        - https://developerknowledge.googleapis.com/mcp
+        command: node
+      platform_control:
+        args:
+        - /opt/data/scripts/platform_mcp_server.py
+        command: /opt/hermes/.venv/bin/python3
+        connect_timeout: 120
+        env:
+          API_SERVER_KEY: ${API_SERVER_KEY}
+          GOOGLE_CHAT_PROJECT_ID: ${GOOGLE_CHAT_PROJECT_ID}
+          GOOGLE_CHAT_SUBSCRIPTION_NAME: ${GOOGLE_CHAT_SUBSCRIPTION_NAME}
+          HERMES_HOME: ${HERMES_HOME}
+          KUBERNETES_SERVICE_HOST: ${KUBERNETES_SERVICE_HOST}
+          KUBERNETES_SERVICE_PORT: ${KUBERNETES_SERVICE_PORT}
+        timeout: 300
     model:
       api_key: none
       base_url: http://litellm.kubeagents-system.svc.cluster.local/v1
       default: model-default
       model: model-default
       provider: custom
+    platform_toolsets:
+      api_server:
+      - hermes-api-server
+      - mcp-agent_common
+      - mcp-platform_control
+      - mcp-developer_knowledge
+      cli:
+      - hermes-cli
+      - mcp-agent_common
+      - mcp-platform_control
+      - mcp-developer_knowledge
     platforms:
       google_chat:
         enabled: true
@@ -104,6 +140,8 @@ data:
     terminal:
       backend: local
       cwd: /opt/data
+    web:
+      backend: ddgs
 kind: ConfigMap
 metadata:
   creationTimestamp: null
@@ -217,7 +255,7 @@ spec:
   template:
     metadata:
       annotations:
-        kubeagents.x-k8s.io/config-hash: 029e3e097c8c21d4a9d86e6a599b34813165b4f0113cde02eff297e3162494a3
+        kubeagents.x-k8s.io/config-hash: 52136be633904adc957be02afbe4891ae909e2109889fe43956a7947485eb5d8
         kubeagents.x-k8s.io/fluent-bit-config-hash: 50923ab88e1741b0729c37837bc1c3869161e3161402494a4ee64cda3a2cfab3
         kubeagents.x-k8s.io/settings-config-hash: 9db5b5cb5fb8ec46b1a0572ef34ef27e0ed44dc1f787a4a76bdd75f43934c8b9
       creationTimestamp: null
@@ -236,6 +274,10 @@ spec:
               value: "0"
             - name: OTEL_SERVICE_NAME
               value: platformagent-gateway
+            - name: API_SERVER_ENABLED
+              value: "true"
+            - name: API_SERVER_HOST
+              value: 0.0.0.0
             - name: GKE_CLUSTER_NAME
               value: cluster-a
             - name: GKE_LOCATION
