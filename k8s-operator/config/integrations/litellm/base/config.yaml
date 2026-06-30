@@ -1,6 +1,8 @@
 model_list:
   - model_name: model-default
     litellm_params:
-      model: ${MODEL_PROVIDER}/${MODEL_DEFAULT_NAME}
+      model: gemini/${MODEL_DEFAULT_NAME}
+      custom_llm_provider: gemini
+      api_base: https://generativelanguage.googleapis.com/v1beta
 litellm_settings:
   callbacks: ["otel", "prometheus"]

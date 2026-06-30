@@ -86,6 +86,9 @@ func renderDevTeamConfigYAML(agent *agentv1alpha1.DevTeamAgent) string {
 		Plugins struct {
 			Enabled []string `json:"enabled"`
 		} `json:"plugins"`
+		Display struct {
+			Platforms map[string]map[string]any `json:"platforms,omitempty"`
+		} `json:"display,omitempty"`
 	}{}
 
 	cfg.Model.Provider = "custom"
@@ -115,6 +118,14 @@ func renderDevTeamConfigYAML(agent *agentv1alpha1.DevTeamAgent) string {
 	cfg.Agent.Progress.Mode = "in_place"
 	cfg.Agent.Progress.ClampTools = []string{"read_file", "patch", "view_file", "grep_search", "list_dir"}
 	cfg.Plugins.Enabled = []string{"hermes_otel"}
+	cfg.Display.Platforms = map[string]map[string]any{
+		"google_chat": {
+			"tool_progress":              "off",
+			"interim_assistant_messages": false,
+			"long_running_notifications": false,
+			"busy_ack_detail":            false,
+		},
+	}
 
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
