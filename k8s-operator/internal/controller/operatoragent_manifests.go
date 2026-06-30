@@ -71,6 +71,9 @@ func renderOperatorConfigYAML(agent *agentv1alpha1.OperatorAgent) string {
 		Plugins struct {
 			Enabled []string `json:"enabled"`
 		} `json:"plugins"`
+		Display struct {
+			Platforms map[string]map[string]any `json:"platforms,omitempty"`
+		} `json:"display,omitempty"`
 	}{}
 
 	cfg.Model.Provider = "custom"
@@ -81,6 +84,27 @@ func renderOperatorConfigYAML(agent *agentv1alpha1.OperatorAgent) string {
 	cfg.Terminal.Backend = "local"
 	cfg.Terminal.Cwd = cwd
 	cfg.Plugins.Enabled = []string{"hermes_otel"}
+
+	pluginsDebug := false
+	if agent.Spec.Harness != nil && agent.Spec.Harness.Hermes != nil && agent.Spec.Harness.Hermes.PluginsDebug != nil {
+		pluginsDebug = *agent.Spec.Harness.Hermes.PluginsDebug
+	}
+
+	toolProgress := "new"
+	verbose := false
+	if pluginsDebug {
+		toolProgress = "all"
+		verbose = true
+	}
+
+	cfg.Display.Platforms = map[string]map[string]any{
+		"google_chat": {
+			"tool_progress":              toolProgress,
+			"interim_assistant_messages": verbose,
+			"long_running_notifications": verbose,
+			"busy_ack_detail":            verbose,
+		},
+	}
 
 	data, err := yaml.Marshal(cfg)
 	if err != nil {

@@ -104,6 +104,9 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 		Plugins struct {
 			Enabled []string `json:"enabled"`
 		} `json:"plugins"`
+		Display struct {
+			Platforms map[string]map[string]any `json:"platforms,omitempty"`
+		} `json:"display,omitempty"`
 	}{}
 
 	cfg.Model.Provider = "custom"
@@ -114,6 +117,27 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 	cfg.Terminal.Backend = "local"
 	cfg.Terminal.Cwd = cwd
 	cfg.Plugins.Enabled = []string{"hermes_otel"}
+
+	pluginsDebug := false
+	if agent.Spec.Harness != nil && agent.Spec.Harness.Hermes != nil && agent.Spec.Harness.Hermes.PluginsDebug != nil {
+		pluginsDebug = *agent.Spec.Harness.Hermes.PluginsDebug
+	}
+
+	toolProgress := "new"
+	verbose := false
+	if pluginsDebug {
+		toolProgress = "all"
+		verbose = true
+	}
+
+	cfg.Display.Platforms = map[string]map[string]any{
+		"google_chat": {
+			"tool_progress":              toolProgress,
+			"interim_assistant_messages": verbose,
+			"long_running_notifications": verbose,
+			"busy_ack_detail":            verbose,
+		},
+	}
 
 	if agent.Spec.Integration != nil && agent.Spec.Integration.GoogleChat != nil {
 		gchat := agent.Spec.Integration.GoogleChat
@@ -489,6 +513,11 @@ func buildPlatformExplorerRole(agent *agentv1alpha1.PlatformAgent) *rbacv1.Clust
 			{
 				APIGroups: []string{""},
 				Resources: []string{"nodes", "pods", "namespaces"},
+				Verbs:     []string{"get", "list"},
+			},
+			{
+				APIGroups: []string{"apiextensions.k8s.io"},
+				Resources: []string{"customresourcedefinitions"},
 				Verbs:     []string{"get", "list"},
 			},
 		},
