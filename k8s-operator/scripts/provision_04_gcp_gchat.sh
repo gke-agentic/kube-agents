@@ -22,6 +22,34 @@ check_prereqs "gcloud"
 print_step "Setting up Configuration State for GChat Setup"
 load_state
 
+if [ "${NON_INTERACTIVE:-0}" -eq 1 ]; then
+  export GOOGLE_CHAT_ENABLED="${GOOGLE_CHAT_ENABLED:-false}"
+else
+  current_gc_val="${GOOGLE_CHAT_ENABLED:-false}"
+  default_gc_prompt="y/N"
+  if [ "$current_gc_val" = "true" ]; then
+    default_gc_prompt="Y/n"
+  fi
+  echo -ne "  ${C_CYAN}Do you want to enable Google Chat integration? (${default_gc_prompt}): ${C_RESET}"
+  read -r REPLY_GC
+  if [ -z "$REPLY_GC" ]; then
+    export GOOGLE_CHAT_ENABLED="$current_gc_val"
+  elif [[ "$REPLY_GC" =~ ^[Yy]$ ]]; then
+    export GOOGLE_CHAT_ENABLED="true"
+  else
+    export GOOGLE_CHAT_ENABLED="false"
+  fi
+fi
+save_var "GOOGLE_CHAT_ENABLED" "${GOOGLE_CHAT_ENABLED}"
+
+if [ "${GOOGLE_CHAT_ENABLED}" != "true" ]; then
+  print_info "Google Chat integration is disabled. Skipping Google Chat Pub/Sub setup."
+  save_var "CHAT_TOPIC_NAME" ""
+  save_var "CHAT_SUB_NAME" ""
+  save_var "ALLOWED_USERS" ""
+  exit 0
+fi
+
 ACTIVE_PROJECT="$(gcloud config get-value project 2>/dev/null || echo "")"
 DEFAULT_PROJECT_ID="${ACTIVE_PROJECT:-$(whoami 2>/dev/null || echo "user")}"
 
@@ -42,8 +70,7 @@ if [ -z "${PROJECT_NUMBER:-}" ]; then
     print_error "Project number is required to configure Google Chat integration. Exiting."
     exit 1
   fi
-  export PROJECT_NUMBER="$PROJECT_NUMBER_VAL"
-  printf "export PROJECT_NUMBER=%q\n" "${PROJECT_NUMBER}" >> "$VARS_FILE"
+  save_var "PROJECT_NUMBER" "${PROJECT_NUMBER_VAL}"
   print_success "Project Number resolved: $PROJECT_NUMBER"
 fi
 

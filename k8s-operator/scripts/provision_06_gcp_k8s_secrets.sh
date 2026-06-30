@@ -85,8 +85,7 @@ fi
 
 if [ -z "${API_SERVER_KEY:-}" ]; then
   print_info "Generating a secure random API_SERVER_KEY..."
-  export API_SERVER_KEY=$(openssl rand -hex 16)
-  printf "export API_SERVER_KEY=%q\n" "${API_SERVER_KEY}" >> "$VARS_FILE"
+  save_var "API_SERVER_KEY" "$(openssl rand -hex 16)"
 fi
 
 # ─── Step Implementations ─────────────────────────────────────────────────────
@@ -123,6 +122,11 @@ execute_k8s_secrets() {
       --from-literal=API_SERVER_KEY="$API_SERVER_KEY" \
       --from-literal=OPENAI_API_KEY="$OPENAI_API_KEY" \
       --from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+      --from-literal=SLACK_BOT_TOKEN="${SLACK_BOT_TOKEN:-}" \
+      --from-literal=SLACK_APP_TOKEN="${SLACK_APP_TOKEN:-}" \
+      --from-literal=SLACK_ALLOWED_USERS="${SLACK_ALLOWED_USERS:-}" \
+      --from-literal=SLACK_HOME_CHANNEL="${SLACK_HOME_CHANNEL:-}" \
+      --from-literal=SLACK_HOME_CHANNEL_NAME="${SLACK_HOME_CHANNEL_NAME:-}" \
       --dry-run=client -o yaml | kubectl apply -f -
 
   if [ -n "${GITHUB_APP_ID}" ]; then
