@@ -99,8 +99,7 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 		MCPServers       map[string]any      `json:"mcp_servers,omitempty"`
 		PlatformToolsets map[string][]string `json:"platform_toolsets,omitempty"`
 		Approvals        struct {
-			CronMode        string `json:"cron_mode,omitempty"`
-			SilentOnSuccess bool   `json:"silent_on_success,omitempty"`
+			CronMode string `json:"cron_mode,omitempty"`
 		} `json:"approvals,omitempty"`
 		Web struct {
 			Backend string `json:"backend,omitempty"`
@@ -165,7 +164,6 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 
 	// Execution & Display UX configuration
 	cfg.Approvals.CronMode = "approve"
-	cfg.Approvals.SilentOnSuccess = false
 	cfg.Web.Backend = "ddgs"
 	cfg.Agent.Progress.Mode = "in_place"
 	cfg.Plugins.Enabled = []string{"hermes_otel"}
