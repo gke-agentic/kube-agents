@@ -71,27 +71,16 @@ func renderOperatorConfigYAML(agent *agentv1alpha1.OperatorAgent) string {
 		MCPServers       map[string]any      `json:"mcp_servers,omitempty"`
 		PlatformToolsets map[string][]string `json:"platform_toolsets,omitempty"`
 		Approvals        struct {
-			CronMode        string `json:"cron_mode,omitempty"`
-			SilentOnSuccess bool   `json:"silent_on_success,omitempty"`
+			CronMode string `json:"cron_mode,omitempty"`
 		} `json:"approvals,omitempty"`
 		Web struct {
 			Backend string `json:"backend,omitempty"`
 		} `json:"web,omitempty"`
-		Agent struct {
-			Progress struct {
-				Mode string `json:"mode,omitempty"`
-			} `json:"progress,omitempty"`
-		} `json:"agent,omitempty"`
 		Plugins struct {
 			Enabled []string `json:"enabled"`
 		} `json:"plugins"`
-		Display struct {
-			MemoryNotifications string                    `json:"memory_notifications,omitempty"`
-			Platforms           map[string]map[string]any `json:"platforms,omitempty"`
-		} `json:"display,omitempty"`
 	}{}
 
-	// Model & Terminal configuration
 	cfg.Model.Provider = "custom"
 	cfg.Model.Default = "model-default"
 	cfg.Model.Model = "model-default"
@@ -99,8 +88,6 @@ func renderOperatorConfigYAML(agent *agentv1alpha1.OperatorAgent) string {
 	cfg.Model.APIKey = "none"
 	cfg.Terminal.Backend = "local"
 	cfg.Terminal.Cwd = cwd
-
-	// MCP Servers & Toolsets configuration
 	cfg.MCPServers = map[string]any{
 		"agent_common": map[string]any{
 			"command": "/opt/hermes/.venv/bin/python3",
@@ -115,41 +102,9 @@ func renderOperatorConfigYAML(agent *agentv1alpha1.OperatorAgent) string {
 		"cli":        {"hermes-cli", "mcp-agent_common", "mcp-developer_knowledge"},
 		"api_server": {"hermes-api-server", "mcp-agent_common", "mcp-developer_knowledge"},
 	}
-
-	// Mode resolution: "default" (quiet mode) vs "debug" (full verbosity)
-	mode := "default"
-	if agent.Spec.Display != nil && agent.Spec.Display.Mode != "" {
-		mode = strings.ToLower(agent.Spec.Display.Mode)
-	}
-
-	toolProgress := "off"
-	memoryNotifications := "off"
-	silentOnSuccess := false
-	interimMessages := false
-
-	if mode == "debug" {
-		toolProgress = "all"
-		memoryNotifications = "verbose"
-		silentOnSuccess = false
-		interimMessages = true
-	}
-
-	// Execution & Display UX configuration
 	cfg.Approvals.CronMode = "approve"
-	cfg.Approvals.SilentOnSuccess = silentOnSuccess
 	cfg.Web.Backend = "ddgs"
-	cfg.Agent.Progress.Mode = "in_place"
 	cfg.Plugins.Enabled = []string{"hermes_otel"}
-	cfg.Display.MemoryNotifications = memoryNotifications
-	cfg.Display.Platforms = map[string]map[string]any{
-		"google_chat": {
-			"tool_progress":              toolProgress,
-			"memory_notifications":       memoryNotifications,
-			"interim_assistant_messages": interimMessages,
-			"long_running_notifications": interimMessages,
-			"busy_ack_detail":            interimMessages,
-		},
-	}
 
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
