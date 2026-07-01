@@ -177,29 +177,7 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 		if gchat.Enabled != nil {
 			cfg.Platforms.GoogleChat.Enabled = *gchat.Enabled
 		}
-
-		mode := "default"
-		if gchat.Mode != "" {
-			mode = strings.ToLower(gchat.Mode)
-		}
-
-		toolProgress := "off"
-		memoryNotifications := "off"
-		interimMessages := false
-
-		if mode == "debug" {
-			toolProgress = "all"
-			memoryNotifications = "verbose"
-			interimMessages = true
-		}
-
-		cfg.Display.Platforms["google_chat"] = map[string]any{
-			"tool_progress":              toolProgress,
-			"memory_notifications":       memoryNotifications,
-			"interim_assistant_messages": interimMessages,
-			"long_running_notifications": interimMessages,
-			"busy_ack_detail":            interimMessages,
-		}
+		cfg.Display.Platforms["google_chat"] = resolveGoogleChatDisplayConfig(gchat.Mode)
 	}
 
 	data, err := yaml.Marshal(cfg)
@@ -207,6 +185,32 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 		return ""
 	}
 	return string(data)
+}
+
+// resolveGoogleChatDisplayConfig resolves verbosity settings for Google Chat based on mode ("default" or "debug").
+func resolveGoogleChatDisplayConfig(mode string) map[string]any {
+	resolvedMode := "default"
+	if mode != "" {
+		resolvedMode = strings.ToLower(mode)
+	}
+
+	toolProgress := "off"
+	memoryNotifications := "off"
+	interimMessages := false
+
+	if resolvedMode == "debug" {
+		toolProgress = "all"
+		memoryNotifications = "verbose"
+		interimMessages = true
+	}
+
+	return map[string]any{
+		"tool_progress":              toolProgress,
+		"memory_notifications":       memoryNotifications,
+		"interim_assistant_messages": interimMessages,
+		"long_running_notifications": interimMessages,
+		"busy_ack_detail":            interimMessages,
+	}
 }
 
 // buildPVC generates the PVC manifest for agent data persistence
