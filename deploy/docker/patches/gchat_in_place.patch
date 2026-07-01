@@ -26,7 +26,10 @@
 +        per (chat_id, status_key). If a message ID exists, updates the message
 +        in-place using edit_message. If edit_message fails, falls back to a fresh send.
 +        """
-+        key = (str(chat_id), str(status_key))
++        thread_id = ""
++        if metadata:
++            thread_id = metadata.get("thread_name") or metadata.get("thread_id") or ""
++        key = (str(chat_id), str(thread_id), str(status_key))
 +        cached_id = self._status_message_ids.get(key)
 +        if cached_id is not None:
 +            # Edit the existing status message
