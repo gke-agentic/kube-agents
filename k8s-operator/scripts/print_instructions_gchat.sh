@@ -10,6 +10,10 @@ source "${SCRIPT_DIR}/common.sh" "$@"
 load_state
 
 if [ "${GOOGLE_CHAT_ENABLED:-false}" = "true" ]; then
+  if [ -z "${CHAT_TOPIC_NAME:-}" ] || [ -z "${CHAT_SUB_NAME:-}" ]; then
+    print_warning "Google Chat integration is enabled but CHAT_TOPIC_NAME or CHAT_SUB_NAME is missing. It may not work properly."
+  fi
+
   echo -e "${C_CYAN}${C_BOLD}--- [Google Chat Integration Instructions] ---${C_RESET}"
   echo -e "[ ] 1. Configure GChat bot connection in GCP Console:"
   echo -e "       ${C_WHITE}https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat?project=${PROJECT_ID}${C_RESET}"

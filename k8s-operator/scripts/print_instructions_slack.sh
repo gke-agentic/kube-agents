@@ -10,6 +10,13 @@ source "${SCRIPT_DIR}/common.sh" "$@"
 load_state
 
 if [ "${SLACK_ENABLED:-false}" = "true" ]; then
+  if [ -z "${SLACK_BOT_TOKEN:-}" ]; then
+    print_warning "SLACK_BOT_TOKEN is empty. Slack integration may not work properly until provided."
+  fi
+  if [ -z "${SLACK_APP_TOKEN:-}" ]; then
+    print_warning "SLACK_APP_TOKEN is empty. Slack integration may not work properly until provided."
+  fi
+
   echo -e "${C_CYAN}${C_BOLD}--- [Slack Integration Instructions] ---${C_RESET}"
   echo -e "[ ] 1. Verify Slack Bot configuration:"
   echo -e "       - Ensure Socket Mode is ${C_GREEN}enabled${C_RESET} in Slack App Console."

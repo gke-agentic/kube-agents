@@ -124,9 +124,6 @@ execute_k8s_secrets() {
       --from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
       --from-literal=SLACK_BOT_TOKEN="${SLACK_BOT_TOKEN:-}" \
       --from-literal=SLACK_APP_TOKEN="${SLACK_APP_TOKEN:-}" \
-      --from-literal=SLACK_ALLOWED_USERS="${SLACK_ALLOWED_USERS:-}" \
-      --from-literal=SLACK_HOME_CHANNEL="${SLACK_HOME_CHANNEL:-}" \
-      --from-literal=SLACK_HOME_CHANNEL_NAME="${SLACK_HOME_CHANNEL_NAME:-}" \
       --dry-run=client -o yaml | kubectl apply -f -
 
   if [ -n "${GITHUB_APP_ID}" ]; then

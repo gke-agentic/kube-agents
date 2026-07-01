@@ -80,3 +80,4 @@ init_var "SLACK_HOME_CHANNEL" "" "Enter Slack Home Channel ID (optional)."
 init_var "SLACK_HOME_CHANNEL_NAME" "" "Enter Slack Home Channel Name (optional)."
 
 echo -e "\n${C_MAGENTA}${C_BOLD}>>>  Slack Integration Configuration Initialized!  <<<${C_RESET}"
+"${SCRIPT_DIR}/print_instructions_slack.sh" "$@"
