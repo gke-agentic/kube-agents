@@ -52,3 +52,10 @@ agent:
       - "view_file"
       - "grep_search"
       - "list_dir"
+
+display:
+  memory_notifications: "off"
+
+self_improvement:
+  enabled: false
+
