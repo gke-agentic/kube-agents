@@ -163,45 +163,42 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 		"api_server": {"hermes-api-server", "mcp-agent_common", "mcp-platform_control", "mcp-developer_knowledge"},
 	}
 
-	// Mode resolution: "default" (quiet mode) vs "debug" (full verbosity)
-	mode := "default"
-	if agent.Spec.Display != nil && agent.Spec.Display.Mode != "" {
-		mode = strings.ToLower(agent.Spec.Display.Mode)
-	}
-
-	toolProgress := "off"
-	memoryNotifications := "off"
-	silentOnSuccess := false
-	interimMessages := false
-
-	if mode == "debug" {
-		toolProgress = "all"
-		memoryNotifications = "verbose"
-		silentOnSuccess = false
-		interimMessages = true
-	}
-
 	// Execution & Display UX configuration
 	cfg.Approvals.CronMode = "approve"
-	cfg.Approvals.SilentOnSuccess = silentOnSuccess
+	cfg.Approvals.SilentOnSuccess = false
 	cfg.Web.Backend = "ddgs"
 	cfg.Agent.Progress.Mode = "in_place"
 	cfg.Plugins.Enabled = []string{"hermes_otel"}
-	cfg.Display.MemoryNotifications = memoryNotifications
-	cfg.Display.Platforms = map[string]map[string]any{
-		"google_chat": {
-			"tool_progress":              toolProgress,
-			"memory_notifications":       memoryNotifications,
-			"interim_assistant_messages": interimMessages,
-			"long_running_notifications": interimMessages,
-			"busy_ack_detail":            interimMessages,
-		},
-	}
+	cfg.Display.MemoryNotifications = "off"
+	cfg.Display.Platforms = map[string]map[string]any{}
 
 	if agent.Spec.Integration != nil && agent.Spec.Integration.GoogleChat != nil {
 		gchat := agent.Spec.Integration.GoogleChat
 		if gchat.Enabled != nil {
 			cfg.Platforms.GoogleChat.Enabled = *gchat.Enabled
+		}
+
+		mode := "default"
+		if gchat.Mode != "" {
+			mode = strings.ToLower(gchat.Mode)
+		}
+
+		toolProgress := "off"
+		memoryNotifications := "off"
+		interimMessages := false
+
+		if mode == "debug" {
+			toolProgress = "all"
+			memoryNotifications = "verbose"
+			interimMessages = true
+		}
+
+		cfg.Display.Platforms["google_chat"] = map[string]any{
+			"tool_progress":              toolProgress,
+			"memory_notifications":       memoryNotifications,
+			"interim_assistant_messages": interimMessages,
+			"long_running_notifications": interimMessages,
+			"busy_ack_detail":            interimMessages,
 		}
 	}
 

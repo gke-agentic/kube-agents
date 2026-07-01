@@ -92,6 +92,13 @@ func TestDisplayMode(t *testing.T) {
 	// Test Default (Quiet) Mode
 	defaultAgent := &agentv1alpha1.PlatformAgent{
 		ObjectMeta: metav1.ObjectMeta{Name: "quiet-agent", Namespace: "ns"},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
+				GoogleChat: &agentv1alpha1.GoogleChatSpec{
+					Mode: "default",
+				},
+			},
+		},
 	}
 	defaultConfig := buildConfigMap(defaultAgent).Data["config.yaml"]
 	if !strings.Contains(defaultConfig, "tool_progress: \"off\"") || !strings.Contains(defaultConfig, "memory_notifications: \"off\"") {
@@ -102,8 +109,8 @@ func TestDisplayMode(t *testing.T) {
 	debugAgent := &agentv1alpha1.PlatformAgent{
 		ObjectMeta: metav1.ObjectMeta{Name: "debug-agent", Namespace: "ns"},
 		Spec: agentv1alpha1.PlatformAgentSpec{
-			AgentSpec: agentv1alpha1.AgentSpec{
-				Display: &agentv1alpha1.DisplaySpec{
+			Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
+				GoogleChat: &agentv1alpha1.GoogleChatSpec{
 					Mode: "debug",
 				},
 			},

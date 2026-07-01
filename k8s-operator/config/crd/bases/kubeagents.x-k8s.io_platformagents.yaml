@@ -203,17 +203,7 @@ spec:
                       description: Tag specifies the container image tag.
                       type: string
                   type: object
-                display:
-                  description: Display configures chat display and notification verbosity.
-                  properties:
-                    mode:
-                      default: default
-                      description: Mode controls output verbosity in chat ("default" or "debug").
-                      enum:
-                        - default
-                        - debug
-                      type: string
-                  type: object
+
                 harness:
                   description:
                     Harness configures the core execution environment and
@@ -313,6 +303,13 @@ spec:
                           type: boolean
                         homeChannel:
                           description: HomeChannel is the home channel Chat address.
+                          type: string
+                        mode:
+                          default: default
+                          description: Mode controls output verbosity in Google Chat ("default" or "debug").
+                          enum:
+                            - default
+                            - debug
                           type: string
                         projectId:
                           description: ProjectID is the target GCP Project ID for Pub/Sub.
