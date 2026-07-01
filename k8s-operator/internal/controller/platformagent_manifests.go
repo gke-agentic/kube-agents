@@ -174,7 +174,7 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 
 	toolProgress := "off"
 	memoryNotifications := "off"
-	silentOnSuccess := true
+	silentOnSuccess := false
 	selfImprovement := false
 	interimMessages := false
 

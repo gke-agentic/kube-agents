@@ -127,7 +127,7 @@ func renderDevTeamConfigYAML(agent *agentv1alpha1.DevTeamAgent) string {
 
 	toolProgress := "off"
 	memoryNotifications := "off"
-	silentOnSuccess := true
+	silentOnSuccess := false
 	selfImprovement := false
 	interimMessages := false
 

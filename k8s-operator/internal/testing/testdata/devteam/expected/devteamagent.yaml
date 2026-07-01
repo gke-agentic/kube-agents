@@ -99,16 +99,9 @@ data:
   config.yaml: |
     agent:
       progress:
-        clamp_tools:
-        - read_file
-        - patch
-        - view_file
-        - grep_search
-        - list_dir
         mode: in_place
     approvals:
       cron_mode: approve
-      silent_on_success: true
     display:
       memory_notifications: "off"
       platforms:
@@ -117,7 +110,7 @@ data:
           interim_assistant_messages: false
           long_running_notifications: false
           memory_notifications: "off"
-          tool_progress: new
+          tool_progress: "off"
     mcp_servers:
       agent_common:
         args:
@@ -248,7 +241,7 @@ spec:
   template:
     metadata:
       annotations:
-        kubeagents.x-k8s.io/config-hash: bd0ece9b2d3ba0de3b467df0c73dd7d47b76f0bdbd6dd0b0dc7db388cb3bb8c5
+        kubeagents.x-k8s.io/config-hash: 391ff1d43eaba4f121eca34b3f5452ea7c04bb5bfa75862873eb101faa790231
         kubeagents.x-k8s.io/fluent-bit-config-hash: 50923ab88e1741b0729c37837bc1c3869161e3161402494a4ee64cda3a2cfab3
       creationTimestamp: null
       labels:
