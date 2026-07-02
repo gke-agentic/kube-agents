@@ -114,7 +114,9 @@ load_state() {
     echo "# SRE Sourced Variables for GKE & GCP Setup" > "$VARS_FILE"
   fi
   source "$VARS_FILE"
-  export NAMESPACE="kubeagents-system"
+  # Allows overriding the target deployment namespace (defaults to 'kubeagents-system').
+  # Used to achieve namespace isolation for temporary spikes (e.g. kube-agents-spike).
+  export NAMESPACE="${NAMESPACE:-kubeagents-system}"
   export PLATFORM_AGENT_KSA_NAME="kubeagents-platform-agent"
   export PLATFORM_AGENT_GSA_NAME="kubeagents-platform-gsa"
   export OPERATOR_AGENT_KSA_NAME="kubeagents-operator-agent"
@@ -132,7 +134,7 @@ ensure_teardown_state() {
     source "$VARS_FILE"
     export GCP_ARTIFACT_REGISTRY_REPO_NAME="${GCP_ARTIFACT_REGISTRY_REPO_NAME:-${REPO_NAME:-kube-agents}}"
     export DEV_ARTIFACT_REGISTRY_CREATED="${DEV_ARTIFACT_REGISTRY_CREATED:-false}"
-    export NAMESPACE="kubeagents-system"
+    export NAMESPACE="${NAMESPACE:-kubeagents-system}"
     export PLATFORM_AGENT_KSA_NAME="kubeagents-platform-agent"
     export PLATFORM_AGENT_GSA_NAME="kubeagents-platform-gsa"
     export OPERATOR_AGENT_KSA_NAME="kubeagents-operator-agent"
@@ -169,7 +171,7 @@ ensure_teardown_state() {
       read -r INPUT_CLUSTER_NAME
       export CLUSTER_NAME="${INPUT_CLUSTER_NAME:-$CLUSTER_NAME}"
     fi
-    export NAMESPACE="kubeagents-system"
+    export NAMESPACE="${NAMESPACE:-kubeagents-system}"
     export GCP_ARTIFACT_REGISTRY_REPO_NAME="${GCP_ARTIFACT_REGISTRY_REPO_NAME:-${REPO_NAME:-kube-agents}}"
     export DEV_ARTIFACT_REGISTRY_CREATED="${DEV_ARTIFACT_REGISTRY_CREATED:-false}"
     export CHAT_TOPIC_NAME="${CHAT_TOPIC_NAME:-platform-agent-chat-events}"

@@ -5,3 +5,5 @@ bin/
 .env.*
 !*.env.example
 k8s-operator/cover.out
+agentharness.yaml
+vars.sh

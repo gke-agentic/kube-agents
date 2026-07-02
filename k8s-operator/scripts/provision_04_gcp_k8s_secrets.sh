@@ -13,7 +13,7 @@ if [[ "$SCRIPT_DIR" == */scripts ]]; then
 else
   OPERATOR_DIR="${SCRIPT_DIR}"
 fi
-VARS_FILE="${SCRIPT_DIR}/vars.sh"
+VARS_FILE="${VARS_FILE:-${SCRIPT_DIR}/vars.sh}"
 
 source "${SCRIPT_DIR}/common.sh" "$@"
 
@@ -121,6 +121,7 @@ execute_k8s_secrets() {
       --namespace="$NAMESPACE" \
       --from-literal=GEMINI_API_KEY="$GEMINI_API_KEY" \
       --from-literal=API_SERVER_KEY="$API_SERVER_KEY" \
+      --from-literal=token="$API_SERVER_KEY" \
       --from-literal=OPENAI_API_KEY="$OPENAI_API_KEY" \
       --from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
       --dry-run=client -o yaml | kubectl apply -f -

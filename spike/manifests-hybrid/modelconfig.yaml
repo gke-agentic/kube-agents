@@ -1,0 +1,12 @@
+apiVersion: kagent.dev/v1alpha2
+kind: ModelConfig
+metadata:
+  name: platform-model-config
+  namespace: kube-agents-spike
+spec:
+  provider: OpenAI
+  model: model-default
+  apiKeySecret: platform-agent-secrets
+  apiKeySecretKey: API_SERVER_KEY
+  openAI:
+    baseUrl: http://litellm.kube-agents-spike.svc.cluster.local/v1

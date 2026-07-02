@@ -1,0 +1,44 @@
+apiVersion: kagent.dev/v1alpha2
+kind: AgentHarness
+metadata:
+  name: platform-agent-hybrid
+  namespace: kube-agents-spike
+spec:
+  backend: hermes
+  description: "Platform Agent Spike with Hermes Backend"
+  image: $AGENT_IMAGE
+  modelConfigRef: platform-model-config
+  network:
+    allowedDomains:
+      - "pubsub.googleapis.com"
+      - "chat.googleapis.com"
+  env:
+    - name: GOOGLE_CHAT_PROJECT_ID
+      value: "$PROJECT_ID"
+    - name: GOOGLE_CHAT_SUBSCRIPTION_NAME
+      value: "projects/$PROJECT_ID/subscriptions/$CHAT_SUB_NAME"
+    - name: GOOGLE_CHAT_ALLOWED_USERS
+      value: "$ALLOWED_USERS"
+    - name: GKE_CLUSTER_NAME
+      value: "$CLUSTER_NAME"
+    - name: GKE_LOCATION
+      value: "$REGION"
+    - name: HERMES_DASHBOARD
+      value: "1"
+    - name: PLATFORM_AGENT_DASHBOARD
+      value: "1"
+    - name: PLATFORM_AGENT_PLUGINS_DEBUG
+      value: "0"
+    # --------------------------------------------------------------------------
+    # ⚠️ OpenShell Limitation Note:
+    # Under OpenShell runtime, environment variables defined via 'valueFrom' 
+    # (secrets) are ignored/wiped by the supervisor. 
+    # The actual secret key is securely injected via a JSON volume mount patch
+    # inside 'provision_harness.sh', and loaded by the hermes wrapper script.
+    # We keep the valueFrom definition here for CRD schema validation compliance.
+    # --------------------------------------------------------------------------
+    - name: API_SERVER_KEY
+      valueFrom:
+        secretKeyRef:
+          name: platform-agent-secrets
+          key: API_SERVER_KEY
