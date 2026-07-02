@@ -1,14 +1,14 @@
---- gchat_adapter.py.orig	2026-06-30 13:07:29.316314514 +0000
-+++ gchat_adapter.py	2026-06-30 13:06:23.980368604 +0000
-@@ -504,6 +504,7 @@
+--- a/plugins/platforms/google_chat/adapter.py
++++ b/plugins/platforms/google_chat/adapter.py
+@@ -503,6 +503,7 @@
          self._typing_messages: Dict[str, str] = {}
          self._shutting_down = False
          self._rate_limit_hits: Dict[str, int] = {}
-+        self._status_message_ids: Dict[Tuple[str, str], str] = {}
++        self._status_message_ids: Dict[Tuple[str, str, str], str] = {}
          # Last-seen inbound thread name per chat_id (space). Google Chat
          # DMs create a NEW thread per top-level user message but the user
          # views them as one logical conversation. We:
-@@ -1870,6 +1871,39 @@
+@@ -1871,6 +1872,34 @@
          finally:
              self.resume_typing_for_chat(chat_id)
  
@@ -20,19 +20,13 @@
 +        *,
 +        metadata: Optional[Dict[str, Any]] = None,
 +    ) -> SendResult:
-+        """Send or update a status message in-place for Google Chat.
-+
-+        Maintains a cache of active status message resource names (message IDs)
-+        per (chat_id, status_key). If a message ID exists, updates the message
-+        in-place using edit_message. If edit_message fails, falls back to a fresh send.
-+        """
++        """Send or update a status message in-place for Google Chat."""
 +        thread_id = ""
 +        if metadata:
 +            thread_id = metadata.get("thread_name") or metadata.get("thread_id") or ""
 +        key = (str(chat_id), str(thread_id), str(status_key))
 +        cached_id = self._status_message_ids.get(key)
 +        if cached_id is not None:
-+            # Edit the existing status message
 +            result = await self.edit_message(
 +                chat_id, cached_id, content, finalize=True
 +            )
@@ -40,9 +34,8 @@
 +                if result.message_id:
 +                    self._status_message_ids[key] = str(result.message_id)
 +                return result
-+            # Edit failed — clear the cached id and fall through to a fresh send.
++            # Edit failed (e.g. message deleted), fall through to fresh send.
 +            self._status_message_ids.pop(key, None)
-+        # Send a fresh status message
 +        result = await self.send(chat_id, content, metadata=metadata)
 +        if result.success and result.message_id:
 +            self._status_message_ids[key] = str(result.message_id)
@@ -51,3 +44,41 @@
      async def edit_message(
          self,
          chat_id: str,
+@@ -1971,8 +2000,16 @@
+                 .execute(http=self._new_authed_http())
+             )
+ 
+-        resp = await asyncio.to_thread(_do_patch)
+-        return SendResult(success=True, message_id=resp.get("name", message_name))
++        for attempt in range(4):
++            try:
++                resp = await asyncio.to_thread(_do_patch)
++                return SendResult(success=True, message_id=resp.get("name", message_name))
++            except HttpError as exc:
++                status = getattr(getattr(exc, "resp", None), "status", None)
++                if status == 429 and attempt < 3:
++                    await asyncio.sleep(1.0 + attempt)
++                    continue
++                raise
+ 
+     def _chunk_text(self, text: str) -> List[str]:
+         if not text:
+@@ -2198,8 +2235,16 @@
+                 .execute(http=self._new_authed_http())
+             )
+ 
+-        resp = await asyncio.to_thread(_do_create)
+-        return SendResult(success=True, message_id=resp.get("name"))
++        for attempt in range(4):
++            try:
++                resp = await asyncio.to_thread(_do_create)
++                return SendResult(success=True, message_id=resp.get("name"))
++            except HttpError as exc:
++                status = getattr(getattr(exc, "resp", None), "status", None)
++                if status == 429 and attempt < 3:
++                    await asyncio.sleep(1.0 + attempt)
++                    continue
++                raise
+ 
+     def _chunk_and_upload(
+         self, chat_id: str, text: str, attachments: List[Any], thread_id: str = ""
