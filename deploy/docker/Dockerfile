@@ -56,7 +56,8 @@ RUN /usr/local/bin/uv pip install --python /opt/hermes/.venv/bin/python \
 
 # Apply Google Chat platform integration patch
 COPY deploy/docker/patches/gchat_in_place.patch /tmp/
-RUN patch /opt/hermes/plugins/platforms/google_chat/adapter.py /tmp/gchat_in_place.patch && rm /tmp/gchat_in_place.patch
+RUN patch /opt/hermes/plugins/platforms/google_chat/adapter.py /tmp/gchat_in_place.patch && \
+    rm /tmp/gchat_in_place.patch
 
 # 4. Clone and build mcp-remote proxy
 RUN git clone https://github.com/bradhoekstra/mcp-remote.git /opt/mcp-remote && \
