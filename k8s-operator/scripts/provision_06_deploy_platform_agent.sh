@@ -45,6 +45,7 @@ init_var "GOOGLE_CHAT_MODE" "default" "Enter Google Chat Output Mode (default or
 init_var "ALLOWED_USERS" "" "Enter Allowed Google Chat Users Emails (comma separated). Leaving it empty will allow all users."
 DEFAULT_AGENT_IMAGE="ghcr.io/gke-labs/kube-agents/platform-agent"
 init_var "AGENT_IMAGE" "$DEFAULT_AGENT_IMAGE" "Enter Platform Agent Image Path"
+init_var "AGENT_TAG" "latest" "Enter Platform Agent Image Tag"
 
 # ─── Step Implementations ─────────────────────────────────────────────────────
 
@@ -76,7 +77,7 @@ execute_custom_resource() {
   fi
 
   # Ensure variables are explicitly exported so envsubst can access them
-  export PROJECT_ID REGION CLUSTER_NAME MODEL_DEFAULT_NAME MODEL_PROVIDER GSA_NAME CHAT_SUB_NAME CHAT_TOPIC_NAME GOOGLE_CHAT_MODE ALLOWED_USERS AGENT_IMAGE NAMESPACE KSA_NAME
+  export PROJECT_ID REGION CLUSTER_NAME MODEL_DEFAULT_NAME MODEL_PROVIDER GSA_NAME CHAT_SUB_NAME CHAT_TOPIC_NAME GOOGLE_CHAT_MODE ALLOWED_USERS AGENT_IMAGE NAMESPACE KSA_NAME AGENT_TAG
 
   envsubst < "$CR_TEMPLATE" > "$CR_MANIFEST"
   
