@@ -270,6 +270,23 @@ confirm_action() {
 }
 
 get_chatgpt_auth_info() {
-  read -r CHATGPT_URL CHATGPT_CODE <<< $(kubectl logs deployment/litellm -n ${NAMESPACE:-kubeagents-system} 2>/dev/null | awk '/Visit https:/ {u=$NF} /Enter code:/ {c=$NF} END {print u, c}')
+  if [ "${DRY_RUN:-0}" -eq 1 ]; then
+    return 0
+  fi
+
+  # Wait for the deployment to be rolled out first
+  kubectl rollout status deployment/litellm -n "${NAMESPACE:-kubeagents-system}" --timeout=60s >/dev/null 2>&1 || true
+
+  # Retry a few times to allow LiteLLM to initialize and print the device code
+  for i in {1..15}; do
+    local auth_info
+    auth_info=$(kubectl logs deployment/litellm -n "${NAMESPACE:-kubeagents-system}" 2>/dev/null | awk '/Visit https:/ {u=$NF} /Enter code:/ {c=$NF} END {print u, c}') || true
+    read -r CHATGPT_URL CHATGPT_CODE <<< "$auth_info"
+    if [ -n "$CHATGPT_URL" ] && [ -n "$CHATGPT_CODE" ]; then
+      break
+    fi
+    sleep 1
+  done
+
   export CHATGPT_URL CHATGPT_CODE
 }
