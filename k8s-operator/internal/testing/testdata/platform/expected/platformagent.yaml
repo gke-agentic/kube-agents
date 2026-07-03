@@ -91,6 +91,14 @@ data:
   config.yaml: |
     approvals:
       cron_mode: approve
+    display:
+      platforms:
+        google_chat:
+          busy_ack_detail: false
+          interim_assistant_messages: false
+          long_running_notifications: true
+          memory_notifications: "off"
+          tool_progress: "off"
     mcp_servers:
       agent_common:
         args:
