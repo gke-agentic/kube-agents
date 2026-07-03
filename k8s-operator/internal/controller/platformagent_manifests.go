@@ -118,32 +118,17 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 	cfg.Terminal.Cwd = cwd
 	cfg.Plugins.Enabled = []string{"hermes_otel"}
 
-	pluginsDebug := false
-	if agent.Spec.Harness != nil && agent.Spec.Harness.Hermes != nil && agent.Spec.Harness.Hermes.PluginsDebug != nil {
-		pluginsDebug = *agent.Spec.Harness.Hermes.PluginsDebug
-	}
-
-	toolProgress := "new"
-	verbose := false
-	if pluginsDebug {
-		toolProgress = "all"
-		verbose = true
-	}
-
-	cfg.Display.Platforms = map[string]map[string]any{
-		"google_chat": {
-			"tool_progress":              toolProgress,
-			"interim_assistant_messages": verbose,
-			"long_running_notifications": verbose,
-			"busy_ack_detail":            verbose,
-		},
-	}
-
+	var gchatMode string
 	if agent.Spec.Integration != nil && agent.Spec.Integration.GoogleChat != nil {
 		gchat := agent.Spec.Integration.GoogleChat
 		if gchat.Enabled != nil {
 			cfg.Platforms.GoogleChat.Enabled = *gchat.Enabled
 		}
+		gchatMode = gchat.Mode
+	}
+
+	cfg.Display.Platforms = map[string]map[string]any{
+		"google_chat": resolveGoogleChatDisplayConfig(gchatMode),
 	}
 
 	data, err := yaml.Marshal(cfg)
@@ -151,6 +136,32 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 		return ""
 	}
 	return string(data)
+}
+
+func resolveGoogleChatDisplayConfig(mode string) map[string]any {
+	resolvedMode := "default"
+	if mode != "" {
+		resolvedMode = strings.ToLower(mode)
+	}
+
+	switch resolvedMode {
+	case "debug":
+		return map[string]any{
+			"tool_progress":              "all",
+			"memory_notifications":       "verbose",
+			"interim_assistant_messages": true,
+			"long_running_notifications": true,
+			"busy_ack_detail":            true,
+		}
+	default: // "default" / quiet mode
+		return map[string]any{
+			"tool_progress":              "off",
+			"memory_notifications":       "off",
+			"interim_assistant_messages": false,
+			"long_running_notifications": true,
+			"busy_ack_detail":            false,
+		}
+	}
 }
 
 // buildPVC generates the PVC manifest for agent data persistence

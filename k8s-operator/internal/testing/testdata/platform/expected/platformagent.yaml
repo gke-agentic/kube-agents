@@ -87,8 +87,9 @@ data:
         google_chat:
           busy_ack_detail: false
           interim_assistant_messages: false
-          long_running_notifications: false
-          tool_progress: new
+          long_running_notifications: true
+          memory_notifications: "off"
+          tool_progress: "off"
     model:
       api_key: none
       base_url: http://litellm.kubeagents-system.svc.cluster.local/v1
