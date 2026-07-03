@@ -1,0 +1,317 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chat-dispatcher-agents
+data:
+  agents.json: |
+    [
+        {"id": "platform-agent", "name": "Platform Agent", "topic": "platform-agent-chat-events"},
+        {"id": "test-agent", "name": "Test Agent", "topic": "test-chat-app-topic"}
+    ]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: chat-dispatcher-sa
+  annotations:
+    # Replace with your actual GCP Service Account that has Pub/Sub and Chat API permissions
+    iam.gke.io/gcp-service-account: "chat-dispatcher-gsa@YOUR_PROJECT_ID.iam.gserviceaccount.com" # TODO DBG: replace this with dynamic value
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chat-dispatcher
+  labels:
+    app: chat-dispatcher
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: chat-dispatcher
+  template:
+    metadata:
+      labels:
+        app: chat-dispatcher
+    spec:
+      serviceAccountName: chat-dispatcher-sa
+      containers:
+      - name: dispatcher
+        # Using a standard python image for the PoC
+        image: python:3.10-slim
+        # This installs dependencies and runs the script on startup
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            pip install google-cloud-pubsub google-apps-chat google-auth
+            python -u /app/dispatcher_poc.py
+        env:
+        # NOTE: If not using Workload Identity, you need to mount GOOGLE_APPLICATION_CREDENTIALS
+        - name: GOOGLE_CLOUD_PROJECT
+          value: "YOUR_PROJECT_ID" # TODO DBG: replace this with dynamic value
+        - name: INCOMING_SUBSCRIPTION_ID
+          value: "chat-app-dispatcher-events-sub" # TODO DBG: replace this with dynamic value, make provision script create topic and subscription
+        volumeMounts:
+        - name: agents-config-volume
+          mountPath: /etc/chat-dispatcher
+        - name: script-volume
+          mountPath: /app
+      volumes:
+      - name: agents-config-volume
+        configMap:
+          name: chat-dispatcher-agents
+      - name: script-volume
+        configMap:
+          name: chat-dispatcher-script
+
+---
+apiVersion: v1
+data:
+  dispatcher_poc.py: |
+    import os
+    import json
+    import google.auth
+    from google.cloud import pubsub_v1
+    from google.apps import chat_v1 as google_chat
+    
+    AGENTS_CONFIG_FILE = "/etc/chat-dispatcher/agents.json"
+    if os.path.exists(AGENTS_CONFIG_FILE):
+        with open(AGENTS_CONFIG_FILE, 'r') as f:
+            AGENTS_CONFIG = json.load(f)
+    else:
+        AGENTS_CONFIG = [
+            {"id": "platform-agent", "name": "Platform Agent", "topic": "platform-agent-chat-events"},
+            {"id": "test-agent", "name": "Test Agent", "topic": "test-chat-app-topic"}
+        ]
+    
+    thread_state = {}
+    
+    def send_agent_selection_card(chat_client, space_name, thread_name):
+        buttons = []
+        for agent in AGENTS_CONFIG:
+            buttons.append({
+                "text": agent["name"],
+                "on_click": {
+                    "action": {
+                        "function": "select_agent",
+                        "parameters": [
+                            {"key": "agent_id", "value": agent["id"]},
+                            {"key": "target_topic", "value": agent["topic"]}
+                        ]
+                    }
+                }
+            })
+        
+        card_payload = {
+            "text": "Please select the agent you want to talk to in this thread:",
+            "cards_v2": [{
+                "card_id": "agent_dispatcher_card",
+                "card": {
+                    "header": {"title": "Agent Dispatcher"},
+                    "sections": [{
+                        "widgets": [
+                            {"text_paragraph": {"text": "Please select the agent you want to talk to in this thread:"}},
+                            {"button_list": {"buttons": buttons}}
+                        ]
+                    }]
+                }
+            }],
+            "thread": {"name": thread_name}
+        }
+        
+        print(f"SEND_AGENT_SELECTION_CARD PAYLOAD: {json.dumps(card_payload)}")
+        
+        request = google_chat.CreateMessageRequest(
+            parent=space_name,
+            message=card_payload,
+            message_reply_option=google_chat.CreateMessageRequest.MessageReplyOption.REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD
+        )
+        chat_client.create_message(request=request)
+
+    def send_card_via_api(chat_client, space_name):
+        """Constructs a card and sends it to a specific space using the Chat API."""
+        card_payload = {
+            "cards_v2": [
+                {
+                    "card_id": "api-button-card",
+                    "card": {
+                        "header": {
+                            "title": "Pub/Sub API Card",
+                            "subtitle": "Sent via REST API"
+                        },
+                        "sections": [
+                            {
+                                "widgets": [
+                                    {
+                                        "text_paragraph": {
+                                            "text": "This message was pushed via the Chat API."
+                                        }
+                                    },
+                                    {
+                                        "button_list": {
+                                            "buttons": [
+                                                {
+                                                    "text": "Acknowledge",
+                                                    "on_click": {
+                                                        "action": {
+                                                            "function": "https://chat-dispatcher-proxy-304544202124.us-central1.run.app",
+                                                            "parameters": [
+                                                                {"key": "type", "value": "ack"},
+                                                                {"key": "action_method", "value": "handle_ack_click"}
+                                                            ]
+                                                        }
+                                                    }
+                                                }
+                                            ]
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+        
+        print(f"SEND_CARD_VIA_API PAYLOAD: {json.dumps(card_payload)}")
+        
+        request = google_chat.CreateMessageRequest(
+            parent=space_name,
+            message=card_payload
+        )
+        response = chat_client.create_message(request=request)
+        print(f"Message sent: {response.name}")
+    
+    def callback(message, publisher, chat_client, project_id):
+        try:
+            data_bytes = message.data
+            event = json.loads(data_bytes.decode('utf-8'))
+            print(f"RAW EVENT: {json.dumps(event)}")
+            
+            event_type = event.get('type')
+            space_name = event.get('space', {}).get('name')
+            thread_name = None
+            message_name = None
+            
+            is_message = False
+            is_card_click = False
+            action_name = None
+            parameters = []
+            text = ""
+            
+            if event_type == "MESSAGE":
+                is_message = True
+                thread_name = event.get('message', {}).get('thread', {}).get('name')
+                text = event.get('message', {}).get('argumentText', '').strip()
+                message_name = event.get('message', {}).get('name')
+            elif event_type == "CARD_CLICKED":
+                is_card_click = True
+                action = event.get('action', {})
+                action_name = action.get('actionMethodName')
+                parameters = action.get('parameters', [])
+                thread_name = event.get('message', {}).get('thread', {}).get('name')
+                message_name = event.get('message', {}).get('name')
+                space_name = event.get('space', {}).get('name')
+            
+            # Fallback to Add-on format keys (Workspace Add-on event payload)
+            if not event_type:
+                chat_obj = event.get('chat', {})
+                msg_payload = chat_obj.get('messagePayload', {})
+                btn_payload = chat_obj.get('buttonClickedPayload', {})
+                common_obj = event.get('commonEventObject', {})
+                
+                if btn_payload:
+                    is_card_click = True
+                    space_name = btn_payload.get('space', {}).get('name')
+                    thread_name = btn_payload.get('message', {}).get('thread', {}).get('name')
+                    message_name = btn_payload.get('message', {}).get('name')
+                    action_name = common_obj.get('invokedFunction')
+                    params_dict = common_obj.get('parameters', {})
+                    parameters = [{'key': k, 'value': v} for k, v in params_dict.items()]
+                elif msg_payload:
+                    is_message = True
+                    space_name = msg_payload.get('space', {}).get('name')
+                    thread_name = msg_payload.get('message', {}).get('thread', {}).get('name')
+                    message_name = msg_payload.get('message', {}).get('name')
+                    text = msg_payload.get('message', {}).get('argumentText', '').strip()
+                    if not text:
+                        text = msg_payload.get('message', {}).get('text', '').strip()
+    
+            print(f"Message ID: {message.message_id}, space: {space_name}, thread: {thread_name}, is_msg: {is_message}, is_click: {is_card_click}")
+    
+            if is_message:
+                if thread_name and thread_name in thread_state:
+                    target_topic_name = thread_state[thread_name]
+                    target_topic_path = publisher.topic_path(project_id, target_topic_name)
+                    str_attributes = {k: str(v) for k, v in message.attributes.items()}
+                    print(f"Routing existing thread message to {target_topic_name}")
+                    publisher.publish(target_topic_path, data_bytes, **str_attributes)
+                else:
+                    print(f"Unknown thread {thread_name}, calling send_card_via_api.")
+                    send_card_via_api(chat_client, space_name)
+                    
+            elif is_card_click:
+                if action_name == "select_agent":
+                    target_topic = None
+                    agent_id = None
+                    for param in parameters:
+                        if param.get('key') == 'target_topic':
+                            target_topic = param.get('value')
+                        elif param.get('key') == 'agent_id':
+                            agent_id = param.get('value')
+                            
+                    if target_topic and thread_name:
+                        print(f"User selected agent {agent_id}. Binding thread {thread_name} to topic {target_topic}")
+                        thread_state[thread_name] = target_topic
+                        
+                        if message_name:
+                            print(f"Updating card message {message_name}")
+                            update_payload = {
+                                "name": message_name,
+                                "text": f"✅ Connected to the **{agent_id}** agent for this thread.",
+                                "cards_v2": [], # Clear cards
+                                "thread": {"name": thread_name}
+                            }
+                            request = google_chat.UpdateMessageRequest(
+                                message=update_payload,
+                                update_mask="text,cards_v2"
+                            )
+                            chat_client.update_message(request=request)
+                else:
+                    if thread_name and thread_name in thread_state:
+                        target_topic_name = thread_state[thread_name]
+                        target_topic_path = publisher.topic_path(project_id, target_topic_name)
+                        str_attributes = {k: str(v) for k, v in message.attributes.items()}
+                        print(f"Routing card click {action_name} to {target_topic_name}")
+                        publisher.publish(target_topic_path, data_bytes, **str_attributes)
+    
+            message.ack()
+        except Exception as e:
+            print(f"Error processing message: {e}")
+            message.ack()
+    
+    def main():
+        project_id = os.environ.get('GOOGLE_CLOUD_PROJECT')
+        if not project_id:
+            print("Set GOOGLE_CLOUD_PROJECT environment variable.")
+            return
+        subscription_id = os.environ.get('INCOMING_SUBSCRIPTION_ID', 'chat-app-incoming-sub') 
+        subscriber = pubsub_v1.SubscriberClient()
+        publisher = pubsub_v1.PublisherClient()
+        credentials, _ = google.auth.default(scopes=['https://www.googleapis.com/auth/chat.bot'])
+        chat_client = google_chat.ChatServiceClient(credentials=credentials)
+        subscription_path = subscriber.subscription_path(project_id, subscription_id)
+        print(f"Starting Dispatcher. Listening on {subscription_path}...")
+        def message_callback(msg):
+            callback(msg, publisher, chat_client, project_id)
+        streaming_pull_future = subscriber.subscribe(subscription_path, callback=message_callback)
+        try:
+            streaming_pull_future.result()
+        except KeyboardInterrupt:
+            streaming_pull_future.cancel()
+    
+    if __name__ == "__main__":
+        main()
+    
+kind: ConfigMap
+metadata:
+  name: chat-dispatcher-script

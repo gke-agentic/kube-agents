@@ -1,0 +1,6 @@
+Flask==3.0.3
+gunicorn==22.0.0
+google-auth
+google-api-python-client
+google-cloud-firestore
+google-cloud-pubsub
