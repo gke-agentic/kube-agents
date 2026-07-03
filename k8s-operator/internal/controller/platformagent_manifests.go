@@ -35,6 +35,8 @@ import (
 	agentv1alpha1 "github.com/gke-labs/kube-agents/k8s-operator/api/v1alpha1"
 )
 
+const defaultPlatformAgentSecrets = "platform-agent-secrets"
+
 // buildConfigMap generates the ConfigMap manifest containing config.yaml
 func buildConfigMap(agent *agentv1alpha1.PlatformAgent) *corev1.ConfigMap {
 	return &corev1.ConfigMap{
@@ -324,39 +326,17 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 			}
 		}
 		if slack := integration.Slack; slack != nil && slack.Enabled != nil && *slack.Enabled {
-			botSecretRef := slack.BotTokenSecretRef
-			if botSecretRef == nil {
-				botSecretRef = &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: "platform-agent-secrets"},
-					Key:                  "SLACK_BOT_TOKEN",
-					Optional:             ptr.To(true),
-				}
-			}
-			envVars = append(envVars, corev1.EnvVar{
-				Name: "SLACK_BOT_TOKEN",
-				ValueFrom: &corev1.EnvVarSource{
-					SecretKeyRef: botSecretRef,
+			envVars = append(envVars,
+				corev1.EnvVar{
+					Name:      "SLACK_BOT_TOKEN",
+					ValueFrom: &corev1.EnvVarSource{SecretKeyRef: defaultSecretRef(slack.BotTokenSecretRef, defaultPlatformAgentSecrets, "SLACK_BOT_TOKEN")},
 				},
-			})
-
-			appSecretRef := slack.AppTokenSecretRef
-			if appSecretRef == nil {
-				appSecretRef = &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: "platform-agent-secrets"},
-					Key:                  "SLACK_APP_TOKEN",
-					Optional:             ptr.To(true),
-				}
-			}
-			envVars = append(envVars, corev1.EnvVar{
-				Name: "SLACK_APP_TOKEN",
-				ValueFrom: &corev1.EnvVarSource{
-					SecretKeyRef: appSecretRef,
+				corev1.EnvVar{
+					Name:      "SLACK_APP_TOKEN",
+					ValueFrom: &corev1.EnvVarSource{SecretKeyRef: defaultSecretRef(slack.AppTokenSecretRef, defaultPlatformAgentSecrets, "SLACK_APP_TOKEN")},
 				},
-			})
-			allowAllSlack := len(slack.AllowedUsers) == 0
-			if len(slack.AllowedUsers) == 1 && slack.AllowedUsers[0] == "" {
-				allowAllSlack = true
-			}
+			)
+			allowAllSlack := len(slack.AllowedUsers) == 0 || (len(slack.AllowedUsers) == 1 && slack.AllowedUsers[0] == "")
 			if allowAllSlack {
 				envVars = append(envVars, corev1.EnvVar{
 					Name:  "SLACK_ALLOW_ALL_USERS",
