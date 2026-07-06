@@ -30,8 +30,10 @@ When any script is run:
    - Points `kubectl` credentials to the new cluster and creates the target namespace.
 2. **[provision_02_gcp_gke_operator.sh](provision_02_gcp_gke_operator.sh)**
    - Installs Custom Resource Definitions (CRDs) for `PlatformAgent`.
+   - Installs Custom Resource Definitions (CRDs) for `PlatformAgent`.
    - Deploys the Operator controller manager into the GKE cluster.
 3. **[provision_03_gcp_iam.sh](provision_03_gcp_iam.sh)**
+   - Pre-provisions GCP Service Accounts (GSAs) for the Controller and Platform Agent.
    - Pre-provisions GCP Service Accounts (GSAs) for the Controller and Platform Agent.
    - Configures Workload Identity policy bindings mapping the Kubernetes SAs to the GCP GSAs.
    - Grants GKE admin permissions to the Controller GSA, and GKE permissions to the Agent GSAs.

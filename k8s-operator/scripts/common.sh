@@ -62,6 +62,26 @@ retry() {
   return 1
 }
 
+retry() {
+  local max_retries=$1
+  local delay=$2
+  shift 2
+  local count=0
+
+  while [ $count -lt $max_retries ]; do
+    count=$((count + 1))
+    if "$@"; then
+      return 0
+    fi
+    if [ $count -lt $max_retries ]; then
+      echo -e "  ${C_YELLOW}⚠ [Retry $count/$max_retries] Waiting ${delay}s before next attempt...${C_RESET}" >&2
+      sleep "$delay"
+    fi
+  done
+
+  return 1
+}
+
 cleanup() { tput cnorm 2>/dev/null || true; }
 trap cleanup EXIT
 
@@ -86,6 +106,13 @@ save_var() {
   printf "export %s=%q\n" "$var_name" "$var_val" >> "$VARS_FILE"
 }
 
+is_ci_pipeline() {
+  if [ "${CI:-}" = "true" ] || [ "${CI:-}" = "1" ]; then
+    return 0
+  fi
+  return 1
+}
+
 init_var() {
   local var_name=$1
   local default_val=$2
@@ -93,13 +120,14 @@ init_var() {
   local current_val="${!var_name:-}"
   if [ -z "$current_val" ]; then
     local final_val
-    if [ "${DRY_RUN:-0}" -eq 1 ]; then
+    if [ "${DRY_RUN:-0}" -eq 1 ] || is_ci_pipeline; then
       final_val="$default_val"
     else
       echo -ne "  ${C_CYAN}${prompt_msg} [${C_WHITE}${default_val}${C_CYAN}]: ${C_RESET}"
       read -r input_val
       final_val="${input_val:-$default_val}"
     fi
+    export "${var_name}=${final_val}"
     save_var "$var_name" "$final_val"
   fi
 }
@@ -231,6 +259,21 @@ run_step() {
   fi
 }
 
+# ─── Smart Deployment Step Runner (Routes based on CI/CD mode) ────────────────
+run_deploy_step() {
+  local name=$1
+  local verify_func=$2
+  local execute_func=$3
+  local wait_time=${4:-0}
+
+  if is_ci_pipeline; then
+    local force_redeploy_verify="false"
+    run_step "$name" "$force_redeploy_verify" "$execute_func" "$wait_time"
+  else
+    run_step "$name" "$verify_func" "$execute_func" "$wait_time"
+  fi
+}
+
 # ─── Cloud Helpers ────────────────────────────────────────────────────────────
 check_prereqs() {
   for cmd in "$@"; do
@@ -254,11 +297,47 @@ connect_cluster() {
   gcloud container clusters get-credentials "$CLUSTER_NAME" --region "$REGION" --project "$PROJECT_ID" --quiet
 }
 
+ensure_k8s_resource_exists() {
+  local resource=$1         # e.g., "deployment/cert-manager-cainjector"
+  local namespace=$2        # e.g., "cert-manager"
+  local retries=${3:-10}    # Default 10 retries (20s timeout)
+
+  print_info "Checking existence of ${resource} in namespace '${namespace}'..."
+  if [ "${DRY_RUN:-0}" -eq 1 ]; then return 0; fi
+
+  _check_resource_exists() {
+    kubectl get "${resource}" -n "${namespace}" &>/dev/null
+  }
+
+  if ! retry "$retries" 2 _check_resource_exists; then
+    print_error "Timeout waiting for ${resource} to be created in '${namespace}'." >&2
+    return 1
+  fi
+  print_success "${resource} exists in '${namespace}'."
+}
+
+wait_for_k8s_resource() {
+  local resource=$1                 # e.g., "deployment/cert-manager"
+  local namespace=$2                # e.g., "cert-manager"
+  local condition=${3:-"Available"} # e.g., "Available"
+  local timeout=${4:-"120s"}
+
+  # Step 1: Ensure resource exists in API server etcd before calling 'kubectl wait'
+  ensure_k8s_resource_exists "${resource}" "${namespace}" 10 || return 1
+
+  print_info "Waiting for ${resource} in namespace '${namespace}' (condition=${condition})..."
+  if [ "${DRY_RUN:-0}" -eq 1 ]; then return 0; fi
+
+  # Step 2: Wait for condition availability
+  kubectl wait --for="condition=${condition}" "${resource}" -n "${namespace}" --timeout="${timeout}" || return 1
+  print_success "${resource} reached state: ${condition}."
+}
+
 confirm_action() {
   local warning_msg=$1
   shift
   
-  if [ "${NO_CONFIRM:-0}" -eq 1 ] || [ "${DRY_RUN:-0}" -eq 1 ]; then
+  if [ "${NO_CONFIRM:-0}" -eq 1 ] || [ "${DRY_RUN:-0}" -eq 1 ] || is_ci_pipeline; then
     return 0
   fi
   

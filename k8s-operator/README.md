@@ -171,7 +171,7 @@ graph TD
 
 - Deletes the GCP Artifact Registry repository created during local dev rebuilds.
 
-10. **[teardown_01_gcp_cluster.sh](scripts/teardown_01_gcp_cluster.sh)**:
+9. **[teardown_01_gcp_cluster.sh](scripts/teardown_01_gcp_cluster.sh)**:
 
 - Deletes the GKE Standard Cluster and local state files (`scripts/vars.sh`).
 
