@@ -100,13 +100,8 @@ init_var() {
   # Use declare -p to avoid prompting again for variables defined with empty values
   if ! declare -p "$var_name" &>/dev/null; then
     local final_val
-    if [ "${DRY_RUN:-0}" -eq 1 ]; then
+    if [ "${DRY_RUN:-0}" -eq 1 ] || is_ci_pipeline; then
       final_val="$default_val"
-    elif is_ci_pipeline; then
-      print_error "Required environment variable '${var_name}' is not set." >&2
-      print_error "Running in CI pipeline mode: cannot prompt interactively for '${prompt_msg}'." >&2
-      print_error "Action required: Please export '${var_name}' in your pipeline job environment." >&2
-      exit 1
     else
       echo -ne "  ${C_CYAN}${prompt_msg} [${C_WHITE}${default_val}${C_CYAN}]: ${C_RESET}"
       read -r input_val
@@ -317,7 +312,7 @@ confirm_action() {
   local warning_msg=$1
   shift
   
-  if [ "${NO_CONFIRM:-0}" -eq 1 ] || [ "${DRY_RUN:-0}" -eq 1 ]; then
+  if [ "${NO_CONFIRM:-0}" -eq 1 ] || [ "${DRY_RUN:-0}" -eq 1 ] || is_ci_pipeline; then
     return 0
   fi
   
