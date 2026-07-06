@@ -99,6 +99,7 @@ data:
           long_running_notifications: true
           memory_notifications: "off"
           tool_progress: "off"
+          tool_progress_grouping: accumulate
     mcp_servers:
       agent_common:
         args:

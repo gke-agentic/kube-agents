@@ -104,6 +104,9 @@ func TestDisplayMode(t *testing.T) {
 	if !strings.Contains(defaultConfig, "tool_progress: \"off\"") || !strings.Contains(defaultConfig, "memory_notifications: \"off\"") {
 		t.Errorf("expected default mode to turn off tool_progress and memory_notifications, got:\n%s", defaultConfig)
 	}
+	if !strings.Contains(defaultConfig, "tool_progress_grouping: accumulate") {
+		t.Errorf("expected default mode to contain tool_progress_grouping: accumulate, got:\n%s", defaultConfig)
+	}
 
 	// Test Debug Mode
 	debugAgent := &agentv1alpha1.PlatformAgent{

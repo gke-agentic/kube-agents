@@ -185,6 +185,7 @@ func resolveGoogleChatDisplayConfig(mode string) map[string]any {
 	}
 
 	toolProgress := "off"
+	toolProgressGrouping := "accumulate"
 	memoryNotifications := "off"
 	interimMessages := false
 
@@ -196,6 +197,7 @@ func resolveGoogleChatDisplayConfig(mode string) map[string]any {
 
 	return map[string]any{
 		"tool_progress":              toolProgress,
+		"tool_progress_grouping":     toolProgressGrouping,
 		"memory_notifications":       memoryNotifications,
 		"interim_assistant_messages": interimMessages,
 		"long_running_notifications": true,
