@@ -50,15 +50,20 @@ echo -e "[ ] Monitor Gateway pod rollout progress:"
 echo -e "       ${C_WHITE}kubectl get pods -n ${NAMESPACE:-kubeagents-system}${C_RESET}"
 echo -e ""
 
-if [ "${MODEL_PROVIDER:-}" = "chatgpt" ]; then
-  echo -e "${C_CYAN}${C_BOLD}--- [ChatGPT Authentication Next Steps] ---${C_RESET}"
-  echo -e "[ ] Complete ChatGPT OAuth Device Flow Authentication:"
+if [ "$MODEL_PROVIDER" = "chatgpt" ]; then
+  get_chatgpt_auth_info
+  echo -e ""
+  echo -e "[ ] ${C_YELLOW}Complete ChatGPT OAuth Device Flow Authentication:${C_RESET}"
   echo -e "       Because you selected 'chatgpt' as the model provider, LiteLLM must be authenticated"
   echo -e "       via OpenAI's OAuth Device Flow. Please follow these steps to authenticate:"
-  echo -e "       - View the LiteLLM gateway logs to retrieve the 8-digit user code:"
-  echo -e "         ${C_WHITE}kubectl logs -n ${NAMESPACE:-kubeagents-system} deployment/litellm -f${C_RESET}"
-  echo -e "       - Open your browser and navigate to: ${C_WHITE}https://auth.openai.com/codex/device${C_RESET}"
-  echo -e "       - Enter the code displayed in the LiteLLM logs and log in to authorize the device."
+  if [ -n "$CHATGPT_URL" ] && [ -n "$CHATGPT_CODE" ]; then
+    echo -e "       - Open your browser and navigate to: ${C_CYAN}${CHATGPT_URL}${C_RESET}"
+    echo -e "       - Enter the code: ${C_CYAN}${CHATGPT_CODE}${C_RESET} and log in to authorize the device."
+  else
+    echo -e "       - View the LiteLLM gateway logs to check the authentication instructions:"
+    echo -e "         ${C_CYAN}kubectl logs -n ${NAMESPACE:-kubeagents-system} deployment/litellm -f${C_RESET}"
+    echo -e "       - Follow the instructions displayed in the logs to authorize the device."
+  fi
   echo -e "       - Once authorized, the LiteLLM gateway will automatically pair with your ChatGPT subscription."
   echo -e ""
 fi

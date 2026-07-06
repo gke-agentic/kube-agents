@@ -127,19 +127,12 @@ execute_github_minter() {
           local import_success=0
           (
             cd "$tmp_dir"
-            for i in {1..6}; do
-              if go run ./cmd/minty tools import-pk \
-                  -project-id="${PROJECT_ID}" \
-                  -location="${REGION}" \
-                  -key-ring="${KMS_KEYRING}" \
-                  -key="${KMS_KEY}" \
-                  -private-key="@${abs_pem}"; then
-                exit 0
-              fi
-              echo "  [Retry $i/6] Waiting 5 seconds for KMS Import Job to become ACTIVE..."
-              sleep 5
-            done
-            exit 1
+            retry 6 5 go run ./cmd/minty tools import-pk \
+                -project-id="${PROJECT_ID}" \
+                -location="${REGION}" \
+                -key-ring="${KMS_KEYRING}" \
+                -key="${KMS_KEY}" \
+                -private-key="@${abs_pem}"
           ) && import_success=1
           rm -rf "$tmp_dir"
           
@@ -180,7 +173,7 @@ execute_github_minter() {
   
   if [ -d "$GITHUB_INTEGRATION_DIR" ]; then
     # Ensure all variables are exported for envsubst
-    export PROJECT_ID REGION CLUSTER_NAME NAMESPACE GITHUB_MINTER_KSA_NAME GITHUB_MINTER_GSA_NAME KMS_KEYRING KMS_KEY KMS_KEY_VERSION GITHUB_ORG GITHUB_REPO KSA_NAME PLATFORM_AGENT_GSA_NAME OPERATOR_AGENT_GSA_NAME DEVTEAM_AGENT_GSA_NAME
+    export PROJECT_ID REGION CLUSTER_NAME NAMESPACE GITHUB_MINTER_KSA_NAME GITHUB_MINTER_GSA_NAME KMS_KEYRING KMS_KEY KMS_KEY_VERSION GITHUB_ORG GITHUB_REPO KSA_NAME PLATFORM_AGENT_GSA_NAME
     make -C "${OPERATOR_DIR}" deploy-github || return 1
   else
     print_error "GitHub integration directory not found at ${GITHUB_INTEGRATION_DIR}"

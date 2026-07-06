@@ -31,9 +31,6 @@ fi
 echo -e "\n${C_RED}${C_BOLD}🧹 Running Teardown Steps...${C_RESET}"
 "${SCRIPT_DIR}/teardown_09_deploy_github_minter.sh" --no-confirm $DRY_RUN_ARG || true
 "${SCRIPT_DIR}/teardown_08_deploy_litellm.sh" --no-confirm $DRY_RUN_ARG || true
-if [ "${EXTRA_AGENTS_DEPLOYED:-false}" = "true" ] || [ -f "${SCRIPT_DIR}/../examples/operatoragent.yaml" ] || [ -f "${SCRIPT_DIR}/../examples/devteamagent.yaml" ]; then
-  "${SCRIPT_DIR}/dev/teardown_extra_01_deploy_extra_agents.sh" --no-confirm $DRY_RUN_ARG || true
-fi
 "${SCRIPT_DIR}/teardown_07_deploy_platform_agent.sh" --no-confirm $DRY_RUN_ARG || true
 "${SCRIPT_DIR}/teardown_06_gcp_k8s_secrets.sh" --no-confirm $DRY_RUN_ARG || true
 "${SCRIPT_DIR}/teardown_05_slack.sh" --no-confirm $DRY_RUN_ARG || true
