@@ -177,6 +177,20 @@ func TestBuildDeployment(t *testing.T) {
 							Image: "busybox:1.36",
 						},
 					},
+					Sidecars: []corev1.Container{
+						{
+							Name:  "my-sidecar",
+							Image: "sidecar-image:latest",
+						},
+					},
+					SidecarVolumes: []corev1.Volume{
+						{
+							Name: "sidecar-vol",
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{},
+							},
+						},
+					},
 				},
 				Security: &agentv1alpha1.SecuritySpec{
 					ServiceAccountName: "custom-sa",
@@ -230,8 +244,16 @@ func TestBuildDeployment(t *testing.T) {
 		t.Errorf("expected settings-config-hash annotation to be ijkl9012, got %s", dep.Spec.Template.Annotations["kubeagents.x-k8s.io/settings-config-hash"])
 	}
 
-	if len(dep.Spec.Template.Spec.Containers) != 2 {
-		t.Errorf("expected 2 containers, got %d", len(dep.Spec.Template.Spec.Containers))
+	if len(dep.Spec.Template.Spec.Containers) != 3 {
+		t.Errorf("expected 3 containers, got %d", len(dep.Spec.Template.Spec.Containers))
+	} else {
+		sidecarC := dep.Spec.Template.Spec.Containers[2]
+		if sidecarC.Name != "my-sidecar" {
+			t.Errorf("expected sidecar name my-sidecar, got %s", sidecarC.Name)
+		}
+		if sidecarC.Image != "sidecar-image:latest" {
+			t.Errorf("expected sidecar image sidecar-image:latest, got %s", sidecarC.Image)
+		}
 	}
 
 	if len(dep.Spec.Template.Spec.InitContainers) != 2 {
@@ -375,6 +397,15 @@ func TestBuildDeployment(t *testing.T) {
 			} else if *v.ConfigMap.DefaultMode != int32(0644) {
 				t.Errorf("expected settings-volume ConfigMap DefaultMode 0644, got %o", *v.ConfigMap.DefaultMode)
 			}
+		}
+	}
+
+	if _, ok := volumesMap["sidecar-vol"]; !ok {
+		t.Errorf("expected sidecar-vol volume, not found")
+	} else {
+		v := volumesMap["sidecar-vol"]
+		if v.EmptyDir == nil {
+			t.Errorf("expected sidecar-vol to be emptyDir")
 		}
 	}
 }

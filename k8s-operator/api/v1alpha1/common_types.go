@@ -93,6 +93,14 @@ type DeploymentSpec struct {
 	// InitContainers specifies standard Kubernetes initContainers to run before the agent starts.
 	// +optional
 	InitContainers []corev1.Container `json:"initContainers,omitempty"`
+
+	// Sidecars specifies standard Kubernetes sidecar/application containers to run alongside the agent.
+	// +optional
+	Sidecars []corev1.Container `json:"sidecars,omitempty"`
+
+	// SidecarVolumes specifies custom volumes to mount for the sidecar containers.
+	// +optional
+	SidecarVolumes []corev1.Volume `json:"sidecarVolumes,omitempty"`
 }
 
 // SecuritySpec manages Kubernetes RBAC, Pod Security, and Cloud Workload Identity,

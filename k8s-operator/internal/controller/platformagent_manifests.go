@@ -248,6 +248,16 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 		initContainers = agent.Spec.Deployment.InitContainers
 	}
 
+	var sidecars []corev1.Container
+	if agent.Spec.Deployment != nil && len(agent.Spec.Deployment.Sidecars) > 0 {
+		sidecars = agent.Spec.Deployment.Sidecars
+	}
+
+	var sidecarVolumes []corev1.Volume
+	if agent.Spec.Deployment != nil && len(agent.Spec.Deployment.SidecarVolumes) > 0 {
+		sidecarVolumes = agent.Spec.Deployment.SidecarVolumes
+	}
+
 	homeDir := "/opt/data"
 	if agent.Spec.Harness != nil && agent.Spec.Harness.Hermes != nil && agent.Spec.Harness.Hermes.AgentHome != "" {
 		homeDir = agent.Spec.Harness.Hermes.AgentHome
@@ -408,7 +418,7 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 						RunAsNonRoot:   ptr.To(true),
 						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},
-					Containers: []corev1.Container{
+					Containers: append([]corev1.Container{
 						{
 							Name:            "platform-agent",
 							Image:           image,
@@ -507,8 +517,8 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 								},
 							},
 						},
-					},
-					Volumes: []corev1.Volume{
+					}, sidecars...),
+					Volumes: append([]corev1.Volume{
 						{
 							Name: "platform-agent-data-vol",
 							VolumeSource: corev1.VolumeSource{
@@ -556,7 +566,7 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 								},
 							},
 						},
-					},
+					}, sidecarVolumes...),
 				},
 			},
 		},
