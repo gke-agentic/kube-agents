@@ -114,10 +114,49 @@ jobs:
             exit 1
           fi
 
-  deploy-github:
-    name: Redeploy GitHub Token Minter Integration
+  check-github-config:
+    name: Check GitHub Minter Configuration
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.github == 'true' }}
+    runs-on: ubuntu-latest
+    environment: staging
+    outputs:
+      configured: ${{ steps.check_vars.outputs.configured }}
+    steps:
+      - name: Check GitHub Variables
+        id: check_vars
+        env:
+          GH_ORG: ${{ vars.GH_ORG }}
+          GH_REPO: ${{ vars.GH_REPO }}
+          GH_APP_ID: ${{ vars.GH_APP_ID }}
+        run: |
+          missing=()
+          for var in GH_ORG GH_REPO GH_APP_ID; do
+            if [ -z "${!var}" ]; then
+              missing+=("$var")
+            fi
+          done
+
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "⚠️ GitHub Token Minter deployment will be skipped because required repository variables are not configured: ${missing[*]}"
+            echo "::notice title=GitHub Minter Skipped::GitHub Token Minter files changed, but deployment will be skipped because required repository variables are not configured: ${missing[*]}"
+            echo "### ⚠️ GitHub Token Minter Deployment Skipped" >> "$GITHUB_STEP_SUMMARY"
+            echo "Changes were detected in GitHub Token Minter files, but the deployment job will be skipped because the following required repository variables are not configured:" >> "$GITHUB_STEP_SUMMARY"
+            for var in "${missing[@]}"; do
+              echo "- \`$var\`" >> "$GITHUB_STEP_SUMMARY"
+            done
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "✅ All required repository variables (GH_ORG, GH_REPO, GH_APP_ID) for GitHub Token Minter deployment are set. Proceeding with deployment."
+            echo "### ✅ GitHub Token Minter Configured" >> "$GITHUB_STEP_SUMMARY"
+            echo "All required repository variables (GH_ORG, GH_REPO, GH_APP_ID) for GitHub Token Minter deployment are set." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  deploy-github:
+    name: Redeploy GitHub Token Minter Integration
+    needs: [detect-changes, check-github-config]
+    if: ${{ needs.detect-changes.outputs.github == 'true' && needs.check-github-config.outputs.configured == 'true' }}
     runs-on: ubuntu-latest
     environment: staging
     concurrency:
