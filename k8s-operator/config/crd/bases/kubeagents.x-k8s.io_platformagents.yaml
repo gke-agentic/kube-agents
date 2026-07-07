@@ -198,6 +198,11 @@ spec:
                         - Never
                         - IfNotPresent
                       type: string
+                    runtimeClassName:
+                      description:
+                        RuntimeClassName specifies the Pod runtime class
+                        (e.g. "gvisor").
+                      type: string
                     tag:
                       default: latest
                       description: Tag specifies the container image tag.

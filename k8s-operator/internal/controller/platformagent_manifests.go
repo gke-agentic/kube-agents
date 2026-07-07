@@ -431,6 +431,11 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 		envVars = mergeEnvVars(envVars, agent.Spec.Deployment.Env)
 	}
 
+	var runtimeClassName *string
+	if agent.Spec.Deployment != nil && agent.Spec.Deployment.RuntimeClassName != nil {
+		runtimeClassName = agent.Spec.Deployment.RuntimeClassName
+	}
+
 	return &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "apps/v1",
@@ -465,6 +470,7 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 					},
 				},
 				Spec: corev1.PodSpec{
+					RuntimeClassName:   runtimeClassName,
 					ServiceAccountName: saName,
 					SecurityContext: &corev1.PodSecurityContext{
 						FSGroup: &fsGroup,

@@ -61,7 +61,24 @@ execute_cluster() {
       --quiet
 }
 
-# Step 3: Connect kubectl
+# Step 3: Provision gVisor Node Pool
+verify_gvisor_pool() {
+  gcloud container node-pools describe gvisor-pool --cluster="$CLUSTER_NAME" --region="$REGION" --project="$PROJECT_ID" >/dev/null 2>&1
+}
+execute_gvisor_pool() {
+  print_info "Creating dedicated gVisor node pool ('gvisor-pool'). This takes approximately 3-5 minutes..."
+  gcloud container node-pools create gvisor-pool \
+      --cluster="$CLUSTER_NAME" \
+      --region="$REGION" \
+      --machine-type="e2-standard-4" \
+      --num-nodes=1 \
+      --sandbox=type=gvisor \
+      --workload-metadata=GKE_METADATA \
+      --project="$PROJECT_ID" \
+      --quiet
+}
+
+# Step 4: Connect kubectl
 verify_kubeconfig() {
   local current_ctx
   current_ctx=$(kubectl config current-context 2>/dev/null || echo "")
@@ -74,6 +91,7 @@ execute_kubeconfig() {
 # ─── Execution Pipeline ───────────────────────────────────────────────────────
 run_step "1. Enable GCP Cluster APIs" verify_apis execute_apis 30
 run_step "2. Provision GKE Cluster" verify_cluster execute_cluster 10
-run_step "3. Connect kubectl" verify_kubeconfig execute_kubeconfig 5
+run_step "3. Provision gVisor Node Pool" verify_gvisor_pool execute_gvisor_pool 10
+run_step "4. Connect kubectl" verify_kubeconfig execute_kubeconfig 5
 
 echo -e "\n${C_MAGENTA}${C_BOLD}>>>  GKE Infrastructure Provisioned Successfully!  <<<${C_RESET}"
