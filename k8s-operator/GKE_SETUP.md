@@ -110,26 +110,10 @@ kubectl annotate serviceaccount $KSA_NAME --namespace $NAMESPACE iam.gke.io/gcp-
 ```bash
 export PROJECT_ID="<PROJECT_ID>"
 
-# Uncomment one line below based on the agent you want to configure.
-
 # export AGENT_GSA_DISPLAY_NAME="Platform Agent GSA"
-# export AGENT_GSA_DISPLAY_NAME="ClusterOperator Agent GSA"
-# export AGENT_GSA_DISPLAY_NAME="DevTeam Agent GSA"
-
-
-# Uncomment one line below based on the agent you want to configure.
-
 # export GSA_NAME="platform-agent-gsa"
-# export GSA_NAME="clusteroperator-agent-gsa"
-# export GSA_NAME="devteam-agent-gsa"
-
 export GSA_EMAIL="${GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
-
-# Uncomment one line below based on the agent you want to configure.
-
 # export KSA_NAME="platform-agent"
-# export KSA_NAME="clusteroperator-agent"
-# export KSA_NAME="devteam-agent"
 
 gcloud iam service-accounts create $GSA_NAME \
     --project=$PROJECT_ID \

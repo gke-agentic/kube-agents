@@ -95,9 +95,9 @@ func mergeEnvVars(defaults []corev1.EnvVar, custom []corev1.EnvVar) []corev1.Env
 	return merged
 }
 
-// ReconcileHostServiceAccount is a shared helper to reconcile a ServiceAccount on the host cluster
+// ReconcileServiceAccount is a shared helper to reconcile a ServiceAccount on the host cluster
 // with Server-Side Apply and OwnerReference.
-func ReconcileHostServiceAccount(
+func ReconcileServiceAccount(
 	ctx context.Context,
 	c client.Client,
 	scheme *runtime.Scheme,
