@@ -13,7 +13,7 @@ if [[ "$SCRIPT_DIR" == */scripts ]]; then
 else
   OPERATOR_DIR="${SCRIPT_DIR}"
 fi
-VARS_FILE="${SCRIPT_DIR}/vars.sh"
+VARS_FILE="${VARS_FILE:-${SCRIPT_DIR}/vars.sh}"
 
 # ─── ANSI Colors ──────────────────────────────────────────────────────────────
 source "${SCRIPT_DIR}/common.sh" "$@"

@@ -1,0 +1,39 @@
+model:
+  provider: custom
+  model: model-default
+  default: model-default
+  base_url: http://litellm.${TARGET_NAMESPACE}.svc.cluster.local/v1
+  api_key: none
+
+# MCP Servers configuration.
+mcp_servers:
+  platform_control:
+    command: "/opt/hermes/.venv/bin/python3"
+    args:
+      - "/opt/defaults/scripts/platform_mcp_server.py"
+    connect_timeout: 120
+    timeout: 300
+    env:
+      KUBERNETES_SERVICE_HOST: "${KUBERNETES_SERVICE_HOST}"
+      KUBERNETES_SERVICE_PORT: "${KUBERNETES_SERVICE_PORT}"
+      HERMES_HOME: "${HERMES_HOME}"
+      GOOGLE_CHAT_PROJECT_ID: "${GOOGLE_CHAT_PROJECT_ID}"
+      GOOGLE_CHAT_SUBSCRIPTION_NAME: "${GOOGLE_CHAT_SUBSCRIPTION_NAME}"
+      API_SERVER_KEY: "${API_SERVER_KEY}"
+
+# Explicitly list platform_toolsets
+platform_toolsets:
+  cli:
+    - hermes-cli
+    - mcp-platform_control
+  api_server:
+    - hermes-api-server
+    - mcp-platform_control
+
+# Approval settings. Allow dangerous commands to execute autonomously in cron watchdogs.
+approvals:
+  cron_mode: approve
+
+# Enable DuckDuckGo web search
+web:
+  backend: "ddgs"

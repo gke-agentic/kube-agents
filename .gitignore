@@ -7,3 +7,5 @@ bin/
 k8s-operator/cover.out
 agentharness.yaml
 vars.sh
+spike/manifests-regular/agent.yaml
+spike/manifests-regular/config.yaml

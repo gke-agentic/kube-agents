@@ -7,7 +7,7 @@
 if [ -z "${SCRIPT_DIR:-}" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fi
-VARS_FILE="${SCRIPT_DIR}/vars.sh"
+VARS_FILE="${VARS_FILE:-${SCRIPT_DIR}/vars.sh}"
 
 # ─── ANSI Colors ──────────────────────────────────────────────────────────────
 C_CYAN='\033[96m'
