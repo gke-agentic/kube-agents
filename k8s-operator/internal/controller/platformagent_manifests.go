@@ -243,6 +243,11 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 		pullPolicy = *agent.Spec.Deployment.ImagePullPolicy
 	}
 
+	var initContainers []corev1.Container
+	if agent.Spec.Deployment != nil && len(agent.Spec.Deployment.InitContainers) > 0 {
+		initContainers = agent.Spec.Deployment.InitContainers
+	}
+
 	homeDir := "/opt/data"
 	if agent.Spec.Harness != nil && agent.Spec.Harness.Hermes != nil && agent.Spec.Harness.Hermes.AgentHome != "" {
 		homeDir = agent.Spec.Harness.Hermes.AgentHome
@@ -394,6 +399,7 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 					},
 				},
 				Spec: corev1.PodSpec{
+					InitContainers:     initContainers,
 					ServiceAccountName: saName,
 					SecurityContext: &corev1.PodSecurityContext{
 						FSGroup: &fsGroup,

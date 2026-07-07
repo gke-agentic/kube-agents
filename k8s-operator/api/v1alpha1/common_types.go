@@ -89,6 +89,10 @@ type DeploymentSpec struct {
 	// +listMapKey=name
 	// +optional
 	Env []corev1.EnvVar `json:"env,omitempty"`
+
+	// InitContainers specifies standard Kubernetes initContainers to run before the agent starts.
+	// +optional
+	InitContainers []corev1.Container `json:"initContainers,omitempty"`
 }
 
 // SecuritySpec manages Kubernetes RBAC, Pod Security, and Cloud Workload Identity,
