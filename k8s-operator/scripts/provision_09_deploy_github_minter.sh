@@ -35,7 +35,6 @@ init_var "CLUSTER_NAME" "platform-agent-host" "Enter GKE Cluster Name"
 init_var "KMS_KEYRING" "github-token-minter-keyring" "Enter Cloud KMS Keyring Name"
 init_var "KMS_KEY" "github-token-minter-key" "Enter Cloud KMS Key Name"
 
-
 # ─── Step Implementations ─────────────────────────────────────────────────────
 
 # Step 1: Connect kubectl
@@ -108,6 +107,8 @@ execute_github_minter() {
       --role="roles/cloudkms.signerVerifier" \
       --project="${PROJECT_ID}" \
       --quiet >/dev/null || return 1
+  
+  export GOOGLE_CLOUD_QUOTA_PROJECT="${PROJECT_ID}"
 
   # Import PEM if provided and no version exists
   local versions=$(gcloud kms keys versions list --key="${KMS_KEY}" --keyring="${KMS_KEYRING}" --location="${REGION}" --project="${PROJECT_ID}" --filter="state=ENABLED" --format="value(name)" 2>/dev/null)
