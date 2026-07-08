@@ -3,21 +3,36 @@ name: Operator Tests
 on:
   pull_request:
     branches: [main]
-    paths:
-      - "k8s-operator/**"
-      - ".github/workflows/k8s-operator-test.yml"
   push:
-    paths:
-      - "k8s-operator/**"
-      - ".github/workflows/k8s-operator-test.yml"
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      operator: ${{ steps.filter.outputs.operator }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Detect changes
+        id: filter
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            operator:
+              - "k8s-operator/**"
+              - ".github/workflows/k8s-operator-test.yml"
+
   test:
     name: Run Controller Tests
+    needs: changes
+    if: needs.changes.outputs.operator == 'true'
     runs-on: ubuntu-latest
 
     steps:
