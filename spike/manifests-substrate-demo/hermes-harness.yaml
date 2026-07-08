@@ -1,0 +1,26 @@
+# ==============================================================================
+# 🤖 Official Demo Hermes AgentHarness on kagent Substrate
+# ==============================================================================
+# Why this file exists & why it was changed:
+# Provisions a remote execution environment on Substrate running Hermes.
+# 1. Per official docs (kagent.dev/docs/kagent/examples/agent-harness), we omit
+#    spec.image / workloadImage so kagent defaults to the official Hermes image.
+# 2. Changed modelConfigRef to 'gemini-model-config' to point to our newly created
+#    Gemini 3.5 Flash ModelConfig (avoiding Helm built-in conflicts).
+# 3. Added 'runtime: substrate' and 'gatewayToken' (SUBSTRATE_DEMO_SPIKE_LOG.md Step 12)
+#    to satisfy kagent 0.9.9 CRD validation requirements for Substrate harnesses.
+# ==============================================================================
+apiVersion: kagent.dev/v1alpha2
+kind: AgentHarness
+metadata:
+  name: hermes-shell
+  namespace: kagent
+spec:
+  runtime: substrate
+  backend: hermes
+  description: "Official demo Hermes harness on kagent Substrate (default upstream image)"
+  modelConfigRef: gemini-model-config
+  substrate:
+    gatewayToken: "hermes-demo-token-secret-12345"
+    workerPoolRef:
+      name: kagent-default

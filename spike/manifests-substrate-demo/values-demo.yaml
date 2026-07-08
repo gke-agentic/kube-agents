@@ -1,0 +1,64 @@
+# ==============================================================================
+# 🤖 kagent Helm Values for Isolated Substrate Demo Spike
+# ==============================================================================
+# Override top-level registry from cr.kagent.dev to ghcr.io
+registry: "ghcr.io"
+# Why this file exists:
+# By default, the kagent Helm chart deploys 10+ built-in agents (k8s-agent,
+# istio-agent, promql-agent, etc.) and heavy MCP servers (grafana, querydoc).
+# On a demo cluster, these extra workloads consume excessive CPU/Memory and
+# cause core pods (like PostgreSQL and kagent-controller) to hang in Pending
+# or Error status.
+# We explicitly disable all non-essential default agents and MCP tools so the
+# cluster compute is 100% dedicated to our Substrate + Hermes demo harness.
+# ==============================================================================
+
+# Disable all default built-in agents to prevent resource starvation
+k8s-agent:
+  enabled: false
+kgateway-agent:
+  enabled: false
+istio-agent:
+  enabled: false
+promql-agent:
+  enabled: false
+observability-agent:
+  enabled: false
+argo-rollouts-agent:
+  enabled: false
+helm-agent:
+  enabled: false
+cilium-policy-agent:
+  enabled: false
+cilium-manager-agent:
+  enabled: false
+cilium-debug-agent:
+  enabled: false
+
+# Disable default heavy MCP tools
+grafana-mcp:
+  enabled: false
+querydoc:
+  enabled: false
+
+# Substrate Integration Settings
+controller:
+  substrate:
+    enabled: true
+    ateApiEndpoint: "dns:///api.ate-system.svc:443"
+    ateApiInsecure: true
+
+# Configure Substrate worker pool with official v0.0.7 image and sane limits
+substrateWorkerPool:
+  create: true
+  # Updated to stable v0.0.6 per 1:1 official walkthrough (SUBSTRATE_DEMO_SPIKE_LOG.md Step 7):
+  # Matches the v0.0.6 Substrate data plane release per kagent.dev/docs/kagent/examples/agent-substrate.
+  ateomImage: "ghcr.io/kagent-dev/substrate/ateom-gvisor:v0.0.6"
+  template:
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "1Gi"
+      limits:
+        cpu: "2"
+        memory: "4Gi"

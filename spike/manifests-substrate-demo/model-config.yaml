@@ -1,0 +1,24 @@
+# ==============================================================================
+# 🤖 ModelConfig Manifest for Substrate Demo Harness
+# ==============================================================================
+# Why this file exists & why it was changed:
+# Defines the AI model provider and API key secret mapping for our demo harness.
+# 1. We name it 'gemini-model-config' to avoid conflicting with Helm's built-in
+#    'default-model-config'.
+# 2. Changed due to kagent v1alpha2 schema validation: the API key secret must be
+#    specified using 'apiKeySecret' (name) and 'apiKeySecretKey' (key in secret).
+# 3. Changed 'provider: gemini' to 'provider: Gemini' (capital G) due to CRD enum
+#    validation: supported values are case-sensitive ("Anthropic", "OpenAI",
+#    "Gemini", "GeminiVertexAI", etc.).
+# 4. Uses model: gemini-3.5-flash per user instruction to test the latest Gemini model.
+# ==============================================================================
+apiVersion: kagent.dev/v1alpha2
+kind: ModelConfig
+metadata:
+  name: gemini-model-config
+  namespace: kagent
+spec:
+  provider: Gemini
+  model: gemini-3.5-flash
+  apiKeySecret: platform-agent-secrets
+  apiKeySecretKey: GEMINI_API_KEY
