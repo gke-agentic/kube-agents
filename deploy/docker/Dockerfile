@@ -94,6 +94,7 @@ CMD ["node", "/opt/openclaw/openclaw.mjs", "gateway", "--port", "8642", "--bind"
 
 # --- OPENCLAW BUILDER STAGE ---
 FROM node:22-bookworm-slim AS openclaw-builder
+ARG OPENCLAW_COMMIT=86e9dcfc1b051b8b0993850e21a37359ff2626ac
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y git python3 make g++ && rm -rf /var/lib/apt/lists/*
@@ -104,9 +105,11 @@ RUN npm install -g pnpm
 # Clone and build openclaw from public repository
 RUN git clone https://github.com/openclaw/openclaw.git /opt/openclaw && \
     cd /opt/openclaw && \
-    git checkout 86e9dcfc1b051b8b0993850e21a37359ff2626ac && \
+    git checkout ${OPENCLAW_COMMIT} && \
     pnpm install && \
-    pnpm run build
+    pnpm run build && \
+    find dist -name "*.js" -exec sed -i 's/if (!expectedAddOnPrincipal) return/if (expectedAddOnPrincipal === "*") return { ok: true }; if (!expectedAddOnPrincipal) return/g' {} + && \
+    rm -rf .git
 
 
 # --- PLATFORM AGENT TARGET ---

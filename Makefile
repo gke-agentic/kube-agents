@@ -19,7 +19,9 @@ docker-build-agents: $(foreach agent,$(AGENTS),docker-build-$(agent))
 
 .PHONY: $(foreach agent,$(AGENTS),docker-build-$(agent))
 $(foreach agent,$(AGENTS),docker-build-$(agent)): docker-build-%:
-	docker build --target $* -t $(REPO)/$*-agent:latest -f deploy/docker/Dockerfile .
+	docker build \
+		--build-arg OPENCLAW_COMMIT=$(OPENCLAW_COMMIT) \
+		--target $* -t $(REPO)/$*-agent:latest -f deploy/docker/Dockerfile .
 
 # Docker pushes
 docker-push: docker-push-agents

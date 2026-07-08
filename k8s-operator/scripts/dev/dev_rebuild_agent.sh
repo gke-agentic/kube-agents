@@ -111,10 +111,22 @@ verify_image_build() {
   return 1
 }
 execute_image_build() {
+  local openclaw_commit="86e9dcfc1b051b8b0993850e21a37359ff2626ac"
+  if [ -f "${REPO_ROOT}/tags.env" ]; then
+    source "${REPO_ROOT}/tags.env"
+    openclaw_commit="${OPENCLAW_COMMIT:-$openclaw_commit}"
+  fi
+
   if [ "$USE_LOCAL_BUILD" -eq 1 ]; then
     print_info "Building '$AGENT_TARGET' agent locally using Docker..."
     docker pull "$IMAGE_URI_LATEST" 2>/dev/null || true
-    DOCKER_BUILDKIT=1 docker build --cache-from "$IMAGE_URI_LATEST" --build-arg BUILDKIT_INLINE_CACHE=1 --target "$AGENT_TARGET" -t "$IMAGE_URI" -t "$IMAGE_URI_LATEST" -f "${REPO_ROOT}/deploy/docker/Dockerfile" "${REPO_ROOT}" || return 1
+    DOCKER_BUILDKIT=1 docker build \
+        --cache-from "$IMAGE_URI_LATEST" \
+        --build-arg BUILDKIT_INLINE_CACHE=1 \
+        --build-arg OPENCLAW_COMMIT="${openclaw_commit}" \
+        --target "$AGENT_TARGET" \
+        -t "$IMAGE_URI" -t "$IMAGE_URI_LATEST" \
+        -f "${REPO_ROOT}/deploy/docker/Dockerfile" "${REPO_ROOT}" || return 1
     print_info "Pushing images to Artifact Registry ($IMAGE_BASE)..."
     docker push "$IMAGE_URI" || return 1
     docker push "$IMAGE_URI_LATEST" || return 1
@@ -125,7 +137,7 @@ execute_image_build() {
       cd "${REPO_ROOT}"
       gcloud builds submit \
           --config="deploy/docker/cloudbuild.yaml" \
-          --substitutions="_IMAGE_URI=${IMAGE_URI},_IMAGE_URI_LATEST=${IMAGE_URI_LATEST},_TARGET=${AGENT_TARGET}" \
+          --substitutions="_IMAGE_URI=${IMAGE_URI},_IMAGE_URI_LATEST=${IMAGE_URI_LATEST},_TARGET=${AGENT_TARGET},_OPENCLAW_COMMIT=${openclaw_commit}" \
           --project="${PROJECT_ID}" \
           .
     ) || return 1

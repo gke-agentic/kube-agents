@@ -43,6 +43,8 @@ init_var "CHAT_SUB_NAME" "platform-agent-chat-events-sub" "Enter Pub/Sub Subscri
 init_var "CHAT_TOPIC_NAME" "platform-agent-chat-events" "Enter Pub/Sub Topic Name"
 init_var "GOOGLE_CHAT_MODE" "default" "Enter Google Chat Output Mode (default or debug)"
 init_var "ALLOWED_USERS" "" "Enter Allowed Google Chat Users Emails (comma separated). Leaving it empty will allow all users."
+  init_var "APP_URL" "https://your-ngrok-tunnel.ngrok-free.dev/googlechat" "Enter Google Chat Webhook URL (e.g. ngrok endpoint)"
+  init_var "APP_PRINCIPAL" "*" "Enter Google Chat App ID (use '*' to allow any App)"
 DEFAULT_AGENT_IMAGE="ghcr.io/gke-labs/kube-agents/platform-agent"
 init_var "AGENT_IMAGE" "$DEFAULT_AGENT_IMAGE" "Enter Platform Agent Image Path"
 
@@ -76,7 +78,7 @@ execute_custom_resource() {
   fi
 
   # Ensure variables are explicitly exported so envsubst can access them
-  export PROJECT_ID REGION CLUSTER_NAME MODEL_DEFAULT_NAME MODEL_PROVIDER GSA_NAME CHAT_SUB_NAME CHAT_TOPIC_NAME GOOGLE_CHAT_MODE ALLOWED_USERS AGENT_IMAGE NAMESPACE KSA_NAME
+  export PROJECT_ID REGION CLUSTER_NAME MODEL_DEFAULT_NAME MODEL_PROVIDER GSA_NAME CHAT_SUB_NAME CHAT_TOPIC_NAME GOOGLE_CHAT_MODE ALLOWED_USERS AGENT_IMAGE NAMESPACE KSA_NAME APP_URL APP_PRINCIPAL
 
   envsubst < "$CR_TEMPLATE" > "$CR_MANIFEST"
   

@@ -21,6 +21,8 @@ steps:
       - "$_TARGET"
       - "--build-arg"
       - "BUILDKIT_INLINE_CACHE=1"
+      - "--build-arg"
+      - "OPENCLAW_COMMIT=$_OPENCLAW_COMMIT"
       - "."
 images:
   - "$_IMAGE_URI"
@@ -29,3 +31,4 @@ substitutions:
   _IMAGE_URI: ""
   _IMAGE_URI_LATEST: ""
   _TARGET: ""
+  _OPENCLAW_COMMIT: "86e9dcfc1b051b8b0993850e21a37359ff2626ac"
