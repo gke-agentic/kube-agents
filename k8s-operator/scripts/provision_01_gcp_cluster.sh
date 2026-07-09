@@ -72,6 +72,7 @@ execute_gvisor_pool() {
       --region="$REGION" \
       --machine-type="e2-standard-4" \
       --num-nodes=1 \
+      --image-type="cos_containerd" \
       --sandbox=type=gvisor \
       --workload-metadata=GKE_METADATA \
       --project="$PROJECT_ID" \

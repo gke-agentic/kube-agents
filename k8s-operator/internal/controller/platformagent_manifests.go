@@ -432,7 +432,7 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 	}
 
 	var runtimeClassName *string
-	if agent.Spec.Deployment != nil && agent.Spec.Deployment.RuntimeClassName != nil {
+	if agent.Spec.Deployment != nil {
 		runtimeClassName = agent.Spec.Deployment.RuntimeClassName
 	}
 
