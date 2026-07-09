@@ -62,7 +62,8 @@ graph TD
    - Configures `kubectl` credentials and creates the target namespace.
 
 1a. **[provision_01a_gvisor_nodepool.sh](scripts/provision_01a_gvisor_nodepool.sh)** (Optional):
-   - Provisions a dedicated GKE Sandbox (gVisor) node pool (`gvisor-pool`) for secure container runtime isolation. Executed automatically by `provision.sh` if `ENABLE_GVISOR=true`.
+
+- Provisions a dedicated GKE Sandbox (gVisor) node pool (`gvisor-pool`) for secure container runtime isolation. Executed automatically by `provision.sh` if `ENABLE_GVISOR=true`.
 
 2. **[provision_02_gcp_gke_operator.sh](scripts/provision_02_gcp_gke_operator.sh)**:
    - Registers operator CRDs onto the GKE cluster.
@@ -171,7 +172,8 @@ graph TD
    - Removes the Operator controller manager deployment and CRDs.
 
 8a. **[teardown_01a_gvisor_nodepool.sh](scripts/teardown_01a_gvisor_nodepool.sh)** (Optional Standalone):
-   - Deletes the dedicated GKE Sandbox (gVisor) node pool (`gvisor-pool`) from Google Cloud to deprovision compute without destroying the cluster.
+
+- Deletes the dedicated GKE Sandbox (gVisor) node pool (`gvisor-pool`) from Google Cloud to deprovision compute without destroying the cluster.
 
 9. **[dev/teardown_dev_01_gcp_artifact_registry.sh](scripts/dev/teardown_dev_01_gcp_artifact_registry.sh)**:
 

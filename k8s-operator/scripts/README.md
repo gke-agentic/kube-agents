@@ -28,7 +28,7 @@ When any script is run:
    - Enables GKE/GCP Service APIs (`container.googleapis.com` and `cloudresourcemanager.googleapis.com`).
    - Provisions a GKE Standard Cluster with Workload Identity enabled.
    - Points `kubectl` credentials to the new cluster and creates the target namespace.
-1a. **[provision_01a_gvisor_nodepool.sh](provision_01a_gvisor_nodepool.sh)** (Optional)
+     1a. **[provision_01a_gvisor_nodepool.sh](provision_01a_gvisor_nodepool.sh)** (Optional)
    - Provisions a dedicated GKE Sandbox (gVisor) node pool (`gvisor-pool`). Executed automatically if `ENABLE_GVISOR=true`.
 2. **[provision_02_gcp_gke_operator.sh](provision_02_gcp_gke_operator.sh)**
    - Installs Custom Resource Definitions (CRDs) for `PlatformAgent`.
