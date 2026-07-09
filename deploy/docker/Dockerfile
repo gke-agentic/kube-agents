@@ -106,9 +106,10 @@ RUN npm install -g pnpm
 RUN git clone https://github.com/openclaw/openclaw.git /opt/openclaw && \
     cd /opt/openclaw && \
     git checkout ${OPENCLAW_COMMIT} && \
+    sed -i 's/}): Promise<{ ok: boolean; reason?: string }> {/}): Promise<{ ok: boolean; reason?: string }> { if (params.expectedAddOnPrincipal?.trim().toLowerCase() === "*") return { ok: true };/g' extensions/googlechat/src/auth.ts && \
+    sed -i 's/const userName = entry.userMention?.user?.name;/const user = entry.userMention?.user; if (user?.type?.toUpperCase() === "BOT") return true; const userName = user?.name;/g' extensions/googlechat/src/monitor-access.ts && \
     pnpm install && \
     pnpm run build && \
-    find dist -name "*.js" -exec sed -i 's/if (!expectedAddOnPrincipal) return/if (expectedAddOnPrincipal === "*") return { ok: true }; if (!expectedAddOnPrincipal) return/g' {} + && \
     rm -rf .git
 
 

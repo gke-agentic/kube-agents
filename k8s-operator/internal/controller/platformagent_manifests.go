@@ -201,6 +201,7 @@ func renderConfigJSON(agent *agentv1alpha1.PlatformAgent) string {
 				"enabled":      true,
 				"audienceType": audienceType,
 				"audience":     audience,
+				"groupPolicy":  "open",
 				"dm": map[string]any{
 					"policy":    "open",
 					"allowFrom": []string{"*"},
