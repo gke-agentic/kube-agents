@@ -83,12 +83,12 @@ execute_github_minter() {
 
   # Ensure KMS Keyring and Key exist.
   print_info "Ensuring KMS Keyring '${KMS_KEYRING}' exists..."
-  if ! gcloud kms keyrings describe "${KMS_KEYRING}" --location="${REGION}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
-    gcloud kms keyrings create "${KMS_KEYRING}" --location="${REGION}" --project="${PROJECT_ID}" || return 1
+  if ! gcloud kms keyrings describe "${KMS_KEYRING}" --location="${REGION}" --project="${PROJECT_ID}" --quiet >/dev/null 2>&1; then
+    gcloud kms keyrings create "${KMS_KEYRING}" --location="${REGION}" --project="${PROJECT_ID}" --quiet || return 1
   fi
 
   print_info "Ensuring KMS Key '${KMS_KEY}' exists..."
-  if ! gcloud kms keys describe "${KMS_KEY}" --location="${REGION}" --keyring="${KMS_KEYRING}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  if ! gcloud kms keys describe "${KMS_KEY}" --location="${REGION}" --keyring="${KMS_KEYRING}" --project="${PROJECT_ID}" --quiet >/dev/null 2>&1; then
     gcloud kms keys create "${KMS_KEY}" \
         --location="${REGION}" \
         --keyring="${KMS_KEYRING}" \
@@ -96,7 +96,8 @@ execute_github_minter() {
         --default-algorithm=rsa-sign-pkcs1-2048-sha256 \
         --import-only \
         --skip-initial-version-creation \
-        --project="${PROJECT_ID}" || return 1
+        --project="${PROJECT_ID}" \
+        --quiet || return 1
   fi
 
   # Ensure the Minter GSA has signer permissions on the KMS key.
@@ -111,7 +112,7 @@ execute_github_minter() {
       --quiet >/dev/null || return 1
 
   # Import PEM if provided and no version exists
-  local versions=$(gcloud kms keys versions list --key="${KMS_KEY}" --keyring="${KMS_KEYRING}" --location="${REGION}" --project="${PROJECT_ID}" --filter="state=ENABLED" --format="value(name)" 2>/dev/null)
+  local versions=$(gcloud kms keys versions list --key="${KMS_KEY}" --keyring="${KMS_KEYRING}" --location="${REGION}" --project="${PROJECT_ID}" --filter="state=ENABLED" --format="value(name)" --quiet 2>/dev/null)
   if [ -z "$versions" ]; then
     if [ -n "${GITHUB_PEM_PATH}" ] && [ -f "${GITHUB_PEM_PATH}" ]; then
       if ! command -v go &>/dev/null; then
@@ -160,7 +161,7 @@ execute_github_minter() {
   # Resolve the latest active (ENABLED) version number dynamically
   print_info "Resolving active KMS key version number..."
   local active_version
-  active_version=$(gcloud kms keys versions list --key="${KMS_KEY}" --keyring="${KMS_KEYRING}" --location="${REGION}" --project="${PROJECT_ID}" --filter="state=ENABLED" --format="value(name)" 2>/dev/null | awk -F'/' '{print $NF}' | sort -n | tail -n 1)
+  active_version=$(gcloud kms keys versions list --key="${KMS_KEY}" --keyring="${KMS_KEYRING}" --location="${REGION}" --project="${PROJECT_ID}" --filter="state=ENABLED" --format="value(name)" --quiet 2>/dev/null | awk -F'/' '{print $NF}' | sort -n | tail -n 1)
   
   if [ -n "$active_version" ]; then
     export KMS_KEY_VERSION="${active_version}"
