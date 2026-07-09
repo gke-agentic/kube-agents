@@ -369,7 +369,70 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 		envVars = mergeEnvVars(envVars, agent.Spec.Deployment.Env)
 	}
 
-	containers := []corev1.Container{
+	containers := buildDefaultContainers(image, pullPolicy, envVars, homeDir)
+	if len(sidecars) > 0 {
+		containers = append(containers, sidecars...)
+	}
+
+	volumes := buildDefaultVolumes(agent)
+	if len(sidecarVolumes) > 0 {
+		volumes = append(volumes, sidecarVolumes...)
+	}
+
+	return &appsv1.Deployment{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "apps/v1",
+			Kind:       "Deployment",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      agent.Name + "-gateway",
+			Namespace: agent.Namespace,
+			Labels: map[string]string{
+				"app": agent.Name + "-gateway",
+			},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Strategy: appsv1.DeploymentStrategy{
+				Type: appsv1.RecreateDeploymentStrategyType,
+			},
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app": agent.Name + "-gateway",
+				},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						"app": agent.Name + "-gateway",
+					},
+					Annotations: map[string]string{
+						"kubeagents.x-k8s.io/config-hash":            configHash,
+						"kubeagents.x-k8s.io/fluent-bit-config-hash": fluentBitHash,
+						"kubeagents.x-k8s.io/settings-config-hash":   settingsConfigHash,
+					},
+				},
+				Spec: corev1.PodSpec{
+					InitContainers:     initContainers,
+					ServiceAccountName: saName,
+					SecurityContext: &corev1.PodSecurityContext{
+						FSGroup: &fsGroup,
+						// UID 10000 matches canonical 'hermes' runtime user in upstream image (NousResearch/hermes-agent Dockerfile line 92)
+						RunAsUser:      ptr.To(int64(10000)),
+						RunAsNonRoot:   ptr.To(true),
+						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+					},
+					Containers: containers,
+					Volumes:    volumes,
+				},
+			},
+		},
+	}
+}
+
+// buildDefaultContainers generates the default containers for PlatformAgent
+func buildDefaultContainers(image string, pullPolicy corev1.PullPolicy, envVars []corev1.EnvVar, homeDir string) []corev1.Container {
+	return []corev1.Container{
 		{
 			Name:            "platform-agent",
 			Image:           image,
@@ -469,11 +532,11 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 			},
 		},
 	}
-	if len(sidecars) > 0 {
-		containers = append(containers, sidecars...)
-	}
+}
 
-	volumes := []corev1.Volume{
+// buildDefaultVolumes generates the default volumes for PlatformAgent
+func buildDefaultVolumes(agent *agentv1alpha1.PlatformAgent) []corev1.Volume {
+	return []corev1.Volume{
 		{
 			Name: "platform-agent-data-vol",
 			VolumeSource: corev1.VolumeSource{
@@ -518,59 +581,6 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 						Name: agent.Name + "-settings",
 					},
 					DefaultMode: ptr.To(int32(0644)),
-				},
-			},
-		},
-	}
-	if len(sidecarVolumes) > 0 {
-		volumes = append(volumes, sidecarVolumes...)
-	}
-
-	return &appsv1.Deployment{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "apps/v1",
-			Kind:       "Deployment",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      agent.Name + "-gateway",
-			Namespace: agent.Namespace,
-			Labels: map[string]string{
-				"app": agent.Name + "-gateway",
-			},
-		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
-			Strategy: appsv1.DeploymentStrategy{
-				Type: appsv1.RecreateDeploymentStrategyType,
-			},
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"app": agent.Name + "-gateway",
-				},
-			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app": agent.Name + "-gateway",
-					},
-					Annotations: map[string]string{
-						"kubeagents.x-k8s.io/config-hash":            configHash,
-						"kubeagents.x-k8s.io/fluent-bit-config-hash": fluentBitHash,
-						"kubeagents.x-k8s.io/settings-config-hash":   settingsConfigHash,
-					},
-				},
-				Spec: corev1.PodSpec{
-					InitContainers:     initContainers,
-					ServiceAccountName: saName,
-					SecurityContext: &corev1.PodSecurityContext{
-						FSGroup: &fsGroup,
-						// UID 10000 matches canonical 'hermes' runtime user in upstream image (NousResearch/hermes-agent Dockerfile line 92)
-						RunAsUser:      ptr.To(int64(10000)),
-						RunAsNonRoot:   ptr.To(true),
-						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
-					},
-					Containers: containers,
-					Volumes:    volumes,
 				},
 			},
 		},
