@@ -346,19 +346,33 @@ func (r *PlatformAgentReconciler) updateStatusReady(ctx context.Context, agent *
 		newAddress = fmt.Sprintf("%s.%s.svc.cluster.local", svc.Name, svc.Namespace)
 	}
 
-	// Determine Phase
+	// Determine Phase and Condition
 	newPhase := "Provisioning"
+	condStatus := metav1.ConditionFalse
+	condReason := "Provisioning"
+	condMsg := "Waiting for deployment replicas to be ready"
 	if errDep == nil && dep.Status.ReadyReplicas > 0 {
 		newPhase = "Ready"
+		condStatus = metav1.ConditionTrue
+		condReason = "Reconciled"
+		condMsg = "Agent deployment and resources are fully reconciled"
+	} else if errDep == nil {
+		if phaseOverride, reasonOverride, msgOverride := r.getDeploymentStatusDetails(ctx, agent, dep); reasonOverride != "Provisioning" {
+			newPhase = phaseOverride
+			condReason = reasonOverride
+			condMsg = msgOverride
+		}
 	}
 
+	existingCond := meta.FindStatusCondition(agent.Status.Conditions, "Ready")
 	// Check if anything actually changed
 	if agent.Status.Phase == newPhase &&
 		agent.Status.DeploymentStatus.Name == newDeploymentStatusName &&
 		agent.Status.DeploymentStatus.ReadyReplicas == newDeploymentStatusReadyReplicas &&
 		agent.Status.StorageStatus.Bound == newStorageStatusBound &&
 		agent.Status.ServiceStatus.Endpoint == newServiceStatusEndpoint &&
-		agent.Status.Address == newAddress {
+		agent.Status.Address == newAddress &&
+		existingCond != nil && existingCond.Status == condStatus && existingCond.Reason == condReason && existingCond.Message == condMsg {
 		return nil
 	}
 
@@ -373,14 +387,6 @@ func (r *PlatformAgentReconciler) updateStatusReady(ctx context.Context, agent *
 	now := metav1.Now()
 	agent.Status.LastReconcileTime = &now
 
-	condStatus := metav1.ConditionFalse
-	condReason := "Provisioning"
-	condMsg := "Waiting for deployment replicas to be ready"
-	if newPhase == "Ready" {
-		condStatus = metav1.ConditionTrue
-		condReason = "Reconciled"
-		condMsg = "Agent deployment and resources are fully reconciled"
-	}
 	condition := metav1.Condition{
 		Type:               "Ready",
 		Status:             condStatus,
@@ -391,6 +397,48 @@ func (r *PlatformAgentReconciler) updateStatusReady(ctx context.Context, agent *
 	meta.SetStatusCondition(&agent.Status.Conditions, condition)
 
 	return r.Status().Update(ctx, agent)
+}
+
+func (r *PlatformAgentReconciler) getDeploymentStatusDetails(ctx context.Context, agent *agentv1alpha1.PlatformAgent, dep *appsv1.Deployment) (phase string, reason string, message string) {
+	phase = "Provisioning"
+	reason = "Provisioning"
+	message = "Waiting for deployment replicas to be ready"
+
+	podList := &corev1.PodList{}
+	err := r.List(ctx, podList, client.InNamespace(agent.Namespace), client.MatchingLabels{"app": agent.Name + "-gateway"})
+	if err != nil || len(podList.Items) == 0 {
+		return phase, reason, message
+	}
+
+	for _, pod := range podList.Items {
+		// 1. Check container waiting states (CrashLoopBackOff, ImagePullBackOff, ErrImagePull, etc.)
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.State.Waiting != nil && cs.State.Waiting.Reason != "" && cs.State.Waiting.Reason != "ContainerCreating" {
+				phase = "Degraded"
+				reason = cs.State.Waiting.Reason
+				message = fmt.Sprintf("Container '%s' in pod %s is waiting: %s - %s", cs.Name, pod.Name, cs.State.Waiting.Reason, cs.State.Waiting.Message)
+				return phase, reason, message
+			}
+		}
+
+		// 2. Check pod scheduling conditions (Unschedulable due to node selector/affinity/gVisor)
+		for _, cond := range pod.Status.Conditions {
+			if cond.Type == corev1.PodScheduled && cond.Status == corev1.ConditionFalse && cond.Reason == "Unschedulable" {
+				phase = "Degraded"
+				reason = "PodUnschedulable"
+				if agent.Spec.Deployment != nil && agent.Spec.Deployment.RuntimeClassName != nil && *agent.Spec.Deployment.RuntimeClassName != "" {
+					rcName := *agent.Spec.Deployment.RuntimeClassName
+					message = fmt.Sprintf("Pod %s is waiting to be scheduled because no nodes in the cluster match the requested RuntimeClass '%s'. For GKE Standard, enable GKE Sandbox by provisioning a gVisor node pool.", pod.Name, rcName)
+				} else {
+					cleanMsg := strings.TrimSuffix(strings.TrimSpace(cond.Message), ".")
+					message = fmt.Sprintf("Pod %s cannot be scheduled onto any available node: %s.", pod.Name, cleanMsg)
+				}
+				return phase, reason, message
+			}
+		}
+	}
+
+	return phase, reason, message
 }
 
 func (r *PlatformAgentReconciler) validateRuntimeClass(ctx context.Context, agent *agentv1alpha1.PlatformAgent) error {

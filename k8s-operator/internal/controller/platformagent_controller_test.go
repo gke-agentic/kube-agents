@@ -409,3 +409,119 @@ func TestPlatformAgentReconciler_Reconcile_ExistingRuntimeClass(t *testing.T) {
 		t.Errorf("expected Status.Phase not Degraded when RuntimeClass exists, got %q", updatedAgent.Status.Phase)
 	}
 }
+
+func TestPlatformAgentReconciler_Reconcile_PodUnschedulable(t *testing.T) {
+	scheme := setupScheme()
+
+	rc := &nodev1.RuntimeClass{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "gvisor",
+		},
+		Handler: "gvisor",
+	}
+
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent-unschedulable",
+			Namespace: "test-ns",
+		},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			AgentSpec: agentv1alpha1.AgentSpec{
+				Deployment: &agentv1alpha1.DeploymentSpec{
+					RuntimeClassName: ptr.To("gvisor"),
+				},
+			},
+		},
+	}
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent-unschedulable-gateway-pod",
+			Namespace: "test-ns",
+			Labels: map[string]string{
+				"app": "test-agent-unschedulable-gateway",
+			},
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodPending,
+			Conditions: []corev1.PodCondition{
+				{
+					Type:    corev1.PodScheduled,
+					Status:  corev1.ConditionFalse,
+					Reason:  "Unschedulable",
+					Message: "0/3 nodes are available: 3 node(s) didn't match Pod's node affinity/selector. no new claims to deallocate, preemption: 0/3 nodes are available: 3 Preemption is not helpful for scheduling.",
+				},
+			},
+		},
+	}
+
+	interceptors := interceptor.Funcs{
+		Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			if patch.Type() == types.ApplyPatchType {
+				key := client.ObjectKeyFromObject(obj)
+				existing := obj.DeepCopyObject().(client.Object)
+				err := cl.Get(ctx, key, existing)
+				if err != nil {
+					if errors.IsNotFound(err) {
+						return cl.Create(ctx, obj)
+					}
+					return err
+				}
+				obj.SetResourceVersion(existing.GetResourceVersion())
+				return cl.Update(ctx, obj)
+			}
+			return cl.Patch(ctx, obj, patch, opts...)
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(agent, rc, pod).
+		WithStatusSubresource(&agentv1alpha1.PlatformAgent{}).
+		WithInterceptorFuncs(interceptors).
+		Build()
+
+	r := &PlatformAgentReconciler{
+		Client: cl,
+		Scheme: scheme,
+	}
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      "test-agent-unschedulable",
+			Namespace: "test-ns",
+		},
+	}
+	ctx := context.Background()
+
+	// 1st Reconcile: Adds finalizer
+	_, err := r.Reconcile(ctx, req)
+	if err != nil {
+		t.Fatalf("Reconcile 1 failed: %v", err)
+	}
+
+	// 2nd Reconcile: Validates RuntimeClass, creates Deployment, and inspects unschedulable Pod
+	_, err = r.Reconcile(ctx, req)
+	if err != nil {
+		t.Fatalf("Reconcile 2 failed: %v", err)
+	}
+
+	updatedAgent := &agentv1alpha1.PlatformAgent{}
+	if err := cl.Get(ctx, req.NamespacedName, updatedAgent); err != nil {
+		t.Fatalf("failed to get agent: %v", err)
+	}
+
+	if updatedAgent.Status.Phase != "Degraded" {
+		t.Errorf("expected Status.Phase Degraded when Pod is Unschedulable, got %q", updatedAgent.Status.Phase)
+	}
+
+	cond := meta.FindStatusCondition(updatedAgent.Status.Conditions, "Ready")
+	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != "PodUnschedulable" {
+		t.Fatalf("expected Ready condition False with reason PodUnschedulable, got %v", cond)
+	}
+
+	expectedMsg := "Pod test-agent-unschedulable-gateway-pod is waiting to be scheduled because no nodes in the cluster match the requested RuntimeClass 'gvisor'. For GKE Standard, enable GKE Sandbox by provisioning a gVisor node pool."
+	if cond.Message != expectedMsg {
+		t.Errorf("expected polished condition message:\n%q\ngot:\n%q", expectedMsg, cond.Message)
+	}
+}
