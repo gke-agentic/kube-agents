@@ -107,6 +107,30 @@ type DeploymentSpec struct {
 	// +listMapKey=name
 	// +optional
 	SidecarVolumes []corev1.Volume `json:"sidecarVolumes,omitempty"`
+
+	// ExtraVolumes specifies custom volumes to mount for the main container.
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	ExtraVolumes []corev1.Volume `json:"extraVolumes,omitempty"`
+
+	// ExtraVolumeMounts specifies custom volume mounts for the main container.
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	ExtraVolumeMounts []corev1.VolumeMount `json:"extraVolumeMounts,omitempty"`
+
+	// PodAnnotations specifies custom annotations to apply to the generated Pod template.
+	// +optional
+	PodAnnotations map[string]string `json:"podAnnotations,omitempty"`
+
+	// ScaleToZero scales the deployment replicas to 0 when true (useful for saving costs during idle periods).
+	// +optional
+	ScaleToZero *bool `json:"scaleToZero,omitempty"`
+
+	// HighAvailability scales the deployment to multiple replicas and applies rolling update strategies when true.
+	// +optional
+	HighAvailability *bool `json:"highAvailability,omitempty"`
 }
 
 // SecuritySpec manages Kubernetes RBAC, Pod Security, and Cloud Workload Identity,

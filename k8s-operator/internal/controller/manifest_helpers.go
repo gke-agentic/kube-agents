@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"strings"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -94,6 +95,43 @@ func mergeEnvVars(defaults []corev1.EnvVar, custom []corev1.EnvVar) []corev1.Env
 	}
 
 	return merged
+}
+
+// mergeAnnotations merges custom annotations into defaults. Custom annotations override defaults with the same key.
+func mergeAnnotations(defaults map[string]string, custom map[string]string) map[string]string {
+	if len(custom) == 0 {
+		return defaults
+	}
+	merged := make(map[string]string, len(defaults)+len(custom))
+	for k, v := range defaults {
+		merged[k] = v
+	}
+	for k, v := range custom {
+		merged[k] = v
+	}
+	return merged
+}
+
+// resolveDeploymentReplicasAndStrategy determines the replica count and deployment strategy
+// based on ScaleToZero and HighAvailability settings in the DeploymentSpec.
+func resolveDeploymentReplicasAndStrategy(deployment *agentv1alpha1.DeploymentSpec) (int32, appsv1.DeploymentStrategy) {
+	replicas := int32(1)
+	strategy := appsv1.DeploymentStrategy{
+		Type: appsv1.RecreateDeploymentStrategyType,
+	}
+
+	if deployment != nil {
+		if deployment.HighAvailability != nil && *deployment.HighAvailability {
+			replicas = int32(2)
+			strategy = appsv1.DeploymentStrategy{
+				Type: appsv1.RollingUpdateDeploymentStrategyType,
+			}
+		}
+		if deployment.ScaleToZero != nil && *deployment.ScaleToZero {
+			replicas = int32(0)
+		}
+	}
+	return replicas, strategy
 }
 
 // ReconcileHostServiceAccount is a shared helper to reconcile a ServiceAccount on the host cluster
