@@ -30,5 +30,5 @@ spec:
       allowedUsers:
         - "${ALLOWED_USERS}"
       homeChannel: ""
-      appURL: "${APP_URL}"
+      appUrl: "${APP_URL}"
       appPrincipal: "${APP_PRINCIPAL}"
