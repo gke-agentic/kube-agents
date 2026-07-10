@@ -146,18 +146,17 @@ get_platform_agent_roles() {
   local admin_roles="roles/container.clusterAdmin roles/container.admin roles/monitoring.admin roles/logging.admin roles/iam.serviceAccountUser roles/iam.securityReviewer"
 
   case "${PLATFORM_AGENT_PERMISSION_SET:-gke-admin}" in
-    read-only)
+    read-only) 
       echo "$read_only_roles"
       ;;
-    custom)
+    custom) 
       echo "${PLATFORM_AGENT_CUSTOM_ROLES:-}"
       ;;
-    gke-admin|*)
+    gke-admin|*) 
       echo "$admin_roles"
       ;;
   esac
 }
-
 verify_platform_agent() {
   local -a roles=($(get_platform_agent_roles))
   verify_agent_iam "${PLATFORM_AGENT_KSA_NAME}" "${PLATFORM_AGENT_GSA_NAME}" "${roles[@]}"
