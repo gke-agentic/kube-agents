@@ -30,11 +30,12 @@ jobs:
       GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
       MODEL_DEFAULT_NAME: ${{ vars.MODEL_DEFAULT_NAME }}
       MODEL_PROVIDER: ${{ vars.MODEL_PROVIDER }}
+      GOOGLE_CHAT_MODE: ${{ vars.GOOGLE_CHAT_MODE }}
       NAMESPACE: "kubeagents-system"
     steps:
       - name: Verify Env Variables
         run: |
-          for var in GCP_PROJECT_ID GCP_REGION GCP_WORKLOAD_IDENTITY_PROVIDER GCP_SERVICE_ACCOUNT GKE_CLUSTER_NAME MODEL_DEFAULT_NAME MODEL_PROVIDER; do
+          for var in GCP_PROJECT_ID GCP_REGION GCP_WORKLOAD_IDENTITY_PROVIDER GCP_SERVICE_ACCOUNT GKE_CLUSTER_NAME MODEL_DEFAULT_NAME MODEL_PROVIDER GOOGLE_CHAT_MODE; do
             if [ -z "${!var}" ]; then
               echo "::error::Required environment variable $var is not set."
               exit 1
@@ -53,7 +54,16 @@ jobs:
       GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
       MODEL_DEFAULT_NAME: ${{ vars.MODEL_DEFAULT_NAME }}
       MODEL_PROVIDER: ${{ vars.MODEL_PROVIDER }}
-      NAMESPACE: "kubeagents-system"
+      GOOGLE_CHAT_ENABLED: ${{ vars.GOOGLE_CHAT_ENABLED }}
+      GOOGLE_CHAT_MODE: ${{ vars.GOOGLE_CHAT_MODE }}
+      CHAT_SUB_NAME: ${{ vars.CHAT_SUB_NAME }}
+      CHAT_TOPIC_NAME: ${{ vars.CHAT_TOPIC_NAME }}
+      ALLOWED_USERS: ${{ vars.ALLOWED_USERS }}
+      SLACK_ENABLED: ${{ vars.SLACK_ENABLED }}
+      SLACK_ALLOWED_USERS: ${{ vars.SLACK_ALLOWED_USERS }}
+      SLACK_HOME_CHANNEL: ${{ vars.SLACK_HOME_CHANNEL }}
+      SLACK_HOME_CHANNEL_NAME: ${{ vars.SLACK_HOME_CHANNEL_NAME }}
+      NAMESPACE: "${{vars.NAMESPACE}}"
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -86,24 +96,20 @@ jobs:
           TAG_NAME: ${{ github.event.workflow_run.head_sha }}
         run: |
           REPO_DOWNCASE=$(echo "$REPO_NAME" | tr '[:upper:]' '[:lower:]')
-          echo "IMAGE_REPO=ghcr.io/${REPO_DOWNCASE}/${PACKAGE_NAME}" >> "$GITHUB_ENV"
-          echo "IMAGE_TAG=${TAG_NAME}" >> "$GITHUB_ENV"
+          echo "AGENT_IMAGE=ghcr.io/${REPO_DOWNCASE}/${PACKAGE_NAME}" >> "$GITHUB_ENV"
+          echo "AGENT_TAG=${TAG_NAME}" >> "$GITHUB_ENV"
 
       - name: Perform Agent Redeployment
         env:
           PROJECT_ID: ${{ env.GCP_PROJECT_ID }}
           REGION: ${{ env.GCP_REGION }}
           CLUSTER_NAME: ${{ env.GKE_CLUSTER_NAME }}
-          MODEL_PROVIDER: ${{ env.MODEL_PROVIDER }}
-          MODEL_DEFAULT_NAME: ${{ env.MODEL_DEFAULT_NAME }}
-          AGENT_IMAGE: "${{ env.IMAGE_REPO }}:${{ env.IMAGE_TAG }}"
-          CHAT_SUB_NAME: "platform-agent-chat-events-sub"
-          CHAT_TOPIC_NAME: "platform-agent-chat-events"
-          ALLOWED_USERS: "[]"
+          AGENT_IMAGE: "${{ env.AGENT_IMAGE }}"
+          AGENT_TAG: "${{ env.AGENT_TAG }}"
         run: |
-          echo "Redeploying platform-agent via provision_06 with image: $AGENT_IMAGE"
+          echo "Redeploying platform-agent via provision_07 with image: ${AGENT_IMAGE}:${AGENT_TAG}"
           cd k8s-operator
-          make gcp-provision-06-deploy ARGS="--no-confirm"
+          make gcp-provision-07-deploy ARGS="--no-confirm"
 
       - name: Verify Agent Deployment Rollout
         run: |

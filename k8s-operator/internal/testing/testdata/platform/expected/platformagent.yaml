@@ -87,6 +87,27 @@ spec:
 status: {}
 ---
 apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  creationTimestamp: null
+  name: system-metadata
+  namespace: kubeagents-system
+  ownerReferences:
+  - apiVersion: kubeagents.x-k8s.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: PlatformAgent
+    name: platformagent
+    uid: ""
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+status: {}
+---
+apiVersion: v1
 data:
   openclaw.json: |-
     {
@@ -149,7 +170,8 @@ data:
                 ],
                 "policy": "open"
               },
-              "enabled": true
+              "enabled": true,
+              "groupPolicy": "open"
             }
           },
           "defaultAccount": "default",
@@ -329,7 +351,7 @@ spec:
   template:
     metadata:
       annotations:
-        kubeagents.x-k8s.io/config-hash: d5f9a5e1d987908a80ffb77353c56f491ec63f266a5fbf852f0b8a6b31dfa17c
+        kubeagents.x-k8s.io/config-hash: 951ddf806f56872d155939a136b25f0a28f406f22538509155b50947cfe06224
         kubeagents.x-k8s.io/fluent-bit-config-hash: 50923ab88e1741b0729c37837bc1c3869161e3161402494a4ee64cda3a2cfab3
         kubeagents.x-k8s.io/settings-config-hash: 9db5b5cb5fb8ec46b1a0572ef34ef27e0ed44dc1f787a4a76bdd75f43934c8b9
       creationTimestamp: null
@@ -458,6 +480,9 @@ spec:
         name: fluent-bit-config
       - emptyDir: {}
         name: fluent-bit-state
+      - name: system-metadata
+        persistentVolumeClaim:
+          claimName: system-metadata
       - configMap:
           defaultMode: 420
           name: platformagent-settings

@@ -23,6 +23,7 @@ import (
 	"path"
 	"strings"
 
+	agentv1alpha1 "github.com/gke-labs/kube-agents/k8s-operator/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -30,7 +31,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
-	agentv1alpha1 "github.com/gke-labs/kube-agents/k8s-operator/api/v1alpha1"
 )
 
 // buildConfigMap generates the ConfigMap manifest containing openclaw.json
@@ -49,7 +49,6 @@ func buildConfigMap(agent *agentv1alpha1.PlatformAgent) *corev1.ConfigMap {
 		},
 	}
 }
-
 
 // buildSettingsConfigMap generates the ConfigMap manifest containing SETTINGS.md
 func buildSettingsConfigMap(agent *agentv1alpha1.PlatformAgent) *corev1.ConfigMap {
@@ -92,10 +91,10 @@ type OpenClawConfig struct {
 		} `json:"defaults"`
 	} `json:"agents"`
 	Gateway struct {
-		Mode      string `json:"mode"`
-		Port      int    `json:"port"`
-		Bind      string `json:"bind"`
-		Auth      struct {
+		Mode string `json:"mode"`
+		Port int    `json:"port"`
+		Bind string `json:"bind"`
+		Auth struct {
 			Mode  string `json:"mode"`
 			Token string `json:"token"`
 		} `json:"auth"`
@@ -210,16 +209,28 @@ func renderConfigJSON(agent *agentv1alpha1.PlatformAgent) string {
 			if gchat.AppPrincipal != "" {
 				defaultAccountConfig["appPrincipal"] = gchat.AppPrincipal
 			}
-			openclaw_config.Channels = map[string]any{
-				"googlechat": map[string]any{
-					"enabled":        true,
-					"defaultAccount": "default",
-					"accounts": map[string]any{
-						"default": defaultAccountConfig,
-					},
+			if openclaw_config.Channels == nil {
+				openclaw_config.Channels = make(map[string]any)
+			}
+			openclaw_config.Channels["googlechat"] = map[string]any{
+				"enabled":        true,
+				"defaultAccount": "default",
+				"accounts": map[string]any{
+					"default": defaultAccountConfig,
 				},
 			}
 			openclaw_config.Plugins.Entries["googlechat"] = map[string]any{"enabled": true}
+		}
+		if slack := integration.Slack; slack != nil && slack.Enabled != nil && *slack.Enabled {
+			if openclaw_config.Channels == nil {
+				openclaw_config.Channels = make(map[string]any)
+			}
+			openclaw_config.Channels["slack"] = map[string]any{
+				"enabled":  true,
+				"botToken": "${SLACK_BOT_TOKEN}",
+				"appToken": "${SLACK_APP_TOKEN}",
+			}
+			openclaw_config.Plugins.Entries["slack"] = map[string]any{"enabled": true}
 		}
 	}
 
@@ -258,7 +269,7 @@ func renderConfigJSON(agent *agentv1alpha1.PlatformAgent) string {
 	openclaw_config.Diagnostics.Otel.Traces = true
 	openclaw_config.Diagnostics.Otel.Metrics = false
 	openclaw_config.Diagnostics.Otel.Logs = false
-	
+
 	// Logging output destination configuration
 	openclaw_config.Logging.Level = "info"
 	openclaw_config.Logging.File = "/opt/data/logs/openclaw.log"
@@ -320,6 +331,27 @@ func buildPVC(agent *agentv1alpha1.PlatformAgent) *corev1.PersistentVolumeClaim 
 	}
 }
 
+func buildSystemPVC(agent *agentv1alpha1.PlatformAgent) *corev1.PersistentVolumeClaim {
+	return &corev1.PersistentVolumeClaim{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "PersistentVolumeClaim",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "system-metadata",
+			Namespace: agent.Namespace,
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: resource.MustParse("1Gi"),
+				},
+			},
+		},
+	}
+}
+
 // buildDeployment generates the Deployment manifest for the agent payload
 func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHash, settingsConfigHash string) *appsv1.Deployment {
 	replicas := int32(1)
@@ -336,6 +368,15 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 	pullPolicy := corev1.PullAlways
 	if agent.Spec.Deployment != nil && agent.Spec.Deployment.ImagePullPolicy != nil {
 		pullPolicy = *agent.Spec.Deployment.ImagePullPolicy
+	}
+
+	var initContainers []corev1.Container
+	var sidecars []corev1.Container
+	var sidecarVolumes []corev1.Volume
+	if agent.Spec.Deployment != nil {
+		initContainers = agent.Spec.Deployment.InitContainers
+		sidecars = agent.Spec.Deployment.Sidecars
+		sidecarVolumes = agent.Spec.Deployment.SidecarVolumes
 	}
 
 	homeDir := "/opt/data"
@@ -447,10 +488,216 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 				})
 			}
 		}
+		if slack := integration.Slack; slack != nil && slack.Enabled != nil && *slack.Enabled {
+			envVars = append(envVars,
+				corev1.EnvVar{
+					Name:      "SLACK_BOT_TOKEN",
+					ValueFrom: &corev1.EnvVarSource{SecretKeyRef: defaultSecretRef(slack.BotTokenSecretRef, "platform-agent-secrets", "SLACK_BOT_TOKEN")},
+				},
+				corev1.EnvVar{
+					Name:      "SLACK_APP_TOKEN",
+					ValueFrom: &corev1.EnvVarSource{SecretKeyRef: defaultSecretRef(slack.AppTokenSecretRef, "platform-agent-secrets", "SLACK_APP_TOKEN")},
+				},
+			)
+			allowAllSlack := len(slack.AllowedUsers) == 0 || (len(slack.AllowedUsers) == 1 && slack.AllowedUsers[0] == "")
+			if allowAllSlack {
+				envVars = append(envVars, corev1.EnvVar{
+					Name:  "SLACK_ALLOW_ALL_USERS",
+					Value: "true",
+				})
+			} else {
+				envVars = append(envVars, corev1.EnvVar{
+					Name:  "SLACK_ALLOWED_USERS",
+					Value: strings.Join(slack.AllowedUsers, ","),
+				})
+			}
+			if slack.HomeChannel != "" {
+				envVars = append(envVars, corev1.EnvVar{
+					Name:  "SLACK_HOME_CHANNEL",
+					Value: slack.HomeChannel,
+				})
+			}
+			if slack.HomeChannelName != "" {
+				envVars = append(envVars, corev1.EnvVar{
+					Name:  "SLACK_HOME_CHANNEL_NAME",
+					Value: slack.HomeChannelName,
+				})
+			}
+		}
 	}
 
 	if agent.Spec.Deployment != nil && len(agent.Spec.Deployment.Env) > 0 {
 		envVars = mergeEnvVars(envVars, agent.Spec.Deployment.Env)
+	}
+
+	var runtimeClassName *string
+	if agent.Spec.Deployment != nil {
+		runtimeClassName = agent.Spec.Deployment.RuntimeClassName
+	}
+
+	containers := []corev1.Container{
+		{
+			Name:            "platform-agent",
+			Image:           image,
+			ImagePullPolicy: pullPolicy,
+			Ports: []corev1.ContainerPort{
+				{
+					Name:          "dashboard",
+					ContainerPort: 9119,
+				},
+				{
+					Name:          "api",
+					ContainerPort: 8642,
+				},
+			},
+			Env: envVars,
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("500m"),
+					corev1.ResourceMemory: resource.MustParse("2Gi"),
+				},
+				Limits: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("2"),
+					corev1.ResourceMemory: resource.MustParse("4Gi"),
+				},
+			},
+			VolumeMounts: []corev1.VolumeMount{
+				{
+					Name:      "platform-agent-data-vol",
+					MountPath: homeDir,
+				},
+				{
+					Name:      "platform-agent-config-vol",
+					MountPath: fmt.Sprintf("%s/openclaw.json", homeDir),
+					SubPath:   "openclaw.json",
+				},
+				{
+					Name:      "settings-volume",
+					MountPath: path.Join(homeDir, "SETTINGS.md"),
+					SubPath:   "SETTINGS.md",
+					ReadOnly:  true,
+				},
+			},
+			SecurityContext: &corev1.SecurityContext{
+				AllowPrivilegeEscalation: ptr.To(false),
+				Capabilities: &corev1.Capabilities{
+					Drop: []corev1.Capability{"ALL"},
+				},
+			},
+		},
+		{
+			Name:  "fluent-bit",
+			Image: "fluent/fluent-bit:5.0.7",
+			Args: []string{
+				"-c",
+				"/fluent-bit/etc/fluent-bit.conf",
+			},
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU:              resource.MustParse("100m"),
+					corev1.ResourceEphemeralStorage: resource.MustParse("1Gi"),
+					corev1.ResourceMemory:           resource.MustParse("128Mi"),
+				},
+				Limits: corev1.ResourceList{
+					corev1.ResourceCPU:              resource.MustParse("500m"),
+					corev1.ResourceEphemeralStorage: resource.MustParse("1Gi"),
+					corev1.ResourceMemory:           resource.MustParse("256Mi"),
+				},
+			},
+			VolumeMounts: []corev1.VolumeMount{
+				{
+					Name:      "platform-agent-data-vol",
+					MountPath: "/opt/data",
+					ReadOnly:  true,
+				},
+				{
+					Name:      "fluent-bit-config",
+					MountPath: "/fluent-bit/etc/fluent-bit.conf",
+					SubPath:   "fluent-bit.conf",
+					ReadOnly:  true,
+				},
+				{
+					Name:      "fluent-bit-config",
+					MountPath: "/fluent-bit/etc/parsers.conf",
+					SubPath:   "parsers.conf",
+					ReadOnly:  true,
+				},
+				{
+					Name:      "fluent-bit-state",
+					MountPath: "/fluent-bit/state",
+				},
+			},
+			SecurityContext: &corev1.SecurityContext{
+				AllowPrivilegeEscalation: ptr.To(false),
+				Capabilities: &corev1.Capabilities{
+					Drop: []corev1.Capability{"ALL"},
+				},
+			},
+		},
+	}
+	if len(sidecars) > 0 {
+		containers = append(containers, sidecars...)
+	}
+
+	volumes := []corev1.Volume{
+		{
+			Name: "platform-agent-data-vol",
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: agent.Name + "-data",
+				},
+			},
+		},
+		{
+			Name: "platform-agent-config-vol",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: agent.Name + "-config",
+					},
+					DefaultMode: ptr.To(int32(0755)),
+				},
+			},
+		},
+		{
+			Name: "fluent-bit-config",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: agent.Name + "-fluent-bit-config",
+					},
+					DefaultMode: ptr.To(int32(420)),
+				},
+			},
+		},
+		{
+			Name: "fluent-bit-state",
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		},
+		{
+			Name: "system-metadata",
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: "system-metadata",
+				},
+			},
+		},
+		{
+			Name: "settings-volume",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: agent.Name + "-settings",
+					},
+					DefaultMode: ptr.To(int32(0644)),
+				},
+			},
+		},
+	}
+	if len(sidecarVolumes) > 0 {
+		volumes = append(volumes, sidecarVolumes...)
 	}
 
 	return &appsv1.Deployment{
@@ -487,6 +734,8 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 					},
 				},
 				Spec: corev1.PodSpec{
+					RuntimeClassName:   runtimeClassName,
+					InitContainers:     initContainers,
 					ServiceAccountName: saName,
 					SecurityContext: &corev1.PodSecurityContext{
 						FSGroup: &fsGroup,
@@ -495,155 +744,8 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 						RunAsNonRoot:   ptr.To(true),
 						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},
-					Containers: []corev1.Container{
-						{
-							Name:            "platform-agent",
-							Image:           image,
-							ImagePullPolicy: pullPolicy,
-							Ports: []corev1.ContainerPort{
-								{
-									Name:          "dashboard",
-									ContainerPort: 9119,
-								},
-								{
-									Name:          "api",
-									ContainerPort: 8642,
-								},
-							},
-							Env: envVars,
-							Resources: corev1.ResourceRequirements{
-								Requests: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("500m"),
-									corev1.ResourceMemory: resource.MustParse("2Gi"),
-								},
-								Limits: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("2"),
-									corev1.ResourceMemory: resource.MustParse("4Gi"),
-								},
-							},
-							VolumeMounts: []corev1.VolumeMount{
-								{
-									Name:      "platform-agent-data-vol",
-									MountPath: homeDir,
-								},
-								{
-									Name:      "platform-agent-config-vol",
-									MountPath: fmt.Sprintf("%s/openclaw.json", homeDir),
-									SubPath:   "openclaw.json",
-								},
-								{
-									Name:      "settings-volume",
-									MountPath: path.Join(homeDir, "SETTINGS.md"),
-									SubPath:   "SETTINGS.md",
-									ReadOnly:  true,
-								},
-							},
-							SecurityContext: &corev1.SecurityContext{
-								AllowPrivilegeEscalation: ptr.To(false),
-								Capabilities: &corev1.Capabilities{
-									Drop: []corev1.Capability{"ALL"},
-								},
-							},
-						},
-						{
-							Name:  "fluent-bit",
-							Image: "fluent/fluent-bit:5.0.7",
-							Args: []string{
-								"-c",
-								"/fluent-bit/etc/fluent-bit.conf",
-							},
-							Resources: corev1.ResourceRequirements{
-								Requests: corev1.ResourceList{
-									corev1.ResourceCPU:              resource.MustParse("100m"),
-									corev1.ResourceEphemeralStorage: resource.MustParse("1Gi"),
-									corev1.ResourceMemory:           resource.MustParse("128Mi"),
-								},
-								Limits: corev1.ResourceList{
-									corev1.ResourceCPU:              resource.MustParse("500m"),
-									corev1.ResourceEphemeralStorage: resource.MustParse("1Gi"),
-									corev1.ResourceMemory:           resource.MustParse("256Mi"),
-								},
-							},
-							VolumeMounts: []corev1.VolumeMount{
-								{
-									Name:      "platform-agent-data-vol",
-									MountPath: "/opt/data",
-									ReadOnly:  true,
-								},
-								{
-									Name:      "fluent-bit-config",
-									MountPath: "/fluent-bit/etc/fluent-bit.conf",
-									SubPath:   "fluent-bit.conf",
-									ReadOnly:  true,
-								},
-								{
-									Name:      "fluent-bit-config",
-									MountPath: "/fluent-bit/etc/parsers.conf",
-									SubPath:   "parsers.conf",
-									ReadOnly:  true,
-								},
-								{
-									Name:      "fluent-bit-state",
-									MountPath: "/fluent-bit/state",
-								},
-							},
-							SecurityContext: &corev1.SecurityContext{
-								AllowPrivilegeEscalation: ptr.To(false),
-								Capabilities: &corev1.Capabilities{
-									Drop: []corev1.Capability{"ALL"},
-								},
-							},
-						},
-					},
-					Volumes: []corev1.Volume{
-						{
-							Name: "platform-agent-data-vol",
-							VolumeSource: corev1.VolumeSource{
-								PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-									ClaimName: agent.Name + "-data",
-								},
-							},
-						},
-						{
-							Name: "platform-agent-config-vol",
-							VolumeSource: corev1.VolumeSource{
-								ConfigMap: &corev1.ConfigMapVolumeSource{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: agent.Name + "-config",
-									},
-									DefaultMode: ptr.To(int32(0755)),
-								},
-							},
-						},
-						{
-							Name: "fluent-bit-config",
-							VolumeSource: corev1.VolumeSource{
-								ConfigMap: &corev1.ConfigMapVolumeSource{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: agent.Name + "-fluent-bit-config",
-									},
-									DefaultMode: ptr.To(int32(420)),
-								},
-							},
-						},
-						{
-							Name: "fluent-bit-state",
-							VolumeSource: corev1.VolumeSource{
-								EmptyDir: &corev1.EmptyDirVolumeSource{},
-							},
-						},
-						{
-							Name: "settings-volume",
-							VolumeSource: corev1.VolumeSource{
-								ConfigMap: &corev1.ConfigMapVolumeSource{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: agent.Name + "-settings",
-									},
-									DefaultMode: ptr.To(int32(0644)),
-								},
-							},
-						},
-					},
+					Containers: containers,
+					Volumes:    volumes,
 				},
 			},
 		},

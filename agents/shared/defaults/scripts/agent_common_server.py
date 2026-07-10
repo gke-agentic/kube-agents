@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Annotated
 from pydantic import Field
 from mcp.server.fastmcp import FastMCP
+from session_manager import SessionManager
 
 # Initialize the FastMCP server
 mcp = FastMCP("Agent Common")
@@ -77,6 +78,8 @@ def call_agent(
     Directly and securely execute a synchronous, token-authorized completions API call
     to the Platform Agent across the fleet (only 'platform' is a valid target).
     """
+    context = SESSION_MANAGER.current_context(session_id)
+
     try:
         endpoint, api_key = resolve_agent_credentials(target_agent_id)
     except Exception as e:

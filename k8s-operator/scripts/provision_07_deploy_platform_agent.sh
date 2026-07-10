@@ -33,6 +33,7 @@ DEFAULT_PROJECT_ID="${ACTIVE_PROJECT:-$(whoami 2>/dev/null || echo "user")}"
 init_var "PROJECT_ID" "$DEFAULT_PROJECT_ID" "Enter Target GCP Project ID"
 init_var "REGION" "us-east4" "Enter GKE GCP Region"
 init_var "CLUSTER_NAME" "platform-agent-host" "Enter GKE Cluster Name"
+init_var "ENABLE_GVISOR" "false" "Enable GKE Sandbox (gVisor) runtime isolation? (true/false)"
 init_var_model_provider
 
 # Map global state variables to expected template variables
@@ -47,6 +48,7 @@ init_var "ALLOWED_USERS" "" "Enter Allowed Google Chat Users Emails (comma separ
   init_var "APP_PRINCIPAL" "*" "Enter Google Chat App ID (use '*' to allow any App)"
 DEFAULT_AGENT_IMAGE="ghcr.io/gke-labs/kube-agents/platform-agent"
 init_var "AGENT_IMAGE" "$DEFAULT_AGENT_IMAGE" "Enter Platform Agent Image Path"
+init_var "AGENT_TAG" "latest" "Enter Platform Agent Image Tag"
 
 # ─── Step Implementations ─────────────────────────────────────────────────────
 
@@ -77,11 +79,44 @@ execute_custom_resource() {
     exit 1
   fi
 
+  # Determine if Google Chat should be enabled
+  if [ "${GOOGLE_CHAT_ENABLED:-false}" = "true" ]; then
+    export GOOGLE_CHAT_ENABLED="true"
+    if [ -z "${CHAT_TOPIC_NAME}" ] || [ -z "${CHAT_SUB_NAME}" ]; then
+      print_warning "Google Chat integration is enabled but CHAT_TOPIC_NAME or CHAT_SUB_NAME is missing. It may not work properly."
+    fi
+  else
+    export GOOGLE_CHAT_ENABLED="false"
+    export CHAT_TOPIC_NAME=""
+    export CHAT_SUB_NAME=""
+    export ALLOWED_USERS=""
+  fi
+
+  # Determine if Slack should be enabled
+  if [ "${SLACK_ENABLED:-false}" = "true" ]; then
+    export SLACK_ENABLED="true"
+    if [ -z "${SLACK_BOT_TOKEN}" ] || [ -z "${SLACK_APP_TOKEN}" ]; then
+      print_warning "Slack integration is enabled but SLACK_BOT_TOKEN or SLACK_APP_TOKEN is missing. It may not work properly."
+    fi
+  else
+    export SLACK_ENABLED="false"
+    export SLACK_BOT_TOKEN=""
+    export SLACK_APP_TOKEN=""
+    export SLACK_ALLOWED_USERS=""
+    export SLACK_HOME_CHANNEL=""
+    export SLACK_HOME_CHANNEL_NAME=""
+  fi
+
   # Ensure variables are explicitly exported so envsubst can access them
   export PROJECT_ID REGION CLUSTER_NAME MODEL_DEFAULT_NAME MODEL_PROVIDER GSA_NAME CHAT_SUB_NAME CHAT_TOPIC_NAME GOOGLE_CHAT_MODE ALLOWED_USERS AGENT_IMAGE NAMESPACE KSA_NAME APP_URL APP_PRINCIPAL
 
   envsubst < "$CR_TEMPLATE" > "$CR_MANIFEST"
   
+  if [[ "$ENABLE_GVISOR" =~ ^(true|yes|1)$ ]]; then
+    print_info "Enabling gVisor runtimeClassName in '$CR_MANIFEST'..."
+    sed -i.bak 's/# runtimeClassName: gvisor/runtimeClassName: gvisor/g' "$CR_MANIFEST" && rm -f "${CR_MANIFEST}.bak"
+  fi
+
   print_info "Applying 'platform-agent' Custom Resource to the GKE cluster..."
   kubectl apply -f "$CR_MANIFEST"
 }

@@ -94,6 +94,24 @@ func TestBuildPVC(t *testing.T) {
 	}
 }
 
+func TestBuildSystemPVC(t *testing.T) {
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+		},
+	}
+
+	pvc := buildSystemPVC(agent)
+	if pvc.Name != "system-metadata" {
+		t.Errorf("expected PVC name system-metadata, got %s", pvc.Name)
+	}
+	storageReq := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+	if storageReq.String() != "1Gi" {
+		t.Errorf("expected storage request 1Gi, got %s", storageReq.String())
+	}
+}
+
 func TestBuildDeployment(t *testing.T) {
 	agent := &agentv1alpha1.PlatformAgent{
 		ObjectMeta: metav1.ObjectMeta{
@@ -103,10 +121,11 @@ func TestBuildDeployment(t *testing.T) {
 		Spec: agentv1alpha1.PlatformAgentSpec{
 			AgentSpec: agentv1alpha1.AgentSpec{
 				Deployment: &agentv1alpha1.DeploymentSpec{
-					Image:           "gcr.io/my-proj/agent",
-					Tag:             ptr.To("v1.0.0"),
-					ImagePullPolicy: ptr.To(corev1.PullAlways),
-					BrowserArgs:     []string{"--no-sandbox", "--disable-gpu"},
+					RuntimeClassName: ptr.To("gvisor"),
+					Image:            "gcr.io/my-proj/agent",
+					Tag:              ptr.To("v1.0.0"),
+					ImagePullPolicy:  ptr.To(corev1.PullAlways),
+					BrowserArgs:      []string{"--no-sandbox", "--disable-gpu"},
 					Env: []corev1.EnvVar{
 						{
 							Name:  "CUSTOM_VAR",
@@ -121,6 +140,30 @@ func TestBuildDeployment(t *testing.T) {
 							Value: "new-custom-value",
 						},
 					},
+					InitContainers: []corev1.Container{
+						{
+							Name:  "init-git",
+							Image: "git-image:latest",
+						},
+						{
+							Name:  "init-bootstrap",
+							Image: "busybox:1.36",
+						},
+					},
+					Sidecars: []corev1.Container{
+						{
+							Name:  "my-sidecar",
+							Image: "sidecar-image:latest",
+						},
+					},
+					SidecarVolumes: []corev1.Volume{
+						{
+							Name: "sidecar-vol",
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{},
+							},
+						},
+					},
 				},
 				Security: &agentv1alpha1.SecuritySpec{
 					ServiceAccountName: "custom-sa",
@@ -130,7 +173,7 @@ func TestBuildDeployment(t *testing.T) {
 				ClusterName: "gke-cluster",
 				Location:    "us-east1",
 				OpenClaw: &agentv1alpha1.OpenClawSpec{
-					AgentHome:        "/var/agent",
+					AgentHome: "/var/agent",
 					GatewayTokenSecretRef: &corev1.SecretKeySelector{
 						LocalObjectReference: corev1.LocalObjectReference{Name: "secrets"},
 						Key:                  "api-key",
@@ -172,8 +215,40 @@ func TestBuildDeployment(t *testing.T) {
 		t.Errorf("expected settings-config-hash annotation to be ijkl9012, got %s", dep.Spec.Template.Annotations["kubeagents.x-k8s.io/settings-config-hash"])
 	}
 
-	if len(dep.Spec.Template.Spec.Containers) != 2 {
-		t.Errorf("expected 2 containers, got %d", len(dep.Spec.Template.Spec.Containers))
+	if dep.Spec.Template.Spec.RuntimeClassName == nil || *dep.Spec.Template.Spec.RuntimeClassName != "gvisor" {
+		t.Errorf("expected RuntimeClassName gvisor, got %v", dep.Spec.Template.Spec.RuntimeClassName)
+	}
+
+	if len(dep.Spec.Template.Spec.Containers) != 3 {
+		t.Errorf("expected 3 containers, got %d", len(dep.Spec.Template.Spec.Containers))
+	} else {
+		sidecarC := dep.Spec.Template.Spec.Containers[2]
+		if sidecarC.Name != "my-sidecar" {
+			t.Errorf("expected sidecar name my-sidecar, got %s", sidecarC.Name)
+		}
+		if sidecarC.Image != "sidecar-image:latest" {
+			t.Errorf("expected sidecar image sidecar-image:latest, got %s", sidecarC.Image)
+		}
+	}
+
+	if len(dep.Spec.Template.Spec.InitContainers) != 2 {
+		t.Errorf("expected 2 init containers, got %d", len(dep.Spec.Template.Spec.InitContainers))
+	} else {
+		initC1 := dep.Spec.Template.Spec.InitContainers[0]
+		if initC1.Name != "init-git" {
+			t.Errorf("expected first init container name init-git, got %s", initC1.Name)
+		}
+		if initC1.Image != "git-image:latest" {
+			t.Errorf("expected first init container image git-image:latest, got %s", initC1.Image)
+		}
+
+		initC2 := dep.Spec.Template.Spec.InitContainers[1]
+		if initC2.Name != "init-bootstrap" {
+			t.Errorf("expected second init container name init-bootstrap, got %s", initC2.Name)
+		}
+		if initC2.Image != "busybox:1.36" {
+			t.Errorf("expected second init container image busybox:1.36, got %s", initC2.Image)
+		}
 	}
 
 	container := dep.Spec.Template.Spec.Containers[0]
@@ -236,6 +311,7 @@ func TestBuildDeployment(t *testing.T) {
 		t.Errorf("expected API_SERVER_HOST 0.0.0.0, got %s", envMap["API_SERVER_HOST"].Value)
 	}
 
+
 	// Verify volume mounts
 	mountsMap := make(map[string]corev1.VolumeMount)
 	for _, m := range container.VolumeMounts {
@@ -255,6 +331,7 @@ func TestBuildDeployment(t *testing.T) {
 			t.Errorf("expected settings-volume to be read-only")
 		}
 	}
+
 
 	// Verify Fluent Bit container
 	fbContainer := dep.Spec.Template.Spec.Containers[1]
@@ -276,6 +353,16 @@ func TestBuildDeployment(t *testing.T) {
 	if _, ok := volumesMap["fluent-bit-state"]; !ok {
 		t.Errorf("expected fluent-bit-state volume, not found")
 	}
+	if _, ok := volumesMap["system-metadata"]; !ok {
+		t.Errorf("expected system-metadata volume, not found")
+	} else {
+		v := volumesMap["system-metadata"]
+		if v.PersistentVolumeClaim == nil {
+			t.Errorf("expected system-metadata to be a PVC")
+		} else if v.PersistentVolumeClaim.ClaimName != "system-metadata" {
+			t.Errorf("expected system-metadata claim system-metadata, got %s", v.PersistentVolumeClaim.ClaimName)
+		}
+	}
 
 	if _, ok := volumesMap["settings-volume"]; !ok {
 		t.Errorf("expected settings-volume, not found")
@@ -292,6 +379,15 @@ func TestBuildDeployment(t *testing.T) {
 			} else if *v.ConfigMap.DefaultMode != int32(0644) {
 				t.Errorf("expected settings-volume ConfigMap DefaultMode 0644, got %o", *v.ConfigMap.DefaultMode)
 			}
+		}
+	}
+
+	if _, ok := volumesMap["sidecar-vol"]; !ok {
+		t.Errorf("expected sidecar-vol volume, not found")
+	} else {
+		v := volumesMap["sidecar-vol"]
+		if v.EmptyDir == nil {
+			t.Errorf("expected sidecar-vol to be emptyDir")
 		}
 	}
 }
@@ -332,6 +428,109 @@ func TestBuildDeploymentGoogleChatAllowedUsersEmpty(t *testing.T) {
 	}
 	if envMap["GOOGLE_CHAT_ALLOW_ALL_USERS"].Value != "true" {
 		t.Errorf("expected GOOGLE_CHAT_ALLOW_ALL_USERS true, got %s", envMap["GOOGLE_CHAT_ALLOW_ALL_USERS"].Value)
+	}
+}
+
+func TestBuildDeploymentSlackIntegration(t *testing.T) {
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-agent",
+			Namespace: "my-ns",
+		},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
+				Slack: &agentv1alpha1.SlackSpec{
+					Enabled: ptr.To(true),
+					BotTokenSecretRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "custom-slack-secret"},
+						Key:                  "bot-token-key",
+					},
+					AppTokenSecretRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "custom-slack-secret"},
+						Key:                  "app-token-key",
+					},
+					AllowedUsers:    []string{"U123", "U456"},
+					HomeChannel:     "C999",
+					HomeChannelName: "general",
+				},
+			},
+		},
+	}
+
+	dep := buildDeployment(agent, "abcd1234", "efgh5678", "ijkl9012")
+	container := dep.Spec.Template.Spec.Containers[0]
+	envMap := make(map[string]corev1.EnvVar)
+	for _, env := range container.Env {
+		envMap[env.Name] = env
+	}
+
+	if envMap["SLACK_BOT_TOKEN"].ValueFrom.SecretKeyRef.Name != "custom-slack-secret" || envMap["SLACK_BOT_TOKEN"].ValueFrom.SecretKeyRef.Key != "bot-token-key" {
+		t.Errorf("expected SLACK_BOT_TOKEN custom-slack-secret/bot-token-key, got %v", envMap["SLACK_BOT_TOKEN"].ValueFrom)
+	}
+	if envMap["SLACK_APP_TOKEN"].ValueFrom.SecretKeyRef.Name != "custom-slack-secret" || envMap["SLACK_APP_TOKEN"].ValueFrom.SecretKeyRef.Key != "app-token-key" {
+		t.Errorf("expected SLACK_APP_TOKEN custom-slack-secret/app-token-key, got %v", envMap["SLACK_APP_TOKEN"].ValueFrom)
+	}
+	if envMap["SLACK_ALLOWED_USERS"].Value != "U123,U456" {
+		t.Errorf("expected SLACK_ALLOWED_USERS U123,U456, got %s", envMap["SLACK_ALLOWED_USERS"].Value)
+	}
+	if envMap["SLACK_HOME_CHANNEL"].Value != "C999" {
+		t.Errorf("expected SLACK_HOME_CHANNEL C999, got %s", envMap["SLACK_HOME_CHANNEL"].Value)
+	}
+	if envMap["SLACK_HOME_CHANNEL_NAME"].Value != "general" {
+		t.Errorf("expected SLACK_HOME_CHANNEL_NAME general, got %s", envMap["SLACK_HOME_CHANNEL_NAME"].Value)
+	}
+}
+
+func TestBuildDeploymentSlackAllowAllUsers(t *testing.T) {
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-agent",
+			Namespace: "my-ns",
+		},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
+				Slack: &agentv1alpha1.SlackSpec{
+					Enabled:      ptr.To(true),
+					AllowedUsers: []string{""},
+				},
+			},
+		},
+	}
+
+	dep := buildDeployment(agent, "abcd1234", "efgh5678", "ijkl9012")
+	container := dep.Spec.Template.Spec.Containers[0]
+	envMap := make(map[string]corev1.EnvVar)
+	for _, env := range container.Env {
+		envMap[env.Name] = env
+	}
+
+	if _, ok := envMap["SLACK_ALLOWED_USERS"]; ok {
+		t.Errorf("expected SLACK_ALLOWED_USERS not to be set when allowedUsers is empty")
+	}
+	if envMap["SLACK_ALLOW_ALL_USERS"].Value != "true" {
+		t.Errorf("expected SLACK_ALLOW_ALL_USERS true, got %s", envMap["SLACK_ALLOW_ALL_USERS"].Value)
+	}
+}
+
+func TestBuildConfigMapSlackEnabled(t *testing.T) {
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+		},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
+				Slack: &agentv1alpha1.SlackSpec{
+					Enabled: ptr.To(true),
+				},
+			},
+		},
+	}
+
+	cm := buildConfigMap(agent)
+	jsonContent := cm.Data["openclaw.json"]
+	if !strings.Contains(jsonContent, "\"slack\": {") {
+		t.Errorf("expected openclaw.json to enable slack platform, got:\n%s", jsonContent)
 	}
 }
 

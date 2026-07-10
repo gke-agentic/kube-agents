@@ -13,8 +13,9 @@ spec:
         name: platform-agent-secrets
         key: API_SERVER_KEY
   deployment:
+    # runtimeClassName: gvisor # Uncomment to enable GKE Sandbox (gVisor) kernel isolation
     image: "${AGENT_IMAGE}"
-    tag: "latest"
+    tag: "${AGENT_TAG}"
     imagePullPolicy: Always
   security:
     serviceAccountName: "${KSA_NAME}"
@@ -22,7 +23,7 @@ spec:
       iam.gke.io/gcp-service-account: "${GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
   integration:
     googleChat:
-      enabled: true
+      enabled: ${GOOGLE_CHAT_ENABLED}
       mode: "${GOOGLE_CHAT_MODE}"
       projectId: "${PROJECT_ID}"
       topicName: "${CHAT_TOPIC_NAME}"
@@ -32,3 +33,13 @@ spec:
       homeChannel: ""
       appUrl: "${APP_URL}"
       appPrincipal: "${APP_PRINCIPAL}"
+    slack:
+      enabled: ${SLACK_ENABLED}
+      botTokenSecretRef:
+        name: platform-agent-secrets
+        key: SLACK_BOT_TOKEN
+      appTokenSecretRef:
+        name: platform-agent-secrets
+        key: SLACK_APP_TOKEN
+      allowedUsers:
+        - "${ALLOWED_USERS}"
