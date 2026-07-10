@@ -136,7 +136,6 @@ verify_apis() {
 execute_apis() {
   gcloud services enable \
       container.googleapis.com \
-      cloudresourcemanager.googleapis.com \
       --project="$PROJECT_ID" || return 1
 }
 
