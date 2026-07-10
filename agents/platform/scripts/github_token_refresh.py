@@ -49,13 +49,21 @@ def get_current_git_repo() -> str:
 
 def refresh_git_credentials() -> str:
     """Query local Minty, retrieve token, and cache inside git credentials."""
-    # 1. Read the GKE Service Account token (OIDC token)
-    token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    # 1. Read the Google ID Token (OIDC token)
     try:
-        with open(token_path, "r", encoding="utf-8") as f:
-            oidc_token = f.read().strip()
+        oidc_token = subprocess.run(
+            ["gcloud", "auth", "print-identity-token"],
+            capture_output=True, text=True, check=True,
+            timeout=10
+        ).stdout.strip()
     except Exception as e:
-        raise RuntimeError(f"Failed to read service account token from {token_path}: {e}")
+        # Fallback to K8s service account token if gcloud fails
+        token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+        try:
+            with open(token_path, "r", encoding="utf-8") as f:
+                oidc_token = f.read().strip()
+        except Exception as e2:
+            raise RuntimeError(f"Failed to read service account token: {e2}") from e
 
     # 2. Dynamically identify target repository from workspace git remote
     repository = get_current_git_repo()
