@@ -26,6 +26,12 @@ check_prereqs "gcloud" "kubectl"
 print_step "Setting up Configuration State"
 load_state
 
+init_var "ENABLE_GVISOR" "false" "Enable GKE Sandbox (gVisor) runtime isolation? (true/false)"
+if [[ ! "$ENABLE_GVISOR" =~ ^(true|yes|1)$ ]]; then
+  print_info "Skipping gVisor node pool provisioning (ENABLE_GVISOR=${ENABLE_GVISOR})."
+  exit 0
+fi
+
 ACTIVE_PROJECT="$(gcloud config get-value project 2>/dev/null || echo "")"
 DEFAULT_PROJECT_ID="${ACTIVE_PROJECT:-$(whoami 2>/dev/null || echo "user")}"
 

@@ -99,6 +99,9 @@ save_var() {
   local var_name=$1
   local var_val=$2
   export "${var_name}=${var_val}"
+  if [ "${DRY_RUN:-0}" -eq 1 ]; then
+    return 0
+  fi
   if [ -f "$VARS_FILE" ]; then
     grep -E -v "^[[:space:]]*export[[:space:]]+${var_name}=" "$VARS_FILE" > "$VARS_FILE.tmp" 2>/dev/null || true
     mv "$VARS_FILE.tmp" "$VARS_FILE"
@@ -157,10 +160,12 @@ init_var_model_provider() {
 }
 
 load_state() {
-  if [ ! -f "$VARS_FILE" ]; then
+  if [ -f "$VARS_FILE" ]; then
+    source "$VARS_FILE"
+  elif [ "${DRY_RUN:-0}" -ne 1 ]; then
     echo "# SRE Sourced Variables for GKE & GCP Setup" > "$VARS_FILE"
+    source "$VARS_FILE"
   fi
-  source "$VARS_FILE"
   export NAMESPACE="kubeagents-system"
   export PLATFORM_AGENT_KSA_NAME="kubeagents-platform-agent"
   export PLATFORM_AGENT_GSA_NAME="kubeagents-platform-gsa"
