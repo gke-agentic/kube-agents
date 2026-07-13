@@ -15,20 +15,8 @@ source "${SCRIPT_DIR}/common.sh" "$@"
 print_step "Setting up Configuration State for Slack Integration"
 load_state
 
-if [ -z "${SLACK_ENABLED:-}" ]; then
-  if [ "${DRY_RUN:-0}" -eq 1 ]; then
-    export SLACK_ENABLED="false"
-  else
-    echo -ne "  ${C_CYAN}Do you want to enable Slack integration? (y/N): ${C_RESET}"
-    read -r REPLY_SLACK
-    if [[ "$REPLY_SLACK" =~ ^[Yy]$ ]]; then
-      export SLACK_ENABLED="true"
-    else
-      export SLACK_ENABLED="false"
-    fi
-  fi
-  save_var "SLACK_ENABLED" "${SLACK_ENABLED}"
-fi
+init_var "SLACK_ENABLED" "false" "Enable Slack integration? (true/false)"
+
 
 
 if [ "${SLACK_ENABLED}" != "true" ]; then
