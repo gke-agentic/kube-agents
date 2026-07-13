@@ -24,10 +24,10 @@ if [ "${GOOGLE_CHAT_ENABLED:-false}" = "true" ]; then
   echo -e "       - Under Visibility, check: ${C_GREEN}Only specific people (add your email/emails: ${ALLOWED_USERS:-your-email})${C_RESET}"
   echo -e ""
   echo -e "[ ] 2. Send a DM to the Bot on Google Chat:"
-  echo -e "       Type: ${C_WHITE}\"Hi Hermes\"${C_RESET}"
+  echo -e "       Type: ${C_WHITE}\"Hi OpenClaw\"${C_RESET}"
   echo -e ""
   echo -e "[ ] 3. ${C_YELLOW}[Optional]${C_RESET} Approve pairing code in GKE container:"
-  echo -e "       ${C_CYAN}(Only required for first-time bot deployments. If the bot responds instantly, skip this!)${C_RESET}"
-  echo -e "       ${C_WHITE}kubectl exec -it deploy/platform-agent-gateway -n ${NAMESPACE:-kubeagents-system} -- hermes pairing approve google_chat <PAIRING_CODE>${C_RESET}"
+  echo -e "       ${C_CYAN}(Only required if device auth is enabled. If the bot responds instantly, skip this!)${C_RESET}"
+  echo -e "       ${C_WHITE}kubectl exec -it deploy/platform-agent-gateway -n ${NAMESPACE:-kubeagents-system} -- openclaw pairing approve googlechat <PAIRING_CODE>${C_RESET}"
   echo -e ""
 fi

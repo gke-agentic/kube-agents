@@ -109,7 +109,7 @@ async def save_cache():
         except Exception as e:
             logger.error(f"Failed to save cache: {e}")
 
-# Per-message fields injected by clients (e.g. Hermes) that change every request
+# Per-message fields injected by clients (e.g. OpenClaw) that change every request
 # and would otherwise prevent any user-message body from ever cache-hitting.
 # Stripped only for hash computation — the original body is still forwarded upstream.
 _VOLATILE_MSG_FIELDS = {"timestamp"}

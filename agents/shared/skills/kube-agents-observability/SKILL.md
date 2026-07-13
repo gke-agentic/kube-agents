@@ -48,7 +48,7 @@ To determine which users have interacted with the system via Google Chat in the 
 
   ```
 
-- Alternatively, search Cloud Logging manually (via console or gcloud CLI) for the custom GChat event format emitted by the hermes session store:
+- Alternatively, search Cloud Logging manually (via console or gcloud CLI) for the custom GChat event format emitted by the openclaw session store:
   ```bash
   gcloud logging read 'resource.type="k8s_container" "Logging incoming GChat event"' --project=<PROJECT_ID> --limit=1000 --format="json"
   ```

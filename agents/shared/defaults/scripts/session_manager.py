@@ -8,7 +8,7 @@ DEFAULT_SESSION_KV_DB_PATH = "/var/lib/kube-agents/session/session_kv.db"
 
 
 class SessionManager:
-    """Resolve Hermes session metadata from the session_kv store."""
+    """Resolve OpenClaw session metadata from the session_kv store."""
 
     SESSION_METADATA_KEYS = (
         "session_id",
@@ -22,18 +22,21 @@ class SessionManager:
     )
 
     ENV_SESSION_KEYS = (
+        "OPENCLAW_SESSION_ID",
         "HERMES_SESSION_ID",
         "SESSION_ID",
+        "X_OPENCLAW_SESSION_ID",
         "X_HERMES_SESSION_ID",
+        "OPENCLAW_CURRENT_SESSION_ID",
         "HERMES_CURRENT_SESSION_ID",
     )
 
     def __init__(
         self,
-        hermes_home: Optional[Path] = None,
+        openclaw_home: Optional[Path] = None,
         db_path: Optional[Path] = None,
     ) -> None:
-        self.hermes_home = hermes_home or Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")))
+        self.openclaw_home = openclaw_home or Path(os.environ.get("OPENCLAW_HOME", os.environ.get("HERMES_HOME", os.path.expanduser("~/.openclaw"))))
         self.db_path = db_path or Path(os.environ.get("SESSION_KV_DB_PATH", DEFAULT_SESSION_KV_DB_PATH))
 
     def sanitize_session_id(self, value: object) -> str:
@@ -84,14 +87,14 @@ class SessionManager:
         metadata = self.metadata_for_session(session_id)
         platform = metadata.get("platform") or ""
         sender_id = metadata.get("user_id") or metadata.get("user_email") or ""
-        user_id = os.environ.get("HERMES_USER_ID") or os.environ.get("HERMES_SENDER_ID") or sender_id
+        user_id = os.environ.get("OPENCLAW_USER_ID") or os.environ.get("HERMES_USER_ID") or os.environ.get("OPENCLAW_SENDER_ID") or os.environ.get("HERMES_SENDER_ID") or sender_id
         if user_id and platform and ":" not in str(user_id):
             user_id = f"{platform}:{user_id}"
 
         return {
             "session_id": session_id,
             "user_id": user_id,
-            "sender_id": os.environ.get("HERMES_SENDER_ID") or sender_id,
+            "sender_id": os.environ.get("OPENCLAW_SENDER_ID") or os.environ.get("HERMES_SENDER_ID") or sender_id,
             "chat_id": metadata.get("chat_id") or "",
             "thread_id": metadata.get("thread_id") or "",
             "metadata": metadata,
@@ -101,16 +104,22 @@ class SessionManager:
         metadata = context.get("metadata", {})
         headers: Dict[str, str] = {}
         if context.get("session_id"):
+            headers["X-OpenClaw-Session-Id"] = str(context["session_id"])
             headers["X-Hermes-Session-Id"] = str(context["session_id"])
         if context.get("user_id"):
+            headers["X-OpenClaw-User-Id"] = str(context["user_id"])
             headers["X-Hermes-User-Id"] = str(context["user_id"])
         if context.get("sender_id"):
+            headers["X-OpenClaw-Sender-Id"] = str(context["sender_id"])
             headers["X-Hermes-Sender-Id"] = str(context["sender_id"])
         if metadata.get("user_email"):
+            headers["X-OpenClaw-User-Email"] = str(metadata["user_email"])
             headers["X-Hermes-User-Email"] = str(metadata["user_email"])
         if context.get("chat_id"):
+            headers["X-OpenClaw-Chat-Id"] = str(context["chat_id"])
             headers["X-Hermes-Chat-Id"] = str(context["chat_id"])
         if context.get("thread_id"):
+            headers["X-OpenClaw-Thread-Id"] = str(context["thread_id"])
             headers["X-Hermes-Thread-Id"] = str(context["thread_id"])
         return headers
 

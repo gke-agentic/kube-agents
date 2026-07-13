@@ -333,9 +333,12 @@ def start_session_kv_server() -> None:
 
         app_dir = Path(__file__).resolve().parent.parent
         log(f"Starting Session KV server on port {port}.")
+        python_bin = sys.executable if os.path.exists(sys.executable) else "/opt/openclaw/.venv/bin/python3"
+        if not os.path.exists(python_bin) and os.path.exists("/opt/hermes/.venv/bin/python3"):
+            python_bin = "/opt/hermes/.venv/bin/python3"
         subprocess.Popen(
             [
-                "/opt/hermes/.venv/bin/python3",
+                python_bin,
                 "-m",
                 "uvicorn",
                 "scripts.session_kv_server:app",
