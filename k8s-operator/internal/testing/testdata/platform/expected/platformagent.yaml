@@ -114,6 +114,7 @@ data:
       "agents": {
         "defaults": {
           "workspace": "/opt/data/workspace",
+          "verboseDefault": "off",
           "model": {
             "primary": "openai/model-default"
           },
@@ -352,7 +353,7 @@ spec:
   template:
     metadata:
       annotations:
-        kubeagents.x-k8s.io/config-hash: 00029b7b69624c8a67bc195b3a676fcc640812678036b1cb738f13450b45e1f4
+        kubeagents.x-k8s.io/config-hash: 6ddcec53cf0e449eed666f91717df9b65f6496945611c6d93a59e1a0003ed782
         kubeagents.x-k8s.io/fluent-bit-config-hash: 50923ab88e1741b0729c37837bc1c3869161e3161402494a4ee64cda3a2cfab3
         kubeagents.x-k8s.io/settings-config-hash: 9db5b5cb5fb8ec46b1a0572ef34ef27e0ed44dc1f787a4a76bdd75f43934c8b9
       creationTimestamp: null
@@ -397,6 +398,8 @@ spec:
         - name: GOOGLE_CHAT_HOME_CHANNEL
         - name: GOOGLE_CHAT_ALLOW_ALL_USERS
           value: "true"
+        - name: SESSION_KV_DB_PATH
+          value: /var/lib/kube-agents/session/session_kv.db
         image: ghcr.io/gke-labs/kube-agents/platform-agent:latest
         imagePullPolicy: IfNotPresent
         name: platform-agent
@@ -427,6 +430,8 @@ spec:
           name: settings-volume
           readOnly: true
           subPath: SETTINGS.md
+        - mountPath: /var/lib/kube-agents/session
+          name: system-metadata
       - args:
         - -c
         - /fluent-bit/etc/fluent-bit.conf

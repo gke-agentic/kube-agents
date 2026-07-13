@@ -81,8 +81,9 @@ func buildSettingsConfigMap(agent *agentv1alpha1.PlatformAgent) *corev1.ConfigMa
 type OpenClawConfig struct {
 	Agents struct {
 		Defaults struct {
-			Workspace string `json:"workspace"`
-			Model     struct {
+			Workspace      string `json:"workspace"`
+			VerboseDefault string `json:"verboseDefault,omitempty"`
+			Model          struct {
 				Primary string `json:"primary"`
 			} `json:"model"`
 			Sandbox struct {
@@ -146,6 +147,7 @@ func renderConfigJSON(agent *agentv1alpha1.PlatformAgent) string {
 
 	// Set Defaults
 	openclaw_config.Agents.Defaults.Workspace = cwd + "/workspace"
+	openclaw_config.Agents.Defaults.VerboseDefault = "off"
 	openclaw_config.Agents.Defaults.Model.Primary = "openai/model-default"
 	openclaw_config.Agents.Defaults.Sandbox.Mode = "off"
 	openclaw_config.Agents.Defaults.Sandbox.Backend = ""
@@ -198,6 +200,10 @@ func renderConfigJSON(agent *agentv1alpha1.PlatformAgent) string {
 				audienceType = "app-url"
 				audience = gchat.AppURL
 			}
+			allowFrom := []string{"*"}
+			if len(gchat.AllowedUsers) > 0 && !(len(gchat.AllowedUsers) == 1 && gchat.AllowedUsers[0] == "") {
+				allowFrom = gchat.AllowedUsers
+			}
 			defaultAccountConfig := map[string]any{
 				"enabled":      true,
 				"audienceType": audienceType,
@@ -205,25 +211,30 @@ func renderConfigJSON(agent *agentv1alpha1.PlatformAgent) string {
 				"groupPolicy":  "open",
 				"dm": map[string]any{
 					"policy":    "open",
-					"allowFrom": []string{"*"},
+					"allowFrom": allowFrom,
 				},
 			}
-			if gchat.AppPrincipal != "" {
-				defaultAccountConfig["appPrincipal"] = gchat.AppPrincipal
-			}
-			if openclaw_config.Channels == nil {
-				openclaw_config.Channels = make(map[string]any)
-			}
-			openclaw_config.Channels["googlechat"] = map[string]any{
+			googlechatCfg := map[string]any{
 				"enabled":        true,
 				"defaultAccount": "default",
 				"accounts": map[string]any{
 					"default": defaultAccountConfig,
 				},
 			}
+			if gchat.AppPrincipal != "" {
+				googlechatCfg["appPrincipal"] = gchat.AppPrincipal
+			}
+			if openclaw_config.Channels == nil {
+				openclaw_config.Channels = make(map[string]any)
+			}
+			openclaw_config.Channels["googlechat"] = googlechatCfg
 			openclaw_config.Plugins.Entries["googlechat"] = map[string]any{"enabled": true}
 		}
 		if slack := integration.Slack; slack != nil && slack.Enabled != nil && *slack.Enabled {
+			allowFromSlack := []string{"*"}
+			if len(slack.AllowedUsers) > 0 && !(len(slack.AllowedUsers) == 1 && slack.AllowedUsers[0] == "") {
+				allowFromSlack = slack.AllowedUsers
+			}
 			if openclaw_config.Channels == nil {
 				openclaw_config.Channels = make(map[string]any)
 			}
@@ -232,10 +243,8 @@ func renderConfigJSON(agent *agentv1alpha1.PlatformAgent) string {
 				"botToken":    "${SLACK_BOT_TOKEN}",
 				"appToken":    "${SLACK_APP_TOKEN}",
 				"groupPolicy": "open",
-				"dm": map[string]any{
-					"policy":    "open",
-					"allowFrom": []string{"*"},
-				},
+				"dmPolicy":    "open",
+				"allowFrom":   allowFromSlack,
 			}
 			openclaw_config.Plugins.Entries["slack"] = map[string]any{"enabled": true}
 		}
@@ -538,6 +547,11 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 		}
 	}
 
+	envVars = append(envVars, corev1.EnvVar{
+		Name:  "SESSION_KV_DB_PATH",
+		Value: "/var/lib/kube-agents/session/session_kv.db",
+	})
+
 	if agent.Spec.Deployment != nil && len(agent.Spec.Deployment.Env) > 0 {
 		envVars = mergeEnvVars(envVars, agent.Spec.Deployment.Env)
 	}
@@ -588,6 +602,10 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 					MountPath: path.Join(homeDir, "SETTINGS.md"),
 					SubPath:   "SETTINGS.md",
 					ReadOnly:  true,
+				},
+				{
+					Name:      "system-metadata",
+					MountPath: "/var/lib/kube-agents/session",
 				},
 			},
 			SecurityContext: &corev1.SecurityContext{

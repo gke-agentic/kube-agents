@@ -1,58 +1,45 @@
 # Google Chat Session Metadata Data Flow
 
-This document describes the final attribution path from a Google Chat message to
-OpenClaw OpenTelemetry spans.
+This document describes the attribution path from a Google Chat message across OpenClaw's gateway, Python tool servers, cross-agent delegation hops, and OpenTelemetry spans.
 
 ## Overview
 
-The raw Google Chat Pub/Sub/HTTP event contains the sender and Chat conversation
-metadata, but it does not contain an OpenClaw `session_id`.
-
-OpenClaw creates or resolves the `session_id` after the Google Chat adapter
-converts the raw event into a gateway message. The `session_store` plugin then
-persists the mapping from that OpenClaw session to the Google Chat sender. The
-`session_otel_bridge` plugin uses that mapping to add fixed identity attributes
-to OpenClaw OTel spans.
+In the OpenClaw architecture, Google Chat webhooks arrive over HTTPS at the compiled Node.js Gateway. The raw event contains sender identity and Chat conversation metadata (`space.name`, `thread.name`), but does not initially carry an OpenClaw `session_id`.
 
 ```text
-Google Chat event
-  -> OpenClaw Google Chat adapter
-  -> OpenClaw session_id
-  -> session_store plugin
-  -> /var/lib/kube-agents/session/session_kv.db
-  -> session_otel_bridge
-  -> OpenClaw OTel span attributes
+Google Chat HTTPS Webhook (`/googlechat`)
+  -> OpenClaw Node.js Gateway (resolves `session_id`, `user.id`)
+  -> Environment variables passed to Python tool servers / MCP subprocesses (`OPENCLAW_SESSION_ID`, `OPENCLAW_USER_ID`)
+  -> SessionManager / session_store (`/var/lib/kube-agents/session/session_kv.db`)
+  -> X-OpenClaw-* Delegation Headers (cross-agent calls)
+  -> session_otel_bridge (Python OTel span attributes)
 ```
 
-## Components
+## Components & Flow
 
-### session_store
+### 1. OpenClaw Node.js Gateway
 
-`session_store` is a session metadata plugin registered during gateway dispatch.
-It registers the `pre_gateway_dispatch` hook.
+When an inbound HTTPS POST request arrives at `/googlechat`:
+1. OpenClaw verifies the webhook target (`audienceCheck` against `openclaw.json`).
+2. Extracts the sender identity (`sender.name` / `email`) and Chat conversation (`space.name`, `thread.name`).
+3. Establishes the authoritative `session_id` for the conversation turn.
+4. When launching local MCP servers or Python tool subprocesses (`platform_mcp_server.py`, `agent_common_server.py`), OpenClaw passes down active session context via environment variables (`OPENCLAW_SESSION_ID`, `OPENCLAW_USER_ID`, `OPENCLAW_SENDER_ID`).
 
-On each gateway message, it:
+### 2. SessionManager (`session_manager.py`)
 
-1. Reads `event.source` from the parsed OpenClaw message.
-2. Calls `session_store.get_or_create_session(source)`.
-3. Reads the resulting `session_id`.
-4. Builds a plugin-local `SessionMetadata` object from `event.source`.
-5. Writes `session_id -> metadata` into `/var/lib/kube-agents/session/session_kv.db`.
+`SessionManager` is the universal Python session resolver used across our multi-agent harness (`agent_common_server.py`, peer agents, and tool runners).
 
-The plugin does not create spans and does not modify OTel.
+When `SessionManager.current_context()` is invoked, it resolves the caller's identity in prioritized order:
+1. **Environment Variables:** Checks `OPENCLAW_SESSION_ID`, `OPENCLAW_USER_ID`, and `OPENCLAW_SENDER_ID` (with fallback to legacy `HERMES_` keys).
+2. **SQLite Session Store (`session_kv.db`):** If an explicit `session_id` is provided or found in environment/headers, it queries `/var/lib/kube-agents/session/session_kv.db` (`session_metadata` table) to retrieve stored metadata (`platform`, `user_id`, `user_email`, `chat_id`, `thread_id`).
 
-### SessionMetadata
+### 3. session_store (`session_store/store.py`)
 
-`SessionMetadata` is a plugin-local class in `session_store`. It defines the
-fixed metadata retained for an OpenClaw session.
+`session_store` (`SessionMetadataStore` and `SessionMetadata`) manages persistent SQLite (`/var/lib/kube-agents/session/session_kv.db`) storage for Python-based agent layers, peer agents (`DevTeamAgent`, `OperatorAgent`), or Python gateway pipelines.
 
-It owns:
-
-- the fixed session metadata allowlist
-- conversion from `event.source` to stored metadata
-
-It does not scan arbitrary dictionaries, tool arguments, span attributes, or
-model-provided payloads to discover identity.
+When active, it:
+1. Builds a `SessionMetadata` object from event sources (`platform`, `user_id`, `chat_id`, `thread_id`).
+2. Writes `session_id -> metadata` JSON into `/var/lib/kube-agents/session/session_kv.db`.
 
 For session storage, it keeps only this fixed metadata allowlist:
 
@@ -67,76 +54,14 @@ thread_id
 updated_at
 ```
 
-These keys are platform-neutral. For Google Chat, the Chat space is stored as
-`chat_id`; there is no separate `google_chat_id` key.
+### 4. session_otel_bridge (`session_otel_bridge/bridge.py`)
 
-### session_otel_bridge
+`session_otel_bridge` (`OtelSessionBridge`) enriches Python OpenTelemetry spans with user attribution.
 
-`session_otel_bridge` is a plugin enabled alongside OTel tracing.
-
-At plugin registration time, it installs a wrapper around the OTel
-tracer's `start_span` method. For each span, the wrapper:
-
-1. Reads the explicit `session_id` argument passed to `start_span`.
-2. Reads the matching metadata row from `session_kv.db`.
-3. Maps that metadata to the bridge-owned fixed span attribute allowlist.
-4. Calls the original OTel `start_span`.
-
-The bridge intentionally does not infer identity from existing span attributes
-or other dynamic payloads. It only uses the explicit `session_id` passed by
-OTel.
-
-### session_kv_server
-
-`session_kv_server.py` exposes a small HTTP resolver for the same
-`session_kv.db` data:
-
-```text
-GET /v1/sessions/{session_id}/metadata
-GET /v1/sessions
-GET /healthz
-```
-
-`platform_mcp_server.py` starts this resolver when the platform MCP server
-starts. There is no separate Kubernetes sidecar for it.
-
-## Stored Data
-
-SQLite database:
-
-```text
-/var/lib/kube-agents/session/session_kv.db
-```
-
-Table:
-
-```text
-session_metadata(
-  session_id TEXT PRIMARY KEY,
-  metadata TEXT NOT NULL,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)
-```
-
-Example metadata, anonymized:
-
-```json
-{
-  "session_id": "20260702_153830_50074bf0",
-  "platform": "google_chat",
-  "user_id": "user@example.com",
-  "user_email": "user@example.com",
-  "user_resource": "users/REDACTED",
-  "chat_id": "spaces/REDACTED",
-  "thread_id": "",
-  "updated_at": "2026-07-02T18:22:31Z"
-}
-```
-
-## OTel Attributes
-
-When a matching session row exists, `session_otel_bridge` adds these fixed
-attributes to OTel spans:
+At initialization, it installs a wrapper around Python `tracer.start_span`. For each span:
+1. Reads `session_id` passed to `start_span` (or active session context).
+2. Reads the matching metadata row from `/var/lib/kube-agents/session/session_kv.db`.
+3. Injects fixed identity attributes into the OTel span:
 
 ```text
 session.id
@@ -161,10 +86,19 @@ Example attributes, anonymized:
 }
 ```
 
-## Delegation
+### 5. session_kv_server (`scripts.session_kv_server:app`)
 
-When `agent_common_server.py` delegates to another agent, it uses
-`SessionManager` to forward the same session context as headers:
+`platform_mcp_server.py` starts a local HTTP resolver (`start_session_kv_server()`) on port 8699 exposing `session_kv.db` queries:
+
+```text
+GET /v1/sessions/{session_id}/metadata
+GET /v1/sessions
+GET /healthz
+```
+
+## Cross-Agent Delegation
+
+When `agent_common_server.py` delegates to another agent over HTTP/MCP, it invokes `SessionManager.delegation_headers(context)` to forward the resolved attribution as HTTP headers:
 
 ```text
 X-OpenClaw-Session-Id
@@ -175,8 +109,42 @@ X-OpenClaw-Chat-Id
 X-OpenClaw-Thread-Id
 ```
 
-This allows downstream agents to preserve attribution when they receive the
-session context.
+(Note: Legacy `X-Hermes-*` headers are also emitted in parallel to maintain backwards compatibility across older downstream peers).
+
+When the downstream target agent receives these headers, its local `SessionManager` reads them from the request environment/headers, preserving exact attribution across multi-agent hops without requiring direct network access to the upstream cluster's SQLite file.
+
+## Stored Data Schema
+
+SQLite database:
+
+```text
+/var/lib/kube-agents/session/session_kv.db
+```
+
+Table:
+
+```text
+session_metadata(
+  session_id TEXT PRIMARY KEY,
+  metadata TEXT NOT NULL,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+```
+
+Example stored row:
+
+```json
+{
+  "session_id": "20260702_153830_50074bf0",
+  "platform": "google_chat",
+  "user_id": "user@example.com",
+  "user_email": "user@example.com",
+  "user_resource": "users/REDACTED",
+  "chat_id": "spaces/REDACTED",
+  "thread_id": "",
+  "updated_at": "2026-07-02T18:22:31Z"
+}
+```
 
 ## Verification
 
@@ -247,15 +215,7 @@ curl -s \
 
 ## Reliability Notes
 
-- The authoritative ingress mapping uses OpenClaw runtime session state, not a
-  model-supplied tool parameter.
-- The raw Google Chat event does not carry an OpenClaw `session_id`; the mapping is
-  created after OpenClaw resolves the session.
-- Attribution is limited to fixed fields we explicitly persist and format:
-  `session_id`, Google Chat sender identity, Google Chat space/thread, and
-  delegation headers. The code does not dynamically parse arbitrary attributes
-  for user identity.
-- OTel enrichment depends on `openclaw_otel`, `session_store`, and
-  `session_otel_bridge` all being enabled.
-- Remote systems can only preserve attribution if they receive and honor the
-  forwarded session headers.
+- The primary ingress entrypoint (`PlatformAgent`) resolves identity via the OpenClaw Node.js gateway and propagates it to Python subprocesses via environment variables (`OPENCLAW_SESSION_ID`, `OPENCLAW_USER_ID`).
+- `session_kv.db` serves as the shared SQLite persistence layer across Python tool servers, multi-agent delegation resolvers (`SessionManager`), and OpenTelemetry bridges (`OtelSessionBridge`).
+- Attribution is strictly restricted to the fixed fields explicitly defined in `SessionMetadata` (`session_id`, sender identity, chat space/thread, and delegation headers). The code does not dynamically scan arbitrary payloads or tool arguments to discover identity.
+- Dual-emitting both `X-OpenClaw-*` and `X-Hermes-*` delegation headers ensures zero-breakage interoperability across hybrid or rolling multi-agent deployments.

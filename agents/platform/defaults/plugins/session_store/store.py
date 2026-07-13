@@ -6,7 +6,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-logger = logging.getLogger("hermes.plugin.session_store")
+logger = logging.getLogger("openclaw.plugin.session_store")
 
 DEFAULT_SESSION_KV_DB_PATH = "/var/lib/kube-agents/session/session_kv.db"
 DEFAULT_RETENTION_DAYS = 7
@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS session_metadata (
 
 
 class SessionMetadata:
-    """Fixed metadata retained for a Hermes session."""
+    """Fixed metadata retained for an OpenClaw session."""
 
     KEYS = (
         "session_id",
@@ -196,7 +196,7 @@ def log_event_to_db(
     session_store: Any,
     **kwargs: Any,
 ) -> Optional[Dict[str, str]]:
-    """Persist session metadata before Hermes dispatches a gateway message."""
+    """Persist session metadata before OpenClaw dispatches a gateway message."""
     try:
         source = getattr(event, "source", None)
         if source is None:
