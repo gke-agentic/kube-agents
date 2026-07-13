@@ -1,0 +1,70 @@
+name: Integration Tests
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+jobs:
+  # 1. Figure out what changed
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      operator_changed: ${{ steps.filter.outputs.operator }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            operator:
+              - 'k8s-operator/**'
+
+  # 2. The actual heavy tests (Pure logic, no bypass hacks)
+  integration-test:
+    needs: detect-changes
+    # ONLY run if the directory changed AND the label is applied
+    if: needs.detect-changes.outputs.operator_changed == 'true' && contains(github.event.pull_request.labels.*.name, 'run-integration-tests')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run heavy tests
+        run: |
+          echo "Running heavy integration tests..."
+          sleep 5
+          exit 1 # (Change to 'exit 0' later to test a passing run)
+
+  # 3. The Required Check that evaluates the results
+  pr-gatekeeper:
+    # 'always()' ensures this runs even if integration-test is skipped
+    if: always() 
+    needs: [detect-changes, integration-test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate PR Status
+        run: |
+          # If the detection job failed entirely, block the merge
+          if [[ "${{ needs.detect-changes.result }}" != "success" ]]; then
+            echo "❌ Error: Failed to detect changed files."
+            exit 1
+          fi
+
+          # SCENARIO A: No changes to the directory
+          if [[ "${{ needs.detect-changes.outputs.operator_changed }}" == "false" ]]; then
+            echo "✅ No changes to /k8s-operator. Merge allowed."
+            exit 0
+          fi
+
+          # SCENARIO B & C: Changes exist, evaluate the test job
+          TEST_RESULT="${{ needs.integration-test.result }}"
+          
+          if [[ "$TEST_RESULT" == "success" ]]; then
+            echo "✅ Integration tests passed. Merge allowed."
+            exit 0
+          elif [[ "$TEST_RESULT" == "skipped" ]]; then
+            echo "❌ Changes detected in /k8s-operator, but tests haven't run."
+            echo "💡 Please comment '/run-integration-tests' to trigger them."
+            exit 1
+          else
+            echo "❌ Integration tests failed or were cancelled."
+            exit 1
+          fi

@@ -1,0 +1,24 @@
+name: ChatOps Listener
+
+on:
+  issue_comment:
+    types: [created]
+
+# We need permission to modify the PR to add the label
+permissions:
+  pull-requests: write
+  issues: write
+
+jobs:
+  add-label-on-comment:
+    # Only run if the comment is on a PR and contains our magic command
+    if: ${{ github.event.issue.pull_request && contains(github.event.comment.body, '/run-integration-tests') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add label to PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.issue.html_url }}
+        run: |
+          echo "Command detected. Adding label..."
+          gh pr edit "$PR_URL" --add-label "run-integration-tests"
