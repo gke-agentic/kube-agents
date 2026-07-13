@@ -1,4 +1,5 @@
 # kube-agents: The Kubernetes Agentic Harness
+# TODO: remove the comment
 
 The k8s agentic harness will fundamentally redefine the DevOps presentation layer by replacing traditional interfaces like kubectl, gcloud, and the Google Cloud console with intelligent, autonomous agents. By replacing the static, imperative nature of the traditional Kubernetes presentation layer with an autonomous agentic harness, we transition from reactive manual management to proactive, intent-driven operations.
 
