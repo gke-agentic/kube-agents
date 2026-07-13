@@ -76,25 +76,25 @@ fi
 
 DEFAULT_USERS=""
 init_var "ALLOWED_USERS" "$DEFAULT_USERS" "Enter Allowed Google Chat Users Emails (comma separated). Leaving it empty will allow all users."
-init_var "CHAT_TOPIC_NAME" "platform-agent-chat-events" "Enter Pub/Sub Topic Name"
-init_var "CHAT_SUB_NAME" "platform-agent-chat-events-sub" "Enter Pub/Sub Subscription Name"
 init_var "GOOGLE_CHAT_MODE" "default" "Enter Google Chat Output Mode (default or debug)"
+init_var "GOOGLE_CHAT_DOMAIN" "auto" "Enter custom HTTPS domain for Google Chat (or press Enter for 'auto' zero-interaction DNS via nip.io)"
 
 
 # ─── Step Implementations ─────────────────────────────────────────────────────
 
-# Step 1: Enable Chat & PubSub APIs
+# Step 1: Enable Chat & Endpoints APIs
 verify_apis() {
   local out=$(gcloud services list --enabled --project="$PROJECT_ID" --format="value(config.name)" 2>/dev/null || echo "")
-  echo "$out" | grep -q 'pubsub.googleapis.com' && \
   echo "$out" | grep -q 'chat.googleapis.com' && \
-  echo "$out" | grep -q 'gsuiteaddons.googleapis.com'
+  echo "$out" | grep -q 'gsuiteaddons.googleapis.com' && \
+  echo "$out" | grep -q 'servicemanagement.googleapis.com'
 }
 execute_apis() {
   gcloud services enable \
-      pubsub.googleapis.com \
       chat.googleapis.com \
       gsuiteaddons.googleapis.com \
+      servicemanagement.googleapis.com \
+      servicecontrol.googleapis.com \
       --project="$PROJECT_ID"
 }
 
@@ -110,40 +110,6 @@ execute_gsuite_identity() {
       --quiet >/dev/null
 }
 
-# Step 3: Pub/Sub Setup (Inbound routing from GChat)
-verify_pubsub_setup() {
-  gcloud pubsub topics describe "${CHAT_TOPIC_NAME}" --project="${PROJECT_ID}" >/dev/null 2>&1 && \
-  gcloud pubsub subscriptions describe "${CHAT_SUB_NAME}" --project="${PROJECT_ID}" >/dev/null 2>&1
-}
-execute_pubsub_setup() {
-  if ! gcloud pubsub topics describe "${CHAT_TOPIC_NAME}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
-    print_info "Creating Pub/Sub Topic ${CHAT_TOPIC_NAME}..."
-    gcloud pubsub topics create "${CHAT_TOPIC_NAME}" --project="${PROJECT_ID}" || return 1
-  fi
-
-  if ! gcloud pubsub subscriptions describe "${CHAT_SUB_NAME}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
-    print_info "Creating Pub/Sub Subscription ${CHAT_SUB_NAME}..."
-    gcloud pubsub subscriptions create "${CHAT_SUB_NAME}" \
-        --topic="${CHAT_TOPIC_NAME}" \
-        --ack-deadline=60 \
-        --project="${PROJECT_ID}" || return 1
-  fi
-
-  print_info "Granting Google Chat systems Publisher roles to the Topic..."
-  gcloud pubsub topics add-iam-policy-binding "${CHAT_TOPIC_NAME}" \
-      --member="serviceAccount:chat-api-push@system.gserviceaccount.com" \
-      --role="roles/pubsub.publisher" \
-      --project="${PROJECT_ID}" \
-      --quiet >/dev/null || return 1
-
-  local gsuite_sa="service-${PROJECT_NUMBER}@gcp-sa-gsuiteaddons.iam.gserviceaccount.com"
-  gcloud pubsub topics add-iam-policy-binding "${CHAT_TOPIC_NAME}" \
-      --member="serviceAccount:${gsuite_sa}" \
-      --role="roles/pubsub.publisher" \
-      --project="${PROJECT_ID}" \
-      --quiet >/dev/null || return 1
-}
-
 # Helper: verify that the Google Chat credentials key is present and is a valid JSON key
 verify_k8s_gchat_key() {
   local key_val
@@ -151,32 +117,16 @@ verify_k8s_gchat_key() {
   [[ -n "$key_val" ]] && echo "$key_val" | grep -q '"private_key"' && echo "$key_val" | grep -q '"client_email"'
 }
 
-# Step 4: Agent GSA Creation & PubSub Message Read Access
+# Step 3: Agent GSA Creation & Outgoing Chat API Credentials
 verify_agent_gcp() {
   local gsa_email="${PLATFORM_AGENT_GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
   gcloud iam service-accounts describe "${gsa_email}" --project="${PROJECT_ID}" >/dev/null 2>&1 && \
-  gcloud pubsub subscriptions get-iam-policy "${CHAT_SUB_NAME}" --project="${PROJECT_ID}" --format="json" 2>/dev/null | grep -F -q "${gsa_email}" && \
   verify_k8s_gchat_key
 }
 execute_agent_gcp() {
   local gsa_email="${PLATFORM_AGENT_GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 
-  print_info "Applying Pub/Sub Subscriber Role for Agent GSA..."
-  
-  # 2. Allow bot to read from Pub/Sub Queue
-  gcloud pubsub subscriptions add-iam-policy-binding "${CHAT_SUB_NAME}" \
-      --member="serviceAccount:${gsa_email}" \
-      --role="roles/pubsub.subscriber" \
-      --project="${PROJECT_ID}" \
-      --quiet >/dev/null || return 1
-
-  gcloud pubsub subscriptions add-iam-policy-binding "${CHAT_SUB_NAME}" \
-      --member="serviceAccount:${gsa_email}" \
-      --role="roles/pubsub.viewer" \
-      --project="${PROJECT_ID}" \
-      --quiet >/dev/null || return 1
-
-  print_info "Generating Service Account private key JSON for Google Chat webhook API..."
+  print_info "Generating Service Account private key JSON for outgoing Google Chat API..."
   local tmp_key="/tmp/gchat-sa-key-${PROJECT_ID}.json"
   gcloud iam service-accounts keys create "${tmp_key}" \
       --iam-account="${gsa_email}" \
@@ -195,10 +145,9 @@ execute_agent_gcp() {
 }
 
 # ─── Execution Pipeline ───────────────────────────────────────────────────────
-run_step "1. Enable GCP APIs for Chat & PubSub" verify_apis execute_apis 15
+run_step "1. Enable GCP APIs for Chat & Endpoints" verify_apis execute_apis 15
 run_step "2. Provision Google Workspace Add-ons Service Identity" verify_gsuite_identity execute_gsuite_identity 5
-run_step "3. Provision Pub/Sub Routing (Inbound)" verify_pubsub_setup execute_pubsub_setup 5
-run_step "4. Setup Agent Identity & Message Read Permissions" verify_agent_gcp execute_agent_gcp 5
+run_step "3. Setup Agent Identity & Outgoing API Credentials" verify_agent_gcp execute_agent_gcp 5
 
 # ─── Conclusion Checklist ─────────────────────────────────────────────────────
 echo -e "\n${C_MAGENTA}${C_BOLD}>>>  GCP Backend for Google Chat Configured!  <<<${C_RESET}"

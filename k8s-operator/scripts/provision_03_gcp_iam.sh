@@ -156,8 +156,8 @@ verify_platform_agent() {
       "roles/monitoring.admin" \
       "roles/logging.admin" \
       "roles/iam.serviceAccountUser" \
-      "roles/iam.securityReviewer"
-
+      "roles/iam.securityReviewer" \
+      "roles/servicemanagement.admin"
 }
 execute_platform_agent() {
   execute_agent_iam "Platform Agent" "${PLATFORM_AGENT_KSA_NAME}" "${PLATFORM_AGENT_GSA_NAME}" \
@@ -166,7 +166,19 @@ execute_platform_agent() {
       "roles/monitoring.admin" \
       "roles/logging.admin" \
       "roles/iam.serviceAccountUser" \
-      "roles/iam.securityReviewer"
+      "roles/iam.securityReviewer" \
+      "roles/servicemanagement.admin"
+
+  local gsa_email="${PLATFORM_AGENT_GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
+  local active_user=$(gcloud config get-value account 2>/dev/null || echo "")
+  if [ -n "$active_user" ]; then
+    print_info "Granting Token Creator role on ${PLATFORM_AGENT_GSA_NAME} to ${active_user} for Cloud Endpoints automation..."
+    gcloud iam service-accounts add-iam-policy-binding "${gsa_email}" \
+        --member="user:${active_user}" \
+        --role="roles/iam.serviceAccountTokenCreator" \
+        --project="${PROJECT_ID}" \
+        --quiet >/dev/null || true
+  fi
 }
 
 

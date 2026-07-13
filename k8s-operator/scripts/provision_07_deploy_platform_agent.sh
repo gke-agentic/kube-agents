@@ -82,13 +82,8 @@ execute_custom_resource() {
   # Determine if Google Chat should be enabled
   if [ "${GOOGLE_CHAT_ENABLED:-false}" = "true" ]; then
     export GOOGLE_CHAT_ENABLED="true"
-    if [ -z "${CHAT_TOPIC_NAME}" ] || [ -z "${CHAT_SUB_NAME}" ]; then
-      print_warning "Google Chat integration is enabled but CHAT_TOPIC_NAME or CHAT_SUB_NAME is missing. It may not work properly."
-    fi
   else
     export GOOGLE_CHAT_ENABLED="false"
-    export CHAT_TOPIC_NAME=""
-    export CHAT_SUB_NAME=""
     export ALLOWED_USERS=""
   fi
 
@@ -107,8 +102,62 @@ execute_custom_resource() {
     export SLACK_HOME_CHANNEL_NAME=""
   fi
 
+  # Check/reserve global static IP and automate Cloud Endpoints DNS if applicable
+  if [ -n "${GOOGLE_CHAT_DOMAIN:-}" ] && [ "${GOOGLE_CHAT_ENABLED:-false}" = "true" ]; then
+    print_info "Checking/reserving GCP Global Static IP for Google Chat ingress..."
+    gcloud compute addresses create "platform-agent-ip" --global --project="$PROJECT_ID" 2>/dev/null || true
+    STATIC_IP=$(gcloud compute addresses describe "platform-agent-ip" --global --project="$PROJECT_ID" --format="get(address)" 2>/dev/null || echo "PENDING")
+    
+    if [ -n "$STATIC_IP" ] && [ "$STATIC_IP" != "PENDING" ]; then
+      if [ "$GOOGLE_CHAT_DOMAIN" = "auto" ] || [ -z "$GOOGLE_CHAT_DOMAIN" ] || [[ "$GOOGLE_CHAT_DOMAIN" == *.nip.io ]]; then
+        IP_DASH=$(echo "$STATIC_IP" | tr '.' '-')
+        GOOGLE_CHAT_DOMAIN="${AGENT_NAME:-platform-agent}.${IP_DASH}.nip.io"
+        APP_URL="https://${GOOGLE_CHAT_DOMAIN}/googlechat"
+        export GOOGLE_CHAT_DOMAIN APP_URL
+        print_success "Assigned 100% zero-interaction wildcard DNS: ${GOOGLE_CHAT_DOMAIN} -> ${STATIC_IP}"
+      elif [[ "$GOOGLE_CHAT_DOMAIN" == *.endpoints.cloud.goog ]]; then
+        APP_URL="https://${GOOGLE_CHAT_DOMAIN}/googlechat"
+        export APP_URL
+        print_info "Automating Cloud Endpoints DNS registration for ${GOOGLE_CHAT_DOMAIN} -> ${STATIC_IP}..."
+        cat <<EOF > "/tmp/openapi-${AGENT_NAME:-platform-agent}.yaml"
+swagger: "2.0"
+info:
+  title: "${AGENT_NAME:-platform-agent} Gateway Ingress"
+  description: "Automated DNS mapping for OpenClaw Gateway on GKE"
+  version: "1.0.0"
+host: "${GOOGLE_CHAT_DOMAIN}"
+x-google-endpoints:
+  - name: "${GOOGLE_CHAT_DOMAIN}"
+    target: "${STATIC_IP}"
+paths: {}
+EOF
+        if gcloud endpoints services deploy "/tmp/openapi-${AGENT_NAME:-platform-agent}.yaml" --project="$PROJECT_ID" --impersonate-service-account="${GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com" --quiet 2>/dev/null || gcloud endpoints services deploy "/tmp/openapi-${AGENT_NAME:-platform-agent}.yaml" --project="$PROJECT_ID" --quiet 2>/dev/null; then
+          rm -f "/tmp/openapi-${AGENT_NAME:-platform-agent}.yaml"
+          print_success "Cloud Endpoints DNS registered! ($GOOGLE_CHAT_DOMAIN -> $STATIC_IP)"
+        else
+          rm -f "/tmp/openapi-${AGENT_NAME:-platform-agent}.yaml"
+          print_warning "Automatic Cloud Endpoints DNS deployment could not be completed."
+          echo -e "${C_YELLOW}╔═════════════════════════════════════════════════════════════════════════════╗${C_RESET}"
+          echo -e "${C_YELLOW}║  >>> DNS ACTION REQUIRED FOR GOOGLE CHAT HTTPS <<<                          ║${C_RESET}"
+          echo -e "${C_YELLOW}║  Domain:    ${C_GREEN}${GOOGLE_CHAT_DOMAIN}${C_YELLOW}                                     ║${C_RESET}"
+          echo -e "${C_YELLOW}║  Static IP: ${C_GREEN}${STATIC_IP}${C_YELLOW}                                           ║${C_RESET}"
+          echo -e "${C_YELLOW}║  Action:    Please verify domain ownership or create a DNS 'A Record'       ║${C_RESET}"
+          echo -e "${C_YELLOW}║             pointing your domain to the Static IP above.                    ║${C_RESET}"
+          echo -e "${C_YELLOW}╚═════════════════════════════════════════════════════════════════════════════╝${C_RESET}"
+        fi
+      else
+        echo -e "${C_YELLOW}╔════════════════════════════════════════════════════════════════════════╗${C_RESET}"
+        echo -e "${C_YELLOW}║  >>> DNS MAPPING REQUIRED FOR GOOGLE CHAT HTTPS <<<                    ║${C_RESET}"
+        echo -e "${C_YELLOW}║  Domain:    ${C_GREEN}${GOOGLE_CHAT_DOMAIN}${C_YELLOW}                                     ║${C_RESET}"
+        echo -e "${C_YELLOW}║  Static IP: ${C_GREEN}${STATIC_IP}${C_YELLOW}                                           ║${C_RESET}"
+        echo -e "${C_YELLOW}║  Action:    Create a DNS 'A Record' pointing your domain to this IP.   ║${C_RESET}"
+        echo -e "${C_YELLOW}╚════════════════════════════════════════════════════════════════════════╝${C_RESET}"
+      fi
+    fi
+  fi
+
   # Ensure variables are explicitly exported so envsubst can access them
-  export PROJECT_ID REGION CLUSTER_NAME MODEL_DEFAULT_NAME MODEL_PROVIDER GSA_NAME CHAT_SUB_NAME CHAT_TOPIC_NAME GOOGLE_CHAT_MODE ALLOWED_USERS AGENT_IMAGE NAMESPACE KSA_NAME APP_URL APP_PRINCIPAL
+  export PROJECT_ID REGION CLUSTER_NAME MODEL_DEFAULT_NAME MODEL_PROVIDER GSA_NAME GOOGLE_CHAT_MODE ALLOWED_USERS AGENT_IMAGE NAMESPACE KSA_NAME APP_URL APP_PRINCIPAL GOOGLE_CHAT_DOMAIN
 
   envsubst < "$CR_TEMPLATE" > "$CR_MANIFEST"
   

@@ -4909,6 +4909,15 @@ spec:
                         description: AppURL is the public webhook URL of the Google
                           Chat App, used as the audience.
                         type: string
+                      autoIngress:
+                        default: true
+                        description: AutoIngress toggles automated generation of GKE
+                          Ingress and ManagedCertificate resources.
+                        type: boolean
+                      domain:
+                        description: Domain is the public HTTPS domain name (e.g.
+                          bot.mycompany.com) for Google Chat webhooks.
+                        type: string
                       enabled:
                         default: false
                         description: Enabled toggles the Google Chat integration.

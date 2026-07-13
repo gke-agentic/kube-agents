@@ -26,13 +26,13 @@ spec:
       enabled: ${GOOGLE_CHAT_ENABLED}
       mode: "${GOOGLE_CHAT_MODE}"
       projectId: "${PROJECT_ID}"
-      topicName: "${CHAT_TOPIC_NAME}"
-      subscriptionName: "${CHAT_SUB_NAME}"
       allowedUsers:
         - "${ALLOWED_USERS}"
       homeChannel: ""
       appUrl: "${APP_URL}"
       appPrincipal: "${APP_PRINCIPAL}"
+      domain: "${GOOGLE_CHAT_DOMAIN}"
+      autoIngress: true
     slack:
       enabled: ${SLACK_ENABLED}
       botTokenSecretRef:

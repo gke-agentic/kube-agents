@@ -10,8 +10,8 @@ source "${SCRIPT_DIR}/common.sh" "$@"
 load_state
 
 if [ "${GOOGLE_CHAT_ENABLED:-false}" = "true" ]; then
-  if [ -z "${CHAT_TOPIC_NAME:-}" ] || [ -z "${CHAT_SUB_NAME:-}" ]; then
-    print_warning "Google Chat integration is enabled but CHAT_TOPIC_NAME or CHAT_SUB_NAME is missing. It may not work properly."
+  if [ -z "${GOOGLE_CHAT_DOMAIN:-}" ]; then
+    GOOGLE_CHAT_DOMAIN="<your-domain-or-static-ip>"
   fi
 
   echo -e "${C_CYAN}${C_BOLD}--- [Google Chat Integration Instructions] ---${C_RESET}"
@@ -19,8 +19,8 @@ if [ "${GOOGLE_CHAT_ENABLED:-false}" = "true" ]; then
   echo -e "       ${C_WHITE}https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat?project=${PROJECT_ID}${C_RESET}"
   echo -e "       - Name: ${C_GREEN}GKE Platform Agent Bot${C_RESET}"
   echo -e "       - Avatar: ${C_GREEN}https://platform-agent.nousresearch.com/docs/img/logo.png${C_RESET}"
-  echo -e "       - Connection Settings: Select ${C_BOLD}Cloud Pub/Sub${C_RESET}"
-  echo -e "       - Pub/Sub Topic Name: ${C_GREEN}projects/${PROJECT_ID}/topics/${CHAT_TOPIC_NAME}${C_RESET}"
+  echo -e "       - Connection Settings: Select ${C_BOLD}App URL (HTTP Webhook)${C_RESET}"
+  echo -e "       - App URL: ${C_GREEN}https://${GOOGLE_CHAT_DOMAIN}/googlechat${C_RESET}"
   echo -e "       - Under Visibility, check: ${C_GREEN}Only specific people (add your email/emails: ${ALLOWED_USERS:-your-email})${C_RESET}"
   echo -e ""
   echo -e "[ ] 2. Send a DM to the Bot on Google Chat:"

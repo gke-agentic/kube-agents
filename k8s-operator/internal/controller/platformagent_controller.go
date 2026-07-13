@@ -29,6 +29,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -58,6 +60,9 @@ type PlatformAgentReconciler struct {
 // +kubebuilder:rbac:groups=node.k8s.io,resources=runtimeclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=get;list;watch;create;update;patch;delete;bind
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.gke.io,resources=managedcertificates,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=cloud.google.com,resources=backendconfigs,verbs=get;list;watch;create;update;patch;delete
 
 func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -138,6 +143,11 @@ func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	// Reconcile Service
 	if err := r.reconcileService(ctx, instance); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Reconcile Ingress & ManagedCertificate
+	if err := r.reconcileIngressAndSSL(ctx, instance); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -291,6 +301,37 @@ func (r *PlatformAgentReconciler) reconcileService(ctx context.Context, agent *a
 		return err
 	}
 	return r.Patch(ctx, svc, client.Apply, client.ForceOwnership, client.FieldOwner("platformagent-controller"))
+}
+
+func (r *PlatformAgentReconciler) reconcileIngressAndSSL(ctx context.Context, agent *agentv1alpha1.PlatformAgent) error {
+	if integration := agent.Spec.Integration; integration != nil && integration.GoogleChat != nil && integration.GoogleChat.Enabled != nil && *integration.GoogleChat.Enabled {
+		if integration.GoogleChat.Domain != "" && (integration.GoogleChat.AutoIngress == nil || *integration.GoogleChat.AutoIngress) {
+			bc := buildBackendConfig(agent)
+			if err := ctrl.SetControllerReference(agent, bc, r.Scheme); err != nil {
+				return err
+			}
+			if err := r.Patch(ctx, bc, client.Apply, client.ForceOwnership, client.FieldOwner("platformagent-controller")); err != nil {
+				return fmt.Errorf("failed to reconcile BackendConfig: %w", err)
+			}
+
+			cert := buildManagedCertificate(agent)
+			if err := ctrl.SetControllerReference(agent, cert, r.Scheme); err != nil {
+				return err
+			}
+			if err := r.Patch(ctx, cert, client.Apply, client.ForceOwnership, client.FieldOwner("platformagent-controller")); err != nil {
+				return fmt.Errorf("failed to reconcile ManagedCertificate: %w", err)
+			}
+
+			ing := buildIngress(agent)
+			if err := ctrl.SetControllerReference(agent, ing, r.Scheme); err != nil {
+				return err
+			}
+			if err := r.Patch(ctx, ing, client.Apply, client.ForceOwnership, client.FieldOwner("platformagent-controller")); err != nil {
+				return fmt.Errorf("failed to reconcile Ingress: %w", err)
+			}
+		}
+	}
+	return nil
 }
 
 func (r *PlatformAgentReconciler) reconcileRBAC(ctx context.Context, agent *agentv1alpha1.PlatformAgent) error {
@@ -480,6 +521,19 @@ func (r *PlatformAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Service{}).
+		Owns(&networkingv1.Ingress{}).
+		Owns(&unstructured.Unstructured{
+			Object: map[string]any{
+				"apiVersion": "networking.gke.io/v1",
+				"kind":       "ManagedCertificate",
+			},
+		}).
+		Owns(&unstructured.Unstructured{
+			Object: map[string]any{
+				"apiVersion": "cloud.google.com/v1",
+				"kind":       "BackendConfig",
+			},
+		}).
 		Watches(
 			&rbacv1.ClusterRoleBinding{},
 			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {

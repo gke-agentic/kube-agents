@@ -51,6 +51,18 @@ rules:
   - update
   - watch
 - apiGroups:
+  - cloud.google.com
+  resources:
+  - backendconfigs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - kubeagents.x-k8s.io
   resources:
   - platformagents
@@ -76,6 +88,30 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - networking.gke.io
+  resources:
+  - managedcertificates
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - ingresses
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - node.k8s.io
   resources:

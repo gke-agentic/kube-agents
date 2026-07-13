@@ -226,7 +226,7 @@ data:
         "enabled": true,
         "otel": {
           "enabled": true,
-          "endpoint": "http://opentelemetry-collector.gke-managed-otel.svc.cluster.local:4318",
+          "endpoint": "http://opentelemetry-collector.gke-managed-otel.svc.cluster.local:4318/v1/traces",
           "protocol": "http/protobuf",
           "serviceName": "platformagent-gateway",
           "traces": true,
@@ -352,7 +352,7 @@ spec:
   template:
     metadata:
       annotations:
-        kubeagents.x-k8s.io/config-hash: 3b7589fdcb1283b8a20210ba1eb9d9ad8b762ef16795ffc65b3efd829f0a4026
+        kubeagents.x-k8s.io/config-hash: 00029b7b69624c8a67bc195b3a676fcc640812678036b1cb738f13450b45e1f4
         kubeagents.x-k8s.io/fluent-bit-config-hash: 50923ab88e1741b0729c37837bc1c3869161e3161402494a4ee64cda3a2cfab3
         kubeagents.x-k8s.io/settings-config-hash: 9db5b5cb5fb8ec46b1a0572ef34ef27e0ed44dc1f787a4a76bdd75f43934c8b9
       creationTimestamp: null

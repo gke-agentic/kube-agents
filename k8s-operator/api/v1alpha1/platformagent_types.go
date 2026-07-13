@@ -96,6 +96,15 @@ type GoogleChatSpec struct {
 	// +kubebuilder:default:="default"
 	// +optional
 	Mode string `json:"mode,omitempty"`
+
+	// Domain is the public HTTPS domain name (e.g. bot.mycompany.com) for Google Chat webhooks.
+	// +optional
+	Domain string `json:"domain,omitempty"`
+
+	// AutoIngress toggles automated generation of GKE Ingress and ManagedCertificate resources.
+	// +kubebuilder:default=true
+	// +optional
+	AutoIngress *bool `json:"autoIngress,omitempty"`
 }
 
 // SlackSpec contains the configuration for the Slack integration.

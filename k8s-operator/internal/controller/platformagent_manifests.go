@@ -26,9 +26,11 @@ import (
 	agentv1alpha1 "github.com/gke-labs/kube-agents/k8s-operator/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 )
@@ -890,7 +892,7 @@ func buildFluentBitConfigMap(agent *agentv1alpha1.PlatformAgent) *corev1.ConfigM
 
 // buildPlatformService generates the Service manifest for PlatformAgent
 func buildPlatformService(agent *agentv1alpha1.PlatformAgent) *corev1.Service {
-	return &corev1.Service{
+	svc := &corev1.Service{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "v1",
 			Kind:       "Service",
@@ -913,6 +915,97 @@ func buildPlatformService(agent *agentv1alpha1.PlatformAgent) *corev1.Service {
 					Name:       "dashboard",
 					Port:       9119,
 					TargetPort: intstr.FromString("dashboard"),
+				},
+			},
+		},
+	}
+	if agent.Spec.Integration != nil && agent.Spec.Integration.GoogleChat != nil && agent.Spec.Integration.GoogleChat.AutoIngress != nil && *agent.Spec.Integration.GoogleChat.AutoIngress {
+		if svc.ObjectMeta.Annotations == nil {
+			svc.ObjectMeta.Annotations = make(map[string]string)
+		}
+		svc.ObjectMeta.Annotations["cloud.google.com/backend-config"] = fmt.Sprintf(`{"default": "%s-backendconfig"}`, agent.Name)
+	}
+	return svc
+}
+
+// buildBackendConfig generates the BackendConfig manifest specifying /healthz for GKE load balancer
+func buildBackendConfig(agent *agentv1alpha1.PlatformAgent) *unstructured.Unstructured {
+	u := &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": "cloud.google.com/v1",
+			"kind":       "BackendConfig",
+			"metadata": map[string]any{
+				"name":      agent.Name + "-backendconfig",
+				"namespace": agent.Namespace,
+			},
+			"spec": map[string]any{
+				"healthCheck": map[string]any{
+					"checkIntervalSec":   int64(15),
+					"timeoutSec":         int64(10),
+					"healthyThreshold":   int64(1),
+					"unhealthyThreshold": int64(2),
+					"type":               "HTTP",
+					"requestPath":        "/healthz",
+					"port":               int64(8642),
+				},
+			},
+		},
+	}
+	return u
+}
+
+// buildManagedCertificate generates the ManagedCertificate manifest for Let's Encrypt / Google SSL
+func buildManagedCertificate(agent *agentv1alpha1.PlatformAgent) *unstructured.Unstructured {
+	cert := &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": "networking.gke.io/v1",
+			"kind":       "ManagedCertificate",
+			"metadata": map[string]any{
+				"name":      agent.Name + "-cert",
+				"namespace": agent.Namespace,
+			},
+			"spec": map[string]any{
+				"domains": []string{agent.Spec.Integration.GoogleChat.Domain},
+			},
+		},
+	}
+	return cert
+}
+
+// buildIngress generates the GKE Ingress pointing to the PlatformAgent Service (port 8642)
+func buildIngress(agent *agentv1alpha1.PlatformAgent) *networkingv1.Ingress {
+	pathType := networkingv1.PathTypePrefix
+	return &networkingv1.Ingress{
+		TypeMeta: metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "Ingress"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      agent.Name + "-ingress",
+			Namespace: agent.Namespace,
+			Annotations: map[string]string{
+				"kubernetes.io/ingress.global-static-ip-name": agent.Name + "-ip",
+				"networking.gke.io/managed-certificates":      agent.Name + "-cert",
+				"kubernetes.io/ingress.class":                 "gce",
+			},
+		},
+		Spec: networkingv1.IngressSpec{
+			Rules: []networkingv1.IngressRule{
+				{
+					Host: agent.Spec.Integration.GoogleChat.Domain,
+					IngressRuleValue: networkingv1.IngressRuleValue{
+						HTTP: &networkingv1.HTTPIngressRuleValue{
+							Paths: []networkingv1.HTTPIngressPath{
+								{
+									Path:     "/googlechat",
+									PathType: &pathType,
+									Backend: networkingv1.IngressBackend{
+										Service: &networkingv1.IngressServiceBackend{
+											Name: agent.Name,
+											Port: networkingv1.ServiceBackendPort{Number: 8642},
+										},
+									},
+								},
+							},
+						},
+					},
 				},
 			},
 		},
