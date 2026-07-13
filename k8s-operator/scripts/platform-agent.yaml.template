@@ -46,4 +46,3 @@ spec:
       allowedUsers:
         - "${SLACK_ALLOWED_USERS}"
       homeChannel: "${SLACK_HOME_CHANNEL}"
-      homeChannelName: "${SLACK_HOME_CHANNEL_NAME}"
