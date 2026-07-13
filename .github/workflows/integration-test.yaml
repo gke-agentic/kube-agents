@@ -31,7 +31,7 @@ jobs:
         run: |
           echo "Running heavy integration tests..."
           sleep 5
-          exit 1 # (Change to 'exit 0' later to test a passing run)
+          exit 0 # (Change to 'exit 0' later to test a passing run)
 
   # 3. The Required Check that evaluates the results
   pr-gatekeeper:
