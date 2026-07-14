@@ -68,20 +68,20 @@ For full end-to-end setups on Google Cloud Platform (GCP) with GKE Standard, Wor
 
 ### Modular Pipeline Stages
 
-The automated installer executes 9 idempotent stages sequentially:
+The automated installer executes 10 idempotent stages sequentially:
 
 ```mermaid
 graph TD
     A[make gcp-provision] --> S01[01: GKE Cluster Setup]
-    A --> S01a[01a: Optional gVisor Sandbox Pool]
-    A --> S02[02: Operator CRDs & Manager]
-    A --> S03[03: GCP IAM & Workload Identity]
-    A --> S04[04: Google Chat Pub/Sub Topic]
-    A --> S05[05: Slack Configuration]
-    A --> S06[06: Kubernetes API Secrets]
-    A --> S07[07: PlatformAgent CR Deployment]
-    A --> S08[08: LiteLLM Gateway]
-    A --> S09[09: GitHub Token Minter]
+    A --> S02[02: gVisor Sandbox Pool]
+    A --> S03[03: Operator CRDs & Manager]
+    A --> S04[04: GCP IAM & Workload Identity]
+    A --> S05[05: Google Chat Pub/Sub Topic]
+    A --> S06[06: Slack Configuration]
+    A --> S07[07: Kubernetes API Secrets]
+    A --> S08[08: PlatformAgent CR Deployment]
+    A --> S09[09: LiteLLM Gateway]
+    A --> S10[10: GitHub Token Minter]
 ```
 
 ### Step-by-Step Execution
@@ -112,7 +112,7 @@ make gcp-provision
   ```
 
 > [!TIP]
-> Each stage of the provisioning pipeline can also be run individually using step-specific Makefile targets (e.g., `make gcp-provision-01-cluster`, `make gcp-provision-02-operator`, ..., `make gcp-provision-09-github`). See [k8s-operator/README.md](k8s-operator/README.md#running-individual-steps-with-make) for the complete list of individual provisioning and teardown targets.
+> Each stage of the provisioning pipeline can also be run individually using step-specific Makefile targets (e.g., `make gcp-provision-01-cluster`, `make gcp-provision-02-gvisor`, ..., `make gcp-provision-10-github`). See [k8s-operator/README.md](k8s-operator/README.md#running-individual-steps-with-make) for the complete list of individual provisioning and teardown targets.
 
 #### Step 3: Verify Running Components
 
@@ -306,14 +306,15 @@ make gcp-teardown
 
 You can also run step-specific teardowns:
 
-- `make gcp-teardown-09-github`: Remove GitHub Token Minter
-- `make gcp-teardown-08-litellm`: Undeploy LiteLLM Gateway
-- `make gcp-teardown-07-deploy`: Delete PlatformAgent CR
-- `make gcp-teardown-06-secrets`: Delete Kubernetes secrets
-- `make gcp-teardown-05-slack`: Reset Slack configuration
-- `make gcp-teardown-04-gchat`: Remove Google Chat Pub/Sub resources
-- `make gcp-teardown-03-iam`: Clean up Workload Identity and GSAs
-- `make gcp-teardown-02-operator`: Undeploy operator controller and CRDs
+- `make gcp-teardown-10-github`: Remove GitHub Token Minter
+- `make gcp-teardown-09-litellm`: Undeploy LiteLLM Gateway
+- `make gcp-teardown-08-deploy`: Delete PlatformAgent CR
+- `make gcp-teardown-07-secrets`: Delete Kubernetes secrets
+- `make gcp-teardown-06-slack`: Reset Slack configuration
+- `make gcp-teardown-05-gchat`: Remove Google Chat Pub/Sub resources
+- `make gcp-teardown-04-iam`: Clean up Workload Identity and GSAs
+- `make gcp-teardown-03-operator`: Undeploy operator controller and CRDs
+- `make gcp-teardown-02-gvisor`: Delete gVisor node pool
 - `make gcp-teardown-01-cluster`: Decommission GKE Standard cluster
 
 ### Manual Local Uninstall
