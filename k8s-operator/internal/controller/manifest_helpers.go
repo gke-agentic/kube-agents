@@ -128,9 +128,9 @@ func resolveDeploymentReplicasAndStrategy(deployment *agentv1alpha1.DeploymentSp
 	return replicas, strategy
 }
 
-// ReconcileHostServiceAccount is a shared helper to reconcile a ServiceAccount on the host cluster
+// ReconcileServiceAccount is a shared helper to reconcile a ServiceAccount on the host cluster
 // with Server-Side Apply and OwnerReference.
-func ReconcileHostServiceAccount(
+func ReconcileServiceAccount(
 	ctx context.Context,
 	c client.Client,
 	scheme *runtime.Scheme,

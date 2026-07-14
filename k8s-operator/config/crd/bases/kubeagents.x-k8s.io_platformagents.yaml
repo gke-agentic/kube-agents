@@ -7212,11 +7212,6 @@ spec:
                     Security configures RBAC, Pod Security, and Workload
                     Identity.
                   properties:
-                    remoteIdentitySubject:
-                      description: |-
-                        RemoteIdentitySubject specifies the identity subject (e.g. GSA email, AWS IAM Role ARN, etc.)
-                        to authorize on the remote cluster.
-                      type: string
                     serviceAccountAnnotations:
                       additionalProperties:
                         type: string
