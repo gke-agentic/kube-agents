@@ -164,7 +164,7 @@ get_platform_agent_roles() {
       ;;
     custom)
       if declare -p PLATFORM_AGENT_CUSTOM_ROLES 2>/dev/null | grep -q 'declare -a'; then
-        eval 'echo "${PLATFORM_AGENT_CUSTOM_ROLES[*]}"'
+        echo "${PLATFORM_AGENT_CUSTOM_ROLES[*]}"
       else
         local custom_roles_str="${PLATFORM_AGENT_CUSTOM_ROLES:-}"
         echo "${custom_roles_str//,/ }"

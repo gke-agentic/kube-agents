@@ -96,7 +96,7 @@ platform_roles=(
 if [ -n "${PLATFORM_AGENT_CUSTOM_ROLES:-}" ]; then
   custom_roles_str=""
   if declare -p PLATFORM_AGENT_CUSTOM_ROLES 2>/dev/null | grep -q 'declare -a'; then
-    eval 'custom_roles_str="${PLATFORM_AGENT_CUSTOM_ROLES[*]}"'
+    custom_roles_str="${PLATFORM_AGENT_CUSTOM_ROLES[*]}"
   else
     custom_roles_str="${PLATFORM_AGENT_CUSTOM_ROLES}"
   fi
