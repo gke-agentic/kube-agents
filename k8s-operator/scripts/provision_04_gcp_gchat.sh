@@ -135,11 +135,12 @@ execute_agent_gcp() {
       --quiet >/dev/null || return 1
 
   print_info "Patching Kubernetes Secret platform-agent-secrets with Chat Service Account key..."
-  local b64_key
-  b64_key=$(base64 < "${tmp_key}" | tr -d '\r\n')
+  local patch_json
+  patch_json=$(jq -n --rawfile key "${tmp_key}" '{"stringData": {"GOOGLE_CHAT_SERVICE_ACCOUNT": $key}}')
   kubectl patch secret platform-agent-secrets \
       --namespace="${NAMESPACE:-kubeagents-system}" \
-      -p "{\"data\":{\"GOOGLE_CHAT_SERVICE_ACCOUNT\":\"${b64_key}\"}}" >/dev/null || return 1
+      --type=merge \
+      -p "$patch_json" >/dev/null || return 1
 
   rm -f "${tmp_key}"
 }

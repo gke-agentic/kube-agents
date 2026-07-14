@@ -198,20 +198,13 @@ func renderConfigJSON(agent *agentv1alpha1.PlatformAgent) string {
 			audience := gchat.ProjectNumber
 			if audience == "" {
 				audience = gchat.ProjectID
-				allDigits := len(audience) > 0
-				for _, r := range audience {
-					if r < '0' || r > '9' {
-						allDigits = false
-						break
-					}
-				}
-				if !allDigits {
-					audienceType = "project-id"
-				}
 			}
 			if gchat.AppURL != "" {
 				audienceType = "app-url"
 				audience = gchat.AppURL
+			} else if gchat.Domain != "" {
+				audienceType = "app-url"
+				audience = fmt.Sprintf("https://%s/googlechat", gchat.Domain)
 			}
 			allowFrom := []string{"*"}
 			if len(gchat.AllowedUsers) > 0 && !(len(gchat.AllowedUsers) == 1 && gchat.AllowedUsers[0] == "") {
