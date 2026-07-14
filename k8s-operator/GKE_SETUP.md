@@ -172,7 +172,7 @@ gcloud projects add-iam-policy-binding $PROJECT_ID \
 
 3. Provide the Cluster’s Kubernetes Service Account (KSA) with the Google Service Account (GSA) via the Security struct
 
-```yaml
+````yaml
 spec:
   workloadIdentity:
     gcp:
@@ -191,7 +191,8 @@ For rapid local testing without custom DNS or certificate provisioning, use a po
 1. **Start a port-forward** to expose the platform agent gateway service locally:
    ```bash
    kubectl port-forward svc/platform-agent 8642:8642 -n kubeagents-system
-   ```
+````
+
 2. **Launch ngrok** to map local port `8642` to a public HTTPS URL:
    ```bash
    ngrok http 8642
@@ -202,16 +203,21 @@ For rapid local testing without custom DNS or certificate provisioning, use a po
 ---
 
 ### Production Deployment (GKE Ingress + Managed Certificates)
+
 For a production GKE deployment, traffic is routed securely via a Global External Application Load Balancer (GFE) with Google-managed TLS certificates.
 
 #### 1. Reserve a Static IP Address
+
 Reserve a static global IP in your target project:
+
 ```bash
 gcloud compute addresses create platform-agent-ip --global --project=$PROJECT_ID
 ```
 
 #### 2. Create the GKE Managed Certificate
+
 Create a `ManagedCertificate` resource so GKE requests and manages the SSL certificate automatically:
+
 ```yaml
 apiVersion: networking.gke.io/v1
 kind: ManagedCertificate
@@ -224,7 +230,9 @@ spec:
 ```
 
 #### 3. Define the GKE Ingress Resource
+
 Create an Ingress to bind the global static IP and certificate, terminating HTTPS traffic and forwarding it to the `platform-agent` Service:
+
 ```yaml
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -250,10 +258,14 @@ spec:
 ```
 
 #### 4. Configure Cloud DNS
+
 Create an `A` record mapping `platform-agent.yourcompany.com` to the reserved IP address in Cloud DNS or your DNS provider.
 
 #### 5. Save the endpoint in Google Chat API settings
+
 Point the GChat App configuration URL directly to:
 `https://platform-agent.yourcompany.com/googlechat`
+
+```
 
 ```

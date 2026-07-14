@@ -20,6 +20,7 @@ Google Chat HTTPS Webhook (`/googlechat`)
 ### 1. OpenClaw Node.js Gateway
 
 When an inbound HTTPS POST request arrives at `/googlechat`:
+
 1. OpenClaw verifies the webhook target (`audienceCheck` against `openclaw.json`).
 2. Extracts the sender identity (`sender.name` / `email`) and Chat conversation (`space.name`, `thread.name`).
 3. Establishes the authoritative `session_id` for the conversation turn.
@@ -30,6 +31,7 @@ When an inbound HTTPS POST request arrives at `/googlechat`:
 `SessionManager` is the universal Python session resolver used across our multi-agent harness (`agent_common_server.py`, peer agents, and tool runners).
 
 When `SessionManager.current_context()` is invoked, it resolves the caller's identity in prioritized order:
+
 1. **Environment Variables:** Checks `OPENCLAW_SESSION_ID`, `OPENCLAW_USER_ID`, and `OPENCLAW_SENDER_ID` (with fallback to legacy `HERMES_` keys).
 2. **SQLite Session Store (`session_kv.db`):** If an explicit `session_id` is provided or found in environment/headers, it queries `/var/lib/kube-agents/session/session_kv.db` (`session_metadata` table) to retrieve stored metadata (`platform`, `user_id`, `user_email`, `chat_id`, `thread_id`).
 
@@ -38,6 +40,7 @@ When `SessionManager.current_context()` is invoked, it resolves the caller's ide
 `session_store` (`SessionMetadataStore` and `SessionMetadata`) manages persistent SQLite (`/var/lib/kube-agents/session/session_kv.db`) storage for Python-based agent layers, peer agents (`DevTeamAgent`, `OperatorAgent`), or Python gateway pipelines.
 
 When active, it:
+
 1. Builds a `SessionMetadata` object from event sources (`platform`, `user_id`, `chat_id`, `thread_id`).
 2. Writes `session_id -> metadata` JSON into `/var/lib/kube-agents/session/session_kv.db`.
 
@@ -59,6 +62,7 @@ updated_at
 `session_otel_bridge` (`OtelSessionBridge`) enriches Python OpenTelemetry spans with user attribution.
 
 At initialization, it installs a wrapper around Python `tracer.start_span`. For each span:
+
 1. Reads `session_id` passed to `start_span` (or active session context).
 2. Reads the matching metadata row from `/var/lib/kube-agents/session/session_kv.db`.
 3. Injects fixed identity attributes into the OTel span:
