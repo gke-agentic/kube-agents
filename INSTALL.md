@@ -132,6 +132,50 @@ If you chose `chatgpt` as your `MODEL_PROVIDER`, follow the printed OAuth Device
 kubectl logs -n kubeagents-system deployment/litellm -f
 ```
 
+#### Step 5: Enable Google Chat & Slack Integrations (Manual Required Steps)
+
+If you enabled Google Chat (`GOOGLE_CHAT_ENABLED=true`) or Slack (`SLACK_ENABLED=true`) during provisioning, perform the following required manual steps after `make gcp-provision` completes:
+
+##### 1. Google Chat Configuration (`GOOGLE_CHAT_ENABLED=true`)
+
+1. **Configure the Google Chat API endpoint in GCP Console**:
+   - Open the Google Chat API configuration page: `https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat?project=<PROJECT_ID>`
+   - Set the **App name** to `GKE Platform Agent Bot`.
+   - Set the **Avatar URL** to `https://platform-agent.nousresearch.com/docs/img/logo.png`.
+   - Under **Connection settings**, select **Cloud Pub/Sub** and enter the Cloud Pub/Sub topic created during provisioning:
+     ```text
+     projects/<PROJECT_ID>/topics/<CHAT_TOPIC_NAME>
+     ```
+   - Under **Visibility**, select **Specific people and groups in your domain** and enter your email address (`ALLOWED_USERS`).
+2. **Send a Test Direct Message**:
+   - Send a DM to the bot in Google Chat with the message `"Hi Hermes"`.
+3. **Approve Pairing Code (Optional / First-time setup)**:
+   - If pairing mode is enabled, approve the pairing code displayed in the gateway logs:
+     ```bash
+     kubectl exec -it deploy/platform-agent-gateway -n kubeagents-system -- hermes pairing approve google_chat <PAIRING_CODE>
+     ```
+   - Re-display these instructions at any time from the `k8s-operator` directory:
+     ```bash
+     ./scripts/print_instructions_gchat.sh
+     ```
+
+##### 2. Slack Configuration (`SLACK_ENABLED=true`)
+
+1. **Verify Slack App Settings**:
+   - Ensure **Socket Mode** is enabled in your Slack App console.
+   - Verify that your Bot Token (`SLACK_BOT_TOKEN`) has the required scopes: `app_mentions:read`, `channels:history`, `chat:write`, `channels:read`, `groups:read`, `im:read`, `mpim:read`.
+2. **Test Bot Connection**:
+   - Invite the bot to a channel or send a direct message: `"Hi Hermes"`.
+3. **Approve Pairing Code (Optional / First-time setup)**:
+   - If pairing mode is enabled, approve the pairing code displayed in the gateway logs:
+     ```bash
+     kubectl exec -it deploy/platform-agent-gateway -n kubeagents-system -- hermes pairing approve slack <PAIRING_CODE>
+     ```
+   - Re-display these instructions at any time from the `k8s-operator` directory:
+     ```bash
+     ./scripts/print_instructions_slack.sh
+     ```
+
 ---
 
 ## Method 2: Manual Kubernetes Cluster Deployment
