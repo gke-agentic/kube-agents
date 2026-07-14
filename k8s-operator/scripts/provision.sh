@@ -44,7 +44,7 @@ echo -e "Next steps to run the operator and interact with your bot:\n"
 echo -e "${C_CYAN}${C_BOLD}--- [General Operator & Deployment Next Steps] ---${C_RESET}"
 echo -e "[ ] Run the new Operator manager locally or deploy it:"
 echo -e "       To run locally: ${C_WHITE}ENABLE_WEBHOOKS=false make run${C_RESET} (from k8s-operator directory)"
-echo -e "       To deploy to cluster: ${C_WHITE}make deploy IMG=<your-docker-registry>/kube-agents-operator:latest${C_RESET}"
+echo -e "       To deploy to cluster: ${C_WHITE}export IMG=<your-docker-registry>/kube-agents-operator:latest && make deploy IMG=\$IMG${C_RESET}"
 echo -e ""
 
 echo -e "[ ] Monitor Gateway pod rollout progress:"
