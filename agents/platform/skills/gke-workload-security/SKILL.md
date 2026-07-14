@@ -39,12 +39,7 @@ access Google Cloud APIs.
 **Steps:**
 
 1. **Create Namespace and KSA:**
-
-   ```bash
-   kubectl create namespace workload-identity-test-ns
-   kubectl create serviceaccount <ksa-name> \
-       --namespace workload-identity-test-ns
-   ```
+   Define the namespace and KSA declaratively in a YAML manifest, and submit them via the secure GitOps Pull Request flow (`submit-suggestion`).
 
 2. **Bind KSA to GSA:**
 
@@ -64,11 +59,7 @@ access Google Cloud APIs.
 
 4. **Verify Example Pod:**
    Use existing asset `assets/workload-identity-pod.yaml` to test the
-   configuration. Update the `<ksa-name>` in the file first.
-
-   ```bash
-   kubectl apply -f ./assets/workload-identity-pod.yaml -n workload-identity-test-ns
-   ```
+   configuration. Update the `<ksa-name>` in the file first, and propose a Pull Request via `submit-suggestion` to deploy it.
 
 ### 3. Implement Network Policies
 
@@ -89,11 +80,7 @@ gcloud container clusters update <cluster-name> \
 **Apply Default Deny Policy:**
 Isolate namespaces by denying all ingress and egress traffic by default.
 
-**Replace <target-namespace> with the namespace you want to isolate.**
-
-```bash
-kubectl apply -f ./assets/default-deny-netpol.yaml -n <target-namespace>
-```
+**Replace <target-namespace> with the namespace you want to isolate, and submit via the GitOps PR flow (`submit-suggestion`).**
 
 ### 4. Enable Shielded Nodes
 

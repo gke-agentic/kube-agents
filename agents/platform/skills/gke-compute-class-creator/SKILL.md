@@ -16,7 +16,7 @@ This skill helps you construct `ComputeClass` resources for Google Kubernetes En
    - **AI/ML**: Configure `gpu` or `tpu` fields.
 3. **Construct YAML**: Use the references below to build the `ComputeClass` manifest.
 4. **Validate**: Ensure all fields comply with the specification.
-5. **Apply**: Provide the user with the `kubectl apply -f <filename>.yaml` command.
+5. **Apply**: Propose a secure GitOps suggestion via the `submit-suggestion` skill to apply the ComputeClass YAML manifest for human review.
 
 ## References
 

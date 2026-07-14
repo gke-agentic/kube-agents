@@ -37,10 +37,7 @@ kubectl autoscale deployment <deployment-name> --cpu-percent=50 --min=1 --max=10
 **Manifest Approach (Recommended):**
 Use a YAML manifest for version-controlled configuration.
 See [assets/hpa-example.yaml](assets/hpa-example.yaml) for a template.
-
-```bash
-kubectl apply -f assets/hpa-example.yaml
-```
+Commit and submit changes via the secure GitOps Pull Request flow (`submit-suggestion`).
 
 **Custom Metrics & External Metrics:**
 For GKE, the modern and recommended approach for scaling based on Cloud Monitoring metrics (e.g., Pub/Sub queue length) is to use the **External** metric type, which is natively supported by the GKE control plane without requiring the Custom Metrics Adapter. For application-specific metrics exposed via Prometheus, you can use **Google Cloud Managed Service for Prometheus** or the Prometheus Adapter.

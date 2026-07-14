@@ -53,7 +53,7 @@ Generate Kubernetes manifests for the application:
 
 Apply the manifests and verify the deployment:
 
-- **Apply**: Use `kubectl apply -f <manifest-file>`.
+- **Apply**: Propose a secure GitOps suggestion via the `submit-suggestion` skill to commit and deploy the application manifest.
 - **Verify**: Check pod status with `kubectl get pods` and ensure the service is accessible.
 
 ## Next Steps

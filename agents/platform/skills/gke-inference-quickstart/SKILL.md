@@ -73,9 +73,7 @@ gcloud container ai profiles manifests create \
 2. **Review:** Check for any placeholders or specific requirements (like PVCs or secrets).
    - _Note: Some models require Hugging Face tokens. Ensure query instructions for secrets are followed._
 3. **Deploy:**
-   ```bash
-   kubectl apply -f inference-workload.yaml
-   ```
+   Commit and submit `inference-workload.yaml` via the secure GitOps Pull Request flow (`submit-suggestion`) for automated SRE review and rollout.
 
 ## Troubleshooting
 
