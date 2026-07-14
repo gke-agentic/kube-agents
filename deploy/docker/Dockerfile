@@ -113,6 +113,8 @@ RUN git clone https://github.com/openclaw/openclaw.git /opt/openclaw && \
     pnpm install && \
     pnpm run build && \
     (pnpm ui:build || true) && \
+    mkdir -p /opt/openclaw/dist && \
+    (cp -r $(find /opt/openclaw/node_modules -path "*/dist/control-ui" -type d | head -n 1) /opt/openclaw/dist/control-ui || true) && \
     rm -rf .git
 
 
