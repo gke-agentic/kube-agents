@@ -22,9 +22,10 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-# Create openclaw user and group (UID/GID 10000)
+# Create openclaw user and group (UID/GID 10000) and install global pnpm
 RUN groupadd -g 10000 openclaw && \
-    useradd -u 10000 -g openclaw -m -s /bin/bash openclaw
+    useradd -u 10000 -g openclaw -m -s /bin/bash openclaw && \
+    npm install -g pnpm
 
 # 2. Install google-cloud-cli and kubectl natively using the Google Cloud apt repository
 RUN curl -sSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
@@ -111,6 +112,7 @@ RUN git clone https://github.com/openclaw/openclaw.git /opt/openclaw && \
     sed -i 's/const userName = entry.userMention?.user?.name;/const user = entry.userMention?.user; if (user?.type?.toUpperCase() === "BOT") return true; const userName = user?.name;/g' extensions/googlechat/src/monitor-access.ts && \
     pnpm install && \
     pnpm run build && \
+    (pnpm ui:build || true) && \
     rm -rf .git
 
 
