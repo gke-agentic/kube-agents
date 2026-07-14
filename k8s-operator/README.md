@@ -8,96 +8,25 @@ The operator is built using the Kubebuilder framework and is written in Go.
 
 ---
 
-## Prerequisites
+## 📖 Deployment & Operations Documentation
 
-Before building or deploying the operator, ensure you have the following installed:
+To improve onboarding, security, and cluster operations, all deployment and administration guides have been consolidated into focused topics in the root `docs/` directory.
 
-- [Go](https://go.dev/doc/install) (version 1.24+)
-- [Docker](https://docs.docker.com/get-docker/) or Podman (for building container images)
-- [kubectl](https://kubernetes.io/docs/tasks/tools/) (configured to access your Kubernetes/GKE cluster)
-- Access to a running Kubernetes/GKE cluster
-- [gcloud](https://cloud.google.com/sdk/docs/install) (for GKE cluster access)
+Please refer to the following resources:
+
+- **[Deployment Index (`docs/deployment.md`)](../docs/deployment.md)**: Central entry point for all operations and architecture documentation.
+- **[Architecture & Sizing (`docs/architecture_and_sizing.md`)](../docs/architecture_and_sizing.md)**: System topology options, component inventory, and node sizing recommendations.
+- **[Installation Guide (`docs/installation.md`)](../docs/installation.md)**: Standard bootstrapping (`provision.sh`), key acquisition, and teardown procedures.
+- **[Integrations (`docs/integrations.md`)](../docs/integrations.md)**: LiteLLM model routing, token logging, and GitHub Token Broker (Minty).
+- **[Security & IAM (`docs/security_and_iam.md`)](../docs/security_and_iam.md)**: Workload Identity, least privilege, and configuring a strict **Read-Only (Auditing) Mode**.
+- **[FAQ (`docs/faq.md`)](../docs/faq.md)**: Safety guardrails, runaway loop protections, write permission boundaries, and general operational FAQs.
 
 ---
 
-## Bootstrapping GCP & GKE Infrastructure
+## 🛠️ Developer Guide
 
-To simplify development and testing in a real GKE/GCP environment, you can use the automated provisioning and teardown workflow. This infrastructure is fully modularized and idempotent.
+The documentation below is intended for developers contributing to the operator, running it locally, or running tests.
 
-### 1. The Provisioning Pipeline
-
-To bootstrap GCP APIs, a GKE Standard cluster, Artifact Registry, Secrets, Google Chat Pub/Sub resources, build and push containers, and apply the Custom Resource (CR) in one command:
-
-```bash
-make gcp-provision
-```
-
-Or execute the master script directly from the scripts folder:
-
-```bash
-./scripts/provision.sh [--dry-run]
-```
-
-#### How it Works & Modular Sub-scripts
-
-The master [provision.sh](scripts/provision.sh) script orchestrates eight modular sub-scripts sequentially. Each sub-script is idempotent: it verifies the state of its resources before executing any action. If a resource already exists or a step was already completed, it is skipped.
-
-```mermaid
-graph TD
-    A[provision.sh] --> B[provision_01_gcp_cluster.sh]
-    A --> C[provision_02_gcp_gke_operator.sh]
-    A --> D[provision_03_gcp_iam.sh]
-    A --> E[provision_04_gcp_gchat.sh]
-    A --> F[provision_05_slack.sh]
-    A --> G[provision_06_gcp_k8s_secrets.sh]
-    A --> H[provision_07_deploy_platform_agent.sh]
-    A --> I[provision_08_deploy_litellm.sh]
-    A --> J[provision_09_deploy_github_minter.sh]
-```
-
-1. **[provision_01_gcp_cluster.sh](scripts/provision_01_gcp_cluster.sh)**:
-   - Sets up configuration state (prompts for GCP Project ID, region, cluster name, GChat allowed user, default model configuration) and writes parameters to [scripts/vars.sh](scripts/vars.sh).
-   - Enables GKE/GCP Service APIs.
-   - Provisions a GKE Standard Cluster with Workload Identity.
-   - Configures `kubectl` credentials and creates the target namespace.
-
-1a. **[provision_01a_gvisor_nodepool.sh](scripts/provision_01a_gvisor_nodepool.sh)** (Optional):
-
-- Provisions a dedicated GKE Sandbox (gVisor) node pool (defaults to `gvisor-pool`, configurable via `GVISOR_POOL_NAME`) for secure container runtime isolation. Executed automatically by `provision.sh` if `ENABLE_GVISOR=true`.
-
-2. **[provision_02_gcp_gke_operator.sh](scripts/provision_02_gcp_gke_operator.sh)**:
-   - Registers operator CRDs onto the GKE cluster.
-   - Deploys the Operator controller manager.
-
-3. **[provision_03_gcp_iam.sh](scripts/provision_03_gcp_iam.sh)**:
-   - Pre-provisions GCP Service Accounts (GSAs) and Workload Identity bindings for the Controller and all Agent types.
-   - Configures the Controller's GSA with cluster management permissions and annotates the Controller KSA.
-   - Configures the Agent GSAs (Platform Agent) with the selected permission set (`read-only`, `gke-admin`, or `custom`).
-
-4. **[provision_04_gcp_gchat.sh](scripts/provision_04_gcp_gchat.sh)**:
-   - Creates the Pub/Sub Chat Event Topic and Subscriber Subscription for Google Chat events.
-
-5. **[provision_05_slack.sh](scripts/provision_05_slack.sh)**:
-   - Configures Slack integration parameters, bot tokens, and home channel settings.
-
-6. **[provision_06_gcp_k8s_secrets.sh](scripts/provision_06_gcp_k8s_secrets.sh)**:
-   - Prompts for or reads the `MODEL_PROVIDER` and corresponding `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY`.
-   - Creates the Kubernetes Secret (`platform-agent-secrets`) directly in the GKE Namespace.
-
-7. **[provision_07_deploy_platform_agent.sh](scripts/provision_07_deploy_platform_agent.sh)**:
-   - Generates [scripts/platform-agent.yaml](scripts/platform-agent.yaml) from its template and applies the Custom Resource (CR) to deploy the Platform Agent.
-
-8. **[provision_08_deploy_litellm.sh](scripts/provision_08_deploy_litellm.sh)**:
-   - Deploys the LiteLLM Gateway to the cluster.
-
-9. **[provision_09_deploy_github_minter.sh](scripts/provision_09_deploy_github_minter.sh)**:
-   - Sets up Google Cloud KMS keyrings and keys for token signing.
-   - Deploys the GitHub Token Minter into the cluster with its authorization configs.
-   - For detailed configuration instructions, see the [GitHub Token Minter README](config/integrations/github/README.md).
-
-#### Fast Local Development & Testing
-
-For fast local iteration when updating agent skills, prompts, or code without waiting for CI/CD pipelines, you can use the dedicated rebuild script or `make` target:
 
 ```bash
 # Run interactively via make
