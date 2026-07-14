@@ -22,7 +22,7 @@ This comprehensive, step-by-step guide explains how to install, configure, deplo
 6. [Method 4: Harness & Orchestrator Integration](#method-4-harness--orchestrator-integration)
    - [Declarative Registration](#1-declarative-registration-yamljson)
    - [Imperative CLI Registration](#2-imperative-cli-registration)
-   - [Heartbeat Schedule Configuration](#3-heartbeat-schedule-configuration)
+   - [Scheduled Governance & Cron Jobs](#3-scheduled-governance--cron-jobs)
 7. [Teardown & Cleanup](#teardown--cleanup)
 8. [Troubleshooting & Common FAQ](#troubleshooting--common-faq)
 
@@ -217,7 +217,18 @@ export MODEL_PROVIDER=gemini
 export MODEL_DEFAULT_NAME=gemini-3.1-flash
 make deploy-litellm
 
-# Deploy GitHub Integration (requires pre-configured github-app-credentials secret)
+# Deploy GitHub Integration (requires pre-configured github-app-credentials secret and env vars)
+export PROJECT_ID="your-gcp-project-id"
+export REGION="your-gcp-region"
+export CLUSTER_NAME="your-gke-cluster-name"
+export KMS_KEYRING="your-kms-keyring"
+export KMS_KEY="your-kms-key"
+export KMS_KEY_VERSION="your-kms-key-version"
+export GITHUB_ORG="your-github-org"
+export GITHUB_REPO="your-github-repo"
+export GITHUB_MINTER_KSA_NAME="kubeagents-github-minter"
+export GITHUB_MINTER_GSA_NAME="kubeagents-github-minter-gsa"
+export PLATFORM_AGENT_GSA_NAME="kubeagents-platform-agent-gsa"
 make deploy-github
 ```
 
