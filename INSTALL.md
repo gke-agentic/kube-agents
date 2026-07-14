@@ -41,7 +41,7 @@ graph TD
     F -->|Executes Skills| G[K8s APIs & Cloud Operations]
 ```
 
-- **Agent Configuration (`agents/platform`)**: Contains the system prompt (`SOUL.md`), persona identity (`IDENTITY.md`), heartbeat instructions (`HEARTBEAT.md`), and reusable operational skills (`skills/`).
+- **Agent Configuration (`agents/platform`)**: Contains the system prompt and persona identity (`SOUL.md`), workspace instructions (`AGENTS.md`), runtime configuration (`config.yaml`), scheduled governance jobs (`cron/jobs.json`), operational playbooks (`governance/`), and reusable skills (`skills/`).
 - **Kubernetes Operator (`k8s-operator`)**: A Kubebuilder-powered Go operator that manages Custom Resource Definitions (`PlatformAgent`) and reconciles cluster lifecycle state.
 - **Integrations**: Supports LiteLLM Gateway for LLM provider routing (Gemini, OpenAI, Anthropic) and enterprise messaging bridges (Google Chat, Slack).
 
@@ -51,13 +51,14 @@ graph TD
 
 Before beginning installation, ensure your environment meets the following requirements:
 
-| CLI Tool / Utility              | Required Version | Verification Command       | Description                                                   |
-| :------------------------------ | :--------------- | :------------------------- | :------------------------------------------------------------ |
-| **Go**                          | `1.24+`          | `go version`               | Required for building operator binaries and running tests.    |
-| **Docker / Podman**             | `20.10+`         | `docker --version`         | Required to build container images for the operator.          |
-| **kubectl**                     | `1.28+`          | `kubectl version --client` | Communicates with your target Kubernetes or GKE cluster.      |
-| **Google Cloud SDK (`gcloud`)** | Latest           | `gcloud version`           | Needed for GKE cluster access, IAM, and Artifact Registry.    |
-| **Helm**                        | `3.10+`          | `helm version`             | Used for installing cluster dependencies like `cert-manager`. |
+| CLI Tool / Utility              | Required Version | Verification Command       | Description                                                    |
+| :------------------------------ | :--------------- | :------------------------- | :------------------------------------------------------------- |
+| **Go**                          | `1.24+`          | `go version`               | Required for building operator binaries and running tests.     |
+| **Docker / Podman**             | `20.10+`         | `docker --version`         | Required to build container images for the operator.           |
+| **kubectl**                     | `1.28+`          | `kubectl version --client` | Communicates with your target Kubernetes or GKE cluster.       |
+| **Google Cloud SDK (`gcloud`)** | Latest           | `gcloud version`           | Needed for GKE cluster access, IAM, and Artifact Registry.     |
+| **Helm**                        | `3.10+`          | `helm version`             | Used for installing cluster dependencies like `cert-manager`.  |
+| **gettext (`envsubst`)**        | Standard         | `envsubst --version`       | Used by Makefile deployment targets for template substitution. |
 
 ---
 
@@ -221,7 +222,7 @@ make deploy-github
 
 ### Step 6: Apply Custom Resources
 
-Submit a sample `PlatformAgent` Custom Resource to activate cluster governance:
+Submit a sample `PlatformAgent` Custom Resource to activate cluster governance (run inside `k8s-operator/`):
 
 ```bash
 kubectl apply -f examples/platformagent.yaml
@@ -267,7 +268,6 @@ Add the Platform Agent workspace directory to your agent gateway configuration:
 agents:
   - id: platform
     workspace: ./agents/platform
-    persona: ./agents/platform/IDENTITY.md
     instructions: ./agents/platform/SOUL.md
 ```
 
@@ -282,19 +282,12 @@ gateway-cli agents add platform \
   --non-interactive
 ```
 
-### 3. Heartbeat Schedule Configuration
+### 3. Scheduled Governance & Cron Jobs
 
-The Platform Agent relies on a periodic heartbeat check to monitor cluster drift, audits, and governance policies:
+The Platform Agent executes recurring governance checks and cluster audits configured in `agents/platform/cron/jobs.json`:
 
-- **Schedule**: Every 1 minute (`* * * * *`)
-- **Target Agent ID**: `platform`
-- **Message Content**:
-  ```text
-  [Scheduled Heartbeat]
-  Read HEARTBEAT.md and execute due checks.
-  Update memory/heartbeat-state.json with fresh timestamps/results.
-  If healthy and no anomalies, respond exactly NO_REPLY; otherwise return concise blockers.
-  ```
+- **Scheduled Playbooks (`agents/platform/governance/`)**: Standard Operating Procedures (SOPs) including `blueprint_sync_sop.md`, `compliance_audit_sop.md`, `policy_propagation_sop.md`, and `security_patch_orchestrator_sop.md`.
+- **Execution Engine**: Jobs run on standard cron schedules (e.g., hourly policy propagation or daily compliance scans) to proactively detect and remediate cluster drift.
 
 ---
 
