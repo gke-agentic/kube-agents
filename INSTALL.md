@@ -112,7 +112,7 @@ make gcp-provision
   ```
 
 > [!TIP]
-> Each stage of the provisioning pipeline can also be run individually using step-specific Makefile targets (e.g., `make gcp-provision-01-cluster`, `make gcp-provision-02-operator`, ..., `make gcp-provision-09-github`). See [k8s-operator/README.md](file:///usr/local/google/home/mplakhtiy/repos/fork/kube-agents/k8s-operator/README.md#running-individual-steps-with-make) for the complete list of individual provisioning and teardown targets.
+> Each stage of the provisioning pipeline can also be run individually using step-specific Makefile targets (e.g., `make gcp-provision-01-cluster`, `make gcp-provision-02-operator`, ..., `make gcp-provision-09-github`). See [k8s-operator/README.md](k8s-operator/README.md#running-individual-steps-with-make) for the complete list of individual provisioning and teardown targets.
 
 #### Step 3: Verify Running Components
 
