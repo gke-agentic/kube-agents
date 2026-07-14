@@ -109,6 +109,18 @@
       "enabled": true
     },
     {
+      "id": "self-maintenance-audit",
+      "name": "Self-Maintenance Audit",
+      "schedule": {
+        "kind": "cron",
+        "expr": "0 8 * * *",
+        "display": "0 8 * * *"
+      },
+      "prompt": "Execute daily self-maintenance and skill quality audit. Read '/opt/defaults/governance/self_maintenance_audit_sop.md' to verify GKE node pool automated management settings, certificate lifecycles, and agent SKILL.md definitions across the fleet.",
+      "skills": [],
+      "enabled": true
+    },
+    {
       "id": "github-issue-resolver",
       "name": "GitHub Issue Resolver",
       "schedule": {
