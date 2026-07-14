@@ -220,10 +220,15 @@ func renderConfigJSON(agent *agentv1alpha1.PlatformAgent) string {
 			if len(gchat.AllowedUsers) > 0 && !(len(gchat.AllowedUsers) == 1 && gchat.AllowedUsers[0] == "") {
 				allowFrom = gchat.AllowedUsers
 			}
+			appPrincipal := gchat.AppPrincipal
+			if appPrincipal == "" {
+				appPrincipal = "*"
+			}
 			defaultAccountConfig := map[string]any{
 				"enabled":      true,
 				"audienceType": audienceType,
 				"audience":     audience,
+				"appPrincipal": appPrincipal,
 				"groupPolicy":  "open",
 				"dm": map[string]any{
 					"policy":    "open",
@@ -236,9 +241,6 @@ func renderConfigJSON(agent *agentv1alpha1.PlatformAgent) string {
 				"accounts": map[string]any{
 					"default": defaultAccountConfig,
 				},
-			}
-			if gchat.AppPrincipal != "" {
-				googlechatCfg["appPrincipal"] = gchat.AppPrincipal
 			}
 			if openclaw_config.Channels == nil {
 				openclaw_config.Channels = make(map[string]any)
@@ -1005,7 +1007,7 @@ func buildManagedCertificate(agent *agentv1alpha1.PlatformAgent) *unstructured.U
 				"namespace": agent.Namespace,
 			},
 			"spec": map[string]any{
-				"domains": []string{agent.Spec.Integration.GoogleChat.Domain},
+				"domains": []any{agent.Spec.Integration.GoogleChat.Domain},
 			},
 		},
 	}

@@ -163,8 +163,9 @@ data:
         "googlechat": {
           "accounts": {
             "default": {
-              "audience": "kube-agents-gkedemos",
-              "audienceType": "project-number",
+              "appPrincipal": "*",
+              "audience": "https://${GOOGLE_CHAT_DOMAIN}/googlechat",
+              "audienceType": "app-url",
               "dm": {
                 "allowFrom": [
                   "*"
@@ -364,7 +365,7 @@ spec:
   template:
     metadata:
       annotations:
-        kubeagents.x-k8s.io/config-hash: fd6f925d77591cc872da4b0b7907988bf82ceefe2318b2eacc5dde9b8b8780ef
+        kubeagents.x-k8s.io/config-hash: ec8431cdad5d56de6a87d87bc3dc916ab79ec50fbe92113a244d9e61f4e80740
         kubeagents.x-k8s.io/fluent-bit-config-hash: 50923ab88e1741b0729c37837bc1c3869161e3161402494a4ee64cda3a2cfab3
         kubeagents.x-k8s.io/settings-config-hash: 9db5b5cb5fb8ec46b1a0572ef34ef27e0ed44dc1f787a4a76bdd75f43934c8b9
       creationTimestamp: null
@@ -534,5 +535,75 @@ spec:
     targetPort: dashboard
   selector:
     app: platformagent-gateway
+status:
+  loadBalancer: {}
+---
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: platformagent-backendconfig
+  namespace: kubeagents-system
+  ownerReferences:
+  - apiVersion: kubeagents.x-k8s.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: PlatformAgent
+    name: platformagent
+    uid: ""
+spec:
+  healthCheck:
+    checkIntervalSec: 15
+    healthyThreshold: 1
+    port: 8642
+    requestPath: /healthz
+    timeoutSec: 10
+    type: HTTP
+    unhealthyThreshold: 2
+---
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: platformagent-cert
+  namespace: kubeagents-system
+  ownerReferences:
+  - apiVersion: kubeagents.x-k8s.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: PlatformAgent
+    name: platformagent
+    uid: ""
+spec:
+  domains:
+  - ${GOOGLE_CHAT_DOMAIN}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    kubernetes.io/ingress.class: gce
+    kubernetes.io/ingress.global-static-ip-name: platformagent-ip
+    networking.gke.io/managed-certificates: platformagent-cert
+  creationTimestamp: null
+  name: platformagent-ingress
+  namespace: kubeagents-system
+  ownerReferences:
+  - apiVersion: kubeagents.x-k8s.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: PlatformAgent
+    name: platformagent
+    uid: ""
+spec:
+  rules:
+  - host: ${GOOGLE_CHAT_DOMAIN}
+    http:
+      paths:
+      - backend:
+          service:
+            name: platformagent
+            port:
+              number: 8642
+        path: /googlechat
+        pathType: Prefix
 status:
   loadBalancer: {}
