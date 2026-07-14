@@ -7051,6 +7051,24 @@ spec:
                     location:
                       description: Location is the geographical location or cloud region.
                       type: string
+                    memory:
+                      description: Memory configures agent memory settings.
+                      properties:
+                        memoryEnabled:
+                          default: false
+                          description: MemoryEnabled toggles framework memory persistence.
+                          type: boolean
+                        provider:
+                          default: multiuser_memory
+                          description:
+                            Provider specifies the memory provider implementation
+                            (e.g. "multiuser_memory").
+                          type: string
+                        userProfileEnabled:
+                          default: false
+                          description: UserProfileEnabled toggles per-user memory profiling.
+                          type: boolean
+                      type: object
                     projectId:
                       description: ProjectID is the GCP Project ID of the cluster.
                       type: string

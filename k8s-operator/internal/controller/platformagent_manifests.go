@@ -176,6 +176,18 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 	cfg.Memory.Provider = "multiuser_memory"
 	cfg.Memory.UserProfileEnabled = false
 
+	if agent.Spec.Harness != nil && agent.Spec.Harness.Memory != nil {
+		if agent.Spec.Harness.Memory.MemoryEnabled != nil {
+			cfg.Memory.MemoryEnabled = *agent.Spec.Harness.Memory.MemoryEnabled
+		}
+		if agent.Spec.Harness.Memory.Provider != "" {
+			cfg.Memory.Provider = agent.Spec.Harness.Memory.Provider
+		}
+		if agent.Spec.Harness.Memory.UserProfileEnabled != nil {
+			cfg.Memory.UserProfileEnabled = *agent.Spec.Harness.Memory.UserProfileEnabled
+		}
+	}
+
 	if agent.Spec.Integration != nil {
 		if gchat := agent.Spec.Integration.GoogleChat; gchat != nil {
 			if gchat.Enabled != nil {
