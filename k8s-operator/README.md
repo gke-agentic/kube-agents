@@ -377,6 +377,9 @@ make docker-push IMG=$IMG
 Deploy the operator deployment, RBAC permissions, and CRDs into the cluster:
 
 ```bash
+# Set the image target URL (ensure it was exported in Step 1)
+export IMG=us-central1-docker.pkg.dev/ai-platform-1-464114/k8s-harness-poc/kube-agents-operator:latest
+
 make deploy IMG=$IMG
 ```
 
