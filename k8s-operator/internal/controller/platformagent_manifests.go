@@ -143,9 +143,7 @@ func renderConfigJSON(agent *agentv1alpha1.PlatformAgent) string {
 		cwd = agent.Spec.Harness.OpenClaw.AgentHome
 	}
 
-
 	openclaw_config := OpenClawConfig{}
-
 
 	// Set Defaults
 	openclaw_config.Agents.Defaults.Workspace = cwd + "/workspace"
@@ -296,7 +294,6 @@ func renderConfigJSON(agent *agentv1alpha1.PlatformAgent) string {
 	}
 	openclaw_config.Logging.Level = logLevel
 	openclaw_config.Logging.File = "/opt/data/logs/openclaw.log"
-
 
 	payload, err := json.MarshalIndent(openclaw_config, "", "  ")
 

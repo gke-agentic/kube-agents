@@ -40,12 +40,21 @@ init_var_model_provider
 export GSA_NAME="${PLATFORM_AGENT_GSA_NAME}"
 export KSA_NAME="${PLATFORM_AGENT_KSA_NAME}"
 
-init_var "CHAT_SUB_NAME" "platform-agent-chat-events-sub" "Enter Pub/Sub Subscription Name"
-init_var "CHAT_TOPIC_NAME" "platform-agent-chat-events" "Enter Pub/Sub Topic Name"
-init_var "GOOGLE_CHAT_MODE" "default" "Enter Google Chat Output Mode (default or debug)"
-init_var "ALLOWED_USERS" "" "Enter Allowed Google Chat Users Emails (comma separated). Leaving it empty will allow all users."
+if [ "${GOOGLE_CHAT_ENABLED:-false}" = "true" ]; then
+  init_var "CHAT_SUB_NAME" "platform-agent-chat-events-sub" "Enter Pub/Sub Subscription Name"
+  init_var "CHAT_TOPIC_NAME" "platform-agent-chat-events" "Enter Pub/Sub Topic Name"
+  init_var "GOOGLE_CHAT_MODE" "default" "Enter Google Chat Output Mode (default or debug)"
+  init_var "ALLOWED_USERS" "" "Enter Allowed Google Chat Users Emails (comma separated). Leaving it empty will allow all users."
   init_var "APP_URL" "https://your-ngrok-tunnel.ngrok-free.dev/googlechat" "Enter Google Chat Webhook URL (e.g. ngrok endpoint)"
   init_var "APP_PRINCIPAL" "*" "Enter Google Chat App ID (use '*' to allow any App)"
+else
+  export CHAT_SUB_NAME=""
+  export CHAT_TOPIC_NAME=""
+  export GOOGLE_CHAT_MODE="default"
+  export ALLOWED_USERS=""
+  export APP_URL=""
+  export APP_PRINCIPAL=""
+fi
 DEFAULT_AGENT_IMAGE="ghcr.io/gke-labs/kube-agents/platform-agent"
 init_var "AGENT_IMAGE" "$DEFAULT_AGENT_IMAGE" "Enter Platform Agent Image Path"
 init_var "AGENT_TAG" "latest" "Enter Platform Agent Image Tag"
@@ -85,6 +94,10 @@ execute_custom_resource() {
   else
     export GOOGLE_CHAT_ENABLED="false"
     export ALLOWED_USERS=""
+    export APP_URL=""
+    export APP_PRINCIPAL=""
+    export CHAT_SUB_NAME=""
+    export CHAT_TOPIC_NAME=""
   fi
 
   # Determine if Slack should be enabled
