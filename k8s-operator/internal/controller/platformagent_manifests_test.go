@@ -164,6 +164,20 @@ func TestBuildDeployment(t *testing.T) {
 							},
 						},
 					},
+					ExtraVolumes: []corev1.Volume{
+						{
+							Name: "extra-vol",
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{},
+							},
+						},
+					},
+					ExtraVolumeMounts: []corev1.VolumeMount{
+						{
+							Name:      "extra-vol",
+							MountPath: "/extra/path",
+						},
+					},
 				},
 				Security: &agentv1alpha1.SecuritySpec{
 					ServiceAccountName: "custom-sa",
@@ -334,6 +348,15 @@ func TestBuildDeployment(t *testing.T) {
 		}
 	}
 
+	if _, ok := mountsMap["extra-vol"]; !ok {
+		t.Errorf("expected extra-vol mount, not found")
+	} else {
+		m := mountsMap["extra-vol"]
+		if m.MountPath != "/extra/path" {
+			t.Errorf("expected extra-vol mount path /extra/path, got %s", m.MountPath)
+		}
+	}
+
 	// Verify Fluent Bit container
 	fbContainer := dep.Spec.Template.Spec.Containers[1]
 	if fbContainer.Name != "fluent-bit" {
@@ -389,6 +412,15 @@ func TestBuildDeployment(t *testing.T) {
 		v := volumesMap["sidecar-vol"]
 		if v.EmptyDir == nil {
 			t.Errorf("expected sidecar-vol to be emptyDir")
+		}
+	}
+
+	if _, ok := volumesMap["extra-vol"]; !ok {
+		t.Errorf("expected extra-vol volume, not found")
+	} else {
+		v := volumesMap["extra-vol"]
+		if v.EmptyDir == nil {
+			t.Errorf("expected extra-vol to be emptyDir")
 		}
 	}
 }
@@ -846,3 +878,4 @@ func TestGetConfigMapHash(t *testing.T) {
 		t.Errorf("expected different hashes for different configmap data")
 	}
 }
+

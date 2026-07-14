@@ -398,7 +398,7 @@ func buildSystemPVC(agent *agentv1alpha1.PlatformAgent) *corev1.PersistentVolume
 
 // buildDeployment generates the Deployment manifest for the agent payload
 func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHash, settingsConfigHash string) *appsv1.Deployment {
-	replicas := int32(1)
+	replicas, strategy := resolveDeploymentReplicasAndStrategy(agent.Spec.Deployment)
 	// UID/GID 10000 matches the canonical unprivileged 'openclaw' runtime user created in our Dockerfile
 	fsGroup := int64(10000)
 
@@ -417,10 +417,16 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 	var initContainers []corev1.Container
 	var sidecars []corev1.Container
 	var sidecarVolumes []corev1.Volume
+	var extraVolumes []corev1.Volume
+	var extraVolumeMounts []corev1.VolumeMount
+	var podAnnotations map[string]string
 	if agent.Spec.Deployment != nil {
 		initContainers = agent.Spec.Deployment.InitContainers
 		sidecars = agent.Spec.Deployment.Sidecars
 		sidecarVolumes = agent.Spec.Deployment.SidecarVolumes
+		extraVolumes = agent.Spec.Deployment.ExtraVolumes
+		extraVolumeMounts = agent.Spec.Deployment.ExtraVolumeMounts
+		podAnnotations = agent.Spec.Deployment.PodAnnotations
 	}
 
 	homeDir := "/opt/data"
@@ -589,7 +595,96 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 		runtimeClassName = agent.Spec.Deployment.RuntimeClassName
 	}
 
-	containers := []corev1.Container{
+	containers := buildBaseContainers(image, pullPolicy, envVars, homeDir, extraVolumeMounts)
+	defaultAnnotations := map[string]string{
+		"kubeagents.x-k8s.io/config-hash":            configHash,
+		"kubeagents.x-k8s.io/fluent-bit-config-hash": fluentBitHash,
+		"kubeagents.x-k8s.io/settings-config-hash":   settingsConfigHash,
+	}
+
+	if len(sidecars) > 0 {
+		containers = append(containers, sidecars...)
+	}
+
+	volumes := buildDefaultVolumes(agent)
+	if len(sidecarVolumes) > 0 {
+		volumes = append(volumes, sidecarVolumes...)
+	}
+	if len(extraVolumes) > 0 {
+		volumes = append(volumes, extraVolumes...)
+	}
+
+	return &appsv1.Deployment{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "apps/v1",
+			Kind:       "Deployment",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      agent.Name + "-gateway",
+			Namespace: agent.Namespace,
+			Labels: map[string]string{
+				"app": agent.Name + "-gateway",
+			},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Strategy: strategy,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app": agent.Name + "-gateway",
+				},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						"app": agent.Name + "-gateway",
+					},
+					Annotations: mergeAnnotations(defaultAnnotations, podAnnotations),
+				},
+				Spec: corev1.PodSpec{
+					RuntimeClassName:   runtimeClassName,
+					InitContainers:     initContainers,
+					ServiceAccountName: saName,
+					SecurityContext: &corev1.PodSecurityContext{
+						FSGroup: &fsGroup,
+						// UID 10000 matches canonical 'openclaw' runtime user in container image
+						RunAsUser:      ptr.To(int64(10000)),
+						RunAsNonRoot:   ptr.To(true),
+						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+					},
+					Containers: containers,
+					Volumes:    volumes,
+				},
+			},
+		},
+	}
+}
+
+// buildBaseContainers generates the default containers for PlatformAgent
+func buildBaseContainers(image string, pullPolicy corev1.PullPolicy, envVars []corev1.EnvVar, homeDir string, extraVolumeMounts []corev1.VolumeMount) []corev1.Container {
+	defaultPlatformAgentVolumeMounts := []corev1.VolumeMount{
+		{
+			Name:      "platform-agent-data-vol",
+			MountPath: homeDir,
+		},
+		{
+			Name:      "platform-agent-config-vol",
+			MountPath: fmt.Sprintf("%s/openclaw.json", homeDir),
+			SubPath:   "openclaw.json",
+		},
+		{
+			Name:      "settings-volume",
+			MountPath: path.Join(homeDir, "SETTINGS.md"),
+			SubPath:   "SETTINGS.md",
+			ReadOnly:  true,
+		},
+		{
+			Name:      "system-metadata",
+			MountPath: "/var/lib/kube-agents/session",
+		},
+	}
+
+	return []corev1.Container{
 		{
 			Name:            "platform-agent",
 			Image:           image,
@@ -615,27 +710,7 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 					corev1.ResourceMemory: resource.MustParse("4Gi"),
 				},
 			},
-			VolumeMounts: []corev1.VolumeMount{
-				{
-					Name:      "platform-agent-data-vol",
-					MountPath: homeDir,
-				},
-				{
-					Name:      "platform-agent-config-vol",
-					MountPath: fmt.Sprintf("%s/openclaw.json", homeDir),
-					SubPath:   "openclaw.json",
-				},
-				{
-					Name:      "settings-volume",
-					MountPath: path.Join(homeDir, "SETTINGS.md"),
-					SubPath:   "SETTINGS.md",
-					ReadOnly:  true,
-				},
-				{
-					Name:      "system-metadata",
-					MountPath: "/var/lib/kube-agents/session",
-				},
-			},
+			VolumeMounts: append(defaultPlatformAgentVolumeMounts, extraVolumeMounts...),
 			SecurityContext: &corev1.SecurityContext{
 				AllowPrivilegeEscalation: ptr.To(false),
 				Capabilities: &corev1.Capabilities{
@@ -693,11 +768,11 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 			},
 		},
 	}
-	if len(sidecars) > 0 {
-		containers = append(containers, sidecars...)
-	}
+}
 
-	volumes := []corev1.Volume{
+// buildDefaultVolumes generates the default volumes for PlatformAgent
+func buildDefaultVolumes(agent *agentv1alpha1.PlatformAgent) []corev1.Volume {
+	return []corev1.Volume{
 		{
 			Name: "platform-agent-data-vol",
 			VolumeSource: corev1.VolumeSource{
@@ -750,60 +825,6 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 						Name: agent.Name + "-settings",
 					},
 					DefaultMode: ptr.To(int32(0644)),
-				},
-			},
-		},
-	}
-	if len(sidecarVolumes) > 0 {
-		volumes = append(volumes, sidecarVolumes...)
-	}
-
-	return &appsv1.Deployment{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "apps/v1",
-			Kind:       "Deployment",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      agent.Name + "-gateway",
-			Namespace: agent.Namespace,
-			Labels: map[string]string{
-				"app": agent.Name + "-gateway",
-			},
-		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
-			Strategy: appsv1.DeploymentStrategy{
-				Type: appsv1.RecreateDeploymentStrategyType,
-			},
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"app": agent.Name + "-gateway",
-				},
-			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app": agent.Name + "-gateway",
-					},
-					Annotations: map[string]string{
-						"kubeagents.x-k8s.io/config-hash":            configHash,
-						"kubeagents.x-k8s.io/fluent-bit-config-hash": fluentBitHash,
-						"kubeagents.x-k8s.io/settings-config-hash":   settingsConfigHash,
-					},
-				},
-				Spec: corev1.PodSpec{
-					RuntimeClassName:   runtimeClassName,
-					InitContainers:     initContainers,
-					ServiceAccountName: saName,
-					SecurityContext: &corev1.PodSecurityContext{
-						FSGroup: &fsGroup,
-						// UID 10000 matches canonical 'openclaw' runtime user in container image
-						RunAsUser:      ptr.To(int64(10000)),
-						RunAsNonRoot:   ptr.To(true),
-						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
-					},
-					Containers: containers,
-					Volumes:    volumes,
 				},
 			},
 		},
