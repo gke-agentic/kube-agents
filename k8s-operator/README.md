@@ -179,8 +179,7 @@ graph TD
 
 8a. **[teardown_01a_gvisor_nodepool.sh](scripts/teardown_01a_gvisor_nodepool.sh)** (Optional Standalone): - Deletes the dedicated GKE Sandbox (gVisor) node pool (defaults to `gvisor-pool`, configurable via `GVISOR_POOL_NAME`) from Google Cloud to deprovision compute without destroying the cluster.
 
-    - **[dev/teardown_dev_01_gcp_artifact_registry.sh](scripts/dev/teardown_dev_01_gcp_artifact_registry.sh)** (Optional Dev):
-      - Deletes the GCP Artifact Registry repository created during local dev rebuilds.
+8b. **[dev/teardown_dev_01_gcp_artifact_registry.sh](scripts/dev/teardown_dev_01_gcp_artifact_registry.sh)** (Optional Dev): - Deletes the GCP Artifact Registry repository created during local dev rebuilds.
 
 9. **[teardown_01_gcp_cluster.sh](scripts/teardown_01_gcp_cluster.sh)**:
    - Deletes the GKE Standard Cluster and local state files (`scripts/vars.sh`).
@@ -289,19 +288,21 @@ You can clean up specific layers of the deployment:
    make gcp-teardown-03-iam
    ```
 8. **Step 2 Teardown: Undeploy the operator and CRDs**
-
    ```bash
    make gcp-teardown-02-operator
    ```
 
-   - **Step 1a Teardown: Delete optional gVisor node pool**
-     ```bash
-     make gcp-teardown-01a-gvisor
-     ```
-   - **Dev Teardown: Delete Artifact Registry created during dev rebuilds**
-     ```bash
-     make gcp-teardown-dev-artifact-registry
-     ```
+8a. **Step 1a Teardown: Delete optional gVisor node pool**
+
+    ```bash
+    make gcp-teardown-01a-gvisor
+    ```
+
+8b. **Dev Teardown: Delete Artifact Registry created during dev rebuilds**
+
+    ```bash
+    make gcp-teardown-dev-artifact-registry
+    ```
 
 9. **Step 1 Teardown: Delete GKE cluster and local configuration state**
    ```bash
