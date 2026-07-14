@@ -942,7 +942,7 @@ func buildPlatformService(agent *agentv1alpha1.PlatformAgent) *corev1.Service {
 			},
 		},
 	}
-	if agent.Spec.Integration != nil && agent.Spec.Integration.GoogleChat != nil && agent.Spec.Integration.GoogleChat.AutoIngress != nil && *agent.Spec.Integration.GoogleChat.AutoIngress {
+	if agent.Spec.Integration != nil && agent.Spec.Integration.GoogleChat != nil && (agent.Spec.Integration.GoogleChat.AutoIngress == nil || *agent.Spec.Integration.GoogleChat.AutoIngress) {
 		if svc.ObjectMeta.Annotations == nil {
 			svc.ObjectMeta.Annotations = make(map[string]string)
 		}

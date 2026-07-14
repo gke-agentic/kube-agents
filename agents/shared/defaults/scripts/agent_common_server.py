@@ -99,6 +99,8 @@ def call_agent(
         if clean_session_id:
             headers["X-OpenClaw-Session-Id"] = clean_session_id
 
+    headers.update(SESSION_MANAGER.delegation_headers(context))
+
     payload = {
         "model": "openclaw-agent",
         "messages": [{"role": "user", "content": query}]
