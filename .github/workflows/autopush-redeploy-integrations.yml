@@ -1,0 +1,46 @@
+name: Autopush Redeploy Integrations
+
+on:
+  # DBG TEST: Hardcoding trigger for feature branch testing
+  # push:
+  #   branches:
+  #     - main
+  #   paths:
+  #     - "k8s-operator/config/integrations/**"
+  #     - "k8s-operator/scripts/provision_08_deploy_litellm.sh"
+  #     - "k8s-operator/scripts/provision_09_deploy_github_minter.sh"
+  #     - "k8s-operator/Makefile"
+  push:
+    branches:
+      - 'feature/autopush-env-actions'
+  workflow_dispatch:
+    inputs:
+      deploy_litellm:
+        description: "Redeploy LiteLLM Integration"
+        type: boolean
+        default: true
+      deploy_github:
+        description: "Redeploy GitHub Minter Integration"
+        type: boolean
+        default: true
+
+concurrency:
+  group: autopush-redeploy-integrations
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  call-deploy:
+    secrets: inherit
+    uses: ./.github/workflows/reusable-deploy-integrations.yml
+    with:
+      # DBG TEST: Hardcoded values for testing
+      # target_environment: 'autopush'
+      # force_deploy: ${{ github.event_name == 'workflow_dispatch' }}
+      # checkout_ref: ${{ github.ref }}
+      target_environment: 'kkosov-dev'
+      force_deploy: true
+      checkout_ref: ${{ github.ref }}

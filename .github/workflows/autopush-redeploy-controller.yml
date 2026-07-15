@@ -1,0 +1,36 @@
+name: Autopush Redeploy Controller
+
+on:
+  # DBG TEST: Hardcoding trigger for feature branch testing
+  # workflow_run:
+  #   workflows: ["Publish Controller to GHCR"]
+  #   types:
+  #     - completed
+  push:
+    branches:
+      - 'feature/autopush-env-actions'
+
+concurrency:
+  group: autopush-redeploy-controller
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  call-deploy:
+    # DBG TEST: Commenting out conditions for testing
+    # if: |
+    #   github.repository == 'gke-labs/kube-agents' &&
+    #   github.event.workflow_run.conclusion == 'success' &&
+    #   github.event.workflow_run.head_branch == 'main'
+    uses: ./.github/workflows/reusable-deploy-controller.yml
+    with:
+      # DBG TEST: Hardcoded values for testing
+      # target_environment: 'autopush'
+      # controller_tag: ${{ github.event.workflow_run.head_sha }}
+      # checkout_ref: ${{ github.event.workflow_run.head_sha }}
+      target_environment: 'kkosov-dev'
+      controller_tag: '193c92e45ca2159df10958f6937f8c6154c855a4'
+      checkout_ref: ${{ github.ref }}
