@@ -42,6 +42,9 @@ Or execute the master script directly from the scripts folder:
 
 The master [provision.sh](scripts/provision.sh) script orchestrates eleven modular sub-scripts sequentially. Each sub-script is idempotent: it verifies the state of its resources before executing any action. If a resource already exists or a step was already completed, it is skipped.
 
+> [!NOTE]
+> Because the provisioning scripts persist configuration state in [scripts/vars.sh](scripts/vars.sh), running the script again will reuse the same options selected on the first run. If you want to change configuration variables, manually edit [scripts/vars.sh](scripts/vars.sh) or perform a teardown first.
+
 ```mermaid
 graph TD
     A[provision.sh] --> B[provision_01_gcp_cluster.sh]
@@ -74,16 +77,18 @@ graph TD
 4. **[provision_04_gcp_iam.sh](scripts/provision_04_gcp_iam.sh)**:
    - Enables GCP Service APIs (`container.googleapis.com` and `cloudresourcemanager.googleapis.com`).
    - Pre-provisions GCP Service Accounts (GSAs) and Workload Identity bindings for the Platform Agent and conditionally for the GitHub Token Minter.
-   - Grants GKE cluster management and monitoring permissions to the Platform Agent GSA based on the selected permission set (`read-only`, `gke-admin`, or `custom`).
+   - Grants GKE cluster management and monitoring permissions to the Platform Agent GSA based on the selected permission set (`read-only`, `gke-admin`, or `custom`, default: `gke-admin`).
    - Configures Workload Identity policy bindings and annotations for the GitHub Token Minter GSA/KSA if GitHub integration is configured.
 
 5. **[provision_05_gcp_gchat.sh](scripts/provision_05_gcp_gchat.sh)**:
    - Enables GCP Service APIs (`pubsub.googleapis.com` and `chat.googleapis.com`).
    - Creates the Pub/Sub Chat Event Topic and Subscriber Subscription for Google Chat events (skipped if `GOOGLE_CHAT_ENABLED=false`).
    - Configures IAM policy bindings allowing the Platform Agent GSA to read incoming messages from the Pub/Sub subscription.
+   - Note: Access can be restricted to specific users by configuring `GOOGLE_CHAT_ALLOWED_USERS`.
 
 6. **[provision_06_slack.sh](scripts/provision_06_slack.sh)**:
    - Configures Slack integration parameters, bot tokens, app tokens, and home channel settings (skipped if `SLACK_ENABLED=false`).
+   - Note: Access can be restricted to specific users by configuring `SLACK_ALLOWED_USERS`.
 
 7. **[provision_07_gcp_k8s_secrets.sh](scripts/provision_07_gcp_k8s_secrets.sh)**:
    - Prompts for or reads the `MODEL_PROVIDER` and corresponding `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY`.

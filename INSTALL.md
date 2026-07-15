@@ -106,6 +106,10 @@ make gcp-provision
 
 - On the first run, the script prompts for configuration inputs (GCP Project ID, region, cluster name, model provider, API key, etc.) and saves them locally in `scripts/vars.sh`.
 - Subsequent invocations reuse `scripts/vars.sh` for non-interactive idempotency.
+
+> [!NOTE]
+> Because the provisioning scripts persist configuration state in `scripts/vars.sh`, running the script again will reuse the same options selected on the first run. If you want to change configuration variables, manually edit `scripts/vars.sh` or perform a teardown first.
+
 - **Dry-run check**: To preview actions without modifying cloud infrastructure:
   ```bash
   make gcp-provision ARGS="--dry-run"
