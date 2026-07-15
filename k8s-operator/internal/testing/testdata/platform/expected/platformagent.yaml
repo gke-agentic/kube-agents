@@ -394,7 +394,7 @@ spec:
           valueFrom:
             secretKeyRef:
               key: api-key
-              name: platformagent-secrets
+              name: platform-agent-secrets
         - name: GOOGLE_CHAT_PROJECT_ID
           value: kube-agents-gkedemos
         - name: GOOGLE_CHAT_SUBSCRIPTION_NAME

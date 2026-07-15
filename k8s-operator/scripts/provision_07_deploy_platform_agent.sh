@@ -112,7 +112,7 @@ execute_custom_resource() {
 
   # Check/reserve global static IP and automate Cloud Endpoints DNS if applicable
   if [ -n "${GOOGLE_CHAT_DOMAIN:-}" ] && [ "${GOOGLE_CHAT_ENABLED:-false}" = "true" ]; then
-    local ip_name="${AGENT_NAME:-platform-agent}-ip"
+    local ip_name="${AGENT_NAME:-platformagent}-ip"
     print_info "Checking/reserving GCP Global Static IP ($ip_name) for Google Chat ingress..."
     gcloud compute addresses create "$ip_name" --global --project="$PROJECT_ID" 2>/dev/null || true
     STATIC_IP=$(gcloud compute addresses describe "$ip_name" --global --project="$PROJECT_ID" --format="get(address)" 2>/dev/null || echo "PENDING")
@@ -120,7 +120,7 @@ execute_custom_resource() {
     if [ -n "$STATIC_IP" ] && [ "$STATIC_IP" != "PENDING" ]; then
       if [ "$GOOGLE_CHAT_DOMAIN" = "auto" ] || [ -z "$GOOGLE_CHAT_DOMAIN" ] || [[ "$GOOGLE_CHAT_DOMAIN" == *.nip.io ]]; then
         IP_DASH=$(echo "$STATIC_IP" | tr '.' '-')
-        GOOGLE_CHAT_DOMAIN="${AGENT_NAME:-platform-agent}.${IP_DASH}.nip.io"
+        GOOGLE_CHAT_DOMAIN="${AGENT_NAME:-platformagent}.${IP_DASH}.nip.io"
         APP_URL="https://${GOOGLE_CHAT_DOMAIN}/googlechat"
         export GOOGLE_CHAT_DOMAIN APP_URL
         print_success "Assigned 100% zero-interaction wildcard DNS: ${GOOGLE_CHAT_DOMAIN} -> ${STATIC_IP}"
@@ -128,10 +128,10 @@ execute_custom_resource() {
         APP_URL="https://${GOOGLE_CHAT_DOMAIN}/googlechat"
         export APP_URL
         print_info "Automating Cloud Endpoints DNS registration for ${GOOGLE_CHAT_DOMAIN} -> ${STATIC_IP}..."
-        cat <<EOF > "/tmp/openapi-${AGENT_NAME:-platform-agent}.yaml"
+        cat <<EOF > "/tmp/openapi-${AGENT_NAME:-platformagent}.yaml"
 swagger: "2.0"
 info:
-  title: "${AGENT_NAME:-platform-agent} Gateway Ingress"
+  title: "${AGENT_NAME:-platformagent} Gateway Ingress"
   description: "Automated DNS mapping for OpenClaw Gateway on GKE"
   version: "1.0.0"
 host: "${GOOGLE_CHAT_DOMAIN}"
@@ -140,7 +140,7 @@ x-google-endpoints:
     target: "${STATIC_IP}"
 paths: {}
 EOF
-        if gcloud endpoints services deploy "/tmp/openapi-${AGENT_NAME:-platform-agent}.yaml" --project="$PROJECT_ID" --impersonate-service-account="${GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com" --quiet 2>/dev/null || gcloud endpoints services deploy "/tmp/openapi-${AGENT_NAME:-platform-agent}.yaml" --project="$PROJECT_ID" --quiet 2>/dev/null; then
+        if gcloud endpoints services deploy "/tmp/openapi-${AGENT_NAME:-platformagent}.yaml" --project="$PROJECT_ID" --impersonate-service-account="${GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com" --quiet 2>/dev/null || gcloud endpoints services deploy "/tmp/openapi-${AGENT_NAME:-platformagent}.yaml" --project="$PROJECT_ID" --quiet 2>/dev/null; then
           print_success "Cloud Endpoints DNS registered! ($GOOGLE_CHAT_DOMAIN -> $STATIC_IP)"
         else
           print_warning "Automatic Cloud Endpoints DNS deployment could not be completed."
@@ -152,7 +152,7 @@ EOF
           echo -e "${C_YELLOW}║             pointing your domain to the Static IP above.                    ║${C_RESET}"
           echo -e "${C_YELLOW}╚═════════════════════════════════════════════════════════════════════════════╝${C_RESET}"
         fi
-        rm -f "/tmp/openapi-${AGENT_NAME:-platform-agent}.yaml"
+        rm -f "/tmp/openapi-${AGENT_NAME:-platformagent}.yaml"
       else
         echo -e "${C_YELLOW}╔════════════════════════════════════════════════════════════════════════╗${C_RESET}"
         echo -e "${C_YELLOW}║  >>> DNS MAPPING REQUIRED FOR GOOGLE CHAT HTTPS <<<                    ║${C_RESET}"

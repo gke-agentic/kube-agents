@@ -117,9 +117,9 @@ RUN git clone https://github.com/openclaw/openclaw.git /opt/openclaw && \
     rm /tmp/openclaw-googlechat.patch && \
     pnpm install && \
     pnpm run build && \
-    (pnpm ui:build || true) && \
+    pnpm ui:build && \
     mkdir -p /opt/openclaw/dist && \
-    UI_DIR=$(find /opt/openclaw/node_modules -path "*/dist/control-ui" -type d | head -n 1) && if [ -n "$UI_DIR" ]; then cp -r "$UI_DIR" /opt/openclaw/dist/control-ui; else echo "Warning: control-ui assets not found"; fi && \
+    UI_DIR=$(find /opt/openclaw/node_modules -path "*/dist/control-ui" -type d | head -n 1) && if [ -n "$UI_DIR" ]; then cp -r "$UI_DIR" /opt/openclaw/dist/control-ui; else echo "Error: control-ui assets not found" && exit 1; fi && \
     rm -rf .git
 
 

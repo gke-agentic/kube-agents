@@ -22,7 +22,7 @@ spec:
       # GatewayTokenSecretRef securely references a Secret containing the gateway API token.
       # +optional
       gatewayTokenSecretRef:
-        name: "platformagent-secrets"
+        name: "platform-agent-secrets"
         key: "api-key"
   # Deployment abstracts the Kubernetes Pod/Deployment configuration,
   # decoupling the compute payload from the agent's application logic.
