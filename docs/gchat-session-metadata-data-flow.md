@@ -67,15 +67,15 @@ At initialization, it installs a wrapper around Python `tracer.start_span`. For 
 2. Reads the matching metadata row from `/var/lib/kube-agents/session/session_kv.db`.
 3. Injects fixed identity attributes into the OTel span:
 
-| Attribute | Description | Example |
-| :--- | :--- | :--- |
-| `session.id` | Authoritative session identifier for the conversation turn | `20260702_153830_50074bf0` |
-| `user.id` | Composite identity prefixed with platform (`platform:email`) | `google_chat:user@example.com` |
-| `openclaw.sender.id` | Primary sender identity across OpenClaw components | `user@example.com` |
-| `hermes.sender.id` | Legacy sender identity (preserved for backwards compatibility) | `user@example.com` |
-| `chat.id` | Target chat space or channel identifier | `spaces/REDACTED` |
-| `chat.thread_id` | Specific conversation thread ID (if applicable) | `threads/REDACTED` |
-| `chat.platform` | Originating messaging channel (`google_chat`, `slack`) | `google_chat` |
+| Attribute            | Description                                                    | Example                        |
+| :------------------- | :------------------------------------------------------------- | :----------------------------- |
+| `session.id`         | Authoritative session identifier for the conversation turn     | `20260702_153830_50074bf0`     |
+| `user.id`            | Composite identity prefixed with platform (`platform:email`)   | `google_chat:user@example.com` |
+| `openclaw.sender.id` | Primary sender identity across OpenClaw components             | `user@example.com`             |
+| `hermes.sender.id`   | Legacy sender identity (preserved for backwards compatibility) | `user@example.com`             |
+| `chat.id`            | Target chat space or channel identifier                        | `spaces/REDACTED`              |
+| `chat.thread_id`     | Specific conversation thread ID (if applicable)                | `threads/REDACTED`             |
+| `chat.platform`      | Originating messaging channel (`google_chat`, `slack`)         | `google_chat`                  |
 
 Example attributes, anonymized:
 
