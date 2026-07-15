@@ -206,7 +206,7 @@ type RealGCSClient struct {
 func (c *RealGCSClient) GetLock(ctx context.Context, projectID string) (*PlatformAgentLock, error) {
 	c.mu.Lock()
 	if c.client == nil {
-		client, err := storage.NewClient(ctx)
+		client, err := storage.NewClient(context.Background())
 		if err != nil {
 			c.mu.Unlock()
 			return nil, fmt.Errorf("failed to create GCS client: %w", err)
