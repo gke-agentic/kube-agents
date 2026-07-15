@@ -99,16 +99,16 @@ kubectl get pods -n kubeagents-system
 
 The [Makefile](Makefile) provides several targets to automate development workflows:
 
-| Target | Description |
-| :--- | :--- |
-| `make manifests` | Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects. |
-| `make generate` | Generate code containing DeepCopy, DeepCopyInto, and DeepCopyTab methods. |
-| `make fmt` | Run `go fmt` against code. |
-| `make vet` | Run `go vet` against code. |
-| `make test` | Run tests. |
-| `make install` | Install CRDs into the K8s cluster. |
-| `make uninstall` | Uninstall CRDs from the K8s cluster. |
-| `make deploy` | Deploy controller to the K8s cluster. |
-| `make undeploy` | Undeploy controller from the K8s cluster. |
-| `make docker-build` | Build docker image with the manager. |
-| `make docker-push` | Push docker image with the manager. |
+| Target              | Description                                                                      |
+| :------------------ | :------------------------------------------------------------------------------- |
+| `make manifests`    | Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects. |
+| `make generate`     | Generate code containing DeepCopy, DeepCopyInto, and DeepCopyTab methods.        |
+| `make fmt`          | Run `go fmt` against code.                                                       |
+| `make vet`          | Run `go vet` against code.                                                       |
+| `make test`         | Run tests.                                                                       |
+| `make install`      | Install CRDs into the K8s cluster.                                               |
+| `make uninstall`    | Uninstall CRDs from the K8s cluster.                                             |
+| `make deploy`       | Deploy controller to the K8s cluster.                                            |
+| `make undeploy`     | Undeploy controller from the K8s cluster.                                        |
+| `make docker-build` | Build docker image with the manager.                                             |
+| `make docker-push`  | Push docker image with the manager.                                              |
