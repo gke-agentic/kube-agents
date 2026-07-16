@@ -89,6 +89,16 @@ init_var "REGION" "us-east4" "Enter GCP Region for Artifact Registry & GKE"
 init_var "CLUSTER_NAME" "platform-agent-host" "Enter Host GKE Cluster Name"
 init_var "GCP_ARTIFACT_REGISTRY_REPO_NAME" "${GCP_ARTIFACT_REGISTRY_REPO_NAME:-${REPO_NAME:-kube-agents}}" "Enter Artifact Registry Repository Name"
 
+# Resolve HERMES_AGENT_TAG from tags.env
+HERMES_AGENT_TAG=""
+if [ -f "${REPO_ROOT}/tags.env" ]; then
+  HERMES_AGENT_TAG=$(grep '^HERMES_AGENT_TAG=' "${REPO_ROOT}/tags.env" | cut -d'=' -f2 | tr -d '\r"' | tr -d "'")
+fi
+if [ -z "$HERMES_AGENT_TAG" ]; then
+  print_error "Could not resolve HERMES_AGENT_TAG from ${REPO_ROOT}/tags.env"
+  exit 1
+fi
+
 # Build environment settings
 
 DEV_TAG="dev-$(date +%Y%m%d-%H%M%S)"
@@ -119,24 +129,15 @@ verify_image_build() {
 }
 execute_image_build() {
   local openclaw_commit="86e9dcfc1b051b8b0993850e21a37359ff2626ac"
-  local hermes_tag="v2026.7.7.2@sha256:9c841866021c54c4596849f6135717e8a4d52ba510b7f52c50aef1de1a283973"
   if [ -f "${REPO_ROOT}/tags.env" ]; then
-    source "${REPO_ROOT}/tags.env"
-    openclaw_commit="${OPENCLAW_COMMIT:-$openclaw_commit}"
-    hermes_tag="${HERMES_AGENT_TAG:-$hermes_tag}"
+    openclaw_commit=$(grep '^OPENCLAW_COMMIT=' "${REPO_ROOT}/tags.env" | cut -d'=' -f2 | tr -d '\r"' | tr -d "'")
   fi
+  openclaw_commit="${openclaw_commit:-86e9dcfc1b051b8b0993850e21a37359ff2626ac}"
 
   if [ "$USE_LOCAL_BUILD" -eq 1 ]; then
     print_info "Building '$AGENT_TARGET' agent locally using Docker..."
     docker pull "$IMAGE_URI_LATEST" 2>/dev/null || true
-    DOCKER_BUILDKIT=1 docker build \
-        --cache-from "$IMAGE_URI_LATEST" \
-        --build-arg BUILDKIT_INLINE_CACHE=1 \
-        --build-arg OPENCLAW_COMMIT="${openclaw_commit}" \
-        --build-arg HERMES_AGENT_TAG="${hermes_tag}" \
-        --target "$AGENT_TARGET" \
-        -t "$IMAGE_URI" -t "$IMAGE_URI_LATEST" \
-        -f "${REPO_ROOT}/deploy/docker/Dockerfile" "${REPO_ROOT}" || return 1
+    DOCKER_BUILDKIT=1 docker build --cache-from "$IMAGE_URI_LATEST" --build-arg BUILDKIT_INLINE_CACHE=1 --build-arg HERMES_AGENT_TAG="$HERMES_AGENT_TAG" --build-arg OPENCLAW_COMMIT="${openclaw_commit}" --target "$AGENT_TARGET" -t "$IMAGE_URI" -t "$IMAGE_URI_LATEST" -f "${REPO_ROOT}/deploy/docker/Dockerfile" "${REPO_ROOT}" || return 1
     print_info "Pushing images to Artifact Registry ($IMAGE_BASE)..."
     docker push "$IMAGE_URI" || return 1
     docker push "$IMAGE_URI_LATEST" || return 1
@@ -147,7 +148,7 @@ execute_image_build() {
       cd "${REPO_ROOT}"
       gcloud builds submit \
           --config="deploy/docker/cloudbuild.yaml" \
-          --substitutions="_IMAGE_URI=${IMAGE_URI},_IMAGE_URI_LATEST=${IMAGE_URI_LATEST},_TARGET=${AGENT_TARGET},_OPENCLAW_COMMIT=${openclaw_commit},_HERMES_AGENT_TAG=${hermes_tag}" \
+          --substitutions="_IMAGE_URI=${IMAGE_URI},_IMAGE_URI_LATEST=${IMAGE_URI_LATEST},_TARGET=${AGENT_TARGET},_HERMES_AGENT_TAG=${HERMES_AGENT_TAG},_OPENCLAW_COMMIT=${openclaw_commit}" \
           --project="${PROJECT_ID}" \
           .
     ) || return 1

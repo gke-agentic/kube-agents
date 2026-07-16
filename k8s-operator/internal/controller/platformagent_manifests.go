@@ -36,7 +36,10 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-const defaultPlatformAgentSecrets = "platform-agent-secrets"
+const (
+	defaultPlatformAgentSecrets = "platform-agent-secrets"
+	sessionKVDBPath             = "/var/lib/kube-agents/session/session_kv.db"
+)
 
 // isOpenClaw checks if the agent is configured to use OpenClaw framework instead of Hermes (the default).
 func isOpenClaw(agent *agentv1alpha1.PlatformAgent) bool {
@@ -414,10 +417,14 @@ func renderHermesConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 			"command": "node",
 			"args":    []string{"/opt/mcp-remote/dist/proxy.js", "https://developerknowledge.googleapis.com/mcp"},
 		},
+		"gke": map[string]any{
+			"command": "node",
+			"args":    []string{"/opt/mcp-remote/dist/proxy.js", "https://container.googleapis.com/mcp"},
+		},
 	}
 	cfg.PlatformToolsets = map[string][]string{
-		"cli":        {"hermes-cli", "mcp-agent_common", "mcp-platform_control", "mcp-developer_knowledge"},
-		"api_server": {"hermes-api-server", "mcp-agent_common", "mcp-platform_control", "mcp-developer_knowledge"},
+		"cli":        {"hermes-cli", "mcp-agent_common", "mcp-platform_control", "mcp-developer_knowledge", "mcp-gke"},
+		"api_server": {"hermes-api-server", "mcp-agent_common", "mcp-platform_control", "mcp-developer_knowledge", "mcp-gke"},
 	}
 
 	// Execution & Display UX configuration
@@ -540,7 +547,7 @@ func buildSystemPVC(agent *agentv1alpha1.PlatformAgent) *corev1.PersistentVolume
 // buildDeployment generates the Deployment manifest for the agent payload
 func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHash, settingsConfigHash string) *appsv1.Deployment {
 	replicas, strategy := resolveDeploymentReplicasAndStrategy(agent.Spec.Deployment)
-	// UID/GID 10000 matches the canonical unprivileged 'openclaw' runtime user created in our Dockerfile
+	// UID/GID 10000 matches the canonical unprivileged 'hermes' runtime user created in NousResearch/hermes-agent upstream Dockerfile
 	fsGroup := int64(10000)
 
 	saName := agent.Name
@@ -581,11 +588,11 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 		}
 	}
 
-	dashboardVal := "1"
+	dashboardVal := "0"
 	pluginsDebugVal := "0"
 	if agent.Spec.Harness != nil && agent.Spec.Harness.Hermes != nil {
-		if agent.Spec.Harness.Hermes.DashboardEnabled != nil && !*agent.Spec.Harness.Hermes.DashboardEnabled {
-			dashboardVal = "0"
+		if agent.Spec.Harness.Hermes.DashboardEnabled != nil && *agent.Spec.Harness.Hermes.DashboardEnabled {
+			dashboardVal = "1"
 		}
 		if agent.Spec.Harness.Hermes.PluginsDebug != nil && *agent.Spec.Harness.Hermes.PluginsDebug {
 			pluginsDebugVal = "1"
@@ -614,6 +621,10 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 			{
 				Name:  "API_SERVER_HOST",
 				Value: "0.0.0.0",
+			},
+			{
+				Name:  "SESSION_KV_DB_PATH",
+				Value: sessionKVDBPath,
 			},
 			{
 				Name:  "OPENCLAW_CONFIG_PATH",
@@ -666,6 +677,10 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 				Name:  "API_SERVER_HOST",
 				Value: "0.0.0.0",
 			},
+			{
+				Name:  "SESSION_KV_DB_PATH",
+				Value: sessionKVDBPath,
+			},
 		}
 	}
 
@@ -689,20 +704,25 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 				Value: agent.Spec.Harness.Location,
 			})
 		}
-		var gatewayTokenSecretRef *corev1.SecretKeySelector
 		if isOpenClaw(agent) {
+			var gatewayTokenSecretRef *corev1.SecretKeySelector
 			if agent.Spec.Harness.OpenClaw != nil {
 				gatewayTokenSecretRef = agent.Spec.Harness.OpenClaw.GatewayTokenSecretRef
 			}
+			envVars = append(envVars, corev1.EnvVar{
+				Name:      "API_SERVER_KEY",
+				ValueFrom: &corev1.EnvVarSource{SecretKeyRef: defaultSecretRef(gatewayTokenSecretRef, defaultPlatformAgentSecrets, "API_SERVER_KEY")},
+			})
 		} else {
-			if agent.Spec.Harness.Hermes != nil {
-				gatewayTokenSecretRef = agent.Spec.Harness.Hermes.ApiServerSecretRef
+			if agent.Spec.Harness.Hermes != nil && agent.Spec.Harness.Hermes.ApiServerSecretRef != nil {
+				envVars = append(envVars, corev1.EnvVar{
+					Name: "API_SERVER_KEY",
+					ValueFrom: &corev1.EnvVarSource{
+						SecretKeyRef: agent.Spec.Harness.Hermes.ApiServerSecretRef,
+					},
+				})
 			}
 		}
-		envVars = append(envVars, corev1.EnvVar{
-			Name:      "API_SERVER_KEY",
-			ValueFrom: &corev1.EnvVarSource{SecretKeyRef: defaultSecretRef(gatewayTokenSecretRef, defaultPlatformAgentSecrets, "API_SERVER_KEY")},
-		})
 	}
 
 	if integration := agent.Spec.Integration; integration != nil {
@@ -775,13 +795,9 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 	}
 
 	envVars = append(envVars, corev1.EnvVar{
-		Name:  "SESSION_KV_DB_PATH",
-		Value: "/var/lib/kube-agents/session/session_kv.db",
-	},
-		corev1.EnvVar{
-			Name:  "TOKEN_BROKER_URL",
-			Value: fmt.Sprintf("http://github-token-minter.%s.svc.cluster.local:8080/token", agent.Namespace),
-		})
+		Name:  "TOKEN_BROKER_URL",
+		Value: fmt.Sprintf("http://github-token-minter.%s.svc.cluster.local:8080/token", agent.Namespace),
+	})
 
 	if agent.Spec.Deployment != nil && len(agent.Spec.Deployment.Env) > 0 {
 		envVars = mergeEnvVars(envVars, agent.Spec.Deployment.Env)
@@ -844,7 +860,7 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 					ServiceAccountName: saName,
 					SecurityContext: &corev1.PodSecurityContext{
 						FSGroup: &fsGroup,
-						// UID 10000 matches canonical 'openclaw' runtime user in container image
+						// UID 10000 matches canonical 'hermes' runtime user in upstream image (NousResearch/hermes-agent Dockerfile line 92)
 						RunAsUser:      ptr.To(int64(10000)),
 						RunAsNonRoot:   ptr.To(true),
 						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
@@ -883,7 +899,8 @@ func buildBaseContainers(agent *agentv1alpha1.PlatformAgent, image string, pullP
 		},
 		{
 			Name:      "system-metadata",
-			MountPath: "/var/lib/kube-agents/session",
+			MountPath: path.Dir(sessionKVDBPath),
+			SubPath:   "session",
 		},
 	}
 
@@ -1053,11 +1070,6 @@ func buildPlatformExplorerRole(agent *agentv1alpha1.PlatformAgent) *rbacv1.Clust
 			{
 				APIGroups: []string{"apiextensions.k8s.io"},
 				Resources: []string{"customresourcedefinitions"},
-				Verbs:     []string{"get", "list"},
-			},
-			{
-				APIGroups: []string{"kubeagents.x-k8s.io"},
-				Resources: []string{"platformagents"},
 				Verbs:     []string{"get", "list"},
 			},
 		},

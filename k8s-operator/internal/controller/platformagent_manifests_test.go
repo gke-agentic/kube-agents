@@ -35,7 +35,7 @@ func TestBuildConfigMap(t *testing.T) {
 		},
 		Spec: agentv1alpha1.PlatformAgentSpec{
 			Harness: &agentv1alpha1.HarnessSpec{
-				OpenClaw: &agentv1alpha1.OpenClawSpec{
+				Hermes: &agentv1alpha1.HermesSpec{
 					AgentHome: "/custom/home",
 				},
 			},
@@ -52,62 +52,103 @@ func TestBuildConfigMap(t *testing.T) {
 		t.Errorf("expected configmap name test-agent-config, got %s", cm.Name)
 	}
 
-	jsonContent := cm.Data["openclaw.json"]
-	if !strings.Contains(jsonContent, "\"primary\": \"openai/model-default\"") {
-		t.Errorf("expected config to contain primary model openai/model-default, got:\n%s", jsonContent)
+	yamlContent := cm.Data["config.yaml"]
+	if !strings.Contains(yamlContent, "provider: custom") {
+		t.Errorf("expected config to contain provider: custom, got:\n%s", yamlContent)
 	}
-	if !strings.Contains(jsonContent, "\"api\": \"openai-responses\"") {
-		t.Errorf("expected config to contain api openai-responses, got:\n%s", jsonContent)
+	if !strings.Contains(yamlContent, "default: model-default") {
+		t.Errorf("expected config to contain default: model-default, got:\n%s", yamlContent)
 	}
-	if !strings.Contains(jsonContent, "\"baseUrl\": \"http://litellm.test-ns.svc.cluster.local/v1\"") {
-		t.Errorf("expected config to contain correct baseUrl, got:\n%s", jsonContent)
+	if !strings.Contains(yamlContent, "model: model-default") {
+		t.Errorf("expected config to contain model: model-default, got:\n%s", yamlContent)
 	}
-	if !strings.Contains(jsonContent, "\"apiKey\": \"none\"") {
-		t.Errorf("expected config to contain apiKey none, got:\n%s", jsonContent)
+	if !strings.Contains(yamlContent, "base_url: http://litellm.test-ns.svc.cluster.local/v1") {
+		t.Errorf("expected config to contain correct base_url, got:\n%s", yamlContent)
 	}
-	if !strings.Contains(jsonContent, "\"workspace\": \"/custom/home/workspace\"") {
-		t.Errorf("expected config to contain custom workspace path, got:\n%s", jsonContent)
+	if !strings.Contains(yamlContent, "api_key: none") {
+		t.Errorf("expected config to contain api_key: none, got:\n%s", yamlContent)
 	}
-	if !strings.Contains(jsonContent, "\"googlechat\": {") {
-		t.Errorf("expected config to contain googlechat channel, got:\n%s", jsonContent)
+	if !strings.Contains(yamlContent, "cwd: /custom/home") {
+		t.Errorf("expected config to contain custom home path, got:\n%s", yamlContent)
 	}
-	if !strings.Contains(jsonContent, "\"servers\": {") {
-		t.Errorf("expected config to contain servers inside mcp, got:\n%s", jsonContent)
+	if !strings.Contains(yamlContent, "enabled: true") {
+		t.Errorf("expected config to enable google_chat platform, got:\n%s", yamlContent)
+	}
+	if !strings.Contains(yamlContent, "mcp_servers:") {
+		t.Errorf("expected config to contain mcp_servers, got:\n%s", yamlContent)
+	}
+	if !strings.Contains(yamlContent, "platform_toolsets:") {
+		t.Errorf("expected config to contain platform_toolsets, got:\n%s", yamlContent)
+	}
+	if !strings.Contains(yamlContent, "cron_mode: approve") {
+		t.Errorf("expected config to contain cron_mode: approve, got:\n%s", yamlContent)
+	}
+	if !strings.Contains(yamlContent, "backend: ddgs") {
+		t.Errorf("expected config to contain web backend: ddgs, got:\n%s", yamlContent)
 	}
 }
 
-func TestBuildConfigMapHermes(t *testing.T) {
+func TestBuildConfigMap_MemoryConfig(t *testing.T) {
 	agent := &agentv1alpha1.PlatformAgent{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-agent",
+			Name:      "memory-agent",
 			Namespace: "test-ns",
 		},
 		Spec: agentv1alpha1.PlatformAgentSpec{
 			Harness: &agentv1alpha1.HarnessSpec{
-				Framework: "hermes",
-				Hermes: &agentv1alpha1.HermesSpec{
-					AgentHome: "/hermes/home",
-				},
-			},
-			Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
-				GoogleChat: &agentv1alpha1.GoogleChatSpec{
-					Enabled: ptr.To(true),
+				Memory: &agentv1alpha1.MemorySpec{
+					MemoryEnabled:      ptr.To(true),
+					Provider:           "custom_memory",
+					UserProfileEnabled: ptr.To(true),
 				},
 			},
 		},
 	}
 
 	cm := buildConfigMap(agent)
-	if cm.Name != "test-agent-config" {
-		t.Errorf("expected configmap name test-agent-config, got %s", cm.Name)
+	yamlContent := cm.Data["config.yaml"]
+	if !strings.Contains(yamlContent, "memory_enabled: true") {
+		t.Errorf("expected config to contain memory_enabled: true, got:\n%s", yamlContent)
+	}
+	if !strings.Contains(yamlContent, "provider: custom_memory") {
+		t.Errorf("expected config to contain provider: custom_memory, got:\n%s", yamlContent)
+	}
+	if !strings.Contains(yamlContent, "user_profile_enabled: true") {
+		t.Errorf("expected config to contain user_profile_enabled: true, got:\n%s", yamlContent)
+	}
+}
+
+func TestDisplayMode(t *testing.T) {
+	// Test Default (Quiet) Mode
+	defaultAgent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{Name: "quiet-agent", Namespace: "ns"},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
+				GoogleChat: &agentv1alpha1.GoogleChatSpec{
+					Mode: "default",
+				},
+			},
+		},
+	}
+	defaultConfig := buildConfigMap(defaultAgent).Data["config.yaml"]
+	if !strings.Contains(defaultConfig, "tool_progress: \"off\"") || !strings.Contains(defaultConfig, "memory_notifications: \"off\"") {
+		t.Errorf("expected default mode to turn off tool_progress and memory_notifications, got:\n%s", defaultConfig)
 	}
 
-	yamlContent := cm.Data["config.yaml"]
-	if !strings.Contains(yamlContent, "cwd: /hermes/home") {
-		t.Errorf("expected config to contain cwd /hermes/home, got:\n%s", yamlContent)
+	// Test Debug Mode
+	debugAgent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{Name: "debug-agent", Namespace: "ns"},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
+				GoogleChat: &agentv1alpha1.GoogleChatSpec{
+					Mode: "debug",
+				},
+			},
+		},
 	}
-	if !strings.Contains(yamlContent, "base_url: http://litellm.test-ns.svc.cluster.local/v1") {
-		t.Errorf("expected config to contain correct base_url, got:\n%s", yamlContent)
+	debugConfig := buildConfigMap(debugAgent).Data["config.yaml"]
+	if !strings.Contains(debugConfig, "tool_progress: all") || !strings.Contains(debugConfig, "memory_notifications: verbose") {
+		t.Errorf("expected debug mode to enable all tool_progress and verbose memory_notifications, got:\n%s", debugConfig)
 	}
 }
 
@@ -221,9 +262,11 @@ func TestBuildDeployment(t *testing.T) {
 			Harness: &agentv1alpha1.HarnessSpec{
 				ClusterName: "gke-cluster",
 				Location:    "us-east1",
-				OpenClaw: &agentv1alpha1.OpenClawSpec{
-					AgentHome: "/var/agent",
-					GatewayTokenSecretRef: &corev1.SecretKeySelector{
+				Hermes: &agentv1alpha1.HermesSpec{
+					DashboardEnabled: ptr.To(true),
+					PluginsDebug:     ptr.To(false),
+					AgentHome:        "/var/agent",
+					ApiServerSecretRef: &corev1.SecretKeySelector{
 						LocalObjectReference: corev1.LocalObjectReference{Name: "secrets"},
 						Key:                  "api-key",
 					},
@@ -316,13 +359,18 @@ func TestBuildDeployment(t *testing.T) {
 		envMap[env.Name] = env
 	}
 
-	if envMap["OPENCLAW_HOME"].Value != "/var/agent" {
-		t.Errorf("expected OPENCLAW_HOME /var/agent, got %s", envMap["OPENCLAW_HOME"].Value)
+	if envMap["PLATFORM_AGENT_HOME"].Value != "/var/agent" {
+		t.Errorf("expected PLATFORM_AGENT_HOME /var/agent, got %s", envMap["PLATFORM_AGENT_HOME"].Value)
 	}
 	if envMap["HOME"].Value != "/var/agent/home" {
 		t.Errorf("expected HOME /var/agent/home, got %s", envMap["HOME"].Value)
 	}
-
+	if envMap["PLATFORM_AGENT_DASHBOARD"].Value != "0" {
+		t.Errorf("expected PLATFORM_AGENT_DASHBOARD to be overridden to 0, got %s", envMap["PLATFORM_AGENT_DASHBOARD"].Value)
+	}
+	if envMap["PLATFORM_AGENT_PLUGINS_DEBUG"].Value != "0" {
+		t.Errorf("expected PLATFORM_AGENT_PLUGINS_DEBUG 0, got %s", envMap["PLATFORM_AGENT_PLUGINS_DEBUG"].Value)
+	}
 	if envMap["CUSTOM_VAR"].Value != "new-custom-value" {
 		t.Errorf("expected CUSTOM_VAR new-custom-value, got %s", envMap["CUSTOM_VAR"].Value)
 	}
@@ -362,6 +410,9 @@ func TestBuildDeployment(t *testing.T) {
 	if envMap["API_SERVER_HOST"].Value != "0.0.0.0" {
 		t.Errorf("expected API_SERVER_HOST 0.0.0.0, got %s", envMap["API_SERVER_HOST"].Value)
 	}
+	if envMap["SESSION_KV_DB_PATH"].Value != "/var/lib/kube-agents/session/session_kv.db" {
+		t.Errorf("expected SESSION_KV_DB_PATH /var/lib/kube-agents/session/session_kv.db, got %s", envMap["SESSION_KV_DB_PATH"].Value)
+	}
 
 	// Verify volume mounts
 	mountsMap := make(map[string]corev1.VolumeMount)
@@ -381,6 +432,13 @@ func TestBuildDeployment(t *testing.T) {
 		if !m.ReadOnly {
 			t.Errorf("expected settings-volume to be read-only")
 		}
+	}
+	if _, ok := mountsMap["system-metadata"]; !ok {
+		t.Errorf("expected system-metadata mount, not found")
+	} else if mountsMap["system-metadata"].MountPath != "/var/lib/kube-agents/session" {
+		t.Errorf("expected system-metadata mount path /var/lib/kube-agents/session, got %s", mountsMap["system-metadata"].MountPath)
+	} else if mountsMap["system-metadata"].SubPath != "session" {
+		t.Errorf("expected system-metadata subpath session, got %s", mountsMap["system-metadata"].SubPath)
 	}
 
 	if _, ok := mountsMap["extra-vol"]; !ok {
@@ -581,15 +639,12 @@ func TestBuildDeploymentSlackAllowAllUsers(t *testing.T) {
 }
 
 func TestBuildConfigMapSlackEnabled(t *testing.T) {
-	agentOpenClaw := &agentv1alpha1.PlatformAgent{
+	agent := &agentv1alpha1.PlatformAgent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-agent",
 			Namespace: "test-ns",
 		},
 		Spec: agentv1alpha1.PlatformAgentSpec{
-			Harness: &agentv1alpha1.HarnessSpec{
-				Framework: "openclaw",
-			},
 			Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
 				Slack: &agentv1alpha1.SlackSpec{
 					Enabled: ptr.To(true),
@@ -598,31 +653,8 @@ func TestBuildConfigMapSlackEnabled(t *testing.T) {
 		},
 	}
 
-	cmOC := buildConfigMap(agentOpenClaw)
-	jsonContent := cmOC.Data["openclaw.json"]
-	if !strings.Contains(jsonContent, "\"slack\": {") {
-		t.Errorf("expected openclaw.json to enable slack platform, got:\n%s", jsonContent)
-	}
-
-	agentHermes := &agentv1alpha1.PlatformAgent{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-agent-hermes",
-			Namespace: "test-ns",
-		},
-		Spec: agentv1alpha1.PlatformAgentSpec{
-			Harness: &agentv1alpha1.HarnessSpec{
-				Framework: "hermes",
-			},
-			Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
-				Slack: &agentv1alpha1.SlackSpec{
-					Enabled: ptr.To(true),
-				},
-			},
-		},
-	}
-
-	cmHermes := buildConfigMap(agentHermes)
-	yamlContent := cmHermes.Data["config.yaml"]
+	cm := buildConfigMap(agent)
+	yamlContent := cm.Data["config.yaml"]
 	if !strings.Contains(yamlContent, "slack:") || !strings.Contains(yamlContent, "enabled: true") {
 		t.Errorf("expected config.yaml to enable slack platform, got:\n%s", yamlContent)
 	}

@@ -82,8 +82,9 @@ def call_agent(
 
     headers.update(SESSION_MANAGER.delegation_headers(context))
 
+    model_name = os.environ.get("AGENT_MODEL") or os.environ.get("OPENCLAW_MODEL") or ("openclaw-agent" if os.path.exists("/opt/openclaw") and os.environ.get("HARNESS_FRAMEWORK", "").lower() == "openclaw" else "hermes-agent")
     payload = {
-        "model": "openclaw-agent",
+        "model": model_name,
         "messages": [{"role": "user", "content": query}]
     }
 

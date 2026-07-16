@@ -33,9 +33,11 @@ class SessionManager:
 
     def __init__(
         self,
+        hermes_home: Optional[Path] = None,
         openclaw_home: Optional[Path] = None,
         db_path: Optional[Path] = None,
     ) -> None:
+        self.hermes_home = hermes_home or Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")))
         self.openclaw_home = openclaw_home or Path(os.environ.get("OPENCLAW_HOME", os.environ.get("HERMES_HOME", os.path.expanduser("~/.openclaw"))))
         self.db_path = db_path or Path(os.environ.get("SESSION_KV_DB_PATH", DEFAULT_SESSION_KV_DB_PATH))
 

@@ -102,6 +102,8 @@ def get_hermes_home() -> Path:
 def get_project_id() -> str:
     """Resolve Project ID from USER.md or gcloud config."""
     user_md = get_openclaw_home() / "USER.md"
+    if not user_md.exists():
+        user_md = get_hermes_home() / "USER.md"
     if user_md.exists():
         try:
             content = user_md.read_text(encoding="utf-8")
@@ -469,16 +471,20 @@ def send_notification(message: str) -> str:
     Args:
         message: The plaintext or markdown-formatted message string to post.
     """
-    channel = "googlechat"
-    if os.environ.get("SLACK_BOT_TOKEN"):
-        channel = "slack"
-        
     try:
-        res = subprocess.run(
-            ["agentapi", "send-message", channel, message],
-            capture_output=True, text=True, check=True
-        )
-        return f"SUCCESS: Notification posted to {channel}. Output: {res.stdout.strip()}"
+        if shutil.which("agentapi") and (os.environ.get("HARNESS_FRAMEWORK", "").lower() == "openclaw" or os.path.exists("/opt/openclaw")):
+            channel = "slack" if os.environ.get("SLACK_BOT_TOKEN") else "googlechat"
+            res = subprocess.run(
+                ["agentapi", "send-message", channel, message],
+                capture_output=True, text=True, check=True
+            )
+            return f"SUCCESS: Notification posted to {channel}. Output: {res.stdout.strip()}"
+        else:
+            res = subprocess.run(
+                ["hermes", "send", "--to", "google_chat", message],
+                capture_output=True, text=True, check=True, env=_run_env()
+            )
+            return f"SUCCESS: Notification posted to Google Chat. Output: {res.stdout.strip()}"
     except subprocess.CalledProcessError as e:
         return f"ERROR: Failed to send notification: {e.stderr.strip()}"
     except Exception as e:
