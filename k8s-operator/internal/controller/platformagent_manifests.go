@@ -350,10 +350,6 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 			Value: pluginsDebugVal,
 		},
 		{
-			Name:  "OTEL_SERVICE_NAME",
-			Value: agent.Name + "-gateway",
-		},
-		{
 			Name:  "API_SERVER_ENABLED",
 			Value: "true",
 		},
@@ -366,6 +362,8 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 			Value: sessionKVDBPath,
 		},
 	}
+
+	envVars = append(envVars, otelTelemetryEnvVars("platform", agent.Name, agent.Namespace)...)
 
 	if agent.Spec.Deployment != nil && len(agent.Spec.Deployment.BrowserArgs) > 0 {
 		envVars = append(envVars, corev1.EnvVar{
