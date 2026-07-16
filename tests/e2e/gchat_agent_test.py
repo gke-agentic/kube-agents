@@ -54,6 +54,7 @@ if CHAT_SPACE_ID and not CHAT_SPACE_ID.startswith("spaces/"):
     CHAT_SPACE_ID = f"spaces/{CHAT_SPACE_ID}"
 
 SCOPES: list[str] = [
+    "https://www.googleapis.com/auth/chat.bot",
     "https://www.googleapis.com/auth/chat.messages.create",
     "https://www.googleapis.com/auth/chat.app.messages.readonly",
     "https://www.googleapis.com/auth/pubsub",
