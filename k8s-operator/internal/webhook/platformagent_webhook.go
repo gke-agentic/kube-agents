@@ -133,44 +133,6 @@ func (v *PlatformAgentCustomValidator) validatePlatformAgent(ctx context.Context
 		}
 	}
 
-	// 2. Enforce 1 PlatformAgent per project globally (using GCS project-level lock)
-	if v.GCSClient != nil {
-		projectID := getProjectID(platformAgent)
-		if projectID == "" {
-			return nil, apierrors.NewInvalid(
-				schema.GroupKind{Group: "kubeagents.x-k8s.io", Kind: "PlatformAgent"},
-				platformAgent.Name,
-				field.ErrorList{field.Required(field.NewPath("spec", "harness", "projectId"), "GCP Project ID is required for global cardinality lock validation")},
-			)
-		}
-
-		currentCluster := ""
-		if platformAgent.Spec.Harness != nil {
-			currentCluster = platformAgent.Spec.Harness.ClusterName
-		}
-		if currentCluster == "" {
-			return nil, apierrors.NewInvalid(
-				schema.GroupKind{Group: "kubeagents.x-k8s.io", Kind: "PlatformAgent"},
-				platformAgent.Name,
-				field.ErrorList{field.Required(field.NewPath("spec", "harness", "clusterName"), "clusterName is required when global cardinality lock is enabled")},
-			)
-		}
-
-		lock, err := v.GCSClient.GetLock(ctx, projectID)
-		if err != nil {
-			return nil, apierrors.NewInternalError(fmt.Errorf("failed to verify project-level cardinality lock: %w", err))
-		}
-		if lock != nil {
-			if lock.ClusterName != currentCluster || lock.AgentName != platformAgent.Name || lock.Namespace != platformAgent.Namespace {
-				return nil, apierrors.NewInvalid(
-					schema.GroupKind{Group: "kubeagents.x-k8s.io", Kind: "PlatformAgent"},
-					platformAgent.Name,
-					field.ErrorList{field.Forbidden(field.NewPath(""), fmt.Sprintf("only one PlatformAgent is allowed per project; already running in GKE cluster %q (agent %q in namespace %q)", lock.ClusterName, lock.AgentName, lock.Namespace))},
-				)
-			}
-		}
-	}
-
 	return nil, nil
 }
 
