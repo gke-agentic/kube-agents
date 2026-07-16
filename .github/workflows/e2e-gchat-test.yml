@@ -33,14 +33,6 @@ on:
         required: false
         default: "120"
         type: string
-  push:
-    branches:
-      - "test/**"
-      - "feature/**"
-  pull_request:
-    branches:
-      - "feature/e2e-gchat-test"
-      - "main"
 
 permissions:
   contents: read
