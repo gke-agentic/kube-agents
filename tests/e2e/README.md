@@ -156,7 +156,7 @@ pytest tests/e2e/gchat_agent_test.py -v -s
 
 ## 🤖 Running in GitHub Actions (CI)
 
-The workflow file [`.github/workflows/e2e-gchat-test.yml`](file:///.github/workflows/e2e-gchat-test.yml) executes automatically on `push` to `test/**` and `feature/**` branches, or manually via `workflow_dispatch`.
+The workflow file [`.github/workflows/e2e-gchat-test.yml`](file:///.github/workflows/e2e-gchat-test.yml) is triggered manually via `workflow_dispatch` (or via GitHub CLI / Web UI).
 
 ### Triggering Workflow via GitHub CLI (`gh`):
 
