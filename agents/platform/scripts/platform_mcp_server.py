@@ -474,8 +474,10 @@ def send_notification(message: str) -> str:
         message: The plaintext or markdown-formatted message string to post.
     """
     try:
-        if shutil.which("agentapi") and HARNESS_FRAMEWORK == "openclaw":
-            channel = "slack" if os.environ.get("SLACK_BOT_TOKEN") else "googlechat"
+        import shutil
+        if shutil.which("agentapi") and (HARNESS_FRAMEWORK == "openclaw" or os.path.exists("/opt/openclaw")):
+            slack_token = os.environ.get("SLACK_BOT_TOKEN")
+            channel = "slack" if slack_token and not slack_token.startswith("$") else "googlechat"
             res = subprocess.run(
                 ["agentapi", "send-message", channel, message],
                 capture_output=True, text=True, check=True

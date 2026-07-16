@@ -453,9 +453,13 @@ func renderHermesConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 				cfg.Platforms.GoogleChat.Enabled = *gchat.Enabled
 			}
 			if gchat.Enabled != nil && *gchat.Enabled && gchat.ProjectID != "" && gchat.SubscriptionName != "" {
+				subName := gchat.SubscriptionName
+				if !strings.HasPrefix(subName, "projects/") {
+					subName = fmt.Sprintf("projects/%s/subscriptions/%s", gchat.ProjectID, gchat.SubscriptionName)
+				}
 				cfg.Platforms.GoogleChat.Extra = map[string]any{
 					"project_id":        gchat.ProjectID,
-					"subscription_name": fmt.Sprintf("projects/%s/subscriptions/%s", gchat.ProjectID, gchat.SubscriptionName),
+					"subscription_name": subName,
 				}
 			}
 			cfg.Display.Platforms["google_chat"] = resolveGoogleChatDisplayConfig(gchat.Mode)

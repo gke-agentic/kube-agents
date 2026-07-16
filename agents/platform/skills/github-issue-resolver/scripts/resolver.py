@@ -28,10 +28,16 @@ def get_target_repo() -> str:
                 parts = line.strip().split()
                 if parts:
                     repo_url = parts[-1]
+                    if repo_url.lower() == "none":
+                        print("Error: Target repository is not configured in SETTINGS.md.", file=sys.stderr)
+                        sys.exit(1)
                     repo = re.sub(
                         r"^https?://(www\.)?github\.com/", "", repo_url
                     )
                     repo = re.sub(r"\.git$", "", repo)
+                    if "/" not in repo:
+                        print(f"Error: Invalid repository format '{repo}' extracted from SETTINGS.md.", file=sys.stderr)
+                        sys.exit(1)
                     return repo
 
     print(

@@ -342,6 +342,14 @@ func (r *PlatformAgentReconciler) reconcileIngressAndSSL(ctx context.Context, ag
 		}
 	}
 
+	ing := &networkingv1.Ingress{}
+	err := r.Get(ctx, types.NamespacedName{Name: agent.Name + "-ingress", Namespace: agent.Namespace}, ing)
+	if errors.IsNotFound(err) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("failed to check Ingress existence: %w", err)
+	}
+
 	bc := &unstructured.Unstructured{}
 	bc.SetAPIVersion("cloud.google.com/v1")
 	bc.SetKind("BackendConfig")
@@ -368,15 +376,8 @@ func (r *PlatformAgentReconciler) reconcileIngressAndSSL(ctx context.Context, ag
 		}
 	}
 
-	ing := &networkingv1.Ingress{}
-	ing.SetName(agent.Name + "-ingress")
-	ing.SetNamespace(agent.Namespace)
 	if err := r.Delete(ctx, ing); err != nil && !errors.IsNotFound(err) {
-		if meta.IsNoMatchError(err) {
-			log.Info("Ingress CRD not found during deletion. Skipping.")
-		} else {
-			return fmt.Errorf("failed to clean up Ingress: %w", err)
-		}
+		return fmt.Errorf("failed to clean up Ingress: %w", err)
 	}
 
 	return nil

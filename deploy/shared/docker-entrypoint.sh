@@ -38,7 +38,7 @@ if [ -d "/openclaw" ] && [ -f "$TARGET_DIR/openclaw.json" -o -n "${OPENCLAW_HOME
     cp -ru /openclaw/. "$TARGET_DIR/" 2>/dev/null || cp -rp /openclaw/. "$TARGET_DIR/" 2>/dev/null || true
 fi
 if [ -f "$TARGET_DIR/openclaw.json" -o -n "${OPENCLAW_HOME:-}" ]; then
-    mkdir -p "$TARGET_DIR/workspace"
+    mkdir -p "$TARGET_DIR/workspace" "$TARGET_DIR/logs"
     if [ ! -f "$TARGET_DIR/workspace/MEMORY.md" ]; then
         echo "# Memory" > "$TARGET_DIR/workspace/MEMORY.md"
     fi
