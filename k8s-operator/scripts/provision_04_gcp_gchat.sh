@@ -60,8 +60,8 @@ fi
 
 DEFAULT_USERS=""
 init_var "ALLOWED_USERS" "$DEFAULT_USERS" "Enter Allowed Google Chat Users Emails (comma separated). Leaving it empty will allow all users."
+init_var "GOOGLE_CHAT_MODE" "default" "Enter Google Chat Output Mode (default or debug)"
 if [ "${HARNESS_FRAMEWORK:-hermes}" = "openclaw" ]; then
-  init_var "GOOGLE_CHAT_MODE" "default" "Enter Google Chat Output Mode (default or debug)"
   init_var "GOOGLE_CHAT_DOMAIN" "auto" "Enter custom HTTPS domain for Google Chat (or press Enter for 'auto' zero-interaction DNS via nip.io)"
   init_var "APP_PRINCIPAL" "*" "Enter Google Chat App Principal ID (e.g. chat@system.gserviceaccount.com, or '*' for any Google Chat issuer)"
 else

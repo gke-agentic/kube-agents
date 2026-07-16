@@ -1,6 +1,6 @@
 # check=skip=InvalidDefaultArgInFrom
-ARG HERMES_AGENT_TAG=v2026.7.7.2@sha256:9c841866021c54c4596849f6135717e8a4d52ba510b7f52c50aef1de1a283973
-ARG OPENCLAW_COMMIT=86e9dcfc1b051b8b0993850e21a37359ff2626ac
+ARG HERMES_AGENT_TAG
+ARG OPENCLAW_COMMIT
 
 # ==========================================
 # STAGE 1: Hermes Base (nousresearch/hermes-agent)
@@ -59,7 +59,7 @@ RUN /usr/local/bin/uv pip install --python /opt/hermes/.venv/bin/python \
     opentelemetry-sdk \
     opentelemetry-exporter-otlp-proto-http
 
-# Apply upstream PR #51567 patch to google_chat adapter to fix nested inline formatting leaks
+# Apply upstream PR #51567 patch to google_chat adapter to fix nested inline formatting leaks (GC0, GC1, etc.)
 RUN sed -i 's/for key, value in placeholders.items():/for key, value in reversed(list(placeholders.items())):/' /opt/hermes/plugins/platforms/google_chat/adapter.py && \
     grep -q "reversed(list(placeholders.items()))" /opt/hermes/plugins/platforms/google_chat/adapter.py
 
@@ -73,22 +73,28 @@ RUN git clone https://github.com/bradhoekstra/mcp-remote.git /opt/mcp-remote && 
     npm cache clean --force && \
     rm -rf .git
 
-# 5. Create base defaults directory and copy docs
+# 5. Create base defaults directory and copy shared defaults
 RUN mkdir -p /opt/defaults && chown hermes:hermes /opt/defaults
 COPY --chown=hermes:hermes deploy/shared/defaults/ /opt/defaults/
 COPY --chown=hermes:hermes docs/glossary.md /opt/defaults/docs/
+
 
 # 5.5. Install and enable hermes-otel plugin in /opt/defaults
 RUN HOME=/opt/defaults HERMES_HOME=/opt/defaults /opt/hermes/.venv/bin/hermes plugins install briancaffey/hermes-otel && \
     HOME=/opt/defaults HERMES_HOME=/opt/defaults /opt/hermes/.venv/bin/hermes plugins enable hermes_otel && \
     /opt/hermes/.venv/bin/python3 -c "import yaml, pathlib; p = pathlib.Path('/opt/defaults/plugins/hermes_otel/config.yaml'); c = yaml.safe_load(p.read_text()) or {} if p.exists() else {}; c['backends'] = [{'name': 'gke-managed-otel', 'type': 'otlp', 'endpoint': 'http://opentelemetry-collector.gke-managed-otel.svc.cluster.local:4318/v1/traces'}]; p.write_text(yaml.safe_dump(c))"
 
+
+
+# 5.8. Copy custom agent startup script
 COPY deploy/shared/docker-entrypoint.sh /usr/local/bin/agent-entrypoint
 RUN chmod 755 /usr/local/bin/agent-entrypoint
 
+# 6. Expose ports shared by all agent gateways
 EXPOSE 8642
 EXPOSE 9119
 
+# 7. Execution lifecycle
 ENTRYPOINT ["/usr/local/bin/agent-entrypoint"]
 CMD ["hermes", "gateway", "run"]
 
@@ -207,8 +213,10 @@ RUN git clone https://github.com/openclaw/openclaw.git /opt/openclaw && \
 # ==========================================
 # STAGE 4: Platform Agent Hermes Target (platform / platform-hermes)
 # ==========================================
+# --- PLATFORM AGENT TARGET ---
 FROM hermes-base AS platform-hermes
 
+# Setup platform specific defaults from consolidated configs
 COPY agents/platform/cron/ /opt/defaults/cron/
 COPY --chown=hermes:hermes agents/platform/defaults/ /opt/defaults/
 COPY agents/platform/scripts/ /opt/defaults/scripts/
@@ -216,14 +224,23 @@ COPY agents/platform/governance/ /opt/defaults/governance/
 COPY agents/platform/SOUL.md /opt/defaults/SOUL.md
 COPY agents/platform/AGENTS.md /opt/defaults/AGENTS.md
 
+# Copy platform skills
 COPY agents/platform/skills/ /opt/hermes/skills/
+
+# Copy platform plugins
 COPY agents/platform/plugins/ /opt/hermes/plugins/
-COPY deploy/docker/merge_configs.py /tmp/merge_configs.py
+
+# Copy platform defaults configuration as temp file
 COPY agents/platform/config.yaml /tmp/platform-config.yaml
 
+# Copy config merge helper script
+COPY deploy/docker/merge_configs.py /tmp/merge_configs.py
+
+# Dynamically merge config.yamls using helper script
 RUN /opt/hermes/.venv/bin/python3 /tmp/merge_configs.py /opt/defaults/config.yaml /tmp/platform-config.yaml && \
     rm -f /tmp/merge_configs.py /tmp/platform-config.yaml
 
+# Normalize ownership and permissions at the end of build
 RUN chown -R hermes:hermes /opt/defaults /opt/hermes/skills /opt/hermes/plugins && \
     find /opt/defaults -type d -exec chmod 755 {} + && \
     find /opt/defaults -type f -exec chmod 644 {} + && \

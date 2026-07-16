@@ -42,7 +42,7 @@ func TestAgentsGolden(t *testing.T) {
 		newReconciler func(client.Client, *runtime.Scheme) reconcile.Reconciler
 	}{
 		{
-			name:         "PlatformAgentHermes",
+			name:         "PlatformAgent",
 			inputPath:    filepath.Join("..", "..", "examples", "platformagent.yaml"),
 			expectedPath: filepath.Join("testdata", "platform", "expected", "platformagent.yaml"),
 			newAgent:     func() client.Object { return &agentv1alpha1.PlatformAgent{} },

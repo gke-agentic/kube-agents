@@ -10,16 +10,22 @@ source "${SCRIPT_DIR}/common.sh" "$@"
 load_state
 
 if [ "${GOOGLE_CHAT_ENABLED:-false}" = "true" ]; then
-  if [ -z "${GOOGLE_CHAT_DOMAIN:-}" ]; then
-    GOOGLE_CHAT_DOMAIN="<your-domain-or-static-ip>"
+  if [ "${HARNESS_FRAMEWORK:-hermes}" = "openclaw" ]; then
+    if [ -z "${GOOGLE_CHAT_DOMAIN:-}" ]; then
+      GOOGLE_CHAT_DOMAIN="<your-domain-or-static-ip>"
+    fi
+  else
+    if [ -z "${CHAT_TOPIC_NAME:-}" ] || [ -z "${CHAT_SUB_NAME:-}" ]; then
+      print_warning "Google Chat integration is enabled but CHAT_TOPIC_NAME or CHAT_SUB_NAME is missing. It may not work properly."
+    fi
   fi
 
   echo -e "${C_CYAN}${C_BOLD}--- [Google Chat Integration Instructions] ---${C_RESET}"
   echo -e "[ ] 1. Configure GChat bot connection in GCP Console:"
   echo -e "       ${C_WHITE}https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat?project=${PROJECT_ID}${C_RESET}"
   echo -e "       - Name: ${C_GREEN}GKE Platform Agent Bot${C_RESET}"
+  echo -e "       - Avatar: ${C_GREEN}https://platform-agent.nousresearch.com/docs/img/logo.png${C_RESET}"
   if [ "${HARNESS_FRAMEWORK:-hermes}" = "openclaw" ]; then
-    echo -e "       - Avatar: ${C_GREEN}https://platform-agent.nousresearch.com/docs/img/logo.png${C_RESET}"
     echo -e "       - Connection Settings: Select ${C_BOLD}App URL (HTTP Webhook)${C_RESET}"
     echo -e "       - App URL: ${C_GREEN}https://${GOOGLE_CHAT_DOMAIN}/googlechat${C_RESET}"
   else

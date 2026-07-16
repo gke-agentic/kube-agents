@@ -117,8 +117,21 @@ execute_custom_resource() {
   # Determine if Google Chat should be enabled
   if [ "${GOOGLE_CHAT_ENABLED:-false}" = "true" ]; then
     export GOOGLE_CHAT_ENABLED="true"
+    if [ "${HARNESS_FRAMEWORK:-hermes}" = "openclaw" ]; then
+      if [ -z "${APP_URL:-}" ]; then
+        print_warning "Google Chat integration is enabled for OpenClaw but APP_URL is missing."
+      fi
+    else
+      if [ -z "${CHAT_TOPIC_NAME:-}" ] || [ -z "${CHAT_SUB_NAME:-}" ]; then
+        print_warning "Google Chat integration is enabled but CHAT_TOPIC_NAME or CHAT_SUB_NAME is missing. It may not work properly."
+      fi
+    fi
   else
     export GOOGLE_CHAT_ENABLED="false"
+    if [ "${HARNESS_FRAMEWORK:-hermes}" != "openclaw" ]; then
+      export CHAT_TOPIC_NAME=""
+      export CHAT_SUB_NAME=""
+    fi
     export ALLOWED_USERS=""
     export APP_URL=""
     export APP_PRINCIPAL=""

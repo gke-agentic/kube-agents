@@ -49,6 +49,6 @@ spec:
         name: platform-agent-secrets
         key: SLACK_APP_TOKEN
       allowedUsers:
-        - "${ALLOWED_USERS}"
+        - "${SLACK_ALLOWED_USERS}"
       homeChannel: "${SLACK_HOME_CHANNEL}"
       homeChannelName: "${SLACK_HOME_CHANNEL_NAME}"

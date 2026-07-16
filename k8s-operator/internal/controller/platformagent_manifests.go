@@ -23,7 +23,6 @@ import (
 	"path"
 	"strings"
 
-	agentv1alpha1 "github.com/gke-labs/kube-agents/k8s-operator/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -34,12 +33,12 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/yaml"
+
+	agentv1alpha1 "github.com/gke-labs/kube-agents/k8s-operator/api/v1alpha1"
 )
 
-const (
-	defaultPlatformAgentSecrets = "platform-agent-secrets"
-	sessionKVDBPath             = "/var/lib/kube-agents/session/session_kv.db"
-)
+const defaultPlatformAgentSecrets = "platform-agent-secrets"
+const sessionKVDBPath = "/var/lib/kube-agents/session/session_kv.db"
 
 // isOpenClaw checks if the agent is configured to use OpenClaw framework instead of Hermes (the default).
 func isOpenClaw(agent *agentv1alpha1.PlatformAgent) bool {
@@ -481,7 +480,6 @@ func resolveGoogleChatDisplayConfig(mode string) map[string]any {
 	}
 
 	toolProgress := "off"
-	toolProgressGrouping := "accumulate"
 	memoryNotifications := "off"
 	interimMessages := false
 
@@ -493,7 +491,6 @@ func resolveGoogleChatDisplayConfig(mode string) map[string]any {
 
 	return map[string]any{
 		"tool_progress":              toolProgress,
-		"tool_progress_grouping":     toolProgressGrouping,
 		"memory_notifications":       memoryNotifications,
 		"interim_assistant_messages": interimMessages,
 		"long_running_notifications": true,

@@ -34,5 +34,9 @@ if [ "${SLACK_ENABLED:-false}" = "true" ]; then
     echo -e "[ ] 3. ${C_YELLOW}[Optional]${C_RESET} Approve pairing code in GKE container (if pairing mode enabled):"
     echo -e "       ${C_WHITE}kubectl exec -it deploy/platform-agent-gateway -n ${NAMESPACE:-kubeagents-system} -- openclaw pairing approve slack <PAIRING_CODE>${C_RESET}"
     echo -e ""
+  else
+    echo -e "[ ] 3. ${C_YELLOW}[Optional]${C_RESET} Approve pairing code in GKE container (if pairing mode enabled):"
+    echo -e "       ${C_WHITE}kubectl exec -it deploy/platform-agent-gateway -n ${NAMESPACE:-kubeagents-system} -- hermes pairing approve slack <PAIRING_CODE>${C_RESET}"
+    echo -e ""
   fi
 fi

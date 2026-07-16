@@ -17,8 +17,15 @@ source "${SCRIPT_DIR}/common.sh" "$@"
 ensure_teardown_state
 
 # ─── Confirmation Prompt ──────────────────────────────────────────────────────
-confirm_action "This will clean up any legacy GChat Pub/Sub resources." \
-  "GCP Project:$PROJECT_ID"
+if [ "${HARNESS_FRAMEWORK:-hermes}" = "openclaw" ]; then
+  confirm_action "This will clean up any legacy GChat Pub/Sub resources." \
+    "GCP Project:$PROJECT_ID"
+else
+  confirm_action "This will permanently delete GChat Pub/Sub topic and subscription." \
+    "GCP Project:$PROJECT_ID" \
+    "Pub/Sub Topic:$CHAT_TOPIC_NAME" \
+    "Pub/Sub Sub:$CHAT_SUB_NAME"
+fi
 
 gcloud config set project "$PROJECT_ID" --quiet
 

@@ -17,6 +17,7 @@ from datetime import datetime
 from mcp.server.fastmcp import FastMCP
 
 DEFAULT_SESSION_KV_DB_PATH = "/var/lib/kube-agents/session/session_kv.db"
+HARNESS_FRAMEWORK = os.environ.get("HARNESS_FRAMEWORK", "hermes").lower()
 
 # Initialize the FastMCP server
 mcp = FastMCP("GKE Platform Control Plane")
@@ -101,8 +102,9 @@ def get_hermes_home() -> Path:
 
 def get_project_id() -> str:
     """Resolve Project ID from USER.md or gcloud config."""
-    user_md = get_openclaw_home() / "USER.md"
-    if not user_md.exists():
+    if HARNESS_FRAMEWORK == "openclaw":
+        user_md = get_openclaw_home() / "USER.md"
+    else:
         user_md = get_hermes_home() / "USER.md"
     if user_md.exists():
         try:
@@ -472,7 +474,7 @@ def send_notification(message: str) -> str:
         message: The plaintext or markdown-formatted message string to post.
     """
     try:
-        if shutil.which("agentapi") and (os.environ.get("HARNESS_FRAMEWORK", "").lower() == "openclaw" or os.path.exists("/opt/openclaw")):
+        if shutil.which("agentapi") and HARNESS_FRAMEWORK == "openclaw":
             channel = "slack" if os.environ.get("SLACK_BOT_TOKEN") else "googlechat"
             res = subprocess.run(
                 ["agentapi", "send-message", channel, message],
@@ -503,9 +505,12 @@ def start_session_kv_server() -> None:
 
         app_dir = Path(__file__).resolve().parent.parent
         log(f"Starting Session KV server on port {port}.")
-        python_bin = sys.executable if os.path.exists(sys.executable) else "/opt/openclaw/.venv/bin/python3"
-        if not os.path.exists(python_bin) and os.path.exists("/opt/hermes/.venv/bin/python3"):
+        if HARNESS_FRAMEWORK == "openclaw":
+            python_bin = "/opt/openclaw/.venv/bin/python3"
+        else:
             python_bin = "/opt/hermes/.venv/bin/python3"
+        if not os.path.exists(python_bin) and os.path.exists(sys.executable):
+            python_bin = sys.executable
         subprocess.Popen(
             [
                 python_bin,
