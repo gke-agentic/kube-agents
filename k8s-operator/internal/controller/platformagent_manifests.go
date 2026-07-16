@@ -235,8 +235,12 @@ func renderOpenClawConfigJSON(agent *agentv1alpha1.PlatformAgent) string {
 				allowFrom = gchat.AllowedUsers
 			}
 			appPrincipal := gchat.AppPrincipal
-			if appPrincipal == "" {
-				appPrincipal = "*"
+			if appPrincipal == "" || appPrincipal == "*" {
+				if gchat.ProjectNumber != "" {
+					appPrincipal = gchat.ProjectNumber
+				} else {
+					appPrincipal = "*"
+				}
 			}
 			defaultAccountConfig := map[string]any{
 				"enabled":      true,

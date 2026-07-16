@@ -154,24 +154,21 @@ execute_custom_resource() {
 
 
   # Check/reserve global static IP and automate Cloud Endpoints DNS if applicable
-  if [ -n "${GOOGLE_CHAT_DOMAIN:-}" ] && [ "${GOOGLE_CHAT_ENABLED:-false}" = "true" ]; then
+  if [ "${GOOGLE_CHAT_ENABLED:-false}" = "true" ] && { [ -n "${GOOGLE_CHAT_DOMAIN:-}" ] || [ "${HARNESS_FRAMEWORK:-hermes}" = "openclaw" ]; }; then
     local ip_name="${AGENT_NAME:-platform-agent}-ip"
     print_info "Checking/reserving GCP Global Static IP ($ip_name) for Google Chat ingress..."
     gcloud compute addresses create "$ip_name" --global --project="$PROJECT_ID" 2>/dev/null || true
     STATIC_IP=$(gcloud compute addresses describe "$ip_name" --global --project="$PROJECT_ID" --format="get(address)" 2>/dev/null || echo "PENDING")
     
     if [ -n "$STATIC_IP" ] && [ "$STATIC_IP" != "PENDING" ]; then
-      if [ "$GOOGLE_CHAT_DOMAIN" = "auto" ] || [ -z "$GOOGLE_CHAT_DOMAIN" ] || [[ "$GOOGLE_CHAT_DOMAIN" == *.nip.io ]]; then
-        IP_DASH=$(echo "$STATIC_IP" | tr '.' '-')
-        GOOGLE_CHAT_DOMAIN="${AGENT_NAME:-platform-agent}.${IP_DASH}.nip.io"
+      if [ "$GOOGLE_CHAT_DOMAIN" = "auto" ] || [ -z "$GOOGLE_CHAT_DOMAIN" ] || [[ "$GOOGLE_CHAT_DOMAIN" == *.endpoints*.cloud.goog ]]; then
+        if [ "$GOOGLE_CHAT_DOMAIN" = "auto" ] || [ -z "$GOOGLE_CHAT_DOMAIN" ]; then
+          GOOGLE_CHAT_DOMAIN="${AGENT_NAME:-platform-agent}.endpoints.${PROJECT_ID}.cloud.goog"
+          print_info "No domain specified (or 'auto' selected). Using Cloud Endpoints (${GOOGLE_CHAT_DOMAIN}) as default..."
+        fi
         APP_URL="https://${GOOGLE_CHAT_DOMAIN}/googlechat"
         export GOOGLE_CHAT_DOMAIN APP_URL
         save_var "GOOGLE_CHAT_DOMAIN" "$GOOGLE_CHAT_DOMAIN"
-        save_var "APP_URL" "$APP_URL"
-        print_success "Assigned 100% zero-interaction wildcard DNS: ${GOOGLE_CHAT_DOMAIN} -> ${STATIC_IP}"
-      elif [[ "$GOOGLE_CHAT_DOMAIN" == *.endpoints.cloud.goog ]]; then
-        APP_URL="https://${GOOGLE_CHAT_DOMAIN}/googlechat"
-        export APP_URL
         save_var "APP_URL" "$APP_URL"
         print_info "Automating Cloud Endpoints DNS registration for ${GOOGLE_CHAT_DOMAIN} -> ${STATIC_IP}..."
         cat <<EOF > "/tmp/openapi-${AGENT_NAME:-platform-agent}.yaml"
@@ -184,10 +181,25 @@ host: "${GOOGLE_CHAT_DOMAIN}"
 x-google-endpoints:
   - name: "${GOOGLE_CHAT_DOMAIN}"
     target: "${STATIC_IP}"
-paths: {}
+paths:
+  /googlechat:
+    post:
+      description: "Google Chat webhook endpoint"
+      operationId: "postGoogleChat"
+      responses:
+        200:
+          description: "Success"
 EOF
         if gcloud endpoints services deploy "/tmp/openapi-${AGENT_NAME:-platform-agent}.yaml" --project="$PROJECT_ID" --impersonate-service-account="${GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com" --quiet 2>/dev/null || gcloud endpoints services deploy "/tmp/openapi-${AGENT_NAME:-platform-agent}.yaml" --project="$PROJECT_ID" --quiet 2>/dev/null; then
           print_success "Cloud Endpoints DNS registered! ($GOOGLE_CHAT_DOMAIN -> $STATIC_IP)"
+          echo -e "${C_CYAN}╔═════════════════════════════════════════════════════════════════════════════╗${C_RESET}"
+          echo -e "${C_CYAN}║  >>> CLOUD ENDPOINTS DNS & SSL CERTIFICATE PROVISIONING <<<                 ║${C_RESET}"
+          echo -e "${C_CYAN}║  Domain:    ${C_GREEN}${GOOGLE_CHAT_DOMAIN}${C_CYAN}                                     ║${C_RESET}"
+          echo -e "${C_CYAN}║  Static IP: ${C_GREEN}${STATIC_IP}${C_CYAN}                                           ║${C_RESET}"
+          echo -e "${C_CYAN}║  Note:      GKE is provisioning a Google-managed SSL certificate.           ║${C_RESET}"
+          echo -e "${C_CYAN}║             It takes ~15-30 mins to transition from PROVISIONING to ACTIVE. ║${C_RESET}"
+          echo -e "${C_CYAN}║  Verify:    kubectl get managedcertificate ${AGENT_NAME:-platform-agent}-cert -n ${NAMESPACE:-agents}       ║${C_RESET}"
+          echo -e "${C_CYAN}╚═════════════════════════════════════════════════════════════════════════════╝${C_RESET}"
         else
           print_warning "Automatic Cloud Endpoints DNS deployment could not be completed."
           echo -e "${C_YELLOW}╔═════════════════════════════════════════════════════════════════════════════╗${C_RESET}"
@@ -199,6 +211,12 @@ EOF
           echo -e "${C_YELLOW}╚═════════════════════════════════════════════════════════════════════════════╝${C_RESET}"
         fi
         rm -f "/tmp/openapi-${AGENT_NAME:-platform-agent}.yaml"
+      elif [[ "$GOOGLE_CHAT_DOMAIN" == *.nip.io ]]; then
+        APP_URL="https://${GOOGLE_CHAT_DOMAIN}/googlechat"
+        export GOOGLE_CHAT_DOMAIN APP_URL
+        save_var "GOOGLE_CHAT_DOMAIN" "$GOOGLE_CHAT_DOMAIN"
+        save_var "APP_URL" "$APP_URL"
+        print_success "Assigned zero-interaction wildcard DNS: ${GOOGLE_CHAT_DOMAIN} -> ${STATIC_IP}"
       else
         APP_URL="https://${GOOGLE_CHAT_DOMAIN}/googlechat"
         export APP_URL
@@ -215,7 +233,7 @@ EOF
   fi
 
   # Ensure variables are explicitly exported so envsubst can access them
-  export PROJECT_ID REGION CLUSTER_NAME MODEL_DEFAULT_NAME MODEL_PROVIDER GSA_NAME GOOGLE_CHAT_MODE ALLOWED_USERS AGENT_IMAGE NAMESPACE KSA_NAME APP_URL APP_PRINCIPAL GOOGLE_CHAT_DOMAIN
+  export PROJECT_ID PROJECT_NUMBER REGION CLUSTER_NAME MODEL_DEFAULT_NAME MODEL_PROVIDER GSA_NAME GOOGLE_CHAT_MODE ALLOWED_USERS AGENT_IMAGE NAMESPACE KSA_NAME APP_URL APP_PRINCIPAL GOOGLE_CHAT_DOMAIN
 
   # Handle optional GitHub integration variables
   if [ -n "${GITHUB_ORG:-}" ] && [ -n "${GITHUB_REPO:-}" ]; then
@@ -238,7 +256,7 @@ EOF
   fi
 
   # Ensure variables are explicitly exported so envsubst can access them
-  export PROJECT_ID REGION CLUSTER_NAME MODEL_DEFAULT_NAME MODEL_PROVIDER GSA_NAME GOOGLE_CHAT_MODE ALLOWED_USERS AGENT_IMAGE NAMESPACE KSA_NAME APP_URL APP_PRINCIPAL GOOGLE_CHAT_DOMAIN GOOGLE_CHAT_ENABLED SLACK_ENABLED SLACK_BOT_TOKEN SLACK_APP_TOKEN SLACK_ALLOWED_USERS SLACK_HOME_CHANNEL SLACK_HOME_CHANNEL_NAME AGENT_TAG GITHUB_FULL_REPO CHAT_SUB_NAME CHAT_TOPIC_NAME MEMORY_ENABLED MEMORY_PROVIDER USER_PROFILE_ENABLED HARNESS_FRAMEWORK
+  export PROJECT_ID PROJECT_NUMBER REGION CLUSTER_NAME MODEL_DEFAULT_NAME MODEL_PROVIDER GSA_NAME GOOGLE_CHAT_MODE ALLOWED_USERS AGENT_IMAGE NAMESPACE KSA_NAME APP_URL APP_PRINCIPAL GOOGLE_CHAT_DOMAIN GOOGLE_CHAT_ENABLED SLACK_ENABLED SLACK_BOT_TOKEN SLACK_APP_TOKEN SLACK_ALLOWED_USERS SLACK_HOME_CHANNEL SLACK_HOME_CHANNEL_NAME AGENT_TAG GITHUB_FULL_REPO CHAT_SUB_NAME CHAT_TOPIC_NAME MEMORY_ENABLED MEMORY_PROVIDER USER_PROFILE_ENABLED HARNESS_FRAMEWORK
 
   envsubst < "$CR_TEMPLATE" > "$CR_MANIFEST"
   

@@ -11,8 +11,8 @@ load_state
 
 if [ "${GOOGLE_CHAT_ENABLED:-false}" = "true" ]; then
   if [ "${HARNESS_FRAMEWORK:-hermes}" = "openclaw" ]; then
-    if [ -z "${GOOGLE_CHAT_DOMAIN:-}" ]; then
-      GOOGLE_CHAT_DOMAIN="<your-domain-or-static-ip>"
+    if [ -z "${GOOGLE_CHAT_DOMAIN:-}" ] || [ "${GOOGLE_CHAT_DOMAIN:-}" = "auto" ]; then
+      GOOGLE_CHAT_DOMAIN="${AGENT_NAME:-platform-agent}.endpoints.${PROJECT_ID:-<project-id>}.cloud.goog"
     fi
   else
     if [ -z "${CHAT_TOPIC_NAME:-}" ] || [ -z "${CHAT_SUB_NAME:-}" ]; then
@@ -28,6 +28,10 @@ if [ "${GOOGLE_CHAT_ENABLED:-false}" = "true" ]; then
   if [ "${HARNESS_FRAMEWORK:-hermes}" = "openclaw" ]; then
     echo -e "       - Connection Settings: Select ${C_BOLD}App URL (HTTP Webhook)${C_RESET}"
     echo -e "       - App URL: ${C_GREEN}https://${GOOGLE_CHAT_DOMAIN}/googlechat${C_RESET}"
+    if [[ "${GOOGLE_CHAT_DOMAIN:-}" == *.endpoints*.cloud.goog ]] || [[ "${GOOGLE_CHAT_DOMAIN:-}" != *.nip.io ]]; then
+      echo -e "       ${C_YELLOW}  Important: If using Cloud Endpoints/Managed SSL, ensure the certificate is ACTIVE before saving:${C_RESET}"
+      echo -e "       ${C_WHITE}  kubectl get managedcertificate -n ${NAMESPACE:-agents} --watch${C_RESET}"
+    fi
   else
     echo -e "       - Connection Settings: Select ${C_BOLD}Cloud Pub/Sub${C_RESET}"
     echo -e "       - Pub/Sub Topic Name: ${C_GREEN}projects/${PROJECT_ID}/topics/${CHAT_TOPIC_NAME:-platform-agent-chat-events}${C_RESET}"

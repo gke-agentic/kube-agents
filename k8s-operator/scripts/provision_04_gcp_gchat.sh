@@ -70,8 +70,22 @@ DEFAULT_USERS=""
 init_var "ALLOWED_USERS" "$DEFAULT_USERS" "Enter Allowed Google Chat Users Emails (comma separated). Leaving it empty will allow all users."
 init_var "GOOGLE_CHAT_MODE" "default" "Enter Google Chat Output Mode (default or debug)"
 if [ "${HARNESS_FRAMEWORK:-hermes}" = "openclaw" ]; then
-  init_var "GOOGLE_CHAT_DOMAIN" "auto" "Enter custom HTTPS domain for Google Chat (or press Enter for 'auto' zero-interaction DNS via nip.io)"
-  init_var "APP_PRINCIPAL" "*" "Enter Google Chat App Principal ID (e.g. chat@system.gserviceaccount.com, or '*' for any Google Chat issuer)"
+  init_var "GOOGLE_CHAT_DOMAIN" "auto" "Enter custom HTTPS domain for Google Chat (press Enter for 'auto' zero-interaction DNS via Cloud Endpoints endpoints.${PROJECT_ID}.cloud.goog)"
+  if [ -z "${APP_PRINCIPAL:-}" ]; then
+    if [ "${DRY_RUN:-0}" -eq 1 ] || is_ci_pipeline; then
+      APP_PRINCIPAL="${PROJECT_NUMBER:-*}"
+    else
+      echo -ne "  ${C_CYAN}Lock Google Chat HTTPS webhook requests exclusively to this project (${PROJECT_NUMBER:-*})? [Y/n]: ${C_RESET}"
+      read -r lock_choice
+      if [[ "${lock_choice:-Y}" =~ ^[Nn] ]]; then
+        APP_PRINCIPAL="*"
+      else
+        APP_PRINCIPAL="${PROJECT_NUMBER:-*}"
+      fi
+    fi
+    export APP_PRINCIPAL
+    save_var "APP_PRINCIPAL" "$APP_PRINCIPAL"
+  fi
 else
   init_var "CHAT_TOPIC_NAME" "platform-agent-chat-events" "Enter Pub/Sub Topic Name"
   init_var "CHAT_SUB_NAME" "platform-agent-chat-events-sub" "Enter Pub/Sub Subscription Name"
@@ -85,7 +99,8 @@ verify_apis() {
   if [ "${HARNESS_FRAMEWORK:-hermes}" = "openclaw" ]; then
     echo "$out" | grep -q 'chat.googleapis.com' && \
     echo "$out" | grep -q 'gsuiteaddons.googleapis.com' && \
-    echo "$out" | grep -q 'servicemanagement.googleapis.com'
+    echo "$out" | grep -q 'servicemanagement.googleapis.com' && \
+    echo "$out" | grep -q 'endpoints.googleapis.com'
   else
     echo "$out" | grep -q 'pubsub.googleapis.com' && \
     echo "$out" | grep -q 'chat.googleapis.com' && \
@@ -99,6 +114,7 @@ execute_apis() {
         gsuiteaddons.googleapis.com \
         servicemanagement.googleapis.com \
         servicecontrol.googleapis.com \
+        endpoints.googleapis.com \
         --project="$PROJECT_ID"
   else
     gcloud services enable \
