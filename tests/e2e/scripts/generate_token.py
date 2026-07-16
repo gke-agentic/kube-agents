@@ -29,21 +29,8 @@ client_config = {
     }
 }
 
-flow = InstalledAppFlow.from_client_config(client_config, SCOPES, redirect_uri="urn:ietf:wg:oauth:2.0:oob")
-auth_url, _ = flow.authorization_url(prompt="consent")
-
-print("\n======================================================================")
-print(" 1. Copy this URL and paste it into your Chrome browser in Incognito:")
-print("----------------------------------------------------------------------")
-print(auth_url)
-print("----------------------------------------------------------------------")
-print(" 2. Log in as your OTA account (e.g. your-ota-account@gmail.com) and click 'Allow'.")
-print(" 3. Copy the authorization code shown on screen and paste it below.")
-print("======================================================================\n")
-
-code = input("Enter authorization code: ").strip()
-flow.fetch_token(code=code)
-creds = flow.credentials
+flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
+creds = flow.run_local_server(port=0)
 
 print("\n================ SUCCESS ================")
 print(f"E2E_CHAT_CLIENT_ID: {creds.client_id}")

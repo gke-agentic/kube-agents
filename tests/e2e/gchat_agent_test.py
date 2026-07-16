@@ -79,7 +79,12 @@ def poll_chat_service(credentials: Credentials) -> Resource:
     client_id = os.environ.get("E2E_CHAT_CLIENT_ID")
     client_secret = os.environ.get("E2E_CHAT_CLIENT_SECRET")
 
-    if refresh_token and client_id and client_secret:
+    if refresh_token or client_id or client_secret:
+        if not (refresh_token and client_id and client_secret):
+            pytest.fail(
+                "Incomplete OTA credentials configuration. "
+                "Please ensure E2E_CHAT_REFRESH_TOKEN, E2E_CHAT_CLIENT_ID, and E2E_CHAT_CLIENT_SECRET are all set."
+            )
         user_creds = UserCredentials(
             token=None,
             refresh_token=refresh_token,

@@ -131,10 +131,6 @@ gcloud iam service-accounts add-iam-policy-binding "${E2E_SA_EMAIL}" \
     --role="roles/iam.serviceAccountTokenCreator" \
     --member="principalSet://iam.googleapis.com/${WIF_POOL_ID}/attribute.repository/${GITHUB_REPO}"
 
-gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-    --member="serviceAccount:${E2E_SA_EMAIL}" \
-    --role="roles/iam.serviceAccountTokenCreator"
-
 echo "[SUCCESS] E2E CI Service Account and WIF Provider successfully provisioned!"
 echo "[INFO] WIF Provider Resource Name:"
 echo "${WIF_POOL_ID}/providers/${WIF_PROVIDER_NAME}"
