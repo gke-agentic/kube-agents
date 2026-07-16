@@ -5,34 +5,27 @@ This directory contains the automated E2E test suite for verifying the **Hermes 
 ## 📌 Architecture & Design Concept
 
 ```
-┌─────────────────────────────────┐
-│         pytest runner           │
-└────────────────┬────────────────┘
-                 │
-                 ├──────────────────────────────────────────────────────┐
-                 │ 1. Post Prompt Message                               │ 2. Publish Chat Event w/ Thread ID
-                 │    (Service Account WIF credentials)                 │    (Service Account WIF credentials)
-                 ▼                                                      ▼
-┌─────────────────────────────────┐                        ┌─────────────────────────────────┐
-│     Google Chat Space API       │                        │         Pub/Sub Topic:          │
-│ (spaces.messages.create)        │                        │   platform-agent-chat-events    │
-└────────────────┬────────────────┘                        └────────────────┬────────────────┘
-                 │ 1b. Returns real                                         │ 3. Pull Event
-                 │     Thread ID                                            ▼
-                 │                                         ┌─────────────────────────────────┐
-                 │                                         │     Hermes Agent (GKE Pod)      │
-                 │                                         └────────────────┬────────────────┘
-                 │                                                          │ 4. Execute Prompt & Post Reply
-                 ▼                                                          ▼
-┌─────────────────────────────────────────────────────────────────────────────────────────────┐
-│                                   Google Chat Space                                         │
-└──────────────────────────────────────────────┬──────────────────────────────────────────────┘
-                                               │ 5. Polls & asserts response
-                                               │    (OTA User Credentials: chat.messages.readonly)
-                                               ▼
-                                  ┌─────────────────────────┐
-                                  │      pytest runner      │
-                                  └─────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                              pytest runner                              │
+└───────┬─────────────────────────────────┬───────────────────────▲───────┘
+        │ 1. Post prompt message          │ 2. Publish Chat Event │
+        │    (Service Account WIF)        │    with Thread ID     │ 5. Polls & asserts
+        │                                 │    (Service Account)  │    response (OTA User)
+        ▼                                 ▼                       │
+┌──────────────────────┐      ┌──────────────────────┐            │
+│  Google Chat API     │      │    Pub/Sub Topic:    │            │
+│(spaces.messages.create)     │ platform-agent-events│            │
+└───────┬──────────────┘      └───────────┬──────────┘            │
+        │                                 │ 3. Pull Event         │
+        │ 1b. Returns Thread ID           ▼                       │
+        │                     ┌──────────────────────┐            │
+        │                     │ Hermes Agent (GKE)   │            │
+        │                     └───────────┬──────────┘            │
+        │                                 │ 4. Post Reply         │
+        ▼                                 ▼                       │
+┌─────────────────────────────────────────────────────────────────┴───────┐
+│                            Google Chat Space                            │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 1. Hybrid Auth Model & Google Chat API Restrictions

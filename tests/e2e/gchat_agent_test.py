@@ -8,28 +8,18 @@ polls the Google Chat API for the agent's response, and asserts mathematical cor
 """
 
 import base64
-
 import json
-
 import os
-
 import re
-
 import time
-
 from datetime import datetime, timezone
-
 from typing import Any, Optional
 
 import google.auth
-from google.oauth2.credentials import Credentials as UserCredentials
-
 from google.auth.credentials import Credentials
-
+from google.oauth2.credentials import Credentials as UserCredentials
 from googleapiclient.discovery import Resource, build
-
 from googleapiclient.errors import HttpError
-
 import pytest
 
 # Configuration from Environment Variables (read dynamically from vars.sh or CI environment)
