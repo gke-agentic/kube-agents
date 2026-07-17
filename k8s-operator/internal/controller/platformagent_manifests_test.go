@@ -359,8 +359,8 @@ func TestBuildDeployment(t *testing.T) {
 		envMap[env.Name] = env
 	}
 
-	if envMap["PLATFORM_AGENT_HOME"].Value != "/var/agent" {
-		t.Errorf("expected PLATFORM_AGENT_HOME /var/agent, got %s", envMap["PLATFORM_AGENT_HOME"].Value)
+	if envMap["HERMES_HOME"].Value != "/var/agent" {
+		t.Errorf("expected HERMES_HOME /var/agent, got %s", envMap["HERMES_HOME"].Value)
 	}
 	if envMap["HOME"].Value != "/var/agent/home" {
 		t.Errorf("expected HOME /var/agent/home, got %s", envMap["HOME"].Value)

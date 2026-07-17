@@ -309,7 +309,7 @@ spec:
     spec:
       containers:
         - env:
-            - name: PLATFORM_AGENT_HOME
+            - name: HERMES_HOME
               value: /opt/data
             - name: HOME
               value: /opt/data/home

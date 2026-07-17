@@ -334,7 +334,7 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 
 	envVars := []corev1.EnvVar{
 		{
-			Name:  "PLATFORM_AGENT_HOME",
+			Name:  "HERMES_HOME",
 			Value: homeDir,
 		},
 		{
