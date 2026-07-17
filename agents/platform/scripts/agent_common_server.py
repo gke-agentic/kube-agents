@@ -26,7 +26,9 @@ SESSION_MANAGER = SessionManager()
 
 def resolve_agent_credentials(agent_id: str) -> tuple[str, str]:
     """Retrieve the target agent's endpoint and shared API key."""
-    api_key = os.environ.get("API_SERVER_KEY") or "none"
+    api_key = os.environ.get("API_SERVER_KEY")
+    if not api_key or not api_key.strip():
+        raise ValueError("ERROR [401]: API_SERVER_KEY is unset, empty, or whitespace.")
 
     if agent_id.lower() == "platform":
         endpoint = os.environ.get("PLATFORM_API_URL") or "platform-agent.agent-system.svc.cluster.local:8642"
