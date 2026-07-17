@@ -342,11 +342,11 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 			Value: strings.TrimSuffix(homeDir, "/") + "/home",
 		},
 		{
-			Name:  "PLATFORM_AGENT_DASHBOARD",
+			Name:  "HERMES_DASHBOARD",
 			Value: dashboardVal,
 		},
 		{
-			Name:  "PLATFORM_AGENT_PLUGINS_DEBUG",
+			Name:  "HERMES_PLUGINS_DEBUG",
 			Value: pluginsDebugVal,
 		},
 		{
@@ -360,6 +360,10 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 		{
 			Name:  "SESSION_KV_DB_PATH",
 			Value: sessionKVDBPath,
+		},
+		{
+			Name:  "HERMES_DASHBOARD_HOST",
+			Value: "127.0.0.1",
 		},
 	}
 
@@ -497,6 +501,8 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 		volumes = append(volumes, extraVolumes...)
 	}
 
+	allInitContainers := initContainers
+
 	return &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "apps/v1",
@@ -526,7 +532,7 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 				},
 				Spec: corev1.PodSpec{
 					RuntimeClassName:   runtimeClassName,
-					InitContainers:     initContainers,
+					InitContainers:     allInitContainers,
 					ServiceAccountName: saName,
 					SecurityContext: &corev1.PodSecurityContext{
 						FSGroup: &fsGroup,
@@ -565,6 +571,10 @@ func buildBaseContainers(image string, pullPolicy corev1.PullPolicy, envVars []c
 			Name:      "system-metadata",
 			MountPath: path.Dir(sessionKVDBPath),
 			SubPath:   "session",
+		},
+		{
+			Name:      "tmp-run",
+			MountPath: "/run",
 		},
 	}
 
@@ -709,6 +719,15 @@ func buildDefaultVolumes(agent *agentv1alpha1.PlatformAgent) []corev1.Volume {
 						Name: agent.Name + "-settings",
 					},
 					DefaultMode: ptr.To(int32(0644)),
+				},
+			},
+		},
+		{
+			Name: "tmp-run",
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{
+					Medium:    corev1.StorageMediumMemory,
+					SizeLimit: ptr.To(resource.MustParse("64Mi")),
 				},
 			},
 		},
