@@ -1,27 +1,43 @@
+import importlib
 import os
 import sys
+import types
 import unittest
 from pathlib import Path
 
 # Add the directory containing agent_common_server.py to sys.path so it can be imported.
 sys.path.insert(0, str(Path(__file__).parent.absolute()))
 
-# agent_common_server pulls in FastMCP / pydantic / session_manager at import time.
-# The credential logic under test needs none of them, so fall back to lightweight
-# stubs when the real packages aren't importable (i.e. outside the hermes venv).
-try:
-    import agent_common_server  # noqa: F401
-except Exception:
-    import types
-    for _name in ("mcp", "mcp.server", "mcp.server.fastmcp", "pydantic", "session_manager"):
-        sys.modules[_name] = types.ModuleType(_name)
-    sys.modules["mcp.server.fastmcp"].FastMCP = lambda *a, **k: types.SimpleNamespace(
-        tool=lambda *a, **k: (lambda f: f), run=lambda: None)
-    sys.modules["pydantic"].Field = lambda *a, **k: None
-    sys.modules["session_manager"].SessionManager = object
-    import agent_common_server  # noqa: F401
 
-from agent_common_server import resolve_agent_credentials
+def _load_agent_common_server():
+    """Import the module under test.
+
+    These tests are not wired into CI, and the credential logic under test
+    (resolve_agent_credentials) depends only on the stdlib. When the hermes
+    runtime deps (FastMCP / pydantic / session_manager) aren't importable, fall
+    back to minimal stubs so the module still imports in a bare checkout. Each
+    stub package sets __path__ so it is treated as a real package.
+    """
+    try:
+        return importlib.import_module("agent_common_server")
+    except Exception:
+        mcp = types.ModuleType("mcp"); mcp.__path__ = []
+        mcp_server = types.ModuleType("mcp.server"); mcp_server.__path__ = []
+        fastmcp = types.ModuleType("mcp.server.fastmcp")
+        fastmcp.FastMCP = lambda *a, **k: types.SimpleNamespace(
+            tool=lambda *a, **k: (lambda f: f), run=lambda: None)
+        pydantic = types.ModuleType("pydantic")
+        pydantic.Field = lambda *a, **k: None
+        session_manager = types.ModuleType("session_manager")
+        session_manager.SessionManager = object
+        sys.modules.update({
+            "mcp": mcp, "mcp.server": mcp_server, "mcp.server.fastmcp": fastmcp,
+            "pydantic": pydantic, "session_manager": session_manager,
+        })
+        return importlib.import_module("agent_common_server")
+
+
+resolve_agent_credentials = _load_agent_common_server().resolve_agent_credentials
 
 
 class TestResolveAgentCredentials(unittest.TestCase):
@@ -53,15 +69,12 @@ class TestResolveAgentCredentials(unittest.TestCase):
             resolve_agent_credentials("platform")
 
     def test_never_falls_back_to_none_literal(self):
-        """The regression pin: an unconfigured key must not yield the literal 'none'."""
+        """Regression pin: an unconfigured key must fail closed — raise, never
+        yield the guessable literal 'none'."""
         os.environ.pop("API_SERVER_KEY", None)
-        try:
-            _, api_key = resolve_agent_credentials("platform")
-        except ValueError:
-            return  # failing closed is the correct behavior
-        self.assertNotEqual(
-            api_key, "none",
-            "must never authenticate with the guessable literal 'none'")
+        with self.assertRaises(ValueError) as ctx:
+            resolve_agent_credentials("platform")
+        self.assertIn("API_SERVER_KEY is not configured", str(ctx.exception))
 
     def test_returns_endpoint_and_key_when_set(self):
         os.environ["API_SERVER_KEY"] = "s3cret"
