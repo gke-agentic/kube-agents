@@ -18,13 +18,8 @@ package webhook
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"sync"
 
-	"cloud.google.com/go/storage"
-	"google.golang.org/api/googleapi"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -46,8 +41,7 @@ func SetupPlatformAgentWebhookWithManager(mgr ctrl.Manager) error {
 		For(&agentv1alpha1.PlatformAgent{}).
 		WithDefaulter(&PlatformAgentCustomDefaulter{}).
 		WithValidator(&PlatformAgentCustomValidator{
-			Client:    mgr.GetAPIReader(),
-			GCSClient: &RealGCSClient{},
+			Client: mgr.GetAPIReader(),
 		}).
 		Complete()
 }
@@ -78,8 +72,7 @@ func (d *PlatformAgentCustomDefaulter) Default(ctx context.Context, obj runtime.
 
 // PlatformAgentCustomValidator struct to implement CustomValidator.
 type PlatformAgentCustomValidator struct {
-	Client    client.Reader
-	GCSClient GCSClient
+	Client client.Reader
 }
 
 var _ admission.CustomValidator = &PlatformAgentCustomValidator{}
@@ -133,44 +126,6 @@ func (v *PlatformAgentCustomValidator) validatePlatformAgent(ctx context.Context
 		}
 	}
 
-	// 2. Enforce 1 PlatformAgent per project globally (using GCS project-level lock)
-	if v.GCSClient != nil {
-		projectID := getProjectID(platformAgent)
-		if projectID == "" {
-			return nil, apierrors.NewInvalid(
-				schema.GroupKind{Group: "kubeagents.x-k8s.io", Kind: "PlatformAgent"},
-				platformAgent.Name,
-				field.ErrorList{field.Required(field.NewPath("spec", "harness", "projectId"), "GCP Project ID is required for global cardinality lock validation")},
-			)
-		}
-
-		currentCluster := ""
-		if platformAgent.Spec.Harness != nil {
-			currentCluster = platformAgent.Spec.Harness.ClusterName
-		}
-		if currentCluster == "" {
-			return nil, apierrors.NewInvalid(
-				schema.GroupKind{Group: "kubeagents.x-k8s.io", Kind: "PlatformAgent"},
-				platformAgent.Name,
-				field.ErrorList{field.Required(field.NewPath("spec", "harness", "clusterName"), "clusterName is required when global cardinality lock is enabled")},
-			)
-		}
-
-		lock, err := v.GCSClient.GetLock(ctx, projectID)
-		if err != nil {
-			return nil, apierrors.NewInternalError(fmt.Errorf("failed to verify project-level cardinality lock: %w", err))
-		}
-		if lock != nil {
-			if lock.ClusterName != currentCluster || lock.AgentName != platformAgent.Name || lock.Namespace != platformAgent.Namespace {
-				return nil, apierrors.NewInvalid(
-					schema.GroupKind{Group: "kubeagents.x-k8s.io", Kind: "PlatformAgent"},
-					platformAgent.Name,
-					field.ErrorList{field.Forbidden(field.NewPath(""), fmt.Sprintf("only one PlatformAgent is allowed per project; already running in GKE cluster %q (agent %q in namespace %q)", lock.ClusterName, lock.AgentName, lock.Namespace))},
-				)
-			}
-		}
-	}
-
 	return nil, nil
 }
 
@@ -184,84 +139,4 @@ func (v *PlatformAgentCustomValidator) ValidateDelete(ctx context.Context, obj r
 
 	// TODO(user): fill in validation logic here
 	return nil, nil
-}
-
-// ─── GCS Lock Client Implementation ──────────────────────────────────────────
-
-type PlatformAgentLock struct {
-	ClusterName string `json:"clusterName"`
-	AgentName   string `json:"agentName"`
-	Namespace   string `json:"namespace"`
-}
-
-type GCSClient interface {
-	GetLock(ctx context.Context, projectID string) (*PlatformAgentLock, error)
-}
-
-type RealGCSClient struct {
-	mu     sync.Mutex
-	client *storage.Client
-}
-
-func (c *RealGCSClient) GetLock(ctx context.Context, projectID string) (*PlatformAgentLock, error) {
-	c.mu.Lock()
-	if c.client == nil {
-		client, err := storage.NewClient(ctx)
-		if err != nil {
-			c.mu.Unlock()
-			return nil, fmt.Errorf("failed to create GCS client: %w", err)
-		}
-		c.client = client
-	}
-	c.mu.Unlock()
-
-	bucketName := fmt.Sprintf("%s-kube-agents-lock", projectID)
-
-	// 1. Verify GCS lock bucket exists
-	if _, err := c.client.Bucket(bucketName).Attrs(ctx); err != nil {
-		if isGCSNotFound(err) {
-			return nil, nil // Lock bucket does not exist, so no lock exists
-		}
-		return nil, fmt.Errorf("failed to verify GCS lock bucket: %w", err)
-	}
-
-	// 2. Read GCS lock object
-	rc, err := c.client.Bucket(bucketName).Object("platform-agent-lock.json").NewReader(ctx)
-	if err != nil {
-		if isGCSNotFound(err) {
-			return nil, nil // Lock does not exist
-		}
-		return nil, fmt.Errorf("failed to read GCS lock: %w", err)
-	}
-	defer rc.Close()
-
-	var lock PlatformAgentLock
-	if err := json.NewDecoder(rc).Decode(&lock); err != nil {
-		return nil, fmt.Errorf("failed to decode GCS lock: %w", err)
-	}
-	return &lock, nil
-}
-
-func isGCSNotFound(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, storage.ErrBucketNotExist) || errors.Is(err, storage.ErrObjectNotExist) {
-		return true
-	}
-	var apiErr *googleapi.Error
-	if errors.As(err, &apiErr) && apiErr.Code == 404 {
-		return true
-	}
-	return false
-}
-
-func getProjectID(agent *agentv1alpha1.PlatformAgent) string {
-	if agent.Spec.Harness != nil && agent.Spec.Harness.ProjectID != "" {
-		return agent.Spec.Harness.ProjectID
-	}
-	if agent.Spec.Integration != nil && agent.Spec.Integration.GoogleChat != nil {
-		return agent.Spec.Integration.GoogleChat.ProjectID
-	}
-	return ""
 }
