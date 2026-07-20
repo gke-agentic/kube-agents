@@ -2,7 +2,7 @@ name: Publish Controller to GHCR
 
 on:
   push:
-    branches: [main]
+    branches: [main, "feature/**", "test/**"]
     paths:
       - "k8s-operator/**"
       - ".github/workflows/docker-publish-k8s-operator.yml"
@@ -16,7 +16,7 @@ permissions:
 jobs:
   publish-controller-ghcr:
     runs-on: ubuntu-latest
-    if: github.repository == 'gke-labs/kube-agents'
+    if: github.repository == 'gke-labs/kube-agents' || github.repository == 'gke-agentic/kube-agents'
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
