@@ -87,10 +87,17 @@ rules:
   - apiGroups:
       - rbac.authorization.k8s.io
     resources:
+      - clusterroles
+    resourceNames:
+      - view
+    verbs:
+      - bind
+  - apiGroups:
+      - rbac.authorization.k8s.io
+    resources:
       - clusterrolebindings
       - clusterroles
     verbs:
-      - bind
       - create
       - delete
       - get
