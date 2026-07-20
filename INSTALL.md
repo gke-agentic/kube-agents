@@ -79,3 +79,36 @@ Configure a recurring scheduled task (cron) within your agent harness for the `p
 ## Post-Installation
 
 Once installed and the heartbeat is active, the Platform Agent will begin monitoring its state. You can interact with it directly to manage your Kubernetes clusters.
+
+## Uninstallation & Teardown
+
+### Option A: Uninstall Platform Agent Only (Preserve GKE Cluster & Operator)
+
+To remove the Platform Agent while leaving your underlying GKE cluster and operator controller intact:
+
+1. **Remove Scheduled Heartbeat**: Delete or disable the recurring `1m` cron job in your agent harness.
+2. **Undeploy PlatformAgent Resource**:
+   ```bash
+   kubectl delete platformagent platform-agent -n kubeagents-system --ignore-not-found=true
+   ```
+   _Note: If deletion hangs due to controller finalizers or offline webhooks, force remove finalizers:_
+   ```bash
+   kubectl patch platformagent platform-agent -n kubeagents-system -p '{"metadata":{"finalizers":null}}' --type=merge
+   ```
+3. **Delete Agent Secrets**:
+   ```bash
+   kubectl delete secret platform-agent-secrets github-app-credentials -n kubeagents-system --ignore-not-found=true
+   ```
+4. **Remove Harness Workspace**: Remove the `agents/platform` directory from your agent harness workspace.
+
+### Option B: Full Infrastructure Teardown & Deprovisioning
+
+To completely clean up all deployed resources (Platform Agent, Operator CRDs, LiteLLM, GitHub Token Minter, GCP IAM bindings, gVisor node pools, and GKE cluster):
+
+```bash
+cd k8s-operator/scripts
+./teardown.sh
+```
+
+For granular teardown options (e.g. removing specific components without destroying the cluster), refer to the [Teardown Scripts Reference](k8s-operator/scripts/README.md#teardown-steps).
+
