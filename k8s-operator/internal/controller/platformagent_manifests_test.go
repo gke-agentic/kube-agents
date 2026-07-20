@@ -1031,8 +1031,8 @@ func TestBuildPVCStorageClass(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error from buildCustomPVCs: %v", err)
 	}
-	if len(customPvcs) != 1 || customPvcs[0].Spec.StorageClassName == nil || *customPvcs[0].Spec.StorageClassName != "standard-rwx" {
-		t.Errorf("expected StorageClassName standard-rwx on custom PVC, got %v", *customPvcs[0].Spec.StorageClassName)
+	if len(customPvcs) != 1 || customPvcs[0].Spec.StorageClassName == nil || *customPvcs[0].Spec.StorageClassName != "standard-rwd" {
+		t.Errorf("expected StorageClassName standard-rwd on custom PVC, got %v", *customPvcs[0].Spec.StorageClassName)
 	}
 }
 
