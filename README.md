@@ -12,7 +12,7 @@ The master custodian and agent architect configured with an architectural person
 
 ## Harness Integration & Setup
 
-This workspace contains agent configurations, personas, and skills that can be imported into various pattern gateways or multi-agent platforms (such as CrewAI, Microsoft AutoGen, or LangGraph).
+This workspace contains agent configurations, personas, and skills that can be imported into your pattern gateways or orchestration platforms.
 
 Multi-agent platforms and orchestrators can use the [INSTALL.md](INSTALL.md) guide to set up the Platform Agent. To delegate this task to your platform, clone this repository to the workspace of the default agent of multi-agent platform and ask it:
 
@@ -37,7 +37,7 @@ For hosts supporting CLI-driven imports, register the Platform Agent directory f
 gateway-cli agents add platform --workspace ./agents/platform --non-interactive
 ```
 
-For more details on routing policies, proof gates, and showcasing scenarios, see the [Kubernetes Multi-Agent Integration Guide](docs/m1-demos.md).
+For more details on routing policies, proof gates, and showcasing scenarios, see the [Installation Guide](INSTALL.md).
 
 ## Disclaimer
 

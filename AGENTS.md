@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This repository contains the Kubernetes Agentic Harness (`kube-agents`). It is a collection of agent configurations, personas, and skills designed to manage Kubernetes/GKE operations. It utilizes a Platform Agent to transition from reactive manual management to proactive, intent-driven operations.
+This repository contains the Kubernetes Agentic Harness (`kube-agents`). It is centered on a unified, single Platform Agent topology designed to manage Kubernetes/GKE operations, transitioning from reactive manual management to proactive, intent-driven operations.
 
 ## Repository Layout
 
@@ -21,7 +21,7 @@ This repository is primarily a configuration and documentation repository for AI
 To use these agents:
 
 1. Follow the instructions in [INSTALL.md](INSTALL.md) to set up and register the Platform Agent in your agent harness.
-2. Refer to SRE walkthroughs in [docs/m1-demos.md](docs/m1-demos.md) for details on how to interact with the cooperative agent layout and run demo scenarios.
+2. Follow the operational guides in [docs/](docs/) for details on how the unified Platform Agent executes cluster operations.
 
 ## Skills Guidelines
 

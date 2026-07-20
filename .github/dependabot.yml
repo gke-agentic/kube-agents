@@ -33,13 +33,4 @@ updates:
     commit-message:
       prefix: "ci"
 
-  - package-ecosystem: "docker"
-    directory: "/agents/devteam"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 5
-    labels:
-      - "dependencies"
-      - "docker"
-    commit-message:
-      prefix: "ci"
+

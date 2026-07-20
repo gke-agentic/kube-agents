@@ -35,5 +35,5 @@ This glossary defines key terms and concepts related to the Kubernetes Agentic H
 
 ### Platform Agent (`platform`)
 
-- **Role:** Architectural custodian and agent orchestrator.
-- **Scope:** Configured with an architectural persona (`SOUL.md`). It manages multi-tenancy boundaries, fleet-wide governance, and RBAC isolation.
+- **Role:** Consolidated architectural custodian and single-agent orchestrator.
+- **Scope:** Configured with an architectural persona (`SOUL.md`). It manages multi-tenancy boundaries, fleet-wide governance, and RBAC isolation, unifying all platform operations under a single topology.
