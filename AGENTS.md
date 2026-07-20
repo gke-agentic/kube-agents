@@ -27,6 +27,7 @@ To use these agents:
 
 - Skills are located under `agents/platform/skills/`.
 - Each skill directory must contain a `SKILL.md` file providing instructions for that specific skill.
+- For instructions on how to author, test, or import skills from `google/skills`, refer to the [Platform Agent Skills Guide](agents/platform/skills/README.md).
 - When adding new skills, ensure they follow the existing structure and are clearly documented to be understood by AI agents.
 
 ## Pull Request Hygiene
