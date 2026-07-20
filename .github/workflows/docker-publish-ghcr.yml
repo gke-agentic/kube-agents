@@ -2,13 +2,12 @@ name: Publish to GHCR
 
 on:
   push:
-    branches: [main, "feature/**", "test/**"]
-  workflow_dispatch:
+    branches: [main]
 
 jobs:
   publish-ghcr:
     runs-on: ubuntu-latest
-    if: github.repository == 'gke-labs/kube-agents' || github.repository == 'gke-agentic/kube-agents'
+    if: github.repository == 'gke-labs/kube-agents'
     permissions:
       contents: read
       packages: write
