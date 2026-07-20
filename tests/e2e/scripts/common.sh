@@ -7,7 +7,7 @@ set -euo pipefail
 
 REGISTRY="${REGISTRY:-ghcr.io}"
 OWNER="${OWNER:-gke-agentic/kube-agents}"
-IMAGES="${IMAGES:-platform-agent k8s-operator}"
+IMAGES="${IMAGES:-platform-agent}"
 SOURCE_TAG="${SOURCE_TAG:-latest}"
 
 # Ensure crane CLI is installed and exported
