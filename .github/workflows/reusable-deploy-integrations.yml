@@ -38,11 +38,11 @@ jobs:
           filters: |
             litellm:
               - 'k8s-operator/config/integrations/litellm/**'
-              - 'k8s-operator/scripts/provision_08_deploy_litellm.sh'
+              - 'k8s-operator/scripts/provision_09_deploy_litellm.sh'
               - 'k8s-operator/Makefile'
             github:
               - 'k8s-operator/config/integrations/github/**'
-              - 'k8s-operator/scripts/provision_09_deploy_github_minter.sh'
+              - 'k8s-operator/scripts/provision_10_deploy_github_minter.sh'
               - 'k8s-operator/Makefile'
 
       - name: Determine target deployments
