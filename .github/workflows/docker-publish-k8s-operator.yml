@@ -3,9 +3,6 @@ name: Publish Controller to GHCR
 on:
   push:
     branches: [main]
-    paths:
-      - "k8s-operator/**"
-      - ".github/workflows/docker-publish-k8s-operator.yml"
   workflow_dispatch:
 
 permissions:
