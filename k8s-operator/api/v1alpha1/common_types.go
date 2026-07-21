@@ -106,10 +106,6 @@ type DeploymentSpec struct {
 	// +optional
 	BrowserArgs []string `json:"browserArgs,omitempty"`
 
-	// RuntimeClassName specifies the Pod runtime class (e.g. "gvisor").
-	// +optional
-	RuntimeClassName *string `json:"runtimeClassName,omitempty"`
-
 	// Env is a list of environment variables to set in the container
 	// +listType=map
 	// +listMapKey=name
@@ -154,17 +150,13 @@ type DeploymentSpec struct {
 	// +optional
 	ScaleToZero *bool `json:"scaleToZero,omitempty"`
 
-	// HighAvailability scales the deployment to multiple replicas and applies rolling update strategies when true.
+	// Availability configures high availability and scheduling settings for the agent pod.
 	// +optional
-	HighAvailability *bool `json:"highAvailability,omitempty"`
+	Availability *AvailabilitySpec `json:"availability,omitempty"`
 
 	// Resources specifies resource requests and limits for the main container.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
-
-	// Affinity specifies scheduling constraints (node affinity, pod affinity, pod anti-affinity) for the agent pod.
-	// +optional
-	Affinity *corev1.Affinity `json:"affinity,omitempty"`
 
 	// Storages specifies extra custom PersistentVolumeClaims to provision and mount for the agent pod.
 	// +listType=map
@@ -203,6 +195,30 @@ type StorageSpec struct {
 	// ReadOnly specifies if the volume should be mounted as read-only.
 	// +optional
 	ReadOnly bool `json:"readOnly,omitempty"`
+}
+
+// AvailabilitySpec defines high availability and scheduling settings.
+type AvailabilitySpec struct {
+	// Replicas specifies the desired number of pod replicas. If omitted, defaults to 1.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	// NodeSelector is a selector which must match a node's labels for the pod to be scheduled
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	// Tolerations are tolerations for pod scheduling
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+
+	// Affinity specifies affinity scheduling rules
+	// +optional
+	Affinity *corev1.Affinity `json:"affinity,omitempty"`
+
+	// RuntimeClassName refers to a RuntimeClass object in the cluster.
+	// +optional
+	RuntimeClassName *string `json:"runtimeClassName,omitempty"`
 }
 
 // SecuritySpec manages Kubernetes RBAC, Pod Security, and Cloud Workload Identity,

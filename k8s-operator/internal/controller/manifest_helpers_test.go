@@ -174,7 +174,9 @@ func TestResolveDeploymentReplicasAndStrategy(t *testing.T) {
 		{
 			name: "high availability enabled",
 			deployment: &agentv1alpha1.DeploymentSpec{
-				HighAvailability: ptr.To(true),
+				Availability: &agentv1alpha1.AvailabilitySpec{
+					Replicas: ptr.To(int32(2)),
+				},
 			},
 			expectedReplicas: 2,
 			expectedStrategy: appsv1.RollingUpdateDeploymentStrategyType,
@@ -190,7 +192,9 @@ func TestResolveDeploymentReplicasAndStrategy(t *testing.T) {
 		{
 			name: "high availability and scale to zero both enabled",
 			deployment: &agentv1alpha1.DeploymentSpec{
-				HighAvailability: ptr.To(true),
+				Availability: &agentv1alpha1.AvailabilitySpec{
+					Replicas: ptr.To(int32(2)),
+				},
 				ScaleToZero:      ptr.To(true),
 			},
 			expectedReplicas: 0,

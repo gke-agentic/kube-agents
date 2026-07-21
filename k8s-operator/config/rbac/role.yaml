@@ -11,6 +11,19 @@ rules:
       - persistentvolumeclaims
       - serviceaccounts
       - services
+      - pods
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
     verbs:
       - create
       - delete
@@ -42,6 +55,7 @@ rules:
       - apps
     resources:
       - deployments
+      - statefulsets
     verbs:
       - create
       - delete
@@ -89,6 +103,8 @@ rules:
     resources:
       - clusterrolebindings
       - clusterroles
+      - rolebindings
+      - roles
     verbs:
       - bind
       - create

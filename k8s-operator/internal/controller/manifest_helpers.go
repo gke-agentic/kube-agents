@@ -156,8 +156,17 @@ func resolveDeploymentReplicasAndStrategy(deployment *agentv1alpha1.DeploymentSp
 	}
 
 	if deployment != nil {
-		if deployment.HighAvailability != nil && *deployment.HighAvailability {
-			replicas = int32(2)
+		intendedReplicas := int32(1)
+		if deployment.Availability != nil && deployment.Availability.Replicas != nil {
+			intendedReplicas = *deployment.Availability.Replicas
+		}
+
+		replicas = intendedReplicas
+		if deployment.ScaleToZero != nil && *deployment.ScaleToZero {
+			replicas = 0
+		}
+
+		if intendedReplicas > 1 {
 			strategy = appsv1.DeploymentStrategy{
 				Type: appsv1.RollingUpdateDeploymentStrategyType,
 				RollingUpdate: &appsv1.RollingUpdateDeployment{
@@ -165,9 +174,6 @@ func resolveDeploymentReplicasAndStrategy(deployment *agentv1alpha1.DeploymentSp
 					MaxUnavailable: &intstr.IntOrString{Type: intstr.String, StrVal: "25%"},
 				},
 			}
-		}
-		if deployment.ScaleToZero != nil && *deployment.ScaleToZero {
-			replicas = int32(0)
 		}
 	}
 	return replicas, strategy

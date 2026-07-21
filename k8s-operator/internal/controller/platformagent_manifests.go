@@ -18,6 +18,7 @@ package controller
 
 import (
 	"crypto/sha256"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"path"
@@ -55,7 +56,8 @@ func buildConfigMap(agent *agentv1alpha1.PlatformAgent) *corev1.ConfigMap {
 			Namespace: agent.Namespace,
 		},
 		Data: map[string]string{
-			"config.yaml": renderConfigYAML(agent),
+			"config.yaml":     renderConfigYAML(agent),
+			"leader_elect.py": leaderElectScript,
 		},
 	}
 }
@@ -131,6 +133,11 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 		Display struct {
 			Platforms map[string]map[string]any `json:"platforms,omitempty"`
 		} `json:"display,omitempty"`
+		LeaderElection struct {
+			Enabled   bool   `json:"enabled"`
+			LeaseName string `json:"lease_name,omitempty"`
+			Namespace string `json:"namespace,omitempty"`
+		} `json:"leader_election,omitempty"`
 	}{}
 
 	// Model & Terminal configuration
@@ -207,6 +214,13 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 		if slack := agent.Spec.Integration.Slack; slack != nil && slack.Enabled != nil {
 			cfg.Platforms.Slack.Enabled = *slack.Enabled
 		}
+	}
+
+	replicas, _ := resolveDeploymentReplicasAndStrategy(agent.Spec.Deployment)
+	if replicas > 1 {
+		cfg.LeaderElection.Enabled = true
+		cfg.LeaderElection.LeaseName = agent.Name + "-leader"
+		cfg.LeaderElection.Namespace = agent.Namespace
 	}
 
 	data, err := yaml.Marshal(cfg)
@@ -287,15 +301,120 @@ func buildSystemPVC(agent *agentv1alpha1.PlatformAgent) *corev1.PersistentVolume
 	}
 }
 
+// isRWOStorage checks if a storage configuration specifies ReadWriteOnce access or an RWO StorageClass
+func isRWOStorage(storage agentv1alpha1.StorageSpec) bool {
+	accessModes := storage.AccessModes
+	if len(accessModes) == 0 {
+		accessModes = defaultAccessModes
+	}
+	for _, mode := range accessModes {
+		if mode == corev1.ReadWriteOnce {
+			return true
+		}
+	}
+	if storage.StorageClassName != nil {
+		sc := strings.ToLower(*storage.StorageClassName)
+		if strings.Contains(sc, "rwd") || strings.Contains(sc, "rwo") {
+			return true
+		}
+	}
+	return false
+}
+
+// hasCustomRWOStorage returns true if any custom storage spec uses ReadWriteOnce access mode or an RWO StorageClass
+func hasCustomRWOStorage(agent *agentv1alpha1.PlatformAgent) bool {
+	if agent.Spec.Deployment == nil {
+		return false
+	}
+	for _, storage := range agent.Spec.Deployment.Storages {
+		if isRWOStorage(storage) {
+			return true
+		}
+	}
+	return false
+}
+
+// useStatefulSet returns true if the platform agent workload should be managed as a StatefulSet
+func useStatefulSet(agent *agentv1alpha1.PlatformAgent) bool {
+	if agent.Spec.Deployment == nil {
+		return false
+	}
+	replicas, _ := resolveDeploymentReplicasAndStrategy(agent.Spec.Deployment)
+	return replicas > 1 && hasCustomRWOStorage(agent)
+}
+
+// buildCustomPVCInstance constructs a single PersistentVolumeClaim manifest
+func buildCustomPVCInstance(name, namespace string, accessModes []corev1.PersistentVolumeAccessMode, scName *string, parsedSize resource.Quantity) *corev1.PersistentVolumeClaim {
+	return &corev1.PersistentVolumeClaim{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "PersistentVolumeClaim",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes:      accessModes,
+			StorageClassName: scName,
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: parsedSize,
+				},
+			},
+		},
+	}
+}
+
+// buildRWOVolumeClaimTemplates generates VolumeClaimTemplates for RWO custom storage specs in a StatefulSet
+func buildRWOVolumeClaimTemplates(agent *agentv1alpha1.PlatformAgent) []corev1.PersistentVolumeClaim {
+	if agent.Spec.Deployment == nil || len(agent.Spec.Deployment.Storages) == 0 {
+		return nil
+	}
+	var vcts []corev1.PersistentVolumeClaim
+	for _, storage := range agent.Spec.Deployment.Storages {
+		if isRWOStorage(storage) {
+			accessModes := storage.AccessModes
+			if len(accessModes) == 0 {
+				accessModes = defaultAccessModes
+			}
+			storageSize := storage.StorageSize
+			if storageSize == "" {
+				storageSize = "5Gi"
+			}
+			parsedSize, _ := resource.ParseQuantity(storageSize)
+			vcts = append(vcts, corev1.PersistentVolumeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: storage.Name + "-vol",
+				},
+				Spec: corev1.PersistentVolumeClaimSpec{
+					AccessModes:      accessModes,
+					StorageClassName: storage.StorageClassName,
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceStorage: parsedSize,
+						},
+					},
+				},
+			})
+		}
+	}
+	return vcts
+}
+
 // buildCustomPVCs generates PVC manifests for custom storage definitions specified in DeploymentSpec.Storages
 func buildCustomPVCs(agent *agentv1alpha1.PlatformAgent) ([]*corev1.PersistentVolumeClaim, error) {
 	if agent.Spec.Deployment == nil || len(agent.Spec.Deployment.Storages) == 0 {
 		return nil, nil
 	}
+	useSts := useStatefulSet(agent)
 	var pvcList []*corev1.PersistentVolumeClaim
 	for _, storage := range agent.Spec.Deployment.Storages {
 		if storage.Name == "" {
 			return nil, fmt.Errorf("storage name cannot be empty")
+		}
+		if useSts && isRWOStorage(storage) {
+			continue // Handled by VolumeClaimTemplates in StatefulSet
 		}
 		scName := storage.StorageClassName
 		accessModes := storage.AccessModes
@@ -310,25 +429,7 @@ func buildCustomPVCs(agent *agentv1alpha1.PlatformAgent) ([]*corev1.PersistentVo
 		if err != nil {
 			return nil, fmt.Errorf("invalid storage size %q for storage %q: %w", storageSize, storage.Name, err)
 		}
-		pvcList = append(pvcList, &corev1.PersistentVolumeClaim{
-			TypeMeta: metav1.TypeMeta{
-				APIVersion: "v1",
-				Kind:       "PersistentVolumeClaim",
-			},
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      storage.Name,
-				Namespace: agent.Namespace,
-			},
-			Spec: corev1.PersistentVolumeClaimSpec{
-				AccessModes:      accessModes,
-				StorageClassName: scName,
-				Resources: corev1.VolumeResourceRequirements{
-					Requests: corev1.ResourceList{
-						corev1.ResourceStorage: parsedSize,
-					},
-				},
-			},
-		})
+		pvcList = append(pvcList, buildCustomPVCInstance(storage.Name, agent.Namespace, accessModes, scName, parsedSize))
 	}
 	return pvcList, nil
 }
@@ -350,14 +451,22 @@ func buildCustomStorageVolumeMounts(storages []agentv1alpha1.StorageSpec) []core
 }
 
 // buildCustomStorageVolumes generates Pod Volumes for custom storage specs
-func buildCustomStorageVolumes(storages []agentv1alpha1.StorageSpec) []corev1.Volume {
+func buildCustomStorageVolumes(agent *agentv1alpha1.PlatformAgent) []corev1.Volume {
+	if agent.Spec.Deployment == nil || len(agent.Spec.Deployment.Storages) == 0 {
+		return nil
+	}
+	useSts := useStatefulSet(agent)
 	var vols []corev1.Volume
-	for _, storage := range storages {
+	for _, storage := range agent.Spec.Deployment.Storages {
+		if useSts && isRWOStorage(storage) {
+			continue // Handled by VolumeClaimTemplates in StatefulSet
+		}
+		claimName := storage.Name
 		vols = append(vols, corev1.Volume{
 			Name: storage.Name + "-vol",
 			VolumeSource: corev1.VolumeSource{
 				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-					ClaimName: storage.Name,
+					ClaimName: claimName,
 					ReadOnly:  storage.ReadOnly,
 				},
 			},
@@ -366,9 +475,9 @@ func buildCustomStorageVolumes(storages []agentv1alpha1.StorageSpec) []corev1.Vo
 	return vols
 }
 
-// buildDeployment generates the Deployment manifest for the agent payload
-func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHash, settingsConfigHash string) *appsv1.Deployment {
-	replicas, strategy := resolveDeploymentReplicasAndStrategy(agent.Spec.Deployment)
+// buildPodTemplateSpec generates the shared PodTemplateSpec for Deployment and StatefulSet
+func buildPodTemplateSpec(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHash, settingsConfigHash string) corev1.PodTemplateSpec {
+	replicas, _ := resolveDeploymentReplicasAndStrategy(agent.Spec.Deployment)
 	// UID/GID 10000 matches the canonical unprivileged 'hermes' runtime user created in NousResearch/hermes-agent upstream Dockerfile
 	fsGroup := int64(10000)
 
@@ -482,6 +591,10 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 					Value: gchat.ProjectID,
 				},
 				{
+					Name:  "GOOGLE_CHAT_ENABLED",
+					Value: "true",
+				},
+				{
 					Name:  "GOOGLE_CHAT_SUBSCRIPTION_NAME",
 					Value: fmt.Sprintf("projects/%s/subscriptions/%s", gchat.ProjectID, gchat.SubscriptionName),
 				},
@@ -543,6 +656,23 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 		}
 	}
 
+	if replicas > 1 {
+		envVars = append(envVars,
+			corev1.EnvVar{
+				Name:  "ENABLE_LEADER_ELECTION",
+				Value: "true",
+			},
+			corev1.EnvVar{
+				Name:  "LEADER_ELECTION_LEASE_NAME",
+				Value: agent.Name + "-leader",
+			},
+			corev1.EnvVar{
+				Name:  "LEADER_ELECTION_NAMESPACE",
+				Value: agent.Namespace,
+			},
+		)
+	}
+
 	envVars = append(envVars, corev1.EnvVar{
 		Name:  "TOKEN_BROKER_URL",
 		Value: fmt.Sprintf("http://github-token-minter.%s.svc.cluster.local:8080/token", agent.Namespace),
@@ -553,8 +683,8 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 	}
 
 	var runtimeClassName *string
-	if agent.Spec.Deployment != nil {
-		runtimeClassName = agent.Spec.Deployment.RuntimeClassName
+	if agent.Spec.Deployment != nil && agent.Spec.Deployment.Availability != nil {
+		runtimeClassName = agent.Spec.Deployment.Availability.RuntimeClassName
 	}
 
 	containers := buildBaseContainers(agent, image, envVars)
@@ -569,9 +699,7 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 	}
 
 	volumes := buildDefaultVolumes(agent)
-	if agent.Spec.Deployment != nil {
-		volumes = append(volumes, buildCustomStorageVolumes(agent.Spec.Deployment.Storages)...)
-	}
+	volumes = append(volumes, buildCustomStorageVolumes(agent)...)
 	if len(sidecarVolumes) > 0 {
 		volumes = append(volumes, sidecarVolumes...)
 	}
@@ -580,9 +708,45 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 	}
 
 	var affinity *corev1.Affinity
-	if agent.Spec.Deployment != nil {
-		affinity = agent.Spec.Deployment.Affinity
+	var nodeSelector map[string]string
+	var tolerations []corev1.Toleration
+
+	if agent.Spec.Deployment != nil && agent.Spec.Deployment.Availability != nil {
+		affinity = agent.Spec.Deployment.Availability.Affinity
+		nodeSelector = agent.Spec.Deployment.Availability.NodeSelector
+		tolerations = agent.Spec.Deployment.Availability.Tolerations
 	}
+
+	return corev1.PodTemplateSpec{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels: map[string]string{
+				"app": agent.Name + "-gateway",
+			},
+			Annotations: mergeAnnotations(defaultAnnotations, podAnnotations),
+		},
+		Spec: corev1.PodSpec{
+			RuntimeClassName:   runtimeClassName,
+			InitContainers:     initContainers,
+			ServiceAccountName: saName,
+			SecurityContext: &corev1.PodSecurityContext{
+				FSGroup:        &fsGroup,
+				RunAsUser:      ptr.To(int64(10000)),
+				RunAsNonRoot:   ptr.To(true),
+				SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+			},
+			Affinity:                  affinity,
+			NodeSelector:              nodeSelector,
+			Tolerations:               tolerations,
+			Containers:                containers,
+			Volumes:                   volumes,
+		},
+	}
+}
+
+// buildDeployment generates the Deployment manifest for the agent payload
+func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHash, settingsConfigHash string) *appsv1.Deployment {
+	replicas, strategy := resolveDeploymentReplicasAndStrategy(agent.Spec.Deployment)
+	podTemplate := buildPodTemplateSpec(agent, configHash, fluentBitHash, settingsConfigHash)
 
 	return &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{
@@ -604,29 +768,39 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 					"app": agent.Name + "-gateway",
 				},
 			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app": agent.Name + "-gateway",
-					},
-					Annotations: mergeAnnotations(defaultAnnotations, podAnnotations),
-				},
-				Spec: corev1.PodSpec{
-					RuntimeClassName:   runtimeClassName,
-					InitContainers:     initContainers,
-					ServiceAccountName: saName,
-					SecurityContext: &corev1.PodSecurityContext{
-						FSGroup: &fsGroup,
-						// UID 10000 matches canonical 'hermes' runtime user in upstream image (NousResearch/hermes-agent Dockerfile line 92)
-						RunAsUser:      ptr.To(int64(10000)),
-						RunAsNonRoot:   ptr.To(true),
-						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
-					},
-					Affinity:   affinity,
-					Containers: containers,
-					Volumes:    volumes,
+			Template: podTemplate,
+		},
+	}
+}
+
+// buildStatefulSet generates the StatefulSet manifest for PlatformAgent when RWO custom storage is used with multiple replicas
+func buildStatefulSet(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHash, settingsConfigHash string) *appsv1.StatefulSet {
+	replicas, _ := resolveDeploymentReplicasAndStrategy(agent.Spec.Deployment)
+	podTemplate := buildPodTemplateSpec(agent, configHash, fluentBitHash, settingsConfigHash)
+	vcts := buildRWOVolumeClaimTemplates(agent)
+
+	return &appsv1.StatefulSet{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "apps/v1",
+			Kind:       "StatefulSet",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      agent.Name + "-gateway",
+			Namespace: agent.Namespace,
+			Labels: map[string]string{
+				"app": agent.Name + "-gateway",
+			},
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas:    &replicas,
+			ServiceName: agent.Name,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app": agent.Name + "-gateway",
 				},
 			},
+			Template:             podTemplate,
+			VolumeClaimTemplates: vcts,
 		},
 	}
 }
@@ -642,6 +816,11 @@ func buildDefaultVolumeMounts(homeDir string) []corev1.VolumeMount {
 			Name:      "platform-agent-config-vol",
 			MountPath: fmt.Sprintf("%s/config.yaml", homeDir),
 			SubPath:   "config.yaml",
+		},
+		{
+			Name:      "platform-agent-config-vol",
+			MountPath: fmt.Sprintf("%s/leader_elect.py", homeDir),
+			SubPath:   "leader_elect.py",
 		},
 		{
 			Name:      "settings-volume",
@@ -685,11 +864,22 @@ func buildBaseContainers(agent *agentv1alpha1.PlatformAgent, image string, envVa
 		volumeMounts = append(volumeMounts, extraVolumeMounts...)
 	}
 
+	var command []string
+	var args []string
+
+	replicas, _ := resolveDeploymentReplicasAndStrategy(agent.Spec.Deployment)
+	if replicas > 1 {
+		command = []string{"/opt/hermes/.venv/bin/python3"}
+		args = []string{fmt.Sprintf("%s/leader_elect.py", homeDir)}
+	}
+
 	return []corev1.Container{
 		{
 			Name:            "platform-agent",
 			Image:           image,
 			ImagePullPolicy: pullPolicy,
+			Command:         command,
+			Args:            args,
 			Ports: []corev1.ContainerPort{
 				{
 					Name:          "dashboard",
@@ -951,6 +1141,15 @@ func buildFluentBitConfigMap(agent *agentv1alpha1.PlatformAgent) *corev1.ConfigM
 
 // buildPlatformService generates the Service manifest for PlatformAgent
 func buildPlatformService(agent *agentv1alpha1.PlatformAgent) *corev1.Service {
+	selector := map[string]string{
+		"app": agent.Name + "-gateway",
+	}
+
+	replicas, _ := resolveDeploymentReplicasAndStrategy(agent.Spec.Deployment)
+	if replicas > 1 {
+		selector["kubeagents.io/is-leader"] = "true"
+	}
+
 	return &corev1.Service{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "v1",
@@ -961,9 +1160,7 @@ func buildPlatformService(agent *agentv1alpha1.PlatformAgent) *corev1.Service {
 			Namespace: agent.Namespace,
 		},
 		Spec: corev1.ServiceSpec{
-			Selector: map[string]string{
-				"app": agent.Name + "-gateway",
-			},
+			Selector: selector,
 			Ports: []corev1.ServicePort{
 				{
 					Name:       "api",
@@ -979,3 +1176,63 @@ func buildPlatformService(agent *agentv1alpha1.PlatformAgent) *corev1.Service {
 		},
 	}
 }
+
+// buildPlatformLeaderRole generates the Role manifest for leader election leases in the agent namespace
+func buildPlatformLeaderRole(agent *agentv1alpha1.PlatformAgent) *rbacv1.Role {
+	return &rbacv1.Role{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "rbac.authorization.k8s.io/v1",
+			Kind:       "Role",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("kubeagents:leader:%s:%s", agent.Namespace, agent.Name),
+			Namespace: agent.Namespace,
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{"coordination.k8s.io"},
+				Resources: []string{"leases"},
+				Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+			},
+			{
+				APIGroups: []string{""},
+				Resources: []string{"pods"},
+				Verbs:     []string{"get", "patch"},
+			},
+		},
+	}
+}
+
+// buildLeaderRoleBinding generates the RoleBinding manifest for leader election in the agent namespace
+func buildLeaderRoleBinding(agent *agentv1alpha1.PlatformAgent, bindingName, roleName string) *rbacv1.RoleBinding {
+	saName := agent.Name
+	if agent.Spec.Security != nil && agent.Spec.Security.ServiceAccountName != "" {
+		saName = agent.Spec.Security.ServiceAccountName
+	}
+
+	return &rbacv1.RoleBinding{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "rbac.authorization.k8s.io/v1",
+			Kind:       "RoleBinding",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      bindingName,
+			Namespace: agent.Namespace,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      saName,
+				Namespace: agent.Namespace,
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "Role",
+			Name:     roleName,
+		},
+	}
+}
+
+//go:embed leader_elect.py
+var leaderElectScript string

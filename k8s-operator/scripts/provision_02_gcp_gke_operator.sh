@@ -60,20 +60,29 @@ execute_cert_manager() {
 
   if [ "$is_autopilot" = "true" ]; then
     print_info "GKE Autopilot cluster detected. Deploying cert-manager with leader-election disabled..."
-    kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.14.4/cert-manager.yaml || return 1
-    
-    # Wait for the deployments to be created by the API server
-    ensure_k8s_resource_exists "deployment/cert-manager-cainjector" "cert-manager" || return 1
-    ensure_k8s_resource_exists "deployment/cert-manager" "cert-manager" || return 1
-    
+  else
+    print_info "Standard cluster detected. Installing standard cert-manager..."
+  fi
+
+  kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.14.4/cert-manager.yaml || return 1
+  
+  # Wait for the deployments to be created by the API server
+  ensure_k8s_resource_exists "deployment/cert-manager-cainjector" "cert-manager" || return 1
+  ensure_k8s_resource_exists "deployment/cert-manager" "cert-manager" || return 1
+  ensure_k8s_resource_exists "deployment/cert-manager-webhook" "cert-manager" || return 1
+  
+  if [ "$is_autopilot" = "true" ]; then
     # Patch deployments to disable leader election due to Autopilot kube-system namespace restrictions
     print_info "Patching cert-manager cainjector and controller arguments..."
     kubectl patch deployment cert-manager-cainjector -n cert-manager --type='json' -p='[{"op": "replace", "path": "/spec/template/spec/containers/0/args/1", "value": "--leader-elect=false"}]' || return 1
     kubectl patch deployment cert-manager -n cert-manager --type='json' -p='[{"op": "replace", "path": "/spec/template/spec/containers/0/args/2", "value": "--leader-elect=false"}]' || return 1
-  else
-    print_info "Standard cluster detected. Installing standard cert-manager..."
-    kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.14.4/cert-manager.yaml || return 1
   fi
+
+  print_info "Patching cert-manager resources to comply with baseline quotas..."
+  local resources_patch='[{"op": "add", "path": "/spec/template/spec/containers/0/resources", "value": {"requests": {"cpu": "10m", "memory": "32Mi"}, "limits": {"cpu": "100m", "memory": "128Mi"}}}]'
+  kubectl patch deployment cert-manager -n cert-manager --type='json' -p="${resources_patch}" || return 1
+  kubectl patch deployment cert-manager-cainjector -n cert-manager --type='json' -p="${resources_patch}" || return 1
+  kubectl patch deployment cert-manager-webhook -n cert-manager --type='json' -p="${resources_patch}" || return 1
 
   # Wait for cert-manager pods to become healthy
   wait_for_k8s_resource "deployment/cert-manager" "cert-manager" "Available" "120s" || return 1
