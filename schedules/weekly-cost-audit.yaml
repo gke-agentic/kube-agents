@@ -1,0 +1,3 @@
+name: weekly-cost-audit
+cron: "0 9 * * 1"
+triggerPrompt: "Execute a comprehensive weekly FinOps cost audit across all targeted namespaces, identify overprovisioned containers, and generate right-sizing recommendations following weekly_cost_report_sop.md."

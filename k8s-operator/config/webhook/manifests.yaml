@@ -10,9 +10,9 @@ webhooks:
       service:
         name: webhook-service
         namespace: system
-        path: /mutate-kubeagents-x-k8s-io-v1alpha1-platformagent
+        path: /mutate-kubeagents-x-k8s-io-v1alpha1-kubeagent
     failurePolicy: Fail
-    name: mplatformagent.kb.io
+    name: mkubeagent.kb.io
     rules:
       - apiGroups:
           - kubeagents.x-k8s.io
@@ -22,7 +22,7 @@ webhooks:
           - CREATE
           - UPDATE
         resources:
-          - platformagents
+          - kubeagents
     sideEffects: None
 ---
 apiVersion: admissionregistration.k8s.io/v1
@@ -36,9 +36,9 @@ webhooks:
       service:
         name: webhook-service
         namespace: system
-        path: /validate-kubeagents-x-k8s-io-v1alpha1-platformagent
+        path: /validate-kubeagents-x-k8s-io-v1alpha1-kubeagent
     failurePolicy: Fail
-    name: vplatformagent.kb.io
+    name: vkubeagent.kb.io
     rules:
       - apiGroups:
           - kubeagents.x-k8s.io
@@ -49,5 +49,5 @@ webhooks:
           - UPDATE
           - DELETE
         resources:
-          - platformagents
+          - kubeagents
     sideEffects: None

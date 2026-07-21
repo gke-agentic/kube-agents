@@ -1,0 +1,7 @@
+[
+  {
+    "name": "weekly-cost-audit",
+    "schedule": "0 9 * * 1",
+    "ref": "templates/operator/schedules/weekly-cost-audit.yaml"
+  }
+]

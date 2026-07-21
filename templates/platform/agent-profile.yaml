@@ -1,0 +1,29 @@
+apiVersion: kubeagents.x-k8s.io/v1alpha1
+kind: KubeAgent
+metadata:
+  name: platform-custodian
+  namespace: kubeagents-system
+spec:
+  harness:
+    clusterName: "gke-production-us-central1"
+    location: "us-central1"
+    projectId: "enterprise-gke-ops"
+  personaRef:
+    name: standard-operator
+    ref: "./personas/standard-operator/SOUL.md"
+  skills:
+    - name: gke-observability
+      ref: "./skills/gke-observability"
+  procedures:
+    - name: compliance_audit_sop.md
+      ref: "./procedures/compliance_audit_sop.md"
+  schedules:
+    - name: compliance-check
+      cron: "0 2 * * *"
+      ref: "./schedules/compliance-check.yaml"
+  namespaces:
+    - "*"
+  model:
+    provider: "gemini"
+    default: "gemini-1.5-pro"
+  workflowMode: "Hybrid"

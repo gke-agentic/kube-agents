@@ -1,0 +1,9 @@
+apiVersion: kubeagents.x-k8s.io/v1alpha1
+kind: KubeAgent
+metadata:
+  name: cluster-cost-optimizer
+  namespace: agent-system
+spec:
+  workflowMode: "Hybrid"
+  namespaces:
+    - "app-frontend"

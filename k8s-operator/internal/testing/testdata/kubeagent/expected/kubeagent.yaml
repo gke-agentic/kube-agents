@@ -1,0 +1,202 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  creationTimestamp: null
+  name: cluster-cost-optimizer
+  namespace: agent-system
+  ownerReferences:
+  - apiVersion: kubeagents.x-k8s.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: KubeAgent
+    name: cluster-cost-optimizer
+    uid: ""
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  creationTimestamp: null
+  name: kubeagents:kubeagent:agent-system:cluster-cost-optimizer
+  namespace: app-frontend
+rules:
+- apiGroups:
+  - '*'
+  resources:
+  - '*'
+  verbs:
+  - '*'
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  creationTimestamp: null
+  name: kubeagents:kubeagent:agent-system:cluster-cost-optimizer
+  namespace: app-frontend
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubeagents:kubeagent:agent-system:cluster-cost-optimizer
+subjects:
+- kind: ServiceAccount
+  name: cluster-cost-optimizer
+  namespace: agent-system
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  creationTimestamp: null
+  name: cluster-cost-optimizer-data
+  namespace: agent-system
+  ownerReferences:
+  - apiVersion: kubeagents.x-k8s.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: KubeAgent
+    name: cluster-cost-optimizer
+    uid: ""
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+status: {}
+---
+apiVersion: v1
+data:
+  config.yaml: |
+    namespaces:
+    - app-frontend
+    workflowMode: Hybrid
+kind: ConfigMap
+metadata:
+  creationTimestamp: null
+  name: cluster-cost-optimizer-workspace-config
+  namespace: agent-system
+  ownerReferences:
+  - apiVersion: kubeagents.x-k8s.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: KubeAgent
+    name: cluster-cost-optimizer
+    uid: ""
+---
+apiVersion: v1
+data:
+  schedules.yaml: |
+    null
+kind: ConfigMap
+metadata:
+  creationTimestamp: null
+  name: cluster-cost-optimizer-schedule-config
+  namespace: agent-system
+  ownerReferences:
+  - apiVersion: kubeagents.x-k8s.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: KubeAgent
+    name: cluster-cost-optimizer
+    uid: ""
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  creationTimestamp: null
+  labels:
+    app: cluster-cost-optimizer
+    kubeagents.x-k8s.io/agent: cluster-cost-optimizer
+    kubeagents.x-k8s.io/resource: kubeagent
+  name: cluster-cost-optimizer
+  namespace: agent-system
+  ownerReferences:
+  - apiVersion: kubeagents.x-k8s.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: KubeAgent
+    name: cluster-cost-optimizer
+    uid: ""
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cluster-cost-optimizer
+      kubeagents.x-k8s.io/agent: cluster-cost-optimizer
+      kubeagents.x-k8s.io/resource: kubeagent
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      annotations:
+        kubeagents.x-k8s.io/schedule-config-hash: 45585864c84e70b6d564d054d34579c16ee6284d45060fbb715656355ee13fbf
+        kubeagents.x-k8s.io/workspace-config-hash: 9b9ffe02d70c1874b68631b514ed01f1435ea9352b42f8efd0ea6cf1d036dfd0
+      creationTimestamp: null
+      labels:
+        app: cluster-cost-optimizer
+        kubeagents.x-k8s.io/agent: cluster-cost-optimizer
+        kubeagents.x-k8s.io/resource: kubeagent
+    spec:
+      containers:
+      - env:
+        - name: OTEL_SERVICE_NAME
+          value: cluster-cost-optimizer-gateway
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: http://opentelemetry-collector.gke-managed-otel.svc.cluster.local:4318
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: http/protobuf
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          value: service.namespace=agent-system,k8s.namespace.name=agent-system,kubeagents.agent_type=kubeagent,kubeagents.agent_name=cluster-cost-optimizer
+        - name: AGENT_NAME
+          value: cluster-cost-optimizer
+        - name: AGENT_NAMESPACE
+          value: agent-system
+        image: ghcr.io/gke-labs/kube-agents/kube-agent:latest
+        imagePullPolicy: IfNotPresent
+        name: agent
+        resources: {}
+        volumeMounts:
+        - mountPath: /opt/data
+          name: agent-data
+        - mountPath: /etc/kubeagents/workspace
+          name: workspace-config
+          readOnly: true
+        - mountPath: /etc/kubeagents/schedule
+          name: schedule-config
+          readOnly: true
+      serviceAccountName: cluster-cost-optimizer
+      volumes:
+      - name: agent-data
+        persistentVolumeClaim:
+          claimName: cluster-cost-optimizer-data
+      - configMap:
+          name: cluster-cost-optimizer-workspace-config
+        name: workspace-config
+      - configMap:
+          name: cluster-cost-optimizer-schedule-config
+        name: schedule-config
+status: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  creationTimestamp: null
+  name: cluster-cost-optimizer
+  namespace: agent-system
+  ownerReferences:
+  - apiVersion: kubeagents.x-k8s.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: KubeAgent
+    name: cluster-cost-optimizer
+    uid: ""
+spec:
+  ports:
+  - name: http
+    port: 8080
+    protocol: TCP
+    targetPort: 8080
+  selector:
+    app: cluster-cost-optimizer
+    kubeagents.x-k8s.io/agent: cluster-cost-optimizer
+    kubeagents.x-k8s.io/resource: kubeagent
+status:
+  loadBalancer: {}

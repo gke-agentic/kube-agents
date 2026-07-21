@@ -20,25 +20,6 @@ rules:
       - update
       - watch
   - apiGroups:
-      - ""
-    resources:
-      - events
-      - namespaces
-      - nodes
-      - persistentvolumes
-      - pods
-    verbs:
-      - get
-      - list
-      - watch
-  - apiGroups:
-      - apiextensions.k8s.io
-    resources:
-      - customresourcedefinitions
-    verbs:
-      - get
-      - list
-  - apiGroups:
       - apps
     resources:
       - deployments
@@ -53,7 +34,7 @@ rules:
   - apiGroups:
       - kubeagents.x-k8s.io
     resources:
-      - platformagents
+      - kubeagents
     verbs:
       - create
       - delete
@@ -65,30 +46,24 @@ rules:
   - apiGroups:
       - kubeagents.x-k8s.io
     resources:
-      - platformagents/finalizers
+      - kubeagents/finalizers
     verbs:
       - update
   - apiGroups:
       - kubeagents.x-k8s.io
     resources:
-      - platformagents/status
+      - kubeagents/status
     verbs:
       - get
       - patch
       - update
   - apiGroups:
-      - node.k8s.io
-    resources:
-      - runtimeclasses
-    verbs:
-      - get
-      - list
-      - watch
-  - apiGroups:
       - rbac.authorization.k8s.io
     resources:
       - clusterrolebindings
       - clusterroles
+      - rolebindings
+      - roles
     verbs:
       - bind
       - create

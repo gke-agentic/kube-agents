@@ -1,0 +1,9 @@
+{
+  "agentName": "cluster-cost-optimizer",
+  "skills": [
+    {
+      "name": "gke-cost-analysis",
+      "ref": "templates/operator/skills/gke-cost-analysis"
+    }
+  ]
+}

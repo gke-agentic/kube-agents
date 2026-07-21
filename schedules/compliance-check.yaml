@@ -1,0 +1,3 @@
+name: compliance-check
+cron: "0 2 * * *"
+triggerPrompt: "Audit all targeted workloads for RBAC boundary drift, privileged security contexts, and unsegmented Pods without explicit NetworkPolicies."

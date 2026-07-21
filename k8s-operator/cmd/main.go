@@ -171,11 +171,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&controller.PlatformAgentReconciler{
+	if err := (&controller.KubeAgentReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "platformagent")
+		setupLog.Error(err, "Failed to create controller", "controller", "kubeagent")
 		os.Exit(1)
 	}
 
@@ -184,7 +184,7 @@ func main() {
 			name      string
 			setupFunc func(ctrl.Manager) error
 		}{
-			{"PlatformAgent", agentwebhook.SetupPlatformAgentWebhookWithManager},
+			{"KubeAgent", agentwebhook.SetupKubeAgentWebhookWithManager},
 		}
 
 		for _, wh := range webhooks {

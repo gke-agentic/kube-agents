@@ -4,20 +4,20 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.1
-  name: platformagents.kubeagents.x-k8s.io
+  name: kubeagents.kubeagents.x-k8s.io
 spec:
   group: kubeagents.x-k8s.io
   names:
-    kind: PlatformAgent
-    listKind: PlatformAgentList
-    plural: platformagents
-    singular: platformagent
+    kind: KubeAgent
+    listKind: KubeAgentList
+    plural: kubeagents
+    singular: kubeagent
   scope: Namespaced
   versions:
     - name: v1alpha1
       schema:
         openAPIV3Schema:
-          description: PlatformAgent is the Schema for the platformagents API
+          description: KubeAgent is the Schema for the kubeagents API.
           properties:
             apiVersion:
               description: |-
@@ -37,7 +37,7 @@ spec:
             metadata:
               type: object
             spec:
-              description: spec defines the desired state of PlatformAgent
+              description: Spec defines the desired state of KubeAgent.
               properties:
                 deployment:
                   description: Deployment abstracts the Kubernetes Pod/Deployment configuration.
@@ -7077,7 +7077,7 @@ spec:
                     - location
                   type: object
                 integration:
-                  description: Integration configures platform-specific external connections.
+                  description: Integration configures external integrations.
                   properties:
                     github:
                       description: GitHub configures the GitHub integration.
@@ -7093,138 +7093,91 @@ spec:
                       properties:
                         allowedUsers:
                           description:
-                            AllowedUsers is a list of allowed users. If not
-                            present, all users will be allowed.
+                            AllowedUsers limits bot responses to explicit
+                            email addresses.
                           items:
                             type: string
                           type: array
-                          x-kubernetes-list-type: set
-                        enabled:
-                          default: false
-                          description: Enabled toggles the Google Chat integration.
-                          type: boolean
-                        homeChannel:
-                          description: HomeChannel is the home channel Chat address.
-                          type: string
-                        mode:
-                          default: default
-                          description: |-
-                            Mode controls output verbosity in Google Chat ("default" or "debug").
-                            "default": Quiet mode (silences memory reviews, approval cards, and tool progress).
-                            "debug": Full verbosity (surfaces tool progress, memory reviews, interim messages, and approval cards).
-                          enum:
-                            - default
-                            - debug
-                          type: string
-                        projectId:
-                          description: ProjectID is the target GCP Project ID for Pub/Sub.
-                          type: string
-                        subscriptionName:
-                          description:
-                            SubscriptionName is the GCP Chat Subscription
-                            Name.
-                          type: string
-                        topicName:
-                          description: TopicName is the GCP Chat Topic Name.
-                          type: string
                       type: object
-                      x-kubernetes-validations:
-                        - message:
-                            projectId, topicName, and subscriptionName are required
-                            when Google Chat integration is enabled
-                          rule:
-                            "!has(self.enabled) || self.enabled == false || (has(self.projectId)
-                            && has(self.topicName) && has(self.subscriptionName))"
-                    slack:
-                      description: Slack configures the Slack integration.
-                      properties:
-                        allowedUsers:
-                          description:
-                            AllowedUsers is a list of allowed member IDs.
-                            If not present, all users will be allowed.
-                          items:
-                            type: string
-                          type: array
-                          x-kubernetes-list-type: set
-                        appTokenSecretRef:
-                          description:
-                            AppTokenSecretRef securely references a Secret
-                            containing the SLACK_APP_TOKEN.
-                          properties:
-                            key:
-                              description:
-                                The key of the secret to select from.  Must
-                                be a valid secret key.
-                              type: string
-                            name:
-                              default: ""
-                              description: |-
-                                Name of the referent.
-                                This field is effectively required, but due to backwards compatibility is
-                                allowed to be empty. Instances of this type with an empty value here are
-                                almost certainly wrong.
-                                More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                              type: string
-                            optional:
-                              description:
-                                Specify whether the Secret or its key must
-                                be defined
-                              type: boolean
-                          required:
-                            - key
-                          type: object
-                          x-kubernetes-map-type: atomic
-                        botTokenSecretRef:
-                          description:
-                            BotTokenSecretRef securely references a Secret
-                            containing the SLACK_BOT_TOKEN.
-                          properties:
-                            key:
-                              description:
-                                The key of the secret to select from.  Must
-                                be a valid secret key.
-                              type: string
-                            name:
-                              default: ""
-                              description: |-
-                                Name of the referent.
-                                This field is effectively required, but due to backwards compatibility is
-                                allowed to be empty. Instances of this type with an empty value here are
-                                almost certainly wrong.
-                                More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                              type: string
-                            optional:
-                              description:
-                                Specify whether the Secret or its key must
-                                be defined
-                              type: boolean
-                          required:
-                            - key
-                          type: object
-                          x-kubernetes-map-type: atomic
-                        enabled:
-                          default: false
-                          description: Enabled toggles the Slack integration.
-                          type: boolean
-                        homeChannel:
-                          description:
-                            HomeChannel is the default channel ID for scheduled
-                            messages.
-                          type: string
-                        homeChannelName:
-                          description:
-                            HomeChannelName is the human-readable name for
-                            the home channel.
-                          type: string
-                      type: object
-                      x-kubernetes-validations:
-                        - message:
-                            botTokenSecretRef and appTokenSecretRef are required
-                            when Slack integration is enabled
-                          rule:
-                            "!has(self.enabled) || self.enabled == false || (has(self.botTokenSecretRef)
-                            && has(self.appTokenSecretRef))"
                   type: object
+                model:
+                  description: Model configures the model settings.
+                  properties:
+                    default:
+                      description: Default specifies the default model name.
+                      type: string
+                    provider:
+                      description:
+                        Provider specifies the model provider (e.g. vertex,
+                        openai).
+                      type: string
+                  type: object
+                namespaces:
+                  description: |-
+                    Namespaces defines the target namespaces where this agent should have RBAC permissions.
+                    Use ["*"] for cluster-wide permissions.
+                  items:
+                    type: string
+                  type: array
+                personaRef:
+                  description: PersonaRef defines the persona blueprint or inline content.
+                  properties:
+                    content:
+                      description: Content contains inline persona instructions.
+                      type: string
+                    name:
+                      description: Name is the logical name of the persona.
+                      type: string
+                    ref:
+                      description: Ref references a remote or filesystem blueprint persona.
+                      type: string
+                  type: object
+                procedures:
+                  description:
+                    Procedures lists standard operating procedures attached
+                    to this agent.
+                  items:
+                    description:
+                      ProcedureReference defines a standard operating procedure
+                      or workflow script.
+                    properties:
+                      content:
+                        description: Content contains inline procedure definition.
+                        type: string
+                      name:
+                        description: Name is the name of the procedure.
+                        type: string
+                      ref:
+                        description: Ref references a procedure file or path.
+                        type: string
+                    type: object
+                  type: array
+                profileRef:
+                  description: ProfileRef references a profile configuration.
+                  type: string
+                schedules:
+                  description: Schedules lists cron schedules attached to this agent.
+                  items:
+                    description:
+                      ScheduleReference defines a scheduled execution configuration
+                      for the agent.
+                    properties:
+                      cron:
+                        description: Cron specifies the cron expression for execution.
+                        type: string
+                      name:
+                        description: Name is the identifier for this schedule.
+                        type: string
+                      ref:
+                        description: Ref references a scheduled workflow or procedure.
+                        type: string
+                      triggerPrompt:
+                        description:
+                          TriggerPrompt specifies the prompt to trigger when
+                          the cron fires.
+                        type: string
+                    type: object
+                  type: array
                 security:
                   description:
                     Security configures RBAC, Pod Security, and Workload
@@ -7243,11 +7196,43 @@ spec:
                         bound to the Deployment.
                       type: string
                   type: object
-              required:
-                - harness
+                skills:
+                  description: Skills lists the skills attached to this agent.
+                  items:
+                    description:
+                      SkillReference defines reference or configuration for
+                      an agent skill.
+                    properties:
+                      mcpServers:
+                        description:
+                          MCPServers lists MCP server configurations or endpoints
+                          required by the skill.
+                        items:
+                          type: string
+                        type: array
+                      name:
+                        description: Name is the name of the skill.
+                        type: string
+                      ref:
+                        description: Ref references a skill blueprint path or URI.
+                        type: string
+                      scripts:
+                        description:
+                          Scripts lists script names or paths associated
+                          with the skill.
+                        items:
+                          type: string
+                        type: array
+                    type: object
+                  type: array
+                workflowMode:
+                  description:
+                    WorkflowMode configures execution mode (e.g. autonomous,
+                    interactive).
+                  type: string
               type: object
             status:
-              description: status defines the observed state of PlatformAgent
+              description: Status defines the observed state of KubeAgent.
               properties:
                 address:
                   description:

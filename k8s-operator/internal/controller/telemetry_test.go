@@ -55,11 +55,11 @@ func TestOTelTelemetryEnvVars(t *testing.T) {
 // TestBuildDeploymentHasOTelEnv verifies the agent container is wired to the managed
 // collector and still carries its service name, without duplicate env entries.
 func TestBuildDeploymentHasOTelEnv(t *testing.T) {
-	agent := &agentv1alpha1.PlatformAgent{
+	agent := &agentv1alpha1.KubeAgent{
 		ObjectMeta: metav1.ObjectMeta{Name: "my-agent", Namespace: "my-ns"},
 	}
 
-	dep := buildDeployment(agent, "h1", "h2", "h3")
+	dep := buildKubeAgentDeployment(agent, "h1", "h2")
 	container := dep.Spec.Template.Spec.Containers[0]
 
 	seen := make(map[string]bool)
@@ -83,9 +83,9 @@ func TestBuildDeploymentHasOTelEnv(t *testing.T) {
 }
 
 func TestBuildDeploymentAllowsOTelEnvOverrides(t *testing.T) {
-	agent := &agentv1alpha1.PlatformAgent{
+	agent := &agentv1alpha1.KubeAgent{
 		ObjectMeta: metav1.ObjectMeta{Name: "my-agent", Namespace: "my-ns"},
-		Spec: agentv1alpha1.PlatformAgentSpec{
+		Spec: agentv1alpha1.KubeAgentSpec{
 			AgentSpec: agentv1alpha1.AgentSpec{
 				Deployment: &agentv1alpha1.DeploymentSpec{
 					Env: []corev1.EnvVar{
@@ -97,7 +97,7 @@ func TestBuildDeploymentAllowsOTelEnvOverrides(t *testing.T) {
 		},
 	}
 
-	dep := buildDeployment(agent, "h1", "h2", "h3")
+	dep := buildKubeAgentDeployment(agent, "h1", "h2")
 	m := envMapOf(dep.Spec.Template.Spec.Containers[0].Env)
 
 	if got := m["OTEL_EXPORTER_OTLP_ENDPOINT"].Value; got != "http://custom-collector:4318" {

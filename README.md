@@ -1,46 +1,43 @@
 # kube-agents: The Kubernetes Agentic Harness
 
-The k8s agentic harness will fundamentally redefine the DevOps presentation layer by replacing traditional interfaces like kubectl, gcloud, and the Google Cloud console with intelligent, autonomous agents. By replacing the static, imperative nature of the traditional Kubernetes presentation layer with an autonomous agentic harness, we transition from reactive manual management to proactive, intent-driven operations.
+The k8s agentic harness fundamentally redefines the DevOps presentation layer by replacing traditional interfaces like kubectl, gcloud, and the Google Cloud console with intelligent, composable, autonomous agents powered by the **Dynamic Assembly Specification (DASP)**.
 
 ## Key Components
 
-### 1. Platform Agent (`platform`)
+### 1. Unified `KubeAgent` CRD (`kubeagents.x-k8s.io/v1alpha1`)
+All agent archetypes (`platform`, `operator`, `devteam`, or custom profiles) are governed by a single unified Custom Resource Definition (`KubeAgent`). Behavior, scope, and permissions are determined dynamically by attached modular building blocks:
+- **Personas (`personas/`)**: Standardized identity archetypes (`standard-operator`, `paranoid-security-auditor`, `frugal-cost-optimizer`).
+- **Skills (`skills/`)**: Universal composable tools and FastMCP servers.
+- **Procedures (`procedures/`)**: Standard Operating Procedures (SOPs).
+- **Schedules (`schedules/`)**: Recurring cron triggers.
 
-The master custodian and agent architect configured with an architectural persona (`SOUL.md`). It manages multi-tenancy governance, RBAC boundaries, and GKE infrastructure lifecycle.
+### 2. Interactive CLI/TUI Studio (`kube-agent-cli`)
+Use `kube-agent-cli studio` to interactively assemble, review, and deploy specialized agents directly to your Kubernetes clusters, or use `kube-agent-cli compile` for headless CI/CD transpilation across multi-harness runtimes (`hermes`, `antigravity`, `scion`, `cloud-agents-api`).
 
 ---
 
 ## Harness Integration & Setup
 
-This workspace contains agent configurations, personas, and skills that can be imported into various pattern gateways or multi-agent platforms (such as CrewAI, Microsoft AutoGen, or LangGraph).
+For full installation instructions, see [INSTALL.md](INSTALL.md).
 
-Multi-agent platforms and orchestrators can use the [INSTALL.md](INSTALL.md) guide to set up the Platform Agent. To delegate this task to your platform, clone this repository to the workspace of the default agent of multi-agent platform and ask it:
-
-> "Using `kube-agents/INSTALL.md` provision k8s agentic harness and create platform agent"
-
-### 1. Declarative Registration (YAML/JSON)
-
-For platforms or gateways that load agents declaratively, add the Platform Agent workspace path to your profile or orchestrator configuration:
-
-```yaml
-agents:
-  - id: platform
-    workspace: ./agents/platform
-```
-
-### 2. Imperative CLI Registration
-
-For hosts supporting CLI-driven imports, register the Platform Agent directory from the repository root. For example (using a generic gateway CLI or reference host):
-
+### 1. Interactive Studio Assembly
 ```bash
-# Register platform agent
-gateway-cli agents add platform --workspace ./agents/platform --non-interactive
+cd cli && go run ./cmd/main.go studio
 ```
 
-For more details on routing policies, proof gates, and showcasing scenarios, see the [Kubernetes Multi-Agent Integration Guide](docs/m1-demos.md).
+### 2. Declarative Kubernetes Manifest
+```bash
+kubectl apply -f examples/kubeagent.yaml
+```
+
+### 3. Recreate Full `agents/` Directory from Seed DASP Templates
+```bash
+make compile-agents
+```
+
+For more details on walkthroughs and demos, see the [DASP Migration Demos](docs/m2-dasp-migration-demos.md).
 
 ## Disclaimer
 
 This is not an officially supported Google product.
-
 This project is not eligible for the Google Open Source Software Vulnerability Rewards Program.

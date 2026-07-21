@@ -1,0 +1,9 @@
+{
+  "agentName": "devteam-security-auditor",
+  "skills": [
+    {
+      "name": "gke-workload-security",
+      "ref": "templates/devteam/skills/gke-workload-security"
+    }
+  ]
+}

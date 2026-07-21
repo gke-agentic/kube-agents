@@ -1,0 +1,9 @@
+{
+  "agentName": "platform-custodian",
+  "skills": [
+    {
+      "name": "gke-observability",
+      "ref": "templates/platform/skills/gke-observability"
+    }
+  ]
+}

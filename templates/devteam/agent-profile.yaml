@@ -1,0 +1,23 @@
+apiVersion: kubeagents.x-k8s.io/v1alpha1
+kind: KubeAgent
+metadata:
+  name: devteam-security-auditor
+  namespace: kubeagents-system
+spec:
+  personaRef:
+    name: paranoid-security-auditor
+    ref: "./personas/paranoid-security-auditor/SOUL.md"
+  skills:
+    - name: gke-workload-security
+      ref: "./skills/gke-workload-security"
+  procedures:
+    - name: cve_scan_sop.md
+      ref: "./procedures/cve_scan_sop.md"
+    - name: deployment_failure_resolver_sop.md
+      ref: "./procedures/deployment_failure_resolver_sop.md"
+  namespaces:
+    - "app-frontend"
+  model:
+    provider: "gemini"
+    default: "gemini-1.5-pro"
+  workflowMode: "GitOps"

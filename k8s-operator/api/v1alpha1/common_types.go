@@ -181,6 +181,13 @@ type GitHubSpec struct {
 	GitRepo string `json:"gitRepo,omitempty"`
 }
 
+// GoogleChatSpec configures integration with Google Chat.
+type GoogleChatSpec struct {
+	// AllowedUsers limits bot responses to explicit email addresses.
+	// +optional
+	AllowedUsers []string `json:"allowedUsers,omitempty"`
+}
+
 // AgentSpec defines the common infrastructure configuration shared across all agent types.
 type AgentSpec struct {
 	// Deployment abstracts the Kubernetes Pod/Deployment configuration.

@@ -5,12 +5,21 @@ REPO ?= $(eval REPO := $(LOCATION)-docker.pkg.dev/$(shell gcloud config get core
 
 BAD_SKILLS := $(wildcard agents/*/defaults/skills/*)
 
-.PHONY: default docker-build docker-build-agents docker-push docker-push-agents dev-rebuild-agent status prettier-check prettier-write validate
+.PHONY: default docker-build docker-build-agents docker-push docker-push-agents dev-rebuild-agent status prettier-check prettier-write validate compile-agents
 
 AGENTS := $(notdir $(patsubst %/,%,$(wildcard agents/*/)))
 
 
 default: docker-build
+
+compile-agents:
+	@echo "Recreating agents folder from DASP templates using kube-agent-cli..."
+	@cd cli && go build -o ../bin/kube-agent-cli ./cmd/main.go
+	@mkdir -p agents/platform agents/operator agents/devteam
+	@./bin/kube-agent-cli compile --profile templates/platform/agent-profile.yaml --output agents/platform --target hermes
+	@./bin/kube-agent-cli compile --profile templates/operator/agent-profile.yaml --output agents/operator --target hermes
+	@./bin/kube-agent-cli compile --profile templates/devteam/agent-profile.yaml --output agents/devteam --target hermes
+	@echo "Full agents folder recreated successfully."
 
 # Docker builds
 docker-build: docker-build-agents
@@ -43,7 +52,7 @@ prettier-write:
 
 validate:
 	@if [ -n "$(BAD_SKILLS)" ]; then \
-		echo "Error: Skills should not be placed under agents/*/defaults/skills. Move them to agents/*/skills/"; \
+		echo "Error: Skills should not be placed under agents/*/defaults/skills. Move them to skills/"; \
 		set -- $(BAD_SKILLS); \
 		for file; do echo "  $$file"; done; \
 		exit 1; \

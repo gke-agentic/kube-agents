@@ -133,3 +133,31 @@ RUN chown -R hermes:hermes /opt/defaults /opt/hermes/skills /opt/hermes/plugins 
     find /opt/hermes/plugins -type f -exec chmod 644 {} + && \
     find /opt/defaults/scripts -type f -exec chmod 755 {} + 2>/dev/null && \
     find /opt/hermes/skills -path '*/scripts/*' -type f -exec chmod 755 {} + 2>/dev/null || true
+
+# --- CLI BUILDER TARGET ---
+FROM golang:1.23-alpine AS cli-builder
+WORKDIR /workspace
+COPY cli/ ./cli/
+RUN cd cli && CGO_ENABLED=0 GOOS=linux go build -o /kube-agent-cli ./cmd/main.go
+
+# --- DASP AGENT TARGET (Unified KubeAgent Headless Pre-Bake) ---
+FROM agent-base AS dasp-agent
+
+ARG AGENT_PROFILE="templates/platform/agent-profile.yaml"
+ARG TARGET_HARNESS="hermes"
+
+COPY --from=cli-builder /kube-agent-cli /usr/local/bin/kube-agent-cli
+COPY personas/ /opt/dasp/personas/
+COPY procedures/ /opt/dasp/procedures/
+COPY skills/ /opt/dasp/skills/
+COPY schedules/ /opt/dasp/schedules/
+COPY templates/ /opt/dasp/templates/
+
+RUN /usr/local/bin/kube-agent-cli compile --profile "/opt/dasp/${AGENT_PROFILE}" --output /opt/defaults --target "${TARGET_HARNESS}" && \
+    chown -R hermes:hermes /opt/defaults && \
+    find /opt/defaults -type d -exec chmod 755 {} + && \
+    find /opt/defaults -type f -exec chmod 644 {} +
+
+# Set execution mode and environment
+ENV WORKFLOW_MODE=Hybrid
+

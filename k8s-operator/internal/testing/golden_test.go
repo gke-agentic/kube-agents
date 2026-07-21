@@ -40,12 +40,12 @@ func TestAgentsGolden(t *testing.T) {
 		newReconciler func(client.Client, *runtime.Scheme) reconcile.Reconciler
 	}{
 		{
-			name:         "PlatformAgent",
-			inputPath:    filepath.Join("..", "..", "examples", "platformagent.yaml"),
-			expectedPath: filepath.Join("testdata", "platform", "expected", "platformagent.yaml"),
-			newAgent:     func() client.Object { return &agentv1alpha1.PlatformAgent{} },
+			name:         "KubeAgent",
+			inputPath:    filepath.Join("testdata", "kubeagent.yaml"),
+			expectedPath: filepath.Join("testdata", "kubeagent", "expected", "kubeagent.yaml"),
+			newAgent:     func() client.Object { return &agentv1alpha1.KubeAgent{} },
 			newReconciler: func(c client.Client, s *runtime.Scheme) reconcile.Reconciler {
-				return &controller.PlatformAgentReconciler{Client: c, Scheme: s}
+				return &controller.KubeAgentReconciler{Client: c, Scheme: s}
 			},
 		},
 	}

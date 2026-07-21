@@ -1,0 +1,30 @@
+apiVersion: kubeagents.x-k8s.io/v1alpha1
+kind: KubeAgent
+metadata:
+  name: cluster-cost-optimizer
+  namespace: kubeagents-system
+spec:
+  harness:
+    clusterName: "gke-production-us-central1"
+    location: "us-central1"
+    projectId: "enterprise-gke-ops"
+  personaRef:
+    name: frugal-cost-optimizer
+    ref: "./personas/frugal-cost-optimizer/SOUL.md"
+  skills:
+    - name: gke-cost-analysis
+      ref: "./skills/gke-cost-analysis"
+  procedures:
+    - name: weekly_cost_report_sop.md
+      ref: "./procedures/weekly_cost_report_sop.md"
+  schedules:
+    - name: weekly-cost-audit
+      cron: "0 9 * * 1"
+      ref: "./schedules/weekly-cost-audit.yaml"
+  namespaces:
+    - "app-frontend"
+    - "app-backend"
+  model:
+    provider: "gemini"
+    default: "gemini-1.5-pro"
+  workflowMode: "Hybrid"
