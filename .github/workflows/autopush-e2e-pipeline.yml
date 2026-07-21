@@ -38,6 +38,7 @@ jobs:
           REGISTRY: "ghcr.io"
           OWNER: "${{ github.repository }}"
           IMAGES: "platform-agent"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           chmod +x tests/e2e/scripts/check_candidate_artifacts.sh
           tests/e2e/scripts/check_candidate_artifacts.sh
@@ -68,6 +69,7 @@ jobs:
           OWNER: "${{ github.repository }}"
           IMAGES: "platform-agent"
           RUN_URL: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           chmod +x tests/e2e/scripts/label_stable_artifacts.sh
           tests/e2e/scripts/label_stable_artifacts.sh

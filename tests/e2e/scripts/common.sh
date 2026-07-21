@@ -23,6 +23,10 @@ ensure_crane() {
     CRANE_BIN="/tmp/crane"
   fi
   export CRANE_BIN
+
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    "${CRANE_BIN}" auth login "${REGISTRY:-ghcr.io}" -u "${GITHUB_ACTOR:-${USER}}" -p "${GITHUB_TOKEN}" >/dev/null 2>&1 || true
+  fi
 }
 
 # Convert image name to variable prefix (e.g. platform-agent -> platform_agent)
