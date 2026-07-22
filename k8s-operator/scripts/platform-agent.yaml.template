@@ -23,7 +23,7 @@ spec:
     tag: "${AGENT_TAG}"
     imagePullPolicy: Always
     availability:
-      replicas: 2
+      replicas: 1
       # runtimeClassName: gvisor # Uncomment to enable GKE Sandbox (gVisor) kernel isolation
   security:
     serviceAccountName: "${KSA_NAME}"
