@@ -530,13 +530,6 @@ func buildPodTemplateSpec(agent *agentv1alpha1.PlatformAgent, configHash, fluent
 		homeDir = agent.Spec.Harness.Hermes.AgentHome
 	}
 
-	dashboardVal := "0"
-	if agent.Spec.Harness != nil && agent.Spec.Harness.Hermes != nil && agent.Spec.Harness.Hermes.DashboardEnabled != nil {
-		if *agent.Spec.Harness.Hermes.DashboardEnabled {
-			dashboardVal = "1"
-		}
-	}
-
 	pluginsDebugVal := "0"
 	if agent.Spec.Harness != nil && agent.Spec.Harness.Hermes != nil && agent.Spec.Harness.Hermes.PluginsDebug != nil {
 		if *agent.Spec.Harness.Hermes.PluginsDebug {
@@ -552,10 +545,6 @@ func buildPodTemplateSpec(agent *agentv1alpha1.PlatformAgent, configHash, fluent
 		{
 			Name:  "HOME",
 			Value: strings.TrimSuffix(homeDir, "/") + "/home",
-		},
-		{
-			Name:  "PLATFORM_AGENT_DASHBOARD",
-			Value: dashboardVal,
 		},
 		{
 			Name:  "PLATFORM_AGENT_PLUGINS_DEBUG",
@@ -704,6 +693,13 @@ func buildPodTemplateSpec(agent *agentv1alpha1.PlatformAgent, configHash, fluent
 
 	if agent.Spec.Deployment != nil && len(agent.Spec.Deployment.Env) > 0 {
 		envVars = mergeEnvVars(envVars, agent.Spec.Deployment.Env)
+	}
+
+	dashboardEnabled := isDashboardEnabled(agent)
+
+	var shareProcessNamespace *bool
+	if dashboardEnabled {
+		shareProcessNamespace = ptr.To(true)
 	}
 
 	var runtimeClassName *string
@@ -897,7 +893,7 @@ func buildBaseContainers(agent *agentv1alpha1.PlatformAgent, image string, envVa
 		args = []string{fmt.Sprintf("%s/leader_elect.py", homeDir)}
 	}
 
-	return []corev1.Container{
+	containers := []corev1.Container{
 		{
 			Name:            "platform-agent",
 			Image:           image,
@@ -905,10 +901,6 @@ func buildBaseContainers(agent *agentv1alpha1.PlatformAgent, image string, envVa
 			Command:         command,
 			Args:            args,
 			Ports: []corev1.ContainerPort{
-				{
-					Name:          "dashboard",
-					ContainerPort: 9119,
-				},
 				{
 					Name:          "api",
 					ContainerPort: 8642,
@@ -924,56 +916,119 @@ func buildBaseContainers(agent *agentv1alpha1.PlatformAgent, image string, envVa
 				},
 			},
 		},
-		{
-			Name:  "fluent-bit",
-			Image: "fluent/fluent-bit:5.0.7",
-			Args: []string{
-				"-c",
-				"/fluent-bit/etc/fluent-bit.conf",
+	}
+
+	if isDashboardEnabled(agent) {
+		dashboardEnvVars := []corev1.EnvVar{
+			{
+				Name:  "PLATFORM_AGENT_HOME",
+				Value: homeDir,
 			},
+			{
+				Name:  "HOME",
+				Value: strings.TrimSuffix(homeDir, "/") + "/home",
+			},
+			{
+				Name:  "SESSION_KV_DB_PATH",
+				Value: sessionKVDBPath,
+			},
+		}
+
+		dashboardVolumeMounts := []corev1.VolumeMount{
+			{
+				Name:      "platform-agent-data-vol",
+				MountPath: homeDir,
+			},
+			{
+				Name:      "system-metadata",
+				MountPath: path.Dir(sessionKVDBPath),
+				SubPath:   "session",
+			},
+		}
+
+		containers = append(containers, corev1.Container{
+			Name:            "platform-agent-dashboard",
+			Image:           image,
+			ImagePullPolicy: pullPolicy,
+			Args:            []string{"hermes", "dashboard"},
+			Ports: []corev1.ContainerPort{
+				{
+					Name:          "dashboard",
+					ContainerPort: 9119,
+				},
+			},
+			Env: dashboardEnvVars,
 			Resources: corev1.ResourceRequirements{
 				Requests: corev1.ResourceList{
-					corev1.ResourceCPU:              resource.MustParse("100m"),
-					corev1.ResourceEphemeralStorage: resource.MustParse("1Gi"),
-					corev1.ResourceMemory:           resource.MustParse("128Mi"),
+					corev1.ResourceCPU:    resource.MustParse("256m"),
+					corev1.ResourceMemory: resource.MustParse("512Mi"),
 				},
 				Limits: corev1.ResourceList{
-					corev1.ResourceCPU:              resource.MustParse("500m"),
-					corev1.ResourceEphemeralStorage: resource.MustParse("1Gi"),
-					corev1.ResourceMemory:           resource.MustParse("256Mi"),
+					corev1.ResourceCPU:    resource.MustParse("1"),
+					corev1.ResourceMemory: resource.MustParse("2Gi"),
 				},
 			},
-			VolumeMounts: []corev1.VolumeMount{
-				{
-					Name:      "platform-agent-data-vol",
-					MountPath: "/opt/data",
-					ReadOnly:  true,
-				},
-				{
-					Name:      "fluent-bit-config",
-					MountPath: "/fluent-bit/etc/fluent-bit.conf",
-					SubPath:   "fluent-bit.conf",
-					ReadOnly:  true,
-				},
-				{
-					Name:      "fluent-bit-config",
-					MountPath: "/fluent-bit/etc/parsers.conf",
-					SubPath:   "parsers.conf",
-					ReadOnly:  true,
-				},
-				{
-					Name:      "fluent-bit-state",
-					MountPath: "/fluent-bit/state",
-				},
-			},
+			VolumeMounts: append(dashboardVolumeMounts, extraVolumeMounts...),
 			SecurityContext: &corev1.SecurityContext{
 				AllowPrivilegeEscalation: ptr.To(false),
 				Capabilities: &corev1.Capabilities{
 					Drop: []corev1.Capability{"ALL"},
 				},
 			},
-		},
+		})
 	}
+
+	containers = append(containers, corev1.Container{
+		Name:  "fluent-bit",
+		Image: "fluent/fluent-bit:5.0.7",
+		Args: []string{
+			"-c",
+			"/fluent-bit/etc/fluent-bit.conf",
+		},
+		Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:              resource.MustParse("100m"),
+				corev1.ResourceEphemeralStorage: resource.MustParse("1Gi"),
+				corev1.ResourceMemory:           resource.MustParse("128Mi"),
+			},
+			Limits: corev1.ResourceList{
+				corev1.ResourceCPU:              resource.MustParse("500m"),
+				corev1.ResourceEphemeralStorage: resource.MustParse("1Gi"),
+				corev1.ResourceMemory:           resource.MustParse("256Mi"),
+			},
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			{
+				Name:      "platform-agent-data-vol",
+				MountPath: "/opt/data",
+				ReadOnly:  true,
+			},
+			{
+				Name:      "fluent-bit-config",
+				MountPath: "/fluent-bit/etc/fluent-bit.conf",
+				SubPath:   "fluent-bit.conf",
+				ReadOnly:  true,
+			},
+			{
+				Name:      "fluent-bit-config",
+				MountPath: "/fluent-bit/etc/parsers.conf",
+				SubPath:   "parsers.conf",
+				ReadOnly:  true,
+			},
+			{
+				Name:      "fluent-bit-state",
+				MountPath: "/fluent-bit/state",
+			},
+		},
+		SecurityContext: &corev1.SecurityContext{
+			AllowPrivilegeEscalation: ptr.To(false),
+			Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{"ALL"},
+			},
+		},
+	})
+
+	return containers
 }
 
 // buildDefaultVolumes generates the default volumes for PlatformAgent
@@ -1172,6 +1227,22 @@ func buildPlatformService(agent *agentv1alpha1.PlatformAgent) *corev1.Service {
 	replicas, _ := resolveDeploymentReplicasAndStrategy(agent.Spec.Deployment)
 	if replicas > 1 {
 		selector["kubeagents.io/is-leader"] = "true"
+	dashboardEnabled := isDashboardEnabled(agent)
+
+	ports := []corev1.ServicePort{
+		{
+			Name:       "api",
+			Port:       8642,
+			TargetPort: intstr.FromString("api"),
+		},
+	}
+
+	if dashboardEnabled {
+		ports = append(ports, corev1.ServicePort{
+			Name:       "dashboard",
+			Port:       9119,
+			TargetPort: intstr.FromString("dashboard"),
+		})
 	}
 
 	return &corev1.Service{
@@ -1185,18 +1256,7 @@ func buildPlatformService(agent *agentv1alpha1.PlatformAgent) *corev1.Service {
 		},
 		Spec: corev1.ServiceSpec{
 			Selector: selector,
-			Ports: []corev1.ServicePort{
-				{
-					Name:       "api",
-					Port:       8642,
-					TargetPort: intstr.FromString("api"),
-				},
-				{
-					Name:       "dashboard",
-					Port:       9119,
-					TargetPort: intstr.FromString("dashboard"),
-				},
-			},
+			Ports: ports,
 		},
 	}
 }
@@ -1258,5 +1318,12 @@ func buildLeaderRoleBinding(agent *agentv1alpha1.PlatformAgent, bindingName, rol
 	}
 }
 
+func isDashboardEnabled(agent *agentv1alpha1.PlatformAgent) bool {
+	if agent != nil && agent.Spec.Harness != nil && agent.Spec.Harness.Hermes != nil && agent.Spec.Harness.Hermes.DashboardEnabled != nil {
+		return *agent.Spec.Harness.Hermes.DashboardEnabled
+	}
+	return true
+}
+  
 //go:embed leader_elect.py
 var leaderElectScript string
