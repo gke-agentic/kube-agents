@@ -314,6 +314,7 @@ make gcp-teardown
 
 You can also run step-specific teardowns:
 
+- `make gcp-teardown-11-inference-replay`: Undeploy Inference Replay proxy
 - `make gcp-teardown-10-github`: Remove GitHub Token Minter
 - `make gcp-teardown-09-litellm`: Undeploy LiteLLM Gateway
 - `make gcp-teardown-08-deploy`: Delete PlatformAgent CR

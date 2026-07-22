@@ -457,7 +457,7 @@ kubectl get pods -n kubeagents-system
 ## Deploying LiteLLM Integration
 
 > [!NOTE]
-> LiteLLM is now automatically deployed during the `make gcp-provision` flow by `provision_08_deploy_litellm.sh`. The following instructions are for manual standalone deployment.
+> LiteLLM is now automatically deployed during the `make gcp-provision` flow by `provision_09_deploy_litellm.sh`. The following instructions are for manual standalone deployment.
 
 LiteLLM gateway can be deployed to the Kubernetes cluster using the `kustomize` targets in the Makefile.
 
@@ -547,7 +547,9 @@ The [Makefile](Makefile) provides several targets to automate development workfl
 | `make gcp-provision-08-deploy`            | Step 8: Deploy the PlatformAgent Custom Resource.                        |
 | `make gcp-provision-09-litellm`           | Step 9: Deploy LiteLLM Gateway.                                          |
 | `make gcp-provision-10-github`            | Step 10: Deploy GitHub Token Minter.                                     |
+| `make gcp-provision-11-inference-replay`  | Step 11: Deploy Inference Replay proxy.                                  |
 | `make dev-rebuild-agent`                  | Fast local iteration: rebuild and redeploy an agent image.               |
+| `make gcp-teardown-11-inference-replay`   | Teardown Step 11: Undeploy Inference Replay proxy.                       |
 | `make gcp-teardown-10-github`             | Teardown Step 10: Delete GitHub Token Minter resources.                  |
 | `make gcp-teardown-09-litellm`            | Teardown Step 9: Undeploy LiteLLM Gateway.                               |
 | `make gcp-teardown-08-deploy`             | Teardown Step 8: Delete the PlatformAgent Custom Resource.               |
