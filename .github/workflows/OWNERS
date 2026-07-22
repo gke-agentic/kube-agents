@@ -1,7 +1,7 @@
 filters:
   "staging-redeploy-.*\\.yml$":
     approvers:
-      - k8s-operator-owners
+      - waw-leads
   "k8s-operator-test\\.yml$":
     approvers:
-      - k8s-operator-owners
+      - waw-leads
