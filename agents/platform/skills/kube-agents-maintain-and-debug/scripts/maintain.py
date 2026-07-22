@@ -195,19 +195,80 @@ def diagnose(project_id: str = "") -> Dict[str, Any]:
         "http_code_port_4000": out4000 if code4000 == 0 else "CONNECTION_REFUSED"
     }
 
+    # 6. Active Incidents State Telemetry
+    incidents_path = "/opt/data/memory/incidents.json"
+    active_incidents = []
+    if os.path.exists(incidents_path):
+        try:
+            with open(incidents_path, "r") as f:
+                data = json.load(f)
+                active_incidents = data.get("incidents", [])
+        except Exception:
+            pass
+    telemetry["active_incidents"] = active_incidents
+
     telemetry["status"] = overall
     return telemetry
 
 
+def record_incident(component: str, symptom: str, root_cause: str, proposed_action: str, state: str = "AWAITING_APPROVAL") -> bool:
+    """Records an incident state into /opt/data/memory/incidents.json."""
+    incidents_path = "/opt/data/memory/incidents.json"
+    os.makedirs(os.path.dirname(incidents_path), exist_ok=True)
+    
+    data = {"incidents": []}
+    if os.path.exists(incidents_path):
+        try:
+            with open(incidents_path, "r") as f:
+                data = json.load(f)
+        except Exception:
+            data = {"incidents": []}
+
+    inc_list = data.get("incidents", [])
+    # Update existing component record or append new one
+    found = False
+    for inc in inc_list:
+        if inc.get("component") == component:
+            inc["approval_state"] = state
+            inc["timestamp"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            if proposed_action:
+                inc["proposed_action"] = proposed_action
+            found = True
+            break
+    
+    if not found:
+        inc_list.append({
+            "incident_id": f"INC-{int(datetime.datetime.now(datetime.timezone.utc).timestamp())}",
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "component": component,
+            "symptom": symptom,
+            "root_cause": root_cause,
+            "proposed_action": proposed_action,
+            "approval_state": state
+        })
+    
+    data["incidents"] = inc_list
+    with open(incidents_path, "w") as f:
+        json.dump(data, f, indent=2)
+    return True
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Kube-Agents Telemetry Collector")
-    parser.add_argument("command", nargs="?", default="diagnose", choices=["diagnose"], help="Telemetry command")
+    parser = argparse.ArgumentParser(description="Kube-Agents Telemetry & SRE Engine")
+    parser.add_argument("command", nargs="?", default="diagnose", choices=["diagnose", "record-incident"], help="Telemetry command")
+    parser.add_argument("--component", default="", help="Component name for incident recording")
+    parser.add_argument("--state", default="AWAITING_APPROVAL", help="Incident state")
+    parser.add_argument("--action", default="", help="Proposed action")
     parser.add_argument("--json", action="store_true", default=True, help="Output structured JSON telemetry")
     
     args = parser.parse_args()
-    proj = get_project()
-    res = diagnose(proj)
-    print(json.dumps(res, indent=2))
+    if args.command == "record-incident":
+        record_incident(args.component, "Telemetry Alert", "SRE Investigation", args.action, args.state)
+        print(json.dumps({"success": True, "component": args.component, "state": args.state}))
+    else:
+        proj = get_project()
+        res = diagnose(proj)
+        print(json.dumps(res, indent=2))
 
 
 if __name__ == "__main__":

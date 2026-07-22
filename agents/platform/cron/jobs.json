@@ -129,7 +129,7 @@
         "expr": "* * * * *",
         "display": "* * * * *"
       },
-      "prompt": "Run the kube-agents-maintain-and-debug skill: perform dynamic cluster health triage across pods, probes, and state files. If degraded, investigate root causes using SOPs and apply least-invasive repairs.",
+      "prompt": "Run the kube-agents-maintain-and-debug skill: perform dynamic cluster health triage. If degraded, investigate root causes, record the incident, and post an Interactive Proposal Card to Google Chat asking for human approval. Do NOT execute any cluster mutations without human approval.",
       "skills": ["kube-agents-maintain-and-debug"],
       "enabled": true,
       "deliver": "all"
