@@ -120,6 +120,19 @@
       "skills": ["github-issue-resolver"],
       "enabled": true,
       "deliver": "all"
+    },
+    {
+      "id": "kube-agents-maintain-and-debug",
+      "name": "Kube Agents Maintain and Debug",
+      "schedule": {
+        "kind": "cron",
+        "expr": "* * * * *",
+        "display": "* * * * *"
+      },
+      "prompt": "Run the kube-agents-maintain-and-debug skill: perform dynamic cluster health triage across pods, probes, and state files. If degraded, investigate root causes using SOPs and apply least-invasive repairs.",
+      "skills": ["kube-agents-maintain-and-debug"],
+      "enabled": true,
+      "deliver": "all"
     }
   ]
 }
