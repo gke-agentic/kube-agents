@@ -148,3 +148,5 @@ spec:
       ports:
         - protocol: TCP
           port: 443
+
+# SRE Declarative Patch: deployment/github-token-minter
