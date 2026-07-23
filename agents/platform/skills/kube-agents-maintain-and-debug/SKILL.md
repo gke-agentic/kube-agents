@@ -52,7 +52,7 @@ When cluster anomalies or workload degradations are detected:
    - Iterate through **each** unique degraded component or workload reported in `telemetry["workloads"]`.
    - For each degraded component that does NOT already have an open ticket on GitHub (checking `open_prs` and `open_issues`):
      - If Issues are enabled, open a **GitHub Issue** ticket.
-     - If Issues are disabled, open a **Fallback PR** (Zero Code Lines Changed — purely an informational incident report card, at max creating a `docs/incidents/<slug>-<ts>.md` report file).
+     - If Issues are disabled, open a **Fallback PR** (Zero Code Lines Changed — purely an informational incident report card).
      ```bash
      python3 /opt/data/skills/kube-agents-maintain-and-debug/scripts/maintain.py create-gitops-pr \
        --component "<component_name>" \
@@ -66,16 +66,8 @@ When cluster anomalies or workload degradations are detected:
 
 # Execution Guardrails & Circuit Breakers
 
-### ⚡ Anti-Flapping Circuit Breakers
-
-If a container is stuck in a chronic crash loop where previous rollbacks/restarts failed to stabilize the pod:
-
-1. Pause posting interactive chat cards to prevent human alert fatigue.
-2. Mark the incident state as `"FLAPPING_CIRCUIT_BREAKER_TRIPPED"` in `incidents.json`.
-3. Escalate the chronic failure directly to the GitOps Repository as an infrastructure bug.
-
 ### 🛡️ Negative Safety Red Lines (What NEVER to Touch)
 
-- **Informational Fallback Guardrail (Zero File Modifications)**: Automated Fallback Pull Requests created by `maintain-and-debug` serve purely as a ticket fallback for reporting incidents when GitHub Issues are disabled. Fallback PRs must **ONLY create an informational incident report file** (`docs/incidents/<slug>-<ts>.md`). NEVER attempt to modify application source code (`.go`, `.py`, `.js`), Terraform infrastructure code (`.tf`), or declarative manifest files (`.yaml`, `.yml`).
+- **Informational Fallback Guardrail (Zero File Modifications)**: Automated Fallback Pull Requests created by `maintain-and-debug` serve purely as a ticket fallback for reporting incidents when GitHub Issues are disabled. Fallback PRs must **ONLY create an informational incident report file**. NEVER attempt to modify application source code (`.go`, `.py`, `.js`), Terraform infrastructure code (`.tf`), or declarative manifest files (`.yaml`, `.yml`).
 - **No Storage Mutations**: NEVER delete `PersistentVolumeClaims` (PVCs), `PersistentVolumes` (PVs), `StatefulSets`, or persistent volume storage.
 - **Autonomous Exclusion Boundaries**: All mutations are strictly restricted to `kubeagents-system`, `agent-system`, and `kube-agents-operator-system`. NEVER modify or restart resources in `kube-system`, `gmp-system`, or customer tenant application namespaces. NEVER run `kubectl delete namespace`.
