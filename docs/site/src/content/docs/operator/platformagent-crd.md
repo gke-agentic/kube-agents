@@ -42,9 +42,9 @@ Framework-level settings passed to Hermes. `clusterName` and `location` are requ
 | `hermes.pluginsDebug`                    | bool   | Enable plugin-level debug logging. Default `false`.                                  |
 | `hermes.agentHome`                       | string | Path to the `AGENT_HOME` directory. Default `/opt/data`.                             |
 | `hermes.apiServerSecretRef.name` + `key` | string | `Secret` holding the Hermes API server key (`API_SERVER_KEY`).                       |
-| `memory.memoryEnabled`                   | bool   | Toggle framework memory persistence. Default `false`.                               |
+| `memory.memoryEnabled`                   | bool   | Toggle framework memory persistence. Default `false`.                                |
 | `memory.provider`                        | string | Memory provider implementation. Default `multiuser_memory`.                          |
-| `memory.userProfileEnabled`             | bool   | Toggle per-user memory profiling. Default `false`.                                   |
+| `memory.userProfileEnabled`              | bool   | Toggle per-user memory profiling. Default `false`.                                   |
 
 ## `spec.deployment`
 
@@ -89,16 +89,16 @@ See [`k8s-operator/api/v1alpha1/platformagent_types.go`](https://github.com/gke-
 
 The operator writes observed state to the `status` subresource:
 
-| Field                            | Type   | Purpose                                                            |
-| -------------------------------- | ------ | ----------------------------------------------------------------- |
-| `phase`                          | string | Overall state (`Pending`, `Provisioning`, `Ready`, `Failed`).     |
-| `address`                        | string | Fully qualified domain name (FQDN) of the agent service.          |
-| `lastReconcileTime`              | time   | Timestamp of the last status update.                              |
-| `conditions`                     | list   | Standard `metav1.Condition` observations, keyed by `type`.        |
-| `deploymentStatus.name`          | string | Name of the underlying Deployment.                                |
-| `deploymentStatus.readyReplicas` | int32  | Number of fully ready replicas.                                   |
-| `serviceStatus.endpoint`         | string | Primary URL/IP (with protocol and port) to reach the agent.       |
-| `storageStatus.bound`            | bool   | Whether the primary PVC has been provisioned.                     |
+| Field                            | Type   | Purpose                                                       |
+| -------------------------------- | ------ | ------------------------------------------------------------- |
+| `phase`                          | string | Overall state (`Pending`, `Provisioning`, `Ready`, `Failed`). |
+| `address`                        | string | Fully qualified domain name (FQDN) of the agent service.      |
+| `lastReconcileTime`              | time   | Timestamp of the last status update.                          |
+| `conditions`                     | list   | Standard `metav1.Condition` observations, keyed by `type`.    |
+| `deploymentStatus.name`          | string | Name of the underlying Deployment.                            |
+| `deploymentStatus.readyReplicas` | int32  | Number of fully ready replicas.                               |
+| `serviceStatus.endpoint`         | string | Primary URL/IP (with protocol and port) to reach the agent.   |
+| `storageStatus.bound`            | bool   | Whether the primary PVC has been provisioned.                 |
 
 ## Reconcile behavior
 

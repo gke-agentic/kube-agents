@@ -37,7 +37,7 @@ The IAM side of the binding is pre-provisioned by [`provision_04_gcp_iam.sh`](ht
 | -------------- | ------------------------------- | -------------------------------------------------------------- |
 | **gke-admin**  | `gke-admin` (default)           | The agent should manage GKE lifecycle and node pools directly. |
 | **read-only**  | `read-only`                     | Auditing / monitoring only — no GCP write capability.          |
-| **custom**     | `custom`                        | You supply the exact roles via `PLATFORM_AGENT_CUSTOM_ROLES`.   |
+| **custom**     | `custom`                        | You supply the exact roles via `PLATFORM_AGENT_CUSTOM_ROLES`.  |
 
 ### Roles per set
 
