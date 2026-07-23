@@ -19,7 +19,7 @@ from contextlib import closing
 import logging
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
-from agent_common_server import _run_env, CONFIG_PATH, DOTENV_PATH, STATE_DB_PATH
+from agent_common_server import _run_env, CONFIG_PATH, DOTENV_PATH
 
 # Configure logging
 logging.basicConfig(
@@ -38,6 +38,7 @@ except Exception:
 app = FastAPI()
 
 SESSION_KV_DB_PATH = os.getenv("SESSION_KV_DB_PATH", "/var/lib/kube-agents/session/session_kv.db")
+CLEANUP_TTL_DAYS = int(os.getenv("SESSION_KV_CLEANUP_TTL_DAYS", "14"))
 
 
 def init_db() -> None:
@@ -73,6 +74,16 @@ def init_db() -> None:
 
 
 
+def cleanup_old_records(conn: sqlite3.Connection) -> None:
+    try:
+        # Delete incident reports and session metadata older than CLEANUP_TTL_DAYS
+        param = f"-{CLEANUP_TTL_DAYS} days"
+        conn.execute("DELETE FROM incidents WHERE created_at < datetime('now', ?)", (param,))
+        conn.execute("DELETE FROM session_metadata WHERE updated_at < datetime('now', ?)", (param,))
+    except Exception as exc:
+        logger.error(f"Failed to clean up old DB records: {exc}")
+
+
 @app.get("/healthz")
 def healthz() -> Dict[str, str]:
     return {"status": "ok"}
@@ -90,7 +101,9 @@ def create_session() -> Dict[str, str]:
                 "INSERT INTO session_metadata (session_id, metadata) VALUES (?, ?)",
                 (session_id, json.dumps({"platform": "k8s-watcher", "created_at": datetime.now(timezone.utc).isoformat()}))
             )
+            cleanup_old_records(conn)
     return {"sessionID": session_id}
+
 
 def clean_workload_name(kind: str, name: str) -> str:
     if kind.lower() == "pod":
@@ -237,6 +250,8 @@ def _build_agent_query(session_id: str, payload: Dict[str, Any]) -> str:
     object_name = payload.get("name") or ""
     message = payload.get("message") or ""
     cluster_name = os.environ.get("GKE_CLUSTER_NAME", "platform-agent-host")
+    gcp_project = os.environ.get("GCP_PROJECT_ID") or os.environ.get("GCP_PROJECT") or ""
+    project_query = f"?project={gcp_project}" if gcp_project else ""
 
     return (
         f"Analyze the following Kubernetes event warning on GKE cluster '{cluster_name}' "
@@ -253,8 +268,8 @@ def _build_agent_query(session_id: str, payload: Dict[str, Any]) -> str:
         f"🛠️ *Proposed Fixes (GitOps):*\n"
         f"*Option A (<Action Title>):* <1-sentence description of Option A GitOps fix>.\n"
         f"*Option B (<Action Title>):* <1-sentence description of Option B GitOps fix>.\n\n"
-        f"🔗 <https://console.cloud.google.com/kubernetes/workload/overview?project={os.environ.get('GCP_PROJECT', 'jayantid-gkedemos')}|GKE Workloads> | "
-        f"<https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22?project={os.environ.get('GCP_PROJECT', 'jayantid-gkedemos')}|Cloud Logs>\n\n"
+        f"🔗 <https://console.cloud.google.com/kubernetes/workload/overview{project_query}|GKE Workloads> | "
+        f"<https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22{project_query}|Cloud Logs>\n\n"
         f"👉 *Reply to this thread with 'apply Option A' or 'apply Option B' to automatically open a GitOps Pull Request with the fix.*\n\n"
         f"---"
         f"\n\n**GitOps PR Instructions (For subsequent turns if the user replies):**\n"
@@ -409,6 +424,7 @@ def store_incident(body: Dict[str, Any]) -> Dict[str, str]:
                 "INSERT OR IGNORE INTO incidents (chat_id, thread_id, report) VALUES (?, ?, ?)",
                 (chat_id, thread_id, report),
             )
+            cleanup_old_records(conn)
     return {"status": "stored"}
 
 

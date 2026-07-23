@@ -383,15 +383,10 @@ func realMain(argv []string) error {
 		go runSnapshotLoop(ctx, dedup, f.snapshotInterval)
 	}
 
-	// Build the kube client.
 	if f.dryRun {
-		log.Printf("k8s-event-watcher: --dry-run: skipping kube client; would watch cluster %q", f.clusterName)
-		<-ctx.Done()
-		if err := dedup.Snapshot(); err != nil {
-			log.Printf("dedup snapshot on shutdown: %v", err)
-		}
-		return nil
+		log.Printf("k8s-event-watcher: running in --dry-run mode; watching cluster %q without calling the daemon", f.clusterName)
 	}
+	// Build the kube client.
 	client, err := buildKubeClient(f)
 	if err != nil {
 		return err
