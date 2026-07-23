@@ -93,10 +93,13 @@ _(To teardown CI IAM resources when no longer needed, run `./tests/e2e/scripts/t
 
 1. **Configure OAuth Consent Screen**:
    - Go to **[https://pantheon.corp.google.com/apis/credentials/consent?project=<GCP_PROJECT_ID>](https://pantheon.corp.google.com/apis/credentials/consent)**
-   - Select **External** User Type.
+   - Select **External** User Type (or **Internal** if using a Google Workspace organization).
    - Enter App Name (`E2E Chat Verifier`) and Support/Developer Email (`@google.com`).
    - In **Test Users**, click **+ ADD USERS** and add your OTA email (`kube-agents-e2e-verifier@gmail.com`).
-2. **Create OAuth Client ID**:
+2. **Publish the OAuth App (Mandatory to prevent 7-day token expiration)**:
+   - Under **Publishing Status**, click **PUBLISH APP** and confirm publication (moves status from **Testing** to **In Production**).
+   - > ⚠️ **CRITICAL NOTE**: By default, GCP OAuth applications in **Testing** status force all issued refresh tokens to expire after **7 days**, which causes CI/CD runs to fail with `invalid_grant: Token has been expired or revoked`. Publishing the application removes this 7-day limit, allowing the OTA refresh token to live indefinitely and self-renew during CI runs.
+3. **Create OAuth Client ID**:
    - Go to **[https://pantheon.corp.google.com/apis/credentials?project=<GCP_PROJECT_ID>](https://pantheon.corp.google.com/apis/credentials)**
    - Click **+ CREATE CREDENTIALS** ➔ **OAuth client ID**.
    - Select Application type: **Desktop app**.
@@ -109,8 +112,10 @@ _(To teardown CI IAM resources when no longer needed, run `./tests/e2e/scripts/t
    ```bash
    CLIENT_ID="<your_client_id>" CLIENT_SECRET="<your_client_secret>" python3 tests/e2e/scripts/generate_token.py
    ```
-2. Paste the URL into Chrome Incognito (logged in as OTA), click **Allow**, copy the authorization code, and paste it back into the terminal.
-3. Save the 4 credentials as **GitHub Repository Secrets** (**Settings ➔ Secrets and variables ➔ Actions**):
+2. Open the printed authorization URL in Chrome Incognito (logged into your OTA account via Rhea `go/rhea`).
+3. Click **Allow** (if prompted with an unverified app warning, click **Advanced ➔ Go to E2E Chat Verifier (unsafe) ➔ Allow**).
+4. When Chrome redirects to `http://localhost:8080/?code=...` (`ERR_CONNECTION_REFUSED`), copy the **entire URL from your browser address bar** and paste it into the terminal prompt.
+5. Save the 4 credentials as **GitHub Repository Secrets** (**Settings ➔ Secrets and variables ➔ Actions**):
    - `E2E_CHAT_CLIENT_ID`
    - `E2E_CHAT_CLIENT_SECRET`
    - `E2E_CHAT_REFRESH_TOKEN`
