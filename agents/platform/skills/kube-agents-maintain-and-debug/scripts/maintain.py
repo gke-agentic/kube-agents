@@ -195,17 +195,24 @@ def diagnose(project_id: str = "") -> Dict[str, Any]:
         "http_code_port_4000": out4000 if code4000 == 0 else "CONNECTION_REFUSED"
     }
 
-    # 6. Active Incidents State Telemetry
-    incidents_path = "/opt/data/memory/incidents.json"
-    active_incidents = []
-    if os.path.exists(incidents_path):
+    # 6. Live GitHub Open PRs & Issues Telemetry (Single Source of Truth)
+    open_prs = []
+    code, pr_json, _ = run_cmd(["gh", "api", "repos/gke-agentic/kube-agents/pulls?state=open", "--jq", "[.[] | {number, title, html_url, created_at}]"])
+    if code == 0 and pr_json:
         try:
-            with open(incidents_path, "r") as f:
-                data = json.load(f)
-                active_incidents = data.get("incidents", [])
+            open_prs = json.loads(pr_json)
         except Exception:
             pass
-    telemetry["active_incidents"] = active_incidents
+    telemetry["open_prs"] = open_prs
+
+    open_issues = []
+    code_iss, iss_json, _ = run_cmd(["gh", "api", "repos/gke-agentic/kube-agents/issues?state=open", "--jq", "[.[] | {number, title, html_url, created_at}]"])
+    if code_iss == 0 and iss_json:
+        try:
+            open_issues = json.loads(iss_json)
+        except Exception:
+            pass
+    telemetry["open_issues"] = open_issues
 
     telemetry["status"] = overall
     return telemetry
@@ -253,18 +260,135 @@ def record_incident(component: str, symptom: str, root_cause: str, proposed_acti
     return True
 
 
+def create_gitops_pr(component: str, root_cause: str, error_logs: str, proposed_fix: str, target_file: str = "", patched_content: str = "") -> Dict[str, Any]:
+    """Generates a dynamic GitOps Pull Request with the LLM's diagnosed patch."""
+    repo = "gke-agentic/kube-agents"
+    settings_path = "/opt/data/SETTINGS.md"
+    if os.path.exists(settings_path):
+        try:
+            with open(settings_path) as f:
+                for line in f:
+                    if "Git Repo:" in line:
+                        repo = line.split("Git Repo:")[-1].replace("*", "").strip().replace("https://github.com/", "").replace(".git", "")
+        except Exception:
+            pass
+
+    slug = component.replace("/", "-").replace("deployment-", "")
+    ts = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+    branch_name = f"fix/{slug}-{ts}"
+
+    title = f"fix(sre): declarative fix for {component}"
+    body = f"""### 🚨 Autonomous SRE Declarative Incident Report
+
+- **Component:** `{component}`
+- **Diagnosed Root Cause:** {root_cause}
+- **Forensic Logs:**
+```text
+{error_logs}
+```
+- **Proposed GitOps Solution:** {proposed_fix}
+
+*Human-in-the-loop approval: Please review the LLM-diagnosed manifest changes and merge to deploy.*"""
+
+    # Extract component name and key failure terms for comprehensive issue deduplication
+    comp_name = component.replace("deployment/", "").strip()
+    key_terms = [comp_name]
+    if "ImagePullBackOff" in root_cause or "ImagePullBackOff" in error_logs:
+        key_terms.append("ImagePullBackOff")
+
+    # Check GitHub directly for any existing open PRs matching component OR issue failure terms
+    code, pr_json, _ = run_cmd(["gh", "api", f"repos/{repo}/pulls?state=open", "--jq", ".[].title"])
+    if code == 0 and pr_json:
+        for open_title in pr_json.splitlines():
+            if comp_name in open_title or (component in open_title):
+                return {
+                    "success": False,
+                    "output": f"An open Pull Request related to this issue already exists on GitHub: '{open_title}'. Skipping duplicate PR creation.",
+                    "already_exists": True,
+                    "repo": repo
+                }
+
+    # Check if GitHub Issues are enabled on the repository
+    code_has_issues, out_has_issues, _ = run_cmd(["gh", "api", f"repos/{repo}", "--jq", ".has_issues"])
+    has_issues = (code_has_issues == 0 and out_has_issues.strip() == "true")
+
+    if has_issues:
+        # Check if an open Issue already exists matching component OR issue failure terms
+        code_iss, iss_json, _ = run_cmd(["gh", "api", f"repos/{repo}/issues?state=open", "--jq", ".[].title"])
+        if code_iss == 0 and iss_json:
+            for open_title in iss_json.splitlines():
+                if comp_name in open_title or (component in open_title):
+                    return {
+                        "type": "issue",
+                        "success": False,
+                        "output": f"An open Issue related to this issue already exists on GitHub: '{open_title}'. Skipping duplicate creation.",
+                        "already_exists": True,
+                        "repo": repo
+                    }
+
+        # Create GitHub Issue first if issues are enabled
+        code_create_iss, out_create_iss, err_create_iss = run_cmd([
+            "gh", "issue", "create", "-R", repo,
+            "--title", title,
+            "--body", body
+        ])
+        if code_create_iss == 0:
+            return {
+                "type": "issue",
+                "success": True,
+                "output": out_create_iss.strip(),
+                "repo": repo
+            }
+
+    # Fallback to Pull Request if Issues are disabled or Issue creation failed
+    # 1. Fetch main branch SHA
+    code, main_sha, _ = run_cmd(["gh", "api", f"repos/{repo}/git/ref/heads/main", "--jq", ".object.sha"])
+    if code == 0 and main_sha:
+        # 2. Create the new unique branch ref on GitHub
+        run_cmd(["gh", "api", f"repos/{repo}/git/refs", "-f", f"ref=refs/heads/{branch_name}", "-f", f"sha={main_sha}"])
+
+        # 3. Create a clean incident report file (0 code/manifest lines changed)
+        report_path = f"docs/incidents/{slug}-{ts}.md"
+        report_content = f"# SRE Incident Report: {component}\n\n{body}\n"
+        import base64
+        report_b64 = base64.b64encode(report_content.encode("utf-8")).decode("utf-8")
+        run_cmd([
+            "gh", "api", "-X", "PUT", f"repos/{repo}/contents/{report_path}",
+            "-F", f"message=docs(sre): incident report for {component}",
+            "-F", f"content={report_b64}",
+            "-F", f"branch={branch_name}"
+        ])
+
+    # 4. Open the Pull Request on GitHub
+    code, out, err = run_cmd([
+        "gh", "api", f"repos/{repo}/pulls",
+        "-F", f"title={title}",
+        "-F", f"body={body}",
+        "-F", f"head={branch_name}",
+        "-F", "base=main"
+    ])
+    return {"type": "pull_request", "success": code == 0, "output": out or err, "repo": repo, "branch": branch_name}
+
+
 def main():
     parser = argparse.ArgumentParser(description="Kube-Agents Telemetry & SRE Engine")
-    parser.add_argument("command", nargs="?", default="diagnose", choices=["diagnose", "record-incident"], help="Telemetry command")
+    parser.add_argument("command", nargs="?", default="diagnose", choices=["diagnose", "record-incident", "create-gitops-pr"], help="Telemetry command")
     parser.add_argument("--component", default="", help="Component name for incident recording")
     parser.add_argument("--state", default="AWAITING_APPROVAL", help="Incident state")
     parser.add_argument("--action", default="", help="Proposed action")
+    parser.add_argument("--root-cause", default="", help="Root cause explanation")
+    parser.add_argument("--logs", default="", help="Error logs")
+    parser.add_argument("--target-file", default="", help="Path to declarative manifest file in repo")
+    parser.add_argument("--patched-content", default="", help="Dynamic patched file content synthesized by LLM")
     parser.add_argument("--json", action="store_true", default=True, help="Output structured JSON telemetry")
     
     args = parser.parse_args()
     if args.command == "record-incident":
         record_incident(args.component, "Telemetry Alert", "SRE Investigation", args.action, args.state)
         print(json.dumps({"success": True, "component": args.component, "state": args.state}))
+    elif args.command == "create-gitops-pr":
+        res = create_gitops_pr(args.component, args.root_cause, args.logs, args.action, args.target_file, args.patched_content)
+        print(json.dumps(res))
     else:
         proj = get_project()
         res = diagnose(proj)

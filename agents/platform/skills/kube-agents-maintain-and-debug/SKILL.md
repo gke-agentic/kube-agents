@@ -35,18 +35,19 @@ graph TD
 ### Step 1: Cluster Health Triage
 Execute the telemetry collector to gather structured facts across pods, quotas, events, probes, and active incident states:
 ```bash
-python3 scripts/maintain.py diagnose --json
+python3 /opt/data/skills/kube-agents-maintain-and-debug/scripts/maintain.py diagnose --json || python3 scripts/maintain.py diagnose --json
 ```
 
-### Step 2: Dynamic Root-Cause Analysis & Deduplication
+### Step 2: Dynamic Root-Cause Analysis & Routing
 - **Healthy System Override**: If `status == "HEALTHY"` and all pods are `Running`, return **`[SILENT]`** immediately to suppress chat noise.
-- **Incident Deduplication**: If `status == "DEGRADED"` but `active_incidents` in the telemetry indicates the incident is already `AWAITING_APPROVAL` (and no new human message has arrived), return **`[SILENT]`** to prevent chat spam.
+- **Incident & Issue Deduplication (Single Source of Truth)**: Inspect `open_prs` and `open_issues` in the telemetry. If an open PR or Issue on GitHub already exists related to the component (e.g. `github-token-minter`) OR matching the specific diagnosed failure symptom/root cause (e.g. `ImagePullBackOff`), return **`[SILENT]`** immediately to prevent creating duplicate tickets/PRs on GitHub.
+- **Declarative Failure Routing (`ImagePullBackOff` / Non-existent Image Tag / Manifest Drift)**: Skip Step 3 (Interactive Proposal Card). Proceed directly to **Step 5 (Declarative GitOps PR Escalation)** to invoke `maintain.py create-gitops-pr`.
 
 ---
 
 ### Step 3: Interactive Approval Proposal Card (Google Chat / Slack)
 
-If a new runtime-recoverable anomaly is detected (e.g. `CrashLoopBackOff`, Secret key drift, deadlocked pod, or stale webhook), **NEVER execute terminal mutations autonomously**.
+If a new runtime-recoverable anomaly is detected (e.g. `CrashLoopBackOff`, Secret key drift, deadlocked pod, or stale webhook), **NEVER execute terminal mutations autonomously**. (Note: For `ImagePullBackOff`, skip this step and proceed to Step 5).
 
 Synthesize the forensic evidence and post the **Interactive Proposal Card** for Google Chat / Slack:
 
@@ -98,19 +99,21 @@ python3 scripts/maintain.py record-incident --component "<component>" --state "A
 
 ---
 
-### Step 5: Declarative GitOps Issue Escalation
+### Step 5: Declarative GitOps Issue & Fallback PR Escalation
 
-When an issue requires code changes, new Docker images (`ImagePullBackOff`), or Terraform quota expansions (or if verification fails):
+When an issue requires code/manifest investigation, new Docker images (`ImagePullBackOff`), quota expansions, or when the user replies `Reject` (or if 60s health verification fails):
 
-1. **Target Repository Resolution:** Dynamically extract the GitOps repository from `/opt/data/SETTINGS.md`.
-2. **Deterministic Issue Creation:**
+1. **Target Repository Resolution:** Dynamically extract the GitOps repository URL from `/opt/data/SETTINGS.md`.
+2. **Issue-First Escalation & Fallback PR (Zero Code Lines Changed):**
+   - If Issues are enabled, open a **GitHub Issue** ticket.
+   - If Issues are disabled, open a **Pull Request** as a fallback ticket.
+   - **Zero Code Lines Changed:** The PR acts purely as an SRE diagnostic report card detailing the symptom, root cause, forensic logs, and step-by-step resolution instructions. No application source code or manifest lines are mutated automatically.
    ```bash
-   REPO_URL=$(grep "Git Repo:" /opt/data/SETTINGS.md | awk '{print $NF}' | sed -E 's|^https?://(www\.)?github\.com/||; s|\.git$||')
-
-   gh issue create -R "${REPO_URL}" \
-     --title "🚨 [Automated SRE Incident] ${COMPONENT} ${FAILURE_REASON}" \
-     --body "### Incident Summary\n\n- **Component:** \`${COMPONENT}\`\n- **Forensic Logs:**\n\`\`\`text\n${ERROR_LOGS}\n\`\`\`" \
-     --label "status:escalation-needed"
+   python3 /opt/data/skills/kube-agents-maintain-and-debug/scripts/maintain.py create-gitops-pr \
+     --component "<component>" \
+     --root-cause "<diagnosed root cause>" \
+     --logs "<error logs>" \
+     --action "<proposed resolution instructions>"
    ```
 
 ---
@@ -124,5 +127,6 @@ If a container is stuck in a chronic crash loop where previous rollbacks/restart
 3. Escalate the chronic failure directly to the GitOps Repository as an infrastructure bug.
 
 ### 🛡️ Negative Safety Red Lines (What NEVER to Touch)
+- **Declarative Scope Guardrail (No Source Code Modifications)**: Automated GitOps Pull Requests must **ONLY modify declarative manifest files** (`.yaml`, `.yml`, `.template`). NEVER attempt to modify application source code files (`.go`, `.py`, `.js`, etc.) in automated remediation PRs.
 - **No Storage Mutations**: NEVER delete `PersistentVolumeClaims` (PVCs), `PersistentVolumes` (PVs), `StatefulSets`, or persistent volume storage.
 - **Autonomous Exclusion Boundaries**: All mutations are strictly restricted to `kubeagents-system`, `agent-system`, and `kube-agents-operator-system`. NEVER modify or restart resources in `kube-system`, `gmp-system`, or customer tenant application namespaces. NEVER run `kubectl delete namespace`.
