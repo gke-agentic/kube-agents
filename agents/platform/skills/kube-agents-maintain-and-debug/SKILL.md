@@ -52,7 +52,7 @@ When cluster anomalies or workload degradations are detected:
    - Iterate through **each** unique degraded component or workload reported in `telemetry["workloads"]`.
    - For each degraded component that does NOT already have an open ticket on GitHub (checking `open_prs` and `open_issues`):
      - If Issues are enabled, open a **GitHub Issue** ticket.
-     - If Issues are disabled, open a **Fallback PR** (Zero Code Lines Changed, purely an informational report card).
+     - If Issues are disabled, open a **Fallback PR** (Zero Code Lines Changed — purely an informational incident report card, at max creating a `docs/incidents/<slug>-<ts>.md` report file).
      ```bash
      python3 /opt/data/skills/kube-agents-maintain-and-debug/scripts/maintain.py create-gitops-pr \
        --component "<component_name>" \
@@ -76,6 +76,6 @@ If a container is stuck in a chronic crash loop where previous rollbacks/restart
 
 ### 🛡️ Negative Safety Red Lines (What NEVER to Touch)
 
-- **Declarative Scope Guardrail (No Source Code Modifications)**: Automated GitOps Pull Requests must **ONLY modify declarative manifest files** (`.yaml`, `.yml`, `.template`). NEVER attempt to modify application source code files (`.go`, `.py`, `.js`, etc.) in automated remediation PRs.
+- **Informational Fallback Guardrail (Zero File Modifications)**: Automated Fallback Pull Requests created by `maintain-and-debug` serve purely as a ticket fallback for reporting incidents when GitHub Issues are disabled. Fallback PRs must **ONLY create an informational incident report file** (`docs/incidents/<slug>-<ts>.md`). NEVER attempt to modify application source code (`.go`, `.py`, `.js`), Terraform infrastructure code (`.tf`), or declarative manifest files (`.yaml`, `.yml`).
 - **No Storage Mutations**: NEVER delete `PersistentVolumeClaims` (PVCs), `PersistentVolumes` (PVs), `StatefulSets`, or persistent volume storage.
 - **Autonomous Exclusion Boundaries**: All mutations are strictly restricted to `kubeagents-system`, `agent-system`, and `kube-agents-operator-system`. NEVER modify or restart resources in `kube-system`, `gmp-system`, or customer tenant application namespaces. NEVER run `kubectl delete namespace`.
