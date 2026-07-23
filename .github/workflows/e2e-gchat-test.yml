@@ -5,7 +5,7 @@ on:
     inputs: &shared_inputs
       gcp_project_id:
         description: "Target GCP Project ID"
-        required: true
+        required: false
         default: "kube-agents-autopush"
         type: string
       chat_space_id:
