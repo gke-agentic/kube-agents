@@ -64,6 +64,8 @@ jobs:
 
       - name: Set up Google Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
+        with:
+          install_components: "beta,gke-gcloud-auth-plugin"
 
       - name: Log Deployment Configuration Summary
         run: |
@@ -96,6 +98,7 @@ jobs:
       - name: Teardown & Provision Environment in GCP
         # TODO(POC): Pass environment variables with default fallbacks to provision.sh.
         env:
+          CLOUDSDK_CORE_DISABLE_PROMPTS: "1"
           PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
           REGION: ${{ vars.GCP_REGION }}
