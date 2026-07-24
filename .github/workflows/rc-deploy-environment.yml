@@ -71,26 +71,26 @@ jobs:
           echo "======================================================================"
           echo "🚀 RELEASE CANDIDATE DEPLOYMENT CONFIGURATION"
           echo "======================================================================"
-          echo "Target Project ID:          ${{ vars.GCP_PROJECT_ID }}"
-          echo "Target Project Number:      ${{ vars.GCP_PROJECT_NUMBER }}"
-          echo "Target GCP Region:          ${{ vars.GCP_REGION }}"
-          echo "Target Cluster Name:        ${{ vars.GKE_CLUSTER_NAME || vars.CLUSTER_NAME }}"
-          echo "Service Account:            ${{ vars.GCP_SERVICE_ACCOUNT }}"
+          echo "Target Project ID:          ${{ vars.GCP_PROJECT_ID || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "Target Project Number:      ${{ vars.GCP_PROJECT_NUMBER || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "Target GCP Region:          ${{ vars.GCP_REGION || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "Target Cluster Name:        ${{ vars.GKE_CLUSTER_NAME || vars.CLUSTER_NAME || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "Service Account:            ${{ vars.GCP_SERVICE_ACCOUNT || '<NOT SET IN ENVIRONMENT>' }}"
           echo "----------------------------------------------------------------------"
           echo "Candidate Commit SHA:       ${{ steps.validate.outputs.commit_sha }}"
           echo "Candidate Image Tag:        ${{ steps.validate.outputs.rc_tag }}"
           echo "----------------------------------------------------------------------"
-          echo "Google Chat Enabled:        ${{ vars.GOOGLE_CHAT_ENABLED || 'true' }}"
-          echo "Google Chat Mode:           ${{ vars.GOOGLE_CHAT_MODE || 'default' }}"
-          echo "Google Chat Topic Name:     ${{ vars.E2E_CHAT_TOPIC_NAME || 'platform-agent-chat-events' }}"
+          echo "Google Chat Enabled:        ${{ vars.GOOGLE_CHAT_ENABLED || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "Google Chat Mode:           ${{ vars.GOOGLE_CHAT_MODE || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "Google Chat Topic Name:     ${{ vars.E2E_CHAT_TOPIC_NAME || '<NOT SET IN ENVIRONMENT>' }}"
           echo "----------------------------------------------------------------------"
-          echo "Model Provider:             ${{ vars.MODEL_PROVIDER || 'gemini' }}"
-          echo "Model Default Name:         ${{ vars.MODEL_DEFAULT_NAME || 'gemini-3.5-flash' }}"
-          echo "Enable gVisor Isolation:    ${{ vars.ENABLE_GVISOR || 'true' }}"
-          echo "Agent K8s Permission Set:   ${{ vars.PLATFORM_AGENT_PERMISSION_SET || 'read-only' }}"
-          echo "Memory Enabled:             ${{ vars.MEMORY_ENABLED || 'false' }}"
-          echo "Memory Provider:            ${{ vars.MEMORY_PROVIDER || 'multiuser_memory' }}"
-          echo "User Profile Enabled:       ${{ vars.USER_PROFILE_ENABLED || 'false' }}"
+          echo "Model Provider:             ${{ vars.MODEL_PROVIDER || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "Model Default Name:         ${{ vars.MODEL_DEFAULT_NAME || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "Enable gVisor Isolation:    ${{ vars.ENABLE_GVISOR || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "Agent K8s Permission Set:   ${{ vars.PLATFORM_AGENT_PERMISSION_SET || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "Memory Enabled:             ${{ vars.MEMORY_ENABLED || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "Memory Provider:            ${{ vars.MEMORY_PROVIDER || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "User Profile Enabled:       ${{ vars.USER_PROFILE_ENABLED || '<NOT SET IN ENVIRONMENT>' }}"
           echo "======================================================================"
 
       - name: Teardown & Provision Environment in GCP
@@ -110,7 +110,7 @@ jobs:
           MEMORY_ENABLED: ${{ vars.MEMORY_ENABLED || 'false' }}
           MEMORY_PROVIDER: ${{ vars.MEMORY_PROVIDER || 'multiuser_memory' }}
           USER_PROFILE_ENABLED: ${{ vars.USER_PROFILE_ENABLED || 'false' }}
-          AGENT_TAG: ${{ steps.validate.outputs.rc_tag }}
+          AGENT_TAG: ${{ steps.validate.outputs.commit_sha }}
           CI: "true"
         run: |
           ./k8s-operator/scripts/teardown.sh --no-confirm

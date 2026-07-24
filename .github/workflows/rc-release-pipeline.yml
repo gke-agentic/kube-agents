@@ -14,10 +14,9 @@ on:
   workflow_dispatch:
     inputs:
       commit_sha:
-        # TODO(POC): Temporary default commit SHA for POC testing (1810fac241a9540f943e9722c38ab45135905e06). Remove before merging to main.
-        description: "Git Commit SHA (Default: 1810fac241a9540f943e9722c38ab45135905e06)"
+        # TODO(POC): Temporary default commit SHA for POC testing. Revert default before main.
+        description: "Git Commit SHA (Default: Current SHA)"
         required: false
-        default: "1810fac241a9540f943e9722c38ab45135905e06"
         type: string
       rc_tag:
         # TODO(POC): Temporary RC tag auto-generation fallback for manual release candidate testing.
@@ -39,8 +38,7 @@ jobs:
       - name: Resolve Commit SHA and Tag Name
         id: resolve
         run: |
-          # TODO(POC): Temporary target commit fallback 1810fac241a9540f943e9722c38ab45135905e06. Replace with github.sha before main.
-          TARGET_SHA="${{ inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' }}"
+          TARGET_SHA="${{ inputs.commit_sha || github.sha }}"
 
           if [ -n "${{ inputs.rc_tag }}" ] && [ "${{ inputs.rc_tag }}" != "test/autopush-poc-pipeline" ]; then
             TAG_VAL="${{ inputs.rc_tag }}"
@@ -90,7 +88,7 @@ jobs:
       - name: Validate Inputs
         id: validate
         run: |
-          TARGET_SHA="${{ needs.step1-create-tag.outputs.resolved_commit_sha || inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' }}"
+          TARGET_SHA="${{ needs.step1-create-tag.outputs.resolved_commit_sha || inputs.commit_sha || github.sha }}"
           TAG_VAL="${{ needs.step1-create-tag.outputs.resolved_rc_tag || inputs.rc_tag || 'rc_poc' }}"
 
           echo "commit_sha=${TARGET_SHA}" >> "$GITHUB_OUTPUT"
@@ -115,14 +113,26 @@ jobs:
           echo "======================================================================"
           echo "🚀 RELEASE CANDIDATE DEPLOYMENT CONFIGURATION"
           echo "======================================================================"
-          echo "Target Project ID:          ${{ vars.GCP_PROJECT_ID }}"
-          echo "Target Project Number:      ${{ vars.GCP_PROJECT_NUMBER }}"
-          echo "Target GCP Region:          ${{ vars.GCP_REGION }}"
-          echo "Target Cluster Name:        ${{ vars.GKE_CLUSTER_NAME || vars.CLUSTER_NAME }}"
-          echo "Service Account:            ${{ vars.GCP_SERVICE_ACCOUNT }}"
+          echo "Target Project ID:          ${{ vars.GCP_PROJECT_ID || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "Target Project Number:      ${{ vars.GCP_PROJECT_NUMBER || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "Target GCP Region:          ${{ vars.GCP_REGION || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "Target Cluster Name:        ${{ vars.GKE_CLUSTER_NAME || vars.CLUSTER_NAME || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "Service Account:            ${{ vars.GCP_SERVICE_ACCOUNT || '<NOT SET IN ENVIRONMENT>' }}"
           echo "----------------------------------------------------------------------"
           echo "Candidate Commit SHA:       ${{ steps.validate.outputs.commit_sha }}"
           echo "Candidate Image Tag:        ${{ steps.validate.outputs.rc_tag }}"
+          echo "----------------------------------------------------------------------"
+          echo "Google Chat Enabled:        ${{ vars.GOOGLE_CHAT_ENABLED || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "Google Chat Mode:           ${{ vars.GOOGLE_CHAT_MODE || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "Google Chat Topic Name:     ${{ vars.E2E_CHAT_TOPIC_NAME || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "----------------------------------------------------------------------"
+          echo "Model Provider:             ${{ vars.MODEL_PROVIDER || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "Model Default Name:         ${{ vars.MODEL_DEFAULT_NAME || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "Enable gVisor Isolation:    ${{ vars.ENABLE_GVISOR || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "Agent K8s Permission Set:   ${{ vars.PLATFORM_AGENT_PERMISSION_SET || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "Memory Enabled:             ${{ vars.MEMORY_ENABLED || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "Memory Provider:            ${{ vars.MEMORY_PROVIDER || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "User Profile Enabled:       ${{ vars.USER_PROFILE_ENABLED || '<NOT SET IN ENVIRONMENT>' }}"
           echo "======================================================================"
 
       - name: Teardown & Provision Environment in GCP
@@ -159,7 +169,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.step1-create-tag.outputs.resolved_commit_sha || inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' }}
+          ref: ${{ needs.step1-create-tag.outputs.resolved_commit_sha || inputs.commit_sha || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -201,7 +211,7 @@ jobs:
     steps:
       - name: Validate Release Candidate Commit
         run: |
-          SHA_VAL="${{ needs.step1-create-tag.outputs.resolved_commit_sha || inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' }}"
+          SHA_VAL="${{ needs.step1-create-tag.outputs.resolved_commit_sha || inputs.commit_sha || github.sha }}"
           TAG_VAL="${{ needs.step1-create-tag.outputs.resolved_rc_tag || inputs.rc_tag || 'rc_poc' }}"
 
           echo "======================================================================"
