@@ -114,6 +114,9 @@ spec:
         - podSelector:
             matchLabels:
               app: platform-agent
+        - podSelector:
+            matchLabels:
+              app: platform-agent-gateway
       ports:
         - protocol: TCP
           port: 8080
