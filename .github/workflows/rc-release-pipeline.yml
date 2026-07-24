@@ -10,7 +10,7 @@ on:
   pull_request:
     # TODO(POC): Temporary PR trigger for POC testing. Remove before merging to main.
     branches:
-      - main
+      - "*"
   workflow_dispatch:
     inputs:
       commit_sha:

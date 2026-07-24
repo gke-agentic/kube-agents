@@ -1,10 +1,11 @@
 name: Autopush E2E Pipeline
 
 on:
-  push:
-    branches:
-      - "feature/**"
-      - "test/**"
+  # TODO(POC): Automatic push trigger disabled for POC testing of Release Candidate pipeline.
+  # push:
+  #   branches:
+  #     - "feature/**"
+  #     - "test/**"
   workflow_dispatch:
 
 permissions:
