@@ -112,8 +112,10 @@ spec:
   ingress:
     - from:
         - podSelector:
-            matchLabels:
-              kubeagents.x-k8s.io/has-credential-proxy: "true"
+            matchExpressions:
+              - key: app
+                operator: In
+                values: ["platform-agent", "platform-agent-gateway"]
       ports:
         - protocol: TCP
           port: 8080
