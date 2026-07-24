@@ -1,0 +1,100 @@
+name: RC Step 3 - Run E2E Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        # TODO(POC): Temporary commit SHA input fallback for manual test execution.
+        description: "Git Commit SHA (Default: Current SHA)"
+        required: false
+        type: string
+      rc_tag:
+        description: "Release Candidate Tag (Mandatory for Step 3 standalone launch)"
+        required: false
+        type: string
+      run_subsequent_steps:
+        description: "Run Step 4 (Validation & Tagging) after test success?"
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      commit_sha:
+        required: true
+        type: string
+      rc_tag:
+        required: true
+        type: string
+
+jobs:
+  run-e2e-tests:
+    runs-on: ubuntu-latest
+    environment: rc
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Validate Release Candidate Tag & Commit
+        id: validate
+        run: |
+          TARGET_SHA="${{ inputs.commit_sha || github.sha }}"
+          TAG_VAL="${{ inputs.rc_tag }}"
+          
+          # TODO(POC): Enforce mandatory RC tag check before running E2E tests.
+          if [ -z "$TAG_VAL" ]; then
+            echo "❌ ERROR: No Release Candidate tag ('rc_*') provided!"
+            echo "E2E Testing on 'kube-agents-rc' is restricted to official Release Candidates."
+            echo "Please create an 'rc_*' tag on commit ${TARGET_SHA} or start the pipeline from Step 1 (Build)."
+            exit 1
+          fi
+          
+          echo "commit_sha=${TARGET_SHA}" >> "$GITHUB_OUTPUT"
+          echo "rc_tag=${TAG_VAL}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout repository at exact candidate commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.validate.outputs.commit_sha }}
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Pytest & Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest google-api-python-client google-auth google-auth-oauthlib google-cloud-pubsub
+
+      - name: Authenticate to GCP via Workload Identity Federation (WIF)
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Log E2E Test Execution Configuration
+        run: |
+          # TODO(POC): Log E2E test execution parameters before pytest.
+          echo "======================================================================"
+          echo "🧪 RELEASE CANDIDATE E2E TEST EXECUTION"
+          echo "======================================================================"
+          echo "Target Project ID:          ${{ vars.GCP_PROJECT_ID }}"
+          echo "Target GCP Region:          ${{ vars.GCP_REGION }}"
+          echo "Target Cluster Name:        ${{ vars.GKE_CLUSTER_NAME || vars.CLUSTER_NAME }}"
+          echo "----------------------------------------------------------------------"
+          echo "Candidate Commit SHA:       ${{ steps.validate.outputs.commit_sha }}"
+          echo "Candidate Image Tag:        ${{ steps.validate.outputs.rc_tag }}"
+          echo "Google Chat Topic Name:     ${{ vars.E2E_CHAT_TOPIC_NAME || 'platform-agent-chat-events' }}"
+          echo "======================================================================"
+
+      - name: Execute E2E Pytest Suite
+        # TODO(POC): Pass OTA refresh token and environment parameters to gchat_agent_test.py.
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          E2E_CHAT_SPACE_ID: ${{ secrets.E2E_CHAT_SPACE_ID }}
+          E2E_CHAT_TOPIC_NAME: ${{ vars.E2E_CHAT_TOPIC_NAME || 'platform-agent-chat-events' }}
+          E2E_CHAT_CLIENT_ID: ${{ secrets.E2E_CHAT_CLIENT_ID }}
+          E2E_CHAT_CLIENT_SECRET: ${{ secrets.E2E_CHAT_CLIENT_SECRET }}
+          E2E_CHAT_REFRESH_TOKEN: ${{ secrets.E2E_CHAT_REFRESH_TOKEN }}
+        run: |
+          pytest tests/e2e/gchat_agent_test.py -v -s

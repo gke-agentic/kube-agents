@@ -1,0 +1,87 @@
+name: RC Step 1 - Create Candidate Tag
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        # TODO(POC): Temporary target commit default 1810fac241a9540f943e9722c38ab45135905e06 for POC testing.
+        description: "Git Commit SHA for Release Candidate (Default: 1810fac241a9540f943e9722c38ab45135905e06)"
+        required: false
+        default: "1810fac241a9540f943e9722c38ab45135905e06"
+        type: string
+      rc_tag:
+        # TODO(POC): Temporary auto-generation of rc_YYMMDDHHMM tag for testing.
+        description: "Release Candidate Tag (Default: Auto-generated rc_YYMMDDHHMM)"
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      commit_sha:
+        required: true
+        type: string
+      rc_tag:
+        required: false
+        type: string
+    outputs:
+      resolved_commit_sha:
+        value: ${{ jobs.create-tag.outputs.resolved_commit_sha }}
+      resolved_rc_tag:
+        value: ${{ jobs.create-tag.outputs.resolved_rc_tag }}
+
+jobs:
+  create-tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      resolved_commit_sha: ${{ steps.tag_step.outputs.commit_sha }}
+      resolved_rc_tag: ${{ steps.tag_step.outputs.rc_tag }}
+
+    steps:
+      - name: Resolve Commit SHA and Tag Name
+        id: resolve
+        run: |
+          TARGET_SHA="${{ inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' }}"
+          
+          # TODO(POC): Auto-generate timestamped RC tag if omitted during manual dispatch.
+          if [ -n "${{ inputs.rc_tag }}" ] && [ "${{ inputs.rc_tag }}" != "test/autopush-poc-pipeline" ]; then
+            TAG_VAL="${{ inputs.rc_tag }}"
+          else
+            TAG_VAL="rc_$(date -u +'%y%m%d%H%M')"
+          fi
+          
+          echo "commit_sha=${TARGET_SHA}" >> "$GITHUB_OUTPUT"
+          echo "rc_tag=${TAG_VAL}" >> "$GITHUB_OUTPUT"
+          
+          echo "======================================================================"
+          echo "🏷️ CREATING RELEASE CANDIDATE TAG"
+          echo "Target Commit SHA: ${TARGET_SHA}"
+          echo "Release Tag:      ${TAG_VAL}"
+          echo "======================================================================"
+
+      - name: Checkout repository at candidate commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve.outputs.commit_sha }}
+
+      - name: Create Git Tag & Push
+        id: tag_step
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHA_VAL="${{ steps.resolve.outputs.commit_sha }}"
+          TAG_VAL="${{ steps.resolve.outputs.rc_tag }}"
+          
+          echo "commit_sha=${SHA_VAL}" >> "$GITHUB_OUTPUT"
+          echo "rc_tag=${TAG_VAL}" >> "$GITHUB_OUTPUT"
+          
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          if git rev-parse "${TAG_VAL}" >/dev/null 2>&1; then
+            echo "[INFO] Git tag '${TAG_VAL}' already exists."
+          else
+            echo "[INFO] Tagging commit ${SHA_VAL} with ${TAG_VAL}..."
+            git tag -a "${TAG_VAL}" "${SHA_VAL}" -m "Release Candidate ${TAG_VAL} for commit ${SHA_VAL}" || true
+            git push origin "${TAG_VAL}" || echo "[WARN] Tag push fallback"
+          fi

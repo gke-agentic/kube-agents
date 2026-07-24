@@ -1,0 +1,117 @@
+name: RC Step 2 - Deploy Environment
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        # TODO(POC): Temporary input fallback for commit SHA in manual execution.
+        description: "Git Commit SHA (Default: Current SHA)"
+        required: false
+        type: string
+      rc_tag:
+        description: "Release Candidate Tag (Mandatory for Step 2 standalone launch)"
+        required: false
+        type: string
+      run_subsequent_steps:
+        description: "Run subsequent testing & validation steps after deploy?"
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      commit_sha:
+        required: true
+        type: string
+      rc_tag:
+        required: true
+        type: string
+
+jobs:
+  deploy-rc:
+    runs-on: ubuntu-latest
+    environment: rc
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Validate Release Candidate Tag & Commit
+        id: validate
+        run: |
+          TARGET_SHA="${{ inputs.commit_sha || github.sha }}"
+          TAG_VAL="${{ inputs.rc_tag }}"
+          
+          # TODO(POC): Enforce mandatory RC tag check for standalone Step 2 deployment safety.
+          if [ -z "$TAG_VAL" ]; then
+            echo "❌ ERROR: No Release Candidate tag ('rc_*') provided!"
+            echo "Direct deployment to 'kube-agents-rc' is restricted to official Release Candidates."
+            echo "Please create an 'rc_*' tag on commit ${TARGET_SHA} or start the pipeline from Step 1 (Build)."
+            exit 1
+          fi
+          
+          echo "commit_sha=${TARGET_SHA}" >> "$GITHUB_OUTPUT"
+          echo "rc_tag=${TAG_VAL}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout repository at exact candidate commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.validate.outputs.commit_sha }}
+
+      - name: Authenticate to GCP via Workload Identity Federation (WIF)
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Log Deployment Configuration Summary
+        run: |
+          # TODO(POC): Print configuration summary log table before invoking provision.sh.
+          echo "======================================================================"
+          echo "🚀 RELEASE CANDIDATE DEPLOYMENT CONFIGURATION"
+          echo "======================================================================"
+          echo "Target Project ID:          ${{ vars.GCP_PROJECT_ID }}"
+          echo "Target Project Number:      ${{ vars.GCP_PROJECT_NUMBER }}"
+          echo "Target GCP Region:          ${{ vars.GCP_REGION }}"
+          echo "Target Cluster Name:        ${{ vars.GKE_CLUSTER_NAME || vars.CLUSTER_NAME }}"
+          echo "Service Account:            ${{ vars.GCP_SERVICE_ACCOUNT }}"
+          echo "----------------------------------------------------------------------"
+          echo "Candidate Commit SHA:       ${{ steps.validate.outputs.commit_sha }}"
+          echo "Candidate Image Tag:        ${{ steps.validate.outputs.rc_tag }}"
+          echo "----------------------------------------------------------------------"
+          echo "Google Chat Enabled:        ${{ vars.GOOGLE_CHAT_ENABLED || 'true' }}"
+          echo "Google Chat Mode:           ${{ vars.GOOGLE_CHAT_MODE || 'default' }}"
+          echo "Google Chat Topic Name:     ${{ vars.E2E_CHAT_TOPIC_NAME || 'platform-agent-chat-events' }}"
+          echo "----------------------------------------------------------------------"
+          echo "Model Provider:             ${{ vars.MODEL_PROVIDER || 'gemini' }}"
+          echo "Model Default Name:         ${{ vars.MODEL_DEFAULT_NAME || 'gemini-3.5-flash' }}"
+          echo "Enable gVisor Isolation:    ${{ vars.ENABLE_GVISOR || 'true' }}"
+          echo "Agent K8s Permission Set:   ${{ vars.PLATFORM_AGENT_PERMISSION_SET || 'read-only' }}"
+          echo "Memory Enabled:             ${{ vars.MEMORY_ENABLED || 'false' }}"
+          echo "Memory Provider:            ${{ vars.MEMORY_PROVIDER || 'multiuser_memory' }}"
+          echo "User Profile Enabled:       ${{ vars.USER_PROFILE_ENABLED || 'false' }}"
+          echo "======================================================================"
+
+      - name: Teardown & Provision Environment in GCP
+        # TODO(POC): Pass environment variables with default fallbacks to provision.sh.
+        env:
+          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
+          REGION: ${{ vars.GCP_REGION }}
+          CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME || vars.CLUSTER_NAME }}
+          GOOGLE_CHAT_ENABLED: ${{ vars.GOOGLE_CHAT_ENABLED || 'true' }}
+          GOOGLE_CHAT_MODE: ${{ vars.GOOGLE_CHAT_MODE || 'default' }}
+          E2E_CHAT_TOPIC_NAME: ${{ vars.E2E_CHAT_TOPIC_NAME || 'platform-agent-chat-events' }}
+          MODEL_PROVIDER: ${{ vars.MODEL_PROVIDER || 'gemini' }}
+          MODEL_DEFAULT_NAME: ${{ vars.MODEL_DEFAULT_NAME || 'gemini-3.5-flash' }}
+          ENABLE_GVISOR: ${{ vars.ENABLE_GVISOR || 'true' }}
+          PLATFORM_AGENT_PERMISSION_SET: ${{ vars.PLATFORM_AGENT_PERMISSION_SET || 'read-only' }}
+          MEMORY_ENABLED: ${{ vars.MEMORY_ENABLED || 'false' }}
+          MEMORY_PROVIDER: ${{ vars.MEMORY_PROVIDER || 'multiuser_memory' }}
+          USER_PROFILE_ENABLED: ${{ vars.USER_PROFILE_ENABLED || 'false' }}
+          AGENT_TAG: ${{ steps.validate.outputs.rc_tag }}
+          CI: "true"
+        run: |
+          ./k8s-operator/scripts/teardown.sh --no-confirm
+          ./k8s-operator/scripts/provision.sh --no-confirm

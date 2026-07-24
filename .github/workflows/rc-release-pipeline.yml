@@ -1,0 +1,66 @@
+name: RC Master Release Pipeline
+
+on:
+  push:
+    branches:
+      - 'test/autopush-poc-pipeline' # TODO(POC): Temporary branch push trigger for POC testing
+    tags:
+      - 'rc_*'
+  pull_request:                       # TODO(POC): Temporary PR trigger for POC testing
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        # TODO(POC): Commit SHA input default fallback for POC manual execution.
+        description: "Git Commit SHA (Default: 1810fac241a9540f943e9722c38ab45135905e06)"
+        required: false
+        default: "1810fac241a9540f943e9722c38ab45135905e06"
+        type: string
+      rc_tag:
+        # TODO(POC): RC tag input fallback for manual release candidate pipeline execution.
+        description: "Release Candidate Tag (Default: Auto-generated rc_YYMMDDHHMM)"
+        required: false
+        type: string
+      start_from_step:
+        # TODO(POC): Choice parameter to trigger master pipeline from a specific step during debugging.
+        description: "Start pipeline from step"
+        type: choice
+        options:
+          - "step1_create_tag"
+          - "step2_deploy"
+          - "step3_test"
+          - "step4_validate"
+        default: "step1_create_tag"
+
+jobs:
+  step1-create-tag:
+    if: inputs.start_from_step == '' || inputs.start_from_step == 'step1_create_tag' || github.event_name == 'push' || github.event_name == 'pull_request'
+    uses: ./.github/workflows/rc-create-tag.yml
+    with:
+      commit_sha: ${{ inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' }}
+      rc_tag: ${{ inputs.rc_tag || github.ref_name }}
+
+  step2-deploy:
+    needs: [step1-create-tag]
+    if: always() && (needs.step1-create-tag.result == 'success' || inputs.start_from_step == 'step2_deploy')
+    uses: ./.github/workflows/rc-deploy-environment.yml
+    with:
+      commit_sha: ${{ needs.step1-create-tag.outputs.resolved_commit_sha || inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' }}
+      rc_tag: ${{ needs.step1-create-tag.outputs.resolved_rc_tag || inputs.rc_tag || github.ref_name }}
+
+  step3-test:
+    needs: [step1-create-tag, step2-deploy]
+    if: always() && (needs.step2-deploy.result == 'success' || inputs.start_from_step == 'step3_test')
+    uses: ./.github/workflows/rc-run-e2e-tests.yml
+    with:
+      commit_sha: ${{ needs.step1-create-tag.outputs.resolved_commit_sha || inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' }}
+      rc_tag: ${{ needs.step1-create-tag.outputs.resolved_rc_tag || inputs.rc_tag || github.ref_name }}
+
+  step4-validate:
+    needs: [step1-create-tag, step3-test]
+    if: always() && (needs.step3-test.result == 'success' || inputs.start_from_step == 'step4_validate')
+    uses: ./.github/workflows/rc-tag-validated.yml
+    with:
+      commit_sha: ${{ needs.step1-create-tag.outputs.resolved_commit_sha || inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' }}
+      rc_tag: ${{ needs.step1-create-tag.outputs.resolved_rc_tag || inputs.rc_tag || github.ref_name }}
