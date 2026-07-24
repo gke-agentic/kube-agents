@@ -24,57 +24,189 @@ on:
         description: "Release Candidate Tag (Default: Auto-generated rc_YYMMDDHHMM)"
         required: false
         type: string
-      start_from_step:
-        # TODO(POC): Choice parameter to trigger master pipeline from a specific step during debugging. Remove before merging to main.
-        description: "Start pipeline from step"
-        type: choice
-        options:
-          - "step1_create_tag"
-          - "step2_deploy"
-          - "step3_test"
-          - "step4_validate"
-        default: "step1_create_tag"
 
 jobs:
   step1-create-tag:
     name: 🏷️ Step 1 - Create Candidate Tag
-    if: inputs.start_from_step == '' || inputs.start_from_step == 'step1_create_tag'
-    uses: ./.github/workflows/rc-create-tag.yml
-    with:
-      # TODO(POC): Temporary hardcoded commit fallback 1810fac241a9540f943e9722c38ab45135905e06. Replace with github.sha before main.
-      commit_sha: ${{ inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' }}
-      rc_tag: ${{ inputs.rc_tag || '' }}
-    secrets: inherit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      resolved_commit_sha: ${{ steps.tag_step.outputs.commit_sha }}
+      resolved_rc_tag: ${{ steps.tag_step.outputs.rc_tag }}
+
+    steps:
+      - name: Resolve Commit SHA and Tag Name
+        id: resolve
+        run: |
+          # TODO(POC): Temporary target commit fallback 1810fac241a9540f943e9722c38ab45135905e06. Replace with github.sha before main.
+          TARGET_SHA="${{ inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' }}"
+
+          if [ -n "${{ inputs.rc_tag }}" ] && [ "${{ inputs.rc_tag }}" != "test/autopush-poc-pipeline" ]; then
+            TAG_VAL="${{ inputs.rc_tag }}"
+          else
+            TAG_VAL="rc_$(date -u +'%y%m%d%H%M')"
+          fi
+
+          echo "commit_sha=${TARGET_SHA}" >> "$GITHUB_OUTPUT"
+          echo "rc_tag=${TAG_VAL}" >> "$GITHUB_OUTPUT"
+
+          echo "======================================================================"
+          echo "🏷️ CREATING RELEASE CANDIDATE TAG"
+          echo "Target Commit SHA: ${TARGET_SHA}"
+          echo "Release Tag:      ${TAG_VAL}"
+          echo "======================================================================"
+
+      - name: Checkout repository at candidate commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve.outputs.commit_sha }}
+
+      - name: Create Git Tag & Push
+        id: tag_step
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHA_VAL="${{ steps.resolve.outputs.commit_sha }}"
+          TAG_VAL="${{ steps.resolve.outputs.rc_tag }}"
+
+          echo "commit_sha=${SHA_VAL}" >> "$GITHUB_OUTPUT"
+          echo "rc_tag=${TAG_VAL}" >> "$GITHUB_OUTPUT"
+
+          # TODO(POC): Temporary mock tag push during POC testing. Revert before main.
+          echo "[INFO] (POC Dry Run) Generated candidate RC tag '${TAG_VAL}' for commit '${SHA_VAL}' in memory."
+          echo "[INFO] (POC Dry Run) Skipping real git tag push to remote origin during POC testing."
 
   step2-deploy:
     name: 🚀 Step 2 - Deploy Environment
     needs: [step1-create-tag]
-    if: always() && (needs.step1-create-tag.result == 'success' || inputs.start_from_step == 'step2_deploy')
-    uses: ./.github/workflows/rc-deploy-environment.yml
-    with:
-      # TODO(POC): Temporary hardcoded commit fallback 1810fac241a9540f943e9722c38ab45135905e06. Replace with github.sha before main.
-      commit_sha: ${{ needs.step1-create-tag.outputs.resolved_commit_sha || inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' }}
-      rc_tag: ${{ needs.step1-create-tag.outputs.resolved_rc_tag || inputs.rc_tag || '' }}
-    secrets: inherit
+    runs-on: ubuntu-latest
+    environment: rc
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Validate Inputs
+        id: validate
+        run: |
+          TARGET_SHA="${{ needs.step1-create-tag.outputs.resolved_commit_sha || inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' }}"
+          TAG_VAL="${{ needs.step1-create-tag.outputs.resolved_rc_tag || inputs.rc_tag || 'rc_poc' }}"
+
+          echo "commit_sha=${TARGET_SHA}" >> "$GITHUB_OUTPUT"
+          echo "rc_tag=${TAG_VAL}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout repository at exact candidate commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.validate.outputs.commit_sha }}
+
+      - name: Authenticate to GCP via Workload Identity Federation (WIF)
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Log Deployment Configuration Summary
+        run: |
+          echo "======================================================================"
+          echo "🚀 RELEASE CANDIDATE DEPLOYMENT CONFIGURATION"
+          echo "======================================================================"
+          echo "Target Project ID:          ${{ vars.GCP_PROJECT_ID }}"
+          echo "Target Project Number:      ${{ vars.GCP_PROJECT_NUMBER }}"
+          echo "Target GCP Region:          ${{ vars.GCP_REGION }}"
+          echo "Target Cluster Name:        ${{ vars.GKE_CLUSTER_NAME || vars.CLUSTER_NAME }}"
+          echo "Service Account:            ${{ vars.GCP_SERVICE_ACCOUNT }}"
+          echo "----------------------------------------------------------------------"
+          echo "Candidate Commit SHA:       ${{ steps.validate.outputs.commit_sha }}"
+          echo "Candidate Image Tag:        ${{ steps.validate.outputs.rc_tag }}"
+          echo "======================================================================"
+
+      - name: Teardown & Provision Environment in GCP
+        env:
+          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
+          REGION: ${{ vars.GCP_REGION }}
+          CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME || vars.CLUSTER_NAME }}
+          GOOGLE_CHAT_ENABLED: ${{ vars.GOOGLE_CHAT_ENABLED || 'true' }}
+          GOOGLE_CHAT_MODE: ${{ vars.GOOGLE_CHAT_MODE || 'default' }}
+          E2E_CHAT_TOPIC_NAME: ${{ vars.E2E_CHAT_TOPIC_NAME || 'platform-agent-chat-events' }}
+          MODEL_PROVIDER: ${{ vars.MODEL_PROVIDER || 'gemini' }}
+          MODEL_DEFAULT_NAME: ${{ vars.MODEL_DEFAULT_NAME || 'gemini-3.5-flash' }}
+          ENABLE_GVISOR: ${{ vars.ENABLE_GVISOR || 'true' }}
+          PLATFORM_AGENT_PERMISSION_SET: ${{ vars.PLATFORM_AGENT_PERMISSION_SET || 'read-only' }}
+          MEMORY_ENABLED: ${{ vars.MEMORY_ENABLED || 'false' }}
+          MEMORY_PROVIDER: ${{ vars.MEMORY_PROVIDER || 'multiuser_memory' }}
+          USER_PROFILE_ENABLED: ${{ vars.USER_PROFILE_ENABLED || 'false' }}
+          AGENT_TAG: ${{ steps.validate.outputs.commit_sha }}
+          CI: "true"
+        run: |
+          ./k8s-operator/scripts/teardown.sh --no-confirm
+          ./k8s-operator/scripts/provision.sh --no-confirm
 
   step3-test:
     name: 🧪 Step 3 - Run E2E Tests
     needs: [step1-create-tag, step2-deploy]
-    if: always() && (needs.step2-deploy.result == 'success' || inputs.start_from_step == 'step3_test')
-    uses: ./.github/workflows/rc-run-e2e-tests.yml
-    with:
-      # TODO(POC): Temporary hardcoded commit fallback 1810fac241a9540f943e9722c38ab45135905e06. Replace with github.sha before main.
-      commit_sha: ${{ needs.step1-create-tag.outputs.resolved_commit_sha || inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' }}
-      rc_tag: ${{ needs.step1-create-tag.outputs.resolved_rc_tag || inputs.rc_tag || '' }}
-    secrets: inherit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.step1-create-tag.outputs.resolved_commit_sha || inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r tests/e2e/requirements.txt
+
+      - name: Authenticate to GCP via WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER || 'projects/1020703904916/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider' }}
+          service_account: ${{ secrets.GCP_WIF_SA_EMAIL || 'github-actions-e2e@kube-agents-rc.iam.gserviceaccount.com' }}
+
+      - name: Execute E2E Test
+        env:
+          GCP_PROJECT_ID: "kube-agents-rc"
+          CHAT_TOPIC_NAME: "platform-agent-chat-events"
+          TEST_USER_EMAIL: "github-actions-e2e@kube-agents-rc.iam.gserviceaccount.com"
+          TEST_TIMEOUT_SEC: "120"
+          E2E_CHAT_CLIENT_ID: ${{ secrets.E2E_CHAT_CLIENT_ID }}
+          E2E_CHAT_CLIENT_SECRET: ${{ secrets.E2E_CHAT_CLIENT_SECRET }}
+          E2E_CHAT_REFRESH_TOKEN: ${{ secrets.E2E_CHAT_REFRESH_TOKEN }}
+        run: |
+          pytest tests/e2e/gchat_agent_test.py -v -s
 
   step4-validate:
     name: ✅ Step 4 - Validate Candidate
     needs: [step1-create-tag, step3-test]
-    if: always() && (needs.step3-test.result == 'success' || inputs.start_from_step == 'step4_validate')
-    uses: ./.github/workflows/rc-tag-validated.yml
-    with:
-      # TODO(POC): Temporary hardcoded commit fallback 1810fac241a9540f943e9722c38ab45135905e06. Replace with github.sha before main.
-      commit_sha: ${{ needs.step1-create-tag.outputs.resolved_commit_sha || inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' }}
-      rc_tag: ${{ needs.step1-create-tag.outputs.resolved_rc_tag || inputs.rc_tag || '' }}
-    secrets: inherit
+    runs-on: ubuntu-latest
+    environment: rc
+    permissions:
+      contents: write
+
+    steps:
+      - name: Validate Release Candidate Commit
+        run: |
+          SHA_VAL="${{ needs.step1-create-tag.outputs.resolved_commit_sha || inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' }}"
+          TAG_VAL="${{ needs.step1-create-tag.outputs.resolved_rc_tag || inputs.rc_tag || 'rc_poc' }}"
+
+          echo "======================================================================"
+          echo "🏷️ MARKING RELEASE CANDIDATE COMMIT AS VALIDATED"
+          echo "Commit SHA:   ${SHA_VAL}"
+          echo "RC Tag:       ${TAG_VAL}"
+          echo "======================================================================"
+          echo "[INFO] Candidate commit ${SHA_VAL} (${TAG_VAL}) passed all E2E tests and is verified!"
