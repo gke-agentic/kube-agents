@@ -86,7 +86,7 @@ Deploying onto an existing cluster, or iterating locally against [Kind](https://
 
 ### Isolation by construction
 
-- **Least-privilege RBAC boundaries** — the operator provisions each agent with read-only (`view` + a scoped custom `explorer` ClusterRole) fleet visibility; the only write grant is a namespaced leader-election Role. Infrastructure changes happen exclusively through the GitOps path below.
+- **Least-privilege RBAC boundaries** — the operator provisions each agent with read-only (`view` + a scoped custom `explorer` ClusterRole) fleet visibility; the only write grant is a single Role scoped to the agent's own namespace, covering leader-election leases and `get`/`patch` on pods. Infrastructure changes happen exclusively through the GitOps path below.
 - **Credential isolation** — the agent sandbox container _never_ receives API keys or tokens. An Envoy credential-proxy sidecar injects credentials at the network boundary, and the sandbox image ships only non-functional CLI wrappers — the real credential-aware CLIs live in a separate, inaccessible image. See the full design in [docs/credential-isolation-design.md](docs/credential-isolation-design.md).
 - **Kernel-level sandboxing** — agent workloads run under a gVisor RuntimeClass (GKE Sandbox), validated by the operator at reconcile time.
 - **GitOps-only mutations** — the agent proposes changes as pull requests (via the `submit-suggestion` skill and short-lived GitHub App tokens minted through KMS) for human SRE review; it does not apply mutations directly.
