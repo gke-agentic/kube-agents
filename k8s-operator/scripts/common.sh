@@ -116,8 +116,10 @@ save_var() {
 #   true, yes, y, 1, on  (in any letter case, e.g. "True", "YES", "On")
 # Everything else — including false, no, n, 0, off, and empty/unset — is falsy.
 is_truthy() {
-  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
-    true | yes | y | 1 | on) return 0 ;;
+  local val="${1:-}"
+  val="${val//[[:space:]]/}"
+  case "$val" in
+    [Tt][Rr][Uu][Ee] | [Yy][Ee][Ss] | [Yy] | 1 | [Oo][Nn]) return 0 ;;
     *) return 1 ;;
   esac
 }
