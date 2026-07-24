@@ -77,13 +77,14 @@ jobs:
           echo "commit_sha=${SHA_VAL}" >> "$GITHUB_OUTPUT"
           echo "rc_tag=${TAG_VAL}" >> "$GITHUB_OUTPUT"
 
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # TODO(POC): Temporary mock tag push during POC testing.
+          # HOW TO REVERT BACK TO ORIGINAL CODE WHEN MERGING TO MAIN:
+          # Uncomment the git tag creation commands below and remove the POC Dry Run log lines:
+          #
+          # git config user.name "github-actions[bot]"
+          # git config user.email "github-actions[bot]@users.noreply.github.com"
+          # git tag -a "${TAG_VAL}" "${SHA_VAL}" -m "Release Candidate ${TAG_VAL} for commit ${SHA_VAL}"
+          # git push origin "${TAG_VAL}"
 
-          if git rev-parse "${TAG_VAL}" >/dev/null 2>&1; then
-            echo "[INFO] Git tag '${TAG_VAL}' already exists."
-          else
-            echo "[INFO] Tagging commit ${SHA_VAL} with ${TAG_VAL}..."
-            git tag -a "${TAG_VAL}" "${SHA_VAL}" -m "Release Candidate ${TAG_VAL} for commit ${SHA_VAL}" || true
-            git push origin "${TAG_VAL}" || echo "[WARN] Tag push fallback"
-          fi
+          echo "[INFO] (POC Dry Run) Generated candidate RC tag '${TAG_VAL}' for commit '${SHA_VAL}' in memory."
+          echo "[INFO] (POC Dry Run) Skipping real git tag push to remote origin during POC testing."
