@@ -18,7 +18,7 @@ if [ "${GOOGLE_CHAT_ENABLED:-false}" = "true" ]; then
   echo -e "[ ] 1. Configure GChat bot connection in GCP Console:"
   echo -e "       ${C_WHITE}https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat?project=${PROJECT_ID}${C_RESET}"
   echo -e "       - Name: ${C_GREEN}GKE Platform Agent Bot${C_RESET}"
-  echo -e "       - Avatar: ${C_GREEN}https://platform-agent.nousresearch.com/docs/img/logo.png${C_RESET}"
+  echo -e "       - Avatar: ${C_GREEN}https://raw.githubusercontent.com/cncf/artwork/master/projects/kubernetes/icon/color/kubernetes-icon-color.png${C_RESET}"
   echo -e "       - Connection Settings: Select ${C_BOLD}Cloud Pub/Sub${C_RESET}"
   echo -e "       - Pub/Sub Topic Name: ${C_GREEN}projects/${PROJECT_ID}/topics/${CHAT_TOPIC_NAME}${C_RESET}"
   echo -e "       - Under Visibility, check: ${C_GREEN}Only specific people (add your email/emails: ${ALLOWED_USERS:-your-email})${C_RESET}"
