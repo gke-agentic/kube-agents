@@ -210,10 +210,14 @@ ensure_teardown_state() {
     echo -e "  ${C_YELLOW}⚠ State file ${VARS_FILE} not found. Prompting for target values...${C_RESET}"
     local ACTIVE_PROJECT
     ACTIVE_PROJECT="$(gcloud config get-value project 2>/dev/null || echo "")"
-    if [ "${DRY_RUN:-0}" -eq 1 ]; then
-      export PROJECT_ID="${ACTIVE_PROJECT:-dummy-project}"
-      export REGION="us-east4"
-      export CLUSTER_NAME="platform-agent-host"
+    if [ "${DRY_RUN:-0}" -eq 1 ] || [ "${NO_CONFIRM:-0}" -eq 1 ] || is_ci_pipeline || [ -n "${PROJECT_ID:-}" ]; then
+      export PROJECT_ID="${PROJECT_ID:-${GCP_PROJECT_ID:-${ACTIVE_PROJECT}}}"
+      if [ -z "$PROJECT_ID" ]; then
+        echo -e "  ${C_RED}✗ Project ID is required. Please export PROJECT_ID.${C_RESET}"
+        exit 1
+      fi
+      export REGION="${REGION:-${GCP_REGION:-us-east4}}"
+      export CLUSTER_NAME="${CLUSTER_NAME:-${GKE_CLUSTER_NAME:-platform-agent-host}}"
     else
       echo -ne "  ${C_CYAN}Enter Target GCP Project ID [${C_WHITE}${ACTIVE_PROJECT}${C_CYAN}]: ${C_RESET}"
       read -r INPUT_PROJECT_ID

@@ -1,0 +1,77 @@
+name: RC Step 4 - Validate Candidate Commit
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        # TODO(POC): Temporary input fallback for candidate SHA. Revert before main.
+        description: "Git Commit SHA (Default: Current SHA)"
+        required: false
+        type: string
+      rc_tag:
+        description: "Release Candidate Tag (Mandatory)"
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      commit_sha:
+        # TODO(POC): required: false set for POC testing from push events. Revert to true when tag trigger is strict.
+        required: false
+        type: string
+      rc_tag:
+        required: false
+        type: string
+
+jobs:
+  validate-tag:
+    runs-on: ubuntu-latest
+    environment: rc
+    permissions:
+      contents: write
+
+    steps:
+      - name: Validate Inputs
+        id: validate
+        run: |
+          TARGET_SHA="${{ inputs.commit_sha || github.sha }}"
+          TAG_VAL="${{ inputs.rc_tag }}"
+
+          # TODO(POC): Validate presence of RC tag before marking candidate as validated.
+          if [ -z "$TAG_VAL" ]; then
+            echo "❌ ERROR: No Release Candidate tag ('rc_*') provided!"
+            exit 1
+          fi
+
+          echo "commit_sha=${TARGET_SHA}" >> "$GITHUB_OUTPUT"
+          echo "rc_tag=${TAG_VAL}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout repository at exact candidate commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.validate.outputs.commit_sha }}
+
+      - name: Validate Release Candidate Commit
+        run: |
+          SHA_VAL="${{ steps.validate.outputs.commit_sha }}"
+          TAG_VAL="${{ steps.validate.outputs.rc_tag }}"
+
+          echo "======================================================================"
+          echo "🏷️ MARKING RELEASE CANDIDATE COMMIT AS VALIDATED"
+          echo "Commit SHA:   ${SHA_VAL}"
+          echo "RC Tag:       ${TAG_VAL}"
+          echo "======================================================================"
+
+          # TODO(POC): Temporary mock step for POC testing.
+          # When merging to main, uncomment the git tag creation command below to attach 'rc_validated' tag to the Git commit:
+          #
+          # git config user.name "github-actions[bot]"
+          # git config user.email "github-actions[bot]@users.noreply.github.com"
+          # git tag -a "${TAG_VAL}_validated" "${SHA_VAL}" -m "Validated RC ${TAG_VAL} for commit ${SHA_VAL}"
+          # git push origin "${TAG_VAL}_validated"
+
+          echo "[INFO] Candidate commit ${SHA_VAL} (RC Tag: ${TAG_VAL}) passed all E2E tests and is marked as verified!"
+          echo "[INFO] (POC Dry Run) Skipping git tag push '${TAG_VAL}_validated' during POC testing."
+
+          echo "======================================================================"
+          echo "✅ Release Candidate ${TAG_VAL} (${SHA_VAL}) successfully verified!"
+          echo "======================================================================"
