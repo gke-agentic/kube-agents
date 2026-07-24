@@ -17,10 +17,16 @@ ensure_crane() {
   elif [ -f "/tmp/crane" ]; then
     CRANE_BIN="/tmp/crane"
   else
-    echo "[INFO] Downloading crane CLI tool..." >&2
-    CRANE_VER=$(curl -sSL https://api.github.com/repos/google/go-containerregistry/releases/latest 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || echo "")
-    CRANE_VER="${CRANE_VER:-v0.20.2}"
-    curl -sSL "https://github.com/google/go-containerregistry/releases/download/${CRANE_VER}/go-containerregistry_Linux_x86_64.tar.gz" | tar -xz -C /tmp crane
+    echo "[INFO] Downloading crane CLI tool via gh CLI..." >&2
+    if command -v gh &>/dev/null; then
+      gh release download -R google/go-containerregistry --pattern "*_Linux_x86_64.tar.gz" --dir /tmp --clobber >/dev/null 2>&1 || true
+      tar -xzf /tmp/*_Linux_x86_64.tar.gz -C /tmp crane 2>/dev/null || true
+    fi
+
+    if [ ! -f "/tmp/crane" ]; then
+      curl -sSL "https://github.com/google/go-containerregistry/releases/download/v0.21.7/go-containerregistry_Linux_x86_64.tar.gz" | tar -xz -C /tmp crane
+    fi
+
     chmod +x /tmp/crane
     CRANE_BIN="/tmp/crane"
   fi
