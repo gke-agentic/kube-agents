@@ -4,20 +4,21 @@ on:
   workflow_dispatch:
     inputs:
       commit_sha:
-        # TODO(POC): Temporary target commit default 1810fac241a9540f943e9722c38ab45135905e06 for POC testing.
+        # TODO(POC): Temporary target commit default 1810fac241a9540f943e9722c38ab45135905e06 for POC testing. Revert before main.
         description: "Git Commit SHA for Release Candidate (Default: 1810fac241a9540f943e9722c38ab45135905e06)"
         required: false
         default: "1810fac241a9540f943e9722c38ab45135905e06"
         type: string
       rc_tag:
-        # TODO(POC): Temporary auto-generation of rc_YYMMDDHHMM tag for testing.
+        # TODO(POC): Temporary auto-generation of rc_YYMMDDHHMM tag for testing without pre-created git tag.
         description: "Release Candidate Tag (Default: Auto-generated rc_YYMMDDHHMM)"
         required: false
         type: string
   workflow_call:
     inputs:
       commit_sha:
-        required: true
+        # TODO(POC): required: false set for POC testing from push events. Revert to true when tag trigger is strict.
+        required: false
         type: string
       rc_tag:
         required: false
@@ -41,9 +42,10 @@ jobs:
       - name: Resolve Commit SHA and Tag Name
         id: resolve
         run: |
+          # TODO(POC): Temporary target commit fallback 1810fac241a9540f943e9722c38ab45135905e06. Replace with github.sha before main.
           TARGET_SHA="${{ inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' }}"
 
-          # TODO(POC): Auto-generate timestamped RC tag if omitted during manual dispatch.
+          # TODO(POC): Auto-generate timestamped RC tag if omitted or during POC branch testing.
           if [ -n "${{ inputs.rc_tag }}" ] && [ "${{ inputs.rc_tag }}" != "test/autopush-poc-pipeline" ]; then
             TAG_VAL="${{ inputs.rc_tag }}"
           else

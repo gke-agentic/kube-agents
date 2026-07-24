@@ -1,10 +1,10 @@
-name: RC Step 4 - Validate & Tag Stable
+name: RC Step 4 - Validate Candidate Commit
 
 on:
   workflow_dispatch:
     inputs:
       commit_sha:
-        # TODO(POC): Temporary input fallback for candidate SHA.
+        # TODO(POC): Temporary input fallback for candidate SHA. Revert before main.
         description: "Git Commit SHA (Default: Current SHA)"
         required: false
         type: string
@@ -15,10 +15,11 @@ on:
   workflow_call:
     inputs:
       commit_sha:
-        required: true
+        # TODO(POC): required: false set for POC testing from push events. Revert to true when tag trigger is strict.
+        required: false
         type: string
       rc_tag:
-        required: true
+        required: false
         type: string
 
 jobs:
@@ -27,8 +28,6 @@ jobs:
     environment: rc
     permissions:
       contents: write
-      packages: write
-      id-token: write
 
     steps:
       - name: Validate Inputs
@@ -51,40 +50,28 @@ jobs:
         with:
           ref: ${{ steps.validate.outputs.commit_sha }}
 
-      - name: Install Crane CLI
-        uses: imjasonh/setup-crane@v0.4
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Tag Verified Commit & Docker Images
+      - name: Validate Release Candidate Commit
         run: |
-          IMAGE_REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           SHA_VAL="${{ steps.validate.outputs.commit_sha }}"
           TAG_VAL="${{ steps.validate.outputs.rc_tag }}"
 
           echo "======================================================================"
-          echo "🏷️ MARKING RELEASE CANDIDATE AS VALIDATED"
+          echo "🏷️ MARKING RELEASE CANDIDATE COMMIT AS VALIDATED"
           echo "Commit SHA:   ${SHA_VAL}"
           echo "RC Tag:       ${TAG_VAL}"
           echo "======================================================================"
 
-          # TODO(POC): Tag Docker images as validated-stable and rc_validated via crane with fallback to SHA.
-          PLATFORM_IMG="ghcr.io/${IMAGE_REPO}/platform-agent"
-          OPERATOR_IMG="ghcr.io/${IMAGE_REPO}/k8s-operator"
+          # TODO(POC): Temporary mock step for POC testing.
+          # When merging to main, uncomment the git tag creation command below to attach 'rc_validated' tag to the Git commit:
+          #
+          # git config user.name "github-actions[bot]"
+          # git config user.email "github-actions[bot]@users.noreply.github.com"
+          # git tag -a "${TAG_VAL}_validated" "${SHA_VAL}" -m "Validated RC ${TAG_VAL} for commit ${SHA_VAL}"
+          # git push origin "${TAG_VAL}_validated"
 
-          echo "[INFO] Tagging platform-agent:${TAG_VAL} as validated-stable..."
-          crane tag "${PLATFORM_IMG}:${TAG_VAL}" "validated-stable" || crane tag "${PLATFORM_IMG}:${SHA_VAL}" "validated-stable"
-          crane tag "${PLATFORM_IMG}:${TAG_VAL}" "rc_validated" || crane tag "${PLATFORM_IMG}:${SHA_VAL}" "rc_validated"
-
-          echo "[INFO] Tagging k8s-operator:${TAG_VAL} as validated-stable..."
-          crane tag "${OPERATOR_IMG}:${TAG_VAL}" "validated-stable" || crane tag "${OPERATOR_IMG}:${SHA_VAL}" "validated-stable"
-          crane tag "${OPERATOR_IMG}:${TAG_VAL}" "rc_validated" || crane tag "${OPERATOR_IMG}:${SHA_VAL}" "rc_validated"
+          echo "[INFO] Candidate commit ${SHA_VAL} (RC Tag: ${TAG_VAL}) passed all E2E tests and is marked as verified!"
+          echo "[INFO] (POC Dry Run) Skipping git tag push '${TAG_VAL}_validated' during POC testing."
 
           echo "======================================================================"
-          echo "✅ Release Candidate ${TAG_VAL} successfully validated and tagged!"
+          echo "✅ Release Candidate ${TAG_VAL} (${SHA_VAL}) successfully verified!"
           echo "======================================================================"
