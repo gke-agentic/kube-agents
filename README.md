@@ -2,6 +2,8 @@
 
 **Stop driving your clusters. Start delegating them.**
 
+## Introduction
+
 `kube-agents` replaces the traditional imperative DevOps presentation layer — `kubectl`, `gcloud`, the Google Cloud Console — with autonomous, proactive AI agents that manage your Kubernetes/GKE infrastructure, enforce multi-tenant governance, and continuously audit security posture. Instead of you reacting to pages and typing commands, a **Platform Agent** watches your fleet around the clock, opens pull requests with fixes, and reports to you in chat.
 
 | Traditional Ops                              | With `kube-agents`                                                                                           |
@@ -12,7 +14,20 @@
 | Patch Tuesdays and CVE spreadsheets          | Daily vulnerability & patch scans with staggered rollout orchestration                                       |
 | One human, one terminal                      | ChatOps with the agent over Google Chat & Slack                                                              |
 
-### ⚡ Try it now
+## Table of Contents
+
+- [Introduction](#introduction)
+- [⚡ Try it now](#-try-it-now)
+- [📖 Overview](#-overview)
+- [🚀 Installation & Quickstart](#-installation--quickstart)
+- [🛡️ Governance & Multi-Tenancy](#️-governance--multi-tenancy)
+- [🏗️ End State Architecture](#️-end-state-architecture)
+- [🤝 Contributing](#-contributing)
+- [Disclaimer](#disclaimer)
+
+---
+
+## ⚡ Try it now
 
 The fastest way in: clone this repository into your agent harness's workspace and delegate the setup itself to an agent:
 
