@@ -17,6 +17,11 @@ source "${SCRIPT_DIR}/common.sh" "$@"
 # ─── Configuration State Restoration ──────────────────────────────────────────
 ensure_teardown_state
 
+if ! is_truthy "${ENABLE_GVISOR:-false}"; then
+  print_info "Skipping gVisor node pool teardown (ENABLE_GVISOR=${ENABLE_GVISOR:-false})."
+  exit 0
+fi
+
 if [ -z "${GVISOR_POOL_NAME:-}" ]; then
   if [ "${DRY_RUN:-0}" -eq 1 ] || [ "${NO_CONFIRM:-0}" -eq 1 ] || is_ci_pipeline; then
     export GVISOR_POOL_NAME="gvisor-pool"
@@ -45,7 +50,7 @@ if [ -n "$POOL_EXISTS" ]; then
       REMOVE_GVISOR="y"
     fi
 
-    if [[ ${REMOVE_GVISOR:-n} =~ ^[Yy]$ ]]; then
+    if is_truthy "${REMOVE_GVISOR:-n}"; then
       echo -e "  ${C_CYAN}ℹ Deleting gVisor node pool ('$GVISOR_POOL_NAME') in cluster '$CLUSTER_NAME'...${C_RESET}"
       echo -e "    ${C_YELLOW}Note: This takes approximately 3-5 minutes in Google Cloud...${C_RESET}"
       gcloud container node-pools delete "$GVISOR_POOL_NAME" --cluster="$CLUSTER_NAME" --region="$REGION" --project="${PROJECT_ID}" --quiet
