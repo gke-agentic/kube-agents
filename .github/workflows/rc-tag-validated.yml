@@ -36,13 +36,13 @@ jobs:
         run: |
           TARGET_SHA="${{ inputs.commit_sha || github.sha }}"
           TAG_VAL="${{ inputs.rc_tag }}"
-          
+
           # TODO(POC): Validate presence of RC tag before marking candidate as validated.
           if [ -z "$TAG_VAL" ]; then
             echo "❌ ERROR: No Release Candidate tag ('rc_*') provided!"
             exit 1
           fi
-          
+
           echo "commit_sha=${TARGET_SHA}" >> "$GITHUB_OUTPUT"
           echo "rc_tag=${TAG_VAL}" >> "$GITHUB_OUTPUT"
 
@@ -66,25 +66,25 @@ jobs:
           IMAGE_REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           SHA_VAL="${{ steps.validate.outputs.commit_sha }}"
           TAG_VAL="${{ steps.validate.outputs.rc_tag }}"
-          
+
           echo "======================================================================"
           echo "🏷️ MARKING RELEASE CANDIDATE AS VALIDATED"
           echo "Commit SHA:   ${SHA_VAL}"
           echo "RC Tag:       ${TAG_VAL}"
           echo "======================================================================"
-          
+
           # TODO(POC): Tag Docker images as validated-stable and rc_validated via crane with fallback to SHA.
           PLATFORM_IMG="ghcr.io/${IMAGE_REPO}/platform-agent"
           OPERATOR_IMG="ghcr.io/${IMAGE_REPO}/k8s-operator"
-          
+
           echo "[INFO] Tagging platform-agent:${TAG_VAL} as validated-stable..."
           crane tag "${PLATFORM_IMG}:${TAG_VAL}" "validated-stable" || crane tag "${PLATFORM_IMG}:${SHA_VAL}" "validated-stable"
           crane tag "${PLATFORM_IMG}:${TAG_VAL}" "rc_validated" || crane tag "${PLATFORM_IMG}:${SHA_VAL}" "rc_validated"
-          
+
           echo "[INFO] Tagging k8s-operator:${TAG_VAL} as validated-stable..."
           crane tag "${OPERATOR_IMG}:${TAG_VAL}" "validated-stable" || crane tag "${OPERATOR_IMG}:${SHA_VAL}" "validated-stable"
           crane tag "${OPERATOR_IMG}:${TAG_VAL}" "rc_validated" || crane tag "${OPERATOR_IMG}:${SHA_VAL}" "rc_validated"
-          
+
           echo "======================================================================"
           echo "✅ Release Candidate ${TAG_VAL} successfully validated and tagged!"
           echo "======================================================================"

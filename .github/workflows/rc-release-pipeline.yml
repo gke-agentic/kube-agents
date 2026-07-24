@@ -3,10 +3,10 @@ name: RC Master Release Pipeline
 on:
   push:
     branches:
-      - 'test/autopush-poc-pipeline' # TODO(POC): Temporary branch push trigger for POC testing
+      - "test/autopush-poc-pipeline" # TODO(POC): Temporary branch push trigger for POC testing
     tags:
-      - 'rc_*'
-  pull_request:                       # TODO(POC): Temporary PR trigger for POC testing
+      - "rc_*"
+  pull_request: # TODO(POC): Temporary PR trigger for POC testing
     branches:
       - main
   workflow_dispatch:

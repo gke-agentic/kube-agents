@@ -39,7 +39,7 @@ jobs:
         run: |
           TARGET_SHA="${{ inputs.commit_sha || github.sha }}"
           TAG_VAL="${{ inputs.rc_tag }}"
-          
+
           # TODO(POC): Enforce mandatory RC tag check for standalone Step 2 deployment safety.
           if [ -z "$TAG_VAL" ]; then
             echo "❌ ERROR: No Release Candidate tag ('rc_*') provided!"
@@ -47,7 +47,7 @@ jobs:
             echo "Please create an 'rc_*' tag on commit ${TARGET_SHA} or start the pipeline from Step 1 (Build)."
             exit 1
           fi
-          
+
           echo "commit_sha=${TARGET_SHA}" >> "$GITHUB_OUTPUT"
           echo "rc_tag=${TAG_VAL}" >> "$GITHUB_OUTPUT"
 

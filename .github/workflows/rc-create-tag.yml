@@ -42,17 +42,17 @@ jobs:
         id: resolve
         run: |
           TARGET_SHA="${{ inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' }}"
-          
+
           # TODO(POC): Auto-generate timestamped RC tag if omitted during manual dispatch.
           if [ -n "${{ inputs.rc_tag }}" ] && [ "${{ inputs.rc_tag }}" != "test/autopush-poc-pipeline" ]; then
             TAG_VAL="${{ inputs.rc_tag }}"
           else
             TAG_VAL="rc_$(date -u +'%y%m%d%H%M')"
           fi
-          
+
           echo "commit_sha=${TARGET_SHA}" >> "$GITHUB_OUTPUT"
           echo "rc_tag=${TAG_VAL}" >> "$GITHUB_OUTPUT"
-          
+
           echo "======================================================================"
           echo "🏷️ CREATING RELEASE CANDIDATE TAG"
           echo "Target Commit SHA: ${TARGET_SHA}"
@@ -71,13 +71,13 @@ jobs:
         run: |
           SHA_VAL="${{ steps.resolve.outputs.commit_sha }}"
           TAG_VAL="${{ steps.resolve.outputs.rc_tag }}"
-          
+
           echo "commit_sha=${SHA_VAL}" >> "$GITHUB_OUTPUT"
           echo "rc_tag=${TAG_VAL}" >> "$GITHUB_OUTPUT"
-          
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
+
           if git rev-parse "${TAG_VAL}" >/dev/null 2>&1; then
             echo "[INFO] Git tag '${TAG_VAL}' already exists."
           else
