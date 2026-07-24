@@ -38,47 +38,43 @@ on:
 jobs:
   step1-create-tag:
     name: 🏷️ Step 1 - Create Candidate Tag
-    if: github.event_name == 'push' || github.event_name == 'pull_request' || github.event.inputs.start_from_step == '' || github.event.inputs.start_from_step == 'step1_create_tag'
-    # TODO(POC): Temporary branch reference @test/autopush-poc-pipeline for unmerged POC reusable workflow resolution. Revert to ./.github/workflows/rc-create-tag.yml before main.
-    uses: gke-agentic/kube-agents/.github/workflows/rc-create-tag.yml@test/autopush-poc-pipeline
+    if: inputs.start_from_step == '' || inputs.start_from_step == 'step1_create_tag'
+    uses: ./.github/workflows/rc-create-tag.yml
     with:
       # TODO(POC): Temporary hardcoded commit fallback 1810fac241a9540f943e9722c38ab45135905e06. Replace with github.sha before main.
-      commit_sha: ${{ github.event.inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' }}
-      rc_tag: ${{ github.event.inputs.rc_tag || '' }}
+      commit_sha: ${{ inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' }}
+      rc_tag: ${{ inputs.rc_tag || '' }}
     secrets: inherit
 
   step2-deploy:
     name: 🚀 Step 2 - Deploy Environment
     needs: [step1-create-tag]
-    if: always() && (needs.step1-create-tag.result == 'success' || github.event.inputs.start_from_step == 'step2_deploy')
-    # TODO(POC): Temporary branch reference @test/autopush-poc-pipeline for unmerged POC reusable workflow resolution. Revert to ./.github/workflows/rc-deploy-environment.yml before main.
-    uses: gke-agentic/kube-agents/.github/workflows/rc-deploy-environment.yml@test/autopush-poc-pipeline
+    if: always() && (needs.step1-create-tag.result == 'success' || inputs.start_from_step == 'step2_deploy')
+    uses: ./.github/workflows/rc-deploy-environment.yml
     with:
       # TODO(POC): Temporary hardcoded commit fallback 1810fac241a9540f943e9722c38ab45135905e06. Replace with github.sha before main.
-      commit_sha: ${{ needs.step1-create-tag.outputs.resolved_commit_sha || github.event.inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' }}
-      rc_tag: ${{ needs.step1-create-tag.outputs.resolved_rc_tag || github.event.inputs.rc_tag || '' }}
+      commit_sha: ${{ needs.step1-create-tag.outputs.resolved_commit_sha || inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' }}
+      rc_tag: ${{ needs.step1-create-tag.outputs.resolved_rc_tag || inputs.rc_tag || '' }}
     secrets: inherit
 
   step3-test:
     name: 🧪 Step 3 - Run E2E Tests
     needs: [step1-create-tag, step2-deploy]
-    if: always() && (needs.step2-deploy.result == 'success' || github.event.inputs.start_from_step == 'step3_test')
-    # TODO(POC): Temporary branch reference @test/autopush-poc-pipeline for unmerged POC reusable workflow resolution. Revert to ./.github/workflows/rc-run-e2e-tests.yml before main.
-    uses: gke-agentic/kube-agents/.github/workflows/rc-run-e2e-tests.yml@test/autopush-poc-pipeline
+    if: always() && (needs.step2-deploy.result == 'success' || inputs.start_from_step == 'step3_test')
+    uses: ./.github/workflows/rc-run-e2e-tests.yml
     with:
       # TODO(POC): Temporary hardcoded commit fallback 1810fac241a9540f943e9722c38ab45135905e06. Replace with github.sha before main.
-      commit_sha: ${{ needs.step1-create-tag.outputs.resolved_commit_sha || github.event.inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' }}
-      rc_tag: ${{ needs.step1-create-tag.outputs.resolved_rc_tag || github.event.inputs.rc_tag || '' }}
+      commit_sha: ${{ needs.step1-create-tag.outputs.resolved_commit_sha || inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' }}
+      rc_tag: ${{ needs.step1-create-tag.outputs.resolved_rc_tag || inputs.rc_tag || '' }}
     secrets: inherit
 
   step4-validate:
     name: ✅ Step 4 - Validate Candidate
     needs: [step1-create-tag, step3-test]
-    if: always() && (needs.step3-test.result == 'success' || github.event.inputs.start_from_step == 'step4_validate')
-    # TODO(POC): Temporary branch reference @test/autopush-poc-pipeline for unmerged POC reusable workflow resolution. Revert to ./.github/workflows/rc-tag-validated.yml before main.
-    uses: gke-agentic/kube-agents/.github/workflows/rc-tag-validated.yml@test/autopush-poc-pipeline
+    if: always() && (needs.step3-test.result == 'success' || inputs.start_from_step == 'step4_validate')
+    uses: ./.github/workflows/rc-tag-validated.yml
     with:
       # TODO(POC): Temporary hardcoded commit fallback 1810fac241a9540f943e9722c38ab45135905e06. Replace with github.sha before main.
-      commit_sha: ${{ needs.step1-create-tag.outputs.resolved_commit_sha || github.event.inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' }}
-      rc_tag: ${{ needs.step1-create-tag.outputs.resolved_rc_tag || github.event.inputs.rc_tag || '' }}
+      commit_sha: ${{ needs.step1-create-tag.outputs.resolved_commit_sha || inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' }}
+      rc_tag: ${{ needs.step1-create-tag.outputs.resolved_rc_tag || inputs.rc_tag || '' }}
     secrets: inherit
