@@ -23,7 +23,7 @@ init_var "CLUSTER_NAME" "platform-agent-host" "Enter GKE Cluster Name"
 init_var "ENABLE_GKE_BACKUP_PLAN" "true" "Enable automated Google Cloud Backup for GKE on cluster (true/false)"
 
 # ─── Interactive Confirmation ─────────────────────────────────────────────────
-if [[ ! "$ENABLE_GKE_BACKUP_PLAN" =~ ^([tT][rR][uU][eE]|[yY][eE][sS]|[yY]|1)$ ]]; then
+if ! is_truthy "$ENABLE_GKE_BACKUP_PLAN"; then
   echo -e "  ${C_YELLOW}ℹ Skipping GKE Backup Plan setup per user request (ENABLE_GKE_BACKUP_PLAN=${ENABLE_GKE_BACKUP_PLAN}).${C_RESET}"
   exit 0
 fi

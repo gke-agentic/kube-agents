@@ -18,8 +18,6 @@ confirm_action "This will delete the GKE Backup Plan 'platform-agent-backup-plan
   "GCP Project:$PROJECT_ID" \
   "GCP Region:$REGION"
 
-gcloud config set project "$PROJECT_ID" --quiet 2>/dev/null || true
-
 print_step "Checking and removing GKE Backup Plan"
 
 if gcloud beta container backup-restore backup-plans describe platform-agent-backup-plan \
@@ -28,17 +26,20 @@ if gcloud beta container backup-restore backup-plans describe platform-agent-bac
     echo -e "  ${C_GREEN}[DRY-RUN] Would delete GKE Backup Plan 'platform-agent-backup-plan'.${C_RESET}"
   else
     echo -e "  ${C_CYAN}ℹ Deleting existing backup snapshots in 'platform-agent-backup-plan'...${C_RESET}"
-    for backup in $(gcloud beta container backup-restore backups list \
+    backups=$(gcloud beta container backup-restore backups list \
         --backup-plan=platform-agent-backup-plan \
         --location="$REGION" \
         --project="$PROJECT_ID" \
-        --format="value(name)" 2>/dev/null); do
-      echo -e "    ${C_CYAN}ℹ Deleting snapshot '${backup}'...${C_RESET}"
-      gcloud beta container backup-restore backups delete "$backup" \
-          --backup-plan=platform-agent-backup-plan \
-          --location="$REGION" \
-          --project="$PROJECT_ID" \
-          --quiet || true
+        --format="value(name)" || echo "")
+    for backup in $backups; do
+      if [ -n "$backup" ]; then
+        echo -e "    ${C_CYAN}ℹ Deleting snapshot '${backup}'...${C_RESET}"
+        gcloud beta container backup-restore backups delete "$backup" \
+            --backup-plan=platform-agent-backup-plan \
+            --location="$REGION" \
+            --project="$PROJECT_ID" \
+            --quiet
+      fi
     done
 
     echo -e "  ${C_CYAN}ℹ Deleting GKE Backup Plan 'platform-agent-backup-plan'...${C_RESET}"
