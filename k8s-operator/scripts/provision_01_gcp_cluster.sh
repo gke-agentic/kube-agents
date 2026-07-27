@@ -37,11 +37,12 @@ init_var "REGION" "us-east4" "Enter GKE GCP Region"
 # Step 1: Enable APIs
 verify_apis() {
   local out=$(gcloud services list --enabled --project="$PROJECT_ID" --format="value(config.name)" 2>/dev/null || echo "")
-  echo "$out" | grep -q 'container.googleapis.com'
+  echo "$out" | grep -q 'container.googleapis.com' && echo "$out" | grep -q 'gkebackup.googleapis.com'
 }
 execute_apis() {
   gcloud services enable \
       container.googleapis.com \
+      gkebackup.googleapis.com \
       --project="$PROJECT_ID"
 }
 
@@ -50,13 +51,14 @@ verify_cluster() {
   gcloud container clusters describe "$CLUSTER_NAME" --region="$REGION" --project="$PROJECT_ID" >/dev/null 2>&1
 }
 execute_cluster() {
-  print_info "Creating GKE Standard Cluster with Workload Identity. This takes approximately 5-8 minutes in Google Cloud..."
+  print_info "Creating GKE Standard Cluster with Workload Identity and GKE Backup. This takes approximately 5-8 minutes in Google Cloud..."
   gcloud beta container clusters create "$CLUSTER_NAME" \
       --region "$REGION" \
       --machine-type="e2-standard-4" \
       --num-nodes=1 \
       --workload-pool="${PROJECT_ID}.svc.id.goog" \
       --addons=GcpFilestoreCsiDriver \
+      --enable-gke-backup \
       --managed-otel-scope=COLLECTION_AND_INSTRUMENTATION_COMPONENTS \
       --project "$PROJECT_ID" \
       --quiet
