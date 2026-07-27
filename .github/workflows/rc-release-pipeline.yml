@@ -25,7 +25,7 @@ on:
         type: string
 
 jobs:
-  step1-create-tag:
+  step1-create-candidate:
     name: "🏷️ Step 1: Create Release Candidate Tag"
     runs-on: ubuntu-latest
     permissions:
@@ -75,9 +75,9 @@ jobs:
           echo "[INFO] (POC Dry Run) Generated candidate RC tag '${TAG_VAL}' for commit '${SHA_VAL}' in memory."
           echo "[INFO] (POC Dry Run) Skipping real git tag push to remote origin during POC testing."
 
-  step2-deploy:
+  step2-deploy-candidate:
     name: "🚀 Step 2: Deploy Candidate to RC Environment"
-    needs: [step1-create-tag]
+    needs: [step1-create-candidate]
     runs-on: ubuntu-latest
     environment: rc
     permissions:
@@ -85,10 +85,10 @@ jobs:
       id-token: write
     env:
       CLOUDSDK_CORE_DISABLE_PROMPTS: "1"
-      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-      PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
-      REGION: ${{ vars.GCP_REGION }}
-      CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
       GOOGLE_CHAT_ENABLED: ${{ vars.GOOGLE_CHAT_ENABLED }}
       GOOGLE_CHAT_MODE: ${{ vars.GOOGLE_CHAT_MODE }}
       E2E_CHAT_TOPIC_NAME: ${{ vars.E2E_CHAT_TOPIC_NAME }}
@@ -100,15 +100,15 @@ jobs:
       MEMORY_PROVIDER: ${{ vars.MEMORY_PROVIDER }}
       USER_PROFILE_ENABLED: ${{ vars.USER_PROFILE_ENABLED }}
       # TODO(POC): Temporary 3-element fallback chain. Revert fallback 1810fac241a9540f943e9722c38ab45135905e06 before merging PR 3 to main.
-      IMAGE_TAG: ${{ needs.step1-create-tag.outputs.resolved_commit_sha || inputs.commit_sha || github.sha || '1810fac241a9540f943e9722c38ab45135905e06' }}
+      IMAGE_TAG: ${{ needs.step1-create-candidate.outputs.resolved_commit_sha || inputs.commit_sha || github.sha || '1810fac241a9540f943e9722c38ab45135905e06' }}
       CI: "true"
 
     steps:
       - name: Validate Inputs
         id: validate
         run: |
-          TARGET_SHA="${{ needs.step1-create-tag.outputs.resolved_commit_sha || inputs.commit_sha || github.sha }}"
-          TAG_VAL="${{ needs.step1-create-tag.outputs.resolved_rc_tag || inputs.rc_tag || 'rc_poc' }}"
+          TARGET_SHA="${{ needs.step1-create-candidate.outputs.resolved_commit_sha || inputs.commit_sha || github.sha }}"
+          TAG_VAL="${{ needs.step1-create-candidate.outputs.resolved_rc_tag || inputs.rc_tag || 'rc_poc' }}"
 
           echo "commit_sha=${TARGET_SHA}" >> "$GITHUB_OUTPUT"
           echo "rc_tag=${TAG_VAL}" >> "$GITHUB_OUTPUT"
@@ -134,10 +134,10 @@ jobs:
           echo "======================================================================"
           echo "🚀 RELEASE CANDIDATE DEPLOYMENT CONFIGURATION"
           echo "======================================================================"
-          echo "Target Project ID:          ${PROJECT_ID:-<NOT SET IN ENVIRONMENT>}"
-          echo "Target Project Number:      ${PROJECT_NUMBER:-<NOT SET IN ENVIRONMENT>}"
-          echo "Target GCP Region:          ${REGION:-<NOT SET IN ENVIRONMENT>}"
-          echo "Target Cluster Name:        ${CLUSTER_NAME:-<NOT SET IN ENVIRONMENT>}"
+          echo "Target Project ID:          ${GCP_PROJECT_ID:-<NOT SET IN ENVIRONMENT>}"
+          echo "Target Project Number:      ${GCP_PROJECT_NUMBER:-<NOT SET IN ENVIRONMENT>}"
+          echo "Target GCP Region:          ${GCP_REGION:-<NOT SET IN ENVIRONMENT>}"
+          echo "Target Cluster Name:        ${GKE_CLUSTER_NAME:-<NOT SET IN ENVIRONMENT>}"
           echo "Service Account:            ${{ vars.GCP_SERVICE_ACCOUNT }}"
           echo "----------------------------------------------------------------------"
           echo "Candidate Commit SHA:       ${{ steps.validate.outputs.commit_sha }}"
@@ -162,9 +162,9 @@ jobs:
           # ./k8s-operator/scripts/teardown.sh --no-confirm
           ./k8s-operator/scripts/provision.sh --no-confirm
 
-  step3-test:
+  step3-validate-candidate:
     name: "🧪 Step 3: Validate Candidate via E2E Suite"
-    needs: [step1-create-tag, step2-deploy]
+    needs: [step1-create-candidate, step2-deploy-candidate]
     runs-on: ubuntu-latest
     environment: rc
     permissions:
@@ -185,7 +185,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.step1-create-tag.outputs.resolved_commit_sha || inputs.commit_sha || github.sha }}
+          ref: ${{ needs.step1-create-candidate.outputs.resolved_commit_sha || inputs.commit_sha || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -222,9 +222,9 @@ jobs:
         run: |
           pytest tests/e2e/gchat_agent_test.py -v -s
 
-  step4-validate:
+  step4-promote-release:
     name: "✅ Step 4: Promote & Mark Release Candidate as Validated"
-    needs: [step1-create-tag, step3-test]
+    needs: [step1-create-candidate, step3-validate-candidate]
     runs-on: ubuntu-latest
     environment: rc
     permissions:
@@ -233,8 +233,8 @@ jobs:
     steps:
       - name: Validate Release Candidate Commit
         run: |
-          SHA_VAL="${{ needs.step1-create-tag.outputs.resolved_commit_sha || inputs.commit_sha || github.sha }}"
-          TAG_VAL="${{ needs.step1-create-tag.outputs.resolved_rc_tag || inputs.rc_tag || 'rc_poc' }}"
+          SHA_VAL="${{ needs.step1-create-candidate.outputs.resolved_commit_sha || inputs.commit_sha || github.sha }}"
+          TAG_VAL="${{ needs.step1-create-candidate.outputs.resolved_rc_tag || inputs.rc_tag || 'rc_poc' }}"
 
           echo "======================================================================"
           echo "🏷️ MARKING RELEASE CANDIDATE COMMIT AS VALIDATED"
