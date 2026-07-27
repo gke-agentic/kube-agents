@@ -62,12 +62,6 @@ Each entry follows this shape:
 | `enabled`            | bool            | Set `false` to disable without deleting the entry.                                           |
 | `deliver` (optional) | string          | Chat delivery mode. `"all"` on `github-issue-resolver` means every run reports back to Chat. |
 
-## Change log
-
-- **[PR #354](https://github.com/gke-labs/kube-agents/pull/354)** (merged 2026-07-20) — `github-issue-resolver` dropped from a higher frequency to `*/30 * * * *` to reduce Chat noise and inference cost.
-- **[PR #356](https://github.com/gke-labs/kube-agents/pull/356)** (open) — proposes a `fleet-health-digest` job at 13:00 UTC daily.
-- **[PR #347](https://github.com/gke-labs/kube-agents/pull/347)** (open) — proposes a 15-minute `gke-node-problem-detector` watchdog.
-
 ## Editing
 
 Edit `jobs.json`, then redeploy the workspace:

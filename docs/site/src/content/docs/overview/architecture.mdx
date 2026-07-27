@@ -94,7 +94,7 @@ flowchart TB
 
 Everything except the LLM (and, for hosted providers, the LLM API endpoint) runs inside your Kubernetes cluster:
 
-- **Namespace**: `kubeagents-system` (renamed from earlier `platform-agent-system` in PR #336).
+- **Namespace**: `kubeagents-system`.
 - **Node pools**: default node pool is enough for the operator, Platform Agent, LiteLLM, and Minty. If you use vLLM, provision a GPU node pool separately.
 - **Optional gVisor node pool** for sandboxed skill execution (`provision_02_gvisor_nodepool.sh`, opt-in via `ENABLE_GVISOR=true`).
 - **Workload Identity** bindings are pre-provisioned in `provision_04_gcp_iam.sh` — the operator gets cluster management scope, the Platform Agent gets a configurable permission set (`read-only`, `gke-admin`, or `custom`). See [Security & IAM](/kube-agents/reference/security-and-iam/).

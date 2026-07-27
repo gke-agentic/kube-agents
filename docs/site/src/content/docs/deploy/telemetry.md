@@ -34,7 +34,7 @@ Container `stdout`/`stderr` is ingested automatically by the GKE log agent. Pod,
 
 ## Session metadata
 
-Chat session context (space ID, user, thread) flows through Hermes as OTel span attributes. Trace lookup by session ID works out of the box. Full data flow: [`docs/gchat-session-metadata-data-flow.md`](https://github.com/gke-labs/kube-agents/blob/main/docs/gchat-session-metadata-data-flow.md).
+Chat session context (space ID, user, thread) flows through Hermes as OTel span attributes. Trace lookup by session ID works out of the box. Full data flow: [`docs/designs/gchat-session-metadata-data-flow.md`](https://github.com/gke-labs/kube-agents/blob/main/docs/designs/gchat-session-metadata-data-flow.md).
 
 ## Console links
 
