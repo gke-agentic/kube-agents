@@ -38,8 +38,7 @@ jobs:
       - name: Resolve Commit SHA and Tag Name
         id: resolve
         run: |
-          # TODO(POC): Temporary fallback priority for 1810fac241a9540f943e9722c38ab45135905e06 before github.sha during POC testing. Revert order before main.
-          TARGET_SHA="${{ inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' || github.sha }}"
+          TARGET_SHA="${{ inputs.commit_sha || github.sha }}"
 
           if [ -n "${{ inputs.rc_tag }}" ] && [ "${{ inputs.rc_tag }}" != "test/autopush-poc-pipeline" ]; then
             TAG_VAL="${{ inputs.rc_tag }}"
@@ -86,6 +85,10 @@ jobs:
       id-token: write
     env:
       CLOUDSDK_CORE_DISABLE_PROMPTS: "1"
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
+      REGION: ${{ vars.GCP_REGION }}
+      CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
       GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       GCP_PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
       GCP_REGION: ${{ vars.GCP_REGION }}
@@ -100,8 +103,8 @@ jobs:
       MEMORY_ENABLED: ${{ vars.MEMORY_ENABLED }}
       MEMORY_PROVIDER: ${{ vars.MEMORY_PROVIDER }}
       USER_PROFILE_ENABLED: ${{ vars.USER_PROFILE_ENABLED }}
-      # TODO(POC): Temporary fallback priority for 1810fac241a9540f943e9722c38ab45135905e06 before github.sha during POC testing. Revert order before main.
-      IMAGE_TAG: ${{ needs.step1-create-candidate.outputs.resolved_commit_sha || inputs.commit_sha || '503c6cad84cd89784a3a4b3da37a57b735bc3436' || github.sha }}
+      # TODO(POC): Temporary fallback for prebuilt images during POC testing.
+      IMAGE_TAG: ${{ needs.step1-create-candidate.outputs.resolved_commit_sha || inputs.commit_sha || '503c6cad84cd89784a3a4b3da37a57b735bc3436' }}
       CI: "true"
 
     steps:

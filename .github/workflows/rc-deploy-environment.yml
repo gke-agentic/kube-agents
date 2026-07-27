@@ -37,6 +37,10 @@ jobs:
       PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
       REGION: ${{ vars.GCP_REGION }}
       CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
       GOOGLE_CHAT_ENABLED: ${{ vars.GOOGLE_CHAT_ENABLED }}
       GOOGLE_CHAT_MODE: ${{ vars.GOOGLE_CHAT_MODE }}
       E2E_CHAT_TOPIC_NAME: ${{ vars.E2E_CHAT_TOPIC_NAME }}
@@ -47,8 +51,7 @@ jobs:
       MEMORY_ENABLED: ${{ vars.MEMORY_ENABLED }}
       MEMORY_PROVIDER: ${{ vars.MEMORY_PROVIDER }}
       USER_PROFILE_ENABLED: ${{ vars.USER_PROFILE_ENABLED }}
-      # TODO(POC): Temporary fallback priority for 1810fac241a9540f943e9722c38ab45135905e06 before github.sha during POC testing. Revert order before main.
-      IMAGE_TAG: ${{ inputs.commit_sha || '503c6cad84cd89784a3a4b3da37a57b735bc3436' || github.sha }}
+      IMAGE_TAG: ${{ inputs.commit_sha || '503c6cad84cd89784a3a4b3da37a57b735bc3436' }}
       CI: "true"
 
     steps:
