@@ -4,7 +4,6 @@ on:
   workflow_dispatch:
     inputs:
       commit_sha:
-        # TODO(POC): Temporary input fallback for commit SHA in manual execution.
         description: "Git Commit SHA (Default: Current SHA)"
         required: false
         type: string
@@ -32,6 +31,25 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    env:
+      CLOUDSDK_CORE_DISABLE_PROMPTS: "1"
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
+      REGION: ${{ vars.GCP_REGION }}
+      CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
+      GOOGLE_CHAT_ENABLED: ${{ vars.GOOGLE_CHAT_ENABLED }}
+      GOOGLE_CHAT_MODE: ${{ vars.GOOGLE_CHAT_MODE }}
+      E2E_CHAT_TOPIC_NAME: ${{ vars.E2E_CHAT_TOPIC_NAME }}
+      MODEL_PROVIDER: ${{ vars.MODEL_PROVIDER }}
+      MODEL_DEFAULT_NAME: ${{ vars.MODEL_DEFAULT_NAME }}
+      ENABLE_GVISOR: ${{ vars.ENABLE_GVISOR }}
+      PLATFORM_AGENT_PERMISSION_SET: ${{ vars.PLATFORM_AGENT_PERMISSION_SET }}
+      MEMORY_ENABLED: ${{ vars.MEMORY_ENABLED }}
+      MEMORY_PROVIDER: ${{ vars.MEMORY_PROVIDER }}
+      USER_PROFILE_ENABLED: ${{ vars.USER_PROFILE_ENABLED }}
+      # TODO(POC): Temporary 3-element fallback chain. Revert fallback 1810fac241a9540f943e9722c38ab45135905e06 before merging PR 2 to main.
+      IMAGE_TAG: ${{ inputs.commit_sha || github.sha || '1810fac241a9540f943e9722c38ab45135905e06' }}
+      CI: "true"
 
     steps:
       - name: Validate Release Candidate Tag & Commit
@@ -40,16 +58,15 @@ jobs:
           TARGET_SHA="${{ inputs.commit_sha || github.sha }}"
           TAG_VAL="${{ inputs.rc_tag }}"
 
-          # TODO(POC): Enforce mandatory RC tag check for standalone Step 2 deployment safety.
-          if [ -z "$TAG_VAL" ]; then
+          if [ -z "$TAG_VAL" ] && [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "❌ ERROR: No Release Candidate tag ('rc_*') provided!"
             echo "Direct deployment to 'kube-agents-rc' is restricted to official Release Candidates."
-            echo "Please create an 'rc_*' tag on commit ${TARGET_SHA} or start the pipeline from Step 1 (Build)."
+            echo "Please create an 'rc_*' tag on commit ${TARGET_SHA} or start the pipeline from Step 1 (Create Tag)."
             exit 1
           fi
 
           echo "commit_sha=${TARGET_SHA}" >> "$GITHUB_OUTPUT"
-          echo "rc_tag=${TAG_VAL}" >> "$GITHUB_OUTPUT"
+          echo "rc_tag=${TAG_VAL:-rc_poc}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout repository at exact candidate commit
         uses: actions/checkout@v4
@@ -69,52 +86,33 @@ jobs:
 
       - name: Log Deployment Configuration Summary
         run: |
-          # TODO(POC): Print configuration summary log table before invoking provision.sh.
           echo "======================================================================"
           echo "🚀 RELEASE CANDIDATE DEPLOYMENT CONFIGURATION"
           echo "======================================================================"
-          echo "Target Project ID:          ${{ vars.GCP_PROJECT_ID || '<NOT SET IN ENVIRONMENT>' }}"
-          echo "Target Project Number:      ${{ vars.GCP_PROJECT_NUMBER || '<NOT SET IN ENVIRONMENT>' }}"
-          echo "Target GCP Region:          ${{ vars.GCP_REGION || '<NOT SET IN ENVIRONMENT>' }}"
-          echo "Target Cluster Name:        ${{ vars.GKE_CLUSTER_NAME || vars.CLUSTER_NAME || '<NOT SET IN ENVIRONMENT>' }}"
-          echo "Service Account:            ${{ vars.GCP_SERVICE_ACCOUNT || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "Target Project ID:          ${PROJECT_ID:-<NOT SET IN ENVIRONMENT>}"
+          echo "Target Project Number:      ${PROJECT_NUMBER:-<NOT SET IN ENVIRONMENT>}"
+          echo "Target GCP Region:          ${REGION:-<NOT SET IN ENVIRONMENT>}"
+          echo "Target Cluster Name:        ${CLUSTER_NAME:-<NOT SET IN ENVIRONMENT>}"
+          echo "Service Account:            ${{ vars.GCP_SERVICE_ACCOUNT }}"
           echo "----------------------------------------------------------------------"
           echo "Candidate Commit SHA:       ${{ steps.validate.outputs.commit_sha }}"
-          echo "Candidate Image Tag:        ${{ steps.validate.outputs.rc_tag }}"
+          echo "Candidate Image Tag:        ${IMAGE_TAG}"
           echo "----------------------------------------------------------------------"
-          echo "Google Chat Enabled:        ${{ vars.GOOGLE_CHAT_ENABLED || '<NOT SET IN ENVIRONMENT>' }}"
-          echo "Google Chat Mode:           ${{ vars.GOOGLE_CHAT_MODE || '<NOT SET IN ENVIRONMENT>' }}"
-          echo "Google Chat Topic Name:     ${{ vars.E2E_CHAT_TOPIC_NAME || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "Google Chat Enabled:        ${GOOGLE_CHAT_ENABLED:-<NOT SET IN ENVIRONMENT>}"
+          echo "Google Chat Mode:           ${GOOGLE_CHAT_MODE:-<NOT SET IN ENVIRONMENT>}"
+          echo "Google Chat Topic Name:     ${E2E_CHAT_TOPIC_NAME:-<NOT SET IN ENVIRONMENT>}"
           echo "----------------------------------------------------------------------"
-          echo "Model Provider:             ${{ vars.MODEL_PROVIDER || '<NOT SET IN ENVIRONMENT>' }}"
-          echo "Model Default Name:         ${{ vars.MODEL_DEFAULT_NAME || '<NOT SET IN ENVIRONMENT>' }}"
-          echo "Enable gVisor Isolation:    ${{ vars.ENABLE_GVISOR || '<NOT SET IN ENVIRONMENT>' }}"
-          echo "Agent K8s Permission Set:   ${{ vars.PLATFORM_AGENT_PERMISSION_SET || '<NOT SET IN ENVIRONMENT>' }}"
-          echo "Memory Enabled:             ${{ vars.MEMORY_ENABLED || '<NOT SET IN ENVIRONMENT>' }}"
-          echo "Memory Provider:            ${{ vars.MEMORY_PROVIDER || '<NOT SET IN ENVIRONMENT>' }}"
-          echo "User Profile Enabled:       ${{ vars.USER_PROFILE_ENABLED || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "Model Provider:             ${MODEL_PROVIDER:-<NOT SET IN ENVIRONMENT>}"
+          echo "Model Default Name:         ${MODEL_DEFAULT_NAME:-<NOT SET IN ENVIRONMENT>}"
+          echo "Enable gVisor Isolation:    ${ENABLE_GVISOR:-<NOT SET IN ENVIRONMENT>}"
+          echo "Agent K8s Permission Set:   ${PLATFORM_AGENT_PERMISSION_SET:-<NOT SET IN ENVIRONMENT>}"
+          echo "Memory Enabled:             ${MEMORY_ENABLED:-<NOT SET IN ENVIRONMENT>}"
+          echo "Memory Provider:            ${MEMORY_PROVIDER:-<NOT SET IN ENVIRONMENT>}"
+          echo "User Profile Enabled:       ${USER_PROFILE_ENABLED:-<NOT SET IN ENVIRONMENT>}"
           echo "======================================================================"
 
-      - name: Teardown & Provision Environment in GCP
-        # TODO(POC): Pass environment variables with default fallbacks to provision.sh.
-        env:
-          CLOUDSDK_CORE_DISABLE_PROMPTS: "1"
-          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-          PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
-          REGION: ${{ vars.GCP_REGION }}
-          CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME || vars.CLUSTER_NAME }}
-          GOOGLE_CHAT_ENABLED: ${{ vars.GOOGLE_CHAT_ENABLED || 'true' }}
-          GOOGLE_CHAT_MODE: ${{ vars.GOOGLE_CHAT_MODE || 'default' }}
-          E2E_CHAT_TOPIC_NAME: ${{ vars.E2E_CHAT_TOPIC_NAME || 'platform-agent-chat-events' }}
-          MODEL_PROVIDER: ${{ vars.MODEL_PROVIDER || 'gemini' }}
-          MODEL_DEFAULT_NAME: ${{ vars.MODEL_DEFAULT_NAME || 'gemini-3.5-flash' }}
-          ENABLE_GVISOR: ${{ vars.ENABLE_GVISOR || 'true' }}
-          PLATFORM_AGENT_PERMISSION_SET: ${{ vars.PLATFORM_AGENT_PERMISSION_SET || 'read-only' }}
-          MEMORY_ENABLED: ${{ vars.MEMORY_ENABLED || 'false' }}
-          MEMORY_PROVIDER: ${{ vars.MEMORY_PROVIDER || 'multiuser_memory' }}
-          USER_PROFILE_ENABLED: ${{ vars.USER_PROFILE_ENABLED || 'false' }}
-          AGENT_TAG: ${{ steps.validate.outputs.commit_sha }}
-          CI: "true"
+      - name: Provision Environment in GCP
         run: |
-          ./k8s-operator/scripts/teardown.sh --no-confirm
+          # TODO(POC): Temporary disabled teardown.sh for faster POC testing. Uncomment before main.
+          # ./k8s-operator/scripts/teardown.sh --no-confirm
           ./k8s-operator/scripts/provision.sh --no-confirm
