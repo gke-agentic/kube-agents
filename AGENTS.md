@@ -42,15 +42,15 @@ To use these agents:
 Every fact has one home. Duplicating documentation across files is how it goes stale, so before
 adding a paragraph, check whether the topic already has an owner:
 
-| Content                                                     | Canonical home                                           |
-| ----------------------------------------------------------- | -------------------------------------------------------- |
-| User-facing narrative, how-to, and reference                | `docs/site/src/content/docs/`                            |
-| End-state architecture                                      | `docs/architecture/`                                     |
-| Per-feature design rationale                                | `docs/designs/`                                          |
-| What each provisioning script does                          | `k8s-operator/scripts/README.md`                         |
-| The install procedure (self-contained, agent-executable)    | `INSTALL.md`                                             |
-| What the agent is and is not permitted to do                | the site's `reference/security-and-iam.md`               |
-| How to develop a specific directory                         | that directory's `README.md` (keep it short)             |
+| Content                                                  | Canonical home                               |
+| -------------------------------------------------------- | -------------------------------------------- |
+| User-facing narrative, how-to, and reference             | `docs/site/src/content/docs/`                |
+| End-state architecture                                   | `docs/architecture/`                         |
+| Per-feature design rationale                             | `docs/designs/`                              |
+| What each provisioning script does                       | `k8s-operator/scripts/README.md`             |
+| The install procedure (self-contained, agent-executable) | `INSTALL.md`                                 |
+| What the agent is and is not permitted to do             | the site's `reference/security-and-iam.md`   |
+| How to develop a specific directory                      | that directory's `README.md` (keep it short) |
 
 Rules:
 

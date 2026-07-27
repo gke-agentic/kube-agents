@@ -4,13 +4,13 @@
 
 `kube-agents` replaces the traditional imperative DevOps presentation layer — `kubectl`, `gcloud`, the Google Cloud Console — with autonomous, proactive AI agents that manage your Kubernetes/GKE infrastructure, enforce multi-tenant governance, and continuously audit security posture. Instead of you reacting to pages and typing commands, a **Platform Agent** watches your fleet around the clock, opens pull requests with fixes, and reports to you in chat.
 
-| Traditional Ops                              | With `kube-agents`                                                                                       |
-| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| Reactive, manual toil (`kubectl` + runbooks) | Proactive, intent-driven operations                                                                      |
-| Drift discovered during incidents            | Scheduled compliance & blueprint audits ([autonomous watchdogs](agents/platform/cron/jobs.json))         |
+| Traditional Ops                              | With `kube-agents`                                                                                           |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Reactive, manual toil (`kubectl` + runbooks) | Proactive, intent-driven operations                                                                          |
+| Drift discovered during incidents            | Scheduled compliance & blueprint audits ([autonomous watchdogs](agents/platform/cron/jobs.json))             |
 | Hand-rolled RBAC and tenancy reviews         | Automated RBAC & boundary enforcement, [credential isolation by design](docs/credential-isolation-design.md) |
-| Patch Tuesdays and CVE spreadsheets          | Daily vulnerability & patch scans with staggered rollout orchestration                                   |
-| One human, one terminal                      | ChatOps with the agent over Google Chat & Slack                                                          |
+| Patch Tuesdays and CVE spreadsheets          | Daily vulnerability & patch scans with staggered rollout orchestration                                       |
+| One human, one terminal                      | ChatOps with the agent over Google Chat & Slack                                                              |
 
 📗 **Full documentation: [gke-labs.github.io/kube-agents](https://gke-labs.github.io/kube-agents/)**
 
@@ -59,7 +59,7 @@ The runtime is built on the Hermes agent framework and wires in MCP servers for 
 - **Kernel-level sandboxing** — agent workloads can run under a gVisor RuntimeClass (GKE Sandbox).
 - **GitOps-only mutations** — infrastructure changes are proposed as pull requests for human review.
 
-Exactly what is *enforced* on which plane — Kubernetes RBAC, GCP IAM, and the GitOps path each answer differently — is set out in [Security & IAM](https://gke-labs.github.io/kube-agents/reference/security-and-iam/#what-the-agent-can-and-cannot-do). Read that before granting the agent access to a production project.
+Exactly what is _enforced_ on which plane — Kubernetes RBAC, GCP IAM, and the GitOps path each answer differently — is set out in [Security & IAM](https://gke-labs.github.io/kube-agents/reference/security-and-iam/#what-the-agent-can-and-cannot-do). Read that before granting the agent access to a production project.
 
 ---
 
