@@ -7,8 +7,8 @@ name: Docs Deploy
 # Actions", and (b) trigger it manually the first time via the Actions
 # tab. After that, every push to main republishes.
 #
-# On the upstream `gke-labs/kube-agents` repo, this workflow will also
-# stay inert until Pages is enabled there.
+# On the upstream `gke-labs/kube-agents` repo, Pages is enabled and the
+# site is live at https://gke-labs.github.io/kube-agents/.
 
 on:
   push:
