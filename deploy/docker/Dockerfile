@@ -77,7 +77,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git && \
 # 5. Create base defaults directory and copy shared defaults
 RUN mkdir -p /opt/defaults && chown hermes:hermes /opt/defaults
 COPY --chown=hermes:hermes deploy/shared/defaults/ /opt/defaults/
-COPY --chown=hermes:hermes docs/glossary.md /opt/defaults/docs/
+COPY --chown=hermes:hermes agents/platform/docs/glossary.md /opt/defaults/docs/
 COPY --chown=hermes:hermes docs/gcp-console-links.md /opt/defaults/docs/
 
 
