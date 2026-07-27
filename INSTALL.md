@@ -2,6 +2,15 @@
 
 This comprehensive, step-by-step guide explains how to install, configure, deploy, and verify the **Kubernetes Agentic Harness (`kube-agents`)** across different environments—from automated Google Cloud Platform (GCP) / GKE deployments to local development clusters and third-party multi-agent orchestrators.
 
+> **What this file is.** A self-contained, executable procedure — runnable from a fresh clone with no
+> network access to the documentation site, by a human or an AI agent. It deliberately carries the
+> commands and nothing else.
+>
+> For the explanatory material — why each component exists, architecture, troubleshooting in depth,
+> and the concept guides — see **<https://gke-labs.github.io/kube-agents/>**. For what each
+> provisioning script does, see
+> [`k8s-operator/scripts/README.md`](k8s-operator/scripts/README.md).
+
 ---
 
 ## Table of Contents
@@ -55,19 +64,15 @@ For full end-to-end setups on Google Cloud Platform (GCP) with GKE Standard, Wor
 
 ### Modular Pipeline Stages
 
-The automated installer executes idempotent stages sequentially:
+The automated installer executes eleven idempotent stages sequentially, from GKE cluster creation
+through to the optional inference-replay proxy. Each stage has its own `make` target and can be
+re-run on its own.
 
-1. **01: GKE Cluster Setup** (`make gcp-provision-01-cluster`)
-2. **02: gVisor Sandbox Pool** (`make gcp-provision-02-gvisor`)
-3. **03: Operator CRDs & Manager** (`make gcp-provision-03-operator`)
-4. **04: GCP IAM & Workload Identity** (`make gcp-provision-04-iam`)
-5. **05: Google Chat Pub/Sub Topic** (`make gcp-provision-05-gchat`)
-6. **06: Slack Configuration** (`make gcp-provision-06-slack`)
-7. **07: Kubernetes API Secrets** (`make gcp-provision-07-secrets`)
-8. **08: PlatformAgent CR Deployment** (`make gcp-provision-08-deploy`)
-9. **09: LiteLLM Gateway** (`make gcp-provision-09-litellm`)
-10. **10: GitHub Token Minter** (`make gcp-provision-10-github`)
-11. **11: Inference Replay Proxy** (`make gcp-provision-11-inference-replay`)
+- **What each stage does:** [`k8s-operator/scripts/README.md`](k8s-operator/scripts/README.md)
+- **The current target list:** `cd k8s-operator && make help`
+
+Stage 03 installs `cert-manager` automatically if it is not already present, so you do **not** need
+to install it yourself on this path. (You do for [Method 2](#method-2-manual-kubernetes-cluster-deployment).)
 
 ### Step-by-Step Execution
 
@@ -101,7 +106,9 @@ make gcp-provision
   ```
 
 > [!TIP]
-> Each stage of the provisioning pipeline can also be run individually using step-specific Makefile targets (e.g., `make gcp-provision-01-cluster`, `make gcp-provision-02-gvisor`, ..., `make gcp-provision-11-inference-replay`). See [k8s-operator/README.md](k8s-operator/README.md#running-individual-steps-with-make) for the complete list of individual provisioning and teardown targets.
+> Each stage can also be run on its own (e.g. `make gcp-provision-01-cluster`). Run
+> `cd k8s-operator && make help` for the complete, always-current list of provisioning and teardown
+> targets.
 
 #### Step 3: Verify Running Components
 
@@ -174,6 +181,8 @@ If you are installing into an existing Kubernetes or GKE cluster without using t
 ### Step 1: Install cert-manager
 
 The Kubernetes Operator requires `cert-manager` (version `1.13.0+`) to generate and rotate admission webhook TLS certificates.
+
+> Only needed on this manual path. [Method 1](#method-1-automated-gcp--gke-provisioning-recommended) installs `cert-manager` for you in stage 03.
 
 - **Standard Kubernetes / GKE Standard Cluster (via Helm)**:
 
@@ -312,19 +321,9 @@ cd k8s-operator
 make gcp-teardown
 ```
 
-You can also run step-specific teardowns:
-
-- `make gcp-teardown-11-inference-replay`: Undeploy Inference Replay proxy
-- `make gcp-teardown-10-github`: Remove GitHub Token Minter
-- `make gcp-teardown-09-litellm`: Undeploy LiteLLM Gateway
-- `make gcp-teardown-08-deploy`: Delete PlatformAgent CR
-- `make gcp-teardown-07-secrets`: Delete Kubernetes secrets
-- `make gcp-teardown-06-slack`: Reset Slack configuration
-- `make gcp-teardown-05-gchat`: Remove Google Chat Pub/Sub resources
-- `make gcp-teardown-04-iam`: Clean up Workload Identity and GSAs
-- `make gcp-teardown-03-operator`: Undeploy operator controller and CRDs
-- `make gcp-teardown-02-gvisor`: Delete gVisor node pool
-- `make gcp-teardown-01-cluster`: Decommission GKE Standard cluster
+Teardown mirrors provisioning in reverse, and each step has its own `make gcp-teardown-NN-*` target.
+Run `make help` for the list, and see
+[`k8s-operator/scripts/README.md`](k8s-operator/scripts/README.md) for what each one removes.
 
 ### Manual Local Uninstall
 
