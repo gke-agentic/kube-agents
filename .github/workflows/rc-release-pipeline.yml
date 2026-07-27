@@ -101,7 +101,7 @@ jobs:
       MEMORY_PROVIDER: ${{ vars.MEMORY_PROVIDER }}
       USER_PROFILE_ENABLED: ${{ vars.USER_PROFILE_ENABLED }}
       # TODO(POC): Temporary fallback priority for 1810fac241a9540f943e9722c38ab45135905e06 before github.sha during POC testing. Revert order before main.
-      IMAGE_TAG: ${{ needs.step1-create-candidate.outputs.resolved_commit_sha || inputs.commit_sha || '1810fac241a9540f943e9722c38ab45135905e06' || github.sha }}
+      IMAGE_TAG: ${{ needs.step1-create-candidate.outputs.resolved_commit_sha || inputs.commit_sha || '503c6cad84cd89784a3a4b3da37a57b735bc3436' || github.sha }}
       CI: "true"
 
     steps:
