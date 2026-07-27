@@ -51,13 +51,13 @@ FENCE_RE = re.compile(r"^\s*(```|~~~)")
 
 def tracked_markdown() -> list[Path]:
     out = subprocess.run(
-        ["git", "ls-files", "*.md", "*.mdx"],
+        ["git", "ls-files", "-z", "*.md", "*.mdx"],
         cwd=REPO,
         capture_output=True,
         text=True,
         check=True,
-    ).stdout.split()
-    return [REPO / p for p in out if "node_modules" not in p]
+    ).stdout.split("\0")
+    return [REPO / p for p in out if p and "node_modules" not in p]
 
 
 def strip_code_fences(text: str) -> list[tuple[int, str]]:

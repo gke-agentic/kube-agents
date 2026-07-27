@@ -13,4 +13,4 @@ Neither is supported today.
 - [Quick start (GKE)](/kube-agents/install/quickstart-gke/) — `./provision.sh` bootstraps GKE, the operator, and the agent.
 - [Manual install](/kube-agents/install/manual/) — for other Hermes-compatible harnesses.
 
-Check [`k8s-operator/deploy/`](https://github.com/gke-labs/kube-agents/tree/main/k8s-operator/deploy) for a chart if one has landed since this page was written.
+Check the repository's [`deploy/`](https://github.com/gke-labs/kube-agents/tree/main/deploy) tree for a chart if one has landed since this page was written.
