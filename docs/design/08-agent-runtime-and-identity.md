@@ -2,6 +2,10 @@
 
 **Status:** ✅ Agreed
 
+> **Specifies the end state, not current behaviour.** Some of this is built and some is not;
+> where this document leads the implementation it says so. See [README.md](README.md) for the
+> delta against what ships today.
+
 **Overview:** [README.md](README.md) · **Depends on:** [02](02-agent-personas.md),
 [03](03-security-model.md), [04](04-workflow-model.md), [06](06-api-and-data-contracts.md) ·
 **Tier:** Buildable (bridging)

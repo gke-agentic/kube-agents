@@ -2,6 +2,10 @@
 
 **Status:** ✅ Agreed
 
+> **Specifies the end state, not current behaviour.** Some of this is built and some is not;
+> where this document leads the implementation it says so. See [README.md](README.md) for the
+> delta against what ships today.
+
 **Overview:** [README.md](README.md) · **Depends on:** [01-vision-scope.md](01-vision-scope.md),
 [02-agent-personas.md](02-agent-personas.md), [03-security-model.md](03-security-model.md)
 

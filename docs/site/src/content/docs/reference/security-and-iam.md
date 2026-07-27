@@ -5,12 +5,30 @@ sidebar:
   order: 6
 ---
 
-`kube-agents` separates two access planes that are easy to conflate:
+## What the agent can and cannot do
 
-- **GCP IAM** — what the agent's Google Service Account (GSA) can do at the Google Cloud control-plane level (create clusters, read monitoring, etc.). Selectable at provisioning time.
-- **Kubernetes RBAC** — what the agent's Kubernetes ServiceAccount (KSA) can do against the cluster API. Always read-only, regardless of the GCP permission set.
+This is the canonical answer. Other pages summarize it and link here; if they appear to disagree, this page is correct.
 
-Writes to running infrastructure never happen through the agent's own credentials — they route through the [declarative GitOps path](#secure-write-path-gitops).
+"Is the agent read-only?" has **three different answers depending on which plane you mean.** Conflating them is the most common misreading of this project's security posture.
+
+| Plane                                                                       | What it governs                                                 | Can the agent write?                                                                                             |
+| --------------------------------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| **Kubernetes RBAC** (the KSA)                                               | Everything the agent does against a cluster's Kubernetes API    | **No — never.** Read-only in every configuration, and it cannot read Secrets. Enforced by RBAC.                    |
+| **GCP IAM** (the GSA)                                                       | GKE/Google Cloud control-plane calls, including via the `gke` MCP | **Yes, with the default `gke-admin` permission set.** No, with `read-only`. Enforced by IAM, chosen at provisioning. |
+| **The GitOps path**                                                         | Changes to your infrastructure-as-code repository               | Yes — by opening a pull request a human must review and merge.                                                     |
+
+### What that means in practice
+
+- **A cluster cannot be mutated through the Kubernetes API by this agent.** The KSA holds no write verb at all (see [Kubernetes RBAC](#kubernetes-rbac)). This holds regardless of any other setting.
+- **With the default `gke-admin` permission set, GKE control-plane mutation _is_ technically reachable.** The GSA holds `roles/container.admin`, and the agent's `gke` MCP server proxies `container.googleapis.com`, which exposes cluster-management tools. What stops the agent using them is its **persona** (`SOUL.md §1`, "automation first" — infrastructure changes go through Git), not a permission boundary.
+- **Persona rules are guidance, not enforcement.** A prompt-injection or reasoning failure is bounded by IAM, not by `SOUL.md`. If you need "read-only" to be an enforced property of the deployment rather than an intended behaviour of the model, provision with `PLATFORM_AGENT_PERMISSION_SET=read-only` (see [Configuring read-only mode](#configuring-read-only-auditing-mode)).
+- **The intended write path is always GitOps** — the agent proposes, a human merges, your reconciler applies. See [Secure write path](#secure-write-path-gitops).
+
+> The [end-state design](https://github.com/gke-labs/kube-agents/blob/main/docs/architecture/01-vision-scope.md) removes the second row entirely: agents become read-only on cloud APIs too, and the `create_cluster` tool is withdrawn. That is a target, not current behaviour.
+
+---
+
+The rest of this page details the two enforced planes.
 
 ## Identity model
 
