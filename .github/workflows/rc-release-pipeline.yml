@@ -94,6 +94,7 @@ jobs:
       E2E_CHAT_TOPIC_NAME: ${{ vars.E2E_CHAT_TOPIC_NAME }}
       MODEL_PROVIDER: ${{ vars.MODEL_PROVIDER }}
       MODEL_DEFAULT_NAME: ${{ vars.MODEL_DEFAULT_NAME }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       ENABLE_GVISOR: ${{ vars.ENABLE_GVISOR }}
       PLATFORM_AGENT_PERMISSION_SET: ${{ vars.PLATFORM_AGENT_PERMISSION_SET }}
       MEMORY_ENABLED: ${{ vars.MEMORY_ENABLED }}
@@ -215,7 +216,9 @@ jobs:
       - name: Wait for Platform Agent Pod Readiness
         run: |
           echo "Waiting for platform-agent-gateway deployment to become ready in GKE..."
-          kubectl rollout status deployment/platform-agent-gateway -n kubeagents-system --timeout=180s
+          kubectl rollout status deployment/platform-agent-gateway -n kubeagents-system --timeout=300s
+          echo "Waiting for litellm deployment to become ready in GKE..."
+          kubectl rollout status deployment/litellm -n kubeagents-system --timeout=300s
 
       - name: Execute E2E Test (Reusing e2e-gchat-test.yml workflow logic)
         run: |
