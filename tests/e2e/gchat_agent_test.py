@@ -25,7 +25,7 @@ import pytest
 # Configuration from Environment Variables (read dynamically from vars.sh or CI environment)
 GCP_PROJECT_ID: Optional[str] = os.environ.get("GCP_PROJECT_ID") or os.environ.get("PROJECT_ID")
 CHAT_SPACE_ID: Optional[str] = os.environ.get("CHAT_SPACE_ID")
-CHAT_TOPIC_NAME: str = os.environ.get("CHAT_TOPIC_NAME", "platform-agent-chat-events")
+CHAT_TOPIC_NAME: str = os.environ.get("CHAT_TOPIC_NAME") or os.environ.get("E2E_CHAT_TOPIC_NAME", "platform-agent-chat-events")
 
 # Test Identity Resolution (Defaults to CI Service Account email if GCP_PROJECT_ID is set)
 DEFAULT_SA_EMAIL: str = f"github-actions-e2e@{GCP_PROJECT_ID}.iam.gserviceaccount.com" if GCP_PROJECT_ID else "e2e-runner@google.com"

@@ -83,6 +83,24 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    env:
+      CLOUDSDK_CORE_DISABLE_PROMPTS: "1"
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
+      REGION: ${{ vars.GCP_REGION }}
+      CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
+      GOOGLE_CHAT_ENABLED: ${{ vars.GOOGLE_CHAT_ENABLED }}
+      GOOGLE_CHAT_MODE: ${{ vars.GOOGLE_CHAT_MODE }}
+      E2E_CHAT_TOPIC_NAME: ${{ vars.E2E_CHAT_TOPIC_NAME }}
+      MODEL_PROVIDER: ${{ vars.MODEL_PROVIDER }}
+      MODEL_DEFAULT_NAME: ${{ vars.MODEL_DEFAULT_NAME }}
+      ENABLE_GVISOR: ${{ vars.ENABLE_GVISOR }}
+      PLATFORM_AGENT_PERMISSION_SET: ${{ vars.PLATFORM_AGENT_PERMISSION_SET }}
+      MEMORY_ENABLED: ${{ vars.MEMORY_ENABLED }}
+      MEMORY_PROVIDER: ${{ vars.MEMORY_PROVIDER }}
+      USER_PROFILE_ENABLED: ${{ vars.USER_PROFILE_ENABLED }}
+      IMAGE_TAG: ${{ needs.step1-create-tag.outputs.resolved_commit_sha || inputs.commit_sha || github.sha }}
+      CI: "true"
 
     steps:
       - name: Validate Inputs
@@ -115,47 +133,29 @@ jobs:
           echo "======================================================================"
           echo "🚀 RELEASE CANDIDATE DEPLOYMENT CONFIGURATION"
           echo "======================================================================"
-          echo "Target Project ID:          ${{ vars.GCP_PROJECT_ID || '<NOT SET IN ENVIRONMENT>' }}"
-          echo "Target Project Number:      ${{ vars.GCP_PROJECT_NUMBER || '<NOT SET IN ENVIRONMENT>' }}"
-          echo "Target GCP Region:          ${{ vars.GCP_REGION || '<NOT SET IN ENVIRONMENT>' }}"
-          echo "Target Cluster Name:        ${{ vars.GKE_CLUSTER_NAME || vars.CLUSTER_NAME || '<NOT SET IN ENVIRONMENT>' }}"
-          echo "Service Account:            ${{ vars.GCP_SERVICE_ACCOUNT || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "Target Project ID:          ${PROJECT_ID:-<NOT SET IN ENVIRONMENT>}"
+          echo "Target Project Number:      ${PROJECT_NUMBER:-<NOT SET IN ENVIRONMENT>}"
+          echo "Target GCP Region:          ${REGION:-<NOT SET IN ENVIRONMENT>}"
+          echo "Target Cluster Name:        ${CLUSTER_NAME:-<NOT SET IN ENVIRONMENT>}"
+          echo "Service Account:            ${{ vars.GCP_SERVICE_ACCOUNT }}"
           echo "----------------------------------------------------------------------"
           echo "Candidate Commit SHA:       ${{ steps.validate.outputs.commit_sha }}"
-          echo "Candidate Image Tag:        ${{ steps.validate.outputs.rc_tag }}"
+          echo "Candidate Image Tag:        ${IMAGE_TAG}"
           echo "----------------------------------------------------------------------"
-          echo "Google Chat Enabled:        ${{ vars.GOOGLE_CHAT_ENABLED || '<NOT SET IN ENVIRONMENT>' }}"
-          echo "Google Chat Mode:           ${{ vars.GOOGLE_CHAT_MODE || '<NOT SET IN ENVIRONMENT>' }}"
-          echo "Google Chat Topic Name:     ${{ vars.E2E_CHAT_TOPIC_NAME || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "Google Chat Enabled:        ${GOOGLE_CHAT_ENABLED:-<NOT SET IN ENVIRONMENT>}"
+          echo "Google Chat Mode:           ${GOOGLE_CHAT_MODE:-<NOT SET IN ENVIRONMENT>}"
+          echo "Google Chat Topic Name:     ${E2E_CHAT_TOPIC_NAME:-<NOT SET IN ENVIRONMENT>}"
           echo "----------------------------------------------------------------------"
-          echo "Model Provider:             ${{ vars.MODEL_PROVIDER || '<NOT SET IN ENVIRONMENT>' }}"
-          echo "Model Default Name:         ${{ vars.MODEL_DEFAULT_NAME || '<NOT SET IN ENVIRONMENT>' }}"
-          echo "Enable gVisor Isolation:    ${{ vars.ENABLE_GVISOR || '<NOT SET IN ENVIRONMENT>' }}"
-          echo "Agent K8s Permission Set:   ${{ vars.PLATFORM_AGENT_PERMISSION_SET || '<NOT SET IN ENVIRONMENT>' }}"
-          echo "Memory Enabled:             ${{ vars.MEMORY_ENABLED || '<NOT SET IN ENVIRONMENT>' }}"
-          echo "Memory Provider:            ${{ vars.MEMORY_PROVIDER || '<NOT SET IN ENVIRONMENT>' }}"
-          echo "User Profile Enabled:       ${{ vars.USER_PROFILE_ENABLED || '<NOT SET IN ENVIRONMENT>' }}"
+          echo "Model Provider:             ${MODEL_PROVIDER:-<NOT SET IN ENVIRONMENT>}"
+          echo "Model Default Name:         ${MODEL_DEFAULT_NAME:-<NOT SET IN ENVIRONMENT>}"
+          echo "Enable gVisor Isolation:    ${ENABLE_GVISOR:-<NOT SET IN ENVIRONMENT>}"
+          echo "Agent K8s Permission Set:   ${PLATFORM_AGENT_PERMISSION_SET:-<NOT SET IN ENVIRONMENT>}"
+          echo "Memory Enabled:             ${MEMORY_ENABLED:-<NOT SET IN ENVIRONMENT>}"
+          echo "Memory Provider:            ${MEMORY_PROVIDER:-<NOT SET IN ENVIRONMENT>}"
+          echo "User Profile Enabled:       ${USER_PROFILE_ENABLED:-<NOT SET IN ENVIRONMENT>}"
           echo "======================================================================"
 
       - name: Teardown & Provision Environment in GCP
-        env:
-          CLOUDSDK_CORE_DISABLE_PROMPTS: "1"
-          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-          PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
-          REGION: ${{ vars.GCP_REGION }}
-          CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME || vars.CLUSTER_NAME }}
-          GOOGLE_CHAT_ENABLED: ${{ vars.GOOGLE_CHAT_ENABLED || 'true' }}
-          GOOGLE_CHAT_MODE: ${{ vars.GOOGLE_CHAT_MODE || 'default' }}
-          E2E_CHAT_TOPIC_NAME: ${{ vars.E2E_CHAT_TOPIC_NAME || 'platform-agent-chat-events' }}
-          MODEL_PROVIDER: ${{ vars.MODEL_PROVIDER || 'gemini' }}
-          MODEL_DEFAULT_NAME: ${{ vars.MODEL_DEFAULT_NAME || 'gemini-3.5-flash' }}
-          ENABLE_GVISOR: ${{ vars.ENABLE_GVISOR || 'true' }}
-          PLATFORM_AGENT_PERMISSION_SET: ${{ vars.PLATFORM_AGENT_PERMISSION_SET || 'read-only' }}
-          MEMORY_ENABLED: ${{ vars.MEMORY_ENABLED || 'false' }}
-          MEMORY_PROVIDER: ${{ vars.MEMORY_PROVIDER || 'multiuser_memory' }}
-          USER_PROFILE_ENABLED: ${{ vars.USER_PROFILE_ENABLED || 'false' }}
-          AGENT_TAG: ${{ steps.validate.outputs.commit_sha }}
-          CI: "true"
         run: |
           ./k8s-operator/scripts/teardown.sh --no-confirm
           ./k8s-operator/scripts/provision.sh --no-confirm
@@ -168,6 +168,16 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      CHAT_SPACE_ID: ${{ secrets.E2E_CHAT_SPACE_ID }}
+      E2E_CHAT_TOPIC_NAME: ${{ vars.E2E_CHAT_TOPIC_NAME }}
+      CHAT_TOPIC_NAME: ${{ vars.E2E_CHAT_TOPIC_NAME }}
+      TEST_USER_EMAIL: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      TEST_TIMEOUT_SEC: "120"
+      E2E_CHAT_CLIENT_ID: ${{ secrets.E2E_CHAT_CLIENT_ID }}
+      E2E_CHAT_CLIENT_SECRET: ${{ secrets.E2E_CHAT_CLIENT_SECRET }}
+      E2E_CHAT_REFRESH_TOKEN: ${{ secrets.E2E_CHAT_REFRESH_TOKEN }}
 
     steps:
       - name: Checkout Repository
@@ -189,19 +199,24 @@ jobs:
       - name: Authenticate to GCP via WIF
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER || 'projects/1020703904916/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider' }}
-          service_account: ${{ secrets.GCP_WIF_SA_EMAIL || 'github-actions-e2e@kube-agents-rc.iam.gserviceaccount.com' }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          install_components: "gke-gcloud-auth-plugin"
+
+      - name: Connect to GKE Cluster
+        run: |
+          gcloud container clusters get-credentials "${{ vars.GKE_CLUSTER_NAME }}" --location "${{ vars.GCP_REGION }}" --project "${{ vars.GCP_PROJECT_ID }}"
+
+      - name: Wait for Platform Agent Pod Readiness
+        run: |
+          echo "Waiting for platform-agent-gateway deployment to become ready in GKE..."
+          kubectl rollout status deployment/platform-agent-gateway -n kubeagents-system --timeout=180s
 
       - name: Execute E2E Test
-        env:
-          GCP_PROJECT_ID: "kube-agents-rc"
-          CHAT_SPACE_ID: ${{ secrets.E2E_CHAT_SPACE_ID }}
-          CHAT_TOPIC_NAME: "platform-agent-chat-events"
-          TEST_USER_EMAIL: "github-actions-e2e@kube-agents-rc.iam.gserviceaccount.com"
-          TEST_TIMEOUT_SEC: "120"
-          E2E_CHAT_CLIENT_ID: ${{ secrets.E2E_CHAT_CLIENT_ID }}
-          E2E_CHAT_CLIENT_SECRET: ${{ secrets.E2E_CHAT_CLIENT_SECRET }}
-          E2E_CHAT_REFRESH_TOKEN: ${{ secrets.E2E_CHAT_REFRESH_TOKEN }}
         run: |
           pytest tests/e2e/gchat_agent_test.py -v -s
 

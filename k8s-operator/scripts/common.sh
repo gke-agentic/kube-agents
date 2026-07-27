@@ -185,6 +185,7 @@ load_state() {
     echo "# SRE Sourced Variables for GKE & GCP Setup" > "$VARS_FILE"
     source "$VARS_FILE"
   fi
+  init_var "IMAGE_TAG" "latest" "Enter Base Image Tag"
   export NAMESPACE="kubeagents-system"
   export PLATFORM_AGENT_KSA_NAME="kubeagents-platform-agent"
   export PLATFORM_AGENT_GSA_NAME="kubeagents-platform-gsa"
