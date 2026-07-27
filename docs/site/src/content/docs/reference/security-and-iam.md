@@ -11,11 +11,11 @@ This is the canonical answer. Other pages summarize it and link here; if they ap
 
 "Is the agent read-only?" has **three different answers depending on which plane you mean.** Conflating them is the most common misreading of this project's security posture.
 
-| Plane                                                                       | What it governs                                                 | Can the agent write?                                                                                             |
-| --------------------------------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| **Kubernetes RBAC** (the KSA)                                               | Everything the agent does against a cluster's Kubernetes API    | **No** for workloads and cluster state — read-only in every configuration apart from a leader-election housekeeping Role confined to its own namespace, and it cannot read Secrets. Enforced by RBAC. |
-| **GCP IAM** (the GSA)                                                       | GKE/Google Cloud control-plane calls, including via the `gke` MCP | **Yes, with the default `gke-admin` permission set.** No, with `read-only`. Enforced by IAM, chosen at provisioning. |
-| **The GitOps path**                                                         | Changes to your infrastructure-as-code repository               | Yes — by opening a pull request a human must review and merge.                                                     |
+| Plane                         | What it governs                                                   | Can the agent write?                                                                                                                                                                                  |
+| ----------------------------- | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Kubernetes RBAC** (the KSA) | Everything the agent does against a cluster's Kubernetes API      | **No** for workloads and cluster state — read-only in every configuration apart from a leader-election housekeeping Role confined to its own namespace, and it cannot read Secrets. Enforced by RBAC. |
+| **GCP IAM** (the GSA)         | GKE/Google Cloud control-plane calls, including via the `gke` MCP | **Yes, with the default `gke-admin` permission set.** No, with `read-only`. Enforced by IAM, chosen at provisioning.                                                                                  |
+| **The GitOps path**           | Changes to your infrastructure-as-code repository                 | Yes — by opening a pull request a human must review and merge.                                                                                                                                        |
 
 ### What that means in practice
 
@@ -80,11 +80,11 @@ The **custom** set binds exactly the roles listed in `PLATFORM_AGENT_CUSTOM_ROLE
 
 Independently of the GCP permission set, the operator grants the agent KSA a **read-only** footprint on the Kubernetes API, plus one namespaced housekeeping Role. It creates three bindings (see [`platformagent_manifests.go`](https://github.com/gke-labs/kube-agents/blob/main/k8s-operator/internal/controller/platformagent_manifests.go)):
 
-| Binding                                  | Role                          | Grants                                                                                                              |
-| ---------------------------------------- | ----------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `kubeagents:viewer:<namespace>:<name>`   | standard `view` ClusterRole   | Read access to most namespaced resources — **excluding Secrets**.                                                   |
-| `kubeagents:explorer:<namespace>:<name>` | custom `kubeagents:explorer`  | `get`/`list` on `nodes`, `pods`, `namespaces`, and CRDs.                                                             |
-| `kubeagents:leader:<namespace>:<name>`   | custom namespaced Role        | Housekeeping in the agent's **own namespace only**: write on `coordination.k8s.io` `leases` (leader election) and `get`/`patch` on `pods`. |
+| Binding                                  | Role                         | Grants                                                                                                                                     |
+| ---------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `kubeagents:viewer:<namespace>:<name>`   | standard `view` ClusterRole  | Read access to most namespaced resources — **excluding Secrets**.                                                                          |
+| `kubeagents:explorer:<namespace>:<name>` | custom `kubeagents:explorer` | `get`/`list` on `nodes`, `pods`, `namespaces`, and CRDs.                                                                                   |
+| `kubeagents:leader:<namespace>:<name>`   | custom namespaced Role       | Housekeeping in the agent's **own namespace only**: write on `coordination.k8s.io` `leases` (leader election) and `get`/`patch` on `pods`. |
 
 For the default CR (`platform-agent` in `kubeagents-system`) the bindings resolve to `kubeagents:viewer:kubeagents-system:platform-agent`, `kubeagents:explorer:kubeagents-system:platform-agent`, and `kubeagents:leader:kubeagents-system:platform-agent`.
 
