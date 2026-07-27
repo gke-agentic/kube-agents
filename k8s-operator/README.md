@@ -43,7 +43,7 @@ Or execute the master script directly from the scripts folder:
 The master [provision.sh](scripts/provision.sh) script orchestrates modular sub-scripts sequentially. Each sub-script is idempotent: it verifies the state of its resources before executing any action. If a resource already exists or a step was already completed, it is skipped.
 
 > [!NOTE]
-> Because the provisioning scripts persist configuration state in [scripts/vars.sh](scripts/vars.sh), running the script again will reuse the same options selected on the first run. If you want to change configuration variables, manually edit [scripts/vars.sh](scripts/vars.sh) or perform a teardown first.
+> Because the provisioning scripts persist configuration state in `scripts/vars.sh`, running the script again will reuse the same options selected on the first run. If you want to change configuration variables, manually edit `scripts/vars.sh` or perform a teardown first.
 
 ```mermaid
 graph TD
@@ -123,7 +123,7 @@ Each teardown step mirrors its provisioning counterpart and is documented in
 
 ### 3. Sourcing Variables & Configuration State
 
-On the first execution of `make gcp-provision` (or `provision_01_gcp_cluster.sh`), you will be prompted for target values. These are saved to **[scripts/vars.sh](scripts/vars.sh)**.
+On the first execution of `make gcp-provision` (or `provision_01_gcp_cluster.sh`), you will be prompted for target values. These are saved to **`scripts/vars.sh`**.
 
 Subsequent script runs will skip the interactive configuration and automatically load variables from `vars.sh`. To re-configure or customize settings, you can edit `vars.sh` directly or delete it to be prompted again.
 

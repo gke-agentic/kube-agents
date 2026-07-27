@@ -8,16 +8,16 @@ This directory contains the automation scripts for provisioning and tearing down
 
 ## Architecture & Configuration Flow
 
-All scripts are modular and idempotent. They share a single configuration state stored in a local [vars.sh](vars.sh) file (which is git-ignored).
+All scripts are modular and idempotent. They share a single configuration state stored in a local `vars.sh` file (which is git-ignored).
 
 When any script is run:
 
-1. It checks if [vars.sh](vars.sh) exists.
-2. If any required variables are missing, the script prompts the user for them, exports them, and appends them to [vars.sh](vars.sh).
-3. If they are already defined in [vars.sh](vars.sh), the script sources them and runs non-interactively.
+1. It checks if `vars.sh` exists.
+2. If any required variables are missing, the script prompts the user for them, exports them, and appends them to `vars.sh`.
+3. If they are already defined in `vars.sh`, the script sources them and runs non-interactively.
 
 > [!NOTE]
-> Because the provisioning scripts persist configuration state in [vars.sh](vars.sh), running the script again will reuse the same options selected on the first run. If you want to change configuration variables, manually edit [vars.sh](vars.sh) or perform a teardown first.
+> Because the provisioning scripts persist configuration state in `vars.sh`, running the script again will reuse the same options selected on the first run. If you want to change configuration variables, manually edit `vars.sh` or perform a teardown first.
 
 ---
 
