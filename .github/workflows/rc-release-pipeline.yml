@@ -164,6 +164,7 @@ jobs:
     name: 🧪 Step 3 - Run E2E Tests
     needs: [step1-create-tag, step2-deploy]
     runs-on: ubuntu-latest
+    environment: rc
     permissions:
       contents: read
       id-token: write
@@ -194,6 +195,7 @@ jobs:
       - name: Execute E2E Test
         env:
           GCP_PROJECT_ID: "kube-agents-rc"
+          CHAT_SPACE_ID: ${{ secrets.E2E_CHAT_SPACE_ID }}
           CHAT_TOPIC_NAME: "platform-agent-chat-events"
           TEST_USER_EMAIL: "github-actions-e2e@kube-agents-rc.iam.gserviceaccount.com"
           TEST_TIMEOUT_SEC: "120"
