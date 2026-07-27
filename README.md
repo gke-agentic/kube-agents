@@ -33,7 +33,7 @@ cd k8s-operator
 make gcp-provision
 ```
 
-This runs eleven staged, idempotent scripts — GKE cluster, gVisor sandbox pool, operator + CRDs, IAM & Workload Identity, Google Chat, Slack, secrets, the Platform Agent CR, the LiteLLM gateway, the GitHub token minter, and inference replay. `make gcp-teardown` reverses it. See the [quick start](https://gke-labs.github.io/kube-agents/install/quickstart-gke/) for the walkthrough, or [INSTALL.md](INSTALL.md) for manual and local-development paths.
+This runs the staged, idempotent provisioning scripts end to end — from GKE cluster creation through IAM and chat integration to the optional inference stack. `make gcp-teardown` reverses it. See the [quick start](https://gke-labs.github.io/kube-agents/install/quickstart-gke/) for the walkthrough, or [INSTALL.md](INSTALL.md) for manual and local-development paths.
 
 ---
 

@@ -64,8 +64,8 @@ For full end-to-end setups on Google Cloud Platform (GCP) with GKE Standard, Wor
 
 ### Modular Pipeline Stages
 
-The automated installer executes eleven idempotent stages sequentially, from GKE cluster creation
-through to the optional inference-replay proxy. Each stage has its own `make` target and can be
+The automated installer executes a sequence of numbered, idempotent stages, from GKE cluster
+creation through to the optional inference-replay proxy. Each stage has its own `make` target and can be
 re-run on its own.
 
 - **What each stage does:** [`k8s-operator/scripts/README.md`](k8s-operator/scripts/README.md)
