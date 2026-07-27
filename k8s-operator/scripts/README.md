@@ -2,6 +2,10 @@
 
 This directory contains the automation scripts for provisioning and tearing down the GCP and GKE infrastructure required by the `kube-agents` platform agent and operator.
 
+> **This page is the canonical description of what each script does.** `INSTALL.md`, the operator
+> README, and the documentation site all link here rather than restating the steps. If you change a
+> script's behaviour, update it here — and nowhere else.
+
 ## Architecture & Configuration Flow
 
 All scripts are modular and idempotent. They share a single configuration state stored in a local [vars.sh](vars.sh) file (which is git-ignored).

@@ -19,7 +19,7 @@ SHELL = /usr/bin/env bash -o pipefail
 .SHELLFLAGS = -ec
 
 .PHONY: all
-all: build
+all: build ## Default target: build the manager binary.
 
 ##@ General
 
@@ -323,8 +323,10 @@ gcp-teardown-01-cluster: ## Teardown Step 1: Delete GKE cluster and local config
 	@chmod +x scripts/*.sh
 	@./scripts/teardown_01_gcp_cluster.sh $(ARGS)
 
-prettier-check:
+##@ Formatting
+
+prettier-check: ## Check Markdown/YAML formatting.
 	npx prettier --check "**/*.{md,yaml,yml}"
 
-prettier-write:
+prettier-write: ## Apply Markdown/YAML formatting.
 	npx prettier --write "**/*.{md,yaml,yml}"
