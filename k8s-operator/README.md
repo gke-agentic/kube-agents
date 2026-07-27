@@ -12,7 +12,7 @@ The operator is built using the Kubebuilder framework and is written in Go.
 
 Before building or deploying the operator, ensure you have the following installed:
 
-- [Go](https://go.dev/doc/install) (version 1.24+)
+- [Go](https://go.dev/doc/install) (version 1.25+)
 - [Docker](https://docs.docker.com/get-docker/) or Podman (for building container images)
 - [kubectl](https://kubernetes.io/docs/tasks/tools/) (configured to access your Kubernetes/GKE cluster)
 - Access to a running Kubernetes/GKE cluster
@@ -497,7 +497,7 @@ The GitHub Token Broker (Minty) can be deployed to the Kubernetes cluster using 
 Before deploying the GitHub integration, ensure you have:
 
 1. Created the `github-app-credentials` Secret containing your GitHub App ID in the destination namespace.
-2. Completed the Workload Identity and GCP Cloud KMS setup (see [integrations/github/README.md](integrations/github/README.md) for details).
+2. Completed the Workload Identity and GCP Cloud KMS setup (see [config/integrations/github/README.md](config/integrations/github/README.md) for details).
 
 ### Step-by-Step Deployment
 
@@ -515,7 +515,7 @@ export GITHUB_ORG=your-github-org
 export GITHUB_REPO=your-github-repo
 export GITHUB_MINTER_KSA_NAME=kubeagents-github-minter
 export GITHUB_MINTER_GSA_NAME=kubeagents-github-minter-gsa
-export PLATFORM_AGENT_GSA_NAME=kubeagents-platform-agent-gsa
+export PLATFORM_AGENT_GSA_NAME=kubeagents-platform-gsa
 
 # 2. Deploy GitHub:
 make deploy-github
