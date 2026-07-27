@@ -40,7 +40,7 @@ Before beginning installation, ensure your environment meets the following requi
 
 | CLI Tool / Utility              | Required Version | Verification Command       | Description                                                    |
 | :------------------------------ | :--------------- | :------------------------- | :------------------------------------------------------------- |
-| **Go**                          | `1.24+`          | `go version`               | Required for building operator binaries and running tests.     |
+| **Go**                          | `1.25+`          | `go version`               | Required for building operator binaries and running tests.     |
 | **Docker / Podman**             | `20.10+`         | `docker --version`         | Required to build container images for the operator.           |
 | **kubectl**                     | `1.28+`          | `kubectl version --client` | Communicates with your target Kubernetes or GKE cluster.       |
 | **Google Cloud SDK (`gcloud`)** | Latest           | `gcloud version`           | Needed for GKE cluster access, IAM, and Artifact Registry.     |
@@ -130,7 +130,7 @@ If you enabled Google Chat (`GOOGLE_CHAT_ENABLED=true`) or Slack (`SLACK_ENABLED
 1. **Configure the Google Chat API endpoint in GCP Console**:
    - Open the Google Chat API configuration page: `https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat?project=<PROJECT_ID>`
    - Set the **App name** to `GKE Platform Agent Bot`.
-   - Set the **Avatar URL** to `https://platform-agent.nousresearch.com/docs/img/logo.png`.
+   - Optionally set an **Avatar URL** pointing at an image you host.
    - Under **Connection settings**, select **Cloud Pub/Sub** and enter the Cloud Pub/Sub topic created during provisioning:
      ```text
      projects/<PROJECT_ID>/topics/<CHAT_TOPIC_NAME>
@@ -261,7 +261,7 @@ export GITHUB_ORG="your-github-org"
 export GITHUB_REPO="your-github-repo"
 export GITHUB_MINTER_KSA_NAME="kubeagents-github-minter"
 export GITHUB_MINTER_GSA_NAME="kubeagents-github-minter-gsa"
-export PLATFORM_AGENT_GSA_NAME="kubeagents-platform-agent-gsa"
+export PLATFORM_AGENT_GSA_NAME="kubeagents-platform-gsa"
 make deploy-github
 ```
 
@@ -342,7 +342,7 @@ make uninstall
 
 ### 1. Workload Identity Authorization Errors (`403 Permission Denied`)
 
-- Ensure the GKE Kubernetes Service Account (`kubeagents-system/kubeagents-platform-agent-ksa`) is correctly annotated with the GCP Service Account email (`iam.gke.io/gcp-service-account`).
+- Ensure the GKE Kubernetes Service Account (`kubeagents-system/kubeagents-platform-agent`) is correctly annotated with the GCP Service Account email (`iam.gke.io/gcp-service-account`).
 - Verify IAM bindings using:
   ```bash
   gcloud iam service-accounts get-iam-policy <GSA_EMAIL>
