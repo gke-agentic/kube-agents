@@ -113,7 +113,7 @@ values (project IDs, secrets). Derive these from the contracts in 06 and the rep
 - **Security-review skills:** `.agents/skills/review-security-k8s-*`
 - **Reference implementation stack** (Hermes on the controller; KCC or Terraform via customer CI/CD;
   OKF): [04-workflow-model.md](04-workflow-model.md) §1.1
-- **Glossary:** `docs/glossary.md`
+- **Glossary:** [gke-labs.github.io/kube-agents/reference/glossary](https://gke-labs.github.io/kube-agents/reference/glossary/)
 - **Detailed feature designs:** `docs/designs/` (e.g. `audit-logging-user-attribution.md`)
 - **Contribution mechanics:** `AGENTS.md`
 - **Install prerequisites:** `INSTALL.md` — _predates the controller runtime; rewritten in roadmap
