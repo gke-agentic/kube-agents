@@ -42,31 +42,20 @@ execute_kubeconfig() {
 
 # Step 2: Ensure GKE Backup Plan
 verify_backup_plan() {
-  # Always return false so that schedule or retention updates are applied idempotently on every run
-  return 1
+  gcloud beta container backup-restore backup-plans describe platform-agent-backup-plan \
+      --location="$REGION" --project="$PROJECT_ID" >/dev/null 2>&1
 }
 execute_backup_plan() {
-  if gcloud beta container backup-restore backup-plans describe platform-agent-backup-plan \
-      --location="$REGION" --project="$PROJECT_ID" >/dev/null 2>&1; then
-    print_info "Updating existing GKE Backup Plan 'platform-agent-backup-plan'..."
-    gcloud beta container backup-restore backup-plans update platform-agent-backup-plan \
-        --project="$PROJECT_ID" \
-        --location="$REGION" \
-        --cron-schedule="0 2 * * *" \
-        --backup-retain-days=30 \
-        --quiet
-  else
-    print_info "Creating default GKE Backup Plan 'platform-agent-backup-plan'..."
-    gcloud beta container backup-restore backup-plans create platform-agent-backup-plan \
-        --project="$PROJECT_ID" \
-        --location="$REGION" \
-        --cluster="projects/${PROJECT_ID}/locations/${REGION}/clusters/${CLUSTER_NAME}" \
-        --all-namespaces \
-        --include-volume-data \
-        --cron-schedule="0 2 * * *" \
-        --backup-retain-days=30 \
-        --quiet
-  fi
+  print_info "Creating default GKE Backup Plan 'platform-agent-backup-plan'..."
+  gcloud beta container backup-restore backup-plans create platform-agent-backup-plan \
+      --project="$PROJECT_ID" \
+      --location="$REGION" \
+      --cluster="projects/${PROJECT_ID}/locations/${REGION}/clusters/${CLUSTER_NAME}" \
+      --all-namespaces \
+      --include-volume-data \
+      --cron-schedule="0 2 * * *" \
+      --backup-retain-days=30 \
+      --quiet
 }
 
 # ─── Execution Pipeline ───────────────────────────────────────────────────────
