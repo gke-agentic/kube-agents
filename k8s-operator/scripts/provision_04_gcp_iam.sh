@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# 🤖 Step 3: Controller & Agent GCP Workload Identity & GCP IAM Permissions
+# 🤖 Step 4: Controller & Agent GCP Workload Identity & GCP IAM Permissions
 # ==============================================================================
 # Idempotent script for granting GKE cluster management and Workload Identity
 # permissions to the Operator Controller Manager and Agent GSAs.

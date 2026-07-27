@@ -5,7 +5,7 @@ REPO ?= $(eval REPO := $(LOCATION)-docker.pkg.dev/$(shell gcloud config get core
 
 BAD_SKILLS := $(wildcard agents/*/defaults/skills/*)
 
-.PHONY: default docker-build docker-build-agents docker-build-credential-proxy docker-push docker-push-agents docker-push-credential-proxy dev-rebuild-agent status prettier-check prettier-write validate
+.PHONY: default docker-build docker-build-agents docker-build-credential-proxy docker-push docker-push-agents docker-push-credential-proxy dev-rebuild-agent status prettier-check prettier-write validate docs-generate docs-check
 
 AGENTS := $(notdir $(patsubst %/,%,$(wildcard agents/*/)))
 
@@ -46,6 +46,14 @@ prettier-check:
 
 prettier-write:
 	npx prettier --write "**/*.md" "**/*.yaml" "**/*.yml"
+
+# Documentation tables that mirror a machine-readable source (cron jobs, the
+# skill catalogue, the provisioning steps) are generated rather than hand-kept.
+docs-generate:
+	@python3 scripts/generate_docs.py
+
+docs-check:
+	@python3 scripts/generate_docs.py --check
 
 validate:
 	@if [ -n "$(BAD_SKILLS)" ]; then \

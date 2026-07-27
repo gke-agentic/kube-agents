@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# 🤖 Step 6: Deploy PlatformAgent Custom Resource Manifest
+# 🤖 Step 8: Deploy PlatformAgent Custom Resource Manifest
 # ==============================================================================
 # Idempotent script that connects to GKE, renders the platform-agent.yaml 
 # template, and deploys it to the cluster.
