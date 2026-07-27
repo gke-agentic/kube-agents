@@ -34,7 +34,7 @@ When any script is run:
    - Sets up initial project configs.
    - Enables GKE Service API (`container.googleapis.com`).
    - Provisions a GKE Standard Cluster with Workload Identity enabled.
-   - Points `kubectl` credentials to the new cluster and creates the target namespace.
+   - Points `kubectl` credentials to the new cluster. (The target namespace is created later, by the operator deploy in step 03.)
 2. **[provision_02_gvisor_nodepool.sh](provision_02_gvisor_nodepool.sh)**
    - Provisions a dedicated GKE Sandbox (gVisor) node pool (defaults to `gvisor-pool`, configurable via `GVISOR_POOL_NAME`). Executed automatically if `ENABLE_GVISOR=true`.
 3. **[provision_03_gcp_gke_operator.sh](provision_03_gcp_gke_operator.sh)**

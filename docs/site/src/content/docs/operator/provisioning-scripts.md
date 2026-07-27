@@ -42,6 +42,6 @@ Mirror the provisioning steps in reverse. Full table on [Uninstall](/kube-agents
 
 ## Common gotchas
 
-- **cert-manager.** Step 03 auto-installs cert-manager (v1.14.4) if the `certificates.cert-manager.io` CRD isn't present, so you normally don't need to install it yourself. All steps are idempotent, so you can safely re-run.
+- **cert-manager.** Step 03 auto-installs cert-manager (v1.14.4) unless a `cert-manager-webhook` Deployment is already available in the `cert-manager` namespace, so you normally don't need to install it yourself. All steps are idempotent, so you can safely re-run.
 - **`vars.sh` collision.** If you rerun the provisioner against a different project without wiping `vars.sh`, you'll target the previous project. Delete `vars.sh` to reset.
 - **Autopilot leader election.** On GKE Autopilot, step 03 installs cert-manager with leader election disabled automatically (kube-system restrictions) — see [Prerequisites](/kube-agents/install/prerequisites/#gke-autopilot-install).
