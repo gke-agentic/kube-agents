@@ -13,6 +13,7 @@ Generated from [`agents/platform/cron/jobs.json`](https://github.com/gke-labs/ku
 
 <!-- BEGIN GENERATED: cron-jobs -->
 <!-- Regenerate with: make docs-generate -- do not edit by hand. -->
+<!-- prettier-ignore-start -->
 
 | ID | Schedule | Cadence | Enabled | Prompt |
 | -- | -------- | ------- | :-----: | ------ |
@@ -27,6 +28,7 @@ Generated from [`agents/platform/cron/jobs.json`](https://github.com/gke-labs/ku
 | `obtainability-audit` | `0 12 * * *` | Daily 12:00 | yes | Execute dynamic capacity pool alignment audit. Read '/opt/defaults/governance/obtainability_audit_sop.md' t... |
 | `github-issue-resolver` | `*/30 * * * *` | Every 30 minutes | yes | Run the github-issue-resolver skill to poll, triage, investigate, and resolve unaddressed open issues on ou... |
 
+<!-- prettier-ignore-end -->
 <!-- END GENERATED: cron-jobs -->
 
 ## Job schema

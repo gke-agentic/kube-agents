@@ -180,7 +180,7 @@ def parse_script_banner(path: Path) -> tuple[str, str]:
     """Return (title, description) from a script's comment banner."""
     lines = path.read_text().splitlines()
     title, desc = "", []
-    rules = [i for i, line in enumerate(lines[:12]) if set(line.strip("# ")) == {"="}]
+    rules = [i for i, line in enumerate(lines[:24]) if set(line.strip("# ")) == {"="}]
     if len(rules) >= 2:
         between = lines[rules[0] + 1 : rules[1]]
         if between:
@@ -250,10 +250,20 @@ def splice(path: Path, block_id: str, body: str) -> tuple[bool, str]:
             f"{path.relative_to(REPO)}: missing markers for block '{block_id}'.\n"
             f"  Add:\n    {begin}\n    {end}"
         )
+    # Prettier would reflow the compact generated tables, which then fail
+    # --check; fence the region off for .md files (the Prettier CI job does
+    # not cover .mdx, and MDX rejects HTML comments anyway).
+    if path.suffix == ".mdx":
+        guard_open = guard_close = ""
+    else:
+        guard_open = "<!-- prettier-ignore-start -->\n"
+        guard_close = "<!-- prettier-ignore-end -->\n"
     replacement = (
         f"{begin}\n"
-        f"{notice}\n\n"
+        f"{notice}\n"
+        f"{guard_open}\n"
         f"{body}\n\n"
+        f"{guard_close}"
         f"{end}"
     )
     new_text = pattern.sub(lambda _: replacement, text, count=1)
