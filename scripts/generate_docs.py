@@ -12,6 +12,11 @@ Each generated region is delimited in its target file by::
     <!-- BEGIN GENERATED: <block-id> -->
     <!-- END GENERATED: <block-id> -->
 
+or, in ``.mdx`` files (where MDX rejects HTML comments), by::
+
+    {/* BEGIN GENERATED: <block-id> */}
+    {/* END GENERATED: <block-id> */}
+
 Everything outside those markers is hand-written and is never touched.
 
 Usage::
@@ -128,10 +133,19 @@ def read_frontmatter(path: Path) -> dict[str, str]:
     if not m:
         return {}
     fields: dict[str, str] = {}
+    key: str | None = None
     for line in m.group(1).splitlines():
         km = re.match(r"^([A-Za-z_-]+):\s*(.*)$", line)
         if km:
-            fields[km.group(1)] = km.group(2).strip().strip("\"'")
+            key = km.group(1)
+            value = km.group(2).strip()
+            # Block scalar indicators start a multi-line value on the next line.
+            if value in (">", ">-", ">+", "|", "|-", "|+"):
+                value = ""
+            fields[key] = value.strip("\"'")
+        elif key and line[:1] in (" ", "\t") and line.strip():
+            # Continuation line of a multi-line value.
+            fields[key] = f"{fields[key]} {line.strip()}".strip()
     return fields
 
 
@@ -205,11 +219,28 @@ BLOCKS = {
 # --------------------------------------------------------------------------- #
 
 
+def region_markers(path: Path, block_id: str) -> tuple[str, str, str]:
+    """Return (begin, end, notice) markers in the comment syntax the file allows.
+
+    MDX rejects HTML comments, so ``.mdx`` files use JSX-style comments.
+    """
+    if path.suffix == ".mdx":
+        return (
+            f"{{/* BEGIN GENERATED: {block_id} */}}",
+            f"{{/* END GENERATED: {block_id} */}}",
+            "{/* Regenerate with: make docs-generate -- do not edit by hand. */}",
+        )
+    return (
+        f"<!-- BEGIN GENERATED: {block_id} -->",
+        f"<!-- END GENERATED: {block_id} -->",
+        "<!-- Regenerate with: make docs-generate -- do not edit by hand. -->",
+    )
+
+
 def splice(path: Path, block_id: str, body: str) -> tuple[bool, str]:
     """Return (changed, new_text) with the generated region replaced."""
     text = path.read_text()
-    begin = f"<!-- BEGIN GENERATED: {block_id} -->"
-    end = f"<!-- END GENERATED: {block_id} -->"
+    begin, end, notice = region_markers(path, block_id)
     pattern = re.compile(
         re.escape(begin) + r".*?" + re.escape(end),
         re.S,
@@ -221,7 +252,7 @@ def splice(path: Path, block_id: str, body: str) -> tuple[bool, str]:
         )
     replacement = (
         f"{begin}\n"
-        f"<!-- Regenerate with: make docs-generate -- do not edit by hand. -->\n\n"
+        f"{notice}\n\n"
         f"{body}\n\n"
         f"{end}"
     )
