@@ -9,20 +9,25 @@ sidebar:
 
 ## The shipping jobs
 
-| ID                              | Schedule       | Prompt (abbreviated)                                                                         |
-| ------------------------------- | -------------- | -------------------------------------------------------------------------------------------- |
-| `blueprint-sync`                | `0 9 * * *`    | Execute GKE blueprint alignment audit; read `blueprint_sync_sop.md`.                         |
-| `compliance-audit`              | `0 9 * * 0`    | Execute fleet-wide security compliance audit; read `compliance_audit_sop.md`.                |
-| `policy-propagation`            | `0 * * * *`    | Propagate updated operational policies; read `policy_propagation_sop.md`.                    |
-| `global-capacity-orchestrator`  | `0 * * * *`    | Execute cross-cluster capacity optimization; read `global_capacity_orchestrator_sop.md`.     |
-| `fleet-wide-cost-analysis`      | `0 10 * * *`   | Execute daily cost delta audit; read `fleet_wide_cost_analysis_sop.md`.                      |
-| `security-patch-orchestrator`   | `0 11 * * *`   | Run vulnerability and patch compliance scan; read `security_patch_orchestrator_sop.md`.      |
-| `lifecycle-deprecation-manager` | `0 9 1 * *`    | Execute monthly toolchain lifecycle audit; read `lifecycle_deprecation_manager_sop.md`.      |
-| `standardization-validator`     | `0 10 * * 0`   | Run weekly structural GKE alignment audit; read `standardization_validator_sop.md`.          |
-| `obtainability-audit`           | `0 12 * * *`   | Execute dynamic capacity pool alignment audit; read `obtainability_audit_sop.md`.            |
-| `github-issue-resolver`         | `*/30 * * * *` | Run the `github-issue-resolver` skill to poll, triage, investigate, and resolve open issues. |
+Generated from [`agents/platform/cron/jobs.json`](https://github.com/gke-labs/kube-agents/blob/main/agents/platform/cron/jobs.json).
 
-All are `"enabled": true` in the shipping config.
+<!-- BEGIN GENERATED: cron-jobs -->
+<!-- Regenerate with: make docs-generate -- do not edit by hand. -->
+
+| ID | Schedule | Cadence | Enabled | Prompt |
+| -- | -------- | ------- | :-----: | ------ |
+| `blueprint-sync` | `0 9 * * *` | Daily 09:00 | yes | Execute GKE blueprint alignment audit. Read '/opt/defaults/governance/blueprint_sync_sop.md' and perform th... |
+| `compliance-audit` | `0 9 * * 0` | Weekly, Sunday 09:00 | yes | Execute fleet-wide security compliance audit. Read '/opt/defaults/governance/compliance_audit_sop.md' and s... |
+| `policy-propagation` | `0 * * * *` | Hourly | yes | Propagate updated operational policies. Read '/opt/defaults/governance/policy_propagation_sop.md' and inspe... |
+| `global-capacity-orchestrator` | `0 * * * *` | Hourly | yes | Execute cross-cluster capacity optimization. Read '/opt/defaults/governance/global_capacity_orchestrator_so... |
+| `fleet-wide-cost-analysis` | `0 10 * * *` | Daily 10:00 | yes | Execute daily cost delta audit. Read '/opt/defaults/governance/fleet_wide_cost_analysis_sop.md' to aggregat... |
+| `security-patch-orchestrator` | `0 11 * * *` | Daily 11:00 | yes | Run vulnerability and patch compliance scan. Read '/opt/defaults/governance/security_patch_orchestrator_sop... |
+| `lifecycle-deprecation-manager` | `0 9 1 * *` | Monthly, 1st 09:00 | yes | Execute monthly toolchain lifecycle audit. Read '/opt/defaults/governance/lifecycle_deprecation_manager_sop... |
+| `standardization-validator` | `0 10 * * 0` | Weekly, Sunday 10:00 | yes | Run weekly structural GKE alignment audit. Read '/opt/defaults/governance/standardization_validator_sop.md'... |
+| `obtainability-audit` | `0 12 * * *` | Daily 12:00 | yes | Execute dynamic capacity pool alignment audit. Read '/opt/defaults/governance/obtainability_audit_sop.md' t... |
+| `github-issue-resolver` | `*/30 * * * *` | Every 30 minutes | yes | Run the github-issue-resolver skill to poll, triage, investigate, and resolve unaddressed open issues on ou... |
+
+<!-- END GENERATED: cron-jobs -->
 
 ## Job schema
 
