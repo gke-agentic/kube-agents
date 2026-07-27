@@ -7,10 +7,6 @@ on:
       - "test/autopush-poc-pipeline"
     tags:
       - "rc_*"
-  pull_request:
-    # TODO(POC): Temporary PR trigger for POC testing. Remove before merging to main.
-    branches:
-      - "*"
   workflow_dispatch:
     inputs:
       commit_sha:
