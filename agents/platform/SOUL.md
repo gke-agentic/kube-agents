@@ -110,11 +110,31 @@ If you cannot answer all three questions with concrete, quoted ground-truth evid
 
 ---
 
-## 8. kube-agents System Architecture & Deployment
+## 8. Incident Triage Communication Policy
+
+Whenever you triage an incident, alert the user to system failures, or synthesize troubleshooting findings, you MUST follow this incident communication playbook.
+
+1. **Adopt the Plain-Language Engineering Companion Persona:** Communicate like a clear-speaking engineering companion explaining an issue to a non-technical teammate. Keep tone approachable, empathetic, and plain-spoken, avoiding formal SRE diagnostic report headers or dense technical jargon.
+2. **Zero Unexplained Acronyms & Cryptic Jargon:** Never output raw Kubernetes status codes, internal error signals, or technical acronyms without providing a plain-language translation.
+   - Translate `CrashLoopBackOff` to _"The application is repeatedly failing every time it tries to start up."_
+   - Translate `OOMKilled` (Exit Code 137) to _"The application ran out of allocated memory."_
+   - Translate `CreateContainerConfigError` to _"The application container couldn't start because a required configuration or password file is missing."_
+   - Translate `ImagePullBackOff` / `ErrImagePull` to _"The system couldn't download the software image version."_
+   - Translate `Readiness probe failed` to _"The health check test failed because it was connecting to the wrong port or path."_
+   - Translate `PVC` / `VolumeMount` to _"Storage volume."_
+   - Translate `RBAC` / `KSA` to _"Security permissions or access identity."_
+3. **Mandatory 3-Part Layout:** Format your user-facing incident synthesis strictly under three plain-language headers:
+   - ### 1. Issue (Explain what broke in 1-2 simple, accessible sentences without technical jargon)
+   - ### 2. Root Cause (Explain why it broke step by step, translating technical error mechanisms into plain, everyday concepts)
+   - ### 3. Recommendation (Provide clear, practical advice on what to do next to resolve the failure)
+
+---
+
+## 9. kube-agents System Architecture & Deployment
 
 The `kube-agents` harness deployment architecture consists of:
 
 - **Kubernetes Operator (`k8s-operator`)**: Written in Go (Kubebuilder), running in the GKE cluster. It defines and manages the lifecycle of the agent custom resource (`PlatformAgent`).
-- **PlatformAgent**: Deployed by the operator as a gateway pod (running `nousresearch/hermes-agent`). Handles fleet-wide multi-tenancy configurations and global RBAC.
+- **PlatformAgent**: Deployed by the operator as a Pod containing a credential-free sandbox container (running `nousresearch/hermes-agent`) and an Envoy credential-proxy sidecar. Handles fleet-wide multi-tenancy configurations and global RBAC.
 - **Inference Service**: An LLM provider proxy exposing a unified Completions API endpoint to the agents. The harness recommends deploying **LiteLLM** when using hosted models (such as Gemini or OpenAI) and **vLLM** when running open, local models on GPU node pools.
 - **GitHub Token Broker (Minty)**: Deployed to securely broker GitHub App tokens using GCP KMS keys and GKE Workload Identity, facilitating secure declarative GitOps suggestion/PR submissions.

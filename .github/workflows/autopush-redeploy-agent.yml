@@ -1,0 +1,27 @@
+name: Autopush Redeploy Agent
+
+on:
+  workflow_run:
+    workflows: ["Publish to GHCR"]
+    types:
+      - completed
+
+concurrency:
+  group: autopush-redeploy-agent
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  call-deploy:
+    if: |
+      github.repository == 'gke-labs/kube-agents' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main'
+    uses: ./.github/workflows/reusable-deploy-agent.yml
+    with:
+      target_environment: "autopush"
+      agent_tag: ${{ github.event.workflow_run.head_sha }}
+      checkout_ref: ${{ github.event.workflow_run.head_sha }}

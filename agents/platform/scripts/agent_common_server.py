@@ -22,14 +22,49 @@ def log(msg: str):
 
 SESSION_MANAGER = SessionManager()
 
+# Shared Configuration Defaults
+CONFIG_PATH = os.environ.get("PLATFORM_AGENT_CONFIG_PATH", "/opt/data/config.yaml")
+DOTENV_PATH = os.environ.get("PLATFORM_AGENT_DOTENV_PATH", "/opt/data/.env")
+
+def load_slack_token():
+    """Load SLACK_BOT_TOKEN dynamically from Kubernetes secret if missing from environment."""
+    if "SLACK_BOT_TOKEN" not in os.environ:
+        try:
+            import base64
+            import subprocess
+            res = subprocess.run(
+                ["kubectl", "get", "secret", "platform-agent-secrets", "-n", "kubeagents-system", "-o", "jsonpath={.data.SLACK_BOT_TOKEN}"],
+                capture_output=True, text=True, check=True, timeout=10
+            )
+            val = res.stdout.strip()
+            if val:
+                os.environ["SLACK_BOT_TOKEN"] = base64.b64decode(val).decode("utf-8")
+        except Exception:
+            pass
+
+# Run Slack token resolution once at module load
+load_slack_token()
+
+def _run_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """Build a subprocess env with HOME redirected to /tmp for GKE container compatibility."""
+    return {**os.environ, "HOME": "/tmp", **(extra or {})}
+
 
 
 def resolve_agent_credentials(agent_id: str) -> tuple[str, str]:
     """Retrieve the target agent's endpoint and shared API key."""
-    api_key = os.environ.get("API_SERVER_KEY") or "none"
+    api_key = os.environ.get("API_SERVER_KEY", "").strip()
+    if not api_key:
+        # Fail closed: never fall back to a guessable literal (e.g. "none").
+        # A missing secret means the deployment is misconfigured; refuse to
+        # send an inter-agent request that would authenticate as a known value.
+        raise ValueError(
+            "ERROR [500]: API_SERVER_KEY is not configured; refusing to send an "
+            "unauthenticated inter-agent request."
+        )
 
     if agent_id.lower() == "platform":
-        endpoint = os.environ.get("PLATFORM_API_URL") or "platform-agent.agent-system.svc.cluster.local:8642"
+        endpoint = os.environ.get("PLATFORM_API_URL") or "platform-agent.kubeagents-system.svc.cluster.local:8642"
         return endpoint, api_key
 
     raise ValueError(f"ERROR [404]: Could not resolve agent '{agent_id}'. Only 'platform' agent is supported.")

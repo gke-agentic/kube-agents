@@ -18,8 +18,10 @@ __pycache__/
 node_modules/
 .venv/
 venv/
+k8s-operator/bin/
 
 # Local configuration files (except tracked default .env)
 .env
 .env.*
 !agents/shared/defaults/.env
+**/vars.sh
