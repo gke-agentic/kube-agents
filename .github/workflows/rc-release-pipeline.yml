@@ -1,4 +1,4 @@
-name: RC Master Release Pipeline
+name: "📦 Release Candidate Validation & Promotion Pipeline"
 
 on:
   push:
@@ -26,7 +26,7 @@ on:
 
 jobs:
   step1-create-tag:
-    name: 🏷️ Step 1 - Create Candidate Tag
+    name: "🏷️ Step 1: Create Release Candidate Tag"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -76,7 +76,7 @@ jobs:
           echo "[INFO] (POC Dry Run) Skipping real git tag push to remote origin during POC testing."
 
   step2-deploy:
-    name: 🚀 Step 2 - Deploy Environment
+    name: "🚀 Step 2: Deploy Candidate to RC Environment"
     needs: [step1-create-tag]
     runs-on: ubuntu-latest
     environment: rc
@@ -163,7 +163,7 @@ jobs:
           ./k8s-operator/scripts/provision.sh --no-confirm
 
   step3-test:
-    name: 🧪 Step 3 - Run E2E Tests (reusing e2e-gchat-test.yml)
+    name: "🧪 Step 3: Validate Candidate via E2E Suite"
     needs: [step1-create-tag, step2-deploy]
     runs-on: ubuntu-latest
     environment: rc
@@ -223,7 +223,7 @@ jobs:
           pytest tests/e2e/gchat_agent_test.py -v -s
 
   step4-validate:
-    name: ✅ Step 4 - Validate Candidate
+    name: "✅ Step 4: Promote & Mark Release Candidate as Validated"
     needs: [step1-create-tag, step3-test]
     runs-on: ubuntu-latest
     environment: rc
