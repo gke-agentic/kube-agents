@@ -159,8 +159,7 @@ jobs:
 
       - name: Provision Environment in GCP
         run: |
-          # TODO(POC): Temporary disabled teardown.sh for faster POC testing. Uncomment before main.
-          # ./k8s-operator/scripts/teardown.sh --no-confirm
+          ./k8s-operator/scripts/teardown.sh --no-confirm
           ./k8s-operator/scripts/provision.sh --no-confirm
 
   step3-validate-candidate:
