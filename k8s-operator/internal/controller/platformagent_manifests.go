@@ -1465,7 +1465,6 @@ func buildDefaultVolumes(agent *agentv1alpha1.PlatformAgent) []corev1.Volume {
 			},
 		},
 	}
-	return append(vols, buildCredentialProxyVolumes(agent)...)
 }
 
 // buildPlatformExplorerRole generates the custom ClusterRole manifest
