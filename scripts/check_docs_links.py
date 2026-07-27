@@ -8,7 +8,9 @@ moved or a directory was renamed.
 Scope is deliberately narrow and offline:
 
 * relative links and image paths are resolved against the linking file and
-  must exist on disk;
+  must point at a git-tracked file (or a directory) -- existence on disk is
+  not enough, because generated or ignored files exist in a local clone but
+  not in a fresh checkout or on GitHub;
 * ``http(s)``, ``mailto:`` and protocol-relative links are not fetched;
 * site-absolute routes (``/kube-agents/...``) are Starlight routes rather than
   paths on disk, so they are skipped -- broken ones surface as a failed site
@@ -49,6 +51,17 @@ SKIP_PREFIXES = (
 FENCE_RE = re.compile(r"^\s*(```|~~~)")
 
 
+def tracked_paths() -> set[Path]:
+    out = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split("\0")
+    return {(REPO / p).resolve() for p in out if p}
+
+
 def tracked_markdown() -> list[Path]:
     out = subprocess.run(
         ["git", "ls-files", "-z", "*.md", "*.mdx"],
@@ -78,7 +91,7 @@ def strip_code_fences(text: str) -> list[tuple[int, str]]:
     return kept
 
 
-def check_file(path: Path) -> list[str]:
+def check_file(path: Path, tracked: set[Path]) -> list[str]:
     problems: list[str] = []
     for lineno, line in strip_code_fences(path.read_text(encoding="utf-8")):
         for raw in LINK_RE.findall(line):
@@ -94,7 +107,7 @@ def check_file(path: Path) -> list[str]:
                 if file_part.startswith("/")
                 else (path.parent / file_part)
             )
-            if not resolved.exists():
+            if resolved.resolve() not in tracked and not resolved.is_dir():
                 rel = path.relative_to(REPO)
                 problems.append(f"{rel}:{lineno}: broken link -> {target}")
     return problems
@@ -106,9 +119,10 @@ def main() -> int:
         print("ERROR: no Markdown files found.", file=sys.stderr)
         return 1
 
+    tracked = tracked_paths()
     problems: list[str] = []
     for f in files:
-        problems.extend(check_file(f))
+        problems.extend(check_file(f, tracked))
 
     print(f"Checked relative links in {len(files)} Markdown files.")
     if problems:
