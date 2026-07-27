@@ -51,7 +51,7 @@ verify_cluster() {
   gcloud container clusters describe "$CLUSTER_NAME" --region="$REGION" --project="$PROJECT_ID" >/dev/null 2>&1
 }
 execute_cluster() {
-  print_info "Creating GKE Standard Cluster with Workload Identity and GKE Backup. This takes approximately 5-8 minutes in Google Cloud..."
+  print_info "Creating GKE Standard Cluster with Workload Identity. This takes approximately 5-8 minutes in Google Cloud..."
   gcloud beta container clusters create "$CLUSTER_NAME" \
       --region "$REGION" \
       --machine-type="e2-standard-4" \
