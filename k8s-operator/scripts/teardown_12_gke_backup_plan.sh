@@ -46,7 +46,7 @@ if gcloud beta container backup-restore backup-plans describe platform-agent-bac
     gcloud beta container backup-restore backup-plans delete platform-agent-backup-plan \
         --location="$REGION" \
         --project="$PROJECT_ID" \
-        --quiet || true
+        --quiet
     echo -e "  ${C_GREEN}✓ Deleted GKE Backup Plan 'platform-agent-backup-plan'.${C_RESET}"
   fi
 else
