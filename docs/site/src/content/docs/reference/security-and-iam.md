@@ -98,6 +98,10 @@ kubectl describe clusterrolebinding kubeagents:explorer:kubeagents-system:platfo
 kubectl describe rolebinding -n kubeagents-system kubeagents:leader:kubeagents-system:platform-agent
 ```
 
+### The operator controller is a separate identity
+
+Everything above describes the _agent_. The controller-manager that reconciles `PlatformAgent` CRs runs under its own KSA, `kubeagents-controller` (the kustomize `namePrefix: kubeagents-` applied to the base `controller` ServiceAccount), and its Kubernetes permissions are the Kubebuilder-generated ClusterRole in [`k8s-operator/config/rbac/role.yaml`](https://github.com/gke-labs/kube-agents/blob/main/k8s-operator/config/rbac/role.yaml) (regenerated with `make manifests`): write access to the object kinds it reconciles for the agent pod — Deployments/StatefulSets, ServiceAccounts, Services, ConfigMaps, PVCs, NetworkPolicies, and the agent RBAC objects above — plus read-only access to what it merely watches (nodes, namespaces, CRDs, RuntimeClasses). Unlike the agent, the controller has no GCP identity: no provisioning step creates a controller GSA or Workload Identity binding for it (the `CONTROLLER_GSA_NAME` default in `scripts/common.sh` is consumed only by the teardown scripts, which clean up older installs that did bind one).
+
 ## Configuring read-only (auditing) mode
 
 `read-only` is the provisioning default, so a fresh install already runs in this posture. To pin it explicitly, or to bring a deployment provisioned with `gke-admin` back to it:
