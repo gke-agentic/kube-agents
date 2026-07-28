@@ -6,9 +6,11 @@ to enable autonomous AI agent diagnosis and SOP-guided remediation.
 """
 
 import argparse
+import base64
 import datetime
 import json
 import os
+import re
 import subprocess
 import sys
 from typing import Any, Dict, List, Tuple
@@ -24,20 +26,26 @@ def run_cmd(cmd: List[str], timeout: int = 20) -> Tuple[int, str, str]:
 
 
 def get_project() -> str:
-    """Retrieves the active Google Cloud Project ID."""
-    code, out, _ = run_cmd(["gcloud", "config", "get-value", "project"])
-    return out if code == 0 and out and "(unset)" not in out else os.environ.get("PROJECT_ID", "")
+    """Retrieves the active Google Cloud Project ID from environment variables."""
+    return os.environ.get("PROJECT_ID") or os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCP_PROJECT") or ""
 
 
 def get_repo() -> str:
     """Dynamically resolves the target GitOps repository from SETTINGS.md or git remote origin."""
+    def parse_repo_url(url: str) -> str:
+        s = re.sub(r'^(https?|ssh|git)://(git@)?github\.com/', '', url.strip())
+        s = re.sub(r'^git@github\.com:', '', s)
+        s = re.sub(r'\.git/*$', '', s).strip('/')
+        return s
+
     settings_path = "/opt/data/SETTINGS.md"
     if os.path.exists(settings_path):
         try:
             with open(settings_path) as f:
                 for line in f:
                     if "Git Repo:" in line:
-                        repo = line.split("Git Repo:")[-1].replace("*", "").strip().replace("https://github.com/", "").replace(".git", "")
+                        raw = line.split("Git Repo:")[-1].replace("*", "").strip()
+                        repo = parse_repo_url(raw)
                         if repo:
                             return repo
         except Exception:
@@ -45,7 +53,7 @@ def get_repo() -> str:
 
     code, out, _ = run_cmd(["git", "config", "--get", "remote.origin.url"])
     if code == 0 and out.strip():
-        url = out.strip().replace("https://github.com/", "").replace("git@github.com:", "").replace(".git", "")
+        url = parse_repo_url(out.strip())
         if url:
             return url
 
@@ -89,24 +97,18 @@ def get_target_namespaces(default_ns: str) -> List[str]:
     return [default_ns]
 
 
-def get_pod_error_logs(namespace: str, pod_name: str, max_lines: int = 15) -> List[str]:
-    """Retrieves authoritative error logs for an unhealthy pod via GKE Cloud Logging or K8s Warning Events."""
+def get_pod_error_logs(namespace: str, pod_name: str, max_lines: int = 15, project_id: str = "") -> List[str]:
+    """Retrieves authoritative container logs or K8s Warning Events for an unhealthy pod so the LLM can identify root causes."""
     err_logs = []
-    # 1. Query GKE Cloud Logging directly for actual ERROR/CRITICAL severity logs
-    filter_expr = f'resource.type="k8s_container" AND resource.labels.namespace_name="{namespace}" AND resource.labels.pod_name="{pod_name}" AND severity>=ERROR'
-    code, out, _ = run_cmd(["gcloud", "logging", "read", filter_expr, f"--limit={max_lines}", "--format=json"], timeout=10)
-    if code == 0 and out.strip():
-        try:
-            entries = json.loads(out)
-            for entry in entries:
-                msg = entry.get("textPayload") or entry.get("jsonPayload", {}).get("message") or entry.get("jsonPayload", {}).get("msg") or str(entry.get("jsonPayload", ""))
-                sev = entry.get("severity", "ERROR")
-                if msg:
-                    err_logs.append(f"[{sev}] {msg.strip()}")
+    # 1. Try kubectl logs directly (works across all K8s clusters)
+    for flag in [["--tail", str(max_lines)], ["--tail", str(max_lines), "--previous"]]:
+        code_log, out_log, _ = run_cmd(["kubectl", "logs", "-n", namespace, pod_name] + flag, timeout=10)
+        if code_log == 0 and out_log.strip():
+            for line in out_log.strip().splitlines()[-max_lines:]:
+                if line.strip():
+                    err_logs.append(f"[kubectl] {line.strip()}")
             if err_logs:
                 return err_logs[:max_lines]
-        except Exception:
-            pass
 
     # 2. Fall back to structured Kubernetes Warning Events for this specific pod
     code_ev, out_ev, _ = run_cmd(["kubectl", "get", "events", "-n", namespace, f"--field-selector=involvedObject.name={pod_name},type=Warning", "-o", "json"])
@@ -126,6 +128,7 @@ def diagnose(project_id: str = "") -> Dict[str, Any]:
     """Collects unopinionated diagnostic telemetry across platform harness subsystems."""
     overall = "HEALTHY"
     ns, pod, container = get_agent_target()
+    target_namespaces = get_target_namespaces(ns)
     
     telemetry = {
         "status": "HEALTHY",
@@ -140,7 +143,7 @@ def diagnose(project_id: str = "") -> Dict[str, Any]:
     }
 
     # 1. Workload Pods & Container State Telemetry
-    for target_ns in get_target_namespaces(ns):
+    for target_ns in target_namespaces:
         code, out, err = run_cmd(["kubectl", "get", "pods", "-n", target_ns, "-o", "json"])
         if code == 0 and out:
             try:
@@ -170,7 +173,7 @@ def diagnose(project_id: str = "") -> Dict[str, Any]:
                     err_logs = []
                     if not ready or p_phase not in ["Running", "Succeeded"] or unhealthy_reasons:
                         overall = "DEGRADED"
-                        err_logs = get_pod_error_logs(target_ns, p_name)
+                        err_logs = get_pod_error_logs(target_ns, p_name, project_id=project_id)
 
                     telemetry["workloads"].append({
                         "namespace": target_ns,
@@ -189,7 +192,7 @@ def diagnose(project_id: str = "") -> Dict[str, Any]:
             telemetry["errors"].append(f"kubectl get pods -n {target_ns} failed (code {code}): {err}")
 
     # 2. Deployment Quotas & Condition Telemetry
-    for target_ns in get_target_namespaces(ns):
+    for target_ns in target_namespaces:
         code, out, err = run_cmd(["kubectl", "get", "deployments", "-n", target_ns, "-o", "json"])
         if code == 0 and out:
             try:
@@ -214,8 +217,20 @@ def diagnose(project_id: str = "") -> Dict[str, Any]:
             telemetry["errors"].append(f"kubectl get deployments -n {target_ns} failed (code {code}): {err}")
 
     # 3. K8s Warning Events Bus (Standard structured warning events across all target namespaces)
-    for target_ns in get_target_namespaces(ns):
-        code, out, err = run_cmd(["kubectl", "get", "events", "-n", target_ns, "--field-selector", "type=Warning", "-o", "json"])
+    critical_warning_reasons = {
+        "FailedScheduling",
+        "Evicted",
+        "FailedMount",
+        "FailedAttachVolume",
+        "CreateContainerConfigError",
+        "CreateContainerError",
+        "CannotEvictPod",
+        "OOMKilled",
+        "ErrImagePull",
+        "ImagePullBackOff",
+    }
+    for target_ns in target_namespaces:
+        code, out, err = run_cmd(["kubectl", "get", "events", "-n", target_ns, "--field-selector", "type=Warning", "--sort-by=.lastTimestamp", "-o", "json"])
         if code == 0 and out:
             try:
                 for ev in json.loads(out).get("items", [])[-10:]:
@@ -224,6 +239,8 @@ def diagnose(project_id: str = "") -> Dict[str, Any]:
                     obj_kind = obj.get("kind", "")
                     reason = ev.get("reason", "")
                     msg = ev.get("message", "")
+                    if reason in critical_warning_reasons:
+                        overall = "DEGRADED"
                     telemetry["warning_events"].append(f"[{target_ns}] {obj_kind}/{obj_name} ({reason}): {msg}")
             except Exception as e:
                 telemetry["errors"].append(f"Parsing warning events json in {target_ns} failed: {str(e)}")
@@ -259,7 +276,7 @@ def diagnose(project_id: str = "") -> Dict[str, Any]:
 
     # 5. Gateway Probe Telemetry
     litellm_ns = "kubeagents-system"
-    for candidate_ns in get_target_namespaces(ns):
+    for candidate_ns in target_namespaces:
         code_svc, _, _ = run_cmd(["kubectl", "get", "svc", "litellm", "-n", candidate_ns])
         if code_svc == 0:
             litellm_ns = candidate_ns
@@ -268,9 +285,9 @@ def diagnose(project_id: str = "") -> Dict[str, Any]:
     litellm_svc = f"litellm.{litellm_ns}.svc.cluster.local"
     code80, out80 = 1, "000"
     if os.environ.get("KUBERNETES_SERVICE_HOST"):
-        code80, out80, _ = run_cmd(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", f"http://{litellm_svc}/health"])
+        code80, out80, _ = run_cmd(["curl", "-s", "--max-time", "5", "-o", "/dev/null", "-w", "%{http_code}", f"http://{litellm_svc}/health"])
     if code80 != 0 or out80 != "200":
-        code80, out80, _ = run_cmd(["kubectl", "exec", "-n", ns, pod, "-c", container, "--", "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", f"http://{litellm_svc}/health"])
+        code80, out80, _ = run_cmd(["kubectl", "exec", "-n", ns, pod, "-c", container, "--", "curl", "-s", "--max-time", "5", "-o", "/dev/null", "-w", "%{http_code}", f"http://{litellm_svc}/health"])
 
     is_gateway_ok = (code80 == 0 and out80 == "200")
     if not is_gateway_ok:
@@ -304,10 +321,10 @@ def diagnose(project_id: str = "") -> Dict[str, Any]:
     elif code_node != 0 and err_node:
         telemetry["errors"].append(f"kubectl get nodes failed (code {code_node}): {err_node}")
 
-    # 7. Live GitHub Open PRs & Issues Telemetry (Single Source of Truth)
+    # 7. Live GitHub Open PRs & Issues Telemetry (Filtered by 'sre-incident-report' string in description, latest 100)
     repo = get_repo()
     open_prs = []
-    code, pr_json, err_pr = run_cmd(["gh", "api", f"repos/{repo}/pulls?state=open", "--jq", "[.[] | {number, title}]"])
+    code, pr_json, err_pr = run_cmd(["gh", "api", f"repos/{repo}/pulls?state=open&per_page=100", "--jq", "[.[] | select((.body // \"\") | contains(\"sre-incident-report\")) | {number, title}]"])
     if code == 0 and pr_json:
         try:
             open_prs = json.loads(pr_json)
@@ -318,7 +335,7 @@ def diagnose(project_id: str = "") -> Dict[str, Any]:
     telemetry["open_prs"] = open_prs
 
     open_issues = []
-    code_iss, iss_json, err_iss = run_cmd(["gh", "api", f"repos/{repo}/issues?state=open", "--jq", "[.[] | select(.pull_request == null) | {number, title}]"])
+    code_iss, iss_json, err_iss = run_cmd(["gh", "api", f"repos/{repo}/issues?state=open&per_page=100", "--jq", "[.[] | select((.pull_request == null) and ((.body // \"\") | contains(\"sre-incident-report\"))) | {number, title}]"])
     if code_iss == 0 and iss_json:
         try:
             open_issues = json.loads(iss_json)
@@ -333,15 +350,14 @@ def diagnose(project_id: str = "") -> Dict[str, Any]:
 
 
 def sanitize_component_path(component: str) -> str:
-    """Sanitizes an LLM-provided component string into a safe hierarchical path [a-z0-9/-]."""
-    import re
+    """Sanitizes an LLM-provided component string into a safe slug [a-z0-9-]."""
     clean_segments = []
     for seg in component.split("/"):
         s = re.sub(r'[^a-z0-9]+', '-', seg.lower()).strip('-')
         s = re.sub(r'-+', '-', s)
         if s:
             clean_segments.append(s[:30])
-    path = "/".join(clean_segments[:4])
+    path = "-".join(clean_segments[:4])
     return path or "workload"
 
 
@@ -358,6 +374,7 @@ def create_gitops_pr(component: str, root_cause: str, error_logs: str, proposed_
 
     body = f"""### 🚨 Autonomous SRE Declarative Incident Report
 
+- **Type:** `sre-incident-report`
 - **Component:** `{component}`
 - **Diagnosed Root Cause:** {root_cause}
 - **Forensic Logs:**
@@ -408,7 +425,6 @@ def create_gitops_pr(component: str, root_cause: str, error_logs: str, proposed_
     # 3. Create a clean incident report file (0 code/manifest lines changed)
     report_path = f"docs/incidents/{slug_path}-{ts}.md"
     report_content = f"# SRE Incident Report: {component}\n\n{body}\n"
-    import base64
     report_b64 = base64.b64encode(report_content.encode("utf-8")).decode("utf-8")
     code_put, _, err_put = run_cmd([
         "gh", "api", "-X", "PUT", f"repos/{repo}/contents/{report_path}",
@@ -427,7 +443,14 @@ def create_gitops_pr(component: str, root_cause: str, error_logs: str, proposed_
         "-f", f"head={branch_name}",
         "-f", f"base={base_branch}"
     ], timeout=15)
-    return {"type": "pull_request", "success": code_pr == 0, "output": (out_pr or err_pr).strip(), "repo": repo, "branch": branch_name, "base": base_branch}
+    output_val = (out_pr or err_pr).strip()
+    if code_pr == 0 and out_pr:
+        try:
+            pr_data = json.loads(out_pr)
+            output_val = json.dumps({"number": pr_data.get("number"), "url": pr_data.get("html_url"), "title": pr_data.get("title")})
+        except Exception:
+            pass
+    return {"type": "pull_request", "success": code_pr == 0, "output": output_val, "repo": repo, "branch": branch_name, "base": base_branch}
 
 def main():
     parser = argparse.ArgumentParser(description="Kube-Agents Telemetry & SRE Engine")
