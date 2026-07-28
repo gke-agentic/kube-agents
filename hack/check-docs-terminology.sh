@@ -37,7 +37,7 @@ echo "Checking terminology across ${FILE_COUNT} documentation files..."
 
 # search <extended-regex> -> prints "path:line:text" matches, empty if none
 search() {
-  tr '\n' '\0' < "$FILE_LIST" | xargs -0 grep -nEI --with-filename "$1" 2>/dev/null || true
+  tr '\n' '\0' < "$FILE_LIST" | xargs -0 grep -nEI -H "$1" 2>/dev/null || true
 }
 
 # forbid <extended-regex> <explanation>
