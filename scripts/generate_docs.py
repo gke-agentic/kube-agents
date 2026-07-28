@@ -78,7 +78,7 @@ SKILL_GROUPS: dict[str, list[str]] = {
     "Networking and storage": ["gke-networking-edge"],
     "AI and inference": ["gke-inference-quickstart"],
     "Observability": ["kube-agents-observability"],
-    "Manifests and remediation": ["gke-manifest-generation", "submit-suggestion"],
+    "Manifests and remediation": ["gke-manifest-generation", "kube-agents-maintain-and-debug", "submit-suggestion"],
     "Meta": ["github-issue-resolver"],
 }
 
@@ -95,6 +95,7 @@ CRON_CADENCE = {
     "0 12 * * *": "Daily 12:00",
     "0 * * * *": "Hourly",
     "*/30 * * * *": "Every 30 minutes",
+    "15,45 * * * *": "Twice hourly (:15, :45)",
     "0 9 * * 0": "Weekly, Sunday 09:00",
     "0 10 * * 0": "Weekly, Sunday 10:00",
     "0 9 1 * *": "Monthly, 1st 09:00",

@@ -27,7 +27,7 @@ Generated from [`agents/platform/cron/jobs.json`](https://github.com/gke-labs/ku
 | `standardization-validator` | `0 10 * * 0` | Weekly, Sunday 10:00 | yes | Run weekly structural GKE alignment audit. Read '/opt/defaults/governance/standardization_validator_sop.md'... |
 | `obtainability-audit` | `0 12 * * *` | Daily 12:00 | yes | Execute dynamic capacity pool alignment audit. Read '/opt/defaults/governance/obtainability_audit_sop.md' t... |
 | `github-issue-resolver` | `*/30 * * * *` | Every 30 minutes | yes | Run the github-issue-resolver skill to poll, triage, investigate, and resolve unaddressed open issues on ou... |
-| `kube-agents-maintain-and-debug` | `15,45 * * * *` | — | yes | Run the kube-agents-maintain-and-debug skill: perform dynamic cluster health triage. If degraded, investiga... |
+| `kube-agents-maintain-and-debug` | `15,45 * * * *` | Twice hourly (:15, :45) | yes | Run the kube-agents-maintain-and-debug skill: perform dynamic cluster health triage. If degraded, investiga... |
 
 <!-- prettier-ignore-end -->
 <!-- END GENERATED: cron-jobs -->
