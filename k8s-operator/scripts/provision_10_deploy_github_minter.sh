@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# 🤖 Step 8: Deploy GitHub Token Minter
+# 🤖 Step 10: Deploy GitHub Token Minter
 # ==============================================================================
 # Idempotent script that deploys the GitHub Token Minter. Runs only when
 # GITHUB_ORG, GITHUB_REPO, and GITHUB_APP_ID are all set; skipped otherwise.
