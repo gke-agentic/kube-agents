@@ -71,7 +71,7 @@ Required attribution depends on the source of an operation:
 
 Google Chat session and requester attribution is implemented. Complete autonomous-trigger attribution, immutable skill, script, and workflow versions, and a version-controlled automation changelog are planned capabilities.
 
-See [Google Chat Session Metadata Data Flow](gchat-session-metadata-data-flow.md) for the implemented Google Chat session-to-requester correlation path.
+See [Google Chat Session Metadata Data Flow](designs/gchat-session-metadata-data-flow.md) for the implemented Google Chat session-to-requester correlation path.
 
 ### 6. Credential Isolation
 
