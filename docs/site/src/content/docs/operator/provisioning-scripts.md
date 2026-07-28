@@ -18,7 +18,7 @@ Both accept `--dry-run` to print planned actions without applying them.
 
 ## Provisioning steps
 
-Eleven numbered steps run in order; opt-in steps no-op unless their flag is set. Rather than
+The numbered steps run in order; opt-in steps no-op unless their flag is set. Rather than
 restate them here, the catalogue lives next to the code so it cannot drift from it:
 
 **[`k8s-operator/scripts/README.md`](https://github.com/gke-labs/kube-agents/blob/main/k8s-operator/scripts/README.md)**

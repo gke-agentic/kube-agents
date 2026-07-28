@@ -127,6 +127,8 @@ CMD ["hermes", "gateway", "run"]
 #                   from /opt/defaults into $HERMES_HOME at startup.
 #   - `platform`  = Platform Agent specialist — scaffolded at startup from
 #                   /opt/platform-template (see docker-entrypoint.sh).
+#   - `cluster-*` = per-cluster read-only agents — scaffolded at runtime from
+#                   /opt/cluster-template (see scripts/cluster_agent_profile.py).
 FROM agent-base AS platform
 
 # --- Chat Agent (the `default` profile) ---
@@ -141,7 +143,7 @@ COPY agents/chat/config.yaml /opt/defaults/config.yaml
 
 # --- Shared scripts (reachable by every profile at $HERMES_HOME/scripts) ---
 # Executable scripts are shared, not per-profile: the router (Chat Agent) and the
-# platform tooling all resolve under $HERMES_HOME/scripts.
+# platform/cluster tooling all resolve under $HERMES_HOME/scripts.
 COPY agents/chat/scripts/ /opt/defaults/scripts/
 COPY agents/platform/scripts/ /opt/defaults/scripts/
 
@@ -164,6 +166,10 @@ RUN /opt/hermes/.venv/bin/python3 /tmp/merge_configs.py /tmp/platform-base-confi
     cp /tmp/platform-base-config.yaml /opt/platform-template/config.yaml && \
     rm -f /tmp/merge_configs.py /tmp/platform-base-config.yaml /tmp/platform-overlay-config.yaml
 
+# Copy the Cluster Agent profile TEMPLATE (persona, config, skills), scaffolded
+# into per-cluster Hermes profiles at runtime by scripts/cluster_agent_profile.py.
+COPY --chown=hermes:hermes agents/cluster/ /opt/cluster-template/
+
 # Shared plugins available to all profiles (memory backend used by the Chat Agent).
 COPY agents/platform/plugins/ /opt/hermes/plugins/
 
@@ -181,14 +187,15 @@ COPY agents/platform/plugins/ /opt/hermes/plugins/
 # Every path below is guaranteed to exist at this point: /opt/hermes/skills and
 # /opt/hermes/plugins come from the base image, the rest are COPYed above.
 RUN set -eu; \
-    chown -R hermes:hermes /opt/defaults /opt/hermes/skills /opt/hermes/plugins /opt/platform-template; \
-    for d in /opt/defaults /opt/hermes/skills /opt/hermes/plugins /opt/platform-template; do \
+    chown -R hermes:hermes /opt/defaults /opt/hermes/skills /opt/hermes/plugins /opt/cluster-template /opt/platform-template; \
+    for d in /opt/defaults /opt/hermes/skills /opt/hermes/plugins /opt/cluster-template /opt/platform-template; do \
         find "$d" -type d -exec chmod 755 {} + ; \
         find "$d" -type f -exec chmod 644 {} + ; \
     done; \
     find /opt/defaults/scripts -type f -exec chmod 755 {} + ; \
-    find /opt/hermes/skills -path '*/scripts/*' -type f -exec chmod 755 {} + ; \
-    find /opt/platform-template -path '*/scripts/*' -type f -exec chmod 755 {} +
+    for d in /opt/hermes/skills /opt/platform-template /opt/cluster-template; do \
+        find "$d" -path '*/scripts/*' -type f -exec chmod 755 {} + ; \
+    done
 
 
 # --- CREDENTIAL PROXY TARGET ---

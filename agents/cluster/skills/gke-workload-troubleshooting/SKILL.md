@@ -150,10 +150,23 @@ kubectl get networkpolicies -n <workload_namespace> -o yaml
 
 ---
 
-### Step 5: Propose GitOps Correction
+### Step 5: Record RCA & Proposed Correction on the Kanban Task
 
-Following the GitOps boundary, **do not apply patches directly to the cluster**.
+As a Cluster Agent you operate under a strict **read-only** boundary: **do not apply patches directly to the cluster, and do not open Pull Requests yourself.** The GitOps write path (`submit-suggestion`) is owned exclusively by the Platform Agent. You also **never pass context back through your chat reply** — you communicate only through the kanban task you were spawned on.
 
-1. Synthesize the root cause analysis for the human operator (e.g. _"payment-api is failing with exit code 137 because its memory limit is set to 256Mi while actual usage spiked to 270Mi"_).
+1. Synthesize the root cause analysis (e.g. _"payment-api is failing with exit code 137 because its memory limit is set to 256Mi while actual usage spiked to 270Mi"_), grounded in the exact diagnostic evidence you collected.
 2. Generate the corrected YAML manifest patch (e.g. increase memory limits, add missing Secret mounts, or add tolerations for Spot nodes).
-3. Check if a branch or Pull Request (PR) already exists for this workload/failure. If so, update the existing branch/PR or notify the user instead of creating a duplicate. Otherwise, create a branch, commit the change, and open a Pull Request (PR) on GitHub. Wait for human merge.
+3. **Complete the task with a structured handoff** — put the RCA and proposed patch in `metadata`:
+
+   ```
+   kanban_complete(
+     summary="<concise root cause>",
+     metadata={
+       "root_cause": "...",
+       "evidence": ["<quoted event/log/spec excerpts>"],
+       "proposed_patch": "<YAML>"
+     }
+   )
+   ```
+
+   (If you cannot proceed — missing input, ambiguous scope — call `kanban_block(kind="needs_input", ...)` instead.) Your final chat reply is only a brief acknowledgement — never the RCA or patch. The Platform Agent reads the completed card and decides whether to open/update a Pull Request via `submit-suggestion`; do not duplicate an existing PR.
