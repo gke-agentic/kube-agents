@@ -32,6 +32,10 @@ init_var "PROJECT_ID" "$DEFAULT_PROJECT_ID" "Enter Target GCP Project ID"
 init_var "REGION" "us-east4" "Enter GKE GCP Region"
 init_var "CLUSTER_NAME" "platform-agent-host" "Enter GKE Cluster Name"
 
+DEFAULT_OPERATOR_IMAGE="ghcr.io/gke-labs/kube-agents/k8s-operator"
+init_var "OPERATOR_IMAGE" "$DEFAULT_OPERATOR_IMAGE" "Enter Operator Image Path"
+export OPERATOR_TAG="${OPERATOR_TAG:-${IMAGE_TAG}}"
+
 # ─── Step Implementations ─────────────────────────────────────────────────────
 
 # Step 1: Connect kubectl
@@ -98,8 +102,8 @@ verify_operator() {
 execute_operator() {
   print_info "Installing Custom Resource Definitions (CRDs)..."
   make -C "$OPERATOR_DIR" install || return 1
-  print_info "Deploying Operator Controller Manager to the GKE cluster..."
-  make -C "$OPERATOR_DIR" deploy || return 1
+  print_info "Deploying Operator Controller Manager (${OPERATOR_IMAGE}:${OPERATOR_TAG}) to the GKE cluster..."
+  make -C "$OPERATOR_DIR" deploy IMG="${IMG:-${OPERATOR_IMAGE}:${OPERATOR_TAG}}" || return 1
   wait_for_k8s_resource "deployment/kubeagents-controller-manager" "${NAMESPACE:-kubeagents-system}" "Available" "180s" || return 1
 }
 
