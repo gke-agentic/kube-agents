@@ -501,7 +501,7 @@ Before deploying the GitHub integration, ensure you have:
 
 ### Step-by-Step Deployment
 
-Run the `make deploy-github` target, passing the required environment variables:
+Run the `make deploy-github` target, passing the required environment variables. The KSA/GSA names below are the same defaults the provisioning scripts use (see [`scripts/common.sh`](scripts/common.sh)), but they still have to be exported here: `make deploy-github` renders the manifests with `envsubst` and does not source `common.sh`, so an unset variable would be substituted as an empty string.
 
 ```bash
 # 1. Define the GCP and GitHub parameter variables:
