@@ -106,33 +106,33 @@ Everything above describes the _agent_. The controller-manager that reconciles `
 
 `read-only` is the provisioning default, so a fresh install already runs in this posture. To pin it explicitly, or to bring a deployment provisioned with `gke-admin` back to it:
 
-**With the provisioner (recommended)** — accept the default `read-only` permission set when `provision_04_gcp_iam.sh` prompts, or set it up front:
+- **With the provisioner (recommended)** — accept the default `read-only` permission set when `provision_04_gcp_iam.sh` prompts, or set it up front:
 
-```bash
-cd k8s-operator/scripts
-PLATFORM_AGENT_PERMISSION_SET=read-only ./provision_04_gcp_iam.sh
-```
+  ```bash
+  cd k8s-operator/scripts
+  PLATFORM_AGENT_PERMISSION_SET=read-only ./provision_04_gcp_iam.sh
+  ```
 
-**On an existing GSA provisioned with `gke-admin`** — swap the admin roles for viewers by hand:
+- **On an existing GSA provisioned with `gke-admin`** — swap the admin roles for viewers by hand:
 
-```bash
-PROJECT_ID="your-gcp-project-id"
-GSA_EMAIL="kubeagents-platform-gsa@${PROJECT_ID}.iam.gserviceaccount.com"
+  ```bash
+  PROJECT_ID="your-gcp-project-id"
+  GSA_EMAIL="kubeagents-platform-gsa@${PROJECT_ID}.iam.gserviceaccount.com"
 
-# Remove the admin roles
-for role in roles/container.clusterAdmin roles/container.admin roles/monitoring.admin; do
-  gcloud projects remove-iam-policy-binding "${PROJECT_ID}" \
-    --member="serviceAccount:${GSA_EMAIL}" --role="${role}"
-done
+  # Remove the admin roles
+  for role in roles/container.clusterAdmin roles/container.admin roles/monitoring.admin; do
+    gcloud projects remove-iam-policy-binding "${PROJECT_ID}" \
+      --member="serviceAccount:${GSA_EMAIL}" --role="${role}"
+  done
 
-# Add the read-only roles
-for role in roles/container.clusterViewer roles/container.viewer roles/monitoring.viewer; do
-  gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
-    --member="serviceAccount:${GSA_EMAIL}" --role="${role}"
-done
-```
+  # Add the read-only roles
+  for role in roles/container.clusterViewer roles/container.viewer roles/monitoring.viewer; do
+    gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+      --member="serviceAccount:${GSA_EMAIL}" --role="${role}"
+  done
+  ```
 
-Leave `roles/logging.viewer`, `roles/iam.serviceAccountUser`, `roles/iam.securityReviewer`, and `roles/mcp.toolUser` in place — they are shared by both sets.
+  Leave `roles/logging.viewer`, `roles/iam.serviceAccountUser`, `roles/iam.securityReviewer`, and `roles/mcp.toolUser` in place — they are shared by both sets.
 
 The Kubernetes RBAC above is already read-only in every mode, so no cluster-side change is needed.
 
