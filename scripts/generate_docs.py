@@ -103,7 +103,7 @@ def md_escape(text: str) -> str:
 
 
 def gen_cron_jobs() -> str:
-    data = json.loads(CRON_JOBS.read_text())
+    data = json.loads(CRON_JOBS.read_text(encoding="utf-8"))
     jobs = data["jobs"] if isinstance(data, dict) and "jobs" in data else data
 
     rows = [
@@ -128,7 +128,7 @@ def gen_cron_jobs() -> str:
 
 
 def read_frontmatter(path: Path) -> dict[str, str]:
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     m = re.match(r"^---\n(.*?)\n---", text, re.S)
     if not m:
         return {}
@@ -180,7 +180,7 @@ def gen_skill_catalog() -> str:
 
 def parse_script_banner(path: Path) -> tuple[str, str]:
     """Return (title, description) from a script's comment banner."""
-    lines = path.read_text().splitlines()
+    lines = path.read_text(encoding="utf-8").splitlines()
     title, desc = "", []
     rules = [i for i, line in enumerate(lines[:24]) if set(line.strip("# ")) == {"="}]
     if len(rules) >= 2:
@@ -241,7 +241,7 @@ def region_markers(path: Path, block_id: str) -> tuple[str, str, str]:
 
 def splice(path: Path, block_id: str, body: str) -> tuple[bool, str]:
     """Return (changed, new_text) with the generated region replaced."""
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     begin, end, notice = region_markers(path, block_id)
     pattern = re.compile(
         re.escape(begin) + r".*?" + re.escape(end),
@@ -292,7 +292,7 @@ def main() -> int:
             stale.append(f"{rel} [{block_id}]")
             print(f"  STALE    {rel} [{block_id}]")
         else:
-            path.write_text(new_text)
+            path.write_text(new_text, encoding="utf-8")
             print(f"  updated  {rel} [{block_id}]")
 
     if stale:
