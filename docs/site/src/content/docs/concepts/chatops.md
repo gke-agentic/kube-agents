@@ -32,11 +32,11 @@ Google Chat ingress can be gated by `GOOGLE_CHAT_ALLOWED_USERS` (a comma-separat
 
 ### E2E coverage
 
-The Google Chat path has an end-to-end integration test suite in [`tests/e2e/`](https://github.com/gke-labs/kube-agents/tree/main/tests/e2e) (introduced in [PR #324](https://github.com/gke-labs/kube-agents/pull/324)). It runs a real Chat message through the deployed agent and asserts a valid reply, giving CI a signal on the full stack.
+The Google Chat path has an end-to-end integration test suite in [`tests/e2e/`](https://github.com/gke-labs/kube-agents/tree/main/tests/e2e). It runs a real Chat message through the deployed agent and asserts a valid reply, giving CI a signal on the full stack.
 
 ### Session metadata
 
-Every Chat message carries session context (space, user, thread) that flows through Hermes and out as OpenTelemetry spans. The full trace is documented in [`docs/gchat-session-metadata-data-flow.md`](https://github.com/gke-labs/kube-agents/blob/main/docs/gchat-session-metadata-data-flow.md).
+Every Chat message carries session context (space, user, thread) that flows through Hermes and out as OpenTelemetry spans. The full trace is documented in [`docs/designs/gchat-session-metadata-data-flow.md`](https://github.com/gke-labs/kube-agents/blob/main/docs/designs/gchat-session-metadata-data-flow.md).
 
 ## Slack
 
@@ -46,7 +46,7 @@ Slack is opt-in. Configure with `SLACK_ENABLED=true` during provisioning; the pr
 
 - `provision_06_slack.sh` collects `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_ALLOWED_USERS`, `SLACK_HOME_CHANNEL`, and `SLACK_HOME_CHANNEL_NAME`, and stores them as Kubernetes secrets.
 - The Slack listener itself lives inside the Hermes runtime; it uses Socket Mode (no public webhook required) driven by the app token.
-- Setup for the Slack app itself (creating the app, generating tokens, installing to workspace) is documented in the Hermes docs: [hermes-agent.nousresearch.com/docs/user-guide/messaging/slack](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/slack). [PR #352](https://github.com/gke-labs/kube-agents/pull/352) added this link to the provisioner output.
+- Setup for the Slack app itself (creating the app, generating tokens, installing to workspace) is documented in the Hermes docs: [hermes-agent.nousresearch.com/docs/user-guide/messaging/slack](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/slack).
 
 ### Allowed users
 

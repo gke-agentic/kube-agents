@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# 🤖 Step 2: Deploy Kubernetes Operator (CRDs & Controller Manager)
+# 🤖 Step 3: Deploy Kubernetes Operator (CRDs & Controller Manager)
 # ==============================================================================
 # Idempotent script that installs the CRDs and deploys the operator to the cluster.
 # ==============================================================================

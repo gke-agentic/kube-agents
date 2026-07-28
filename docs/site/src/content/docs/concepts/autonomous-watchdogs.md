@@ -54,10 +54,6 @@ Each job in `jobs.json` follows this schema:
 - **`enabled`** — set to `false` to disable a job without deleting its entry.
 - **`deliver`** (optional) — controls chat delivery. Set on `github-issue-resolver` to `"all"` meaning every run reports back.
 
-## Recent changes
-
-- [PR #354 — `fix(cron): reduce github issue resolver execution frequency`](https://github.com/gke-labs/kube-agents/pull/354) — reduced the `github-issue-resolver` cadence to every 30 minutes (`*/30 * * * *`) to lower LLM cost and Chat noise.
-
 ## Disabling a watchdog
 
 Edit `cron/jobs.json`, flip `enabled` to `false`, and redeploy the workspace (`provision_08_deploy_platform_agent.sh` or `dev/dev_rebuild_agent.sh`). The change is picked up on the next agent restart.

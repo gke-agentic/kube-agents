@@ -172,7 +172,7 @@ init_var_model_provider() {
 }
 
 init_var_platform_agent_permission_set() {
-  init_var "PLATFORM_AGENT_PERMISSION_SET" "gke-admin" "Enter Platform Agent Permission Set (read-only, gke-admin, custom)"
+  init_var "PLATFORM_AGENT_PERMISSION_SET" "read-only" "Enter Platform Agent Permission Set (read-only, gke-admin, custom)"
 
   PLATFORM_AGENT_PERMISSION_SET=$(echo "$PLATFORM_AGENT_PERMISSION_SET" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
   if [[ ! "$PLATFORM_AGENT_PERMISSION_SET" =~ ^(read-only|gke-admin|custom)$ ]]; then

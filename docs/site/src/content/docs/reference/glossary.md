@@ -5,7 +5,9 @@ sidebar:
   order: 4
 ---
 
-Terms used throughout the `kube-agents` docs and the wider agentic-Kubernetes ecosystem. Ported from [`docs/glossary.md`](https://github.com/gke-labs/kube-agents/blob/main/docs/glossary.md).
+Terms used throughout the `kube-agents` docs and the wider agentic-Kubernetes ecosystem.
+
+This page is the canonical glossary for humans. The Platform Agent carries its own trimmed grounding copy at [`agents/platform/docs/glossary.md`](https://github.com/gke-labs/kube-agents/blob/main/agents/platform/docs/glossary.md), which is baked into the agent image at `/opt/defaults/docs/glossary.md`.
 
 ## `kube-agents` concepts
 

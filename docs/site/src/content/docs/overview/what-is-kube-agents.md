@@ -48,8 +48,8 @@ Once the [provisioning script](/kube-agents/install/quickstart-gke/) finishes, y
 
 ## What is _not_ included
 
-- **No Helm chart yet** — [PR #230](https://github.com/gke-labs/kube-agents/pull/230) proposes a GKE-oriented chart (plus Terraform) at `k8s-operator/deploy/helm/kube-agents/`. Today, install is via `./provision.sh` + Kustomize.
-- **No local Kind path** — there is no `kind` workflow in the repo. Today you need a real GKE cluster; the only scripted installer (`scripts/quick-install.sh`) targets GKE Autopilot.
+- **No Helm chart** — install is via `make gcp-provision` + Kustomize. A GKE-oriented chart and a Terraform module have been proposed but are not in `main`.
+- **No local Kind path** — there is no `kind` workflow in the repo and no scripted installer outside `k8s-operator/scripts/`. You need a real GKE cluster.
 - **No web UI or CLI beyond `kubectl` port-forward + the Hermes API** — chat is the primary user interface.
 - **No cross-cloud abstractions** — the shipping MCP toolset, IAM assumptions, and provisioning scripts all target GKE. The runtime and persona are cluster-agnostic; the skill catalog is not.
 
@@ -57,4 +57,4 @@ Once the [provisioning script](/kube-agents/install/quickstart-gke/) finishes, y
 
 - [Proactive autonomy](/kube-agents/overview/proactive-autonomy/) — the background watchdogs and how they close loops.
 - [Architecture](/kube-agents/overview/architecture/) — how requests and cron ticks flow through the components.
-- [Quick start (GKE)](/kube-agents/install/quickstart-gke/) — run `./provision.sh` end-to-end.
+- [Quick start (GKE)](/kube-agents/install/quickstart-gke/) — run `make gcp-provision` end-to-end.

@@ -40,7 +40,7 @@ Schedules are literal `cron` expressions from `jobs.json`. See [Reference → Cr
 The alternative for each of these is a person on a rotation, a static Terraform module, or an alert that pages someone in the middle of the night. `kube-agents` closes the loop:
 
 - **Audit → PR** — the agent doesn't just detect drift, it proposes the fix as a PR you review.
-- **Read-only elevated for the fleet, write-narrow for its own identity** — the Platform Agent holds fleet-wide read via the GKE MCP server but has to route mutations through Git.
+- **Fleet-wide read, mutations through Git** — the Platform Agent reads the fleet via the GKE MCP server and is designed to route every change through a pull request. Which parts of that are _enforced_ rather than _intended_ is set out in [Security &amp; IAM](/kube-agents/reference/security-and-iam/#what-the-agent-can-and-cannot-do).
 - **Recovery ladder before escalation** — `SOUL.md §5` caps recovery attempts at 5 iterations / ~10 minutes per blocker before asking a human.
 
 The design goal: fleet issues stop rotting silently while the on-call queue is quiet.

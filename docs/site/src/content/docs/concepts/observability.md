@@ -28,7 +28,7 @@ All container `stdout`/`stderr` is ingested by Cloud Logging by the GKE log agen
 
 ## Session metadata plumbing
 
-Every Chat message carries session context (space ID, user, thread) that flows through Hermes as OpenTelemetry span attributes and out to Cloud Trace. The trace is documented in [`docs/gchat-session-metadata-data-flow.md`](https://github.com/gke-labs/kube-agents/blob/main/docs/gchat-session-metadata-data-flow.md).
+Every Chat message carries session context (space ID, user, thread) that flows through Hermes as OpenTelemetry span attributes and out to Cloud Trace. The trace is documented in [`docs/designs/gchat-session-metadata-data-flow.md`](https://github.com/gke-labs/kube-agents/blob/main/docs/designs/gchat-session-metadata-data-flow.md).
 
 ## Inline Console links
 

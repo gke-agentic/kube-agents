@@ -27,6 +27,63 @@ if [ -d "/opt/defaults" ]; then
     cp -ru /opt/defaults/. "$TARGET_DIR/" 2>/dev/null || cp -rp /opt/defaults/. "$TARGET_DIR/" 2>/dev/null || true
 fi
 
+# 2a. Force-sync the image-managed default-profile files so they ALWAYS track the
+# image, not the persistent PVC. The update-only copy above (cp -u) can skip
+# config.yaml: step 3 below rewrites config.yaml on every start (to enable otel),
+# bumping its mtime, so on the next image roll cp -u sees the PVC copy as "newer"
+# and never overwrites it — leaving a stale toolset/persona config live. These
+# files are image-owned (not runtime state), so overwrite them unconditionally.
+if [ -d "/opt/defaults" ]; then
+    for f in config.yaml SOUL.md AGENTS.md CAPABILITIES.md; do
+        [ -f "/opt/defaults/$f" ] && cp -f "/opt/defaults/$f" "$TARGET_DIR/$f" 2>/dev/null || true
+    done
+fi
+
+# 2.5 Scaffold the Platform Agent specialist profile (idempotent).
+# The `default` profile is the front-door Chat Agent (synced above). Today's
+# Platform Agent runs as a separate named `platform` profile so the Chat Agent
+# can route to it. Its persona/config/skills are baked at /opt/platform-template;
+# executable scripts stay in the shared $TARGET_DIR/scripts and are not overlaid.
+PLATFORM_TEMPLATE="/opt/platform-template"
+if [ -d "$PLATFORM_TEMPLATE" ] && [ ! -d "$TARGET_DIR/profiles/platform" ] && [ -f "$TARGET_DIR/scripts/profile_scaffold.py" ]; then
+    PLATFORM_DESC="Platform Agent: fleet-wide GKE architecture, cluster lifecycle/provisioning, multi-tenancy, and the GitOps write path (Pull Requests)."
+    HOME=/tmp HERMES_HOME="$TARGET_DIR" "$INSTALL_DIR/.venv/bin/python3" \
+        "$TARGET_DIR/scripts/profile_scaffold.py" \
+        --name platform \
+        --template "$PLATFORM_TEMPLATE" \
+        --plugins /opt/defaults/plugins \
+        --description "$PLATFORM_DESC" || echo "WARN: platform profile scaffold failed; continuing" >&2
+fi
+# Point the platform profile's home-relative `scripts/` at the shared scripts dir
+# (executable scripts are shared across profiles, not copied per-profile). Self-heal
+# on every start. Cluster agents use absolute /opt/data/scripts paths and need no link.
+if [ -d "$TARGET_DIR/profiles/platform" ] && [ -d "$TARGET_DIR/scripts" ]; then
+    ln -sfn "$TARGET_DIR/scripts" "$TARGET_DIR/profiles/platform/scripts" 2>/dev/null || true
+fi
+
+# 2.6 Force-sync the image-managed persona and config files of the specialist
+# profiles so they ALWAYS track the image, not the persistent PVC — the same
+# guarantee step 2a gives the default profile. The scaffold in 2.5 only runs when
+# a profile is ABSENT, so without this an existing platform profile on the PVC
+# keeps a stale SOUL.md/AGENTS.md/config.yaml after an image roll.
+#
+# config.yaml is included because the platform profile's copy is entirely
+# image-owned: it is built at image build time by merging the shared defaults
+# with the platform overlay, `hermes profile create` does not emit one, and
+# nothing writes to profiles/*/config.yaml at runtime (step 3's otel injection
+# targets only the default profile — the platform template already enables
+# hermes_otel). Without this, an image that changes the platform's toolsets or
+# plugins would silently have no effect on any existing deployment.
+#
+# Profile identity is NOT at risk: `hermes profile create` records the name and
+# description in profiles/<name>/profile.yaml, a separate file that no template
+# ships, so it is never overwritten here. Per-profile runtime state (USER.md,
+# memory/, sessions/) is likewise left untouched.
+if [ -d "$TARGET_DIR/profiles/platform" ] && [ -d "$PLATFORM_TEMPLATE" ]; then
+    for f in config.yaml SOUL.md AGENTS.md CAPABILITIES.md; do
+        [ -f "$PLATFORM_TEMPLATE/$f" ] && cp -f "$PLATFORM_TEMPLATE/$f" "$TARGET_DIR/profiles/platform/$f" 2>/dev/null || true
+    done
+fi
 # 3. Enable OpenTelemetry plugin in active config.yaml (if writable)
 if [ -f "$TARGET_DIR/config.yaml" ] && [ -w "$TARGET_DIR/config.yaml" ]; then
     "$INSTALL_DIR/.venv/bin/python3" -c "import sys, yaml, pathlib; p = pathlib.Path(sys.argv[1]); c = yaml.safe_load(p.read_text()) or {} if p.exists() else {}; enabled = c.setdefault('plugins', {}).setdefault('enabled', []); 'hermes_otel' not in enabled and enabled.append('hermes_otel'); p.write_text(yaml.safe_dump(c))" "$TARGET_DIR/config.yaml" 2>/dev/null || true
