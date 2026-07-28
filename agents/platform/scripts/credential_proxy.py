@@ -368,7 +368,9 @@ class SlackRelay:
         response = self._client(team_id).api_call(
             method, **self._decode_argument(arguments)
         )
-        return dict(response)
+        # SlackResponse defines no keys(), so dict() would fall back to the
+        # iterator protocol and raise. The parsed payload lives on .data.
+        return dict(response.data)
 
     def download(self, team_id: str, url: str) -> bytes:
         def is_slack_url(value: str) -> bool:
