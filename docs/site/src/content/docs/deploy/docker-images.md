@@ -13,7 +13,7 @@ Published on push to `main` via GitHub Actions workflows.
 
 ### `platform-agent`
 
-The Platform Agent Deployment image. Built from the `platform` target of [`deploy/docker/Dockerfile`](https://github.com/gke-labs/kube-agents/blob/main/deploy/docker/Dockerfile) on top of `nousresearch/hermes-agent` with the Platform Agent workspace, GCP tools, and `kubectl` layered in.
+The agent Deployment image. Built from the `platform` target of [`deploy/docker/Dockerfile`](https://github.com/gke-labs/kube-agents/blob/main/deploy/docker/Dockerfile) on top of `nousresearch/hermes-agent`. It lays down both Hermes profiles: the Chat Agent workspace at `/opt/defaults` (the `default` profile) and the Platform Agent template at `/opt/platform-template`, scaffolded into the `platform` profile at startup by the entrypoint.
 
 - **Registry**: `ghcr.io/gke-labs/kube-agents/platform-agent`
 - **Published by**: [`.github/workflows/docker-publish-ghcr.yml`](https://github.com/gke-labs/kube-agents/blob/main/.github/workflows/docker-publish-ghcr.yml)
