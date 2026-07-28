@@ -29,6 +29,29 @@ def get_project() -> str:
     return out if code == 0 and out and "(unset)" not in out else os.environ.get("PROJECT_ID", "")
 
 
+def get_repo() -> str:
+    """Dynamically resolves the target GitOps repository from SETTINGS.md or git remote origin."""
+    settings_path = "/opt/data/SETTINGS.md"
+    if os.path.exists(settings_path):
+        try:
+            with open(settings_path) as f:
+                for line in f:
+                    if "Git Repo:" in line:
+                        repo = line.split("Git Repo:")[-1].replace("*", "").strip().replace("https://github.com/", "").replace(".git", "")
+                        if repo:
+                            return repo
+        except Exception:
+            pass
+
+    code, out, _ = run_cmd(["git", "config", "--get", "remote.origin.url"])
+    if code == 0 and out.strip():
+        url = out.strip().replace("https://github.com/", "").replace("git@github.com:", "").replace(".git", "")
+        if url:
+            return url
+
+    return "gke-agentic/kube-agents"
+
+
 def get_agent_target() -> Tuple[str, str, str]:
     """Dynamically resolves namespace, pod name, and container name for the platform agent."""
     ns = "kubeagents-system"
@@ -54,6 +77,51 @@ def get_agent_target() -> Tuple[str, str, str]:
     return ns, "deploy/platform-agent-gateway", "platform-agent"
 
 
+def get_target_namespaces(default_ns: str) -> List[str]:
+    """Returns the subset of known candidate Kube-Agents namespaces that actually exist on this cluster."""
+    known_candidates = ["kubeagents-system", default_ns, "agent-system", "kube-agents-operator-system"]
+    code, out, _ = run_cmd(["kubectl", "get", "namespaces", "-o", "jsonpath={.items[*].metadata.name}"])
+    if code == 0 and out.strip():
+        cluster_ns = set(out.strip().split())
+        existing = [n for n in list(dict.fromkeys(known_candidates)) if n in cluster_ns]
+        if existing:
+            return existing
+    return [default_ns]
+
+
+def get_pod_error_logs(namespace: str, pod_name: str, max_lines: int = 15) -> List[str]:
+    """Retrieves authoritative error logs for an unhealthy pod via GKE Cloud Logging or K8s Warning Events."""
+    err_logs = []
+    # 1. Query GKE Cloud Logging directly for actual ERROR/CRITICAL severity logs
+    filter_expr = f'resource.type="k8s_container" AND resource.labels.namespace_name="{namespace}" AND resource.labels.pod_name="{pod_name}" AND severity>=ERROR'
+    code, out, _ = run_cmd(["gcloud", "logging", "read", filter_expr, f"--limit={max_lines}", "--format=json"], timeout=10)
+    if code == 0 and out.strip():
+        try:
+            entries = json.loads(out)
+            for entry in entries:
+                msg = entry.get("textPayload") or entry.get("jsonPayload", {}).get("message") or entry.get("jsonPayload", {}).get("msg") or str(entry.get("jsonPayload", ""))
+                sev = entry.get("severity", "ERROR")
+                if msg:
+                    err_logs.append(f"[{sev}] {msg.strip()}")
+            if err_logs:
+                return err_logs[:max_lines]
+        except Exception:
+            pass
+
+    # 2. Fall back to structured Kubernetes Warning Events for this specific pod
+    code_ev, out_ev, _ = run_cmd(["kubectl", "get", "events", "-n", namespace, f"--field-selector=involvedObject.name={pod_name},type=Warning", "-o", "json"])
+    if code_ev == 0 and out_ev:
+        try:
+            for ev in json.loads(out_ev).get("items", [])[-max_lines:]:
+                reason = ev.get("reason", "Warning")
+                message = ev.get("message", "")
+                err_logs.append(f"[K8sEvent: {reason}] {message}")
+        except Exception:
+            pass
+
+    return err_logs[:max_lines]
+
+
 def diagnose(project_id: str = "") -> Dict[str, Any]:
     """Collects unopinionated diagnostic telemetry across platform harness subsystems."""
     overall = "HEALTHY"
@@ -72,7 +140,7 @@ def diagnose(project_id: str = "") -> Dict[str, Any]:
     }
 
     # 1. Workload Pods & Container State Telemetry
-    for target_ns in list(set([ns, "kubeagents-system", "agent-system", "kube-agents-operator-system"])):
+    for target_ns in get_target_namespaces(ns):
         code, out, err = run_cmd(["kubectl", "get", "pods", "-n", target_ns, "-o", "json"])
         if code == 0 and out:
             try:
@@ -84,21 +152,25 @@ def diagnose(project_id: str = "") -> Dict[str, Any]:
                     
                     unhealthy_reasons = []
                     for cs in c_statuses:
-                        waiting = cs.get("state", {}).get("waiting", {})
-                        if waiting.get("reason"):
-                            unhealthy_reasons.append(f"Waiting: {waiting.get('reason')} ({waiting.get('message', '')})")
-                        term = cs.get("lastState", {}).get("terminated", {})
-                        if term.get("reason"):
-                            unhealthy_reasons.append(f"Terminated: {term.get('reason')}")
+                        for state_key in ["state", "lastState"]:
+                            term = cs.get(state_key, {}).get("terminated", {})
+                            if term.get("reason") and term.get("reason") != "Completed":
+                                msg = f"Terminated ({term.get('reason')}, exitCode={term.get('exitCode')})"
+                                if term.get("message"):
+                                    msg += f": {term.get('message')}"
+                                if msg not in unhealthy_reasons:
+                                    unhealthy_reasons.append(msg)
+                            waiting = cs.get(state_key, {}).get("waiting", {})
+                            if waiting.get("reason"):
+                                msg = f"Waiting: {waiting.get('reason')} ({waiting.get('message', '')})"
+                                if msg not in unhealthy_reasons:
+                                    unhealthy_reasons.append(msg)
 
                     restart_count = max([cs.get("restartCount", 0) for cs in c_statuses], default=0)
                     err_logs = []
                     if not ready or p_phase not in ["Running", "Succeeded"] or unhealthy_reasons:
                         overall = "DEGRADED"
-                        _, logs, _ = run_cmd(["kubectl", "logs", "-n", target_ns, p_name, "--tail=40"])
-                        for line in logs.splitlines():
-                            if any(k in line.lower() for k in ["error", "warn", "exception", "traceback", "fatal", "denied", "invalid", "x509", "failed"]):
-                                err_logs.append(line.strip())
+                        err_logs = get_pod_error_logs(target_ns, p_name)
 
                     telemetry["workloads"].append({
                         "namespace": target_ns,
@@ -117,7 +189,7 @@ def diagnose(project_id: str = "") -> Dict[str, Any]:
             telemetry["errors"].append(f"kubectl get pods -n {target_ns} failed (code {code}): {err}")
 
     # 2. Deployment Quotas & Condition Telemetry
-    for target_ns in list(set([ns, "kubeagents-system", "agent-system", "kube-agents-operator-system"])):
+    for target_ns in get_target_namespaces(ns):
         code, out, err = run_cmd(["kubectl", "get", "deployments", "-n", target_ns, "-o", "json"])
         if code == 0 and out:
             try:
@@ -141,16 +213,20 @@ def diagnose(project_id: str = "") -> Dict[str, Any]:
             overall = "DEGRADED"
             telemetry["errors"].append(f"kubectl get deployments -n {target_ns} failed (code {code}): {err}")
 
-    # 3. K8s Warning Events Bus
-    code, out, err = run_cmd(["kubectl", "get", "events", "-n", ns, "--field-selector", "type=Warning", "-o", "json"])
-    if code == 0 and out:
-        try:
-            for ev in json.loads(out).get("items", [])[-10:]:
-                telemetry["warning_events"].append(f"{ev.get('reason')}: {ev.get('message')}")
-        except Exception as e:
-            telemetry["errors"].append(f"Parsing warning events json failed: {str(e)}")
-    elif code != 0 and err:
-        telemetry["errors"].append(f"kubectl get events -n {ns} failed (code {code}): {err}")
+    # 3. K8s Warning Events Bus (Standard structured warning events across all target namespaces)
+    for target_ns in get_target_namespaces(ns):
+        code, out, err = run_cmd(["kubectl", "get", "events", "-n", target_ns, "--field-selector", "type=Warning", "-o", "json"])
+        if code == 0 and out:
+            try:
+                for ev in json.loads(out).get("items", [])[-10:]:
+                    obj = ev.get("involvedObject", {})
+                    obj_name = obj.get("name", "")
+                    obj_kind = obj.get("kind", "")
+                    reason = ev.get("reason", "")
+                    msg = ev.get("message", "")
+                    telemetry["warning_events"].append(f"[{target_ns}] {obj_kind}/{obj_name} ({reason}): {msg}")
+            except Exception as e:
+                telemetry["errors"].append(f"Parsing warning events json in {target_ns} failed: {str(e)}")
 
     # 4. Heartbeat State Telemetry
     hb_path = "/opt/data/memory/heartbeat-state.json"
@@ -172,40 +248,38 @@ def diagnose(project_id: str = "") -> Dict[str, Any]:
     else:
         try:
             hb_data = json.loads(hb_raw)
-            ts = hb_data.get("last_run") or hb_data.get("timestamp")
-            age_sec = None
-            if ts:
-                age_sec = (datetime.datetime.now(datetime.timezone.utc) - datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))).total_seconds()
             telemetry["heartbeat"] = {
-                "status": "HEALTHY",
+                "status": "VALID",
                 "file_exists": True,
-                "data": hb_data,
-                "age_seconds": int(age_sec) if age_sec is not None else None
+                "data": hb_data
             }
         except Exception as e:
             telemetry["errors"].append(f"Parsing heartbeat json failed: {str(e)}")
             telemetry["heartbeat"] = {"status": "CORRUPTED", "file_exists": True, "raw": hb_raw[:100]}
 
     # 5. Gateway Probe Telemetry
-    # 5. Gateway Probe Telemetry
-    litellm_svc = f"litellm.{ns}.svc.cluster.local"
-    code80, out80, _ = run_cmd(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", f"http://{litellm_svc}/health"])
+    litellm_ns = "kubeagents-system"
+    for candidate_ns in get_target_namespaces(ns):
+        code_svc, _, _ = run_cmd(["kubectl", "get", "svc", "litellm", "-n", candidate_ns])
+        if code_svc == 0:
+            litellm_ns = candidate_ns
+            break
+
+    litellm_svc = f"litellm.{litellm_ns}.svc.cluster.local"
+    code80, out80 = 1, "000"
+    if os.environ.get("KUBERNETES_SERVICE_HOST"):
+        code80, out80, _ = run_cmd(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", f"http://{litellm_svc}/health"])
     if code80 != 0 or out80 != "200":
         code80, out80, _ = run_cmd(["kubectl", "exec", "-n", ns, pod, "-c", container, "--", "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", f"http://{litellm_svc}/health"])
-    
-    code4000, out4000, _ = run_cmd(["kubectl", "exec", "-n", ns, pod, "-c", container, "--", "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", f"http://{litellm_svc}:4000/health"])
 
-    is_gateway_ok = (code80 == 0 and out80 == "200") or (code4000 == 0 and out4000 == "200")
-    auto_heal_info = None
+    is_gateway_ok = (code80 == 0 and out80 == "200")
     if not is_gateway_ok:
         overall = "DEGRADED"
-        auto_heal_info = auto_heal_gateway(ns)
     
     telemetry["gateway_probe"] = {
         "status": "HEALTHY" if is_gateway_ok else "DEGRADED",
-        "http_code_port_80": out80 if code80 == 0 else "CONNECTION_REFUSED",
-        "http_code_port_4000": out4000 if code4000 == 0 else "CONNECTION_REFUSED",
-        "auto_remediation": auto_heal_info
+        "namespace": litellm_ns,
+        "http_code_port_80": out80 if code80 == 0 else "CONNECTION_REFUSED"
     }
 
     # 6. Cluster Node Health & Pressure Telemetry
@@ -231,8 +305,9 @@ def diagnose(project_id: str = "") -> Dict[str, Any]:
         telemetry["errors"].append(f"kubectl get nodes failed (code {code_node}): {err_node}")
 
     # 7. Live GitHub Open PRs & Issues Telemetry (Single Source of Truth)
+    repo = get_repo()
     open_prs = []
-    code, pr_json, err_pr = run_cmd(["gh", "api", "repos/gke-agentic/kube-agents/pulls?state=open", "--jq", "[.[] | {number, title}]"])
+    code, pr_json, err_pr = run_cmd(["gh", "api", f"repos/{repo}/pulls?state=open", "--jq", "[.[] | {number, title}]"])
     if code == 0 and pr_json:
         try:
             open_prs = json.loads(pr_json)
@@ -243,7 +318,7 @@ def diagnose(project_id: str = "") -> Dict[str, Any]:
     telemetry["open_prs"] = open_prs
 
     open_issues = []
-    code_iss, iss_json, err_iss = run_cmd(["gh", "api", "repos/gke-agentic/kube-agents/issues?state=open", "--jq", "[.[] | {number, title}]"])
+    code_iss, iss_json, err_iss = run_cmd(["gh", "api", f"repos/{repo}/issues?state=open", "--jq", "[.[] | select(.pull_request == null) | {number, title}]"])
     if code_iss == 0 and iss_json:
         try:
             open_issues = json.loads(iss_json)
@@ -257,26 +332,30 @@ def diagnose(project_id: str = "") -> Dict[str, Any]:
     return telemetry
 
 
+def sanitize_component_path(component: str) -> str:
+    """Sanitizes an LLM-provided component string into a safe hierarchical path [a-z0-9/-]."""
+    import re
+    clean_segments = []
+    for seg in component.split("/"):
+        s = re.sub(r'[^a-z0-9]+', '-', seg.lower()).strip('-')
+        s = re.sub(r'-+', '-', s)
+        if s:
+            clean_segments.append(s[:30])
+    path = "/".join(clean_segments[:4])
+    return path or "workload"
 
 
 def create_gitops_pr(component: str, root_cause: str, error_logs: str, proposed_fix: str) -> Dict[str, Any]:
     """Generates a dynamic GitOps Pull Request with the LLM's diagnosed patch."""
-    repo = "gke-agentic/kube-agents"
-    settings_path = "/opt/data/SETTINGS.md"
-    if os.path.exists(settings_path):
-        try:
-            with open(settings_path) as f:
-                for line in f:
-                    if "Git Repo:" in line:
-                        repo = line.split("Git Repo:")[-1].replace("*", "").strip().replace("https://github.com/", "").replace(".git", "")
-        except Exception:
-            pass
+    repo = get_repo()
 
-    slug = component.replace("/", "-").replace("deployment-", "")
+    slug_path = sanitize_component_path(component)
     ts = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
-    branch_name = f"fix/{slug}-{ts}"
+    branch_name = f"fix/{slug_path}-{ts}"
 
     title = f"fix(sre): declarative fix for {component}"
+    title_iss = f"[SRE Incident] {component}: automated diagnosis"
+
     body = f"""### 🚨 Autonomous SRE Declarative Incident Report
 
 - **Component:** `{component}`
@@ -289,46 +368,15 @@ def create_gitops_pr(component: str, root_cause: str, error_logs: str, proposed_
 
 *Human-in-the-loop approval: Please review the LLM-diagnosed manifest changes and merge to deploy.*"""
 
-    # Extract component name for comprehensive case-insensitive issue deduplication
-    comp_name = component.replace("deployment/", "").strip().lower()
-    comp_raw = component.lower()
-
-    # Check GitHub directly for any existing open PRs matching component (case-insensitive)
-    code, pr_json, _ = run_cmd(["gh", "api", f"repos/{repo}/pulls?state=open", "--jq", ".[].title"], timeout=15)
-    if code == 0 and pr_json:
-        for open_title in pr_json.splitlines():
-            t_lower = open_title.lower()
-            if comp_name in t_lower or comp_raw in t_lower:
-                return {
-                    "success": False,
-                    "output": f"An open Pull Request related to this issue already exists on GitHub: '{open_title}'. Skipping duplicate PR creation.",
-                    "already_exists": True,
-                    "repo": repo
-                }
-
     # Check if GitHub Issues are enabled on the repository
     code_has_issues, out_has_issues, _ = run_cmd(["gh", "api", f"repos/{repo}", "--jq", ".has_issues"], timeout=15)
     has_issues = (code_has_issues == 0 and out_has_issues.strip() == "true")
 
     if has_issues:
-        # Check if an open Issue already exists matching component (case-insensitive)
-        code_iss, iss_json, _ = run_cmd(["gh", "api", f"repos/{repo}/issues?state=open", "--jq", ".[].title"], timeout=15)
-        if code_iss == 0 and iss_json:
-            for open_title in iss_json.splitlines():
-                t_lower = open_title.lower()
-                if comp_name in t_lower or comp_raw in t_lower:
-                    return {
-                        "type": "issue",
-                        "success": False,
-                        "output": f"An open Issue related to this issue already exists on GitHub: '{open_title}'. Skipping duplicate creation.",
-                        "already_exists": True,
-                        "repo": repo
-                    }
-
         # Create GitHub Issue first if issues are enabled
         code_create_iss, out_create_iss, err_create_iss = run_cmd([
             "gh", "issue", "create", "-R", repo,
-            "--title", title,
+            "--title", title_iss,
             "--body", body
         ], timeout=15)
         if code_create_iss == 0:
@@ -340,100 +388,60 @@ def create_gitops_pr(component: str, root_cause: str, error_logs: str, proposed_
             }
 
     # Fallback to Pull Request if Issues are disabled or Issue creation failed
-    # 1. Fetch main branch SHA
-    code, main_sha, _ = run_cmd(["gh", "api", f"repos/{repo}/git/ref/heads/main", "--jq", ".object.sha"], timeout=15)
-    if code == 0 and main_sha:
-        # 2. Create the new unique branch ref on GitHub
-        run_cmd(["gh", "api", f"repos/{repo}/git/refs", "-f", f"ref=refs/heads/{branch_name}", "-f", f"sha={main_sha}"], timeout=15)
+    # 0. Resolve the repository's default base branch dynamically (no fallback)
+    code_def, default_branch, err_def = run_cmd(["gh", "api", f"repos/{repo}", "--jq", ".default_branch"], timeout=15)
+    if code_def != 0 or not default_branch.strip():
+        return {"type": "pull_request", "success": False, "output": f"Failed to resolve default branch for repository '{repo}': {err_def}", "repo": repo}
+    base_branch = default_branch.strip()
 
-        # 3. Create a clean incident report file (0 code/manifest lines changed)
-        report_path = f"docs/incidents/{slug}-{ts}.md"
-        report_content = f"# SRE Incident Report: {component}\n\n{body}\n"
-        import base64
-        report_b64 = base64.b64encode(report_content.encode("utf-8")).decode("utf-8")
-        run_cmd([
-            "gh", "api", "-X", "PUT", f"repos/{repo}/contents/{report_path}",
-            "-F", f"message=docs(sre): incident report for {component}",
-            "-F", f"content={report_b64}",
-            "-F", f"branch={branch_name}"
-        ], timeout=15)
+    # 1. Fetch base branch SHA
+    code_sha, base_sha, err_sha = run_cmd(["gh", "api", f"repos/{repo}/git/ref/heads/{base_branch}", "--jq", ".object.sha"], timeout=15)
+    if code_sha != 0 or not base_sha.strip():
+        return {"type": "pull_request", "success": False, "output": f"Failed to resolve SHA for base branch '{base_branch}': {err_sha}", "repo": repo}
+    base_sha_str = base_sha.strip()
+
+    # 2. Create the new unique branch ref on GitHub
+    code_ref, _, err_ref = run_cmd(["gh", "api", f"repos/{repo}/git/refs", "-f", f"ref=refs/heads/{branch_name}", "-f", f"sha={base_sha_str}"], timeout=15)
+    if code_ref != 0:
+        return {"type": "pull_request", "success": False, "output": f"Failed to create branch ref '{branch_name}': {err_ref}", "repo": repo, "branch": branch_name}
+
+    # 3. Create a clean incident report file (0 code/manifest lines changed)
+    report_path = f"docs/incidents/{slug_path}-{ts}.md"
+    report_content = f"# SRE Incident Report: {component}\n\n{body}\n"
+    import base64
+    report_b64 = base64.b64encode(report_content.encode("utf-8")).decode("utf-8")
+    code_put, _, err_put = run_cmd([
+        "gh", "api", "-X", "PUT", f"repos/{repo}/contents/{report_path}",
+        "-f", f"message=docs(sre): incident report for {component}",
+        "-f", f"content={report_b64}",
+        "-f", f"branch={branch_name}"
+    ], timeout=15)
+    if code_put != 0:
+        return {"type": "pull_request", "success": False, "output": f"Failed to commit incident report file '{report_path}': {err_put}", "repo": repo, "branch": branch_name}
 
     # 4. Open the Pull Request on GitHub
-    code, out, err = run_cmd([
+    code_pr, out_pr, err_pr = run_cmd([
         "gh", "api", f"repos/{repo}/pulls",
-        "-F", f"title={title}",
-        "-F", f"body={body}",
-        "-F", f"head={branch_name}",
-        "-F", "base=main"
+        "-f", f"title={title}",
+        "-f", f"body={body}",
+        "-f", f"head={branch_name}",
+        "-f", f"base={base_branch}"
     ], timeout=15)
-    return {"type": "pull_request", "success": code == 0, "output": out or err, "repo": repo, "branch": branch_name}
-
-
-def auto_heal_gateway(ns: str = "kubeagents-system") -> Dict[str, Any]:
-    """Deterministically diagnoses and self-heals LiteLLM gateway deployment regardless of failure cause."""
-    litellm_svc = f"litellm.{ns}.svc.cluster.local"
-    
-    code80, out80, _ = run_cmd(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", f"http://{litellm_svc}/health"])
-    code4000, out4000, _ = run_cmd(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", f"http://{litellm_svc}:4000/health"])
-    
-    is_healthy = (code80 == 0 and out80 == "200") or (code4000 == 0 and out4000 == "200")
-    if is_healthy:
-        return {"status": "HEALTHY", "action_taken": None, "details": "LiteLLM gateway is responsive."}
-
-    code, out, _ = run_cmd(["kubectl", "get", "deployment", "litellm", "-n", ns, "-o", "json"])
-    if code == 0 and out:
-        try:
-            dep = json.loads(out)
-            spec_replicas = dep.get("spec", {}).get("replicas", 0)
-            if spec_replicas == 0:
-                run_cmd(["kubectl", "scale", "deployment", "litellm", "-n", ns, "--replicas=2"])
-                return {
-                    "status": "REMEDIATED",
-                    "action_taken": "scale_up",
-                    "details": "LiteLLM deployment replicas were 0. Scaled up to 2 replicas."
-                }
-        except Exception:
-            pass
-
-    code_pods, out_pods, _ = run_cmd(["kubectl", "get", "pods", "-n", ns, "-l", "app=litellm", "-o", "json"])
-    if code_pods == 0 and out_pods:
-        try:
-            pods = json.loads(out_pods).get("items", [])
-            unhealthy = [p for p in pods if p.get("status", {}).get("phase") != "Running" or not any(c.get("ready") for c in p.get("status", {}).get("containerStatuses", []))]
-            if unhealthy or not pods:
-                run_cmd(["kubectl", "rollout", "restart", "deployment/litellm", "-n", ns])
-                return {
-                    "status": "REMEDIATED",
-                    "action_taken": "rollout_restart",
-                    "details": "LiteLLM pods were in CrashLoopBackOff or NotReady. Initiated rolling restart."
-                }
-        except Exception:
-            pass
-
-    run_cmd(["kubectl", "rollout", "restart", "deployment/litellm", "-n", ns])
-    return {
-        "status": "REMEDIATED",
-        "action_taken": "rollout_restart_deadlock",
-        "details": "LiteLLM gateway port unreachable due to socket deadlock. Initiated rolling restart."
-    }
-
+    return {"type": "pull_request", "success": code_pr == 0, "output": (out_pr or err_pr).strip(), "repo": repo, "branch": branch_name, "base": base_branch}
 
 def main():
     parser = argparse.ArgumentParser(description="Kube-Agents Telemetry & SRE Engine")
-    parser.add_argument("command", nargs="?", default="diagnose", choices=["diagnose", "create-gitops-pr", "auto-heal-gateway"], help="Telemetry command")
+    parser.add_argument("command", nargs="?", default="diagnose", choices=["diagnose", "create-gitops-pr"], help="Telemetry command")
     parser.add_argument("--component", default="", help="Component name")
     parser.add_argument("--action", default="", help="Proposed action")
     parser.add_argument("--root-cause", default="", help="Root cause explanation")
     parser.add_argument("--logs", default="", help="Error logs")
-    parser.add_argument("--json", action="store_true", default=True, help="Output structured JSON telemetry")
+    parser.add_argument("--json", action="store_true", default=False, help="Output structured JSON telemetry (default format)")
     
     args = parser.parse_args()
     if args.command == "create-gitops-pr":
         res = create_gitops_pr(args.component, args.root_cause, args.logs, args.action)
         print(json.dumps(res))
-    elif args.command == "auto-heal-gateway":
-        res = auto_heal_gateway()
-        print(json.dumps(res, indent=2))
     else:
         proj = get_project()
         res = diagnose(proj)

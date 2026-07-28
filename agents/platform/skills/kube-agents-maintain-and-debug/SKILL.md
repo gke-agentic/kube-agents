@@ -1,11 +1,10 @@
 ---
 name: kube-agents-maintain-and-debug
 description: >-
-  Audits, diagnoses, and manages health anomalies, pod freezes, auth drift,
-  state corruption, and admission lockouts across the internal Kube-Agents
-  platform harness (agent-system). Formulates interactive Google Chat / Slack
-  remediation proposals, executes verified fixes upon human approval, and
-  escalates declarative code or infra bugs to the GitOps repository.
+  Audits, diagnoses, and reports health anomalies, pod crashes, and state
+  degradations across the internal Kube-Agents platform harness. Collects
+  diagnostic telemetry and escalates incidents to the GitOps repository via
+  GitHub Issues or Fallback Pull Requests.
 ---
 
 # Task
@@ -33,7 +32,9 @@ graph TD
 Execute the telemetry collector to gather structured facts across pods, quotas, events, probes, and open GitHub tickets:
 
 ```bash
-python3 /opt/data/skills/kube-agents-maintain-and-debug/scripts/maintain.py diagnose --json || python3 scripts/maintain.py diagnose --json
+SCRIPT="/opt/data/skills/kube-agents-maintain-and-debug/scripts/maintain.py"
+[ -f "$SCRIPT" ] || SCRIPT="scripts/maintain.py"
+python3 "$SCRIPT" diagnose --json
 ```
 
 ### Step 2: Dynamic Root-Cause Analysis & Deduplication
@@ -58,11 +59,14 @@ When cluster anomalies or workload degradations are detected:
 1. **Target Repository Resolution:** Dynamically extract the GitOps repository URL from `/opt/data/SETTINGS.md`.
 2. **Multi-Degradation Batch Loop:**
    - Iterate through **each** unique degraded component or workload reported in `telemetry["workloads"]`.
-   - For each degraded component that does NOT already have an open ticket on GitHub (checking `open_prs` and `open_issues`):
+   - **LLM Semantic Deduplication:** Before calling `create-gitops-pr`, review `telemetry["open_prs"]` and `telemetry["open_issues"]`. If an open Pull Request or Issue already addresses the same root cause for this component, do NOT call `create-gitops-pr`. Instead, record in your triage report that a remediation ticket is already open.
+   - For each degraded component that requires a new ticket:
      - If Issues are enabled, open a **GitHub Issue** ticket.
      - If Issues are disabled, open a **Fallback PR** (Zero Code Lines Changed — purely an informational incident report card).
      ```bash
-     python3 /opt/data/skills/kube-agents-maintain-and-debug/scripts/maintain.py create-gitops-pr \
+     SCRIPT="/opt/data/skills/kube-agents-maintain-and-debug/scripts/maintain.py"
+     [ -f "$SCRIPT" ] || SCRIPT="scripts/maintain.py"
+     python3 "$SCRIPT" create-gitops-pr \
        --component "<component_name>" \
        --root-cause "<diagnosed root cause>" \
        --logs "<error logs>" \
