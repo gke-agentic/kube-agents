@@ -142,11 +142,13 @@ def read_frontmatter(path: Path) -> dict[str, str]:
             # Block scalar indicators start a multi-line value on the next line.
             if value in (">", ">-", ">+", "|", "|-", "|+"):
                 value = ""
-            fields[key] = value.strip("\"'")
+            fields[key] = value
         elif key and line[:1] in (" ", "\t") and line.strip():
             # Continuation line of a multi-line value.
             fields[key] = f"{fields[key]} {line.strip()}".strip()
-    return fields
+    # Strip quotes only once values are fully assembled: a quoted value that
+    # wraps across lines carries its closing quote on the last line.
+    return {k: v.strip("\"'") for k, v in fields.items()}
 
 
 def gen_skill_catalog() -> str:
