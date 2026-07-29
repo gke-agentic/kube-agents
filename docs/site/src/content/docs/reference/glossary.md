@@ -49,7 +49,7 @@ The Kubernetes namespace that hosts the kube-agents control plane: the operator,
 
 ### Toolset
 
-A named set of tools and MCP servers exposed to an agent, declared under `platform_toolsets` in that agent's `config.yaml`. In `agents/platform/config.yaml`, separate `cli` and `api_server` toolsets select which capabilities (e.g. `mcp-platform_control`, `mcp-gke`, `mcp-agent_common`) are available in each mode; `agents/chat/config.yaml` pins every mode to `mcp-router` + `kanban` only. A separate top-level `toolsets: [kanban]` key gates the kanban orchestrator surface. `platform_toolsets` is a reserved framework key in Hermes.
+A named set of tools and MCP servers exposed to an agent, declared under `platform_toolsets` in that agent's `config.yaml`. In `agents/platform/config.yaml`, separate `cli` and `api_server` toolsets select which capabilities (e.g. `mcp-platform_control`, `mcp-gke`, `mcp-agent_common`) are available in each mode; `agents/chat/config.yaml` pins every mode to `mcp-router` + `kanban` plus the `memory` gate for its per-user memory tool. A separate top-level `toolsets: [kanban]` key gates the kanban orchestrator surface. `platform_toolsets` is a reserved framework key in Hermes.
 
 ### Kanban task (delegation)
 
