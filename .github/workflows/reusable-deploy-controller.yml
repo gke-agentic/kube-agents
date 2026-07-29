@@ -7,7 +7,7 @@ on:
         required: true
         type: string
         description: "The GitHub environment to use for variables (e.g., autopush, staging)"
-      controller_tag:
+      image_tag:
         required: true
         type: string
         description: "The Docker image tag to deploy (e.g. commit SHA or 'latest')"
@@ -77,11 +77,10 @@ jobs:
         env:
           REPO_NAME: ${{ github.repository }}
           PACKAGE_NAME: "k8s-operator"
-          TAG_NAME: ${{ inputs.controller_tag }}
         run: |
           REPO_DOWNCASE=$(echo "$REPO_NAME" | tr '[:upper:]' '[:lower:]')
           echo "IMAGE_REPO=ghcr.io/${REPO_DOWNCASE}/${PACKAGE_NAME}" >> "$GITHUB_ENV"
-          echo "IMAGE_TAG=${TAG_NAME}" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=${{ inputs.image_tag }}" >> "$GITHUB_ENV"
 
       - name: Perform Controller Redeployment
         env:

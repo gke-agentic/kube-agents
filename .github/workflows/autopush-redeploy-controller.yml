@@ -23,5 +23,5 @@ jobs:
     uses: ./.github/workflows/reusable-deploy-controller.yml
     with:
       target_environment: "autopush"
-      controller_tag: ${{ github.event.workflow_run.head_sha }}
+      image_tag: ${{ github.event.workflow_run.head_sha }}
       checkout_ref: ${{ github.event.workflow_run.head_sha }}
