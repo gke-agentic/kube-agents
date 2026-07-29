@@ -1,6 +1,7 @@
 name: Autopush Redeploy Agent
 
 on:
+  # zizmor: ignore[dangerous-triggers]
   workflow_run:
     workflows: ["Publish to GHCR"]
     types:

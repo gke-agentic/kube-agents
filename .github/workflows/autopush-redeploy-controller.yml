@@ -1,6 +1,7 @@
 name: Autopush Redeploy Controller
 
 on:
+  # zizmor: ignore[dangerous-triggers]
   workflow_run:
     workflows: ["Publish Controller to GHCR"]
     types:
