@@ -70,7 +70,8 @@ Rules:
   `k8s-operator/scripts/common.sh`, the Go version in `k8s-operator/go.mod`.
 
 Run `make docs-check` before pushing. It verifies generated regions are current, relative links
-resolve, and identifiers match their source — the same three checks CI runs.
+resolve, identifiers match their source, and every Markdown document has an entry in the
+documentation map (`docs/README.md`) — the same four checks CI runs.
 
 ## Pull Request Hygiene
 
