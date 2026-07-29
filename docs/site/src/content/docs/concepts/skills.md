@@ -81,7 +81,7 @@ The `gke-compute-classes` skill is a good example — it explicitly delineates w
 The agent discovers skills from **two** locations at startup:
 
 - **Baked into the image** — [`deploy/docker/Dockerfile`](https://github.com/gke-labs/kube-agents/blob/main/deploy/docker/Dockerfile) copies `agents/platform/skills/` to `/opt/platform-template/skills/` (and `agents/cluster/skills/` to `/opt/cluster-template/skills/`), which are scaffolded into the matching profile's home when the profile is created.
-- **The runtime workspace** at `$HERMES_HOME/skills` — `HERMES_HOME` defaults to `/opt/data`, so `/opt/data/skills`. This path is backed by the agent's persistent volume.
+- **The profile's runtime workspace** at `$HERMES_HOME/profiles/<profile>/skills` — `HERMES_HOME` defaults to `/opt/data`, so the Platform Agent's is `/opt/data/profiles/platform/skills`. This path is backed by the agent's persistent volume. Note it is _not_ `/opt/data/skills`: that is the `default` profile's home, which belongs to the Chat Agent, and [`agents/chat/config.yaml`](https://github.com/gke-labs/kube-agents/blob/main/agents/chat/config.yaml) disables the `skills` toolset there — a skill dropped in that directory is loaded by nothing.
 
 That gives you two ways to bring in additional skills — for example from the upstream [`google/skills`](https://github.com/google/skills/tree/main/skills/cloud) catalog.
 
@@ -116,7 +116,9 @@ The operator rolls the Deployment and the new skill loads on boot.
 
 ### Method 2 — inject into the running pod (development)
 
-Faster for iterating: drop the skill into the persistent workspace without rebuilding.
+Faster for iterating: drop the skill into the target profile's persistent workspace without
+rebuilding. Copy into the profile that should load the skill — `profiles/platform/skills` for the
+Platform Agent, `profiles/cluster-<name>/skills` for one Cluster Agent.
 
 ```bash
 # The agent pod carries the label app=platform-agent-gateway; the container is `platform-agent`.
@@ -124,14 +126,14 @@ AGENT_POD=$(kubectl get pods -n kubeagents-system \
   -l app=platform-agent-gateway -o jsonpath='{.items[0].metadata.name}')
 
 kubectl cp <skill-dir>/ \
-  kubeagents-system/$AGENT_POD:/opt/data/skills/<skill-dir> -c platform-agent
+  kubeagents-system/$AGENT_POD:/opt/data/profiles/platform/skills/<skill-dir> -c platform-agent
 ```
 
 Verify it landed:
 
 ```bash
 kubectl exec -n kubeagents-system -it $AGENT_POD -c platform-agent -- \
-  ls -la /opt/data/skills/<skill-dir>
+  ls -la /opt/data/profiles/platform/skills/<skill-dir>
 ```
 
 The runtime discovers the skill on its next relevant turn. Because this writes to the persistent volume, it survives pod restarts — but it is **not** captured in the image, so bake it in (Method 1) before relying on it in production.
