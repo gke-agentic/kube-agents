@@ -10,9 +10,11 @@ failure instead of a review-time hope. Two directions:
   least one backticked path (or glob) somewhere in the map's inventory tables
   (section 4). Collapsed family rows use globs (``agents/platform/skills/*/
   SKILL.md``, ``examples/gitops-repo/**``), so one row can cover many files.
-  Files inside dot-directories (``.agents/``, ``.github/``, ``.claude/``, …)
-  are tooling, not documentation: the map does not inventory them and this
-  check does not require them — the map and the check share one scope.
+  Files under a ROOT-LEVEL dot-directory (``.agents/``, ``.github/``,
+  ``.claude/``, …) are tooling, not documentation: the map does not inventory
+  them and this check does not require them — the map and the check share one
+  scope. A dot-directory nested inside a documented area (e.g.
+  ``examples/gitops-repo/.github/``) is example content and IS required.
 * **Existence** -- every backticked path in the *first column* of an inventory
   row must match at least one tracked file. A path cell that matches nothing is
   a stale row: the file was moved or deleted and the map was not updated.
@@ -53,15 +55,18 @@ SELF = "docs/README.md"
 
 
 def in_dot_dir(path: str) -> bool:
-    """True for paths inside a dot-directory (.agents/, .github/, .claude/, …).
+    """True for paths under a root-level dot-directory (.agents/, .github/, …).
 
     Those hold tooling artifacts — review skills, PR/issue templates, style
     guides, local agent config — not documentation a reader navigates. They
     are out of the map's scope by the same rule, so new tooling files never
-    force a map edit. (A dot-dir path in a path cell would still be validated
-    for existence, keeping the two scopes from silently diverging.)
+    force a map edit. Only the FIRST path segment counts: a dot-directory
+    nested inside a documented area (examples/gitops-repo/.github/) is part of
+    that example and stays in scope. (A dot-dir path in a path cell would
+    still be validated for existence, keeping the two scopes from silently
+    diverging.)
     """
-    return any(seg.startswith(".") for seg in path.split("/"))
+    return path.split("/", 1)[0].startswith(".")
 
 
 def tracked_docs() -> set[str]:
@@ -167,7 +172,7 @@ def main() -> int:
         exempt = len(files) - len(required)
         print(
             f"Documentation map inventory covers all {len(required)} tracked docs; "
-            f"no stale path cells ({exempt} dot-directory tooling files exempt from coverage)."
+            f"no stale path cells ({exempt} root-level dot-directory tooling files exempt)."
         )
     return 0 if ok else 1
 

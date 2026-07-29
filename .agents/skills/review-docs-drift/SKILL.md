@@ -55,7 +55,7 @@ For every doc the PR adds or edits:
 
 ## 4. Check the instruments themselves
 
-- **`docs/README.md` (the map):** if the PR adds, moves, renames, or deletes any doc, the map must reflect it — tree section, counts, and inventory table. The map is hand-maintained; `make docs-check` (`docs-check-map`) enforces only presence — an inventory entry per tracked doc outside dot-directories, and no dead paths in the path column. The counts and row summaries have no mechanical guard, so verify those here. Also spot-check that map entries touching the PR's area are still accurate.
+- **`docs/README.md` (the map):** if the PR adds, moves, renames, or deletes any doc, the map must reflect it — tree section, counts, and inventory table. The map is hand-maintained; `make docs-check` (`docs-check-map`) enforces only presence — an inventory entry per tracked doc outside root-level dot-directories, and no dead paths in the path column. The counts and row summaries have no mechanical guard, so verify those here. Also spot-check that map entries touching the PR's area are still accurate.
 - **Map staleness window:** the map stores no "last verified" stamp; derive the delta from git instead — everything that changed since the map itself was last touched is the map's unreviewed backlog:
 
   ```bash

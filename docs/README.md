@@ -88,10 +88,12 @@ CI enforcement: `make docs-check` runs the same three checks as
   prose must match their source (service-account names, versions, …).
 - `docs-check-map` — `scripts/check_docs_map.py`; every tracked `.md`/`.mdx`
   file must be matched by an inventory entry in this map (globs count), and
-  every path in the inventory's path column must exist. Dot-directories
-  (`.agents/`, `.github/`, `.gemini/`, `.claude/`, …) are tooling, not docs:
-  the map does not inventory them and the check does not require them — the
-  map and the check share one scope.
+  every path in the inventory's path column must exist. Root-level
+  dot-directories (`.agents/`, `.github/`, `.gemini/`, `.claude/`, …) are
+  tooling, not docs: the map does not inventory them and the check does not
+  require them — the map and the check share one scope. A dot-directory
+  nested inside a documented area (`examples/gitops-repo/.github/`) is
+  example content and stays in scope.
 
 ## 3. Documentation eras and status
 
