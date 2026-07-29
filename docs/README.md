@@ -14,53 +14,56 @@ editing any doc.
 
 ## 1. Directory overview
 
-Counts are of `.md`/`.mdx` files (138 total). Dot-directories at the
-repository root (`.agents/`, `.github/`, `.gemini/`, `.claude/`) hold
-tooling — review skills, PR templates, style guides, agent config — not
-documentation; they are out of the map's scope and `docs-check-map`
-exempts them.
+The repository tracks **138** `.md`/`.mdx` documents outside the root-level
+dot-directories — `docs-check-map` verifies this total against `git ls-files`
+and fails CI when it drifts. Dot-directories at the repository root
+(`.agents/`, `.github/`, `.gemini/`, `.claude/`) hold tooling — review
+skills, PR templates, style guides, agent config — not documentation; they
+are out of the map's scope and `docs-check-map` exempts them. The tree
+carries no per-directory counts: only numbers a machine checks belong in this
+file, and the mechanically checked counts live in the inventory rows below.
 
 ```text
 kube-agents/
-├── README.md, INSTALL.md, AGENTS.md, CLAUDE.md   (4) project front door, install
-│                                                     guide, contributor/agent rules
-├── agents/                                      (57) agent blueprints (runtime docs)
-│   ├── chat/                                     (5) Chat Agent front door: AGENTS.md,
-│   │                                                 SOUL.md, onboarding templates (2),
-│   │                                                 bootstrap-plugin design README
-│   ├── cluster/                                  (9) Cluster Agent profile TEMPLATE:
-│   │                                                 persona docs (3) + 6 runtime-
-│   │                                                 debugging SKILL.md bundles
-│   └── platform/                                (43) Platform Agent profile
-│       ├── AGENTS.md, SOUL.md, CAPABILITIES.md   (3) persona and workspace docs
-│       ├── docs/                                 (2) runtime glossary + one design doc
-│       ├── governance/                          (10) cron-run SOP playbooks + the
-│       │                                             first-run inventory-scan SOP
-│       ├── plugins/memory/multiuser_memory/      (1) memory-plugin design README
-│       └── skills/                              (27) 17 SKILL.md bundles + 10
-│                                                     gke-compute-classes references
-├── docs/                                        (56) human documentation
-│   ├── README.md                                 (1) this map
-│   ├── architecture/                             (9) END-STATE spec set 01–08 + README
-│   ├── designs/                                  (3) per-feature design documents
+├── README.md, INSTALL.md, AGENTS.md, CLAUDE.md    project front door, install
+│                                                  guide, contributor/agent rules
+├── agents/                                        agent blueprints (runtime docs)
+│   ├── chat/                                      Chat Agent front door: persona
+│   │                                              docs, onboarding templates,
+│   │                                              bootstrap-plugin design README
+│   ├── cluster/                                   Cluster Agent profile TEMPLATE:
+│   │                                              persona docs + runtime-debugging
+│   │                                              SKILL.md bundles
+│   └── platform/                                  Platform Agent profile
+│       ├── AGENTS.md, SOUL.md, CAPABILITIES.md    persona and workspace docs
+│       ├── docs/                                  runtime glossary + design docs
+│       ├── governance/                            cron-run SOP playbooks + the
+│       │                                          first-run inventory-scan SOP
+│       ├── plugins/memory/multiuser_memory/       memory-plugin design README
+│       └── skills/                                SKILL.md bundles + the
+│                                                  gke-compute-classes references
+├── docs/                                          human documentation
+│   ├── README.md                                  this map
+│   ├── architecture/                              END-STATE spec set 01–08 + README
+│   ├── designs/                                   per-feature design documents
 │   ├── contributing.md, security_requirements.md,
 │   │   credential-isolation-design.md,
-│   │   gcp-console-links.md                      (4) standalone docs + one runtime
-│   │                                                 asset awaiting its agents/ home
-│   └── site/                                    (39) Astro + Starlight site: README
-│                                                     + 38 pages in src/content/docs/
-├── examples/                                    (14) gitops-repo template (10) + 4
-│                                                     inference/integration READMEs
-├── k8s-operator/                                 (6) operator, event watcher, Minty,
-│                                                     provisioning-scripts READMEs
-└── tests/e2e/                                    (1) Google Chat E2E suite README
+│   │   gcp-console-links.md                       standalone docs + one runtime
+│   │                                              asset awaiting its agents/ home
+│   └── site/                                      Astro + Starlight site: README +
+│                                                  the published pages
+├── examples/                                      gitops-repo template + inference/
+│                                                  integration READMEs
+├── k8s-operator/                                  operator, event watcher, Minty,
+│                                                  provisioning-scripts READMEs
+└── tests/e2e/                                     Google Chat E2E suite README
 ```
 
 The published documentation site is built from `docs/site/src/content/docs/`
 and served from GitHub Pages at <https://gke-labs.github.io/kube-agents/>
 (Astro `base: '/kube-agents'`).
 
-## 2. Canonical homes and generated regions
+## 2. Canonical homes, generated regions, and identifier sources
 
 Which file owns which category of content is defined once, in the
 canonical-home table in [`AGENTS.md`](../AGENTS.md) — do not duplicate a fact
@@ -77,7 +80,7 @@ inside the markers — edit the source and regenerate.
 | `docs/site/src/content/docs/skills/index.mdx`       | `{/* BEGIN GENERATED: skill-catalog */}` (MDX comment syntax) | `name`/`description` frontmatter of every `agents/platform/skills/*/SKILL.md` and `agents/cluster/skills/*/SKILL.md` |
 | `k8s-operator/scripts/README.md`                    | `<!-- BEGIN GENERATED: provisioning-steps -->`                | The comment banner in each `k8s-operator/scripts/provision_*.sh` / `teardown_*.sh` script                            |
 
-CI enforcement: `make docs-check` runs the same three checks as
+CI enforcement: `make docs-check` runs the same checks as
 `.github/workflows/docs-check.yml` —
 
 - `docs-check-generated` — `scripts/generate_docs.py --check`; fails if a
@@ -87,13 +90,36 @@ CI enforcement: `make docs-check` runs the same three checks as
 - `docs-check-terminology` — `hack/check-docs-terminology.sh`; identifiers in
   prose must match their source (service-account names, versions, …).
 - `docs-check-map` — `scripts/check_docs_map.py`; every tracked `.md`/`.mdx`
-  file must be matched by an inventory entry in this map (globs count), and
-  every path in the inventory's path column must exist. Root-level
+  file must be matched by an inventory entry in this map (globs count), every
+  path in the inventory's path column must exist, the document total stated
+  in section 1 must match `git ls-files`, and a collapsed family row's
+  `(N …)` count must match the number of files its glob matches. Root-level
   dot-directories (`.agents/`, `.github/`, `.gemini/`, `.claude/`, …) are
   tooling, not docs: the map does not inventory them and the check does not
   require them — the map and the check share one scope. A dot-directory
   nested inside a documented area (`examples/gitops-repo/.github/`) is
   example content and stays in scope.
+
+### Identifier sources
+
+Docs state identifiers — names, defaults, versions, paths — as fact, and each
+identifier has exactly one source file. Verify a doc's claim against the
+source, never against another doc. The `review-docs-drift` skill classifies a
+PR that touches one of these files as a change to documented identifiers and
+uses this table to find what to re-verify; when a new category of documented
+identifier appears, add its source here.
+
+| Identifier                                                | Source of truth                                                                        |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Service-account names, namespace, permission-set defaults | `k8s-operator/scripts/common.sh`                                                       |
+| Go toolchain version                                      | `k8s-operator/go.mod`                                                                  |
+| Toolsets, plugins, and MCP servers of an agent profile    | that profile's `config.yaml` (`agents/platform/`, `agents/chat/`, `agents/cluster/`)   |
+| Cron job rosters and schedules                            | the profile's cron `jobs.json` (`agents/platform/cron/`, `agents/chat/defaults/cron/`) |
+| Persona rules and `§N` section numbering                  | the profile's `SOUL.md`                                                                |
+| RBAC bindings and KSA defaults laid down per agent        | `k8s-operator/internal/controller/platformagent_manifests.go`                          |
+| Controller permissions                                    | `k8s-operator/config/rbac/`                                                            |
+| `make` targets                                            | the root `Makefile` and `k8s-operator/Makefile`                                        |
+| Paths baked into the agent image (`/opt/defaults/...`)    | `deploy/docker/Dockerfile`                                                             |
 
 ## 3. Documentation eras and status
 
@@ -124,7 +150,8 @@ code, first check which era it belongs to:
 ## 4. Inventory
 
 One row per document; large uniform families are collapsed into a single row
-with a count. Paths are repository-root-relative.
+with a count, and `docs-check-map` verifies each such count against what the
+row's glob matches. Paths are repository-root-relative.
 
 ### Repository root and repo meta
 
@@ -177,7 +204,7 @@ with a count. Paths are repository-root-relative.
 | `docs/security_requirements.md`                      | Requirements      | Provider-neutral security configuration model across three dimensions (permission, interaction, authorization), explicitly distinguishing current behavior from planned capabilities.                        | Permission sets, credential-isolation requirements, attribution requirements | Referenced by the site's security pages; current-vs-planned marked inline     |
 | `docs/site/README.md`                                | Component README  | How to develop the docs site: local preview/build, layout, adding a page, CI build/deploy workflows, publishing from a fork.                                                                                 | `npm run dev`, frontmatter, GitHub Pages base                                | Site contributors                                                             |
 
-### `docs/site/src/content/docs/` — the published site (38 pages)
+### `docs/site/src/content/docs/` — the published site
 
 Frontmatter `title`/`description` is the page's own summary; rows below add
 only what the title does not say.
@@ -228,7 +255,7 @@ only what the title does not say.
 | Path                                              | Category | Purpose and summary                                                                                                                                                                                                                                                                                                                            | Key topics                                              | Audience / notes                                   |
 | ------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- | -------------------------------------------------- |
 | `examples/gitops-repo/README.md`                  | Example  | Top of the reference GitOps repository template customers fork as their source of truth: layout map and the propose/apply/review-gate contracts (agents propose via PR; only customer CI/CD applies).                                                                                                                                          | Repo layout, guarded paths                              | Implements the `docs/architecture/` contracts      |
-| `examples/gitops-repo/**` sub-docs (9 files)      | Example  | Short uniform READMEs and knowledge entries for each template directory: branch-protection ruleset, workflows (actuation pipeline), per-cluster agents/namespaces/provisioning, fleet, OKF knowledge index + sample cluster blueprint, and admission policy (`vap-agent-readonly`). Densely cross-reference the architecture specs by section. | Per-directory contracts, OKF taxonomy, admission policy | Template consumers; tied to the END-STATE spec set |
+| `examples/gitops-repo/*/**` sub-docs (9 files)    | Example  | Short uniform READMEs and knowledge entries for each template directory: branch-protection ruleset, workflows (actuation pipeline), per-cluster agents/namespaces/provisioning, fleet, OKF knowledge index + sample cluster blueprint, and admission policy (`vap-agent-readonly`). Densely cross-reference the architecture specs by section. | Per-directory contracts, OKF taxonomy, admission policy | Template consumers; tied to the END-STATE spec set |
 | `examples/inference-replay/README.md`             | Example  | Deploying the Inference Replay proxy that intercepts the LiteLLM service and serves cached LLM responses from a PVC-backed store.                                                                                                                                                                                                              | Context-aware hashing, off/on modes                     | Developers wanting cheap deterministic iteration   |
 | `examples/litellm-chatgpt-subscription/README.md` | Example  | LiteLLM proxy backed by a consumer ChatGPT subscription via the OAuth device-code flow.                                                                                                                                                                                                                                                        | Device flow, PVC token persistence                      | Users without API keys                             |
 | `examples/litellm-gemini/README.md`               | Example  | LiteLLM proxy configured for Gemini models: secret, manifests, metric verification.                                                                                                                                                                                                                                                            | API-key secret, PodMonitoring                           | Cluster operators                                  |
@@ -249,13 +276,16 @@ only what the title does not say.
 ## 5. Keeping this map fresh
 
 - This file is **hand-maintained**. When a PR adds, moves, renames, or deletes
-  any Markdown document, update the tree, the counts, and the inventory row in
-  the same PR.
-- `make docs-check` mechanically guards **presence only**: `docs-check-map`
-  fails CI when a tracked `.md`/`.mdx` file outside a dot-directory has no
-  inventory entry here, or when a path in the inventory's path column no
-  longer exists. The counts, summaries, and key-topic cells have no mechanical
-  guard — PR review (and the drift skill) is the only check on their honesty.
+  any Markdown document, update the tree, the stated total, and the inventory
+  row in the same PR.
+- `make docs-check` mechanically guards **presence and counts**:
+  `docs-check-map` fails CI when a tracked `.md`/`.mdx` file outside a
+  root-level dot-directory has no inventory entry here, when a path in the
+  inventory's path column no longer exists, when the total stated in
+  section 1 drifts from `git ls-files`, or when a family row's count no
+  longer matches its glob. The prose summaries, key-topic cells, and the
+  identifier-sources table have no mechanical guard — PR review (and the
+  drift skill) is the only check on their honesty.
 - The `review-docs-drift` skill in `.agents/skills/` consults this map to find
   which docs a code change should have updated, and checks the map itself for
   staleness — keep the summaries honest. CI's docs-freshness workflow

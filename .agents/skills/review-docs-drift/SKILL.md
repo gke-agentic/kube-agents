@@ -13,7 +13,9 @@ Given a pull request (a branch diff against `main`), determine whether the repos
 Your two navigation instruments are:
 
 - **`AGENTS.md` (repo root)** — owns the documentation RULES: the canonical-home table (one home per fact), the generated-region rule, link-don't-summarise, no PR-status prose, verify-identifiers-against-source.
-- **`docs/README.md`** — the documentation MAP: what lives where, what each document covers, which files carry generated regions and from which sources.
+- **`docs/README.md`** — the documentation MAP: what lives where, what each document covers, which files carry generated regions and from which sources, and which source files own the identifiers that docs state as fact.
+
+This skill deliberately holds no repository facts of its own — no file lists, no agent topology, no counts. Facts live in the two instruments above and in the sources they point to; when this skill and a source disagree, the source wins and this skill needs fixing.
 
 Read both before reviewing the diff.
 
@@ -23,10 +25,10 @@ Read both before reviewing the diff.
 
 - `git diff --stat main...HEAD` (or the PR's base) — list every changed file.
 - Classify each changed path:
-  - **Generated-table source?** `agents/platform/cron/jobs.json`, any `agents/platform/skills/*/SKILL.md` or `agents/cluster/skills/*/SKILL.md` frontmatter, any `k8s-operator/scripts/provision_*.sh` / `teardown_*.sh` banner → the generated regions must be regenerated (`make docs-generate`) and committed.
-  - **Identifier source?** `k8s-operator/scripts/common.sh` (SA names, namespace), `k8s-operator/go.mod` (Go version), `agents/platform/config.yaml` / `agents/chat/config.yaml` / `agents/cluster/config.yaml` (toolsets, plugins, MCP servers), `agents/chat/defaults/cron/jobs.json` (the chat profile's script jobs), `agents/platform/SOUL.md` (section numbering, persona rules), `k8s-operator/internal/controller/platformagent_manifests.go` (RBAC bindings, KSA defaults), `k8s-operator/config/rbac/` (controller permissions), `k8s-operator/Makefile` and root `Makefile` (targets), `deploy/docker/Dockerfile` (baked paths) → find every doc that states a fact about the changed item.
+  - **Source of a generated region?** Check the generated-regions table in the map (`docs/README.md` §2). If the changed file — or its frontmatter or comment banner — feeds a generated region, that region must be regenerated (`make docs-generate`) and committed.
+  - **Source of documented identifiers?** Check the identifier-sources table in the map (`docs/README.md` §2). If the changed file owns names, defaults, versions, section numbering, or baked paths that docs state as fact, find every doc that states a fact about the changed item.
   - **Doc file?** → review it under step 3.
-  - **Anything else** (controller code, scripts, workflows, examples) → check the map for pages that describe that component.
+  - **Anything else** (code, scripts, workflows, examples) → check the map for pages that describe that component.
 
 ## 2. Find the affected docs (code → docs)
 
@@ -34,13 +36,12 @@ For each changed source item:
 
 - Look it up in `docs/README.md` to find the pages that document that area; then `git grep` the identifier (old AND new spelling) across `*.md`/`*.mdx` to catch pages the map's summaries don't surface.
 - A doc sentence that names a file, flag, default, section number, count, or identifier is a **testable assertion** — test it against the PR's version of the source, not against other docs and not against your memory.
-- Pay specific attention to known drift magnets:
-  - SA/namespace names and permission-set defaults (`PLATFORM_AGENT_PERMISSION_SET`).
-  - `SOUL.md §N` references anywhere in `docs/` — verify against the current `SOUL.md` headings.
-  - Paths baked into images (`/opt/defaults/...`) and the Dockerfile COPY sources.
-  - Hard-coded counts ("eleven steps", "20 skills") — these should generally not exist; flag any the PR introduces.
-  - The Chat Agent / Platform Agent profile split: chat ingress terminates at the `default` profile (`agents/chat/`), the Platform Agent is the `platform` profile reached via kanban delegation. Docs that re-conflate them are drift.
-  - The per-cluster Cluster Agents (`agents/cluster/` template, `cluster-*` profiles): read-only, single-cluster, no GitOps write path. Docs that ascribe their scope to the Platform Agent (or grant them write capability) are drift, as is any "two profiles" phrasing that predates them.
+- Pay specific attention to known drift magnets. Each is a category of claim to re-verify, not a fact to assume — the current truth lives in the named source, and this skill deliberately does not restate it:
+  - Identifiers that have a source-of-truth file (service-account and namespace names, permission-set defaults, versions) — verify against the identifier-sources table in the map, never against other docs.
+  - `SOUL.md §N` references anywhere in the docs — verify against the current headings of that `SOUL.md`.
+  - Paths docs claim are baked into container images — verify against the Dockerfile.
+  - Hard-coded counts ("eleven steps", "20 skills") — outside the mechanically checked map these should generally not exist; flag any the PR introduces.
+  - Agent scope and topology claims — which profile receives chat ingress, which agents may mutate infrastructure or write to GitOps, which are read-only, and how work is delegated between them. Verify against the repository layout in `AGENTS.md` and the agents' own persona docs and config (`agents/*/SOUL.md`, `agents/*/config.yaml`), never against other docs or your memory of the architecture. Docs that conflate two agents' scopes, or that still describe the topology from before a PR that changed it, are drift.
 
 ## 3. Review changed docs (docs → rules and source)
 
@@ -55,7 +56,7 @@ For every doc the PR adds or edits:
 
 ## 4. Check the instruments themselves
 
-- **`docs/README.md` (the map):** if the PR adds, moves, renames, or deletes any doc, the map must reflect it — tree section, counts, and inventory table. The map is hand-maintained; `make docs-check` (`docs-check-map`) enforces only presence — an inventory entry per tracked doc outside root-level dot-directories, and no dead paths in the path column. The counts and row summaries have no mechanical guard, so verify those here. Also spot-check that map entries touching the PR's area are still accurate.
+- **`docs/README.md` (the map):** if the PR adds, moves, renames, or deletes any doc, the map must reflect it — tree section, stated total, and inventory table. The map is hand-maintained; `make docs-check` (`docs-check-map`) enforces presence and counts — an inventory entry per tracked doc outside root-level dot-directories, no dead paths in the path column, the stated document total, and each collapsed family row's file count. The row summaries and the identifier-sources table have no mechanical guard, so verify those here. Also spot-check that map entries touching the PR's area are still accurate.
 - **Map staleness window:** the map stores no "last verified" stamp; derive the delta from git instead — everything that changed since the map itself was last touched is the map's unreviewed backlog:
 
   ```bash
@@ -68,7 +69,7 @@ For every doc the PR adds or edits:
 
 ## 5. Run the mechanical gates
 
-- `make docs-check` at the PR's HEAD — generated tables current, relative links resolve (targets must be git-tracked), terminology matches source.
+- `make docs-check` at the PR's HEAD — generated tables current, relative links resolve (targets must be git-tracked), terminology matches source, map inventory and counts current.
 - If the PR touched a generated-table source: run `make docs-generate` and confirm `git status` is clean afterwards (a dirty tree means the PR forgot to commit regenerated tables).
 - `npx prettier --check` on changed `.md`/`.json`/`.yaml` files (note: the generated `skills/index.mdx` is intentionally prettier-exempt).
 - If site pages changed: `cd docs/site && npm run build`.
