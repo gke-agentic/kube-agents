@@ -2,12 +2,12 @@
 title: ChatOps
 description: Google Chat and Slack are the primary interfaces to the harness. Both terminate at the Chat Agent front door, which delegates to the Platform Agent.
 sidebar:
-  order: 2
+  order: 3
 ---
 
 Chat is the harness's primary interface — for both requests from humans and proactive alerts from cron watchdogs. The channels shipping today are **Google Chat** (the reference channel, fully wired and E2E tested; enable with `GOOGLE_CHAT_ENABLED=true` during provisioning) and **Slack** (enable with `SLACK_ENABLED=true` during provisioning). Both are opt-in and default to disabled.
 
-Both channels terminate at the **Chat Agent** — the `default` Hermes profile in the agent pod, and the only profile that receives chat ingress. It discovers which specialists exist (via its `router` MCP tool `list_agents`), delegates the request to the right one as a card on the shared **kanban board** (`kanban_create`), and relays progress and results back into the thread. The [Platform Agent](/kube-agents/concepts/platform-agent/) does the actual infrastructure work as a delegated kanban worker; it no longer receives chat directly. A user still sees a single conversational agent regardless of channel — the delegation is visible only as progress updates in the thread. The design of record for this coordination model is [`docs/designs/agent-communication.md`](https://github.com/gke-labs/kube-agents/blob/main/docs/designs/agent-communication.md).
+Both channels terminate at the **Chat Agent** — the `default` Hermes profile in the agent pod, and the only profile that receives chat ingress. It discovers which specialists exist (via its `router` MCP tool `list_agents`), delegates the request to the right one as a card on the shared **kanban board** (`kanban_create`), and relays progress and results back into the thread. The [Platform Agent](/kube-agents/concepts/platform-agent/) does the actual infrastructure work as a delegated kanban worker, and per-cluster [Cluster Agents](/kube-agents/concepts/cluster-agents/) handle single-cluster runtime debugging; neither receives chat directly. A user still sees a single conversational agent regardless of channel — the delegation is visible only as progress updates in the thread. The design of record for this coordination model is [`docs/designs/agent-communication.md`](https://github.com/gke-labs/kube-agents/blob/main/docs/designs/agent-communication.md).
 
 ## Google Chat
 
@@ -67,10 +67,19 @@ The harness doesn't only reply to messages. When a cron watchdog finds something
 
 See [Proactive autonomy](/kube-agents/overview/proactive-autonomy/) for what triggers these alerts and [Autonomous watchdogs](/kube-agents/concepts/autonomous-watchdogs/) for the schedules.
 
+## First-run onboarding
+
+On a fresh install the first chat interaction gets a guided onboarding instead of a cold start. Two `no_agent` cron jobs on the Chat Agent profile (`agents/chat/defaults/cron/jobs.json`) drive it:
+
+- **`bootstrap-inventory-scan`** files a kanban card assigned to the Platform Agent (with a fixed idempotency key, so re-firing never stacks duplicates). That worker runs the environment-discovery SOP ([`agents/platform/governance/inventory.md`](https://github.com/gke-labs/kube-agents/blob/main/agents/platform/governance/inventory.md)) — fleet topology, Workload Identity, workload SRE posture — and writes a presentation-ready report to `/opt/data/INVENTORY.md`.
+- **`bootstrap-inventory-delivery`** posts that report **verbatim** into the chat once two conditions hold: the scan has finished, and a human has connected.
+
+The `bootstrap_onboarding` plugin (enabled in `agents/chat/config.yaml`) hooks the first human turn: it greets the user, binds the delivery job to that chat thread, and marks that a human is present. Once the report is delivered, the flow marks itself complete and removes its own jobs — it never runs again on that data volume. The full design, state markers, and maintenance rules live in the plugin's [README](https://github.com/gke-labs/kube-agents/blob/main/agents/chat/defaults/plugins/bootstrap_onboarding/README.md).
+
 ## What's not here
 
 - **No web UI.** Chat is the primary surface.
-- **No CLI beyond port-forwarding to the Hermes API.** For debug you can `kubectl port-forward` to the agent pod and use the Hermes CLI directly — note the pod hosts two profiles, so a bare `hermes` command talks to the locked-down Chat Agent; use `hermes -p platform` to reach the Platform Agent. This isn't a user-facing pattern.
+- **No CLI beyond port-forwarding to the Hermes API.** For debug you can `kubectl port-forward` to the agent pod and use the Hermes CLI directly — note the pod hosts several profiles, so a bare `hermes` command talks to the locked-down Chat Agent; use `hermes -p platform` to reach the Platform Agent (or `hermes -p <cluster-profile>` for a Cluster Agent). This isn't a user-facing pattern.
 - **No email, PagerDuty, or generic webhook ingress.** Chat channels only.
 
 ## Where to go next

@@ -25,12 +25,12 @@ import { Aside, CardGrid, LinkCard } from "@astrojs/starlight/components";
 
 ## What it is
 
-`kube-agents` runs autonomous agents inside your Kubernetes cluster: a **Chat Agent** front door that listens on Google Chat (and optionally Slack) and a **Platform Agent** specialist it delegates to over a shared kanban board. The Platform Agent executes a growing library of Kubernetes skills on demand, and on its own schedule runs background watchdogs that audit the fleet, propose fixes as GitHub pull requests, and post proactive alerts back to Chat.
+`kube-agents` runs autonomous agents inside your Kubernetes cluster: a **Chat Agent** front door that listens on Google Chat (and optionally Slack), a **Platform Agent** specialist it delegates to over a shared kanban board, and read-only per-cluster **Cluster Agents** the Platform Agent creates for the clusters it manages. The Platform Agent executes a growing library of Kubernetes skills on demand, and on its own schedule runs background watchdogs that audit the fleet, propose fixes as GitHub pull requests, and post proactive alerts back to Chat.
 
 It ships as a small set of components:
 
 - A **Kubernetes operator** (`k8s-operator`, Go / Kubebuilder) that reconciles a `PlatformAgent` custom resource.
-- An **agent Deployment** (running the [Hermes runtime](https://github.com/NousResearch/hermes-agent), `nousresearch/hermes-agent`) hosting two co-located profiles: the Chat Agent (chat ingress and routing) and the Platform Agent, with an opinionated persona, an MCP-based Kubernetes toolset, and a library of skills.
+- An **agent Deployment** (running the [Hermes runtime](https://github.com/NousResearch/hermes-agent), `nousresearch/hermes-agent`) hosting co-located profiles: the Chat Agent (chat ingress and routing), the Platform Agent (an opinionated persona, an MCP-based Kubernetes toolset, and a library of skills), and per-cluster Cluster Agents scaffolded on demand.
 - An **inference gateway** — [LiteLLM](https://litellm.ai) for hosted models (Gemini, Anthropic, OpenAI) or [vLLM](https://vllm.ai) for local models on GPU nodes.
 
 <Aside type="note">
@@ -89,6 +89,7 @@ flowchart LR
         subgraph Pod["Agent pod (k8s-deployment)"]
             CA["Chat Agent<br/>(default profile)"]
             PA["Platform Agent<br/>(platform profile)"]
+            CL["Cluster Agents<br/>(cluster-* profiles)"]
         end
         LM[LiteLLM / vLLM]
         MT[Minty<br/>GitHub token minter]
@@ -102,6 +103,7 @@ flowchart LR
     GC -->|Pub/Sub| CA
     SL -->|Socket Mode| CA
     CA -->|kanban card| PA
+    PA -->|kanban card| CL
     CR -->|scheduled prompts| PA
     OP -->|reconciles PlatformAgent CR| Pod
     Pod -->|Completions API| LM

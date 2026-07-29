@@ -2,7 +2,7 @@
 title: Skills
 description: How the Platform Agent loads and invokes its shipping capability bundles.
 sidebar:
-  order: 3
+  order: 4
 ---
 
 A **skill** is a Markdown-plus-metadata bundle that tells the Platform Agent how to accomplish a particular class of task. Skills follow the [Claude skills format](https://www.anthropic.com/news/skills) — a `SKILL.md` file with YAML frontmatter (`name`, `description`) followed by procedural guidance the model reads on demand.
@@ -20,8 +20,10 @@ agents/platform/skills/
 ├── submit-suggestion/
 │   ├── SKILL.md
 │   └── (supporting scripts)
-└── ... (17 more)
+└── ... (14 more)
 ```
+
+Skills are placed by persona: fleet-wide, provisioning, and GitOps-write skills live in `agents/platform/skills/` (the Platform Agent); the six read-only, single-cluster runtime-debugging skills live in `agents/cluster/skills/` and are scaffolded into every per-cluster [Cluster Agent](/kube-agents/concepts/cluster-agents/) profile.
 
 Some skills are pure Markdown; others carry supporting files (helper scripts, YAML templates) in the same directory. The Hermes runtime discovers `SKILL.md` files automatically at startup.
 
@@ -67,7 +69,7 @@ The `gke-compute-classes` skill is a good example — it explicitly delineates w
 
 ## Adding a new skill
 
-1. Create `agents/platform/skills/<your-skill>/SKILL.md`.
+1. Create `agents/platform/skills/<your-skill>/SKILL.md` — or `agents/cluster/skills/<your-skill>/SKILL.md` if it is a read-only, single-cluster runtime-debugging procedure that belongs to the Cluster Agents.
 2. Add frontmatter with `name` and a specific `description` — this is what routes the agent to the skill.
 3. Write the procedure. Prefer concrete steps and example manifests over abstract descriptions.
 4. If the skill has safety-critical operations (destructive changes, wide-blast-radius commands), list explicit red lines the model must honor.
@@ -78,7 +80,7 @@ The `gke-compute-classes` skill is a good example — it explicitly delineates w
 
 The agent discovers skills from **two** locations at startup:
 
-- **Baked into the image** at `/opt/hermes/skills/` — everything under `agents/platform/skills/` is copied here by [`deploy/docker/Dockerfile`](https://github.com/gke-labs/kube-agents/blob/main/deploy/docker/Dockerfile).
+- **Baked into the image** — [`deploy/docker/Dockerfile`](https://github.com/gke-labs/kube-agents/blob/main/deploy/docker/Dockerfile) copies `agents/platform/skills/` to `/opt/platform-template/skills/` (and `agents/cluster/skills/` to `/opt/cluster-template/skills/`), which are scaffolded into the matching profile's home when the profile is created.
 - **The runtime workspace** at `$HERMES_HOME/skills` — `HERMES_HOME` defaults to `/opt/data`, so `/opt/data/skills`. This path is backed by the agent's persistent volume.
 
 That gives you two ways to bring in additional skills — for example from the upstream [`google/skills`](https://github.com/google/skills/tree/main/skills/cloud) catalog.

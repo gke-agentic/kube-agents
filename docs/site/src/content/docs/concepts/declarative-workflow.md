@@ -2,7 +2,7 @@
 title: Declarative workflow
 description: All infrastructure changes route through Git. How submit-suggestion and Minty enforce it.
 sidebar:
-  order: 6
+  order: 7
 ---
 
 The Platform Agent's `SOUL.md` forbids direct infrastructure mutations. When the agent has a fix in mind — a policy update, a node pool tweak, a security patch, a namespace addition — it doesn't `kubectl apply`. It writes the change into your **GitOps repo** as a **pull request** via the `submit-suggestion` skill, using a short-lived GitHub token minted on demand by **Minty**.

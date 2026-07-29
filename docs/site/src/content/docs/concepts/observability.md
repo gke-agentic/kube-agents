@@ -2,7 +2,7 @@
 title: Observability
 description: OpenTelemetry traces, Prometheus metrics, and Cloud Logging routing for the Platform Agent and its inference gateway.
 sidebar:
-  order: 8
+  order: 9
 ---
 
 The Platform Agent (Hermes) Deployment exports OpenTelemetry traces, and LiteLLM and vLLM export both OpenTelemetry traces and Prometheus metrics to GKE Managed telemetry. Container logs go to Cloud Logging. The Platform Agent's persona also generates Cloud Console links inline in Chat replies whenever it's discussing telemetry.
@@ -19,7 +19,7 @@ The Platform Agent (Hermes) Deployment does **not** expose a Prometheus `/metric
 ### OpenTelemetry traces
 
 - **LiteLLM** and **vLLM** export spans directly to the GKE OTel collector (`gke-managed-otel` namespace).
-- **Hermes** exports session, tool-call, and MCP spans via the `hermes_otel` plugin, enabled in both profile configs (`agents/chat/config.yaml` for the Chat Agent, `agents/platform/config.yaml` for the Platform Agent).
+- **Hermes** exports session, tool-call, and MCP spans via the `hermes_otel` plugin, enabled in every profile config (`agents/chat/config.yaml` for the Chat Agent, `agents/platform/config.yaml` for the Platform Agent, and the `agents/cluster/config.yaml` template for the per-cluster Cluster Agents).
 - Traces route to Google Cloud Trace.
 
 ### Cloud Logging
@@ -40,7 +40,7 @@ The [`kube-agents-observability` skill](https://github.com/gke-labs/kube-agents/
 
 ## Tool-call audit
 
-The `tool_call_audit` plugin (enabled in both profile configs) writes per-tool-call records for every skill invocation and MCP tool call. These flow through the standard log pipeline and are queryable in Logs Explorer.
+The `tool_call_audit` plugin (enabled on the Chat Agent and Platform Agent profiles; Cluster Agent profiles enable only `hermes_otel`) writes per-tool-call records for every skill invocation and MCP tool call. These flow through the standard log pipeline and are queryable in Logs Explorer.
 
 ## Where to go next
 
