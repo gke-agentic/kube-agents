@@ -70,7 +70,7 @@ For every doc the PR adds or edits:
 
 - `make docs-check` at the PR's HEAD — generated tables current, relative links resolve (targets must be git-tracked), terminology matches source.
 - If the PR touched a generated-table source: run `make docs-generate` and confirm `git status` is clean afterwards (a dirty tree means the PR forgot to commit regenerated tables).
-- `npx prettier --check` on changed `.md`/`.yaml` files (note: the generated `skills/index.mdx` is intentionally prettier-exempt).
+- `npx prettier --check` on changed `.md`/`.json`/`.yaml` files (note: the generated `skills/index.mdx` is intentionally prettier-exempt).
 - If site pages changed: `cd docs/site && npm run build`.
 
 # Output
