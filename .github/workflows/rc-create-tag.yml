@@ -1,0 +1,61 @@
+name: RC Step 1 - Create Candidate Tag
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: "Target Commit SHA to tag (Mandatory)"
+        required: true
+        type: string
+      rc_tag:
+        description: "Release Candidate Tag (Optional, Default: Auto-generated rc_YYMMDDHHMM)"
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      commit_sha:
+        description: "Target Commit SHA to tag (Mandatory)"
+        required: true
+        type: string
+      rc_tag:
+        description: "Release Candidate Tag (Optional, Default: Auto-generated rc_YYMMDDHHMM)"
+        required: false
+        type: string
+    outputs:
+      commit_sha:
+        value: ${{ jobs.create-tag.outputs.commit_sha }}
+      rc_tag:
+        value: ${{ jobs.create-tag.outputs.rc_tag }}
+
+jobs:
+  create-tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      commit_sha: ${{ steps.resolve_target.outputs.commit_sha }}
+      rc_tag: ${{ steps.resolve_target.outputs.rc_tag }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Resolve Commit SHA and Tag Name
+        id: resolve_target
+        env:
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          RC_TAG: ${{ inputs.rc_tag }}
+        run: ./scripts/release/resolve_rc_tag.sh
+
+      - name: Verify Prebuilt Container Images Exist in Registry
+        env:
+          COMMIT_SHA: ${{ steps.resolve_target.outputs.commit_sha }}
+        run: ./scripts/release/verify_candidate_images.sh
+
+      - name: Create Git Tag & Push
+        id: tag_step
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMIT_SHA: ${{ steps.resolve_target.outputs.commit_sha }}
+          RC_TAG: ${{ steps.resolve_target.outputs.rc_tag }}
+        run: ./scripts/release/create_release_tag.sh
