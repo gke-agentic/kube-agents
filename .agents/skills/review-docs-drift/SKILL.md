@@ -23,8 +23,8 @@ Read both before reviewing the diff.
 
 - `git diff --stat main...HEAD` (or the PR's base) — list every changed file.
 - Classify each changed path:
-  - **Generated-table source?** `agents/platform/cron/jobs.json`, any `agents/platform/skills/*/SKILL.md` frontmatter, any `k8s-operator/scripts/provision_*.sh` / `teardown_*.sh` banner → the generated regions must be regenerated (`make docs-generate`) and committed.
-  - **Identifier source?** `k8s-operator/scripts/common.sh` (SA names, namespace), `k8s-operator/go.mod` (Go version), `agents/platform/config.yaml` / `agents/chat/config.yaml` (toolsets, plugins, MCP servers), `agents/platform/SOUL.md` (section numbering, persona rules), `k8s-operator/internal/controller/platformagent_manifests.go` (RBAC bindings, KSA defaults), `k8s-operator/config/rbac/` (controller permissions), `k8s-operator/Makefile` and root `Makefile` (targets), `deploy/docker/Dockerfile` (baked paths) → find every doc that states a fact about the changed item.
+  - **Generated-table source?** `agents/platform/cron/jobs.json`, any `agents/platform/skills/*/SKILL.md` or `agents/cluster/skills/*/SKILL.md` frontmatter, any `k8s-operator/scripts/provision_*.sh` / `teardown_*.sh` banner → the generated regions must be regenerated (`make docs-generate`) and committed.
+  - **Identifier source?** `k8s-operator/scripts/common.sh` (SA names, namespace), `k8s-operator/go.mod` (Go version), `agents/platform/config.yaml` / `agents/chat/config.yaml` / `agents/cluster/config.yaml` (toolsets, plugins, MCP servers), `agents/chat/defaults/cron/jobs.json` (the chat profile's script jobs), `agents/platform/SOUL.md` (section numbering, persona rules), `k8s-operator/internal/controller/platformagent_manifests.go` (RBAC bindings, KSA defaults), `k8s-operator/config/rbac/` (controller permissions), `k8s-operator/Makefile` and root `Makefile` (targets), `deploy/docker/Dockerfile` (baked paths) → find every doc that states a fact about the changed item.
   - **Doc file?** → review it under step 3.
   - **Anything else** (controller code, scripts, workflows, examples) → check the map for pages that describe that component.
 
@@ -40,6 +40,7 @@ For each changed source item:
   - Paths baked into images (`/opt/defaults/...`) and the Dockerfile COPY sources.
   - Hard-coded counts ("eleven steps", "20 skills") — these should generally not exist; flag any the PR introduces.
   - The Chat Agent / Platform Agent profile split: chat ingress terminates at the `default` profile (`agents/chat/`), the Platform Agent is the `platform` profile reached via kanban delegation. Docs that re-conflate them are drift.
+  - The per-cluster Cluster Agents (`agents/cluster/` template, `cluster-*` profiles): read-only, single-cluster, no GitOps write path. Docs that ascribe their scope to the Platform Agent (or grant them write capability) are drift, as is any "two profiles" phrasing that predates them.
 
 ## 3. Review changed docs (docs → rules and source)
 
@@ -55,6 +56,14 @@ For every doc the PR adds or edits:
 ## 4. Check the instruments themselves
 
 - **`docs/README.md` (the map):** if the PR adds, moves, renames, or deletes any doc, the map must reflect it — tree section, counts, and inventory table. The map is hand-maintained and NOT covered by `make docs-check`, so this check is the only guard. Also spot-check that map entries touching the PR's area are still accurate.
+- **Map staleness window:** the map stores no "last verified" stamp; derive the delta from git instead — everything that changed since the map itself was last touched is the map's unreviewed backlog:
+
+  ```bash
+  git diff --name-status "$(git log -1 --format=%H -- docs/README.md)"..HEAD -- '*.md' '*.mdx'
+  ```
+
+  If that list contains adds/renames/deletes the map does not reflect, the map is stale even if this PR didn't cause it — report it either way.
+
 - **`AGENTS.md`:** if the PR changes the repo layout, the docs toolchain (`scripts/generate_docs.py`, checkers in `hack/`/`scripts/`), or where a category of content lives, the layout section and canonical-home table need the same update. If the PR invalidates a rule's example, fix the example.
 
 ## 5. Run the mechanical gates
