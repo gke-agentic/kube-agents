@@ -87,6 +87,43 @@ func TestBuildConfigMap(t *testing.T) {
 	if !strings.Contains(yamlContent, "backend: ddgs") {
 		t.Errorf("expected config to contain web backend: ddgs, got:\n%s", yamlContent)
 	}
+	// The default profile is the Chat Agent front door: router MCP (sync) + kanban
+	// (async delegation with chat progress). Both are its delegation surface.
+	if !strings.Contains(yamlContent, "mcp-router") {
+		t.Errorf("expected default profile to expose the router MCP, got:\n%s", yamlContent)
+	}
+	// The router script path must track AgentHome. The entrypoint copies
+	// /opt/defaults (carrying scripts/) into $PLATFORM_AGENT_HOME, which the
+	// operator sets from this same AgentHome — so under a custom home the script
+	// is not at /opt/data and a hardcoded path leaves the router MCP dead.
+	if !strings.Contains(yamlContent, "/custom/home/scripts/router_server.py") {
+		t.Errorf("expected router script resolved under AgentHome, got:\n%s", yamlContent)
+	}
+	if strings.Contains(yamlContent, "/opt/data/scripts/router_server.py") {
+		t.Errorf("router script path must not be hardcoded to /opt/data, got:\n%s", yamlContent)
+	}
+	if !strings.Contains(yamlContent, "kanban") {
+		t.Errorf("expected default profile to enable the kanban toolset, got:\n%s", yamlContent)
+	}
+	if !strings.Contains(yamlContent, "dispatch_in_gateway: true") {
+		t.Errorf("expected kanban dispatch_in_gateway pinned on, got:\n%s", yamlContent)
+	}
+	if !strings.Contains(yamlContent, "auto_subscribe_on_create: true") {
+		t.Errorf("expected kanban auto_subscribe_on_create pinned on, got:\n%s", yamlContent)
+	}
+	if !strings.Contains(yamlContent, "dispatch_interval_seconds: 5") {
+		t.Errorf("expected kanban dispatch_interval_seconds pinned to 5, got:\n%s", yamlContent)
+	}
+	if !strings.Contains(yamlContent, "disabled_toolsets:") {
+		t.Errorf("expected default profile to disable runtime toolsets, got:\n%s", yamlContent)
+	}
+	// The front door must NOT hold privileged/runtime tools — those live in the
+	// separate platform/cluster profiles, not the default (chat) profile.
+	for _, forbidden := range []string{"platform_control", "agent_common", "hermes-api-server", "hermes-cli"} {
+		if strings.Contains(yamlContent, forbidden) {
+			t.Errorf("default (chat) profile must not contain %q, got:\n%s", forbidden, yamlContent)
+		}
+	}
 }
 
 func TestBuildConfigMap_MemoryConfig(t *testing.T) {

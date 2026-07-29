@@ -1,43 +1,113 @@
-# kube-agents: The Kubernetes Agentic Harness
+# 🧭 kube-agents — The Kubernetes Agentic Harness
 
-The k8s agentic harness will fundamentally redefine the DevOps presentation layer by replacing traditional interfaces like kubectl, gcloud, and the Google Cloud console with intelligent, autonomous agents. By replacing the static, imperative nature of the traditional Kubernetes presentation layer with an autonomous agentic harness, we transition from reactive manual management to proactive, intent-driven operations.
+**Stop driving your clusters. Start delegating them.**
 
-## Key Components
+`kube-agents` replaces the traditional imperative DevOps presentation layer — `kubectl`, `gcloud`, the Google Cloud Console — with autonomous, proactive AI agents that manage your Kubernetes/GKE infrastructure, enforce multi-tenant governance, and continuously audit security posture. Instead of you reacting to pages and typing commands, a **Platform Agent** watches your fleet around the clock, opens pull requests with fixes, and reports to you in chat.
 
-### 1. Platform Agent (`platform`)
+| Traditional Ops                              | With `kube-agents`                                                                                           |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Reactive, manual toil (`kubectl` + runbooks) | Proactive, intent-driven operations                                                                          |
+| Drift discovered during incidents            | Scheduled compliance & blueprint audits ([autonomous watchdogs](agents/platform/cron/jobs.json))             |
+| Hand-rolled RBAC and tenancy reviews         | Automated RBAC & boundary enforcement, [credential isolation by design](docs/credential-isolation-design.md) |
+| Patch Tuesdays and CVE spreadsheets          | Daily vulnerability & patch scans with staggered rollout orchestration                                       |
+| One human, one terminal                      | ChatOps with the agent over Google Chat & Slack                                                              |
 
-The master custodian and agent architect configured with an architectural persona (`SOUL.md`). It manages multi-tenancy governance, RBAC boundaries, and GKE infrastructure lifecycle.
+📗 **Full documentation: [gke-labs.github.io/kube-agents](https://gke-labs.github.io/kube-agents/)**
 
 ---
 
-## Harness Integration & Setup
+## ⚡ Try it now
 
-This workspace contains agent configurations, personas, and skills that can be imported into various pattern gateways or multi-agent platforms (such as CrewAI, Microsoft AutoGen, or LangGraph).
+The fastest way in: clone this repository into your agent harness's workspace and delegate the setup itself to an agent:
 
-Multi-agent platforms and orchestrators can use the [INSTALL.md](INSTALL.md) guide to set up the Platform Agent. To delegate this task to your platform, clone this repository to the workspace of the default agent of multi-agent platform and ask it:
-
-> "Using `kube-agents/INSTALL.md` provision k8s agentic harness and create platform agent"
-
-### 1. Declarative Registration (YAML/JSON)
-
-For platforms or gateways that load agents declaratively, add the Platform Agent workspace path to your profile or orchestrator configuration:
-
-```yaml
-agents:
-  - id: platform
-    workspace: ./agents/platform
+```text
+"Using kube-agents/INSTALL.md provision k8s agentic harness and create platform agent"
 ```
 
-### 2. Imperative CLI Registration
+[INSTALL.md](INSTALL.md) is written so that an AI agent with file access and shell tools can follow it end-to-end — and the same guide works step-by-step for humans.
 
-For hosts supporting CLI-driven imports, register the Platform Agent directory from the repository root. For example (using a generic gateway CLI or reference host):
+Prefer the scripted path? From an authenticated `gcloud`:
 
 ```bash
-# Register platform agent
-gateway-cli agents add platform --workspace ./agents/platform --non-interactive
+cd k8s-operator
+make gcp-provision
 ```
 
-For more details on routing policies, proof gates, and showcasing scenarios, see the [Kubernetes Multi-Agent Integration Guide](docs/m1-demos.md).
+This runs the staged, idempotent provisioning scripts end to end — from GKE cluster creation through IAM and chat integration to the optional inference stack. `make gcp-teardown` reverses it. See the [quick start](https://gke-labs.github.io/kube-agents/install/quickstart-gke/) for the walkthrough, or [INSTALL.md](INSTALL.md) for manual and local-development paths.
+
+---
+
+## 📖 What it is
+
+The harness runs co-located agents in a single operator-deployed pod: the **Chat Agent** — the conversational front door that receives every chat message and delegates work over a shared kanban board — the **Platform Agent** — the master custodian and agent architect that manages the GKE infrastructure lifecycle, establishes multi-tenancy boundaries, and enforces fleet-wide compliance — and a **Cluster Agent** per managed cluster, a single-cluster SRE persona the Platform Agent scaffolds from the [`agents/cluster/`](agents/cluster/) template for runtime operations and workload debugging, with read-only access to the cluster it watches. The Platform Agent is driven by:
+
+- 🧬 **A persona** — [`agents/platform/SOUL.md`](agents/platform/SOUL.md) defines its identity, its _Automation First_ rule (no manual cluster mutations; changes flow through declarative, PR-based workflows), and its _Least Privilege_ constraint.
+- 📚 **Governance playbooks** — SOPs in [`agents/platform/governance/`](agents/platform/governance/) covering blueprint sync, compliance audits, cost analysis, capacity orchestration, security patch orchestration, and lifecycle management.
+- 🛠️ **Skills** — task-focused `SKILL.md` bundles under [`agents/platform/skills/`](agents/platform/skills/): cluster creation, app onboarding, cost analysis, backup & DR, and manifest generation. Single-cluster runtime skills — workload troubleshooting, observability, autoscaling, storage — belong to the Cluster Agent in [`agents/cluster/skills/`](agents/cluster/skills/). See the [skill catalog](https://gke-labs.github.io/kube-agents/skills/).
+- ⏰ **Autonomous watchdogs** — cron-driven governance jobs in [`agents/platform/cron/jobs.json`](agents/platform/cron/jobs.json) that keep the fleet honest without human prompting. See [proactive autonomy](https://gke-labs.github.io/kube-agents/overview/proactive-autonomy/).
+
+The runtime is built on the Hermes agent framework and wires in MCP servers for platform control and GKE's hosted MCP endpoint, so the agent speaks to your clusters through structured tools rather than raw shell access.
+
+---
+
+## 🛡️ Governance & isolation
+
+`kube-agents` is designed for enterprise fleets where agents must be powerful _and_ provably contained:
+
+- **Least-privilege RBAC** — the agent's Kubernetes identity is read-only and cannot read Secrets.
+- **Credential isolation** — the agent sandbox container never receives API keys or tokens; an Envoy credential-proxy sidecar injects them at the network boundary.
+- **Kernel-level sandboxing** — agent workloads can run under a gVisor RuntimeClass (GKE Sandbox).
+- **GitOps-only mutations** — infrastructure changes are proposed as pull requests for human review.
+
+Exactly what is _enforced_ on which plane — Kubernetes RBAC, GCP IAM, and the GitOps path each answer differently — is set out in [Security & IAM](https://gke-labs.github.io/kube-agents/reference/security-and-iam/#what-the-agent-can-and-cannot-do). Read that before granting the agent access to a production project.
+
+---
+
+## 🏗️ Architecture
+
+```mermaid
+flowchart TB
+    subgraph agent["🧠 Control Plane — Agent Layer"]
+        SOUL["SOUL.md persona<br/>+ governance SOPs"]
+        SKILLS["Skills<br/>(agents/platform/skills)"]
+        CRON["Scheduled watchdogs<br/>(cron/jobs.json)"]
+        PA["Platform Agent workspace<br/>(agents/platform)"]
+        SOUL --> PA
+        SKILLS --> PA
+        CRON --> PA
+    end
+
+    subgraph cluster["☸️ Cluster Plane — Kubernetes Layer"]
+        OP["k8s-operator<br/>(Go / Kubebuilder)"]
+        CRD["PlatformAgent CRD<br/>kubeagents.x-k8s.io/v1alpha1"]
+        POD["Agent pod: gVisor sandbox<br/>+ Envoy credential proxy<br/>+ Fluent Bit + event watcher"]
+        RBAC["RBAC isolation boundaries<br/>(read-only view + explorer)"]
+        OP -->|reconciles| CRD
+        CRD --> POD
+        OP --> RBAC
+    end
+
+    subgraph integration["🔀 Integration & Routing Layer"]
+        LLM["LiteLLM Gateway<br/>Gemini · OpenAI · Anthropic"]
+        CHAT["Messaging bridges<br/>Google Chat (Pub/Sub) · Slack (Socket Mode)"]
+        GH["Minty — GitHub App<br/>token minter (KMS)"]
+    end
+
+    PA -.runs inside.-> POD
+    POD --> LLM
+    CHAT <--> POD
+    POD -->|PR-based changes| GH
+```
+
+Walkthrough: [Architecture](https://gke-labs.github.io/kube-agents/overview/architecture/). The [`k8s-operator/`](k8s-operator/) reconciles `PlatformAgent` custom resources into the sandboxed agent pod, its sidecars, per-agent ServiceAccounts with Workload Identity, read-only RBAC, and Services.
+
+> **Looking for the end-state design?** [`docs/architecture/`](docs/architecture/) specifies a three-tier, fully read-only agent model that this repository is converging toward. It describes the target, not what ships today.
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome. See [docs/contributing.md](docs/contributing.md) for CLA requirements and the [contributing guide](https://gke-labs.github.io/kube-agents/contributing/) for PR hygiene, commit conventions, and the local checks CI enforces. Repository conventions for AI coding agents are in [AGENTS.md](AGENTS.md).
 
 ## Disclaimer
 

@@ -147,7 +147,19 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 		} `json:"terminal"`
 		MCPServers       map[string]any      `json:"mcp_servers,omitempty"`
 		PlatformToolsets map[string][]string `json:"platform_toolsets,omitempty"`
-		Approvals        struct {
+		// Top-level toolsets: read by the kanban tools' check_fn to expose the
+		// orchestrator surface (kanban_create/list/…) to the front door. This is
+		// a SEPARATE gate from platform_toolsets — both must include `kanban`.
+		Toolsets []string `json:"toolsets,omitempty"`
+		Agent    struct {
+			DisabledToolsets []string `json:"disabled_toolsets,omitempty"`
+		} `json:"agent,omitempty"`
+		Kanban struct {
+			DispatchInGateway       bool `json:"dispatch_in_gateway"`
+			AutoSubscribeOnCreate   bool `json:"auto_subscribe_on_create"`
+			DispatchIntervalSeconds int  `json:"dispatch_interval_seconds"`
+		} `json:"kanban,omitempty"`
+		Approvals struct {
 			CronMode string `json:"cron_mode,omitempty"`
 		} `json:"approvals,omitempty"`
 		Web struct {
@@ -188,45 +200,76 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 	cfg.Terminal.Backend = "local"
 	cfg.Terminal.Cwd = cwd
 
-	// MCP Servers & Toolsets configuration
+	// MCP Servers & Toolsets configuration.
+	//
+	// The `default` profile is the front-door Chat Agent: its job is to analyze a
+	// message, choose the best specialist, delegate, and proxy the chat session.
+	// It gets NO runtime tools of its own (no terminal/gcloud/kubectl/files/etc.).
+	// Its delegation surface is two things:
+	//   - `router` MCP (list_agents): discovery only — lists the dynamic specialist
+	//     roster so the Chat Agent can pick the right kanban `assignee`. (The old
+	//     synchronous `ask_agent` relay was removed; it blocked up to 300s with no
+	//     visible progress. All delegation is kanban-only now.)
+	//   - `kanban`: async delegation for ALL substantive work (quick lookups and
+	//     long/multi-step/mutating jobs alike). Hermes auto-subscribes this chat
+	//     thread and posts the specialist's lifecycle/progress back to it as each
+	//     step completes, with no blocking timeout. The dispatcher/notifier run in
+	//     this gateway.
+	// The privileged Platform Agent and read-only Cluster Agents run as separate
+	// Hermes profiles (scaffolded from the image) with their own configs.
 	cfg.MCPServers = map[string]any{
-		"platform_control": map[string]any{
-			"command":         "/opt/hermes/.venv/bin/python3",
-			"args":            []string{"/opt/data/scripts/platform_mcp_server.py"},
-			"connect_timeout": 120,
-			"timeout":         300,
+		"router": map[string]any{
+			"command": "/opt/hermes/.venv/bin/python3",
+			// Resolved against cwd, not hardcoded to /opt/data: the entrypoint copies
+			// /opt/defaults (which carries scripts/) into $PLATFORM_AGENT_HOME, and the
+			// operator sets that env from the same AgentHome that produced cwd. With a
+			// custom AgentHome the script is never at /opt/data/scripts, so a literal
+			// path would leave the router MCP dead and the Chat Agent unable to
+			// discover any specialist to delegate to.
+			"args": []string{path.Join(cwd, "scripts/router_server.py")},
 			"env": map[string]string{
-				"KUBERNETES_SERVICE_HOST":       "${KUBERNETES_SERVICE_HOST}",
-				"KUBERNETES_SERVICE_PORT":       "${KUBERNETES_SERVICE_PORT}",
-				"HERMES_HOME":                   "${HERMES_HOME}",
-				"GOOGLE_CHAT_PROJECT_ID":        "${GOOGLE_CHAT_PROJECT_ID}",
-				"GOOGLE_CHAT_SUBSCRIPTION_NAME": "${GOOGLE_CHAT_SUBSCRIPTION_NAME}",
-				"API_SERVER_KEY":                "${API_SERVER_KEY}",
+				"HERMES_HOME": "${HERMES_HOME}",
 			},
 		},
-		"agent_common": map[string]any{
-			"command": "/opt/hermes/.venv/bin/python3",
-			"args":    []string{"/opt/data/scripts/agent_common_server.py"},
-		},
-		"developer_knowledge": map[string]any{
-			"command": "node",
-			"args":    []string{"/opt/mcp-remote/dist/proxy.js", "https://developerknowledge.googleapis.com/mcp"},
-		},
-		"gke": map[string]any{
-			"command": "node",
-			"args":    []string{"/opt/mcp-remote/dist/proxy.js", "https://container.googleapis.com/mcp"},
-		},
 	}
+	// Delegation toolset (router MCP + kanban) for every platform key the gateway
+	// may resolve under, including `google_chat` (the real chat-ingress key).
 	cfg.PlatformToolsets = map[string][]string{
-		"cli":        {"hermes-cli", "mcp-agent_common", "mcp-platform_control", "mcp-developer_knowledge", "mcp-gke"},
-		"api_server": {"hermes-api-server", "mcp-agent_common", "mcp-platform_control", "mcp-developer_knowledge", "mcp-gke"},
+		"cli":         {"mcp-router", "kanban"},
+		"api_server":  {"mcp-router", "kanban"},
+		"google_chat": {"mcp-router", "kanban"},
+	}
+	// Second gate for the kanban orchestrator surface: the kanban tools' check_fn
+	// reads this top-level `toolsets` key (distinct from platform_toolsets above).
+	cfg.Toolsets = []string{"kanban"}
+	// Pin the chat-transparency machinery on (both default True upstream, pinned
+	// so a future default change can't silently disable delegated-progress).
+	cfg.Kanban.DispatchInGateway = true
+	cfg.Kanban.AutoSubscribeOnCreate = true
+	// Dispatcher tick. Upstream defaults to 60s, which added a 0-60s (median ~38s)
+	// dead wait to every delegation before the worker was even claimed. 5s matches
+	// the notifier watcher's cadence and makes delegation feel immediate.
+	cfg.Kanban.DispatchIntervalSeconds = 5
+	// Defense in depth: disabled_toolsets is applied last by Hermes for EVERY
+	// platform key, so even if a base bundle is ever reintroduced the front door
+	// still cannot touch the system (no terminal/gcloud/kubectl, files, skills,
+	// code-exec, delegate_task, etc.). `kanban` is intentionally NOT disabled —
+	// it is the delegation surface. Only mcp-router + kanban survive.
+	cfg.Agent.DisabledToolsets = []string{
+		"terminal", "file", "skills", "code_execution", "delegation",
+		"browser", "computer_use", "cronjob", "web", "search", "x_search",
+		"vision", "video", "image_gen", "video_gen", "tts", "todo", "memory",
+		"session_search", "project", "homeassistant", "discord",
+		"discord_admin", "spotify",
 	}
 
 	// Execution & Display UX configuration
 	cfg.Approvals.CronMode = "approve"
 	cfg.Web.Backend = "ddgs"
-	// Enable incident_context plugin by default to parse and rewrite GChat/Slack threaded incident replies
-	cfg.Plugins.Enabled = []string{"hermes_otel", "session_store", "session_otel_bridge", "tool_call_audit", "incident_context"}
+	// Enable incident_context plugin by default to parse and rewrite GChat/Slack threaded incident replies.
+	// bootstrap_onboarding rides on the default profile because it hooks pre_llm_call on the first
+	// human turn — chat ingress lands here, not on the platform specialist.
+	cfg.Plugins.Enabled = []string{"hermes_otel", "session_store", "session_otel_bridge", "tool_call_audit", "incident_context", "bootstrap_onboarding"}
 	cfg.Display.Platforms = map[string]map[string]any{}
 	cfg.Memory.MemoryEnabled = false
 	cfg.Memory.Provider = "multiuser_memory"
@@ -939,6 +982,16 @@ func buildSandboxCredentialCleanup(image string, pullPolicy corev1.PullPolicy) c
 			AllowPrivilegeEscalation: ptr.To(false),
 			ReadOnlyRootFilesystem:   ptr.To(true),
 			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		},
+		Resources: corev1.ResourceRequirements{
+			Limits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("200m"),
+				corev1.ResourceMemory: resource.MustParse("256Mi"),
+			},
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("100m"),
+				corev1.ResourceMemory: resource.MustParse("128Mi"),
+			},
 		},
 	}
 }
