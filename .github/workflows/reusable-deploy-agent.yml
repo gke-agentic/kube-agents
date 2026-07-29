@@ -94,10 +94,11 @@ jobs:
         env:
           REPO_NAME: ${{ github.repository }}
           PACKAGE_NAME: "platform-agent"
+          INPUT_IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
           REPO_DOWNCASE=$(echo "$REPO_NAME" | tr '[:upper:]' '[:lower:]')
           echo "AGENT_IMAGE=ghcr.io/${REPO_DOWNCASE}/${PACKAGE_NAME}" >> "$GITHUB_ENV"
-          echo "IMAGE_TAG=${{ inputs.image_tag }}" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=${INPUT_IMAGE_TAG}" >> "$GITHUB_ENV"
 
       - name: Perform Agent Redeployment
         env:

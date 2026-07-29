@@ -77,10 +77,11 @@ jobs:
         env:
           REPO_NAME: ${{ github.repository }}
           PACKAGE_NAME: "k8s-operator"
+          INPUT_IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
           REPO_DOWNCASE=$(echo "$REPO_NAME" | tr '[:upper:]' '[:lower:]')
           echo "IMAGE_REPO=ghcr.io/${REPO_DOWNCASE}/${PACKAGE_NAME}" >> "$GITHUB_ENV"
-          echo "IMAGE_TAG=${{ inputs.image_tag }}" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=${INPUT_IMAGE_TAG}" >> "$GITHUB_ENV"
 
       - name: Perform Controller Redeployment
         env:
