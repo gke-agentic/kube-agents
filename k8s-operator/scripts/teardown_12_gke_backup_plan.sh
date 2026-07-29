@@ -30,7 +30,7 @@ if gcloud beta container backup-restore backup-plans describe platform-agent-bac
         --backup-plan=platform-agent-backup-plan \
         --location="$REGION" \
         --project="$PROJECT_ID" \
-        --format="value(name)" || echo "")
+        --format="value(name.basename())" || echo "")
     for backup in $backups; do
       if [ -n "$backup" ]; then
         echo -e "    ${C_CYAN}ℹ Deleting snapshot '${backup}'...${C_RESET}"
@@ -38,7 +38,7 @@ if gcloud beta container backup-restore backup-plans describe platform-agent-bac
             --backup-plan=platform-agent-backup-plan \
             --location="$REGION" \
             --project="$PROJECT_ID" \
-            --quiet
+            --quiet || echo -e "    ${C_YELLOW}⚠ Failed to delete snapshot '${backup}'; continuing...${C_RESET}"
       fi
     done
 

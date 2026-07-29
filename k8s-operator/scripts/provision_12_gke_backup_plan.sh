@@ -11,6 +11,10 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh" "$@"
 
+# ─── Prerequisites Check ──────────────────────────────────────────────────────
+print_step "Checking Local Prerequisites"
+check_prereqs "gcloud"
+
 print_step "Setting up Configuration State for GKE Backup Plan"
 load_state
 
@@ -21,6 +25,9 @@ init_var "PROJECT_ID" "$DEFAULT_PROJECT_ID" "Enter Target GCP Project ID"
 init_var "REGION" "us-east4" "Enter GKE GCP Region"
 init_var "CLUSTER_NAME" "platform-agent-host" "Enter GKE Cluster Name"
 init_var "ENABLE_GKE_BACKUP_PLAN" "true" "Enable automated Google Cloud Backup for GKE on cluster (true/false)"
+init_var "BACKUP_CRON_SCHEDULE" "0 2 * * *" "Enter GKE Backup Plan cron schedule"
+init_var "BACKUP_RETAIN_DAYS" "30" "Enter backup retention in days"
+init_var "BACKUP_ENCRYPTION_KEY" "" "Enter optional KMS encryption key for backups (leave empty for Google-managed)"
 
 # ─── Interactive Confirmation ─────────────────────────────────────────────────
 if ! is_truthy "$ENABLE_GKE_BACKUP_PLAN"; then
@@ -30,14 +37,19 @@ fi
 
 # ─── Step Implementations ─────────────────────────────────────────────────────
 
-# Step 1: Connect kubectl
-verify_kubeconfig() {
-  local current_ctx
-  current_ctx=$(kubectl config current-context 2>/dev/null || echo "")
-  [[ "$current_ctx" == *"${PROJECT_ID}"* && "$current_ctx" == *"${CLUSTER_NAME}"* ]]
+# Step 1: Ensure Backup for GKE is enabled on cluster
+verify_cluster_backup_enabled() {
+  gcloud container clusters describe "$CLUSTER_NAME" \
+      --location="$REGION" --project="$PROJECT_ID" \
+      --format="value(addonsConfig.gkeBackupAgentConfig.enabled)" 2>/dev/null | grep -iq "True"
 }
-execute_kubeconfig() {
-  connect_cluster
+execute_cluster_backup_enabled() {
+  print_info "Enabling Backup for GKE on cluster '${CLUSTER_NAME}'..."
+  gcloud container clusters update "$CLUSTER_NAME" \
+      --location="$REGION" \
+      --project="$PROJECT_ID" \
+      --enable-gke-backup \
+      --quiet
 }
 
 # Step 2: Ensure GKE Backup Plan
@@ -46,6 +58,11 @@ verify_backup_plan() {
       --location="$REGION" --project="$PROJECT_ID" >/dev/null 2>&1
 }
 execute_backup_plan() {
+  local enc_flag=()
+  if [ -n "${BACKUP_ENCRYPTION_KEY:-}" ]; then
+    enc_flag=("--encryption-key=${BACKUP_ENCRYPTION_KEY}")
+  fi
+
   print_info "Creating default GKE Backup Plan 'platform-agent-backup-plan'..."
   gcloud beta container backup-restore backup-plans create platform-agent-backup-plan \
       --project="$PROJECT_ID" \
@@ -53,13 +70,14 @@ execute_backup_plan() {
       --cluster="projects/${PROJECT_ID}/locations/${REGION}/clusters/${CLUSTER_NAME}" \
       --all-namespaces \
       --include-volume-data \
-      --cron-schedule="0 2 * * *" \
-      --backup-retain-days=30 \
+      --cron-schedule="$BACKUP_CRON_SCHEDULE" \
+      --backup-retain-days="$BACKUP_RETAIN_DAYS" \
+      "${enc_flag[@]}" \
       --quiet
 }
 
 # ─── Execution Pipeline ───────────────────────────────────────────────────────
-run_step "1. Connect kubectl" verify_kubeconfig execute_kubeconfig 0
+run_step "1. Ensure Backup for GKE enabled on cluster" verify_cluster_backup_enabled execute_cluster_backup_enabled 5
 run_step "2. Ensure GKE Backup Plan" verify_backup_plan execute_backup_plan 0
 
 # ─── Conclusion Checklist ─────────────────────────────────────────────────────

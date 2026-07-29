@@ -62,6 +62,14 @@ Both accept `--dry-run` to print planned actions without applying them.
 
 `provision_11_deploy_inference_replay.sh` — Only runs if `INFERENCE_REPLAY_ENABLED=true`. Deploys the [inference-replay proxy](/kube-agents/concepts/inference-gateway/#inference-replay) with a PVC for the cache and re-points the `litellm` Service to route through the proxy.
 
+### 12. GKE Backup Plan
+
+`provision_12_gke_backup_plan.sh` — Only runs if `ENABLE_GKE_BACKUP_PLAN=true` (default). Ensures Backup for GKE is enabled on the GKE cluster (`--enable-gke-backup`), then creates a default Google Cloud Backup for GKE BackupPlan (`platform-agent-backup-plan`) configured to back up all namespaces and persistent volume data daily (`BACKUP_CRON_SCHEDULE`, default `0 2 * * *`) with a retention policy (`BACKUP_RETAIN_DAYS`, default `30` days). Optionally accepts `BACKUP_ENCRYPTION_KEY` to encrypt backups with a Customer-Managed Encryption Key (CMEK) via Cloud KMS instead of Google-managed encryption.
+
+**Note:** If `BACKUP_CRON_SCHEDULE`, `BACKUP_RETAIN_DAYS`, or `BACKUP_ENCRYPTION_KEY` are modified after initial provisioning, existing backup plans are not updated in-place. To apply configuration drift changes, either update the plan manually via `gcloud beta container backup-restore backup-plans update` or run `teardown_12_gke_backup_plan.sh` before re-provisioning.
+
+**Security:** Because backups include all Kubernetes Secrets and persistent volume data (`--all-namespaces`, `--include-volume-data`), GCP IAM policies should restrict backup/restore permissions (`roles/gkebackup.admin` and `roles/gkebackup.backupAdmin`) to authorized cluster administrators.
+
 ## Teardown steps
 
 Mirror the provisioning steps in reverse. Full table on [Uninstall](/kube-agents/install/uninstall/).
