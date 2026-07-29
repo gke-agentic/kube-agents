@@ -14,16 +14,16 @@ editing any doc.
 
 ## 1. Directory overview
 
-Counts are of `.md`/`.mdx` files (161 total).
+Counts are of `.md`/`.mdx` files (138 total). Dot-directories at the
+repository root (`.agents/`, `.github/`, `.gemini/`, `.claude/`) hold
+tooling — review skills, PR templates, style guides, agent config — not
+documentation; they are out of the map's scope and `docs-check-map`
+exempts them.
 
 ```text
 kube-agents/
 ├── README.md, INSTALL.md, AGENTS.md, CLAUDE.md   (4) project front door, install
 │                                                     guide, contributor/agent rules
-├── .agents/skills/                              (21) repo-level review skills run
-│                                                     against PRs and clusters
-├── .gemini/styleguide.md                         (1) Gemini review-bot style guide
-├── .github/PULL_REQUEST_TEMPLATE.md              (1) PR body template
 ├── agents/                                      (57) agent blueprints (runtime docs)
 │   ├── chat/                                     (5) Chat Agent front door: AGENTS.md,
 │   │                                                 SOUL.md, onboarding templates (2),
@@ -89,9 +89,9 @@ CI enforcement: `make docs-check` runs the same three checks as
 - `docs-check-map` — `scripts/check_docs_map.py`; every tracked `.md`/`.mdx`
   file must be matched by an inventory entry in this map (globs count), and
   every path in the inventory's path column must exist. Dot-directories
-  (`.agents/`, `.github/`, …) are tooling, not docs, and are exempt from
-  required coverage — the rows this map keeps for them are voluntary, but any
-  path they claim is still validated.
+  (`.agents/`, `.github/`, `.gemini/`, `.claude/`, …) are tooling, not docs:
+  the map does not inventory them and the check does not require them — the
+  map and the check share one scope.
 
 ## 3. Documentation eras and status
 
@@ -126,22 +126,12 @@ with a count. Paths are repository-root-relative.
 
 ### Repository root and repo meta
 
-| Path                               | Category          | Purpose and summary                                                                                                                                                                              | Key topics                                                                          | Audience / notes                                                |
-| ---------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| `README.md`                        | Project overview  | Front door for "The Kubernetes Agentic Harness": Chat Agent + Platform Agent managing GKE via GitOps PRs and ChatOps, with quick-start pointers and an architecture diagram.                     | Value proposition, components, governance/isolation summary, links to the docs site | Evaluators and adopters; also usable by an agent to start setup |
-| `INSTALL.md`                       | Install guide     | Self-contained, executable installation guide: automated GCP/GKE provisioning, manual Kubernetes deployment, local dev, teardown, troubleshooting. Commands only; explanation lives on the site. | Prerequisites, provisioning stages, integrations, teardown                          | Written to be runnable end-to-end by a human or an AI agent     |
-| `AGENTS.md`                        | Contributor rules | Workspace instructions: repo layout, skills guidelines, the canonical-home documentation rules, generated-regions rule, and PR hygiene.                                                          | Doc ownership table, `make docs-check`, Conventional Commits, fork PRs              | AI coding agents and human contributors; owns the doc RULES     |
-| `CLAUDE.md`                        | Contributor rules | Imports `AGENTS.md` and adds Claude-specific commit-authorship and PR-disclosure rules.                                                                                                          | No co-author trailers; PRs mention Claude assistance                                | Claude Code sessions                                            |
-| `.github/PULL_REQUEST_TEMPLATE.md` | Repo meta         | PR body template (Why This Change / What Changed / Why This Matters / Context / Testing). Other `.github/` content (CI workflows) is not inventoried here.                                       | PR structure                                                                        | PR authors; `gh pr create --fill` bypasses it — don't           |
-| `.gemini/styleguide.md`            | Repo meta         | Style guide consumed by the Gemini code-review bot; mirrors the PR-hygiene and skills-structure rules of `AGENTS.md`.                                                                            | PR hygiene, skill structure                                                         | Automated reviewer configuration                                |
-
-### `.agents/skills/` — repository-level review skills
-
-| Path                                                        | Category     | Purpose and summary                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Key topics                                                     | Audience / notes                                                                      |
-| ----------------------------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| `.agents/skills/review-security-k8s-*/SKILL.md` (18 skills) | Review skill | Hierarchical Kubernetes security-review suite: `review-security-k8s-main` orchestrates `-understand` plus nine domain sub-skills (rbac, nodes, network, gateway, namespaces, service-accounts, storage, admission, pod) and `-agents-main`, which dispatches six AI-agent-specific sub-skills (sandbox, firewall, credentials, prompt-injection, data-exfil, audit-logs). Each returns standardized JSON findings. `.agents/skills/review-security-k8s-rbac/resources/gke-rbac.md` is a local copy of Google's GKE RBAC best-practices page kept as a reference resource. | Security review orchestration, deterministic check lists       | AI review agents; referenced as a control in `docs/architecture/03-security-model.md` |
-| `.agents/skills/skill-review/SKILL.md`                      | Review skill | Reviews skill definitions themselves for token efficiency, clarity, and standardized `# Task`/`# Checks` formatting.                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Skill authoring standards                                      | AI review agents                                                                      |
-| `.agents/skills/review-docs-drift/SKILL.md`                 | Review skill | Reviews a pull request for documentation drift in both directions (code→docs and docs→source), using `AGENTS.md` for the rules and this map for navigation, then runs the mechanical gates (`make docs-check`, prettier, site build).                                                                                                                                                                                                                                                                                                                                     | Drift detection, generated-region sources, testable assertions | AI review agents; the consumer of this file                                           |
+| Path         | Category          | Purpose and summary                                                                                                                                                                              | Key topics                                                                          | Audience / notes                                                |
+| ------------ | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `README.md`  | Project overview  | Front door for "The Kubernetes Agentic Harness": Chat Agent + Platform Agent managing GKE via GitOps PRs and ChatOps, with quick-start pointers and an architecture diagram.                     | Value proposition, components, governance/isolation summary, links to the docs site | Evaluators and adopters; also usable by an agent to start setup |
+| `INSTALL.md` | Install guide     | Self-contained, executable installation guide: automated GCP/GKE provisioning, manual Kubernetes deployment, local dev, teardown, troubleshooting. Commands only; explanation lives on the site. | Prerequisites, provisioning stages, integrations, teardown                          | Written to be runnable end-to-end by a human or an AI agent     |
+| `AGENTS.md`  | Contributor rules | Workspace instructions: repo layout, skills guidelines, the canonical-home documentation rules, generated-regions rule, and PR hygiene.                                                          | Doc ownership table, `make docs-check`, Conventional Commits, fork PRs              | AI coding agents and human contributors; owns the doc RULES     |
+| `CLAUDE.md`  | Contributor rules | Imports `AGENTS.md` and adds Claude-specific commit-authorship and PR-disclosure rules.                                                                                                          | No co-author trailers; PRs mention Claude assistance                                | Claude Code sessions                                            |
 
 ### `agents/` — agent blueprints (runtime documents)
 
