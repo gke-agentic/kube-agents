@@ -1,0 +1,14 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: kubeagents-system
+  labels:
+    app.kubernetes.io/part-of: kube-agents
+spec:
+  # Selects ALL pods in the namespace. Any additional or ephemeral pods deployed
+  # in kubeagents-system require explicit NetworkPolicies to allow traffic.
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress

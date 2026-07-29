@@ -147,6 +147,10 @@ func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if err := r.reconcileService(ctx, instance); err != nil {
 		return ctrl.Result{}, err
 	}
+	// Reconcile NetworkPolicy
+	if err := r.reconcileNetworkPolicy(ctx, instance); err != nil {
+		return ctrl.Result{}, err
+	}
 	if err := r.deleteLegacyCredentialIsolationResources(ctx, instance); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -374,9 +378,23 @@ func (r *PlatformAgentReconciler) deleteLegacyCredentialIsolationResources(ctx c
 func (r *PlatformAgentReconciler) reconcileService(ctx context.Context, agent *agentv1alpha1.PlatformAgent) error {
 	svc := buildPlatformService(agent)
 	if err := ctrl.SetControllerReference(agent, svc, r.Scheme); err != nil {
-		return err
+		return fmt.Errorf("failed to set controller reference on Service %s/%s: %w", svc.Namespace, svc.Name, err)
 	}
-	return r.Patch(ctx, svc, client.Apply, client.ForceOwnership, client.FieldOwner("platformagent-controller"))
+	if err := r.Patch(ctx, svc, client.Apply, client.ForceOwnership, client.FieldOwner("platformagent-controller")); err != nil {
+		return fmt.Errorf("failed to reconcile Service %s/%s: %w", svc.Namespace, svc.Name, err)
+	}
+	return nil
+}
+
+func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, agent *agentv1alpha1.PlatformAgent) error {
+	netpol := buildNetworkPolicy(agent)
+	if err := ctrl.SetControllerReference(agent, netpol, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set controller reference on NetworkPolicy %s/%s: %w", netpol.Namespace, netpol.Name, err)
+	}
+	if err := r.Patch(ctx, netpol, client.Apply, client.ForceOwnership, client.FieldOwner("platformagent-controller")); err != nil {
+		return fmt.Errorf("failed to reconcile NetworkPolicy %s/%s: %w", netpol.Namespace, netpol.Name, err)
+	}
+	return nil
 }
 
 func (r *PlatformAgentReconciler) reconcileRBAC(ctx context.Context, agent *agentv1alpha1.PlatformAgent) error {

@@ -181,6 +181,14 @@ func TestPlatformAgentReconciler_Reconcile(t *testing.T) {
 		t.Errorf("expected Service to have OwnerReference to PlatformAgent")
 	}
 
+	// NetworkPolicy
+	netpol := &networkingv1.NetworkPolicy{}
+	if err := cl.Get(ctx, types.NamespacedName{Name: "test-agent-gateway-netpol", Namespace: "test-ns"}, netpol); err != nil {
+		t.Errorf("failed to get NetworkPolicy: %v", err)
+	} else if len(netpol.OwnerReferences) != 1 || netpol.OwnerReferences[0].Kind != "PlatformAgent" {
+		t.Errorf("expected NetworkPolicy to have OwnerReference to PlatformAgent")
+	}
+
 	// RBAC
 	explorerRole := &rbacv1.ClusterRole{}
 	if err := cl.Get(ctx, types.NamespacedName{Name: "kubeagents:explorer:test-ns:test-agent"}, explorerRole); err != nil {
@@ -569,3 +577,69 @@ func TestPlatformAgentReconciler_Reconcile_PodUnschedulable(t *testing.T) {
 		t.Errorf("expected polished condition message:\n%q\ngot:\n%q", expectedMsg, cond.Message)
 	}
 }
+
+func TestBuildNetworkPolicy(t *testing.T) {
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+		},
+	}
+
+	netpol := buildNetworkPolicy(agent)
+	if netpol.Name != "test-agent-gateway-netpol" {
+		t.Errorf("expected Name 'test-agent-gateway-netpol', got %s", netpol.Name)
+	}
+	if netpol.Namespace != "test-ns" {
+		t.Errorf("expected Namespace 'test-ns', got %s", netpol.Namespace)
+	}
+	if len(netpol.Spec.PolicyTypes) != 2 {
+		t.Errorf("expected 2 PolicyTypes, got %d", len(netpol.Spec.PolicyTypes))
+	}
+	if len(netpol.Spec.Ingress) != 2 {
+		t.Fatalf("expected 2 Ingress rules, got %d", len(netpol.Spec.Ingress))
+	}
+	if len(netpol.Spec.Ingress[0].Ports) != 3 {
+		t.Errorf("expected 3 ports in agent namespace ingress rule when dashboard enabled, got %d", len(netpol.Spec.Ingress[0].Ports))
+	}
+	if len(netpol.Spec.Ingress[1].Ports) != 1 {
+		t.Errorf("expected 1 port in gke-gmp-system ingress rule, got %d", len(netpol.Spec.Ingress[1].Ports))
+	}
+	if len(netpol.Spec.Egress) != 4 {
+		t.Errorf("expected 4 Egress rules (DNS, GCP Metadata, LiteLLM Gateway, K8s/GCP APIs), got %d", len(netpol.Spec.Egress))
+	}
+	if len(netpol.Spec.Egress[0].To) != 3 {
+		t.Errorf("expected 3 peers in DNS egress rule, got %d", len(netpol.Spec.Egress[0].To))
+	}
+	if netpol.Spec.Egress[2].To[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "test-ns" {
+		t.Errorf("expected LiteLLM egress rule to match agent namespace 'test-ns', got %s", netpol.Spec.Egress[2].To[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"])
+	}
+	if len(netpol.Spec.Egress[3].To[0].IPBlock.Except) != 0 {
+		t.Errorf("expected no Except block in K8s API server egress rule, got %v", netpol.Spec.Egress[3].To[0].IPBlock.Except)
+	}
+}
+
+func TestBuildNetworkPolicy_DashboardDisabled(t *testing.T) {
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+		},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			Harness: &agentv1alpha1.HarnessSpec{
+				Hermes: &agentv1alpha1.HermesSpec{
+					DashboardEnabled: ptr.To(false),
+				},
+			},
+		},
+	}
+
+	netpol := buildNetworkPolicy(agent)
+	if len(netpol.Spec.Ingress) != 2 {
+		t.Fatalf("expected 2 Ingress rules, got %d", len(netpol.Spec.Ingress))
+	}
+	if len(netpol.Spec.Ingress[0].Ports) != 2 {
+		t.Errorf("expected 2 ports in agent namespace ingress rule when dashboard disabled, got %d", len(netpol.Spec.Ingress[0].Ports))
+	}
+}
+

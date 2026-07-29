@@ -1,0 +1,90 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: platform-agent-gateway-netpol
+  namespace: kubeagents-system
+  labels:
+    app: platform-agent
+spec:
+  # Note: Kustomize targets the static 'app: platform-agent' label from service.yaml.
+  # The Kubernetes Operator dynamically targets 'app: <agent.Name>-gateway' when reconciling PlatformAgent CRs.
+  podSelector:
+    matchLabels:
+      app: platform-agent
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # 1. Internal agent traffic and dashboard access from within kubeagents-system
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kubeagents-system
+      ports:
+        - port: 8642
+          protocol: TCP
+        - port: 8643
+          protocol: TCP
+        - port: 9119
+          protocol: TCP
+    # 2. Prometheus metrics scraping from Google Managed Prometheus (gke-gmp-system)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: gke-gmp-system
+      ports:
+        - port: 8643
+          protocol: TCP
+  egress:
+    # 1. Cluster DNS (Scoped specifically to CoreDNS and NodeLocal DNSCache pods in kube-system)
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+      to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: node-local-dns
+        - ipBlock:
+            cidr: 169.254.20.10/32
+    # 2. GCP Workload Identity / Metadata Server
+    - ports:
+        - port: 80
+          protocol: TCP
+      to:
+        - ipBlock:
+            cidr: 169.254.169.254/32
+    # 3. LiteLLM Gateway in kubeagents-system
+    - ports:
+        - port: 4000
+          protocol: TCP
+        - port: 80
+          protocol: TCP
+        - port: 443
+          protocol: TCP
+      to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kubeagents-system
+          podSelector:
+            matchLabels:
+              app: litellm
+    # 4. Kubernetes API Server & GCP APIs
+    - ports:
+        - port: 443
+          protocol: TCP
+        - port: 6443
+          protocol: TCP
+      to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
