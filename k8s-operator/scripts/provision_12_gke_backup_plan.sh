@@ -54,8 +54,19 @@ execute_cluster_backup_enabled() {
 
 # Step 2: Ensure GKE Backup Plan
 verify_backup_plan() {
-  gcloud beta container backup-restore backup-plans describe platform-agent-backup-plan \
-      --location="$REGION" --project="$PROJECT_ID" >/dev/null 2>&1
+  local out
+  local err=0
+  out=$(gcloud beta container backup-restore backup-plans describe platform-agent-backup-plan \
+      --location="$REGION" --project="$PROJECT_ID" 2>&1) || err=$?
+  if [ "$err" -eq 0 ]; then
+    return 0
+  elif echo "$out" | grep -iq "not found\|NOT_FOUND"; then
+    return 1
+  else
+    echo -e "  ${C_RED}✗ Error checking GKE Backup Plan 'platform-agent-backup-plan':${C_RESET}" >&2
+    echo "$out" >&2
+    exit "$err"
+  fi
 }
 execute_backup_plan() {
   local enc_flag=()
