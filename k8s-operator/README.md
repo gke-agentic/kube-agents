@@ -65,6 +65,8 @@ Every step is documented once, in **[scripts/README.md](scripts/README.md)** —
 reference for what each `provision_NN_*.sh` script does, in what order, and which variables it
 reads. Run `make help` for the per-step targets.
 
+- **GKE Backup & Disaster Recovery (Step 12)**: `provision_12_gke_backup_plan.sh` enables Backup for GKE on the cluster (`--enable-gke-backup`) and creates a Google Cloud Backup for GKE `BackupPlan` (`platform-agent-backup-plan`) configured to snapshot the target namespace (`$NAMESPACE`, default `kubeagents-system`), persistent volumes, and Kubernetes Secrets daily with a 30-day retention policy. Opt out anytime by setting `ENABLE_GKE_BACKUP_PLAN=false` in `vars.sh`.
+
 #### Fast Local Development & Testing
 
 For fast local iteration when updating agent skills, prompts, or code without waiting for CI/CD pipelines, you can use the dedicated rebuild script or `make` target:
@@ -103,22 +105,23 @@ Or run the master teardown script directly:
 
 ```mermaid
 graph TD
-    A[teardown.sh] --> B[teardown_11_deploy_inference_replay.sh]
-    A --> C[teardown_10_deploy_github_minter.sh]
-    A --> D[teardown_09_deploy_litellm.sh]
-    A --> E[teardown_08_deploy_platform_agent.sh]
-    A --> F[teardown_07_gcp_k8s_secrets.sh]
-    A --> G[teardown_06_slack.sh]
-    A --> H[teardown_05_gcp_gchat.sh]
-    A --> I[teardown_04_gcp_iam.sh]
-    A --> J[teardown_03_gcp_gke_operator.sh]
-    A --> K[teardown_02_gvisor_nodepool.sh]
-    A --> L[dev/teardown_dev_01_gcp_artifact_registry.sh]
-    A --> M[teardown_01_gcp_cluster.sh]
+    A[teardown.sh] --> B[teardown_12_gke_backup_plan.sh]
+    A --> C[teardown_11_deploy_inference_replay.sh]
+    A --> D[teardown_10_deploy_github_minter.sh]
+    A --> E[teardown_09_deploy_litellm.sh]
+    A --> F[teardown_08_deploy_platform_agent.sh]
+    A --> G[teardown_07_gcp_k8s_secrets.sh]
+    A --> H[teardown_06_slack.sh]
+    A --> I[teardown_05_gcp_gchat.sh]
+    A --> J[teardown_04_gcp_iam.sh]
+    A --> K[teardown_03_gcp_gke_operator.sh]
+    A --> L[teardown_02_gvisor_nodepool.sh]
+    A --> M[dev/teardown_dev_01_gcp_artifact_registry.sh]
+    A --> N[teardown_01_gcp_cluster.sh]
 ```
 
 Each teardown step mirrors its provisioning counterpart and is documented in
-**[scripts/README.md](scripts/README.md)**.
+**[scripts/README.md](scripts/README.md)**. Note that `teardown_12_gke_backup_plan.sh` safely deletes any remaining backup snapshots in background batches before removing the GKE `BackupPlan`.
 
 ---
 

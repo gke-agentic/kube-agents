@@ -32,7 +32,9 @@ init_var "REGION" "us-east4" "Enter GKE GCP Region"
 init_var "CLUSTER_NAME" "platform-agent-host" "Enter GKE Cluster Name"
 init_var "BACKUP_CRON_SCHEDULE" "0 2 * * *" "Enter GKE Backup Plan cron schedule"
 init_var "BACKUP_RETAIN_DAYS" "30" "Enter backup retention in days"
+BACKUP_PLAN_NAME="platform-agent-backup-plan"
 init_var "BACKUP_ENCRYPTION_KEY" "" "Enter optional KMS encryption key for backups (leave empty for Google-managed)"
+init_var "PRESERVE_BACKUPS" "true" "Preserve existing backup snapshots on teardown? (true/false)"
 
 
 # ─── Step Implementations ─────────────────────────────────────────────────────
@@ -65,14 +67,14 @@ execute_cluster_backup_enabled() {
 verify_backup_plan() {
   local out
   local err=0
-  out=$(gcloud beta container backup-restore backup-plans describe platform-agent-backup-plan \
+  out=$(gcloud beta container backup-restore backup-plans describe "$BACKUP_PLAN_NAME" \
       --location="$REGION" --project="$PROJECT_ID" 2>&1) || err=$?
   if [ "$err" -eq 0 ]; then
     return 0
   elif echo "$out" | grep -iq "not found\|NOT_FOUND"; then
     return 1
   else
-    echo -e "  ${C_RED}✗ Error checking GKE Backup Plan 'platform-agent-backup-plan':${C_RESET}" >&2
+    echo -e "  ${C_RED}✗ Error checking GKE Backup Plan '${BACKUP_PLAN_NAME}':${C_RESET}" >&2
     echo "$out" >&2
     exit "$err"
   fi
@@ -83,8 +85,8 @@ execute_backup_plan() {
     enc_flag=("--encryption-key=${BACKUP_ENCRYPTION_KEY}")
   fi
 
-  print_info "Creating default GKE Backup Plan 'platform-agent-backup-plan'..."
-  gcloud beta container backup-restore backup-plans create platform-agent-backup-plan \
+  print_info "Creating default GKE Backup Plan '${BACKUP_PLAN_NAME}'..."
+  gcloud beta container backup-restore backup-plans create "$BACKUP_PLAN_NAME" \
       --project="$PROJECT_ID" \
       --location="$REGION" \
       --cluster="projects/${PROJECT_ID}/locations/${REGION}/clusters/${CLUSTER_NAME}" \
@@ -103,4 +105,4 @@ run_step "2. Ensure Backup for GKE enabled on cluster" verify_cluster_backup_ena
 run_step "3. Ensure GKE Backup Plan" verify_backup_plan execute_backup_plan 0
 
 # ─── Conclusion Checklist ─────────────────────────────────────────────────────
-echo -e "\n${C_GREEN}${C_BOLD}✓ GKE Backup Plan 'platform-agent-backup-plan' provisioned successfully!${C_RESET}"
+echo -e "\n${C_GREEN}${C_BOLD}✓ GKE Backup Plan '${BACKUP_PLAN_NAME}' provisioned successfully!${C_RESET}"
