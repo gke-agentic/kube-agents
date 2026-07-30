@@ -242,6 +242,16 @@ class GoogleChatRelay:
         return operation.execute()
 
 
+def _slack_error_detail(exc: Exception) -> str:
+    """Slack's machine-readable error code (e.g. invalid_auth) from a SlackApiError."""
+    response = getattr(exc, "response", None)
+    try:
+        detail = response.get("error") if response is not None else None
+    except Exception:
+        detail = None
+    return str(detail) if detail else "unknown"
+
+
 class SlackRelay:
     """Credentialed Slack Socket Mode and Web API transport."""
 
@@ -264,8 +274,9 @@ class SlackRelay:
                 identity = client.auth_test()
             except Exception as exc:
                 LOGGER.error(
-                    "Slack bot token authentication failed type=%s",
+                    "Slack bot token authentication failed type=%s error=%s",
                     type(exc).__name__,
+                    _slack_error_detail(exc),
                 )
                 continue
             team_id = str(identity.get("team_id", ""))
@@ -368,7 +379,12 @@ class SlackRelay:
         response = self._client(team_id).api_call(
             method, **self._decode_argument(arguments)
         )
-        return dict(response)
+        # SlackResponse defines no keys(), so dict() would fall back to the
+        # iterator protocol and raise. The parsed payload lives on .data.
+        result = dict(response.data)
+        if hasattr(response, "headers") and response.headers:
+            result["__headers"] = dict(response.headers)
+        return result
 
     def download(self, team_id: str, url: str) -> bytes:
         def is_slack_url(value: str) -> bool:
@@ -905,9 +921,10 @@ class CredentialProxyHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except Exception as exc:
             LOGGER.warning(
-                "Slack relay operation failed path=%s type=%s",
+                "Slack relay operation failed path=%s type=%s error=%s",
                 self.path,
                 type(exc).__name__,
+                _slack_error_detail(exc),
             )
             self._json(HTTPStatus.BAD_GATEWAY, {"error": "Slack operation failed"})
 

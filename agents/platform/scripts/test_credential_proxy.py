@@ -344,11 +344,27 @@ class GoogleChatRelayTest(unittest.TestCase):
 
 
 class SlackRelayTest(unittest.TestCase):
+    class FakeResponse:
+        """Stands in for slack_sdk's SlackResponse.
+
+        The payload lives on ``data``; the object itself is not a mapping and
+        defines no ``keys()``, so ``dict(response)`` falls back to the iterator
+        protocol and raises, exactly as the real class does.
+        """
+
+        def __init__(self, data):
+            self.data = data
+
+        def __iter__(self):
+            return iter([self])
+
     class FakeClient:
         token = "xoxb-not-returned"
 
         def api_call(self, method, **arguments):
-            return {"ok": True, "method": method, "arguments": arguments}
+            return SlackRelayTest.FakeResponse(
+                {"ok": True, "method": method, "arguments": arguments}
+            )
 
     def relay(self):
         relay = SlackRelay.__new__(SlackRelay)
