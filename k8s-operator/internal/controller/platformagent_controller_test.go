@@ -605,8 +605,8 @@ func TestBuildNetworkPolicy(t *testing.T) {
 	if len(netpol.Spec.Ingress[1].Ports) != 1 {
 		t.Errorf("expected 1 port in gke-gmp-system ingress rule, got %d", len(netpol.Spec.Ingress[1].Ports))
 	}
-	if len(netpol.Spec.Egress) != 4 {
-		t.Errorf("expected 4 Egress rules (DNS, GCP Metadata, LiteLLM Gateway, K8s/GCP APIs), got %d", len(netpol.Spec.Egress))
+	if len(netpol.Spec.Egress) != 6 {
+		t.Errorf("expected 6 Egress rules (DNS, GCP Metadata, LiteLLM Gateway, K8s Control Plane, External HTTPS, GKE OTel Collector), got %d", len(netpol.Spec.Egress))
 	}
 	if len(netpol.Spec.Egress[0].To) != 3 {
 		t.Errorf("expected 3 peers in DNS egress rule, got %d", len(netpol.Spec.Egress[0].To))
@@ -614,8 +614,14 @@ func TestBuildNetworkPolicy(t *testing.T) {
 	if netpol.Spec.Egress[2].To[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "test-ns" {
 		t.Errorf("expected LiteLLM egress rule to match agent namespace 'test-ns', got %s", netpol.Spec.Egress[2].To[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"])
 	}
-	if len(netpol.Spec.Egress[3].To[0].IPBlock.Except) != 0 {
-		t.Errorf("expected no Except block in K8s API server egress rule, got %v", netpol.Spec.Egress[3].To[0].IPBlock.Except)
+	if netpol.Spec.Egress[3].To[0].IPBlock.CIDR != "10.96.0.1/32" {
+		t.Errorf("expected K8s API server CIDR '10.96.0.1/32', got %s", netpol.Spec.Egress[3].To[0].IPBlock.CIDR)
+	}
+	if len(netpol.Spec.Egress[4].To[0].IPBlock.Except) != 3 {
+		t.Errorf("expected 3 Except RFC1918 subnets in External HTTPS egress rule, got %v", netpol.Spec.Egress[4].To[0].IPBlock.Except)
+	}
+	if netpol.Spec.Egress[5].To[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "gke-managed-otel" {
+		t.Errorf("expected GKE OTel Collector egress rule to match namespace 'gke-managed-otel', got %s", netpol.Spec.Egress[5].To[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"])
 	}
 }
 
@@ -642,4 +648,3 @@ func TestBuildNetworkPolicy_DashboardDisabled(t *testing.T) {
 		t.Errorf("expected 2 ports in agent namespace ingress rule when dashboard disabled, got %d", len(netpol.Spec.Ingress[0].Ports))
 	}
 }
-

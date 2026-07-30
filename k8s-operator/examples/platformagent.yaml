@@ -73,12 +73,16 @@ spec:
       # Default: false
       # +optional
       enabled: false
-      # BotToken is the Slack bot token (xoxb-...).
+      # BotTokenSecretRef references a Secret containing the SLACK_BOT_TOKEN.
       # +optional
-      botToken: ""
-      # AppToken is the Slack app token for Socket Mode (xapp-...).
+      # botTokenSecretRef:
+      #   name: "platformagent-secrets"
+      #   key: "slack-bot-token"
+      # AppTokenSecretRef references a Secret containing the SLACK_APP_TOKEN.
       # +optional
-      appToken: ""
+      # appTokenSecretRef:
+      #   name: "platformagent-secrets"
+      #   key: "slack-app-token"
       # AllowedUsers is a list of allowed member IDs.
       # +optional
       allowedUsers: []

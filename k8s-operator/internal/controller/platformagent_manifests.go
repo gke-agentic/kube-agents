@@ -1870,7 +1870,7 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent) *networkingv1.Networ
 				},
 			},
 		},
-		// 4. Kubernetes API Server & GCP APIs
+		// 4. Kubernetes API Server (Internal Control Plane)
 		{
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(443))},
@@ -1879,7 +1879,37 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent) *networkingv1.Networ
 			To: []networkingv1.NetworkPolicyPeer{
 				{
 					IPBlock: &networkingv1.IPBlock{
-						CIDR: "0.0.0.0/0",
+						CIDR: "10.96.0.1/32",
+					},
+				},
+			},
+		},
+		// 5. External HTTPS (Google APIs, GitHub, etc.)
+		{
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(443))},
+			},
+			To: []networkingv1.NetworkPolicyPeer{
+				{
+					IPBlock: &networkingv1.IPBlock{
+						CIDR:   "0.0.0.0/0",
+						Except: []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"},
+					},
+				},
+			},
+		},
+		// 6. GKE Managed OpenTelemetry Collector (Trace Export)
+		{
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(4317))},
+				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(4318))},
+			},
+			To: []networkingv1.NetworkPolicyPeer{
+				{
+					NamespaceSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"kubernetes.io/metadata.name": "gke-managed-otel",
+						},
 					},
 				},
 			},

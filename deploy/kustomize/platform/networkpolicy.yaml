@@ -79,7 +79,7 @@ spec:
           podSelector:
             matchLabels:
               app: litellm
-    # 4. Kubernetes API Server & GCP APIs
+    # 4. Kubernetes API Server (Internal Control Plane)
     - ports:
         - port: 443
           protocol: TCP
@@ -87,4 +87,28 @@ spec:
           protocol: TCP
       to:
         - ipBlock:
+            cidr: 10.96.0.1/32
+    # 5. External HTTPS (Google APIs, GitHub, etc.)
+    # Allows external public traffic but strictly BLOCKS internal lateral movement.
+    - ports:
+        - port: 443
+          protocol: TCP
+      to:
+        - ipBlock:
             cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+    # 6. GKE Managed OpenTelemetry Collector (Trace Export)
+    - ports:
+        - port: 4317
+          protocol: TCP
+        - port: 4318
+          protocol: TCP
+      to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: gke-managed-otel
+
+

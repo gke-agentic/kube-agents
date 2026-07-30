@@ -29,9 +29,34 @@ deploy/
 ```
 
 The Kustomize surface at [`deploy/kustomize/platform/`](https://github.com/gke-labs/kube-agents/tree/main/deploy/kustomize/platform) includes the base Service and network isolation policies:
+
 - [`default-deny-all.yaml`](https://github.com/gke-labs/kube-agents/blob/main/deploy/kustomize/platform/default-deny-all.yaml) — Enforces a default-deny NetworkPolicy across `kubeagents-system`.
-- [`networkpolicy.yaml`](https://github.com/gke-labs/kube-agents/blob/main/deploy/kustomize/platform/networkpolicy.yaml) — Explicitly allowlists required Ingress ports (`8642`, `8643`, `9119`) and restricted Egress destinations (CoreDNS, GCP Metadata `169.254.169.254/32`, LiteLLM Gateway, and Kubernetes/GCP APIs).
+- [`networkpolicy.yaml`](https://github.com/gke-labs/kube-agents/blob/main/deploy/kustomize/platform/networkpolicy.yaml) — Explicitly allowlists required Ingress ports (`8642`, `8643`, `9119`) and restricted Egress destinations (CoreDNS, GCP Metadata `169.254.169.254/32`, LiteLLM Gateway, the Kubernetes Control Plane `10.96.0.1/32`, and external HTTPS with RFC 1918 exclusions to prevent internal lateral movement).
 - [`service.yaml`](https://github.com/gke-labs/kube-agents/blob/main/deploy/kustomize/platform/service.yaml) — ClusterIP Service for the Platform Agent.
+
+### Configuring NetworkPolicy for GKE Private Clusters & Custom CIDRs
+
+The base [`networkpolicy.yaml`](https://github.com/gke-labs/kube-agents/blob/main/deploy/kustomize/platform/networkpolicy.yaml) defaults the Kubernetes API Server egress CIDR to `10.96.0.1/32` (standard Kubernetes `kubernetes.default.svc` ClusterIP).
+
+Do **not** edit base manifests directly. If your cluster uses a different service CIDR or is a GKE Private Cluster with a specific Control Plane VIP range (e.g., `172.16.0.0/28`), override the CIDR cleanly in your deployment overlay using a Kustomize patch in your `kustomization.yaml`:
+
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - github.com/gke-labs/kube-agents//deploy/kustomize/platform?ref=main
+
+patches:
+  - target:
+      group: networking.k8s.io
+      version: v1
+      kind: NetworkPolicy
+      name: platform-agent-gateway-netpol
+    patch: |-
+      - op: replace
+        path: /spec/egress/3/to/0/ipBlock/cidr
+        value: "172.16.0.0/28" # Replace with your GKE Control Plane VIP range or ClusterIP
+```
 
 ```yaml
 apiVersion: v1
