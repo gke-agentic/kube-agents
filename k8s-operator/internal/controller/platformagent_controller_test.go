@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -39,6 +40,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/yaml"
 
 	agentv1alpha1 "github.com/gke-labs/kube-agents/k8s-operator/api/v1alpha1"
 )
@@ -567,5 +569,25 @@ func TestPlatformAgentReconciler_Reconcile_PodUnschedulable(t *testing.T) {
 	expectedMsg := "Pod test-agent-unschedulable-sandbox-pod is waiting to be scheduled because no nodes in the cluster match the requested RuntimeClass 'gvisor'. For GKE Standard, enable GKE Sandbox by provisioning a gVisor node pool."
 	if cond.Message != expectedMsg {
 		t.Errorf("expected polished condition message:\n%q\ngot:\n%q", expectedMsg, cond.Message)
+	}
+}
+
+func TestManagerRoleYAML_NoBindVerb(t *testing.T) {
+	content, err := os.ReadFile("../../config/rbac/role.yaml")
+	if err != nil {
+		t.Fatalf("failed to read config/rbac/role.yaml: %v", err)
+	}
+
+	var role rbacv1.ClusterRole
+	if err := yaml.Unmarshal(content, &role); err != nil {
+		t.Fatalf("failed to unmarshal role.yaml: %v", err)
+	}
+
+	for _, rule := range role.Rules {
+		for _, verb := range rule.Verbs {
+			if verb == "bind" {
+				t.Errorf("security violation: manager-role in role.yaml contains forbidden 'bind' verb for resources %v", rule.Resources)
+			}
+		}
 	}
 }
