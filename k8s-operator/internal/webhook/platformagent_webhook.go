@@ -105,7 +105,7 @@ func (v *PlatformAgentCustomValidator) validatePlatformAgent(ctx context.Context
 		return nil, nil
 	}
 
-	// 1. Enforce 1 PlatformAgent per project limit (enforced at cluster level on the Hub/Management cluster)
+	// 1. Enforce 1 PlatformAgent per cluster limit (enforced at cluster level on the Hub/Management cluster)
 	if v.Client != nil {
 		var list agentv1alpha1.PlatformAgentList
 		if err := v.Client.List(ctx, &list); err != nil {
@@ -120,7 +120,7 @@ func (v *PlatformAgentCustomValidator) validatePlatformAgent(ctx context.Context
 				return nil, apierrors.NewInvalid(
 					schema.GroupKind{Group: "kubeagents.x-k8s.io", Kind: "PlatformAgent"},
 					platformAgent.Name,
-					field.ErrorList{field.Forbidden(field.NewPath(""), "only one PlatformAgent is allowed per project")},
+					field.ErrorList{field.Forbidden(field.NewPath(""), "only one PlatformAgent is allowed per cluster")},
 				)
 			}
 		}
