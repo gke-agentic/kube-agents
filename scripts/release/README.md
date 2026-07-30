@@ -16,9 +16,9 @@ This directory contains executable scripts supporting the Release Candidate (RC)
 
 These modular scripts back the corresponding child workflows in `.github/workflows/`:
 
-| GitHub Workflow | Release Step | Executed Scripts |
-| --------------- | ------------ | ---------------- |
-| `rc-create-tag.yml` | Step 1 - Create Candidate Tag | `resolve_rc_tag.sh`, `verify_candidate_images.sh`, `create_release_tag.sh` |
-| `rc-deploy-environment.yml` | Step 2 - Deploy Environment | `resolve_rc_tag.sh`, `validate_and_log_deploy_summary.sh`, `provision_rc_environment.sh` |
-| `e2e-gchat-test.yml` / `rc-release-pipeline.yml` | Step 3 - GKE Readiness & E2E Validation | `install_e2e_deps.sh`, `wait_for_gke_readiness.sh`, `execute_e2e_tests.sh` |
-| `rc-tag-validated.yml` | Step 4 - Validate Candidate Commit | `resolve_rc_tag.sh`, `tag_validated_release.sh` |
+| GitHub Workflow                                  | Release Step                            | Executed Scripts                                                                         |
+| ------------------------------------------------ | --------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `rc-create-tag.yml`                              | Step 1 - Create Candidate Tag           | `resolve_rc_tag.sh`, `verify_candidate_images.sh`, `create_release_tag.sh`               |
+| `rc-deploy-environment.yml`                      | Step 2 - Deploy Environment             | `resolve_rc_tag.sh`, `validate_and_log_deploy_summary.sh`, `provision_rc_environment.sh` |
+| `e2e-gchat-test.yml` / `rc-release-pipeline.yml` | Step 3 - GKE Readiness & E2E Validation | `install_e2e_deps.sh`, `wait_for_gke_readiness.sh`, `execute_e2e_tests.sh`               |
+| `rc-tag-validated.yml`                           | Step 4 - Validate Candidate Commit      | `resolve_rc_tag.sh`, `tag_validated_release.sh`                                          |
