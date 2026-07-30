@@ -39,6 +39,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
 
       - name: Resolve Commit SHA and Tag Name
         id: resolve_target
@@ -53,9 +55,7 @@ jobs:
         run: ./scripts/release/verify_candidate_images.sh
 
       - name: Create Git Tag & Push
-        id: tag_step
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COMMIT_SHA: ${{ steps.resolve_target.outputs.commit_sha }}
           RC_TAG: ${{ steps.resolve_target.outputs.rc_tag }}
         run: ./scripts/release/create_release_tag.sh

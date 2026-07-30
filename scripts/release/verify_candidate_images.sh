@@ -9,7 +9,10 @@ if [ -z "${COMMIT_SHA}" ]; then
   exit 1
 fi
 
-REGISTRY_PREFIX="ghcr.io/gke-labs/kube-agents"
+DEFAULT_REPO="gke-labs/kube-agents"
+REPO_FULL="${GITHUB_REPOSITORY:-$DEFAULT_REPO}"
+REPO_DOWNCASED=$(echo "$REPO_FULL" | tr '[:upper:]' '[:lower:]')
+REGISTRY_PREFIX="${REGISTRY_PREFIX:-ghcr.io/${REPO_DOWNCASED}}"
 REQUIRED_IMAGES=("k8s-operator" "platform-agent")
 
 echo "🔍 Checking candidate container images in GHCR for commit ${COMMIT_SHA}..."

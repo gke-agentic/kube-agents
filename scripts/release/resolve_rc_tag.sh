@@ -2,8 +2,8 @@
 # Resolves candidate commit SHA and release tag, setting GITHUB_OUTPUT.
 set -euo pipefail
 
-RC_TAG="${RC_TAG:-${1:-}}"
-COMMIT_INPUT="${COMMIT_SHA:-${2:-}}"
+RC_TAG="${1:-${RC_TAG:-}}"
+COMMIT_INPUT="${2:-${COMMIT_SHA:-}}"
 
 # Strict Target Commit SHA resolution
 if [ -n "${COMMIT_INPUT}" ]; then
@@ -23,9 +23,10 @@ else
   exit 1
 fi
 
-# Resolve Release Tag Name (User input > auto-generated fallback)
+# Resolve Release Tag Name (User input > auto-generated fallback with short SHA)
 if [ -z "${RC_TAG}" ]; then
-  RC_TAG="rc_$(date -u +'%y%m%d%H%M')"
+  SHORT_SHA="${COMMIT_SHA:0:7}"
+  RC_TAG="rc_$(date -u +'%y%m%d%H%M')_${SHORT_SHA}"
 fi
 
 if [ -n "${GITHUB_OUTPUT:-}" ]; then

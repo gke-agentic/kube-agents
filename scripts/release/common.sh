@@ -21,7 +21,9 @@ ensure_git_tag() {
   fi
 
   # Fetch remote tags to ensure local view is updated
-  git fetch origin --tags >/dev/null 2>&1 || true
+  if ! git fetch origin --tags >/dev/null 2>&1; then
+    echo "⚠️ Warning: Could not fetch tags from origin repository." >&2
+  fi
 
   # Check if tag already exists in Git
   if git rev-parse "${rc_tag}" >/dev/null 2>&1; then
