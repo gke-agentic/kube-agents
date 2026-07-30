@@ -88,7 +88,8 @@ execute_backup_plan() {
       --project="$PROJECT_ID" \
       --location="$REGION" \
       --cluster="projects/${PROJECT_ID}/locations/${REGION}/clusters/${CLUSTER_NAME}" \
-      --all-namespaces \
+      --selected-namespaces="${NAMESPACE:-kubeagents-system}" \
+      --include-secrets \
       --include-volume-data \
       --cron-schedule="$BACKUP_CRON_SCHEDULE" \
       --backup-retain-days="$BACKUP_RETAIN_DAYS" \
