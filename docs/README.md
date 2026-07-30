@@ -14,7 +14,7 @@ editing any doc.
 
 ## 1. Directory overview
 
-The repository tracks **139** `.md`/`.mdx` documents outside the root-level
+The repository tracks **140** `.md`/`.mdx` documents outside the root-level
 dot-directories — `docs-check-map` verifies this total against `git ls-files`
 and fails CI when it drifts. Dot-directories at the repository root
 (`.agents/`, `.github/`, `.gemini/`, `.claude/`) hold tooling — review
@@ -55,6 +55,7 @@ kube-agents/
 │                                                  integration READMEs
 ├── k8s-operator/                                  operator, event watcher, Minty,
 │                                                  provisioning-scripts READMEs
+├── scripts/release/                               Release Candidate automation scripts README
 └── tests/e2e/                                     Google Chat E2E suite README
 ```
 
@@ -271,6 +272,7 @@ only what the title does not say.
 | `k8s-operator/scripts/README.md`                    | Component README | **Canonical** description of every provisioning/teardown script and the shared `vars.sh` state model. The step tables are a **generated region** sourced from each script's comment banner. | Script inventory, state model              | Do not hand-edit the tables; `make docs-generate`                                         |
 | `k8s-operator/scripts/dev/README.md`                | Component README | The script automating GCP Workload Identity Federation so GitHub Actions can deploy keylessly.                                                                                              | WIF/OIDC CI auth                           | Repo maintainers                                                                          |
 | `k8s-operator/testing/staging_workloads/README.md`  | Component README | Terraform PoC that stamps out multi-cluster GKE staging fleets with realistic workload bundles and traffic simulators.                                                                      | Cluster maps, workload bundle, load shapes | Developers building staging fleets                                                        |
+| `scripts/release/README.md`                        | Component README | Overview of Release Candidate (RC) pipeline scripts: candidate tag creation (Step 1), environment provisioning (Step 2), GKE readiness & E2E test execution (Step 3), and validated tag promotion (Step 4). | Release Candidate scripts, RC automation | CI maintainers and release operators |
 | `tests/e2e/README.md`                               | Component README | The pytest E2E suite for the Google Chat integration and its hybrid auth flow (service-account posting + test-account polling via Pub/Sub event injection).                                 | Hybrid auth, Pub/Sub injection, CI setup   | CI maintainers                                                                            |
 
 ## 5. Keeping this map fresh
