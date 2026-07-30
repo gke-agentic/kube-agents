@@ -278,7 +278,6 @@ gcp-teardown-11-inference-replay: ## Teardown Step 11: Undeploy Inference Replay
 	@chmod +x scripts/*.sh
 	@./scripts/teardown_11_deploy_inference_replay.sh $(ARGS)
 
-
 .PHONY: gcp-teardown-10-github
 gcp-teardown-10-github: ## Teardown Step 10: Delete GitHub Token Minter resources.
 	@chmod +x scripts/*.sh

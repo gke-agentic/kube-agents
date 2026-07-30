@@ -13,8 +13,8 @@ source "${SCRIPT_DIR}/common.sh" "$@"
 
 ensure_teardown_state
 
-BACKUP_PLAN_NAME="platform-agent-backup-plan"
-init_var "PRESERVE_BACKUPS" "true" "Preserve existing backup snapshots on teardown? (true/false)"
+BACKUP_PLAN_NAME="${CLUSTER_NAME}-backup-plan"
+PRESERVE_BACKUPS="${PRESERVE_BACKUPS:-false}"
 
 # ─── Confirmation Prompt ──────────────────────────────────────────────────────
 confirm_action "This will delete the GKE Backup Plan '${BACKUP_PLAN_NAME}'." \
@@ -36,8 +36,8 @@ if [ "$describe_err" -eq 0 ]; then
       --format="value(name.basename())" 2>/dev/null || echo "")
 
   if [ -n "$backups" ] && is_truthy "${PRESERVE_BACKUPS}"; then
-    echo -e "  ${C_YELLOW}ℹ PRESERVE_BACKUPS=true (default): Preserving GKE Backup Plan '${BACKUP_PLAN_NAME}' and its existing backup snapshots.${C_RESET}"
-    echo -e "  ${C_CYAN}ℹ To delete all backup snapshots and the plan, run with PRESERVE_BACKUPS=false.${C_RESET}"
+    echo -e "  ${C_YELLOW}ℹ PRESERVE_BACKUPS=true: Preserving GKE Backup Plan '${BACKUP_PLAN_NAME}' and its existing backup snapshots.${C_RESET}"
+    echo -e "  ${C_CYAN}ℹ To delete all backup snapshots and the plan, run with PRESERVE_BACKUPS=false (default).${C_RESET}"
   else
     if [ "${DRY_RUN:-0}" -eq 1 ]; then
       echo -e "  ${C_GREEN}[DRY-RUN] Would delete GKE Backup Plan '${BACKUP_PLAN_NAME}'.${C_RESET}"

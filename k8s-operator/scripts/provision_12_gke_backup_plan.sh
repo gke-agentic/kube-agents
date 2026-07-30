@@ -18,7 +18,7 @@ check_prereqs "gcloud"
 print_step "Setting up Configuration State for GKE Backup Plan"
 load_state
 
-init_var "ENABLE_GKE_BACKUP_PLAN" "true" "Enable automated Google Cloud Backup for GKE on cluster (true/false)"
+init_var "ENABLE_GKE_BACKUP_PLAN" "false" "Enable automated Google Cloud Backup for GKE on cluster (true/false)"
 if ! is_truthy "$ENABLE_GKE_BACKUP_PLAN"; then
   echo -e "  ${C_YELLOW}ℹ Skipping GKE Backup Plan setup per user request (ENABLE_GKE_BACKUP_PLAN=${ENABLE_GKE_BACKUP_PLAN}).${C_RESET}"
   exit 0
@@ -32,9 +32,8 @@ init_var "REGION" "us-east4" "Enter GKE GCP Region"
 init_var "CLUSTER_NAME" "platform-agent-host" "Enter GKE Cluster Name"
 init_var "BACKUP_CRON_SCHEDULE" "0 2 * * *" "Enter GKE Backup Plan cron schedule"
 init_var "BACKUP_RETAIN_DAYS" "30" "Enter backup retention in days"
-BACKUP_PLAN_NAME="platform-agent-backup-plan"
+BACKUP_PLAN_NAME="${CLUSTER_NAME}-backup-plan"
 init_var "BACKUP_ENCRYPTION_KEY" "" "Enter optional KMS encryption key for backups (leave empty for Google-managed)"
-init_var "PRESERVE_BACKUPS" "true" "Preserve existing backup snapshots on teardown? (true/false)"
 
 
 # ─── Step Implementations ─────────────────────────────────────────────────────
@@ -59,7 +58,7 @@ execute_cluster_backup_enabled() {
   gcloud container clusters update "$CLUSTER_NAME" \
       --location="$REGION" \
       --project="$PROJECT_ID" \
-      --enable-gke-backup \
+      --update-addons=BackupRestore=ENABLED \
       --quiet
 }
 

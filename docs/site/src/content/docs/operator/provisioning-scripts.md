@@ -28,9 +28,11 @@ For the current target list, run `cd k8s-operator && make help`.
 
 ### 12. GKE Backup Plan
 
-`provision_12_gke_backup_plan.sh` — Only runs if `ENABLE_GKE_BACKUP_PLAN=true` (default). Ensures Backup for GKE is enabled on the GKE cluster (`--enable-gke-backup`), then creates a default Google Cloud Backup for GKE BackupPlan (`platform-agent-backup-plan`) configured to back up the selected namespace (`$NAMESPACE`, default `kubeagents-system`), including Kubernetes Secrets and persistent volume data daily (`BACKUP_CRON_SCHEDULE`, default `0 2 * * *`) with a retention policy (`BACKUP_RETAIN_DAYS`, default `30` days). Optionally accepts `BACKUP_ENCRYPTION_KEY` to encrypt backups with a Customer-Managed Encryption Key (CMEK) via Cloud KMS instead of Google-managed encryption.
+`provision_12_gke_backup_plan.sh` — Only runs if `ENABLE_GKE_BACKUP_PLAN=true` (defaults to `false`). Ensures Backup for GKE is enabled on the GKE cluster (`--update-addons=BackupRestore=ENABLED`), then creates a default Google Cloud Backup for GKE BackupPlan (`${CLUSTER_NAME}-backup-plan`, default `platform-agent-host-backup-plan`) configured to back up the selected namespace (`$NAMESPACE`, default `kubeagents-system`), including Kubernetes Secrets and persistent volume data daily (`BACKUP_CRON_SCHEDULE`, default `0 2 * * *`) with a retention policy (`BACKUP_RETAIN_DAYS`, default `30` days). Optionally accepts `BACKUP_ENCRYPTION_KEY` to encrypt backups with a Customer-Managed Encryption Key (CMEK) via Cloud KMS instead of Google-managed encryption.
 
 **Note:** If `BACKUP_CRON_SCHEDULE`, `BACKUP_RETAIN_DAYS`, or `BACKUP_ENCRYPTION_KEY` are modified after initial provisioning, existing backup plans are not updated in-place. To apply configuration drift changes, either update the plan manually via `gcloud beta container backup-restore backup-plans update` or run `teardown_12_gke_backup_plan.sh` before re-provisioning.
+
+**Cost:** Google Cloud Backup for GKE incurs charges based on the number of GKE pods backed up and persistent volume snapshot storage used. To prevent unintended cloud storage bills in dev/test environments, `ENABLE_GKE_BACKUP_PLAN` defaults to `false`.
 
 **Security:** Because backups include Kubernetes Secrets and persistent volume data (`--selected-namespaces`, `--include-secrets`, `--include-volume-data`), GCP IAM policies should restrict backup/restore permissions (`roles/gkebackup.admin` and `roles/gkebackup.backupAdmin`) to authorized cluster administrators.
 

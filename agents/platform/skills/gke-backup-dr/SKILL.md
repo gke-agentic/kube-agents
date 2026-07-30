@@ -17,7 +17,7 @@ Backup for GKE must be enabled on the cluster level.
 
 ```bash
 gcloud container clusters update <cluster-name> \
-    --enable-gke-backup \
+    --update-addons=BackupRestore=ENABLED \
     --region <region>
 ```
 
