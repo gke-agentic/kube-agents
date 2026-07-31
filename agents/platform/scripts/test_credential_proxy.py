@@ -690,8 +690,9 @@ class SlackRelayTest(unittest.TestCase):
         protocol and raises, exactly as the real class does.
         """
 
-        def __init__(self, data):
+        def __init__(self, data, headers=None):
             self.data = data
+            self.headers = headers or {}
 
         def __iter__(self):
             return iter([self])
@@ -701,7 +702,8 @@ class SlackRelayTest(unittest.TestCase):
 
         def api_call(self, method, **arguments):
             return SlackRelayTest.FakeResponse(
-                {"ok": True, "method": method, "arguments": arguments}
+                {"ok": True, "method": method, "arguments": arguments},
+                headers={"x-oauth-scopes": "chat:write", "other": "ignored"}
             )
 
     def relay(self):
@@ -777,6 +779,7 @@ class SlackRelayTest(unittest.TestCase):
         self.assertEqual("future.method", result["method"])
         self.assertEqual(arguments, result["arguments"])
         self.assertNotIn("token", json.dumps(result))
+        self.assertEqual({"x-oauth-scopes": "chat:write"}, result.get("__headers"))
 
     def test_nack_requeues_event(self):
         relay = self.relay()

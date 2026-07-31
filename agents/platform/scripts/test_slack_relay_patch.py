@@ -90,6 +90,8 @@ def _register_fake_modules() -> None:
     slack_web_module = types.ModuleType("slack_sdk.web")
     slack_response_module = types.ModuleType("slack_sdk.web.slack_response")
     slack_response_module.SlackResponse = FakeSlackResponse
+    slack_async_response_module = types.ModuleType("slack_sdk.web.async_slack_response")
+    slack_async_response_module.AsyncSlackResponse = FakeSlackResponse
     slack_socket_mode_module = types.ModuleType("slack_sdk.socket_mode")
     slack_socket_mode_request_module = types.ModuleType(
         "slack_sdk.socket_mode.request"
@@ -123,6 +125,7 @@ def _register_fake_modules() -> None:
         ("slack_sdk", slack_sdk_module),
         ("slack_sdk.web", slack_web_module),
         ("slack_sdk.web.slack_response", slack_response_module),
+        ("slack_sdk.web.async_slack_response", slack_async_response_module),
         ("slack_sdk.socket_mode", slack_socket_mode_module),
         ("slack_sdk.socket_mode.request", slack_socket_mode_request_module),
         ("gateway", gateway_module),
@@ -156,26 +159,7 @@ class FakeHTTPResponse:
         return False
 
 
-class FakeSlackResponse:
-    def __init__(
-        self,
-        *,
-        client=None,
-        http_verb=None,
-        api_url=None,
-        req_args=None,
-        data=None,
-        headers=None,
-        status_code=None,
-        **_kwargs,
-    ):
-        self.client = client
-        self.http_verb = http_verb
-        self.api_url = api_url
-        self.req_args = req_args
-        self.data = data
-        self.headers = headers
-        self.status_code = status_code
+
 
 
 class SlackRelayPatchTest(unittest.TestCase):
@@ -235,12 +219,14 @@ class SlackRelayPatchTest(unittest.TestCase):
         self.fake_real_app = FakeAsyncApp
 
         self.bolt_async_app = sys.modules["slack_bolt.app.async_app"]
+        self._saved_bolt_app_client = self.bolt_async_app.AsyncWebClient
         self.bolt_async_app.AsyncWebClient = FakeAsyncWebClient
         self.bolt_async_context = sys.modules["slack_bolt.context.async_context"]
+        self._saved_bolt_context_client = self.bolt_async_context.AsyncWebClient
         self.bolt_async_context.AsyncWebClient = FakeAsyncWebClient
-        self._saved_modules = {}
 
         self.registry_class = sys.modules["gateway.platform_registry"].PlatformRegistry
+        self._saved_registry_create = self.registry_class.create_adapter
         if hasattr(self.registry_class, "_slack_credential_proxy_relay_patched"):
             delattr(self.registry_class, "_slack_credential_proxy_relay_patched")
 
@@ -259,11 +245,9 @@ class SlackRelayPatchTest(unittest.TestCase):
                 os.environ.pop(name, None)
             else:
                 os.environ[name] = value
-        for name, module in self._saved_modules.items():
-            if module is None:
-                sys.modules.pop(name, None)
-            else:
-                sys.modules[name] = module
+        self.bolt_async_app.AsyncWebClient = self._saved_bolt_app_client
+        self.bolt_async_context.AsyncWebClient = self._saved_bolt_context_client
+        self.registry_class.create_adapter = self._saved_registry_create
         sys.modules.pop(ADAPTER_MODULE_NAME, None)
 
     def _create_adapter(self, token=""):

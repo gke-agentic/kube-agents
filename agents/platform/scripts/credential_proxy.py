@@ -32,6 +32,7 @@ from typing import Any
 
 LOGGER = logging.getLogger("credential-proxy")
 SLACK_EVENT_QUEUE_MAXSIZE = 1000
+SLACK_ERROR_DIAGNOSTIC_FIELDS = ("ok", "error", "needed", "provided")
 
 # GitHub "owner/name" slug validation. Each segment is matched with a single,
 # unambiguous character class rather than two adjacent "+" groups around the
@@ -264,7 +265,7 @@ def _slack_error_detail(exc: Exception) -> str:
             payload = response
     if payload is not None:
         try:
-            return json.dumps(payload, sort_keys=True)
+            return json.dumps({k: payload[k] for k in SLACK_ERROR_DIAGNOSTIC_FIELDS if k in payload}, sort_keys=True)
         except Exception:
             pass
     try:
@@ -409,7 +410,10 @@ class SlackRelay:
         # iterator protocol and raise. The parsed payload lives on .data.
         result = dict(response.data)
         if hasattr(response, "headers") and response.headers:
-            result["__headers"] = dict(response.headers)
+            WANTED = ("x-oauth-scopes", "x-accepted-oauth-scopes")
+            headers = {k: v for k, v in response.headers.items() if k.lower() in WANTED}
+            if headers:
+                result["__headers"] = headers
         return result
 
     def download(self, team_id: str, url: str) -> bytes:

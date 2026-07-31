@@ -42,7 +42,7 @@ def install() -> None:
     from gateway.platforms.base import cache_audio_from_bytes, cache_image_from_bytes
     from slack_bolt.adapter.socket_mode.async_internals import run_async_bolt_app
     from slack_sdk.socket_mode.request import SocketModeRequest
-    from slack_sdk.web.slack_response import SlackResponse
+    from slack_sdk.web.async_slack_response import AsyncSlackResponse
 
     try:
         max_file_bytes = int(
@@ -187,9 +187,7 @@ def install() -> None:
                     },
                 )
                 payload = response.get("response") or {}
-                headers = {
-                    "x-oauth-scopes": "chat:write,app_mentions:read,channels:history,channels:read,groups:history,im:history,im:read,im:write,mpim:history,mpim:read,users:read,files:read,files:write,groups:read,usergroups:read,assistant:write"
-                }
+                headers = {}
                 if isinstance(payload, dict):
                     data = dict(payload)
                     if "__headers" in data and isinstance(data["__headers"], dict):
@@ -198,7 +196,7 @@ def install() -> None:
                         headers.update(data.get("headers") or {})
                 else:
                     data = {}
-                return SlackResponse(
+                return AsyncSlackResponse(
                     client=self,
                     http_verb=http_verb,
                     api_url=api_method,
