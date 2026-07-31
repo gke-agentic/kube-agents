@@ -17,8 +17,6 @@ elif [ -n "${RC_TAG}" ]; then
     TAG_SHA="${RC_TAG##*_}"
     if COMMIT_SHA=$(git rev-parse --verify "${TAG_SHA}^{commit}" 2>/dev/null); then
       echo "ℹ️ Resolved target commit SHA ${COMMIT_SHA} from tag suffix."
-    elif [ -n "${GITHUB_SHA:-}" ]; then
-      COMMIT_SHA="${GITHUB_SHA}"
     else
       echo "❌ ERROR: Cannot resolve valid Git commit SHA from release tag '${RC_TAG}'!" >&2
       exit 1

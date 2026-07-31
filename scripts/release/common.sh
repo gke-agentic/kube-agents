@@ -52,11 +52,16 @@ ensure_git_tag() {
     if push_err=$(git push "https://${RELEASE_BOT_TOKEN}@github.com/${target_repo}.git" "${rc_tag}" 2>&1); then
       echo "✅ Git tag '${rc_tag}' successfully pushed to remote repository (${target_repo})!"
     else
-      echo "⚠️ Notice: Could not push git tag '${rc_tag}' to remote repository (${push_err}). Tag created locally."
+      echo "❌ ERROR: Could not push git tag '${rc_tag}' to remote repository (${target_repo}): ${push_err}" >&2
+      return 1
     fi
-  elif git push origin "${rc_tag}" 2>/dev/null; then
-    echo "✅ Git tag '${rc_tag}' successfully pushed to remote repository!"
   else
-    echo "⚠️ Notice: Could not push git tag '${rc_tag}' to origin remote (PR context / restricted permissions). Tag created locally."
+    local push_err
+    if push_err=$(git push origin "${rc_tag}" 2>&1); then
+      echo "✅ Git tag '${rc_tag}' successfully pushed to remote repository!"
+    else
+      echo "❌ ERROR: Could not push git tag '${rc_tag}' to origin remote: ${push_err}" >&2
+      return 1
+    fi
   fi
 }
