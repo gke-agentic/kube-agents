@@ -47,4 +47,5 @@ jobs:
         env:
           COMMIT_SHA: ${{ steps.resolve_target.outputs.commit_sha }}
           RC_TAG: ${{ steps.resolve_target.outputs.rc_tag }}
+          RELEASE_BOT_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
         run: ./scripts/release/tag_validated_release.sh
