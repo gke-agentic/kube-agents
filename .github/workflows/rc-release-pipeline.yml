@@ -12,14 +12,12 @@ on:
         required: false
         type: string
 
-permissions:
-  contents: write
-  id-token: write
-
 jobs:
   step-1-create-tag:
     name: Step 1 - Create Release Candidate Tag
     uses: ./.github/workflows/rc-create-tag.yml
+    permissions:
+      contents: write
     with:
       commit_sha: ${{ inputs.commit_sha }}
       rc_tag: ${{ inputs.rc_tag }}
@@ -30,6 +28,9 @@ jobs:
     name: Step 2 - Provision RC Environment
     needs: step-1-create-tag
     uses: ./.github/workflows/rc-deploy-environment.yml
+    permissions:
+      contents: read
+      id-token: write
     with:
       rc_tag: ${{ needs.step-1-create-tag.outputs.rc_tag }}
     secrets:
@@ -90,6 +91,8 @@ jobs:
     name: Step 4 - Tag Validated Release
     needs: [step-1-create-tag, step-3-run-e2e-tests]
     uses: ./.github/workflows/rc-tag-validated.yml
+    permissions:
+      contents: write
     with:
       rc_tag: ${{ needs.step-1-create-tag.outputs.rc_tag }}
     secrets:
