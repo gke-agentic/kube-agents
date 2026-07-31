@@ -83,7 +83,7 @@ jobs:
           E2E_CHAT_CLIENT_ID: ${{ secrets.E2E_CHAT_CLIENT_ID }}
           E2E_CHAT_CLIENT_SECRET: ${{ secrets.E2E_CHAT_CLIENT_SECRET }}
           E2E_CHAT_REFRESH_TOKEN: ${{ secrets.E2E_CHAT_REFRESH_TOKEN }}
-          E2E_CHAT_SPACE_ID: ${{ secrets.E2E_CHAT_SPACE_ID }}
+          CHAT_SPACE_ID: ${{ secrets.E2E_CHAT_SPACE_ID }}
         run: ./scripts/release/execute_e2e_tests.sh
 
   step-4-tag-validated:
