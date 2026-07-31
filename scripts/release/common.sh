@@ -41,10 +41,11 @@ ensure_git_tag() {
   setup_git_bot_user
   git tag -a "${rc_tag}" "${commit_sha}" -m "${tag_message}"
   if [ -n "${RELEASE_BOT_TOKEN:-}" ]; then
-    if git push "https://x-access-token:${RELEASE_BOT_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "${rc_tag}" 2>/dev/null; then
+    local push_err
+    if push_err=$(git push "https://${RELEASE_BOT_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "${rc_tag}" 2>&1); then
       echo "✅ Git tag '${rc_tag}' successfully pushed to remote repository!"
     else
-      echo "⚠️ Notice: Could not push git tag '${rc_tag}' to remote repository. Tag created locally."
+      echo "⚠️ Notice: Could not push git tag '${rc_tag}' to remote repository (${push_err}). Tag created locally."
     fi
   elif git push origin "${rc_tag}" 2>/dev/null; then
     echo "✅ Git tag '${rc_tag}' successfully pushed to remote repository!"
