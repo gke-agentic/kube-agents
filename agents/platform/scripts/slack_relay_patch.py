@@ -14,13 +14,6 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-import slack_bolt.app.async_app as bolt_async_app
-import slack_bolt.context.async_context as bolt_async_context
-from gateway.platform_registry import PlatformRegistry
-from gateway.platforms.base import cache_audio_from_bytes, cache_image_from_bytes
-from slack_bolt.adapter.socket_mode.async_internals import run_async_bolt_app
-from slack_sdk.socket_mode.request import SocketModeRequest
-from slack_sdk.web.slack_response import SlackResponse
 
 
 LOGGER = logging.getLogger("slack-relay-patch")
@@ -42,6 +35,15 @@ def install() -> None:
     relay_url = os.getenv("SLACK_RELAY_URL", "").rstrip("/")
     if not relay_url:
         return
+
+    import slack_bolt.app.async_app as bolt_async_app
+    import slack_bolt.context.async_context as bolt_async_context
+    from gateway.platform_registry import PlatformRegistry
+    from gateway.platforms.base import cache_audio_from_bytes, cache_image_from_bytes
+    from slack_bolt.adapter.socket_mode.async_internals import run_async_bolt_app
+    from slack_sdk.socket_mode.request import SocketModeRequest
+    from slack_sdk.web.slack_response import SlackResponse
+
     try:
         max_file_bytes = int(
             os.getenv("SLACK_RELAY_MAX_FILE_BYTES", str(DEFAULT_MAX_FILE_BYTES))
@@ -254,9 +256,9 @@ def install() -> None:
                 wait_seconds = 20.0
             deadline = time.monotonic() + wait_seconds
             while True:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("Slack relay bootstrap timed out")
                 try:
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError("Slack relay bootstrap timed out")
                     bootstrap = await asyncio.to_thread(
                         request, "/v1/chat/slack/bootstrap", {}
                     )
