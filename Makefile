@@ -5,7 +5,7 @@ REPO ?= $(eval REPO := $(LOCATION)-docker.pkg.dev/$(shell gcloud config get core
 
 BAD_SKILLS := $(wildcard agents/*/defaults/skills/*)
 
-.PHONY: default docker-build docker-build-agents docker-build-credential-proxy docker-push docker-push-agents docker-push-credential-proxy dev-rebuild-agent status prettier-check prettier-write validate docs-generate docs-check docs-check-generated docs-check-links docs-check-terminology
+.PHONY: default docker-build docker-build-agents docker-build-credential-proxy docker-push docker-push-agents docker-push-credential-proxy dev-rebuild-agent status prettier-check prettier-write validate docs-generate docs-check docs-check-generated docs-check-links docs-check-terminology docs-check-map
 
 AGENTS := $(notdir $(patsubst %/,%,$(wildcard agents/*/)))
 
@@ -53,7 +53,7 @@ docs-generate:
 	@python3 scripts/generate_docs.py
 
 # Everything CI enforces about the docs, in one command.
-docs-check: docs-check-generated docs-check-links docs-check-terminology
+docs-check: docs-check-generated docs-check-links docs-check-terminology docs-check-map
 
 docs-check-generated:
 	@python3 scripts/generate_docs.py --check
@@ -63,6 +63,9 @@ docs-check-links:
 
 docs-check-terminology:
 	@./hack/check-docs-terminology.sh
+
+docs-check-map:
+	@python3 scripts/check_docs_map.py
 
 validate:
 	@if [ -n "$(BAD_SKILLS)" ]; then \
