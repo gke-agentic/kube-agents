@@ -43,6 +43,7 @@ REPO = Path(__file__).resolve().parent.parent
 
 CRON_JOBS = REPO / "agents/platform/cron/jobs.json"
 SKILLS_DIR = REPO / "agents/platform/skills"
+CLUSTER_SKILLS_DIR = REPO / "agents/cluster/skills"
 SCRIPTS_DIR = REPO / "k8s-operator/scripts"
 
 CRON_PAGE = REPO / "docs/site/src/content/docs/reference/cron-jobs.md"
@@ -51,33 +52,41 @@ SCRIPTS_PAGE = SCRIPTS_DIR / "README.md"
 
 GITHUB_BLOB = "https://github.com/gke-labs/kube-agents/blob/main"
 
-# Editorial grouping for the skill catalogue. Skills missing from this map are
-# emitted under "Other" rather than dropped, so a new skill shows up as a diff
-# in `--check` instead of silently vanishing from the catalogue.
+# Editorial grouping for the Platform Agent skill catalogue. Skills missing from
+# this map are emitted under "Other" rather than dropped, so a new skill shows up
+# as a diff in `--check` instead of silently vanishing from the catalogue. Cluster
+# Agent skills are not listed here — they are grouped by persona, not by area (see
+# CLUSTER_SKILL_GROUP).
 SKILL_GROUPS: dict[str, list[str]] = {
     "Cluster lifecycle": [
+        "cluster-agent-lifecycle",
         "gke-cluster-creator",
         "gke-cluster-lifecycle",
         "gke-multi-tenancy",
+        "manage-cluster",
     ],
     "Workloads": [
         "gke-app-onboarding",
-        "gke-workload-scaling",
-        "gke-workload-troubleshooting",
+        "workload-rebalancing",
     ],
     "Cost and capacity": [
         "gke-cost-analysis",
         "gke-compute-classes",
         "gke-productionize",
-        "gke-reliability",
     ],
-    "Security and compliance": ["gke-workload-security", "gke-backup-dr"],
-    "Networking and storage": ["gke-networking-edge", "gke-storage"],
+    "Security and compliance": ["gke-backup-dr"],
+    "Networking and storage": ["gke-networking-edge"],
     "AI and inference": ["gke-inference-quickstart"],
-    "Observability": ["gke-observability", "kube-agents-observability"],
+    "Observability": ["kube-agents-observability"],
     "Manifests and remediation": ["gke-manifest-generation", "submit-suggestion"],
     "Meta": ["github-issue-resolver"],
 }
+
+# Cluster Agent skills are single-cluster runtime debugging/operations procedures
+# scaffolded into every per-cluster profile. They are listed under one heading
+# rather than folded into the groups above: what distinguishes them to a reader is
+# which persona runs them, not which area they cover.
+CLUSTER_SKILL_GROUP = "Cluster Agent (per-cluster runtime)"
 
 CRON_CADENCE = {
     "0 9 * * *": "Daily 09:00",
@@ -93,8 +102,20 @@ CRON_CADENCE = {
 
 
 def md_escape(text: str) -> str:
-    """Make a string safe to drop into a Markdown table cell."""
-    return text.replace("|", "\\|").replace("\n", " ").strip()
+    """Make a string safe to drop into a Markdown table cell.
+
+    Angle brackets are escaped because the skill catalogue is an `.mdx` page:
+    MDX reads a bare `<name>` in a description as an unclosed JSX tag and fails
+    the site build. `&lt;`/`&gt;` render as literal brackets in plain Markdown
+    too, so this is safe for the `.md` targets as well.
+    """
+    return (
+        text.replace("|", "\\|")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\n", " ")
+        .strip()
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -151,18 +172,37 @@ def read_frontmatter(path: Path) -> dict[str, str]:
     return {k: v.strip("\"'") for k, v in fields.items()}
 
 
-def gen_skill_catalog() -> str:
+def _read_skills(skills_dir: Path) -> dict[str, str]:
+    """Return {skill name: description} for every SKILL.md under skills_dir."""
     skills: dict[str, str] = {}
-    for skill_md in sorted(SKILLS_DIR.glob("*/SKILL.md")):
+    for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
         fm = read_frontmatter(skill_md)
         name = fm.get("name") or skill_md.parent.name
         skills[name] = fm.get("description", "")
+    return skills
+
+
+def gen_skill_catalog() -> str:
+    skills = _read_skills(SKILLS_DIR)
+    cluster_skills = _read_skills(CLUSTER_SKILLS_DIR)
 
     grouped = {g: [] for g in SKILL_GROUPS}
     grouped["Other"] = []
     for name in sorted(skills):
         group = next((g for g, members in SKILL_GROUPS.items() if name in members), "Other")
         grouped[group].append(name)
+    # Every Cluster Agent skill goes in one persona-scoped group, appended last so
+    # the Platform Agent's editorial order above is untouched.
+    grouped[CLUSTER_SKILL_GROUP] = sorted(cluster_skills)
+
+    def source_dir(group: str) -> str:
+        return (
+            "agents/cluster/skills"
+            if group == CLUSTER_SKILL_GROUP
+            else "agents/platform/skills"
+        )
+
+    descriptions = {**skills, **cluster_skills}
 
     out: list[str] = []
     for group, names in grouped.items():
@@ -172,8 +212,8 @@ def gen_skill_catalog() -> str:
         out.append("| Skill | Description |")
         out.append("| ----- | ----------- |")
         for name in names:
-            link = f"{GITHUB_BLOB}/agents/platform/skills/{name}/SKILL.md"
-            out.append(f"| [`{name}`]({link}) | {md_escape(skills[name])} |")
+            link = f"{GITHUB_BLOB}/{source_dir(group)}/{name}/SKILL.md"
+            out.append(f"| [`{name}`]({link}) | {md_escape(descriptions[name])} |")
         out.append("")
     return "\n".join(out).rstrip()
 

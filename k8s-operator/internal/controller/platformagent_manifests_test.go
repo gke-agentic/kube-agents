@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -154,6 +155,70 @@ func TestBuildConfigMap_MemoryConfig(t *testing.T) {
 	if !strings.Contains(yamlContent, "user_profile_enabled: true") {
 		t.Errorf("expected config to contain user_profile_enabled: true, got:\n%s", yamlContent)
 	}
+	// Turning the built-in store on must put `memory` back in the denylist. The
+	// toolset name is listed only to pass the multiuser_memory injection gate;
+	// leaving it enabled alongside a live built-in store would hand the front
+	// door a second, unscoped read/write memory tool.
+	if !slices.Contains(disabledToolsets(t, yamlContent), "memory") {
+		t.Errorf("expected `memory` in disabled_toolsets when memory_enabled is true, got:\n%s", yamlContent)
+	}
+}
+
+// The default (no CR override) case: the built-in store stays off, so `memory`
+// must stay OUT of disabled_toolsets — otherwise the subtraction runs last, the
+// gate fails, and multiuser_memory loads but never reaches the model.
+func TestBuildConfigMap_MemoryGateOpenByDefault(t *testing.T) {
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{Name: "default-agent", Namespace: "test-ns"},
+	}
+
+	yamlContent := buildConfigMap(agent).Data["config.yaml"]
+	if !strings.Contains(yamlContent, "memory_enabled: false") {
+		t.Errorf("expected memory_enabled: false by default, got:\n%s", yamlContent)
+	}
+	if !strings.Contains(yamlContent, "provider: multiuser_memory") {
+		t.Errorf("expected provider: multiuser_memory by default, got:\n%s", yamlContent)
+	}
+	if disabled := disabledToolsets(t, yamlContent); slices.Contains(disabled, "memory") {
+		t.Errorf("`memory` must not be in disabled_toolsets by default — the subtraction "+
+			"runs last and would silently kill multiuser_memory; got %v", disabled)
+	}
+}
+
+// disabledToolsets returns the `agent.disabled_toolsets` items from a rendered
+// config. Scoped extraction, not a substring match: `platform_toolsets` carries
+// a `- memory` entry of its own, and the two lists mean opposite things.
+//
+// sigs.k8s.io/yaml renders a sequence at the SAME indentation as its key, so the
+// list ends at the first line that is not a `- ` item at that indent or deeper:
+//
+//	disabled_toolsets:
+//	- file
+//	- terminal
+func disabledToolsets(t *testing.T, yamlContent string) []string {
+	t.Helper()
+	lines := strings.Split(yamlContent, "\n")
+	for i, line := range lines {
+		if strings.TrimSpace(line) != "disabled_toolsets:" {
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		var items []string
+		for _, next := range lines[i+1:] {
+			trimmed := strings.TrimSpace(next)
+			nextIndent := len(next) - len(strings.TrimLeft(next, " "))
+			if nextIndent < indent || !strings.HasPrefix(trimmed, "- ") {
+				break
+			}
+			items = append(items, strings.TrimPrefix(trimmed, "- "))
+		}
+		if len(items) == 0 {
+			t.Fatalf("disabled_toolsets parsed as empty — extractor is broken:\n%s", yamlContent)
+		}
+		return items
+	}
+	t.Fatalf("rendered config has no disabled_toolsets key:\n%s", yamlContent)
+	return nil
 }
 
 func TestDisplayMode(t *testing.T) {

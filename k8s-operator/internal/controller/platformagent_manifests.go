@@ -173,6 +173,9 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 		Platforms struct {
 			GoogleChat struct {
 				Enabled bool `json:"enabled"`
+				// Overrides the adapter's default "Hermes is thinking…" marker
+				// card text with our product name.
+				TypingStatusText string `json:"typing_status_text,omitempty"`
 			} `json:"google_chat"`
 			Slack struct {
 				Enabled bool `json:"enabled"`
@@ -234,10 +237,25 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 	}
 	// Delegation toolset (router MCP + kanban) for every platform key the gateway
 	// may resolve under, including `google_chat` (the real chat-ingress key).
+	//
+	// `memory` here is a GATE for the multiuser_memory provider, not a tool grant.
+	// hermes_cli.tools_config._get_platform_tools() resolves this list for the
+	// session's platform key and subtracts agent.disabled_toolsets LAST; what
+	// survives becomes agent.enabled_toolsets. inject_memory_provider_tools()
+	// then bails unless memory_provider_tools_enabled() sees "memory" there, and
+	// that injection is the only path by which multiuser_memory reaches the model.
+	// So `memory` must be listed HERE and must NOT be in DisabledToolsets below —
+	// listing it in both nets to off (the subtraction wins), which is why the
+	// front door's memories dir stayed empty despite the provider loading.
+	//
+	// Price: the built-in `memory` tool is exposed alongside multiuser_memory. It
+	// is inert — MemoryEnabled=false leaves agent._memory_store nil and
+	// tools/memory_tool.py returns "Memory is not available" without touching
+	// disk. SOUL.md §1.6 tells the agent to write through multiuser_memory.
 	cfg.PlatformToolsets = map[string][]string{
-		"cli":         {"mcp-router", "kanban"},
-		"api_server":  {"mcp-router", "kanban"},
-		"google_chat": {"mcp-router", "kanban"},
+		"cli":         {"mcp-router", "kanban", "memory"},
+		"api_server":  {"mcp-router", "kanban", "memory"},
+		"google_chat": {"mcp-router", "kanban", "memory"},
 	}
 	// Second gate for the kanban orchestrator surface: the kanban tools' check_fn
 	// reads this top-level `toolsets` key (distinct from platform_toolsets above).
@@ -255,10 +273,17 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 	// still cannot touch the system (no terminal/gcloud/kubectl, files, skills,
 	// code-exec, delegate_task, etc.). `kanban` is intentionally NOT disabled —
 	// it is the delegation surface. Only mcp-router + kanban survive.
+	// `memory` is deliberately NOT in this list: disabling it here would strip
+	// "memory" from agent.enabled_toolsets, fail the gate in
+	// inject_memory_provider_tools(), and silently kill multiuser_memory — the
+	// provider would still load and log "registered (1 tools)" while never
+	// reaching the model. See the PlatformToolsets note above. That omission is
+	// conditional on the built-in store staying off; it is re-added below when
+	// spec.harness.memory.memoryEnabled turns it on.
 	cfg.Agent.DisabledToolsets = []string{
 		"terminal", "file", "skills", "code_execution", "delegation",
 		"browser", "computer_use", "cronjob", "web", "search", "x_search",
-		"vision", "video", "image_gen", "video_gen", "tts", "todo", "memory",
+		"vision", "video", "image_gen", "video_gen", "tts", "todo",
 		"session_search", "project", "homeassistant", "discord",
 		"discord_admin", "spotify",
 	}
@@ -266,9 +291,18 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 	// Execution & Display UX configuration
 	cfg.Approvals.CronMode = "approve"
 	cfg.Web.Backend = "ddgs"
-	// Enable incident_context plugin by default to parse and rewrite GChat/Slack threaded incident replies
-	cfg.Plugins.Enabled = []string{"hermes_otel", "session_store", "session_otel_bridge", "tool_call_audit", "incident_context"}
+	// Enable incident_context plugin by default to parse and rewrite GChat/Slack threaded incident replies.
+	// bootstrap_onboarding rides on the default profile because it hooks pre_llm_call on the first
+	// human turn — chat ingress lands here, not on the platform specialist.
+	cfg.Plugins.Enabled = []string{"hermes_otel", "session_store", "session_otel_bridge", "tool_call_audit", "incident_context", "bootstrap_onboarding"}
 	cfg.Display.Platforms = map[string]map[string]any{}
+	// Per-user memory. The built-in MEMORY.md/USER.md store stays off; the
+	// multiuser_memory provider replaces it and keys each user's notes off the
+	// gateway identity (agent._user_id), writing to memories/users/<user>.md with a
+	// shared MEMORY.md alongside. The provider hydrates both into the system prompt
+	// itself, so the agent reads without a tool call and only writes through one.
+	// This is the only profile that gets it: kanban-spawned specialists carry no
+	// human identity, so their writes would collapse into one anonymous bucket.
 	cfg.Memory.MemoryEnabled = false
 	cfg.Memory.Provider = "multiuser_memory"
 	cfg.Memory.UserProfileEnabled = false
@@ -285,10 +319,30 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 		}
 	}
 
+	// Keeping `memory` out of DisabledToolsets is only safe while the built-in
+	// store is off. memoryEnabled is a supported CRD field, and setting it true
+	// would leave the front door holding a live built-in `memory` tool — a real
+	// read/write surface over a single MEMORY.md/USER.md pair with no per-user
+	// scoping, which is precisely what multiuser_memory exists to avoid. There is
+	// no way to have one without the other: the same toolset name gates the
+	// provider injection and exposes the built-in tool. So when the built-in
+	// store is switched on, put `memory` back in the denylist. Both memory tools
+	// then disappear from the front door — the behaviour this field already had
+	// before the gate was opened, and better than two competing stores on a
+	// profile whose whole point is a minimal tool surface.
+	if cfg.Memory.MemoryEnabled {
+		cfg.Agent.DisabledToolsets = append(cfg.Agent.DisabledToolsets, "memory")
+	}
+
 	if agent.Spec.Integration != nil {
 		if gchat := agent.Spec.Integration.GoogleChat; gchat != nil {
 			if gchat.Enabled != nil {
 				cfg.Platforms.GoogleChat.Enabled = *gchat.Enabled
+				if *gchat.Enabled {
+					// Rebrand the Google Chat "thinking" marker card from the
+					// upstream default ("Hermes is thinking…") to our product name.
+					cfg.Platforms.GoogleChat.TypingStatusText = "Kage is thinking…"
+				}
 			}
 			cfg.Display.Platforms["google_chat"] = resolveGoogleChatDisplayConfig(gchat.Mode)
 		}
