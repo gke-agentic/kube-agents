@@ -58,6 +58,7 @@ jobs:
       - name: Verify Prebuilt Container Images Exist in Registry
         env:
           COMMIT_SHA: ${{ steps.resolve_target.outputs.commit_sha }}
+          REGISTRY_PREFIX: ${{ vars.REGISTRY_PREFIX }}
         run: ./scripts/release/verify_candidate_images.sh
 
       - name: Create Git Tag & Push
