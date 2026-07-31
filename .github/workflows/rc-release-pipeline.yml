@@ -22,6 +22,8 @@ jobs:
     with:
       commit_sha: ${{ inputs.commit_sha }}
       rc_tag: ${{ inputs.rc_tag }}
+    secrets:
+      RELEASE_BOT_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
 
   step-2-deploy-env:
     name: Step 2 - Provision RC Environment
@@ -89,3 +91,5 @@ jobs:
     uses: ./.github/workflows/rc-tag-validated.yml
     with:
       rc_tag: ${{ needs.step-1-create-tag.outputs.rc_tag }}
+    secrets:
+      RELEASE_BOT_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}

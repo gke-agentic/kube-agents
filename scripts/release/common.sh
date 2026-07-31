@@ -40,6 +40,9 @@ ensure_git_tag() {
 
   setup_git_bot_user
   git tag -a "${rc_tag}" "${commit_sha}" -m "${tag_message}"
-  git push origin "${rc_tag}"
-  echo "✅ Git tag '${rc_tag}' successfully pushed to remote repository!"
+  if git push origin "${rc_tag}" 2>/dev/null; then
+    echo "✅ Git tag '${rc_tag}' successfully pushed to remote repository!"
+  else
+    echo "⚠️ Notice: Could not push git tag '${rc_tag}' to origin remote (PR context / restricted permissions). Tag created locally."
+  fi
 }
