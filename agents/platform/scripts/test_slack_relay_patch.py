@@ -8,6 +8,133 @@ import urllib.error
 from email.message import Message
 from unittest import mock
 
+
+def _register_fake_modules() -> None:
+    class FakeAsyncWebClient:
+        def __init__(self, token=None, **kwargs):
+            self.token = token
+            self.base_url = kwargs.get("base_url", "https://slack.com/api/")
+
+        async def api_call(self, *_args, **_kwargs):
+            raise AssertionError("the real Slack client must never be used")
+
+    class FakeAsyncApp:
+        def __init__(self, client=None, **kwargs):
+            self.client = client
+            self.kwargs = kwargs
+
+    class FakeSlackResponse:
+        def __init__(
+            self,
+            *,
+            client=None,
+            http_verb=None,
+            api_url=None,
+            req_args=None,
+            data=None,
+            headers=None,
+            status_code=None,
+            **_kwargs,
+        ):
+            self.client = client
+            self.http_verb = http_verb
+            self.api_url = api_url
+            self.req_args = req_args
+            self.data = data
+            self.headers = headers
+            self.status_code = status_code
+
+    class FakeSocketModeRequest:
+        def __init__(self, type, envelope_id, payload):
+            self.type = type
+            self.envelope_id = envelope_id
+            self.payload = payload
+
+    async def fake_run_async_bolt_app(app, request):
+        return None
+
+    def fake_cache_audio_from_bytes(content, ext):
+        return f"cached_audio.{ext}"
+
+    def fake_cache_image_from_bytes(content, ext):
+        return f"cached_image.{ext}"
+
+    class PlatformRegistry:
+        def create_adapter(self, name, config):
+            return None
+
+    bolt_async_app = types.ModuleType("slack_bolt.app.async_app")
+    bolt_async_app.AsyncWebClient = FakeAsyncWebClient
+    bolt_async_context = types.ModuleType("slack_bolt.context.async_context")
+    bolt_async_context.AsyncWebClient = FakeAsyncWebClient
+    bolt_internals = types.ModuleType(
+        "slack_bolt.adapter.socket_mode.async_internals"
+    )
+    bolt_internals.run_async_bolt_app = fake_run_async_bolt_app
+
+    bolt_socket_mode = types.ModuleType("slack_bolt.adapter.socket_mode")
+    bolt_socket_mode.async_internals = bolt_internals
+    bolt_adapter = types.ModuleType("slack_bolt.adapter")
+    bolt_adapter.socket_mode = bolt_socket_mode
+
+    bolt_package = types.ModuleType("slack_bolt")
+    bolt_app_package = types.ModuleType("slack_bolt.app")
+    bolt_context_package = types.ModuleType("slack_bolt.context")
+    bolt_package.app = bolt_app_package
+    bolt_package.context = bolt_context_package
+    bolt_package.adapter = bolt_adapter
+    bolt_app_package.async_app = bolt_async_app
+    bolt_context_package.async_context = bolt_async_context
+
+    slack_sdk_module = types.ModuleType("slack_sdk")
+    slack_web_module = types.ModuleType("slack_sdk.web")
+    slack_response_module = types.ModuleType("slack_sdk.web.slack_response")
+    slack_response_module.SlackResponse = FakeSlackResponse
+    slack_socket_mode_module = types.ModuleType("slack_sdk.socket_mode")
+    slack_socket_mode_request_module = types.ModuleType(
+        "slack_sdk.socket_mode.request"
+    )
+    slack_socket_mode_request_module.SocketModeRequest = FakeSocketModeRequest
+    slack_sdk_module.web = slack_web_module
+    slack_sdk_module.socket_mode = slack_socket_mode_module
+    slack_web_module.slack_response = slack_response_module
+    slack_socket_mode_module.request = slack_socket_mode_request_module
+
+    registry_module = types.ModuleType("gateway.platform_registry")
+    registry_module.PlatformRegistry = PlatformRegistry
+    platforms_base_module = types.ModuleType("gateway.platforms.base")
+    platforms_base_module.cache_audio_from_bytes = fake_cache_audio_from_bytes
+    platforms_base_module.cache_image_from_bytes = fake_cache_image_from_bytes
+    platforms_module = types.ModuleType("gateway.platforms")
+    platforms_module.base = platforms_base_module
+    gateway_module = types.ModuleType("gateway")
+    gateway_module.platform_registry = registry_module
+    gateway_module.platforms = platforms_module
+
+    for name, mod in [
+        ("slack_bolt", bolt_package),
+        ("slack_bolt.app", bolt_app_package),
+        ("slack_bolt.app.async_app", bolt_async_app),
+        ("slack_bolt.context", bolt_context_package),
+        ("slack_bolt.context.async_context", bolt_async_context),
+        ("slack_bolt.adapter", bolt_adapter),
+        ("slack_bolt.adapter.socket_mode", bolt_socket_mode),
+        ("slack_bolt.adapter.socket_mode.async_internals", bolt_internals),
+        ("slack_sdk", slack_sdk_module),
+        ("slack_sdk.web", slack_web_module),
+        ("slack_sdk.web.slack_response", slack_response_module),
+        ("slack_sdk.socket_mode", slack_socket_mode_module),
+        ("slack_sdk.socket_mode.request", slack_socket_mode_request_module),
+        ("gateway", gateway_module),
+        ("gateway.platform_registry", registry_module),
+        ("gateway.platforms", platforms_module),
+        ("gateway.platforms.base", platforms_base_module),
+    ]:
+        sys.modules.setdefault(name, mod)
+
+
+_register_fake_modules()
+
 import slack_relay_patch
 
 
@@ -27,6 +154,28 @@ class FakeHTTPResponse:
 
     def __exit__(self, *_args):
         return False
+
+
+class FakeSlackResponse:
+    def __init__(
+        self,
+        *,
+        client=None,
+        http_verb=None,
+        api_url=None,
+        req_args=None,
+        data=None,
+        headers=None,
+        status_code=None,
+        **_kwargs,
+    ):
+        self.client = client
+        self.http_verb = http_verb
+        self.api_url = api_url
+        self.req_args = req_args
+        self.data = data
+        self.headers = headers
+        self.status_code = status_code
 
 
 class SlackRelayPatchTest(unittest.TestCase):
@@ -85,46 +234,22 @@ class SlackRelayPatchTest(unittest.TestCase):
         self.fake_real_client = FakeAsyncWebClient
         self.fake_real_app = FakeAsyncApp
 
-        self.bolt_async_app = types.ModuleType("slack_bolt.app.async_app")
+        self.bolt_async_app = sys.modules["slack_bolt.app.async_app"]
         self.bolt_async_app.AsyncWebClient = FakeAsyncWebClient
-        self.bolt_async_context = types.ModuleType("slack_bolt.context.async_context")
+        self.bolt_async_context = sys.modules["slack_bolt.context.async_context"]
         self.bolt_async_context.AsyncWebClient = FakeAsyncWebClient
-        bolt_package = types.ModuleType("slack_bolt")
-        bolt_app_package = types.ModuleType("slack_bolt.app")
-        bolt_context_package = types.ModuleType("slack_bolt.context")
-        bolt_package.app = bolt_app_package
-        bolt_package.context = bolt_context_package
-        bolt_app_package.async_app = self.bolt_async_app
-        bolt_context_package.async_context = self.bolt_async_context
-        self._fake_modules = {
-            "slack_bolt": bolt_package,
-            "slack_bolt.app": bolt_app_package,
-            "slack_bolt.app.async_app": self.bolt_async_app,
-            "slack_bolt.context": bolt_context_package,
-            "slack_bolt.context.async_context": self.bolt_async_context,
-        }
-        self._saved_modules = {
-            name: sys.modules.get(name) for name in self._fake_modules
-        }
-        sys.modules.update(self._fake_modules)
+        self._saved_modules = {}
 
-        class PlatformRegistry:
-            def create_adapter(self, name, config):
-                if name == "slack":
-                    return FakeAdapter(config)
-                return None
+        self.registry_class = sys.modules["gateway.platform_registry"].PlatformRegistry
+        if hasattr(self.registry_class, "_slack_credential_proxy_relay_patched"):
+            delattr(self.registry_class, "_slack_credential_proxy_relay_patched")
 
-        registry_module = types.ModuleType("gateway.platform_registry")
-        registry_module.PlatformRegistry = PlatformRegistry
-        gateway_module = types.ModuleType("gateway")
-        gateway_module.platform_registry = registry_module
-        self._saved_modules["gateway"] = sys.modules.get("gateway")
-        self._saved_modules["gateway.platform_registry"] = sys.modules.get(
-            "gateway.platform_registry"
-        )
-        sys.modules["gateway"] = gateway_module
-        sys.modules["gateway.platform_registry"] = registry_module
-        self.registry_class = PlatformRegistry
+        def _create_adapter(self_reg, name, config):
+            if name == "slack":
+                return FakeAdapter(config)
+            return None
+
+        self.registry_class.create_adapter = _create_adapter
 
         slack_relay_patch.install()
 

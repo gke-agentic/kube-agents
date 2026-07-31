@@ -14,6 +14,14 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+import slack_bolt.app.async_app as bolt_async_app
+import slack_bolt.context.async_context as bolt_async_context
+from gateway.platform_registry import PlatformRegistry
+from gateway.platforms.base import cache_audio_from_bytes, cache_image_from_bytes
+from slack_bolt.adapter.socket_mode.async_internals import run_async_bolt_app
+from slack_sdk.socket_mode.request import SocketModeRequest
+from slack_sdk.web.slack_response import SlackResponse
+
 
 LOGGER = logging.getLogger("slack-relay-patch")
 DEFAULT_MAX_FILE_BYTES = 20 * 1024 * 1024
@@ -88,9 +96,6 @@ def install() -> None:
         return value
 
     async def relay_loop(self: Any) -> None:
-        from slack_bolt.adapter.socket_mode.async_internals import run_async_bolt_app
-        from slack_sdk.socket_mode.request import SocketModeRequest
-
         while self._running:
             receipt = ""
             try:
@@ -191,8 +196,6 @@ def install() -> None:
                         headers.update(data.get("headers") or {})
                 else:
                     data = {}
-                from slack_sdk.web.slack_response import SlackResponse
-
                 return SlackResponse(
                     client=self,
                     http_verb=http_verb,
@@ -230,16 +233,8 @@ def install() -> None:
         # per-request clients are relay-backed too. RemoteSlackClient
         # subclasses the real AsyncWebClient, so bolt's isinstance() check on
         # AsyncApp(client=...) still passes.
-        try:
-            import slack_bolt.app.async_app as bolt_async_app
-            import slack_bolt.context.async_context as bolt_async_context
-
-            bolt_async_app.AsyncWebClient = RemoteSlackClient
-            bolt_async_context.AsyncWebClient = RemoteSlackClient
-        except ImportError:
-            LOGGER.warning(
-                "slack_bolt is unavailable; per-request Slack clients are not relayed"
-            )
+        bolt_async_app.AsyncWebClient = RemoteSlackClient
+        bolt_async_context.AsyncWebClient = RemoteSlackClient
 
         async def bootstrap_workspaces() -> list[dict[str, Any]]:
             # The credential proxy sidecar can come up tens of seconds after
@@ -260,16 +255,17 @@ def install() -> None:
             deadline = time.monotonic() + wait_seconds
             while True:
                 try:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("Slack relay bootstrap timed out")
                     bootstrap = await asyncio.to_thread(
                         request, "/v1/chat/slack/bootstrap", {}
                     )
                     return bootstrap.get("workspaces") or []
                 except urllib.error.HTTPError as exc:
-                    if exc.code != 503 or time.monotonic() >= deadline:
+                    if exc.code != 503:
                         raise
-                except urllib.error.URLError:
-                    if time.monotonic() >= deadline:
-                        raise
+                except (urllib.error.URLError, OSError):
+                    pass
                 LOGGER.info("Slack relay is not ready yet; retrying bootstrap")
                 await asyncio.sleep(2)
 
@@ -369,11 +365,7 @@ def install() -> None:
             )
             content = base64.b64decode(response["data"])
             if audio:
-                from gateway.platforms.base import cache_audio_from_bytes
-
                 return cache_audio_from_bytes(content, ext)
-            from gateway.platforms.base import cache_image_from_bytes
-
             return cache_image_from_bytes(content, ext)
 
         async def download_bytes(self: Any, url: str, team_id: str = "") -> bytes:
@@ -392,8 +384,6 @@ def install() -> None:
         adapter_class._download_slack_file = download
         adapter_class._download_slack_file_bytes = download_bytes
         adapter_class._credential_proxy_relay_patched = True
-
-    from gateway.platform_registry import PlatformRegistry
 
     original_registry_create = PlatformRegistry.create_adapter
     if not getattr(PlatformRegistry, "_slack_credential_proxy_relay_patched", False):

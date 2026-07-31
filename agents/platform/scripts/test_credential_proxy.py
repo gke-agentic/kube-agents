@@ -20,6 +20,7 @@ from credential_proxy import (
     GoogleChatRelay,
     Policy,
     SlackRelay,
+    _slack_error_detail,
     is_valid_repository,
 )
 from slack_relay_patch import read_upload
@@ -491,6 +492,26 @@ class SlackRelayTest(unittest.TestCase):
             path = Path(directory) / "upload"
             path.write_bytes(b"1234")
             self.assertEqual(b"1234", read_upload(path, 4))
+
+    def test_slack_error_detail_serializes_response_to_json(self):
+        exc_with_data = Exception()
+        exc_with_data.response = types.SimpleNamespace(
+            data={"ok": False, "error": "invalid_auth"}
+        )
+        self.assertEqual(
+            '{"error": "invalid_auth", "ok": false}',
+            _slack_error_detail(exc_with_data),
+        )
+
+        exc_with_dict = Exception()
+        exc_with_dict.response = {"error": "ratelimited"}
+        self.assertEqual(
+            '{"error": "ratelimited"}',
+            _slack_error_detail(exc_with_dict),
+        )
+
+        exc_without_response = Exception("network error")
+        self.assertEqual("unknown", _slack_error_detail(exc_without_response))
 
 
 if __name__ == "__main__":

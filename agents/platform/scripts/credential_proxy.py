@@ -243,13 +243,33 @@ class GoogleChatRelay:
 
 
 def _slack_error_detail(exc: Exception) -> str:
-    """Slack's machine-readable error code (e.g. invalid_auth) from a SlackApiError."""
+    """Return Slack API error details as a JSON string or fallback text."""
     response = getattr(exc, "response", None)
+    payload = None
+    if response is not None:
+        if hasattr(response, "data") and isinstance(response.data, dict):
+            payload = response.data
+        elif hasattr(response, "to_dict"):
+            try:
+                payload = response.to_dict()
+            except Exception:
+                payload = None
+        elif isinstance(response, dict):
+            payload = response
+    if payload is not None:
+        try:
+            return json.dumps(payload, sort_keys=True)
+        except Exception:
+            pass
     try:
-        detail = response.get("error") if response is not None else None
+        detail = (
+            response.get("error")
+            if response is not None and hasattr(response, "get")
+            else None
+        )
     except Exception:
         detail = None
-    return str(detail) if detail else "unknown"
+    return str(detail or "unknown")
 
 
 class SlackRelay:
