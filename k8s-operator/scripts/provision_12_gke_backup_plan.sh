@@ -118,6 +118,7 @@ execute_backup_plan() {
         --location="$REGION" \
         --cron-schedule="$BACKUP_CRON_SCHEDULE" \
         --backup-retain-days="$BACKUP_RETAIN_DAYS" \
+        "${enc_flag[@]}" \
         --quiet
   else
     print_info "Creating default GKE Backup Plan '${BACKUP_PLAN_NAME}'..."
