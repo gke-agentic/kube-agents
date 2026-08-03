@@ -21,6 +21,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path"
 	"strings"
 
@@ -1748,15 +1749,20 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent) *networkingv1.Networ
 	udp := corev1.ProtocolUDP
 	tcp := corev1.ProtocolTCP
 
+	apiHost := os.Getenv("KUBERNETES_SERVICE_HOST")
+	if apiHost == "" {
+		apiHost = "10.96.0.1"
+	}
+	apiCidr := apiHost + "/32"
+	if strings.Contains(apiHost, ":") {
+		apiCidr = apiHost + "/128"
+	}
+
 	ingressRules := []networkingv1.NetworkPolicyIngressRule{
 		{
 			From: []networkingv1.NetworkPolicyPeer{
 				{
-					NamespaceSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							"kubernetes.io/metadata.name": agent.Namespace,
-						},
-					},
+					PodSelector: &metav1.LabelSelector{},
 				},
 			},
 			Ports: []networkingv1.NetworkPolicyPort{
@@ -1891,7 +1897,7 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent) *networkingv1.Networ
 				},
 			},
 		},
-		// 3. LiteLLM Gateway in kubeagents-system
+		// 3. LiteLLM Gateway in the agent namespace
 		{
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(4000))},
@@ -1900,11 +1906,6 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent) *networkingv1.Networ
 			},
 			To: []networkingv1.NetworkPolicyPeer{
 				{
-					NamespaceSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							"kubernetes.io/metadata.name": agent.Namespace,
-						},
-					},
 					PodSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
 							"app": "litellm",
@@ -1922,22 +1923,7 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent) *networkingv1.Networ
 			To: []networkingv1.NetworkPolicyPeer{
 				{
 					IPBlock: &networkingv1.IPBlock{
-						CIDR: "10.0.0.0/8",
-					},
-				},
-				{
-					IPBlock: &networkingv1.IPBlock{
-						CIDR: "172.16.0.0/12",
-					},
-				},
-				{
-					IPBlock: &networkingv1.IPBlock{
-						CIDR: "192.168.0.0/16",
-					},
-				},
-				{
-					IPBlock: &networkingv1.IPBlock{
-						CIDR: "34.118.0.0/16", // GKE default Service CIDR range
+						CIDR: apiCidr,
 					},
 				},
 			},

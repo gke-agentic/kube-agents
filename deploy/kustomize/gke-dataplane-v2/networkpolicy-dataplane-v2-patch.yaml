@@ -3,36 +3,7 @@ kind: NetworkPolicy
 metadata:
   name: platform-agent-gateway-netpol
   namespace: kubeagents-system
-  labels:
-    app: platform-agent
 spec:
-  # Note: Kustomize targets the static 'app: platform-agent' label from service.yaml.
-  # The Kubernetes Operator dynamically targets 'app: <agent.Name>-gateway' when reconciling PlatformAgent CRs.
-  podSelector:
-    matchLabels:
-      app: platform-agent
-  policyTypes:
-    - Ingress
-    - Egress
-  ingress:
-    # 1. Internal agent traffic and dashboard access from within the agent namespace
-    - from:
-        - podSelector: {}
-      ports:
-        - port: 8642
-          protocol: TCP
-        - port: 8643
-          protocol: TCP
-        - port: 9119
-          protocol: TCP
-    # 2. Prometheus metrics scraping from Google Managed Prometheus (gke-gmp-system)
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: gke-gmp-system
-      ports:
-        - port: 8643
-          protocol: TCP
   egress:
     # 1. Cluster DNS (Scoped specifically to CoreDNS and NodeLocal DNSCache pods in kube-system)
     - ports:
@@ -55,8 +26,6 @@ spec:
               k8s-app: node-local-dns
         - ipBlock:
             cidr: 169.254.20.10/32
-        - ipBlock:
-            cidr: 0.0.0.0/0
     # 2a. GCP Workload Identity / Metadata Server (Link-Local & Daemon pod)
     - ports:
         - port: 80
@@ -75,15 +44,13 @@ spec:
         - port: 988
           protocol: TCP
       to:
-        - ipBlock:
-            cidr: 0.0.0.0/0
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: kube-system
           podSelector:
             matchLabels:
               k8s-app: gke-metadata-server
-    # 3. LiteLLM Gateway in the agent namespace
+    # 3. LiteLLM Gateway in kubeagents-system
     - ports:
         - port: 4000
           protocol: TCP
@@ -92,7 +59,10 @@ spec:
         - port: 443
           protocol: TCP
       to:
-        - podSelector:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kubeagents-system
+          podSelector:
             matchLabels:
               app: litellm
     # 4. Kubernetes API Server (Internal Control Plane)
@@ -103,20 +73,14 @@ spec:
           protocol: TCP
       to:
         - ipBlock:
-            cidr: 10.96.0.1/32
-    # 5. External HTTPS (Google APIs, GitHub, etc.)
-    # Allows external public traffic but strictly BLOCKS internal lateral movement.
-    - ports:
-        - port: 443
-          protocol: TCP
-      to:
+            cidr: 10.0.0.0/8
         - ipBlock:
-            cidr: 0.0.0.0/0
-            except:
-              - 10.0.0.0/8
-              - 172.16.0.0/12
-              - 192.168.0.0/16
-    # 6. GKE Managed OpenTelemetry Collector (Trace Export)
+            cidr: 172.16.0.0/12
+        - ipBlock:
+            cidr: 192.168.0.0/16
+        - ipBlock:
+            cidr: 34.118.0.0/16
+    # 5. GKE Managed OpenTelemetry Collector (Trace Export)
     - ports:
         - port: 4317
           protocol: TCP
@@ -126,5 +90,3 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: gke-managed-otel
-
-

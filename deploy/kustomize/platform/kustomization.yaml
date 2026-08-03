@@ -3,5 +3,4 @@ kind: Kustomization
 
 resources:
   - service.yaml
-  - default-deny-all.yaml
   - networkpolicy.yaml

@@ -17,7 +17,6 @@ deploy/
 │   └── merge_configs.py
 ├── kustomize/
 │   └── platform/
-│       ├── default-deny-all.yaml # Namespace-wide default-deny NetworkPolicy
 │       ├── kustomization.yaml    # Kustomize entrypoint
 │       ├── networkpolicy.yaml    # Ingress/egress NetworkPolicy for Platform Agent
 │       └── service.yaml          # ClusterIP Service for the Platform Agent
@@ -30,7 +29,6 @@ deploy/
 
 The Kustomize surface at [`deploy/kustomize/platform/`](https://github.com/gke-labs/kube-agents/tree/main/deploy/kustomize/platform) includes the base Service and network isolation policies:
 
-- [`default-deny-all.yaml`](https://github.com/gke-labs/kube-agents/blob/main/deploy/kustomize/platform/default-deny-all.yaml) — Enforces a default-deny NetworkPolicy across `kubeagents-system`.
 - [`networkpolicy.yaml`](https://github.com/gke-labs/kube-agents/blob/main/deploy/kustomize/platform/networkpolicy.yaml) — Explicitly allowlists required Ingress ports (`8642`, `8643`, `9119`) and restricted Egress destinations (CoreDNS, GCP Metadata `169.254.169.254/32`, LiteLLM Gateway, the Kubernetes Control Plane `10.96.0.1/32`, and external HTTPS with RFC 1918 exclusions to prevent internal lateral movement).
 - [`service.yaml`](https://github.com/gke-labs/kube-agents/blob/main/deploy/kustomize/platform/service.yaml) — ClusterIP Service for the Platform Agent.
 

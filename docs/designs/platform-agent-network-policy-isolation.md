@@ -1,6 +1,6 @@
 # Platform Agent Pod Network Policy Isolation — kube-agents
 
-> **STATUS — Implemented in `feature/networkpolicy`.** The Layer 4 `NetworkPolicy` reconciliation and Kustomize default-deny policy described below are implemented in [`k8s-operator/internal/controller/platformagent_manifests.go`](file:///usr/local/google/home/shalinibhatia/src/gke-agentic/kube-agents/k8s-operator/internal/controller/platformagent_manifests.go#L1800), verified in [`platformagent_controller_test.go`](file:///usr/local/google/home/shalinibhatia/src/gke-agentic/kube-agents/k8s-operator/internal/controller/platformagent_controller_test.go#L605), and documented in [`security-and-iam.md`](file:///usr/local/google/home/shalinibhatia/src/gke-agentic/kube-agents/docs/site/src/content/docs/reference/security-and-iam.md#L154).
+> **STATUS — Implemented in `feature/networkpolicy`.** The Layer 4 `NetworkPolicy` reconciliation described below is implemented in [`k8s-operator/internal/controller/platformagent_manifests.go`](file:///usr/local/google/home/shalinibhatia/src/gke-agentic/kube-agents/k8s-operator/internal/controller/platformagent_manifests.go#L1800), verified in [`platformagent_controller_test.go`](file:///usr/local/google/home/shalinibhatia/src/gke-agentic/kube-agents/k8s-operator/internal/controller/platformagent_controller_test.go#L605), and documented in [`security-and-iam.md`](file:///usr/local/google/home/shalinibhatia/src/gke-agentic/kube-agents/docs/site/src/content/docs/reference/security-and-iam.md#L154).
 
 **Status:** Implemented (`feature/networkpolicy`)  
 **Authors:** Shalini Bhatia  
@@ -34,7 +34,7 @@ In modern Kubernetes environments, AI-driven agents possess significant capabili
 
 ## 3. Design / Proposal
 
-To address these vulnerabilities while maintaining compatibility across diverse cluster environments (e.g., GKE, standard Kubernetes, Minikube), we implement a standard Layer 4 `NetworkPolicy` generated directly by the Go operator, paired with a Kustomize default-deny baseline.
+To address these vulnerabilities while maintaining compatibility across diverse cluster environments (e.g., GKE, standard Kubernetes, Minikube), we implement a standard Layer 4 `NetworkPolicy` generated directly by the Go operator.
 
 ### 3.1 Operator Manifest Builder (`platformagent_manifests.go`)
 
@@ -175,26 +175,7 @@ spec:
 
 ---
 
-### 3.3 Default-Deny Namespace Policy
 
-To ensure a zero-trust posture across static and dynamic deployments, we introduce a baseline default-deny policy for the **`kubeagents-system`** namespace ([`deploy/kustomize/platform/default-deny-all.yaml`](file:///usr/local/google/home/shalinibhatia/src/gke-agentic/kube-agents/deploy/kustomize/platform/default-deny-all.yaml)).
-
-```yaml
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: default-deny-all
-  namespace: kubeagents-system
-spec:
-  podSelector: {}
-  policyTypes:
-    - Ingress
-    - Egress
-```
-
-Any pod deployed within `kubeagents-system` is denied all ingress and egress by default unless an explicit `NetworkPolicy` allows traffic.
-
----
 
 ## 4. Why Generate Directly via the Go Operator?
 
