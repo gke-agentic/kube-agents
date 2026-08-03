@@ -12,6 +12,10 @@ on:
         required: false
         type: string
 
+concurrency:
+  group: rc-release-pipeline
+  cancel-in-progress: false
+
 jobs:
   step-1-create-tag:
     name: Step 1 - Create Release Candidate Tag
@@ -41,6 +45,9 @@ jobs:
     needs: [step-1-create-tag, step-2-deploy-env]
     runs-on: ubuntu-latest
     environment: rc
+    concurrency:
+      group: rc-environment
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
