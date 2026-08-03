@@ -33,7 +33,7 @@ spec:
   # decoupling the compute payload from the agent's application logic.
   # +optional
   deployment:
-    image: "ghcr.io/gke-labs/kube-agents/platform-agent"
+    image: "us-east4-docker.pkg.dev/shalinibhatia-gkedemos/kube-agents/platform-agent:latest"
 
     imagePullPolicy: "IfNotPresent"
   security:
@@ -41,7 +41,7 @@ spec:
     # WorkloadIdentity maps external IAM to the KSA securely.
     # +optional
     serviceAccountAnnotations:
-      iam.gke.io/gcp-service-account: "kubeagents-platform-gsa@kube-agents-gkedemos.iam.gserviceaccount.com"
+      iam.gke.io/gcp-service-account: "kubeagents-platform-gsa@shalinibhatia-gkedemos.iam.gserviceaccount.com"
 
   # Integration configures platform-specific external connections.
   # +optional
@@ -59,7 +59,7 @@ spec:
       mode: "default"
       # ProjectID is the target GCP Project ID for Pub/Sub. Required if enabled.
       # +optional
-      projectId: "kube-agents-gkedemos"
+      projectId: "shalinibhatia-gkedemos"
       # TopicName is the GCP Chat Topic Name. Required if enabled.
       # +optional
       topicName: "kubeagents-google-chat-events"

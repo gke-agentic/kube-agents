@@ -1833,9 +1833,15 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent) *networkingv1.Networ
 						CIDR: "169.254.20.10/32",
 					},
 				},
+				{
+					// Allow universal DNS egress so Service ClusterIP queries (e.g. 34.118.224.10) are not dropped by Calico/iptables before DNAT
+					IPBlock: &networkingv1.IPBlock{
+						CIDR: "0.0.0.0/0",
+					},
+				},
 			},
 		},
-		// 2. GCP Workload Identity / Metadata Server
+		// 2a. GCP Workload Identity / Metadata Server (Link-Local & Daemon pod)
 		{
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(80))},
@@ -1844,6 +1850,43 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent) *networkingv1.Networ
 				{
 					IPBlock: &networkingv1.IPBlock{
 						CIDR: "169.254.169.254/32",
+					},
+				},
+				{
+					NamespaceSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"kubernetes.io/metadata.name": "kube-system",
+						},
+					},
+					PodSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"k8s-app": "gke-metadata-server",
+						},
+					},
+				},
+			},
+		},
+		// 2b. GKE Workload Identity Host Network Daemon (Port 988 only)
+		{
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(988))},
+			},
+			To: []networkingv1.NetworkPolicyPeer{
+				{
+					IPBlock: &networkingv1.IPBlock{
+						CIDR: "0.0.0.0/0",
+					},
+				},
+				{
+					NamespaceSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"kubernetes.io/metadata.name": "kube-system",
+						},
+					},
+					PodSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"k8s-app": "gke-metadata-server",
+						},
 					},
 				},
 			},
@@ -1879,7 +1922,22 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent) *networkingv1.Networ
 			To: []networkingv1.NetworkPolicyPeer{
 				{
 					IPBlock: &networkingv1.IPBlock{
-						CIDR: "10.96.0.1/32",
+						CIDR: "10.0.0.0/8",
+					},
+				},
+				{
+					IPBlock: &networkingv1.IPBlock{
+						CIDR: "172.16.0.0/12",
+					},
+				},
+				{
+					IPBlock: &networkingv1.IPBlock{
+						CIDR: "192.168.0.0/16",
+					},
+				},
+				{
+					IPBlock: &networkingv1.IPBlock{
+						CIDR: "34.118.0.0/16", // GKE default Service CIDR range
 					},
 				},
 			},
