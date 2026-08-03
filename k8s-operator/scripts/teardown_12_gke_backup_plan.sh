@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# 12. Teardown GKE Backup & Disaster Recovery Plan
+# 🧹 Step 12: Teardown GKE Backup Plan
 # ==============================================================================
 # Idempotent script to delete the Google Cloud Backup for GKE BackupPlan.
 # Safe to run even if the backup plan was never created.
@@ -35,7 +35,7 @@ if [ "$describe_err" -eq 0 ]; then
       --project="$PROJECT_ID" \
       --format="value(name.basename())" 2>/dev/null || echo "")
 
-  if [ -n "$backups" ] && is_truthy "${PRESERVE_BACKUPS}"; then
+  if is_truthy "${PRESERVE_BACKUPS}"; then
     echo -e "  ${C_YELLOW}ℹ PRESERVE_BACKUPS=true: Preserving GKE Backup Plan '${BACKUP_PLAN_NAME}' and its existing backup snapshots.${C_RESET}"
     echo -e "  ${C_CYAN}ℹ To delete all backup snapshots and the plan, run with PRESERVE_BACKUPS=false (default).${C_RESET}"
   else
@@ -49,11 +49,16 @@ if [ "$describe_err" -eq 0 ]; then
           if [ -n "$backup" ]; then
             echo -e "    ${C_CYAN}ℹ Triggering deletion for snapshot '${backup}' (in background)...${C_RESET}"
             (
-              gcloud beta container backup-restore backups delete "$backup" \
+              del_err=0
+              del_out=$(gcloud beta container backup-restore backups delete "$backup" \
                   --backup-plan="$BACKUP_PLAN_NAME" \
                   --location="$REGION" \
                   --project="$PROJECT_ID" \
-                  --quiet || echo -e "    ${C_YELLOW}⚠ Failed to delete snapshot '${backup}'; continuing...${C_RESET}"
+                  --quiet 2>&1) || del_err=$?
+              if [ "$del_err" -ne 0 ]; then
+                echo -e "    ${C_YELLOW}⚠ Failed to delete snapshot '${backup}':${C_RESET}" >&2
+                echo "$del_out" | sed 's/^/      /' >&2
+              fi
             ) &
             count=$((count + 1))
             if [ $((count % 5)) -eq 0 ]; then
@@ -88,8 +93,8 @@ if [ "$describe_err" -eq 0 ]; then
       echo -e "  ${C_GREEN}✓ Deleted GKE Backup Plan '${BACKUP_PLAN_NAME}'.${C_RESET}"
     fi
   fi
-elif echo "$describe_out" | grep -iq "not found\|NOT_FOUND"; then
-  echo -e "  ${C_GREEN}✓ GKE Backup Plan '${BACKUP_PLAN_NAME}' does not exist. Skipping.${C_RESET}"
+elif [ "${DRY_RUN:-0}" -eq 1 ] || echo "$describe_out" | grep -iq "not found\|NOT_FOUND"; then
+  echo -e "  ${C_GREEN}✓ GKE Backup Plan '${BACKUP_PLAN_NAME}' does not exist (or dry-run skip). Skipping.${C_RESET}"
 else
   echo -e "  ${C_RED}✗ Error describing GKE Backup Plan '${BACKUP_PLAN_NAME}':${C_RESET}" >&2
   echo "$describe_out" >&2

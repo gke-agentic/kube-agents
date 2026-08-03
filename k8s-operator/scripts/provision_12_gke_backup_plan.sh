@@ -1,9 +1,19 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# 12. GKE Backup & Disaster Recovery Provisioning
+# 🤖 Step 12: GKE Backup Plan (optional)
 # ==============================================================================
 # Sets up Google Cloud Backup for GKE BackupPlan for automated cluster
-# and persistent volume snapshots.
+# and persistent volume snapshots. Skipped unless ENABLE_GKE_BACKUP_PLAN=true.
+#
+# Note: If BACKUP_CRON_SCHEDULE or BACKUP_RETAIN_DAYS are modified after initial
+# provisioning, re-running this script automatically reconciles the existing
+# backup plan in-place using 'gcloud beta container backup-restore backup-plans update'.
+#
+# Cost: Incurs charges based on the number of GKE pods backed up and persistent
+# volume snapshot storage used. Defaults to ENABLE_GKE_BACKUP_PLAN=false.
+#
+# Security: Backups include Kubernetes Secrets and persistent volume data, so
+# GCP IAM policies should restrict backup/restore permissions to authorized admins.
 # ==============================================================================
 
 set -e
@@ -22,6 +32,11 @@ init_var "ENABLE_GKE_BACKUP_PLAN" "false" "Enable automated Google Cloud Backup 
 if ! is_truthy "$ENABLE_GKE_BACKUP_PLAN"; then
   echo -e "  ${C_YELLOW}ℹ Skipping GKE Backup Plan setup per user request (ENABLE_GKE_BACKUP_PLAN=${ENABLE_GKE_BACKUP_PLAN}).${C_RESET}"
   exit 0
+fi
+
+if [ "${DRY_RUN:-0}" -ne 1 ] && ! gcloud version 2>/dev/null | grep -q -E "^beta "; then
+  print_error "The 'gcloud beta' component is required for Backup for GKE commands. Please install it (e.g., 'gcloud components install beta' or 'apt-get install google-cloud-cli-beta') and rerun."
+  exit 1
 fi
 
 ACTIVE_PROJECT="$(gcloud config get-value project 2>/dev/null || echo "")"
@@ -69,8 +84,20 @@ verify_backup_plan() {
   out=$(gcloud beta container backup-restore backup-plans describe "$BACKUP_PLAN_NAME" \
       --location="$REGION" --project="$PROJECT_ID" 2>&1) || err=$?
   if [ "$err" -eq 0 ]; then
-    return 0
-  elif echo "$out" | grep -iq "not found\|NOT_FOUND"; then
+    BACKUP_PLAN_EXISTS="true"
+    local curr_retain curr_cron curr_enc
+    curr_retain=$(echo "$out" | grep -E "^[[:space:]]*backupRetainDays:" | head -n1 | sed -E 's/^[[:space:]]*backupRetainDays:[[:space:]]*//' | tr -d "'\"[:space:]")
+    curr_cron=$(echo "$out" | grep -E "^[[:space:]]*cronSchedule:" | head -n1 | sed -E 's/^[[:space:]]*cronSchedule:[[:space:]]*//' | sed -E "s/^['\"]//;s/['\"]$//")
+    curr_enc=$(echo "$out" | grep -E "^[[:space:]]*gcpKmsEncryptionKey:" | head -n1 | sed -E 's/^[[:space:]]*gcpKmsEncryptionKey:[[:space:]]*//' | tr -d "'\"[:space:]")
+
+    if [ "$curr_retain" = "$BACKUP_RETAIN_DAYS" ] && [ "$curr_cron" = "$BACKUP_CRON_SCHEDULE" ] && [ "$curr_enc" = "${BACKUP_ENCRYPTION_KEY:-}" ]; then
+      return 0
+    else
+      echo -e "  ${C_YELLOW}ℹ Configuration drift detected on existing BackupPlan '${BACKUP_PLAN_NAME}'. Will update.${C_RESET}"
+      return 1
+    fi
+  elif [ "${DRY_RUN:-0}" -eq 1 ] || echo "$out" | grep -iq "not found\|NOT_FOUND"; then
+    BACKUP_PLAN_EXISTS="false"
     return 1
   else
     echo -e "  ${C_RED}✗ Error checking GKE Backup Plan '${BACKUP_PLAN_NAME}':${C_RESET}" >&2
@@ -84,18 +111,28 @@ execute_backup_plan() {
     enc_flag=("--encryption-key=${BACKUP_ENCRYPTION_KEY}")
   fi
 
-  print_info "Creating default GKE Backup Plan '${BACKUP_PLAN_NAME}'..."
-  gcloud beta container backup-restore backup-plans create "$BACKUP_PLAN_NAME" \
-      --project="$PROJECT_ID" \
-      --location="$REGION" \
-      --cluster="projects/${PROJECT_ID}/locations/${REGION}/clusters/${CLUSTER_NAME}" \
-      --selected-namespaces="${NAMESPACE:-kubeagents-system}" \
-      --include-secrets \
-      --include-volume-data \
-      --cron-schedule="$BACKUP_CRON_SCHEDULE" \
-      --backup-retain-days="$BACKUP_RETAIN_DAYS" \
-      "${enc_flag[@]}" \
-      --quiet
+  if [ "${BACKUP_PLAN_EXISTS:-false}" = "true" ]; then
+    print_info "Updating GKE Backup Plan '${BACKUP_PLAN_NAME}' to reconcile configuration drift..."
+    gcloud beta container backup-restore backup-plans update "$BACKUP_PLAN_NAME" \
+        --project="$PROJECT_ID" \
+        --location="$REGION" \
+        --cron-schedule="$BACKUP_CRON_SCHEDULE" \
+        --backup-retain-days="$BACKUP_RETAIN_DAYS" \
+        --quiet
+  else
+    print_info "Creating default GKE Backup Plan '${BACKUP_PLAN_NAME}'..."
+    gcloud beta container backup-restore backup-plans create "$BACKUP_PLAN_NAME" \
+        --project="$PROJECT_ID" \
+        --location="$REGION" \
+        --cluster="projects/${PROJECT_ID}/locations/${REGION}/clusters/${CLUSTER_NAME}" \
+        --selected-namespaces="${NAMESPACE:-kubeagents-system}" \
+        --include-secrets \
+        --include-volume-data \
+        --cron-schedule="$BACKUP_CRON_SCHEDULE" \
+        --backup-retain-days="$BACKUP_RETAIN_DAYS" \
+        "${enc_flag[@]}" \
+        --quiet
+  fi
 }
 
 # ─── Execution Pipeline ───────────────────────────────────────────────────────

@@ -65,8 +65,6 @@ Every step is documented once, in **[scripts/README.md](scripts/README.md)** —
 reference for what each `provision_NN_*.sh` script does, in what order, and which variables it
 reads. Run `make help` for the per-step targets.
 
-- **GKE Backup & Disaster Recovery (Step 12)**: `provision_12_gke_backup_plan.sh` enables Backup for GKE on the cluster (`--update-addons=BackupRestore=ENABLED`) and creates a Google Cloud Backup for GKE `BackupPlan` (`${CLUSTER_NAME}-backup-plan`, default `platform-agent-host-backup-plan`) configured to snapshot the target namespace (`$NAMESPACE`, default `kubeagents-system`), persistent volumes, and Kubernetes Secrets daily with a 30-day retention policy. Defaults to `ENABLE_GKE_BACKUP_PLAN=false` to avoid unattended backup storage billing.
-
 #### Fast Local Development & Testing
 
 For fast local iteration when updating agent skills, prompts, or code without waiting for CI/CD pipelines, you can use the dedicated rebuild script or `make` target:
