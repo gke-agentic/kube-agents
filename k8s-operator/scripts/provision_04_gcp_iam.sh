@@ -86,26 +86,37 @@ execute_agent_iam() {
   
   if ! gcloud iam service-accounts describe "${gsa_email}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
     print_info "Creating GSA ${gsa_name} for ${agent_name}..."
-    if ! gcloud iam service-accounts create "${gsa_name}" \
+    local create_output
+    if ! create_output=$(gcloud iam service-accounts create "${gsa_name}" \
         --display-name="${agent_name} GSA" \
-        --project="${PROJECT_ID}" 2>/dev/null; then
-      print_info "GSA ${gsa_name} may be soft-deleted. Attempting to undelete..."
-      local uids
-      uids=$(gcloud projects get-iam-policy "${PROJECT_ID}" \
-          --flatten="bindings[].members" \
-          --filter="bindings.members:deleted:serviceAccount:${gsa_email}?uid=" \
-          --format="value(bindings.members)" 2>/dev/null | sed -E 's/.*[?&]uid=([0-9]+).*/\1/' | sort -ur)
-      local undeleted=0
-      for uid in ${uids}; do
-        print_info "Attempting to undelete GSA ${gsa_name} with uid ${uid}..."
-        if gcloud iam service-accounts undelete "${uid}" --project="${PROJECT_ID}" --quiet 2>/dev/null; then
-          print_info "Successfully undeleted GSA ${gsa_name} (${uid})."
-          undeleted=1
-          break
+        --project="${PROJECT_ID}" 2>&1); then
+      if echo "$create_output" | grep -q -E "ALREADY_EXISTS|already exists"; then
+        print_info "GSA ${gsa_name} may be soft-deleted. Attempting to undelete..."
+        local uids=""
+        uids=$(gcloud projects get-iam-policy "${PROJECT_ID}" \
+            --flatten="bindings[].members" \
+            --filter="bindings.members:deleted:serviceAccount:${gsa_email}?uid=" \
+            --format="value(bindings.members)" 2>/dev/null | sed -E 's/.*[?&]uid=([0-9]+).*/\1/' | sort -ur)
+        if [ -z "${uids}" ]; then
+          uids=$(gcloud logging read \
+              'resource.type="service_account" protoPayload.methodName="google.iam.admin.v1.DeleteServiceAccount" protoPayload.resourceName: "'"${gsa_email}"'"' \
+              --project="${PROJECT_ID}" --limit 5 --format="value(protoPayload.resourceName)" 2>/dev/null | sed -E 's/.*\/serviceAccounts\/([0-9]+).*/\1/' | sort -ur)
         fi
-      done
-      if [ "$undeleted" -eq 0 ]; then
-        print_error "Failed to create or undelete GSA ${gsa_name}."
+        local undeleted=0
+        for uid in ${uids}; do
+          print_info "Attempting to undelete GSA ${gsa_name} with uid ${uid}..."
+          if gcloud iam service-accounts undelete "${uid}" --project="${PROJECT_ID}" --quiet 2>/dev/null; then
+            print_info "Successfully undeleted GSA ${gsa_name} (${uid})."
+            undeleted=1
+            break
+          fi
+        done
+        if [ "$undeleted" -eq 0 ]; then
+          print_error "Failed to create or undelete GSA ${gsa_name}. Error: ${create_output}"
+          return 1
+        fi
+      else
+        print_error "Failed to create GSA ${gsa_name}: ${create_output}"
         return 1
       fi
     fi
@@ -118,6 +129,26 @@ execute_agent_iam() {
         --member="serviceAccount:${gsa_email}" \
         --role="${role}" \
         --quiet >/dev/null || return 1
+  done
+
+  local current_roles
+  current_roles=$(gcloud projects get-iam-policy "${PROJECT_ID}" --flatten="bindings[].members" --filter="bindings.members=serviceAccount:${gsa_email}" --format="value(bindings.role)" 2>/dev/null)
+  for cur_role in ${current_roles}; do
+    local keep=0
+    for role in "${roles[@]}"; do
+      if [ "$cur_role" = "$role" ]; then
+        keep=1
+        break
+      fi
+    done
+    if [ "$keep" -eq 0 ]; then
+      print_info "Removing unrequested role ${cur_role} from ${gsa_name}..."
+      gcloud projects remove-iam-policy-binding "${PROJECT_ID}" \
+          --member="serviceAccount:${gsa_email}" \
+          --role="${cur_role}" \
+          --condition=None \
+          --quiet >/dev/null 2>&1 || true
+    fi
   done
 
   if [[ ! " ${roles[*]} " =~ " roles/logging.admin " ]]; then
