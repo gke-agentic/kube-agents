@@ -44,6 +44,7 @@ verify_apis() {
 execute_apis() {
   gcloud services enable \
       container.googleapis.com \
+      gkebackup.googleapis.com \
       --project="$PROJECT_ID"
 }
 
