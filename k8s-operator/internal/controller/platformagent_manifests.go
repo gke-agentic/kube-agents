@@ -1458,9 +1458,13 @@ func resolveCredentialProxyImage(deployment *agentv1alpha1.DeploymentSpec) strin
 		// The agent image's digest cannot name the proxy image; fall back to
 		// the tag field or latest.
 		name = name[:digest]
+		sidecarTag := "latest"
 		if deployment != nil && deployment.Tag != nil && *deployment.Tag != "" {
 			suffix = ":" + *deployment.Tag
+			sidecarTag = *deployment.Tag
 		}
+		manifestsLog.Info("digest-pinned agent image cannot pin the credential-proxy sidecar; using a mutable tag instead",
+			"agentImage", image, "sidecarTag", sidecarTag)
 	} else if tag := strings.LastIndex(name, ":"); tag >= 0 {
 		suffix, name = name[tag:], name[:tag]
 	}

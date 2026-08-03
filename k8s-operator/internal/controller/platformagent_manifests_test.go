@@ -1048,7 +1048,7 @@ func TestFluentBitImageEnvOverride(t *testing.T) {
 	agent := &agentv1alpha1.PlatformAgent{
 		ObjectMeta: metav1.ObjectMeta{Name: "my-agent", Namespace: "my-ns"},
 	}
-	dep := buildDeployment(agent, "abcd1234", "efgh5678", "ijkl9012", "policy3456")
+	dep := buildDeployment(agent, "abcd1234", "efgh5678", "ijkl9012", "policy3456", nil, true)
 	found := false
 	for _, c := range dep.Spec.Template.Spec.Containers {
 		if c.Name == "fluent-bit" {

@@ -45,6 +45,7 @@ init_var "PROJECT_ID" "$DEFAULT_PROJECT_ID" "Enter Target GCP Project ID"
 init_var "REGION" "us-east4" "Enter GKE GCP Region"
 init_var "CLUSTER_NAME" "platform-agent-host" "Enter GKE Cluster Name"
 init_var "REPLAY_IMAGE" "$(registry_prefix)/replay-proxy:${IMAGE_TAG:-latest}" "Enter Replay Proxy container image"
+warn_on_registry_prefix_mismatch "REPLAY_IMAGE"
 
 # ─── Step Implementations ─────────────────────────────────────────────────────
 

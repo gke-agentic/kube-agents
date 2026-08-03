@@ -60,6 +60,9 @@ spec:
         name: platformagent-secrets
         key: api-key
   deployment:
+    # Optional — omit to use the operator's default image (its
+    # PLATFORM_AGENT_IMAGE env var for private-registry installs, else the
+    # public ghcr.io image; see the Docker images page).
     image: ghcr.io/gke-labs/kube-agents/platform-agent
     imagePullPolicy: IfNotPresent
   security:
