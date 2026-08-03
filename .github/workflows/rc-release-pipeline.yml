@@ -80,6 +80,7 @@ jobs:
 
       - name: Connect to GKE & Wait for Pod Readiness
         env:
+          COMMIT_SHA: ${{ needs.step-1-create-tag.outputs.commit_sha }}
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           GCP_REGION: ${{ vars.GCP_REGION }}
           GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
