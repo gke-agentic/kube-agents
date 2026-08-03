@@ -17,7 +17,7 @@ Backup for GKE must be enabled on the cluster level.
 
 ```bash
 gcloud container clusters update <cluster-name> \
-    --enable-gke-backup \
+    --update-addons=BackupRestore=ENABLED \
     --region <region>
 ```
 
@@ -28,18 +28,18 @@ A Backup Plan defines what to back up, when, and for how long.
 **Command to create a backup plan:**
 
 ```bash
-gcloud container backup-restore backup-plans create <plan-name> \
+gcloud beta container backup-restore backup-plans create <plan-name> \
     --cluster=<cluster-name> \
-    --region=<region> \
-    --retention-days=<days> \
+    --location=<location> \
+    --backup-retain-days=<days> \
     --cron-schedule="<cron-expression>" \
     --all-namespaces
 ```
 
 > [!NOTE]
-> You can replace `--all-namespaces` with `--included-namespaces=<namespace1>,<namespace2>` to back up specific namespaces instead of all of them.
+> You can replace `--all-namespaces` with `--selected-namespaces=<namespace1>,<namespace2>` to back up specific namespaces instead of all of them.
 
-**Encryption Note**: You can specify a Customer-Managed Encryption Key (CMEK) to encrypt backups. Add `--backup-encryption-key=<key-resource-name>` to the `create` command.
+**Encryption Note**: You can specify a Customer-Managed Encryption Key (CMEK) to encrypt backups. Add `--encryption-key=<key-resource-name>` to the `create` command.
 
 ### 3. Create a Manual Backup
 
@@ -48,9 +48,9 @@ Trigger a backup immediately outside the schedule.
 **Command:**
 
 ```bash
-gcloud container backup-restore backups create <backup-name> \
+gcloud beta container backup-restore backups create <backup-name> \
     --backup-plan=<plan-name> \
-    --region=<region>
+    --location=<location>
 ```
 
 ### 4. Restore from Backup
@@ -60,9 +60,9 @@ Restore a workload or cluster from a backup.
 **Command to create a restore plan:**
 
 ```bash
-gcloud container backup-restore restore-plans create <restore-plan-name> \
+gcloud beta container backup-restore restore-plans create <restore-plan-name> \
     --cluster=<target-cluster-name> \
-    --region=<region> \
+    --location=<location> \
     --backup-plan=<source-backup-plan-name> \
     --cluster-resource-conflict-policy=USE_EXISTING_VERSION \
     --namespaced-resource-restore-mode=FAIL_ON_CONFLICT
@@ -71,10 +71,10 @@ gcloud container backup-restore restore-plans create <restore-plan-name> \
 **Execute the restore:**
 
 ```bash
-gcloud container backup-restore restores create <restore-name> \
+gcloud beta container backup-restore restores create <restore-name> \
     --restore-plan=<restore-plan-name> \
     --backup=<backup-name> \
-    --region=<region>
+    --location=<location>
 ```
 
 ## Best Practices
