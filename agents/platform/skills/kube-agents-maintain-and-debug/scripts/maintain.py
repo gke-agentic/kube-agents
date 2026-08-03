@@ -155,7 +155,7 @@ def diagnose(project_id: str = "") -> Dict[str, Any]:
                     
                     unhealthy_reasons = []
                     for cs in c_statuses:
-                        for state_key in ["state", "lastState"]:
+                        for state_key in ["state"]:
                             term = cs.get(state_key, {}).get("terminated", {})
                             if term.get("reason") and term.get("reason") != "Completed":
                                 msg = f"Terminated ({term.get('reason')}, exitCode={term.get('exitCode')})"

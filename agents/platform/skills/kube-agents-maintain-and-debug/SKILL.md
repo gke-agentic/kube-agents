@@ -32,7 +32,7 @@ graph TD
 Execute the telemetry collector to gather structured facts across pods, quotas, events, probes, and open GitHub tickets:
 
 ```bash
-SCRIPT="/opt/data/skills/kube-agents-maintain-and-debug/scripts/maintain.py"
+SCRIPT="/opt/data/profiles/platform/skills/kube-agents-maintain-and-debug/scripts/maintain.py"
 [ -f "$SCRIPT" ] || SCRIPT="scripts/maintain.py"
 python3 "$SCRIPT" diagnose --json
 ```
@@ -67,7 +67,7 @@ When cluster anomalies or workload degradations are detected:
      - If Issues are enabled, open a **GitHub Issue** ticket.
      - If Issues are disabled, open a **Fallback PR** (Zero Code Lines Changed — purely an informational incident report card).
      ```bash
-     SCRIPT="/opt/data/skills/kube-agents-maintain-and-debug/scripts/maintain.py"
+     SCRIPT="/opt/data/profiles/platform/skills/kube-agents-maintain-and-debug/scripts/maintain.py"
      [ -f "$SCRIPT" ] || SCRIPT="scripts/maintain.py"
      python3 "$SCRIPT" create-gitops-pr \
        --component "<component_name>" \
