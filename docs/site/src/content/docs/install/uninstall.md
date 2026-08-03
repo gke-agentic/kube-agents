@@ -53,7 +53,7 @@ cd k8s-operator/scripts
 ./teardown.sh
 ```
 
-The script runs the `teardown_11_*.sh` through `teardown_01_*.sh` steps in order, undoing each provisioning step. It reads state from `vars.sh` (created during provisioning) so you don't need to re-answer prompts.
+The script runs the `teardown_12_*.sh` through `teardown_01_*.sh` steps in order, undoing each provisioning step. It reads state from `vars.sh` (created during provisioning) so you don't need to re-answer prompts.
 
 ## Per-step teardown
 
@@ -61,6 +61,7 @@ You can also run individual `teardown_NN_*.sh` scripts to remove one layer at a 
 
 | Script                                   | Removes                                                         |
 | ---------------------------------------- | --------------------------------------------------------------- |
+| `teardown_12_gke_backup_plan.sh`         | GKE BackupPlan and any existing backup snapshots                |
 | `teardown_11_deploy_inference_replay.sh` | Inference-replay proxy + PVC; restores original LiteLLM Service |
 | `teardown_10_deploy_github_minter.sh`    | Minty deployment, GSAs, KMS resources                           |
 | `teardown_09_deploy_litellm.sh`          | LiteLLM Gateway                                                 |

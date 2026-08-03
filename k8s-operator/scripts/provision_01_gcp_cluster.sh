@@ -44,6 +44,7 @@ verify_apis() {
 execute_apis() {
   gcloud services enable \
       container.googleapis.com \
+      gkebackup.googleapis.com \
       --project="$PROJECT_ID"
 }
 
@@ -58,7 +59,7 @@ execute_cluster() {
       --machine-type="e2-standard-4" \
       --num-nodes=1 \
       --workload-pool="${PROJECT_ID}.svc.id.goog" \
-      --addons=GcpFilestoreCsiDriver \
+      --addons=GcpFilestoreCsiDriver,BackupRestore \
       --managed-otel-scope=COLLECTION_AND_INSTRUMENTATION_COMPONENTS \
       --project "$PROJECT_ID" \
       --quiet

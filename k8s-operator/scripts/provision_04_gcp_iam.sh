@@ -61,7 +61,7 @@ verify_agent_iam() {
   gcloud iam service-accounts get-iam-policy "${gsa_email}" --project="${PROJECT_ID}" --format="json" 2>/dev/null | grep -F -q "${wi_member}" || return 1
   
   local project_roles
-  project_roles=$(gcloud projects get-iam-policy "${PROJECT_ID}" --flatten="bindings[].members" --filter="bindings.members:serviceAccount:${gsa_email}" --format="value(bindings.role)" 2>/dev/null)
+  project_roles=$(gcloud projects get-iam-policy "${PROJECT_ID}" --flatten="bindings[].members" --filter="bindings.members=serviceAccount:${gsa_email}" --format="value(bindings.role)" 2>/dev/null)
   for role in "${roles[@]}"; do
     echo "$project_roles" | grep -q "${role}" || return 1
   done
@@ -86,9 +86,29 @@ execute_agent_iam() {
   
   if ! gcloud iam service-accounts describe "${gsa_email}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
     print_info "Creating GSA ${gsa_name} for ${agent_name}..."
-    gcloud iam service-accounts create "${gsa_name}" \
+    if ! gcloud iam service-accounts create "${gsa_name}" \
         --display-name="${agent_name} GSA" \
-        --project="${PROJECT_ID}" || return 1
+        --project="${PROJECT_ID}" 2>/dev/null; then
+      print_info "GSA ${gsa_name} may be soft-deleted. Attempting to undelete..."
+      local uids
+      uids=$(gcloud projects get-iam-policy "${PROJECT_ID}" \
+          --flatten="bindings[].members" \
+          --filter="bindings.members:deleted:serviceAccount:${gsa_email}?uid=" \
+          --format="value(bindings.members)" 2>/dev/null | sed -E 's/.*[?&]uid=([0-9]+).*/\1/' | sort -ur)
+      local undeleted=0
+      for uid in ${uids}; do
+        print_info "Attempting to undelete GSA ${gsa_name} with uid ${uid}..."
+        if gcloud iam service-accounts undelete "${uid}" --project="${PROJECT_ID}" --quiet 2>/dev/null; then
+          print_info "Successfully undeleted GSA ${gsa_name} (${uid})."
+          undeleted=1
+          break
+        fi
+      done
+      if [ "$undeleted" -eq 0 ]; then
+        print_error "Failed to create or undelete GSA ${gsa_name}."
+        return 1
+      fi
+    fi
     sleep 15
   fi
   
