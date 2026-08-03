@@ -14,13 +14,8 @@ if [ -n "${COMMIT_INPUT}" ]; then
 elif [ -n "${RC_TAG}" ]; then
   git fetch --tags >/dev/null 2>&1 || true
   if ! COMMIT_SHA=$(git rev-parse --verify "${RC_TAG}^{commit}" 2>/dev/null); then
-    TAG_SHA="${RC_TAG##*_}"
-    if COMMIT_SHA=$(git rev-parse --verify "${TAG_SHA}^{commit}" 2>/dev/null); then
-      echo "ℹ️ Resolved target commit SHA ${COMMIT_SHA} from tag suffix."
-    else
-      echo "❌ ERROR: Cannot resolve valid Git commit SHA from release tag '${RC_TAG}'!" >&2
-      exit 1
-    fi
+    echo "❌ ERROR: Cannot resolve valid Git commit SHA from release tag '${RC_TAG}'!" >&2
+    exit 1
   fi
 elif [ -n "${GITHUB_SHA:-}" ]; then
   COMMIT_SHA="${GITHUB_SHA}"
