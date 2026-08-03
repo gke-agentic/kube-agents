@@ -17,7 +17,7 @@ Backup for GKE must be enabled on the cluster level.
 
 ```bash
 gcloud container clusters update <cluster-name> \
-    --update-addons=BackupRestore=ENABLED \
+    --enable-gke-backup \
     --region <region>
 ```
 
@@ -28,7 +28,7 @@ A Backup Plan defines what to back up, when, and for how long.
 **Command to create a backup plan:**
 
 ```bash
-gcloud beta container backup-restore backup-plans create <plan-name> \
+gcloud container backup-restore backup-plans create <plan-name> \
     --cluster=<cluster-name> \
     --region=<region> \
     --retention-days=<days> \
@@ -48,7 +48,7 @@ Trigger a backup immediately outside the schedule.
 **Command:**
 
 ```bash
-gcloud beta container backup-restore backups create <backup-name> \
+gcloud container backup-restore backups create <backup-name> \
     --backup-plan=<plan-name> \
     --region=<region>
 ```
@@ -60,7 +60,7 @@ Restore a workload or cluster from a backup.
 **Command to create a restore plan:**
 
 ```bash
-gcloud beta container backup-restore restore-plans create <restore-plan-name> \
+gcloud container backup-restore restore-plans create <restore-plan-name> \
     --cluster=<target-cluster-name> \
     --region=<region> \
     --backup-plan=<source-backup-plan-name> \
@@ -71,7 +71,7 @@ gcloud beta container backup-restore restore-plans create <restore-plan-name> \
 **Execute the restore:**
 
 ```bash
-gcloud beta container backup-restore restores create <restore-name> \
+gcloud container backup-restore restores create <restore-name> \
     --restore-plan=<restore-plan-name> \
     --backup=<backup-name> \
     --region=<region>
