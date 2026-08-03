@@ -48,6 +48,7 @@ jobs:
     concurrency:
       group: rc-environment
       cancel-in-progress: false
+    timeout-minutes: 30
     permissions:
       contents: read
       id-token: write
