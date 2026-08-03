@@ -36,10 +36,10 @@ def install() -> None:
     if not relay_url:
         return
 
-    import slack_bolt.app.async_app as bolt_async_app
-    import slack_bolt.context.async_context as bolt_async_context
     from gateway.platform_registry import PlatformRegistry
     from gateway.platforms.base import cache_audio_from_bytes, cache_image_from_bytes
+    import slack_bolt.app.async_app as bolt_async_app
+    import slack_bolt.context.async_context as bolt_async_context
     from slack_bolt.adapter.socket_mode.async_internals import run_async_bolt_app
     from slack_sdk.socket_mode.request import SocketModeRequest
     from slack_sdk.web.async_slack_response import AsyncSlackResponse

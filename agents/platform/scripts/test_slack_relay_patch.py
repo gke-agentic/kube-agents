@@ -290,10 +290,25 @@ class SlackRelayPatchTest(unittest.TestCase):
             result = asyncio.run(client.api_call("auth.test"))
 
         self.assertEqual(dict(result.data), {"ok": True, "team_id": "T123"})
-        self.assertIn("x-oauth-scopes", getattr(result, "headers", {}))
+        self.assertEqual(getattr(result, "headers", None), {})
         self.assertEqual(captured["url"], RELAY_URL + "/v1/chat/slack/api")
         self.assertEqual(captured["payload"]["teamId"], "T123")
         self.assertEqual(captured["payload"]["method"], "auth.test")
+
+        def fake_urlopen_with_headers(req, timeout=None):
+            return FakeHTTPResponse({
+                "response": {
+                    "ok": True,
+                    "team_id": "T123",
+                    "__headers": {"x-oauth-scopes": "chat:write"}
+                }
+            })
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen_with_headers):
+            result = asyncio.run(client.api_call("auth.test"))
+
+        self.assertEqual(dict(result.data), {"ok": True, "team_id": "T123"})
+        self.assertEqual(getattr(result, "headers", None), {"x-oauth-scopes": "chat:write"})
 
     def test_connect_waits_for_relay_readiness(self):
         adapter = self._create_adapter()
