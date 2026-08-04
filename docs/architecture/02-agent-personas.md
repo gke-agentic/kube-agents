@@ -220,7 +220,7 @@ human chat entrypoint into the harness and the authority at the project level.
   another project. It proposes changes — including child `Agent` CRs — to the GitOps repo; it holds
   no direct cluster/cloud write (see §2.2, [03](03-security-model.md) §3).
 - All infrastructure mutation is declarative (git-reviewed + CI/CD pipeline), never direct `kubectl` (per
-  `SOUL.md §1`, §4).
+  `SOUL.md §1`, §3).
 - **Must not** reach _inside_ a namespace to operate workloads — that is the Developer Team Agent's
   scope. The Platform Agent sets the guardrails; it does not do the tenant's work.
 

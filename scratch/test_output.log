@@ -1,0 +1,10 @@
+===========================================================
+ Network Policy & Dataplane V2 Comprehensive Test Suite
+===========================================================
+Waiting for platform-agent pods to be ready...
+pod/platform-agent-gateway-546b75f7f5-ktmvf condition met
+Waiting for litellm pods to be ready (if deployed)...
+pod/litellm-64df4b786d-b6bw8 condition met
+pod/litellm-64df4b786d-jjc2k condition met
+Waiting for github-token-minter pods to be ready (if deployed)...
+error: no matching resources found
