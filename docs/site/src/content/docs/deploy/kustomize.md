@@ -16,6 +16,7 @@ deploy/
 │   ├── cloudbuild.yaml
 │   └── merge_configs.py
 ├── kustomize/
+│   ├── gke-dataplane-v2/       # GKE Dataplane V2 FQDN network policy overlay
 │   └── platform/
 │       ├── kustomization.yaml    # Kustomize entrypoint
 │       ├── networkpolicy.yaml    # Ingress/egress NetworkPolicy for Platform Agent
@@ -31,6 +32,12 @@ The Kustomize surface at [`deploy/kustomize/platform/`](https://github.com/gke-l
 
 - [`networkpolicy.yaml`](https://github.com/gke-labs/kube-agents/blob/main/deploy/kustomize/platform/networkpolicy.yaml) — Explicitly allowlists required Ingress ports (`8642`, `8643`, `9119`) and restricted Egress destinations (CoreDNS, GCP Metadata `169.254.169.254/32`, LiteLLM Gateway, the Kubernetes Control Plane `10.96.0.1/32`, and external HTTPS with RFC 1918 exclusions to prevent internal lateral movement).
 - [`service.yaml`](https://github.com/gke-labs/kube-agents/blob/main/deploy/kustomize/platform/service.yaml) — ClusterIP Service for the Platform Agent.
+
+### GKE Dataplane V2 & FQDN Network Policies
+
+> [!IMPORTANT]
+> **GKE Dataplane V2 Requirement**: The FQDN-based network policy features under [`deploy/kustomize/gke-dataplane-v2/`](https://github.com/gke-labs/kube-agents/tree/main/deploy/kustomize/gke-dataplane-v2/) (`FQDNNetworkPolicy` custom resource `networking.gke.io/v1alpha1`) **require GKE Dataplane V2** enabled on your Google Kubernetes Engine (GKE) cluster. Standard clusters running kube-proxy without Dataplane V2 will not enforce or support `FQDNNetworkPolicy` objects.
+
 
 ### Configuring NetworkPolicy for GKE Private Clusters & Custom CIDRs
 
