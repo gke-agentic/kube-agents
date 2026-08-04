@@ -324,11 +324,15 @@ class SlackRelayPatchTest(unittest.TestCase):
                 )
             return FakeHTTPResponse({"workspaces": [{"teamId": "T123"}]})
 
-        async def fast_sleep(_seconds):
-            return None
+        current_time = [0.0]
+        def fast_sleep(_seconds):
+            current_time[0] += _seconds
 
-        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen), mock.patch(
-            "asyncio.sleep", side_effect=fast_sleep
+        def fake_monotonic():
+            return current_time[0]
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen), mock.patch.dict(
+            slack_relay_patch.wait_for_relay.__kwdefaults__, {"monotonic": fake_monotonic, "sleep": fast_sleep}
         ):
             connected = asyncio.run(adapter.connect())
 
@@ -341,16 +345,25 @@ class SlackRelayPatchTest(unittest.TestCase):
         # Hermes removes credential-less platforms from its reconnect queue;
         # a connect that fails before the relay is up must leave a non-empty
         # placeholder token behind so Slack stays eligible for retries.
-        os.environ["SLACK_RELAY_BOOTSTRAP_WAIT_SECONDS"] = "0"
+        os.environ["SLACK_RELAY_READY_TIMEOUT_SECONDS"] = "0"
         adapter = self._create_adapter(token="")
 
         def fake_urlopen(req, timeout=None):
             raise urllib.error.URLError(ConnectionRefusedError(111, "refused"))
 
-        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
-            connected = asyncio.run(adapter.connect())
+        current_time = [0.0]
+        def fast_sleep(_seconds):
+            current_time[0] += _seconds
 
-        self.assertFalse(connected)
+        def fake_monotonic():
+            return current_time[0]
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen), mock.patch.dict(
+            slack_relay_patch.wait_for_relay.__kwdefaults__, {"monotonic": fake_monotonic, "sleep": fast_sleep}
+        ):
+            with self.assertRaises(urllib.error.URLError):
+                asyncio.run(adapter.connect())
+
         self.assertEqual(adapter.config.token, "relay:")
 
 

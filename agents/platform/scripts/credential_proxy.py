@@ -296,7 +296,7 @@ class SlackRelay:
         self.workspaces: list[dict[str, str]] = []
         self.primary_client = None
         for token in tokens:
-            client = WebClient(token=token)
+            client = WebClient(token=token, timeout=10)
             try:
                 identity = client.auth_test()
             except Exception as exc:
@@ -1351,7 +1351,7 @@ def serve(args: argparse.Namespace) -> None:
                         "Slack relay initialization failed; retrying type=%s",
                         type(exc).__name__,
                     )
-                    time.sleep(30)
+                    time.sleep(5)
                 else:
                     CredentialProxyHandler.slack_relay = relay
                     LOGGER.info(

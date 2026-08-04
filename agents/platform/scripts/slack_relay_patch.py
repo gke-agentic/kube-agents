@@ -12,12 +12,59 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 
 LOGGER = logging.getLogger("slack-relay-patch")
 DEFAULT_MAX_FILE_BYTES = 20 * 1024 * 1024
+DEFAULT_RELAY_READY_TIMEOUT = 120.0
+RELAY_READY_POLL_SECONDS = 2.0
+# credential_proxy binds its port before the Slack relay finishes
+# authenticating — relay setup runs on a background thread so a Slack outage
+# cannot wedge the whole proxy — and answers 503 "Slack relay disabled" until
+# then. That is a readiness signal, unlike every other status it can return.
+RELAY_NOT_READY_STATUS = 503
+
+
+def wait_for_relay(
+    send: Callable[[], dict[str, Any]],
+    *,
+    timeout: float,
+    poll: float = RELAY_READY_POLL_SECONDS,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
+    """Call ``send``, retrying while the relay is still coming up.
+
+    The agent container starts before the credential-proxy sidecar, so the
+    first connect can beat the relay by the better part of a minute. Letting
+    that surface is fatal rather than merely slow: the real bot token lives in
+    the relay, so when the gateway retries it finds no bot credential on the
+    queued config and drops Slack from the retry queue for the life of the pod.
+    Absorb the startup race here, where the relay is the thing being waited on.
+
+    Coming up has two stages, and both have to be waited out — the socket
+    refuses connections until the proxy binds it, then the proxy answers
+    ``RELAY_NOT_READY_STATUS`` until Slack authentication completes.
+    """
+    deadline = monotonic() + timeout
+    while True:
+        try:
+            return send()
+        except urllib.error.HTTPError as error:
+            if error.code != RELAY_NOT_READY_STATUS:
+                # The relay answered; a real error is not a readiness problem.
+                raise
+            if monotonic() >= deadline:
+                raise
+            reason = "has no authenticated workspace yet"
+        except (urllib.error.URLError, OSError):
+            if monotonic() >= deadline:
+                raise
+            reason = "is not accepting connections yet"
+        LOGGER.warning("Slack relay %s; retrying", reason)
+        sleep(poll)
 
 
 def read_upload(path: Path, max_file_bytes: int) -> bytes:
@@ -51,6 +98,16 @@ def install() -> None:
     except ValueError:
         LOGGER.warning("Invalid Slack relay file limit; using the default")
         max_file_bytes = DEFAULT_MAX_FILE_BYTES
+
+    try:
+        relay_ready_timeout = float(
+            os.getenv(
+                "SLACK_RELAY_READY_TIMEOUT_SECONDS", str(DEFAULT_RELAY_READY_TIMEOUT)
+            )
+        )
+    except ValueError:
+        LOGGER.warning("Invalid Slack relay readiness timeout; using the default")
+        relay_ready_timeout = DEFAULT_RELAY_READY_TIMEOUT
 
     def request(path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         body = None if payload is None else json.dumps(payload).encode("utf-8")
@@ -236,49 +293,21 @@ def install() -> None:
         bolt_async_app.AsyncWebClient = RemoteSlackClient
         bolt_async_context.AsyncWebClient = RemoteSlackClient
 
-        async def bootstrap_workspaces() -> list[dict[str, Any]]:
-            # The credential proxy sidecar can come up tens of seconds after
-            # the gateway starts connecting platforms; a connection error or
-            # 503 ("Slack relay disabled") here usually means the relay is
-            # not ready yet, not that Slack is unconfigured. Retry within a
-            # bounded window instead of failing the whole connect on the
-            # startup race.
-            try:
-                wait_seconds = float(
-                    os.getenv("SLACK_RELAY_BOOTSTRAP_WAIT_SECONDS", "20")
-                )
-            except ValueError:
-                LOGGER.warning(
-                    "Invalid SLACK_RELAY_BOOTSTRAP_WAIT_SECONDS; using the default"
-                )
-                wait_seconds = 20.0
-            deadline = time.monotonic() + wait_seconds
-            while True:
-                if time.monotonic() >= deadline:
-                    raise TimeoutError("Slack relay bootstrap timed out")
-                try:
-                    bootstrap = await asyncio.to_thread(
-                        request, "/v1/chat/slack/bootstrap", {}
-                    )
-                    return bootstrap.get("workspaces") or []
-                except urllib.error.HTTPError as exc:
-                    if exc.code != 503:
-                        raise
-                except (urllib.error.URLError, OSError):
-                    pass
-                LOGGER.info("Slack relay is not ready yet; retrying bootstrap")
-                await asyncio.sleep(2)
-
         async def connect(self: Any, *, is_reconnect: bool = False) -> bool:
             try:
                 try:
-                    workspaces = await bootstrap_workspaces()
+                    bootstrap = await asyncio.to_thread(
+                        wait_for_relay,
+                        lambda: request("/v1/chat/slack/bootstrap", {}),
+                        timeout=relay_ready_timeout,
+                    )
+                    workspaces = bootstrap.get("workspaces") or []
                 except (urllib.error.URLError, OSError) as exc:
                     LOGGER.error(
                         "Slack credential proxy bootstrap failed type=%s",
                         type(exc).__name__,
                     )
-                    return False
+                    raise
                 if not workspaces:
                     LOGGER.error(
                         "Slack credential proxy has no authenticated workspace"
@@ -306,6 +335,8 @@ def install() -> None:
                     raise
                 if not connected and first_connect:
                     restore_slack_placeholders(self)
+                if connected:
+                    start_transport(self)
                 return connected
             finally:
                 # The gateway never holds a real bot token in this deployment,
@@ -337,6 +368,8 @@ def install() -> None:
             del self._credential_proxy_original_slack_app_token
 
         def start_transport(self: Any) -> None:
+            if getattr(self, "_relay_task", None) is not None:
+                return
             task = asyncio.create_task(relay_loop(self))
             self._socket_mode_task = task
             self._relay_task = task

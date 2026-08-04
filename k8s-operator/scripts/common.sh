@@ -4,10 +4,8 @@
 # ==============================================================================
 
 # Determine paths relative to where this helper is loaded
-if [ -z "${SCRIPT_DIR:-}" ]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-fi
-VARS_FILE="${SCRIPT_DIR}/vars.sh"
+COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VARS_FILE="${COMMON_DIR}/vars.sh"
 
 # ─── ANSI Colors ──────────────────────────────────────────────────────────────
 C_CYAN='\033[96m'
