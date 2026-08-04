@@ -147,6 +147,48 @@ init_var() {
   fi
 }
 
+# ─── Container Registry ───────────────────────────────────────────────────────
+# All kube-agents images (k8s-operator, platform-agent, credential-proxy,
+# replay-proxy) default to this public registry prefix. Behind-the-firewall
+# installs export REGISTRY_PREFIX to pull the mirrored images from a private
+# registry instead; individual *_IMAGE variables still win over the prefix.
+DEFAULT_REGISTRY_PREFIX="ghcr.io/gke-labs/kube-agents"
+
+registry_prefix() {
+  local prefix="${REGISTRY_PREFIX:-$DEFAULT_REGISTRY_PREFIX}"
+  echo "${prefix%/}"
+}
+
+init_var_registry_prefix() {
+  init_var "REGISTRY_PREFIX" "$DEFAULT_REGISTRY_PREFIX" "Enter Container Registry Prefix"
+  case "$REGISTRY_PREFIX" in
+    *"://"*)
+      print_error "REGISTRY_PREFIX must be a bare registry path without a scheme (got '$REGISTRY_PREFIX'). Use e.g. 'registry.example.com/kube-agents'."
+      exit 1
+      ;;
+  esac
+  # init_var only saves values it prompted for; persist an env-exported
+  # prefix too, so the remaining steps and later re-runs reuse it.
+  save_var "REGISTRY_PREFIX" "$REGISTRY_PREFIX"
+}
+
+# Warn when a persisted *_IMAGE value no longer lives under the effective
+# registry prefix — e.g. REGISTRY_PREFIX was exported after a first run
+# already saved image defaults derived from another registry. The saved
+# value still wins (state reuse), so surface the mixed state instead of
+# silently applying it halfway.
+warn_on_registry_prefix_mismatch() {
+  local var_name=$1
+  local image_val="${!var_name:-}"
+  [ -z "$image_val" ] && return 0
+  case "$image_val" in
+    "$(registry_prefix)"/*) ;;
+    *)
+      print_warning "${var_name}='${image_val}' does not match REGISTRY_PREFIX '$(registry_prefix)'. The saved value wins; edit ${VARS_FILE} (or unset ${var_name}) to migrate this image to the new registry."
+      ;;
+  esac
+}
+
 init_var_model_provider() {
   init_var "MODEL_PROVIDER" "gemini" "Enter Model Provider (gemini, anthropic, chatgpt, openai)"
 
@@ -194,6 +236,10 @@ is_non_interactive() {
   [ ! -t 0 ] || [ "${NO_CONFIRM:-0}" -eq 1 ] || [ "${DRY_RUN:-0}" -eq 1 ] || is_ci_pipeline
 }
 
+# IMAGE_TAG is deliberately NOT persisted to vars.sh: the tag usually changes
+# between deploys, so it is scoped to a single pipeline execution. provision.sh
+# prompts once up front and exports it; the per-step scripts inherit it from
+# the environment and only prompt when run standalone.
 init_var_image_tag() {
   if [ -z "${IMAGE_TAG:-}" ]; then
     if is_non_interactive; then
@@ -201,7 +247,8 @@ init_var_image_tag() {
       exit 1
     else
       local default_tag="latest"
-      echo -ne "  ${C_CYAN}Enter Base Image Tag [${C_WHITE}${default_tag}${C_CYAN}]: ${C_RESET}"
+      echo -e "  ${C_CYAN}The base image tag is used for all images built from the kube-agents repo.${C_RESET}"
+      echo -ne "  ${C_CYAN}Enter Base Image Tag (a commit SHA; 'latest' = latest commit on main) [${C_WHITE}${default_tag}${C_CYAN}]: ${C_RESET}"
       read -r input_tag
       export IMAGE_TAG="${input_tag:-$default_tag}"
     fi
@@ -209,13 +256,22 @@ init_var_image_tag() {
 }
 
 load_state() {
+  local env_registry_prefix="${REGISTRY_PREFIX:-}"
   if [ -f "$VARS_FILE" ]; then
     source "$VARS_FILE"
   elif [ "${DRY_RUN:-0}" -ne 1 ]; then
     echo "# SRE Sourced Variables for GKE & GCP Setup" > "$VARS_FILE"
     source "$VARS_FILE"
   fi
+  # Sourcing vars.sh restores the saved REGISTRY_PREFIX over a freshly
+  # exported one (saved state wins, as for every knob). Say so instead of
+  # silently ignoring the export.
+  if [ -n "$env_registry_prefix" ] && [ -n "${REGISTRY_PREFIX:-}" ] \
+    && [ "$env_registry_prefix" != "$REGISTRY_PREFIX" ]; then
+    print_warning "Ignoring exported REGISTRY_PREFIX='${env_registry_prefix}': the saved value '${REGISTRY_PREFIX}' from ${VARS_FILE} wins. Edit ${VARS_FILE} (REGISTRY_PREFIX and the saved *_IMAGE values) to change registries."
+  fi
   init_var_image_tag
+  init_var_registry_prefix
   export NAMESPACE="kubeagents-system"
   export PLATFORM_AGENT_KSA_NAME="kubeagents-platform-agent"
   export PLATFORM_AGENT_SANDBOX_KSA_NAME="platform-agent-sandbox"
