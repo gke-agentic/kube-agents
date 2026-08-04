@@ -95,6 +95,17 @@ spec:
         - podSelector:
             matchLabels:
               app: litellm
+        - podSelector:
+            matchLabels:
+              app: standalone-replay
+    # 3b. vLLM Gemma Gateway in the agent namespace
+    - ports:
+        - port: 8000
+          protocol: TCP
+      to:
+        - podSelector:
+            matchLabels:
+              app: gemma-server
     # 4. Kubernetes API Server (Internal Control Plane)
     - ports:
         - port: 443
@@ -116,6 +127,7 @@ spec:
               - 10.0.0.0/8
               - 172.16.0.0/12
               - 192.168.0.0/16
+              - 100.64.0.0/10
     # 6. GKE Managed OpenTelemetry Collector (Trace Export)
     - ports:
         - port: 4317
@@ -126,5 +138,12 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: gke-managed-otel
-
+    # 7. GitHub Token Minter (Minty)
+    - ports:
+        - port: 8080
+          protocol: TCP
+      to:
+        - podSelector:
+            matchLabels:
+              app: github-token-minter
 

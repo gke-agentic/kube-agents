@@ -65,6 +65,17 @@ spec:
           podSelector:
             matchLabels:
               app: litellm
+    # 3b. vLLM Gemma Gateway in kubeagents-system
+    - ports:
+        - port: 8000
+          protocol: TCP
+      to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kubeagents-system
+          podSelector:
+            matchLabels:
+              app: gemma-server
     # 4. Kubernetes API Server (Internal Control Plane)
     - ports:
         - port: 443

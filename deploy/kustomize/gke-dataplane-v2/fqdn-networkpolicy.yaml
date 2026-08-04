@@ -8,7 +8,7 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      app: platform-agent
+      app: platform-agent-gateway
   egress:
     - matches:
         - pattern: "*.googleapis.com"

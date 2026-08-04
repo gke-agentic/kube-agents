@@ -1912,6 +1912,13 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent) *networkingv1.Networ
 						},
 					},
 				},
+				{
+					PodSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"app": "standalone-replay",
+						},
+					},
+				},
 			},
 		},
 		// 4. Kubernetes API Server (Internal Control Plane)
@@ -1937,7 +1944,7 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent) *networkingv1.Networ
 				{
 					IPBlock: &networkingv1.IPBlock{
 						CIDR:   "0.0.0.0/0",
-						Except: []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"},
+						Except: []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"},
 					},
 				},
 			},
@@ -1953,6 +1960,21 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent) *networkingv1.Networ
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
 							"kubernetes.io/metadata.name": "gke-managed-otel",
+						},
+					},
+				},
+			},
+		},
+		// 7. GitHub Token Minter (Minty)
+		{
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(8080))},
+			},
+			To: []networkingv1.NetworkPolicyPeer{
+				{
+					PodSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"app": "github-token-minter",
 						},
 					},
 				},

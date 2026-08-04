@@ -14,6 +14,7 @@ resources:
   - ../manager
   - ../webhook
   - ../certmanager
+  - ../network-policy
 
 patches:
   - path: webhookcainjection_patch.yaml
