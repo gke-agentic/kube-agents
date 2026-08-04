@@ -52,7 +52,7 @@ patches:
       name: platform-agent-gateway-netpol
     patch: |-
       - op: replace
-        path: /spec/egress/3/to/0/ipBlock/cidr
+        path: /spec/egress/5/to/0/ipBlock/cidr
         value: "172.16.0.0/28" # Replace with your GKE Control Plane VIP range or ClusterIP
 ```
 

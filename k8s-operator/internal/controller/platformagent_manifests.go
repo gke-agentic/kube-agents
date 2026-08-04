@@ -1840,9 +1840,9 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent) *networkingv1.Networ
 					},
 				},
 				{
-					// Allow universal DNS egress so Service ClusterIP queries (e.g. 34.118.224.10) are not dropped by Calico/iptables before DNAT
+					// Allow Service ClusterIP queries (e.g. 10.96.0.0/16) so pre-DNAT DNS queries are not dropped
 					IPBlock: &networkingv1.IPBlock{
-						CIDR: "0.0.0.0/0",
+						CIDR: "10.96.0.0/16",
 					},
 				},
 			},
@@ -1878,11 +1878,6 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent) *networkingv1.Networ
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(988))},
 			},
 			To: []networkingv1.NetworkPolicyPeer{
-				{
-					IPBlock: &networkingv1.IPBlock{
-						CIDR: "0.0.0.0/0",
-					},
-				},
 				{
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{

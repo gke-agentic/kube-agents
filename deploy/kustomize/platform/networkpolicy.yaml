@@ -56,7 +56,7 @@ spec:
         - ipBlock:
             cidr: 169.254.20.10/32
         - ipBlock:
-            cidr: 0.0.0.0/0
+            cidr: 10.96.0.0/16
     # 2a. GCP Workload Identity / Metadata Server (Link-Local & Daemon pod)
     - ports:
         - port: 80
@@ -75,8 +75,6 @@ spec:
         - port: 988
           protocol: TCP
       to:
-        - ipBlock:
-            cidr: 0.0.0.0/0
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: kube-system
