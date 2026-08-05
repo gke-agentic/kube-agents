@@ -2117,7 +2117,7 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiHost string) *net
 				},
 			},
 		},
-		// 2a. GCP Workload Identity / Metadata Server (Link-Local & Daemon pod)
+		// 2. GCP Workload Identity / Metadata Server (Link-Local & Daemon pod)
 		{
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(80))},
@@ -2131,7 +2131,7 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiHost string) *net
 				},
 			},
 		},
-		// 2b. GKE Workload Identity Host Network Daemon (Port 988 only)
+		// 3. GKE Workload Identity Host Network Daemon (Port 988 only)
 		{
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(988))},
@@ -2144,7 +2144,7 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiHost string) *net
 				},
 			},
 		},
-		// 3. LiteLLM Gateway in the agent namespace
+		// 4. LiteLLM Gateway in the agent namespace
 		{
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(4000))},
@@ -2166,7 +2166,7 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiHost string) *net
 				},
 			},
 		},
-		// 3b. vLLM Gemma Server in the agent namespace
+		// 5. vLLM Gemma Server in the agent namespace
 		{
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(8000))},
@@ -2181,7 +2181,7 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiHost string) *net
 				},
 			},
 		},
-		// 4. Kubernetes API Server (Internal Control Plane)
+		// 6. Kubernetes API Server (Internal Control Plane)
 		// Note: On GKE Dataplane V2 clusters, Service/ClusterIP ipBlocks are inert.
 		// A companion CiliumNetworkPolicy with 'toEntities: [kube-apiserver]' is required.
 		{
@@ -2197,7 +2197,7 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiHost string) *net
 				},
 			},
 		},
-		// 5. External HTTPS (Google APIs, GitHub, etc.)
+		// 7. External HTTPS (Google APIs, GitHub, etc.)
 		{
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(443))},
@@ -2211,7 +2211,7 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiHost string) *net
 				},
 			},
 		},
-		// 6. GKE Managed OpenTelemetry Collector (Trace Export)
+		// 8. GKE Managed OpenTelemetry Collector (Trace Export)
 		{
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(4317))},
@@ -2227,7 +2227,7 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiHost string) *net
 				},
 			},
 		},
-		// 7. GitHub Token Minter (Minty)
+		// 9. GitHub Token Minter (Minty)
 		{
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(8080))},

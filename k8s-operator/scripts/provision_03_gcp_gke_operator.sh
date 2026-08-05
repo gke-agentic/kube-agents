@@ -188,7 +188,7 @@ execute_networkpolicy_addon() {
   active_op=$(gcloud container operations list --region="$REGION" --project="$PROJECT_ID" --filter="targetLink:$CLUSTER_NAME AND status=RUNNING" --format="value(name)" 2>/dev/null | head -n1)
   if [ -n "$active_op" ]; then
     print_info "Waiting for ongoing cluster operation $active_op to complete before updating network policy addon..."
-    gcloud container operations wait "$active_op" --region="$REGION" --project="$PROJECT_ID" || true
+    gcloud container operations wait "$active_op" --region="$REGION" --project="$PROJECT_ID" || print_warning "Operation wait returned non-zero (operation may have completed between list and wait); proceeding to cluster update..."
   fi
 
   print_info "Enabling NetworkPolicy addon on the cluster master..."
@@ -200,7 +200,7 @@ execute_networkpolicy_addon() {
   active_op=$(gcloud container operations list --region="$REGION" --project="$PROJECT_ID" --filter="targetLink:$CLUSTER_NAME AND status=RUNNING" --format="value(name)" 2>/dev/null | head -n1)
   if [ -n "$active_op" ]; then
     print_info "Waiting for ongoing cluster operation $active_op to complete before enabling network policy enforcement..."
-    gcloud container operations wait "$active_op" --region="$REGION" --project="$PROJECT_ID" || true
+    gcloud container operations wait "$active_op" --region="$REGION" --project="$PROJECT_ID" || print_warning "Operation wait returned non-zero (operation may have completed between list and wait); proceeding to cluster update..."
   fi
 
   print_info "Enabling NetworkPolicy enforcement on the cluster nodes..."
