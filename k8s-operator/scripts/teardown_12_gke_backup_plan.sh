@@ -3,7 +3,9 @@
 # 🧹 Step 12: Teardown GKE Backup Plan
 # ==============================================================================
 # Idempotent script to delete the Google Cloud Backup for GKE BackupPlan.
-# Safe to run even if the backup plan was never created.
+# Safely deletes any remaining backup snapshots in background batches before
+# removing the BackupPlan. Safe to run even if the backup plan was never created.
+# Set PRESERVE_BACKUPS=true to preserve existing BackupPlan and snapshots during teardown (defaults to false).
 # ==============================================================================
 
 set -e
@@ -12,6 +14,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh" "$@"
 
 ensure_teardown_state
+
+if [ "${DRY_RUN:-0}" -ne 1 ] && ! gcloud version 2>/dev/null | grep -q -E "^beta "; then
+  print_info "The 'gcloud beta' component is not installed. Skipping GKE Backup Plan teardown."
+  exit 0
+fi
 
 BACKUP_PLAN_NAME="${CLUSTER_NAME}-backup-plan"
 PRESERVE_BACKUPS="${PRESERVE_BACKUPS:-false}"
@@ -29,12 +36,6 @@ describe_out=$(gcloud beta container backup-restore backup-plans describe "$BACK
     --location="$REGION" --project="$PROJECT_ID" 2>&1) || describe_err=$?
 
 if [ "$describe_err" -eq 0 ]; then
-  backups=$(gcloud beta container backup-restore backups list \
-      --backup-plan="$BACKUP_PLAN_NAME" \
-      --location="$REGION" \
-      --project="$PROJECT_ID" \
-      --format="value(name.basename())" 2>/dev/null || echo "")
-
   if is_truthy "${PRESERVE_BACKUPS}"; then
     echo -e "  ${C_YELLOW}ℹ PRESERVE_BACKUPS=true: Preserving GKE Backup Plan '${BACKUP_PLAN_NAME}' and its existing backup snapshots.${C_RESET}"
     echo -e "  ${C_CYAN}ℹ To delete all backup snapshots and the plan, run with PRESERVE_BACKUPS=false (default).${C_RESET}"
@@ -42,6 +43,12 @@ if [ "$describe_err" -eq 0 ]; then
     if [ "${DRY_RUN:-0}" -eq 1 ]; then
       echo -e "  ${C_GREEN}[DRY-RUN] Would delete GKE Backup Plan '${BACKUP_PLAN_NAME}'.${C_RESET}"
     else
+      backups=$(gcloud beta container backup-restore backups list \
+          --backup-plan="$BACKUP_PLAN_NAME" \
+          --location="$REGION" \
+          --project="$PROJECT_ID" \
+          --format="value(name.basename())" 2>/dev/null || echo "")
+
       if [ -n "$backups" ]; then
         echo -e "  ${C_CYAN}ℹ Deleting existing backup snapshots in '${BACKUP_PLAN_NAME}'...${C_RESET}"
         count=0
@@ -93,7 +100,7 @@ if [ "$describe_err" -eq 0 ]; then
       echo -e "  ${C_GREEN}✓ Deleted GKE Backup Plan '${BACKUP_PLAN_NAME}'.${C_RESET}"
     fi
   fi
-elif [ "${DRY_RUN:-0}" -eq 1 ] || echo "$describe_out" | grep -iq "not found\|NOT_FOUND"; then
+elif [ "${DRY_RUN:-0}" -eq 1 ] || echo "$describe_out" | grep -iq -E "not found|service_disabled|has not been used in project|is disabled"; then
   echo -e "  ${C_GREEN}✓ GKE Backup Plan '${BACKUP_PLAN_NAME}' does not exist (or dry-run skip). Skipping.${C_RESET}"
 else
   echo -e "  ${C_RED}✗ Error describing GKE Backup Plan '${BACKUP_PLAN_NAME}':${C_RESET}" >&2

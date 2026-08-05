@@ -40,7 +40,7 @@ Generated from each script's own comment banner.
 
 | # | Script | What it does |
 | :-: | ------ | ------------ |
-| 1 | [`provision_01_gcp_cluster.sh`](provision_01_gcp_cluster.sh) | **GCP APIs & GKE Cluster Initialization** — Idempotent setup script that enables the GCP APIs and bootstraps the bare GKE cluster. The target namespace is created later, by the operator deploy in step 03. |
+| 1 | [`provision_01_gcp_cluster.sh`](provision_01_gcp_cluster.sh) | **GCP APIs & GKE Cluster Initialization** — Idempotent setup script that enables the GCP APIs (including Backup for GKE) and bootstraps the bare GKE cluster with the BackupRestore addon enabled. The target namespace is created later, by the operator deploy in step 03. |
 | 2 | [`provision_02_gvisor_nodepool.sh`](provision_02_gvisor_nodepool.sh) | **Optional Dedicated gVisor Node Pool Initialization** — Idempotent script to bootstrap a dedicated GKE Sandbox (gVisor) node pool on an existing GKE Standard cluster. Can be run independently for migration. |
 | 3 | [`provision_03_gcp_gke_operator.sh`](provision_03_gcp_gke_operator.sh) | **Deploy Kubernetes Operator (CRDs & Controller Manager)** — Idempotent script that installs the CRDs and deploys the operator to the cluster. |
 | 4 | [`provision_04_gcp_iam.sh`](provision_04_gcp_iam.sh) | **Controller & Agent GCP Workload Identity & GCP IAM Permissions** — Idempotent script for granting GKE cluster management and Workload Identity permissions to the Operator Controller Manager and Agent GSAs. |
@@ -68,7 +68,7 @@ Generated from each script's own comment banner.
 | 9 | [`teardown_09_deploy_litellm.sh`](teardown_09_deploy_litellm.sh) | **Teardown LiteLLM Gateway** — Idempotent script to undeploy the LiteLLM gateway. |
 | 10 | [`teardown_10_deploy_github_minter.sh`](teardown_10_deploy_github_minter.sh) | **Teardown GitHub Token Minter** — Idempotent script to clean up the GitHub Token Minter. |
 | 11 | [`teardown_11_deploy_inference_replay.sh`](teardown_11_deploy_inference_replay.sh) | **Teardown Inference Replay Proxy** — Idempotent script to undeploy the Inference Replay proxy and restore the original LiteLLM Service. Safe to run even when the proxy was never deployed. |
-| 12 | [`teardown_12_gke_backup_plan.sh`](teardown_12_gke_backup_plan.sh) | **Teardown GKE Backup Plan** — Idempotent script to delete the Google Cloud Backup for GKE BackupPlan. Safe to run even if the backup plan was never created. |
+| 12 | [`teardown_12_gke_backup_plan.sh`](teardown_12_gke_backup_plan.sh) | **Teardown GKE Backup Plan** — Idempotent script to delete the Google Cloud Backup for GKE BackupPlan. Safely deletes any remaining backup snapshots in background batches before removing the BackupPlan. Safe to run even if the backup plan was never created. Set PRESERVE_BACKUPS=true to preserve existing BackupPlan and snapshots during teardown (defaults to false). |
 
 <!-- prettier-ignore-end -->
 <!-- END GENERATED: provisioning-steps -->

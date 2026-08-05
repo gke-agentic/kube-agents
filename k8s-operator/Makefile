@@ -267,7 +267,6 @@ dev-rebuild-agent: ## Fast local iteration: rebuild and redeploy an agent image 
 	@chmod +x scripts/*.sh scripts/dev/*.sh 2>/dev/null || true
 	@./scripts/dev/dev_rebuild_agent.sh $(ARGS)
 
-
 .PHONY: gcp-teardown-12-gke-backup-plan
 gcp-teardown-12-gke-backup-plan: ## Teardown Step 12: Delete GKE Backup Plan and snapshots.
 	@chmod +x scripts/*.sh

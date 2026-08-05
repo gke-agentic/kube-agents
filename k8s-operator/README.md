@@ -119,7 +119,7 @@ graph TD
 ```
 
 Each teardown step mirrors its provisioning counterpart and is documented in
-**[scripts/README.md](scripts/README.md)**. Note that `teardown_12_gke_backup_plan.sh` safely deletes any remaining backup snapshots in background batches before removing the GKE `BackupPlan`.
+**[scripts/README.md](scripts/README.md)**.
 
 ---
 
