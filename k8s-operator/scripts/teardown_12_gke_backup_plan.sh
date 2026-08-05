@@ -15,7 +15,7 @@ source "${SCRIPT_DIR}/common.sh" "$@"
 
 ensure_teardown_state
 
-if [ "${DRY_RUN:-0}" -ne 1 ] && ! gcloud version 2>/dev/null | grep -q -E "^beta "; then
+if [ "${DRY_RUN:-0}" -ne 1 ] && ! gcloud beta --help &>/dev/null; then
   print_info "The 'gcloud beta' component is not installed. Skipping GKE Backup Plan teardown."
   exit 0
 fi
@@ -76,11 +76,24 @@ if [ "$describe_err" -eq 0 ]; then
         wait
       fi
 
-      remaining_backups=$(gcloud beta container backup-restore backups list \
-          --backup-plan="$BACKUP_PLAN_NAME" \
-          --location="$REGION" \
-          --project="$PROJECT_ID" \
-          --format="value(name.basename())" 2>/dev/null || echo "")
+      retry=0
+      max_retries=5
+      while [ $retry -lt $max_retries ]; do
+        remaining_backups=$(gcloud beta container backup-restore backups list \
+            --backup-plan="$BACKUP_PLAN_NAME" \
+            --location="$REGION" \
+            --project="$PROJECT_ID" \
+            --format="value(name.basename())" 2>/dev/null || echo "")
+        if [ -z "$remaining_backups" ]; then
+          break
+        fi
+        retry=$((retry + 1))
+        if [ $retry -lt $max_retries ]; then
+          echo -e "  ${C_YELLOW}ℹ Waiting for backup snapshot deletions to complete on GCP (attempt ${retry}/${max_retries})...${C_RESET}"
+          sleep 5
+        fi
+      done
+
       if [ -n "$remaining_backups" ]; then
         echo -e "  ${C_RED}✗ Some backup snapshots could not be deleted. Remaining snapshots:${C_RESET}" >&2
         echo "$remaining_backups" | while read -r rem; do

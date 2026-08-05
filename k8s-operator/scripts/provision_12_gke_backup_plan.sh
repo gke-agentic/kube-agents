@@ -34,7 +34,7 @@ if ! is_truthy "$ENABLE_GKE_BACKUP_PLAN"; then
   exit 0
 fi
 
-if [ "${DRY_RUN:-0}" -ne 1 ] && ! gcloud version 2>/dev/null | grep -q -E "^beta "; then
+if [ "${DRY_RUN:-0}" -ne 1 ] && ! gcloud beta --help &>/dev/null; then
   print_error "The 'gcloud beta' component is required for Backup for GKE commands. Please install it (e.g., 'gcloud components install beta' or 'apt-get install google-cloud-cli-beta') and rerun."
   exit 1
 fi
@@ -46,10 +46,22 @@ init_var "PROJECT_ID" "$DEFAULT_PROJECT_ID" "Enter Target GCP Project ID"
 init_var "REGION" "us-east4" "Enter GKE GCP Region"
 init_var "CLUSTER_NAME" "platform-agent-host" "Enter GKE Cluster Name"
 init_var "BACKUP_CRON_SCHEDULE" "0 2 * * *" "Enter GKE Backup Plan cron schedule"
+if [ -n "${BACKUP_CRON_SCHEDULE:-}" ]; then
+  field_count=$(echo "$BACKUP_CRON_SCHEDULE" | awk '{print NF}')
+  if [ "$field_count" -ne 5 ]; then
+    print_error "BACKUP_CRON_SCHEDULE must be a valid 5-field cron expression (e.g., '0 2 * * *'). Got: '${BACKUP_CRON_SCHEDULE}'"
+    exit 1
+  fi
+fi
 init_var "BACKUP_RETAIN_DAYS" "30" "Enter backup retention in days"
 BACKUP_PLAN_NAME="${CLUSTER_NAME}-backup-plan"
 init_var "BACKUP_ENCRYPTION_KEY" "" "Enter optional KMS encryption key for backups (leave empty for Google-managed)"
-
+if [ -n "${BACKUP_ENCRYPTION_KEY:-}" ]; then
+  if [[ ! "${BACKUP_ENCRYPTION_KEY}" =~ ^projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+$ ]]; then
+    print_error "BACKUP_ENCRYPTION_KEY must be a valid Cloud KMS cryptoKey resource path (e.g., projects/PROJECT_ID/locations/REGION/keyRings/KEY_RING/cryptoKeys/KEY_NAME) or empty."
+    exit 1
+  fi
+fi
 
 # ─── Step Implementations ─────────────────────────────────────────────────────
 
@@ -78,6 +90,7 @@ execute_cluster_backup_enabled() {
 }
 
 # Step 3: Ensure GKE Backup Plan
+# Contract: Sets BACKUP_PLAN_EXISTS="true"|"false" as a global side-effect read by execute_backup_plan().
 verify_backup_plan() {
   local out
   local err=0
@@ -128,6 +141,7 @@ execute_backup_plan() {
         --cron-schedule="$BACKUP_CRON_SCHEDULE" \
         --backup-retain-days="$BACKUP_RETAIN_DAYS" \
         "${enc_flag[@]}" \
+        --no-async \
         --quiet
   else
     print_info "Creating default GKE Backup Plan '${BACKUP_PLAN_NAME}'..."
@@ -141,6 +155,7 @@ execute_backup_plan() {
         --cron-schedule="$BACKUP_CRON_SCHEDULE" \
         --backup-retain-days="$BACKUP_RETAIN_DAYS" \
         "${enc_flag[@]}" \
+        --no-async \
         --quiet
   fi
 }
