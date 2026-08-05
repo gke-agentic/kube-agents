@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -34,8 +35,28 @@ import (
 	agentv1alpha1 "github.com/gke-labs/kube-agents/k8s-operator/api/v1alpha1"
 )
 
+var (
+	// DefaultPlatformAgentVersion is injected at build time via -ldflags "-X ...DefaultPlatformAgentVersion=vX.Y.Z"
+	// or defaults to "latest" during local development.
+	DefaultPlatformAgentVersion = "latest"
+)
+
+// fallbackPlatformAgentImage derives its tag from DefaultPlatformAgentVersion
+// at call time (not folded at init), so release builds default to the matching
+// versioned image and tests can pin the derivation by overriding the variable.
+func fallbackPlatformAgentImage() string {
+	return "ghcr.io/gke-labs/kube-agents/platform-agent:" + DefaultPlatformAgentVersion
+}
+
 const (
-	defaultPlatformAgentImage = "ghcr.io/gke-labs/kube-agents/platform-agent:latest"
+	fallbackFluentBitImage = "fluent/fluent-bit:5.0.7"
+
+	// Operator-level image overrides for installs that mirror images into a
+	// private registry. Set on the controller-manager Deployment; a CR's
+	// spec.deployment.image still takes precedence over PLATFORM_AGENT_IMAGE.
+	platformAgentImageEnvVar   = "PLATFORM_AGENT_IMAGE"
+	credentialProxyImageEnvVar = "CREDENTIAL_PROXY_IMAGE"
+	fluentBitImageEnvVar       = "FLUENT_BIT_IMAGE"
 
 	// managedOTelEndpoint is the OTLP/HTTP endpoint of the GKE Managed OpenTelemetry
 	// collector. The same endpoint is already used by the LiteLLM integration, so agent
@@ -73,6 +94,25 @@ func otelTelemetryEnvVars(agentType, name, namespace string) []corev1.EnvVar {
 	}
 }
 
+// defaultPlatformAgentImage returns the agent image used when a CR omits
+// spec.deployment.image: the PLATFORM_AGENT_IMAGE env var if set, else the
+// public ghcr.io default.
+func defaultPlatformAgentImage() string {
+	if img := os.Getenv(platformAgentImageEnvVar); img != "" {
+		return img
+	}
+	return fallbackPlatformAgentImage()
+}
+
+// fluentBitImage returns the logging sidecar image: the FLUENT_BIT_IMAGE env
+// var if set, else the public Docker Hub default.
+func fluentBitImage() string {
+	if img := os.Getenv(fluentBitImageEnvVar); img != "" {
+		return img
+	}
+	return fallbackFluentBitImage
+}
+
 // resolveAgentImage determines the full image reference using the optional deployment spec and a fallback default.
 func resolveAgentImage(deployment *agentv1alpha1.DeploymentSpec, defaultImage string) string {
 	image := defaultImage
@@ -89,6 +129,9 @@ func resolveAgentImage(deployment *agentv1alpha1.DeploymentSpec, defaultImage st
 		}
 
 		if !hasTagOrDigest {
+			// Deliberately "latest", not DefaultPlatformAgentVersion: this is a
+			// user-supplied image, and our release version must not be stamped
+			// on third-party repositories.
 			tag := "latest"
 			if deployment.Tag != nil && *deployment.Tag != "" {
 				tag = *deployment.Tag
