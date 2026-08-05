@@ -213,7 +213,6 @@ execute_networkpolicy_addon() {
   return 0
 }
 
-
 # ─── Execution Pipeline ───────────────────────────────────────────────────────
 run_step "1. Connect kubectl" verify_kubeconfig execute_kubeconfig 0
 run_deploy_step "1b. Ensure Filestore CSI Driver" verify_filestore_addon execute_filestore_addon 5

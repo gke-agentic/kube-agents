@@ -6,6 +6,7 @@ metadata:
   labels:
     app: platform-agent-gateway
 spec:
+  # This is the Kustomize static version; operator deployments generate their own.
   podSelector:
     matchLabels:
       app: platform-agent-gateway
@@ -31,6 +32,11 @@ spec:
       ports:
         - port: 8643
           protocol: TCP
+  # Note on Kustomize patches: JSON patches targeting specific rules by array index (e.g., /spec/egress/5/...)
+  # rely on the canonical rule order below:
+  # [0]=Cluster DNS, [1]=GCP Workload Identity/Metadata, [2]=GKE Workload Identity Daemon,
+  # [3]=LiteLLM Gateway, [4]=vLLM Gemma Gateway, [5]=Kubernetes API Server,
+  # [6]=External HTTPS, [7]=GKE OpenTelemetry Collector, [8]=GitHub Token Minter.
   egress:
     # 1. Cluster DNS (Scoped specifically to CoreDNS and NodeLocal DNSCache pods in kube-system)
     - ports:

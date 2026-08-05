@@ -619,50 +619,54 @@ func TestBuildNetworkPolicy(t *testing.T) {
 		t.Errorf("expected 9 Egress rules (DNS, GCP Metadata port 80/8080, GCP Metadata port 988, LiteLLM Gateway, vLLM Gemma, K8s Control Plane, External HTTPS, GKE OTel Collector, GitHub Token Minter), got %d", len(netpol.Spec.Egress))
 	}
 
-	findEgressRuleByPort := func(port int32) *networkingv1.NetworkPolicyEgressRule {
+	findEgressRule := func(port int32, peerCheck func(networkingv1.NetworkPolicyPeer) bool) *networkingv1.NetworkPolicyEgressRule {
 		for i := range netpol.Spec.Egress {
 			for _, p := range netpol.Spec.Egress[i].Ports {
 				if p.Port != nil && p.Port.IntVal == port {
-					return &netpol.Spec.Egress[i]
+					for _, peer := range netpol.Spec.Egress[i].To {
+						if peerCheck(peer) {
+							return &netpol.Spec.Egress[i]
+						}
+					}
 				}
 			}
 		}
 		return nil
 	}
 
-	ruleDNS := findEgressRuleByPort(53)
+	ruleDNS := findEgressRule(53, func(p networkingv1.NetworkPolicyPeer) bool { return p.PodSelector != nil && p.PodSelector.MatchLabels["k8s-app"] == "kube-dns" })
 	if ruleDNS == nil || len(ruleDNS.To) != 4 {
 		t.Errorf("expected 4 peers in DNS egress rule")
 	}
-	ruleMeta80 := findEgressRuleByPort(80)
+	ruleMeta80 := findEgressRule(80, func(p networkingv1.NetworkPolicyPeer) bool { return p.IPBlock != nil && p.IPBlock.CIDR == "169.254.169.254/32" })
 	if ruleMeta80 == nil || len(ruleMeta80.To) != 1 {
 		t.Errorf("expected 1 peer in GCP Workload Identity egress rule (port 80/8080)")
 	}
-	ruleMeta988 := findEgressRuleByPort(988)
+	ruleMeta988 := findEgressRule(988, func(p networkingv1.NetworkPolicyPeer) bool { return p.IPBlock != nil && p.IPBlock.CIDR == "169.254.169.254/32" })
 	if ruleMeta988 == nil || len(ruleMeta988.To) != 1 {
 		t.Errorf("expected 1 peer in GCP Workload Identity egress rule (port 988)")
 	}
-	ruleLiteLLM := findEgressRuleByPort(4000)
+	ruleLiteLLM := findEgressRule(4000, func(p networkingv1.NetworkPolicyPeer) bool { return p.PodSelector != nil && p.PodSelector.MatchLabels["app"] == "litellm" })
 	if ruleLiteLLM == nil || ruleLiteLLM.To[0].PodSelector.MatchLabels["app"] != "litellm" {
 		t.Errorf("expected LiteLLM egress rule to match app 'litellm'")
 	}
-	rulevLLM := findEgressRuleByPort(8000)
+	rulevLLM := findEgressRule(8000, func(p networkingv1.NetworkPolicyPeer) bool { return p.PodSelector != nil && p.PodSelector.MatchLabels["app"] == "gemma-server" })
 	if rulevLLM == nil || rulevLLM.To[0].PodSelector.MatchLabels["app"] != "gemma-server" {
 		t.Errorf("expected vLLM Gemma egress rule to match app 'gemma-server'")
 	}
-	ruleK8s := findEgressRuleByPort(6443)
+	ruleK8s := findEgressRule(6443, func(p networkingv1.NetworkPolicyPeer) bool { return p.IPBlock != nil })
 	if ruleK8s == nil || !strings.HasSuffix(ruleK8s.To[0].IPBlock.CIDR, "/32") {
 		t.Errorf("expected K8s API server CIDR with /32 suffix")
 	}
-	ruleHTTPS := findEgressRuleByPort(443)
+	ruleHTTPS := findEgressRule(443, func(p networkingv1.NetworkPolicyPeer) bool { return p.IPBlock != nil && p.IPBlock.CIDR == "0.0.0.0/0" })
 	if ruleHTTPS == nil || len(ruleHTTPS.To[0].IPBlock.Except) != 4 {
 		t.Errorf("expected 4 Except subnets in External HTTPS egress rule")
 	}
-	ruleOTel := findEgressRuleByPort(4317)
+	ruleOTel := findEgressRule(4317, func(p networkingv1.NetworkPolicyPeer) bool { return p.NamespaceSelector != nil && p.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] == "gke-managed-otel" })
 	if ruleOTel == nil || ruleOTel.To[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "gke-managed-otel" {
 		t.Errorf("expected GKE OTel Collector egress rule to match namespace 'gke-managed-otel'")
 	}
-	ruleMinter := findEgressRuleByPort(8080)
+	ruleMinter := findEgressRule(8080, func(p networkingv1.NetworkPolicyPeer) bool { return p.PodSelector != nil && p.PodSelector.MatchLabels["app"] == "github-token-minter" })
 	if ruleMinter == nil || ruleMinter.To[0].PodSelector == nil || ruleMinter.To[0].PodSelector.MatchLabels["app"] != "github-token-minter" {
 		t.Errorf("expected GitHub Token Minter egress rule to match app 'github-token-minter'")
 	}
@@ -689,6 +693,25 @@ func TestBuildNetworkPolicy_DashboardDisabled(t *testing.T) {
 	}
 	if len(netpol.Spec.Ingress[0].Ports) != 2 {
 		t.Errorf("expected 2 ports in agent namespace ingress rule when dashboard disabled, got %d", len(netpol.Spec.Ingress[0].Ports))
+	}
+}
+
+func TestBuildNetworkPolicy_CustomAPIHost(t *testing.T) {
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+		},
+	}
+
+	netpolIPv4 := buildNetworkPolicy(agent, "10.0.0.5")
+	if netpolIPv4.Spec.Egress[5].To[0].IPBlock.CIDR != "10.0.0.5/32" {
+		t.Errorf("expected IPv4 CIDR '10.0.0.5/32', got %s", netpolIPv4.Spec.Egress[5].To[0].IPBlock.CIDR)
+	}
+
+	netpolIPv6 := buildNetworkPolicy(agent, "fd00::1")
+	if netpolIPv6.Spec.Egress[5].To[0].IPBlock.CIDR != "fd00::1/128" {
+		t.Errorf("expected IPv6 CIDR 'fd00::1/128', got %s", netpolIPv6.Spec.Egress[5].To[0].IPBlock.CIDR)
 	}
 }
 

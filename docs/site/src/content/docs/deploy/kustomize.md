@@ -62,6 +62,9 @@ patches:
         value: "172.16.0.0/28" # Replace with your GKE Control Plane VIP range or ClusterIP
 ```
 
+> [!WARNING]
+> **Positional Patch Fragility**: JSON patches targeting specific rules by array index (e.g., `/spec/egress/5/to/0/ipBlock/cidr`) rely on the canonical rule order defined in [`networkpolicy.yaml`](https://github.com/gke-labs/kube-agents/blob/main/deploy/kustomize/platform/networkpolicy.yaml). If rule ordering changes in future updates, verify the index of the Kubernetes API Server egress rule before applying positional patches.
+
 The canonical ClusterIP Service definition for the Platform Agent is defined in [`service.yaml`](https://github.com/gke-labs/kube-agents/blob/main/deploy/kustomize/platform/service.yaml):
 
 ```yaml
