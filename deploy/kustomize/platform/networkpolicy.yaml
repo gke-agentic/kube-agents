@@ -1,16 +1,14 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: platform-agent-gateway-netpol
+  name: platform-agent-gateway-base-netpol
   namespace: kubeagents-system
   labels:
-    app: platform-agent
+    app: platform-agent-gateway
 spec:
-  # Note: Kustomize targets the static 'app: platform-agent' label from service.yaml.
-  # The Kubernetes Operator dynamically targets 'app: <agent.Name>-gateway' when reconciling PlatformAgent CRs.
   podSelector:
     matchLabels:
-      app: platform-agent
+      app: platform-agent-gateway
   policyTypes:
     - Ingress
     - Egress
@@ -61,33 +59,21 @@ spec:
     - ports:
         - port: 80
           protocol: TCP
+        - port: 8080
+          protocol: TCP
       to:
         - ipBlock:
             cidr: 169.254.169.254/32
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: gke-metadata-server
     # 2b. GKE Workload Identity Host Network Daemon (Port 988 only)
     - ports:
         - port: 988
           protocol: TCP
       to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: gke-metadata-server
+        - ipBlock:
+            cidr: 169.254.169.254/32
     # 3. LiteLLM Gateway in the agent namespace
     - ports:
         - port: 4000
-          protocol: TCP
-        - port: 80
-          protocol: TCP
-        - port: 443
           protocol: TCP
       to:
         - podSelector:
@@ -105,6 +91,8 @@ spec:
             matchLabels:
               app: gemma-server
     # 4. Kubernetes API Server (Internal Control Plane)
+    # Note: On GKE Dataplane V2 clusters, Service/ClusterIP ipBlocks are inert.
+    # A companion CiliumNetworkPolicy with 'toEntities: [kube-apiserver]' is required.
     - ports:
         - port: 443
           protocol: TCP

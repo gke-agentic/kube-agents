@@ -2015,11 +2015,10 @@ func isDashboardEnabled(agent *agentv1alpha1.PlatformAgent) bool {
 }
 
 // buildNetworkPolicy generates the restrictive NetworkPolicy manifest for PlatformAgent
-func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent) *networkingv1.NetworkPolicy {
+func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiHost string) *networkingv1.NetworkPolicy {
 	udp := corev1.ProtocolUDP
 	tcp := corev1.ProtocolTCP
 
-	apiHost := os.Getenv("KUBERNETES_SERVICE_HOST")
 	if apiHost == "" {
 		apiHost = "10.96.0.1"
 	}
@@ -2121,23 +2120,12 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent) *networkingv1.Networ
 		{
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(80))},
+				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(8080))},
 			},
 			To: []networkingv1.NetworkPolicyPeer{
 				{
 					IPBlock: &networkingv1.IPBlock{
 						CIDR: "169.254.169.254/32",
-					},
-				},
-				{
-					NamespaceSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							"kubernetes.io/metadata.name": "kube-system",
-						},
-					},
-					PodSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							"k8s-app": "gke-metadata-server",
-						},
 					},
 				},
 			},
@@ -2149,15 +2137,8 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent) *networkingv1.Networ
 			},
 			To: []networkingv1.NetworkPolicyPeer{
 				{
-					NamespaceSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							"kubernetes.io/metadata.name": "kube-system",
-						},
-					},
-					PodSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							"k8s-app": "gke-metadata-server",
-						},
+					IPBlock: &networkingv1.IPBlock{
+						CIDR: "169.254.169.254/32",
 					},
 				},
 			},
@@ -2166,8 +2147,6 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent) *networkingv1.Networ
 		{
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(4000))},
-				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(80))},
-				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(443))},
 			},
 			To: []networkingv1.NetworkPolicyPeer{
 				{
@@ -2186,7 +2165,24 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent) *networkingv1.Networ
 				},
 			},
 		},
+		// 3b. vLLM Gemma Server in the agent namespace
+		{
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(8000))},
+			},
+			To: []networkingv1.NetworkPolicyPeer{
+				{
+					PodSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"app": "gemma-server",
+						},
+					},
+				},
+			},
+		},
 		// 4. Kubernetes API Server (Internal Control Plane)
+		// Note: On GKE Dataplane V2 clusters, Service/ClusterIP ipBlocks are inert.
+		// A companion CiliumNetworkPolicy with 'toEntities: [kube-apiserver]' is required.
 		{
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(443))},

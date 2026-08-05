@@ -36,8 +36,7 @@ The Kustomize surface at [`deploy/kustomize/platform/`](https://github.com/gke-l
 ### GKE Dataplane V2 & FQDN Network Policies
 
 > [!IMPORTANT]
-> **GKE Dataplane V2 Requirement**: The FQDN-based network policy features under [`deploy/kustomize/gke-dataplane-v2/`](https://github.com/gke-labs/kube-agents/tree/main/deploy/kustomize/gke-dataplane-v2/) (`FQDNNetworkPolicy` custom resource `networking.gke.io/v1alpha1`) **require GKE Dataplane V2** enabled on your Google Kubernetes Engine (GKE) cluster. Standard clusters running kube-proxy without Dataplane V2 will not enforce or support `FQDNNetworkPolicy` objects.
-
+> **GKE Dataplane V2 Requirement**: The FQDN-based network policy features under [`deploy/kustomize/gke-dataplane-v2/`](https://github.com/gke-labs/kube-agents/tree/main/deploy/kustomize/gke-dataplane-v2/) (`FQDNNetworkPolicy` custom resource `networking.gke.io/v1alpha1`) **require GKE Dataplane V2** (`--enable-dataplane-v2`) **and FQDN Network Policy enabled** (`--enable-fqdn-network-policy`) on your Google Kubernetes Engine (GKE) cluster (running GKE 1.26.4-gke.500 or 1.27.1-gke.400 or later). Standard clusters running kube-proxy without Dataplane V2 will not enforce or support `FQDNNetworkPolicy` objects.
 
 ### Configuring NetworkPolicy for GKE Private Clusters & Custom CIDRs
 
@@ -56,12 +55,14 @@ patches:
       group: networking.k8s.io
       version: v1
       kind: NetworkPolicy
-      name: platform-agent-gateway-netpol
+      name: platform-agent-gateway-base-netpol
     patch: |-
       - op: replace
         path: /spec/egress/5/to/0/ipBlock/cidr
         value: "172.16.0.0/28" # Replace with your GKE Control Plane VIP range or ClusterIP
 ```
+
+The canonical ClusterIP Service definition for the Platform Agent is defined in [`service.yaml`](https://github.com/gke-labs/kube-agents/blob/main/deploy/kustomize/platform/service.yaml):
 
 ```yaml
 apiVersion: v1
@@ -71,7 +72,7 @@ metadata:
   namespace: kubeagents-system
 spec:
   selector:
-    app: platform-agent
+    app: platform-agent-gateway
   ports:
     - name: api
       protocol: TCP

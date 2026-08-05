@@ -60,6 +60,7 @@ execute_cluster() {
       --workload-pool="${PROJECT_ID}.svc.id.goog" \
       --addons=GcpFilestoreCsiDriver \
       --enable-dataplane-v2 \
+      --enable-fqdn-network-policy \
       --managed-otel-scope=COLLECTION_AND_INSTRUMENTATION_COMPONENTS \
       --project "$PROJECT_ID" \
       --quiet

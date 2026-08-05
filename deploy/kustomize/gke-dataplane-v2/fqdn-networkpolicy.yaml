@@ -4,7 +4,7 @@ metadata:
   name: platform-agent-gateway-fqdn-netpol
   namespace: kubeagents-system
   labels:
-    app: platform-agent
+    app: platform-agent-gateway
 spec:
   podSelector:
     matchLabels:

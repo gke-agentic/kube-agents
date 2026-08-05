@@ -5,7 +5,7 @@ metadata:
   namespace: kubeagents-system
 spec:
   selector:
-    app: platform-agent
+    app: platform-agent-gateway
   ports:
     - name: api
       protocol: TCP

@@ -616,6 +616,22 @@ spec:
                 secretKeyRef:
                   key: api-key
                   name: platformagent-secrets
+            - name: GKE_PROJECT_ID
+              value: example-project
+            - name: GKE_CLUSTER_NAME
+              value: cluster-a
+            - name: GKE_LOCATION
+              value: us-central1-a
+            - name: KUBE_CONTEXT_NAME
+              value: gke_example-project_us-central1-a_cluster-a
+            - name: KUBE_DEFAULT_NAMESPACE
+              value: kubeagents-system
+            - name: CREDENTIAL_PROXY_BOOTSTRAP_COMMAND
+              value: |-
+                gcloud config set project "$GKE_PROJECT_ID" >/dev/null &&
+                gcloud container clusters get-credentials "$GKE_CLUSTER_NAME" --location "$GKE_LOCATION" --project "$GKE_PROJECT_ID" &&
+                kubectl config use-context "$KUBE_CONTEXT_NAME" >/dev/null &&
+                kubectl config set-context "$KUBE_CONTEXT_NAME" --namespace="$KUBE_DEFAULT_NAMESPACE" >/dev/null
             - name: GOOGLE_CHAT_PROJECT_ID
               value: kube-agents-gkedemos
             - name: GOOGLE_CHAT_SUBSCRIPTION_NAME
@@ -849,37 +865,23 @@ spec:
     - ipBlock:
         cidr: 169.254.20.10/32
     - ipBlock:
-        cidr: 0.0.0.0/0
+        cidr: 10.96.0.0/16
   - ports:
     - port: 80
+      protocol: TCP
+    - port: 8080
       protocol: TCP
     to:
     - ipBlock:
         cidr: 169.254.169.254/32
-    - namespaceSelector:
-        matchLabels:
-          kubernetes.io/metadata.name: kube-system
-      podSelector:
-        matchLabels:
-          k8s-app: gke-metadata-server
   - ports:
     - port: 988
       protocol: TCP
     to:
     - ipBlock:
-        cidr: 0.0.0.0/0
-    - namespaceSelector:
-        matchLabels:
-          kubernetes.io/metadata.name: kube-system
-      podSelector:
-        matchLabels:
-          k8s-app: gke-metadata-server
+        cidr: 169.254.169.254/32
   - ports:
     - port: 4000
-      protocol: TCP
-    - port: 80
-      protocol: TCP
-    - port: 443
       protocol: TCP
     to:
     - podSelector:
@@ -888,6 +890,13 @@ spec:
     - podSelector:
         matchLabels:
           app: standalone-replay
+  - ports:
+    - port: 8000
+      protocol: TCP
+    to:
+    - podSelector:
+        matchLabels:
+          app: gemma-server
   - ports:
     - port: 443
       protocol: TCP

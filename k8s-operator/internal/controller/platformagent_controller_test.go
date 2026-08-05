@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -591,12 +592,16 @@ func TestBuildNetworkPolicy(t *testing.T) {
 		},
 	}
 
-	netpol := buildNetworkPolicy(agent)
+	netpol := buildNetworkPolicy(agent, "")
 	if netpol.Name != "test-agent-gateway-netpol" {
 		t.Errorf("expected Name 'test-agent-gateway-netpol', got %s", netpol.Name)
 	}
 	if netpol.Namespace != "test-ns" {
 		t.Errorf("expected Namespace 'test-ns', got %s", netpol.Namespace)
+	}
+	deploy := buildPlatformDeployment(agent)
+	if !reflect.DeepEqual(netpol.Spec.PodSelector.MatchLabels, deploy.Spec.Template.Labels) {
+		t.Errorf("expected PodSelector %v to match Deployment template labels %v", netpol.Spec.PodSelector.MatchLabels, deploy.Spec.Template.Labels)
 	}
 	if len(netpol.Spec.PolicyTypes) != 2 {
 		t.Errorf("expected 2 PolicyTypes, got %d", len(netpol.Spec.PolicyTypes))
@@ -610,32 +615,56 @@ func TestBuildNetworkPolicy(t *testing.T) {
 	if len(netpol.Spec.Ingress[1].Ports) != 1 {
 		t.Errorf("expected 1 port in gke-gmp-system ingress rule, got %d", len(netpol.Spec.Ingress[1].Ports))
 	}
-	if len(netpol.Spec.Egress) != 8 {
-		t.Errorf("expected 8 Egress rules (DNS, GCP Metadata port 80, GCP Metadata port 988, LiteLLM Gateway, K8s Control Plane, External HTTPS, GKE OTel Collector, GitHub Token Minter), got %d", len(netpol.Spec.Egress))
+	if len(netpol.Spec.Egress) != 9 {
+		t.Errorf("expected 9 Egress rules (DNS, GCP Metadata port 80/8080, GCP Metadata port 988, LiteLLM Gateway, vLLM Gemma, K8s Control Plane, External HTTPS, GKE OTel Collector, GitHub Token Minter), got %d", len(netpol.Spec.Egress))
 	}
-	if len(netpol.Spec.Egress[0].To) != 4 {
-		t.Errorf("expected 4 peers in DNS egress rule, got %d", len(netpol.Spec.Egress[0].To))
+
+	findEgressRuleByPort := func(port int32) *networkingv1.NetworkPolicyEgressRule {
+		for i := range netpol.Spec.Egress {
+			for _, p := range netpol.Spec.Egress[i].Ports {
+				if p.Port != nil && p.Port.IntVal == port {
+					return &netpol.Spec.Egress[i]
+				}
+			}
+		}
+		return nil
 	}
-	if len(netpol.Spec.Egress[1].To) != 2 {
-		t.Errorf("expected 2 peers in GCP Workload Identity egress rule (port 80), got %d", len(netpol.Spec.Egress[1].To))
+
+	ruleDNS := findEgressRuleByPort(53)
+	if ruleDNS == nil || len(ruleDNS.To) != 4 {
+		t.Errorf("expected 4 peers in DNS egress rule")
 	}
-	if len(netpol.Spec.Egress[2].To) != 1 {
-		t.Errorf("expected 1 peer in GCP Workload Identity egress rule (port 988), got %d", len(netpol.Spec.Egress[2].To))
+	ruleMeta80 := findEgressRuleByPort(80)
+	if ruleMeta80 == nil || len(ruleMeta80.To) != 1 {
+		t.Errorf("expected 1 peer in GCP Workload Identity egress rule (port 80/8080)")
 	}
-	if netpol.Spec.Egress[3].To[0].PodSelector.MatchLabels["app"] != "litellm" {
-		t.Errorf("expected LiteLLM egress rule to match app 'litellm', got %s", netpol.Spec.Egress[3].To[0].PodSelector.MatchLabels["app"])
+	ruleMeta988 := findEgressRuleByPort(988)
+	if ruleMeta988 == nil || len(ruleMeta988.To) != 1 {
+		t.Errorf("expected 1 peer in GCP Workload Identity egress rule (port 988)")
 	}
-	if !strings.HasSuffix(netpol.Spec.Egress[4].To[0].IPBlock.CIDR, "/32") {
-		t.Errorf("expected K8s API server CIDR with /32 suffix, got %s", netpol.Spec.Egress[4].To[0].IPBlock.CIDR)
+	ruleLiteLLM := findEgressRuleByPort(4000)
+	if ruleLiteLLM == nil || ruleLiteLLM.To[0].PodSelector.MatchLabels["app"] != "litellm" {
+		t.Errorf("expected LiteLLM egress rule to match app 'litellm'")
 	}
-	if len(netpol.Spec.Egress[5].To[0].IPBlock.Except) != 4 {
-		t.Errorf("expected 4 Except subnets in External HTTPS egress rule, got %v", netpol.Spec.Egress[5].To[0].IPBlock.Except)
+	rulevLLM := findEgressRuleByPort(8000)
+	if rulevLLM == nil || rulevLLM.To[0].PodSelector.MatchLabels["app"] != "gemma-server" {
+		t.Errorf("expected vLLM Gemma egress rule to match app 'gemma-server'")
 	}
-	if netpol.Spec.Egress[6].To[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "gke-managed-otel" {
-		t.Errorf("expected GKE OTel Collector egress rule to match namespace 'gke-managed-otel', got %s", netpol.Spec.Egress[6].To[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"])
+	ruleK8s := findEgressRuleByPort(6443)
+	if ruleK8s == nil || !strings.HasSuffix(ruleK8s.To[0].IPBlock.CIDR, "/32") {
+		t.Errorf("expected K8s API server CIDR with /32 suffix")
 	}
-	if netpol.Spec.Egress[7].To[0].PodSelector.MatchLabels["app"] != "github-token-minter" {
-		t.Errorf("expected GitHub Token Minter egress rule to match app 'github-token-minter', got %s", netpol.Spec.Egress[7].To[0].PodSelector.MatchLabels["app"])
+	ruleHTTPS := findEgressRuleByPort(443)
+	if ruleHTTPS == nil || len(ruleHTTPS.To[0].IPBlock.Except) != 4 {
+		t.Errorf("expected 4 Except subnets in External HTTPS egress rule")
+	}
+	ruleOTel := findEgressRuleByPort(4317)
+	if ruleOTel == nil || ruleOTel.To[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "gke-managed-otel" {
+		t.Errorf("expected GKE OTel Collector egress rule to match namespace 'gke-managed-otel'")
+	}
+	ruleMinter := findEgressRuleByPort(8080)
+	if ruleMinter == nil || ruleMinter.To[0].PodSelector == nil || ruleMinter.To[0].PodSelector.MatchLabels["app"] != "github-token-minter" {
+		t.Errorf("expected GitHub Token Minter egress rule to match app 'github-token-minter'")
 	}
 }
 
@@ -654,7 +683,7 @@ func TestBuildNetworkPolicy_DashboardDisabled(t *testing.T) {
 		},
 	}
 
-	netpol := buildNetworkPolicy(agent)
+	netpol := buildNetworkPolicy(agent, "")
 	if len(netpol.Spec.Ingress) != 2 {
 		t.Fatalf("expected 2 Ingress rules, got %d", len(netpol.Spec.Ingress))
 	}

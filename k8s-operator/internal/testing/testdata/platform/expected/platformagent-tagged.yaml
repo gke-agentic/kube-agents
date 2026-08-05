@@ -869,31 +869,19 @@ spec:
     - ports:
         - port: 80
           protocol: TCP
+        - port: 8080
+          protocol: TCP
       to:
         - ipBlock:
             cidr: 169.254.169.254/32
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: gke-metadata-server
     - ports:
         - port: 988
           protocol: TCP
       to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: gke-metadata-server
+        - ipBlock:
+            cidr: 169.254.169.254/32
     - ports:
         - port: 4000
-          protocol: TCP
-        - port: 80
-          protocol: TCP
-        - port: 443
           protocol: TCP
       to:
         - podSelector:
@@ -902,6 +890,13 @@ spec:
         - podSelector:
             matchLabels:
               app: standalone-replay
+    - ports:
+        - port: 8000
+          protocol: TCP
+      to:
+        - podSelector:
+            matchLabels:
+              app: gemma-server
     - ports:
         - port: 443
           protocol: TCP

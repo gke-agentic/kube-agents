@@ -1,11 +1,12 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: platform-agent-gateway-netpol
+  name: platform-agent-gateway-base-netpol
   namespace: kubeagents-system
 spec:
   egress:
     # 1. Cluster DNS (Scoped specifically to CoreDNS and NodeLocal DNSCache pods in kube-system)
+    # Note: On DPv2, Service ClusterIP ipBlocks are inert, so 10.96.0.0/16 is omitted.
     - ports:
         - port: 53
           protocol: UDP
@@ -30,68 +31,51 @@ spec:
     - ports:
         - port: 80
           protocol: TCP
+        - port: 8080
+          protocol: TCP
       to:
         - ipBlock:
             cidr: 169.254.169.254/32
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: gke-metadata-server
     # 2b. GKE Workload Identity Host Network Daemon (Port 988 only)
     - ports:
         - port: 988
           protocol: TCP
       to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: gke-metadata-server
-    # 3. LiteLLM Gateway in kubeagents-system
+        - ipBlock:
+            cidr: 169.254.169.254/32
+    # 3. LiteLLM Gateway in the agent namespace
     - ports:
         - port: 4000
           protocol: TCP
-        - port: 80
-          protocol: TCP
-        - port: 443
-          protocol: TCP
       to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kubeagents-system
-          podSelector:
+        - podSelector:
             matchLabels:
               app: litellm
-    # 3b. vLLM Gemma Gateway in kubeagents-system
+        - podSelector:
+            matchLabels:
+              app: standalone-replay
+    # 3b. vLLM Gemma Gateway in the agent namespace
     - ports:
         - port: 8000
           protocol: TCP
       to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kubeagents-system
-          podSelector:
+        - podSelector:
             matchLabels:
               app: gemma-server
-    # 4. Kubernetes API Server (Internal Control Plane)
+    # 4. Kubernetes API Server is handled by companion CiliumNetworkPolicy (toEntities: [kube-apiserver])
+    # 5. External HTTPS (Google APIs, GitHub, etc.)
     - ports:
         - port: 443
           protocol: TCP
-        - port: 6443
-          protocol: TCP
       to:
         - ipBlock:
-            cidr: 10.0.0.0/8
-        - ipBlock:
-            cidr: 172.16.0.0/12
-        - ipBlock:
-            cidr: 192.168.0.0/16
-        - ipBlock:
-            cidr: 34.118.0.0/16
-    # 5. GKE Managed OpenTelemetry Collector (Trace Export)
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 100.64.0.0/10
+    # 6. GKE Managed OpenTelemetry Collector (Trace Export)
     - ports:
         - port: 4317
           protocol: TCP
@@ -101,3 +85,11 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: gke-managed-otel
+    # 7. GitHub Token Minter (Minty)
+    - ports:
+        - port: 8080
+          protocol: TCP
+      to:
+        - podSelector:
+            matchLabels:
+              app: github-token-minter

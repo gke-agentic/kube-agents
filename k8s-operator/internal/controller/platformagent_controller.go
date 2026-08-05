@@ -63,6 +63,10 @@ type PlatformAgentReconciler struct {
 	imageVolumeMu       sync.Mutex
 	imageVolumeResolved bool
 	clusterImageVolumes bool
+
+	// APIServerIP configures the Kubernetes API server control-plane egress CIDR
+	// for generated NetworkPolicy manifests.
+	APIServerIP string
 }
 
 // +kubebuilder:rbac:groups=kubeagents.x-k8s.io,resources=platformagents,verbs=get;list;watch;create;update;patch;delete
@@ -464,7 +468,7 @@ func (r *PlatformAgentReconciler) reconcileService(ctx context.Context, agent *a
 }
 
 func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, agent *agentv1alpha1.PlatformAgent) error {
-	netpol := buildNetworkPolicy(agent)
+	netpol := buildNetworkPolicy(agent, r.APIServerIP)
 	if err := ctrl.SetControllerReference(agent, netpol, r.Scheme); err != nil {
 		return fmt.Errorf("failed to set controller reference on NetworkPolicy %s/%s: %w", netpol.Namespace, netpol.Name, err)
 	}

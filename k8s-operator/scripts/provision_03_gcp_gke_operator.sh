@@ -69,12 +69,12 @@ execute_cert_manager() {
   fi
 
   kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.14.4/cert-manager.yaml || return 1
-  
+
   # Wait for the deployments to be created by the API server
   ensure_k8s_resource_exists "deployment/cert-manager-cainjector" "cert-manager" || return 1
   ensure_k8s_resource_exists "deployment/cert-manager" "cert-manager" || return 1
   ensure_k8s_resource_exists "deployment/cert-manager-webhook" "cert-manager" || return 1
-  
+
   if [ "$is_autopilot" = "true" ]; then
     # Patch deployments to disable leader election due to Autopilot kube-system namespace restrictions
     print_info "Patching cert-manager cainjector and controller arguments..."
@@ -183,7 +183,7 @@ verify_networkpolicy_addon() {
 }
 execute_networkpolicy_addon() {
   print_info "GKE Dataplane V2 is not enabled. Falling back to enabling Legacy GKE Network Policy (Calico)..."
-  
+
   local active_op
   active_op=$(gcloud container operations list --region="$REGION" --project="$PROJECT_ID" --filter="targetLink:$CLUSTER_NAME AND status=RUNNING" --format="value(name)" 2>/dev/null | head -n1)
   if [ -n "$active_op" ]; then

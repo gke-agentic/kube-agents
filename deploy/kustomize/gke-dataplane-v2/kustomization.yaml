@@ -4,6 +4,7 @@ kind: Kustomization
 resources:
   - ../platform
   - fqdn-networkpolicy.yaml
+  - ciliumnetworkpolicy.yaml
 
 patches:
   - path: networkpolicy-dataplane-v2-patch.yaml
