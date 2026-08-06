@@ -40,6 +40,19 @@ ensure_git_tag() {
 
   setup_git_bot_user
   git tag -a "${rc_tag}" "${commit_sha}" -m "${tag_message}"
-  git push origin "${rc_tag}"
-  echo "✅ Git tag '${rc_tag}' successfully pushed to remote repository!"
+
+  local target_repo
+  if [ -n "${GH_ORG:-}" ] && [ -n "${GH_REPO:-}" ]; then
+    target_repo="${GH_ORG}/${GH_REPO}"
+  else
+    target_repo="${GITHUB_REPOSITORY:-}"
+  fi
+
+  local push_err
+  if push_err=$(git push "https://github.com/${target_repo}.git" "${rc_tag}" 2>&1); then
+    echo "✅ Git tag '${rc_tag}' successfully pushed to remote repository (${target_repo})!"
+  else
+    echo "❌ ERROR: Could not push git tag '${rc_tag}' to remote repository (${target_repo}): ${push_err}" >&2
+    return 1
+  fi
 }

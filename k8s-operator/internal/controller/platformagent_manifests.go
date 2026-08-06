@@ -21,7 +21,11 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path"
+	"reflect"
+	"regexp"
+	"slices"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -31,10 +35,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/yaml"
 
 	agentv1alpha1 "github.com/gke-labs/kube-agents/k8s-operator/api/v1alpha1"
 )
+
+// manifestsLog is for logging in the manifests builder functions.
+var manifestsLog = logf.Log.WithName("platformagent-manifests")
 
 const (
 	defaultPlatformAgentSecrets = "platform-agent-secrets"
@@ -84,7 +92,7 @@ const credentialProxyPolicyJSON = `{
 }`
 
 // buildConfigMap generates the ConfigMap manifest containing config.yaml
-func buildConfigMap(agent *agentv1alpha1.PlatformAgent) *corev1.ConfigMap {
+func buildConfigMap(agent *agentv1alpha1.PlatformAgent, agentPlugins []*agentv1alpha1.AgentPlugin) *corev1.ConfigMap {
 	return &corev1.ConfigMap{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "v1",
@@ -94,22 +102,64 @@ func buildConfigMap(agent *agentv1alpha1.PlatformAgent) *corev1.ConfigMap {
 			Name:      agent.Name + "-config",
 			Namespace: agent.Namespace,
 		},
-		Data: map[string]string{
-			"config.yaml":     renderConfigYAML(agent),
-			"leader_elect.py": leaderElectScript,
-		},
+		Data: buildConfigMapData(agent, agentPlugins),
 	}
+}
+
+// buildConfigMapData renders the default profile's config.yaml plus one overlay per
+// named profile targeted by a plugin. Overlays ride in the same ConfigMap so a change
+// to either moves the existing config hash and rolls the pod — the merge happens at
+// startup, so a live update without a restart would be a no-op that silently lies.
+func buildConfigMapData(agent *agentv1alpha1.PlatformAgent, agentPlugins []*agentv1alpha1.AgentPlugin) map[string]string {
+	data := map[string]string{
+		"config.yaml":     renderConfigYAML(agent, agentPlugins),
+		"leader_elect.py": leaderElectScript,
+	}
+
+	_, targeted := partitionPluginsByProfile(filterValidAgentPlugins(agentPlugins))
+
+	// A profile needs an overlay if a plugin targets it OR spec.harness.tuning sets
+	// limits for it — tuning alone is enough, so limits can be applied to a profile that
+	// hosts no plugins at all.
+	profiles := make(map[string]bool, len(targeted)+1)
+	for profile := range targeted {
+		profiles[profile] = true
+	}
+	if platformProfileLimits(agent) != nil {
+		profiles[platformProfileName] = true
+	}
+	for profile := range profiles {
+		var limits *agentv1alpha1.AgentLimits
+		if profile == platformProfileName {
+			limits = platformProfileLimits(agent)
+		}
+		if overlay := renderProfileOverlayYAML(targeted[profile], limits); strings.TrimSpace(overlay) != "" {
+			data[profileOverlayKey(profile)] = overlay
+		}
+	}
+
+	// Cluster profiles are named at runtime, so they get one class overlay applied to
+	// all of them rather than a file each.
+	if overlay := renderProfileOverlayYAML(nil, clusterProfileLimits(agent)); strings.TrimSpace(overlay) != "" {
+		data[clusterProfileClassKey] = overlay
+	}
+	return data
 }
 
 // buildSettingsConfigMap generates the ConfigMap manifest containing SETTINGS.md
 func buildSettingsConfigMap(agent *agentv1alpha1.PlatformAgent) *corev1.ConfigMap {
 	gitRepo := ""
 	if agent.Spec.Integration != nil && agent.Spec.Integration.GitHub != nil {
-		gitRepo = agent.Spec.Integration.GitHub.GitRepo
+		gitRepo = strings.TrimSpace(agent.Spec.Integration.GitHub.GitRepo)
 	}
-	if gitRepo == "" {
+
+	if err := agentv1alpha1.ValidateGitRepoURL(gitRepo); err != nil {
+		manifestsLog.Info("Invalid gitRepo URL in PlatformAgent spec, defaulting SETTINGS.md to None", "err", err, "gitRepo", gitRepo)
+		gitRepo = "None"
+	} else if gitRepo == "" {
 		gitRepo = "None"
 	}
+
 	settingsContent := fmt.Sprintf("# GKE Scope Configuration\n- **Git Repo:** %s\n", gitRepo)
 	return &corev1.ConfigMap{
 		TypeMeta: metav1.TypeMeta{
@@ -126,8 +176,336 @@ func buildSettingsConfigMap(agent *agentv1alpha1.PlatformAgent) *corev1.ConfigMa
 	}
 }
 
-// renderConfigYAML generates the YAML payload for the agent config
-func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
+// DefaultBuiltInPlugins defines the built-in plugins pre-installed in the Hermes container image.
+var DefaultBuiltInPlugins = []string{
+	"hermes_otel",
+	"session_store",
+	"session_otel_bridge",
+	"tool_call_audit",
+	"incident_context",
+	"bootstrap_onboarding",
+}
+
+// pluginNamePattern mirrors the CEL rule on AgentPlugin.metadata.name. The name becomes
+// both the on-disk directory under $AGENT_HOME/plugins and the identifier Hermes imports,
+// so it is restricted to characters valid in a Python module name.
+var pluginNamePattern = regexp.MustCompile(`^[a-z][a-z0-9]*$`)
+
+// isValidPluginName reports whether a plugin name is usable as a plugin directory and
+// module identifier. The CRD enforces this too; re-checking here keeps a cluster whose
+// CEL rule predates this validation from producing an unmountable pod spec.
+func isValidPluginName(name string) bool {
+	return len(name) <= 56 && pluginNamePattern.MatchString(name)
+}
+
+// normalizePluginName reduces a name to comparable form: lowercased with separators
+// stripped. AgentPlugin names may not contain separators, but the built-in plugin names
+// do, so stripping them lets "sessionstore" be recognised as colliding with the built-in
+// "session_store".
+func normalizePluginName(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	name = strings.ReplaceAll(name, "-", "")
+	name = strings.ReplaceAll(name, "_", "")
+	return name
+}
+
+// IsBuiltInPlugin returns true if the plugin name matches any built-in Hermes plugin,
+// handling hyphen/underscore normalization and case-insensitivity.
+func IsBuiltInPlugin(name string) bool {
+	norm := normalizePluginName(name)
+	for _, p := range DefaultBuiltInPlugins {
+		if normalizePluginName(p) == norm {
+			return true
+		}
+	}
+	return false
+}
+
+// allowedPluginConfigSubtrees bounds which top-level config.yaml keys a plugin may set.
+// Anything else — notably agent, leader_election, logging, and plugins — is dropped.
+//
+// `agent` stays out deliberately: it holds api_max_retries and max_turns, which are
+// per-persona operator policy. A plugin that could raise its own retry or iteration
+// budget could stall the board for everyone. `plugins` stays out because the operator
+// writes plugins.enabled itself, from the plugin set it reconciles — letting config
+// touch it would let a plugin enable a plugin the operator does not know about.
+var allowedPluginConfigSubtrees = map[string]bool{
+	"approvals":         true,
+	"platforms":         true,
+	"platform_toolsets": true,
+}
+
+// gatewayScopedPluginConfigSubtrees are the allowlisted subtrees that always belong to
+// the DEFAULT profile, even for a plugin with a TargetProfile.
+//
+// `platforms` configures platform adapters, and those are gateway-level singletons: the
+// gateway process discovers them from its own HERMES_HOME (the default profile) at
+// startup and opens one listener per configured entry. Routing a plugin's `platforms`
+// block to a named profile would put the subscription somewhere nothing reads it — the
+// adapter would come up with no subscriptions and ingress would silently stop, while
+// every CR still looked correct. A subscription's own `agent_profile` key is what sends
+// the resulting work to a specialist; the listener itself stays on the front door.
+var gatewayScopedPluginConfigSubtrees = map[string]bool{
+	"platforms": true,
+}
+
+// pluginConfigForScope filters a plugin's parsed spec.config down to the subtrees that
+// belong to the given scope. Gateway-scoped keys go to the default profile's config;
+// everything else follows the plugin to its target profile.
+func pluginConfigForScope(pluginConfig map[string]any, gatewayScope bool) map[string]any {
+	filtered := make(map[string]any)
+	for k, v := range pluginConfig {
+		if !allowedPluginConfigSubtrees[k] {
+			continue
+		}
+		if gatewayScopedPluginConfigSubtrees[k] != gatewayScope {
+			continue
+		}
+		filtered[k] = v
+	}
+	return filtered
+}
+
+// profileOverlayPrefix and profileOverlaySuffix bracket the ConfigMap keys holding
+// per-profile config overlays. docker-entrypoint.sh globs for this shape, so the two
+// must change together.
+const (
+	profileOverlayPrefix = "profile-"
+	profileOverlaySuffix = ".overlay.yaml"
+
+	// profileOverlayDir is where the config ConfigMap is mounted as a directory so the
+	// entrypoint can find the overlays. Outside $HERMES_HOME on purpose.
+	profileOverlayDir = "/opt/agent-config"
+)
+
+// profileOverlayKey returns the ConfigMap key carrying the overlay for a profile.
+func profileOverlayKey(profile string) string {
+	return profileOverlayPrefix + profile + profileOverlaySuffix
+}
+
+// platformProfileName is the profile the Platform Agent runs as.
+const platformProfileName = "platform"
+
+// clusterProfileClassKey is the ConfigMap key holding the overlay applied to EVERY
+// cluster-* profile.
+//
+// Cluster profiles are scaffolded at runtime, one per managed cluster, so the operator
+// cannot name them individually at render time. The distinct `profileclass-` prefix
+// keeps this out of the `profile-<name>` namespace: a sentinel inside that namespace
+// could collide with a real profile that happens to share the name.
+const clusterProfileClassKey = "profileclass-cluster" + profileOverlaySuffix
+
+// defaultProfileLimits, platformProfileLimits and clusterProfileLimits read
+// spec.harness.tuning, tolerating every level being nil.
+func defaultProfileLimits(agent *agentv1alpha1.PlatformAgent) *agentv1alpha1.AgentLimits {
+	if t := agentTuning(agent); t != nil {
+		return t.Default
+	}
+	return nil
+}
+
+func platformProfileLimits(agent *agentv1alpha1.PlatformAgent) *agentv1alpha1.AgentLimits {
+	if t := agentTuning(agent); t != nil {
+		return t.Platform
+	}
+	return nil
+}
+
+func clusterProfileLimits(agent *agentv1alpha1.PlatformAgent) *agentv1alpha1.AgentLimits {
+	if t := agentTuning(agent); t != nil {
+		return t.Cluster
+	}
+	return nil
+}
+
+func agentTuning(agent *agentv1alpha1.PlatformAgent) *agentv1alpha1.TuningSpec {
+	if agent == nil || agent.Spec.Harness == nil {
+		return nil
+	}
+	return agent.Spec.Harness.Tuning
+}
+
+// agentLimitsOverlay renders the `agent` subtree for a profile overlay, or nil when
+// nothing is configured — an empty overlay would rewrite the profile config for no
+// reason on every reconcile.
+//
+// The operator may write `agent` here even though a plugin may not (it is absent from
+// allowedPluginConfigSubtrees). That asymmetry is deliberate: these limits have
+// board-wide consequences — under kanban.max_in_progress a single long-running worker
+// blocks every other profile — so they belong to whoever can see the whole board.
+func agentLimitsOverlay(limits *agentv1alpha1.AgentLimits) map[string]any {
+	if limits == nil {
+		return nil
+	}
+	out := map[string]any{}
+	if limits.APIMaxRetries != nil {
+		out["api_max_retries"] = *limits.APIMaxRetries
+	}
+	if limits.MaxTurns != nil {
+		out["max_turns"] = *limits.MaxTurns
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return map[string]any{"agent": out}
+}
+
+// pluginProfileMountRoot is where a profile-targeted plugin's image volume is mounted.
+//
+// Outside $HERMES_HOME on purpose. That directory is the data PVC, and the kubelet creates
+// a volume's mount point before the container's entrypoint runs, so mounting at
+// <home>/profiles/<profile>/plugins/<plugin> created profiles/<profile> inside the PVC
+// ahead of the scaffold. Both scaffold gates treat an existing directory as a built
+// profile, so a fresh PVC that came up with a targeted plugin got a profile Hermes had
+// never registered and that never received its skills — and since the directory persists,
+// every later start skipped the scaffold too. docker-entrypoint.sh step 2.65 links these
+// into the profile after scaffolding; deploy/shared/profile_plugins.py has the details.
+const pluginProfileMountRoot = "/opt/agent-plugins"
+
+// pluginMountPath is where a plugin's OCI image volume is mounted.
+//
+// The default profile's plugins live at the home root and are mounted straight there — it
+// is not scaffolded, so nothing gates on its directories. A targeted plugin is staged
+// outside the PVC and linked in instead, for the reason above. Hermes resolves a profile's
+// plugins from get_hermes_home()/plugins, which for a profile-scoped run is the profile
+// directory, so the link is what makes the plugin visible.
+func pluginMountPath(homeDir string, plugin *agentv1alpha1.AgentPlugin) string {
+	if profile := plugin.Spec.TargetProfile; profile != "" {
+		return fmt.Sprintf("%s/%s/%s", pluginProfileMountRoot, profile, plugin.Name)
+	}
+	return fmt.Sprintf("%s/plugins/%s", homeDir, plugin.Name)
+}
+
+// partitionPluginsByProfile splits plugins into those belonging to the default profile
+// and those targeting a named profile, keyed by profile name. Order is preserved so the
+// rendered config is stable across reconciles.
+func partitionPluginsByProfile(agentPlugins []*agentv1alpha1.AgentPlugin) ([]*agentv1alpha1.AgentPlugin, map[string][]*agentv1alpha1.AgentPlugin) {
+	var defaultProfile []*agentv1alpha1.AgentPlugin
+	targeted := make(map[string][]*agentv1alpha1.AgentPlugin)
+	for _, p := range agentPlugins {
+		if profile := p.Spec.TargetProfile; profile != "" {
+			targeted[profile] = append(targeted[profile], p)
+			continue
+		}
+		defaultProfile = append(defaultProfile, p)
+	}
+	return defaultProfile, targeted
+}
+
+// renderProfileOverlayYAML builds the overlay merged into a named profile's config.yaml
+// at pod startup.
+//
+// It carries only what the operator owns for that profile: the plugins.enabled entries
+// and the allowlisted subtrees of each plugin's spec.config. It is deliberately NOT the
+// whole config — that file is built at image build time by merging
+// deploy/shared/defaults/config.yaml with the profile's own overlay, content the operator
+// does not have. Rendering it in full would fork the source of truth; a cluster profile
+// additionally carries a runtime `cluster_identity` stamp that overwriting would strip.
+func renderProfileOverlayYAML(plugins []*agentv1alpha1.AgentPlugin, limits *agentv1alpha1.AgentLimits) string {
+	overlay := map[string]any{}
+
+	// Operator-owned execution limits from spec.harness.tuning. Written before the
+	// plugin contributions so a plugin cannot displace them; the allowlist already
+	// drops `agent` from plugin config, and this ordering makes that belt-and-braces.
+	if agentOverlay := agentLimitsOverlay(limits); agentOverlay != nil {
+		overlay = mergeMaps(overlay, agentOverlay)
+	}
+
+	enabled := make([]string, 0, len(plugins))
+	for _, p := range plugins {
+		if !slices.Contains(enabled, p.Name) {
+			enabled = append(enabled, p.Name)
+		}
+	}
+	if len(enabled) > 0 {
+		overlay["plugins"] = map[string]any{"enabled": enabled}
+	}
+
+	for _, p := range plugins {
+		if strings.TrimSpace(p.Spec.Config) == "" {
+			continue
+		}
+		var pluginConfig map[string]any
+		if err := yaml.Unmarshal([]byte(p.Spec.Config), &pluginConfig); err != nil {
+			// Same contract as the default-profile path: malformed config is skipped
+			// silently here and surfaced once via pluginConfigIssues/status.
+			continue
+		}
+		// Gateway-scoped subtrees (`platforms`) are deliberately excluded: platform
+		// adapters are gateway singletons read from the default profile, so a
+		// subscription placed here would be configured where nothing listens.
+		overlay = mergeMaps(overlay, pluginConfigForScope(pluginConfig, false))
+	}
+
+	// Nothing to say: return empty rather than "{}", which would otherwise be written
+	// as a ConfigMap key and make the entrypoint rewrite a profile config for no reason
+	// on every start.
+	if len(overlay) == 0 {
+		return ""
+	}
+
+	data, err := yaml.Marshal(overlay)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// pluginConfigIssues reports problems with a plugin's spec.config: YAML that does not
+// parse, or keys dropped for falling outside the allowlist. It mirrors the filtering in
+// renderConfigYAML so the same findings can be surfaced on status and logged once,
+// instead of being logged from the render path on every reconcile.
+func pluginConfigIssues(plugin *agentv1alpha1.AgentPlugin) []string {
+	if plugin == nil || strings.TrimSpace(plugin.Spec.Config) == "" {
+		return nil
+	}
+
+	var parsed map[string]any
+	if err := yaml.Unmarshal([]byte(plugin.Spec.Config), &parsed); err != nil {
+		return []string{fmt.Sprintf("spec.config is not valid YAML and was ignored: %v.", err)}
+	}
+
+	var rejected []string
+	for k := range parsed {
+		if !allowedPluginConfigSubtrees[k] {
+			rejected = append(rejected, k)
+		}
+	}
+	if len(rejected) == 0 {
+		return nil
+	}
+	slices.Sort(rejected)
+	return []string{fmt.Sprintf(
+		"Ignored config key(s) outside the allowed subtrees [approvals, platforms, platform_toolsets]: %s.",
+		strings.Join(rejected, ", "))}
+}
+
+// filterValidAgentPlugins drops plugins that must not reach the pod spec or config.yaml.
+// It is deliberately silent: it runs twice per reconcile (config render and pod template),
+// and the reasons it rejects a plugin are reported on that plugin's status by
+// updatePluginStatuses, which logs only when the status actually changes.
+func filterValidAgentPlugins(agentPlugins []*agentv1alpha1.AgentPlugin) []*agentv1alpha1.AgentPlugin {
+	seen := make(map[string]bool)
+	var valid []*agentv1alpha1.AgentPlugin
+	for _, p := range agentPlugins {
+		if p == nil {
+			continue
+		}
+		if !isValidPluginName(p.Name) {
+			continue
+		}
+		normName := normalizePluginName(p.Name)
+		if IsBuiltInPlugin(p.Name) || seen[normName] {
+			continue
+		}
+		seen[normName] = true
+		valid = append(valid, p)
+	}
+	return valid
+}
+
+func renderConfigYAML(agent *agentv1alpha1.PlatformAgent, agentPlugins []*agentv1alpha1.AgentPlugin) string {
+	agentPlugins = filterValidAgentPlugins(agentPlugins)
 	cwd := defaultAgentHome
 	if agent.Spec.Harness != nil && agent.Spec.Harness.Hermes != nil && agent.Spec.Harness.Hermes.AgentHome != "" {
 		cwd = agent.Spec.Harness.Hermes.AgentHome
@@ -153,11 +531,25 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 		Toolsets []string `json:"toolsets,omitempty"`
 		Agent    struct {
 			DisabledToolsets []string `json:"disabled_toolsets,omitempty"`
+			// LLM call retry budget. Upstream defaults to 3, which is tuned for
+			// an interactive session where a human retries; the front door has
+			// no such luxury when Vertex returns 429/503 under load.
+			APIMaxRetries int `json:"api_max_retries,omitempty"`
+			// Iterations allowed within a single turn. Upstream defaults to 90;
+			// omitted unless spec.harness.tuning.default sets it, so the front
+			// door keeps the upstream default it has never needed more than.
+			MaxTurns int `json:"max_turns,omitempty"`
 		} `json:"agent,omitempty"`
 		Kanban struct {
 			DispatchInGateway       bool `json:"dispatch_in_gateway"`
 			AutoSubscribeOnCreate   bool `json:"auto_subscribe_on_create"`
 			DispatchIntervalSeconds int  `json:"dispatch_interval_seconds"`
+			// Live concurrency cap across the whole board (not a per-tick
+			// spawn budget). Every worker shares one LiteLLM/Vertex quota.
+			// omitempty matters: without tuning this stays 0, and emitting
+			// `max_in_progress: 0` would be both meaningless (Hermes ignores
+			// anything below 1) and misleading to anyone reading the ConfigMap.
+			MaxInProgress int `json:"max_in_progress,omitempty"`
 		} `json:"kanban,omitempty"`
 		Approvals struct {
 			CronMode string `json:"cron_mode,omitempty"`
@@ -238,6 +630,13 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 	// Delegation toolset (router MCP + kanban) for every platform key the gateway
 	// may resolve under, including `google_chat` (the real chat-ingress key).
 	//
+	// `mcp-router` maps to `mcp_servers.router`. Hermes logs a benign startup warning
+	// for it ("no valid toolsets configured (unknown name(s): mcp-router)", issue
+	// #38798): the startup check validates against the bare keys of `mcp_servers` and
+	// does not know the prefixed spelling yet. The tools load regardless, via the alias
+	// Hermes registers during discover_mcp_tools. Kept in sync with
+	// agents/chat/config.yaml, which carries the same note.
+	//
 	// `memory` here is a GATE for the multiuser_memory provider, not a tool grant.
 	// hermes_cli.tools_config._get_platform_tools() resolves this list for the
 	// session's platform key and subtracts agent.disabled_toolsets LAST; what
@@ -268,6 +667,15 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 	// dead wait to every delegation before the worker was even claimed. 5s matches
 	// the notifier watcher's cadence and makes delegation feel immediate.
 	cfg.Kanban.DispatchIntervalSeconds = 5
+	// Dispatch concurrency is NOT pinned here. Upstream leaves it unbounded, and that
+	// suits a fleet with headroom; capping it is a deployment decision, because every
+	// worker draws on the same model quota and the right number depends on how much
+	// quota this deployment has. spec.harness.tuning.maxInProgress sets it when a
+	// deployment needs the cap — see the stockout example in
+	// k8s-operator/examples/. Left unset, Hermes' own default applies.
+	if limits := agentTuning(agent); limits != nil && limits.MaxInProgress != nil {
+		cfg.Kanban.MaxInProgress = *limits.MaxInProgress
+	}
 	// Defense in depth: disabled_toolsets is applied last by Hermes for EVERY
 	// platform key, so even if a base bundle is ever reintroduced the front door
 	// still cannot touch the system (no terminal/gcloud/kubectl, files, skills,
@@ -287,14 +695,34 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 		"session_search", "project", "homeassistant", "discord",
 		"discord_admin", "spotify",
 	}
+	// Execution limits are NOT pinned here: Hermes' own defaults apply unless a
+	// deployment opts in. What a given fleet needs depends on its model quota and on
+	// what its agents actually do, so the values belong in the CR rather than baked
+	// into every deployment. spec.harness.tuning.default sets them for the front door.
+	// The default profile takes them here rather than through an overlay: this rendered
+	// file IS the default profile's config, mounted over whatever the image shipped.
+	if limits := defaultProfileLimits(agent); limits != nil {
+		if limits.APIMaxRetries != nil {
+			cfg.Agent.APIMaxRetries = *limits.APIMaxRetries
+		}
+		if limits.MaxTurns != nil {
+			cfg.Agent.MaxTurns = *limits.MaxTurns
+		}
+	}
 
 	// Execution & Display UX configuration
 	cfg.Approvals.CronMode = "approve"
 	cfg.Web.Backend = "ddgs"
-	// Enable incident_context plugin by default to parse and rewrite GChat/Slack threaded incident replies.
-	// bootstrap_onboarding rides on the default profile because it hooks pre_llm_call on the first
-	// human turn — chat ingress lands here, not on the platform specialist.
-	cfg.Plugins.Enabled = []string{"hermes_otel", "session_store", "session_otel_bridge", "tool_call_audit", "incident_context", "bootstrap_onboarding"}
+	// Default built-in plugins pre-installed in the Hermes container image, plus
+	// legacy_slash_commands. That one rides on the default profile because it hooks
+	// pre_gateway_dispatch on inbound chat messages so a typed "/hermes sethome" reaches
+	// the gateway command dispatcher instead of drawing an unknown-command reply — chat
+	// ingress lands here, not on the platform specialist. It is not in
+	// DefaultBuiltInPlugins because that list is also the roster an AgentPlugin may not
+	// shadow, and this plugin ships in agents/chat/defaults/plugins rather than the image.
+	// Keep in sync with agents/chat/config.yaml — this copy is authoritative on the
+	// deployed default profile.
+	cfg.Plugins.Enabled = append(slices.Clone(DefaultBuiltInPlugins), "legacy_slash_commands")
 	cfg.Display.Platforms = map[string]map[string]any{}
 	// Per-user memory. The built-in MEMORY.md/USER.md store stays off; the
 	// multiuser_memory provider replaces it and keys each user's notes off the
@@ -358,11 +786,66 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 		cfg.LeaderElection.Namespace = agent.Namespace
 	}
 
+	// Only plugins without a TargetProfile belong to the default profile. Ones targeting
+	// a named profile are enabled by that profile's overlay instead; enabling them here
+	// too would load them into the front door as well, which for a privileged skill
+	// plugin means handing it to the one agent deliberately stripped of every tool.
+	// allPlugins keeps every plugin, targeted or not: gateway-scoped config subtrees
+	// (`platforms`) belong to this file regardless of which profile runs the plugin.
+	allPlugins := agentPlugins
+	agentPlugins, _ = partitionPluginsByProfile(agentPlugins)
+
+	for _, plugin := range agentPlugins {
+		if !slices.Contains(cfg.Plugins.Enabled, plugin.Name) {
+			cfg.Plugins.Enabled = append(cfg.Plugins.Enabled, plugin.Name)
+		}
+	}
+
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return ""
 	}
-	return string(data)
+
+	mergedYAML := string(data)
+
+	hasConfigOverrides := false
+	for _, plugin := range allPlugins {
+		if strings.TrimSpace(plugin.Spec.Config) != "" {
+			hasConfigOverrides = true
+			break
+		}
+	}
+	if !hasConfigOverrides {
+		return mergedYAML
+	}
+
+	var base map[string]any
+	if err := yaml.Unmarshal([]byte(mergedYAML), &base); err == nil {
+		// Rejections are not logged here: this runs on every reconcile. pluginConfigIssues
+		// reports the same findings, and updatePluginStatuses logs them once per change.
+		for _, plugin := range allPlugins {
+			if strings.TrimSpace(plugin.Spec.Config) == "" {
+				continue
+			}
+			var pluginConfig map[string]any
+			if err := yaml.Unmarshal([]byte(plugin.Spec.Config), &pluginConfig); err != nil {
+				continue
+			}
+			// Gateway-scoped subtrees always land here, whoever owns the plugin.
+			base = mergeMaps(base, pluginConfigForScope(pluginConfig, true))
+			// The rest follow a targeted plugin to its profile overlay; for an
+			// untargeted plugin the default profile IS the target, so they land here.
+			if plugin.Spec.TargetProfile == "" {
+				base = mergeMaps(base, pluginConfigForScope(pluginConfig, false))
+			}
+		}
+
+		if mergedData, err := yaml.Marshal(base); err == nil {
+			return string(mergedData)
+		}
+	}
+
+	return mergedYAML
 }
 
 // resolveGoogleChatDisplayConfig resolves verbosity settings for Google Chat based on mode ("default" or "debug").
@@ -613,7 +1096,8 @@ func buildCustomStorageVolumes(agent *agentv1alpha1.PlatformAgent) []corev1.Volu
 }
 
 // buildPodTemplateSpec generates the shared PodTemplateSpec for Deployment and StatefulSet
-func buildPodTemplateSpec(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHash, settingsConfigHash, policyHash string) corev1.PodTemplateSpec {
+func buildPodTemplateSpec(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHash, settingsConfigHash, policyHash string, agentPlugins []*agentv1alpha1.AgentPlugin, isImageVolumeSupported bool) corev1.PodTemplateSpec {
+	agentPlugins = filterValidAgentPlugins(agentPlugins)
 	replicas, _ := resolveDeploymentReplicasAndStrategy(agent.Spec.Deployment)
 	// UID/GID 10000 matches the canonical unprivileged 'hermes' runtime user created in NousResearch/hermes-agent upstream Dockerfile
 	fsGroup := int64(10000)
@@ -623,7 +1107,7 @@ func buildPodTemplateSpec(agent *agentv1alpha1.PlatformAgent, configHash, fluent
 		saName = agent.Spec.Security.ServiceAccountName
 	}
 
-	image := resolveAgentImage(agent.Spec.Deployment, defaultPlatformAgentImage)
+	image := resolveAgentImage(agent.Spec.Deployment, defaultPlatformAgentImage())
 	pullPolicy := corev1.PullAlways
 	if agent.Spec.Deployment != nil && agent.Spec.Deployment.ImagePullPolicy != nil {
 		pullPolicy = *agent.Spec.Deployment.ImagePullPolicy
@@ -859,6 +1343,13 @@ func buildPodTemplateSpec(agent *agentv1alpha1.PlatformAgent, configHash, fluent
 		)
 	}
 
+	if len(agentPlugins) > 0 {
+		extEnvs := extractAgentPluginEnvVars(agentPlugins)
+		if len(extEnvs) > 0 {
+			envVars = mergeEnvVars(envVars, extEnvs)
+		}
+	}
+
 	envVars = append(envVars, corev1.EnvVar{
 		Name:  "CREDENTIAL_PROXY_URL",
 		Value: fmt.Sprintf("http://127.0.0.1:%d", credentialProxyPort),
@@ -884,19 +1375,43 @@ func buildPodTemplateSpec(agent *agentv1alpha1.PlatformAgent, configHash, fluent
 		runtimeClassName = agent.Spec.Deployment.Availability.RuntimeClassName
 	}
 
-	containers := buildBaseContainers(agent, image, envVars)
+	containers := buildBaseContainers(agent, image, envVars, agentPlugins, isImageVolumeSupported)
 	containers = append(containers, buildCredentialProxySidecar(agent, homeDir))
+
 	defaultAnnotations := map[string]string{
 		"kubeagents.x-k8s.io/config-hash":            configHash,
 		"kubeagents.x-k8s.io/fluent-bit-config-hash": fluentBitHash,
 		"kubeagents.x-k8s.io/settings-config-hash":   settingsConfigHash,
 		"kubeagents.x-k8s.io/proxy-policy-hash":      policyHash,
 	}
+
 	if len(sidecars) > 0 {
 		containers = append(containers, sidecars...)
 	}
 
 	volumes := buildDefaultVolumes(agent)
+	for _, plugin := range agentPlugins {
+		if isImageVolumeSupported {
+			pullPolicy := corev1.PullIfNotPresent
+			if plugin.Spec.ImagePullPolicy != nil {
+				pullPolicy = *plugin.Spec.ImagePullPolicy
+			}
+			volumes = append(volumes, corev1.Volume{
+				Name: buildPluginVolumeName(plugin.Name),
+				VolumeSource: corev1.VolumeSource{
+					Image: &corev1.ImageVolumeSource{
+						Reference:  plugin.Spec.Image,
+						PullPolicy: pullPolicy,
+					},
+				},
+			})
+		} else {
+			manifestsLog.Error(fmt.Errorf("ImageVolumeSource unsupported on Kubernetes < 1.35"),
+				"skipping plugin OCI image volume mount to prevent deployment pod validation failure",
+				"plugin", plugin.Name,
+				"platformagent", agent.Name)
+		}
+	}
 	volumes = append(volumes, buildCustomStorageVolumes(agent)...)
 	volumes = append(volumes, buildCredentialProxyVolumes(agent)...)
 	if len(sidecarVolumes) > 0 {
@@ -916,12 +1431,17 @@ func buildPodTemplateSpec(agent *agentv1alpha1.PlatformAgent, configHash, fluent
 		tolerations = agent.Spec.Deployment.Availability.Tolerations
 	}
 
+	// The recommended labels are set here as well as on the workload, so the
+	// pods themselves are selectable. "app" stays out of commonLabels because
+	// the Deployment and StatefulSet selectors match on it and selectors are
+	// immutable once created.
+	podLabels := commonLabels(agent)
+	podLabels["app"] = agent.Name + "-gateway"
+	podLabels["kubeagents.x-k8s.io/has-credential-proxy"] = "true"
+
 	return corev1.PodTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{
-			Labels: map[string]string{
-				"app": agent.Name + "-gateway",
-				"kubeagents.x-k8s.io/has-credential-proxy": "true",
-			},
+			Labels: podLabels,
 			Annotations: mergeAnnotations(defaultAnnotations, podAnnotations),
 		},
 		Spec: corev1.PodSpec{
@@ -947,9 +1467,9 @@ func buildPodTemplateSpec(agent *agentv1alpha1.PlatformAgent, configHash, fluent
 }
 
 // buildDeployment generates the Deployment manifest for the agent payload
-func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHash, settingsConfigHash, policyHash string) *appsv1.Deployment {
+func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHash, settingsConfigHash, policyHash string, agentPlugins []*agentv1alpha1.AgentPlugin, isImageVolumeSupported bool) *appsv1.Deployment {
 	replicas, strategy := resolveDeploymentReplicasAndStrategy(agent.Spec.Deployment)
-	podTemplate := buildPodTemplateSpec(agent, configHash, fluentBitHash, settingsConfigHash, policyHash)
+	podTemplate := buildPodTemplateSpec(agent, configHash, fluentBitHash, settingsConfigHash, policyHash, agentPlugins, isImageVolumeSupported)
 
 	return &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{
@@ -978,9 +1498,9 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 }
 
 // buildStatefulSet generates the StatefulSet manifest for PlatformAgent when RWO custom storage is used with multiple replicas
-func buildStatefulSet(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHash, settingsConfigHash, policyHash string) *appsv1.StatefulSet {
+func buildStatefulSet(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHash, settingsConfigHash, policyHash string, agentPlugins []*agentv1alpha1.AgentPlugin, isImageVolumeSupported bool) *appsv1.StatefulSet {
 	replicas, _ := resolveDeploymentReplicasAndStrategy(agent.Spec.Deployment)
-	podTemplate := buildPodTemplateSpec(agent, configHash, fluentBitHash, settingsConfigHash, policyHash)
+	podTemplate := buildPodTemplateSpec(agent, configHash, fluentBitHash, settingsConfigHash, policyHash, agentPlugins, isImageVolumeSupported)
 	vcts := buildRWOVolumeClaimTemplates(agent)
 
 	return &appsv1.StatefulSet{
@@ -1025,6 +1545,15 @@ func buildDefaultVolumeMounts(homeDir string) []corev1.VolumeMount {
 			Name:      "platform-agent-config-vol",
 			MountPath: fmt.Sprintf("%s/leader_elect.py", homeDir),
 			SubPath:   "leader_elect.py",
+		},
+		{
+			// Whole-ConfigMap directory mount so docker-entrypoint.sh can glob the
+			// per-profile overlays without the operator having to enumerate them as
+			// individual subPath mounts. Read-only and outside $HERMES_HOME so it
+			// cannot shadow anything the agent writes.
+			Name:      "platform-agent-config-vol",
+			MountPath: profileOverlayDir,
+			ReadOnly:  true,
 		},
 		{
 			Name:      "settings-volume",
@@ -1198,6 +1727,9 @@ func mergeCredentialProxyEnv(managed, custom []corev1.EnvVar) []corev1.EnvVar {
 	for _, env := range managed {
 		reserved[env.Name] = struct{}{}
 	}
+	for name := range agentv1alpha1.SensitiveEnvVars {
+		reserved[name] = struct{}{}
+	}
 	for _, name := range []string{
 		"CREDENTIAL_PROXY_BOOTSTRAP_COMMAND",
 		"CREDENTIAL_PROXY_MAX_OUTPUT_BYTES",
@@ -1272,11 +1804,16 @@ func buildCredentialProxyVolumes(agent *agentv1alpha1.PlatformAgent) []corev1.Vo
 	}
 }
 
+// resolveCredentialProxyImage returns the credential-proxy sidecar image. An
+// explicit CREDENTIAL_PROXY_IMAGE env var wins; otherwise the image is derived
+// from the resolved agent image — same registry and tag as the image the agent
+// container actually runs, with the name platform-agent → credential-proxy —
+// so agent and sidecar can never end up on different versions.
 func resolveCredentialProxyImage(deployment *agentv1alpha1.DeploymentSpec) string {
-	image := defaultPlatformAgentImage
-	if deployment != nil && deployment.Image != "" {
-		image = deployment.Image
+	if override := os.Getenv(credentialProxyImageEnvVar); override != "" {
+		return override
 	}
+	image := resolveAgentImage(deployment, defaultPlatformAgentImage())
 	lastSlash := strings.LastIndex(image, "/")
 	prefix, name := "", image
 	if lastSlash >= 0 {
@@ -1284,7 +1821,16 @@ func resolveCredentialProxyImage(deployment *agentv1alpha1.DeploymentSpec) strin
 	}
 	suffix := ""
 	if digest := strings.Index(name, "@"); digest >= 0 {
-		suffix, name = name[digest:], name[:digest]
+		// The agent image's digest cannot name the proxy image; fall back to
+		// the tag field or latest.
+		name = name[:digest]
+		sidecarTag := "latest"
+		if deployment != nil && deployment.Tag != nil && *deployment.Tag != "" {
+			suffix = ":" + *deployment.Tag
+			sidecarTag = *deployment.Tag
+		}
+		manifestsLog.Info("digest-pinned agent image cannot pin the credential-proxy sidecar; using a mutable tag instead",
+			"agentImage", image, "sidecarTag", sidecarTag)
 	} else if tag := strings.LastIndex(name, ":"); tag >= 0 {
 		suffix, name = name[tag:], name[:tag]
 	}
@@ -1293,17 +1839,17 @@ func resolveCredentialProxyImage(deployment *agentv1alpha1.DeploymentSpec) strin
 	} else {
 		name += "-credential-proxy"
 	}
-	if deployment != nil && deployment.Tag != nil && *deployment.Tag != "" {
-		return prefix + name + ":" + *deployment.Tag
-	}
 	if suffix == "" {
+		// The sidecar tag must follow the agent image, which on this path is
+		// untagged or digest-pinned without a tag field — i.e. effectively
+		// "latest", not the build-injected default version.
 		suffix = ":latest"
 	}
 	return prefix + name + suffix
 }
 
 // buildBaseContainers generates the base containers for PlatformAgent.
-func buildBaseContainers(agent *agentv1alpha1.PlatformAgent, image string, envVars []corev1.EnvVar) []corev1.Container {
+func buildBaseContainers(agent *agentv1alpha1.PlatformAgent, image string, envVars []corev1.EnvVar, agentPlugins []*agentv1alpha1.AgentPlugin, isImageVolumeSupported bool) []corev1.Container {
 	homeDir := defaultAgentHome
 	if agent.Spec.Harness != nil && agent.Spec.Harness.Hermes != nil && agent.Spec.Harness.Hermes.AgentHome != "" {
 		homeDir = agent.Spec.Harness.Hermes.AgentHome
@@ -1361,6 +1907,14 @@ func buildBaseContainers(agent *agentv1alpha1.PlatformAgent, image string, envVa
 	}
 	if sessionKVSaltSecretRef == nil {
 		sessionKVSaltSecretRef = defaultSecretRef(nil, defaultPlatformAgentSecrets, "SESSION_KV_SALT")
+
+	if isImageVolumeSupported {
+		for _, plugin := range agentPlugins {
+			volumeMounts = append(volumeMounts, corev1.VolumeMount{
+				Name:      buildPluginVolumeName(plugin.Name),
+				MountPath: pluginMountPath(homeDir, plugin),
+			})
+		}
 	}
 
 	containers := []corev1.Container{
@@ -1462,7 +2016,7 @@ func buildBaseContainers(agent *agentv1alpha1.PlatformAgent, image string, envVa
 
 	containers = append(containers, corev1.Container{
 		Name:  "fluent-bit",
-		Image: "fluent/fluent-bit:5.0.7",
+		Image: fluentBitImage(),
 		Args: []string{
 			"-c",
 			"/fluent-bit/etc/fluent-bit.conf",
@@ -1858,5 +2412,94 @@ func isDashboardEnabled(agent *agentv1alpha1.PlatformAgent) bool {
 	return true
 }
 
+func extractAgentPluginEnvVars(agentPlugins []*agentv1alpha1.AgentPlugin) []corev1.EnvVar {
+	var envs []corev1.EnvVar
+	for _, plugin := range agentPlugins {
+		envs = append(envs, plugin.Spec.Env...)
+	}
+	return envs
+}
+
+func mergeMaps(base, extra map[string]any) map[string]any {
+	for k, v := range extra {
+		if baseVal, ok := base[k]; ok {
+			baseMap := toStrMap(baseVal)
+			extraMap := toStrMap(v)
+			if baseMap != nil && extraMap != nil {
+				base[k] = mergeMaps(baseMap, extraMap)
+				continue
+			}
+
+			baseSlice, okBase := toSlice(baseVal)
+			extraSlice, okExtra := toSlice(v)
+			if okBase && okExtra {
+				for _, item := range extraSlice {
+					if !containsValue(baseSlice, item) {
+						baseSlice = append(baseSlice, item)
+					}
+				}
+				base[k] = baseSlice
+				continue
+			}
+		}
+		base[k] = v
+	}
+	return base
+}
+
+// containsValue reports whether list already holds an element deep-equal to item.
+//
+// Not slices.Contains: that compares with ==, which panics when two elements share an
+// uncomparable dynamic type. A plugin listing YAML mappings under an allowlisted key —
+// perfectly ordinary config — would otherwise panic the reconcile and, since the panic is
+// recovered and retried, wedge that PlatformAgent permanently.
+func containsValue(list []any, item any) bool {
+	for _, existing := range list {
+		if reflect.DeepEqual(existing, item) {
+			return true
+		}
+	}
+	return false
+}
+
+func toStrMap(v any) map[string]any {
+	if m, ok := v.(map[string]any); ok {
+		return m
+	}
+	if m, ok := v.(map[any]any); ok {
+		res := make(map[string]any)
+		for k, val := range m {
+			if strK, okStr := k.(string); okStr {
+				res[strK] = val
+			}
+		}
+		return res
+	}
+	return nil
+}
+
+func toSlice(v any) ([]any, bool) {
+	if s, ok := v.([]any); ok {
+		return s, true
+	}
+	if s, ok := v.([]string); ok {
+		res := make([]any, len(s))
+		for i, val := range s {
+			res[i] = val
+		}
+		return res, true
+	}
+	return nil, false
+}
+
 //go:embed leader_elect.py
 var leaderElectScript string
+
+func buildPluginVolumeName(pluginName string) string {
+	name := "plugin-" + pluginName
+	if len(name) > 63 {
+		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(pluginName)))[:8]
+		name = name[:54] + "-" + hash
+	}
+	return name
+}

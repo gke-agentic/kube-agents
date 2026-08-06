@@ -161,10 +161,13 @@ def clean_reason_label(reason: str) -> str:
 
 def clean_event_message(message: str) -> str:
     msg = message.replace("PodDisruptionBudget", "PDB")
-    # Simplify PDB eviction violation message:
-    m = re.search(r"cannot be evicted:\s*(would violate PDB\s+(?:[^/]+/)?([a-zA-Z0-9_-]+))", msg)
+    # Simplify PDB eviction violation message. The namespace segment excludes
+    # whitespace so it cannot overlap the preceding `\s+`: two adjacent
+    # quantifiers that can match the same characters make the engine try every
+    # split point, which is quadratic on hostile input (CodeQL py/polynomial-redos).
+    m = re.search(r"cannot be evicted:\s*would violate PDB\s+(?:[^\s/]+/)?([a-zA-Z0-9_-]+)", msg)
     if m:
-        clean_pdb = m.group(2)
+        clean_pdb = m.group(1)
         return f"Eviction would violate PDB {clean_pdb}"
     return msg
 
@@ -284,7 +287,7 @@ def _build_agent_query(session_id: str, payload: Dict[str, Any]) -> str:
     object_kind = payload.get("kind_of_object") or payload.get("kindOfObject") or "Pod"
     object_name = payload.get("name") or ""
     message = payload.get("message") or ""
-    cluster_name = os.environ.get("GKE_CLUSTER_NAME", "platform-agent-host")
+    cluster_name = payload.get("cluster") or os.environ.get("GKE_CLUSTER_NAME", "platform-agent-host")
     gcp_project = os.environ.get("GCP_PROJECT_ID") or os.environ.get("GCP_PROJECT") or ""
     workloads_project_query = f"?project={gcp_project}" if gcp_project else ""
     logs_project_query = f";project={gcp_project}" if gcp_project else ""
