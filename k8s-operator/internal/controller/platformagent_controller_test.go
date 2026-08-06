@@ -599,9 +599,9 @@ func TestBuildNetworkPolicy(t *testing.T) {
 	if netpol.Namespace != "test-ns" {
 		t.Errorf("expected Namespace 'test-ns', got %s", netpol.Namespace)
 	}
-	deploy := buildPlatformDeployment(agent)
-	if !reflect.DeepEqual(netpol.Spec.PodSelector.MatchLabels, deploy.Spec.Template.Labels) {
-		t.Errorf("expected PodSelector %v to match Deployment template labels %v", netpol.Spec.PodSelector.MatchLabels, deploy.Spec.Template.Labels)
+	deploy := buildDeployment(agent, "", "", "", "", nil, false)
+	if !reflect.DeepEqual(netpol.Spec.PodSelector.MatchLabels, deploy.Spec.Selector.MatchLabels) {
+		t.Errorf("expected PodSelector %v to match Deployment selector labels %v", netpol.Spec.PodSelector.MatchLabels, deploy.Spec.Selector.MatchLabels)
 	}
 	if len(netpol.Spec.PolicyTypes) != 2 {
 		t.Errorf("expected 2 PolicyTypes, got %d", len(netpol.Spec.PolicyTypes))
