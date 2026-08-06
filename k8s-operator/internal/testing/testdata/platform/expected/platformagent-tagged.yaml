@@ -910,6 +910,10 @@ metadata:
   creationTimestamp: null
   labels:
     app: platformagent-gateway
+    app.kubernetes.io/instance: kubeagents-system-platformagent
+    app.kubernetes.io/managed-by: platformagent-controller
+    app.kubernetes.io/name: platform-agent
+    app.kubernetes.io/part-of: kube-agents
   name: platformagent-gateway-netpol
   namespace: kubeagents-system
   ownerReferences:
