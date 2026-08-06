@@ -75,6 +75,7 @@ spec:
               - 172.16.0.0/12
               - 192.168.0.0/16
               - 100.64.0.0/10
+              - 169.254.0.0/16
     # 6. GKE Managed OpenTelemetry Collector (Trace Export)
     - ports:
         - port: 4317

@@ -21,6 +21,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path"
 	"reflect"
@@ -2358,12 +2359,23 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiHost string) *net
 	udp := corev1.ProtocolUDP
 	tcp := corev1.ProtocolTCP
 
-	if apiHost == "" {
+	// Strip brackets from IPv6 addresses (e.g. "[fd00::1]" -> "fd00::1")
+	apiHost = strings.Trim(apiHost, "[]")
+	if apiHost == "" || net.ParseIP(apiHost) == nil {
 		apiHost = "10.96.0.1"
 	}
 	apiCidr := apiHost + "/32"
 	if strings.Contains(apiHost, ":") {
 		apiCidr = apiHost + "/128"
+	}
+
+	// Derive /16 subnet from apiHost for pre-DNAT DNS Service CIDR matching (e.g. "34.118.224.1" -> "34.118.0.0/16")
+	serviceSubnet := "10.96.0.0/16"
+	if ip := net.ParseIP(apiHost); ip != nil && ip.To4() != nil {
+		parts := strings.Split(ip.String(), ".")
+		if len(parts) == 4 {
+			serviceSubnet = fmt.Sprintf("%s.%s.0.0/16", parts[0], parts[1])
+		}
 	}
 
 	ingressRules := []networkingv1.NetworkPolicyIngressRule{
@@ -2410,6 +2422,51 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiHost string) *net
 		})
 	}
 
+	dnsPeers := []networkingv1.NetworkPolicyPeer{
+		{
+			NamespaceSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"kubernetes.io/metadata.name": "kube-system",
+				},
+			},
+			PodSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"k8s-app": "kube-dns",
+				},
+			},
+		},
+		{
+			NamespaceSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"kubernetes.io/metadata.name": "kube-system",
+				},
+			},
+			PodSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"k8s-app": "node-local-dns",
+				},
+			},
+		},
+		{
+			IPBlock: &networkingv1.IPBlock{
+				CIDR: "169.254.20.10/32",
+			},
+		},
+		{
+			// Allow Service ClusterIP queries so pre-DNAT DNS queries are not dropped on Calico
+			IPBlock: &networkingv1.IPBlock{
+				CIDR: "10.96.0.0/16",
+			},
+		},
+	}
+	if serviceSubnet != "10.96.0.0/16" {
+		dnsPeers = append(dnsPeers, networkingv1.NetworkPolicyPeer{
+			IPBlock: &networkingv1.IPBlock{
+				CIDR: serviceSubnet,
+			},
+		})
+	}
+
 	egressRules := []networkingv1.NetworkPolicyEgressRule{
 		// 1. Cluster DNS
 		{
@@ -2417,43 +2474,7 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiHost string) *net
 				{Protocol: &udp, Port: ptr.To(intstr.FromInt32(53))},
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(53))},
 			},
-			To: []networkingv1.NetworkPolicyPeer{
-				{
-					NamespaceSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							"kubernetes.io/metadata.name": "kube-system",
-						},
-					},
-					PodSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							"k8s-app": "kube-dns",
-						},
-					},
-				},
-				{
-					NamespaceSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							"kubernetes.io/metadata.name": "kube-system",
-						},
-					},
-					PodSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							"k8s-app": "node-local-dns",
-						},
-					},
-				},
-				{
-					IPBlock: &networkingv1.IPBlock{
-						CIDR: "169.254.20.10/32",
-					},
-				},
-				{
-					// Allow Service ClusterIP queries (e.g. 10.96.0.0/16) so pre-DNAT DNS queries are not dropped
-					IPBlock: &networkingv1.IPBlock{
-						CIDR: "10.96.0.0/16",
-					},
-				},
-			},
+			To: dnsPeers,
 		},
 		// 2. GCP Workload Identity / Metadata Server (Link-Local & Daemon pod)
 		{
@@ -2544,7 +2565,7 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiHost string) *net
 				{
 					IPBlock: &networkingv1.IPBlock{
 						CIDR:   "0.0.0.0/0",
-						Except: []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"},
+						Except: []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16"},
 					},
 				},
 			},

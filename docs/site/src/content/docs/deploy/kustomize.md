@@ -63,7 +63,7 @@ patches:
 ```
 
 > [!WARNING]
-> **Positional Patch Fragility**: JSON patches targeting specific rules by array index (e.g., `/spec/egress/5/to/0/ipBlock/cidr`) rely on the canonical rule order defined in [`networkpolicy.yaml`](https://github.com/gke-labs/kube-agents/blob/main/deploy/kustomize/platform/networkpolicy.yaml). If rule ordering changes in future updates, verify the index of the Kubernetes API Server egress rule before applying positional patches.
+> **Positional Patch Fragility**: JSON patches targeting specific rules by array index (e.g., `/spec/egress/5/to/0/ipBlock/cidr`) rely on the canonical rule order defined in [`networkpolicy.yaml`](https://github.com/gke-labs/kube-agents/blob/main/deploy/kustomize/platform/networkpolicy.yaml). If rule ordering changes in future updates, verify the index of the Kubernetes API Server egress rule before applying positional patches. **This example applies to the base policy only.** The GKE Dataplane V2 overlay (`gke-dataplane-v2/`) removes the K8s API ipBlock rule (handled by `CiliumNetworkPolicy` instead), shifting all subsequent egress rule indices down by one. Do **not** use base-policy indices on a DPv2-patched policy.
 
 The canonical ClusterIP Service definition for the Platform Agent is defined in [`service.yaml`](https://github.com/gke-labs/kube-agents/blob/main/deploy/kustomize/platform/service.yaml):
 

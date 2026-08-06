@@ -669,8 +669,8 @@ func TestBuildNetworkPolicy(t *testing.T) {
 		t.Errorf("expected K8s API server CIDR with /32 suffix")
 	}
 	ruleHTTPS := findEgressRule(443, func(p networkingv1.NetworkPolicyPeer) bool { return p.IPBlock != nil && p.IPBlock.CIDR == "0.0.0.0/0" })
-	if ruleHTTPS == nil || len(ruleHTTPS.To[0].IPBlock.Except) != 4 {
-		t.Errorf("expected 4 Except subnets in External HTTPS egress rule")
+	if ruleHTTPS == nil || len(ruleHTTPS.To[0].IPBlock.Except) != 5 {
+		t.Errorf("expected 5 Except subnets in External HTTPS egress rule")
 	}
 	ruleOTel := findEgressRule(4317, func(p networkingv1.NetworkPolicyPeer) bool {
 		return p.NamespaceSelector != nil && p.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] == "gke-managed-otel"
@@ -726,6 +726,146 @@ func TestBuildNetworkPolicy_CustomAPIHost(t *testing.T) {
 	netpolIPv6 := buildNetworkPolicy(agent, "fd00::1")
 	if netpolIPv6.Spec.Egress[5].To[0].IPBlock.CIDR != "fd00::1/128" {
 		t.Errorf("expected IPv6 CIDR 'fd00::1/128', got %s", netpolIPv6.Spec.Egress[5].To[0].IPBlock.CIDR)
+	}
+}
+
+func TestBuildNetworkPolicy_InvalidAPIHost(t *testing.T) {
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+		},
+	}
+
+	tests := []struct {
+		name     string
+		apiHost  string
+		wantCIDR string
+	}{
+		{
+			name:     "empty string defaults to 10.96.0.1/32",
+			apiHost:  "",
+			wantCIDR: "10.96.0.1/32",
+		},
+		{
+			name:     "valid IPv4",
+			apiHost:  "10.0.0.5",
+			wantCIDR: "10.0.0.5/32",
+		},
+		{
+			name:     "valid IPv6",
+			apiHost:  "fd00::1",
+			wantCIDR: "fd00::1/128",
+		},
+		{
+			name:     "bracket-wrapped IPv6 stripped to valid",
+			apiHost:  "[fd00::1]",
+			wantCIDR: "fd00::1/128",
+		},
+		{
+			name:     "hostname falls back to default",
+			apiHost:  "kubernetes.default.svc",
+			wantCIDR: "10.96.0.1/32",
+		},
+		{
+			name:     "garbage falls back to default",
+			apiHost:  "not-an-ip",
+			wantCIDR: "10.96.0.1/32",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			netpol := buildNetworkPolicy(agent, tt.apiHost)
+			gotCIDR := netpol.Spec.Egress[5].To[0].IPBlock.CIDR
+			if gotCIDR != tt.wantCIDR {
+				t.Errorf("apiHost=%q: expected CIDR %q, got %q", tt.apiHost, tt.wantCIDR, gotCIDR)
+			}
+		})
+	}
+}
+
+func TestBuildNetworkPolicy_Idempotent(t *testing.T) {
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+		},
+	}
+
+	np1 := buildNetworkPolicy(agent, "10.0.0.5")
+	np2 := buildNetworkPolicy(agent, "10.0.0.5")
+	if !reflect.DeepEqual(np1.Spec, np2.Spec) {
+		t.Errorf("buildNetworkPolicy is not idempotent: consecutive calls produced different specs")
+	}
+}
+
+func TestBuildNetworkPolicy_ExternalHTTPSExceptList(t *testing.T) {
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+		},
+	}
+	netpol := buildNetworkPolicy(agent, "")
+
+	var httpsRule *networkingv1.NetworkPolicyEgressRule
+	for i := range netpol.Spec.Egress {
+		for _, p := range netpol.Spec.Egress[i].Ports {
+			if p.Port != nil && p.Port.IntVal == 443 {
+				for _, peer := range netpol.Spec.Egress[i].To {
+					if peer.IPBlock != nil && peer.IPBlock.CIDR == "0.0.0.0/0" {
+						httpsRule = &netpol.Spec.Egress[i]
+					}
+				}
+			}
+		}
+	}
+	if httpsRule == nil {
+		t.Fatal("external HTTPS egress rule not found")
+	}
+
+	exceptList := httpsRule.To[0].IPBlock.Except
+	requiredExcepts := []string{
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+		"100.64.0.0/10",
+		"169.254.0.0/16",
+	}
+	for _, required := range requiredExcepts {
+		found := false
+		for _, e := range exceptList {
+			if e == required {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected %q in External HTTPS except list, got %v", required, exceptList)
+		}
+	}
+}
+
+func TestBuildNetworkPolicy_DynamicServiceCIDR(t *testing.T) {
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+		},
+	}
+
+	netpolGKE := buildNetworkPolicy(agent, "34.118.224.1")
+	dnsRule := netpolGKE.Spec.Egress[0]
+	foundGKESubnet := false
+	for _, peer := range dnsRule.To {
+		if peer.IPBlock != nil && peer.IPBlock.CIDR == "34.118.0.0/16" {
+			foundGKESubnet = true
+			break
+		}
+	}
+	if !foundGKESubnet {
+		t.Errorf("expected 34.118.0.0/16 dynamically derived in DNS egress peers for GKE API server IP 34.118.224.1")
 	}
 }
 
