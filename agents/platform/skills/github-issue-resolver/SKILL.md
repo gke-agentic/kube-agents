@@ -8,9 +8,11 @@ description:
 # Skill: github-issue-resolver
 
 > [!CAUTION] **INVIOLABLE SAFETY RED LINE:** NEVER inspect, comment on, edit,
-> close, or modify any issue labeled `status:escalation-needed` or
-> `agent:ignore`. Issues labeled `status:escalation-needed` are locked for human
-> intervention and must NEVER be modified or closed autonomously.
+> close, or modify any issue labeled `status:escalation-needed`, `agent:ignore`,
+> or `agent:audit`. Issues labeled `status:escalation-needed` are locked for
+> human intervention and must NEVER be modified or closed autonomously. Issues
+> labeled `agent:audit` are `fleet-audit` ledgers, rewritten in place by that
+> skill on every run — touching one corrupts a report the audit owns.
 
 This skill delegates all deterministic GitHub CLI operations, label creation,
 stale sweeps, and safe comment uploading to the helper script
@@ -31,6 +33,13 @@ python3 /opt/data/profiles/platform/skills/github-issue-resolver/scripts/resolve
 
 - If the script outputs `{"status": "NO_ISSUES", ...}`, your final response MUST
   BE exactly `[SILENT]` to suppress chat noise. Terminate the turn immediately.
+- If the script outputs `{"status": "NOT_CONFIGURED"}`, this deployment has no
+  target repository. That is a supported state, not a fault: your final response
+  MUST BE exactly `[SILENT]`. Terminate the turn immediately.
+- If the script outputs `{"status": "ERROR", "reason": <reason>, ...}`, the
+  resolver could not run. Do NOT respond `[SILENT]` — this is a fault that would
+  otherwise recur silently on every scheduled poll. Alert the chat room:
+  `⚠️ **GitHub issue resolver is not running:** <reason>` and terminate the turn.
 - If the script outputs `{"status": "FOUND", "issue_number": <number>, ...}`,
   proceed to Step 2.
 
