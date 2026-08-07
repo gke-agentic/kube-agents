@@ -3,8 +3,9 @@
 # 🧹 Step 12: Teardown GKE Backup Plan
 # ==============================================================================
 # Idempotent script to delete the Google Cloud Backup for GKE BackupPlan.
-# Safely deletes any remaining backup snapshots in background batches before
-# removing the BackupPlan. Safe to run even if the backup plan was never created.
+# Safely pauses the plan, then deletes any remaining backup snapshots in
+# background batches before removing the BackupPlan. Safe to run even if
+# the backup plan was never created.
 # Set PRESERVE_BACKUPS=true to preserve existing BackupPlan and snapshots during teardown (defaults to false).
 # ==============================================================================
 
@@ -15,7 +16,7 @@ source "${SCRIPT_DIR}/common.sh" "$@"
 
 ensure_teardown_state
 
-if [ "${DRY_RUN:-0}" -ne 1 ] && ! gcloud beta --help &>/dev/null; then
+if [ "${DRY_RUN:-0}" -ne 1 ] && ! gcloud beta --help < /dev/null &>/dev/null; then
   print_info "The 'gcloud beta' component is not installed. Skipping GKE Backup Plan teardown."
   exit 0
 fi
@@ -41,13 +42,36 @@ if [ "$describe_err" -eq 0 ]; then
     echo -e "  ${C_CYAN}ℹ To delete all backup snapshots and the plan, run with PRESERVE_BACKUPS=false (default).${C_RESET}"
   else
     if [ "${DRY_RUN:-0}" -eq 1 ]; then
-      echo -e "  ${C_GREEN}[DRY-RUN] Would delete GKE Backup Plan '${BACKUP_PLAN_NAME}'.${C_RESET}"
+      echo -e "  ${C_GREEN}[DRY-RUN] Would pause and delete GKE Backup Plan '${BACKUP_PLAN_NAME}'.${C_RESET}"
     else
-      backups=$(gcloud beta container backup-restore backups list \
+      # Step 1: Pause the backup plan immediately to prevent scheduled backups from triggering during teardown
+      echo -e "  ${C_CYAN}ℹ Pausing GKE Backup Plan '${BACKUP_PLAN_NAME}' to prevent scheduled backups during teardown...${C_RESET}"
+      pause_err=0
+      pause_out=$(gcloud beta container backup-restore backup-plans update "$BACKUP_PLAN_NAME" \
+          --location="$REGION" \
+          --project="$PROJECT_ID" \
+          --paused \
+          --quiet 2>&1) || pause_err=$?
+      if [ "$pause_err" -ne 0 ]; then
+        echo -e "  ${C_YELLOW}⚠ Could not pause BackupPlan '${BACKUP_PLAN_NAME}' (proceeding with deletion):${C_RESET}"
+        echo "$pause_out" | sed 's/^/    /'
+      fi
+
+      # Step 2: List existing backups (fail cleanly on API errors rather than treating as empty)
+      list_out=""
+      list_err=0
+      list_out=$(gcloud beta container backup-restore backups list \
           --backup-plan="$BACKUP_PLAN_NAME" \
           --location="$REGION" \
           --project="$PROJECT_ID" \
-          --format="value(name.basename())" 2>/dev/null || echo "")
+          --format="value(name.basename())" 2>&1) || list_err=$?
+
+      if [ "$list_err" -ne 0 ]; then
+        echo -e "  ${C_RED}✗ Error listing backups for GKE Backup Plan '${BACKUP_PLAN_NAME}':${C_RESET}" >&2
+        echo "$list_out" >&2
+        exit "$list_err"
+      fi
+      backups="$list_out"
 
       if [ -n "$backups" ]; then
         echo -e "  ${C_CYAN}ℹ Deleting existing backup snapshots in '${BACKUP_PLAN_NAME}'...${C_RESET}"
@@ -78,14 +102,25 @@ if [ "$describe_err" -eq 0 ]; then
 
       retry=0
       max_retries=5
+      remaining_backups=""
       while [ $retry -lt $max_retries ]; do
-        remaining_backups=$(gcloud beta container backup-restore backups list \
+        rem_out=""
+        rem_err=0
+        rem_out=$(gcloud beta container backup-restore backups list \
             --backup-plan="$BACKUP_PLAN_NAME" \
             --location="$REGION" \
             --project="$PROJECT_ID" \
-            --format="value(name.basename())" 2>/dev/null || echo "")
-        if [ -z "$remaining_backups" ]; then
-          break
+            --format="value(name.basename())" 2>&1) || rem_err=$?
+
+        if [ "$rem_err" -ne 0 ]; then
+          echo -e "  ${C_YELLOW}⚠ Transient error checking remaining backups (attempt $((retry + 1))/${max_retries}):${C_RESET}" >&2
+          echo "$rem_out" | sed 's/^/    /' >&2
+          remaining_backups="<error-listing-backups>"
+        else
+          remaining_backups="$rem_out"
+          if [ -z "$remaining_backups" ]; then
+            break
+          fi
         fi
         retry=$((retry + 1))
         if [ $retry -lt $max_retries ]; then

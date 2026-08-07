@@ -86,7 +86,7 @@ Generated from each script's own comment banner.
 | 9 | [`teardown_09_deploy_litellm.sh`](teardown_09_deploy_litellm.sh) | **Teardown LiteLLM Gateway** — Idempotent script to undeploy the LiteLLM gateway. |
 | 10 | [`teardown_10_deploy_github_minter.sh`](teardown_10_deploy_github_minter.sh) | **Teardown GitHub Token Minter** — Idempotent script to clean up the GitHub Token Minter. |
 | 11 | [`teardown_11_deploy_inference_replay.sh`](teardown_11_deploy_inference_replay.sh) | **Teardown Inference Replay Proxy** — Idempotent script to undeploy the Inference Replay proxy and restore the original LiteLLM Service. Safe to run even when the proxy was never deployed. |
-| 12 | [`teardown_12_gke_backup_plan.sh`](teardown_12_gke_backup_plan.sh) | **Teardown GKE Backup Plan** — Idempotent script to delete the Google Cloud Backup for GKE BackupPlan. Safely deletes any remaining backup snapshots in background batches before removing the BackupPlan. Safe to run even if the backup plan was never created. Set PRESERVE_BACKUPS=true to preserve existing BackupPlan and snapshots during teardown (defaults to false). |
+| 12 | [`teardown_12_gke_backup_plan.sh`](teardown_12_gke_backup_plan.sh) | **Teardown GKE Backup Plan** — Idempotent script to delete the Google Cloud Backup for GKE BackupPlan. Safely pauses the plan, then deletes any remaining backup snapshots in background batches before removing the BackupPlan. Safe to run even if the backup plan was never created. Set PRESERVE_BACKUPS=true to preserve existing BackupPlan and snapshots during teardown (defaults to false). |
 
 <!-- prettier-ignore-end -->
 <!-- END GENERATED: provisioning-steps -->
