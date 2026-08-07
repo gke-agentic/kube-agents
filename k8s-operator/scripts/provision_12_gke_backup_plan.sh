@@ -98,10 +98,11 @@ verify_backup_plan() {
       --location="$REGION" --project="$PROJECT_ID" 2>&1) || err=$?
   if [ "$err" -eq 0 ]; then
     BACKUP_PLAN_EXISTS="true"
-    local curr_retain curr_cron curr_enc
+    local curr_retain curr_cron curr_enc curr_paused
     curr_retain=$(echo "$out" | grep -E "^[[:space:]]*backupRetainDays:" | head -n1 | sed -E 's/^[[:space:]]*backupRetainDays:[[:space:]]*//' | tr -d "'\"[:space:]")
     curr_cron=$(echo "$out" | grep -E "^[[:space:]]*cronSchedule:" | head -n1 | sed -E 's/^[[:space:]]*cronSchedule:[[:space:]]*//' | sed -E "s/^['\"]//;s/['\"]$//")
     curr_enc=$(echo "$out" | grep -E "^[[:space:]]*gcpKmsEncryptionKey:" | head -n1 | sed -E 's/^[[:space:]]*gcpKmsEncryptionKey:[[:space:]]*//' | tr -d "'\"[:space:]")
+    curr_paused=$(echo "$out" | grep -E "^[[:space:]]*paused:" | head -n1 | sed -E 's/^[[:space:]]*paused:[[:space:]]*//' | tr -d "'\"[:space:]")
 
     local enc_matches="true"
     if [ -n "${BACKUP_ENCRYPTION_KEY:-}" ]; then
@@ -112,7 +113,7 @@ verify_backup_plan() {
       echo -e "  ${C_YELLOW}⚠ Existing BackupPlan '${BACKUP_PLAN_NAME}' has CMEK encryption enabled. Clearing CMEK key via empty BACKUP_ENCRYPTION_KEY is unsupported; preserving existing key.${C_RESET}"
     fi
 
-    if [ "$curr_retain" = "$BACKUP_RETAIN_DAYS" ] && [ "$curr_cron" = "$BACKUP_CRON_SCHEDULE" ] && [ "$enc_matches" = "true" ]; then
+    if [ "$curr_retain" = "$BACKUP_RETAIN_DAYS" ] && [ "$curr_cron" = "$BACKUP_CRON_SCHEDULE" ] && [ "$enc_matches" = "true" ] && ! is_truthy "$curr_paused"; then
       return 0
     else
       echo -e "  ${C_YELLOW}ℹ Configuration drift detected on existing BackupPlan '${BACKUP_PLAN_NAME}'. Will update.${C_RESET}"
