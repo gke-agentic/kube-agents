@@ -20,6 +20,28 @@ def log(msg: str):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [SRE-AUTH] {msg}", file=sys.stderr, flush=True)
 
 
+def get_current_git_repo() -> str | None:
+    """Extract repository name (owner/repo) from local git config."""
+    try:
+        res = subprocess.run(
+            ["git", "config", "--get", "remote.origin.url"],
+            capture_output=True, text=True, check=True
+        )
+        url = res.stdout.strip().strip("/")
+        if url.endswith(".git"):
+            url = url[:-4]
+        if "://" in url:
+            url = url.split("://", 1)[1]
+        if "@" in url and ":" in url:
+            url = url.split(":", 1)[1]
+        parts = url.split("/")
+        if len(parts) >= 2:
+            return f"{parts[-2]}/{parts[-1]}"
+    except Exception as e:
+        log(f"WARNING: Could not parse repository from git config: {e}")
+    return None
+
+
 def refresh_git_credentials(target_repo: str = None) -> str:
     """Query local Minty, retrieve token, and cache inside git credentials."""
     if target_repo:
@@ -27,9 +49,7 @@ def refresh_git_credentials(target_repo: str = None) -> str:
         if repository.count("/") != 1:
             raise RuntimeError(f"Invalid repository format: '{target_repo}'. Expected 'owner/repo'.")
     else:
-        repository = None
-
-
+        repository = get_current_git_repo()
 
     if not repository or repository.count("/") != 1:
         raise RuntimeError("Could not identify target repository (must be formatted as owner/repo) to determine GitHub organization")

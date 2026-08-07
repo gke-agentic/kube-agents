@@ -67,7 +67,7 @@ def git(argv: list, workspace: str, check: bool = True) -> subprocess.CompletedP
 def handle_prepare(args) -> int:
     branch = check_branch(args.branch)
     lease = gitops_workspace.lease_id(args.lease)
-    repo = gitops_workspace.resolve_repo()
+    repo = args.repo or gitops_workspace.resolve_repo()
 
     # Repo-scoped, and needed before the clone: the clone is what a token would
     # otherwise have to be derived from.
