@@ -173,6 +173,7 @@ func main() {
 
 	if err := (&controller.PlatformAgentReconciler{
 		Client:      mgr.GetClient(),
+		APIReader:   mgr.GetAPIReader(),
 		Scheme:      mgr.GetScheme(),
 		APIServerIP: os.Getenv("KUBERNETES_SERVICE_HOST"),
 	}).SetupWithManager(mgr); err != nil {

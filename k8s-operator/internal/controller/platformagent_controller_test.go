@@ -1864,3 +1864,78 @@ func TestDetectPluginImageFailures_DoesNotBlameSiblingTag(t *testing.T) {
 		t.Errorf("expected the plugin using :v10 to be blamed, got %v", failures)
 	}
 }
+
+func TestReconcileNetworkPolicy_APIReader(t *testing.T) {
+	scheme := setupScheme()
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "test-ns"},
+	}
+
+	k8sEndpoints := &corev1.Endpoints{
+		ObjectMeta: metav1.ObjectMeta{Name: "kubernetes", Namespace: "default"},
+		Subsets: []corev1.EndpointSubset{
+			{
+				Addresses: []corev1.EndpointAddress{
+					{IP: "172.16.0.5"},
+					{IP: "172.16.0.6"},
+				},
+			},
+		},
+	}
+
+	interceptors := interceptor.Funcs{
+		Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			if patch.Type() == types.ApplyPatchType {
+				key := client.ObjectKeyFromObject(obj)
+				existing := obj.DeepCopyObject().(client.Object)
+				err := cl.Get(ctx, key, existing)
+				if err != nil {
+					if errors.IsNotFound(err) {
+						return cl.Create(ctx, obj)
+					}
+					return err
+				}
+				obj.SetResourceVersion(existing.GetResourceVersion())
+				return cl.Update(ctx, obj)
+			}
+			return cl.Patch(ctx, obj, patch, opts...)
+		},
+	}
+
+	k8sSvc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "kubernetes", Namespace: "default"},
+		Spec:       corev1.ServiceSpec{ClusterIP: "10.96.0.1"},
+	}
+
+	// APIReader has the Endpoints object, while Client does not (simulating non-cached live read)
+	apiReader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(k8sEndpoints).Build()
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(agent, k8sSvc).WithInterceptorFuncs(interceptors).Build()
+
+	r := &PlatformAgentReconciler{
+		Client:    cl,
+		APIReader: apiReader,
+		Scheme:    scheme,
+	}
+
+	ctx := context.Background()
+	if err := r.reconcileNetworkPolicy(ctx, agent); err != nil {
+		t.Fatalf("reconcileNetworkPolicy failed: %v", err)
+	}
+
+	netpol := &networkingv1.NetworkPolicy{}
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: "test-ns", Name: "test-agent-gateway-netpol"}, netpol); err != nil {
+		t.Fatalf("failed to get generated NetworkPolicy: %v", err)
+	}
+
+	var gotCIDRs []string
+	for _, peer := range netpol.Spec.Egress[5].To {
+		if peer.IPBlock != nil {
+			gotCIDRs = append(gotCIDRs, peer.IPBlock.CIDR)
+		}
+	}
+
+	wantCIDRs := []string{"10.96.0.1/32", "172.16.0.5/32", "172.16.0.6/32"}
+	if !reflect.DeepEqual(gotCIDRs, wantCIDRs) {
+		t.Errorf("expected API server egress CIDRs %v, got %v", wantCIDRs, gotCIDRs)
+	}
+}

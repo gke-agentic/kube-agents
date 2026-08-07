@@ -148,6 +148,10 @@ verify_filestore_addon() {
   [ "$enabled" = "True" ] || [ "$enabled" = "true" ]
 }
 execute_filestore_addon() {
+  if verify_filestore_addon; then
+    return 0
+  fi
+
   print_info "Enabling GKE Filestore CSI Driver for RWX storage support..."
   local active_op
   active_op=$(gcloud container operations list --region="$REGION" --project="$PROJECT_ID" --filter="targetLink:$CLUSTER_NAME AND status=RUNNING" --format="value(name)" 2>/dev/null | head -n1)
@@ -159,7 +163,7 @@ execute_filestore_addon() {
   gcloud container clusters update "$CLUSTER_NAME" \
       --region "$REGION" \
       --update-addons GcpFilestoreCsiDriver=ENABLED \
-      --project "$PROJECT_ID"
+      --project "$PROJECT_ID" || return 1
 }
 
 # Step 1c: Ensure GKE Dataplane V2 is enabled for built-in NetworkPolicy isolation
@@ -182,6 +186,10 @@ verify_networkpolicy_addon() {
   return 1
 }
 execute_networkpolicy_addon() {
+  if verify_networkpolicy_addon; then
+    return 0
+  fi
+
   print_info "GKE Dataplane V2 is not enabled. Falling back to enabling Legacy GKE Network Policy (Calico)..."
 
   local active_op
@@ -195,7 +203,7 @@ execute_networkpolicy_addon() {
   gcloud container clusters update "$CLUSTER_NAME" \
       --region "$REGION" \
       --update-addons NetworkPolicy=ENABLED \
-      --project "$PROJECT_ID"
+      --project "$PROJECT_ID" || return 1
 
   active_op=$(gcloud container operations list --region="$REGION" --project="$PROJECT_ID" --filter="targetLink:$CLUSTER_NAME AND status=RUNNING" --format="value(name)" 2>/dev/null | head -n1)
   if [ -n "$active_op" ]; then
@@ -207,7 +215,7 @@ execute_networkpolicy_addon() {
   gcloud container clusters update "$CLUSTER_NAME" \
       --region "$REGION" \
       --enable-network-policy \
-      --project "$PROJECT_ID"
+      --project "$PROJECT_ID" || return 1
 
   print_warning "Legacy Network Policy enabled. Note that advanced FQDN-based NetworkPolicies will NOT be supported without Dataplane V2."
   return 0
@@ -215,8 +223,8 @@ execute_networkpolicy_addon() {
 
 # ─── Execution Pipeline ───────────────────────────────────────────────────────
 run_step "1. Connect kubectl" verify_kubeconfig execute_kubeconfig 0
-run_deploy_step "1b. Ensure Filestore CSI Driver" verify_filestore_addon execute_filestore_addon 5
-run_deploy_step "1c. Ensure NetworkPolicy Addon" verify_networkpolicy_addon execute_networkpolicy_addon 5
+run_step "1b. Ensure Filestore CSI Driver" verify_filestore_addon execute_filestore_addon 5
+run_step "1c. Ensure NetworkPolicy Addon" verify_networkpolicy_addon execute_networkpolicy_addon 5
 run_deploy_step "2. Ensure cert-manager" verify_cert_manager execute_cert_manager 5
 run_deploy_step "3. Deploy Kubernetes Operator" verify_operator execute_operator 0
 

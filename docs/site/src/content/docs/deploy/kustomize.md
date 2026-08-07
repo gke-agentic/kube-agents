@@ -41,11 +41,17 @@ The Kustomize surface at [`deploy/kustomize/platform/`](https://github.com/gke-l
 > [!IMPORTANT]
 > **GKE Dataplane V2 Requirement**: The FQDN-based network policy features under [`deploy/kustomize/gke-dataplane-v2/`](https://github.com/gke-labs/kube-agents/tree/main/deploy/kustomize/gke-dataplane-v2/) (`FQDNNetworkPolicy` custom resource `networking.gke.io/v1alpha1`) **require GKE Dataplane V2** (`--enable-dataplane-v2`) **and FQDN Network Policy enabled** (`--enable-fqdn-network-policy`) on your Google Kubernetes Engine (GKE) cluster (running GKE 1.26.4-gke.500 or 1.27.1-gke.400 or later). Standard clusters running kube-proxy without Dataplane V2 will not enforce or support `FQDNNetworkPolicy` objects.
 
-### Configuring NetworkPolicy for GKE Private Clusters & Custom CIDRs
+### Configuring NetworkPolicy for GKE Private Clusters, Dataplane V2, & Custom CIDRs
 
 The base [`networkpolicy.yaml`](https://github.com/gke-labs/kube-agents/blob/main/deploy/kustomize/platform/networkpolicy.yaml) defaults the Kubernetes API Server egress CIDR to `10.96.0.1/32` (standard Kubernetes `kubernetes.default.svc` ClusterIP).
 
-Do **not** edit base manifests directly. If your cluster uses a different service CIDR or is a GKE Private Cluster with a specific Control Plane VIP range (e.g., `172.16.0.0/28`), override the CIDR cleanly in your deployment overlay using a Kustomize patch in your `kustomization.yaml`:
+> [!IMPORTANT]
+> **Kubernetes API Server Egress on GKE Dataplane V2**: On GKE Dataplane V2, eBPF performs Destination NAT (DNAT) on `kubernetes.default.svc` ClusterIP traffic to the control plane's internal endpoint before `NetworkPolicy` evaluation. Because Kubernetes NetworkPolicy `ipBlock` evaluates the post-DNAT destination address, the default ClusterIP `10.96.0.1/32` will not match.
+>
+> - **Operator Deployments**: The operator automatically discovers the real control plane endpoint IPs (from `default/kubernetes` Endpoints, `KUBERNETES_SERVICE_HOST`, and Service ClusterIP). You can supply custom CIDRs via the `kubeagents.x-k8s.io/apiserver-cidr` annotation on the `PlatformAgent` CR or the `KUBERNETES_API_SERVER_CIDR` environment variable on the operator deployment.
+> - **Static Kustomize Deployments**: When using the Dataplane V2 overlay (`deploy/kustomize/gke-dataplane-v2`), you **must** patch rule index 5 (`/spec/egress/5/to/0/ipBlock/cidr`) with your cluster's actual control plane master / PSC endpoint IP or master IPv4 CIDR range (e.g., `172.16.0.0/28`).
+
+Do **not** edit base manifests directly. If your cluster uses a different service CIDR, is a GKE Dataplane V2 cluster, or is a GKE Private Cluster with a specific Control Plane VIP range (e.g., `172.16.0.0/28`), override the CIDR cleanly in your deployment overlay using a Kustomize patch in your `kustomization.yaml`:
 
 ```yaml
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -62,7 +68,7 @@ patches:
     patch: |-
       - op: replace
         path: /spec/egress/5/to/0/ipBlock/cidr
-        value: "172.16.0.0/28" # Replace with your GKE Control Plane VIP range or ClusterIP
+        value: "172.16.0.0/28" # Replace with your GKE Control Plane VIP range or endpoint IP
 ```
 
 > [!WARNING]

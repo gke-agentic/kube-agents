@@ -55,6 +55,7 @@ const platformAgentFinalizer = "kubeagents.x-k8s.io/finalizer"
 // PlatformAgentReconciler reconciles a PlatformAgent object
 type PlatformAgentReconciler struct {
 	client.Client
+	APIReader       client.Reader
 	Scheme          *runtime.Scheme
 	DiscoveryClient discovery.DiscoveryInterface
 
@@ -501,8 +502,15 @@ func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, ag
 		}
 	}
 
+	// Use APIReader (live non-cached reader) for default/kubernetes Endpoints to avoid
+	// starting an unconstrained cluster-wide Endpoints informer / watch cache.
+	endpointsReader := client.Reader(r.Client)
+	if r.APIReader != nil {
+		endpointsReader = r.APIReader
+	}
+
 	var k8sEndpoints corev1.Endpoints
-	if err := r.Get(ctx, types.NamespacedName{Namespace: "default", Name: "kubernetes"}, &k8sEndpoints); err == nil {
+	if err := endpointsReader.Get(ctx, types.NamespacedName{Namespace: "default", Name: "kubernetes"}, &k8sEndpoints); err == nil {
 		for _, subset := range k8sEndpoints.Subsets {
 			for _, addr := range subset.Addresses {
 				if addr.IP != "" {

@@ -70,6 +70,10 @@ spec:
             matchLabels:
               app: gemma-server
     # 6. Kubernetes API Server (Internal Control Plane)
+    # Note: On GKE Dataplane V2, traffic to kubernetes.default.svc (10.96.0.1) is DNAT'd to the
+    # control plane's internal endpoint before NetworkPolicy evaluation. The default 10.96.0.1/32
+    # rule will not match post-DNAT packets; static Kustomize deployments must patch this CIDR
+    # with their cluster's actual control plane IP or master CIDR (e.g. /spec/egress/5/to/0/ipBlock/cidr).
     - ports:
         - port: 443
           protocol: TCP
