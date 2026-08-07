@@ -962,7 +962,11 @@ spec:
         - ipBlock:
             cidr: 169.254.169.254/32
     - ports:
+        - port: 80
+          protocol: TCP
         - port: 4000
+          protocol: TCP
+        - port: 8080
           protocol: TCP
       to:
         - podSelector:
@@ -972,6 +976,8 @@ spec:
             matchLabels:
               app: standalone-replay
     - ports:
+        - port: 80
+          protocol: TCP
         - port: 8000
           protocol: TCP
       to:

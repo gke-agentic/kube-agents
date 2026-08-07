@@ -494,6 +494,13 @@ func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, ag
 		apiTargets = append(apiTargets, r.APIServerIP)
 	}
 
+	var k8sSvc corev1.Service
+	if err := r.Get(ctx, types.NamespacedName{Namespace: "default", Name: "kubernetes"}, &k8sSvc); err == nil {
+		if ip := strings.TrimSpace(k8sSvc.Spec.ClusterIP); ip != "" && ip != "None" && net.ParseIP(ip) != nil {
+			apiTargets = append(apiTargets, ip)
+		}
+	}
+
 	var k8sEndpoints corev1.Endpoints
 	if err := r.Get(ctx, types.NamespacedName{Namespace: "default", Name: "kubernetes"}, &k8sEndpoints); err == nil {
 		for _, subset := range k8sEndpoints.Subsets {

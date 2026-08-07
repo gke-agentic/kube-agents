@@ -14,7 +14,8 @@ spec:
     - Ingress
     - Egress
   ingress:
-    # 1. Internal agent traffic and dashboard access from within the agent namespace
+    # 1. Internal agent traffic from within the agent namespace
+    # (Dashboard port 9119 is conditionally added by the operator or via overlay patch)
     - from:
         - podSelector: {}
       ports:
@@ -77,9 +78,13 @@ spec:
       to:
         - ipBlock:
             cidr: 169.254.169.254/32
-    # 4. LiteLLM Gateway in the agent namespace
+    # 4. LiteLLM Gateway in the agent namespace (Service port 80, container port 4000, and standalone-replay port 8080)
     - ports:
+        - port: 80
+          protocol: TCP
         - port: 4000
+          protocol: TCP
+        - port: 8080
           protocol: TCP
       to:
         - podSelector:
@@ -88,8 +93,10 @@ spec:
         - podSelector:
             matchLabels:
               app: standalone-replay
-    # 5. vLLM Gemma Gateway in the agent namespace
+    # 5. vLLM Gemma Gateway in the agent namespace (Service port 80 and container port 8000)
     - ports:
+        - port: 80
+          protocol: TCP
         - port: 8000
           protocol: TCP
       to:

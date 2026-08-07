@@ -2530,10 +2530,12 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, d
 				},
 			},
 		},
-		// 4. LiteLLM Gateway in the agent namespace
+		// 4. LiteLLM Gateway in the agent namespace (Service port 80, container port 4000, and standalone-replay port 8080)
 		{
 			Ports: []networkingv1.NetworkPolicyPort{
+				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(80))},
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(4000))},
+				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(8080))},
 			},
 			To: []networkingv1.NetworkPolicyPeer{
 				{
@@ -2552,9 +2554,10 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, d
 				},
 			},
 		},
-		// 5. vLLM Gemma Server in the agent namespace
+		// 5. vLLM Gemma Server in the agent namespace (Service port 80 and container port 8000)
 		{
 			Ports: []networkingv1.NetworkPolicyPort{
+				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(80))},
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(8000))},
 			},
 			To: []networkingv1.NetworkPolicyPeer{
