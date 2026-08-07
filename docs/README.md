@@ -14,7 +14,7 @@ editing any doc.
 
 ## 1. Directory overview
 
-The repository tracks **163** `.md`/`.mdx` documents outside the root-level
+The repository tracks **164** `.md`/`.mdx` documents outside the root-level
 dot-directories — `docs-check-map` verifies this total against `git ls-files`
 and fails CI when it drifts. Dot-directories at the repository root
 (`.agents/`, `.github/`, `.claude/`) hold tooling — review skills, PR
@@ -43,6 +43,7 @@ kube-agents/
 │       ├── plugins/memory/multiuser_memory/       memory-plugin design README
 │       └── skills/                                SKILL.md bundles + the
 │                                                  gke-compute-classes references
+├── bench/                                         devops-bench evaluation harness README
 ├── charts/                                        canonical Helm charts (kube-agents)
 ├── docs/                                          human documentation
 │   ├── README.md                                  this map
@@ -292,6 +293,7 @@ only what the title does not say.
 
 | Path                                                | Category         | Purpose and summary                                                                                                                                                                                                 | Key topics                                    | Audience / notes                                                                          |
 | --------------------------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `bench/README.md`                                   | Component README | The evaluation harness that runs `kubernetes-sigs/devops-bench` against the Platform Agent as a pip-installed library: layout, running evals, harness registration, offline tests.                                  | Eval invocation, `BENCH_TF_ROOT` stacks       | Developers writing or running evals                                                       |
 | `charts/kube-agents/README.md`                      | Component README | Canonical GKE-oriented Helm chart (`kube-agents`) for deploying the Kube-Agents operator and PlatformAgent CR via GitOps.                                                                                           | Chart configuration, values, CRD installation | Deployment operators and GitOps pipelines                                                 |
 | `k8s-operator/README.md`                            | Component README | The Go/Kubebuilder operator managing the `PlatformAgent` CRD: prerequisites, the `make gcp-provision` workflow, teardown.                                                                                           | CRD lifecycle, provisioning entry point       | Operator developers                                                                       |
 | `k8s-operator/cmd/k8s-event-watcher/README.md`      | Component README | The Go daemon that streams, filters, and deduplicates GKE warning events and forwards unique incidents to trigger autonomous diagnostic sessions.                                                                   | Event filtering, dedup windows, snapshots     | Watcher developers/operators                                                              |
