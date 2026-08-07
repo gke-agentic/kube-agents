@@ -19,6 +19,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -76,7 +78,7 @@ type PlatformAgentReconciler struct {
 // +kubebuilder:rbac:groups=kubeagents.x-k8s.io,resources=agentplugins/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=apps,resources=deployments;statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts;persistentvolumeclaims;configmaps;services;pods,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=namespaces;nodes;events;persistentvolumes,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=namespaces;nodes;events;persistentvolumes;endpoints,verbs=get;list;watch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=node.k8s.io,resources=runtimeclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
@@ -479,7 +481,51 @@ func (r *PlatformAgentReconciler) reconcileService(ctx context.Context, agent *a
 }
 
 func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, agent *agentv1alpha1.PlatformAgent) error {
-	netpol := buildNetworkPolicy(agent, r.APIServerIP)
+	dnsClusterIP := "10.96.0.10"
+	var kubeDnsSvc corev1.Service
+	if err := r.Get(ctx, types.NamespacedName{Namespace: "kube-system", Name: "kube-dns"}, &kubeDnsSvc); err == nil {
+		if ip := strings.TrimSpace(kubeDnsSvc.Spec.ClusterIP); ip != "" && ip != "None" && net.ParseIP(ip) != nil {
+			dnsClusterIP = ip
+		}
+	}
+
+	var apiTargets []string
+	if r.APIServerIP != "" {
+		apiTargets = append(apiTargets, r.APIServerIP)
+	}
+
+	var k8sEndpoints corev1.Endpoints
+	if err := r.Get(ctx, types.NamespacedName{Namespace: "default", Name: "kubernetes"}, &k8sEndpoints); err == nil {
+		for _, subset := range k8sEndpoints.Subsets {
+			for _, addr := range subset.Addresses {
+				if addr.IP != "" {
+					apiTargets = append(apiTargets, addr.IP)
+				}
+			}
+		}
+	}
+
+	if agent.Annotations != nil {
+		if customCIDRs, ok := agent.Annotations["kubeagents.x-k8s.io/apiserver-cidr"]; ok {
+			for _, cidr := range strings.Split(customCIDRs, ",") {
+				cidr = strings.TrimSpace(cidr)
+				if cidr != "" {
+					apiTargets = append(apiTargets, cidr)
+				}
+			}
+		}
+	}
+
+	if envCIDR := os.Getenv("KUBERNETES_API_SERVER_CIDR"); envCIDR != "" {
+		for _, cidr := range strings.Split(envCIDR, ",") {
+			cidr = strings.TrimSpace(cidr)
+			if cidr != "" {
+				apiTargets = append(apiTargets, cidr)
+			}
+		}
+	}
+
+	netpol := buildNetworkPolicy(agent, apiTargets, dnsClusterIP)
 	if err := ctrl.SetControllerReference(agent, netpol, r.Scheme); err != nil {
 		return fmt.Errorf("failed to set controller reference on NetworkPolicy %s/%s: %w", netpol.Namespace, netpol.Name, err)
 	}

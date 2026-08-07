@@ -2355,27 +2355,62 @@ func isDashboardEnabled(agent *agentv1alpha1.PlatformAgent) bool {
 
 // buildNetworkPolicy generates the restrictive NetworkPolicy manifest for PlatformAgent.
 // Note: This is the operator-generated version; Kustomize static deployments use deploy/kustomize/platform/networkpolicy.yaml.
-func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiHost string) *networkingv1.NetworkPolicy {
+func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, dnsClusterIP string) *networkingv1.NetworkPolicy {
 	udp := corev1.ProtocolUDP
 	tcp := corev1.ProtocolTCP
 
-	// Strip brackets from IPv6 addresses (e.g. "[fd00::1]" -> "fd00::1")
-	apiHost = strings.Trim(apiHost, "[]")
-	if apiHost == "" || net.ParseIP(apiHost) == nil {
-		apiHost = "10.96.0.1"
+	dnsClusterIP = strings.Trim(dnsClusterIP, "[]")
+	if dnsClusterIP == "" || net.ParseIP(dnsClusterIP) == nil {
+		dnsClusterIP = "10.96.0.10"
 	}
-	apiCidr := apiHost + "/32"
-	if strings.Contains(apiHost, ":") {
-		apiCidr = apiHost + "/128"
+	dnsCidr := dnsClusterIP + "/32"
+	if strings.Contains(dnsClusterIP, ":") {
+		dnsCidr = dnsClusterIP + "/128"
 	}
 
-	// Derive /16 subnet from apiHost for pre-DNAT DNS Service CIDR matching (e.g. "34.118.224.1" -> "34.118.0.0/16")
-	serviceSubnet := "10.96.0.0/16"
-	if ip := net.ParseIP(apiHost); ip != nil && ip.To4() != nil {
-		parts := strings.Split(ip.String(), ".")
-		if len(parts) == 4 {
-			serviceSubnet = fmt.Sprintf("%s.%s.0.0/16", parts[0], parts[1])
+	var formattedAPICIDRs []string
+	for _, raw := range apiCIDRs {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
 		}
+		if strings.Contains(raw, "/") {
+			if _, _, err := net.ParseCIDR(raw); err == nil {
+				formattedAPICIDRs = append(formattedAPICIDRs, raw)
+			}
+			continue
+		}
+		rawIP := strings.Trim(raw, "[]")
+		ip := net.ParseIP(rawIP)
+		if ip == nil {
+			continue
+		}
+		if ip.To4() != nil {
+			formattedAPICIDRs = append(formattedAPICIDRs, rawIP+"/32")
+		} else {
+			formattedAPICIDRs = append(formattedAPICIDRs, rawIP+"/128")
+		}
+	}
+	if len(formattedAPICIDRs) == 0 {
+		formattedAPICIDRs = []string{"10.96.0.1/32"}
+	}
+
+	seenCIDRs := make(map[string]bool)
+	var finalAPICIDRs []string
+	for _, cidr := range formattedAPICIDRs {
+		if !seenCIDRs[cidr] {
+			seenCIDRs[cidr] = true
+			finalAPICIDRs = append(finalAPICIDRs, cidr)
+		}
+	}
+
+	var apiPeers []networkingv1.NetworkPolicyPeer
+	for _, cidr := range finalAPICIDRs {
+		apiPeers = append(apiPeers, networkingv1.NetworkPolicyPeer{
+			IPBlock: &networkingv1.IPBlock{
+				CIDR: cidr,
+			},
+		})
 	}
 
 	ingressRules := []networkingv1.NetworkPolicyIngressRule{
@@ -2453,18 +2488,10 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiHost string) *net
 			},
 		},
 		{
-			// Allow Service ClusterIP queries so pre-DNAT DNS queries are not dropped on Calico
 			IPBlock: &networkingv1.IPBlock{
-				CIDR: "10.96.0.0/16",
+				CIDR: dnsCidr,
 			},
 		},
-	}
-	if serviceSubnet != "10.96.0.0/16" {
-		dnsPeers = append(dnsPeers, networkingv1.NetworkPolicyPeer{
-			IPBlock: &networkingv1.IPBlock{
-				CIDR: serviceSubnet,
-			},
-		})
 	}
 
 	egressRules := []networkingv1.NetworkPolicyEgressRule{
@@ -2540,21 +2567,13 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiHost string) *net
 				},
 			},
 		},
-		// 6. Kubernetes API Server (Internal Control Plane)
-		// Note: On GKE Dataplane V2 clusters, Service/ClusterIP ipBlocks are inert.
-		// A companion CiliumNetworkPolicy with 'toEntities: [kube-apiserver]' is required.
+		// 6. Kubernetes API Server (Control Plane Endpoints and ClusterIP VIP)
 		{
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(443))},
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(6443))},
 			},
-			To: []networkingv1.NetworkPolicyPeer{
-				{
-					IPBlock: &networkingv1.IPBlock{
-						CIDR: apiCidr,
-					},
-				},
-			},
+			To: apiPeers,
 		},
 		// 7. External HTTPS (Google APIs, GitHub, etc.)
 		{

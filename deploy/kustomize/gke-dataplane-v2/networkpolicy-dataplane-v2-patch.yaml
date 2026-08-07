@@ -5,8 +5,7 @@ metadata:
   namespace: kubeagents-system
 spec:
   egress:
-    # 1. Cluster DNS (Scoped specifically to CoreDNS and NodeLocal DNSCache pods in kube-system)
-    # Note: On DPv2, Service ClusterIP ipBlocks are inert, so 10.96.0.0/16 is omitted.
+    # 1. Cluster DNS (Scoped to CoreDNS and NodeLocal DNSCache in kube-system)
     - ports:
         - port: 53
           protocol: UDP
@@ -27,7 +26,9 @@ spec:
               k8s-app: node-local-dns
         - ipBlock:
             cidr: 169.254.20.10/32
-    # 2a. GCP Workload Identity / Metadata Server (Link-Local & Daemon pod)
+        - ipBlock:
+            cidr: 10.96.0.10/32
+    # 2. GCP Workload Identity / Metadata Server (Link-Local & Daemon pod)
     - ports:
         - port: 80
           protocol: TCP
@@ -36,14 +37,14 @@ spec:
       to:
         - ipBlock:
             cidr: 169.254.169.254/32
-    # 2b. GKE Workload Identity Host Network Daemon (Port 988 only)
+    # 3. GKE Workload Identity Host Network Daemon (Port 988 only)
     - ports:
         - port: 988
           protocol: TCP
       to:
         - ipBlock:
             cidr: 169.254.169.254/32
-    # 3. LiteLLM Gateway in the agent namespace
+    # 4. LiteLLM Gateway in the agent namespace
     - ports:
         - port: 4000
           protocol: TCP
@@ -54,7 +55,7 @@ spec:
         - podSelector:
             matchLabels:
               app: standalone-replay
-    # 3b. vLLM Gemma Gateway in the agent namespace
+    # 5. vLLM Gemma Gateway in the agent namespace
     - ports:
         - port: 8000
           protocol: TCP
@@ -62,21 +63,19 @@ spec:
         - podSelector:
             matchLabels:
               app: gemma-server
-    # 4. Kubernetes API Server is handled by companion CiliumNetworkPolicy (toEntities: [kube-apiserver])
-    # 5. External HTTPS (Google APIs, GitHub, etc.)
+    # 6. Kubernetes API Server (Internal Control Plane)
     - ports:
         - port: 443
           protocol: TCP
+        - port: 6443
+          protocol: TCP
       to:
         - ipBlock:
-            cidr: 0.0.0.0/0
-            except:
-              - 10.0.0.0/8
-              - 172.16.0.0/12
-              - 192.168.0.0/16
-              - 100.64.0.0/10
-              - 169.254.0.0/16
-    # 6. GKE Managed OpenTelemetry Collector (Trace Export)
+            cidr: 10.96.0.1/32
+    # Note: External HTTPS (0.0.0.0/0:443) is deliberately omitted here so that
+    # the companion FQDNNetworkPolicy (networking.gke.io/v1alpha1) strictly enforces
+    # domain-level egress filtering without being bypassed by an open IP block.
+    # 7. GKE Managed OpenTelemetry Collector (Trace Export)
     - ports:
         - port: 4317
           protocol: TCP
@@ -86,7 +85,7 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: gke-managed-otel
-    # 7. GitHub Token Minter (Minty)
+    # 8. GitHub Token Minter (Minty)
     - ports:
         - port: 8080
           protocol: TCP

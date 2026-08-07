@@ -592,7 +592,7 @@ func TestBuildNetworkPolicy(t *testing.T) {
 		},
 	}
 
-	netpol := buildNetworkPolicy(agent, "")
+	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10")
 	if netpol.Name != "test-agent-gateway-netpol" {
 		t.Errorf("expected Name 'test-agent-gateway-netpol', got %s", netpol.Name)
 	}
@@ -701,7 +701,7 @@ func TestBuildNetworkPolicy_DashboardDisabled(t *testing.T) {
 		},
 	}
 
-	netpol := buildNetworkPolicy(agent, "")
+	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10")
 	if len(netpol.Spec.Ingress) != 2 {
 		t.Fatalf("expected 2 Ingress rules, got %d", len(netpol.Spec.Ingress))
 	}
@@ -718,12 +718,12 @@ func TestBuildNetworkPolicy_CustomAPIHost(t *testing.T) {
 		},
 	}
 
-	netpolIPv4 := buildNetworkPolicy(agent, "10.0.0.5")
+	netpolIPv4 := buildNetworkPolicy(agent, []string{"10.0.0.5"}, "10.96.0.10")
 	if netpolIPv4.Spec.Egress[5].To[0].IPBlock.CIDR != "10.0.0.5/32" {
 		t.Errorf("expected IPv4 CIDR '10.0.0.5/32', got %s", netpolIPv4.Spec.Egress[5].To[0].IPBlock.CIDR)
 	}
 
-	netpolIPv6 := buildNetworkPolicy(agent, "fd00::1")
+	netpolIPv6 := buildNetworkPolicy(agent, []string{"fd00::1"}, "10.96.0.10")
 	if netpolIPv6.Spec.Egress[5].To[0].IPBlock.CIDR != "fd00::1/128" {
 		t.Errorf("expected IPv6 CIDR 'fd00::1/128', got %s", netpolIPv6.Spec.Egress[5].To[0].IPBlock.CIDR)
 	}
@@ -738,48 +738,58 @@ func TestBuildNetworkPolicy_InvalidAPIHost(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		apiHost  string
-		wantCIDR string
+		name      string
+		apiHosts  []string
+		wantCIDRs []string
 	}{
 		{
-			name:     "empty string defaults to 10.96.0.1/32",
-			apiHost:  "",
-			wantCIDR: "10.96.0.1/32",
+			name:      "empty list defaults to 10.96.0.1/32",
+			apiHosts:  nil,
+			wantCIDRs: []string{"10.96.0.1/32"},
 		},
 		{
-			name:     "valid IPv4",
-			apiHost:  "10.0.0.5",
-			wantCIDR: "10.0.0.5/32",
+			name:      "valid IPv4",
+			apiHosts:  []string{"10.0.0.5"},
+			wantCIDRs: []string{"10.0.0.5/32"},
 		},
 		{
-			name:     "valid IPv6",
-			apiHost:  "fd00::1",
-			wantCIDR: "fd00::1/128",
+			name:      "valid IPv6",
+			apiHosts:  []string{"fd00::1"},
+			wantCIDRs: []string{"fd00::1/128"},
 		},
 		{
-			name:     "bracket-wrapped IPv6 stripped to valid",
-			apiHost:  "[fd00::1]",
-			wantCIDR: "fd00::1/128",
+			name:      "bracket-wrapped IPv6 stripped to valid",
+			apiHosts:  []string{"[fd00::1]"},
+			wantCIDRs: []string{"fd00::1/128"},
 		},
 		{
-			name:     "hostname falls back to default",
-			apiHost:  "kubernetes.default.svc",
-			wantCIDR: "10.96.0.1/32",
+			name:      "hostname falls back to default",
+			apiHosts:  []string{"kubernetes.default.svc"},
+			wantCIDRs: []string{"10.96.0.1/32"},
 		},
 		{
-			name:     "garbage falls back to default",
-			apiHost:  "not-an-ip",
-			wantCIDR: "10.96.0.1/32",
+			name:      "garbage falls back to default",
+			apiHosts:  []string{"not-an-ip"},
+			wantCIDRs: []string{"10.96.0.1/32"},
+		},
+		{
+			name:      "multiple endpoints including clusterIP and endpoints",
+			apiHosts:  []string{"10.96.0.1", "172.16.0.2", "172.16.0.3"},
+			wantCIDRs: []string{"10.96.0.1/32", "172.16.0.2/32", "172.16.0.3/32"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			netpol := buildNetworkPolicy(agent, tt.apiHost)
-			gotCIDR := netpol.Spec.Egress[5].To[0].IPBlock.CIDR
-			if gotCIDR != tt.wantCIDR {
-				t.Errorf("apiHost=%q: expected CIDR %q, got %q", tt.apiHost, tt.wantCIDR, gotCIDR)
+			netpol := buildNetworkPolicy(agent, tt.apiHosts, "10.96.0.10")
+			var gotCIDRs []string
+			for _, peer := range netpol.Spec.Egress[5].To {
+				if peer.IPBlock != nil {
+					gotCIDRs = append(gotCIDRs, peer.IPBlock.CIDR)
+				}
+			}
+			if !reflect.DeepEqual(gotCIDRs, tt.wantCIDRs) {
+				t.Errorf("apiHosts=%v: expected CIDRs %v, got %v", tt.apiHosts, tt.wantCIDRs, gotCIDRs)
 			}
 		})
 	}
@@ -793,8 +803,8 @@ func TestBuildNetworkPolicy_Idempotent(t *testing.T) {
 		},
 	}
 
-	np1 := buildNetworkPolicy(agent, "10.0.0.5")
-	np2 := buildNetworkPolicy(agent, "10.0.0.5")
+	np1 := buildNetworkPolicy(agent, []string{"10.0.0.5"}, "10.96.0.10")
+	np2 := buildNetworkPolicy(agent, []string{"10.0.0.5"}, "10.96.0.10")
 	if !reflect.DeepEqual(np1.Spec, np2.Spec) {
 		t.Errorf("buildNetworkPolicy is not idempotent: consecutive calls produced different specs")
 	}
@@ -807,7 +817,7 @@ func TestBuildNetworkPolicy_ExternalHTTPSExceptList(t *testing.T) {
 			Namespace: "test-ns",
 		},
 	}
-	netpol := buildNetworkPolicy(agent, "")
+	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10")
 
 	var httpsRule *networkingv1.NetworkPolicyEgressRule
 	for i := range netpol.Spec.Egress {
@@ -847,7 +857,7 @@ func TestBuildNetworkPolicy_ExternalHTTPSExceptList(t *testing.T) {
 	}
 }
 
-func TestBuildNetworkPolicy_DynamicServiceCIDR(t *testing.T) {
+func TestBuildNetworkPolicy_ClusterDNS(t *testing.T) {
 	agent := &agentv1alpha1.PlatformAgent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-agent",
@@ -855,17 +865,17 @@ func TestBuildNetworkPolicy_DynamicServiceCIDR(t *testing.T) {
 		},
 	}
 
-	netpolGKE := buildNetworkPolicy(agent, "34.118.224.1")
+	netpolGKE := buildNetworkPolicy(agent, nil, "34.118.224.10")
 	dnsRule := netpolGKE.Spec.Egress[0]
-	foundGKESubnet := false
+	foundExactClusterIP := false
 	for _, peer := range dnsRule.To {
-		if peer.IPBlock != nil && peer.IPBlock.CIDR == "34.118.0.0/16" {
-			foundGKESubnet = true
+		if peer.IPBlock != nil && peer.IPBlock.CIDR == "34.118.224.10/32" {
+			foundExactClusterIP = true
 			break
 		}
 	}
-	if !foundGKESubnet {
-		t.Errorf("expected 34.118.0.0/16 dynamically derived in DNS egress peers for GKE API server IP 34.118.224.1")
+	if !foundExactClusterIP {
+		t.Errorf("expected 34.118.224.10/32 exact clusterIP in DNS egress peers")
 	}
 }
 

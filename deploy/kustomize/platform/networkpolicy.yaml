@@ -60,7 +60,7 @@ spec:
         - ipBlock:
             cidr: 169.254.20.10/32
         - ipBlock:
-            cidr: 10.96.0.0/16
+            cidr: 10.96.0.10/32
     # 2. GCP Workload Identity / Metadata Server (Link-Local & Daemon pod)
     - ports:
         - port: 80
@@ -97,8 +97,6 @@ spec:
             matchLabels:
               app: gemma-server
     # 6. Kubernetes API Server (Internal Control Plane)
-    # Note: On GKE Dataplane V2 clusters, Service/ClusterIP ipBlocks are inert.
-    # A companion CiliumNetworkPolicy with 'toEntities: [kube-apiserver]' is required.
     - ports:
         - port: 443
           protocol: TCP
