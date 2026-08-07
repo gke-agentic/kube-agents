@@ -20,6 +20,12 @@ SECRET_PATTERNS = [
     # Specific Cloud API Keys (GCP, AWS)
     (re.compile(r'AIzaSy[A-Za-z0-9\-_]{33}'), r'[REDACTED_GCP_API_KEY]'),
     (re.compile(r'AKIA[0-9A-Z]{16}'), r'[REDACTED_AWS_KEY]'),
+    # Self-identifying tokens (GitHub, GCP OAuth, Slack, JWTs)
+    (re.compile(r'gh[pousr]_[A-Za-z0-9]{16,}'), r'[REDACTED_GITHUB_TOKEN]'),
+    (re.compile(r'github_pat_[A-Za-z0-9_]{20,}'), r'[REDACTED_GITHUB_TOKEN]'),
+    (re.compile(r'ya29\.[A-Za-z0-9._\-]{20,}'), r'[REDACTED_GCP_TOKEN]'),
+    (re.compile(r'xox[baprs]-[A-Za-z0-9\-]{10,}'), r'[REDACTED_SLACK_TOKEN]'),
+    (re.compile(r'eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}'), r'[REDACTED_JWT]'),
     # Private keys
     (re.compile(r'-----BEGIN[A-Z\s]+PRIVATE KEY-----[\s\S]*?-----END[A-Z\s]+PRIVATE KEY-----'), r'[REDACTED_PRIVATE_KEY]'),
     (re.compile(r'"private_key"\s*:\s*"[^"]+"'), r'"private_key": "[REDACTED_PRIVATE_KEY]"'),
@@ -64,7 +70,7 @@ def parse_repo_url(url: str) -> str:
 
 
 def get_repo() -> str:
-    """Dynamically resolves the target GitOps repository from SETTINGS.md or git remote origin."""
+    """Dynamically resolves the target GitOps repository from SETTINGS.md, git remote origin, or environment."""
     settings_path = "/opt/data/SETTINGS.md"
     if os.path.exists(settings_path):
         try:
@@ -72,6 +78,8 @@ def get_repo() -> str:
                 for line in f:
                     if "Git Repo:" in line:
                         raw = line.split("Git Repo:")[-1].replace("*", "").strip()
+                        if raw.lower() in ("none", ""):
+                            continue
                         repo = parse_repo_url(raw)
                         if repo:
                             return repo
@@ -84,7 +92,13 @@ def get_repo() -> str:
         if url:
             return url
 
-    return "gke-labs/kube-agents"
+    env_repo = os.environ.get("GITHUB_REPOSITORY") or os.environ.get("GITOPS_REPO")
+    if env_repo:
+        url = parse_repo_url(env_repo.strip())
+        if url:
+            return url
+
+    return ""
 
 
 def get_agent_target() -> Tuple[str, str, str]:
@@ -183,7 +197,7 @@ def diagnose() -> Dict[str, Any]:
 
                     unhealthy_reasons = []
                     for cs in c_statuses:
-                        for state_key in ["state", "lastState"]:
+                        for state_key in ["state"]:
                             st = cs.get(state_key, {})
                             term = st.get("terminated", {})
                             if term.get("reason") and term.get("reason") != "Completed":
@@ -200,7 +214,7 @@ def diagnose() -> Dict[str, Any]:
 
                     restart_count = max([cs.get("restartCount", 0) for cs in c_statuses], default=0)
                     err_logs = []
-                    if not ready or p_phase not in ["Running", "Succeeded"] or unhealthy_reasons:
+                    if (p_phase == "Running" and not ready) or p_phase not in ["Running", "Succeeded"] or unhealthy_reasons:
                         overall = "DEGRADED"
                         err_logs = get_pod_error_logs(target_ns, p_name)
 
@@ -353,25 +367,29 @@ def diagnose() -> Dict[str, Any]:
     # 7. Live GitHub Open PRs & Issues Telemetry (Filtered by 'sre-incident-report' string in description, latest 100)
     repo = get_repo()
     open_prs = []
-    code, pr_json, err_pr = run_cmd(["gh", "api", f"repos/{repo}/pulls?state=open&per_page=100", "--jq", "[.[] | select((.body // \"\") | contains(\"sre-incident-report\")) | {number, title, body}]"])
-    if code == 0 and pr_json:
-        try:
-            open_prs = json.loads(pr_json)
-        except Exception as e:
-            telemetry["errors"].append(f"Parsing GitHub open PRs json failed: {str(e)}")
-    elif code != 0 and err_pr:
-        telemetry["errors"].append(f"gh api pulls list failed (code {code}): {err_pr}")
-    telemetry["open_prs"] = open_prs
-
     open_issues = []
-    code_iss, iss_json, err_iss = run_cmd(["gh", "api", f"repos/{repo}/issues?state=open&per_page=100", "--jq", "[.[] | select((.pull_request == null) and ((.body // \"\") | contains(\"sre-incident-report\"))) | {number, title, body}]"])
-    if code_iss == 0 and iss_json:
-        try:
-            open_issues = json.loads(iss_json)
-        except Exception as e:
-            telemetry["errors"].append(f"Parsing GitHub open issues json failed: {str(e)}")
-    elif code_iss != 0 and err_iss:
-        telemetry["errors"].append(f"gh api issues list failed (code {code_iss}): {err_iss}")
+    if not repo:
+        telemetry["errors"].append("Target GitOps repository is not configured in /opt/data/SETTINGS.md, git remote, or GITHUB_REPOSITORY.")
+    else:
+        code, pr_json, err_pr = run_cmd(["gh", "api", f"repos/{repo}/pulls?state=open&per_page=100", "--jq", "[.[] | select((.body // \"\") | contains(\"sre-incident-report\")) | {number, title, body}]"])
+        if code == 0 and pr_json:
+            try:
+                open_prs = json.loads(pr_json)
+            except Exception as e:
+                telemetry["errors"].append(f"Parsing GitHub open PRs json failed: {str(e)}")
+        elif code != 0 and err_pr:
+            telemetry["errors"].append(f"gh api pulls list failed (code {code}): {err_pr}")
+
+        code_iss, iss_json, err_iss = run_cmd(["gh", "api", f"repos/{repo}/issues?state=open&per_page=100", "--jq", "[.[] | select((.pull_request == null) and ((.body // \"\") | contains(\"sre-incident-report\"))) | {number, title, body}]"])
+        if code_iss == 0 and iss_json:
+            try:
+                open_issues = json.loads(iss_json)
+            except Exception as e:
+                telemetry["errors"].append(f"Parsing GitHub open issues json failed: {str(e)}")
+        elif code_iss != 0 and err_iss:
+            telemetry["errors"].append(f"gh api issues list failed (code {code_iss}): {err_iss}")
+
+    telemetry["open_prs"] = open_prs
     telemetry["open_issues"] = open_issues
 
     telemetry["status"] = overall
@@ -393,6 +411,14 @@ def sanitize_component_path(component: str) -> str:
 def create_gitops_pr(component: str, root_cause: str, error_logs: str, proposed_fix: str) -> Dict[str, Any]:
     """Generates a dynamic GitOps Pull Request or GitHub Issue with code-level deduplication and secret redaction."""
     repo = get_repo()
+    if not repo:
+        return {
+            "type": "error",
+            "success": False,
+            "output": "No GitOps repository configured in /opt/data/SETTINGS.md, git remote, or GITHUB_REPOSITORY.",
+            "repo": ""
+        }
+
     slug_path = sanitize_component_path(component)
 
     # Redact secrets deterministically from all LLM-supplied input fields before formatting
@@ -439,7 +465,7 @@ def create_gitops_pr(component: str, root_cause: str, error_logs: str, proposed_
     ts = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
     branch_name = f"fix/{slug_path}-{ts}"
 
-    title = f"fix(sre): declarative fix for {clean_component}"
+    title = f"docs(sre): incident report for {clean_component}"
     title_iss = f"[SRE Incident] {clean_component}: automated diagnosis"
 
     body = f"""### 🚨 Autonomous SRE Declarative Incident Report
@@ -453,7 +479,7 @@ def create_gitops_pr(component: str, root_cause: str, error_logs: str, proposed_
 ```
 - **Proposed GitOps Solution:** {clean_proposed_fix}
 
-*Human-in-the-loop approval: Please review the LLM-diagnosed manifest changes and merge to deploy.*"""
+*Human-in-the-loop approval: Please review the SRE diagnostic report and suggested remediation.*"""
 
     # Check if GitHub Issues are enabled on the repository
     code_has_issues, out_has_issues, _ = run_cmd(["gh", "api", f"repos/{repo}", "--jq", ".has_issues"], timeout=15)
@@ -499,7 +525,7 @@ def create_gitops_pr(component: str, root_cause: str, error_logs: str, proposed_
         return {"type": "pull_request", "success": False, "output": f"Failed to create branch ref '{branch_name}': {err_ref}", "repo": repo, "branch": branch_name}
 
     # 3. Create a clean incident report file (0 code/manifest lines changed)
-    report_path = f"docs/incidents/{slug_path}-{ts}.md"
+    report_path = f".incidents/{slug_path}-{ts}.md"
     report_content = f"# SRE Incident Report: {clean_component}\n\n{body}\n"
     report_b64 = base64.b64encode(report_content.encode("utf-8")).decode("utf-8")
     code_put, _, err_put = run_cmd([

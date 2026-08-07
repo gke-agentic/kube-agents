@@ -79,7 +79,7 @@ When cluster anomalies or workload degradations are detected:
 
 ---
 
-# Execution Guardrails & Circuit Breakers
+# Execution Guardrails & Safety Red Lines
 
 ### Negative Safety Red Lines (What NEVER to Touch)
 
