@@ -66,7 +66,7 @@ RUN /opt/hermes/.venv/bin/python3 -c "import pathlib; p = pathlib.Path('/opt/her
 # ledger link into ".../is" in chat. Swap both slices for a whitespace-boundary
 # clip that also stops discarding every line after the first. See the module
 # docstring in deploy/docker/patches/kanban_handoff_clip.py.
-COPY deploy/docker/patches/kanban_handoff_clip.py /opt/hermes/gateway/kanban_handoff_clip.py
+COPY --chmod=0644 deploy/docker/patches/kanban_handoff_clip.py /opt/hermes/gateway/kanban_handoff_clip.py
 RUN /opt/hermes/.venv/bin/python3 -c "import pathlib; p = pathlib.Path('/opt/hermes/gateway/kanban_watchers.py'); c = p.read_text(); t1 = 'h = lines[0][:200] if lines else payload_summary[:200]'; t2 = 'r = lines[0][:160] if lines else task.result[:160]'; exit(1) if (t1 not in c or t2 not in c) else None; c = c.replace(t1, 'h = _clip_handoff(payload_summary)').replace(t2, 'r = _clip_handoff(task.result)'); p.write_text(c + '\n\n# kube-agents patch: see gateway/kanban_handoff_clip.py\nfrom gateway.kanban_handoff_clip import clip_handoff as _clip_handoff\n')" && \
     grep -q "h = _clip_handoff(payload_summary)" /opt/hermes/gateway/kanban_watchers.py && \
     grep -q "r = _clip_handoff(task.result)" /opt/hermes/gateway/kanban_watchers.py && \
@@ -84,7 +84,7 @@ RUN /opt/hermes/.venv/bin/python3 -c "import pathlib; p = pathlib.Path('/opt/her
 # the run action json.dumps it, and the caller got a TypeError in place of the
 # report it had waited six minutes for.
 # See the module docstring in deploy/docker/patches/cron_run_scope.py.
-COPY deploy/docker/patches/cron_run_scope.py /opt/hermes/tools/cron_run_scope.py
+COPY --chmod=0644 deploy/docker/patches/cron_run_scope.py /opt/hermes/tools/cron_run_scope.py
 COPY deploy/docker/patches/apply_cron_run_scope.py /tmp/apply_cron_run_scope.py
 COPY deploy/docker/patches/verify_cron_run_scope.py /tmp/verify_cron_run_scope.py
 RUN /opt/hermes/.venv/bin/python3 /tmp/apply_cron_run_scope.py /opt/hermes && \
@@ -235,7 +235,7 @@ COPY agents/platform/plugins/ /opt/hermes/plugins/
 # /opt/hermes/plugins come from the base image, the rest are COPYed above.
 RUN set -eu; \
     chown -R hermes:hermes /opt/defaults /opt/hermes/skills /opt/hermes/plugins /opt/cluster-template /opt/platform-template; \
-    for d in /opt/defaults /opt/hermes/skills /opt/hermes/plugins /opt/cluster-template /opt/platform-template; do \
+    for d in /opt/defaults /opt/hermes/skills /opt/hermes/plugins /opt/hermes/gateway /opt/hermes/tools /opt/cluster-template /opt/platform-template; do \
         find "$d" -type d -exec chmod 755 {} + ; \
         find "$d" -type f -exec chmod 644 {} + ; \
     done; \
