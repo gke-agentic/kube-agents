@@ -12,30 +12,20 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import Path
+
+# Append scripts paths so shared helpers resolve in pod and locally
+sys.path.append("/opt/defaults/scripts")
+sys.path.append("/opt/data/scripts")
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
+
+from gitops_workspace import get_managed_repos
+
 SCRATCH_DIR = "/opt/data/scratch"
 
 # Shell convention for "command not found", reused so a missing binary stays
 # distinguishable from a gh command that ran and failed.
 GH_MISSING_RC = 127
-
-
-def get_managed_repos() -> list:
-    """Extracts managed repositories from the state ConfigMap."""
-    cfg_name = os.environ.get("GITHUB_STATE_CONFIGMAP", "platform-agent-github-state")
-    ns = os.environ.get("KUBE_DEFAULT_NAMESPACE", "kubeagents-system")
-    try:
-        cm_res = subprocess.run(
-            ["kubectl", "get", "configmap", cfg_name, "-n", ns, "-o", "json"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        cm = json.loads(cm_res.stdout)
-        repos_str = cm.get("data", {}).get("managed_repos", "")
-        repos = [r.strip() for r in repos_str.split(",") if r.strip()]
-        return repos
-    except Exception:
-        return []
 
 def run_gh(args: list, check: bool = True) -> subprocess.CompletedProcess:
     """Runs a gh CLI command safely without shell escaping or ampersand backgrounding issues."""
