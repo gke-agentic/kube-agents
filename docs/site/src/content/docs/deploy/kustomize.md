@@ -17,6 +17,9 @@ deploy/
 │   └── merge_configs.py
 ├── kustomize/
 │   ├── gke-dataplane-v2/       # GKE Dataplane V2 FQDN network policy overlay
+│   │   ├── fqdn-networkpolicy.yaml
+│   │   ├── kustomization.yaml
+│   │   └── networkpolicy-dataplane-v2-patch.yaml
 │   └── platform/
 │       ├── kustomization.yaml    # Kustomize entrypoint
 │       ├── networkpolicy.yaml    # Ingress/egress NetworkPolicy for Platform Agent
