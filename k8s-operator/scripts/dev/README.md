@@ -28,8 +28,10 @@ Before running the script, you must have the Google Cloud CLI (`gcloud`) install
 
 #### Options
 
-- `--admin`: Grants extended IAM roles for full autonomous `provision.sh` / `teardown.sh` lifecycle operations.
-- `ADMIN=true`: Can also be enabled via environment variable.
+- `--admin`: Grants extended IAM roles (`roles/iam.serviceAccountAdmin`, `roles/resourcemanager.projectIamAdmin`, `roles/pubsub.admin`) for full autonomous `provision.sh` / `teardown.sh` lifecycle operations.
+- `ADMIN=true`: Environment variable alternative to `--admin`.
+
+> **Note:** IAM role grants made with `--admin` are additive and remain assigned to the service account in your GCP project until manually revoked.
 
 #### Example Execution
 
