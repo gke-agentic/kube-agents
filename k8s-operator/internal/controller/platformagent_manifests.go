@@ -2191,26 +2191,77 @@ func buildDefaultVolumes(agent *agentv1alpha1.PlatformAgent) []corev1.Volume {
 	}
 }
 
-// buildPlatformExplorerRole generates the custom ClusterRole manifest
-func buildPlatformExplorerRole(agent *agentv1alpha1.PlatformAgent) *rbacv1.ClusterRole {
+// buildMinimalPlatformRole generates the minimal read-only audit ClusterRole manifest
+func buildMinimalPlatformRole(agent *agentv1alpha1.PlatformAgent) *rbacv1.ClusterRole {
 	return &rbacv1.ClusterRole{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "rbac.authorization.k8s.io/v1",
 			Kind:       "ClusterRole",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name: fmt.Sprintf("kubeagents:explorer:%s:%s", agent.Namespace, agent.Name),
+			Name: fmt.Sprintf("kubeagents:minimal:%s:%s", agent.Namespace, agent.Name),
 		},
 		Rules: []rbacv1.PolicyRule{
 			{
 				APIGroups: []string{""},
-				Resources: []string{"nodes", "pods", "namespaces"},
+				Resources: []string{"nodes", "namespaces", "pods", "pods/log", "services", "endpoints", "events", "persistentvolumes", "persistentvolumeclaims", "resourcequotas", "limitranges", "configmaps", "serviceaccounts"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
+			{
+				APIGroups: []string{"metrics.k8s.io"},
+				Resources: []string{"nodes", "pods"},
 				Verbs:     []string{"get", "list"},
+			},
+			{
+				APIGroups: []string{"apps"},
+				Resources: []string{"deployments", "statefulsets", "daemonsets", "replicasets"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
+			{
+				APIGroups: []string{"batch"},
+				Resources: []string{"jobs", "cronjobs"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
+			{
+				APIGroups: []string{"networking.k8s.io"},
+				Resources: []string{"networkpolicies", "ingresses"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
+			{
+				APIGroups: []string{"autoscaling"},
+				Resources: []string{"horizontalpodautoscalers"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
+			{
+				APIGroups: []string{"policy"},
+				Resources: []string{"poddisruptionbudgets"},
+				Verbs:     []string{"get", "list", "watch"},
 			},
 			{
 				APIGroups: []string{"apiextensions.k8s.io"},
 				Resources: []string{"customresourcedefinitions"},
-				Verbs:     []string{"get", "list"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
+		},
+	}
+}
+
+// buildPlatformLocalRole generates a namespace-scoped Role manifest for managing PlatformAgent CRs
+func buildPlatformLocalRole(agent *agentv1alpha1.PlatformAgent) *rbacv1.Role {
+	return &rbacv1.Role{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "rbac.authorization.k8s.io/v1",
+			Kind:       "Role",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("kubeagents:local:%s:%s", agent.Namespace, agent.Name),
+			Namespace: agent.Namespace,
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{"kubeagents.x-k8s.io"},
+				Resources: []string{"platformagents", "platformagents/status"},
+				Verbs:     []string{"get", "list", "watch"},
 			},
 		},
 	}
@@ -2230,6 +2281,10 @@ func buildClusterRoleBinding(agent *agentv1alpha1.PlatformAgent, bindingName, ro
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name: bindingName,
+			Labels: map[string]string{
+				"kubeagents.x-k8s.io/agent-name":      agent.Name,
+				"kubeagents.x-k8s.io/agent-namespace": agent.Namespace,
+			},
 		},
 		Subjects: appendWorkloadIdentityUser(agent, []rbacv1.Subject{
 			{
@@ -2241,6 +2296,41 @@ func buildClusterRoleBinding(agent *agentv1alpha1.PlatformAgent, bindingName, ro
 		RoleRef: rbacv1.RoleRef{
 			APIGroup: "rbac.authorization.k8s.io",
 			Kind:     "ClusterRole",
+			Name:     roleName,
+		},
+	}
+}
+
+// buildRoleBinding generates a RoleBinding manifest
+func buildRoleBinding(agent *agentv1alpha1.PlatformAgent, bindingName, roleName string) *rbacv1.RoleBinding {
+	saName := agent.Name
+	if agent.Spec.Security != nil && agent.Spec.Security.ServiceAccountName != "" {
+		saName = agent.Spec.Security.ServiceAccountName
+	}
+
+	return &rbacv1.RoleBinding{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "rbac.authorization.k8s.io/v1",
+			Kind:       "RoleBinding",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      bindingName,
+			Namespace: agent.Namespace,
+			Labels: map[string]string{
+				"kubeagents.x-k8s.io/agent-name":      agent.Name,
+				"kubeagents.x-k8s.io/agent-namespace": agent.Namespace,
+			},
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      saName,
+				Namespace: agent.Namespace,
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "Role",
 			Name:     roleName,
 		},
 	}
