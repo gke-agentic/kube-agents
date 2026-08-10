@@ -3,4 +3,8 @@ kind: Kustomization
 
 resources:
   - service.yaml
-  - networkpolicy.yaml
+  - networkpolicy-ingress.yaml
+  - networkpolicy-core-egress.yaml
+  - networkpolicy-internal-egress.yaml
+  - networkpolicy-apiserver-egress.yaml
+  - networkpolicy-external-egress.yaml

@@ -1,20 +1,19 @@
 apiVersion: networking.gke.io/v1alpha1
 kind: FQDNNetworkPolicy
 metadata:
-  name: platform-agent-gateway-fqdn-netpol
+  name: platform-agent-fqdn-netpol
   namespace: kubeagents-system
   labels:
-    app: platform-agent-gateway
+    app: platform-agent
 spec:
   podSelector:
     matchLabels:
-      app: platform-agent-gateway
+      app: platform-agent
   egress:
     - matches:
         - pattern: "googleapis.com"
         - pattern: "*.googleapis.com"
-        - pattern: "google.com"
-        - pattern: "*.google.com"
+        - pattern: "accounts.google.com"
         - pattern: "*.gstatic.com"
         - pattern: "*.pkg.dev"
         - pattern: "gcr.io"

@@ -36,6 +36,8 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -2512,6 +2514,97 @@ func isFQDNNetworkPolicyEnabled(agent *agentv1alpha1.PlatformAgent) bool {
 	return false
 }
 
+// buildFQDNNetworkPolicy generates the companion FQDNNetworkPolicy (networking.gke.io/v1alpha1)
+// for GKE Dataplane V2 clusters when enable-fqdn-network-policy annotation is set.
+func buildFQDNNetworkPolicy(agent *agentv1alpha1.PlatformAgent) *unstructured.Unstructured {
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "networking.gke.io",
+		Version: "v1alpha1",
+		Kind:    "FQDNNetworkPolicy",
+	})
+	u.SetName(agent.Name + "-fqdn-netpol")
+	u.SetNamespace(agent.Namespace)
+	u.SetLabels(map[string]string{
+		"app": agent.Name + "-gateway",
+	})
+
+	patterns := []string{
+		"googleapis.com",
+		"*.googleapis.com",
+		"accounts.google.com",
+		"*.gstatic.com",
+		"gcr.io",
+		"*.gcr.io",
+		"pkg.dev",
+		"*.pkg.dev",
+		"github.com",
+		"*.github.com",
+		"*.githubusercontent.com",
+		"slack.com",
+		"*.slack.com",
+		"*.slack-edge.com",
+		"*.slack-msgs.com",
+		"api.openai.com",
+		"api.anthropic.com",
+		"api.groq.com",
+		"api.mistral.ai",
+		"api.cohere.ai",
+		"*.openai.azure.com",
+		"*.litellm.ai",
+		"generativelanguage.googleapis.com",
+		"pypi.org",
+		"*.pypi.org",
+		"pythonhosted.org",
+		"*.pythonhosted.org",
+		"files.pythonhosted.org",
+		"registry.npmjs.org",
+		"*.npmjs.org",
+		"huggingface.co",
+		"*.huggingface.co",
+		"hf.co",
+		"*.hf.co",
+	}
+
+	matches := make([]interface{}, 0, len(patterns))
+	for _, p := range patterns {
+		matches = append(matches, map[string]interface{}{
+			"pattern": p,
+		})
+	}
+
+	u.Object = map[string]interface{}{
+		"apiVersion": "networking.gke.io/v1alpha1",
+		"kind":       "FQDNNetworkPolicy",
+		"metadata": map[string]interface{}{
+			"name":      agent.Name + "-fqdn-netpol",
+			"namespace": agent.Namespace,
+			"labels": map[string]interface{}{
+				"app": agent.Name + "-gateway",
+			},
+		},
+		"spec": map[string]interface{}{
+			"podSelector": map[string]interface{}{
+				"matchLabels": map[string]interface{}{
+					"app": agent.Name + "-gateway",
+				},
+			},
+			"egress": []interface{}{
+				map[string]interface{}{
+					"matches": matches,
+					"ports": []interface{}{
+						map[string]interface{}{
+							"protocol": "TCP",
+							"port":     int64(443),
+						},
+					},
+				},
+			},
+		},
+	}
+	return u
+}
+
 func isDashboardEnabled(agent *agentv1alpha1.PlatformAgent) bool {
 	if agent != nil && agent.Spec.Harness != nil && agent.Spec.Harness.Hermes != nil && agent.Spec.Harness.Hermes.DashboardEnabled != nil {
 		return *agent.Spec.Harness.Hermes.DashboardEnabled
@@ -2541,8 +2634,13 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, d
 			continue
 		}
 		if strings.Contains(raw, "/") {
-			if _, _, err := net.ParseCIDR(raw); err == nil {
-				formattedAPICIDRs = append(formattedAPICIDRs, raw)
+			if _, ipNet, err := net.ParseCIDR(raw); err == nil {
+				ones, bits := ipNet.Mask.Size()
+				// Reject overly broad CIDRs (must be >= /12 for IPv4, >= /48 for IPv6)
+				// to prevent weaponizing the API server egress rule into an unrestricted egress bypass.
+				if (bits == 32 && ones >= 12) || (bits == 128 && ones >= 48) {
+					formattedAPICIDRs = append(formattedAPICIDRs, raw)
+				}
 			}
 			continue
 		}
@@ -2725,6 +2823,7 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, d
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(443))},
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(6443))},
+				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(8443))},
 			},
 			To: apiPeers,
 		},
@@ -2748,7 +2847,7 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, d
 				{
 					IPBlock: &networkingv1.IPBlock{
 						CIDR:   "::/0",
-						Except: []string{"fc00::/7", "fe80::/10", "ff00::/8"},
+						Except: []string{"fc00::/7", "fe80::/10", "ff00::/8", "::ffff:0:0/96"},
 					},
 				},
 			},

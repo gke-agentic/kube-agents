@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -1028,7 +1029,7 @@ func TestBuildNetworkPolicy_ExternalHTTPSExceptList(t *testing.T) {
 		t.Fatalf("expected IPv6 ::/0 peer in External HTTPS rule, got %v", httpsRule.To)
 	}
 	ipv6Excepts := httpsRule.To[1].IPBlock.Except
-	for _, req := range []string{"fc00::/7", "fe80::/10", "ff00::/8"} {
+	for _, req := range []string{"fc00::/7", "fe80::/10", "ff00::/8", "::ffff:0:0/96"} {
 		found := false
 		for _, e := range ipv6Excepts {
 			if e == req {
@@ -2500,5 +2501,280 @@ func TestReconcileNetworkPolicy_DynamicDiscovery(t *testing.T) {
 		if !found {
 			t.Errorf("expected API server egress rule to contain CIDR %s", cidr)
 		}
+	}
+}
+
+func TestReconcileNetworkPolicy_CustomEgressCIDRsAnnotation(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = agentv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = networkingv1.AddToScheme(scheme)
+
+	ctx := context.Background()
+
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+			Annotations: map[string]string{
+				"kubeagents.x-k8s.io/custom-egress-cidrs": "172.16.0.0/12, 10.50.0.0/16",
+			},
+		},
+	}
+
+	interceptors := interceptor.Funcs{
+		Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			if patch.Type() == types.ApplyPatchType {
+				key := client.ObjectKeyFromObject(obj)
+				existing := obj.DeepCopyObject().(client.Object)
+				err := cl.Get(ctx, key, existing)
+				if err != nil {
+					if errors.IsNotFound(err) {
+						return cl.Create(ctx, obj)
+					}
+					return err
+				}
+				obj.SetResourceVersion(existing.GetResourceVersion())
+				return cl.Update(ctx, obj)
+			}
+			return cl.Patch(ctx, obj, patch, opts...)
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(agent).
+		WithInterceptorFuncs(interceptors).
+		Build()
+
+	r := &PlatformAgentReconciler{
+		Client:      cl,
+		APIReader:   cl,
+		Scheme:      scheme,
+		APIServerIP: "10.96.0.1",
+	}
+
+	err := r.reconcileNetworkPolicy(ctx, agent)
+	if err != nil {
+		t.Fatalf("reconcileNetworkPolicy failed: %v", err)
+	}
+
+	netpol := &networkingv1.NetworkPolicy{}
+	err = cl.Get(ctx, types.NamespacedName{Name: "test-agent-gateway-netpol", Namespace: "test-ns"}, netpol)
+	if err != nil {
+		t.Fatalf("failed to get reconciled NetworkPolicy: %v", err)
+	}
+
+	expectedCIDRs := map[string]bool{
+		"172.16.0.0/12": false,
+		"10.50.0.0/16":  false,
+		"10.96.0.1/32":  false,
+	}
+
+	for _, egressRule := range netpol.Spec.Egress {
+		for _, port := range egressRule.Ports {
+			if port.Port != nil && port.Port.IntVal == 6443 {
+				for _, peer := range egressRule.To {
+					if peer.IPBlock != nil {
+						if _, ok := expectedCIDRs[peer.IPBlock.CIDR]; ok {
+							expectedCIDRs[peer.IPBlock.CIDR] = true
+						}
+					}
+				}
+			}
+		}
+	}
+
+	for cidr, found := range expectedCIDRs {
+		if !found {
+			t.Errorf("expected API server egress rule to contain custom CIDR %s", cidr)
+		}
+	}
+}
+
+func TestReconcileNetworkPolicy_RejectOverlyBroadCIDR(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = agentv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = networkingv1.AddToScheme(scheme)
+
+	ctx := context.Background()
+
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+			Annotations: map[string]string{
+				"kubeagents.x-k8s.io/custom-egress-cidrs": "0.0.0.0/0, 10.0.0.0/8, ::/0, 172.16.0.0/12",
+			},
+		},
+	}
+
+	interceptors := interceptor.Funcs{
+		Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			if patch.Type() == types.ApplyPatchType {
+				key := client.ObjectKeyFromObject(obj)
+				existing := obj.DeepCopyObject().(client.Object)
+				err := cl.Get(ctx, key, existing)
+				if err != nil {
+					if errors.IsNotFound(err) {
+						return cl.Create(ctx, obj)
+					}
+					return err
+				}
+				obj.SetResourceVersion(existing.GetResourceVersion())
+				return cl.Update(ctx, obj)
+			}
+			return cl.Patch(ctx, obj, patch, opts...)
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(agent).
+		WithInterceptorFuncs(interceptors).
+		Build()
+
+	r := &PlatformAgentReconciler{
+		Client:      cl,
+		APIReader:   cl,
+		Scheme:      scheme,
+		APIServerIP: "10.96.0.1",
+	}
+
+	err := r.reconcileNetworkPolicy(ctx, agent)
+	if err != nil {
+		t.Fatalf("reconcileNetworkPolicy failed: %v", err)
+	}
+
+	netpol := &networkingv1.NetworkPolicy{}
+	err = cl.Get(ctx, types.NamespacedName{Name: "test-agent-gateway-netpol", Namespace: "test-ns"}, netpol)
+	if err != nil {
+		t.Fatalf("failed to get reconciled NetworkPolicy: %v", err)
+	}
+
+	for _, egressRule := range netpol.Spec.Egress {
+		for _, port := range egressRule.Ports {
+			if port.Port != nil && port.Port.IntVal == 6443 {
+				for _, peer := range egressRule.To {
+					if peer.IPBlock != nil {
+						if peer.IPBlock.CIDR == "0.0.0.0/0" || peer.IPBlock.CIDR == "10.0.0.0/8" || peer.IPBlock.CIDR == "::/0" {
+							t.Errorf("expected overly broad CIDR %s to be rejected from API server egress rule", peer.IPBlock.CIDR)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestReconcileNetworkPolicy_FQDNNetworkPolicyReconciliation(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = agentv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = networkingv1.AddToScheme(scheme)
+
+	ctx := context.Background()
+
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+			Annotations: map[string]string{
+				"kubeagents.x-k8s.io/enable-fqdn-network-policy": "true",
+			},
+		},
+	}
+
+	interceptors := interceptor.Funcs{
+		Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			if patch.Type() == types.ApplyPatchType {
+				key := client.ObjectKeyFromObject(obj)
+				existing := obj.DeepCopyObject().(client.Object)
+				err := cl.Get(ctx, key, existing)
+				if err != nil {
+					if errors.IsNotFound(err) {
+						return cl.Create(ctx, obj)
+					}
+					return err
+				}
+				obj.SetResourceVersion(existing.GetResourceVersion())
+				return cl.Update(ctx, obj)
+			}
+			return cl.Patch(ctx, obj, patch, opts...)
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(agent).
+		WithInterceptorFuncs(interceptors).
+		Build()
+
+	r := &PlatformAgentReconciler{
+		Client:      cl,
+		APIReader:   cl,
+		Scheme:      scheme,
+		APIServerIP: "10.96.0.1",
+	}
+
+	err := r.reconcileNetworkPolicy(ctx, agent)
+	if err != nil {
+		t.Fatalf("reconcileNetworkPolicy failed: %v", err)
+	}
+
+	// 1. Verify standard NetworkPolicy has external HTTPS omitted
+	netpol := &networkingv1.NetworkPolicy{}
+	err = cl.Get(ctx, types.NamespacedName{Name: "test-agent-gateway-netpol", Namespace: "test-ns"}, netpol)
+	if err != nil {
+		t.Fatalf("failed to get reconciled NetworkPolicy: %v", err)
+	}
+	for _, egress := range netpol.Spec.Egress {
+		for _, peer := range egress.To {
+			if peer.IPBlock != nil && peer.IPBlock.CIDR == "0.0.0.0/0" {
+				t.Errorf("expected blanket 0.0.0.0/0 to be omitted in NetworkPolicy")
+			}
+		}
+	}
+
+	// 2. Verify companion FQDNNetworkPolicy was created
+	fqdnNetpol := &unstructured.Unstructured{}
+	fqdnNetpol.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "networking.gke.io",
+		Version: "v1alpha1",
+		Kind:    "FQDNNetworkPolicy",
+	})
+	err = cl.Get(ctx, types.NamespacedName{Name: "test-agent-fqdn-netpol", Namespace: "test-ns"}, fqdnNetpol)
+	if err != nil {
+		t.Fatalf("failed to get reconciled FQDNNetworkPolicy: %v", err)
+	}
+
+	spec, ok := fqdnNetpol.Object["spec"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected spec map in FQDNNetworkPolicy, got %T", fqdnNetpol.Object["spec"])
+	}
+	egressList, ok := spec["egress"].([]interface{})
+	if !ok || len(egressList) == 0 {
+		t.Fatalf("expected non-empty egress list in FQDNNetworkPolicy spec")
+	}
+	firstRule := egressList[0].(map[string]interface{})
+	ports, ok := firstRule["ports"].([]interface{})
+	if !ok || len(ports) == 0 {
+		t.Fatalf("expected ports list in FQDNNetworkPolicy egress rule, got %v", firstRule["ports"])
+	}
+	portObj := ports[0].(map[string]interface{})
+	if portObj["port"] != int64(443) || portObj["protocol"] != "TCP" {
+		t.Errorf("expected FQDNNetworkPolicy port to be TCP/443, got %v", portObj)
+	}
+
+	// 3. Verify disabling annotation deletes FQDNNetworkPolicy
+	delete(agent.Annotations, "kubeagents.x-k8s.io/enable-fqdn-network-policy")
+	err = r.reconcileNetworkPolicy(ctx, agent)
+	if err != nil {
+		t.Fatalf("reconcileNetworkPolicy after disabling FQDN failed: %v", err)
+	}
+	err = cl.Get(ctx, types.NamespacedName{Name: "test-agent-fqdn-netpol", Namespace: "test-ns"}, fqdnNetpol)
+	if !errors.IsNotFound(err) {
+		t.Errorf("expected FQDNNetworkPolicy to be deleted when annotation is disabled, got %v", err)
 	}
 }

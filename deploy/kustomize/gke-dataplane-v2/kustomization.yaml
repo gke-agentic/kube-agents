@@ -6,4 +6,10 @@ resources:
   - fqdn-networkpolicy.yaml
 
 patches:
-  - path: networkpolicy-dataplane-v2-patch.yaml
+  - patch: |-
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: platform-agent-external-egress
+        namespace: kubeagents-system
+      $patch: delete

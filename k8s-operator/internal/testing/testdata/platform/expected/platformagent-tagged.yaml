@@ -1087,6 +1087,8 @@ spec:
           protocol: TCP
         - port: 6443
           protocol: TCP
+        - port: 8443
+          protocol: TCP
       to:
         - ipBlock:
             cidr: 10.96.0.1/32
@@ -1103,11 +1105,12 @@ spec:
               - 100.64.0.0/10
               - 169.254.0.0/16
         - ipBlock:
-            cidr: '::/0'
+            cidr: "::/0"
             except:
-              - fc00::/7
-              - fe80::/10
-              - ff00::/8
+              - "fc00::/7"
+              - "fe80::/10"
+              - "ff00::/8"
+              - "::ffff:0:0/96"
     - ports:
         - port: 4317
           protocol: TCP
