@@ -14,8 +14,8 @@ on:
   workflow_call:
     inputs:
       commit_sha:
-        description: "Target Commit SHA to tag (Mandatory)"
-        required: true
+        description: "Target Commit SHA to tag (Optional for automated schedule, Mandatory for manual runs)"
+        required: false
         type: string
       rc_tag:
         description: "Release Candidate Tag (Optional, Default: Auto-generated rc_YYMMDDHHMM)"
@@ -53,6 +53,9 @@ jobs:
         env:
           COMMIT_SHA: ${{ inputs.commit_sha }}
           RC_TAG: ${{ inputs.rc_tag }}
+          GH_ORG: ${{ vars.GH_ORG }}
+          GH_REPO: ${{ vars.GH_REPO }}
+          REGISTRY_PREFIX: ${{ vars.REGISTRY_PREFIX }}
         run: ./scripts/release/resolve_rc_tag.sh
 
       - name: Verify Prebuilt Container Images Exist in Registry

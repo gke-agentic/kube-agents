@@ -1,6 +1,8 @@
 name: RC Release E2E Pipeline
 
 on:
+  schedule:
+    - cron: "0 */3 * * *"
   workflow_dispatch:
     inputs:
       commit_sha:

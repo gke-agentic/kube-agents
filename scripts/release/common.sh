@@ -2,6 +2,91 @@
 # Common helper functions for Release Candidate CI/CD automation scripts.
 set -euo pipefail
 
+# Centralized definition of required container images and registry defaults
+DEFAULT_REGISTRY_PREFIX="ghcr.io/gke-labs/kube-agents"
+DEFAULT_RELEASE_REPO="gke-labs/kube-agents"
+REQUIRED_RELEASE_IMAGES=("k8s-operator" "platform-agent")
+
+# Resolves target GitHub repository (e.g. gke-labs/kube-agents)
+get_target_repo() {
+  if [ -n "${GH_ORG:-}" ] && [ -n "${GH_REPO:-}" ]; then
+    echo "${GH_ORG}/${GH_REPO}"
+  elif [ -n "${GITHUB_REPOSITORY:-}" ]; then
+    echo "${GITHUB_REPOSITORY}"
+  else
+    echo "${DEFAULT_RELEASE_REPO}"
+  fi
+}
+
+# Resolves registry prefix (e.g. ghcr.io/gke-labs/kube-agents)
+get_registry_prefix() {
+  if [ -n "${REGISTRY_PREFIX:-}" ]; then
+    echo "${REGISTRY_PREFIX}"
+  else
+    local target_repo
+    target_repo="$(get_target_repo)"
+    if [ "$target_repo" = "$DEFAULT_RELEASE_REPO" ]; then
+      echo "$DEFAULT_REGISTRY_PREFIX"
+    else
+      local repo_downcased
+      repo_downcased="$(echo "$target_repo" | tr '[:upper:]' '[:lower:]')"
+      echo "ghcr.io/${repo_downcased}"
+    fi
+  fi
+}
+
+# Checks if all required candidate container images exist in GHCR for a specific commit SHA
+check_commit_images_exist() {
+  local sha="$1"
+  local registry_prefix
+  registry_prefix="$(get_registry_prefix)"
+
+  for img in "${REQUIRED_RELEASE_IMAGES[@]}"; do
+    local target_img="${registry_prefix}/${img}:${sha}"
+    if ! docker manifest inspect "${target_img}" >/dev/null 2>&1; then
+      return 1
+    fi
+  done
+  return 0
+}
+
+# Finds the latest commit on main whose required container images are already built in the registry
+find_latest_built_commit() {
+  local target_repo
+  target_repo="$(get_target_repo)"
+  local registry_prefix
+  registry_prefix="$(get_registry_prefix)"
+
+  echo "🔍 [Schedule / Auto-resolve] Scanning recent commits on main for prebuilt container images (${registry_prefix})..." >&2
+
+  if [ -n "${target_repo}" ]; then
+    git fetch "https://github.com/${target_repo}.git" main --depth=30 >/dev/null 2>&1 || git fetch origin main --depth=30 >/dev/null 2>&1 || true
+  else
+    git fetch origin main --depth=30 >/dev/null 2>&1 || true
+  fi
+
+  local candidate_commits
+  candidate_commits=$(git log -n 30 --format="%H" FETCH_HEAD 2>/dev/null || git log -n 30 --format="%H" origin/main 2>/dev/null || git log -n 30 --format="%H" HEAD 2>/dev/null || echo "")
+
+  if [ -z "${candidate_commits}" ]; then
+    echo "❌ ERROR: Cannot retrieve commit history from git repository!" >&2
+    return 1
+  fi
+
+  for sha in $candidate_commits; do
+    if check_commit_images_exist "${sha}"; then
+      echo "✅ Found latest commit with verified container images: ${sha}" >&2
+      echo "$sha"
+      return 0
+    else
+      echo "  ⏳ Images not ready yet in GHCR for commit ${sha:0:7}, checking previous commit..." >&2
+    fi
+  done
+
+  echo "❌ ERROR: Could not find any commit in the last 30 commits on main with published images in GHCR (${registry_prefix})!" >&2
+  return 1
+}
+
 # Configures Git bot user identity for automated tagging
 setup_git_bot_user() {
   git config user.name "github-actions[bot]"
