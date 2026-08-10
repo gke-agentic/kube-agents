@@ -230,7 +230,7 @@ execute_networkpolicy_addon() {
 # ─── Execution Pipeline ───────────────────────────────────────────────────────
 run_step "1. Connect kubectl" verify_kubeconfig execute_kubeconfig 0
 run_deploy_step "1b. Ensure Filestore CSI Driver" verify_filestore_addon execute_filestore_addon 5
-run_step "1c. Ensure NetworkPolicy Addon" verify_networkpolicy_addon execute_networkpolicy_addon 5
+run_deploy_step "1c. Ensure NetworkPolicy Addon" verify_networkpolicy_addon execute_networkpolicy_addon 5
 run_deploy_step "2. Ensure cert-manager" verify_cert_manager execute_cert_manager 5
 run_deploy_step "3. Deploy Kubernetes Operator" verify_operator execute_operator 0
 
