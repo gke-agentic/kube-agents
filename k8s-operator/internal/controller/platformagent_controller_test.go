@@ -57,19 +57,9 @@ func setupScheme() *runtime.Scheme {
 	return scheme
 }
 
-func TestPlatformAgentReconciler_Reconcile(t *testing.T) {
-	scheme := setupScheme()
-
-	agent := &agentv1alpha1.PlatformAgent{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-agent",
-			Namespace: "test-ns",
-		},
-		Spec: agentv1alpha1.PlatformAgentSpec{},
-	}
-
-	// Interceptor to handle Server-Side Apply (SSA) in fake client
-	interceptors := interceptor.Funcs{
+// fakeServerSideApplyInterceptors returns interceptor.Funcs to handle Server-Side Apply (SSA) in the controller-runtime fake client.
+func fakeServerSideApplyInterceptors() interceptor.Funcs {
+	return interceptor.Funcs{
 		Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
 			if patch.Type() == types.ApplyPatchType {
 				key := client.ObjectKeyFromObject(obj)
@@ -87,13 +77,25 @@ func TestPlatformAgentReconciler_Reconcile(t *testing.T) {
 			return cl.Patch(ctx, obj, patch, opts...)
 		},
 	}
+}
+
+func TestPlatformAgentReconciler_Reconcile(t *testing.T) {
+	scheme := setupScheme()
+
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+		},
+		Spec: agentv1alpha1.PlatformAgentSpec{},
+	}
 
 	// Create a fake client with the PlatformAgent
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(agent).
 		WithStatusSubresource(&agentv1alpha1.PlatformAgent{}).
-		WithInterceptorFuncs(interceptors).
+		WithInterceptorFuncs(fakeServerSideApplyInterceptors()).
 		Build()
 
 	r := &PlatformAgentReconciler{
@@ -333,26 +335,7 @@ func TestReconcileRBAC_DeletesLegacyRBAC(t *testing.T) {
 		},
 	}
 
-	interceptors := interceptor.Funcs{
-		Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
-			if patch.Type() == types.ApplyPatchType {
-				key := client.ObjectKeyFromObject(obj)
-				existing := obj.DeepCopyObject().(client.Object)
-				err := cl.Get(ctx, key, existing)
-				if err != nil {
-					if errors.IsNotFound(err) {
-						return cl.Create(ctx, obj)
-					}
-					return err
-				}
-				obj.SetResourceVersion(existing.GetResourceVersion())
-				return cl.Update(ctx, obj)
-			}
-			return cl.Patch(ctx, obj, patch, opts...)
-		},
-	}
-
-	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(agent, legacyViewer, legacyExplorerCRB, legacyExplorerCR, legacyRoleBinding, unrelatedRoleBinding).WithInterceptorFuncs(interceptors).Build()
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(agent, legacyViewer, legacyExplorerCRB, legacyExplorerCR, legacyRoleBinding, unrelatedRoleBinding).WithInterceptorFuncs(fakeServerSideApplyInterceptors()).Build()
 	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
 
 	if err := r.reconcileRBAC(context.Background(), agent); err != nil {
@@ -389,26 +372,7 @@ func TestReconcileRBAC_DeletesLegacyRBAC_ServiceAccountSwap(t *testing.T) {
 		},
 	}
 
-	interceptors := interceptor.Funcs{
-		Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
-			if patch.Type() == types.ApplyPatchType {
-				key := client.ObjectKeyFromObject(obj)
-				existing := obj.DeepCopyObject().(client.Object)
-				err := cl.Get(ctx, key, existing)
-				if err != nil {
-					if errors.IsNotFound(err) {
-						return cl.Create(ctx, obj)
-					}
-					return err
-				}
-				obj.SetResourceVersion(existing.GetResourceVersion())
-				return cl.Update(ctx, obj)
-			}
-			return cl.Patch(ctx, obj, patch, opts...)
-		},
-	}
-
-	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(agent, oldDefaultSARoleBinding).WithInterceptorFuncs(interceptors).Build()
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(agent, oldDefaultSARoleBinding).WithInterceptorFuncs(fakeServerSideApplyInterceptors()).Build()
 	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
 
 	if err := r.reconcileRBAC(context.Background(), agent); err != nil {
@@ -439,30 +403,11 @@ func TestPlatformAgentReconciler_Reconcile_MissingRuntimeClass(t *testing.T) {
 		},
 	}
 
-	interceptors := interceptor.Funcs{
-		Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
-			if patch.Type() == types.ApplyPatchType {
-				key := client.ObjectKeyFromObject(obj)
-				existing := obj.DeepCopyObject().(client.Object)
-				err := cl.Get(ctx, key, existing)
-				if err != nil {
-					if errors.IsNotFound(err) {
-						return cl.Create(ctx, obj)
-					}
-					return err
-				}
-				obj.SetResourceVersion(existing.GetResourceVersion())
-				return cl.Update(ctx, obj)
-			}
-			return cl.Patch(ctx, obj, patch, opts...)
-		},
-	}
-
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(agent).
 		WithStatusSubresource(&agentv1alpha1.PlatformAgent{}).
-		WithInterceptorFuncs(interceptors).
+		WithInterceptorFuncs(fakeServerSideApplyInterceptors()).
 		Build()
 
 	r := &PlatformAgentReconciler{
@@ -540,30 +485,11 @@ func TestPlatformAgentReconciler_Reconcile_ExistingRuntimeClass(t *testing.T) {
 		},
 	}
 
-	interceptors := interceptor.Funcs{
-		Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
-			if patch.Type() == types.ApplyPatchType {
-				key := client.ObjectKeyFromObject(obj)
-				existing := obj.DeepCopyObject().(client.Object)
-				err := cl.Get(ctx, key, existing)
-				if err != nil {
-					if errors.IsNotFound(err) {
-						return cl.Create(ctx, obj)
-					}
-					return err
-				}
-				obj.SetResourceVersion(existing.GetResourceVersion())
-				return cl.Update(ctx, obj)
-			}
-			return cl.Patch(ctx, obj, patch, opts...)
-		},
-	}
-
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(agent, rc).
 		WithStatusSubresource(&agentv1alpha1.PlatformAgent{}).
-		WithInterceptorFuncs(interceptors).
+		WithInterceptorFuncs(fakeServerSideApplyInterceptors()).
 		Build()
 
 	r := &PlatformAgentReconciler{
@@ -661,30 +587,11 @@ func TestPlatformAgentReconciler_Reconcile_PodUnschedulable(t *testing.T) {
 		},
 	}
 
-	interceptors := interceptor.Funcs{
-		Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
-			if patch.Type() == types.ApplyPatchType {
-				key := client.ObjectKeyFromObject(obj)
-				existing := obj.DeepCopyObject().(client.Object)
-				err := cl.Get(ctx, key, existing)
-				if err != nil {
-					if errors.IsNotFound(err) {
-						return cl.Create(ctx, obj)
-					}
-					return err
-				}
-				obj.SetResourceVersion(existing.GetResourceVersion())
-				return cl.Update(ctx, obj)
-			}
-			return cl.Patch(ctx, obj, patch, opts...)
-		},
-	}
-
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(agent, rc, pod).
 		WithStatusSubresource(&agentv1alpha1.PlatformAgent{}).
-		WithInterceptorFuncs(interceptors).
+		WithInterceptorFuncs(fakeServerSideApplyInterceptors()).
 		Build()
 
 	r := &PlatformAgentReconciler{
@@ -946,6 +853,21 @@ func TestBuildNetworkPolicy_InvalidAPIHost(t *testing.T) {
 			apiHosts:  []string{"10.96.0.1", "172.16.0.2", "172.16.0.3"},
 			wantCIDRs: []string{"10.96.0.1/32", "172.16.0.2/32", "172.16.0.3/32"},
 		},
+		{
+			name:      "non-canonical CIDRs normalized and deduplicated",
+			apiHosts:  []string{"172.16.0.100/24", "172.16.0.0/24"},
+			wantCIDRs: []string{"172.16.0.0/24"},
+		},
+		{
+			name:      "overly broad CIDRs rejected",
+			apiHosts:  []string{"10.0.0.0/8", "0.0.0.0/0", "::/0", "172.16.0.0/12"},
+			wantCIDRs: []string{"172.16.0.0/12"},
+		},
+		{
+			name:      "IPv6 CIDR normalized",
+			apiHosts:  []string{"2001:db8:abcd:0012::1/48"},
+			wantCIDRs: []string{"2001:db8:abcd::/48"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -1051,6 +973,7 @@ func TestBuildNetworkPolicy_ClusterDNS(t *testing.T) {
 		},
 	}
 
+	// 1. IPv4 dynamic DNS clusterIP
 	netpolGKE := buildNetworkPolicy(agent, nil, "34.118.224.10")
 	dnsRule := netpolGKE.Spec.Egress[0]
 	foundExactClusterIP := false
@@ -1062,6 +985,32 @@ func TestBuildNetworkPolicy_ClusterDNS(t *testing.T) {
 	}
 	if !foundExactClusterIP {
 		t.Errorf("expected 34.118.224.10/32 exact clusterIP in DNS egress peers")
+	}
+
+	// 2. IPv6 dynamic DNS clusterIP
+	netpolIPv6 := buildNetworkPolicy(agent, nil, "2001:db8::10")
+	foundIPv6DNS := false
+	for _, peer := range netpolIPv6.Spec.Egress[0].To {
+		if peer.IPBlock != nil && peer.IPBlock.CIDR == "2001:db8::10/128" {
+			foundIPv6DNS = true
+			break
+		}
+	}
+	if !foundIPv6DNS {
+		t.Errorf("expected 2001:db8::10/128 in DNS egress peers for IPv6 clusterIP")
+	}
+
+	// 3. Fallback when invalid or empty
+	netpolFallback := buildNetworkPolicy(agent, nil, "invalid-ip")
+	foundFallback := false
+	for _, peer := range netpolFallback.Spec.Egress[0].To {
+		if peer.IPBlock != nil && peer.IPBlock.CIDR == "10.96.0.10/32" {
+			foundFallback = true
+			break
+		}
+	}
+	if !foundFallback {
+		t.Errorf("expected fallback 10.96.0.10/32 for invalid DNS clusterIP")
 	}
 }
 
@@ -1089,30 +1038,11 @@ func TestPlatformAgentReconciler_Reconcile_InvalidGitRepo(t *testing.T) {
 		},
 	}
 
-	interceptors := interceptor.Funcs{
-		Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
-			if patch.Type() == types.ApplyPatchType {
-				key := client.ObjectKeyFromObject(obj)
-				existing := obj.DeepCopyObject().(client.Object)
-				err := cl.Get(ctx, key, existing)
-				if err != nil {
-					if errors.IsNotFound(err) {
-						return cl.Create(ctx, obj)
-					}
-					return err
-				}
-				obj.SetResourceVersion(existing.GetResourceVersion())
-				return cl.Update(ctx, obj)
-			}
-			return cl.Patch(ctx, obj, patch, opts...)
-		},
-	}
-
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(agent).
 		WithStatusSubresource(&agentv1alpha1.PlatformAgent{}).
-		WithInterceptorFuncs(interceptors).
+		WithInterceptorFuncs(fakeServerSideApplyInterceptors()).
 		Build()
 
 	r := &PlatformAgentReconciler{
@@ -2069,25 +1999,6 @@ func TestReconcileNetworkPolicy_APIReader(t *testing.T) {
 		},
 	}
 
-	interceptors := interceptor.Funcs{
-		Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
-			if patch.Type() == types.ApplyPatchType {
-				key := client.ObjectKeyFromObject(obj)
-				existing := obj.DeepCopyObject().(client.Object)
-				err := cl.Get(ctx, key, existing)
-				if err != nil {
-					if errors.IsNotFound(err) {
-						return cl.Create(ctx, obj)
-					}
-					return err
-				}
-				obj.SetResourceVersion(existing.GetResourceVersion())
-				return cl.Update(ctx, obj)
-			}
-			return cl.Patch(ctx, obj, patch, opts...)
-		},
-	}
-
 	k8sSvc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: "kubernetes", Namespace: "default"},
 		Spec:       corev1.ServiceSpec{ClusterIP: "10.96.0.1"},
@@ -2095,7 +2006,7 @@ func TestReconcileNetworkPolicy_APIReader(t *testing.T) {
 
 	// APIReader has the Endpoints object, while Client does not (simulating non-cached live read)
 	apiReader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(k8sEndpoints).Build()
-	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(agent, k8sSvc).WithInterceptorFuncs(interceptors).Build()
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(agent, k8sSvc).WithInterceptorFuncs(fakeServerSideApplyInterceptors()).Build()
 
 	r := &PlatformAgentReconciler{
 		Client:    cl,
@@ -2409,29 +2320,10 @@ func TestReconcileNetworkPolicy_DynamicDiscovery(t *testing.T) {
 		},
 	}
 
-	interceptors := interceptor.Funcs{
-		Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
-			if patch.Type() == types.ApplyPatchType {
-				key := client.ObjectKeyFromObject(obj)
-				existing := obj.DeepCopyObject().(client.Object)
-				err := cl.Get(ctx, key, existing)
-				if err != nil {
-					if errors.IsNotFound(err) {
-						return cl.Create(ctx, obj)
-					}
-					return err
-				}
-				obj.SetResourceVersion(existing.GetResourceVersion())
-				return cl.Update(ctx, obj)
-			}
-			return cl.Patch(ctx, obj, patch, opts...)
-		},
-	}
-
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(agent, kubeDnsSvc, k8sEndpoints).
-		WithInterceptorFuncs(interceptors).
+		WithInterceptorFuncs(fakeServerSideApplyInterceptors()).
 		Build()
 
 	r := &PlatformAgentReconciler{
@@ -2505,11 +2397,7 @@ func TestReconcileNetworkPolicy_DynamicDiscovery(t *testing.T) {
 }
 
 func TestReconcileNetworkPolicy_CustomEgressCIDRsAnnotation(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = agentv1alpha1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = networkingv1.AddToScheme(scheme)
-
+	scheme := setupScheme()
 	ctx := context.Background()
 
 	agent := &agentv1alpha1.PlatformAgent{
@@ -2522,29 +2410,10 @@ func TestReconcileNetworkPolicy_CustomEgressCIDRsAnnotation(t *testing.T) {
 		},
 	}
 
-	interceptors := interceptor.Funcs{
-		Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
-			if patch.Type() == types.ApplyPatchType {
-				key := client.ObjectKeyFromObject(obj)
-				existing := obj.DeepCopyObject().(client.Object)
-				err := cl.Get(ctx, key, existing)
-				if err != nil {
-					if errors.IsNotFound(err) {
-						return cl.Create(ctx, obj)
-					}
-					return err
-				}
-				obj.SetResourceVersion(existing.GetResourceVersion())
-				return cl.Update(ctx, obj)
-			}
-			return cl.Patch(ctx, obj, patch, opts...)
-		},
-	}
-
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(agent).
-		WithInterceptorFuncs(interceptors).
+		WithInterceptorFuncs(fakeServerSideApplyInterceptors()).
 		Build()
 
 	r := &PlatformAgentReconciler{
@@ -2593,11 +2462,7 @@ func TestReconcileNetworkPolicy_CustomEgressCIDRsAnnotation(t *testing.T) {
 }
 
 func TestReconcileNetworkPolicy_RejectOverlyBroadCIDR(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = agentv1alpha1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = networkingv1.AddToScheme(scheme)
-
+	scheme := setupScheme()
 	ctx := context.Background()
 
 	agent := &agentv1alpha1.PlatformAgent{
@@ -2610,29 +2475,10 @@ func TestReconcileNetworkPolicy_RejectOverlyBroadCIDR(t *testing.T) {
 		},
 	}
 
-	interceptors := interceptor.Funcs{
-		Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
-			if patch.Type() == types.ApplyPatchType {
-				key := client.ObjectKeyFromObject(obj)
-				existing := obj.DeepCopyObject().(client.Object)
-				err := cl.Get(ctx, key, existing)
-				if err != nil {
-					if errors.IsNotFound(err) {
-						return cl.Create(ctx, obj)
-					}
-					return err
-				}
-				obj.SetResourceVersion(existing.GetResourceVersion())
-				return cl.Update(ctx, obj)
-			}
-			return cl.Patch(ctx, obj, patch, opts...)
-		},
-	}
-
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(agent).
-		WithInterceptorFuncs(interceptors).
+		WithInterceptorFuncs(fakeServerSideApplyInterceptors()).
 		Build()
 
 	r := &PlatformAgentReconciler{
@@ -2669,11 +2515,7 @@ func TestReconcileNetworkPolicy_RejectOverlyBroadCIDR(t *testing.T) {
 }
 
 func TestReconcileNetworkPolicy_FQDNNetworkPolicyReconciliation(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = agentv1alpha1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = networkingv1.AddToScheme(scheme)
-
+	scheme := setupScheme()
 	ctx := context.Background()
 
 	agent := &agentv1alpha1.PlatformAgent{
@@ -2686,29 +2528,10 @@ func TestReconcileNetworkPolicy_FQDNNetworkPolicyReconciliation(t *testing.T) {
 		},
 	}
 
-	interceptors := interceptor.Funcs{
-		Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
-			if patch.Type() == types.ApplyPatchType {
-				key := client.ObjectKeyFromObject(obj)
-				existing := obj.DeepCopyObject().(client.Object)
-				err := cl.Get(ctx, key, existing)
-				if err != nil {
-					if errors.IsNotFound(err) {
-						return cl.Create(ctx, obj)
-					}
-					return err
-				}
-				obj.SetResourceVersion(existing.GetResourceVersion())
-				return cl.Update(ctx, obj)
-			}
-			return cl.Patch(ctx, obj, patch, opts...)
-		},
-	}
-
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(agent).
-		WithInterceptorFuncs(interceptors).
+		WithInterceptorFuncs(fakeServerSideApplyInterceptors()).
 		Build()
 
 	r := &PlatformAgentReconciler{
@@ -2767,6 +2590,33 @@ func TestReconcileNetworkPolicy_FQDNNetworkPolicyReconciliation(t *testing.T) {
 		t.Errorf("expected FQDNNetworkPolicy port to be TCP/443, got %v", portObj)
 	}
 
+	matches, ok := firstRule["matches"].([]interface{})
+	if !ok || len(matches) == 0 {
+		t.Fatalf("expected non-empty matches list in FQDNNetworkPolicy")
+	}
+	patternSet := make(map[string]bool)
+	for _, m := range matches {
+		if mMap, isMap := m.(map[string]interface{}); isMap {
+			if p, isStr := mMap["pattern"].(string); isStr {
+				patternSet[p] = true
+			}
+		}
+	}
+
+	// Verify required baseline and chat patterns are present
+	for _, required := range []string{"googleapis.com", "*.googleapis.com", "github.com", "*.github.com", "pkg.dev", "*.pkg.dev", "slack.com", "*.slack.com"} {
+		if !patternSet[required] {
+			t.Errorf("expected required pattern %q in FQDNNetworkPolicy", required)
+		}
+	}
+
+	// Verify dangerous/unnecessary third-party domains and package registries are excluded
+	for _, prohibited := range []string{"pypi.org", "registry.npmjs.org", "api.openai.com", "api.anthropic.com", "huggingface.co"} {
+		if patternSet[prohibited] {
+			t.Errorf("expected domain %q to be excluded from FQDNNetworkPolicy", prohibited)
+		}
+	}
+
 	// 3. Verify disabling annotation deletes FQDNNetworkPolicy
 	delete(agent.Annotations, "kubeagents.x-k8s.io/enable-fqdn-network-policy")
 	err = r.reconcileNetworkPolicy(ctx, agent)
@@ -2776,5 +2626,120 @@ func TestReconcileNetworkPolicy_FQDNNetworkPolicyReconciliation(t *testing.T) {
 	err = cl.Get(ctx, types.NamespacedName{Name: "test-agent-fqdn-netpol", Namespace: "test-ns"}, fqdnNetpol)
 	if !errors.IsNotFound(err) {
 		t.Errorf("expected FQDNNetworkPolicy to be deleted when annotation is disabled, got %v", err)
+	}
+}
+
+func TestReconcileNetworkPolicy_TruncateMaxCIDRs(t *testing.T) {
+	scheme := setupScheme()
+	ctx := context.Background()
+
+	// Generate 70 valid /32 CIDRs (exceeding maxCIDRsPerAnnotation=50)
+	var cidrList []string
+	for i := 1; i <= 70; i++ {
+		cidrList = append(cidrList, fmt.Sprintf("172.16.1.%d/32", i))
+	}
+	customCIDRs := strings.Join(cidrList, ",")
+
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent-max-cidrs",
+			Namespace: "test-ns",
+			Annotations: map[string]string{
+				"kubeagents.x-k8s.io/custom-egress-cidrs": customCIDRs,
+			},
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(agent).
+		WithInterceptorFuncs(fakeServerSideApplyInterceptors()).
+		Build()
+
+	r := &PlatformAgentReconciler{
+		Client:      cl,
+		APIReader:   cl,
+		Scheme:      scheme,
+		APIServerIP: "10.96.0.1",
+	}
+
+	if err := r.reconcileNetworkPolicy(ctx, agent); err != nil {
+		t.Fatalf("reconcileNetworkPolicy failed: %v", err)
+	}
+
+	netpol := &networkingv1.NetworkPolicy{}
+	if err := cl.Get(ctx, types.NamespacedName{Name: "test-agent-max-cidrs-gateway-netpol", Namespace: "test-ns"}, netpol); err != nil {
+		t.Fatalf("failed to get reconciled NetworkPolicy: %v", err)
+	}
+
+	// Count CIDRs in API server egress rule (port 6443)
+	customCount := 0
+	for _, egressRule := range netpol.Spec.Egress {
+		for _, port := range egressRule.Ports {
+			if port.Port != nil && port.Port.IntVal == 6443 {
+				for _, peer := range egressRule.To {
+					if peer.IPBlock != nil && strings.HasPrefix(peer.IPBlock.CIDR, "172.16.1.") {
+						customCount++
+					}
+				}
+			}
+		}
+	}
+
+	if customCount != 50 {
+		t.Errorf("expected exactly 50 custom CIDRs after truncation, got %d", customCount)
+	}
+}
+
+func TestReconcileNetworkPolicy_PrivateIPOverlap(t *testing.T) {
+	scheme := setupScheme()
+	ctx := context.Background()
+
+	// API server has a private ClusterIP in 172.16.0.1
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent-private-ip",
+			Namespace: "test-ns",
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(agent).
+		WithInterceptorFuncs(fakeServerSideApplyInterceptors()).
+		Build()
+
+	r := &PlatformAgentReconciler{
+		Client:      cl,
+		APIReader:   cl,
+		Scheme:      scheme,
+		APIServerIP: "172.16.0.1",
+	}
+
+	if err := r.reconcileNetworkPolicy(ctx, agent); err != nil {
+		t.Fatalf("reconcileNetworkPolicy failed: %v", err)
+	}
+
+	netpol := &networkingv1.NetworkPolicy{}
+	if err := cl.Get(ctx, types.NamespacedName{Name: "test-agent-private-ip-gateway-netpol", Namespace: "test-ns"}, netpol); err != nil {
+		t.Fatalf("failed to get reconciled NetworkPolicy: %v", err)
+	}
+
+	// Verify API server rule explicitly allows 172.16.0.1/32
+	foundAPIRule := false
+	for _, egressRule := range netpol.Spec.Egress {
+		for _, port := range egressRule.Ports {
+			if port.Port != nil && port.Port.IntVal == 6443 {
+				for _, peer := range egressRule.To {
+					if peer.IPBlock != nil && peer.IPBlock.CIDR == "172.16.0.1/32" {
+						foundAPIRule = true
+					}
+				}
+			}
+		}
+	}
+
+	if !foundAPIRule {
+		t.Errorf("expected 172.16.0.1/32 to be explicitly allowed in API server egress rule")
 	}
 }

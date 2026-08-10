@@ -19,6 +19,7 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"net"
 	"net/url"
 	"os"
 	"strings"
@@ -184,7 +185,11 @@ func main() {
 				apiHost = u.Hostname()
 			}
 		} else {
-			host := strings.Split(rawHost, ":")[0]
+			host, _, err := net.SplitHostPort(rawHost)
+			if err != nil {
+				host = rawHost // no port present, use as-is
+			}
+			host = strings.Trim(host, "[]")
 			if host != "" {
 				apiHost = host
 			}

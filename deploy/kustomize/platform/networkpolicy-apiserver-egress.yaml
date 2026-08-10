@@ -24,4 +24,4 @@ spec:
           protocol: TCP
       to:
         - ipBlock:
-            cidr: 10.96.0.1/32
+            cidr: 10.96.0.1/32 # IMPORTANT: Override this CIDR for your cluster (e.g. GKE master CIDR or PSC VIP)

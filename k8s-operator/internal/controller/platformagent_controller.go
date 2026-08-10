@@ -51,7 +51,12 @@ import (
 	agentv1alpha1 "github.com/gke-labs/kube-agents/k8s-operator/api/v1alpha1"
 )
 
-const platformAgentFinalizer = "kubeagents.x-k8s.io/finalizer"
+const (
+	platformAgentFinalizer = "kubeagents.x-k8s.io/finalizer"
+	minIPv4CIDRPrefix      = 12
+	minIPv6CIDRPrefix      = 48
+	maxCIDRsPerAnnotation  = 50
+)
 
 // PlatformAgentReconciler reconciles a PlatformAgent object
 type PlatformAgentReconciler struct {
@@ -521,35 +526,51 @@ func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, ag
 				return
 			}
 			ones, bits := ipNet.Mask.Size()
-			if (bits == 32 && ones < 12) || (bits == 128 && ones < 48) {
+			if (bits == 32 && ones < minIPv4CIDRPrefix) || (bits == 128 && ones < minIPv6CIDRPrefix) {
 				logf.FromContext(ctx).Info("Rejecting overly broad CIDR in annotation (must be >= /12 for IPv4, >= /48 for IPv6)", "annotation", annotationName, "cidr", raw)
 				return
 			}
-			apiTargets = append(apiTargets, raw)
+			apiTargets = append(apiTargets, ipNet.String())
 			return
 		}
-		if ip := net.ParseIP(strings.Trim(raw, "[]")); ip == nil {
+		trimmed := strings.Trim(raw, "[]")
+		if ip := net.ParseIP(trimmed); ip == nil {
 			logf.FromContext(ctx).Info("Ignoring invalid IP address in annotation", "annotation", annotationName, "ip", raw)
 			return
 		}
-		apiTargets = append(apiTargets, raw)
+		apiTargets = append(apiTargets, trimmed)
 	}
 
 	if agent.Annotations != nil {
 		if customCIDRs, ok := agent.Annotations["kubeagents.x-k8s.io/apiserver-cidr"]; ok {
-			for _, cidr := range strings.Split(customCIDRs, ",") {
+			cidrs := strings.Split(customCIDRs, ",")
+			if len(cidrs) > maxCIDRsPerAnnotation {
+				logf.FromContext(ctx).Info("Truncating annotation to max allowed CIDRs", "annotation", "kubeagents.x-k8s.io/apiserver-cidr", "max", maxCIDRsPerAnnotation, "total", len(cidrs))
+				cidrs = cidrs[:maxCIDRsPerAnnotation]
+			}
+			for _, cidr := range cidrs {
 				parseCIDRTarget("kubeagents.x-k8s.io/apiserver-cidr", cidr)
 			}
 		}
 		if customCIDRs, ok := agent.Annotations["kubeagents.x-k8s.io/custom-egress-cidrs"]; ok {
-			for _, cidr := range strings.Split(customCIDRs, ",") {
+			cidrs := strings.Split(customCIDRs, ",")
+			if len(cidrs) > maxCIDRsPerAnnotation {
+				logf.FromContext(ctx).Info("Truncating annotation to max allowed CIDRs", "annotation", "kubeagents.x-k8s.io/custom-egress-cidrs", "max", maxCIDRsPerAnnotation, "total", len(cidrs))
+				cidrs = cidrs[:maxCIDRsPerAnnotation]
+			}
+			for _, cidr := range cidrs {
 				parseCIDRTarget("kubeagents.x-k8s.io/custom-egress-cidrs", cidr)
 			}
 		}
 	}
 
 	if r.APIServerCIDROverride != "" {
-		for _, cidr := range strings.Split(r.APIServerCIDROverride, ",") {
+		cidrs := strings.Split(r.APIServerCIDROverride, ",")
+		if len(cidrs) > maxCIDRsPerAnnotation {
+			logf.FromContext(ctx).Info("Truncating override to max allowed CIDRs", "override", "KUBERNETES_API_SERVER_CIDR", "max", maxCIDRsPerAnnotation, "total", len(cidrs))
+			cidrs = cidrs[:maxCIDRsPerAnnotation]
+		}
+		for _, cidr := range cidrs {
 			parseCIDRTarget("KUBERNETES_API_SERVER_CIDR", cidr)
 		}
 	}
@@ -585,7 +606,7 @@ func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, ag
 		fqdnNetpol.SetName(agent.Name + "-fqdn-netpol")
 		fqdnNetpol.SetNamespace(agent.Namespace)
 		if err := r.Delete(ctx, fqdnNetpol); err != nil && !errors.IsNotFound(err) && !meta.IsNoMatchError(err) {
-			logf.FromContext(ctx).Info("Failed to clean up disabled FQDNNetworkPolicy", "error", err)
+			return fmt.Errorf("failed to clean up disabled FQDNNetworkPolicy %s/%s: %w", fqdnNetpol.GetNamespace(), fqdnNetpol.GetName(), err)
 		}
 	}
 

@@ -223,6 +223,12 @@ execute_networkpolicy_addon() {
       --project "$PROJECT_ID" \
       --quiet || return 1
 
+  active_op=$(gcloud container operations list --region="$REGION" --project="$PROJECT_ID" --filter="targetLink:$CLUSTER_NAME AND status=RUNNING" --format="value(name)" 2>/dev/null | head -n1)
+  if [ -n "$active_op" ]; then
+    print_info "Waiting for node pool rollout operation $active_op to complete..."
+    gcloud container operations wait "$active_op" --region="$REGION" --project="$PROJECT_ID" || print_warning "Operation wait returned non-zero (operation may have completed between list and wait); proceeding..."
+  fi
+
   print_warning "Legacy Network Policy enabled. Note that advanced FQDN-based NetworkPolicies will NOT be supported without Dataplane V2."
   return 0
 }

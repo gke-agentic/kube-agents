@@ -11,40 +11,25 @@ spec:
       app: platform-agent
   egress:
     - matches:
+        # Google APIs & GCP Services (Vertex AI, GKE, Cloud Logging/Monitoring, Workload Identity)
         - pattern: "googleapis.com"
         - pattern: "*.googleapis.com"
         - pattern: "accounts.google.com"
         - pattern: "*.gstatic.com"
+        # Container & Artifact Registries (Plugin OCI images)
         - pattern: "gcr.io"
         - pattern: "*.gcr.io"
         - pattern: "pkg.dev"
         - pattern: "*.pkg.dev"
+        # GitOps & Source Control
         - pattern: "github.com"
         - pattern: "*.github.com"
         - pattern: "*.githubusercontent.com"
+        # Chat Integrations
         - pattern: "slack.com"
         - pattern: "*.slack.com"
         - pattern: "*.slack-edge.com"
         - pattern: "*.slack-msgs.com"
-        - pattern: "api.openai.com"
-        - pattern: "api.anthropic.com"
-        - pattern: "api.groq.com"
-        - pattern: "api.mistral.ai"
-        - pattern: "api.cohere.ai"
-        - pattern: "*.openai.azure.com"
-        - pattern: "*.litellm.ai"
-        - pattern: "generativelanguage.googleapis.com"
-        - pattern: "pypi.org"
-        - pattern: "*.pypi.org"
-        - pattern: "pythonhosted.org"
-        - pattern: "*.pythonhosted.org"
-        - pattern: "files.pythonhosted.org"
-        - pattern: "registry.npmjs.org"
-        - pattern: "*.npmjs.org"
-        - pattern: "huggingface.co"
-        - pattern: "*.huggingface.co"
-        - pattern: "hf.co"
-        - pattern: "*.hf.co"
       ports:
         - protocol: "TCP"
           port: 443
