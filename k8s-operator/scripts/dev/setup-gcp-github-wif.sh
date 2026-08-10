@@ -76,7 +76,6 @@ gcloud services enable iamcredentials.googleapis.com \
   container.googleapis.com \
   storage.googleapis.com \
   pubsub.googleapis.com \
-  secretmanager.googleapis.com \
   --project="${PROJECT_ID}"
 
 # 3. Create Service Account
@@ -99,7 +98,7 @@ ROLES=(
 if [ "$IS_ADMIN" = true ]; then
   echo "Admin mode selected. Adding extended lifecycle administration roles..."
   ROLES+=(
-    # Required by provision_04_gcp_iam.sh & provision_05_gcp_gchat.sh to create and manage Service Accounts
+    # Required by provision_04_gcp_iam.sh & teardown_04_gcp_iam.sh to create and manage Service Accounts
     "roles/iam.serviceAccountAdmin"
 
     # Required by provision_04_gcp_iam.sh & teardown_04_gcp_iam.sh to bind/unbind IAM policies on GCP resources
@@ -107,9 +106,6 @@ if [ "$IS_ADMIN" = true ]; then
 
     # Required by provision_05_gcp_gchat.sh & teardown_05 for Google Chat Pub/Sub topic and subscription management
     "roles/pubsub.admin"
-
-    # Required by provision_07_gcp_k8s_secrets.sh & teardown_07 to store and cleanup runtime secrets
-    "roles/secretmanager.admin"
   )
 fi
 
