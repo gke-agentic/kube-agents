@@ -30,16 +30,15 @@ elif [ -n "${RC_TAG}" ]; then
     exit 1
   fi
 elif [ "${GITHUB_EVENT_NAME:-}" = "schedule" ]; then
-  RESOLVED_TARGET=$(find_latest_built_commit)
-  if [ -z "${RESOLVED_TARGET}" ]; then
+  COMMIT_SHA=$(find_latest_built_commit)
+  if [ -z "${COMMIT_SHA}" ]; then
     exit 1
   fi
 
-  if [[ "${RESOLVED_TARGET}" == SKIPPED_ALREADY_VALIDATED:* ]]; then
-    COMMIT_SHA="${RESOLVED_TARGET#SKIPPED_ALREADY_VALIDATED:}"
+  if is_commit_already_validated "${COMMIT_SHA}"; then
+    echo "ℹ️ Latest built commit ${COMMIT_SHA:0:7} is already validated (*_validated). Skipping redundant RC run." >&2
     SKIP_RC="true"
   else
-    COMMIT_SHA="${RESOLVED_TARGET}"
     SKIP_RC="false"
   fi
 else

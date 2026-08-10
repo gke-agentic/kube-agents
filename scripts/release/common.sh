@@ -83,12 +83,6 @@ find_latest_built_commit() {
 
   for sha in $candidate_commits; do
     if check_commit_images_exist "${sha}"; then
-      if is_commit_already_validated "${sha}"; then
-        echo "ℹ️ Latest built commit ${sha:0:7} is already validated (*_validated). Skipping redundant RC run." >&2
-        echo "SKIPPED_ALREADY_VALIDATED:${sha}"
-        return 0
-      fi
-
       echo "✅ Found latest commit with verified container images: ${sha}" >&2
       echo "$sha"
       return 0
