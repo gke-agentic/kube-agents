@@ -1,28 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-# 1. Check for required environment variables
-MISSING_VAR=false
-if [ -z "${PROJECT_ID:-}" ]; then
-  PROJECT_ID=$(gcloud config get-value project 2>/dev/null || echo "")
-  if [ -z "$PROJECT_ID" ]; then
-    echo "Error: PROJECT_ID environment variable is not set and no default project found in gcloud config."
-    MISSING_VAR=true
-  fi
-fi
-if [ -z "${SA_NAME:-}" ]; then
-  echo "Error: SA_NAME environment variable is not set."
-  MISSING_VAR=true
-fi
-if [ -z "${GITHUB_REPO:-}" ]; then
-  echo "Error: GITHUB_REPO environment variable is not set."
-  MISSING_VAR=true
-fi
-
 POOL_NAME="github-pool"
 PROVIDER_NAME="github-deploy-provider"
 
-# Parse optional CLI flags and environment variables
+# 1. Parse optional CLI flags and environment variables
 IS_ADMIN="${ADMIN:-false}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -41,6 +23,24 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# 2. Check for required environment variables
+MISSING_VAR=false
+if [ -z "${PROJECT_ID:-}" ]; then
+  PROJECT_ID=$(gcloud config get-value project 2>/dev/null || echo "")
+  if [ -z "$PROJECT_ID" ]; then
+    echo "Error: PROJECT_ID environment variable is not set and no default project found in gcloud config."
+    MISSING_VAR=true
+  fi
+fi
+if [ -z "${SA_NAME:-}" ]; then
+  echo "Error: SA_NAME environment variable is not set."
+  MISSING_VAR=true
+fi
+if [ -z "${GITHUB_REPO:-}" ]; then
+  echo "Error: GITHUB_REPO environment variable is not set."
+  MISSING_VAR=true
+fi
+
 if [ "$MISSING_VAR" = true ]; then
   echo ""
   echo "Please set the required variables before running this script. For example:"
@@ -51,7 +51,7 @@ if [ "$MISSING_VAR" = true ]; then
   exit 1
 fi
 
-# 2. Prompt user for confirmation
+# 3. Prompt user for confirmation
 echo "The script will perform the setup for GitHub Actions WIF in the following project: $PROJECT_ID"
 if [ "$IS_ADMIN" = true ]; then
   echo "Mode: ADMIN (Includes extended IAM roles for teardown.sh + provision.sh cycles)"
