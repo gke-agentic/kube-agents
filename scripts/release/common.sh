@@ -50,6 +50,14 @@ check_commit_images_exist() {
   return 0
 }
 
+# Checks if a commit SHA has already been validated in a previous RC run (*_validated tag)
+is_commit_already_validated() {
+  local sha="$1"
+  local validated_tags
+  validated_tags=$(git tag --points-at "${sha}" "*_validated" 2>/dev/null || echo "")
+  [ -n "${validated_tags}" ]
+}
+
 # Finds the latest commit on main whose required container images are already built in the registry
 find_latest_built_commit() {
   local target_repo
@@ -60,7 +68,7 @@ find_latest_built_commit() {
   echo "🔍 [Schedule / Auto-resolve] Scanning recent commits on main for prebuilt container images (${registry_prefix})..." >&2
 
   if [ -n "${target_repo}" ]; then
-    git fetch "https://github.com/${target_repo}.git" main --depth=30 >/dev/null 2>&1 || git fetch origin main --depth=30 >/dev/null 2>&1 || true
+    git fetch "https://github.com/${target_repo}.git" main +refs/tags/*:refs/tags/* --depth=30 >/dev/null 2>&1 || git fetch origin main --depth=30 >/dev/null 2>&1 || true
   else
     git fetch origin main --depth=30 >/dev/null 2>&1 || true
   fi
@@ -75,6 +83,12 @@ find_latest_built_commit() {
 
   for sha in $candidate_commits; do
     if check_commit_images_exist "${sha}"; then
+      if is_commit_already_validated "${sha}"; then
+        echo "ℹ️ Latest built commit ${sha:0:7} is already validated (*_validated). Skipping redundant RC run." >&2
+        echo "SKIPPED_ALREADY_VALIDATED:${sha}"
+        return 0
+      fi
+
       echo "✅ Found latest commit with verified container images: ${sha}" >&2
       echo "$sha"
       return 0

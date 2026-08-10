@@ -30,6 +30,8 @@ on:
         value: ${{ jobs.create-tag.outputs.commit_sha }}
       rc_tag:
         value: ${{ jobs.create-tag.outputs.rc_tag }}
+      skip_rc:
+        value: ${{ jobs.create-tag.outputs.skip_rc }}
 
 jobs:
   create-tag:
@@ -40,6 +42,7 @@ jobs:
     outputs:
       commit_sha: ${{ steps.resolve_target.outputs.commit_sha }}
       rc_tag: ${{ steps.resolve_target.outputs.rc_tag }}
+      skip_rc: ${{ steps.resolve_target.outputs.skip_rc }}
 
     steps:
       - name: Checkout repository
@@ -59,12 +62,14 @@ jobs:
         run: ./scripts/release/resolve_rc_tag.sh
 
       - name: Verify Prebuilt Container Images Exist in Registry
+        if: steps.resolve_target.outputs.skip_rc != 'true'
         env:
           COMMIT_SHA: ${{ steps.resolve_target.outputs.commit_sha }}
           REGISTRY_PREFIX: ${{ vars.REGISTRY_PREFIX }}
         run: ./scripts/release/verify_candidate_images.sh
 
       - name: Create Git Tag & Push
+        if: steps.resolve_target.outputs.skip_rc != 'true'
         env:
           COMMIT_SHA: ${{ steps.resolve_target.outputs.commit_sha }}
           RC_TAG: ${{ steps.resolve_target.outputs.rc_tag }}

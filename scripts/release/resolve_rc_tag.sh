@@ -8,6 +8,8 @@ source "${SCRIPT_DIR}/common.sh"
 RC_TAG="${1:-${RC_TAG:-}}"
 COMMIT_INPUT="${2:-${COMMIT_SHA:-}}"
 
+SKIP_RC="false"
+
 # Strict Target Commit SHA resolution
 if [ -n "${COMMIT_INPUT}" ]; then
   if ! COMMIT_SHA=$(git rev-parse --verify "${COMMIT_INPUT}^{commit}" 2>/dev/null); then
@@ -28,9 +30,17 @@ elif [ -n "${RC_TAG}" ]; then
     exit 1
   fi
 elif [ "${GITHUB_EVENT_NAME:-}" = "schedule" ]; then
-  COMMIT_SHA=$(find_latest_built_commit)
-  if [ -z "${COMMIT_SHA}" ]; then
+  RESOLVED_TARGET=$(find_latest_built_commit)
+  if [ -z "${RESOLVED_TARGET}" ]; then
     exit 1
+  fi
+
+  if [[ "${RESOLVED_TARGET}" == SKIPPED_ALREADY_VALIDATED:* ]]; then
+    COMMIT_SHA="${RESOLVED_TARGET#SKIPPED_ALREADY_VALIDATED:}"
+    SKIP_RC="true"
+  else
+    COMMIT_SHA="${RESOLVED_TARGET}"
+    SKIP_RC="false"
   fi
 else
   echo "❌ ERROR: Neither COMMIT_SHA nor RC_TAG input was provided (mandatory for manual runs)!" >&2
@@ -46,10 +56,12 @@ fi
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
   echo "commit_sha=${COMMIT_SHA}" >> "$GITHUB_OUTPUT"
   echo "rc_tag=${RC_TAG}" >> "$GITHUB_OUTPUT"
+  echo "skip_rc=${SKIP_RC}" >> "$GITHUB_OUTPUT"
 fi
 
 echo "======================================================================"
 echo "🏷️ RESOLVED RELEASE CANDIDATE TARGET"
-echo "Target Commit SHA: ${COMMIT_SHA}"
-echo "Release Tag:      ${RC_TAG}"
+echo "Target Commit SHA:            ${COMMIT_SHA}"
+echo "Release Tag:                  ${RC_TAG}"
+echo "Skip (RC Already Validated):  ${SKIP_RC}"
 echo "======================================================================"
