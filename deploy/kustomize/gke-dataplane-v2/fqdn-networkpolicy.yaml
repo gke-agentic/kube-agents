@@ -11,7 +11,9 @@ spec:
       app: platform-agent-gateway
   egress:
     - matches:
+        - pattern: "googleapis.com"
         - pattern: "*.googleapis.com"
+        - pattern: "google.com"
         - pattern: "*.google.com"
         - pattern: "*.gstatic.com"
         - pattern: "*.pkg.dev"
@@ -19,9 +21,22 @@ spec:
         - pattern: "github.com"
         - pattern: "*.github.com"
         - pattern: "*.githubusercontent.com"
+        - pattern: "slack.com"
+        - pattern: "*.slack.com"
+        - pattern: "*.slack-edge.com"
+        - pattern: "*.slack-msgs.com"
         - pattern: "api.openai.com"
         - pattern: "api.anthropic.com"
+        - pattern: "api.groq.com"
+        - pattern: "api.mistral.ai"
+        - pattern: "api.cohere.ai"
+        - pattern: "*.openai.azure.com"
+        - pattern: "huggingface.co"
+        - pattern: "*.huggingface.co"
         - pattern: "*.litellm.ai"
+        - pattern: "pypi.org"
+        - pattern: "*.pypi.org"
+        - pattern: "files.pythonhosted.org"
       ports:
         - protocol: "TCP"
           port: 443

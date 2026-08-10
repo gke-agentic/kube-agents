@@ -468,6 +468,8 @@ func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, ag
 		if ip := strings.TrimSpace(kubeDnsSvc.Spec.ClusterIP); ip != "" && ip != "None" && net.ParseIP(ip) != nil {
 			dnsClusterIP = ip
 		}
+	} else if !errors.IsNotFound(err) {
+		logf.FromContext(ctx).Info("Failed to discover kube-dns ClusterIP; defaulting to 10.96.0.10", "error", err)
 	}
 
 	var apiTargets []string
@@ -480,6 +482,8 @@ func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, ag
 		if ip := strings.TrimSpace(k8sSvc.Spec.ClusterIP); ip != "" && ip != "None" && net.ParseIP(ip) != nil {
 			apiTargets = append(apiTargets, ip)
 		}
+	} else if !errors.IsNotFound(err) {
+		logf.FromContext(ctx).Info("Failed to discover default/kubernetes Service ClusterIP", "error", err)
 	}
 
 	// Use APIReader (live non-cached reader) for default/kubernetes Endpoints to avoid
@@ -498,10 +502,20 @@ func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, ag
 				}
 			}
 		}
+	} else if !errors.IsNotFound(err) {
+		logf.FromContext(ctx).Info("Failed to discover default/kubernetes Endpoints", "error", err)
 	}
 
 	if agent.Annotations != nil {
 		if customCIDRs, ok := agent.Annotations["kubeagents.x-k8s.io/apiserver-cidr"]; ok {
+			for _, cidr := range strings.Split(customCIDRs, ",") {
+				cidr = strings.TrimSpace(cidr)
+				if cidr != "" {
+					apiTargets = append(apiTargets, cidr)
+				}
+			}
+		}
+		if customCIDRs, ok := agent.Annotations["kubeagents.x-k8s.io/custom-egress-cidrs"]; ok {
 			for _, cidr := range strings.Split(customCIDRs, ",") {
 				cidr = strings.TrimSpace(cidr)
 				if cidr != "" {

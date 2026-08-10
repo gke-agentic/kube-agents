@@ -192,6 +192,10 @@ execute_networkpolicy_addon() {
 
   print_info "GKE Dataplane V2 is not enabled. Falling back to enabling Legacy GKE Network Policy (Calico)..."
 
+  confirm_action "Enabling NetworkPolicy on existing cluster '$CLUSTER_NAME' will trigger a rolling restart of all cluster node pools." \
+    "Cluster:$CLUSTER_NAME" \
+    "Region:$REGION"
+
   local active_op
   active_op=$(gcloud container operations list --region="$REGION" --project="$PROJECT_ID" --filter="targetLink:$CLUSTER_NAME AND status=RUNNING" --format="value(name)" 2>/dev/null | head -n1)
   if [ -n "$active_op" ]; then
@@ -203,7 +207,8 @@ execute_networkpolicy_addon() {
   gcloud container clusters update "$CLUSTER_NAME" \
       --region "$REGION" \
       --update-addons NetworkPolicy=ENABLED \
-      --project "$PROJECT_ID" || return 1
+      --project "$PROJECT_ID" \
+      --quiet || return 1
 
   active_op=$(gcloud container operations list --region="$REGION" --project="$PROJECT_ID" --filter="targetLink:$CLUSTER_NAME AND status=RUNNING" --format="value(name)" 2>/dev/null | head -n1)
   if [ -n "$active_op" ]; then
@@ -215,7 +220,8 @@ execute_networkpolicy_addon() {
   gcloud container clusters update "$CLUSTER_NAME" \
       --region "$REGION" \
       --enable-network-policy \
-      --project "$PROJECT_ID" || return 1
+      --project "$PROJECT_ID" \
+      --quiet || return 1
 
   print_warning "Legacy Network Policy enabled. Note that advanced FQDN-based NetworkPolicies will NOT be supported without Dataplane V2."
   return 0

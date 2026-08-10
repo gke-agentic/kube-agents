@@ -753,14 +753,11 @@ func TestBuildNetworkPolicy(t *testing.T) {
 	if len(netpol.Spec.PolicyTypes) != 2 {
 		t.Errorf("expected 2 PolicyTypes, got %d", len(netpol.Spec.PolicyTypes))
 	}
-	if len(netpol.Spec.Ingress) != 2 {
-		t.Fatalf("expected 2 Ingress rules, got %d", len(netpol.Spec.Ingress))
+	if len(netpol.Spec.Ingress) != 1 {
+		t.Fatalf("expected 1 Ingress rule, got %d", len(netpol.Spec.Ingress))
 	}
 	if len(netpol.Spec.Ingress[0].Ports) != 3 {
 		t.Errorf("expected 3 ports in agent namespace ingress rule when dashboard enabled, got %d", len(netpol.Spec.Ingress[0].Ports))
-	}
-	if len(netpol.Spec.Ingress[1].Ports) != 1 {
-		t.Errorf("expected 1 port in gke-gmp-system ingress rule, got %d", len(netpol.Spec.Ingress[1].Ports))
 	}
 	if len(netpol.Spec.Egress) != 9 {
 		t.Errorf("expected 9 Egress rules (DNS, GCP Metadata port 80/8080, GCP Metadata port 988, LiteLLM Gateway, vLLM Gemma, K8s Control Plane, External HTTPS, GKE OTel Collector, GitHub Token Minter), got %d", len(netpol.Spec.Egress))
@@ -849,11 +846,35 @@ func TestBuildNetworkPolicy_DashboardDisabled(t *testing.T) {
 	}
 
 	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10")
-	if len(netpol.Spec.Ingress) != 2 {
-		t.Fatalf("expected 2 Ingress rules, got %d", len(netpol.Spec.Ingress))
+	if len(netpol.Spec.Ingress) != 1 {
+		t.Fatalf("expected 1 Ingress rule, got %d", len(netpol.Spec.Ingress))
 	}
 	if len(netpol.Spec.Ingress[0].Ports) != 2 {
 		t.Errorf("expected 2 ports in agent namespace ingress rule when dashboard disabled, got %d", len(netpol.Spec.Ingress[0].Ports))
+	}
+}
+
+func TestBuildNetworkPolicy_FQDNEnabled(t *testing.T) {
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+			Annotations: map[string]string{
+				"kubeagents.x-k8s.io/enable-fqdn-network-policy": "true",
+			},
+		},
+	}
+
+	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10")
+	if len(netpol.Spec.Egress) != 8 {
+		t.Errorf("expected 8 Egress rules when FQDN is enabled (external HTTPS omitted), got %d", len(netpol.Spec.Egress))
+	}
+	for _, egress := range netpol.Spec.Egress {
+		for _, peer := range egress.To {
+			if peer.IPBlock != nil && peer.IPBlock.CIDR == "0.0.0.0/0" {
+				t.Errorf("expected blanket 0.0.0.0/0 egress rule to be omitted when FQDN is enabled")
+			}
+		}
 	}
 }
 
@@ -1000,6 +1021,23 @@ func TestBuildNetworkPolicy_ExternalHTTPSExceptList(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("expected %q in External HTTPS except list, got %v", required, exceptList)
+		}
+	}
+
+	if len(httpsRule.To) < 2 || httpsRule.To[1].IPBlock == nil || httpsRule.To[1].IPBlock.CIDR != "::/0" {
+		t.Fatalf("expected IPv6 ::/0 peer in External HTTPS rule, got %v", httpsRule.To)
+	}
+	ipv6Excepts := httpsRule.To[1].IPBlock.Except
+	for _, req := range []string{"fc00::/7", "fe80::/10", "ff00::/8"} {
+		found := false
+		for _, e := range ipv6Excepts {
+			if e == req {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected %q in External HTTPS IPv6 except list, got %v", req, ipv6Excepts)
 		}
 	}
 }
@@ -2429,11 +2467,11 @@ func TestReconcileNetworkPolicy_DynamicDiscovery(t *testing.T) {
 	// Verify API server egress rule contains all targets:
 	// 10.0.0.1/32 (APIServerIP), 192.168.1.50/32 (Endpoints), 172.16.0.100/32 (Annotation), 198.51.100.0/24, 203.0.113.1/32 (APIServerCIDROverride)
 	expectedAPICIDRs := map[string]bool{
-		"10.0.0.1/32":       false,
-		"192.168.1.50/32":   false,
-		"172.16.0.100/32":   false,
-		"198.51.100.0/24":   false,
-		"203.0.113.1/32":    false,
+		"10.0.0.1/32":     false,
+		"192.168.1.50/32": false,
+		"172.16.0.100/32": false,
+		"198.51.100.0/24": false,
+		"203.0.113.1/32":  false,
 	}
 
 	foundAPIRule := false

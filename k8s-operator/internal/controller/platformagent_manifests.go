@@ -2503,6 +2503,15 @@ func buildLeaderRoleBinding(agent *agentv1alpha1.PlatformAgent, bindingName, rol
 	}
 }
 
+func isFQDNNetworkPolicyEnabled(agent *agentv1alpha1.PlatformAgent) bool {
+	if agent != nil && agent.Annotations != nil {
+		if val, ok := agent.Annotations["kubeagents.x-k8s.io/enable-fqdn-network-policy"]; ok {
+			return val == "true"
+		}
+	}
+	return false
+}
+
 func isDashboardEnabled(agent *agentv1alpha1.PlatformAgent) bool {
 	if agent != nil && agent.Spec.Harness != nil && agent.Spec.Harness.Hermes != nil && agent.Spec.Harness.Hermes.DashboardEnabled != nil {
 		return *agent.Spec.Harness.Hermes.DashboardEnabled
@@ -2583,23 +2592,6 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, d
 					Protocol: &tcp,
 					Port:     ptr.To(intstr.FromInt32(8642)),
 				},
-				{
-					Protocol: &tcp,
-					Port:     ptr.To(intstr.FromInt32(8643)),
-				},
-			},
-		},
-		{
-			From: []networkingv1.NetworkPolicyPeer{
-				{
-					NamespaceSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							"kubernetes.io/metadata.name": "gke-gmp-system",
-						},
-					},
-				},
-			},
-			Ports: []networkingv1.NetworkPolicyPort{
 				{
 					Protocol: &tcp,
 					Port:     ptr.To(intstr.FromInt32(8643)),
@@ -2736,8 +2728,13 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, d
 			},
 			To: apiPeers,
 		},
-		// 7. External HTTPS (Google APIs, GitHub, etc.)
-		{
+	}
+
+	// 7. External HTTPS (Google APIs, GitHub, etc.)
+	// Note: When FQDNNetworkPolicy is enabled on Dataplane V2, this open IPBlock is omitted
+	// so domain-level filtering is strictly enforced by FQDNNetworkPolicy.
+	if !isFQDNNetworkPolicyEnabled(agent) {
+		egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(443))},
 			},
@@ -2748,40 +2745,48 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, d
 						Except: []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16"},
 					},
 				},
-			},
-		},
-		// 8. GKE Managed OpenTelemetry Collector (Trace Export)
-		{
-			Ports: []networkingv1.NetworkPolicyPort{
-				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(4317))},
-				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(4318))},
-			},
-			To: []networkingv1.NetworkPolicyPeer{
 				{
-					NamespaceSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							"kubernetes.io/metadata.name": "gke-managed-otel",
-						},
+					IPBlock: &networkingv1.IPBlock{
+						CIDR:   "::/0",
+						Except: []string{"fc00::/7", "fe80::/10", "ff00::/8"},
 					},
 				},
 			},
-		},
-		// 9. GitHub Token Minter (Minty)
-		{
-			Ports: []networkingv1.NetworkPolicyPort{
-				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(8080))},
-			},
-			To: []networkingv1.NetworkPolicyPeer{
-				{
-					PodSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							"app": "github-token-minter",
-						},
-					},
-				},
-			},
-		},
+		})
 	}
+
+	// 8. GKE Managed OpenTelemetry Collector (Trace Export)
+	egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{
+		Ports: []networkingv1.NetworkPolicyPort{
+			{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(4317))},
+			{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(4318))},
+		},
+		To: []networkingv1.NetworkPolicyPeer{
+			{
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						"kubernetes.io/metadata.name": "gke-managed-otel",
+					},
+				},
+			},
+		},
+	})
+
+	// 9. GitHub Token Minter (Minty)
+	egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{
+		Ports: []networkingv1.NetworkPolicyPort{
+			{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(8080))},
+		},
+		To: []networkingv1.NetworkPolicyPeer{
+			{
+				PodSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						"app": "github-token-minter",
+					},
+				},
+			},
+		},
+	})
 
 	return &networkingv1.NetworkPolicy{
 		TypeMeta: metav1.TypeMeta{

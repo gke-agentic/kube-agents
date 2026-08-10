@@ -1102,6 +1102,12 @@ spec:
               - 192.168.0.0/16
               - 100.64.0.0/10
               - 169.254.0.0/16
+        - ipBlock:
+            cidr: '::/0'
+            except:
+              - fc00::/7
+              - fe80::/10
+              - ff00::/8
     - ports:
         - port: 4317
           protocol: TCP
@@ -1127,13 +1133,6 @@ spec:
         - port: 8643
           protocol: TCP
         - port: 9119
-          protocol: TCP
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: gke-gmp-system
-      ports:
-        - port: 8643
           protocol: TCP
   podSelector:
     matchLabels:
