@@ -68,9 +68,9 @@ find_latest_built_commit() {
   echo "🔍 [Schedule / Auto-resolve] Scanning recent commits on main for prebuilt container images (${registry_prefix})..." >&2
 
   if [ -n "${target_repo}" ]; then
-    git fetch "https://github.com/${target_repo}.git" main +refs/tags/*:refs/tags/* --depth=30 >/dev/null 2>&1 || git fetch origin main --depth=30 >/dev/null 2>&1 || true
+    git fetch "https://github.com/${target_repo}.git" main +refs/tags/*:refs/tags/* --depth=30 >/dev/null 2>&1 || git fetch origin main +refs/tags/*:refs/tags/* --depth=30 >/dev/null 2>&1 || true
   else
-    git fetch origin main --depth=30 >/dev/null 2>&1 || true
+    git fetch origin main +refs/tags/*:refs/tags/* --depth=30 >/dev/null 2>&1 || true
   fi
 
   local candidate_commits
@@ -113,9 +113,14 @@ ensure_git_tag() {
     return 1
   fi
 
+  local target_repo
+  target_repo="$(get_target_repo)"
+
   # Fetch remote tags to ensure local view is updated
-  if ! git fetch origin --tags >/dev/null 2>&1; then
-    echo "⚠️ Warning: Could not fetch tags from origin repository." >&2
+  if [ -n "${target_repo}" ]; then
+    git fetch "https://github.com/${target_repo}.git" +refs/tags/*:refs/tags/* >/dev/null 2>&1 || git fetch origin --tags >/dev/null 2>&1 || true
+  else
+    git fetch origin --tags >/dev/null 2>&1 || true
   fi
 
   # Check if tag already exists in Git
@@ -133,13 +138,6 @@ ensure_git_tag() {
 
   setup_git_bot_user
   git tag -a "${rc_tag}" "${commit_sha}" -m "${tag_message}"
-
-  local target_repo
-  if [ -n "${GH_ORG:-}" ] && [ -n "${GH_REPO:-}" ]; then
-    target_repo="${GH_ORG}/${GH_REPO}"
-  else
-    target_repo="${GITHUB_REPOSITORY:-}"
-  fi
 
   local push_err
   if push_err=$(git push "https://github.com/${target_repo}.git" "${rc_tag}" 2>&1); then
