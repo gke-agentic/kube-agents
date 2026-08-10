@@ -27,6 +27,7 @@ jobs:
     with:
       commit_sha: ${{ inputs.commit_sha }}
       rc_tag: ${{ inputs.rc_tag }}
+      is_scheduled: ${{ github.event_name == 'schedule' }}
     secrets:
       RELEASE_BOT_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
 

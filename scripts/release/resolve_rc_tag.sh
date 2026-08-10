@@ -7,6 +7,7 @@ source "${SCRIPT_DIR}/common.sh"
 
 RC_TAG="${1:-${RC_TAG:-}}"
 COMMIT_INPUT="${2:-${COMMIT_SHA:-}}"
+IS_SCHEDULED="${IS_SCHEDULED:-false}"
 
 SKIP_RC="false"
 
@@ -29,7 +30,7 @@ elif [ -n "${RC_TAG}" ]; then
     echo "❌ ERROR: Cannot resolve valid Git commit SHA from release tag '${RC_TAG}'!" >&2
     exit 1
   fi
-elif [ "${GITHUB_EVENT_NAME:-}" = "schedule" ]; then
+elif [ "${IS_SCHEDULED}" = "true" ]; then
   COMMIT_SHA=$(find_latest_built_commit)
   if [ -z "${COMMIT_SHA}" ]; then
     exit 1

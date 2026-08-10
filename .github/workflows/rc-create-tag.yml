@@ -21,6 +21,11 @@ on:
         description: "Release Candidate Tag (Optional, Default: Auto-generated rc_YYMMDDHHMM)"
         required: false
         type: string
+      is_scheduled:
+        description: "Flag indicating whether run was triggered by automated cron schedule"
+        required: false
+        type: boolean
+        default: false
     secrets:
       RELEASE_BOT_TOKEN:
         description: "Release Bot PAT Token"
@@ -56,6 +61,7 @@ jobs:
         env:
           COMMIT_SHA: ${{ inputs.commit_sha }}
           RC_TAG: ${{ inputs.rc_tag }}
+          IS_SCHEDULED: ${{ inputs.is_scheduled }}
           GH_ORG: ${{ vars.GH_ORG }}
           GH_REPO: ${{ vars.GH_REPO }}
           REGISTRY_PREFIX: ${{ vars.REGISTRY_PREFIX }}
