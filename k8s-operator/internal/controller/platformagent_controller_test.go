@@ -1777,13 +1777,13 @@ func TestCleanupAgentRBAC_ReconcilePreservesActiveRBACAndDeletesLegacy(t *testin
 	configmapEditorBindingName := "kubeagents:configmap-editor:test-ns:test-agent"
 	legacyRoleName := "kubeagents:explorer:test-ns:test-agent"
 	legacyBindingName := "kubeagents-legacy-binding"
-	
+
 	activeMinimalRole := &rbacv1.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: minimalRoleName,
 			Labels: map[string]string{
 				"app.kubernetes.io/instance": "test-ns-test-agent",
-				"app.kubernetes.io/part-of":   "kube-agents",
+				"app.kubernetes.io/part-of":  "kube-agents",
 			},
 		},
 	}
@@ -1840,7 +1840,7 @@ func TestCleanupAgentRBAC_ReconcilePreservesActiveRBACAndDeletesLegacy(t *testin
 			Name: legacyRoleName,
 			Labels: map[string]string{
 				"app.kubernetes.io/instance": "test-ns-test-agent",
-				"app.kubernetes.io/part-of":   "kube-agents",
+				"app.kubernetes.io/part-of":  "kube-agents",
 			},
 		},
 	}
@@ -1914,7 +1914,7 @@ func TestCleanupAgentRBAC_DeletionPurgesAllRBAC(t *testing.T) {
 			Name: minimalRoleName,
 			Labels: map[string]string{
 				"app.kubernetes.io/instance": "test-ns-test-agent",
-				"app.kubernetes.io/part-of":   "kube-agents",
+				"app.kubernetes.io/part-of":  "kube-agents",
 			},
 		},
 	}

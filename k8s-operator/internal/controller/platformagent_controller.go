@@ -517,7 +517,7 @@ func (r *PlatformAgentReconciler) cleanupAgentRBAC(ctx context.Context, agent *a
 	var legacyLabeledCRBs rbacv1.ClusterRoleBindingList
 	if err := r.List(ctx, &legacyLabeledCRBs, client.MatchingLabels{
 		"app.kubernetes.io/instance": instLabel,
-		"app.kubernetes.io/part-of":   "kube-agents",
+		"app.kubernetes.io/part-of":  "kube-agents",
 	}); err != nil {
 		return fmt.Errorf("failed to list legacy labeled ClusterRoleBindings: %w", err)
 	}
@@ -537,7 +537,7 @@ func (r *PlatformAgentReconciler) cleanupAgentRBAC(ctx context.Context, agent *a
 	var legacyClusterRoles rbacv1.ClusterRoleList
 	if err := r.List(ctx, &legacyClusterRoles, client.MatchingLabels{
 		"app.kubernetes.io/instance": instLabel,
-		"app.kubernetes.io/part-of":   "kube-agents",
+		"app.kubernetes.io/part-of":  "kube-agents",
 	}); err != nil {
 		return fmt.Errorf("failed to list legacy ClusterRoles: %w", err)
 	}
@@ -667,17 +667,21 @@ func (r *PlatformAgentReconciler) reconcileRBAC(ctx context.Context, agent *agen
 	}
 
 	configmapEditorRole := buildPlatformConfigMapEditorRole(agent)
-	err = r.Patch(ctx, configmapEditorRole, client.Apply, client.ForceOwnership, client.FieldOwner("platformagent-controller"))
-	if err != nil {
+	if err := ctrl.SetControllerReference(agent, configmapEditorRole, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set controller reference on configmap-editor Role: %w", err)
+	}
+	if err := r.applyManaged(ctx, agent, configmapEditorRole); err != nil {
 		return fmt.Errorf("failed to reconcile configmap-editor Role: %w", err)
 	}
 
 	configmapEditorRBACName := fmt.Sprintf("kubeagents:configmap-editor:%s:%s", agent.Namespace, agent.Name)
 	rbConfigmapEditor := buildPlatformConfigMapEditorRoleBinding(agent, configmapEditorRBACName, configmapEditorRole.Name)
-	err = r.Patch(ctx, rbConfigmapEditor, client.Apply, client.ForceOwnership, client.FieldOwner("platformagent-controller"))
-	if err != nil {
+	if err := ctrl.SetControllerReference(agent, rbConfigmapEditor, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set controller reference on configmap-editor RoleBinding: %w", err)
+	}
+	if err := r.applyManaged(ctx, agent, rbConfigmapEditor); err != nil {
 		return fmt.Errorf("failed to reconcile configmap-editor RoleBinding: %w", err)
-  }
+	}
 	// Clean up legacy or un-canonical RBAC definitions after new roles are applied (Zero-Downtime Upgrade)
 	if err := r.cleanupAgentRBAC(ctx, agent, false); err != nil {
 		return err
