@@ -2331,3 +2331,136 @@ func TestCleanupAgentRBAC_ErrorPropagation(t *testing.T) {
 		t.Fatalf("expected error from cleanupAgentRBAC when Delete fails during deleteAll, got nil")
 	}
 }
+
+func TestReconcileNetworkPolicy_DynamicDiscovery(t *testing.T) {
+	scheme := setupScheme()
+	ctx := context.Background()
+
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+			Annotations: map[string]string{
+				"kubeagents.x-k8s.io/apiserver-cidr": "172.16.0.100/32",
+			},
+		},
+	}
+
+	kubeDnsSvc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "kube-dns",
+			Namespace: "kube-system",
+		},
+		Spec: corev1.ServiceSpec{
+			ClusterIP: "34.118.224.10",
+		},
+	}
+
+	k8sEndpoints := &corev1.Endpoints{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "kubernetes",
+			Namespace: "default",
+		},
+		Subsets: []corev1.EndpointSubset{
+			{
+				Addresses: []corev1.EndpointAddress{
+					{IP: "192.168.1.50"},
+				},
+			},
+		},
+	}
+
+	interceptors := interceptor.Funcs{
+		Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			if patch.Type() == types.ApplyPatchType {
+				key := client.ObjectKeyFromObject(obj)
+				existing := obj.DeepCopyObject().(client.Object)
+				err := cl.Get(ctx, key, existing)
+				if err != nil {
+					if errors.IsNotFound(err) {
+						return cl.Create(ctx, obj)
+					}
+					return err
+				}
+				obj.SetResourceVersion(existing.GetResourceVersion())
+				return cl.Update(ctx, obj)
+			}
+			return cl.Patch(ctx, obj, patch, opts...)
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(agent, kubeDnsSvc, k8sEndpoints).
+		WithInterceptorFuncs(interceptors).
+		Build()
+
+	r := &PlatformAgentReconciler{
+		Client:                cl,
+		APIReader:             cl,
+		Scheme:                scheme,
+		APIServerIP:           "10.0.0.1",
+		APIServerCIDROverride: "198.51.100.0/24,203.0.113.1/32",
+	}
+
+	err := r.reconcileNetworkPolicy(ctx, agent)
+	if err != nil {
+		t.Fatalf("reconcileNetworkPolicy failed: %v", err)
+	}
+
+	netpol := &networkingv1.NetworkPolicy{}
+	err = cl.Get(ctx, types.NamespacedName{Name: "test-agent-gateway-netpol", Namespace: "test-ns"}, netpol)
+	if err != nil {
+		t.Fatalf("failed to get reconciled NetworkPolicy: %v", err)
+	}
+
+	// Verify DNS egress rule has dynamic 34.118.224.10/32
+	foundDNS := false
+	for _, peer := range netpol.Spec.Egress[0].To {
+		if peer.IPBlock != nil && peer.IPBlock.CIDR == "34.118.224.10/32" {
+			foundDNS = true
+			break
+		}
+	}
+	if !foundDNS {
+		t.Errorf("expected DNS egress rule to contain dynamic clusterIP 34.118.224.10/32")
+	}
+
+	// Verify API server egress rule contains all targets:
+	// 10.0.0.1/32 (APIServerIP), 192.168.1.50/32 (Endpoints), 172.16.0.100/32 (Annotation), 198.51.100.0/24, 203.0.113.1/32 (APIServerCIDROverride)
+	expectedAPICIDRs := map[string]bool{
+		"10.0.0.1/32":       false,
+		"192.168.1.50/32":   false,
+		"172.16.0.100/32":   false,
+		"198.51.100.0/24":   false,
+		"203.0.113.1/32":    false,
+	}
+
+	foundAPIRule := false
+	for _, egressRule := range netpol.Spec.Egress {
+		// API rule has port 443 & 6443
+		for _, port := range egressRule.Ports {
+			if port.Port != nil && port.Port.IntVal == 6443 {
+				foundAPIRule = true
+				for _, peer := range egressRule.To {
+					if peer.IPBlock != nil {
+						if _, ok := expectedAPICIDRs[peer.IPBlock.CIDR]; ok {
+							expectedAPICIDRs[peer.IPBlock.CIDR] = true
+						}
+					}
+				}
+				break
+			}
+		}
+	}
+
+	if !foundAPIRule {
+		t.Fatalf("expected to find API server egress rule in NetworkPolicy")
+	}
+
+	for cidr, found := range expectedAPICIDRs {
+		if !found {
+			t.Errorf("expected API server egress rule to contain CIDR %s", cidr)
+		}
+	}
+}

@@ -18,7 +18,6 @@ spec:
         - pattern: "gcr.io"
         - pattern: "github.com"
         - pattern: "*.github.com"
-        - pattern: "api.github.com"
         - pattern: "*.githubusercontent.com"
         - pattern: "api.openai.com"
         - pattern: "api.anthropic.com"

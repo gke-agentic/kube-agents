@@ -172,10 +172,11 @@ func main() {
 	}
 
 	if err := (&controller.PlatformAgentReconciler{
-		Client:      mgr.GetClient(),
-		APIReader:   mgr.GetAPIReader(),
-		Scheme:      mgr.GetScheme(),
-		APIServerIP: os.Getenv("KUBERNETES_SERVICE_HOST"),
+		Client:                mgr.GetClient(),
+		APIReader:             mgr.GetAPIReader(),
+		Scheme:                mgr.GetScheme(),
+		APIServerIP:           os.Getenv("KUBERNETES_SERVICE_HOST"),
+		APIServerCIDROverride: os.Getenv("KUBERNETES_API_SERVER_CIDR"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "platformagent")
 		os.Exit(1)

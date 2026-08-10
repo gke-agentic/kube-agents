@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -70,6 +69,10 @@ type PlatformAgentReconciler struct {
 	// APIServerIP configures the Kubernetes API server control-plane egress CIDR
 	// for generated NetworkPolicy manifests.
 	APIServerIP string
+
+	// APIServerCIDROverride configures static CIDR overrides for the Kubernetes API server
+	// (e.g. from KUBERNETES_API_SERVER_CIDR).
+	APIServerCIDROverride string
 }
 
 // +kubebuilder:rbac:groups=kubeagents.x-k8s.io,resources=platformagents,verbs=get;list;watch;create;update;patch;delete
@@ -452,7 +455,10 @@ func (r *PlatformAgentReconciler) reconcileService(ctx context.Context, agent *a
 	if err := ctrl.SetControllerReference(agent, svc, r.Scheme); err != nil {
 		return fmt.Errorf("failed to set controller reference on Service %s/%s: %w", svc.Namespace, svc.Name, err)
 	}
-	return r.applyManaged(ctx, agent, svc)
+	if err := r.applyManaged(ctx, agent, svc); err != nil {
+		return fmt.Errorf("failed to apply Service %s/%s: %w", svc.Namespace, svc.Name, err)
+	}
+	return nil
 }
 
 func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, agent *agentv1alpha1.PlatformAgent) error {
@@ -505,8 +511,8 @@ func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, ag
 		}
 	}
 
-	if envCIDR := os.Getenv("KUBERNETES_API_SERVER_CIDR"); envCIDR != "" {
-		for _, cidr := range strings.Split(envCIDR, ",") {
+	if r.APIServerCIDROverride != "" {
+		for _, cidr := range strings.Split(r.APIServerCIDROverride, ",") {
 			cidr = strings.TrimSpace(cidr)
 			if cidr != "" {
 				apiTargets = append(apiTargets, cidr)
