@@ -21,7 +21,13 @@ sys.path.insert(0, str(Path(__file__).parent.absolute()))
 resolver = importlib.import_module("resolver")
 
 
-def _gh_stub(auth_rc: int = 0, list_rc: int = 0, list_stdout: str = "[]", record=None):
+def _gh_stub(
+    auth_rc: int = 0,
+    list_rc: int = 0,
+    list_stdout: str = "[]",
+    record=None,
+    repo_responses=None,
+):
     """A ``subprocess.run`` replacement that routes on the gh subcommand."""
 
     def run(argv, **kwargs):
@@ -31,6 +37,17 @@ def _gh_stub(auth_rc: int = 0, list_rc: int = 0, list_stdout: str = "[]", record
         if sub[:2] == ["auth", "status"]:
             return subprocess.CompletedProcess(argv, auth_rc, "", "")
         if sub[:2] == ["issue", "list"]:
+            if repo_responses is not None and "-R" in argv:
+                repo_idx = argv.index("-R") + 1
+                repo_name = argv[repo_idx]
+                if repo_name in repo_responses:
+                    resp = repo_responses[repo_name]
+                    return subprocess.CompletedProcess(
+                        argv,
+                        resp.get("rc", 0),
+                        resp.get("stdout", "[]"),
+                        resp.get("stderr", ""),
+                    )
             return subprocess.CompletedProcess(argv, list_rc, list_stdout, "")
         return subprocess.CompletedProcess(argv, 0, "[]", "")
 
@@ -92,11 +109,13 @@ class HandlePollRoutingTest(unittest.TestCase):
         payload = self._poll(["acme/toolkit"], list_rc=1)
         self.assertEqual(payload["status"], "ERROR")
         self.assertEqual(payload["reason"], "REPO_UNREACHABLE")
-        self.assertEqual(payload["repository"], "acme/toolkit")
+        self.assertEqual(payload["unreachable_repos"], ["acme/toolkit"])
 
     def test_healthy_and_quiet_is_no_issues(self):
         payload = self._poll(["acme/toolkit"])
         self.assertEqual(payload["status"], "NO_ISSUES")
+        self.assertEqual(payload["managed_repos"], ["acme/toolkit"])
+        self.assertEqual(payload["unreachable_repos"], [])
 
     def test_healthy_with_work_is_found(self):
         payload = self._poll(
@@ -129,6 +148,56 @@ class HandlePollRoutingTest(unittest.TestCase):
         self.assertEqual(payload["issue_number"], 7)
         self.assertEqual(payload["repository"], "acme/toolkit")
         self.assertEqual(payload["comments"][0]["author"], "alice")
+        self.assertEqual(payload["unreachable_repos"], [])
+
+    def test_multi_repo_one_unreachable_one_healthy_with_work(self):
+        """A broken repo must not abort polling for healthy repos that have work."""
+        payload = self._poll(
+            ["broken/repo", "healthy/repo"],
+            repo_responses={
+                "broken/repo": {"rc": 1},
+                "healthy/repo": {
+                    "rc": 0,
+                    "stdout": json.dumps(
+                        [
+                            {
+                                "number": 12,
+                                "title": "work item",
+                                "body": "details",
+                                "comments": [],
+                            }
+                        ]
+                    ),
+                },
+            },
+        )
+        self.assertEqual(payload["status"], "FOUND")
+        self.assertEqual(payload["issue_number"], 12)
+        self.assertEqual(payload["repository"], "healthy/repo")
+        self.assertEqual(payload["unreachable_repos"], ["broken/repo"])
+
+    def test_multi_repo_one_unreachable_one_healthy_no_work(self):
+        """A broken repo alongside a healthy repo with no issues returns NO_ISSUES with unreachable_repos."""
+        payload = self._poll(
+            ["broken/repo", "healthy/repo"],
+            repo_responses={
+                "broken/repo": {"rc": 1},
+                "healthy/repo": {"rc": 0, "stdout": "[]"},
+            },
+        )
+        self.assertEqual(payload["status"], "NO_ISSUES")
+        self.assertEqual(payload["managed_repos"], ["broken/repo", "healthy/repo"])
+        self.assertEqual(payload["unreachable_repos"], ["broken/repo"])
+
+    def test_multi_repo_all_unreachable_is_error(self):
+        """When all managed repos fail, report ERROR REPO_UNREACHABLE."""
+        payload = self._poll(
+            ["broken/repo1", "broken/repo2"],
+            list_rc=1,
+        )
+        self.assertEqual(payload["status"], "ERROR")
+        self.assertEqual(payload["reason"], "REPO_UNREACHABLE")
+        self.assertEqual(payload["unreachable_repos"], ["broken/repo1", "broken/repo2"])
 
 
 class HandleClaimTest(unittest.TestCase):

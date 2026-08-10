@@ -188,6 +188,7 @@ def handle_poll(args):
         return
 
     all_issues = []
+    unreachable_repos = []
 
     for repo in repos:
         # Sweep stale issues first
@@ -213,16 +214,8 @@ def handle_poll(args):
             check=False,
         )
         if res.returncode != 0:
-            print(
-                json.dumps(
-                    {
-                        "status": "ERROR",
-                        "reason": "REPO_UNREACHABLE",
-                        "repository": repo,
-                    }
-                )
-            )
-            return
+            unreachable_repos.append(repo)
+            continue
 
         try:
             issues = json.loads(res.stdout)
@@ -236,7 +229,26 @@ def handle_poll(args):
             all_issues.append(issue)
 
     if not all_issues:
-        print(json.dumps({"status": "NO_ISSUES", "repositories": repos}))
+        if unreachable_repos and len(unreachable_repos) == len(repos):
+            print(
+                json.dumps(
+                    {
+                        "status": "ERROR",
+                        "reason": "REPO_UNREACHABLE",
+                        "unreachable_repos": unreachable_repos,
+                    }
+                )
+            )
+            return
+        print(
+            json.dumps(
+                {
+                    "status": "NO_ISSUES",
+                    "managed_repos": repos,
+                    "unreachable_repos": unreachable_repos,
+                }
+            )
+        )
         return
 
     # Select lowest numbered open issue
@@ -259,6 +271,7 @@ def handle_poll(args):
                 "title": target["title"],
                 "body": target.get("body", ""),
                 "comments": comments,
+                "unreachable_repos": unreachable_repos,
             },
             indent=2,
         )

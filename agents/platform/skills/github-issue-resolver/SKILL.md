@@ -31,17 +31,21 @@ new unaddressed open issues:
 ./skills/github-issue-resolver/scripts/resolver.py poll
 ```
 
-- If the script outputs `{"status": "NO_ISSUES", ...}`, your final response MUST
-  BE exactly `[SILENT]` to suppress chat noise. Terminate the turn immediately.
+- If the script outputs `{"status": "NO_ISSUES", ...}`:
+  - If `unreachable_repos` is non-empty (contains one or more failed repositories), do NOT respond `[SILENT]`. Alert the chat room:
+    `⚠️ **GitHub issue resolver warning:** Could not check repository: <unreachable_repos>` and terminate the turn.
+  - Otherwise (`unreachable_repos` is empty and all managed repositories were checked cleanly), your final response MUST
+    BE exactly `[SILENT]` to suppress chat noise. Terminate the turn immediately.
 - If the script outputs `{"status": "NOT_CONFIGURED"}`, this deployment has no
   target repository. That is a supported state, not a fault: your final response
   MUST BE exactly `[SILENT]`. Terminate the turn immediately.
-- If the script outputs `{"status": "ERROR", "reason": <reason>, ...}`, the
-  resolver could not run. Do NOT respond `[SILENT]` — this is a fault that would
+- If the script outputs `{"status": "ERROR", "reason": <reason>, ...}`:
+  The resolver could not run. Do NOT respond `[SILENT]` — this is a fault that would
   otherwise recur silently on every scheduled poll. Alert the chat room:
-  `⚠️ **GitHub issue resolver is not running:** <reason>` and terminate the turn.
-- If the script outputs `{"status": "FOUND", "issue_number": <number>, "repository": "<repo>", ...}`,
-  proceed to Step 2.
+  `⚠️ **GitHub issue resolver is not running:** <reason>` (including `unreachable_repos` if listed) and terminate the turn.
+- If the script outputs `{"status": "FOUND", "issue_number": <number>, "repository": "<repo>", ...}`:
+  - If `unreachable_repos` is non-empty, note the unreachable repository warning in your final chat update.
+  - Proceed to Step 2.
 
 ### Step 2: Claim the Issue
 
