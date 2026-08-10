@@ -2847,7 +2847,7 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, d
 				{
 					IPBlock: &networkingv1.IPBlock{
 						CIDR:   "::/0",
-						Except: []string{"fc00::/7", "fe80::/10", "ff00::/8", "::ffff:0:0/96"},
+						Except: []string{"fc00::/7", "fe80::/10", "ff00::/8"},
 					},
 				},
 			},

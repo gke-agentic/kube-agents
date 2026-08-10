@@ -1029,7 +1029,7 @@ func TestBuildNetworkPolicy_ExternalHTTPSExceptList(t *testing.T) {
 		t.Fatalf("expected IPv6 ::/0 peer in External HTTPS rule, got %v", httpsRule.To)
 	}
 	ipv6Excepts := httpsRule.To[1].IPBlock.Except
-	for _, req := range []string{"fc00::/7", "fe80::/10", "ff00::/8", "::ffff:0:0/96"} {
+	for _, req := range []string{"fc00::/7", "fe80::/10", "ff00::/8"} {
 		found := false
 		for _, e := range ipv6Excepts {
 			if e == req {
