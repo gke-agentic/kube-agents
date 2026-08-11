@@ -221,14 +221,26 @@ validate_immutable_ref() {
 # SHA and it is exactly the revision of the scripts about to run. Empty when the
 # installer runs outside a Git worktree (curl | bash), where the caller must supply one.
 default_image_tag() {
-  git -C "${1:-.}" rev-parse HEAD 2>/dev/null || echo ""
+  local repo_dir="${1:-.}"
+  # Only a kube-agents checkout may supply the default. Without this guard,
+  # running the curl | bash one-liner from inside any unrelated Git repository
+  # would offer that repository's HEAD, which then fails at `git fetch` for a
+  # ref the kube-agents clone has never heard of.
+  if [ ! -f "${repo_dir}/k8s-operator/scripts/provision.sh" ]; then
+    return 0
+  fi
+  git -C "$repo_dir" rev-parse HEAD 2>/dev/null || echo ""
 }
 
 # How that default is shown in a prompt: the full SHA is unreadable, so abbreviate
 # it the way git does and say where it came from. Empty outside a Git worktree.
 default_image_tag_label() {
+  local repo_dir="${1:-.}"
+  if [ ! -f "${repo_dir}/k8s-operator/scripts/provision.sh" ]; then
+    return 0
+  fi
   local short=""
-  short="$(git -C "${1:-.}" rev-parse --short HEAD 2>/dev/null || echo "")"
+  short="$(git -C "$repo_dir" rev-parse --short HEAD 2>/dev/null || echo "")"
   if [ -n "$short" ]; then
     printf 'local HEAD checkout %s' "$short"
   fi
@@ -477,7 +489,14 @@ PROJECT_LIST_LIMIT=5
 # only lowercase letters, digits, and hyphens. A valid ID is never all digits,
 # so a numeric answer is unambiguously a menu index.
 is_valid_project_id() {
-  [[ "${1:-}" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]]
+  local id="${1:-}"
+  # Legacy domain-scoped IDs ("example.com:my-project") keep the same rules on
+  # each side of the colon.
+  if [[ "$id" == *:* ]]; then
+    [[ "${id%%:*}" =~ ^[a-z0-9][a-z0-9.-]*[a-z0-9]$ ]] || return 1
+    id="${id#*:}"
+  fi
+  [[ "$id" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]]
 }
 
 # Interactive GCP project picker. Accepts either a menu number or a project ID
@@ -649,6 +668,10 @@ run_menu_system() {
   export VARS_FILE="$vars_file"
   # shellcheck disable=SC1090
   source "$common_script"
+  # common.sh defines the colour variables unconditionally and its own print_*
+  # helpers; restore the installer's, as source_provisioning_helpers does.
+  configure_colors
+  define_print_helpers
 
   if [ -f "$vars_file" ]; then
     # shellcheck disable=SC1090
@@ -778,7 +801,11 @@ run_menu_system() {
           2) permission_set="gke-admin" ;;
           3)
             permission_set="custom"
-            prompt_read "Custom GCP IAM Roles (space- or comma-separated)" custom_roles "$custom_roles"
+            while true; do
+              prompt_read "Custom GCP IAM Roles (space- or comma-separated)" custom_roles "$custom_roles"
+              [ -n "$custom_roles" ] && break
+              print_error "The custom permission set needs at least one role, e.g. roles/container.viewer."
+            done
             ;;
         esac
         ;;
@@ -883,13 +910,6 @@ main() {
     fi
   fi
   validate_immutable_ref "$image_tag"
-
-  # When the installer runs from a checkout, the source/image verdict is already
-  # knowable here. Reach it now rather than after the whole interview: step 9
-  # would otherwise discard a dozen answers to report a dirty working tree.
-  if [ -f "k8s-operator/scripts/provision.sh" ]; then
-    verify_local_source_ref "$(pwd)" "$image_tag"
-  fi
 
   # 2. Prerequisite CLI Tools Check & Auto-Installation
   print_step "1. Checking Prerequisites & Installing Missing Tools"
@@ -1236,9 +1256,14 @@ main() {
       3) permission_set="custom" ;;
     esac
 
-    if [ "$permission_set" = "custom" ] && [ -z "$custom_roles" ]; then
+    while [ "$permission_set" = "custom" ] && [ -z "$custom_roles" ]; do
       prompt_read "Custom GCP IAM Roles (space- or comma-separated)" custom_roles ""
-    fi
+      if [ -z "$custom_roles" ]; then
+        # provision_04_gcp_iam.sh exits on an empty custom list; that would land
+        # after the cluster and operator are already provisioned.
+        print_error "The custom permission set needs at least one role, e.g. roles/container.viewer."
+      fi
+    done
 
     local gvisor_choice=""
     prompt_menu "Enable GKE Sandbox (gVisor) Runtime Isolation for Agent Workloads?" \

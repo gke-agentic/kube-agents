@@ -43,10 +43,12 @@ Run the interactive one-liner installer directly in **Google Cloud Shell** or an
 curl -fsSL https://gke-labs.github.io/kube-agents/install.sh | bash
 ```
 
-When prompted for the image/source revision, press Enter to accept the local `HEAD` checkout, or
-enter a SemVer release tag or the full 40-character commit SHA behind a validated RC tag. The
-installer rejects mutable refs such as `latest` and `main` so the provisioning scripts and container
-images stay on the same revision.
+When prompted for the image/source revision, enter a SemVer release tag or the full 40-character
+commit SHA behind a validated RC tag. The installer rejects mutable refs such as `latest` and `main`
+so the provisioning scripts and container images stay on the same revision. On the one-liner above
+there is no local checkout yet, so a value is required; running `./install.sh` from a kube-agents
+clone instead offers that clone's `HEAD` as the default — which only works if a container image was
+published for that commit (CI builds one per `main` commit and per release tag).
 
 _(Alternatively via GitHub raw URL: `curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/main/install.sh | bash`)_
 

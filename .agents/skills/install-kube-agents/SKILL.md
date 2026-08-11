@@ -36,8 +36,11 @@ curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/main/install.s
 ```
 
 `--image-tag` accepts a SemVer release tag or a full 40-character commit SHA; mutable refs
-(`latest`, `main`, `master`, `HEAD`) are rejected. When the installer runs from a Git checkout it
-defaults to that checkout's `HEAD`, so the flag is only required on the `curl | bash` path.
+(`latest`, `main`, `master`, `HEAD`) are rejected. When the installer runs from a kube-agents
+checkout it defaults to that checkout's `HEAD`; anywhere else — including the `curl | bash` path —
+the flag is required. Pass it explicitly unless a container image exists for that exact commit: CI
+publishes one per `main` commit and per release tag, so an unmerged local commit will pass
+validation and then fail at image pull.
 
 ## Dry-Run Inspection
 
