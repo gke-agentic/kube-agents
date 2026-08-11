@@ -413,17 +413,26 @@ wait_for_rollout() {
   local frame=0
   local started=$SECONDS
   local status_line=""
+  local term_width=0
+  term_width="$(get_term_width)"
+  # Everything except the kubectl line: two spaces, spinner, name, "(NNNs)",
+  # separators. Keep one column spare so the line never wraps — a wrapped line
+  # cannot be rewritten with \r and would scroll the spinner down the screen.
+  local status_width=$((term_width - ${#deployment} - 15))
+  if [ "$status_width" -lt 10 ]; then
+    status_width=10
+  fi
   tput civis 2>/dev/null || true
   while kill -0 "$kubectl_pid" 2>/dev/null; do
-    status_line="$(tail -n 1 "$log_file" 2>/dev/null | tr -d '\r' | cut -c1-58)"
-    printf '\r  %b%s%b %s %b(%ss)%b %-58s' \
+    status_line="$(tail -n 1 "$log_file" 2>/dev/null | tr -d '\r' | cut -c1-"$status_width")"
+    printf '\r  %b%s%b %s %b(%ss)%b %-*s' \
       "$C_CYAN" "${frames[$((frame % 10))]}" "$C_RESET" "$deployment" \
-      "$C_YELLOW" "$((SECONDS - started))" "$C_RESET" "$status_line"
+      "$C_YELLOW" "$((SECONDS - started))" "$C_RESET" "$status_width" "$status_line"
     frame=$((frame + 1))
     sleep 0.2
   done
   tput cnorm 2>/dev/null || true
-  printf '\r%*s\r' 90 ''
+  printf '\r%*s\r' "$term_width" ''
 
   local rc=0
   wait "$kubectl_pid" || rc=$?
@@ -1519,11 +1528,11 @@ main() {
 
   if [ "${google_chat_enabled:-false}" = "true" ]; then
     echo ""
-    bash "${repo_dir}/k8s-operator/scripts/print_instructions_gchat.sh" || true
+    IMAGE_TAG="$image_tag" bash "${repo_dir}/k8s-operator/scripts/print_instructions_gchat.sh" || true
   fi
   if [ "${slack_enabled:-false}" = "true" ]; then
     echo ""
-    bash "${repo_dir}/k8s-operator/scripts/print_instructions_slack.sh" || true
+    IMAGE_TAG="$image_tag" bash "${repo_dir}/k8s-operator/scripts/print_instructions_slack.sh" || true
   fi
 }
 
