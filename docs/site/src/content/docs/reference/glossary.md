@@ -13,7 +13,7 @@ This page is the canonical glossary for humans. The agents carry their own trimm
 
 ### Chat Agent
 
-The conversational front door shipped in `agents/chat/` — the `default` [Hermes profile](#hermes-profile), and the only profile that receives chat ingress (Google Chat / Slack). It discovers the available specialists via its `router` MCP tool (`list_agents`), delegates each request as a [kanban card](#kanban-task-delegation), and relays progress and results back into the thread. It holds no infrastructure tools of its own: the front door can route, not mutate.
+The conversational front door shipped in `agents/chat/` — the `default` [Hermes profile](#hermes-profile), and the only profile that receives chat ingress (Google Chat / Slack). The available specialists are injected into every turn by its `agent_roster` plugin (the `router` MCP tool `list_agents` re-reads the same list on demand); it delegates each request as a [kanban card](#kanban-task-delegation) and relays the result back into the thread, while the specialist's own progress heartbeats post there directly. It holds no infrastructure tools of its own: the front door can route, not mutate.
 
 ### Platform Agent
 
@@ -37,7 +37,7 @@ A Claude-style `SKILL.md` bundle in `agents/platform/skills/` (Platform Agent) o
 
 ### Watchdog
 
-A cron-scheduled job in `agents/platform/cron/jobs.json` that fires a pre-authored prompt at the Platform Agent on a schedule.
+A cron-scheduled job in `agents/chat/defaults/cron/jobs.json` that files a kanban card carrying a pre-authored prompt for the Platform Agent, on a schedule.
 
 ### Declarative workflow
 
@@ -53,7 +53,7 @@ A named set of tools and MCP servers exposed to an agent, declared under `platfo
 
 ### Kanban task (delegation)
 
-The unit of coordination between the agent profiles: a card on the shared kanban board at the Hermes root (`kanban.db`). An orchestrator creates a card (`kanban_create(assignee=..., body=...)`); the gateway's kanban **dispatcher** auto-spawns the assigned specialist as a worker (`hermes -p <profile> chat -q "work kanban task <id>"`), which reads the card (`kanban_show`), does the work, and reports back (`kanban_complete` / `kanban_block`). The originating chat session is auto-subscribed, so completions post into the thread; a worker propagates that subscription onto any child cards it stages (`kanban_notify_propagate.py`) so multi-stage jobs stay visible. The design of record is [`docs/designs/agent-communication.md`](https://github.com/gke-labs/kube-agents/blob/main/docs/designs/agent-communication.md).
+The unit of coordination between the agent profiles: a card on the shared kanban board at the Hermes root (`kanban.db`). An orchestrator creates a card (`kanban_create(assignee=..., body=...)`); the gateway's kanban **dispatcher** auto-spawns the assigned specialist as a worker (`hermes -p <profile> chat -q "work kanban task <id>"`), which reads the card (`kanban_show`), does the work, and reports back (`kanban_complete` / `kanban_block`). The originating chat session is auto-subscribed, so the worker's `kanban_heartbeat(note=…)` progress notes and its completion both post into the thread; a worker propagates that subscription onto any child cards it creates (`kanban_notify_propagate.py`) so their completions stay visible too. The design of record is [`docs/designs/agent-communication.md`](https://github.com/gke-labs/kube-agents/blob/main/docs/designs/agent-communication.md).
 
 ## Runtime and framework
 
@@ -83,7 +83,7 @@ In-cluster broker that mints short-lived GitHub App installation tokens via GCP 
 
 ### Credential proxy
 
-An in-pod sidecar (Envoy plus `credential_proxy.py`) that mediates credentialed CLI execution. The agent runs `gcloud`, `kubectl`, `gh`, and `git` through the proxy against an executable allowlist, so it never holds the raw credentials directly. Started by `deploy/shared/envoy-credential-sidecar.sh`.
+An in-pod sidecar (Envoy plus `credential_proxy.py`) that mediates credentialed CLI execution. The agent runs `gcloud`, `kubectl`, `gh`, and `git` through the proxy against an executable allowlist, so it never holds the raw credentials directly. Started by `deploy/shared/start-services.sh`, which launches it alongside the `k8s-event-watcher` as peer services in the same container.
 
 ### Inference Replay Proxy
 

@@ -66,32 +66,12 @@ retry() {
   return 1
 }
 
-retry() {
-  local max_retries=$1
-  local delay=$2
-  shift 2
-  local count=0
-
-  while [ $count -lt $max_retries ]; do
-    count=$((count + 1))
-    if "$@"; then
-      return 0
-    fi
-    if [ $count -lt $max_retries ]; then
-      echo -e "  ${C_YELLOW}⚠ [Retry $count/$max_retries] Waiting ${delay}s before next attempt...${C_RESET}" >&2
-      sleep "$delay"
-    fi
-  done
-
-  return 1
-}
-
 cleanup() { tput cnorm 2>/dev/null || true; }
 trap cleanup EXIT
 
 # ─── Universal Argument Parsing ──────────────────────────────────────────────
-DRY_RUN=0
-NO_CONFIRM=0
+DRY_RUN="${DRY_RUN:-0}"
+NO_CONFIRM="${NO_CONFIRM:-0}"
 for arg in "$@"; do
   case $arg in
     --dry-run) DRY_RUN=1 ;;
@@ -106,11 +86,45 @@ save_var() {
   if [ "${DRY_RUN:-0}" -eq 1 ]; then
     return 0
   fi
+
+  local old_umask
+  old_umask=$(umask)
+  umask 077
+
   if [ -f "$VARS_FILE" ]; then
+    chmod 600 "$VARS_FILE" 2>/dev/null || true
     grep -E -v "^[[:space:]]*export[[:space:]]+${var_name}=" "$VARS_FILE" > "$VARS_FILE.tmp" 2>/dev/null || true
+    chmod 600 "$VARS_FILE.tmp" 2>/dev/null || true
     mv "$VARS_FILE.tmp" "$VARS_FILE"
   fi
   printf "export %s=%q\n" "$var_name" "$var_val" >> "$VARS_FILE"
+  chmod 600 "$VARS_FILE" 2>/dev/null || true
+
+  umask "$old_umask"
+}
+
+save_secret_var() {
+  local var_name=$1
+  local var_val=$2
+  export "${var_name}=${var_val}"
+  if [ "${DRY_RUN:-0}" -eq 1 ]; then
+    return 0
+  fi
+  if is_truthy "${PERSIST_SECRETS_ON_DISK:-true}"; then
+    save_var "$var_name" "$var_val"
+  else
+    if [ -f "$VARS_FILE" ]; then
+      local old_umask
+      old_umask=$(umask)
+      umask 077
+      chmod 600 "$VARS_FILE" 2>/dev/null || true
+      grep -E -v "^[[:space:]]*export[[:space:]]+${var_name}=" "$VARS_FILE" > "$VARS_FILE.tmp" 2>/dev/null || true
+      chmod 600 "$VARS_FILE.tmp" 2>/dev/null || true
+      mv "$VARS_FILE.tmp" "$VARS_FILE"
+      chmod 600 "$VARS_FILE" 2>/dev/null || true
+      umask "$old_umask"
+    fi
+  fi
 }
 
 # ─── Boolean Parsing ──────────────────────────────────────────────────────────
@@ -132,6 +146,25 @@ is_ci_pipeline() {
   is_truthy "${CI:-}"
 }
 
+# Checks if GKE databaseEncryption.state is a valid CMEK-encrypted state.
+# Accepts an array of valid active encryption states:
+#   - ENCRYPTED: Standard CMEK database encryption state in GKE
+#   - ALL_OBJECTS_ENCRYPTION_ENABLED: Present in GKE 1.35+ when Application-layer Secrets Encryption is active
+is_valid_cmek_encryption_state() {
+  local state="${1:-}"
+  local valid_states=(
+    "ENCRYPTED"
+    "ALL_OBJECTS_ENCRYPTION_ENABLED"
+  )
+
+  for valid in "${valid_states[@]}"; do
+    if [ "$state" = "$valid" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 init_var() {
   local var_name=$1
   local default_val=$2
@@ -139,7 +172,7 @@ init_var() {
   local current_val="${!var_name:-}"
   if [ -z "$current_val" ]; then
     local final_val
-    if [ "${DRY_RUN:-0}" -eq 1 ] || is_ci_pipeline; then
+    if is_non_interactive; then
       final_val="$default_val"
     else
       echo -ne "  ${C_CYAN}${prompt_msg} [${C_WHITE}${default_val}${C_CYAN}]: ${C_RESET}"
@@ -263,7 +296,7 @@ is_non_interactive() {
 init_var_image_tag() {
   if [ -z "${IMAGE_TAG:-}" ]; then
     if is_non_interactive; then
-      echo -e "  ${C_RED}❌ ERROR: IMAGE_TAG is required in non-interactive / CI mode. Please export IMAGE_TAG.${C_RESET}" >&2
+      print_error "IMAGE_TAG is required in non-interactive mode. Set it to an immutable release tag or validated commit SHA."
       exit 1
     else
       local default_tag="latest"
@@ -278,9 +311,15 @@ init_var_image_tag() {
 load_state() {
   local env_registry_prefix="${REGISTRY_PREFIX:-}"
   if [ -f "$VARS_FILE" ]; then
+    chmod 600 "$VARS_FILE" 2>/dev/null || true
     source "$VARS_FILE"
   elif [ "${DRY_RUN:-0}" -ne 1 ]; then
+    local old_umask
+    old_umask=$(umask)
+    umask 077
     echo "# SRE Sourced Variables for GKE & GCP Setup" > "$VARS_FILE"
+    chmod 600 "$VARS_FILE" 2>/dev/null || true
+    umask "$old_umask"
     source "$VARS_FILE"
   fi
   # Sourcing vars.sh restores the saved REGISTRY_PREFIX over a freshly
@@ -304,7 +343,10 @@ load_state() {
 
 ensure_teardown_state() {
   if [ -f "$VARS_FILE" ]; then
+    chmod 600 "$VARS_FILE" 2>/dev/null || true
     source "$VARS_FILE"
+    export GKE_DB_KMS_KEYRING="${GKE_DB_KMS_KEYRING:-}"
+    export GKE_DB_KMS_KEY="${GKE_DB_KMS_KEY:-}"
     export GCP_ARTIFACT_REGISTRY_REPO_NAME="${GCP_ARTIFACT_REGISTRY_REPO_NAME:-${REPO_NAME:-kube-agents}}"
     export DEV_ARTIFACT_REGISTRY_CREATED="${DEV_ARTIFACT_REGISTRY_CREATED:-false}"
     export NAMESPACE="kubeagents-system"
@@ -349,6 +391,8 @@ ensure_teardown_state() {
       export CLUSTER_NAME="${INPUT_CLUSTER_NAME:-$CLUSTER_NAME}"
     fi
     export NAMESPACE="kubeagents-system"
+    export GKE_DB_KMS_KEYRING="${GKE_DB_KMS_KEYRING:-}"
+    export GKE_DB_KMS_KEY="${GKE_DB_KMS_KEY:-}"
     export GCP_ARTIFACT_REGISTRY_REPO_NAME="${GCP_ARTIFACT_REGISTRY_REPO_NAME:-${REPO_NAME:-kube-agents}}"
     export DEV_ARTIFACT_REGISTRY_CREATED="${DEV_ARTIFACT_REGISTRY_CREATED:-false}"
     if [ "${GOOGLE_CHAT_ENABLED:-false}" = "true" ]; then
@@ -430,12 +474,12 @@ check_prereqs() {
 }
 
 cluster_exists() {
-  gcloud container clusters list --filter="name=${CLUSTER_NAME} AND location:${REGION}*" --format="value(name)" --project="${PROJECT_ID}" 2>/dev/null || echo ""
+  gcloud container clusters list --filter="name=${CLUSTER_NAME} AND location=${REGION}" --format="value(name)" --project="${PROJECT_ID}" 2>/dev/null || echo ""
 }
 
 connect_cluster() {
   print_info "Fetching cluster credentials..."
-  gcloud container clusters get-credentials "$CLUSTER_NAME" --region "$REGION" --project "$PROJECT_ID" --quiet
+  gcloud container clusters get-credentials "$CLUSTER_NAME" --location "$REGION" --project "$PROJECT_ID" --quiet
 }
 
 ensure_k8s_resource_exists() {

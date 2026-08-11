@@ -13,13 +13,12 @@ This page summarizes the architecture. The canonical design — including scope,
 
 Each PlatformAgent runs as one long-lived Pod with these managed containers:
 
-| Container                  | Trust level | Role                                                                 |
-| -------------------------- | ----------- | -------------------------------------------------------------------- |
-| `platform-agent`           | Untrusted   | The agent sandbox — credential-free env and mounts, CLI wrappers.    |
-| `envoy-credential-proxy`   | Trusted     | Envoy plus the credentialed command and chat runtime.                |
-| `event-watcher`            | Trusted     | Cluster-event forwarding with its own separate Kubernetes-API token. |
-| `fluent-bit`               | Trusted     | Log forwarding.                                                      |
-| `platform-agent-dashboard` | Untrusted   | Optional local dashboard (also credential-free).                     |
+| Container                  | Trust level | Role                                                                                                                                                |
+| -------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `platform-agent`           | Untrusted   | The agent sandbox — credential-free env and mounts, CLI wrappers.                                                                                   |
+| `envoy-credential-proxy`   | Trusted     | Envoy, the credentialed command and chat runtime, and the event watcher, which forwards cluster events using its own separate Kubernetes-API token. |
+| `fluent-bit`               | Trusted     | Log forwarding.                                                                                                                                     |
+| `platform-agent-dashboard` | Untrusted   | Optional local dashboard (also credential-free).                                                                                                    |
 
 ```mermaid
 flowchart TB
@@ -47,7 +46,7 @@ So the sidecar reads exactly one string out of the file the agent wrote, `curren
 
 Naming a cluster is not extra authority — `get-credentials` is bound by the same IAM the proxy already runs under, so it can only reach clusters this identity could reach anyway. A pin the proxy cannot regenerate from (no `current-context`, a non-GKE context name, a merged `path1:path2` list) is rejected with `400` rather than honored.
 
-**Tree-mutating `git` runs only inside a leased workspace.** Containment to the shared volume keeps the agent off the sidecar's filesystem; it says nothing about keeping concurrent agents off each other, and a Pod runs five audit crons alongside every kanban worker. A skill takes a lease and works in a private clone under `/opt/data/gitops/<lease>/<owner>__<name>`; the proxy refuses `git add`, `commit`, `checkout`, `push`, `reset` and the other verbs that write a working tree or a remote ref unless the resolved directory — after any `-C` redirect — sits under one holding a `.lease` marker. Read verbs, `fetch`, and `clone` are unaffected. The refusal comes back as `SECURITY_POLICY_BLOCKED` with rule `git.workspace.lease`, and `CREDENTIAL_PROXY_REQUIRE_GIT_LEASE=0` disables the check for an unmigrated skill.
+**Tree-mutating `git` runs only inside a leased workspace.** Containment to the shared volume keeps the agent off the sidecar's filesystem; it says nothing about keeping concurrent agents off each other, and a Pod runs six audit crons alongside every kanban worker. A skill takes a lease and works in a private clone under `/opt/data/gitops/<lease>/<owner>__<name>`; the proxy refuses `git add`, `commit`, `checkout`, `push`, `reset` and the other verbs that write a working tree or a remote ref unless the resolved directory — after any `-C` redirect — sits under one holding a `.lease` marker. Read verbs, `fetch`, and `clone` are unaffected. The refusal comes back as `SECURITY_POLICY_BLOCKED` with rule `git.workspace.lease`, and `CREDENTIAL_PROXY_REQUIRE_GIT_LEASE=0` disables the check for an unmigrated skill.
 
 This is a floor, not an ownership check: the wrapper sends an argument array and a working directory, never a caller identity, so the sidecar can tell that a push is happening inside _some_ lease but not whose. Whether the lease is the caller's own is checked in the sandbox by the skill that holds it. [`docs/designs/gitops-workspace-leases.md`](https://github.com/gke-labs/kube-agents/blob/main/docs/designs/gitops-workspace-leases.md) is canonical for the layout and the reaper.
 
@@ -64,7 +63,7 @@ This is a floor, not an ownership check: the wrapper sends an argument array and
 | GitHub installation token/cache | No          | Private `emptyDir`        |
 | Agent workspace                 | Yes         | Yes, for proxied commands |
 
-Pod-wide `automountServiceAccountToken` is `false`. The sidecar's projected token uses the audience `kubeagents-credential-proxy` and expires after one hour; the event watcher gets a separate one-hour Kubernetes-API token projection. Neither token is mounted in the agent or dashboard containers.
+Pod-wide `automountServiceAccountToken` is `false`. The sidecar's projected token uses the audience `kubeagents-credential-proxy` and expires after one hour; the event watcher gets a separate one-hour Kubernetes-API token projection, mounted in the same sidecar at the conventional in-cluster path. Neither token is mounted in the agent or dashboard containers.
 
 ## Request paths
 

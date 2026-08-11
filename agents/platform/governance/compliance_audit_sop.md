@@ -32,7 +32,7 @@ gcloud container clusters list --project="$PROJECT" \
 For each cluster with `status == RUNNING`, pin a per-cluster kubeconfig (local-only, mutates nothing) the way `platform_mcp_server.switch_kube_context` does, then confirm read access:
 
 ```bash
-export KUBECONFIG="$HERMES_HOME/.kubeconfigs/kubeconfig_${PROJECT}_${C}_${L}.yaml"
+export KUBECONFIG="${HERMES_HOME:-/opt/data}/.kubeconfigs/kubeconfig_${PROJECT}_${C}_${L}.yaml"
 gcloud container clusters get-credentials "$C" --location="$L" --project="$PROJECT"
 kubectl auth can-i list pods --all-namespaces
 ```
@@ -104,7 +104,7 @@ Same slugs as `checks_run`, and the `reason` has to say why the check _cannot_ a
 Shared setup, evaluated once per cluster. `$PRE` normalises every auditable workload to `{kind, ns, name, spec}` and applies the universal suppressions, so each workload check below is `$WL | jq -r --arg sys "$SYS" "$PRE"'| <filter>'`.
 
 ```bash
-SYS='^(kube-system|kube-public|kube-node-lease|gke-.*|gmp-system|gke-gmp-system|gke-managed-.*|cnrm-system|configconnector-operator-system|krmapihosting-system|istio-system|asm-system|anthos-identity-service|config-management-.*|gatekeeper-system|composer-system)$'
+SYS='^(kube-system|kube-public|kube-node-lease|gke-.*|gmp-system|gmp-public|gke-gmp-system|gke-managed-.*|cnrm-system|configconnector-operator-system|krmapihosting-system|istio-system|asm-system|anthos-identity-service|config-management-.*|gatekeeper-system|composer-system)$'
 WL='kubectl get deploy,sts,ds,cronjob,pod -A -o json'
 PRE='.items[]
  | select((.metadata.namespace|test($sys)|not)
@@ -382,7 +382,7 @@ Three `rationale`/`risk` pairs in this SOP are check-specific and must not be wr
 **`silent_ok` decides silence. Do not re-derive it.** `finish` returns `silent_ok: true` only when this run moved nothing an operator needs to hear about: nothing new, nothing resolved, no coverage gap, no remediation PR opened or closed. Read the flag rather than reassembling the conditions from `status`, `new`, `resolved`, and `partial` yourself — that arithmetic is where a run talks itself into silence it has not earned. Two rules, and they are the whole rule:
 
 - On a **scheduled** run, `silent_ok: true` → your final response is exactly `[SILENT]`. Otherwise report, and every report carries `issue_url` in full.
-- **An on-demand run is never silent.** If a person dispatched this job — from a kanban card, from chat, from `cronjob(action='run')` — someone is waiting on the answer, and `[SILENT]` throws it away. Report the outcome and the ledger URL whatever `silent_ok` says.
+- **An on-demand run is never silent.** If a person dispatched this job — from a kanban card or straight from chat — someone is waiting on the answer, and `[SILENT]` throws it away. Report the outcome and the ledger URL whatever `silent_ok` says.
 
 What to report in each case:
 

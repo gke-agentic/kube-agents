@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 from pathlib import Path
@@ -40,9 +41,21 @@ class TestSessionKvServerUtils(unittest.TestCase):
         msg = "cannot be evicted: would violate PDB default/billing-processor-pdb"
         self.assertEqual(clean_event_message(msg), "Eviction would violate PDB billing-processor-pdb")
         
+        # PodDisruptionBudget is abbreviated, and the namespace is optional
+        msg_long = "cannot be evicted: would violate PodDisruptionBudget billing-processor-pdb"
+        self.assertEqual(clean_event_message(msg_long), "Eviction would violate PDB billing-processor-pdb")
+
         # General messages remain unchanged
         msg_general = "MountVolume.SetUp failed for volume \"config\""
         self.assertEqual(clean_event_message(msg_general), msg_general)
+
+    def test_clean_event_message_pathological_whitespace(self):
+        # A long whitespace run with no PDB name must not trigger quadratic
+        # backtracking (CodeQL py/polynomial-redos).
+        msg = "cannot be evicted:would violate PDB " + " " * 60000
+        start = time.monotonic()
+        self.assertEqual(clean_event_message(msg), msg)
+        self.assertLess(time.monotonic() - start, 1.0)
 
     def test_get_severity_details(self):
         # Blocker warnings -> Critical
@@ -234,6 +247,25 @@ class TestSessionKvServerQueryBuilding(unittest.TestCase):
         }
         query = session_kv_server._build_agent_query("test-session", payload)
         self.assertIn("platform-agent-host", query)
+
+    def test_call_to_action_names_options_instead_of_a_placeholder(self):
+        # The call-to-action is copied verbatim into the chat message, so a
+        # `<letter>` there reaches the responder as an unfilled placeholder
+        # rather than a choice they can act on. `<letter>` is still correct in
+        # the instruction prose above the template, which the agent reads but
+        # never echoes -- so pin the template line, not the whole query.
+        payload = {
+            "reason": "OOMKilled",
+            "namespace": "test-ns",
+            "kind_of_object": "Pod",
+            "name": "test-pod",
+            "message": "some message"
+        }
+        query = session_kv_server._build_agent_query("test-session", payload)
+        cta = next(line for line in query.splitlines() if line.startswith("👉"))
+        self.assertNotIn("<letter>", cta)
+        self.assertIn("apply Option A", cta)
+        self.assertIn("apply Option B", cta)
 
 
 if __name__ == "__main__":
