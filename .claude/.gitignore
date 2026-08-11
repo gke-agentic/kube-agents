@@ -1,0 +1,5 @@
+# Shared: commands/ is checked in so the team gets the same slash commands.
+# Everything below is per-developer scratch produced by running them.
+worktrees/
+pr-reviews/
+settings.local.json
