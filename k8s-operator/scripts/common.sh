@@ -14,15 +14,23 @@ fi
 VARS_FILE="${VARS_FILE:-${SCRIPT_DIR}/vars.sh}"
 
 # ─── ANSI Colors ──────────────────────────────────────────────────────────────
-C_CYAN='\033[96m'
-C_GREEN='\033[92m'
-C_YELLOW='\033[93m'
-C_MAGENTA='\033[95m'
-C_BLUE='\033[94m'
-C_RED='\033[91m'
-C_RESET='\033[0m'
-C_BOLD='\033[1m'
-C_WHITE='\033[97m'
+# Empty unless stdout is a terminal and NO_COLOR is unset. This pipeline's output
+# is routinely redirected — install.sh tees it to a log, CI captures it — and
+# unconditional escapes turn those files into "^[[95m^[[1m>>> ..." noise. Every
+# use is decorative interpolation, so empty values simply render plain text.
+if [ -n "${NO_COLOR:-}" ] || [ ! -t 1 ]; then
+  C_CYAN='' C_GREEN='' C_YELLOW='' C_MAGENTA='' C_BLUE='' C_RED='' C_RESET='' C_BOLD='' C_WHITE=''
+else
+  C_CYAN='\033[96m'
+  C_GREEN='\033[92m'
+  C_YELLOW='\033[93m'
+  C_MAGENTA='\033[95m'
+  C_BLUE='\033[94m'
+  C_RED='\033[91m'
+  C_RESET='\033[0m'
+  C_BOLD='\033[1m'
+  C_WHITE='\033[97m'
+fi
 
 # ─── UI Helpers ───────────────────────────────────────────────────────────────
 print_step() { echo -e "\n${C_MAGENTA}${C_BOLD}>>>  $1  <<<${C_RESET}"; }
