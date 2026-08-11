@@ -146,9 +146,21 @@ existing PR conversation carefully either way — a finding the author has alrea
 thread is either resolved (drop it) or contested (address their argument directly rather than
 restating the claim).
 
-### Phase 3 — Find candidates (eight angles)
+### Phase 2b — Establish intent
 
-Work through all eight angles below yourself, in sequence, in this context. Do not skip an angle
+Read the PR description (`body`) and any issue it links (`gh issue view <M> --repo "$REPO"`), then
+write down, in one sentence, **what this PR claims to do**. Keep that sentence; it is the yardstick
+for Angle I and it is what tells you whether a given change belongs here at all.
+
+Two failure modes to avoid. Do not let the description talk you out of a defect — "known
+limitation, follow-up PR" in the body does not make a dropped guard correct, though it does change
+how you phrase the finding. And do not treat the description as a description of the diff: where
+the two disagree, the diff is what merges. A body that promises a behaviour the diff does not
+implement, or omits a behaviour the diff does, is itself a finding.
+
+### Phase 3 — Find candidates (nine angles)
+
+Work through all nine angles below yourself, in sequence, in this context. Do not skip an angle
 because an earlier one found nothing there, and do not let one angle's conclusion suppress
 another's — if two angles flag the same line for different reasons, record both.
 
@@ -201,9 +213,23 @@ and quote the rule so the report can cite it. This is also where docs drift belo
 home per fact, generated `<!-- BEGIN GENERATED -->` regions regenerated rather than hand-edited,
 identifiers verified against source rather than against other docs.
 
-For cleanup, altitude, and conventions candidates the `failure_scenario` states the concrete cost —
-what is duplicated, wasted, harder to maintain, or which rule is broken — instead of a crash.
-Correctness bugs always outrank them when the output cap forces a cut.
+**Angle I — scope and test coverage.** Hold the diff against the intent sentence from Phase 2b.
+Flag changes that do not serve it: an unrelated refactor riding along, a dependency bump nobody
+asked for, a behaviour change buried in a PR described as a rename, reformatting that inflates the
+diff and hides the real hunks. Repo convention is scoped changes and no unrelated formatting, so
+cite the rule when it applies. Judge by whether a change serves the stated intent, not by how large
+it is — a big diff that does one thing is in scope, and a three-line change that does a second
+thing is not.
+
+Then check that the intent is actually tested: for each behaviour the PR claims, name the test that
+would fail if that behaviour regressed. Where there is none, the candidate is the untested
+behaviour, not the absent test — say which regression would ship silently. Bug fixes without a
+regression test, and new error paths nothing exercises, are the usual cases.
+
+For cleanup, altitude, conventions, and scope candidates the `failure_scenario` states the concrete
+cost — what is duplicated, wasted, harder to maintain, out of scope, or which rule or untested
+behaviour is at risk — instead of a crash. Correctness bugs always outrank them when the output cap
+forces a cut.
 
 Prefer running things over reasoning about them: execute the test suites the PR touches and
 reproduce the failures you claim. Also check merge mechanics: `gh pr checks <N> --repo "$REPO"`. If
@@ -265,6 +291,8 @@ the files already in that directory:
 
 - header block: title, author, review date, **head SHA reviewed** (needed for the skip check on the
   next run), base branch and base SHA, diff stat, worktree path;
+- **Intent** — the one-sentence claim from Phase 2b, so the next reader knows what the findings were
+  measured against;
 - **Verdict** — can this merge as is, yes or no, with the blocking items named, and what the
   `mergeStateStatus` actually reflects. When the PR conflicts with its base, say so here and state
   that the review covers the PR as authored, not as merged;
