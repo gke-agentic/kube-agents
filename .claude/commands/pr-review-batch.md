@@ -65,9 +65,23 @@ where saved reviews live so that every run — and every teammate — sees the s
 Create your own worktree so you never contend with the other agents:
 
 ```bash
-git -C "$MAIN_ROOT" worktree add "$MAIN_ROOT/.claude/worktrees/pr-<N>" -b pr-<N>-review 2>/dev/null || true
-cd "$MAIN_ROOT/.claude/worktrees/pr-<N>"
+WT="$MAIN_ROOT/.claude/worktrees/pr-<N>"
+git -C "$MAIN_ROOT" worktree prune                      # clear registrations whose directory is gone
+[ -d "$WT" ] || git -C "$MAIN_ROOT" worktree add --force -B pr-<N>-review "$WT" || exit 1
+cd "$WT" || exit 1
 ```
+
+Every part of that earns its place, because nothing here ever deletes a worktree or its branch and
+so the second run is the normal case: `prune` clears a registration left behind by a directory
+someone deleted by hand, `-B` reuses a leftover `pr-<N>-review` branch instead of failing on it,
+`--force` tolerates that branch being checked out elsewhere, the `[ -d ]` guard reuses an intact
+worktree rather than failing on the occupied path, and the two `|| exit 1` are the point of the
+whole line.
+
+**If you cannot get into the worktree, stop and report `status: skipped` with the reason.** Never
+continue into the later phases from the shared checkout. A swallowed failure here does not degrade
+the review, it redirects it: `git checkout -B` and `git merge` in Phase 1b would then run against
+the developer's primary checkout, several subagents at once, all in the same directory.
 
 Then run **everything else from inside that worktree**. Never use `git -C` pointing at the shared
 checkout after this point — a worktree-isolated session refuses it.
@@ -170,9 +184,9 @@ how you phrase the finding. And do not treat the description as a description of
 the two disagree, the diff is what merges. A body that promises a behaviour the diff does not
 implement, or omits a behaviour the diff does, is itself a finding.
 
-### Phase 3 — Find candidates (nine angles)
+### Phase 3 — Find candidates (ten angles)
 
-Work through all nine angles below yourself, in sequence, in this context. Do not skip an angle
+Work through all ten angles below yourself, in sequence, in this context. Do not skip an angle
 because an earlier one found nothing there, and do not let one angle's conclusion suppress
 another's — if two angles flag the same line for different reasons, record both.
 
@@ -238,7 +252,20 @@ would fail if that behaviour regressed. Where there is none, the candidate is th
 behaviour, not the absent test — say which regression would ship silently. Bug fixes without a
 regression test, and new error paths nothing exercises, are the usual cases.
 
-For cleanup, altitude, conventions, and scope candidates the `failure_scenario` states the concrete
+**Angle J — sibling pull requests.** Every angle so far has looked only at this PR. Widen once:
+
+```bash
+gh pr list --repo "$REPO" --author <login> --state open --json number,title,files
+```
+
+Read the review comments on any sibling that touches adjacent paths. Three things come out of this
+that nothing else in the review can see. A finding already accepted on a sibling usually applies
+here unchanged — apply it rather than rediscovering it. A near-identical PR that has diverged is
+itself a finding: name which copy carries the fix and which does not, because merge order then
+decides whether the fix survives. And where one PR is a superset of others, say so — reviewing the
+subset in isolation spends effort on a diff that may never merge.
+
+For cleanup, altitude, conventions, scope, and sibling candidates the `failure_scenario` states the concrete
 cost — what is duplicated, wasted, harder to maintain, out of scope, or which rule or untested
 behaviour is at risk — instead of a crash. Correctness bugs always outrank them when the output cap
 forces a cut.
@@ -344,3 +371,35 @@ as authored, not as merged).
 
 Do not post to GitHub unless I ask. When I do, post findings only — no verdict, no CI summary, no
 closing section — and tell me whether you posted it as an issue comment or a formal review.
+
+## Posting, when I ask for it
+
+One review per PR with the findings anchored inline, not a summary comment that makes the author
+hunt for the line:
+
+````bash
+cat > /tmp/review-<N>.json <<'JSON'
+{"event":"COMMENT","body":"<summary>","comments":[
+  {"path":"<path>","line":<n>,"side":"RIGHT","body":"<finding>\n\n```suggestion\n<replacement>\n```"}
+]}
+JSON
+python3 -m json.tool /tmp/review-<N>.json      # a malformed payload 422s and posts nothing at all
+gh api "repos/$REPO/pulls/<N>/reviews" --input /tmp/review-<N>.json
+````
+
+The rules that decide whether it lands:
+
+- `event` is `COMMENT`. Never `APPROVE`, never `REQUEST_CHANGES` — that is the human's signature,
+  not yours.
+- `line` must be a RIGHT-side line the diff actually shows; use `start_line` with `line` for a
+  range. A finding that anchors to no changed line goes in the summary body under a **Findings
+  outside this diff** heading — never forced onto a nearby unrelated line, which is how a reviewer
+  ends up arguing about the wrong code.
+- A `suggestion` block replaces exactly the commented range, so it must contain the complete new
+  text for those lines, at the right indentation. Getting the range wrong silently deletes code
+  when the author clicks Commit.
+- A `suggestion` cannot contain a fenced code block — the inner fence closes the outer one. When
+  the fix is itself a fenced block, describe it in prose instead.
+
+Validate the JSON before sending. The API rejects the whole review on one bad anchor, so an
+unvalidated payload usually means posting nothing and believing you posted everything.
