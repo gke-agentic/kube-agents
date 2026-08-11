@@ -109,7 +109,8 @@ find_latest_built_commit() {
 
   local fetch_ok="false"
   if [ -n "${target_repo}" ]; then
-    if git fetch "https://github.com/${target_repo}.git" main --tags "${depth_arg[@]}" >/dev/null 2>&1; then
+    # bash 3.2 compatibility: guard empty array expansion under set -u
+    if git fetch "https://github.com/${target_repo}.git" main --tags ${depth_arg[@]+"${depth_arg[@]}"} >/dev/null 2>&1; then
       fetch_ok="true"
     else
       echo "⚠️ Warning: Failed to fetch from target_repo (${target_repo}), falling back to origin..." >&2
@@ -117,7 +118,8 @@ find_latest_built_commit() {
   fi
 
   if [ "${fetch_ok}" != "true" ]; then
-    if git fetch origin main --tags "${depth_arg[@]}" >/dev/null 2>&1; then
+    # bash 3.2 compatibility: guard empty array expansion under set -u
+    if git fetch origin main --tags ${depth_arg[@]+"${depth_arg[@]}"} >/dev/null 2>&1; then
       fetch_ok="true"
     else
       echo "⚠️ Warning: Failed to fetch from origin remote, checking available local refs..." >&2
