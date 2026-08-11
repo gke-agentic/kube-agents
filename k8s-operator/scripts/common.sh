@@ -184,6 +184,33 @@ init_var() {
   fi
 }
 
+# ─── Shared Provisioning Defaults ─────────────────────────────────────────────
+# The values the per-step provision scripts and the zero-friction installer must
+# agree on. install.sh sources this file rather than restating them, so each
+# default has exactly one home and the two entry points cannot drift apart.
+DEFAULT_CLUSTER_NAME="platform-agent-host"
+DEFAULT_REGION="us-east4"
+DEFAULT_MODEL_PROVIDER="gemini"
+
+# Model provider → the model the pipeline defaults to for that provider.
+default_model_for_provider() {
+  case "${1:-}" in
+    chatgpt | openai) echo "gpt-5.4" ;;
+    anthropic) echo "claude-sonnet-4-5-20250929" ;;
+    *) echo "gemini-3.5-flash" ;;
+  esac
+}
+
+is_valid_model_provider() {
+  [[ "${1:-}" =~ ^(gemini|anthropic|chatgpt|openai)$ ]]
+}
+
+# The GCP IAM role bundles provision_04_gcp_iam.sh knows how to grant. Kubernetes
+# RBAC is read-only in every one of them; see the site's reference/security-and-iam.
+is_valid_permission_set() {
+  [[ "${1:-}" =~ ^(read-only|gke-admin|custom)$ ]]
+}
+
 # ─── Container Registry ───────────────────────────────────────────────────────
 # All kube-agents images (k8s-operator, platform-agent, credential-proxy,
 # replay-proxy) default to this public registry prefix. Behind-the-firewall
@@ -243,25 +270,16 @@ init_var_kms_location() {
 }
 
 init_var_model_provider() {
-  init_var "MODEL_PROVIDER" "gemini" "Enter Model Provider (gemini, anthropic, chatgpt, openai)"
+  init_var "MODEL_PROVIDER" "$DEFAULT_MODEL_PROVIDER" "Enter Model Provider (gemini, anthropic, chatgpt, openai)"
 
   MODEL_PROVIDER=$(echo "$MODEL_PROVIDER" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
-  if [[ ! "$MODEL_PROVIDER" =~ ^(gemini|anthropic|chatgpt|openai)$ ]]; then
+  if ! is_valid_model_provider "$MODEL_PROVIDER"; then
     print_error "Invalid Model Provider '$MODEL_PROVIDER'. Must be one of: gemini, anthropic, chatgpt, openai."
     exit 1
   fi
 
-  case "$MODEL_PROVIDER" in
-    chatgpt|openai)
-      DEFAULT_MODEL="gpt-5.4"
-      ;;
-    anthropic)
-      DEFAULT_MODEL="claude-sonnet-4-5-20250929"
-      ;;
-    *)
-      DEFAULT_MODEL="gemini-3.5-flash"
-      ;;
-  esac
+  local DEFAULT_MODEL
+  DEFAULT_MODEL="$(default_model_for_provider "$MODEL_PROVIDER")"
 
   init_var "MODEL_DEFAULT_NAME" "$DEFAULT_MODEL" "Enter Model Default Name"
 }
@@ -270,7 +288,7 @@ init_var_platform_agent_permission_set() {
   init_var "PLATFORM_AGENT_PERMISSION_SET" "read-only" "Enter Platform Agent Permission Set (read-only, gke-admin, custom)"
 
   PLATFORM_AGENT_PERMISSION_SET=$(echo "$PLATFORM_AGENT_PERMISSION_SET" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
-  if [[ ! "$PLATFORM_AGENT_PERMISSION_SET" =~ ^(read-only|gke-admin|custom)$ ]]; then
+  if ! is_valid_permission_set "$PLATFORM_AGENT_PERMISSION_SET"; then
     print_error "Invalid Platform Agent Permission Set '$PLATFORM_AGENT_PERMISSION_SET'. Must be one of: read-only, gke-admin, custom."
     exit 1
   fi
