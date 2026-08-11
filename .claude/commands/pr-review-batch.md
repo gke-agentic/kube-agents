@@ -132,11 +132,23 @@ matching this PR.
 **Skip the review** (report `status: skipped` plus the reason) when any of these hold:
 
 - the PR is closed or merged;
+- the PR is a **draft** — full stop, whatever its commit history looks like. A draft is the author
+  saying they are not asking for review yet, and review comments on unfinished work are noise at
+  best. Wait for ready-for-review;
 - a saved review already exists for this PR **and** `headRefOid` matches the head SHA it recorded —
   nothing has changed since;
-- a saved review exists and the only commits since are merges of the base branch with no conflict
-  resolution (`git log <recorded-sha>..HEAD --no-merges` is empty);
-- the PR is a draft **and** has no commits since the last saved review.
+- a saved review exists and the author has landed no work of their own since — merging the base
+  branch in is not new work to review:
+
+  ```bash
+  git log <recorded-sha>..HEAD --no-merges --not "$BASE_REF"     # empty → skip
+  ```
+
+  `--not "$BASE_REF"` is what makes this condition reachable. Without it the range still contains
+  every base-branch commit the merge pulled in — `--no-merges` drops the merge commit itself, not
+  the commits underneath it — so the check would report new work in exactly the case it is meant to
+  skip. Phase 1b has already merged the base locally by this point, which makes the unfiltered range
+  wrong even when the author pushed nothing at all.
 
 A merge conflict is **not** a skip reason. Neither is an unmergeable `mergeStateStatus`.
 
