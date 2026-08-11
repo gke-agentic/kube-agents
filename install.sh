@@ -390,6 +390,54 @@ resolve_shared_defaults() {
   PARAM_REGISTRY_PREFIX="${PARAM_REGISTRY_PREFIX:-$DEFAULT_REGISTRY_PREFIX}"
 }
 
+# Wait for one deployment to roll out, animating a spinner with the elapsed time
+# and kubectl's own latest progress line. Falls back to plain streaming output
+# when stdout is not a terminal (CI, piped logs). Returns kubectl's exit status.
+wait_for_rollout() {
+  local deployment="$1"
+  local namespace="$2"
+  local timeout_secs="$3"
+
+  if [ ! -t 1 ]; then
+    kubectl rollout status "deployment/${deployment}" -n "$namespace" --timeout="${timeout_secs}s"
+    return $?
+  fi
+
+  local log_file=""
+  log_file="$(mktemp -t kube-agents-rollout.XXXXXX)"
+  kubectl rollout status "deployment/${deployment}" -n "$namespace" --timeout="${timeout_secs}s" \
+    >"$log_file" 2>&1 &
+  local kubectl_pid=$!
+
+  local frames=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
+  local frame=0
+  local started=$SECONDS
+  local status_line=""
+  tput civis 2>/dev/null || true
+  while kill -0 "$kubectl_pid" 2>/dev/null; do
+    status_line="$(tail -n 1 "$log_file" 2>/dev/null | tr -d '\r' | cut -c1-58)"
+    printf '\r  %b%s%b %s %b(%ss)%b %-58s' \
+      "$C_CYAN" "${frames[$((frame % 10))]}" "$C_RESET" "$deployment" \
+      "$C_YELLOW" "$((SECONDS - started))" "$C_RESET" "$status_line"
+    frame=$((frame + 1))
+    sleep 0.2
+  done
+  tput cnorm 2>/dev/null || true
+  printf '\r%*s\r' 90 ''
+
+  local rc=0
+  wait "$kubectl_pid" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    print_success "$deployment rolled out in $((SECONDS - started))s"
+  else
+    tail -n 3 "$log_file" | tr -d '\r' | while IFS= read -r line; do
+      [ -n "$line" ] && print_info "$line"
+    done
+  fi
+  rm -f -- "$log_file"
+  return "$rc"
+}
+
 has_controlling_tty() {
   [ -c /dev/tty ] && ( : </dev/tty ) 2>/dev/null
 }
@@ -480,6 +528,9 @@ prompt_menu() {
     fi
   done
 }
+
+# How long each deployment gets to report ready in the post-install health check.
+ROLLOUT_TIMEOUT_SECS=300
 
 # Number of projects listed in the interactive project picker. Accounts with
 # more projects than this can still type an ID that the list does not show.
@@ -1414,15 +1465,30 @@ main() {
     print_error "Namespace 'kubeagents-system' was not created. Installation is incomplete."
     exit 1
   fi
+  local slow_rollouts=()
   for deployment in kubeagents-controller-manager litellm platform-agent-gateway; do
     if ! kubectl get deployment "$deployment" -n kubeagents-system >/dev/null 2>&1; then
       print_error "Expected deployment '$deployment' was not created."
       exit 1
     fi
-    kubectl rollout status "deployment/$deployment" -n kubeagents-system --timeout=120s
+    # The agent pulls a large image and waits on LiteLLM before it reports ready,
+    # so a couple of minutes is normal. Running past the budget means "still
+    # coming up", not "broken": say so and keep the summary below, which carries
+    # the chat links and port-forward command.
+    if ! wait_for_rollout "$deployment" kubeagents-system "$ROLLOUT_TIMEOUT_SECS"; then
+      slow_rollouts+=("$deployment")
+      print_warning "$deployment did not report ready within ${ROLLOUT_TIMEOUT_SECS}s."
+    fi
   done
-  print_success "All core control plane deployments are healthy and available!"
-  write_json_report "SUCCESS"
+  if [ "${#slow_rollouts[@]}" -eq 0 ]; then
+    print_success "All core control plane deployments are healthy and available!"
+    write_json_report "SUCCESS"
+  else
+    print_warning "Still waiting on: ${slow_rollouts[*]}"
+    print_info "Keep watching with: ${C_BOLD}kubectl rollout status deployment/${slow_rollouts[0]} -n kubeagents-system${C_RESET}"
+    print_info "Inspect a stuck pod with: ${C_BOLD}kubectl describe pod -l app=${slow_rollouts[0]} -n kubeagents-system${C_RESET}"
+    write_json_report "SUCCESS_PENDING_ROLLOUT"
+  fi
 
   # 13. Installation Summary & Next Steps
   print_step "🎉 Installation Complete!"
