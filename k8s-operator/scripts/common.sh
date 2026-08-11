@@ -197,7 +197,7 @@ init_var() {
 # agree on. install.sh sources this file rather than restating them, so each
 # default has exactly one home and the two entry points cannot drift apart.
 DEFAULT_CLUSTER_NAME="platform-agent-host"
-DEFAULT_REGION="us-east4"
+DEFAULT_REGION="us-central1"
 DEFAULT_MODEL_PROVIDER="gemini"
 
 # Model provider → the model the pipeline defaults to for that provider.
@@ -396,8 +396,8 @@ ensure_teardown_state() {
         echo -e "  ${C_RED}✗ Project ID is required. Please export PROJECT_ID.${C_RESET}" >&2
         exit 1
       fi
-      export REGION="${REGION:-${GCP_REGION:-us-east4}}"
-      export CLUSTER_NAME="${CLUSTER_NAME:-${GKE_CLUSTER_NAME:-platform-agent-host}}"
+      export REGION="${REGION:-${GCP_REGION:-$DEFAULT_REGION}}"
+      export CLUSTER_NAME="${CLUSTER_NAME:-${GKE_CLUSTER_NAME:-$DEFAULT_CLUSTER_NAME}}"
     else
       echo -ne "  ${C_CYAN}Enter Target GCP Project ID [${C_WHITE}${ACTIVE_PROJECT}${C_CYAN}]: ${C_RESET}"
       read -r INPUT_PROJECT_ID
@@ -406,7 +406,7 @@ ensure_teardown_state() {
         echo -e "  ${C_RED}✗ Project ID is required.${C_RESET}"
         exit 1
       fi
-      export REGION="${REGION:-us-east4}"
+      export REGION="${REGION:-$DEFAULT_REGION}"
       echo -ne "  ${C_CYAN}Enter GKE GCP Region [${C_WHITE}${REGION}${C_CYAN}]: ${C_RESET}"
       read -r INPUT_REGION
       export REGION="${INPUT_REGION:-$REGION}"

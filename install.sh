@@ -88,7 +88,7 @@ Flags for AI Agents & Automation:
   --dry-run                     Validate prerequisites & output config/plan without creating resources
   --project-id=ID               Target GCP Project ID
   --region=REGION               Target GCP Region (default: k8s-operator/scripts/common.sh
-                                DEFAULT_REGION, currently us-east4)
+                                DEFAULT_REGION, currently us-central1)
   --cluster-name=NAME           GKE Cluster Name (default: DEFAULT_CLUSTER_NAME,
                                 currently platform-agent-host)
   --model-provider=PROVIDER     Model provider: gemini | anthropic | chatgpt | openai
@@ -365,7 +365,7 @@ acquire_source_repo() {
 # validation rules. The installer sources common.sh and reads them from there
 # rather than keeping its own copies, which is how the two drifted apart before
 # (an installer menu defaulting to gke-admin against a read-only default, an
-# us-central1 region against us-east4, a second copy of derive_kms_location).
+# a us-central1 default against us-east4, a second copy of derive_kms_location).
 source_provisioning_helpers() {
   local repo_dir="$1"
   local common_script="${repo_dir}/k8s-operator/scripts/common.sh"

@@ -29,7 +29,7 @@ curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/main/install.s
   --non-interactive \
   --project-id="YOUR_GCP_PROJECT_ID" \
   --cluster-name="platform-agent-host" \
-  --region="us-east4" \
+  --region="us-central1" \
   --image-tag="<SEMVER_TAG_OR_FULL_COMMIT_SHA>" \
   --model-provider="gemini" \
   --permission-set="read-only"
