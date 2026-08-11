@@ -148,10 +148,6 @@ verify_filestore_addon() {
   [ "$enabled" = "True" ] || [ "$enabled" = "true" ]
 }
 execute_filestore_addon() {
-  if verify_filestore_addon; then
-    return 0
-  fi
-
   print_info "Enabling GKE Filestore CSI Driver for RWX storage support..."
   local active_op
   active_op=$(gcloud container operations list --region="$REGION" --project="$PROJECT_ID" --filter="targetLink:$CLUSTER_NAME AND status=RUNNING" --format="value(name)" 2>/dev/null | head -n1)

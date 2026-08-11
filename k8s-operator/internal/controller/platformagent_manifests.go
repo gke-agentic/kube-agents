@@ -2586,7 +2586,7 @@ func isDashboardEnabled(agent *agentv1alpha1.PlatformAgent) bool {
 }
 
 // buildNetworkPolicy generates the restrictive NetworkPolicy manifest for PlatformAgent.
-// Note: This is the operator-generated version; Kustomize static deployments use deploy/kustomize/platform/networkpolicy.yaml.
+// Note: This is the operator-generated version; Kustomize static deployments use deploy/kustomize/platform/.
 func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, dnsClusterIP string, fqdnEnabled bool) *networkingv1.NetworkPolicy {
 	udp := corev1.ProtocolUDP
 	tcp := corev1.ProtocolTCP

@@ -545,39 +545,25 @@ func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, ag
 		apiTargets = append(apiTargets, trimmed)
 	}
 
-	if agent.Annotations != nil {
-		if customCIDRs, ok := agent.Annotations[AnnotationAPIServerCIDR]; ok {
-			cidrs := strings.Split(customCIDRs, ",")
-			if len(cidrs) > maxCIDRsPerAnnotation {
-				logf.FromContext(ctx).Info("Truncating annotation to max allowed CIDRs", "annotation", AnnotationAPIServerCIDR, "max", maxCIDRsPerAnnotation, "total", len(cidrs))
-				cidrs = cidrs[:maxCIDRsPerAnnotation]
-			}
-			for _, cidr := range cidrs {
-				parseCIDRTarget(AnnotationAPIServerCIDR, cidr)
-			}
+	appendCIDRs := func(sourceName, rawList string) {
+		if rawList == "" {
+			return
 		}
-		if customCIDRs, ok := agent.Annotations[AnnotationCustomEgressCIDRs]; ok {
-			cidrs := strings.Split(customCIDRs, ",")
-			if len(cidrs) > maxCIDRsPerAnnotation {
-				logf.FromContext(ctx).Info("Truncating annotation to max allowed CIDRs", "annotation", AnnotationCustomEgressCIDRs, "max", maxCIDRsPerAnnotation, "total", len(cidrs))
-				cidrs = cidrs[:maxCIDRsPerAnnotation]
-			}
-			for _, cidr := range cidrs {
-				parseCIDRTarget(AnnotationCustomEgressCIDRs, cidr)
-			}
-		}
-	}
-
-	if r.APIServerCIDROverride != "" {
-		cidrs := strings.Split(r.APIServerCIDROverride, ",")
+		cidrs := strings.Split(rawList, ",")
 		if len(cidrs) > maxCIDRsPerAnnotation {
-			logf.FromContext(ctx).Info("Truncating override to max allowed CIDRs", "override", "KUBERNETES_API_SERVER_CIDR", "max", maxCIDRsPerAnnotation, "total", len(cidrs))
+			logf.FromContext(ctx).Info("Truncating CIDR list to max allowed CIDRs", "source", sourceName, "max", maxCIDRsPerAnnotation, "total", len(cidrs))
 			cidrs = cidrs[:maxCIDRsPerAnnotation]
 		}
 		for _, cidr := range cidrs {
-			parseCIDRTarget("KUBERNETES_API_SERVER_CIDR", cidr)
+			parseCIDRTarget(sourceName, cidr)
 		}
 	}
+
+	if agent.Annotations != nil {
+		appendCIDRs(AnnotationAPIServerCIDR, agent.Annotations[AnnotationAPIServerCIDR])
+		appendCIDRs(AnnotationCustomEgressCIDRs, agent.Annotations[AnnotationCustomEgressCIDRs])
+	}
+	appendCIDRs("KUBERNETES_API_SERVER_CIDR", r.APIServerCIDROverride)
 
 	// 1. Reconcile or clean up companion FQDNNetworkPolicy (networking.gke.io/v1alpha1) on GKE Dataplane V2 clusters
 	fqdnEnabled := isFQDNNetworkPolicyEnabled(agent)
@@ -587,7 +573,7 @@ func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, ag
 			return fmt.Errorf("failed to set controller reference on FQDNNetworkPolicy %s/%s: %w", fqdnNetpol.GetNamespace(), fqdnNetpol.GetName(), err)
 		}
 		if err := r.applyManaged(ctx, agent, fqdnNetpol); err != nil {
-			if meta.IsNoMatchError(err) || errors.IsNotFound(err) {
+			if isCRDNotInstalledError(err) {
 				logf.FromContext(ctx).Info("FQDNNetworkPolicy CRD (networking.gke.io/v1alpha1) not present in cluster; keeping blanket external egress rule", "error", err)
 				fqdnEnabled = false
 			} else {
@@ -603,7 +589,7 @@ func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, ag
 		})
 		fqdnNetpol.SetName(agent.Name + "-fqdn-netpol")
 		fqdnNetpol.SetNamespace(agent.Namespace)
-		if err := r.Delete(ctx, fqdnNetpol); err != nil && !errors.IsNotFound(err) && !meta.IsNoMatchError(err) {
+		if err := r.Delete(ctx, fqdnNetpol); err != nil && !isCRDNotInstalledError(err) {
 			return fmt.Errorf("failed to clean up disabled FQDNNetworkPolicy %s/%s: %w", fqdnNetpol.GetNamespace(), fqdnNetpol.GetName(), err)
 		}
 	}

@@ -2756,6 +2756,58 @@ func TestReconcileNetworkPolicy_FQDNCRDNotPresentFallback(t *testing.T) {
 	}
 }
 
+func TestReconcileNetworkPolicy_FQDNCRDWrappedErrorFallback(t *testing.T) {
+	scheme := setupScheme()
+	ctx := context.Background()
+
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+			Annotations: map[string]string{
+				AnnotationEnableFQDNNetworkPolicy: "true",
+			},
+		},
+	}
+
+	interceptors := fakeServerSideApplyInterceptors()
+	ssaPatch := interceptors.Patch
+	interceptors.Patch = func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+		if u, ok := obj.(*unstructured.Unstructured); ok && u.GroupVersionKind().Kind == "FQDNNetworkPolicy" {
+			return fmt.Errorf("failed to get restmapping for FQDNNetworkPolicy")
+		}
+		return ssaPatch(ctx, cl, obj, patch, opts...)
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(agent).
+		WithInterceptorFuncs(interceptors).
+		Build()
+
+	r := &PlatformAgentReconciler{
+		Client:      cl,
+		APIReader:   cl,
+		Scheme:      scheme,
+		APIServerIP: "10.96.0.1",
+	}
+
+	err := r.reconcileNetworkPolicy(ctx, agent)
+	if err != nil {
+		t.Fatalf("reconcileNetworkPolicy failed: %v", err)
+	}
+
+	netpol := &networkingv1.NetworkPolicy{}
+	err = cl.Get(ctx, types.NamespacedName{Name: "test-agent-gateway-netpol", Namespace: "test-ns"}, netpol)
+	if err != nil {
+		t.Fatalf("failed to get reconciled NetworkPolicy: %v", err)
+	}
+
+	if len(netpol.Spec.Egress) != 9 {
+		t.Errorf("expected 9 Egress rules when FQDN CRD returns wrapped restmapping error (fallback to blanket external HTTPS), got %d", len(netpol.Spec.Egress))
+	}
+}
+
 func TestReconcileNetworkPolicy_TruncateMaxCIDRs(t *testing.T) {
 	scheme := setupScheme()
 	ctx := context.Background()
