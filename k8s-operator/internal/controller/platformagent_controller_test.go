@@ -639,6 +639,34 @@ func TestPlatformAgentReconciler_Reconcile_PodUnschedulable(t *testing.T) {
 	}
 }
 
+func findAPIServerEgressRule(netpol *networkingv1.NetworkPolicy) *networkingv1.NetworkPolicyEgressRule {
+	if netpol == nil {
+		return nil
+	}
+	for i := range netpol.Spec.Egress {
+		for _, p := range netpol.Spec.Egress[i].Ports {
+			if p.Port != nil && p.Port.IntVal == 6443 {
+				return &netpol.Spec.Egress[i]
+			}
+		}
+	}
+	return nil
+}
+
+func findDNSEgressRule(netpol *networkingv1.NetworkPolicy) *networkingv1.NetworkPolicyEgressRule {
+	if netpol == nil {
+		return nil
+	}
+	for i := range netpol.Spec.Egress {
+		for _, p := range netpol.Spec.Egress[i].Ports {
+			if p.Port != nil && p.Port.IntVal == 53 {
+				return &netpol.Spec.Egress[i]
+			}
+		}
+	}
+	return nil
+}
+
 func TestBuildNetworkPolicy(t *testing.T) {
 	agent := &agentv1alpha1.PlatformAgent{
 		ObjectMeta: metav1.ObjectMeta{
@@ -768,12 +796,21 @@ func TestBuildNetworkPolicy_FQDNEnabled(t *testing.T) {
 			Name:      "test-agent",
 			Namespace: "test-ns",
 			Annotations: map[string]string{
-				"kubeagents.x-k8s.io/enable-fqdn-network-policy": "true",
+				AnnotationEnableFQDNNetworkPolicy: "true",
 			},
 		},
 	}
 
 	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10")
+	// Expected 8 Egress rules when FQDN is enabled (external HTTPS 0.0.0.0/0:443 is omitted):
+	// 1. Cluster DNS (53)
+	// 2. GCP WI / Metadata server (80, 8080)
+	// 3. GKE WI Host Network Daemon (988)
+	// 4. LiteLLM Gateway (80, 4000, 8080)
+	// 5. vLLM Gemma Server (80, 8000)
+	// 6. Kubernetes API Server (443, 6443, 8443)
+	// 7. GKE Managed OpenTelemetry Collector (4317, 4318)
+	// 8. GitHub Token Minter (8080)
 	if len(netpol.Spec.Egress) != 8 {
 		t.Errorf("expected 8 Egress rules when FQDN is enabled (external HTTPS omitted), got %d", len(netpol.Spec.Egress))
 	}
@@ -795,13 +832,15 @@ func TestBuildNetworkPolicy_CustomAPIHost(t *testing.T) {
 	}
 
 	netpolIPv4 := buildNetworkPolicy(agent, []string{"10.0.0.5"}, "10.96.0.10")
-	if netpolIPv4.Spec.Egress[5].To[0].IPBlock.CIDR != "10.0.0.5/32" {
-		t.Errorf("expected IPv4 CIDR '10.0.0.5/32', got %s", netpolIPv4.Spec.Egress[5].To[0].IPBlock.CIDR)
+	ruleIPv4 := findAPIServerEgressRule(netpolIPv4)
+	if ruleIPv4 == nil || len(ruleIPv4.To) == 0 || ruleIPv4.To[0].IPBlock == nil || ruleIPv4.To[0].IPBlock.CIDR != "10.0.0.5/32" {
+		t.Errorf("expected IPv4 CIDR '10.0.0.5/32', got %v", ruleIPv4)
 	}
 
 	netpolIPv6 := buildNetworkPolicy(agent, []string{"fd00::1"}, "10.96.0.10")
-	if netpolIPv6.Spec.Egress[5].To[0].IPBlock.CIDR != "fd00::1/128" {
-		t.Errorf("expected IPv6 CIDR 'fd00::1/128', got %s", netpolIPv6.Spec.Egress[5].To[0].IPBlock.CIDR)
+	ruleIPv6 := findAPIServerEgressRule(netpolIPv6)
+	if ruleIPv6 == nil || len(ruleIPv6.To) == 0 || ruleIPv6.To[0].IPBlock == nil || ruleIPv6.To[0].IPBlock.CIDR != "fd00::1/128" {
+		t.Errorf("expected IPv6 CIDR 'fd00::1/128', got %v", ruleIPv6)
 	}
 }
 
@@ -873,8 +912,12 @@ func TestBuildNetworkPolicy_InvalidAPIHost(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			netpol := buildNetworkPolicy(agent, tt.apiHosts, "10.96.0.10")
+			rule := findAPIServerEgressRule(netpol)
+			if rule == nil {
+				t.Fatalf("API server egress rule (port 6443) not found in netpol")
+			}
 			var gotCIDRs []string
-			for _, peer := range netpol.Spec.Egress[5].To {
+			for _, peer := range rule.To {
 				if peer.IPBlock != nil {
 					gotCIDRs = append(gotCIDRs, peer.IPBlock.CIDR)
 				}
@@ -975,9 +1018,12 @@ func TestBuildNetworkPolicy_ClusterDNS(t *testing.T) {
 
 	// 1. IPv4 dynamic DNS clusterIP
 	netpolGKE := buildNetworkPolicy(agent, nil, "34.118.224.10")
-	dnsRule := netpolGKE.Spec.Egress[0]
+	dnsRuleGKE := findDNSEgressRule(netpolGKE)
+	if dnsRuleGKE == nil {
+		t.Fatalf("DNS egress rule (port 53) not found in netpolGKE")
+	}
 	foundExactClusterIP := false
-	for _, peer := range dnsRule.To {
+	for _, peer := range dnsRuleGKE.To {
 		if peer.IPBlock != nil && peer.IPBlock.CIDR == "34.118.224.10/32" {
 			foundExactClusterIP = true
 			break
@@ -989,8 +1035,12 @@ func TestBuildNetworkPolicy_ClusterDNS(t *testing.T) {
 
 	// 2. IPv6 dynamic DNS clusterIP
 	netpolIPv6 := buildNetworkPolicy(agent, nil, "2001:db8::10")
+	dnsRuleIPv6 := findDNSEgressRule(netpolIPv6)
+	if dnsRuleIPv6 == nil {
+		t.Fatalf("DNS egress rule (port 53) not found in netpolIPv6")
+	}
 	foundIPv6DNS := false
-	for _, peer := range netpolIPv6.Spec.Egress[0].To {
+	for _, peer := range dnsRuleIPv6.To {
 		if peer.IPBlock != nil && peer.IPBlock.CIDR == "2001:db8::10/128" {
 			foundIPv6DNS = true
 			break
@@ -1002,8 +1052,12 @@ func TestBuildNetworkPolicy_ClusterDNS(t *testing.T) {
 
 	// 3. Fallback when invalid or empty
 	netpolFallback := buildNetworkPolicy(agent, nil, "invalid-ip")
+	dnsRuleFallback := findDNSEgressRule(netpolFallback)
+	if dnsRuleFallback == nil {
+		t.Fatalf("DNS egress rule (port 53) not found in netpolFallback")
+	}
 	foundFallback := false
-	for _, peer := range netpolFallback.Spec.Egress[0].To {
+	for _, peer := range dnsRuleFallback.To {
 		if peer.IPBlock != nil && peer.IPBlock.CIDR == "10.96.0.10/32" {
 			foundFallback = true
 			break
@@ -2024,8 +2078,13 @@ func TestReconcileNetworkPolicy_APIReader(t *testing.T) {
 		t.Fatalf("failed to get generated NetworkPolicy: %v", err)
 	}
 
+	rule := findAPIServerEgressRule(netpol)
+	if rule == nil {
+		t.Fatalf("API server egress rule (port 6443) not found in netpol")
+	}
+
 	var gotCIDRs []string
-	for _, peer := range netpol.Spec.Egress[5].To {
+	for _, peer := range rule.To {
 		if peer.IPBlock != nil {
 			gotCIDRs = append(gotCIDRs, peer.IPBlock.CIDR)
 		}
@@ -2291,7 +2350,7 @@ func TestReconcileNetworkPolicy_DynamicDiscovery(t *testing.T) {
 			Name:      "test-agent",
 			Namespace: "test-ns",
 			Annotations: map[string]string{
-				"kubeagents.x-k8s.io/apiserver-cidr": "172.16.0.100/32",
+				AnnotationAPIServerCIDR: "172.16.0.100/32",
 			},
 		},
 	}
@@ -2346,8 +2405,12 @@ func TestReconcileNetworkPolicy_DynamicDiscovery(t *testing.T) {
 	}
 
 	// Verify DNS egress rule has dynamic 34.118.224.10/32
+	dnsRule := findDNSEgressRule(netpol)
+	if dnsRule == nil {
+		t.Fatalf("DNS egress rule (port 53) not found in netpol")
+	}
 	foundDNS := false
-	for _, peer := range netpol.Spec.Egress[0].To {
+	for _, peer := range dnsRule.To {
 		if peer.IPBlock != nil && peer.IPBlock.CIDR == "34.118.224.10/32" {
 			foundDNS = true
 			break
@@ -2405,7 +2468,7 @@ func TestReconcileNetworkPolicy_CustomEgressCIDRsAnnotation(t *testing.T) {
 			Name:      "test-agent",
 			Namespace: "test-ns",
 			Annotations: map[string]string{
-				"kubeagents.x-k8s.io/custom-egress-cidrs": "172.16.0.0/12, 10.50.0.0/16",
+				AnnotationCustomEgressCIDRs: "172.16.0.0/12, 10.50.0.0/16",
 			},
 		},
 	}
@@ -2470,7 +2533,7 @@ func TestReconcileNetworkPolicy_RejectOverlyBroadCIDR(t *testing.T) {
 			Name:      "test-agent",
 			Namespace: "test-ns",
 			Annotations: map[string]string{
-				"kubeagents.x-k8s.io/custom-egress-cidrs": "0.0.0.0/0, 10.0.0.0/8, ::/0, 172.16.0.0/12",
+				AnnotationCustomEgressCIDRs: "0.0.0.0/0, 10.0.0.0/8, ::/0, 172.16.0.0/12",
 			},
 		},
 	}
@@ -2523,7 +2586,7 @@ func TestReconcileNetworkPolicy_FQDNNetworkPolicyReconciliation(t *testing.T) {
 			Name:      "test-agent",
 			Namespace: "test-ns",
 			Annotations: map[string]string{
-				"kubeagents.x-k8s.io/enable-fqdn-network-policy": "true",
+				AnnotationEnableFQDNNetworkPolicy: "true",
 			},
 		},
 	}
@@ -2618,7 +2681,7 @@ func TestReconcileNetworkPolicy_FQDNNetworkPolicyReconciliation(t *testing.T) {
 	}
 
 	// 3. Verify disabling annotation deletes FQDNNetworkPolicy
-	delete(agent.Annotations, "kubeagents.x-k8s.io/enable-fqdn-network-policy")
+	delete(agent.Annotations, AnnotationEnableFQDNNetworkPolicy)
 	err = r.reconcileNetworkPolicy(ctx, agent)
 	if err != nil {
 		t.Fatalf("reconcileNetworkPolicy after disabling FQDN failed: %v", err)
@@ -2645,7 +2708,7 @@ func TestReconcileNetworkPolicy_TruncateMaxCIDRs(t *testing.T) {
 			Name:      "test-agent-max-cidrs",
 			Namespace: "test-ns",
 			Annotations: map[string]string{
-				"kubeagents.x-k8s.io/custom-egress-cidrs": customCIDRs,
+				AnnotationCustomEgressCIDRs: customCIDRs,
 			},
 		},
 	}

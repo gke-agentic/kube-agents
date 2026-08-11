@@ -2506,7 +2506,7 @@ func buildLeaderRoleBinding(agent *agentv1alpha1.PlatformAgent, bindingName, rol
 
 func isFQDNNetworkPolicyEnabled(agent *agentv1alpha1.PlatformAgent) bool {
 	if agent != nil && agent.Annotations != nil {
-		if val, ok := agent.Annotations["kubeagents.x-k8s.io/enable-fqdn-network-policy"]; ok {
+		if val, ok := agent.Annotations[AnnotationEnableFQDNNetworkPolicy]; ok {
 			return val == "true"
 		}
 	}

@@ -56,6 +56,10 @@ const (
 	minIPv4CIDRPrefix      = 12
 	minIPv6CIDRPrefix      = 48
 	maxCIDRsPerAnnotation  = 50
+
+	AnnotationAPIServerCIDR           = "kubeagents.x-k8s.io/apiserver-cidr"
+	AnnotationCustomEgressCIDRs       = "kubeagents.x-k8s.io/custom-egress-cidrs"
+	AnnotationEnableFQDNNetworkPolicy = "kubeagents.x-k8s.io/enable-fqdn-network-policy"
 )
 
 // PlatformAgentReconciler reconciles a PlatformAgent object
@@ -542,24 +546,24 @@ func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, ag
 	}
 
 	if agent.Annotations != nil {
-		if customCIDRs, ok := agent.Annotations["kubeagents.x-k8s.io/apiserver-cidr"]; ok {
+		if customCIDRs, ok := agent.Annotations[AnnotationAPIServerCIDR]; ok {
 			cidrs := strings.Split(customCIDRs, ",")
 			if len(cidrs) > maxCIDRsPerAnnotation {
-				logf.FromContext(ctx).Info("Truncating annotation to max allowed CIDRs", "annotation", "kubeagents.x-k8s.io/apiserver-cidr", "max", maxCIDRsPerAnnotation, "total", len(cidrs))
+				logf.FromContext(ctx).Info("Truncating annotation to max allowed CIDRs", "annotation", AnnotationAPIServerCIDR, "max", maxCIDRsPerAnnotation, "total", len(cidrs))
 				cidrs = cidrs[:maxCIDRsPerAnnotation]
 			}
 			for _, cidr := range cidrs {
-				parseCIDRTarget("kubeagents.x-k8s.io/apiserver-cidr", cidr)
+				parseCIDRTarget(AnnotationAPIServerCIDR, cidr)
 			}
 		}
-		if customCIDRs, ok := agent.Annotations["kubeagents.x-k8s.io/custom-egress-cidrs"]; ok {
+		if customCIDRs, ok := agent.Annotations[AnnotationCustomEgressCIDRs]; ok {
 			cidrs := strings.Split(customCIDRs, ",")
 			if len(cidrs) > maxCIDRsPerAnnotation {
-				logf.FromContext(ctx).Info("Truncating annotation to max allowed CIDRs", "annotation", "kubeagents.x-k8s.io/custom-egress-cidrs", "max", maxCIDRsPerAnnotation, "total", len(cidrs))
+				logf.FromContext(ctx).Info("Truncating annotation to max allowed CIDRs", "annotation", AnnotationCustomEgressCIDRs, "max", maxCIDRsPerAnnotation, "total", len(cidrs))
 				cidrs = cidrs[:maxCIDRsPerAnnotation]
 			}
 			for _, cidr := range cidrs {
-				parseCIDRTarget("kubeagents.x-k8s.io/custom-egress-cidrs", cidr)
+				parseCIDRTarget(AnnotationCustomEgressCIDRs, cidr)
 			}
 		}
 	}
