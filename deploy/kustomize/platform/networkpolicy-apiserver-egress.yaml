@@ -8,7 +8,7 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      app: platform-agent
+      app.kubernetes.io/name: platform-agent
   policyTypes:
     - Egress
   egress:

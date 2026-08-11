@@ -579,23 +579,17 @@ func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, ag
 		}
 	}
 
-	netpol := buildNetworkPolicy(agent, apiTargets, dnsClusterIP)
-	if err := ctrl.SetControllerReference(agent, netpol, r.Scheme); err != nil {
-		return fmt.Errorf("failed to set controller reference on NetworkPolicy %s/%s: %w", netpol.Namespace, netpol.Name, err)
-	}
-	if err := r.applyManaged(ctx, agent, netpol); err != nil {
-		return fmt.Errorf("failed to apply NetworkPolicy %s/%s: %w", netpol.Namespace, netpol.Name, err)
-	}
-
-	// Reconcile or clean up companion FQDNNetworkPolicy (networking.gke.io/v1alpha1) on GKE Dataplane V2 clusters
-	if isFQDNNetworkPolicyEnabled(agent) {
+	// 1. Reconcile or clean up companion FQDNNetworkPolicy (networking.gke.io/v1alpha1) on GKE Dataplane V2 clusters
+	fqdnEnabled := isFQDNNetworkPolicyEnabled(agent)
+	if fqdnEnabled {
 		fqdnNetpol := buildFQDNNetworkPolicy(agent)
 		if err := ctrl.SetControllerReference(agent, fqdnNetpol, r.Scheme); err != nil {
 			return fmt.Errorf("failed to set controller reference on FQDNNetworkPolicy %s/%s: %w", fqdnNetpol.GetNamespace(), fqdnNetpol.GetName(), err)
 		}
 		if err := r.applyManaged(ctx, agent, fqdnNetpol); err != nil {
 			if meta.IsNoMatchError(err) || errors.IsNotFound(err) {
-				logf.FromContext(ctx).Info("FQDNNetworkPolicy CRD (networking.gke.io/v1alpha1) not present in cluster; omitting FQDNNetworkPolicy", "error", err)
+				logf.FromContext(ctx).Info("FQDNNetworkPolicy CRD (networking.gke.io/v1alpha1) not present in cluster; keeping blanket external egress rule", "error", err)
+				fqdnEnabled = false
 			} else {
 				return fmt.Errorf("failed to apply FQDNNetworkPolicy %s/%s: %w", fqdnNetpol.GetNamespace(), fqdnNetpol.GetName(), err)
 			}
@@ -612,6 +606,15 @@ func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, ag
 		if err := r.Delete(ctx, fqdnNetpol); err != nil && !errors.IsNotFound(err) && !meta.IsNoMatchError(err) {
 			return fmt.Errorf("failed to clean up disabled FQDNNetworkPolicy %s/%s: %w", fqdnNetpol.GetNamespace(), fqdnNetpol.GetName(), err)
 		}
+	}
+
+	// 2. Build and reconcile standard NetworkPolicy (omits blanket external HTTPS egress only if replacement FQDN policy is active)
+	netpol := buildNetworkPolicy(agent, apiTargets, dnsClusterIP, fqdnEnabled)
+	if err := ctrl.SetControllerReference(agent, netpol, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set controller reference on NetworkPolicy %s/%s: %w", netpol.Namespace, netpol.Name, err)
+	}
+	if err := r.applyManaged(ctx, agent, netpol); err != nil {
+		return fmt.Errorf("failed to apply NetworkPolicy %s/%s: %w", netpol.Namespace, netpol.Name, err)
 	}
 
 	return nil

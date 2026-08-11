@@ -2587,7 +2587,7 @@ func isDashboardEnabled(agent *agentv1alpha1.PlatformAgent) bool {
 
 // buildNetworkPolicy generates the restrictive NetworkPolicy manifest for PlatformAgent.
 // Note: This is the operator-generated version; Kustomize static deployments use deploy/kustomize/platform/networkpolicy.yaml.
-func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, dnsClusterIP string) *networkingv1.NetworkPolicy {
+func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, dnsClusterIP string, fqdnEnabled bool) *networkingv1.NetworkPolicy {
 	udp := corev1.ProtocolUDP
 	tcp := corev1.ProtocolTCP
 
@@ -2805,7 +2805,7 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, d
 	// 7. External HTTPS (Google APIs, GitHub, etc.)
 	// Note: When FQDNNetworkPolicy is enabled on Dataplane V2, this open IPBlock is omitted
 	// so domain-level filtering is strictly enforced by FQDNNetworkPolicy.
-	if !isFQDNNetworkPolicyEnabled(agent) {
+	if !fqdnEnabled {
 		egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(443))},

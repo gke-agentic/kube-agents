@@ -8,7 +8,7 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      app: platform-agent
+      app.kubernetes.io/name: platform-agent
   egress:
     - matches:
         # Google APIs & GCP Services (Vertex AI, GKE, Cloud Logging/Monitoring, Workload Identity)

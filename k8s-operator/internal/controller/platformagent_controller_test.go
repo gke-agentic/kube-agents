@@ -675,7 +675,7 @@ func TestBuildNetworkPolicy(t *testing.T) {
 		},
 	}
 
-	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10")
+	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10", false)
 	if netpol.Name != "test-agent-gateway-netpol" {
 		t.Errorf("expected Name 'test-agent-gateway-netpol', got %s", netpol.Name)
 	}
@@ -781,7 +781,7 @@ func TestBuildNetworkPolicy_DashboardDisabled(t *testing.T) {
 		},
 	}
 
-	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10")
+	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10", false)
 	if len(netpol.Spec.Ingress) != 1 {
 		t.Fatalf("expected 1 Ingress rule, got %d", len(netpol.Spec.Ingress))
 	}
@@ -801,7 +801,7 @@ func TestBuildNetworkPolicy_FQDNEnabled(t *testing.T) {
 		},
 	}
 
-	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10")
+	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10", true)
 	// Expected 8 Egress rules when FQDN is enabled (external HTTPS 0.0.0.0/0:443 is omitted):
 	// 1. Cluster DNS (53)
 	// 2. GCP WI / Metadata server (80, 8080)
@@ -831,13 +831,13 @@ func TestBuildNetworkPolicy_CustomAPIHost(t *testing.T) {
 		},
 	}
 
-	netpolIPv4 := buildNetworkPolicy(agent, []string{"10.0.0.5"}, "10.96.0.10")
+	netpolIPv4 := buildNetworkPolicy(agent, []string{"10.0.0.5"}, "10.96.0.10", false)
 	ruleIPv4 := findAPIServerEgressRule(netpolIPv4)
 	if ruleIPv4 == nil || len(ruleIPv4.To) == 0 || ruleIPv4.To[0].IPBlock == nil || ruleIPv4.To[0].IPBlock.CIDR != "10.0.0.5/32" {
 		t.Errorf("expected IPv4 CIDR '10.0.0.5/32', got %v", ruleIPv4)
 	}
 
-	netpolIPv6 := buildNetworkPolicy(agent, []string{"fd00::1"}, "10.96.0.10")
+	netpolIPv6 := buildNetworkPolicy(agent, []string{"fd00::1"}, "10.96.0.10", false)
 	ruleIPv6 := findAPIServerEgressRule(netpolIPv6)
 	if ruleIPv6 == nil || len(ruleIPv6.To) == 0 || ruleIPv6.To[0].IPBlock == nil || ruleIPv6.To[0].IPBlock.CIDR != "fd00::1/128" {
 		t.Errorf("expected IPv6 CIDR 'fd00::1/128', got %v", ruleIPv6)
@@ -911,7 +911,7 @@ func TestBuildNetworkPolicy_InvalidAPIHost(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			netpol := buildNetworkPolicy(agent, tt.apiHosts, "10.96.0.10")
+			netpol := buildNetworkPolicy(agent, tt.apiHosts, "10.96.0.10", false)
 			rule := findAPIServerEgressRule(netpol)
 			if rule == nil {
 				t.Fatalf("API server egress rule (port 6443) not found in netpol")
@@ -937,8 +937,8 @@ func TestBuildNetworkPolicy_Idempotent(t *testing.T) {
 		},
 	}
 
-	np1 := buildNetworkPolicy(agent, []string{"10.0.0.5"}, "10.96.0.10")
-	np2 := buildNetworkPolicy(agent, []string{"10.0.0.5"}, "10.96.0.10")
+	np1 := buildNetworkPolicy(agent, []string{"10.0.0.5"}, "10.96.0.10", false)
+	np2 := buildNetworkPolicy(agent, []string{"10.0.0.5"}, "10.96.0.10", false)
 	if !reflect.DeepEqual(np1.Spec, np2.Spec) {
 		t.Errorf("buildNetworkPolicy is not idempotent: consecutive calls produced different specs")
 	}
@@ -951,7 +951,7 @@ func TestBuildNetworkPolicy_ExternalHTTPSExceptList(t *testing.T) {
 			Namespace: "test-ns",
 		},
 	}
-	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10")
+	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10", false)
 
 	var httpsRule *networkingv1.NetworkPolicyEgressRule
 	for i := range netpol.Spec.Egress {
@@ -1017,7 +1017,7 @@ func TestBuildNetworkPolicy_ClusterDNS(t *testing.T) {
 	}
 
 	// 1. IPv4 dynamic DNS clusterIP
-	netpolGKE := buildNetworkPolicy(agent, nil, "34.118.224.10")
+	netpolGKE := buildNetworkPolicy(agent, nil, "34.118.224.10", false)
 	dnsRuleGKE := findDNSEgressRule(netpolGKE)
 	if dnsRuleGKE == nil {
 		t.Fatalf("DNS egress rule (port 53) not found in netpolGKE")
@@ -1034,7 +1034,7 @@ func TestBuildNetworkPolicy_ClusterDNS(t *testing.T) {
 	}
 
 	// 2. IPv6 dynamic DNS clusterIP
-	netpolIPv6 := buildNetworkPolicy(agent, nil, "2001:db8::10")
+	netpolIPv6 := buildNetworkPolicy(agent, nil, "2001:db8::10", false)
 	dnsRuleIPv6 := findDNSEgressRule(netpolIPv6)
 	if dnsRuleIPv6 == nil {
 		t.Fatalf("DNS egress rule (port 53) not found in netpolIPv6")
@@ -1051,7 +1051,7 @@ func TestBuildNetworkPolicy_ClusterDNS(t *testing.T) {
 	}
 
 	// 3. Fallback when invalid or empty
-	netpolFallback := buildNetworkPolicy(agent, nil, "invalid-ip")
+	netpolFallback := buildNetworkPolicy(agent, nil, "invalid-ip", false)
 	dnsRuleFallback := findDNSEgressRule(netpolFallback)
 	if dnsRuleFallback == nil {
 		t.Fatalf("DNS egress rule (port 53) not found in netpolFallback")
@@ -2689,6 +2689,70 @@ func TestReconcileNetworkPolicy_FQDNNetworkPolicyReconciliation(t *testing.T) {
 	err = cl.Get(ctx, types.NamespacedName{Name: "test-agent-fqdn-netpol", Namespace: "test-ns"}, fqdnNetpol)
 	if !errors.IsNotFound(err) {
 		t.Errorf("expected FQDNNetworkPolicy to be deleted when annotation is disabled, got %v", err)
+	}
+}
+
+func TestReconcileNetworkPolicy_FQDNCRDNotPresentFallback(t *testing.T) {
+	scheme := setupScheme()
+	ctx := context.Background()
+
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+			Annotations: map[string]string{
+				AnnotationEnableFQDNNetworkPolicy: "true",
+			},
+		},
+	}
+
+	interceptors := fakeServerSideApplyInterceptors()
+	ssaPatch := interceptors.Patch
+	interceptors.Patch = func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+		if u, ok := obj.(*unstructured.Unstructured); ok && u.GroupVersionKind().Kind == "FQDNNetworkPolicy" {
+			return &meta.NoResourceMatchError{PartialResource: schema.GroupVersionResource{Group: "networking.gke.io", Version: "v1alpha1", Resource: "fqdnnetworkpolicies"}}
+		}
+		return ssaPatch(ctx, cl, obj, patch, opts...)
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(agent).
+		WithInterceptorFuncs(interceptors).
+		Build()
+
+	r := &PlatformAgentReconciler{
+		Client:      cl,
+		APIReader:   cl,
+		Scheme:      scheme,
+		APIServerIP: "10.96.0.1",
+	}
+
+	err := r.reconcileNetworkPolicy(ctx, agent)
+	if err != nil {
+		t.Fatalf("reconcileNetworkPolicy failed: %v", err)
+	}
+
+	// Verify standard NetworkPolicy kept the blanket external HTTPS rule (rule 7) because CRD is absent
+	netpol := &networkingv1.NetworkPolicy{}
+	err = cl.Get(ctx, types.NamespacedName{Name: "test-agent-gateway-netpol", Namespace: "test-ns"}, netpol)
+	if err != nil {
+		t.Fatalf("failed to get reconciled NetworkPolicy: %v", err)
+	}
+
+	if len(netpol.Spec.Egress) != 9 {
+		t.Errorf("expected 9 Egress rules when FQDN CRD is not present (fallback to blanket external HTTPS), got %d", len(netpol.Spec.Egress))
+	}
+	foundBlanketHTTPS := false
+	for _, egress := range netpol.Spec.Egress {
+		for _, peer := range egress.To {
+			if peer.IPBlock != nil && peer.IPBlock.CIDR == "0.0.0.0/0" {
+				foundBlanketHTTPS = true
+			}
+		}
+	}
+	if !foundBlanketHTTPS {
+		t.Errorf("expected blanket 0.0.0.0/0 external HTTPS egress rule to be kept when FQDN CRD is absent")
 	}
 }
 
