@@ -158,6 +158,25 @@ the Pub/Sub topic; Socket Mode + bot scopes in the Slack app console) —
 [INSTALL.md § Enable Google Chat & Slack Integrations](../../INSTALL.md#step-5-enable-google-chat--slack-integrations-manual-required-steps)
 is the canonical walkthrough, including the pairing-code approval.
 
+### Agent runtime knobs
+
+`platformAgent.harness.hermes`, `platformAgent.harness.memory`, and
+`platformAgent.deployment.availability` expose the remaining fields the
+provisioning scripts substitute into
+[`platform-agent.yaml.template`](../../k8s-operator/scripts/platform-agent.yaml.template),
+so a chart install can reach the same CR as a script install. Each one defaults
+to `null`/`""`, which **omits** the field and lets the CRD's own default apply
+— setting `false` is therefore distinct from leaving it unset.
+
+Two of them have no Terraform or chart-side infrastructure behind them:
+
+- `deployment.availability.runtimeClassName: gvisor` needs the GKE Sandbox node
+  pool that [`provision_02_gvisor_nodepool.sh`](../../k8s-operator/scripts/provision_02_gvisor_nodepool.sh)
+  creates; the Autopilot `gke-cluster` module has no equivalent.
+- `harness.hermes.dashboardEnabled` is the one field where the two install paths
+  disagree by default: the CRD defaults it to `true`, the script path to
+  `false`. Set it explicitly when the two installs must match.
+
 ### ServiceAccount ownership
 
 Exactly one owner creates the agent's KSA, depending on

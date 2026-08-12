@@ -75,6 +75,9 @@ litellm:
     # must be a region (or "global"), so override it on a zonal cluster.
     projectId: ""
     location: ""
+  # Keep in step with the kustomize base
+  # (k8s-operator/config/integrations/litellm/base/deployment.yaml); the
+  # parity check fails the build when they diverge.
   image:
     repository: ghcr.io/berriai/litellm
     tag: v1.96.2
@@ -102,11 +105,34 @@ platformAgent:
     clusterName: ""
     location: ""
     projectId: ""
+    # Hermes runtime knobs, mirroring the HERMES_* variables the provisioning
+    # scripts substitute into platform-agent.yaml.template. `null` omits the
+    # field so the CRD's own default applies — note that the script path
+    # defaults dashboardEnabled to false while the CRD defaults it to true, so
+    # set this explicitly if the two installs must agree.
+    hermes:
+      dashboardEnabled: null
+      pluginsDebug: null
+      agentHome: "" # CRD default: /opt/data
+    # Agent memory persistence. Defaults match both the CRD and the scripts'
+    # MEMORY_ENABLED / MEMORY_PROVIDER / USER_PROFILE_ENABLED defaults.
+    memory:
+      enabled: null # CRD default: false
+      provider: "" # CRD default: multiuser_memory
+      userProfileEnabled: null # CRD default: false
   deployment:
     image:
       repository: ghcr.io/gke-labs/kube-agents/platform-agent
       tag: "" # defaults to Chart.appVersion
       pullPolicy: IfNotPresent
+    availability:
+      # Number of agent pods. `null` omits the field; the operator defaults to 1.
+      replicas: null
+      # RuntimeClass for the agent pod. Set to "gvisor" for GKE Sandbox kernel
+      # isolation — that needs the sandbox node pool
+      # k8s-operator/scripts/provision_02_gvisor_nodepool.sh creates, which has
+      # no Terraform equivalent. Empty omits the field.
+      runtimeClassName: ""
   security:
     # Kubernetes ServiceAccount the agent pod runs as. The Workload Identity
     # binding must target this KSA (see the chart README); the default matches

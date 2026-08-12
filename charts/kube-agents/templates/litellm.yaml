@@ -29,8 +29,21 @@ metadata:
     {{- include "kube-agents.labels" . | nindent 4 }}
 data:
   config.yaml: |
+    {{- /*
+      Three aliases for one upstream model, mirroring the kustomize base
+      (k8s-operator/config/integrations/litellm/base/config.yaml): the agent
+      configs only ever request "model-default", but a caller that names the
+      harness ("hermes-agent") or the concrete model gets routed rather than
+      a 404 from the gateway.
+    */}}
     model_list:
       - model_name: model-default
+        litellm_params:
+          model: {{ printf "%s/%s" $provider $model }}
+      - model_name: hermes-agent
+        litellm_params:
+          model: {{ printf "%s/%s" $provider $model }}
+      - model_name: {{ $model }}
         litellm_params:
           model: {{ printf "%s/%s" $provider $model }}
     litellm_settings:
