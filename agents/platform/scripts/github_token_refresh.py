@@ -106,7 +106,7 @@ def refresh_git_credentials(target_repo: str = None) -> str:
     }
     req_data = json.dumps(body).encode("utf-8")
 
-    log(f"Requesting scoped installation token from Minty for organization: {org_name}...")
+    log(f"Requesting scoped installation token from Minty for repository: {org_name}/{repo_name}...")
     
     try:
         req = urllib.request.Request(

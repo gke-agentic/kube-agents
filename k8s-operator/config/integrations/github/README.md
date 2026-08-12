@@ -136,7 +136,7 @@ curl -i -X POST http://github-token-minter.kubeagents-system.svc.cluster.local:8
   -H "X-OIDC-Token: $OIDC_TOKEN" \
   -d '{
     "org_name": "YOUR_GITHUB_ORG",
-    "repositories": ["*"],
+    "repositories": ["YOUR_REPO"],
     "scope": "platform-agent-scope"
   }'
 ```

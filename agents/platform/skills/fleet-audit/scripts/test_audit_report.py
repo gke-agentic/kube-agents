@@ -586,7 +586,7 @@ class HarnessTestCase(BaseTestCase):
         self.patch_attr("SCRATCH_DIR", str(self.tmp_path / "scratch"))
         self.patch_attr("run_cmd", self.harness)
         self.patch_attr("refresh_credentials", lambda repo=None: None)
-        self.patch_attr("resolve_repo", lambda: "acme/fleet")
+        self.patch_attr("resolve_repo", lambda *a, **k: "acme/fleet")
         self.patch_attr("repo_root", lambda: self.workspace)
         # Most tests describe a pod that has audited before, so the clone
         # already exists and `ensure_workspace` takes the fetch path. Tests
@@ -7258,7 +7258,7 @@ class TestCredentialOrdering(HarnessTestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def _resolve(self):
+    def _resolve(self, *a, **k):
         self.order.append("resolve")
         return "acme/fleet"
 

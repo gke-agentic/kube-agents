@@ -4052,9 +4052,22 @@ def refresh_credentials(repo: str | None = None) -> None:
     refresh_git_credentials(repo)
 
 
-def resolve_repo() -> str:
-    """Resolve the GitOps repository as `owner/name`, without needing a clone."""
+def resolve_repo(audit_id: str | None = None, repo: str | None = None) -> str:
+    """Resolve the GitOps repository as `owner/name`, checking lease record first if audit_id given."""
+    if repo and str(repo).strip():
+        return str(repo).strip()
     import gitops_workspace
+
+    if audit_id:
+        try:
+            holder = gitops_workspace.lease_dir(
+                GITOPS_WORKSPACE or gitops_workspace.default_root(), audit_id
+            )
+            record = gitops_workspace.read_lease(holder)
+            if record and record.get("repo"):
+                return record["repo"]
+        except Exception:
+            pass
 
     return gitops_workspace.resolve_repo()
 
@@ -4076,7 +4089,7 @@ def repo_root_best_effort() -> Path:
         return Path.cwd()
 
 
-def dry_run_repo_root(audit_id: str) -> Path:
+def dry_run_repo_root(audit_id: str, repo: str | None = None) -> Path:
     """Where a dry run looks for the manifests the real run would stage.
 
     The real run resolves every `remediation.path` inside the GitOps clone that
@@ -4098,7 +4111,7 @@ def dry_run_repo_root(audit_id: str) -> Path:
         import gitops_workspace
 
         target = gitops_workspace.workspace_path(
-            resolve_repo(), GITOPS_WORKSPACE, lease=audit_id
+            resolve_repo(audit_id=audit_id, repo=repo), GITOPS_WORKSPACE, lease=audit_id
         )
     except Exception:
         return repo_root_best_effort()
@@ -5063,11 +5076,11 @@ def handle_start(args: argparse.Namespace) -> None:
     )
 
 
-def _handle_finish_dry_run(audit_id: str, data: dict, now: datetime) -> None:
+def _handle_finish_dry_run(audit_id: str, data: dict, now: datetime, repo: str | None = None) -> None:
     findings = list(data["findings"])
 
     log("DRY RUN: validated findings; nothing will be committed, pushed, or published.")
-    root = dry_run_repo_root(audit_id)
+    root = dry_run_repo_root(audit_id, repo=repo)
     log(f"DRY RUN: resolving remediation paths under {root}.")
 
     # The same degradation the real run applies, so a dry run shows the body
@@ -5291,6 +5304,7 @@ def handle_remediate(args: argparse.Namespace) -> None:
     audit_id = validate_audit_id(args.audit)
     data = load_findings(args.findings_file, audit_id)
     findings = list(data["findings"])
+    opt_repo = getattr(args, "repo", None)
 
     by_id = {str(f.get("id", "")): f for f in findings}
     unknown = [fid for fid in args.finding if fid not in by_id]
@@ -5319,7 +5333,7 @@ def handle_remediate(args: argparse.Namespace) -> None:
         # command is to show what the pull request would say, and an operator
         # drafting a document before writing its manifests would otherwise get a
         # blank preview and no explanation.
-        dry_root = dry_run_repo_root(audit_id)
+        dry_root = dry_run_repo_root(audit_id, repo=opt_repo)
         log(f"DRY RUN: resolving remediation paths under {dry_root}.")
         for fid in args.finding:
             if remediation_file_problem(by_id[fid], dry_root):
@@ -5348,7 +5362,7 @@ def handle_remediate(args: argparse.Namespace) -> None:
             )
         return
 
-    repo = resolve_repo()
+    repo = resolve_repo(audit_id=audit_id, repo=opt_repo)
     refresh_credentials(repo)
     root = ensure_workspace(repo, audit_id)
     ensure_labels(repo, audit_id)
@@ -5439,12 +5453,13 @@ def handle_finish(args: argparse.Namespace) -> None:
     data = load_findings(args.findings_file, audit_id)
     findings = list(data["findings"])
     now = datetime.now(timezone.utc)
+    opt_repo = getattr(args, "repo", None)
 
     if args.dry_run:
-        _handle_finish_dry_run(audit_id, data, now)
+        _handle_finish_dry_run(audit_id, data, now, repo=opt_repo)
         return
 
-    repo = resolve_repo()
+    repo = resolve_repo(audit_id=audit_id, repo=opt_repo)
     refresh_credentials(repo)
     root = ensure_workspace(repo, audit_id)
     ensure_labels(repo, audit_id)
@@ -5939,6 +5954,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--findings-file", required=True, help="Path to the findings.json to publish."
     )
     finish_parser.add_argument(
+        "--repo",
+        help="Optional target GitOps repository (defaults to leased workspace repo or ConfigMap registered repo).",
+    )
+    finish_parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Validate and render to stdout; perform zero git/gh side effects.",
@@ -5958,6 +5977,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         metavar="ID",
         help="Finding id to remediate; repeat for more than one.",
+    )
+    remediate_parser.add_argument(
+        "--repo",
+        help="Optional target GitOps repository (defaults to leased workspace repo or ConfigMap registered repo).",
     )
     remediate_parser.add_argument(
         "--issue",

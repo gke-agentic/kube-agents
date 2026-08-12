@@ -57,6 +57,8 @@ if [ -n "${GITHUB_ORG:-}" ]; then
     GITHUB_REPO="${GITHUB_ORG}/${GITHUB_REPO}"
     save_var "GITHUB_REPO" "${GITHUB_REPO}"
   fi
+else
+  GITHUB_REPO=""
 fi
 
 # ─── Step Implementations ─────────────────────────────────────────────────────

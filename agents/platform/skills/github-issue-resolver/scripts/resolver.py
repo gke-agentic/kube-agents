@@ -204,6 +204,13 @@ def handle_poll(args):
     unreachable_repos = []
 
     for repo in repos:
+        try:
+            from github_token_refresh import refresh_git_credentials
+
+            refresh_git_credentials(repo)
+        except Exception:
+            pass
+
         # Sweep stale issues first
         sweep_stale_issues(repo)
 
@@ -334,6 +341,12 @@ def _validate_repo_or_exit(repo: str) -> None:
 def handle_claim(args):
     repo = args.repo
     _validate_repo_or_exit(repo)
+    try:
+        from github_token_refresh import refresh_git_credentials
+
+        refresh_git_credentials(repo)
+    except Exception:
+        pass
     issue_num = str(args.issue)
     ensure_labels_exist(repo)
 
@@ -401,6 +414,12 @@ def handle_transition(args):
         sys.exit(1)
 
     _validate_repo_or_exit(repo)
+    try:
+        from github_token_refresh import refresh_git_credentials
+
+        refresh_git_credentials(repo)
+    except Exception:
+        pass
 
     # Post report comment directly via file parameter (-F)
     run_gh(["issue", "comment", issue_num, "-R", repo, "-F", real_report_path])

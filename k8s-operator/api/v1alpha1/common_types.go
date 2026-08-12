@@ -370,7 +370,7 @@ type GitHubSpec struct {
 	// Org is the target GitHub organization or user account for the agent environment.
 	// If omitted and GitRepo is provided, the organization is inferred from the repository owner.
 	// +kubebuilder:validation:MaxLength=39
-	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$`
+	// +kubebuilder:validation:Pattern=`^$|^[a-zA-Z0-9]([a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$`
 	// +optional
 	Org string `json:"org,omitempty"`
 

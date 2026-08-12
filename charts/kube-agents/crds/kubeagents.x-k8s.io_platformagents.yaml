@@ -8423,7 +8423,7 @@ spec:
                             Org is the target GitHub organization or user account for the agent environment.
                             If omitted and GitRepo is provided, the organization is inferred from the repository owner.
                           maxLength: 39
-                          pattern: ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$
+                          pattern: ^$|^[a-zA-Z0-9]([a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$
                           type: string
                       type: object
                     googleChat:
