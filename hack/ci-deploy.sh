@@ -37,10 +37,9 @@ export IMAGE_TAG="${TAG}"
 
 export MODEL_PROVIDER="gemini"
 export MODEL_DEFAULT_NAME="gemini-3.1-pro-preview"
-# Allow deployments on pre-existing CI evaluation clusters (e.g. in kube-agents-evals)
-# that were created without Cloud KMS etcd database encryption (CMEK), while keeping
-# strict CMEK enforcement enabled by default for production installations.
-export ALLOW_UNENCRYPTED_SECRETS="${ALLOW_UNENCRYPTED_SECRETS:-true}"
+# Default to enforcing CMEK database encryption on CI evaluation clusters.
+# Set ALLOW_UNENCRYPTED_SECRETS=true to bypass CMEK checks on unencrypted test clusters.
+export ALLOW_UNENCRYPTED_SECRETS="${ALLOW_UNENCRYPTED_SECRETS:-false}"
 
 export KSA_NAME="kubeagents-platform-agent"
 export GSA_NAME="kubeagents-platform-gsa"
