@@ -60,7 +60,7 @@ locals {
 
   # Only non-empty credential keys end up in the Secret, so an unset optional
   # provider key does not create an empty entry.
-  credentials = {
+  optional_credentials = {
     for key, value in {
       API_SERVER_KEY = var.api_server_key
       # Generated rather than asked for: neither value means anything to an
@@ -74,11 +74,34 @@ locals {
       ANTHROPIC_API_KEY  = var.anthropic_api_key
       GEMINI_API_KEY     = var.gemini_api_key
       OPENAI_API_KEY     = var.openai_api_key
-      # The CR references these two keys by name whenever Slack is enabled;
-      # provision_06_slack.sh writes the same pair into the same Secret.
-      SLACK_BOT_TOKEN = var.enable_slack ? var.slack_bot_token : ""
-      SLACK_APP_TOKEN = var.enable_slack ? var.slack_app_token : ""
     } : key => value if value != ""
+  }
+
+  # Slack is the exception to that filter, and has to be: with the integration
+  # enabled the CR names both keys in a secretKeyRef the operator passes
+  # through verbatim (no `optional: true` — see defaultSecretRef in
+  # manifest_helpers.go), so a key missing from the Secret does not disable
+  # Slack, it holds the whole agent pod in CreateContainerConfigError. The
+  # tokens legitimately arrive after the first apply, because creating the
+  # Slack app is a manual step, so an empty value has to reach the Secret as
+  # an empty value. provision_07_gcp_k8s_secrets.sh writes the pair
+  # unconditionally for the same reason.
+  slack_credentials = var.enable_slack ? {
+    SLACK_BOT_TOKEN = var.slack_bot_token
+    SLACK_APP_TOKEN = var.slack_app_token
+  } : {}
+
+  credentials = merge(local.optional_credentials, local.slack_credentials)
+}
+
+# A warning rather than a precondition: an install that enables Slack before
+# the Slack app exists is a legitimate order of operations, and the empty keys
+# above keep the pod running until the tokens land. What is not legitimate is
+# not being told.
+check "slack_tokens_present" {
+  assert {
+    condition     = !var.enable_slack || (var.slack_bot_token != "" && var.slack_app_token != "")
+    error_message = "enable_slack is true but slack_bot_token and/or slack_app_token is empty. The agent pod will start and Slack will stay silent until both tokens are set in the credentials Secret."
   }
 }
 

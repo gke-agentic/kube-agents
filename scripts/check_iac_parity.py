@@ -20,6 +20,10 @@ literally agree on. It cannot check intent; that is the ``review-iac-parity``
 skill's job (``.agents/skills/review-iac-parity/SKILL.md``), and the two share
 the divergence list below.
 
+Its own extractors are covered by ``scripts/test_check_iac_parity.py``: a
+mis-parse that still returns a plausible value would report parity across
+surfaces that have drifted, which is worse than no check at all.
+
 **Deliberate divergences, not checked here** (each documented where it lives):
 
 * The chart runs the operator with ``ENABLE_WEBHOOKS=false`` — chart installs
@@ -61,9 +65,14 @@ PROVISION_05 = REPO / "k8s-operator/scripts/provision_05_gcp_gchat.sh"
 PROVISION_12 = REPO / "k8s-operator/scripts/provision_12_gke_backup_plan.sh"
 LITELLM_DEPLOYMENT = REPO / "k8s-operator/config/integrations/litellm/base/deployment.yaml"
 LITELLM_CONFIG = REPO / "k8s-operator/config/integrations/litellm/base/config.yaml"
+CR_TEMPLATE = REPO / "k8s-operator/scripts/platform-agent.yaml.template"
 
 CHART_VALUES = REPO / "charts/kube-agents/values.yaml"
 CHART_LITELLM = REPO / "charts/kube-agents/templates/litellm.yaml"
+# The gateway's config body lives in a named template so the ConfigMap and the
+# Deployment's checksum cannot disagree; the aliases are therefore here, not in
+# litellm.yaml.
+CHART_HELPERS = REPO / "charts/kube-agents/templates/_helpers.tpl"
 
 TF_FULL_INSTALL = REPO / "terraform/examples/full-install/main.tf"
 TF_IAM_VARS = REPO / "terraform/modules/kube-agents-iam/variables.tf"
@@ -118,11 +127,16 @@ def init_var_default(text: str, name: str, path: Path) -> str:
 
 
 def bash_array(text: str, name: str, path: Path) -> list[str]:
-    """Elements of `local name=( "a" "b" )`, comments stripped."""
+    """Elements of `local name=( "a" "b" )`, comments stripped.
+
+    The comment strip is load-bearing, not tidiness: these arrays are IAM role
+    bundles, and a role commented out on one side would otherwise be read as
+    still granted — the check would then demand the other surface grant it.
+    """
     match = re.search(rf"{re.escape(name)}=\(\s*(.*?)\)", text, re.S)
     if not match:
         sys.exit(f"ERROR: no {name}=( ... ) array in {path.relative_to(REPO)}")
-    return re.findall(r'"([^"]+)"', match.group(1))
+    return re.findall(r'"([^"]+)"', re.sub(r"#.*", "", match.group(1)))
 
 
 def tf_list(text: str, assignment: str, path: Path) -> list[str]:
@@ -142,10 +156,13 @@ def tf_variable_default(text: str, name: str, path: Path) -> str | list[str]:
     if not block:
         sys.exit(f"ERROR: no variable {name!r} in {path.relative_to(REPO)}")
     body = block.group(1)
-    listed = re.search(r"default\s*=\s*\[(.*?)\]", body, re.S)
+    # Anchored to the start of a line: an unanchored `default\s*=` also matches
+    # inside a validation's condition or error_message, and would then compare
+    # against text from the wrong line while still looking like a clean parse.
+    listed = re.search(r"^\s*default\s*=\s*\[(.*?)\]", body, re.S | re.M)
     if listed:
         return re.findall(r'"([^"]+)"', re.sub(r"#.*", "", listed.group(1)))
-    scalar = re.search(r"default\s*=\s*(.+)", body)
+    scalar = re.search(r"^\s*default\s*=\s*(.+)$", body, re.M)
     if not scalar:
         sys.exit(f"ERROR: variable {name!r} has no default in {path.relative_to(REPO)}")
     return scalar.group(1).strip().strip('"')
@@ -190,13 +207,20 @@ def dig(tree: dict, path: str):
     return node
 
 
-def model_names(text: str) -> list[str]:
-    """`model_name:` aliases in a LiteLLM config, placeholders normalised."""
+def model_names(text: str, path: Path) -> list[str]:
+    """`model_name:` aliases in a LiteLLM config, placeholders normalised.
+
+    Finding none means the config moved out of this file, not that the gateway
+    serves no models — so it fails loudly rather than reporting an empty list
+    the alias comparison would render as a mismatch.
+    """
     names = []
     for name in re.findall(r"model_name:\s*(\S.*?)\s*$", text, re.M):
-        if name in ("${MODEL_DEFAULT_NAME}", "{{ $model }}"):
+        if name in ("${MODEL_DEFAULT_NAME}", "{{ .model }}", "{{ $model }}"):
             name = MODEL_PLACEHOLDER
         names.append(name)
+    if not names:
+        sys.exit(f"ERROR: no model_name aliases found in {path.relative_to(REPO)}")
     return names
 
 
@@ -230,15 +254,33 @@ def check_litellm_image(f: Failures) -> None:
                 f"{example.relative_to(REPO)} pins {found.group(1)}, kustomize base pins {tag}",
             )
 
+    # A fourth pin, in a chart of its own and in repository/tag form rather than
+    # image: form — which is exactly why it was missed by the bump this check
+    # exists to prevent a repeat of.
+    staging = REPO / "k8s-operator/testing/staging_workloads/charts/workload-bundle/values.yaml"
+    if staging.is_file():
+        found = re.search(
+            r'repository:\s*"?(\S*/litellm)"?\s*\n\s*tag:\s*"?([^"\s]+)"?',
+            staging.read_text(encoding="utf-8"),
+        )
+        if not found:
+            f.add("litellm-image", f"no litellm repository/tag pair found in {staging.relative_to(REPO)}")
+        elif (found.group(1), found.group(2)) != (repo, tag):
+            f.add(
+                "litellm-image",
+                f"{staging.relative_to(REPO)} pins {found.group(1)}:{found.group(2)}, "
+                f"kustomize base pins {repo}:{tag}",
+            )
+
 
 def check_litellm_aliases(f: Failures) -> None:
-    kustomize = model_names(read(LITELLM_CONFIG))
-    chart = model_names(read(CHART_LITELLM))
+    kustomize = model_names(read(LITELLM_CONFIG), LITELLM_CONFIG)
+    chart = model_names(read(CHART_HELPERS), CHART_HELPERS)
     if sorted(kustomize) != sorted(chart):
         f.add(
             "litellm-model-aliases",
             f"chart serves {chart}, kustomize base serves {kustomize} "
-            f"({CHART_LITELLM.relative_to(REPO)} vs {LITELLM_CONFIG.relative_to(REPO)})",
+            f"({CHART_HELPERS.relative_to(REPO)} vs {LITELLM_CONFIG.relative_to(REPO)})",
         )
 
 
@@ -419,6 +461,27 @@ def check_backup_plan(f: Failures) -> None:
         )
 
 
+def check_agent_pull_policy(f: Failures) -> None:
+    """The agent CR's imagePullPolicy, which both surfaces state outright.
+
+    Only the agent image is compared. The operator and LiteLLM images have no
+    imagePullPolicy in their kustomize manifests at all, so there is no second
+    value to disagree with — and both are tag-pinned, where the chart's
+    IfNotPresent is what Kubernetes would default to anyway.
+    """
+    template = read(CR_TEMPLATE)
+    match = re.search(r"^\s*imagePullPolicy:\s*(\S+)", template, re.M)
+    if not match:
+        sys.exit(f"ERROR: no imagePullPolicy in {CR_TEMPLATE.relative_to(REPO)}")
+    chart = dig(simple_yaml(read(CHART_VALUES)), "platformAgent.deployment.image.pullPolicy")
+    if chart != match.group(1):
+        f.add(
+            "agent-pull-policy",
+            f"chart platformAgent.deployment.image.pullPolicy is {chart}, "
+            f"{CR_TEMPLATE.relative_to(REPO)} sets {match.group(1)}",
+        )
+
+
 def check_litellm_replicas(f: Failures) -> None:
     kustomize = read(LITELLM_DEPLOYMENT)
     match = re.search(r"^\s*replicas:\s*(\d+)", kustomize, re.M)
@@ -441,6 +504,7 @@ CHECKS = (
     check_identifiers,
     check_kms_names,
     check_backup_plan,
+    check_agent_pull_policy,
     check_litellm_replicas,
 )
 

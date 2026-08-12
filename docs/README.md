@@ -153,14 +153,6 @@ identifier appears, add its source here.
 | Hindsight endpoint (`HINDSIGHT_API_URL`, derived from the namespace) | `k8s-operator/internal/controller/platformagent_manifests.go` |
 | Admission webhook server port (`--webhook-port` default) | `DefaultPort` in `k8s-operator/internal/webhook/platformagent_webhook.go` |
 
-Where two of those sources state the _same_ identifier — the chart and the
-kustomize base both pinning the LiteLLM image, Terraform and
-`provision_04_gcp_iam.sh` both listing the agent's IAM roles —
-`scripts/check_iac_parity.py` (`make iac-parity-check`) fails CI when they
-disagree, and the `review-iac-parity` skill covers the structural drift no
-scalar comparison can see. The provisioning scripts and `k8s-operator/config/`
-win when the surfaces conflict.
-
 ## 3. Documentation eras and status
 
 Not every document describes the same thing. When checking a doc against the

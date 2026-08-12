@@ -12,50 +12,41 @@ spec:
     clusterName: {{ required "platformAgent.harness.clusterName is required" .Values.platformAgent.harness.clusterName | quote }}
     location: {{ required "platformAgent.harness.location is required" .Values.platformAgent.harness.location | quote }}
     projectId: {{ required "platformAgent.harness.projectId is required" .Values.platformAgent.harness.projectId | quote }}
+    {{- /*
+      Every optional field below goes through kube-agents.compactFields, which
+      drops null and "" but keeps `false` and `0`, and which renders nothing at
+      all when the whole group is unset — so the parent key disappears with its
+      children instead of being guarded by a hand-maintained `or`.
+    */}}
     {{- $hermes := .Values.platformAgent.harness.hermes | default dict }}
     hermes:
       apiServerSecretRef:
         name: {{ .Values.platformAgent.credentials.secretName | quote }}
         key: API_SERVER_KEY
-      {{- /*
-        kindIs "invalid" is the null test: `with` would also skip an explicit
-        `false`, which is exactly the value someone setting these wants.
-      */}}
-      {{- if not (kindIs "invalid" $hermes.dashboardEnabled) }}
-      dashboardEnabled: {{ $hermes.dashboardEnabled }}
-      {{- end }}
-      {{- if not (kindIs "invalid" $hermes.pluginsDebug) }}
-      pluginsDebug: {{ $hermes.pluginsDebug }}
-      {{- end }}
-      {{- with $hermes.agentHome }}
-      agentHome: {{ . | quote }}
+      {{- with include "kube-agents.compactFields" (dict
+            "dashboardEnabled" $hermes.dashboardEnabled
+            "pluginsDebug" $hermes.pluginsDebug
+            "agentHome" $hermes.agentHome) }}
+      {{- . | nindent 6 }}
       {{- end }}
     {{- $memory := .Values.platformAgent.harness.memory | default dict }}
-    {{- if or (not (kindIs "invalid" $memory.enabled)) (not (kindIs "invalid" $memory.userProfileEnabled)) $memory.provider }}
+    {{- with include "kube-agents.compactFields" (dict
+          "memoryEnabled" $memory.enabled
+          "provider" $memory.provider
+          "userProfileEnabled" $memory.userProfileEnabled) }}
     memory:
-      {{- if not (kindIs "invalid" $memory.enabled) }}
-      memoryEnabled: {{ $memory.enabled }}
-      {{- end }}
-      {{- with $memory.provider }}
-      provider: {{ . | quote }}
-      {{- end }}
-      {{- if not (kindIs "invalid" $memory.userProfileEnabled) }}
-      userProfileEnabled: {{ $memory.userProfileEnabled }}
-      {{- end }}
+      {{- . | nindent 6 }}
     {{- end }}
   deployment:
     image: {{ .Values.platformAgent.deployment.image.repository | quote }}
     tag: {{ .Values.platformAgent.deployment.image.tag | default .Chart.AppVersion | quote }}
     imagePullPolicy: {{ .Values.platformAgent.deployment.image.pullPolicy }}
     {{- $availability := .Values.platformAgent.deployment.availability | default dict }}
-    {{- if or (not (kindIs "invalid" $availability.replicas)) $availability.runtimeClassName }}
+    {{- with include "kube-agents.compactFields" (dict
+          "replicas" $availability.replicas
+          "runtimeClassName" $availability.runtimeClassName) }}
     availability:
-      {{- if not (kindIs "invalid" $availability.replicas) }}
-      replicas: {{ $availability.replicas }}
-      {{- end }}
-      {{- with $availability.runtimeClassName }}
-      runtimeClassName: {{ . | quote }}
-      {{- end }}
+      {{- . | nindent 6 }}
     {{- end }}
   security:
     serviceAccountName: {{ .Values.platformAgent.security.serviceAccountName | quote }}

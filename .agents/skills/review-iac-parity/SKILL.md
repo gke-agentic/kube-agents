@@ -43,7 +43,9 @@ Anything else that differs is drift until someone documents otherwise — and do
 make iac-parity-check
 ```
 
-`scripts/check_iac_parity.py` compares the scalar values two surfaces must literally agree on: image tags and replica counts, LiteLLM model aliases and per-provider default models, the registry prefix, the IAM role bundles, GSA/KSA/namespace/topic identifiers, KMS key names, and the backup-plan defaults. Its failures are always Blocking and always precise — start there, and do not re-derive by hand what it already told you.
+`scripts/check_iac_parity.py` compares the scalar values two surfaces must literally agree on: image tags and replica counts, the agent's `imagePullPolicy`, LiteLLM model aliases and per-provider default models, the registry prefix, the IAM role bundles, GSA/KSA/namespace/topic identifiers, KMS key names, and the backup-plan defaults. Its failures are always Blocking and always precise — start there, and do not re-derive by hand what it already told you.
+
+Its extractors have their own tests (`scripts/test_check_iac_parity.py`, run by `make test-python`). Extend them alongside any new check: the failure that matters is not a parser that stops matching — that exits loudly — but one that matches the wrong text and reports parity across surfaces that have drifted.
 
 It is a floor, not a ceiling. It knows nothing about structure: a resource one surface creates and another does not, a variable that exists but is never wired into the chart values, a flag added to a `gcloud` call. That is the rest of this procedure.
 

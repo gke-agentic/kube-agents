@@ -21,9 +21,11 @@ resource "google_gke_backup_backup_plan" "this" {
       namespaces = var.selected_namespaces
     }
 
-    # A CMEK key cannot be removed from an existing plan once set (the script
-    # warns and preserves it rather than trying); clearing this forces
-    # replacement of the plan.
+    # Set this once or not at all. Clearing it on a plan that already holds
+    # backups does not quietly swap the encryption over: the delete half of the
+    # replacement is refused while backups exist (see the README's Teardown
+    # section), so the apply stops partway. provision_12 sidesteps the same
+    # problem by warning and preserving the existing key rather than trying.
     dynamic "encryption_key" {
       for_each = var.encryption_key == "" ? [] : [var.encryption_key]
       content {

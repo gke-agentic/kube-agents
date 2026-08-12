@@ -124,7 +124,11 @@ platformAgent:
     image:
       repository: ghcr.io/gke-labs/kube-agents/platform-agent
       tag: "" # defaults to Chart.appVersion
-      pullPolicy: IfNotPresent
+      # Always, matching platform-agent.yaml.template — and load-bearing for the
+      # Terraform composition, whose image_tag defaults to "latest": under
+      # IfNotPresent a node with a cached "latest" never picks up a new build.
+      # The parity check compares this against the template.
+      pullPolicy: Always
     availability:
       # Number of agent pods. `null` omits the field; the operator defaults to 1.
       replicas: null

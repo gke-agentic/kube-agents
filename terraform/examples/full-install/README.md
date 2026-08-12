@@ -118,7 +118,14 @@ backups are billed per backed-up pod and per GB of snapshot storage.
 Backups include Kubernetes Secrets and persistent volume data, so the agent's
 credentials are inside every snapshot: restrict backup/restore IAM to
 administrators already allowed to read them, and set `backup_encryption_key`
-for CMEK. A CMEK key cannot later be removed from an existing plan.
+for CMEK.
+
+Turning the plan back off is not symmetric with turning it on: a BackupPlan
+cannot be deleted while it still owns backups, so `terraform destroy` — and
+setting `enable_gke_backup_plan = false` again, and changing
+`backup_encryption_key` — fails on that resource until the backups are purged
+by hand. The [module README](../../modules/gke-backup-plan/README.md#teardown-is-not-symmetric)
+has the commands.
 
 ### Google Chat and GitHub integrations
 

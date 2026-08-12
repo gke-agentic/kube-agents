@@ -166,9 +166,15 @@ provisioning scripts substitute into
 [`platform-agent.yaml.template`](../../k8s-operator/scripts/platform-agent.yaml.template),
 so a chart install can reach the same CR as a script install. Each one defaults
 to `null`/`""`, which **omits** the field and lets the CRD's own default apply
-— setting `false` is therefore distinct from leaving it unset.
+— setting `false` is therefore distinct from leaving it unset, and `replicas: 0`
+means zero rather than unset.
 
-Two of them have no Terraform or chart-side infrastructure behind them:
+`platformAgent.deployment.image.pullPolicy` defaults to `Always`, matching the
+same template. Under `IfNotPresent` a node that has already cached the tag never
+picks up a rebuild, which is the normal case for the Terraform composition's
+default `image_tag = "latest"`.
+
+Two knobs have no Terraform or chart-side infrastructure behind them:
 
 - `deployment.availability.runtimeClassName: gvisor` needs the GKE Sandbox node
   pool that [`provision_02_gvisor_nodepool.sh`](../../k8s-operator/scripts/provision_02_gvisor_nodepool.sh)
