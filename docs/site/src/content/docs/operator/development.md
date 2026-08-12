@@ -28,6 +28,8 @@ Generated CRDs land in `config/crd/bases/`; RBAC in `config/rbac/`; webhook conf
 
 `make build`, `make run`, and `make test` all run `manifests`, `generate`, `fmt`, and `vet` first, so generated code and manifests stay in sync automatically.
 
+`make install`, `make uninstall`, and `make deploy` deliberately do not. They apply the manifests exactly as committed, so a deploy ships what is in git rather than whatever the local tree happens to regenerate, and it leaves no modified files behind. Run `make manifests` yourself after changing the API types — CI fails if the committed output is stale.
+
 ## Test
 
 ```bash
@@ -64,6 +66,16 @@ make dev-rebuild-agent ARGS="platform"
 ```
 
 This builds the Platform Agent image, pushes to Artifact Registry, and restarts the Deployment. First run creates a dev Artifact Registry repo; clean it up later with `make gcp-teardown-dev-artifact-registry`.
+
+### Building on a private worker pool
+
+Cloud Build runs on the project's default pool (2 vCPU) unless you point it elsewhere. To use a [private pool](https://cloud.google.com/build/docs/private-pools/private-pools-overview) with more CPU, export its full resource name:
+
+```bash
+export CLOUD_BUILD_WORKER_POOL=projects/PROJECT/locations/REGION/workerPools/POOL
+```
+
+`dev_rebuild_agent.sh` and `hack/ci-deploy.sh` both read this variable and pass `--worker-pool` (plus the pool's region, parsed from the name) to every `gcloud builds submit`. Leave it unset to keep the default pool. The pool must allow public egress, or builds fail pulling base images and packages.
 
 ## Integrations (Kustomize)
 
