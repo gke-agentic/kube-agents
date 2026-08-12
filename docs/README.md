@@ -153,6 +153,14 @@ identifier appears, add its source here.
 | Hindsight endpoint (`HINDSIGHT_API_URL`, derived from the namespace) | `k8s-operator/internal/controller/platformagent_manifests.go` |
 | Admission webhook server port (`--webhook-port` default) | `DefaultPort` in `k8s-operator/internal/webhook/platformagent_webhook.go` |
 
+Where two of those sources state the _same_ identifier — the chart and the
+kustomize base both pinning the LiteLLM image, Terraform and
+`provision_04_gcp_iam.sh` both listing the agent's IAM roles —
+`scripts/check_iac_parity.py` (`make iac-parity-check`) fails CI when they
+disagree, and the `review-iac-parity` skill covers the structural drift no
+scalar comparison can see. The provisioning scripts and `k8s-operator/config/`
+win when the surfaces conflict.
+
 ## 3. Documentation eras and status
 
 Not every document describes the same thing. When checking a doc against the
@@ -359,6 +367,7 @@ only what the title does not say.
 | `terraform/modules/kube-agents-iam/README.md` | Component README | Reusable Terraform module for provisioning the agent's GSA, Workload Identity binding, and read-only IAM role set; mutually exclusive with `provision_04_gcp_iam.sh`. | GCP IAM, Workload Identity, role grants | Infrastructure engineers |
 | `terraform/modules/chat-pubsub/README.md` | Component README | Reusable Terraform module for the Google Chat inbound backend: events topic/subscription, both service-identity registrations, publisher/subscriber IAM; mutually exclusive with `provision_05_gcp_gchat.sh`. | Chat Pub/Sub, service identities, IAM | Infrastructure engineers |
 | `terraform/modules/github-minter/README.md` | Component README | Reusable Terraform module for the GitHub token-minter identity: minter GSA, Workload Identity binding, import-only KMS signing key (PEM import stays with `provision_10_deploy_github_minter.sh`). | Minter GSA, KMS asymmetric key, WI | Infrastructure engineers |
+| `terraform/modules/gke-backup-plan/README.md` | Component README | Reusable Terraform module for the scheduled Backup for GKE BackupPlan covering the release namespace; mutually exclusive with `provision_12_gke_backup_plan.sh`, and opt-in in both paths for cost reasons. | BackupPlan, retention, CMEK, cost | Infrastructure engineers |
 | `tests/e2e/README.md` | Component README | The pytest E2E suite for the Google Chat integration and its hybrid auth flow (service-account posting + test-account polling via Pub/Sub event injection). | Hybrid auth, Pub/Sub injection, CI setup | CI maintainers |
 
 ## 5. Keeping this map fresh
