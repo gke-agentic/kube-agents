@@ -12,13 +12,16 @@ same cluster, service accounts, and IAM bindings.
   destroy), including the Cloud KMS API for GKE database encryption and the Chat
   API when Google Chat is enabled.
 - A GKE Autopilot cluster ([`gke-cluster`](../../modules/gke-cluster) module)
-  with Workload Identity and Cloud KMS database encryption (CMEK) enabled, and
-  the `kube-agents-host=true` discovery label applied.
+  with Workload Identity, Cloud KMS database encryption (CMEK), and the Backup
+  for GKE agent enabled, and the `kube-agents-host=true` discovery label
+  applied.
+- Optionally (`enable_gke_backup_plan = true`) a scheduled
+  [`gke-backup-plan`](../../modules/gke-backup-plan) for the release namespace.
 - The agent's GCP identity ([`kube-agents-iam`](../../modules/kube-agents-iam)
   module): the `kubeagents-platform-gsa` service account, its read-only
   project roles, and the Workload Identity binding to the
-  `kubeagents-platform-agent` KSA (see [IAM roles](#iam-roles-project_roles)
-  below).
+  `kubeagents-platform-agent` KSA (see
+  [IAM roles](#iam-roles-permission_set-and-project_roles) below).
 - Optionally (`enable_google_chat = true`) the Google Chat backend
   ([`chat-pubsub`](../../modules/chat-pubsub) module): Pub/Sub topic,
   subscription, and Chat integration wiring.
@@ -82,23 +85,40 @@ a published image tag — so the chart's usual tag defaulting cannot work here
 (see the [chart README](../../../charts/kube-agents/README.md)). `latest` is
 fine for evaluation; pin a `vX.Y.Z` release tag for production.
 
-### IAM roles (`project_roles`)
+### IAM roles (`permission_set` and `project_roles`)
 
-When `project_roles` is not set, the agent's service account gets the
-**read-only permission set** — verify the exact list in the
-`project_roles` variable default in
-[`terraform/modules/kube-agents-iam/variables.tf`](../../modules/kube-agents-iam/variables.tf),
-which mirrors the provisioning scripts' `read-only` set (the scripts' own
-default; source: `read_only_roles` in
-[`k8s-operator/scripts/provision_04_gcp_iam.sh`](../../../k8s-operator/scripts/provision_04_gcp_iam.sh)).
+`permission_set` names one of the bundles
+[`k8s-operator/scripts/provision_04_gcp_iam.sh`](../../../k8s-operator/scripts/provision_04_gcp_iam.sh)
+grants, using the same vocabulary as the scripts' `PLATFORM_AGENT_PERMISSION_SET`:
 
-To grant a different set, set `project_roles` explicitly in your
-`terraform.tfvars` — for the scripts' `gke-admin` equivalent, copy the
-`gke_admin_roles` list from `provision_04_gcp_iam.sh` rather than typing it
-from memory. `project_roles = []` grants nothing and leaves IAM to you (the
-agent fails every GCP call until an equivalent set exists). Deliberately no
-admin list is pre-staged in `terraform.tfvars.example` — widening access
-should be an explicit, reviewed choice.
+| `permission_set`      | Roles granted                                           |
+| --------------------- | ------------------------------------------------------- |
+| `read-only` (default) | `local.read_only_roles` in [`main.tf`](main.tf)         |
+| `gke-admin`           | `local.gke_admin_roles` in [`main.tf`](main.tf)         |
+| `custom`              | whatever `project_roles` lists — setting it is required |
+
+Both lists are copied verbatim from the script and are the values the parity
+check compares; read them there rather than from this page.
+
+`project_roles` still wins when set, whatever `permission_set` says, so an
+existing configuration keeps the roles it had. `project_roles = []` grants
+nothing and leaves IAM to you (the agent fails every GCP call until an
+equivalent set exists). Deliberately no admin list is pre-staged in
+`terraform.tfvars.example` — widening access should be an explicit, reviewed
+choice.
+
+### Backups
+
+`enable_backup_agent` (default `true`) turns on the Backup for GKE addon,
+matching the cluster `provision_01_gcp_cluster.sh` creates. It costs nothing on
+its own. `enable_gke_backup_plan = true` then adds the scheduled plan that
+`provision_12_gke_backup_plan.sh` creates — opt-in in both paths, because
+backups are billed per backed-up pod and per GB of snapshot storage.
+
+Backups include Kubernetes Secrets and persistent volume data, so the agent's
+credentials are inside every snapshot: restrict backup/restore IAM to
+administrators already allowed to read them, and set `backup_encryption_key`
+for CMEK. A CMEK key cannot later be removed from an existing plan.
 
 ### Google Chat and GitHub integrations
 
@@ -108,9 +128,12 @@ with the created topic/subscription — restrict access with
 `google_chat_allowed_users` (empty = everyone).
 
 Set `github_repo` to wire the agent's GitOps target repository
-(`spec.integration.github.gitRepo`). Slack can be enabled directly through
-chart values (`platformAgent.integration.slack.*`) once the Slack tokens are
-present in the credentials Secret.
+(`spec.integration.github.gitRepo`).
+
+`enable_slack = true` writes `slack_bot_token` / `slack_app_token` into the
+credentials Secret and turns on the CR's `slack` section, the same pair
+`provision_06_slack.sh` collects. Slack needs no GCP resources, so this is
+purely configuration — the Slack app itself is a manual step (below).
 
 **Manual steps that no IaC can perform** — canonical walkthrough:
 [INSTALL.md § Enable Google Chat & Slack Integrations](../../../INSTALL.md#step-5-enable-google-chat--slack-integrations-manual-required-steps):
@@ -123,9 +146,9 @@ present in the credentials Secret.
   first contact, optionally approve the pairing code via
   `hermes pairing approve google_chat <CODE>` in the gateway pod.
 - **Slack:** in the Slack app console enable Socket Mode and grant the bot
-  scopes listed in the walkthrough, then put `SLACK_BOT_TOKEN` /
-  `SLACK_APP_TOKEN` into the credentials Secret; pairing approval works the
-  same way (`hermes pairing approve slack <CODE>`).
+  scopes listed in the walkthrough, then pass the resulting tokens as
+  `slack_bot_token` / `slack_app_token`; pairing approval works the same way
+  (`hermes pairing approve slack <CODE>`).
 
 ## Standalone use outside this repository
 
@@ -139,7 +162,8 @@ module "gke_cluster" {
 }
 ```
 
-(and likewise for `kube-agents-iam`, `chat-pubsub`, and `github-minter`), and
+(and likewise for `kube-agents-iam`, `chat-pubsub`, `github-minter`, and
+`gke-backup-plan`), and
 would install the chart from the OCI registry rather than a local path — see
 the [chart README](../../../charts/kube-agents/README.md).
 

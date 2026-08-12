@@ -49,8 +49,19 @@ variable "namespace" {
   default     = "kubeagents-system"
 }
 
+variable "permission_set" {
+  description = "Which of provision_04_gcp_iam.sh's role bundles the agent's service account gets: read-only, gke-admin, or custom (custom requires project_roles). Ignored when project_roles is set explicitly."
+  type        = string
+  default     = "read-only"
+
+  validation {
+    condition     = contains(["read-only", "gke-admin", "custom"], var.permission_set)
+    error_message = "permission_set must be one of read-only, gke-admin, or custom (the same values the provisioning scripts accept)."
+  }
+}
+
 variable "project_roles" {
-  description = "Project-level IAM roles granted to the agent's service account. Leave null to use the kube-agents-iam module's default read-only permission set; set to [] to grant nothing and manage roles externally."
+  description = "Project-level IAM roles granted to the agent's service account. Leave null to take the bundle permission_set names; set explicitly (including []) to manage the roles yourself, which overrides permission_set."
   type        = list(string)
   default     = null
 }
@@ -136,6 +147,61 @@ variable "google_chat_allowed_users" {
   default     = []
 }
 
+variable "google_chat_home_channel" {
+  description = "Google Chat space the agent posts unsolicited messages to (e.g. cron findings). Empty leaves it unset. Only used when enable_google_chat is true."
+  type        = string
+  default     = ""
+}
+
+variable "google_chat_mode" {
+  description = "Google Chat output verbosity: 'default' (quiet) or 'debug' (surfaces tool progress, memory reviews, and approval cards). Mirrors GOOGLE_CHAT_MODE."
+  type        = string
+  default     = "default"
+
+  validation {
+    condition     = contains(["default", "debug"], var.google_chat_mode)
+    error_message = "google_chat_mode must be 'default' or 'debug'."
+  }
+}
+
+variable "enable_slack" {
+  description = "Enable the agent's Slack integration. Slack needs no GCP resources — this only writes the bot/app tokens into the credentials Secret and turns on the CR's slack section. The Slack app itself (Socket Mode, bot scopes, workspace install) is a manual step; see INSTALL.md."
+  type        = bool
+  default     = false
+}
+
+variable "slack_bot_token" {
+  description = "SLACK_BOT_TOKEN (xoxb-...) stored in the credentials Secret. Only used when enable_slack is true."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "slack_app_token" {
+  description = "SLACK_APP_TOKEN (xapp-...) stored in the credentials Secret. Only used when enable_slack is true."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "slack_allowed_users" {
+  description = "Slack users allowed to talk to the agent (empty list = all users allowed). Only used when enable_slack is true."
+  type        = list(string)
+  default     = []
+}
+
+variable "slack_home_channel" {
+  description = "Slack channel ID the agent posts unsolicited messages to. Empty leaves it unset."
+  type        = string
+  default     = ""
+}
+
+variable "slack_home_channel_name" {
+  description = "Human-readable name of the Slack home channel. Empty leaves it unset."
+  type        = string
+  default     = ""
+}
+
 variable "github_repo" {
   description = "Target GitOps repository for the agent's GitHub integration (owner/repo or URL). Empty leaves the GitHub integration unconfigured. Independent of enable_github_minter, which only provisions the minter's GCP identity."
   type        = string
@@ -146,4 +212,34 @@ variable "enable_github_minter" {
   description = "Provision the GitHub token minter's GCP resources (service account, KMS key ring and signing key)"
   type        = bool
   default     = false
+}
+
+variable "enable_backup_agent" {
+  description = "Enable the Backup for GKE agent on the cluster (the BackupRestore addon). True matches the cluster provision_01_gcp_cluster.sh creates; it costs nothing until a BackupPlan targets the cluster, but it must be on before enable_gke_backup_plan can work."
+  type        = bool
+  default     = true
+}
+
+variable "enable_gke_backup_plan" {
+  description = "Create a scheduled BackupPlan for the release namespace (mirrors provision_12_gke_backup_plan.sh, which is likewise opt-in). Backups include Secrets and volume data and are billed per backed-up pod and per GB of snapshot storage."
+  type        = bool
+  default     = false
+}
+
+variable "backup_cron_schedule" {
+  description = "Cron schedule for automatic backups (5 fields). Only used when enable_gke_backup_plan is true."
+  type        = string
+  default     = "0 2 * * *"
+}
+
+variable "backup_retain_days" {
+  description = "How many days each backup is retained. Only used when enable_gke_backup_plan is true."
+  type        = number
+  default     = 30
+}
+
+variable "backup_encryption_key" {
+  description = "Optional Cloud KMS CryptoKey path encrypting the backups (projects/P/locations/L/keyRings/R/cryptoKeys/K). Empty uses Google-managed encryption. A CMEK key cannot later be removed from an existing plan."
+  type        = string
+  default     = ""
 }

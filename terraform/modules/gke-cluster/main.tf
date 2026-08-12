@@ -53,6 +53,18 @@ resource "google_container_cluster" "autopilot" {
     }
   }
 
+  # Backup for GKE. provision_01_gcp_cluster.sh creates its cluster with
+  # `--addons=...,BackupRestore`, so the agent is installed on a
+  # backup-capable cluster either way; the gke-backup-plan module (and
+  # provision_12_gke_backup_plan.sh) then schedules the backups themselves.
+  # The agent has to be enabled on the cluster before a BackupPlan can
+  # target it.
+  addons_config {
+    gke_backup_agent_config {
+      enabled = var.enable_backup_agent
+    }
+  }
+
   depends_on = [
     google_kms_crypto_key_iam_member.gke_kms_binding
   ]

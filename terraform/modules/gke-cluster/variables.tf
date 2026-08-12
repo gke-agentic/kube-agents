@@ -60,3 +60,16 @@ variable "kms_key_name" {
   type        = string
   default     = "k8s-secret-encryption-key"
 }
+
+variable "enable_backup_agent" {
+  description = <<-EOT
+    Whether to enable the Backup for GKE agent (the BackupRestore addon) on the
+    cluster. Defaults to true, matching the cluster
+    k8s-operator/scripts/provision_01_gcp_cluster.sh creates. Enabling the agent
+    costs nothing on its own — backups are only taken once a BackupPlan targets
+    the cluster (terraform/modules/gke-backup-plan). Requires
+    gkebackup.googleapis.com to be enabled on the project.
+  EOT
+  type        = bool
+  default     = true
+}

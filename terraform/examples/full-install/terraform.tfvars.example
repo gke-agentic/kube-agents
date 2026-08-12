@@ -52,3 +52,26 @@ api_server_key = "REPLACE_WITH_A_STRONG_RANDOM_KEY"
 
 # Optional GitHub token minter backend (GSA + KMS signing key).
 # enable_github_minter = true
+
+# Optional Slack integration. Needs no GCP resources: the tokens go into the
+# credentials Secret and the CR's slack section turns on. Creating the Slack
+# app (Socket Mode + bot scopes) stays manual — see the README.
+# enable_slack            = true
+# slack_bot_token         = "xoxb-..."
+# slack_app_token         = "xapp-..."
+# slack_allowed_users     = ["U01234567"]
+# slack_home_channel      = "C01234567"
+# slack_home_channel_name = "#kube-agents"
+
+# IAM. "read-only" (default) or "gke-admin" select the bundles
+# provision_04_gcp_iam.sh grants; "custom" requires project_roles. An explicit
+# project_roles list overrides permission_set either way.
+# permission_set = "read-only"
+
+# Optional scheduled backups of the release namespace. Off by default in both
+# install paths: Backup for GKE bills per backed-up pod and per GB of snapshot
+# storage, and the snapshots contain the agent's credentials Secret.
+# enable_gke_backup_plan = true
+# backup_cron_schedule   = "0 2 * * *"
+# backup_retain_days     = 30
+# backup_encryption_key  = "projects/my-gcp-project/locations/us-central1/keyRings/my-ring/cryptoKeys/my-key"
