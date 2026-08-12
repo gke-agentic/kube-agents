@@ -18,11 +18,14 @@ package controller
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
 
 	agentv1alpha1 "github.com/gke-labs/kube-agents/k8s-operator/api/v1alpha1"
@@ -216,32 +219,46 @@ func TestResolveDeploymentReplicasAndStrategy(t *testing.T) {
 }
 
 func TestResolveResources(t *testing.T) {
-	// 1. Default resources
+	// 1. Default resources — sized for kanban fan-out (see resolveResources).
 	defaults := resolveResources(nil)
+	cpuReq := defaults.Requests[corev1.ResourceCPU]
+	memReq := defaults.Requests[corev1.ResourceMemory]
+	if cpuReq.Cmp(resource.MustParse("1")) != 0 || memReq.Cmp(resource.MustParse("2Gi")) != 0 {
+		t.Errorf("unexpected default requests: %v", defaults.Requests)
+	}
 	cpuLim := defaults.Limits[corev1.ResourceCPU]
 	memLim := defaults.Limits[corev1.ResourceMemory]
-	if cpuLim.Cmp(resource.MustParse("2")) != 0 || memLim.Cmp(resource.MustParse("4Gi")) != 0 {
-		t.Errorf("unexpected default resources: %v", defaults)
+	if cpuLim.Cmp(resource.MustParse("3")) != 0 || memLim.Cmp(resource.MustParse("8Gi")) != 0 {
+		t.Errorf("unexpected default limits: %v", defaults.Limits)
 	}
 
-	// 2. Custom resources override
+	// A CPU limit above what a node can actually hand out is not headroom, it
+	// is a number that reads like headroom. The reference gVisor pool
+	// (e2-standard-4) advertises 3920m allocatable, so anything at or above 4
+	// cores is unreachable in the deployment this default is tuned for.
+	if cpuLim.MilliValue() > 3920 {
+		t.Errorf("default CPU limit %s exceeds the 3920m allocatable on the reference node pool", cpuLim.String())
+	}
+
+	// 2. Custom resources override. Deliberately not the defaults, so this
+	// still fails if the override path is dropped and defaults are returned.
 	customDep := &agentv1alpha1.DeploymentSpec{
 		Resources: &corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("1"),
+				corev1.ResourceCPU:    resource.MustParse("250m"),
 				corev1.ResourceMemory: resource.MustParse("3Gi"),
 			},
 			Limits: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("4"),
-				corev1.ResourceMemory: resource.MustParse("8Gi"),
+				corev1.ResourceCPU:    resource.MustParse("1500m"),
+				corev1.ResourceMemory: resource.MustParse("6Gi"),
 			},
 		},
 	}
 	res := resolveResources(customDep)
 	resCpuReq := res.Requests[corev1.ResourceCPU]
 	resCpuLim := res.Limits[corev1.ResourceCPU]
-	if resCpuReq.String() != "1" || resCpuLim.String() != "4" {
-		t.Errorf("expected custom resources 1 CPU / 4 CPU limit, got %v", res)
+	if resCpuReq.String() != "250m" || resCpuLim.String() != "1500m" {
+		t.Errorf("expected custom resources 250m request / 1500m limit, got %v", res)
 	}
 }
 
@@ -267,5 +284,126 @@ func TestMergeAnnotations(t *testing.T) {
 	// Test nil when both empty
 	if nilResult := mergeAnnotations(nil, nil); nilResult != nil {
 		t.Errorf("expected nil when both defaults and custom are nil, got %v", nilResult)
+	}
+}
+
+func TestInstanceLabel(t *testing.T) {
+	longName := strings.Repeat("a", 80)
+
+	tests := []struct {
+		name      string
+		namespace string
+		agentName string
+		expected  string
+	}{
+		{
+			name:      "short values are joined verbatim",
+			namespace: "kubeagents-system",
+			agentName: "platform-agent",
+			expected:  "kubeagents-system-platform-agent",
+		},
+		{
+			name:      "same name in a different namespace stays distinct",
+			namespace: "team-b",
+			agentName: "platform-agent",
+			expected:  "team-b-platform-agent",
+		},
+		{
+			name:      "over-long value is truncated to the label limit",
+			namespace: "ns",
+			agentName: longName,
+			expected:  "ns-" + strings.Repeat("a", maxLabelValueLength-3),
+		},
+		{
+			name:      "truncation does not leave a trailing separator",
+			namespace: strings.Repeat("n", 62),
+			agentName: "agent",
+			expected:  strings.Repeat("n", 62),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := instanceLabel(tt.namespace, tt.agentName)
+			if got != tt.expected {
+				t.Errorf("expected %q, got %q", tt.expected, got)
+			}
+			if len(got) > maxLabelValueLength {
+				t.Errorf("value %q exceeds the %d character label limit", got, maxLabelValueLength)
+			}
+			if errs := validation.IsValidLabelValue(got); len(errs) > 0 {
+				t.Errorf("value %q is not a valid label value: %v", got, errs)
+			}
+		})
+	}
+}
+
+func TestWithCommonLabels(t *testing.T) {
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-agent", Namespace: "kubeagents-system"},
+	}
+
+	t.Run("sets the recommended labels on an unlabelled object", func(t *testing.T) {
+		cm := &corev1.ConfigMap{}
+		withCommonLabels(cm, agent)
+
+		expected := map[string]string{
+			labelName:      "platform-agent",
+			labelInstance:  "kubeagents-system-my-agent",
+			labelPartOf:    "kube-agents",
+			labelManagedBy: fieldOwner,
+		}
+		if !reflect.DeepEqual(cm.Labels, expected) {
+			t.Errorf("expected %v, got %v", expected, cm.Labels)
+		}
+	})
+
+	t.Run("preserves selector-bearing labels the builders already set", func(t *testing.T) {
+		dep := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{
+					"app":     "my-agent-gateway",
+					labelName: "do-not-clobber",
+				},
+			},
+		}
+		withCommonLabels(dep, agent)
+
+		if dep.Labels["app"] != "my-agent-gateway" {
+			t.Errorf("expected the app label to survive, got %q", dep.Labels["app"])
+		}
+		if dep.Labels[labelName] != "do-not-clobber" {
+			t.Errorf("expected an existing recommended label to be left alone, got %q", dep.Labels[labelName])
+		}
+		if dep.Labels[labelPartOf] != "kube-agents" {
+			t.Errorf("expected the missing labels to be filled in, got %q", dep.Labels[labelPartOf])
+		}
+	})
+}
+
+// TestVersionedDefaultImage pins the wiring that lets a release build change the
+// default agent image tag via -ldflags "-X ...DefaultPlatformAgentVersion=vX.Y.Z":
+// overriding the variable must flow through defaultPlatformAgentImage() and the
+// credential-proxy sidecar derivation. Overriding (rather than asserting against
+// the current value) is what makes the test non-tautological — a hardcoded
+// ":latest" fallback would fail it.
+func TestVersionedDefaultImage(t *testing.T) {
+	t.Setenv(platformAgentImageEnvVar, "")
+	t.Setenv(credentialProxyImageEnvVar, "")
+
+	orig := DefaultPlatformAgentVersion
+	DefaultPlatformAgentVersion = "v9.9.9-test"
+	t.Cleanup(func() { DefaultPlatformAgentVersion = orig })
+
+	want := "ghcr.io/gke-labs/kube-agents/platform-agent:v9.9.9-test"
+	if got := defaultPlatformAgentImage(); got != want {
+		t.Errorf("defaultPlatformAgentImage() = %q, want %q — the injected version must flow through at call time", got, want)
+	}
+
+	// The credential-proxy sidecar must carry the same tag as the defaulted
+	// agent image, so a versioned release rolls both together.
+	wantSidecar := "ghcr.io/gke-labs/kube-agents/credential-proxy:v9.9.9-test"
+	if got := resolveCredentialProxyImage(nil); got != wantSidecar {
+		t.Errorf("resolveCredentialProxyImage(nil) = %q, want %q", got, wantSidecar)
 	}
 }

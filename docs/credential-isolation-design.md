@@ -19,9 +19,9 @@ Each PlatformAgent runs as one long-lived Pod with these managed containers:
 1. `platform-agent`: the untrusted agent sandbox.
 2. `platform-agent-dashboard`: the optional local dashboard.
 3. `fluent-bit`: log forwarding.
-4. `event-watcher`: cluster-event forwarding using a non-secret internal key.
-5. `envoy-credential-proxy`: Envoy plus the credentialed command and chat
-   runtime.
+4. `envoy-credential-proxy`: Envoy, the credentialed command and chat runtime,
+   and the `k8s-event-watcher`, which forwards cluster events using a
+   non-secret internal key.
 
 The sandbox calls wrappers for `gcloud`, `kubectl`, `gh`, and `git`. Wrappers
 send a structured argument vector to Envoy at `127.0.0.1:8765`. Envoy forwards
@@ -30,9 +30,10 @@ Chat use the same local relay.
 
 Only trusted sidecars receive projected Kubernetes ServiceAccount (KSA) tokens.
 The credential sidecar receives secret environment variables, credential state,
-and its identity token. The event watcher receives a separate Kubernetes-API
-token, CA, and namespace projection. Neither token is mounted in the agent or
-dashboard containers. The credential sidecar also authenticates callers of the
+and its identity token. It also receives a second, separately-audienced
+Kubernetes-API token, CA, and namespace projection, which the event watcher it
+hosts uses to reach the management cluster. Neither token is mounted in the
+agent or dashboard containers. The credential sidecar also authenticates callers of the
 PlatformAgent API before forwarding requests with a non-secret internal
 sentinel. Pod-wide automatic KSA token mounting is disabled.
 
@@ -120,23 +121,59 @@ it.
 
 ## Credential Placement
 
-| Data                            | Sandbox     | Credential sidecar        |
-| ------------------------------- | ----------- | ------------------------- |
-| `spec.deployment.env`           | No          | Yes                       |
-| Slack tokens                    | No          | Yes, Secret-backed env    |
-| PlatformAgent external API key  | No          | Yes, Secret-backed env    |
-| Automatic KSA token mount       | Disabled    | Disabled                  |
-| Explicit projected KSA token    | Not mounted | Read-only, one-hour token |
-| gcloud/kubectl configuration    | No          | Private `emptyDir`        |
-| GitHub installation token/cache | No          | Private `emptyDir`        |
-| Agent workspace                 | Yes         | Yes, for proxied commands |
+| Data                             | Sandbox                | Credential sidecar        |
+| -------------------------------- | ---------------------- | ------------------------- |
+| `spec.deployment.env`            | No                     | Yes                       |
+| Slack tokens                     | No                     | Yes, Secret-backed env    |
+| PlatformAgent external API key   | No                     | Yes, Secret-backed env    |
+| Session KV API key and HMAC salt | Yes, Secret-backed env | Yes, API key only         |
+| Automatic KSA token mount        | Disabled               | Disabled                  |
+| Explicit projected KSA token     | Not mounted            | Read-only, one-hour token |
+| gcloud/kubectl configuration     | No                     | Private `emptyDir`        |
+| GitHub installation token/cache  | No                     | Private `emptyDir`        |
+| Agent workspace                  | Yes                    | Yes, for proxied commands |
+
+### The loopback-only exception
+
+`SESSION_KV_API_KEY` and `SESSION_KV_SALT` are the only Secret-backed values the
+sandbox receives, and they are the exception that proves the rule rather than a
+relaxation of it. Both are pod-scoped: they authenticate and pseudonymise
+nothing outside this Pod, and neither grants access to any external system, so
+an agent that reads them out of its own environment gains nothing it did not
+already have.
+
+They cannot go behind the proxy, because the sandbox is not the client — it is
+the server. `session_kv_server.py` runs in the sandbox and binds
+`127.0.0.1:8699`; its callers are the event watcher in the credential sidecar,
+the Platform MCP server, and the `incident_context` plugin. The key exists so
+that the server can reject a request that did not come from one of them, which
+means the server has to hold it. The salt is read by the Chat Agent plugins,
+which also run in the sandbox, before any identity is written to disk; hashing
+it anywhere else would mean shipping the plaintext address out of the sandbox
+first, which is exactly what it exists to prevent.
+
+Deliberately _not_ `API_SERVER_KEY`: that value is the non-secret loopback
+sentinel `cluster-internal-trusted`, so reusing it here would authenticate
+nothing. Both keys are optional in the CRD, so a Secret without them yields
+containers without the variables rather than a pod that will not start. What
+that costs is worth stating precisely, because one of the three consequences is
+not a degradation: the `k8s-event-watcher` in the credential sidecar
+authenticates to the Session KV server with `SESSION_KV_API_KEY` and treats an
+empty value as fatal, so it exits on every start and **no cluster events are
+watched at all** — silently, since the container stays Ready and no probe covers
+the watcher. The other two are degradations: the Session KV server refuses every
+authenticated request with a 503 and says why, and identity hashing falls back
+to a per-process random salt with one warning.
 
 The projected token uses the audience `kubeagents-credential-proxy`, expires
 after one hour, and is mounted only at
 `/var/run/secrets/kubeagents/serviceaccount/token` in the credential sidecar.
 The event watcher has a separate one-hour token with the Kubernetes API's
-default audience, plus the cluster CA and Pod namespace, at the conventional
-in-cluster path. It is not shared with the sandbox or dashboard.
+default audience, plus the cluster CA and Pod namespace, mounted at the
+conventional in-cluster path in the same credential sidecar. Two differently
+audienced tokens therefore sit side by side there: the proxy's own, which the
+Kubernetes API will not accept, and the watcher's, which it will. Neither is
+shared with the sandbox or dashboard.
 Deleting a default token during startup is intentionally not used: projected
 tokens rotate, and mount-time exclusion is reliable.
 
@@ -172,6 +209,70 @@ an interim policy mechanism, not a general shell parser. If the policy grows
 beyond these narrowly defined commands, it should use tool-specific argument
 parsers over the structured argument vector.
 
+### Agent-supplied kubeconfigs
+
+A Cluster Agent profile pins itself to one cluster through `KUBECONFIG`, and
+that file lives on the shared workspace volume, which the credential sidecar
+also mounts. The sandbox can therefore choose the document a credentialed
+`kubectl` opens.
+
+A kubeconfig is executable configuration rather than data. Left unconstrained it
+offers the sandbox several ways past the boundary this design establishes:
+
+- `users[].user.exec.command` and `users[].user.auth-provider.config.cmd-path`
+  run a program inside the credential sidecar, next to the credentials;
+- `clusters[].cluster.server` and `proxy-url` choose where the access token
+  minted by `gke-gcloud-auth-plugin` is sent, with `certificate-authority-data`
+  supplied by the same author so TLS still validates;
+- `users[].user.tokenFile` reads a sidecar file of the author's choosing and
+  sends its contents as the bearer token; and
+- `insecure-skip-tls-verify` removes the remaining obstacle to the above.
+
+None of this is visible to the deny policy described above, which matches
+against the argument vector — the argv is only ever `kubectl get pods`.
+Validating the document instead would mean maintaining a denylist over a format
+that keeps growing, and would not hold regardless: the sandbox can rewrite the
+file between the check and the open.
+
+The proxy therefore treats an agent-supplied kubeconfig as a **name, not as
+content**. This is possible because the sandbox never legitimately authors one.
+Every kubeconfig the system uses is produced by `gcloud container clusters
+get-credentials`, which already runs in the sidecar. The proxy reads exactly one
+string out of the caller's file — `current-context` — accepts it only if it is a
+well-formed `gke_<project>_<location>_<cluster>` name, and regenerates the
+kubeconfig itself into a directory backed by a sidecar-only `emptyDir`. That
+regenerated file is what every proxied command runs against. No field the
+sandbox wrote is ever interpreted, and there is no check-then-open window,
+because the sandbox never had a handle on the document that is opened.
+
+The same substitution is applied to a `--kubeconfig` flag in the argument
+vector, which `kubectl` prefers over the environment; covering only the
+environment would leave the flag as an equivalent path. `get-credentials` is
+handled as the one command permitted to author a kubeconfig: it writes into the
+sidecar's own directory, the result is filed under the context it selects, and a
+copy is then written to the workspace path the caller asked for. The visible pin
+that profile scaffolding records and the Cluster Agent preflight inspects
+therefore still exists, without being what a later command opens.
+
+Consequences:
+
+- Naming a cluster is not additional authority. `get-credentials` is bound by
+  the same Workload Identity the sidecar already holds, so the sandbox can only
+  name clusters that identity could already reach.
+- Only GKE contexts are supported, because the context name is what makes
+  regeneration possible. A pin the proxy cannot regenerate from — no
+  `current-context`, a non-GKE context name, or a merged `path1:path2` list — is
+  rejected with `400` rather than honored.
+- A cache miss costs one `get-credentials`. The common paths warm the cache
+  themselves, since profile scaffolding and context switching both begin with
+  that command.
+- `current-context` is read with a real YAML parser, so a valid kubeconfig in
+  any legal spelling is recognized, but deliberately with PyYAML's pure-Python
+  `safe_load`. The C loader recurses in C and terminates the sidecar with
+  `SIGSEGV` on a deeply nested document, where the Python loader raises a
+  catchable error. The input is chosen by the sandbox, so this is a
+  denial-of-service boundary rather than a performance choice.
+
 ### Chat
 
 Slack and Google Chat adapters send credential-free request payloads to Envoy.
@@ -205,9 +306,9 @@ only command output, never a mounted Git credential file.
 - The Pod uses the configured PlatformAgent KSA for the credential sidecar's
   Workload Identity.
 - `automountServiceAccountToken: false` applies to the Pod.
-- Separate projected ServiceAccount token volumes are mounted only by the
-  credential sidecar and event watcher; neither is mounted by the agent or
-  dashboard containers.
+- Two separately projected ServiceAccount token volumes are mounted only by the
+  credential sidecar — its own, and the event watcher's; neither is mounted by
+  the agent or dashboard containers.
 - Secret and credential-state volumes are mounted only by the credential
   sidecar.
 - The sandbox and sidecar run non-root, drop all Linux capabilities, disallow
@@ -254,7 +355,10 @@ Costs:
 
 - no hard network or identity boundary between the sandbox and sidecar;
 - a custom command-forwarding protocol must be maintained;
-- interactive, streaming, and file-based CLI behavior is limited; and
+- interactive, streaming, and file-based CLI behavior is limited;
+- configuration files the sandbox supplies to a credentialed command must be
+  regenerated rather than read, which bounds them to what the sidecar can
+  reproduce — for kubeconfigs, GKE contexts only; and
 - each new service needs an explicit proxy integration and policy.
 
 If deliberate metadata or Pod-identity access becomes in scope, this design
@@ -265,8 +369,10 @@ per-container network identity.
 
 CI and deployment tests should assert that:
 
-1. the sandbox has no Secret-backed env, `spec.deployment.env`, secret volume,
-   credential-state volume, or ServiceAccount token mount;
+1. the sandbox has no `spec.deployment.env`, secret volume, credential-state
+   volume, or ServiceAccount token mount, and no Secret-backed env other than
+   the two pod-scoped Session KV values named above — the assertion enumerates
+   them, so a third one cannot be added without amending this list;
 2. only the credential sidecar mounts proxy identity/state, and only the event
    watcher mounts its Kubernetes-API token projection;
 3. only the credential sidecar receives Slack tokens and deployment env;
@@ -274,7 +380,11 @@ CI and deployment tests should assert that:
 5. Envoy can reach the Unix-socket backend and `/healthz` reflects both;
 6. unsupported executables, raw shell requests, and blocked disclosure commands
    fail closed;
-7. the old proxy Deployment and Service are absent after reconciliation; and
-8. the external PlatformAgent API key is accepted by the sidecar and replaced
+7. a command given an agent-authored kubeconfig runs against a regenerated one,
+   with no `exec`, `server`, `proxy-url`, or `tokenFile` value from the supplied
+   document reaching it, whether it arrives through `KUBECONFIG` or
+   `--kubeconfig`;
+8. the old proxy Deployment and Service are absent after reconciliation;
+9. the external PlatformAgent API key is accepted by the sidecar and replaced
    before forwarding to the loopback-only sandbox API; and
-9. Pod readiness fails when either Envoy or the credential runtime fails.
+10. Pod readiness fails when either Envoy or the credential runtime fails.

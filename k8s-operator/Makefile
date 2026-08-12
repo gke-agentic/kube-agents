@@ -1,5 +1,10 @@
+# VERSION is the release version injected into the binary and, by default, the image tag.
+VERSION ?= latest
 # Image URL to use all building/pushing image targets
-IMG ?= ghcr.io/gke-labs/kube-agents/k8s-operator:latest
+IMG ?= ghcr.io/gke-labs/kube-agents/k8s-operator:$(VERSION)
+# Unlike the Dockerfile's ldflags, -s -w is deliberately omitted here so locally
+# built binaries keep their symbol tables for dlv debugging.
+LDFLAGS ?= -ldflags "-X github.com/gke-labs/kube-agents/k8s-operator/internal/controller.DefaultPlatformAgentVersion=$(VERSION)"
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)
 
@@ -13,26 +18,34 @@ endif
 # CONTAINER_TOOL defines the container tool to be used for building images.
 CONTAINER_TOOL ?= docker
 
+# Prefer an installed `prettier` over `npx prettier`, same as the root
+# Makefile: npx re-resolves the package against the npm registry on every
+# invocation, so behind an authenticated mirror it can fail even though
+# prettier is installed and on PATH. CI installs the pinned version before
+# running the manifests gate (see .github/workflows/k8s-operator-test.yml).
+PRETTIER := $(shell command -v prettier 2>/dev/null || echo npx prettier)
+
 # Setting SHELL to bash allows bash commands to be executed by recipes.
 # Options are set to exit when a recipe line exits non-zero or a piped command fails.
 SHELL = /usr/bin/env bash -o pipefail
 .SHELLFLAGS = -ec
 
 .PHONY: all
-all: build
+all: build ## Default target: build the manager binary.
 
 ##@ General
 
 .PHONY: help
 help: ## Display this help.
-	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z_0-9-]+:.*?##/ { printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
+	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z_0-9][a-zA-Z_0-9 -]*:.*##/ { printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
 
 ##@ Development
 
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
-	-npx prettier --write "config/crd/bases/*.yaml" "config/rbac/*.yaml" "config/webhook/*.yaml"
+	@$(PRETTIER) --write "config/crd/bases/*.yaml" "config/rbac/*.yaml" "config/webhook/*.yaml" \
+		|| echo "WARNING: prettier did not run (not installed, or npm registry unreachable?). The regenerated YAML is left unformatted, which CI's prettier check will reject. Re-run prettier --write over config/ once prettier is available." >&2
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
@@ -53,20 +66,21 @@ test: manifests generate fmt vet setup-envtest test-python ## Run tests.
 .PHONY: test-python
 test-python: ## Run Python tests.
 	cd internal/controller && python3 -m unittest test_leader_elect.py
+	cd ../agents/platform/scripts && python3 -m unittest test_slack_relay_patch.py test_credential_proxy.py test_sitecustomize.py
 
 ##@ Build
 
 .PHONY: build
 build: manifests generate fmt vet ## Build manager binary.
-	go build -o bin/manager cmd/main.go
+	go build $(LDFLAGS) -o bin/manager cmd/main.go
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
-	go run ./cmd/main.go
+	go run $(LDFLAGS) ./cmd/main.go
 
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${IMG} .
+	$(CONTAINER_TOOL) build --build-arg VERSION=$(VERSION) -t ${IMG} .
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
@@ -78,20 +92,30 @@ ifndef ignore-not-found
   ignore-not-found = false
 endif
 
+# Deployment targets apply the manifests as committed. They deliberately do NOT
+# depend on `manifests`: regenerating during a deploy means applying something
+# that may differ from what is in git, and it rewrites tracked files as a side
+# effect of shipping. Run `make manifests` yourself after changing the API types;
+# CI fails if the committed output is stale.
+
 .PHONY: install
-install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
+install: kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
 	@out="$$( $(KUSTOMIZE) build config/crd 2>/dev/null || true )"; \
 	if [ -n "$$out" ]; then echo "$$out" | kubectl apply --server-side -f -; else echo "No CRDs to install; skipping."; fi
 
 .PHONY: uninstall
-uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
+uninstall: kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	@out="$$( $(KUSTOMIZE) build config/crd 2>/dev/null || true )"; \
 	if [ -n "$$out" ]; then echo "$$out" | kubectl delete --ignore-not-found=$(ignore-not-found) -f -; else echo "No CRDs to delete; skipping."; fi
 
+# The image is pinned in a throwaway copy of config/ so that `kustomize edit`
+# does not rewrite the tracked config/manager/kustomization.yaml.
 .PHONY: deploy
-deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
-	$(KUSTOMIZE) build config/default | kubectl apply --server-side -f -
+deploy: kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
+	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
+	cp -R config "$$tmp/config"; \
+	(cd "$$tmp/config/manager" && $(KUSTOMIZE) edit set image controller=${IMG}); \
+	$(KUSTOMIZE) build "$$tmp/config/default" | kubectl apply --server-side -f -
 
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
@@ -123,11 +147,11 @@ undeploy-inference-replay: kustomize ## Undeploy Inference Replay proxy integrat
 
 .PHONY: deploy-github
 deploy-github: kustomize ## Deploy GitHub integration.
-	$(KUSTOMIZE) build config/integrations/github | envsubst '$$NAMESPACE $$PROJECT_ID $$REGION $$CLUSTER_NAME $$KMS_KEYRING $$KMS_KEY $$KMS_KEY_VERSION $$GITHUB_ORG $$GITHUB_REPO $$GITHUB_MINTER_KSA_NAME $$GITHUB_MINTER_GSA_NAME $$PLATFORM_AGENT_GSA_NAME' | kubectl apply -n $${NAMESPACE:-kubeagents-system} -f -
+	$(KUSTOMIZE) build config/integrations/github | envsubst '$$NAMESPACE $$PROJECT_ID $$REGION $$CLUSTER_NAME $$KMS_KEYRING $$KMS_KEY $$KMS_KEY_VERSION $$KMS_LOCATION $$GITHUB_ORG $$GITHUB_REPO $$GITHUB_MINTER_KSA_NAME $$GITHUB_MINTER_GSA_NAME $$PLATFORM_AGENT_GSA_NAME' | kubectl apply -n $${NAMESPACE:-kubeagents-system} -f -
 
 .PHONY: undeploy-github
 undeploy-github: kustomize ## Undeploy GitHub integration.
-	$(KUSTOMIZE) build config/integrations/github | envsubst '$$NAMESPACE $$PROJECT_ID $$REGION $$CLUSTER_NAME $$KMS_KEYRING $$KMS_KEY $$KMS_KEY_VERSION $$GITHUB_ORG $$GITHUB_REPO $$GITHUB_MINTER_KSA_NAME $$GITHUB_MINTER_GSA_NAME $$PLATFORM_AGENT_GSA_NAME' | kubectl delete --ignore-not-found=$(ignore-not-found) -n $${NAMESPACE:-kubeagents-system} -f -
+	$(KUSTOMIZE) build config/integrations/github | envsubst '$$NAMESPACE $$PROJECT_ID $$REGION $$CLUSTER_NAME $$KMS_KEYRING $$KMS_KEY $$KMS_KEY_VERSION $$KMS_LOCATION $$GITHUB_ORG $$GITHUB_REPO $$GITHUB_MINTER_KSA_NAME $$GITHUB_MINTER_GSA_NAME $$PLATFORM_AGENT_GSA_NAME' | kubectl delete --ignore-not-found=$(ignore-not-found) -n $${NAMESPACE:-kubeagents-system} -f -
 
 
 
@@ -257,11 +281,25 @@ gcp-provision-11-inference-replay: ## Step 11: Deploy Inference Replay proxy.
 	@chmod +x scripts/*.sh
 	@./scripts/provision_11_deploy_inference_replay.sh $(ARGS)
 
+.PHONY: gcp-provision-12-gke-backup-plan
+gcp-provision-12-gke-backup-plan: ## Step 12: Provision GKE Backup Plan for disaster recovery.
+	@chmod +x scripts/*.sh
+	@./scripts/provision_12_gke_backup_plan.sh $(ARGS)
+
+.PHONY: gcp-provision-13-verify-rollout
+gcp-provision-13-verify-rollout: ## Step 13: Verify the PlatformAgent Deployment rollout.
+	@chmod +x scripts/*.sh
+	@./scripts/provision_13_verify_agent_rollout.sh $(ARGS)
+
 .PHONY: dev-rebuild-agent
 dev-rebuild-agent: ## Fast local iteration: rebuild and redeploy an agent image (e.g. make dev-rebuild-agent ARGS="platform").
 	@chmod +x scripts/*.sh scripts/dev/*.sh 2>/dev/null || true
 	@./scripts/dev/dev_rebuild_agent.sh $(ARGS)
 
+.PHONY: gcp-teardown-12-gke-backup-plan
+gcp-teardown-12-gke-backup-plan: ## Teardown Step 12: Delete GKE Backup Plan and snapshots.
+	@chmod +x scripts/*.sh
+	@./scripts/teardown_12_gke_backup_plan.sh $(ARGS)
 
 .PHONY: gcp-teardown-11-inference-replay
 gcp-teardown-11-inference-replay: ## Teardown Step 11: Undeploy Inference Replay proxy.
@@ -323,8 +361,10 @@ gcp-teardown-01-cluster: ## Teardown Step 1: Delete GKE cluster and local config
 	@chmod +x scripts/*.sh
 	@./scripts/teardown_01_gcp_cluster.sh $(ARGS)
 
-prettier-check:
-	npx prettier --check "**/*.{md,yaml,yml}"
+##@ Formatting
 
-prettier-write:
-	npx prettier --write "**/*.{md,yaml,yml}"
+prettier-check: ## Check Markdown/YAML formatting.
+	$(PRETTIER) --check "**/*.{md,yaml,yml}"
+
+prettier-write: ## Apply Markdown/YAML formatting.
+	$(PRETTIER) --write "**/*.{md,yaml,yml}"

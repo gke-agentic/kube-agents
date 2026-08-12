@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# 🤖 Step 3: Controller & Agent GCP Workload Identity & GCP IAM Permissions
+# 🤖 Step 4: Controller & Agent GCP Workload Identity & GCP IAM Permissions
 # ==============================================================================
 # Idempotent script for granting GKE cluster management and Workload Identity
 # permissions to the Operator Controller Manager and Agent GSAs.
@@ -27,11 +27,13 @@ init_var_platform_agent_permission_set
 
 if [ -z "${GITHUB_ORG:-}" ]; then
   print_info "The GitHub Token Minter acts as a secure bridge allowing the GKE Agent to access GitHub."
-  print_info "We collect the GitHub Org/Owner and Repository to configure authorization rules, ensuring that"
+  print_info "We collect the GitHub Organization and Repository to configure authorization rules, ensuring that"
   print_info "only the GKE Agent's GCP Service Account can request GitHub access tokens for this specific repository."
   print_info "The GKE Agent will use this repository to perform write operations on the Kubernetes infrastructure using GitOps."
+  print_info "The repository must be owned by an organization; the Minter cannot mint tokens for personal accounts."
 fi
-init_var "GITHUB_ORG" "" "Enter GitHub Org/Owner (optional, for GitHub Token Minter)"
+init_var "GITHUB_ORG" "" "Enter GitHub Organization (optional, for GitHub Token Minter)"
+check_github_org_is_organization "${GITHUB_ORG:-}"
 if [ -n "${GITHUB_ORG:-}" ]; then
   init_var "GITHUB_REPO" "" "Enter GitHub Repo (for GitHub Token Minter)"
   init_var "GITHUB_APP_ID" "" "Enter GitHub App ID (for GitHub Token Minter)"
@@ -139,6 +141,49 @@ annotate_ksa() {
 
 # ─── Step Implementations ─────────────────────────────────────────────────────
 
+# Ensure Cluster Workload Identity Pool
+verify_cluster_workload_pool() {
+  local pool
+  pool=$(gcloud container clusters describe "${CLUSTER_NAME}" --location="${REGION}" --project="${PROJECT_ID}" --format="value(workloadIdentityConfig.workloadPool)" 2>/dev/null || echo "")
+  [ "$pool" = "${PROJECT_ID}.svc.id.goog" ]
+}
+execute_cluster_workload_pool() {
+  print_info "Enabling Workload Identity pool on target GKE cluster ${CLUSTER_NAME}..."
+  gcloud container clusters update "${CLUSTER_NAME}" \
+    --location="${REGION}" \
+    --project="${PROJECT_ID}" \
+    --workload-pool="${PROJECT_ID}.svc.id.goog" \
+    --quiet
+}
+
+# Enabling the cluster-level pool does not migrate pre-existing node pools off
+# the legacy GCE metadata server; pods on such pools receive the node's GCE
+# service account instead of the federated identity and fail GCP auth.
+get_legacy_metadata_node_pools() {
+  gcloud container node-pools list \
+      --cluster="${CLUSTER_NAME}" \
+      --location="${REGION}" \
+      --project="${PROJECT_ID}" \
+      --format="csv[no-heading](name,config.workloadMetadataConfig.mode)" 2>/dev/null \
+    | awk -F',' '$2 != "GKE_METADATA" {print $1}'
+}
+verify_node_pool_metadata() {
+  [ -z "$(get_legacy_metadata_node_pools)" ]
+}
+execute_node_pool_metadata() {
+  local pool
+  for pool in $(get_legacy_metadata_node_pools); do
+    print_warning "Node pool '${pool}' uses the legacy GCE metadata server; migrating to GKE_METADATA (this recreates the pool's nodes)..."
+    gcloud container node-pools update "${pool}" \
+        --cluster="${CLUSTER_NAME}" \
+        --location="${REGION}" \
+        --project="${PROJECT_ID}" \
+        --workload-metadata=GKE_METADATA \
+        --quiet || return 1
+  done
+}
+
+
 # Step 1: Enable APIs
 verify_apis() {
   local out=$(gcloud services list --enabled --project="$PROJECT_ID" --format="value(config.name)" 2>/dev/null || echo "")
@@ -206,7 +251,7 @@ get_platform_agent_roles() {
 
 verify_platform_agent() {
   local -a roles=($(get_platform_agent_roles))
-  verify_agent_iam "${PLATFORM_AGENT_KSA_NAME}" "${PLATFORM_AGENT_GSA_NAME}" "${roles[@]}"
+  verify_agent_iam "${PLATFORM_AGENT_KSA_NAME}" "${PLATFORM_AGENT_GSA_NAME}" "${roles[@]}" || return 1
 
   local gsa_email="${PLATFORM_AGENT_GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
   local sandbox_member="serviceAccount:${PROJECT_ID}.svc.id.goog[${NAMESPACE}/${PLATFORM_AGENT_SANDBOX_KSA_NAME}]"
@@ -214,7 +259,10 @@ verify_platform_agent() {
 }
 execute_platform_agent() {
   local -a roles=($(get_platform_agent_roles))
-  execute_agent_iam "Platform Agent" "${PLATFORM_AGENT_KSA_NAME}" "${PLATFORM_AGENT_GSA_NAME}" "${roles[@]}"
+  # Without this check the step reports success even when the GSA, its role
+  # bindings, or the Workload Identity binding failed: the legacy cleanup below
+  # ends in `|| true`, so it would otherwise decide the function's exit status.
+  execute_agent_iam "Platform Agent" "${PLATFORM_AGENT_KSA_NAME}" "${PLATFORM_AGENT_GSA_NAME}" "${roles[@]}" || return 1
 
   local gsa_email="${PLATFORM_AGENT_GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
   local sandbox_member="serviceAccount:${PROJECT_ID}.svc.id.goog[${NAMESPACE}/${PLATFORM_AGENT_SANDBOX_KSA_NAME}]"
@@ -246,7 +294,9 @@ execute_github_minter_iam() {
 
 # ─── Execution Pipeline ───────────────────────────────────────────────────────
 run_step "1. Enable APIs" verify_apis execute_apis 10
-run_step "2. Configure Platform Agent Workload Identity & GCP IAM" verify_platform_agent execute_platform_agent 5
-run_step "3. Configure GitHub Token Minter Workload Identity" verify_github_minter_iam execute_github_minter_iam 5
+run_step "2. Ensure GKE Workload Identity Pool" verify_cluster_workload_pool execute_cluster_workload_pool 10
+run_step "3. Migrate Node Pools to the GKE Metadata Server" verify_node_pool_metadata execute_node_pool_metadata 5
+run_step "4. Configure Platform Agent Workload Identity & GCP IAM" verify_platform_agent execute_platform_agent 5
+run_step "5. Configure GitHub Token Minter Workload Identity" verify_github_minter_iam execute_github_minter_iam 5
 
 echo -e "\n${C_MAGENTA}${C_BOLD}>>>  Controller & Agent GCP Permissions Configured Successfully!  <<<${C_RESET}"

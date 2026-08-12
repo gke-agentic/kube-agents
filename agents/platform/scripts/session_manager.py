@@ -1,8 +1,11 @@
+import hashlib
+import hmac
 import json
 import os
 import sqlite3
+import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 DEFAULT_SESSION_KV_DB_PATH = "/var/lib/kube-agents/session/session_kv.db"
 
@@ -14,7 +17,7 @@ class SessionManager:
         "session_id",
         "platform",
         "user_id",
-        "user_email",
+        "user_email_hash",
         "user_resource",
         "chat_id",
         "thread_id",
@@ -83,7 +86,25 @@ class SessionManager:
         )
         metadata = self.metadata_for_session(session_id)
         platform = metadata.get("platform") or ""
-        sender_id = metadata.get("user_id") or metadata.get("user_email") or ""
+        # `user_email_hash`, never `user_email`: the store writes only the hash
+        # now, and rows written before that are purged of the plaintext field on
+        # server start. Falling back to a plaintext address here would put one
+        # back into the delegation headers.
+        #
+        # `user_id` gets the same treatment for the same reason. On Google Chat
+        # it *is* the address on a pre-migration row, and the server-side purge
+        # is best-effort — it skips any row whose metadata will not parse — so
+        # dropping it here rather than trusting the purge. Dropped rather than
+        # hashed to match what the purge does, and for the reason given in
+        # `_purge_plaintext_identities`: this module's main caller is the stdio
+        # MCP server, whose environment is the allowlist in config.yaml — it
+        # carries `SESSION_KV_API_KEY` and not the salt, so a hash computed
+        # here would not match the one the Chat Agent plugins produce for the
+        # same person, which is the only thing a pseudonym is for. The dropped
+        # value reappears on the user's next message. A Slack member id carries
+        # no `@` and stays.
+        raw_user_id = str(metadata.get("user_id") or "")
+        sender_id = ("" if "@" in raw_user_id else raw_user_id) or metadata.get("user_email_hash") or ""
         user_id = os.environ.get("HERMES_USER_ID") or os.environ.get("HERMES_SENDER_ID") or sender_id
         if user_id and platform and ":" not in str(user_id):
             user_id = f"{platform}:{user_id}"
@@ -97,7 +118,24 @@ class SessionManager:
             "metadata": metadata,
         }
 
-    def delegation_headers(self, context: Dict[str, Any]) -> Dict[str, str]:
+    @staticmethod
+    def canonicalize_headers(headers: Dict[str, str]) -> str:
+        normalized = {}
+        for key, value in headers.items():
+            lower_key = str(key).lower()
+            if lower_key.startswith("x-hermes-") and lower_key not in (
+                "x-hermes-signature",
+                "x-hermes-timestamp",
+            ):
+                normalized[lower_key] = str(value).strip()
+        sorted_keys = sorted(normalized.keys())
+        canonical_lines = [
+            f"{len(key)}:{key}:{len(normalized[key])}:{normalized[key]}\n"
+            for key in sorted_keys
+        ]
+        return "".join(canonical_lines)
+
+    def _base_delegation_headers(self, context: Dict[str, Any]) -> Dict[str, str]:
         metadata = context.get("metadata", {})
         headers: Dict[str, str] = {}
         if context.get("session_id"):
@@ -106,13 +144,116 @@ class SessionManager:
             headers["X-Hermes-User-Id"] = str(context["user_id"])
         if context.get("sender_id"):
             headers["X-Hermes-Sender-Id"] = str(context["sender_id"])
-        if metadata.get("user_email"):
-            headers["X-Hermes-User-Email"] = str(metadata["user_email"])
+        # X-Hermes-User-Email is gone rather than hashed. It existed so a
+        # downstream agent could show who asked; a hash cannot do that, and the
+        # pseudonymised id in X-Hermes-Sender-Id already correlates turns.
+        if metadata.get("user_email_hash"):
+            headers["X-Hermes-User-Email-Hash"] = str(metadata["user_email_hash"])
         if context.get("chat_id"):
             headers["X-Hermes-Chat-Id"] = str(context["chat_id"])
         if context.get("thread_id"):
             headers["X-Hermes-Thread-Id"] = str(context["thread_id"])
         return headers
+
+    def _resolve_signing_key(self, api_key: str) -> str:
+        env_key = os.environ.get("HERMES_DELEGATION_SIGNING_KEY", "").strip()
+        if env_key:
+            return env_key
+        # Derive a distinct signing secret so the raw API key is never used directly as the HMAC key
+        return hmac.new(
+            api_key.strip().encode("utf-8"),
+            b"hermes-delegation-signing-key",
+            hashlib.sha256,
+        ).hexdigest()
+
+    def signed_delegation_headers(
+        self,
+        context: Dict[str, Any],
+        api_key: str,
+        body_digest: str = "",
+        target: str = "",
+    ) -> Dict[str, str]:
+        if not api_key or not str(api_key).strip():
+            raise ValueError("API key is required to sign delegation headers.")
+        headers = self._base_delegation_headers(context)
+        canonical = self.canonicalize_headers(headers)
+        header_digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        timestamp = str(int(time.time()))
+        session_id = str(
+            headers.get("X-Hermes-Session-Id")
+            or context.get("session_id")
+            or ""
+        ).strip()
+        signing_payload = (
+            f"{timestamp}:{session_id}:{target}:{body_digest}:{header_digest}"
+        )
+        signing_key = self._resolve_signing_key(api_key)
+        signature = hmac.new(
+            signing_key.encode("utf-8"),
+            signing_payload.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        headers["X-Hermes-Signature"] = f"sha256={signature}"
+        headers["X-Hermes-Timestamp"] = timestamp
+        return headers
+
+    @staticmethod
+    def _get_header_ci(headers: Dict[str, str], key: str) -> Optional[str]:
+        target = key.lower()
+        for k, v in headers.items():
+            if str(k).lower() == target:
+                return str(v)
+        return None
+
+    def verify_delegation_headers(
+        self,
+        headers: Dict[str, str],
+        api_keys: List[str],
+        max_skew_seconds: int = 300,
+        body_digest: str = "",
+        target: str = "",
+    ) -> bool:
+        sig_header = self._get_header_ci(headers, "X-Hermes-Signature")
+        ts_header = self._get_header_ci(headers, "X-Hermes-Timestamp")
+        if not sig_header or not ts_header:
+            return False
+
+        if not str(sig_header).startswith("sha256="):
+            return False
+        provided_sig = str(sig_header).removeprefix("sha256=")
+
+        try:
+            ts_int = int(str(ts_header).strip())
+        except (ValueError, TypeError):
+            return False
+
+        if abs(time.time() - ts_int) > max_skew_seconds:
+            return False
+
+        valid_keys = [str(k).strip() for k in api_keys if k and str(k).strip()]
+        if not valid_keys:
+            return False
+
+        canonical = self.canonicalize_headers(headers)
+        header_digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        session_id = str(
+            self._get_header_ci(headers, "X-Hermes-Session-Id") or ""
+        ).strip()
+        signing_payload = (
+            f"{str(ts_header).strip()}:{session_id}:{target}:{body_digest}:{header_digest}"
+        )
+
+        for api_key in valid_keys:
+            signing_key = self._resolve_signing_key(api_key)
+            expected_sig = hmac.new(
+                signing_key.encode("utf-8"),
+                signing_payload.encode("utf-8"),
+                hashlib.sha256,
+            ).hexdigest()
+            if hmac.compare_digest(provided_sig, expected_sig):
+                return True
+
+        return False
 
     def filter_session_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
         return {

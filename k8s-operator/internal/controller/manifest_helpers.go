@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -34,22 +35,113 @@ import (
 	agentv1alpha1 "github.com/gke-labs/kube-agents/k8s-operator/api/v1alpha1"
 )
 
-const (
-	defaultPlatformAgentImage = "ghcr.io/gke-labs/kube-agents/platform-agent:latest"
-
-	// managedOTelEndpoint is the OTLP/HTTP endpoint of the GKE Managed OpenTelemetry
-	// collector. The same endpoint is already used by the LiteLLM integration, so agent
-	// traces and LLM-call telemetry land in the same place (Cloud Trace/Logging).
-	managedOTelEndpoint = "http://opentelemetry-collector.gke-managed-otel.svc.cluster.local:4318"
-
-	defaultSurgePercent = "25%"
+var (
+	// DefaultPlatformAgentVersion is injected at build time via -ldflags "-X ...DefaultPlatformAgentVersion=vX.Y.Z"
+	// or defaults to "latest" during local development.
+	DefaultPlatformAgentVersion = "latest"
 )
 
+// fallbackPlatformAgentImage derives its tag from DefaultPlatformAgentVersion
+// at call time (not folded at init), so release builds default to the matching
+// versioned image and tests can pin the derivation by overriding the variable.
+func fallbackPlatformAgentImage() string {
+	return "ghcr.io/gke-labs/kube-agents/platform-agent:" + DefaultPlatformAgentVersion
+}
+
+const (
+	fallbackFluentBitImage = "fluent/fluent-bit:5.0.7"
+
+	// Operator-level image overrides for installs that mirror images into a
+	// private registry. Set on the controller-manager Deployment; a CR's
+	// spec.deployment.image still takes precedence over PLATFORM_AGENT_IMAGE.
+	platformAgentImageEnvVar   = "PLATFORM_AGENT_IMAGE"
+	credentialProxyImageEnvVar = "CREDENTIAL_PROXY_IMAGE"
+	fluentBitImageEnvVar       = "FLUENT_BIT_IMAGE"
+
+	defaultSurgePercent = "25%"
+
+	// fieldOwner identifies this controller in Server-Side Apply managedFields.
+	fieldOwner = "platformagent-controller"
+)
+
+// The Kubernetes recommended labels, stamped on every object this controller
+// creates so the project's whole cluster footprint is selectable with
+// -l app.kubernetes.io/part-of=kube-agents. See
+// https://kubernetes.io/docs/concepts/overview/working-with-objects/common-labels/
+//
+// component and version are deliberately absent: there is no build-time version
+// to report, and image references may carry a digest, whose '@' and ':' are not
+// legal in a label value.
+const (
+	labelName      = "app.kubernetes.io/name"
+	labelInstance  = "app.kubernetes.io/instance"
+	labelPartOf    = "app.kubernetes.io/part-of"
+	labelManagedBy = "app.kubernetes.io/managed-by"
+
+	appNamePlatformAgent = "platform-agent"
+	partOfKubeAgents     = "kube-agents"
+
+	// maxLabelValueLength is the Kubernetes limit on a label value.
+	maxLabelValueLength = 63
+)
+
+// instanceLabel builds the app.kubernetes.io/instance value for an agent.
+//
+// The namespace is included because the controller also writes cluster-scoped
+// ClusterRoles and ClusterRoleBindings, where a bare CR name is ambiguous
+// between two agents of the same name in different namespaces. Nothing bounds
+// a PlatformAgent name to a length that fits a label value, so the result is
+// truncated rather than left to be rejected by the API server.
+func instanceLabel(namespace, name string) string {
+	value := namespace + "-" + name
+	if len(value) <= maxLabelValueLength {
+		return value
+	}
+	value = value[:maxLabelValueLength]
+	// A label value must end in an alphanumeric, which truncation can break.
+	return strings.TrimRight(value, "-_.")
+}
+
+// commonLabels returns the recommended labels identifying an object as part of
+// the agent installation owned by this PlatformAgent.
+func commonLabels(agent *agentv1alpha1.PlatformAgent) map[string]string {
+	return map[string]string{
+		labelName:      appNamePlatformAgent,
+		labelInstance:  instanceLabel(agent.Namespace, agent.Name),
+		labelPartOf:    partOfKubeAgents,
+		labelManagedBy: fieldOwner,
+	}
+}
+
+// withCommonLabels merges the recommended labels into obj, leaving any key the
+// object already sets untouched — buildDeployment and buildPodTemplateSpec set
+// selector-bearing labels of their own that must not be overwritten.
+func withCommonLabels(obj metav1.Object, agent *agentv1alpha1.PlatformAgent) {
+	labels := obj.GetLabels()
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	for k, v := range commonLabels(agent) {
+		if _, exists := labels[k]; !exists {
+			labels[k] = v
+		}
+	}
+	obj.SetLabels(labels)
+}
+
 // otelTelemetryEnvVars returns the OpenTelemetry configuration for an agent container: the
-// service name, the GKE Managed OpenTelemetry collector endpoint, and resource attributes
-// carrying the agent's identity. These defaults can be overridden per-agent via Deployment.Env
-// (see mergeEnvVars).
-func otelTelemetryEnvVars(agentType, name, namespace string) []corev1.EnvVar {
+// service name, the collector endpoint, and resource attributes carrying the agent's
+// identity. These defaults can be overridden per-agent via Deployment.Env (see mergeEnvVars).
+//
+// endpoint is the value the controller resolved (see resolveOTLPEndpoint); an empty one
+// means the GKE Managed OpenTelemetry collector. Defaulting here rather than at the call
+// sites keeps this function total, so no caller can emit an empty
+// OTEL_EXPORTER_OTLP_ENDPOINT, and keeps the manifest builders pure — they take no client
+// and cannot discover anything themselves.
+func otelTelemetryEnvVars(agentType, name, namespace, endpoint string) []corev1.EnvVar {
+	if endpoint == "" {
+		endpoint = managedOTelEndpoint
+	}
 	return []corev1.EnvVar{
 		{
 			Name:  "OTEL_SERVICE_NAME",
@@ -57,7 +149,7 @@ func otelTelemetryEnvVars(agentType, name, namespace string) []corev1.EnvVar {
 		},
 		{
 			Name:  "OTEL_EXPORTER_OTLP_ENDPOINT",
-			Value: managedOTelEndpoint,
+			Value: endpoint,
 		},
 		{
 			Name:  "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -71,6 +163,25 @@ func otelTelemetryEnvVars(agentType, name, namespace string) []corev1.EnvVar {
 			),
 		},
 	}
+}
+
+// defaultPlatformAgentImage returns the agent image used when a CR omits
+// spec.deployment.image: the PLATFORM_AGENT_IMAGE env var if set, else the
+// public ghcr.io default.
+func defaultPlatformAgentImage() string {
+	if img := os.Getenv(platformAgentImageEnvVar); img != "" {
+		return img
+	}
+	return fallbackPlatformAgentImage()
+}
+
+// fluentBitImage returns the logging sidecar image: the FLUENT_BIT_IMAGE env
+// var if set, else the public Docker Hub default.
+func fluentBitImage() string {
+	if img := os.Getenv(fluentBitImageEnvVar); img != "" {
+		return img
+	}
+	return fallbackFluentBitImage
 }
 
 // resolveAgentImage determines the full image reference using the optional deployment spec and a fallback default.
@@ -89,6 +200,9 @@ func resolveAgentImage(deployment *agentv1alpha1.DeploymentSpec, defaultImage st
 		}
 
 		if !hasTagOrDigest {
+			// Deliberately "latest", not DefaultPlatformAgentVersion: this is a
+			// user-supplied image, and our release version must not be stamped
+			// on third-party repositories.
 			tag := "latest"
 			if deployment.Tag != nil && *deployment.Tag != "" {
 				tag = *deployment.Tag
@@ -187,14 +301,32 @@ func resolveResources(deployment *agentv1alpha1.DeploymentSpec) corev1.ResourceR
 		return *deployment.Resources.DeepCopy()
 	}
 
+	// Headroom for kanban fan-out, not a latency fix for a single card. Every
+	// dispatched card is a fresh `hermes chat` subprocess that boots its own MCP
+	// servers (four on the platform profile, two of them node), and the pod runs
+	// under gVisor, where process spawn is far more expensive than on runc. A
+	// five-way fan-out was observed degrading to 57-63s per card against a solo
+	// 17-23s — but that was never traced to the CPU limit, and a solo card on
+	// the 2-CPU ceiling recorded 0 throttled periods out of 35,069, so do not
+	// expect this to speed anything up on its own.
+	//
+	// The CPU limit is 3, not 4: nodes in the reference gVisor pool advertise
+	// 3920m allocatable, so a 4-core limit is a ceiling the container can never
+	// reach and reads as more headroom than exists. The 1-core request stops the
+	// container being scheduled with shares it cannot work with.
+	//
+	// Memory goes to 8Gi because the pod's idle working set already measures
+	// 1.80GiB sandbox-wide; the previous 4Gi limit left roughly 2.2GiB to cover
+	// five concurrent workers, each carrying a Python and two node runtimes.
+	// Requests stay at 2Gi, so scheduling is unchanged either way.
 	return corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
-			corev1.ResourceCPU:    resource.MustParse("500m"),
+			corev1.ResourceCPU:    resource.MustParse("1"),
 			corev1.ResourceMemory: resource.MustParse("2Gi"),
 		},
 		Limits: corev1.ResourceList{
-			corev1.ResourceCPU:    resource.MustParse("2"),
-			corev1.ResourceMemory: resource.MustParse("4Gi"),
+			corev1.ResourceCPU:    resource.MustParse("3"),
+			corev1.ResourceMemory: resource.MustParse("8Gi"),
 		},
 	}
 }
@@ -209,7 +341,8 @@ func ReconcileServiceAccount(
 	name,
 	namespace string,
 	annotations map[string]string,
-	fieldOwner string,
+	labels map[string]string,
+	owningFieldManager string,
 ) error {
 	sa := &corev1.ServiceAccount{
 		TypeMeta: metav1.TypeMeta{
@@ -224,12 +357,15 @@ func ReconcileServiceAccount(
 	if annotations != nil {
 		sa.Annotations = annotations
 	}
+	if labels != nil {
+		sa.Labels = labels
+	}
 
 	if err := controllerutil.SetControllerReference(owner, sa, scheme); err != nil {
 		return err
 	}
 
-	return c.Patch(ctx, sa, client.Apply, client.ForceOwnership, client.FieldOwner(fieldOwner))
+	return c.Patch(ctx, sa, client.Apply, client.ForceOwnership, client.FieldOwner(owningFieldManager))
 }
 
 // defaultSecretRef returns ref if provided, otherwise defaults to secretName with defaultKey.

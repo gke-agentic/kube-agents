@@ -44,7 +44,7 @@ To determine which users have interacted with the system via Google Chat in the 
 - Run the packaged Python helper script to automatically query and parse the GKE container logs from Google Cloud Logging:
 
   ```bash
-  python3 /opt/hermes/skills/kube-agents-observability/scripts/get_chat_users.py --project-id <PROJECT_ID> [--hours <HOURS>]
+  python3 ./scripts/get_chat_users.py --project-id <PROJECT_ID> [--hours <HOURS>]
 
   ```
 
@@ -86,20 +86,20 @@ To determine which users have interacted with the system via Google Chat in the 
 
 - Run the python script to fetch LiteLLM total token metrics from Cloud Monitoring:
   ```bash
-  python3 /opt/hermes/skills/kube-agents-observability/scripts/check_token_usage.py --project-id <project-id>
+  python3 ./scripts/check_token_usage.py --project-id <project-id>
   ```
 
 ### 4. List LiteLLM Metric Descriptors
 
 - Run the python script to list all available metric descriptors for LiteLLM:
   ```bash
-  python3 /opt/hermes/skills/kube-agents-observability/scripts/get_metric_descriptors.py --project-id <project-id>
+  python3 ./scripts/get_metric_descriptors.py --project-id <project-id>
   ```
 
 ## Traces
 
 > [!NOTE]
-> The system relies on GKE Managed OpenTelemetry for distributed tracing.
+> The system defaults to GKE Managed OpenTelemetry for distributed tracing, but the collector is configurable and may have been discovered rather than defaulted. **Never assume the `gke-managed-otel` endpoint** — read it off the resource before diagnosing anything.
 >
 > - **Harness Agents**: Emit traces natively via the `hermes_otel` plugin.
 > - **LiteLLM**: Emits trace spans via its OTLP callback system.
@@ -107,14 +107,27 @@ To determine which users have interacted with the system via Google Chat in the 
 
 ### 1. Verify OpenTelemetry (OTel) Configuration
 
-- Ensure the `hermes_otel` plugin is enabled in `/opt/data/config.yaml` or `/opt/defaults/config.yaml`.
-- Verify the exporter backend is configured to use the GKE managed collector endpoint: `http://opentelemetry-collector.gke-managed-otel.svc.cluster.local:4318/v1/traces`
+- Find the collector this agent is actually exporting to. The operator reports what it resolved and where the answer came from (`DeploymentEnv`, `Spec`, `OperatorEnv`, `Discovered`, or `Default`):
+
+  ```bash
+  kubectl get platformagent <name> -n kubeagents-system -o jsonpath='{.status.telemetry}'
+  ```
+
+  A source of `Default` on a cluster without GKE Managed OTel means nothing was found — spans are going nowhere. Fix it with `spec.telemetry.otlpEndpoint`.
+
+- Ensure the `hermes_otel` plugin is enabled in the profile's own config — `/opt/data/config.yaml` for the Chat Agent, `/opt/data/profiles/<profile>/config.yaml` for the Platform and Cluster Agents.
+- Verify the plugin's exporter backend matches that endpoint. It is rewritten at container start from `OTEL_EXPORTER_OTLP_ENDPOINT`, so a mismatch means the pod predates the current setting and needs a restart:
+  ```bash
+  kubectl exec <pod-name> -c <agent-container-name> -n kubeagents-system -- \
+    sh -c 'echo "$OTEL_EXPORTER_OTLP_ENDPOINT"; grep -r endpoint /opt/data/plugins/hermes_otel/config.yaml /opt/data/profiles/*/plugins/hermes_otel/config.yaml'
+  ```
 
 ### 2. Diagnose Trace Collector Connectivity
 
-- Test network reachability from the agent container to the OpenTelemetry collector:
+- Test network reachability from the agent container to the OpenTelemetry collector, using the endpoint from the container's own environment rather than a hardcoded one:
   ```bash
-  kubectl exec <pod-name> -c <agent-container-name> -n kubeagents-system -- curl -i -s -o /dev/null -w "%{http_code}" -X POST http://opentelemetry-collector.gke-managed-otel.svc.cluster.local:4318/v1/traces
+  kubectl exec <pod-name> -c <agent-container-name> -n kubeagents-system -- \
+    sh -c 'curl -i -s -o /dev/null -w "%{http_code}\n" -X POST "$OTEL_EXPORTER_OTLP_ENDPOINT/v1/traces"'
   ```
 - Check the agent logs for OTLP connection warnings or trace export failures:
   ```bash
@@ -128,7 +141,7 @@ To list recent traces or analyze span latency distributions to locate performanc
 - Run the trace latency analyzer script:
 
   ```bash
-  python3 /opt/hermes/skills/kube-agents-observability/scripts/analyze_trace_latency.py --project-id <project-id> [--hours <hours>] [--limit <limit>]
+  python3 ./scripts/analyze_trace_latency.py --project-id <project-id> [--hours <hours>] [--limit <limit>]
   ```
 
   **Example Output:**
@@ -146,7 +159,7 @@ To list recent traces or analyze span latency distributions to locate performanc
 
 - Alternatively, run the raw trace list script:
   ```bash
-  python3 /opt/hermes/skills/kube-agents-observability/scripts/fetch_traces.py --project-id <project-id> --hours 24
+  python3 ./scripts/fetch_traces.py --project-id <project-id> --hours 24
   ```
 
 ## Agent Status and Health
