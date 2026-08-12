@@ -73,6 +73,19 @@ const (
 	sharedStateSetupSkip   = "skip"
 )
 
+// The single model name LiteLLM is configured to serve, used both in the profile
+// config the gateway reads and in the API server's own default. The two must agree:
+// the API server resolves its model once at startup, and a mismatch means every
+// session it creates asks LiteLLM for a model that does not exist.
+const agentModelName = "model-default"
+
+// The API server picks its model from API_SERVER_MODEL_NAME, then the active profile
+// name, then a hardcoded "hermes-agent". The profile name is skipped for a custom
+// provider, so without this the fallback wins and LiteLLM rejects every request the
+// API server makes. Chat is unaffected — it resolves per message, not at startup —
+// which is why only sessions created through the API fail.
+const apiServerModelEnvVar = "API_SERVER_MODEL_NAME"
+
 // getDefaultStorageConfig returns the access modes and storage class name based on the replica count and user configuration.
 func getDefaultStorageConfig(agent *agentv1alpha1.PlatformAgent) ([]corev1.PersistentVolumeAccessMode, *string) {
 	replicas, _ := resolveDeploymentReplicasAndStrategy(agent.Spec.Deployment)
@@ -609,8 +622,8 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent, agentPlugins []*agentv
 
 	// Model & Terminal configuration
 	cfg.Model.Provider = "custom"
-	cfg.Model.Default = "model-default"
-	cfg.Model.Model = "model-default"
+	cfg.Model.Default = agentModelName
+	cfg.Model.Model = agentModelName
 	cfg.Model.BaseURL = fmt.Sprintf("http://litellm.%s.svc.cluster.local/v1", agent.Namespace)
 	cfg.Model.APIKey = "none"
 	cfg.Terminal.Backend = "local"
@@ -734,16 +747,23 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent, agentPlugins []*agentv
 	// Execution & Display UX configuration
 	cfg.Approvals.CronMode = "approve"
 	cfg.Web.Backend = "ddgs"
-	// Default built-in plugins pre-installed in the Hermes container image, plus
-	// legacy_slash_commands. That one rides on the default profile because it hooks
-	// pre_gateway_dispatch on inbound chat messages so a typed "/hermes sethome" reaches
-	// the gateway command dispatcher instead of drawing an unknown-command reply — chat
-	// ingress lands here, not on the platform specialist. It is not in
-	// DefaultBuiltInPlugins because that list is also the roster an AgentPlugin may not
-	// shadow, and this plugin ships in agents/chat/defaults/plugins rather than the image.
-	// Keep in sync with agents/chat/config.yaml — this copy is authoritative on the
-	// deployed default profile.
-	cfg.Plugins.Enabled = append(slices.Clone(DefaultBuiltInPlugins), "legacy_slash_commands")
+	// Default built-in plugins pre-installed in the Hermes container image, plus two
+	// that ride on the default profile specifically:
+	//
+	//   legacy_slash_commands hooks pre_gateway_dispatch on inbound chat messages so a
+	//   typed "/hermes sethome" reaches the gateway command dispatcher instead of drawing
+	//   an unknown-command reply — chat ingress lands here, not on the platform specialist.
+	//
+	//   agent_roster hooks pre_llm_call to inject the list of routable specialists into
+	//   every turn. The front door cannot delegate without naming an assignee, and it was
+	//   spending a full LLM roundtrip on the list_agents tool to re-read what amounts to a
+	//   directory listing; the tool remains as the refresh path.
+	//
+	// Neither is in DefaultBuiltInPlugins, because that list is also the roster an
+	// AgentPlugin may not shadow, and both ship in agents/chat/defaults/plugins rather
+	// than the image. Keep in sync with agents/chat/config.yaml — this copy is
+	// authoritative on the deployed default profile.
+	cfg.Plugins.Enabled = append(slices.Clone(DefaultBuiltInPlugins), "legacy_slash_commands", "agent_roster")
 	cfg.Display.Platforms = map[string]map[string]any{}
 	// Per-user memory. The built-in MEMORY.md/USER.md store stays off; the
 	// multiuser_memory provider replaces it and keys each user's notes off the
@@ -1116,8 +1136,24 @@ func buildCustomStorageVolumes(agent *agentv1alpha1.PlatformAgent) []corev1.Volu
 	return vols
 }
 
+// renderOptions carries cluster-resolved facts the manifest builders cannot work out for
+// themselves: they take no client and must stay pure so the golden tests can render them
+// without an API server. The controller resolves each field once per reconcile and passes
+// the answers down.
+//
+// A struct rather than more positional parameters — the builders already take four
+// same-typed hash strings, and an endpoint string added to that list could be transposed
+// with one of them and still compile.
+type renderOptions struct {
+	// imageVolumeSupported reports whether the cluster can mount plugin image volumes.
+	imageVolumeSupported bool
+	// otlpEndpoint is the resolved OpenTelemetry collector base URL. Empty means the GKE
+	// managed collector, so the zero value is the historical behaviour.
+	otlpEndpoint string
+}
+
 // buildPodTemplateSpec generates the shared PodTemplateSpec for Deployment and StatefulSet
-func buildPodTemplateSpec(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHash, settingsConfigHash, policyHash string, agentPlugins []*agentv1alpha1.AgentPlugin, isImageVolumeSupported bool) corev1.PodTemplateSpec {
+func buildPodTemplateSpec(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHash, settingsConfigHash, policyHash string, agentPlugins []*agentv1alpha1.AgentPlugin, opts renderOptions) corev1.PodTemplateSpec {
 	agentPlugins = filterValidAgentPlugins(agentPlugins)
 	replicas, _ := resolveDeploymentReplicasAndStrategy(agent.Spec.Deployment)
 	// UID/GID 10000 matches the canonical unprivileged 'hermes' runtime user created in NousResearch/hermes-agent upstream Dockerfile
@@ -1195,7 +1231,7 @@ func buildPodTemplateSpec(agent *agentv1alpha1.PlatformAgent, configHash, fluent
 		},
 	}
 
-	envVars = append(envVars, otelTelemetryEnvVars("platform", agent.Name, agent.Namespace)...)
+	envVars = append(envVars, otelTelemetryEnvVars("platform", agent.Name, agent.Namespace, opts.otlpEndpoint)...)
 	if agent.Spec.Deployment != nil {
 		envVars = mergeEnvVars(envVars, safeSandboxEnvOverrides(agent.Spec.Deployment.Env))
 	}
@@ -1365,7 +1401,7 @@ func buildPodTemplateSpec(agent *agentv1alpha1.PlatformAgent, configHash, fluent
 		runtimeClassName = agent.Spec.Deployment.Availability.RuntimeClassName
 	}
 
-	containers := buildBaseContainers(agent, image, envVars, agentPlugins, isImageVolumeSupported)
+	containers := buildBaseContainers(agent, image, envVars, agentPlugins, opts.imageVolumeSupported)
 	containers = append(containers, buildCredentialProxySidecar(agent, homeDir))
 
 	defaultAnnotations := map[string]string{
@@ -1381,7 +1417,7 @@ func buildPodTemplateSpec(agent *agentv1alpha1.PlatformAgent, configHash, fluent
 
 	volumes := buildDefaultVolumes(agent)
 	for _, plugin := range agentPlugins {
-		if isImageVolumeSupported {
+		if opts.imageVolumeSupported {
 			pullPolicy := corev1.PullIfNotPresent
 			if plugin.Spec.ImagePullPolicy != nil {
 				pullPolicy = *plugin.Spec.ImagePullPolicy
@@ -1457,9 +1493,9 @@ func buildPodTemplateSpec(agent *agentv1alpha1.PlatformAgent, configHash, fluent
 }
 
 // buildDeployment generates the Deployment manifest for the agent payload
-func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHash, settingsConfigHash, policyHash string, agentPlugins []*agentv1alpha1.AgentPlugin, isImageVolumeSupported bool) *appsv1.Deployment {
+func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHash, settingsConfigHash, policyHash string, agentPlugins []*agentv1alpha1.AgentPlugin, opts renderOptions) *appsv1.Deployment {
 	replicas, strategy := resolveDeploymentReplicasAndStrategy(agent.Spec.Deployment)
-	podTemplate := buildPodTemplateSpec(agent, configHash, fluentBitHash, settingsConfigHash, policyHash, agentPlugins, isImageVolumeSupported)
+	podTemplate := buildPodTemplateSpec(agent, configHash, fluentBitHash, settingsConfigHash, policyHash, agentPlugins, opts)
 
 	return &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{
@@ -1488,9 +1524,9 @@ func buildDeployment(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHa
 }
 
 // buildStatefulSet generates the StatefulSet manifest for PlatformAgent when RWO custom storage is used with multiple replicas
-func buildStatefulSet(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHash, settingsConfigHash, policyHash string, agentPlugins []*agentv1alpha1.AgentPlugin, isImageVolumeSupported bool) *appsv1.StatefulSet {
+func buildStatefulSet(agent *agentv1alpha1.PlatformAgent, configHash, fluentBitHash, settingsConfigHash, policyHash string, agentPlugins []*agentv1alpha1.AgentPlugin, opts renderOptions) *appsv1.StatefulSet {
 	replicas, _ := resolveDeploymentReplicasAndStrategy(agent.Spec.Deployment)
-	podTemplate := buildPodTemplateSpec(agent, configHash, fluentBitHash, settingsConfigHash, policyHash, agentPlugins, isImageVolumeSupported)
+	podTemplate := buildPodTemplateSpec(agent, configHash, fluentBitHash, settingsConfigHash, policyHash, agentPlugins, opts)
 	vcts := buildRWOVolumeClaimTemplates(agent)
 
 	return &appsv1.StatefulSet{
@@ -1941,6 +1977,12 @@ func buildBaseContainers(agent *agentv1alpha1.PlatformAgent, image string, envVa
 	gatewayEnvVars := append(append([]corev1.EnvVar{}, envVars...), corev1.EnvVar{
 		Name:  sharedStateSetupEnvVar,
 		Value: sharedStateSetupOwner,
+	}, corev1.EnvVar{
+		// Appended after the merge for the same reason as the variable above: it has
+		// to agree with the model in the generated profile config, and an override
+		// that disagrees breaks every API-created session rather than failing visibly.
+		Name:  apiServerModelEnvVar,
+		Value: agentModelName,
 	})
 
 	containers := []corev1.Container{
@@ -2006,7 +2048,10 @@ func buildBaseContainers(agent *agentv1alpha1.PlatformAgent, image string, envVa
 				// nothing puts one on the PVC for this container to find. In the gateway
 				// this exact path is a ConfigMap mount, and ConfigMap volumes are always
 				// read-only, so the entrypoint's copy from /opt/defaults cannot land a
-				// config.yaml on the volume underneath it (hence step 3's `[ -w ]` guard).
+				// config.yaml on the volume underneath it. Anything in the entrypoint that
+				// wants to EDIT this file is therefore inert under the operator; the step
+				// that used to try was deleted rather than left to look load-bearing (see
+				// the step 3 note in deploy/shared/docker-entrypoint.sh).
 				// The dashboard used to write one itself, as a side effect of running a
 				// setup pass it must no longer run; on a fresh PVC that leaves `hermes
 				// dashboard` starting against a HERMES_HOME with no config at all. An
