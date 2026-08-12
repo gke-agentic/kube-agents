@@ -93,7 +93,6 @@ def refresh_git_credentials(target_repo: str = None) -> str:
     if not oidc_token:
         raise RuntimeError("Retrieved Google OIDC token via gcloud is empty")
 
-    # 2. Dynamically identify target repository from workspace git remote or parameter
     org_name, repo_name = repository.split("/", 1)
 
     headers = {
@@ -102,12 +101,12 @@ def refresh_git_credentials(target_repo: str = None) -> str:
     }
     body = {
         "org_name": org_name,
-        "repositories": ["*"],
+        "repositories": [repo_name],
         "scope": "platform-agent-scope"
     }
     req_data = json.dumps(body).encode("utf-8")
 
-    log(f"Requesting scoped installation token from Minty for repository: {org_name}/{repo_name}...")
+    log(f"Requesting scoped installation token from Minty for organization: {org_name}...")
     
     try:
         req = urllib.request.Request(

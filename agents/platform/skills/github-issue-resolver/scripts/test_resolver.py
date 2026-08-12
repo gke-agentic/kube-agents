@@ -31,6 +31,9 @@ def _gh_stub(
     """A ``subprocess.run`` replacement that routes on the gh subcommand."""
 
     def run(argv, **kwargs):
+        if argv and argv[0] == "kubectl":
+            cm_json = json.dumps({"data": {"managed_repos": "acme/toolkit, acme/repo2"}})
+            return subprocess.CompletedProcess(argv, 0, cm_json, "")
         if record is not None:
             record.append(argv)
         sub = argv[1:]
@@ -78,11 +81,33 @@ class GetManagedReposTest(unittest.TestCase):
         ):
             self.assertEqual(resolver.get_managed_repos(), [])
 
-    def test_empty_when_kubectl_fails(self):
+    def test_raises_when_kubectl_fails(self):
         with mock.patch(
-            "subprocess.run", side_effect=subprocess.CalledProcessError(1, [])
+            "subprocess.run",
+            side_effect=subprocess.CalledProcessError(1, ["kubectl"], stderr="Forbidden"),
         ):
-            self.assertEqual(resolver.get_managed_repos(), [])
+            with self.assertRaises(RuntimeError) as ctx:
+                resolver.get_managed_repos()
+            self.assertIn("Failed to read ConfigMap", str(ctx.exception))
+            self.assertIn("Forbidden", str(ctx.exception))
+
+    def test_raises_when_kubectl_not_found(self):
+        with mock.patch(
+            "subprocess.run",
+            side_effect=FileNotFoundError("kubectl"),
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                resolver.get_managed_repos()
+            self.assertIn("kubectl binary not found", str(ctx.exception))
+
+    def test_raises_when_json_invalid(self):
+        with mock.patch(
+            "subprocess.run",
+            return_value=subprocess.CompletedProcess([], 0, "not-json", ""),
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                resolver.get_managed_repos()
+            self.assertIn("Failed to parse ConfigMap", str(ctx.exception))
 
 
 class HandlePollRoutingTest(unittest.TestCase):
@@ -95,6 +120,20 @@ class HandlePollRoutingTest(unittest.TestCase):
                 with mock.patch.object(subprocess, "run", _gh_stub(**stub)):
                     resolver.handle_poll(argparse.Namespace())
         return json.loads(buf.getvalue())
+
+    def test_configmap_read_failure_is_a_loud_error(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            with mock.patch.object(
+                resolver,
+                "get_managed_repos",
+                side_effect=RuntimeError("kubectl failed: Forbidden"),
+            ):
+                resolver.handle_poll(argparse.Namespace())
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(payload["status"], "ERROR")
+        self.assertEqual(payload["reason"], "CONFIGMAP_READ_FAILED")
+        self.assertIn("Forbidden", payload["error"])
 
     def test_not_configured_is_its_own_status(self):
         """Distinct from NO_ISSUES when no repos are managed."""

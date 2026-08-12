@@ -27,11 +27,14 @@ a bare `git checkout` there lands inside a clone somebody else is mid-way
 through. `prepare` hands you a clone that is yours alone:
 
 ```bash
-./skills/submit-suggestion/scripts/submit_suggestion.py prepare \
+python3 ./skills/submit-suggestion/scripts/submit_suggestion.py prepare \
+  --repo "<owner>/<repo>" \
   --branch "platform-agent/<change_type>-<target_id>"
 ```
 
-_(Example: `platform-agent/provision-mercury-09` or `platform-agent/upgrade-policy-baseline`)_
+_(Example: `--repo "acme/fleet" --branch "platform-agent/provision-mercury-09"` or `--repo "acme/fleet" --branch "platform-agent/upgrade-policy-baseline"`)_
+
+In a multi-repository environment, pass `--repo "<owner>/<repo>"` for the repository your task targets (identified from cluster annotations or task context per SOUL.md §3.4).
 
 It clones and refreshes the GitOps repository, takes the branch, and prints one
 JSON line:
@@ -80,7 +83,7 @@ the `workspace` and the `lease` from Step 1 — the script verifies the lease on
 that tree is still yours and refuses outright if it belongs to another agent:
 
 ```bash
-./skills/submit-suggestion/scripts/submit_suggestion.py submit \
+python3 ./skills/submit-suggestion/scripts/submit_suggestion.py submit \
   --workspace "<workspace>" \
   --lease "<lease>" \
   --branch "platform-agent/<change_type>-<target_id>" \
@@ -110,14 +113,14 @@ Record the PR link returned by the script, update the pending status inside your
 
 When you are asked to **address review comments / reviewer feedback** on an existing PR, **read the comments yourself — never expect them pasted into the task.** You have GitHub access via the minted, repo-scoped App token (cached into `gh` and the git credential store by `scripts/github_token_refresh.py`).
 
-1. **Refresh auth** if a call is unauthorized: `./scripts/github_token_refresh.py <owner/repo>`.
+1. **Refresh auth** if a call is unauthorized: `python3 ./scripts/github_token_refresh.py <owner/repo>`.
 2. **Read the PR and all its feedback** — both the conversation and inline (diff) review comments:
    ```bash
    gh pr view <PR_NUMBER> --repo <owner/repo> --json title,url,headRefName,body,comments,reviews
    gh api repos/<owner/repo>/pulls/<PR_NUMBER>/comments   # inline review-thread comments
    ```
 3. **Apply the requested changes on the PR's own branch.** Lease a workspace for
-   that branch the same way Step 1 does — `prepare --branch <headRefName>` — and
+   that branch the same way Step 1 does — `prepare --repo "<owner>/<repo>" --branch <headRefName>` — and
    work inside the `workspace` it prints. Because the branch already exists on
    the remote, `prepare` bases it on `origin/<headRefName>`, so the commits
    already under review are still there and yours go on top;

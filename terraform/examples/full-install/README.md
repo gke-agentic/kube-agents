@@ -86,17 +86,21 @@ agent fails every GCP call until an equivalent set exists). Deliberately no
 admin list is pre-staged in `terraform.tfvars.example` — widening access
 should be an explicit, reviewed choice.
 
-### Google Chat and GitHub integrations
+### Google Chat, Slack, and GitHub integrations
 
 With `enable_google_chat = true` the composition provisions the GCP backend
 (topic, subscription, IAM) **and** enables the CR's `googleChat` integration
 with the created topic/subscription — restrict access with
 `google_chat_allowed_users` (empty = everyone).
 
-Set `github_repo` to wire the agent's GitOps target repository
-(`spec.integration.github.gitRepo`). Slack can be enabled directly through
-chart values (`platformAgent.integration.slack.*`) once the Slack tokens are
-present in the credentials Secret.
+With `enable_github_minter = true`, set `github_org` to your GitHub Organization
+where the GitHub App is installed, and optionally set `github_repo` to seed the
+primary GitOps repository. GitOps repositories can also be registered dynamically
+by the agent at runtime via the `register-github-repo` skill.
+
+Slack can be enabled directly through chart values
+(`platformAgent.integration.slack.*`) once the Slack tokens are present in the
+credentials Secret.
 
 **Manual steps that no IaC can perform** — canonical walkthrough:
 [INSTALL.md § Enable Google Chat & Slack Integrations](../../../INSTALL.md#step-5-enable-google-chat--slack-integrations-manual-required-steps):

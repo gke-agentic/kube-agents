@@ -105,20 +105,6 @@ LEASE_FILENAME = ".lease"
 # somehow straddles the TTL loses its untracked manifests and re-clones, which
 # is the same outcome a crashed run already had.
 DEFAULT_LEASE_TTL_HOURS = 24.0
-
-def default_settings_path() -> str:
-    """`<agent home>/SETTINGS.md`.
-
-    Written by the operator at provisioning time, so it is present from the
-    first second of the pod's life — unlike a clone, which is what makes it the
-    only usable repository source before anything has been cloned. Derived from
-    `agent_home` for the same reason `default_root` is: on a deployment that
-    moved its home, a hardcoded path is simply a file that is not there, and
-    `resolve_repo` then falls through to a git remote that does not exist yet.
-    """
-    return str(Path(agent_home()) / "SETTINGS.md")
-
-
 # The branch a pull request targets when nothing better can be determined —
 # which is only when there is no clone to ask yet. See `resolve_base_branch`.
 DEFAULT_BASE_BRANCH = "main"
@@ -127,16 +113,6 @@ _LEASE_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _MAX_LEASE_CHARS = 64
 
 Runner = Callable[..., object]
-
-
-def settings_path() -> str:
-    return (
-        os.environ.get("GITOPS_SETTINGS")
-        or os.environ.get("FLEET_AUDIT_SETTINGS")
-        or default_settings_path()
-    )
-
-
 # One `git symbolic-ref` per clone per process, keyed by workspace path. The
 # answer cannot change while a process runs, and the call is not free: `git`
 # here is a shim that POSTs to the sidecar, so every repeat is an HTTP round
@@ -611,23 +587,66 @@ def get_managed_repos() -> list[str]:
             text=True,
             check=True,
         )
+    except FileNotFoundError as e:
+        raise RuntimeError("kubectl binary not found in PATH") from e
+    except subprocess.CalledProcessError as e:
+        err_msg = (e.stderr or e.stdout or "").strip()
+        raise RuntimeError(
+            f"Failed to read ConfigMap {cfg_name} in namespace {ns}: {err_msg} (exit code {e.returncode})"
+        ) from e
+
+    try:
         cm = json.loads(cm_res.stdout)
-        repos_str = cm.get("data", {}).get("managed_repos", "")
-        return [r.strip() for r in repos_str.split(",") if r.strip()]
-    except Exception:
+        if not isinstance(cm, dict):
+            raise RuntimeError(f"ConfigMap JSON is not an object: {cm}")
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            f"Failed to parse ConfigMap {cfg_name} JSON output: {e}"
+        ) from e
+
+    repos_str = (cm.get("data") or {}).get("managed_repos", "")
+    if not repos_str:
         return []
+    repos_str = repos_str.strip()
+    if repos_str.startswith("["):
+        try:
+            parsed = json.loads(repos_str)
+            if isinstance(parsed, list):
+                return [str(r).strip() for r in parsed if str(r).strip()]
+        except json.JSONDecodeError:
+            pass
+    return [r.strip() for r in repos_str.split(",") if r.strip()]
 
 
-def resolve_repo() -> str:
-    """Resolve the GitOps repository as `owner/name`, without needing a clone.
+def resolve_repo(workspace: str | Path | None = None) -> str:
+    """Resolve the GitOps repository as `owner/name`.
 
     Order:
-    1. ConfigMap state ($GITHUB_STATE_CONFIGMAP).
-    2. Local git remote origin fallback (for local development/inside clone).
+    1. Workspace lease record (if a leased workspace directory is provided).
+    2. ConfigMap state ($GITHUB_STATE_CONFIGMAP).
+    3. Local git remote origin fallback (for local development/inside clone).
     """
-    managed = get_managed_repos()
-    if managed:
-        return managed[0]
+    if workspace is not None:
+        holder = lease_holder(workspace)
+        if holder is not None:
+            record = read_lease(holder)
+            if record and record.get("repo"):
+                return record["repo"]
+
+    try:
+        managed = get_managed_repos()
+        if len(managed) == 1:
+            return managed[0]
+        elif len(managed) > 1:
+            raise RuntimeError(
+                f"Multiple repositories configured in ConfigMap ({', '.join(managed)}): "
+                "please specify the target repository explicitly (e.g. via --repo <owner/repo>)."
+            )
+    except RuntimeError as e:
+        if "Multiple repositories configured" in str(e):
+            raise
+    except Exception:
+        pass
 
     from github_token_refresh import get_current_git_repo
 

@@ -14,7 +14,7 @@ Use this skill when a user asks the agent to monitor, watch, or add a new GitHub
 Execute the deterministic registration script:
 
 ```bash
-python3 /opt/data/skills/register-github-repo/scripts/register_github_repo.py --repo <owner>/<repoName>
+python3 ./skills/register-github-repo/scripts/register_github_repo.py --repo <owner>/<repoName>
 ```
 
 ### Script Behaviors:

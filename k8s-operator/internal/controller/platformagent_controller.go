@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strconv"
@@ -387,6 +388,35 @@ func (r *PlatformAgentReconciler) reconcileSettingsConfigMap(ctx context.Context
 	return hash, nil
 }
 
+func parseManagedRepos(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	if strings.HasPrefix(raw, "[") {
+		var list []string
+		if err := json.Unmarshal([]byte(raw), &list); err == nil {
+			var res []string
+			for _, r := range list {
+				trimmed := strings.TrimSpace(r)
+				if trimmed != "" {
+					res = append(res, trimmed)
+				}
+			}
+			return res
+		}
+	}
+	parts := strings.Split(raw, ",")
+	var res []string
+	for _, p := range parts {
+		trimmed := strings.TrimSpace(p)
+		if trimmed != "" {
+			res = append(res, trimmed)
+		}
+	}
+	return res
+}
+
 func (r *PlatformAgentReconciler) reconcileGithubStateConfigMap(ctx context.Context, agent *agentv1alpha1.PlatformAgent) error {
 	cm := buildGithubStateConfigMap(agent)
 	if err := ctrl.SetControllerReference(agent, cm, r.Scheme); err != nil {
@@ -397,10 +427,38 @@ func (r *PlatformAgentReconciler) reconcileGithubStateConfigMap(ctx context.Cont
 	err := r.Get(ctx, client.ObjectKey{Name: cm.Name, Namespace: cm.Namespace}, found)
 	if err != nil {
 		if errors.IsNotFound(err) {
+			withCommonLabels(cm, agent)
 			return r.Create(ctx, cm)
 		}
 		return err
 	}
+
+	// If the CR spec provides a repository and the existing ConfigMap does not include it,
+	// ensure the repository is recorded without overwriting other dynamically added repositories.
+	if cmRepo, ok := cm.Data["managed_repos"]; ok && cmRepo != "" {
+		if found.Data == nil {
+			found.Data = map[string]string{}
+		}
+		existing := strings.TrimSpace(found.Data["managed_repos"])
+		if existing == "" {
+			found.Data["managed_repos"] = cmRepo
+			return r.Update(ctx, found)
+		}
+		repos := parseManagedRepos(existing)
+		present := false
+		for _, r := range repos {
+			if r == cmRepo {
+				present = true
+				break
+			}
+		}
+		if !present {
+			repos = append(repos, cmRepo)
+			found.Data["managed_repos"] = strings.Join(repos, ", ")
+			return r.Update(ctx, found)
+		}
+	}
+
 	return nil
 }
 
@@ -761,24 +819,7 @@ func (r *PlatformAgentReconciler) updateStatusReady(ctx context.Context, agent *
 		}
 	}
 
-	gitRepoErr := error(nil)
-	if agent.Spec.Integration != nil && agent.Spec.Integration.GitHub != nil {
-		gitRepoErr = agentv1alpha1.ValidateGitRepoURL(agent.Spec.Integration.GitHub.GitRepo)
-	}
-
-	degradedStatus := metav1.ConditionFalse
-	if gitRepoErr != nil {
-		newPhase = "Degraded"
-		condStatus = metav1.ConditionFalse
-		condReason = "InvalidGitRepoURL"
-		condMsg = fmt.Sprintf("Invalid gitRepo URL (%s); GitOps disabled in SETTINGS.md", gitRepoErr.Error())
-		degradedStatus = metav1.ConditionTrue
-	}
-
 	existingCond := meta.FindStatusCondition(agent.Status.Conditions, "Ready")
-	existingDegradedCond := meta.FindStatusCondition(agent.Status.Conditions, "Degraded")
-	degradedUnchanged := (degradedStatus == metav1.ConditionFalse && existingDegradedCond == nil) ||
-		(degradedStatus == metav1.ConditionTrue && existingDegradedCond != nil && existingDegradedCond.Status == metav1.ConditionTrue && existingDegradedCond.Reason == "InvalidGitRepoURL" && existingDegradedCond.Message == condMsg)
 
 	// Check if anything actually changed
 	if agent.Status.Phase == newPhase &&
@@ -787,7 +828,6 @@ func (r *PlatformAgentReconciler) updateStatusReady(ctx context.Context, agent *
 		agent.Status.StorageStatus.Bound == newStorageStatusBound &&
 		agent.Status.ServiceStatus.Endpoint == newServiceStatusEndpoint &&
 		agent.Status.Address == newAddress &&
-		degradedUnchanged &&
 		existingCond != nil && existingCond.Status == condStatus && existingCond.Reason == condReason && existingCond.Message == condMsg {
 		return newPhase, nil
 	}
@@ -811,19 +851,6 @@ func (r *PlatformAgentReconciler) updateStatusReady(ctx context.Context, agent *
 		LastTransitionTime: now,
 	}
 	meta.SetStatusCondition(&agent.Status.Conditions, condition)
-
-	if degradedStatus == metav1.ConditionTrue {
-		degradedCond := metav1.Condition{
-			Type:               "Degraded",
-			Status:             metav1.ConditionTrue,
-			Reason:             "InvalidGitRepoURL",
-			Message:            condMsg,
-			LastTransitionTime: now,
-		}
-		meta.SetStatusCondition(&agent.Status.Conditions, degradedCond)
-	} else {
-		meta.RemoveStatusCondition(&agent.Status.Conditions, "Degraded")
-	}
 
 	return newPhase, r.Status().Update(ctx, agent)
 }

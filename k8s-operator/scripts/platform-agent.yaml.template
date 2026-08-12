@@ -31,7 +31,9 @@ spec:
     serviceAccountAnnotations:
       iam.gke.io/gcp-service-account: "${GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
   integration:
-    github: {}
+    github:
+      org: "${GITHUB_ORG}"
+      gitRepo: "${GITHUB_REPO}"
     googleChat:
       enabled: ${GOOGLE_CHAT_ENABLED}
       mode: "${GOOGLE_CHAT_MODE}"

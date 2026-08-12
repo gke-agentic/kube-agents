@@ -80,9 +80,14 @@ class SubmitSuggestionTestCase(unittest.TestCase):
         self.patch_attr(submit_suggestion, "log", lambda msg: None)
 
         # Everything resolves to the local bare repo instead of github.com.
-        self.patch_attr(
-            gitops_workspace, "resolve_repo", lambda: "acme/fleet"
-        )
+        real_resolve = gitops_workspace.resolve_repo
+
+        def local_resolve(workspace=None):
+            if workspace is not None:
+                return real_resolve(workspace=workspace)
+            return "acme/fleet"
+
+        self.patch_attr(gitops_workspace, "resolve_repo", local_resolve)
         real_ensure = gitops_workspace.ensure_workspace
 
         def local_ensure(repo, runner, **kwargs):
@@ -296,6 +301,30 @@ class TestSubmit(SubmitSuggestionTestCase):
         self.assertEqual(argv[argv.index("--repo") + 1], "acme/fleet")
         self.assertEqual(argv[argv.index("--head") + 1], "platform-agent/fix-netpol")
         self.assertEqual(argv[argv.index("--base") + 1], "main")
+
+    def test_submit_inherits_target_repo_from_prepare_lease(self):
+        """When prepare leases a non-default repo, submit without --repo uses it."""
+        payload = self.prepare(branch="platform-agent/secondary-fix")
+        holder = Path(payload["workspace"]).parent
+        gitops_workspace.write_lease(
+            holder, payload["lease"], repo="acme/secondary-repo", owner=submit_suggestion.OWNER
+        )
+        self.commit(payload["workspace"])
+
+        args = [
+            "submit",
+            "--branch", "platform-agent/secondary-fix",
+            "--title", "fix",
+            "--body", "details",
+            "--workspace", payload["workspace"],
+            "--lease", payload["lease"],
+        ]
+        out = io.StringIO()
+        with redirect_stdout(out):
+            submit_suggestion.dispatch(args)
+
+        argv, _ = self.gh_calls[0]
+        self.assertEqual(argv[argv.index("--repo") + 1], "acme/secondary-repo")
 
     def test_another_agents_workspace_is_refused(self):
         # The check the credential proxy cannot make. The audit's tree holds a

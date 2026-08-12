@@ -160,7 +160,7 @@ def handle_submit(args) -> int:
             "are actually on."
         )
 
-    repo = args.repo or gitops_workspace.resolve_repo()
+    repo = args.repo or gitops_workspace.resolve_repo(workspace=workspace)
     refresh_git_credentials(repo)
 
     push_branch(branch, workspace)

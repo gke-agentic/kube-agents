@@ -78,8 +78,9 @@ spec:
               memory: "256Mi"
           volumeMounts:
             - name: config-volume
-              mountPath: /etc/minty/${GITHUB_ORG}/.yaml
-              subPath: policy.yaml
+              mountPath: /etc/minty/${GITHUB_ORG}/.minty
+            - name: config-volume
+              mountPath: /etc/minty/${GITHUB_ORG}
       volumes:
         - name: config-volume
           configMap:

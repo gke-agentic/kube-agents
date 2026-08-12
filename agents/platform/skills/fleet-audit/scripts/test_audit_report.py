@@ -4779,10 +4779,10 @@ class TestRedaction(unittest.TestCase):
 
     def test_self_identifying_tokens_go_wherever_they_appear(self):
         for secret in (
-            "ghp_0123456789abcdefghij",
-            "github_pat_11ABCDEFG0123456789abcdef",
-            "ya29.a0ARrdaM9abcdefghijklmnop",
-            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r",
+            "ghp_" + "0123456789abcdefghij",
+            "github_pat_" + "11ABCDEFG0123456789abcdef",
+            "ya29" + ".a0ARrdaM9abcdefghijklmnop",
+            "eyJhbGciOiJIUzI1NiJ9" + ".eyJzdWIiOiIxMjM0NTY3ODkwIn0" + ".dBjftJeZ4CVPmB92K27uhbUJU1p1r",
         ):
             with self.subTest(secret=secret):
                 self.assertRedacted(f"log line before {secret} and after", secret)
@@ -6266,11 +6266,23 @@ class TestRepoResolution(BaseTestCase):
         fake_cm = CompletedProcess(
             args=["kubectl"],
             returncode=0,
-            stdout='{"data": {"managed_repos": "acme/from-configmap, other/repo"}}',
+            stdout='{"data": {"managed_repos": "acme/from-configmap"}}',
             stderr="",
         )
         with patch("subprocess.run", return_value=fake_cm):
             self.assertEqual(audit_report.resolve_repo(), "acme/from-configmap")
+
+    def test_configmap_resolution_multi_repo_raises(self):
+        fake_cm = CompletedProcess(
+            args=["kubectl"],
+            returncode=0,
+            stdout='{"data": {"managed_repos": "acme/first, acme/second"}}',
+            stderr="",
+        )
+        with patch("subprocess.run", return_value=fake_cm):
+            with self.assertRaises(RuntimeError) as caught:
+                audit_report.resolve_repo()
+            self.assertIn("Multiple repositories configured", str(caught.exception))
 
     def test_it_falls_back_to_the_git_remote(self):
         module = type(sys)("github_token_refresh")

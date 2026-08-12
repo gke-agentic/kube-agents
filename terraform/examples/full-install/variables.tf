@@ -124,14 +124,20 @@ variable "google_chat_allowed_users" {
   default     = []
 }
 
-variable "github_repo" {
-  description = "Target GitOps repository for the agent's GitHub integration (owner/repo or URL). Empty leaves the GitHub integration unconfigured. Independent of enable_github_minter, which only provisions the minter's GCP identity."
-  type        = string
-  default     = ""
-}
-
 variable "enable_github_minter" {
   description = "Provision the GitHub token minter's GCP resources (service account, KMS key ring and signing key)"
   type        = bool
   default     = false
+}
+
+variable "github_org" {
+  description = "GitHub Organization or user account where the GitHub App is installed (for the GitHub token minter and multi-repo GitOps)"
+  type        = string
+  default     = ""
+}
+
+variable "github_repo" {
+  description = "Primary GitOps repository URL or owner/repo shorthand for the Platform Agent (optional; seeds the initial managed_repos list)"
+  type        = string
+  default     = ""
 }

@@ -129,8 +129,11 @@ resource "helm_release" "kube_agents" {
             allowedUsers     = var.google_chat_allowed_users
           }
         } : {},
-        var.github_repo != "" ? {
-          github = { gitRepo = var.github_repo }
+        (var.github_org != "" || var.github_repo != "") ? {
+          github = merge(
+            var.github_org != "" ? { org = var.github_org } : {},
+            var.github_repo != "" ? { gitRepo = var.github_repo } : {}
+          )
         } : {}
       )
     }

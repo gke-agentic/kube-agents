@@ -171,7 +171,20 @@ def sweep_stale_issues(repo: str):
 
 
 def handle_poll(args):
-    repos = get_managed_repos()
+    try:
+        repos = get_managed_repos()
+    except Exception as e:
+        print(
+            json.dumps(
+                {
+                    "status": "ERROR",
+                    "reason": "CONFIGMAP_READ_FAILED",
+                    "error": str(e),
+                }
+            )
+        )
+        return
+
     if not repos:
         print(json.dumps({"status": "NOT_CONFIGURED"}))
         return
@@ -220,8 +233,10 @@ def handle_poll(args):
         try:
             issues = json.loads(res.stdout)
             if not isinstance(issues, list):
+                unreachable_repos.append(repo)
                 continue
         except Exception:
+            unreachable_repos.append(repo)
             continue
 
         for issue in issues:
@@ -278,8 +293,47 @@ def handle_poll(args):
     )
 
 
+def _validate_repo_or_exit(repo: str) -> None:
+    if not repo or "/" not in repo or repo.count("/") != 1:
+        print(
+            json.dumps(
+                {
+                    "status": "ERROR",
+                    "reason": "INVALID_REPOSITORY",
+                    "error": f"Invalid repository format: {repo!r}",
+                }
+            )
+        )
+        sys.exit(1)
+    try:
+        managed = get_managed_repos()
+    except Exception as e:
+        print(
+            json.dumps(
+                {
+                    "status": "ERROR",
+                    "reason": "CONFIGMAP_READ_FAILED",
+                    "error": str(e),
+                }
+            )
+        )
+        sys.exit(1)
+    if repo not in managed:
+        print(
+            json.dumps(
+                {
+                    "status": "ERROR",
+                    "reason": "UNMANAGED_REPOSITORY",
+                    "error": f"Repository {repo!r} is not in the managed repositories list: {managed}",
+                }
+            )
+        )
+        sys.exit(1)
+
+
 def handle_claim(args):
     repo = args.repo
+    _validate_repo_or_exit(repo)
     issue_num = str(args.issue)
     ensure_labels_exist(repo)
 
@@ -345,6 +399,8 @@ def handle_transition(args):
             file=sys.stderr,
         )
         sys.exit(1)
+
+    _validate_repo_or_exit(repo)
 
     # Post report comment directly via file parameter (-F)
     run_gh(["issue", "comment", issue_num, "-R", repo, "-F", real_report_path])

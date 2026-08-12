@@ -511,6 +511,21 @@ func filterValidAgentPlugins(agentPlugins []*agentv1alpha1.AgentPlugin) []*agent
 
 // buildGithubStateConfigMap generates the ConfigMap manifest containing runtime state (e.g. repos)
 func buildGithubStateConfigMap(agent *agentv1alpha1.PlatformAgent) *corev1.ConfigMap {
+	data := map[string]string{}
+
+	// Extract primary repository from CR Spec if provided
+	if agent.Spec.Integration != nil && agent.Spec.Integration.GitHub != nil {
+		gitRepo := strings.TrimSpace(agent.Spec.Integration.GitHub.GitRepo)
+		org := strings.TrimSpace(agent.Spec.Integration.GitHub.Org)
+		if gitRepo != "" && gitRepo != "None" {
+			if cleaned, err := agentv1alpha1.CleanRepoSlugWithOrg(gitRepo, org); err == nil {
+				data["managed_repos"] = cleaned
+			} else {
+				manifestsLog.Info("Skipping initial configmap seed due to unparseable GitRepo", "raw", gitRepo)
+			}
+		}
+	}
+
 	return &corev1.ConfigMap{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "v1",
@@ -520,7 +535,7 @@ func buildGithubStateConfigMap(agent *agentv1alpha1.PlatformAgent) *corev1.Confi
 			Name:      agent.Name + "-github-state",
 			Namespace: agent.Namespace,
 		},
-		Data: map[string]string{},
+		Data: data,
 	}
 }
 
@@ -1315,6 +1330,23 @@ func buildPodTemplateSpec(agent *agentv1alpha1.PlatformAgent, configHash, fluent
 				envVars = append(envVars, corev1.EnvVar{
 					Name:  "SLACK_HOME_CHANNEL_NAME",
 					Value: slack.HomeChannelName,
+				})
+			}
+		}
+		if github := integration.GitHub; github != nil {
+			org := strings.TrimSpace(github.Org)
+			if org == "" && github.GitRepo != "" {
+				if cleaned, err := agentv1alpha1.CleanRepoSlug(github.GitRepo); err == nil {
+					parts := strings.SplitN(cleaned, "/", 2)
+					if len(parts) == 2 {
+						org = parts[0]
+					}
+				}
+			}
+			if org != "" {
+				envVars = append(envVars, corev1.EnvVar{
+					Name:  "GITHUB_ORG",
+					Value: org,
 				})
 			}
 		}
@@ -2286,13 +2318,13 @@ func buildClusterRoleBinding(agent *agentv1alpha1.PlatformAgent, bindingName, ro
 				"kubeagents.x-k8s.io/agent-namespace": agent.Namespace,
 			},
 		},
-		Subjects: appendWorkloadIdentityUser(agent, []rbacv1.Subject{
+		Subjects: []rbacv1.Subject{
 			{
 				Kind:      "ServiceAccount",
 				Name:      saName,
 				Namespace: agent.Namespace,
 			},
-		}),
+		},
 		RoleRef: rbacv1.RoleRef{
 			APIGroup: "rbac.authorization.k8s.io",
 			Kind:     "ClusterRole",
@@ -2493,13 +2525,13 @@ func buildLeaderRoleBinding(agent *agentv1alpha1.PlatformAgent, bindingName, rol
 			Name:      bindingName,
 			Namespace: agent.Namespace,
 		},
-		Subjects: appendWorkloadIdentityUser(agent, []rbacv1.Subject{
+		Subjects: []rbacv1.Subject{
 			{
 				Kind:      "ServiceAccount",
 				Name:      saName,
 				Namespace: agent.Namespace,
 			},
-		}),
+		},
 		RoleRef: rbacv1.RoleRef{
 			APIGroup: "rbac.authorization.k8s.io",
 			Kind:     "Role",

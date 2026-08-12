@@ -83,6 +83,7 @@ If the pre-diagnosis checks pass (no duplicate PRs and it is a real active stock
 
    ```bash
    ./skills/submit-suggestion/scripts/submit_suggestion.py prepare \
+     --repo "<owner>/<repo>" \
      --branch "platform-agent/remediate-stockout-<workload_name>"
    ```
 

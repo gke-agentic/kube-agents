@@ -3663,11 +3663,6 @@ def refresh_credentials(repo: str | None = None) -> None:
     refresh_git_credentials(repo)
 
 
-SETTINGS_PATH = os.environ.get("FLEET_AUDIT_SETTINGS") or "/opt/data/SETTINGS.md"
-
-
-# Both of these live in `gitops_workspace` now, because `submit-suggestion`
-# needs the same answer and a third copy of the SETTINGS.md parser is how the
 def resolve_repo() -> str:
     """Resolve the GitOps repository as `owner/name`, without needing a clone."""
     import gitops_workspace
@@ -4597,7 +4592,7 @@ def handle_start(args: argparse.Namespace) -> None:
 
     # Resolve first, then mint: the token is repo-scoped, and the repository
     # cannot be read off a clone that does not exist yet.
-    repo = resolve_repo()
+    repo = getattr(args, "repo", None) or resolve_repo()
     refresh_credentials(repo)
     # The one place a scrub is correct: the audit has not written anything yet,
     # so whatever is in the tree is debris from a run that did not finish.
@@ -5535,6 +5530,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     start_parser.add_argument(
         "--audit", required=True, help=f"Audit id: one of {', '.join(sorted(AUDITS))}."
+    )
+    start_parser.add_argument(
+        "--repo",
+        help="Optional target GitOps repository (defaults to ConfigMap registered repo).",
     )
 
     finish_parser = subparsers.add_parser(

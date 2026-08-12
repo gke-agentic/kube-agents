@@ -33,6 +33,11 @@ if [ -z "${GITHUB_ORG:-}" ]; then
 fi
 init_var "GITHUB_ORG" "" "Enter GitHub Org/Owner (optional, for GitHub Token Minter)"
 if [ -n "${GITHUB_ORG:-}" ]; then
+  init_var "GITHUB_REPO" "" "Enter GitHub Repository Name (optional, in '${GITHUB_ORG}', for initial GitOps target)"
+  if [ -n "${GITHUB_REPO:-}" ] && [[ "${GITHUB_REPO}" != *"/"* ]]; then
+    GITHUB_REPO="${GITHUB_ORG}/${GITHUB_REPO}"
+    save_var "GITHUB_REPO" "${GITHUB_REPO}"
+  fi
   init_var "GITHUB_APP_ID" "" "Enter GitHub App ID (for GitHub Token Minter)"
   init_var "KMS_KEYRING" "github-token-minter-keyring" "Enter KMS Keyring Name (for GitHub Token Minter)"
   init_var "KMS_KEY" "github-token-minter-key" "Enter KMS Key Name (for GitHub Token Minter)"

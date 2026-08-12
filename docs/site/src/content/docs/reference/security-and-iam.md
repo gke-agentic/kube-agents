@@ -80,16 +80,16 @@ The **custom** set binds exactly the roles listed in `PLATFORM_AGENT_CUSTOM_ROLE
 
 ## Kubernetes RBAC
 
-Independently of the GCP permission set, the operator grants the agent KSA a **read-only** footprint on the Kubernetes API, plus two namespaced housekeeping Roles. It creates four bindings (each including the agent KSA and its Workload Identity GSA as subjects, see [`platformagent_manifests.go`](https://github.com/gke-labs/kube-agents/blob/main/k8s-operator/internal/controller/platformagent_manifests.go)):
+Independently of the GCP permission set, the operator grants the agent KSA a **read-only** footprint on the Kubernetes API, plus two namespaced housekeeping Roles. It creates four bindings (see [`platformagent_manifests.go`](https://github.com/gke-labs/kube-agents/blob/main/k8s-operator/internal/controller/platformagent_manifests.go)):
 
-| Binding                                          | Role                         | Grants                                                                                                                                     |
-| ------------------------------------------------ | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `kubeagents:viewer:<namespace>:<name>`           | standard `view` ClusterRole  | Read access to most namespaced resources — **excluding Secrets**.                                                                          |
-| `kubeagents:explorer:<namespace>:<name>`         | custom `kubeagents:explorer` | `get`/`list` on `nodes`, `pods`, `namespaces`, and CRDs.                                                                                   |
-| `kubeagents:leader:<namespace>:<name>`           | custom namespaced Role       | Housekeeping in the agent's **own namespace only**: write on `coordination.k8s.io` `leases` (leader election) and `get`/`patch` on `pods`. |
-| `kubeagents:configmap-editor:<namespace>:<name>` | custom namespaced Role       | Update/patch strictly scoped to the `<name>-github-state` ConfigMap in the agent's own namespace by `resourceNames`.                       |
+| Binding                                          | Role                                          | Grants                                                                                                                                     |
+| ------------------------------------------------ | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `kubeagents:minimal:<namespace>:<name>`          | cluster-wide `kubeagents:minimal:<ns>:<name>` | Read access to workloads, nodes, namespaces, events, and metrics — **excluding Secrets**.                                                  |
+| `kubeagents:local:<namespace>:<name>`            | namespaced `kubeagents:local:<ns>:<name>`     | Read access strictly scoped to `kubeagents.x-k8s.io` custom resources in the agent's own namespace.                                        |
+| `kubeagents:leader:<namespace>:<name>`           | custom namespaced Role                        | Housekeeping in the agent's **own namespace only**: write on `coordination.k8s.io` `leases` (leader election) and `get`/`patch` on `pods`. |
+| `kubeagents:configmap-editor:<namespace>:<name>` | custom namespaced Role                        | Update/patch strictly scoped to the `<name>-github-state` ConfigMap in the agent's own namespace by `resourceNames`.                       |
 
-For the default CR (`platform-agent` in `kubeagents-system`) the bindings resolve to `kubeagents:minimal:kubeagents-system:platform-agent`, `kubeagents:local:kubeagents-system:platform-agent`, and `kubeagents:leader:kubeagents-system:platform-agent`.
+For the default CR (`platform-agent` in `kubeagents-system`) the bindings resolve to `kubeagents:minimal:kubeagents-system:platform-agent`, `kubeagents:local:kubeagents-system:platform-agent`, `kubeagents:leader:kubeagents-system:platform-agent`, and `kubeagents:configmap-editor:kubeagents-system:platform-agent`.
 
 The Kubernetes `minimal` and `local` roles carry no write verbs (`create`, `update`, `patch`, `delete`) and grant no read access to Secrets or cluster RBAC. (The GCP IAM `read-only` permission set independently provides cluster-viewer read via Cloud IAM for audits connecting through `gcloud container clusters get-credentials`.) The only write grant anywhere in Kubernetes RBAC is the `leader` Role, and it is confined to the agent's own namespace — leader-election `leases`, plus `get`/`patch` on `pods` there. The agent cannot modify Deployments, Services, or namespaces, and it cannot read Secret values — if a resource it proposes needs a Secret, it references the Secret by name rather than reading its contents.
 
