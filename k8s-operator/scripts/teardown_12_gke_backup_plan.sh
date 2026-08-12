@@ -15,6 +15,13 @@ source "${SCRIPT_DIR}/common.sh" "$@"
 
 ensure_teardown_state
 
+# Do not prompt in teardown. If the value is explicitly false, skip.
+# If missing, we assume true to attempt a safe cleanup of any potential orphaned resources.
+if [ -n "${ENABLE_GKE_BACKUP_PLAN:-}" ] && ! is_truthy "$ENABLE_GKE_BACKUP_PLAN"; then
+  echo -e "  ${C_YELLOW}ℹ Skipping GKE Backup Plan teardown (ENABLE_GKE_BACKUP_PLAN=${ENABLE_GKE_BACKUP_PLAN}).${C_RESET}"
+  exit 0
+fi
+
 if [ "${DRY_RUN:-0}" -ne 1 ] && ! gcloud beta --help &>/dev/null; then
   print_info "The 'gcloud beta' component is not installed. Skipping GKE Backup Plan teardown."
   exit 0
