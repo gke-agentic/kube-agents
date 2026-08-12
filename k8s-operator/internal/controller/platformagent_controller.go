@@ -236,7 +236,7 @@ func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 	// Reconcile NetworkPolicy
-	if err := r.reconcileNetworkPolicy(ctx, instance); err != nil {
+	if err := r.reconcileNetworkPolicy(ctx, instance, otlpEndpoint); err != nil {
 		return ctrl.Result{}, err
 	}
 	if err := r.deleteLegacyCredentialIsolationResources(ctx, instance); err != nil {
@@ -504,7 +504,7 @@ func (r *PlatformAgentReconciler) reconcileService(ctx context.Context, agent *a
 	return nil
 }
 
-func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, agent *agentv1alpha1.PlatformAgent) error {
+func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, agent *agentv1alpha1.PlatformAgent, otlpEndpoint string) error {
 	dnsClusterIP := "10.96.0.10"
 	var kubeDnsSvc corev1.Service
 	if err := r.Get(ctx, types.NamespacedName{Namespace: "kube-system", Name: "kube-dns"}, &kubeDnsSvc); err == nil {
@@ -626,7 +626,7 @@ func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, ag
 	}
 
 	// 2. Build and reconcile standard NetworkPolicy (omits blanket external HTTPS egress only if replacement FQDN policy is active)
-	netpol := buildNetworkPolicy(agent, apiTargets, dnsClusterIP, fqdnEnabled)
+	netpol := buildNetworkPolicy(agent, apiTargets, dnsClusterIP, fqdnEnabled, otlpEndpoint)
 	if err := ctrl.SetControllerReference(agent, netpol, r.Scheme); err != nil {
 		return fmt.Errorf("failed to set controller reference on NetworkPolicy %s/%s: %w", netpol.Namespace, netpol.Name, err)
 	}

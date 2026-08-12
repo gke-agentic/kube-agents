@@ -2630,9 +2630,25 @@ func isDashboardEnabled(agent *agentv1alpha1.PlatformAgent) bool {
 	return true
 }
 
+// otlpCollectorNamespace extracts the target namespace from an OTLP endpoint URL.
+func otlpCollectorNamespace(endpoint string) string {
+	if endpoint == "" {
+		return "gke-managed-otel"
+	}
+	host := strings.TrimPrefix(endpoint, "https://")
+	host = strings.TrimPrefix(host, "http://")
+	host = strings.SplitN(host, "/", 2)[0]
+	host = strings.SplitN(host, ":", 2)[0]
+	parts := strings.Split(host, ".")
+	if len(parts) == 2 || (len(parts) >= 3 && parts[2] == "svc") {
+		return parts[1]
+	}
+	return ""
+}
+
 // buildNetworkPolicy generates the restrictive NetworkPolicy manifest for PlatformAgent.
 // Note: This is the operator-generated version; Kustomize static deployments use deploy/kustomize/platform/.
-func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, dnsClusterIP string, fqdnEnabled bool) *networkingv1.NetworkPolicy {
+func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, dnsClusterIP string, fqdnEnabled bool, otlpEndpoint string) *networkingv1.NetworkPolicy {
 	udp := corev1.ProtocolUDP
 	tcp := corev1.ProtocolTCP
 
@@ -2873,21 +2889,23 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, d
 	}
 
 	// 8. GKE Managed OpenTelemetry Collector (Trace Export)
-	egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{
-		Ports: []networkingv1.NetworkPolicyPort{
-			{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(4317))},
-			{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(4318))},
-		},
-		To: []networkingv1.NetworkPolicyPeer{
-			{
-				NamespaceSelector: &metav1.LabelSelector{
-					MatchLabels: map[string]string{
-						"kubernetes.io/metadata.name": "gke-managed-otel",
+	if ns := otlpCollectorNamespace(otlpEndpoint); ns != "" {
+		egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(4317))},
+				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(4318))},
+			},
+			To: []networkingv1.NetworkPolicyPeer{
+				{
+					NamespaceSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"kubernetes.io/metadata.name": ns,
+						},
 					},
 				},
 			},
-		},
-	})
+		})
+	}
 
 	// 9. GitHub Token Minter (Minty)
 	egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{

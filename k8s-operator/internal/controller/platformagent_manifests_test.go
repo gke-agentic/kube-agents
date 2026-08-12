@@ -3355,3 +3355,29 @@ func TestProfileOverlayKey(t *testing.T) {
 		t.Error("per-profile and class overlay keys must not collide")
 	}
 }
+
+func TestOtlpCollectorNamespace(t *testing.T) {
+	tests := []struct {
+		endpoint string
+		want     string
+	}{
+		{"", "gke-managed-otel"},
+		{"http://opentelemetry-collector.gke-managed-otel.svc.cluster.local:4318", "gke-managed-otel"},
+		{"http://otel-collector.observability.svc.cluster.local:4318", "observability"},
+		{"https://my-custom-collector.monitoring:4317", "monitoring"},
+		{"http://my-collector.custom.svc:4318/v1/traces", "custom"},
+		{"http://just-host:4318", ""},
+		{"just-host:4318", ""},
+		{"https://foo.bar.com:4317", ""},
+		{"http://my-collector.custom.svc.cluster.local:4318/v1/traces", "custom"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.endpoint, func(t *testing.T) {
+			got := otlpCollectorNamespace(tc.endpoint)
+			if got != tc.want {
+				t.Errorf("otlpCollectorNamespace(%q) = %q; want %q", tc.endpoint, got, tc.want)
+			}
+		})
+	}
+}
