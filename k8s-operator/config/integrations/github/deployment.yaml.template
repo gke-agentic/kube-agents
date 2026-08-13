@@ -141,10 +141,16 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    # Allow GCP Workload Identity / Metadata Server
+    # Allow GCP Workload Identity / Metadata Server (link-local and node internal IP on Dataplane V2)
     - to:
         - ipBlock:
-            cidr: 0.0.0.0/0
+            cidr: 169.254.169.254/32
+        - ipBlock:
+            cidr: 10.0.0.0/8
+        - ipBlock:
+            cidr: 172.16.0.0/12
+        - ipBlock:
+            cidr: 192.168.0.0/16
       ports:
         - protocol: TCP
           port: 80
@@ -159,4 +165,5 @@ spec:
       ports:
         - protocol: TCP
           port: 443
+
 
