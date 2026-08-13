@@ -35,7 +35,8 @@ spec:
             cidr: 169.254.20.10/32
         - ipBlock:
             cidr: 10.96.0.10/32
-    # 2. GCP Workload Identity / Metadata Server (Link-Local & Node IPs on Dataplane V2)
+    # 2. GCP Workload Identity / Metadata Server (Link-Local & Daemon pod)
+    # On GKE Dataplane V2, patch this with your node subnet CIDR (e.g., 10.150.0.0/24)
     - ports:
         - port: 80
           protocol: TCP
@@ -44,23 +45,11 @@ spec:
       to:
         - ipBlock:
             cidr: 169.254.169.254/32
-        # On GKE Dataplane V2 (eBPF/Cilium), metadata requests are DNAT'd to the hosting node's internal IP.
-        - ipBlock:
-            cidr: 10.0.0.0/8
-        - ipBlock:
-            cidr: 172.16.0.0/12
-        - ipBlock:
-            cidr: 192.168.0.0/16
     # 3. GKE Workload Identity Host Network Daemon (Port 988 only)
+    # On GKE Dataplane V2, patch this with your node subnet CIDR (e.g., 10.150.0.0/24)
     - ports:
         - port: 988
           protocol: TCP
       to:
         - ipBlock:
             cidr: 169.254.169.254/32
-        - ipBlock:
-            cidr: 10.0.0.0/8
-        - ipBlock:
-            cidr: 172.16.0.0/12
-        - ipBlock:
-            cidr: 192.168.0.0/16

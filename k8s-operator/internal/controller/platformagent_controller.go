@@ -633,16 +633,15 @@ func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, ag
 	if r.APIReader != nil {
 		nodesReader = r.APIReader
 	}
-	if err := nodesReader.List(ctx, &nodeList); err == nil {
-		for i := range nodeList.Items {
-			for _, addr := range nodeList.Items[i].Status.Addresses {
-				if addr.Type == corev1.NodeInternalIP && net.ParseIP(addr.Address) != nil {
-					metadataNodeIPs = append(metadataNodeIPs, addr.Address)
-				}
+	if err := nodesReader.List(ctx, &nodeList); err != nil {
+		return fmt.Errorf("failed to list nodes for metadata server DNAT targets: %w", err)
+	}
+	for i := range nodeList.Items {
+		for _, addr := range nodeList.Items[i].Status.Addresses {
+			if addr.Type == corev1.NodeInternalIP && net.ParseIP(addr.Address) != nil {
+				metadataNodeIPs = append(metadataNodeIPs, addr.Address)
 			}
 		}
-	} else if !errors.IsNotFound(err) {
-		logf.FromContext(ctx).Info("Failed to list nodes for metadata server DNAT targets; metadata access may fail on Dataplane V2", "error", err)
 	}
 
 	// 2. Build and reconcile standard NetworkPolicy (omits blanket external HTTPS egress only if replacement FQDN policy is active)

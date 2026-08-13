@@ -141,21 +141,14 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    # Allow GCP Workload Identity / Metadata Server (link-local and node internal IP on Dataplane V2)
+    # Allow GCP Workload Identity / Metadata Server (Link-Local & Daemon)
+    # On GKE Dataplane V2, patch this with your node subnet CIDR (e.g., 10.150.0.0/24)
     - to:
         - ipBlock:
             cidr: 169.254.169.254/32
-        - ipBlock:
-            cidr: 10.0.0.0/8
-        - ipBlock:
-            cidr: 172.16.0.0/12
-        - ipBlock:
-            cidr: 192.168.0.0/16
       ports:
         - protocol: TCP
           port: 80
-        - protocol: TCP
-          port: 8080
         - protocol: TCP
           port: 988
     # Allow HTTPS outbound connection to GitHub and KMS APIs
