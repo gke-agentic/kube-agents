@@ -35,10 +35,33 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m warn\033[0m %s\n' "$*" >&2; }
 
+# Runs before anything reads the configuration. init is idempotent and cheap
+# when nothing changed, and skipping it is how a routine `git pull` that adds a
+# module turns every subcommand below into a failure.
+ensure_init() {
+  terraform init -input=false >/dev/null || {
+    warn "terraform init failed; run it by hand to see why"
+    exit 1
+  }
+}
+
 # Reads a resolved input variable. terraform console loads terraform.tfvars the
 # same way apply does, so defaults and overrides are honoured without this script
 # re-implementing Terraform's precedence rules.
-tfvar() { echo "var.$1" | terraform console 2>/dev/null | tail -1 | tr -d '"'; }
+#
+# The error is printed rather than discarded. With stderr sent to /dev/null a
+# failing console left an empty value, `set -e` killed the script on the
+# assignment, and the run ended with no output whatsoever — which is exactly what
+# an uninitialised module did before ensure_init existed.
+tfvar() {
+  local out
+  if ! out=$(echo "var.$1" | terraform console 2>&1); then
+    printf '%s\n' "$out" >&2
+    warn "could not evaluate var.$1 (see the terraform error above)"
+    exit 1
+  fi
+  printf '%s\n' "$out" | tail -1 | tr -d '"'
+}
 
 # The state list is read once and matched in memory. Piping it straight into
 # `grep -q` looks equivalent but is not: grep exits at the first match, terraform
@@ -258,10 +281,12 @@ forget_kms() {
 case "${1:-}" in
   adopt-kms)
     shift
+    ensure_init
     adopt_kms
     ;;
   apply)
     shift
+    ensure_init
     adopt_kms
     log "terraform apply"
     # No -input=false: this prompts like plain `terraform apply` does. Pass
@@ -270,6 +295,7 @@ case "${1:-}" in
     ;;
   destroy)
     shift
+    ensure_init
     delete_agent_cr
     purge_backups
     disable_deletion_protection
