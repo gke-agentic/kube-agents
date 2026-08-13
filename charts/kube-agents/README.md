@@ -138,6 +138,28 @@ resolves to that GSA:
 `make gcp-provision-09-litellm` (the annotated KSA), both run from
 `k8s-operator/`.
 
+### Turning telemetry off
+
+The operator's endpoint ladder always resolves to something — a collector it
+discovers in the cluster, otherwise the GKE Managed OpenTelemetry collector — so
+`telemetry.otlpEndpoint` can move the exporter but cannot switch it off. On a
+cluster running neither (a plain `gke-cluster` module cluster has no
+`gke-managed-otel` namespace) the exporter then retries a hostname that never
+resolves, for the life of the pod.
+
+`platformAgent.deployment.env` is the off switch. The operator applies it after
+its own container environment, so it wins:
+
+```yaml
+platformAgent:
+  deployment:
+    env:
+      - name: OTEL_SDK_DISABLED
+        value: "true"
+```
+
+Use `telemetry.otlpEndpoint` instead when you do have a collector to point at.
+
 ### Integrations
 
 - **Google Chat** — `platformAgent.integration.googleChat.enabled=true` plus the
@@ -206,9 +228,24 @@ Exactly one owner creates the agent's KSA, depending on
 
 ## Uninstalling
 
+```bash
+helm uninstall kube-agents -n kubeagents-system
+```
+
 The `PlatformAgent` resource carries a finalizer that only the operator can
-clear. Delete the CR and wait for it to disappear **before** uninstalling the
-release (which removes the operator), otherwise the CR strands:
+clear, and Helm deletes the CR and the operator in the same pass — so nothing
+would be left to clear it, the CR would strand, and the namespace would hang in
+`Terminating`. `platformAgent.cleanupHook` (on by default) prevents that with a
+`pre-delete` hook that deletes the CR and waits for the finalizer while the
+operator is still running.
+
+The hook runs `kubectl` from `registry.k8s.io/kubectl`, because the operator
+image is distroless and carries no client. It is best-effort on purpose: the
+container exits 0 even when the wait times out, since a failed `pre-delete`
+hook aborts the entire uninstall — worse than the stranded CR it prevents. Use
+`platformAgent.cleanupHook.image` to point at your own mirror.
+
+With `platformAgent.cleanupHook.enabled=false`, the ordering is yours to keep:
 
 ```bash
 kubectl delete platformagent platform-agent -n kubeagents-system --wait

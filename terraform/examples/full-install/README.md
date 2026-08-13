@@ -83,6 +83,11 @@ terraform init
 terraform apply
 ```
 
+A first apply into an empty project needs nothing else. Once the project has
+been destroyed and re-applied even once, use `make tf-apply` instead — it
+adopts the Cloud KMS resources GCP refuses to delete, which a bare
+`terraform apply` fails on. See [Teardown and re-apply](#teardown-and-re-apply).
+
 ### The `image_tag` rule
 
 `image_tag` (default `latest`) overrides both the operator and platform-agent
@@ -130,9 +135,10 @@ for CMEK.
 Turning the plan back off is not symmetric with turning it on: a BackupPlan
 cannot be deleted while it still owns backups, so `terraform destroy` — and
 setting `enable_gke_backup_plan = false` again, and changing
-`backup_encryption_key` — fails on that resource until the backups are purged
-by hand. The [module README](../../modules/gke-backup-plan/README.md#teardown-is-not-symmetric)
-has the commands.
+`backup_encryption_key` — fails on that resource until the backups are purged.
+`make tf-destroy` purges them for you; the
+[module README](../../modules/gke-backup-plan/README.md#teardown-is-not-symmetric)
+has the commands for the other two cases, which no teardown script covers.
 
 ### cert-manager
 
@@ -214,25 +220,40 @@ module "gke_cluster" {
 would install the chart from the OCI registry rather than a local path — see
 the [chart README](../../../charts/kube-agents/README.md).
 
-## Teardown
+## Teardown and re-apply
 
 Use Terraform for teardown; do not mix this install path with the shell provisioner's
 `teardown_*.sh` scripts. In particular, `teardown_08_deploy_platform_agent.sh` removes the
 Terraform-managed `kube-agents-host` label out of band and causes plan drift.
 
-`terraform destroy` removes the Helm release, but that also removes the
-operator — and the `PlatformAgent` CR carries a finalizer only the operator
-can clear, so destroying first strands the CR and hangs the namespace
-deletion. Delete the CR and wait for it to disappear **before** destroying:
+Four things in this stack are not symmetric — applying them is not the inverse
+of destroying them — and each one breaks a plain `terraform destroy`, or the
+`terraform apply` that follows it. [`lifecycle.sh`](lifecycle.sh) handles all
+four, so the cycle is repeatable:
 
 ```bash
-# Use your namespace value if you overrode the kubeagents-system default.
-kubectl delete platformagent platform-agent -n kubeagents-system --wait
-terraform destroy
+make tf-destroy     # or: ./terraform/examples/full-install/lifecycle.sh destroy
+make tf-apply       # or: ./terraform/examples/full-install/lifecycle.sh apply
 ```
 
-The cluster is created with `deletion_protection = true` by default; set the
-variable to `false` (and apply) before a destroy can remove the cluster.
+What each one does that raw Terraform cannot:
+
+| Asymmetry                                                            | Handled by                                                                    |
+| -------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| KMS key rings and keys can never be deleted, so the next apply 409s  | `tf-apply` imports the survivors before applying (`lifecycle.sh adopt-kms`)   |
+| The `PlatformAgent` finalizer strands the CR and hangs the namespace | `tf-destroy` deletes the CR and waits, force-clearing the finalizer if wedged |
+| A `BackupPlan` cannot be deleted while it owns backups               | `tf-destroy` purges the plan's backups first                                  |
+| `deletion_protection = true` cannot be overridden by a destroy alone | `tf-destroy` applies it as `false`, then destroys                             |
+
+The chart also carries a `pre-delete` hook that removes the CR and waits for
+its finalizer, so a plain `helm uninstall` is safe on its own; `tf-destroy`
+does it up front anyway, which turns the hook into a no-op. Disable it with
+`platformAgent.cleanupHook.enabled=false`.
+
+Running `terraform destroy` directly still works, but you own the four steps
+above yourself — starting with `kubectl delete platformagent <name> -n
+kubeagents-system --wait` while the operator is still running, and setting
+`deletion_protection = false` and applying before the cluster can be removed.
 
 > [!WARNING]
 > Destroying also uninstalls cert-manager when this composition installed it,
@@ -244,7 +265,7 @@ variable to `false` (and apply) before a destroy can remove the cluster.
 
 > [!NOTE]
 > Cloud KMS key rings and crypto keys (for GKE CMEK and optional GitHub minter)
-> cannot be deleted from GCP. `terraform destroy` removes them from state, but
-> re-applying with the same names requires either importing them back into state
-> (`terraform import module.gke_cluster.google_kms_key_ring.gke_keyring[0] ...`)
-> or choosing new key/keyring names.
+> cannot be deleted from GCP — `terraform destroy` only removes them from state,
+> and they stay in the project forever. `make tf-apply` imports them back
+> automatically. Applying with bare `terraform apply` after a destroy fails with
+> a 409 until you either import them yourself or choose new key/keyring names.

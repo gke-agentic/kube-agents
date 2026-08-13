@@ -48,6 +48,32 @@ spec:
     availability:
       {{- . | nindent 6 }}
     {{- end }}
+    {{- /*
+      The operator applies spec.deployment.env AFTER its own container env, so
+      anything set here wins. That is the only way to reach settings the operator
+      computes rather than exposes — OTEL_SDK_DISABLED being the one that matters
+      in practice, since the telemetry ladder always resolves to some endpoint and
+      a cluster with no collector otherwise retries a dead one forever.
+    */}}
+    {{- with .Values.platformAgent.deployment.env }}
+    env:
+      {{- /*
+        `value` is quoted rather than passed through toYaml because the CRD types
+        it as a string: `--set ...value=true` yields a YAML boolean, which the API
+        server rejects. valueFrom is a structured EnvVarSource, so it goes through
+        untouched.
+      */}}
+      {{- range . }}
+      - name: {{ .name | quote }}
+        {{- if hasKey . "value" }}
+        value: {{ .value | quote }}
+        {{- end }}
+        {{- with .valueFrom }}
+        valueFrom:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      {{- end }}
+    {{- end }}
   security:
     serviceAccountName: {{ .Values.platformAgent.security.serviceAccountName | quote }}
     {{- with .Values.platformAgent.security.serviceAccountAnnotations }}

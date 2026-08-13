@@ -209,6 +209,12 @@ chart-check: ## Verify the chart's CRD/RBAC copies match k8s-operator/config (CI
 iac-parity-check: ## Verify the provisioning scripts, Terraform, and the Helm chart agree (CI runs this).
 	@python3 scripts/check_iac_parity.py
 
+tf-apply: ## Apply terraform/examples/full-install, adopting KMS resources a previous destroy left behind.
+	@./terraform/examples/full-install/lifecycle.sh apply $(ARGS)
+
+tf-destroy: ## Destroy terraform/examples/full-install, clearing the finalizer, backups, and deletion protection first.
+	@./terraform/examples/full-install/lifecycle.sh destroy $(ARGS)
+
 validate: ## Fail if any skill sits under agents/*/defaults/skills/.
 	@if [ -n "$(BAD_SKILLS)" ]; then \
 		echo "Error: Skills should not be placed under agents/*/defaults/skills. Move them to agents/*/skills/"; \

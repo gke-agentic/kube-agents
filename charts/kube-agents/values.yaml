@@ -193,6 +193,36 @@ platformAgent:
       # k8s-operator/scripts/provision_02_gvisor_nodepool.sh creates, which has
       # no Terraform equivalent. Empty omits the field.
       runtimeClassName: ""
+    # Extra environment for the agent container, applied after the operator's own
+    # values so it overrides them. The case this exists for is telemetry: the
+    # operator's endpoint ladder always resolves to SOMETHING — an in-cluster
+    # collector if it discovers one, otherwise the GKE managed collector at
+    # opentelemetry-collector.gke-managed-otel — and a cluster that runs neither
+    # has no way to say "no telemetry". The exporter then retries a hostname that
+    # does not resolve for the life of the pod. Turn it off with:
+    #
+    #   env:
+    #     - name: OTEL_SDK_DISABLED
+    #       value: "true"
+    #
+    # Prefer telemetry.otlpEndpoint when you do have a collector; this is the
+    # off switch, not the way to point at one.
+    env: []
+  # pre-delete hook that removes the PlatformAgent CR and waits for the operator
+  # to clear its finalizer, before Helm deletes the operator itself. Without it,
+  # `helm uninstall` and `terraform destroy` strand the CR and hang the namespace
+  # in Terminating — the manual "delete the CR first" step the READMEs used to
+  # require. Best-effort by design: the hook exits 0 even on timeout, because a
+  # failed pre-delete hook aborts the entire uninstall.
+  cleanupHook:
+    enabled: true
+    # Needs a kubectl; the operator image is distroless and has none. Skew of a
+    # minor or two is fine for a delete.
+    image: registry.k8s.io/kubectl:v1.34.0
+    # How long to wait for the finalizer to clear.
+    timeout: 120s
+    # Bounds the Job itself (image pull, scheduling) above that wait.
+    activeDeadlineSeconds: 300
   security:
     # Kubernetes ServiceAccount the agent pod runs as. The Workload Identity
     # binding must target this KSA (see the chart README); the default matches
