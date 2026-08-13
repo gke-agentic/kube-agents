@@ -207,7 +207,9 @@ case "${1:-}" in
     shift
     adopt_kms
     log "terraform apply"
-    terraform apply -input=false "$@"
+    # No -input=false: this prompts like plain `terraform apply` does. Pass
+    # -auto-approve through ARGS for unattended runs.
+    terraform apply "$@"
     ;;
   destroy)
     shift
@@ -217,7 +219,7 @@ case "${1:-}" in
     log "terraform destroy"
     # deletion_protection is passed again because destroy re-evaluates the config,
     # and the variable's default would otherwise reinstate the guard.
-    terraform destroy -input=false -var="deletion_protection=false" "$@"
+    terraform destroy -var="deletion_protection=false" "$@"
     log "done. The KMS key rings remain in the project by design — GCP cannot"
     log "delete them. The next 'lifecycle.sh apply' adopts them automatically."
     ;;
