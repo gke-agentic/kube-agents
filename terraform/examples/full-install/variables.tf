@@ -243,3 +243,27 @@ variable "backup_encryption_key" {
   type        = string
   default     = ""
 }
+
+variable "enable_cert_manager" {
+  description = "Install cert-manager, which issues the serving certificate for the operator's admission webhooks (mirrors provision_03_gcp_gke_operator.sh). Set to false when the target cluster already runs cert-manager: unlike the script, Terraform does not detect an existing install and the apply fails on the existing CRDs. Turning this off with enable_webhooks left on leaves the webhooks without a certificate."
+  type        = bool
+  default     = true
+}
+
+variable "cert_manager_version" {
+  description = "cert-manager chart version, pinned to the release provision_03_gcp_gke_operator.sh installs. Values above 1.14.x need the installCRDs key in main.tf renamed to crds.enabled."
+  type        = string
+  default     = "v1.14.4"
+}
+
+variable "enable_webhooks" {
+  description = "Enable the operator's PlatformAgent admission webhooks (defaulting, validation, delete protection). Requires cert-manager in the cluster — either enable_cert_manager or a pre-existing install."
+  type        = bool
+  default     = true
+}
+
+variable "extra_helm_values" {
+  description = "Extra values for the kube-agents Helm release, covering chart settings this composition does not expose as its own variable (telemetry.otlpEndpoint, litellm.otel, the resource blocks, the PlatformAgent harness knobs). Passed as a second values document, so Helm deep-merges it key by key over the ones computed here and anything set wins. Setting a key the composition also computes — platformAgent.harness.clusterName, say — overrides it, which is rarely what you want."
+  type        = any
+  default     = {}
+}

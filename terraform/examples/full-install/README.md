@@ -28,6 +28,13 @@ same cluster, service accounts, and IAM bindings.
 - Optionally (`enable_github_minter = true`) the GitHub token minter backend
   ([`github-minter`](../../modules/github-minter) module): minter service
   account plus a KMS key ring and signing key.
+- Unless `enable_cert_manager = false`, [cert-manager](https://cert-manager.io)
+  via `helm_release`, pinned to the same version
+  [`provision_03_gcp_gke_operator.sh`](../../../k8s-operator/scripts/provision_03_gcp_gke_operator.sh)
+  installs. It issues the serving certificate for the operator's admission
+  webhooks, which this composition turns on (`enable_webhooks`, default true)
+  because it can guarantee the dependency — a bare `helm install` of the chart
+  cannot, and leaves them off. See [cert-manager](#cert-manager) below.
 - The [`kube-agents` Helm chart](../../../charts/kube-agents) (operator +
   `PlatformAgent` CR + the LiteLLM gateway the agent's default model endpoint
   requires) via `helm_release`, installed straight from this repository
@@ -127,6 +134,39 @@ setting `enable_gke_backup_plan = false` again, and changing
 by hand. The [module README](../../modules/gke-backup-plan/README.md#teardown-is-not-symmetric)
 has the commands.
 
+### cert-manager
+
+The operator's admission webhooks — defaulting, validation, and the
+delete-protection tripwire on the `PlatformAgent` CR — need a serving
+certificate, and cert-manager is what issues it. `enable_cert_manager`
+(default `true`) installs it as its own `helm_release` at
+`cert_manager_version`, the version `provision_03_gcp_gke_operator.sh` applies;
+`enable_webhooks` (default `true`) then turns the webhooks on in the chart.
+
+Three differences from the script path are worth knowing:
+
+- **This is not idempotent against an existing install.** `provision_03` skips
+  cert-manager when a `cert-manager-webhook` Deployment is already available;
+  Terraform does not look, and the apply fails on the CRDs that are already
+  there. Set `enable_cert_manager = false` on such a cluster — the webhooks
+  keep working, they just use the cert-manager that is already installed.
+- **Destroying takes the CRDs with it**, and therefore every `Certificate`,
+  `Issuer`, and `ClusterIssuer` in the cluster — not only the ones this
+  composition created. On any cluster that shares cert-manager with another
+  workload, install it separately and set `enable_cert_manager = false`.
+- **Leader election moves rather than switching off.** The script patches
+  `--leader-elect=false` onto the Autopilot deployments because cert-manager's
+  leases default to `kube-system`, which Autopilot restricts. This sets
+  `global.leaderElection.namespace = "cert-manager"`, which clears the same
+  restriction without giving up the lock.
+
+The chart's `failurePolicy` stays at its default of `Ignore` here. Helm applies
+the webhook configurations before both the `Certificate` and the
+`PlatformAgent` CR, so `Fail` would have the API server reject this
+composition's own CR on the first apply. See the
+[chart README](../../../charts/kube-agents/README.md) for switching it to
+`Fail` afterwards.
+
 ### Google Chat and GitHub integrations
 
 With `enable_google_chat = true` the composition provisions the GCP backend
@@ -193,6 +233,14 @@ terraform destroy
 
 The cluster is created with `deletion_protection = true` by default; set the
 variable to `false` (and apply) before a destroy can remove the cluster.
+
+> [!WARNING]
+> Destroying also uninstalls cert-manager when this composition installed it,
+> and that removes its CRDs — deleting every `Certificate`, `Issuer`, and
+> `ClusterIssuer` in the cluster, including any another workload owns. Only the
+> cluster this composition created is normally affected, since it is destroyed
+> too; the case to watch is `enable_cert_manager = true` pointed at a cluster
+> you did not create here.
 
 > [!NOTE]
 > Cloud KMS key rings and crypto keys (for GKE CMEK and optional GitHub minter)

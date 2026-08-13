@@ -174,6 +174,16 @@ same template. Under `IfNotPresent` a node that has already cached the tag never
 picks up a rebuild, which is the normal case for the Terraform composition's
 default `image_tag = "latest"`.
 
+**Consider `IfNotPresent` when you pin the tag.** The chart's own default tag is
+`.Chart.AppVersion`, which the release workflow overwrites with the git tag — an
+immutable tag, where `Always` buys nothing and costs a registry round-trip on
+every pod start. It also removes a fallback: if the agent pod is rescheduled
+while ghcr.io is unreachable or rate-limiting, `Always` fails the pull and the
+pod sits in `ImagePullBackOff` where `IfNotPresent` would have started from the
+node's cache. The two install surfaces agree on `Always` for the mutable-tag
+case they were both written for, and `make iac-parity-check` holds them there;
+an install at a pinned release tag is the case that wants the override.
+
 Two knobs have no Terraform or chart-side infrastructure behind them:
 
 - `deployment.availability.runtimeClassName: gvisor` needs the GKE Sandbox node
@@ -207,14 +217,40 @@ helm uninstall kube-agents -n kubeagents-system
 
 ## Notes
 
-- **Admission webhooks are not part of chart installs** (deliberate follow-up
-  scope, not an oversight: they need cert-manager wiring and carry
-  `failurePolicy: Fail` risk, so they warrant their own change). The chart
-  ships no webhook Service, certificate, or `*WebhookConfiguration`, and pins
-  `ENABLE_WEBHOOKS=false` on the manager; the webhooks' validation, defaulting,
-  and delete-protection therefore don't apply (CRD-level CEL validation and
-  OpenAPI defaulting still do). The provisioning-script / kustomize install
-  path provides them.
+- **Admission webhooks are off by default** (`operator.webhooks.enabled=false`)
+  and the chart renders the full wiring when you turn them on: the webhook
+  Service, a self-signed `Issuer` and `Certificate`, both
+  `*WebhookConfiguration`s with cert-manager's `inject-ca-from` annotation, and
+  the manager's cert mount on `:9443`. Left off, the webhooks' validation,
+  defaulting, and delete-protection don't apply (CRD-level CEL validation and
+  OpenAPI defaulting still do).
+
+  They are off by default only because they need **cert-manager** and the chart
+  cannot install it for you — a default-on chart would fail at apply time on
+  every cluster without the CRDs. Install cert-manager, then:
+
+  ```bash
+  helm upgrade kube-agents … --set operator.webhooks.enabled=true
+  ```
+
+  `terraform/examples/full-install` does both in one apply.
+
+  Two behaviours worth knowing before you enable them:
+
+  - **`failurePolicy` defaults to `Ignore`, where the kustomize path uses
+    `Fail`.** Helm applies the webhook configurations before both the
+    `Certificate` and the `PlatformAgent` CR, so under `Fail` the API server
+    rejects this chart's own CR on a fresh install and the release never
+    completes. The chart refuses that combination at render time rather than
+    letting you discover it half-applied. `Fail` is available and correct once
+    the operator is serving — set it on a later upgrade, or on a release
+    installed with `platformAgent.enabled=false`.
+  - **The configurations are cluster-scoped and match every namespace**, as
+    they do under kustomize, because the manager reconciles PlatformAgents
+    cluster-wide. Two releases with webhooks on therefore both intercept every
+    PlatformAgent in the cluster; under `Fail` an outage of either one blocks
+    writes for both. Run webhooks from one release.
+
 - **CRDs** live in `crds/` and are installed by Helm on first install but never
   upgraded (a Helm limitation) — apply `k8s-operator/config/crd/bases/`
   manually when upgrading across CRD changes. Automating this (pre-upgrade

@@ -20,8 +20,11 @@ directly::
 from __future__ import annotations
 
 import importlib.util
+import re
+import tempfile
 import textwrap
 import unittest
+import unittest.mock
 from pathlib import Path
 
 SPEC = importlib.util.spec_from_file_location(
@@ -293,6 +296,69 @@ class DigTest(unittest.TestCase):
 
     def test_walks_nested_path(self):
         self.assertEqual(parity.dig({"a": {"b": {"c": "v"}}}, "a.b.c"), "v")
+
+
+class WebhookParityTest(unittest.TestCase):
+    """The two webhook checks, exercised against drift they must catch.
+
+    Both compare a real file against a real file, so the end-to-end test only
+    proves they pass while the tree is in sync — it cannot distinguish a
+    working comparison from one whose regex stopped matching and now compares
+    two empty sets. These drive the mismatch branch directly.
+    """
+
+    def test_cert_manager_version_regex_reads_the_release_url(self):
+        version = re.search(
+            r"cert-manager/releases/download/(v[\d.]+)/cert-manager\.yaml",
+            parity.read(parity.PROVISION_03),
+        )
+        self.assertIsNotNone(
+            version, "provision_03 no longer applies cert-manager by release URL"
+        )
+        self.assertEqual(
+            version.group(1),
+            parity.tf_variable_default(
+                parity.read(parity.TF_FULL_INSTALL_VARS),
+                "cert_manager_version",
+                parity.TF_FULL_INSTALL_VARS,
+            ),
+        )
+
+    def test_webhook_paths_are_found_on_both_surfaces(self):
+        """An empty set on either side would make the comparison vacuous."""
+        kustomize = set(
+            re.findall(r"^\s*path:\s*(/\S+)", parity.read(parity.WEBHOOK_MANIFESTS), re.M)
+        )
+        chart = set(
+            re.findall(r"^\s*path:\s*(/\S+)", parity.read(parity.CHART_WEBHOOKS), re.M)
+        )
+        self.assertTrue(kustomize, "no admission paths parsed from the kustomize manifests")
+        self.assertTrue(chart, "no admission paths parsed from the chart template")
+        self.assertEqual(kustomize, chart)
+
+    def test_a_renamed_chart_path_is_reported(self):
+        """Drive the mismatch branch without editing the tree under test.
+
+        The chart constant is redirected at a scratch copy rather than the real
+        template being rewritten and restored: a restore that does not run —
+        an interrupt, a crash in the assertion — would leave a broken chart in
+        the working tree and every later check reporting drift that is this
+        test's fault.
+        """
+        original = parity.CHART_WEBHOOKS.read_text(encoding="utf-8")
+        patched = original.replace(
+            "/validate-kubeagents-x-k8s-io-v1alpha1-platformagent",
+            "/validate-kubeagents-x-k8s-io-v1alpha1-renamed",
+        )
+        self.assertNotEqual(original, patched, "the path this test rewrites has moved")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch = Path(tmp) / "operator-webhooks.yaml"
+            scratch.write_text(patched, encoding="utf-8")
+            with unittest.mock.patch.object(parity, "CHART_WEBHOOKS", scratch):
+                failures = parity.Failures()
+                parity.check_webhook_paths(failures)
+        self.assertEqual([name for name, _ in failures], ["webhook-paths"])
 
 
 class EndToEndTest(unittest.TestCase):

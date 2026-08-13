@@ -26,8 +26,24 @@ surfaces that have drifted, which is worse than no check at all.
 
 **Deliberate divergences, not checked here** (each documented where it lives):
 
-* The chart runs the operator with ``ENABLE_WEBHOOKS=false`` — chart installs
-  ship no cert-manager wiring. See the chart README's Notes.
+* **Admission webhooks are off by default in the chart** and on in the
+  kustomize path. The wiring exists on both sides now, but the chart cannot
+  install the cert-manager it depends on, so a default-on chart would fail at
+  apply time on any cluster without it. ``terraform/examples/full-install``
+  installs cert-manager and turns them on. Version and admission paths *are*
+  compared, below.
+* **The webhooks' ``failurePolicy`` is ``Ignore`` in the chart** and ``Fail`` in
+  the kustomize copy. Helm applies the webhook configurations before both the
+  Certificate and the PlatformAgent CR, so ``Fail`` deadlocks a fresh install of
+  a release that creates the CR. See the chart's ``values.yaml``.
+* ``provision_01_gcp_cluster.sh`` passes
+  ``--addons=GcpFilestoreCsiDriver,BackupRestore``. The ``gke-cluster`` module
+  mirrors the ``BackupRestore`` half and not the ``GcpFilestoreCsiDriver`` half:
+  nothing in the harness mounts a Filestore volume, so the module does not turn
+  on a driver no workload here asks for. This sits under the Autopilot/Standard
+  divergence above — ``gcloud container clusters create-auto`` has no
+  ``--addons`` flag at all, so the script's own Autopilot path could not pass
+  either half.
 * The chart rejects ``modelProvider: chatgpt``; that provider needs the
   kustomize overlay's OAuth-token PVC.
 * The ``gke-cluster`` module builds an **Autopilot** cluster where
@@ -60,12 +76,14 @@ REPO = Path(__file__).resolve().parent.parent
 
 COMMON_SH = REPO / "k8s-operator/scripts/common.sh"
 PROVISION_01 = REPO / "k8s-operator/scripts/provision_01_gcp_cluster.sh"
+PROVISION_03 = REPO / "k8s-operator/scripts/provision_03_gcp_gke_operator.sh"
 PROVISION_04 = REPO / "k8s-operator/scripts/provision_04_gcp_iam.sh"
 PROVISION_05 = REPO / "k8s-operator/scripts/provision_05_gcp_gchat.sh"
 PROVISION_12 = REPO / "k8s-operator/scripts/provision_12_gke_backup_plan.sh"
 LITELLM_DEPLOYMENT = REPO / "k8s-operator/config/integrations/litellm/base/deployment.yaml"
 LITELLM_CONFIG = REPO / "k8s-operator/config/integrations/litellm/base/config.yaml"
 CR_TEMPLATE = REPO / "k8s-operator/scripts/platform-agent.yaml.template"
+WEBHOOK_MANIFESTS = REPO / "k8s-operator/config/webhook/manifests.yaml"
 
 CHART_VALUES = REPO / "charts/kube-agents/values.yaml"
 CHART_LITELLM = REPO / "charts/kube-agents/templates/litellm.yaml"
@@ -73,8 +91,10 @@ CHART_LITELLM = REPO / "charts/kube-agents/templates/litellm.yaml"
 # Deployment's checksum cannot disagree; the aliases are therefore here, not in
 # litellm.yaml.
 CHART_HELPERS = REPO / "charts/kube-agents/templates/_helpers.tpl"
+CHART_WEBHOOKS = REPO / "charts/kube-agents/templates/operator-webhooks.yaml"
 
 TF_FULL_INSTALL = REPO / "terraform/examples/full-install/main.tf"
+TF_FULL_INSTALL_VARS = REPO / "terraform/examples/full-install/variables.tf"
 TF_IAM_VARS = REPO / "terraform/modules/kube-agents-iam/variables.tf"
 TF_CLUSTER_VARS = REPO / "terraform/modules/gke-cluster/variables.tf"
 TF_MINTER_VARS = REPO / "terraform/modules/github-minter/variables.tf"
@@ -495,6 +515,57 @@ def check_litellm_replicas(f: Failures) -> None:
         )
 
 
+def check_cert_manager_version(f: Failures) -> None:
+    """The cert-manager release both surfaces install.
+
+    The script applies a release manifest by URL and Terraform installs the
+    Helm chart of the same version. They are different artefacts of one
+    release, so the version is the only thing to compare — but it is the thing
+    that matters: the chart's CRD key was renamed at 1.15, so a bump on one
+    surface alone either skips the CRDs or installs a different API than the
+    operator's Certificate is written against.
+    """
+    script = read(PROVISION_03)
+    match = re.search(
+        r"cert-manager/releases/download/(v[\d.]+)/cert-manager\.yaml", script
+    )
+    if not match:
+        sys.exit(
+            f"ERROR: no cert-manager release URL in {PROVISION_03.relative_to(REPO)}"
+        )
+    terraform = tf_variable_default(
+        read(TF_FULL_INSTALL_VARS), "cert_manager_version", TF_FULL_INSTALL_VARS
+    )
+    if terraform != match.group(1):
+        f.add(
+            "cert-manager-version",
+            f"terraform cert_manager_version defaults to {terraform}, "
+            f"{PROVISION_03.relative_to(REPO)} installs {match.group(1)}",
+        )
+
+
+def check_webhook_paths(f: Failures) -> None:
+    """The admission paths the API server is told to call.
+
+    These strings are generated from kubebuilder markers on the Go types, and
+    the chart hand-copies them. A path that agrees with nothing is the worst
+    kind of drift here: with the chart's default failurePolicy of Ignore, the
+    API server's call 404s, admission is silently skipped, and every
+    PlatformAgent is then created unvalidated and undefaulted with no error
+    anywhere.
+    """
+    kustomize = set(re.findall(r"^\s*path:\s*(/\S+)", read(WEBHOOK_MANIFESTS), re.M))
+    chart = set(re.findall(r"^\s*path:\s*(/\S+)", read(CHART_WEBHOOKS), re.M))
+    if not kustomize:
+        sys.exit(f"ERROR: no webhook paths in {WEBHOOK_MANIFESTS.relative_to(REPO)}")
+    if kustomize != chart:
+        f.add(
+            "webhook-paths",
+            f"chart serves {sorted(chart)}, "
+            f"{WEBHOOK_MANIFESTS.relative_to(REPO)} registers {sorted(kustomize)}",
+        )
+
+
 CHECKS = (
     check_litellm_image,
     check_litellm_aliases,
@@ -506,6 +577,8 @@ CHECKS = (
     check_backup_plan,
     check_agent_pull_policy,
     check_litellm_replicas,
+    check_cert_manager_version,
+    check_webhook_paths,
 )
 
 

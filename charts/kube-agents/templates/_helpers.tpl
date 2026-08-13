@@ -139,3 +139,36 @@ selectors are immutable once the Deployment exists.
 app.kubernetes.io/name: {{ .Chart.Name }}-operator
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
+
+{{/*
+Admission-webhook object names, mirroring k8s-operator/config/webhook and
+config/certmanager.
+
+Defined here rather than inlined because four templates have to agree on them:
+the Service the webhook configurations' clientConfig points at, the Certificate
+whose dnsNames must match that Service, the Secret the Deployment mounts, and
+the inject-ca-from annotation. A name that disagrees across any two of those
+renders valid YAML and fails at admission time, which is the wrong place to find
+out.
+
+The webhook configurations are cluster-scoped, so they carry the namespace
+component the chart already uses for the operator ClusterRole — two releases in
+different namespaces would otherwise fight over one object, and the loser's
+clientConfig would point every PlatformAgent admission in the cluster at the
+wrong Service.
+*/}}
+{{- define "kube-agents.webhookServiceName" -}}
+{{ .Release.Name }}-webhook-service
+{{- end }}
+
+{{- define "kube-agents.webhookCertificateName" -}}
+{{ .Release.Name }}-serving-cert
+{{- end }}
+
+{{- define "kube-agents.webhookCertSecretName" -}}
+{{ .Release.Name }}-webhook-certs
+{{- end }}
+
+{{- define "kube-agents.webhookConfigurationPrefix" -}}
+{{ .Release.Name }}-{{ .Release.Namespace }}
+{{- end }}

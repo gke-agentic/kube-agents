@@ -12,6 +12,53 @@ operator:
     tag: "" # defaults to Chart.appVersion
     pullPolicy: IfNotPresent
   replicaCount: 1
+  # Admission webhooks for the PlatformAgent CR — defaulting, validation, and
+  # delete protection, mirroring k8s-operator/config/webhook. Without them the
+  # CRD's CEL rules and OpenAPI defaults still apply; everything the webhook
+  # adds on top does not.
+  webhooks:
+    # Off by default, unlike the kustomize install path. The webhooks need a
+    # serving certificate, cert-manager is what issues it, and the chart cannot
+    # install cert-manager for you: a release that shipped a Certificate into a
+    # cluster without the CRD would fail at apply time for every existing user.
+    # terraform/examples/full-install installs cert-manager and turns this on.
+    enabled: false
+    certManager:
+      # Render the self-signed Issuer, the Certificate, and the
+      # cert-manager.io/inject-ca-from annotation that fills in each webhook
+      # configuration's caBundle. This is the only certificate source the chart
+      # knows how to build, and it needs cert-manager's CRDs to already exist in
+      # the cluster.
+      #
+      # Turning it off leaves the Service, the webhook configurations, and the
+      # manager's cert mount in place and makes the certificate somebody else's
+      # job: provide a Secret named <release>-webhook-certs holding tls.crt and
+      # tls.key valid for <release>-webhook-service.<namespace>.svc, and inject
+      # the matching caBundle into both webhook configurations. Neither is
+      # rendered here, so getting either wrong fails admission rather than the
+      # install.
+      enabled: true
+    # What the API server does when the webhook is unreachable.
+    #
+    # `Ignore` here where the kustomize copy says `Fail`, and the reason is Helm's
+    # apply order rather than a difference of opinion about safety. Helm applies
+    # Mutating/ValidatingWebhookConfiguration before both the Certificate and the
+    # PlatformAgent CR, so on a fresh install the webhooks are registered while
+    # the operator is still waiting for a cert cert-manager has not issued yet.
+    # Under `Fail` the API server would then reject this chart's own PlatformAgent
+    # CR and the install would deadlock every time. The kustomize path does not
+    # hit this because provision_03 waits for the operator to be Available and a
+    # later step applies the CR.
+    #
+    # What `Ignore` costs: a PlatformAgent written while the operator is down is
+    # admitted without the webhook's defaulting and validation. The CRD's CEL
+    # rules and OpenAPI defaults still apply, and the operator's own fallbacks
+    # cover the fields the mutating webhook would have set.
+    #
+    # Set `Fail` for the kustomize guarantee. It is safe in a release that does
+    # not also create the CR (platformAgent.enabled=false), and after the first
+    # install once the operator is serving.
+    failurePolicy: Ignore
   resources:
     limits:
       cpu: 500m
@@ -128,6 +175,11 @@ platformAgent:
       # Terraform composition, whose image_tag defaults to "latest": under
       # IfNotPresent a node with a cached "latest" never picks up a new build.
       # The parity check compares this against the template.
+      #
+      # Set IfNotPresent when you pin `tag` to a release: on an immutable tag
+      # Always only adds a registry round-trip per pod start, and turns an
+      # unreachable ghcr.io during a reschedule into ImagePullBackOff instead of
+      # a start from the node's cache. See the chart README.
       pullPolicy: Always
     availability:
       # Number of agent pods. `null` omits the field; the operator defaults to 1.

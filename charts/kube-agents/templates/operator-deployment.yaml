@@ -36,12 +36,13 @@ spec:
           image: "{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
           env:
-            # Chart installs ship no webhook Service, certificate, or
-            # Mutating/ValidatingWebhookConfiguration, so the admission
-            # webhooks must stay off — enabling them without that wiring
-            # crashes the manager (no cert mount, nothing serving :10250).
+            # The manager reads this as a string and treats anything other than
+            # the literal "false" as on (cmd/main.go:113), so it must render
+            # quoted. Off by default because the webhooks need cert-manager and
+            # the chart cannot install it; turning them on without it fails at
+            # apply time on the missing Certificate CRD. See the chart README.
             - name: ENABLE_WEBHOOKS
-              value: "false"
+              value: {{ .Values.operator.webhooks.enabled | quote }}
             {{- with .Values.operator.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -49,6 +50,11 @@ spec:
             - containerPort: 8081
               name: health
               protocol: TCP
+            {{- if .Values.operator.webhooks.enabled }}
+            - containerPort: 9443
+              name: webhook-server
+              protocol: TCP
+            {{- end }}
           securityContext:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
@@ -69,4 +75,20 @@ spec:
             periodSeconds: 10
           resources:
             {{- toYaml .Values.operator.resources | nindent 12 }}
+          {{- if .Values.operator.webhooks.enabled }}
+          volumeMounts:
+            # controller-runtime's default CertDir. The manager is started
+            # without --webhook-cert-path, so this exact path is what it reads
+            # (cmd/main.go:120 only overrides it when the flag is given).
+            - mountPath: /tmp/k8s-webhook-server/serving-certs
+              name: cert
+              readOnly: true
+          {{- end }}
+      {{- if .Values.operator.webhooks.enabled }}
+      volumes:
+        - name: cert
+          secret:
+            defaultMode: 420
+            secretName: {{ include "kube-agents.webhookCertSecretName" . }}
+      {{- end }}
 {{- end }}
