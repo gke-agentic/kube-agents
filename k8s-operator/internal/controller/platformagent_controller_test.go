@@ -678,7 +678,7 @@ func TestBuildNetworkPolicy(t *testing.T) {
 		},
 	}
 
-	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10", false, "")
+	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10", false, "", nil)
 	if netpol.Name != "test-agent-gateway-netpol" {
 		t.Errorf("expected Name 'test-agent-gateway-netpol', got %s", netpol.Name)
 	}
@@ -784,7 +784,7 @@ func TestBuildNetworkPolicy_DashboardDisabled(t *testing.T) {
 		},
 	}
 
-	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10", false, "")
+	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10", false, "", nil)
 	if len(netpol.Spec.Ingress) != 1 {
 		t.Fatalf("expected 1 Ingress rule, got %d", len(netpol.Spec.Ingress))
 	}
@@ -804,7 +804,7 @@ func TestBuildNetworkPolicy_FQDNEnabled(t *testing.T) {
 		},
 	}
 
-	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10", true, "")
+	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10", true, "", nil)
 	// Expected 8 Egress rules when FQDN is enabled (external HTTPS 0.0.0.0/0:443 is omitted):
 	// 1. Cluster DNS (53)
 	// 2. GCP WI / Metadata server (80, 8080)
@@ -834,13 +834,13 @@ func TestBuildNetworkPolicy_CustomAPIHost(t *testing.T) {
 		},
 	}
 
-	netpolIPv4 := buildNetworkPolicy(agent, []string{"10.0.0.5"}, "10.96.0.10", false, "")
+	netpolIPv4 := buildNetworkPolicy(agent, []string{"10.0.0.5"}, "10.96.0.10", false, "", nil)
 	ruleIPv4 := findAPIServerEgressRule(netpolIPv4)
 	if ruleIPv4 == nil || len(ruleIPv4.To) == 0 || ruleIPv4.To[0].IPBlock == nil || ruleIPv4.To[0].IPBlock.CIDR != "10.0.0.5/32" {
 		t.Errorf("expected IPv4 CIDR '10.0.0.5/32', got %v", ruleIPv4)
 	}
 
-	netpolIPv6 := buildNetworkPolicy(agent, []string{"fd00::1"}, "10.96.0.10", false, "")
+	netpolIPv6 := buildNetworkPolicy(agent, []string{"fd00::1"}, "10.96.0.10", false, "", nil)
 	ruleIPv6 := findAPIServerEgressRule(netpolIPv6)
 	if ruleIPv6 == nil || len(ruleIPv6.To) == 0 || ruleIPv6.To[0].IPBlock == nil || ruleIPv6.To[0].IPBlock.CIDR != "fd00::1/128" {
 		t.Errorf("expected IPv6 CIDR 'fd00::1/128', got %v", ruleIPv6)
@@ -914,7 +914,7 @@ func TestBuildNetworkPolicy_InvalidAPIHost(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			netpol := buildNetworkPolicy(agent, tt.apiHosts, "10.96.0.10", false, "")
+			netpol := buildNetworkPolicy(agent, tt.apiHosts, "10.96.0.10", false, "", nil)
 			rule := findAPIServerEgressRule(netpol)
 			if rule == nil {
 				t.Fatalf("API server egress rule (port 6443) not found in netpol")
@@ -940,8 +940,8 @@ func TestBuildNetworkPolicy_Idempotent(t *testing.T) {
 		},
 	}
 
-	np1 := buildNetworkPolicy(agent, []string{"10.0.0.5"}, "10.96.0.10", false, "")
-	np2 := buildNetworkPolicy(agent, []string{"10.0.0.5"}, "10.96.0.10", false, "")
+	np1 := buildNetworkPolicy(agent, []string{"10.0.0.5"}, "10.96.0.10", false, "", nil)
+	np2 := buildNetworkPolicy(agent, []string{"10.0.0.5"}, "10.96.0.10", false, "", nil)
 	if !reflect.DeepEqual(np1.Spec, np2.Spec) {
 		t.Errorf("buildNetworkPolicy is not idempotent: consecutive calls produced different specs")
 	}
@@ -954,7 +954,7 @@ func TestBuildNetworkPolicy_ExternalHTTPSExceptList(t *testing.T) {
 			Namespace: "test-ns",
 		},
 	}
-	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10", false, "")
+	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10", false, "", nil)
 
 	var httpsRule *networkingv1.NetworkPolicyEgressRule
 	for i := range netpol.Spec.Egress {
@@ -1020,7 +1020,7 @@ func TestBuildNetworkPolicy_ClusterDNS(t *testing.T) {
 	}
 
 	// 1. IPv4 dynamic DNS clusterIP
-	netpolGKE := buildNetworkPolicy(agent, nil, "34.118.224.10", false, "")
+	netpolGKE := buildNetworkPolicy(agent, nil, "34.118.224.10", false, "", nil)
 	dnsRuleGKE := findDNSEgressRule(netpolGKE)
 	if dnsRuleGKE == nil {
 		t.Fatalf("DNS egress rule (port 53) not found in netpolGKE")
@@ -1037,7 +1037,7 @@ func TestBuildNetworkPolicy_ClusterDNS(t *testing.T) {
 	}
 
 	// 2. IPv6 dynamic DNS clusterIP
-	netpolIPv6 := buildNetworkPolicy(agent, nil, "2001:db8::10", false, "")
+	netpolIPv6 := buildNetworkPolicy(agent, nil, "2001:db8::10", false, "", nil)
 	dnsRuleIPv6 := findDNSEgressRule(netpolIPv6)
 	if dnsRuleIPv6 == nil {
 		t.Fatalf("DNS egress rule (port 53) not found in netpolIPv6")
@@ -1054,7 +1054,7 @@ func TestBuildNetworkPolicy_ClusterDNS(t *testing.T) {
 	}
 
 	// 3. Fallback when invalid or empty
-	netpolFallback := buildNetworkPolicy(agent, nil, "invalid-ip", false, "")
+	netpolFallback := buildNetworkPolicy(agent, nil, "invalid-ip", false, "", nil)
 	dnsRuleFallback := findDNSEgressRule(netpolFallback)
 	if dnsRuleFallback == nil {
 		t.Fatalf("DNS egress rule (port 53) not found in netpolFallback")
@@ -1068,6 +1068,59 @@ func TestBuildNetworkPolicy_ClusterDNS(t *testing.T) {
 	}
 	if !foundFallback {
 		t.Errorf("expected fallback 10.96.0.10/32 for invalid DNS clusterIP")
+	}
+}
+
+func TestBuildNetworkPolicy_MetadataNodeIPs(t *testing.T) {
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+		},
+	}
+
+	nodeIPs := []string{"10.150.0.2", "10.150.0.3", "10.150.0.2", "fd00:1::1", "invalid-ip"}
+	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10", false, "", nodeIPs)
+
+	findEgressRule := func(port int32) *networkingv1.NetworkPolicyEgressRule {
+		for i := range netpol.Spec.Egress {
+			for _, p := range netpol.Spec.Egress[i].Ports {
+				if p.Port != nil && p.Port.IntVal == port {
+					return &netpol.Spec.Egress[i]
+				}
+			}
+		}
+		return nil
+	}
+
+	ruleMeta80 := findEgressRule(80)
+	if ruleMeta80 == nil {
+		t.Fatalf("GCP metadata rule (port 80) not found")
+	}
+	// Expected peers: 169.254.169.254/32, 10.150.0.2/32, 10.150.0.3/32, fd00:1::1/128 (deduped & sorted)
+	var gotCIDRs []string
+	for _, peer := range ruleMeta80.To {
+		if peer.IPBlock != nil {
+			gotCIDRs = append(gotCIDRs, peer.IPBlock.CIDR)
+		}
+	}
+	wantCIDRs := []string{"169.254.169.254/32", "10.150.0.2/32", "10.150.0.3/32", "fd00:1::1/128"}
+	if !reflect.DeepEqual(gotCIDRs, wantCIDRs) {
+		t.Errorf("expected metadata peers %v, got %v", wantCIDRs, gotCIDRs)
+	}
+
+	ruleMeta988 := findEgressRule(988)
+	if ruleMeta988 == nil {
+		t.Fatalf("GCP metadata daemon rule (port 988) not found")
+	}
+	var got988CIDRs []string
+	for _, peer := range ruleMeta988.To {
+		if peer.IPBlock != nil {
+			got988CIDRs = append(got988CIDRs, peer.IPBlock.CIDR)
+		}
+	}
+	if !reflect.DeepEqual(got988CIDRs, wantCIDRs) {
+		t.Errorf("expected metadata daemon peers %v, got %v", wantCIDRs, got988CIDRs)
 	}
 }
 

@@ -2919,7 +2919,7 @@ func otlpCollectorNamespace(endpoint string) string {
 
 // buildNetworkPolicy generates the restrictive NetworkPolicy manifest for PlatformAgent.
 // Note: This is the operator-generated version; Kustomize static deployments use deploy/kustomize/platform/.
-func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, dnsClusterIP string, fqdnEnabled bool, otlpEndpoint string) *networkingv1.NetworkPolicy {
+func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, dnsClusterIP string, fqdnEnabled bool, otlpEndpoint string, metadataNodeIPs []string) *networkingv1.NetworkPolicy {
 	udp := corev1.ProtocolUDP
 	tcp := corev1.ProtocolTCP
 
@@ -2977,6 +2977,54 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, d
 	var apiPeers []networkingv1.NetworkPolicyPeer
 	for _, cidr := range finalAPICIDRs {
 		apiPeers = append(apiPeers, networkingv1.NetworkPolicyPeer{
+			IPBlock: &networkingv1.IPBlock{
+				CIDR: cidr,
+			},
+		})
+	}
+
+	var formattedNodeCIDRs []string
+	for _, raw := range metadataNodeIPs {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		if strings.Contains(raw, "/") {
+			if _, ipNet, err := net.ParseCIDR(raw); err == nil {
+				formattedNodeCIDRs = append(formattedNodeCIDRs, ipNet.String())
+			}
+			continue
+		}
+		rawIP := strings.Trim(raw, "[]")
+		ip := net.ParseIP(rawIP)
+		if ip == nil {
+			continue
+		}
+		if ip.To4() != nil {
+			formattedNodeCIDRs = append(formattedNodeCIDRs, rawIP+"/32")
+		} else {
+			formattedNodeCIDRs = append(formattedNodeCIDRs, rawIP+"/128")
+		}
+	}
+	seenNodeCIDRs := make(map[string]bool)
+	var finalNodeCIDRs []string
+	for _, cidr := range formattedNodeCIDRs {
+		if !seenNodeCIDRs[cidr] {
+			seenNodeCIDRs[cidr] = true
+			finalNodeCIDRs = append(finalNodeCIDRs, cidr)
+		}
+	}
+	sort.Strings(finalNodeCIDRs)
+
+	metadataPeers := []networkingv1.NetworkPolicyPeer{
+		{
+			IPBlock: &networkingv1.IPBlock{
+				CIDR: "169.254.169.254/32",
+			},
+		},
+	}
+	for _, cidr := range finalNodeCIDRs {
+		metadataPeers = append(metadataPeers, networkingv1.NetworkPolicyPeer{
 			IPBlock: &networkingv1.IPBlock{
 				CIDR: cidr,
 			},
@@ -3062,26 +3110,14 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, d
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(80))},
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(8080))},
 			},
-			To: []networkingv1.NetworkPolicyPeer{
-				{
-					IPBlock: &networkingv1.IPBlock{
-						CIDR: "169.254.169.254/32",
-					},
-				},
-			},
+			To: metadataPeers,
 		},
 		// 3. GKE Workload Identity Host Network Daemon (Port 988 only)
 		{
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(988))},
 			},
-			To: []networkingv1.NetworkPolicyPeer{
-				{
-					IPBlock: &networkingv1.IPBlock{
-						CIDR: "169.254.169.254/32",
-					},
-				},
-			},
+			To: metadataPeers,
 		},
 		// 4. LiteLLM Gateway in the agent namespace (Service port 80, container port 4000, and standalone-replay port 8080)
 		{

@@ -625,8 +625,28 @@ func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, ag
 		}
 	}
 
+	// Discover node internal IPs for metadata server egress on Dataplane V2.
+	// GKE Dataplane V2 DNAT's 169.254.169.254 to the node IP before policy evaluation.
+	var metadataNodeIPs []string
+	var nodeList corev1.NodeList
+	nodesReader := client.Reader(r.Client)
+	if r.APIReader != nil {
+		nodesReader = r.APIReader
+	}
+	if err := nodesReader.List(ctx, &nodeList); err == nil {
+		for i := range nodeList.Items {
+			for _, addr := range nodeList.Items[i].Status.Addresses {
+				if addr.Type == corev1.NodeInternalIP && net.ParseIP(addr.Address) != nil {
+					metadataNodeIPs = append(metadataNodeIPs, addr.Address)
+				}
+			}
+		}
+	} else if !errors.IsNotFound(err) {
+		logf.FromContext(ctx).Info("Failed to list nodes for metadata server DNAT targets; metadata access may fail on Dataplane V2", "error", err)
+	}
+
 	// 2. Build and reconcile standard NetworkPolicy (omits blanket external HTTPS egress only if replacement FQDN policy is active)
-	netpol := buildNetworkPolicy(agent, apiTargets, dnsClusterIP, fqdnEnabled, otlpEndpoint)
+	netpol := buildNetworkPolicy(agent, apiTargets, dnsClusterIP, fqdnEnabled, otlpEndpoint, metadataNodeIPs)
 	if err := ctrl.SetControllerReference(agent, netpol, r.Scheme); err != nil {
 		return fmt.Errorf("failed to set controller reference on NetworkPolicy %s/%s: %w", netpol.Namespace, netpol.Name, err)
 	}
