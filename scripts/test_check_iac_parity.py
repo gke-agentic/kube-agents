@@ -298,6 +298,63 @@ class DigTest(unittest.TestCase):
         self.assertEqual(parity.dig({"a": {"b": {"c": "v"}}}, "a.b.c"), "v")
 
 
+class ModelDefaultsTest(unittest.TestCase):
+    """check_model_defaults against common.sh's `case` fall-through.
+
+    default_model_for_provider names only the providers whose default differs
+    from the catch-all; everything else lands on `*)`. Reading that arm as an
+    alias for one named provider made every OTHER fall-through provider look
+    absent from common.sh — which is how adding vertex_ai to the chart produced
+    "chart knows provider 'vertex_ai', common.sh does not" about a provider the
+    scripts have validated and handled all along.
+    """
+
+    COMMON_SH = textwrap.dedent(
+        """\
+        default_model_for_provider() {
+          case "$1" in
+            chatgpt | openai) echo "gpt-5.4" ;;
+            anthropic) echo "claude-sonnet-4-5-20250929" ;;
+            *) echo "gemini-3.5-flash" ;;
+          esac
+        }
+        is_valid_model_provider() {
+          [[ "${1:-}" =~ ^(gemini|vertex_ai|anthropic|chatgpt|openai)$ ]]
+        }
+        """
+    )
+
+    def _run(self, chart_dict: str) -> list[tuple[str, str]]:
+        chart = '{{- $defaultModels := dict %s }}' % chart_dict
+        f = parity.Failures()
+        with unittest.mock.patch.object(
+            parity, "read", side_effect=lambda path: self.COMMON_SH if path == parity.COMMON_SH else chart
+        ):
+            parity.check_model_defaults(f)
+        return list(f)
+
+    def test_fall_through_providers_agree(self):
+        """Neither gemini nor vertex_ai is named in the case; both resolve to `*`."""
+        self.assertEqual(
+            self._run('"gemini" "gemini-3.5-flash" "vertex_ai" "gemini-3.5-flash"'), []
+        )
+
+    def test_explicitly_cased_provider_still_compared(self):
+        self.assertEqual(self._run('"anthropic" "claude-sonnet-4-5-20250929"'), [])
+
+    def test_drift_on_a_fall_through_provider_is_caught(self):
+        """The regression the `*`-as-gemini reading would have hidden."""
+        failures = self._run('"vertex_ai" "some-other-model"')
+        self.assertEqual(len(failures), 1, failures)
+        self.assertIn("vertex_ai", failures[0][1])
+
+    def test_provider_the_scripts_reject_is_caught(self):
+        """`*` answers for any string, so this can only come from the validator."""
+        failures = self._run('"nosuchprovider" "gemini-3.5-flash"')
+        self.assertEqual(len(failures), 1, failures)
+        self.assertIn("common.sh does not", failures[0][1])
+
+
 class WebhookParityTest(unittest.TestCase):
     """The two webhook checks, exercised against drift they must catch.
 

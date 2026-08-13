@@ -311,10 +311,24 @@ def check_model_defaults(f: Failures) -> None:
     if not body:
         sys.exit(f"ERROR: no default_model_for_provider in {COMMON_SH.relative_to(REPO)}")
     script: dict[str, str] = {}
+    fallback: str | None = None
     for patterns, model in re.findall(r"^\s*([^\s)]+(?:\s*\|\s*[^\s)]+)*)\)\s*echo\s+\"([^\"]+)\"", body.group(1), re.M):
         for provider in (p.strip() for p in patterns.split("|")):
-            # `*)` is the case default, which common.sh uses for gemini.
-            script["gemini" if provider == "*" else provider] = model
+            if provider == "*":
+                # The catch-all arm, not a provider. Anything the case does not
+                # name explicitly resolves here — which is how gemini and
+                # vertex_ai both get gemini-3.5-flash without being listed.
+                # Reading it as an alias for one named provider made every
+                # later fall-through provider look absent from common.sh.
+                fallback = model
+            else:
+                script[provider] = model
+
+    # Which providers the scripts actually accept. default_model_for_provider
+    # cannot answer that — its `*` arm returns a model for any string at all —
+    # so an unknown provider in the chart has to be caught against the validator.
+    accepted = re.search(r"is_valid_model_provider\(\)[^=]*=~\s*\^\(([^)]+)\)", text, re.S)
+    known = {p.strip() for p in accepted.group(1).split("|")} if accepted else set()
 
     chart_line = re.search(r"\$defaultModels\s*:=\s*dict\s+(.+?)\}\}", read(CHART_LITELLM))
     if not chart_line:
@@ -324,12 +338,16 @@ def check_model_defaults(f: Failures) -> None:
 
     # chatgpt is chart-rejected by design, so compare only shared providers.
     for provider, model in sorted(chart.items()):
-        if provider not in script:
+        if known and provider not in known:
             f.add("model-defaults", f"chart knows provider {provider!r}, common.sh does not")
-        elif script[provider] != model:
+            continue
+        expected = script.get(provider, fallback)
+        if expected is None:
+            f.add("model-defaults", f"chart knows provider {provider!r}, common.sh does not")
+        elif expected != model:
             f.add(
                 "model-defaults",
-                f"{provider}: chart defaults to {model}, common.sh to {script[provider]}",
+                f"{provider}: chart defaults to {model}, common.sh to {expected}",
             )
 
 
