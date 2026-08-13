@@ -394,6 +394,11 @@ is_non_interactive() {
 # between deploys, so it is scoped to a single pipeline execution. provision.sh
 # prompts once up front and exports it; the per-step scripts inherit it from
 # the environment and only prompt when run standalone.
+#
+# Only the steps that deploy an image built from this repo need one, and they
+# say so by setting REQUIRES_IMAGE_TAG=1 before calling load_state. Demanding it
+# from every step made the secrets and integration steps — none of which mention
+# IMAGE_TAG — fail outright in non-interactive mode.
 init_var_image_tag() {
   if [ -z "${IMAGE_TAG:-}" ]; then
     if is_non_interactive; then
@@ -430,7 +435,9 @@ load_state() {
     && [ "$env_registry_prefix" != "$REGISTRY_PREFIX" ]; then
     print_warning "Ignoring exported REGISTRY_PREFIX='${env_registry_prefix}': the saved value '${REGISTRY_PREFIX}' from ${VARS_FILE} wins. Edit ${VARS_FILE} (REGISTRY_PREFIX and the saved *_IMAGE values) to change registries."
   fi
-  init_var_image_tag
+  if [ "${REQUIRES_IMAGE_TAG:-0}" -eq 1 ]; then
+    init_var_image_tag
+  fi
   init_var_registry_prefix
   export NAMESPACE="kubeagents-system"
   export PLATFORM_AGENT_KSA_NAME="kubeagents-platform-agent"

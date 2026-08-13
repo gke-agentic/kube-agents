@@ -23,6 +23,8 @@ check_prereqs "gcloud" "kubectl" "make"
 
 # ─── Configuration & State Restoration ────────────────────────────────────────
 print_step "Setting up Configuration State for Operator Deployment"
+# This step deploys the operator image from this repo, so it needs a tag.
+REQUIRES_IMAGE_TAG=1
 load_state
 
 ACTIVE_PROJECT="$(gcloud config get-value project 2>/dev/null || echo "")"

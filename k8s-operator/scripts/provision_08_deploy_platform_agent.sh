@@ -28,6 +28,8 @@ check_prereqs "gcloud" "kubectl" "envsubst"
 
 # ─── Configuration & State Restoration ────────────────────────────────────────
 print_step "Setting up Configuration State for Agent Deployment"
+# This step deploys the platform agent image from this repo, so it needs a tag.
+REQUIRES_IMAGE_TAG=1
 load_state
 
 ACTIVE_PROJECT="$(gcloud config get-value project 2>/dev/null || echo "")"
