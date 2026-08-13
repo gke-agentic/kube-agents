@@ -15,7 +15,7 @@ By default (`enable_database_encryption = true`), the module provisions a Cloud 
 
 ```hcl
 module "gke_cluster" {
-  source          = "git::https://github.com/gke-labs/kube-agents.git//terraform/modules/gke-cluster?ref=vX.Y.Z"
+  source          = "git::https://github.com/gke-labs/kube-agents.git//terraform/modules/gke-cluster?ref=1.2.0"
   project_id      = "my-gcp-project"
   cluster_name    = "production-host-01"
   location        = "us-central1"

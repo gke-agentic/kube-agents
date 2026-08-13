@@ -80,7 +80,7 @@ image tags. It exists because the chart is installed from this checkout, and a
 checkout's `Chart.yaml` carries an `appVersion` placeholder that never matches
 a published image tag — so the chart's usual tag defaulting cannot work here
 (see the [chart README](../../../charts/kube-agents/README.md)). `latest` is
-fine for evaluation; pin a `vX.Y.Z` release tag for production.
+fine for evaluation; pin an `X.Y.Z` release tag for production.
 
 ### IAM roles (`project_roles`)
 
@@ -134,7 +134,7 @@ repository. A standalone consumer would pin a release instead:
 
 ```hcl
 module "gke_cluster" {
-  source = "git::https://github.com/gke-labs/kube-agents.git//terraform/modules/gke-cluster?ref=vX.Y.Z"
+  source = "git::https://github.com/gke-labs/kube-agents.git//terraform/modules/gke-cluster?ref=1.2.0"
   # ...
 }
 ```
