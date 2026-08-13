@@ -647,6 +647,34 @@ class TestResolveRepo(WorkspaceTestCase):
             "acme/from-lease",
         )
 
+    def test_multiple_repos_under_same_lease_resolve_to_their_respective_repos(self):
+        holder = self.root / "t_lease"
+        # First repo prepared under lease
+        gitops_workspace.write_lease(holder, "t_lease", repo="acme/first-repo")
+        ws_first = holder / "acme__first-repo"
+        # Second repo prepared under same lease, overwriting the lease marker repo
+        gitops_workspace.write_lease(holder, "t_lease", repo="acme/second-repo")
+        ws_second = holder / "acme__second-repo"
+
+        # ws_first resolves to acme/first-repo despite lease marker pointing to second-repo
+        self.assertEqual(
+            gitops_workspace.resolve_repo(workspace=ws_first),
+            "acme/first-repo",
+        )
+        self.assertEqual(
+            gitops_workspace.resolve_repo(workspace=ws_first / "sub" / "dir"),
+            "acme/first-repo",
+        )
+        self.assertEqual(
+            gitops_workspace.resolve_repo(workspace=ws_second),
+            "acme/second-repo",
+        )
+        # Passing holder directly falls back to the lease marker's repo
+        self.assertEqual(
+            gitops_workspace.resolve_repo(workspace=holder),
+            "acme/second-repo",
+        )
+
     def test_single_repo_in_configmap_succeeds(self):
         with patch("gitops_workspace.get_managed_repos", return_value=["acme/single"]):
             self.assertEqual(gitops_workspace.resolve_repo(), "acme/single")

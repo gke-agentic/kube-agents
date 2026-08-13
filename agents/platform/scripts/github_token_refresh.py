@@ -20,11 +20,12 @@ def log(msg: str):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [SRE-AUTH] {msg}", file=sys.stderr, flush=True)
 
 
-def get_current_git_repo() -> str | None:
+def get_current_git_repo(cwd: str | None = None) -> str | None:
     """Extract repository name (owner/repo) from local git config."""
     try:
         res = subprocess.run(
             ["git", "config", "--get", "remote.origin.url"],
+            cwd=str(cwd) if cwd else None,
             capture_output=True, text=True, check=True
         )
         url = res.stdout.strip().strip("/")

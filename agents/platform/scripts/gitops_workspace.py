@@ -622,16 +622,41 @@ def resolve_repo(workspace: str | Path | None = None) -> str:
     """Resolve the GitOps repository as `owner/name`.
 
     Order:
-    1. Workspace lease record (if a leased workspace directory is provided).
-    2. ConfigMap state ($GITHUB_STATE_CONFIGMAP).
-    3. Local git remote origin fallback (for local development/inside clone).
+    1. Workspace path clone decoding (if a leased workspace directory is provided).
+    2. Workspace lease record (fallback if workspace is the lease holder directory).
+    3. Git remote origin of workspace (if workspace is provided).
+    4. ConfigMap state ($GITHUB_STATE_CONFIGMAP).
+    5. Local git remote origin fallback (for local development/inside clone).
     """
     if workspace is not None:
-        holder = lease_holder(workspace)
-        if holder is not None:
-            record = read_lease(holder)
-            if record and record.get("repo"):
-                return record["repo"]
+        try:
+            workspace_p = Path(workspace).resolve()
+            holder = lease_holder(workspace_p)
+            if holder is not None:
+                try:
+                    rel = workspace_p.relative_to(holder.resolve())
+                    if rel.parts:
+                        clone_segment = rel.parts[0]
+                        if "__" in clone_segment:
+                            owner, sep, name = clone_segment.partition("__")
+                            if owner and name:
+                                return f"{owner}/{name}"
+                except ValueError:
+                    pass
+                record = read_lease(holder)
+                if record and record.get("repo"):
+                    return record["repo"]
+        except Exception:
+            pass
+
+        try:
+            from github_token_refresh import get_current_git_repo
+
+            repo = get_current_git_repo(cwd=str(workspace))
+            if repo and "/" in repo:
+                return repo
+        except Exception:
+            pass
 
     try:
         managed = get_managed_repos()

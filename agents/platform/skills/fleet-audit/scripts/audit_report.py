@@ -4054,9 +4054,19 @@ def refresh_credentials(repo: str | None = None) -> None:
 
 def resolve_repo(audit_id: str | None = None, repo: str | None = None) -> str:
     """Resolve the GitOps repository as `owner/name`, checking lease record first if audit_id given."""
-    if repo and str(repo).strip():
-        return str(repo).strip()
     import gitops_workspace
+
+    if repo and str(repo).strip():
+        r = str(repo).strip()
+        try:
+            managed = gitops_workspace.get_managed_repos()
+        except Exception:
+            managed = []
+        if managed and r not in managed:
+            raise ValueError(
+                f"Repository {r!r} is not in the managed repositories list: {managed}"
+            )
+        return r
 
     if audit_id:
         try:

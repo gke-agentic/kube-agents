@@ -64,10 +64,26 @@ def git(argv: list, workspace: str, check: bool = True) -> subprocess.CompletedP
     return gitops_workspace.run_git(argv, workspace, check=check)
 
 
+def validate_repo(repo: str) -> str:
+    """Ensure repo is formatted as owner/name and is in the managed repos allowlist if configured."""
+    if not repo or "/" not in repo or repo.count("/") != 1:
+        raise ValueError(f"Invalid repository format: {repo!r}. Expected 'owner/name'.")
+    try:
+        managed = gitops_workspace.get_managed_repos()
+    except Exception:
+        managed = []
+    if managed and repo not in managed:
+        raise ValueError(
+            f"Repository {repo!r} is not in the managed repositories list: {managed}"
+        )
+    return repo
+
+
 def handle_prepare(args) -> int:
     branch = check_branch(args.branch)
     lease = gitops_workspace.lease_id(args.lease)
     repo = args.repo or gitops_workspace.resolve_repo()
+    validate_repo(repo)
 
     # Repo-scoped, and needed before the clone: the clone is what a token would
     # otherwise have to be derived from.
@@ -161,6 +177,7 @@ def handle_submit(args) -> int:
         )
 
     repo = args.repo or gitops_workspace.resolve_repo(workspace=workspace)
+    validate_repo(repo)
     refresh_git_credentials(repo)
 
     push_branch(branch, workspace)
