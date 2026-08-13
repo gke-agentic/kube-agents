@@ -9,8 +9,11 @@
 #
 #   1. Cloud KMS key rings and crypto keys CANNOT be deleted, ever. `terraform
 #      destroy` drops them from state and leaves them in the project, so the next
-#      apply fails with a 409. `adopt-kms` imports the survivors back before the
-#      apply runs.
+#      apply fails with a 409 — and worse, destroying the crypto key SCHEDULES ITS
+#      VERSIONS for destruction, so even an imported key cannot encrypt and the
+#      cluster refuses to come back. `destroy` forgets them from state first so
+#      Terraform never touches them; `adopt-kms` imports them back and restores
+#      any version a bare `terraform destroy` already scheduled.
 #   2. The PlatformAgent CR carries a finalizer only the operator can clear, and
 #      `terraform destroy` removes the CR and the operator together. The chart's
 #      pre-delete hook handles the ordinary case; this deletes the CR up front so
@@ -68,6 +71,35 @@ EOF
   trap drop_override EXIT
 }
 
+# Destroying a google_kms_crypto_key does not delete the key — GCP will not — but
+# it DOES schedule every one of its versions for destruction, which leaves the key
+# present and unusable. A cluster then fails to come back with
+# "Failed to test encryption operation ... is not enabled, current state is:
+# DESTROY_SCHEDULED". Scheduled destruction is reversible until the destroy time,
+# so anything still pending is restored and re-enabled here. `destroy` avoids
+# creating this situation at all; this recovers from a bare `terraform destroy`.
+restore_key_versions() {
+  local id="$1" location="$2" project="$3" keyring key versions
+  keyring=$(sed -E 's|.*/keyRings/([^/]+)/.*|\1|' <<<"$id")
+  key="${id##*/}"
+
+  versions=$(gcloud kms keys versions list --key "$key" --keyring "$keyring" \
+    --location "$location" --project "$project" --filter='state=DESTROY_SCHEDULED' \
+    --format='value(name.basename())' 2>/dev/null || true)
+  [[ -n "$versions" ]] || return 0
+
+  while read -r version; do
+    [[ -n "$version" ]] || continue
+    log "restoring key version $key/$version (was DESTROY_SCHEDULED)"
+    # restore lands the version in DISABLED; it has to be enabled separately.
+    gcloud kms keys versions restore "$version" --key "$key" --keyring "$keyring" \
+      --location "$location" --project "$project" >/dev/null 2>&1 &&
+      gcloud kms keys versions enable "$version" --key "$key" --keyring "$keyring" \
+        --location "$location" --project "$project" >/dev/null 2>&1 ||
+      warn "could not restore $key/$version; CMEK will fail until it is enabled"
+  done <<<"$versions"
+}
+
 adopt_kms() {
   local project location keyring key
   load_state
@@ -99,7 +131,9 @@ adopt_kms() {
   for target in "${targets[@]}"; do
     IFS=$'\t' read -r address kind id <<<"$target"
 
-    in_state "$address" && continue
+    if in_state "$address"; then
+      continue
+    fi
 
     case "$kind" in
       keyring) gcloud kms keyrings describe "${id##*/}" --location "$location" \
@@ -113,6 +147,9 @@ adopt_kms() {
     [[ -f "$OVERRIDE_FILE" ]] || with_override
     if terraform import -input=false "$address" "$id" >/dev/null 2>&1; then
       adopted=$((adopted + 1))
+      if [[ "$kind" == "key" ]]; then
+        restore_key_versions "$id" "$location" "$project"
+      fi
     else
       warn "could not import $address ($id); the apply will fail with a 409"
     fi
@@ -198,6 +235,26 @@ disable_deletion_protection() {
     -var="deletion_protection=false" -target="$address" >/dev/null
 }
 
+# Terraform cannot delete a KMS key ring or key, but destroying the crypto key
+# resource still schedules every version for destruction — leaving a key that
+# exists and cannot encrypt. Forgetting these before the destroy is what keeps
+# them genuinely untouched, so the next apply adopts a working key rather than a
+# hollow one. They are re-imported by adopt-kms.
+forget_kms() {
+  load_state
+  local address
+  for address in \
+    "module.gke_cluster.google_kms_crypto_key.gke_key[0]" \
+    "module.gke_cluster.google_kms_key_ring.gke_keyring[0]" \
+    "module.github_minter[0].google_kms_crypto_key.minter" \
+    "module.github_minter[0].google_kms_key_ring.minter"; do
+    in_state "$address" || continue
+    log "forgetting $address (kept in GCP; re-adopted on the next apply)"
+    terraform state rm "$address" >/dev/null 2>&1 ||
+      warn "could not forget $address; its key versions may be scheduled for destruction"
+  done
+}
+
 case "${1:-}" in
   adopt-kms)
     shift
@@ -216,6 +273,7 @@ case "${1:-}" in
     delete_agent_cr
     purge_backups
     disable_deletion_protection
+    forget_kms
     log "terraform destroy"
     # deletion_protection is passed again because destroy re-evaluates the config,
     # and the variable's default would otherwise reinstate the guard.
