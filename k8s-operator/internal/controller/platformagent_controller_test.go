@@ -729,11 +729,13 @@ func TestBuildNetworkPolicy(t *testing.T) {
 	if ruleMeta80 == nil || len(ruleMeta80.To) != 1 {
 		t.Errorf("expected 1 peer in GCP Workload Identity egress rule (port 80/8080)")
 	}
+	// Port 988 is the post-DNAT destination, so it carries the metadata daemon's own
+	// address as well as the link-local one even when the cluster has no nodes.
 	ruleMeta988 := findEgressRule(988, func(p networkingv1.NetworkPolicyPeer) bool {
-		return p.IPBlock != nil && p.IPBlock.CIDR == "169.254.169.254/32"
+		return p.IPBlock != nil && p.IPBlock.CIDR == "169.254.169.252/32"
 	})
-	if ruleMeta988 == nil || len(ruleMeta988.To) != 1 {
-		t.Errorf("expected 1 peer in GCP Workload Identity egress rule (port 988)")
+	if ruleMeta988 == nil || len(ruleMeta988.To) != 2 {
+		t.Errorf("expected 2 peers in GCP Workload Identity egress rule (port 988)")
 	}
 	ruleLiteLLM := findEgressRule(4000, func(p networkingv1.NetworkPolicyPeer) bool {
 		return p.PodSelector != nil && p.PodSelector.MatchLabels["app"] == "litellm"
