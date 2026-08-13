@@ -35,8 +35,12 @@ operator:
       # job: provide a Secret named <release>-webhook-certs holding tls.crt and
       # tls.key valid for <release>-webhook-service.<namespace>.svc, and inject
       # the matching caBundle into both webhook configurations. Neither is
-      # rendered here, so getting either wrong fails admission rather than the
-      # install.
+      # rendered here, so a mistake cannot fail the install — and under the
+      # default failurePolicy of Ignore it does not fail admission either: the
+      # API server's call to the webhook fails and the object is admitted
+      # anyway, with validation and defaulting silently skipped. Set
+      # failurePolicy=Fail if you want a broken certificate to surface as
+      # rejected admissions instead.
       enabled: true
     # What the API server does when the webhook is unreachable.
     #
