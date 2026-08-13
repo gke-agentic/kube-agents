@@ -1087,6 +1087,8 @@ spec:
           protocol: TCP
       to:
         - ipBlock:
+            cidr: 169.254.169.252/32
+        - ipBlock:
             cidr: 169.254.169.254/32
     - ports:
         - port: 80

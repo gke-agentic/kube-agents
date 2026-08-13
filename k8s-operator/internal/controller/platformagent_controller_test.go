@@ -1082,45 +1082,151 @@ func TestBuildNetworkPolicy_MetadataNodeIPs(t *testing.T) {
 	nodeIPs := []string{"10.150.0.2", "10.150.0.3", "10.150.0.2", "fd00:1::1", "invalid-ip"}
 	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10", false, "", nodeIPs)
 
-	findEgressRule := func(port int32) *networkingv1.NetworkPolicyEgressRule {
-		for i := range netpol.Spec.Egress {
-			for _, p := range netpol.Spec.Egress[i].Ports {
-				if p.Port != nil && p.Port.IntVal == port {
-					return &netpol.Spec.Egress[i]
+	// The DNAT targets belong on 988 and nowhere else: the node rewrites the port along
+	// with the address, so a node /32 on 80 or 8080 would widen the sandbox's reach
+	// without admitting a single extra token fetch.
+	got80 := egressCIDRsForPort(netpol, 80)
+	want80 := []string{"169.254.169.254/32"}
+	if !reflect.DeepEqual(got80, want80) {
+		t.Errorf("expected port 80 metadata peers %v, got %v", want80, got80)
+	}
+
+	got8080 := egressCIDRsForPort(netpol, 8080)
+	if !reflect.DeepEqual(got8080, want80) {
+		t.Errorf("expected port 8080 metadata peers %v, got %v", want80, got8080)
+	}
+
+	// Deduplicated, sorted, and formatted /32 for IPv4 and /128 for IPv6.
+	got988 := egressCIDRsForPort(netpol, 988)
+	want988 := []string{
+		"10.150.0.2/32",
+		"10.150.0.3/32",
+		"169.254.169.252/32",
+		"169.254.169.254/32",
+		"fd00:1::1/128",
+	}
+	if !reflect.DeepEqual(got988, want988) {
+		t.Errorf("expected metadata daemon peers %v, got %v", want988, got988)
+	}
+}
+
+// egressCIDRsForPort returns the ipBlock CIDRs of the first egress rule naming port.
+func egressCIDRsForPort(netpol *networkingv1.NetworkPolicy, port int32) []string {
+	for i := range netpol.Spec.Egress {
+		for _, p := range netpol.Spec.Egress[i].Ports {
+			if p.Port == nil || p.Port.IntVal != port {
+				continue
+			}
+			var cidrs []string
+			for _, peer := range netpol.Spec.Egress[i].To {
+				if peer.IPBlock != nil {
+					cidrs = append(cidrs, peer.IPBlock.CIDR)
 				}
 			}
+			return cidrs
 		}
-		return nil
+	}
+	return nil
+}
+
+// The link-local address alone is not enough on any GKE datapath, so a policy built
+// with no nodes in the cluster must still carry the daemon's own address.
+func TestBuildNetworkPolicy_MetadataDaemonPeerWithoutNodes(t *testing.T) {
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "test-ns"},
 	}
 
-	ruleMeta80 := findEgressRule(80)
-	if ruleMeta80 == nil {
-		t.Fatalf("GCP metadata rule (port 80) not found")
+	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10", false, "", nil)
+
+	got := egressCIDRsForPort(netpol, 988)
+	want := []string{"169.254.169.252/32", "169.254.169.254/32"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("expected metadata daemon peers %v, got %v", want, got)
 	}
-	// Expected peers: 169.254.169.254/32, 10.150.0.2/32, 10.150.0.3/32, fd00:1::1/128 (deduped & sorted)
-	var gotCIDRs []string
-	for _, peer := range ruleMeta80.To {
-		if peer.IPBlock != nil {
-			gotCIDRs = append(gotCIDRs, peer.IPBlock.CIDR)
-		}
-	}
-	wantCIDRs := []string{"169.254.169.254/32", "10.150.0.2/32", "10.150.0.3/32", "fd00:1::1/128"}
-	if !reflect.DeepEqual(gotCIDRs, wantCIDRs) {
-		t.Errorf("expected metadata peers %v, got %v", wantCIDRs, gotCIDRs)
+}
+
+// The node IPs in the policy have to come from the live Node list. Nothing else in the
+// suite would notice NodeInternalIP being read as NodeExternalIP, which would publish
+// public node addresses and fix nothing.
+func TestReconcileNetworkPolicy_NodeInternalIPs(t *testing.T) {
+	scheme := setupScheme()
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "test-ns"},
 	}
 
-	ruleMeta988 := findEgressRule(988)
-	if ruleMeta988 == nil {
-		t.Fatalf("GCP metadata daemon rule (port 988) not found")
-	}
-	var got988CIDRs []string
-	for _, peer := range ruleMeta988.To {
-		if peer.IPBlock != nil {
-			got988CIDRs = append(got988CIDRs, peer.IPBlock.CIDR)
+	node := func(name, internal, external string) *corev1.Node {
+		return &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Status: corev1.NodeStatus{
+				Addresses: []corev1.NodeAddress{
+					{Type: corev1.NodeExternalIP, Address: external},
+					{Type: corev1.NodeInternalIP, Address: internal},
+					{Type: corev1.NodeHostName, Address: name},
+				},
+			},
 		}
 	}
-	if !reflect.DeepEqual(got988CIDRs, wantCIDRs) {
-		t.Errorf("expected metadata daemon peers %v, got %v", wantCIDRs, got988CIDRs)
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(agent, node("node-a", "10.150.0.4", "34.1.1.1"), node("node-b", "10.150.0.5", "34.1.1.2")).
+		WithInterceptorFuncs(fakeServerSideApplyInterceptors()).
+		Build()
+
+	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
+
+	ctx := context.Background()
+	if err := r.reconcileNetworkPolicy(ctx, agent, ""); err != nil {
+		t.Fatalf("reconcileNetworkPolicy failed: %v", err)
+	}
+
+	netpol := &networkingv1.NetworkPolicy{}
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: "test-ns", Name: "test-agent-gateway-netpol"}, netpol); err != nil {
+		t.Fatalf("failed to get generated NetworkPolicy: %v", err)
+	}
+
+	got := egressCIDRsForPort(netpol, 988)
+	want := []string{"10.150.0.4/32", "10.150.0.5/32", "169.254.169.252/32", "169.254.169.254/32"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("expected metadata daemon peers %v, got %v", want, got)
+	}
+}
+
+// A failed Node list must abort the reconcile. Carrying on would apply a policy built
+// from an empty node set, stripping the /32s out of a working policy.
+func TestReconcileNetworkPolicy_NodeListErrorAborts(t *testing.T) {
+	scheme := setupScheme()
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "test-ns"},
+	}
+
+	interceptors := fakeServerSideApplyInterceptors()
+	interceptors.List = func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+		if _, ok := list.(*corev1.NodeList); ok {
+			return fmt.Errorf("boom")
+		}
+		return cl.List(ctx, list, opts...)
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(agent).
+		WithInterceptorFuncs(interceptors).
+		Build()
+
+	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
+
+	err := r.reconcileNetworkPolicy(context.Background(), agent, "")
+	if err == nil {
+		t.Fatalf("expected reconcileNetworkPolicy to fail when the Node list fails")
+	}
+	if !strings.Contains(err.Error(), "failed to list nodes") {
+		t.Errorf("expected a node-list error, got %v", err)
+	}
+
+	netpol := &networkingv1.NetworkPolicy{}
+	if getErr := cl.Get(context.Background(), types.NamespacedName{Namespace: "test-ns", Name: "test-agent-gateway-netpol"}, netpol); getErr == nil {
+		t.Errorf("expected no NetworkPolicy to be applied after the node list failed")
 	}
 }
 

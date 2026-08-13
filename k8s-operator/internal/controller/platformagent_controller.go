@@ -31,6 +31,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	nodev1 "k8s.io/api/node/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -43,6 +44,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -56,6 +58,17 @@ const (
 	minIPv4CIDRPrefix      = 12
 	minIPv6CIDRPrefix      = 48
 	maxCIDRsPerAnnotation  = 50
+
+	// metadataLinkLocalIP is the address a workload dials for GCP metadata and Workload
+	// Identity tokens. It is only ever the pre-DNAT destination.
+	metadataLinkLocalIP = "169.254.169.254"
+	// metadataDaemonIP is where GKE's node-local metadata daemon actually listens, on
+	// TCP 988. On the iptables datapath the node rewrites 169.254.169.254:80 to
+	// 169.254.169.252:988 in nat PREROUTING — before NetworkPolicy is evaluated — so a
+	// policy that permits only the link-local address drops every token fetch. Dataplane
+	// V2 performs the same rewrite but targets the hosting node's internal IP instead,
+	// which is why reconcileNetworkPolicy also feeds the live node IPs in.
+	metadataDaemonIP = "169.254.169.252"
 
 	AnnotationAPIServerCIDR           = "kubeagents.x-k8s.io/apiserver-cidr"
 	AnnotationCustomEgressCIDRs       = "kubeagents.x-k8s.io/custom-egress-cidrs"
@@ -627,13 +640,12 @@ func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, ag
 
 	// Discover node internal IPs for metadata server egress on Dataplane V2.
 	// GKE Dataplane V2 DNAT's 169.254.169.254 to the node IP before policy evaluation.
+	// Read Nodes through the cache, not APIReader: SetupWithManager watches Nodes so the
+	// informer is running anyway, and a live cluster-wide List here would fetch every
+	// Node — Status.Images included — on every reconcile of every agent.
 	var metadataNodeIPs []string
 	var nodeList corev1.NodeList
-	nodesReader := client.Reader(r.Client)
-	if r.APIReader != nil {
-		nodesReader = r.APIReader
-	}
-	if err := nodesReader.List(ctx, &nodeList); err != nil {
+	if err := r.Client.List(ctx, &nodeList); err != nil {
 		return fmt.Errorf("failed to list nodes for metadata server DNAT targets: %w", err)
 	}
 	for i := range nodeList.Items {
@@ -1126,6 +1138,42 @@ func (r *PlatformAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	return bld.
+		Watches(
+			// The metadata egress rules carry one /32 per node, so a node joining or
+			// leaving invalidates the policy. Without this the set would only be
+			// refreshed by an unrelated event or the 10-hour informer resync, and an
+			// agent scheduled onto an unrepresented node loses Workload Identity.
+			&corev1.Node{},
+			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, _ client.Object) []reconcile.Request {
+				var list agentv1alpha1.PlatformAgentList
+				if err := mgr.GetClient().List(ctx, &list); err != nil {
+					return nil
+				}
+				reqs := make([]reconcile.Request, 0, len(list.Items))
+				for i := range list.Items {
+					reqs = append(reqs, reconcile.Request{
+						NamespacedName: types.NamespacedName{
+							Namespace: list.Items[i].Namespace,
+							Name:      list.Items[i].Name,
+						},
+					})
+				}
+				return reqs
+			}),
+			// Kubelet rewrites Node status constantly — conditions, capacity, the image
+			// list. Only an address change can alter the policy, so everything else is
+			// filtered out rather than allowed to storm the queue.
+			builder.WithPredicates(predicate.Funcs{
+				UpdateFunc: func(e event.UpdateEvent) bool {
+					oldNode, okOld := e.ObjectOld.(*corev1.Node)
+					newNode, okNew := e.ObjectNew.(*corev1.Node)
+					if !okOld || !okNew {
+						return true
+					}
+					return !equality.Semantic.DeepEqual(oldNode.Status.Addresses, newNode.Status.Addresses)
+				},
+			}),
+		).
 		Watches(
 			&rbacv1.ClusterRoleBinding{},
 			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {

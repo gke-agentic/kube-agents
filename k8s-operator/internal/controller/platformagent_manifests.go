@@ -2917,6 +2917,64 @@ func otlpCollectorNamespace(endpoint string) string {
 	return ""
 }
 
+// formatCIDRPeers normalises a mix of bare IPs and CIDRs into sorted, deduplicated
+// NetworkPolicyPeers. A bare IP becomes a single-host /32 or /128; a CIDR is kept as
+// written. Anything unparseable is dropped.
+//
+// enforceMinPrefix rejects CIDRs broader than /12 (IPv4) or /48 (IPv6), which stops a
+// caller-supplied range from being weaponised into an unrestricted egress bypass. Pass
+// false only where the input cannot come from outside the operator.
+func formatCIDRPeers(raw []string, enforceMinPrefix bool) []networkingv1.NetworkPolicyPeer {
+	seen := make(map[string]bool, len(raw))
+	var cidrs []string
+	add := func(cidr string) {
+		if !seen[cidr] {
+			seen[cidr] = true
+			cidrs = append(cidrs, cidr)
+		}
+	}
+
+	for _, entry := range raw {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if strings.Contains(entry, "/") {
+			_, ipNet, err := net.ParseCIDR(entry)
+			if err != nil {
+				continue
+			}
+			if enforceMinPrefix {
+				ones, bits := ipNet.Mask.Size()
+				if (bits == 32 && ones < minIPv4CIDRPrefix) || (bits == 128 && ones < minIPv6CIDRPrefix) {
+					continue
+				}
+			}
+			add(ipNet.String())
+			continue
+		}
+		bare := strings.Trim(entry, "[]")
+		ip := net.ParseIP(bare)
+		if ip == nil {
+			continue
+		}
+		if ip.To4() != nil {
+			add(bare + "/32")
+		} else {
+			add(bare + "/128")
+		}
+	}
+
+	sort.Strings(cidrs)
+	peers := make([]networkingv1.NetworkPolicyPeer, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		peers = append(peers, networkingv1.NetworkPolicyPeer{
+			IPBlock: &networkingv1.IPBlock{CIDR: cidr},
+		})
+	}
+	return peers
+}
+
 // buildNetworkPolicy generates the restrictive NetworkPolicy manifest for PlatformAgent.
 // Note: This is the operator-generated version; Kustomize static deployments use deploy/kustomize/platform/.
 func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, dnsClusterIP string, fqdnEnabled bool, otlpEndpoint string, metadataNodeIPs []string) *networkingv1.NetworkPolicy {
@@ -2932,104 +2990,19 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, d
 		dnsCidr = dnsClusterIP + "/128"
 	}
 
-	var formattedAPICIDRs []string
-	for _, raw := range apiCIDRs {
-		raw = strings.TrimSpace(raw)
-		if raw == "" {
-			continue
-		}
-		if strings.Contains(raw, "/") {
-			if _, ipNet, err := net.ParseCIDR(raw); err == nil {
-				ones, bits := ipNet.Mask.Size()
-				// Reject overly broad CIDRs (must be >= /12 for IPv4, >= /48 for IPv6)
-				// to prevent weaponizing the API server egress rule into an unrestricted egress bypass.
-				if (bits == 32 && ones >= minIPv4CIDRPrefix) || (bits == 128 && ones >= minIPv6CIDRPrefix) {
-					formattedAPICIDRs = append(formattedAPICIDRs, ipNet.String())
-				}
-			}
-			continue
-		}
-		rawIP := strings.Trim(raw, "[]")
-		ip := net.ParseIP(rawIP)
-		if ip == nil {
-			continue
-		}
-		if ip.To4() != nil {
-			formattedAPICIDRs = append(formattedAPICIDRs, rawIP+"/32")
-		} else {
-			formattedAPICIDRs = append(formattedAPICIDRs, rawIP+"/128")
-		}
-	}
-	if len(formattedAPICIDRs) == 0 {
-		formattedAPICIDRs = []string{"10.96.0.1/32"}
+	apiPeers := formatCIDRPeers(apiCIDRs, true)
+	if len(apiPeers) == 0 {
+		apiPeers = formatCIDRPeers([]string{"10.96.0.1"}, true)
 	}
 
-	seenCIDRs := make(map[string]bool)
-	var finalAPICIDRs []string
-	for _, cidr := range formattedAPICIDRs {
-		if !seenCIDRs[cidr] {
-			seenCIDRs[cidr] = true
-			finalAPICIDRs = append(finalAPICIDRs, cidr)
-		}
-	}
-	sort.Strings(finalAPICIDRs)
+	// The link-local address a workload actually connects to. Every datapath rewrites
+	// it before the policy is evaluated, so it only ever matches on the pre-DNAT ports.
+	linkLocalPeers := formatCIDRPeers([]string{metadataLinkLocalIP}, true)
 
-	var apiPeers []networkingv1.NetworkPolicyPeer
-	for _, cidr := range finalAPICIDRs {
-		apiPeers = append(apiPeers, networkingv1.NetworkPolicyPeer{
-			IPBlock: &networkingv1.IPBlock{
-				CIDR: cidr,
-			},
-		})
-	}
-
-	var formattedNodeCIDRs []string
-	for _, raw := range metadataNodeIPs {
-		raw = strings.TrimSpace(raw)
-		if raw == "" {
-			continue
-		}
-		if strings.Contains(raw, "/") {
-			if _, ipNet, err := net.ParseCIDR(raw); err == nil {
-				formattedNodeCIDRs = append(formattedNodeCIDRs, ipNet.String())
-			}
-			continue
-		}
-		rawIP := strings.Trim(raw, "[]")
-		ip := net.ParseIP(rawIP)
-		if ip == nil {
-			continue
-		}
-		if ip.To4() != nil {
-			formattedNodeCIDRs = append(formattedNodeCIDRs, rawIP+"/32")
-		} else {
-			formattedNodeCIDRs = append(formattedNodeCIDRs, rawIP+"/128")
-		}
-	}
-	seenNodeCIDRs := make(map[string]bool)
-	var finalNodeCIDRs []string
-	for _, cidr := range formattedNodeCIDRs {
-		if !seenNodeCIDRs[cidr] {
-			seenNodeCIDRs[cidr] = true
-			finalNodeCIDRs = append(finalNodeCIDRs, cidr)
-		}
-	}
-	sort.Strings(finalNodeCIDRs)
-
-	metadataPeers := []networkingv1.NetworkPolicyPeer{
-		{
-			IPBlock: &networkingv1.IPBlock{
-				CIDR: "169.254.169.254/32",
-			},
-		},
-	}
-	for _, cidr := range finalNodeCIDRs {
-		metadataPeers = append(metadataPeers, networkingv1.NetworkPolicyPeer{
-			IPBlock: &networkingv1.IPBlock{
-				CIDR: cidr,
-			},
-		})
-	}
+	// Everything the rewritten packet can be addressed to, all of it on port 988:
+	// the metadata daemon's own link-local address on the iptables datapath, and the
+	// hosting node's internal IP on Dataplane V2. See metadataDaemonIP.
+	metadataDaemonPeers := formatCIDRPeers(append([]string{metadataLinkLocalIP, metadataDaemonIP}, metadataNodeIPs...), true)
 
 	ingressRules := []networkingv1.NetworkPolicyIngressRule{
 		{
@@ -3104,20 +3077,24 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, d
 			},
 			To: dnsPeers,
 		},
-		// 2. GCP Workload Identity / Metadata Server (Link-Local & Daemon pod)
+		// 2. GCP Metadata Server, link-local address only. Nothing rewrites a request to
+		//    these ports onto another address, so widening this rule would grant the
+		//    sandbox reach it never uses.
 		{
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(80))},
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(8080))},
 			},
-			To: metadataPeers,
+			To: linkLocalPeers,
 		},
-		// 3. GKE Workload Identity Host Network Daemon (Port 988 only)
+		// 3. GKE Workload Identity host-network daemon (port 988). This is where a
+		//    metadata request lands after the node DNATs it, so it has to permit every
+		//    rewrite target the datapath can pick.
 		{
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(988))},
 			},
-			To: metadataPeers,
+			To: metadataDaemonPeers,
 		},
 		// 4. LiteLLM Gateway in the agent namespace (Service port 80, container port 4000, and standalone-replay port 8080)
 		{
