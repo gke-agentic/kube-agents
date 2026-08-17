@@ -2,10 +2,19 @@
 # Common helper functions for Release Candidate CI/CD automation scripts.
 set -euo pipefail
 
+export REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
 # Centralized definition of required container images and registry defaults
-DEFAULT_REGISTRY_PREFIX="ghcr.io/gke-labs/kube-agents"
-DEFAULT_RELEASE_REPO="gke-labs/kube-agents"
-REQUIRED_RELEASE_IMAGES=("k8s-operator" "platform-agent")
+export DEFAULT_REGISTRY_PREFIX="ghcr.io/gke-labs/kube-agents"
+export DEFAULT_RELEASE_REPO="gke-labs/kube-agents"
+
+# Declarative registry of all 4 required container images
+export REQUIRED_RELEASE_IMAGES=(
+  "k8s-operator"
+  "platform-agent"
+  "credential-proxy"
+  "replay-proxy"
+)
 
 # ─── Boolean Parsing ──────────────────────────────────────────────────────────
 # Interpret a value as a boolean toggle. Returns 0 (success) for common
@@ -178,21 +187,25 @@ ensure_git_tag() {
     git fetch origin --tags >/dev/null 2>&1 || true
   fi
 
+  # Canonicalize commit SHA to full 40-character hash before comparison
+  local target_full_sha
+  target_full_sha="$(git rev-parse --verify "${commit_sha}^{commit}" 2>/dev/null || echo "${commit_sha}")"
+
   # Check if tag already exists in Git
   if git rev-parse "${rc_tag}" >/dev/null 2>&1; then
     local existing_sha
     existing_sha=$(git rev-parse "${rc_tag}^{commit}")
-    if [ "${existing_sha}" = "${commit_sha}" ]; then
-      echo "✅ Git tag '${rc_tag}' already exists and points to target commit ${commit_sha}. Idempotent skip."
+    if [ "${existing_sha}" = "${target_full_sha}" ]; then
+      echo "✅ Git tag '${rc_tag}' already exists and points to target commit ${target_full_sha}. Idempotent skip."
       return 0
     else
-      echo "❌ ERROR: Tag '${rc_tag}' already exists but points to commit ${existing_sha}, not target SHA ${commit_sha}!" >&2
+      echo "❌ ERROR: Tag '${rc_tag}' already exists but points to commit ${existing_sha}, not target SHA ${target_full_sha}!" >&2
       return 1
     fi
   fi
 
   setup_git_bot_user
-  git tag -a "${rc_tag}" "${commit_sha}" -m "${tag_message}"
+  git tag -a "${rc_tag}" "${target_full_sha}" -m "${tag_message}"
 
   # Safety Guard: Remote push executes exclusively inside CI
   if ! is_ci_pipeline; then
@@ -207,4 +220,26 @@ ensure_git_tag() {
     echo "❌ ERROR: Could not push git tag '${rc_tag}' to remote repository (${target_repo}): ${push_err}" >&2
     return 1
   fi
+}
+
+# Clean Promotion: Tags verified container images in GHCR without rebuilding
+promote_release_images() {
+  local commit_sha="$1"
+  local target_tag="$2"
+  local registry_prefix
+  registry_prefix="$(get_registry_prefix)"
+
+  echo "🚀 Promoting verified container images (${commit_sha:0:7}) -> (${target_tag})..."
+
+  for img in "${REQUIRED_RELEASE_IMAGES[@]}"; do
+    local source_image="${registry_prefix}/${img}:${commit_sha}"
+    echo "  • Promoting ${img}..."
+    if command -v docker >/dev/null 2>&1; then
+      docker buildx imagetools create --tag "${registry_prefix}/${img}:${target_tag}" "${source_image}"
+    else
+      echo "❌ ERROR: 'docker buildx' CLI is required for image promotion!" >&2
+      return 1
+    fi
+    echo "    ✅ Promoted ${img} to ${target_tag}"
+  done
 }
