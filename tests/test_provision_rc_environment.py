@@ -118,7 +118,6 @@ exit 0
                 f"--chat-topic-name={MOCK_CHAT_TOPIC_NAME} "
                 f"--model-provider={MOCK_MODEL_PROVIDER} "
                 f"--model-default-name={MOCK_MODEL_DEFAULT_NAME} "
-                f"--gemini-api-key={MOCK_GEMINI_API_KEY} "
                 f"--gvisor=true "
                 f"--permission-set={MOCK_PERMISSION_SET} "
                 f"--registry-prefix={MOCK_REGISTRY_PREFIX} "

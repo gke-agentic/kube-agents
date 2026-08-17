@@ -44,10 +44,6 @@ if [ -n "${MODEL_DEFAULT_NAME:-}" ]; then
   INSTALL_ARGS+=(--model-default-name="${MODEL_DEFAULT_NAME}")
 fi
 
-if [ -n "${GEMINI_API_KEY:-}" ]; then
-  INSTALL_ARGS+=(--gemini-api-key="${GEMINI_API_KEY}")
-fi
-
 if [ -n "${ENABLE_GVISOR:-}" ]; then
   INSTALL_ARGS+=(--gvisor="${ENABLE_GVISOR}")
 fi
