@@ -13,8 +13,10 @@
 ### 0. Open the audit run
 
 ```bash
-./skills/fleet-audit/scripts/audit_report.py start --audit stockout-prevention
+./skills/fleet-audit/scripts/audit_report.py start --audit stockout-prevention [--repo "<owner>/<repo>"]
 ```
+
+If multiple repositories are registered in `$GITHUB_STATE_CONFIGMAP` (`managed_repos`), pass `--repo "<owner>/<repo>"` explicitly. If running interactively and no `--repo` was specified, prompt the user to choose which repository to target before proceeding.
 
 Returns `{"issue": <int|null>, "repo":"org/repo", "workspace":"/opt/data/gitops/stockout-prevention/org__repo", "findings_path":"/opt/data/scratch/findings_stockout-prevention.json", "pending_remediation_requests":[…]}`. Keep `findings_path` and `workspace` from this call; you write into both.
 

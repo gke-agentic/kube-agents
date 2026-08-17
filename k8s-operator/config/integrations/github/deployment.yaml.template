@@ -79,8 +79,6 @@ spec:
           volumeMounts:
             - name: config-volume
               mountPath: /etc/minty/${GITHUB_ORG}/.minty
-            - name: config-volume
-              mountPath: /etc/minty/${GITHUB_ORG}
       volumes:
         - name: config-volume
           configMap:
@@ -142,6 +140,23 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+    # Allow GCP Workload Identity / Metadata Server
+    - to:
+        - ipBlock:
+            cidr: 169.254.0.0/16
+        - ipBlock:
+            cidr: 10.0.0.0/8
+        - ipBlock:
+            cidr: 172.16.0.0/12
+        - ipBlock:
+            cidr: 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 988
+        - protocol: TCP
+          port: 8080
     # Allow HTTPS outbound connection to GitHub and KMS APIs
     - to:
         - ipBlock:

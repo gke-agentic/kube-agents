@@ -3,7 +3,7 @@ kind: ConfigMap
 metadata:
   name: github-token-minter-config
 data:
-  policy.yaml: |
+  minty.yaml: |
     version: 'minty.abcxyz.dev/v2'
     rule:
       if: "assertion.iss == 'https://accounts.google.com'"

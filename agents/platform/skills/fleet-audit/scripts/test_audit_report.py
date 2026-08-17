@@ -7242,6 +7242,16 @@ class TestRepoResolution(BaseTestCase):
         self.assertIn("ConfigMap", str(caught.exception))
         self.assertIn("origin remote", str(caught.exception))
 
+    def test_explicit_repo_in_managed_repos_succeeds(self):
+        with patch("gitops_workspace.get_managed_repos", return_value=["acme/first", "acme/second"]):
+            self.assertEqual(audit_report.resolve_repo(repo="acme/first"), "acme/first")
+
+    def test_explicit_repo_not_in_managed_repos_raises(self):
+        with patch("gitops_workspace.get_managed_repos", return_value=["acme/first", "acme/second"]):
+            with self.assertRaises(ValueError) as caught:
+                audit_report.resolve_repo(repo="acme/unregistered")
+            self.assertIn("not in the managed repositories list", str(caught.exception))
+
 
 class TestCredentialOrdering(HarnessTestCase):
     def setUp(self):

@@ -12,7 +12,11 @@
 
 ### 0. Open the audit run
 
-Run `./skills/fleet-audit/scripts/audit_report.py start --audit fleet-wide-cost-analysis`. It prints one JSON line:
+Run `./skills/fleet-audit/scripts/audit_report.py start --audit fleet-wide-cost-analysis [--repo "<owner>/<repo>"]`.
+
+If multiple repositories are registered in `$GITHUB_STATE_CONFIGMAP` (`managed_repos`), pass `--repo "<owner>/<repo>"` explicitly. If running interactively and no `--repo` was specified, prompt the user to choose which repository to target before proceeding.
+
+It prints one JSON line:
 
 ```json
 {

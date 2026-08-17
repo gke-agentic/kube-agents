@@ -5008,9 +5008,8 @@ def _workspace_runner(
 def handle_start(args: argparse.Namespace) -> None:
     audit_id = validate_audit_id(args.audit)
 
-    # Resolve first, then mint: the token is repo-scoped, and the repository
-    # cannot be read off a clone that does not exist yet.
-    repo = getattr(args, "repo", None) or resolve_repo()
+    opt_repo = getattr(args, "repo", None)
+    repo = resolve_repo(audit_id=audit_id, repo=opt_repo)
     refresh_credentials(repo)
     # The one place a scrub is correct: the audit has not written anything yet,
     # so whatever is in the tree is debris from a run that did not finish.
