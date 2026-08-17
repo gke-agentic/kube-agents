@@ -18,6 +18,7 @@ from tests.testing.common import (
     MOCK_DEFAULT_REGISTRY_PREFIX,
     MOCK_DEFAULT_RELEASE_REPO,
     TRUTHY_BOOLEAN_INPUTS,
+    get_isolated_test_env,
 )
 from tests.testing.release import MOCK_REQUIRED_RELEASE_IMAGES
 
@@ -32,8 +33,7 @@ class ReleaseCommonTest(unittest.TestCase):
 source "{_COMMON_SH}"
 {func_call}
 """
-        full_env = dict(os.environ)
-        full_env.update(env or {})
+        full_env = get_isolated_test_env(overrides=env)
         return subprocess.run(
             ["bash", "-c", setup],
             capture_output=True,
@@ -85,6 +85,15 @@ source "{_COMMON_SH}"
         self.assertEqual(proc.returncode, 0)
         for img in MOCK_REQUIRED_RELEASE_IMAGES:
             self.assertIn(img, proc.stdout)
+
+    def test_is_ci_pipeline_behavior(self):
+        # By default isolated env has CI stripped
+        proc = self._run_common_func('is_ci_pipeline')
+        self.assertNotEqual(proc.returncode, 0)
+
+        # With explicit CI=true
+        proc = self._run_common_func('is_ci_pipeline', env={"CI": "true"})
+        self.assertEqual(proc.returncode, 0)
 
 
 if __name__ == "__main__":
