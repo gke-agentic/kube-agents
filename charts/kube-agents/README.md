@@ -258,7 +258,7 @@ helm uninstall kube-agents -n kubeagents-system
   and the chart renders the full wiring when you turn them on: the webhook
   Service, a self-signed `Issuer` and `Certificate`, both
   `*WebhookConfiguration`s with cert-manager's `inject-ca-from` annotation, and
-  the manager's cert mount on `:9443`. Left off, the webhooks' validation,
+  the manager's cert mount on `:10250`. Left off, the webhooks' validation,
   defaulting, and delete-protection don't apply (CRD-level CEL validation and
   OpenAPI defaulting still do).
 

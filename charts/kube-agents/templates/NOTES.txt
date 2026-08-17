@@ -41,13 +41,13 @@ away BEFORE `helm uninstall {{ .Release.Name }}`, otherwise the CR strands:
 {{ if and .Values.operator.enabled .Values.operator.webhooks.enabled -}}
 Admission webhooks are ON. The API server calls {{ include "kube-agents.webhookServiceName" . }}
 {{- if .Values.operator.webhooks.certManager.enabled }}
-on :9443, using a certificate cert-manager issues into
+on :10250, using a certificate cert-manager issues into
 {{ include "kube-agents.webhookCertSecretName" . }}. If the operator pod stays in
 ContainerCreating, that Secret has not been issued yet — check cert-manager:
 
   kubectl get certificate {{ include "kube-agents.webhookCertificateName" . }} -n {{ .Release.Namespace }}
 {{- else }}
-on :9443, using the certificate you provide in the Secret
+on :10250, using the certificate you provide in the Secret
 {{ include "kube-agents.webhookCertSecretName" . }} — certManager.enabled=false, so
 this release renders no Issuer and no Certificate. If the operator pod stays in
 ContainerCreating, that Secret does not exist in {{ .Release.Namespace }} yet.

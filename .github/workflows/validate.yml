@@ -126,7 +126,7 @@ jobs:
             "kind: Certificate" \
             "kind: Issuer" \
             "cert-manager.io/inject-ca-from:" \
-            "containerPort: 9443" \
+            "containerPort: 10250" \
             "/tmp/k8s-webhook-server/serving-certs"; do
             if ! grep -qF "$expected" <<<"$webhooks"; then
               echo "webhook render is missing '$expected'" >&2

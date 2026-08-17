@@ -27,7 +27,7 @@ spec:
   ports:
     - port: 443
       protocol: TCP
-      targetPort: 9443
+      targetPort: 10250
   selector:
     {{- include "kube-agents.operatorSelectorLabels" . | nindent 4 }}
 {{- if .Values.operator.webhooks.certManager.enabled }}
