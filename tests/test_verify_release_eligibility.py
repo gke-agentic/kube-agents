@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import unittest
 
+from tests.testing.common import get_isolated_test_env
 from tests.testing.release import (
     MOCK_COLLIDING_RELEASE_TAG,
     MOCK_EMERGENCY_OVERRIDE_REASON,
@@ -24,7 +25,7 @@ _VERIFY_SCRIPT = _REPO_ROOT / "scripts" / "release" / "verify_release_eligibilit
 class VerifyReleaseEligibilityTest(unittest.TestCase):
     def _create_mock_repo(self, mock_docker_succeeds=True):
         """Creates a temporary git repository with hermetic mock CLI tools."""
-        temp_dir = tempfile.TemporaryDirectory()
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         repo_dir = temp_dir.name
 
         # Create hermetic bin directory with mock docker CLI
@@ -61,10 +62,7 @@ exit {docker_exit}
         return temp_dir, repo_dir, git, commit_sha, bin_dir
 
     def _run_verify_script(self, repo_dir, args=None, env=None, bin_dir=None):
-        full_env = dict(os.environ)
-        if bin_dir:
-            full_env["PATH"] = f"{bin_dir}:{full_env.get('PATH', '')}"
-        full_env.update(env or {})
+        full_env = get_isolated_test_env(overrides=env, bin_dir=bin_dir)
         return subprocess.run(
             ["bash", str(_VERIFY_SCRIPT)] + (args or []),
             cwd=repo_dir,

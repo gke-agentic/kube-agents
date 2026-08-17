@@ -28,3 +28,19 @@ FALSY_BOOLEAN_INPUTS = [
     "random",
     "null",
 ]
+
+
+def get_isolated_test_env(overrides=None, bin_dir=None):
+    """Returns a sanitized environment for hermetic script execution, free of CI runner pollution."""
+    import os
+
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith(("GITHUB_", "RUNNER_")) and k not in ("CI", "CONTINUOUS_INTEGRATION")
+    }
+    if bin_dir:
+        env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+    if overrides:
+        env.update(overrides)
+    return env

@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import unittest
 
+from tests.testing.common import get_isolated_test_env
 from tests.testing.release import (
     MOCK_BASE_TAG_1_X,
     MOCK_BASE_TAG_PRE_1_0,
@@ -30,7 +31,7 @@ _CALC_SCRIPT = _REPO_ROOT / "scripts" / "release" / "calculate_next_version.sh"
 class CalculateNextVersionTest(unittest.TestCase):
     def _create_mock_repo(self):
         """Creates a temporary git repository for testing version calculation."""
-        temp_dir = tempfile.TemporaryDirectory()
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         repo_dir = temp_dir.name
 
         def git(*args):
@@ -55,8 +56,7 @@ class CalculateNextVersionTest(unittest.TestCase):
         return temp_dir, repo_dir, git
 
     def _run_calc_script(self, repo_dir, args=None, env=None):
-        full_env = dict(os.environ)
-        full_env.update(env or {})
+        full_env = get_isolated_test_env(overrides=env)
         return subprocess.run(
             ["bash", str(_CALC_SCRIPT)] + (args or []),
             cwd=repo_dir,
