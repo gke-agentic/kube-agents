@@ -259,7 +259,18 @@ disable_deletion_protection() {
   local address="module.gke_cluster.google_container_cluster.autopilot"
   load_state
   in_state "$address" || return 0
-  [[ "$(tfvar deletion_protection)" == "true" ]] || return 0
+
+  # Read what STATE records, not what the variable is configured to: state is
+  # what the provider enforces on delete. The two disagree exactly when it
+  # matters — after a destroy that stopped partway (state already false, and
+  # the targeted apply below would try to re-create the KMS resources
+  # forget_kms removed, 409ing every later run), or when someone set the
+  # variable to false without an intervening apply (state still true, and
+  # skipping here fails the destroy on the cluster).
+  local recorded
+  recorded=$(terraform state show -no-color "$address" 2>/dev/null |
+    sed -n 's/^ *deletion_protection *= *//p' | head -1)
+  [[ "$recorded" == "true" ]] || return 0
 
   log "clearing deletion_protection so the cluster can be destroyed"
   terraform apply -input=false -auto-approve \
@@ -304,6 +315,28 @@ case "${1:-}" in
   destroy)
     shift
     ensure_init
+    # Confirm before the FIRST side effect, not at terraform's own prompt: by
+    # the time `terraform destroy` asks, this script has already deleted the
+    # PlatformAgent CR, permanently deleted every backup the plan owns,
+    # cleared deletion_protection, and forgotten the KMS state entries — and
+    # answering "no" there undoes none of it. One gate, up front; once passed,
+    # -auto-approve is appended so terraform does not present a second gate
+    # that falsely implies the operation can still be stopped cleanly.
+    auto=false
+    for arg in "$@"; do [[ "$arg" == "-auto-approve" ]] && auto=true; done
+    if [[ "$auto" != "true" ]]; then
+      warn "destroy starts with irreversible steps BEFORE terraform runs:"
+      warn "  - delete the live PlatformAgent CR (force-clearing its finalizer if wedged)"
+      warn "  - permanently delete EVERY backup the backup plan owns"
+      warn "  - clear the cluster's deletion protection"
+      warn "  - forget the KMS resources from state (kept in GCP, re-adopted on apply)"
+      read -r -p "Type 'yes' to destroy everything, anything else to abort: " answer
+      if [[ "$answer" != "yes" ]]; then
+        log "aborted before any change was made"
+        exit 1
+      fi
+      set -- "$@" -auto-approve
+    fi
     delete_agent_cr
     purge_backups
     disable_deletion_protection
