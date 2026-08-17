@@ -28,6 +28,8 @@ check_prereqs "gcloud" "kubectl" "envsubst"
 
 # ─── Configuration & State Restoration ────────────────────────────────────────
 print_step "Setting up Configuration State for Agent Deployment"
+# This step deploys the platform agent image from this repo, so it needs a tag.
+REQUIRES_IMAGE_TAG=1
 load_state
 
 ACTIVE_PROJECT="$(gcloud config get-value project 2>/dev/null || echo "")"
@@ -46,8 +48,8 @@ export KSA_NAME="${PLATFORM_AGENT_KSA_NAME}"
 DEFAULT_AGENT_IMAGE="$(registry_prefix)/platform-agent"
 init_var "AGENT_IMAGE" "$DEFAULT_AGENT_IMAGE" "Enter Platform Agent Image Path"
 warn_on_registry_prefix_mismatch "AGENT_IMAGE"
-init_var "MEMORY_ENABLED" "false" "Enable agent memory persistence? (true/false)"
-init_var "MEMORY_PROVIDER" "multiuser_memory" "Enter agent memory provider"
+init_var "MEMORY_ENABLED" "false" "Enable Hermes' built-in MEMORY.md store? (true/false)"
+init_var_memory_provider
 init_var "USER_PROFILE_ENABLED" "false" "Enable per-user memory profiling? (true/false)"
 init_agent_ready_timeout
 
@@ -120,7 +122,15 @@ execute_custom_resource() {
   fi
 
 
-  # Normalize memory variables to strict boolean values
+  # Normalize memory variables to strict boolean values.
+  #
+  # MEMORY_ENABLED and MEMORY_PROVIDER are independent, and deliberately so.
+  # MEMORY_ENABLED gates Hermes' *built-in* MEMORY.md/USER.md store only; the
+  # provider loads off MEMORY_PROVIDER alone. Every install this repo has ever
+  # written set MEMORY_ENABLED=false and still got a working provider, so
+  # deriving one from the other on upgrade would silently switch that store off.
+  # Whether the agent remembers anything is MEMORY_PROVIDER's question, and
+  # `none` is how it answers no.
   if is_truthy "${MEMORY_ENABLED:-false}"; then
     export MEMORY_ENABLED="true"
   else

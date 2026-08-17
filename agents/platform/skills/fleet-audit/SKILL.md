@@ -470,7 +470,7 @@ and what pull request sits on its branch. Nothing is stored between runs.
 | State                | Rendered as                           | Meaning                                    | What the harness does                                        |
 | -------------------- | ------------------------------------- | ------------------------------------------ | ------------------------------------------------------------ |
 | `open`               | `open`                                | Reproduces; no pull request                | Nothing, unless it qualifies for auto-promotion              |
-| `pr-open`            | `fix proposed`                        | Reproduces; a fix is open on its branch    | **Nothing.** The pull request is left alone                  |
+| `pr-open`            | `fix proposed`                        | Reproduces; a fix is open on its branch    | **Labels re-asserted.** The pull request itself is untouched |
 | `pr-merged-persists` | `⚠ fix merged, still reproduces`      | Reproduces; the fix **merged anyway**      | Comments once on the merged PR; never reopens it             |
 | `refused`            | `fix refused`                         | Reproduces; a **human closed** the fix     | Nothing. The close stands until someone says `/remediate`    |
 | `withdrawn`          | `fix withdrawn, awaiting re-proposal` | Reproduces; the **harness closed** the fix | Treats it as having no pull request — it is promotable again |
@@ -484,9 +484,13 @@ the ordinary, expected ending, so nothing extra is closed and nothing extra is s
 
 Three of the five are easy to misread:
 
-- **`pr-open` is not refreshed.** An open pull request is left exactly as it is, because a reviewer
-  may have pushed onto it and a nightly force-push would silently discard their work. The ledger
-  links it; the diff is whatever a human last made it.
+- **`pr-open` is not refreshed.** An open pull request's diff is left exactly as it is, because a
+  reviewer may have pushed onto it and a nightly force-push would silently discard their work. The
+  ledger links it; the diff is whatever a human last made it. Its **labels** are the single
+  exception, re-asserted on every run that finds it still open: they are the harness's own index of
+  what it still owns rather than anything a reviewer authored, and a stripped `agent:audit` or a
+  `severity:` frozen at what the group used to be loses the pull request from the views triage works
+  from. Labels only — no push, no rewritten body, so the promise above still holds.
 - **`refused` is a human decision, not a rejected command.** It means someone closed the remediation
   pull request without merging it. That is a considered "no", and the harness never overrules it by
   re-opening the same fix tomorrow morning.
@@ -506,7 +510,7 @@ there. Either the remediation was incomplete or something outside this repositor
 ## Remediation pull requests
 
 A pull request is opened for a finding only when its remediation is a `manifest` — there is nothing
-to put in a diff otherwise. Two paths lead there:
+to put in a diff otherwise. Three paths lead there:
 
 - **Auto-promotion.** A finding that is `critical`, is a `manifest`, and has no live pull request on
   its branch is promoted automatically by `finish` — **at most five per run**. The surplus is named
@@ -515,13 +519,21 @@ to put in a diff otherwise. Two paths lead there:
   closed or merged (those are not).
 - **`/remediate <finding-id>`**, or `/remediate all`, commented on the ledger by someone with write
   access to the repository. This path is uncapped: a human asked for that one by name.
+- **A direct ask.** A collaborator asking the agent, in the agent's own task, to fix a named
+  finding; the agent answers with the `remediate` subcommand. Uncapped for the same reason as
+  `/remediate` — and distinct from a comment read on the ledger, which is the harness's to answer
+  (`start` reports the ones that passed its gates as `pending_remediation_requests`). Fresh pull
+  requests only: a finding whose pull request a human closed is reported as `superseded`, never
+  re-proposed — a direct ask carries no GitHub identity, so the after-the-close escape hatch
+  above stays with the write-gated comment.
 
 Every `/remediate` gets exactly one answer, and the answer is never silence:
 
 - Accepted — one acknowledgement comment on the ledger naming each target and **what happened to
-  it**, never a count: the pull request URL, or "already open" and left untouched, or _superseded_
-  by a human close written after the request, or that publishing failed and the next run will retry.
-  "3 requests processed" is indistinguishable from "3 requests silently dropped".
+  it**, never a count: the pull request URL, or "already open" with its labels re-asserted and its
+  diff untouched, or _superseded_ by a human close written after the request, or that publishing
+  failed and the next run will retry. "3 requests processed" is indistinguishable from "3 requests
+  silently dropped".
 - Refused — one reply saying why, for a commenter without write access, a `/remediate` naming a
   finding that is not in the current document, or one naming a non-`manifest` finding.
 - Refused **on syntax**, likewise once, because a command the parser will not honour is a person
@@ -550,7 +562,10 @@ answers itself never stops.
 All of these are guarded by a hidden marker carrying the triggering comment's node id, so a standing
 `/remediate` in the thread is answered once rather than every morning forever.
 
-Run the requested targets through the subcommand, which takes `--finding` once per id:
+A `/remediate` read on the ledger is never run through the subcommand — `finish` answers those on
+the comment's own timestamp, which is what lets a fresh post-close command revive a finding the
+subcommand would report as `superseded`. Run a direct ask's targets through it, `--finding` once
+per id:
 
 ```bash
 ./skills/fleet-audit/scripts/audit_report.py remediate --audit <audit-id> \
@@ -562,9 +577,15 @@ one `--finding` produces one pull request (or one, shared, for the group that pa
 five more for critical findings the requester never mentioned and cannot tell apart from the one they
 did. Auto-promotion happens in `finish`, where the whole fleet is being reported on anyway.
 
-It prints one JSON line — `status`, `prs_opened`, `already_open`, and `refused`:
+It prints one JSON line — `status`, `prs_opened`, `already_open`, `superseded`, and `refused`:
 
-- `{"status":"REMEDIATED","prs_opened":["…"],"already_open":["cluster-old"],"refused":["ns-quota"]}`
+- `{"status":"REMEDIATED","prs_opened":["…"],"already_open":["cluster-old"],"superseded":[],"refused":["ns-quota"]}`
+
+`superseded` names targets whose pull request a human closed: that close stands, and the
+subcommand does not re-propose them. Revival belongs to the write-gated `/remediate` comment
+(§ above, honoured by `finish` on the comment's own timestamp) — or to `--override-human-close`,
+which exists for the person at the terminal who could have written that comment themselves. An
+agent relaying an ask it cannot tie to a GitHub identity never passes that flag.
 
 `refused` names the targets whose remediation is not a readable file inside the clone — either the
 audit promised a manifest and never wrote it, or the path does not resolve inside the repository at

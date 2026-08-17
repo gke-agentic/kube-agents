@@ -199,6 +199,7 @@ class TestSessionKvServerAuth(unittest.TestCase):
         ("GET", "/v1/sessions/sess-1/metadata", None),
         ("POST", "/v1/incidents", {"chat_id": "c", "thread_id": "t", "report": "r"}),
         ("GET", "/v1/incidents/by-thread?chat_id=c&thread_id=t", None),
+        ("GET", "/v1/alert-quota", None),
     )
 
     def setUp(self):
@@ -348,6 +349,205 @@ class TestPlaintextIdentityPurge(unittest.TestCase):
         self._write("modern-1", {"platform": "google_chat", "user_email_hash": "deadbeef"})
         session_kv_server.init_db()
         self.assertEqual(self._read("modern-1")["user_email_hash"], "deadbeef")
+
+
+class TestAlertDailyQuota(unittest.TestCase):
+    """The per-severity daily ceiling enforced in /sessions/{id}/inject."""
+
+    def setUp(self):
+        import sqlite3
+        from fastapi.testclient import TestClient
+
+        # Every route these tests touch is behind verify_api_key, including
+        # /v1/alert-quota. The key goes on the client rather than on each call
+        # so these tests stay about the ceiling; the auth boundary itself is
+        # pinned by TestSessionKvServerAuth above.
+        os.environ["SESSION_KV_API_KEY"] = API_KEY
+        self.client = TestClient(session_kv_server.app, headers=AUTH_HEADERS)
+        # The temp database is shared by every test in this file, so today's
+        # spent budget has to be cleared or these tests order-depend on each
+        # other.
+        with sqlite3.connect(temp_db_path) as conn:
+            with conn:
+                conn.execute("DELETE FROM alert_quota")
+
+    def tearDown(self):
+        os.environ.pop("SESSION_KV_API_KEY", None)
+
+    def _inject(self, reason="Unhealthy", session_id="k8s-evt-quota"):
+        payload = {
+            "reason": reason,
+            "namespace": "ns",
+            "kind_of_object": "Pod",
+            "name": "billing-pod",
+            "message": "some message",
+            "type": "Warning",
+        }
+        return self.client.post(f"/sessions/{session_id}/inject", json={"message": json.dumps(payload)})
+
+    def test_alert_daily_limit_parsing(self):
+        parse = session_kv_server._alert_daily_limit
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("X_LIMIT", None)
+            # Unset falls back to the default rather than to "uncapped".
+            self.assertEqual(parse("X_LIMIT", 10), 10)
+        with patch.dict(os.environ, {"X_LIMIT": "3"}):
+            self.assertEqual(parse("X_LIMIT", 10), 3)
+        with patch.dict(os.environ, {"X_LIMIT": "0"}):
+            # An explicit 0 is how the cap is turned off.
+            self.assertEqual(parse("X_LIMIT", 10), 0)
+        with patch.dict(os.environ, {"X_LIMIT": "-5"}):
+            # Negative is not a ceiling; treated as "off", not as "block all".
+            self.assertEqual(parse("X_LIMIT", 10), 0)
+        with patch.dict(os.environ, {"X_LIMIT": "ten"}):
+            # Garbage must not silently disable the cap or block everything.
+            self.assertEqual(parse("X_LIMIT", 10), 10)
+
+    def test_zero_limit_never_suppresses(self):
+        with patch.dict(session_kv_server.ALERT_DAILY_LIMITS, {"Warning": 0}):
+            for _ in range(20):
+                allowed, suppressed = session_kv_server._claim_alert_quota("Warning")
+                self.assertTrue(allowed)
+                self.assertEqual(suppressed, 0)
+
+    def test_info_severity_is_capped(self):
+        # Info is a real arrival, not a theoretical one: nothing on the path
+        # from the kubelet filters on Event.Type, so an allowlisted reason
+        # emitted as `type: Normal` — BackOff during image-pull back-off, say —
+        # is classified Info here. It gets a ceiling like everything else.
+        self.assertIn("Info", session_kv_server.ALERT_DAILY_LIMITS)
+        with patch.dict(session_kv_server.ALERT_DAILY_LIMITS, {"Info": 1}):
+            allowed, _ = session_kv_server._claim_alert_quota("Info")
+            self.assertTrue(allowed)
+
+            allowed, suppressed = session_kv_server._claim_alert_quota("Info")
+            self.assertFalse(allowed, "Info must not bypass the ceiling")
+            self.assertEqual(suppressed, 1)
+
+    def test_unknown_severity_is_allowed(self):
+        # The .get default is now reachable only by a string
+        # get_severity_details cannot return. Such a severity must pass through
+        # rather than be read as a zero budget and blocked outright.
+        self.assertNotIn("Nonsense", session_kv_server.ALERT_DAILY_LIMITS)
+        allowed, _ = session_kv_server._claim_alert_quota("Nonsense")
+        self.assertTrue(allowed)
+
+    def test_claim_allows_exactly_the_limit_then_suppresses(self):
+        with patch.dict(session_kv_server.ALERT_DAILY_LIMITS, {"Warning": 3}):
+            for i in range(3):
+                allowed, suppressed = session_kv_server._claim_alert_quota("Warning")
+                self.assertTrue(allowed, f"alert {i + 1} of 3 should be within budget")
+                self.assertEqual(suppressed, 0)
+
+            allowed, suppressed = session_kv_server._claim_alert_quota("Warning")
+            self.assertFalse(allowed)
+            self.assertEqual(suppressed, 1)
+
+            allowed, suppressed = session_kv_server._claim_alert_quota("Warning")
+            self.assertFalse(allowed)
+            self.assertEqual(suppressed, 2)
+
+    def test_severities_have_independent_budgets(self):
+        with patch.dict(session_kv_server.ALERT_DAILY_LIMITS, {"Warning": 1, "Critical": 2}):
+            self.assertTrue(session_kv_server._claim_alert_quota("Warning")[0])
+            self.assertFalse(session_kv_server._claim_alert_quota("Warning")[0])
+            # Exhausting warnings must not touch the critical budget.
+            self.assertTrue(session_kv_server._claim_alert_quota("Critical")[0])
+            self.assertTrue(session_kv_server._claim_alert_quota("Critical")[0])
+            self.assertFalse(session_kv_server._claim_alert_quota("Critical")[0])
+
+    def test_yesterdays_spend_does_not_consume_today(self):
+        import sqlite3
+
+        with sqlite3.connect(temp_db_path) as conn:
+            with conn:
+                conn.execute(
+                    "INSERT INTO alert_quota (day, severity, sent, suppressed) VALUES ('2020-01-01', 'Warning', 99, 42)"
+                )
+        with patch.dict(session_kv_server.ALERT_DAILY_LIMITS, {"Warning": 2}):
+            self.assertTrue(session_kv_server._claim_alert_quota("Warning")[0])
+
+    def test_claim_fails_open_when_the_database_is_unavailable(self):
+        import sqlite3
+
+        # A cap must never be the reason an incident goes unreported.
+        with patch.dict(session_kv_server.ALERT_DAILY_LIMITS, {"Warning": 1}):
+            with patch.object(session_kv_server.sqlite3, "connect", side_effect=sqlite3.OperationalError("locked")):
+                allowed, suppressed = session_kv_server._claim_alert_quota("Warning")
+        self.assertTrue(allowed)
+        self.assertEqual(suppressed, 0)
+
+    def test_inject_suppresses_past_the_limit_and_does_not_trigger_the_agent(self):
+        with patch.dict(session_kv_server.ALERT_DAILY_LIMITS, {"Warning": 2}):
+            with patch.object(session_kv_server, "trigger_agent_troubleshooter") as trigger:
+                self.assertEqual(self._inject().json()["status"], "injected")
+                self.assertEqual(self._inject().json()["status"], "injected")
+
+                resp = self._inject()
+                # 200, not an error: a failure response would leave the
+                # watcher's dedup entry unbound and cost us a re-report.
+                self.assertEqual(resp.status_code, 200)
+                body = resp.json()
+                self.assertEqual(body["status"], "suppressed")
+                self.assertEqual(body["severity"], "Warning")
+                self.assertEqual(body["suppressed_today"], "1")
+
+                self.assertEqual(trigger.call_count, 2, "the suppressed alert must not reach the agent")
+
+    def test_suppression_posts_nothing_to_chat(self):
+        # Announcing the ceiling would spend a message to say no more messages
+        # are coming. Nothing at all may be sent once the budget is spent.
+        with patch.dict(session_kv_server.ALERT_DAILY_LIMITS, {"Warning": 1}):
+            with patch.object(session_kv_server, "trigger_agent_troubleshooter"):
+                with patch.object(session_kv_server, "_post_initial_alert") as post:
+                    self._inject()
+                    self._inject()
+                    self._inject()
+        post.assert_not_called()
+
+    def test_alert_quota_endpoint_reports_spend_and_drops(self):
+        with patch.dict(session_kv_server.ALERT_DAILY_LIMITS, {"Warning": 1, "Critical": 5}):
+            with patch.object(session_kv_server, "trigger_agent_troubleshooter"):
+                self._inject()
+                self._inject()
+
+            resp = self.client.get("/v1/alert-quota")
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            self.assertEqual(data["severities"]["Warning"], {"limit": 1, "sent": 1, "suppressed": 1})
+            # A capped severity with no traffic still reports, so a missing key
+            # means "uncapped" rather than "quiet".
+            self.assertEqual(data["severities"]["Critical"], {"limit": 5, "sent": 0, "suppressed": 0})
+
+    def test_alert_quota_endpoint_omits_uncapped_severities(self):
+        with patch.dict(session_kv_server.ALERT_DAILY_LIMITS, {"Warning": 0, "Critical": 5}):
+            data = self.client.get("/v1/alert-quota").json()
+            self.assertNotIn("Warning", data["severities"])
+            self.assertIn("Critical", data["severities"])
+
+    def test_old_quota_rows_are_cleaned_up(self):
+        import sqlite3
+        from datetime import datetime, timedelta
+
+        stale_day = (datetime.now() - timedelta(days=15)).strftime("%Y-%m-%d")
+        fresh_day = datetime.now().strftime("%Y-%m-%d")
+        with sqlite3.connect(temp_db_path) as conn:
+            with conn:
+                conn.execute(
+                    "INSERT INTO alert_quota (day, severity, sent, suppressed) VALUES (?, 'Warning', 1, 1)",
+                    (stale_day,),
+                )
+                conn.execute(
+                    "INSERT INTO alert_quota (day, severity, sent, suppressed) VALUES (?, 'Warning', 1, 1)",
+                    (fresh_day,),
+                )
+
+        # Any write endpoint runs cleanup_old_records.
+        self.assertEqual(self.client.post("/sessions").status_code, 201)
+
+        with sqlite3.connect(temp_db_path) as conn:
+            self.assertIsNone(conn.execute("SELECT 1 FROM alert_quota WHERE day = ?", (stale_day,)).fetchone())
+            self.assertIsNotNone(conn.execute("SELECT 1 FROM alert_quota WHERE day = ?", (fresh_day,)).fetchone())
 
 
 class TestSessionKvServerQueryBuilding(unittest.TestCase):
