@@ -99,20 +99,23 @@ spec:
             capabilities:
               drop: ["ALL"]
           {{- /*
-            kubectl is exec'd directly: the official image is distroless and has
-            no shell, so a `/bin/sh -c` wrapper fails to start the container at all.
-            --ignore-not-found makes an already-deleted CR a success, which is the
-            common case when the teardown tooling removed it first.
+            The trailing `|| true` is what makes the best-effort contract above
+            real: `kubectl delete --wait` exits non-zero when the finalizer does
+            not clear within the timeout, and with backoffLimit 0 that would
+            fail the Job and abort the uninstall. It needs a shell, which is why
+            the image is not the distroless registry.k8s.io/kubectl.
+            --ignore-not-found makes an already-deleted CR a success, which is
+            the common case when the teardown tooling removed it first.
           */}}
-          command: ["kubectl"]
+          command: ["/bin/sh", "-c"]
           args:
-            - delete
-            - platformagent
-            - {{ .Values.platformAgent.name | quote }}
-            - --namespace={{ .Release.Namespace }}
-            - --ignore-not-found
-            - --wait
-            - --timeout={{ .Values.platformAgent.cleanupHook.timeout }}
+            - >-
+              kubectl delete platformagent {{ .Values.platformAgent.name | quote }}
+              --namespace={{ .Release.Namespace }}
+              --ignore-not-found
+              --wait
+              --timeout={{ .Values.platformAgent.cleanupHook.timeout }}
+              || true
           env:
             {{- /* kubectl caches discovery under $HOME; the root filesystem is read-only. */}}
             - name: HOME

@@ -239,11 +239,12 @@ would be left to clear it, the CR would strand, and the namespace would hang in
 `pre-delete` hook that deletes the CR and waits for the finalizer while the
 operator is still running.
 
-The hook runs `kubectl` from `registry.k8s.io/kubectl`, because the operator
-image is distroless and carries no client. It is best-effort on purpose: the
-container exits 0 even when the wait times out, since a failed `pre-delete`
-hook aborts the entire uninstall — worse than the stranded CR it prevents. Use
-`platformAgent.cleanupHook.image` to point at your own mirror.
+The hook runs `kubectl` from `alpine/k8s`, because the operator image is
+distroless and carries no client — and because the hook needs a shell: it is
+best-effort on purpose, exiting 0 (`|| true`) even when the wait times out,
+since a failed `pre-delete` hook aborts the entire uninstall — worse than the
+stranded CR it prevents. Use `platformAgent.cleanupHook.image` to point at your
+own mirror; any image with `kubectl` and `/bin/sh` works.
 
 With `platformAgent.cleanupHook.enabled=false`, the ordering is yours to keep:
 
