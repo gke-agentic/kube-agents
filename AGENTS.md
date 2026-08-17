@@ -10,7 +10,7 @@ This repository contains the Kubernetes Agentic Harness (`kube-agents`). It is a
   - `chat/`: The Chat Agent front door — the `default` Hermes profile that receives chat ingress and delegates to specialists.
   - `platform/`: Configuration for the Platform Agent, scaffolded at pod startup into the `platform` profile.
   - `cluster/`: The Cluster Agent profile _template_ (persona, scoped config, and runtime-debugging skills). The Platform Agent scaffolds this into per-cluster Hermes profiles at runtime; it is not deployed directly.
-- `.agents/skills/`: Repository-level skills, not shipped in the agent images — review skills (security audits, docs-drift, skill quality) run against pull requests and clusters, plus the `install-kube-agents`/`uninstall-kube-agents`/`upgrade-kube-agents` lifecycle skills that drive the repository's installer scripts.
+- `.agents/skills/`: Repository-level skills, not shipped in the agent images — review skills (adversarial change review, security audits, docs-drift, skill quality) run against pull requests and clusters, plus the `install-kube-agents`/`uninstall-kube-agents`/`upgrade-kube-agents` lifecycle skills that drive the repository's installer scripts.
 - `charts/`: Canonical Helm charts (`kube-agents`) for deploying the Kube-Agents operator and profiles.
 - `terraform/`: Companion reusable Terraform modules (`gke-cluster`, `kube-agents-iam`, `chat-pubsub`, `github-minter`) for infrastructure provisioning, plus `examples/full-install/`, the single-apply composition that installs the Helm chart on top.
 - `deploy/`: Deployment infrastructure code (Dockerfile, Kustomize bases, shared runtime assets).
@@ -145,6 +145,33 @@ documentation map (`docs/README.md`) — the same four checks CI runs.
   SHA and the comment together.
 - Use `.github/PULL_REQUEST_TEMPLATE.md` for PR body structure and level of
   detail. Do not use `--fill` with `gh pr create` as it bypasses the template.
+- **Adversarial self-review before opening a PR, and record it in the PR body.** Run the
+  `review-adversarial` skill (`.agents/skills/review-adversarial/SKILL.md`) against your branch
+  diff, fix what it confirms, and fill in the template's **Self-Review** section with what you
+  looked for, what it found, and the disposition of each finding. This is a required pre-PR step
+  for AI agents working in this repository: you are the change's first hostile reader, and a
+  reviewer who has to find what you could have found spends their attention on the wrong things.
+  This bullet is the canonical statement of the requirement; the site's
+  [contributing guide](docs/site/src/content/docs/contributing.md) and the comment in
+  [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) summarise it — change
+  this list first, then reconcile them to it.
+  - **Run the pass in a context that did not write the change** — a subagent, or a new session,
+    handed the diff range and nothing else. Not your plan, not your reasoning, not the summary you
+    were about to write. Reviewing a diff in the conversation that produced it is the one
+    configuration that reliably does not work: the same context that talked you into the code
+    talks you into approving it, and the blind spot sits exactly where you were already wrong. It
+    is why `.claude/commands/pr-review-batch.md` gives every pull request its own subagent, and a
+    self-review earns it for the same reason.
+  - **A finding you decide not to fix is an answer**, provided the reason is an argument about
+    this change rather than a shrug. "Out of scope", "pre-existing", and "will fix later" are not
+    reasons on their own; the separate issue you filed is.
+  - **Fix what the pass confirms; report what it only suspects.** A finding it could not pin down
+    is an open question for the section, not a licence to rewrite working code — chasing an
+    uncertain finding on your own change is how a self-review makes it worse than it started.
+  - **"No findings" is an answer only alongside what you looked for.** The skill's angles are the
+    vocabulary for that, and a pass that names none of them is indistinguishable from no pass.
+  - **Do not claim more than you did.** A self-review the diff contradicts is worse than none: it
+    spends the reviewer's trust before they reach the code.
 - **Docs-drift review before opening a PR:** run the `review-docs-drift` skill
   (`.agents/skills/review-docs-drift/SKILL.md`) against your branch diff and address its
   Blocking findings. This is a required pre-PR step for AI agents working in this repository;
@@ -192,6 +219,18 @@ coding agent over the branch diff. It only comments — it never pushes commits 
 Opening a pull request is therefore not the end of the task. The bot introduces itself in a comment
 on every pull request it picks up, and that comment states its current contract; if it disagrees
 with what follows, believe the comment and fix this section.
+
+**What any reviewer reads first — human or agent, this bot included.** Read the pull request's
+**Self-Review** section before the diff. It tells you what the author already looked for, what they
+found, and what they consciously chose not to fix, so the review can start where theirs stopped.
+Three things to do with it:
+
+- **Absent, empty, or a bare "reviewed it"** → say so as the first thing you report. The section is
+  required (see Pull Request Hygiene) and an unanswered one is the finding.
+- **A claim it makes that the diff does not support** → that is a finding in its own right, and a
+  more serious one than most defects: it misdirects every reader after you.
+- **A finding the author rejected with a reason** → engage with the reason. Restating the finding
+  as though the reason were not there wastes both of you.
 
 **When it runs.** On `opened`, `reopened`, and draft-marked-ready. **Pushing more commits does not
 start another review** — an active branch would otherwise pay for a re-read on every push. To get a
