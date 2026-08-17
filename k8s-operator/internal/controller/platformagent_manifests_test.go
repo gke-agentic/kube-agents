@@ -4011,6 +4011,8 @@ func TestBuildPlatformConfigMapEditorRole(t *testing.T) {
 	}
 	if len(rule.Verbs) != 3 {
 		t.Errorf("Expected 3 verbs (get, update, patch), got %d", len(rule.Verbs))
+	}
+}
 
 // agentWithEventWatcher builds a PlatformAgent whose harness names the emergency
 // stop explicitly. A nil `enabled` stands for the CR that writes the object but

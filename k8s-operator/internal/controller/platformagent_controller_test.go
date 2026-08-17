@@ -2396,7 +2396,7 @@ func TestReconcileGithubStateConfigMap(t *testing.T) {
 	}
 	if verifyCM.Data["managed_repos"] != "some-repo, test-org/new-repo" {
 		t.Errorf("expected ConfigMap to contain merged repos, but got %v", verifyCM.Data["managed_repos"])
-  }
+	}
 }
 
 func TestReconcileNetworkPolicy_APIReader(t *testing.T) {
