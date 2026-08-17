@@ -1225,6 +1225,10 @@ main() {
   local chat_topic_name="${PARAM_CHAT_TOPIC_NAME:-${CHAT_TOPIC_NAME:-platform-agent-chat-events}}"
   local chat_sub_name="${CHAT_SUB_NAME:-platform-agent-chat-events-sub}"
   local google_chat_mode="${PARAM_GOOGLE_CHAT_MODE:-${GOOGLE_CHAT_MODE:-default}}"
+  if [[ ! "$google_chat_mode" =~ ^(default|debug)$ ]]; then
+    print_error "--google-chat-mode must be either 'default' or 'debug'."
+    exit 1
+  fi
   local slack_bot_token=""
   local slack_app_token=""
   local slack_allowed_users=""
