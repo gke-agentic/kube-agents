@@ -69,31 +69,7 @@ else
   fi
 fi
 
-# 3. Check Emergency Override with mandatory non-empty audit reason & container image verification
-if is_truthy "${SKIP_VALIDATION}"; then
-  CLEAN_REASON="${EMERGENCY_REASON//[[:space:]]/}"
-  if [ -z "${CLEAN_REASON}" ]; then
-    echo "❌ ERROR: Emergency override (SKIP_RC_VALIDATION=true) requires an explicit non-whitespace EMERGENCY_OVERRIDE_REASON for audit compliance." >&2
-    exit 1
-  fi
-
-  echo "🔎 [Emergency Override] Verifying required container images exist in registry for commit ${RESOLVED_COMMIT:0:7}..."
-  if ! check_commit_images_exist "${RESOLVED_COMMIT}"; then
-    echo "❌ ERROR: Cannot perform emergency release! Required container images for commit ${RESOLVED_COMMIT:0:7} do not exist in registry." >&2
-    exit 1
-  fi
-
-  echo "⚠️ WARNING: RC E2E validation check is explicitly bypassed via emergency override!" >&2
-  echo "⚠️ Reason: ${EMERGENCY_REASON}" >&2
-  if [ -n "${GITHUB_OUTPUT:-}" ]; then
-    echo "eligible=true" >> "${GITHUB_OUTPUT}"
-    echo "emergency_override=true" >> "${GITHUB_OUTPUT}"
-    echo "target_commit=${RESOLVED_COMMIT}" >> "${GITHUB_OUTPUT}"
-  fi
-  exit 0
-fi
-
-# 4. Idempotent check and collision detection
+# 3. Idempotent check and collision detection (always evaluated before validation checks)
 EXISTING_RELEASE_TAGS="$(git tag --points-at "${RESOLVED_COMMIT}" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' || true)"
 
 for ex_tag in ${EXISTING_RELEASE_TAGS}; do
@@ -116,6 +92,30 @@ for ex_tag in ${EXISTING_RELEASE_TAGS}; do
     exit 1
   fi
 done
+
+# 4. Check Emergency Override with mandatory non-empty audit reason & container image verification
+if is_truthy "${SKIP_VALIDATION}"; then
+  CLEAN_REASON="${EMERGENCY_REASON//[[:space:]]/}"
+  if [ -z "${CLEAN_REASON}" ]; then
+    echo "❌ ERROR: Emergency override (SKIP_RC_VALIDATION=true) requires an explicit non-whitespace EMERGENCY_OVERRIDE_REASON for audit compliance." >&2
+    exit 1
+  fi
+
+  echo "🔎 [Emergency Override] Verifying required container images exist in registry for commit ${RESOLVED_COMMIT:0:7}..."
+  if ! check_commit_images_exist "${RESOLVED_COMMIT}"; then
+    echo "❌ ERROR: Cannot perform emergency release! Required container images for commit ${RESOLVED_COMMIT:0:7} do not exist in registry." >&2
+    exit 1
+  fi
+
+  echo "⚠️ WARNING: RC E2E validation check is explicitly bypassed via emergency override!" >&2
+  echo "⚠️ Reason: ${EMERGENCY_REASON}" >&2
+  if [ -n "${GITHUB_OUTPUT:-}" ]; then
+    echo "eligible=true" >> "${GITHUB_OUTPUT}"
+    echo "emergency_override=true" >> "${GITHUB_OUTPUT}"
+    echo "target_commit=${RESOLVED_COMMIT}" >> "${GITHUB_OUTPUT}"
+  fi
+  exit 0
+fi
 
 # 5. Check for validated RC tag pointing at target commit
 echo "🔎 Checking for rc_*_validated tags pointing at commit ${RESOLVED_COMMIT}..."

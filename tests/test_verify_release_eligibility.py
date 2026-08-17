@@ -174,6 +174,47 @@ exit {docker_exit}
         finally:
             temp_dir.cleanup()
 
+    def test_emergency_override_still_blocks_collision(self):
+        temp_dir, repo_dir, git, commit_sha, bin_dir = self._create_mock_repo()
+        try:
+            git("tag", "-a", MOCK_COLLIDING_RELEASE_TAG, commit_sha, "-m", f"Release {MOCK_COLLIDING_RELEASE_TAG}")
+            proc = self._run_verify_script(
+                repo_dir,
+                args=[MOCK_TARGET_RELEASE_TAG, commit_sha],
+                env={
+                    "SKIP_RC_VALIDATION": "true",
+                    "EMERGENCY_OVERRIDE_REASON": MOCK_EMERGENCY_OVERRIDE_REASON,
+                },
+                bin_dir=bin_dir,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Collision detected", proc.stderr)
+        finally:
+            temp_dir.cleanup()
+
+    def test_emergency_override_still_skips_idempotent(self):
+        temp_dir, repo_dir, git, commit_sha, bin_dir = self._create_mock_repo()
+        try:
+            git("tag", "-a", MOCK_TARGET_RELEASE_TAG, commit_sha, "-m", f"Release {MOCK_TARGET_RELEASE_TAG}")
+            gh_out = pathlib.Path(repo_dir) / "gh_output.txt"
+            proc = self._run_verify_script(
+                repo_dir,
+                args=[MOCK_TARGET_RELEASE_TAG, commit_sha],
+                env={
+                    "SKIP_RC_VALIDATION": "true",
+                    "EMERGENCY_OVERRIDE_REASON": MOCK_EMERGENCY_OVERRIDE_REASON,
+                    "GITHUB_OUTPUT": str(gh_out),
+                },
+                bin_dir=bin_dir,
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn("IDEMPOTENT SKIP", proc.stdout)
+            outputs = gh_out.read_text()
+            self.assertIn("already_released=true", outputs)
+            self.assertIn("skip_release=true", outputs)
+        finally:
+            temp_dir.cleanup()
+
     def test_missing_container_images_fails(self):
         temp_dir, repo_dir, _, commit_sha, bin_dir = self._create_mock_repo(mock_docker_succeeds=False)
         try:
