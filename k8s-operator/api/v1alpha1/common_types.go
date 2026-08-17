@@ -576,21 +576,27 @@ func CleanRepoSlugWithOrg(rawURL, org string) (string, error) {
 	cleaned := strings.TrimSpace(rawURL)
 	cleaned = strings.TrimSuffix(cleaned, ".git")
 
-	// Handle SSH format git@github.com:owner/repo
-	if strings.Contains(cleaned, "@") && strings.Contains(cleaned, ":") {
+	// Strip known URL schemes
+	for _, scheme := range []string{"ssh://", "git://", "https://", "http://"} {
+		cleaned = strings.TrimPrefix(cleaned, scheme)
+	}
+
+	// Handle user@host prefix (e.g. git@github.com:owner/repo or git@github.com/owner/repo)
+	if idx := strings.Index(cleaned, "@"); idx != -1 {
+		cleaned = cleaned[idx+1:]
+	}
+
+	// Handle SCP-style host:path syntax (e.g. github.com:owner/repo)
+	if strings.Contains(cleaned, ":") {
 		parts := strings.SplitN(cleaned, ":", 2)
 		if len(parts) == 2 {
 			cleaned = parts[1]
 		}
 	}
 
-	// Handle Web URLs (HTTP/HTTPS)
-	cleaned = strings.TrimPrefix(cleaned, "https://github.com/")
-	cleaned = strings.TrimPrefix(cleaned, "http://github.com/")
-	cleaned = strings.TrimPrefix(cleaned, "https://www.github.com/")
-	cleaned = strings.TrimPrefix(cleaned, "http://www.github.com/")
-	cleaned = strings.TrimPrefix(cleaned, "www.github.com/")
+	// Strip common domain prefixes
 	cleaned = strings.TrimPrefix(cleaned, "github.com/")
+	cleaned = strings.TrimPrefix(cleaned, "www.github.com/")
 	cleaned = strings.Trim(cleaned, "/")
 
 	if cleaned == "" {

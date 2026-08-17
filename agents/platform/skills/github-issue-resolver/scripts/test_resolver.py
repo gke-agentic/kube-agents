@@ -215,6 +215,43 @@ class HandlePollRoutingTest(unittest.TestCase):
         self.assertEqual(payload["repository"], "healthy/repo")
         self.assertEqual(payload["unreachable_repos"], ["broken/repo"])
 
+    def test_multi_repo_picks_oldest_issue_chronologically(self):
+        """Older issue from a higher-numbered repo wins over a newer issue with lower number."""
+        payload = self._poll(
+            ["repo-new/young", "repo-old/mature"],
+            repo_responses={
+                "repo-new/young": {
+                    "rc": 0,
+                    "stdout": json.dumps(
+                        [
+                            {
+                                "number": 2,
+                                "title": "recent issue",
+                                "createdAt": "2026-08-10T12:00:00Z",
+                                "comments": [],
+                            }
+                        ]
+                    ),
+                },
+                "repo-old/mature": {
+                    "rc": 0,
+                    "stdout": json.dumps(
+                        [
+                            {
+                                "number": 1500,
+                                "title": "older issue",
+                                "createdAt": "2026-08-01T10:00:00Z",
+                                "comments": [],
+                            }
+                        ]
+                    ),
+                },
+            },
+        )
+        self.assertEqual(payload["status"], "FOUND")
+        self.assertEqual(payload["issue_number"], 1500)
+        self.assertEqual(payload["repository"], "repo-old/mature")
+
     def test_multi_repo_one_unreachable_one_healthy_no_work(self):
         """A broken repo alongside a healthy repo with no issues returns NO_ISSUES with unreachable_repos."""
         payload = self._poll(

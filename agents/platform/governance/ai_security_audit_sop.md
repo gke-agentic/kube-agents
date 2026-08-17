@@ -19,6 +19,7 @@
 ```
 
 If multiple repositories are registered in `$GITHUB_STATE_CONFIGMAP` (`managed_repos`), pass `--repo "<owner>/<repo>"` explicitly:
+
 - **Interactive session:** If no `--repo` was specified, prompt the user to choose which repository to target before proceeding.
 - **Scheduled / unattended cron:** Iterate over all repositories in `managed_repos` in sequence, executing the audit and running `audit_report.py start` and `audit_report.py finish` for each repository with `--repo "<owner>/<repo>"`.
 

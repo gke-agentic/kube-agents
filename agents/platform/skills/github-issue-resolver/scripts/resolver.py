@@ -227,7 +227,7 @@ def handle_poll(args):
                 "--search",
                 search_query,
                 "--json",
-                "number,title,body,comments",
+                "number,title,body,comments,createdAt",
                 "--limit",
                 "10",
             ],
@@ -273,8 +273,8 @@ def handle_poll(args):
         )
         return
 
-    # Select lowest numbered open issue
-    all_issues.sort(key=lambda x: int(x["number"]))
+    # Select oldest open issue across repos (by createdAt, then lowest number)
+    all_issues.sort(key=lambda x: (x.get("createdAt", ""), int(x["number"])))
     target = all_issues[0]
     repo = target["_repo"]
     comments = []
