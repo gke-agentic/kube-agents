@@ -20,10 +20,6 @@ INSTALL_ARGS=(
   --image-tag="${IMAGE_TAG}"
 )
 
-if [ -n "${GCP_PROJECT_NUMBER:-}" ]; then
-  INSTALL_ARGS+=(--project-number="${GCP_PROJECT_NUMBER}")
-fi
-
 if [ "${GOOGLE_CHAT_ENABLED:-false}" = "true" ]; then
   INSTALL_ARGS+=(--enable-google-chat)
 fi

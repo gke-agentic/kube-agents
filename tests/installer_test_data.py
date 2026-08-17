@@ -41,7 +41,6 @@ UPGRADER_HELP_BANNER = "Lifecycle Upgrade Engine"
 
 # Shared mock fixtures for RC environment testing
 MOCK_GCP_PROJECT_ID = "mock-rc-project"
-MOCK_GCP_PROJECT_NUMBER = "123456789012"
 MOCK_GCP_REGION = "us-central1"
 MOCK_GKE_CLUSTER_NAME = "mock-rc-cluster"
 MOCK_IMAGE_TAG_SEMVER = "0.1.0"

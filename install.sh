@@ -57,7 +57,6 @@ trap 'on_error $? $LINENO "$BASH_COMMAND"' ERR
 PARAM_NON_INTERACTIVE="${NONINTERACTIVE:-false}"
 PARAM_DRY_RUN="${DRY_RUN:-false}"
 PARAM_PROJECT_ID="${PROJECT_ID:-}"
-PARAM_PROJECT_NUMBER="${PROJECT_NUMBER:-${GCP_PROJECT_NUMBER:-}}"
 PARAM_REGION="${REGION:-}"
 PARAM_CLUSTER_NAME="${CLUSTER_NAME:-}"
 # Left empty on purpose: resolved from common.sh's DEFAULT_* once the
@@ -150,7 +149,6 @@ parse_args() {
       --dry-run) PARAM_DRY_RUN="true"; shift ;;
       --menu|--config|--configure|menu|config) PARAM_MENU_MODE="true"; shift ;;
       --project-id=*) PARAM_PROJECT_ID="${1#*=}"; shift ;;
-      --project-number=*) PARAM_PROJECT_NUMBER="${1#*=}"; shift ;;
       --region=*) PARAM_REGION="${1#*=}"; shift ;;
       --cluster-name=*) PARAM_CLUSTER_NAME="${1#*=}"; shift ;;
       --model-provider=*) PARAM_MODEL_PROVIDER="${1#*=}"; shift ;;
@@ -1113,16 +1111,9 @@ main() {
   print_success "Selected Project ID: ${C_BOLD}${project_id}${C_RESET}"
 
   # Auto-resolve Project Number
-  local project_number="${PARAM_PROJECT_NUMBER:-${PROJECT_NUMBER:-${GCP_PROJECT_NUMBER:-}}}"
-  if [ -n "$project_number" ]; then
-    if ! echo "$project_number" | grep -qE '^[0-9]+$'; then
-      print_error "Invalid project number '${project_number}'. Project numbers must be numeric."
-      exit 1
-    fi
-  else
-    project_number=$(gcloud projects describe "$project_id" --format="value(projectNumber)" 2>/dev/null || echo "")
-  fi
-  if [ -z "$project_number" ] || ! echo "$project_number" | grep -qE '^[0-9]+$'; then
+  local project_number=""
+  project_number=$(gcloud projects describe "$project_id" --format="value(projectNumber)" 2>/dev/null || echo "")
+  if [ -z "$project_number" ]; then
     print_error "Unable to resolve the project number for '$project_id'. Verify the project ID and your access."
     exit 1
   fi

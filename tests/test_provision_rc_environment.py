@@ -14,7 +14,6 @@ from tests.installer_test_data import (
     MOCK_CALLS_LOG,
     MOCK_CHAT_TOPIC_NAME,
     MOCK_GCP_PROJECT_ID,
-    MOCK_GCP_PROJECT_NUMBER,
     MOCK_GCP_REGION,
     MOCK_GEMINI_API_KEY,
     MOCK_GKE_CLUSTER_NAME,
@@ -71,7 +70,6 @@ exit 0
 
             env = {
                 "GCP_PROJECT_ID": MOCK_GCP_PROJECT_ID,
-                "GCP_PROJECT_NUMBER": MOCK_GCP_PROJECT_NUMBER,
                 "GCP_REGION": MOCK_GCP_REGION,
                 "GKE_CLUSTER_NAME": MOCK_GKE_CLUSTER_NAME,
                 "IMAGE_TAG": MOCK_IMAGE_TAG_SHA,
@@ -112,7 +110,6 @@ exit 0
                 f"--region={MOCK_GCP_REGION} "
                 f"--cluster-name={MOCK_GKE_CLUSTER_NAME} "
                 f"--image-tag={MOCK_IMAGE_TAG_SHA} "
-                f"--project-number={MOCK_GCP_PROJECT_NUMBER} "
                 f"--enable-google-chat "
                 f"--google-chat-mode={MOCK_GOOGLE_CHAT_MODE} "
                 f"--chat-topic-name={MOCK_CHAT_TOPIC_NAME} "

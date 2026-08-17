@@ -58,7 +58,6 @@ jobs:
           IMAGE_TAG: ${{ steps.resolve_target.outputs.commit_sha }}
           REGISTRY_PREFIX: ${{ vars.REGISTRY_PREFIX }}
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-          GCP_PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
           GCP_REGION: ${{ vars.GCP_REGION }}
           GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
           GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
@@ -98,7 +97,6 @@ jobs:
           IMAGE_TAG: ${{ steps.resolve_target.outputs.commit_sha }}
           REGISTRY_PREFIX: ${{ vars.REGISTRY_PREFIX }}
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-          GCP_PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
           GCP_REGION: ${{ vars.GCP_REGION }}
           GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
           GOOGLE_CHAT_ENABLED: ${{ vars.GOOGLE_CHAT_ENABLED }}
