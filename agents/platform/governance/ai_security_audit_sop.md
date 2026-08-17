@@ -18,7 +18,9 @@
 ./skills/fleet-audit/scripts/audit_report.py start --audit ai-security-audit [--repo "<owner>/<repo>"]
 ```
 
-If multiple repositories are registered in `$GITHUB_STATE_CONFIGMAP` (`managed_repos`), pass `--repo "<owner>/<repo>"` explicitly. If running interactively and no `--repo` was specified, prompt the user to choose which repository to target before proceeding.
+If multiple repositories are registered in `$GITHUB_STATE_CONFIGMAP` (`managed_repos`), pass `--repo "<owner>/<repo>"` explicitly:
+- **Interactive session:** If no `--repo` was specified, prompt the user to choose which repository to target before proceeding.
+- **Scheduled / unattended cron:** Iterate over all repositories in `managed_repos` in sequence, executing the audit and running `audit_report.py start` and `audit_report.py finish` for each repository with `--repo "<owner>/<repo>"`.
 
 Returns `{"issue": <int|null>, "repo":"org/repo", "workspace":"/opt/data/gitops/ai-security-audit/org__repo", "findings_path":"/opt/data/scratch/findings_ai-security-audit.json", "pending_remediation_requests":[…]}`. Keep `findings_path` and `workspace` from this call; you write into both.
 
