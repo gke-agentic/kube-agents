@@ -5,7 +5,7 @@ REPO ?= $(eval REPO := $(LOCATION)-docker.pkg.dev/$(shell gcloud config get core
 
 BAD_SKILLS := $(wildcard agents/*/defaults/skills/*)
 
-.PHONY: default help docker-build docker-build-agents docker-build-credential-proxy docker-push docker-push-agents docker-push-credential-proxy dev-rebuild-agent status prettier-check prettier-write test-python test-python-deps validate prompt-check docs-generate docs-check docs-check-generated docs-check-links docs-check-terminology docs-check-map chart-sync chart-check iac-parity-check
+.PHONY: default help docker-build docker-build-agents docker-build-credential-proxy docker-push docker-push-agents docker-push-credential-proxy dev-rebuild-agent status prettier-check prettier-write test-python test-python-deps validate prompt-check docs-generate docs-check docs-check-generated docs-check-links docs-check-terminology docs-check-map chart-sync chart-check iac-parity-check tf-apply tf-destroy
 
 # The agent images this repository builds -- one per `--target` stage in
 # deploy/docker/Dockerfile, which is not the same thing as one per directory

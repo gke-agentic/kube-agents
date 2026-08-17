@@ -37,8 +37,9 @@ spec:
           imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
           env:
             # The manager reads this as a string and treats anything other than
-            # the literal "false" as on (cmd/main.go:113), so it must render
-            # quoted. Off by default because the webhooks need cert-manager and
+            # the literal "false" as on (os.Getenv("ENABLE_WEBHOOKS") != "false"
+            # in k8s-operator/cmd/main.go), so it must render quoted. Off by
+            # default because the webhooks need cert-manager and
             # the chart cannot install it; turning them on without it fails at
             # apply time on the missing Certificate CRD. See the chart README.
             - name: ENABLE_WEBHOOKS
@@ -84,7 +85,7 @@ spec:
           volumeMounts:
             # controller-runtime's default CertDir. The manager is started
             # without --webhook-cert-path, so this exact path is what it reads
-            # (cmd/main.go:120 only overrides it when the flag is given).
+            # (k8s-operator/cmd/main.go overrides it only when that flag is given).
             - mountPath: /tmp/k8s-webhook-server/serving-certs
               name: cert
               readOnly: true

@@ -212,17 +212,25 @@ delete_agent_cr() {
     fi
 
     # Only reachable when the operator cannot clear the finalizer — it is already
-    # gone, or wedged. Everything the finalizer would tidy up belongs to the
-    # release being destroyed anyway, so clearing it by hand strands nothing.
+    # gone, or wedged. Clearing it by hand skips the finalizer's other job:
+    # deleting the agent's cluster-scoped RBAC, which no owner reference
+    # garbage-collects (docs/site .../install/uninstall.md). The cluster is
+    # normally destroyed moments later, but a destroy can stop between the
+    # release and the cluster, so delete the two objects here as well.
     warn "finalizer did not clear in time; removing it so the namespace can terminate"
     kubectl patch "$ref" -n "$namespace" --type=merge \
       -p '{"metadata":{"finalizers":[]}}' >/dev/null 2>&1 || true
+    kubectl delete clusterrolebinding "kubeagents:minimal:${namespace}:${ref##*/}" \
+      --ignore-not-found >/dev/null 2>&1 || true
+    kubectl delete clusterrole "kubeagents:minimal:${namespace}:${ref##*/}" \
+      --ignore-not-found >/dev/null 2>&1 || true
   done <<<"$names"
 }
 
 purge_backups() {
-  [[ "$(tfvar enable_gke_backup_plan)" == "true" ]] || return 0
-
+  # Deliberately not gated on enable_gke_backup_plan: a plan created while the
+  # variable was true is still in state (and still owns backups) after it is
+  # flipped off, and the describe below already handles the plan-absent case.
   local project location plan
   project=$(tfvar project_id)
   location=$(tfvar location)
