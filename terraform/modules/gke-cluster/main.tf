@@ -37,6 +37,10 @@ resource "google_container_cluster" "autopilot" {
   deletion_protection = var.deletion_protection
   resource_labels     = var.resource_labels
 
+  # Matches provision_01's --enable-fqdn-network-policy. Autopilot always runs
+  # Dataplane V2, so the script's --enable-dataplane-v2 needs no counterpart.
+  enable_fqdn_network_policy = var.enable_fqdn_network_policy
+
   workload_identity_config {
     workload_pool = "${var.project_id}.svc.id.goog"
   }
