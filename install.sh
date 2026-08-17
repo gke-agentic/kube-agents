@@ -1750,4 +1750,6 @@ main() {
 
 if [ "${KUBE_AGENTS_SOURCE_ONLY:-false}" != "true" ]; then
   main "$@"
+else
+  echo "ℹ️ Sourced install.sh functions without executing main (KUBE_AGENTS_SOURCE_ONLY=true)." >&2
 fi
