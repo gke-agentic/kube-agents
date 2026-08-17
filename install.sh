@@ -1200,7 +1200,7 @@ main() {
   print_step "6. Chat & Messaging Integrations Setup"
   local chat_choice=""
   if [ "$PARAM_NON_INTERACTIVE" = "true" ] || [ "${PARAM_ENABLE_GOOGLE_CHAT:-false}" = "true" ]; then
-    if [ "${PARAM_ENABLE_GOOGLE_CHAT:-false}" = "true" ] || [ "${GOOGLE_CHAT_ENABLED:-false}" = "true" ]; then
+    if [ "${PARAM_ENABLE_GOOGLE_CHAT:-false}" = "true" ]; then
       chat_choice="1"
     else
       chat_choice="4"

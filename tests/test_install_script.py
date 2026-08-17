@@ -94,6 +94,13 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn(f"MODE={MOCK_GOOGLE_CHAT_MODE}", proc.stdout)
 
+    def test_parse_args_enable_google_chat(self):
+        """Verifies parse_args captures --enable-google-chat."""
+        cmd = 'parse_args --enable-google-chat; echo "CHAT=$PARAM_ENABLE_GOOGLE_CHAT"'
+        proc = self._run_install_func(cmd)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("CHAT=true", proc.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
