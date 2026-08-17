@@ -132,7 +132,7 @@ exit 0
             ({"MEMORY_PROVIDER": "kube_agents_memory"}, "--memory=hindsight"),
             ({"MEMORY_PROVIDER": "hindsight"}, "--memory=hindsight"),
             ({"MEMORY_PROVIDER": "none"}, "--memory=off"),
-            ({"MEMORY_ENABLED": "false"}, "--memory=off"),
+            ({"MEMORY_PROVIDER": "off"}, "--memory=off"),
             ({"MEMORY_PROVIDER": "multiuser_memory"}, "--memory=file"),
             ({}, "--memory=file"),
         ]

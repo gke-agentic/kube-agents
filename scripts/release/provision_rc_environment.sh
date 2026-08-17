@@ -60,10 +60,10 @@ if [ -n "${USER_PROFILE_ENABLED:-}" ]; then
   INSTALL_ARGS+=(--user-profile-enabled="${USER_PROFILE_ENABLED}")
 fi
 
-# Memory mode mapping: kube_agents_memory/hindsight -> hindsight, none/false -> off, else -> file
+# Memory mode mapping: kube_agents_memory/hindsight -> hindsight, none/off -> off, else -> file
 if [ "${MEMORY_PROVIDER:-}" = "kube_agents_memory" ] || [ "${MEMORY_PROVIDER:-}" = "hindsight" ]; then
   INSTALL_ARGS+=(--memory=hindsight)
-elif [ "${MEMORY_PROVIDER:-}" = "none" ] || [ "${MEMORY_ENABLED:-true}" = "false" ]; then
+elif [ "${MEMORY_PROVIDER:-}" = "none" ] || [ "${MEMORY_PROVIDER:-}" = "off" ]; then
   INSTALL_ARGS+=(--memory=off)
 else
   INSTALL_ARGS+=(--memory=file)
