@@ -5,10 +5,12 @@ set -euo pipefail
 export CLOUDSDK_CORE_DISABLE_PROMPTS="${CLOUDSDK_CORE_DISABLE_PROMPTS:-1}"
 
 echo "==> Tearing down existing RC environment via canonical uninstall.sh..."
-./uninstall.sh --non-interactive -y \
+if ! ./uninstall.sh --non-interactive -y \
   --project-id="${GCP_PROJECT_ID}" \
   --region="${GCP_REGION}" \
-  --cluster-name="${GKE_CLUSTER_NAME}" || true
+  --cluster-name="${GKE_CLUSTER_NAME}"; then
+  echo "⚠️ Warning: uninstall.sh exited with non-zero status (environment may not exist yet or teardown had partial errors). Proceeding with provisioning..." >&2
+fi
 
 INSTALL_ARGS=(
   --non-interactive -y
