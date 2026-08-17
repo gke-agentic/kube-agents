@@ -21,11 +21,12 @@ resource "google_gke_backup_backup_plan" "this" {
       namespaces = var.selected_namespaces
     }
 
-    # Set this once or not at all. Clearing it on a plan that already holds
-    # backups does not quietly swap the encryption over: the delete half of the
-    # replacement is refused while backups exist (see the README's Teardown
-    # section), so the apply stops partway. provision_12 sidesteps the same
-    # problem by warning and preserving the existing key rather than trying.
+    # Set this once, ideally at creation. Changing it later is an update
+    # in-place, not a replacement (verified against hashicorp/google v7.44:
+    # adding a key to a live plan shows "will be updated in-place"), but the
+    # new key governs only backups taken after the change — each existing
+    # backup keeps the key it was encrypted with. provision_12 warns and
+    # preserves the existing key rather than swapping it for the same reason.
     dynamic "encryption_key" {
       for_each = var.encryption_key == "" ? [] : [var.encryption_key]
       content {
