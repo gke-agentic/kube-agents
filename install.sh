@@ -92,7 +92,6 @@ Flags for AI Agents & Automation:
   -y, --yes, --non-interactive  Run in non-interactive mode (use flags/defaults)
   --dry-run                     Validate prerequisites & output config/plan without creating resources
   --project-id=ID               Target GCP Project ID
-  --project-number=NUMBER       Target GCP Project Number (default: auto-resolved via gcloud)
   --region=REGION               Target GCP Region (default: k8s-operator/scripts/common.sh
                                 DEFAULT_REGION, currently us-central1)
   --cluster-name=NAME           GKE Cluster Name (default: DEFAULT_CLUSTER_NAME,
