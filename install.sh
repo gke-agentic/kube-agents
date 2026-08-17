@@ -57,6 +57,7 @@ trap 'on_error $? $LINENO "$BASH_COMMAND"' ERR
 PARAM_NON_INTERACTIVE="${NONINTERACTIVE:-false}"
 PARAM_DRY_RUN="${DRY_RUN:-false}"
 PARAM_PROJECT_ID="${PROJECT_ID:-}"
+PARAM_PROJECT_NUMBER="${PROJECT_NUMBER:-${GCP_PROJECT_NUMBER:-}}"
 PARAM_REGION="${REGION:-}"
 PARAM_CLUSTER_NAME="${CLUSTER_NAME:-}"
 # Left empty on purpose: resolved from common.sh's DEFAULT_* once the
@@ -92,6 +93,7 @@ Flags for AI Agents & Automation:
   -y, --yes, --non-interactive  Run in non-interactive mode (use flags/defaults)
   --dry-run                     Validate prerequisites & output config/plan without creating resources
   --project-id=ID               Target GCP Project ID
+  --project-number=NUMBER       Target GCP Project Number (default: auto-resolved via gcloud)
   --region=REGION               Target GCP Region (default: k8s-operator/scripts/common.sh
                                 DEFAULT_REGION, currently us-central1)
   --cluster-name=NAME           GKE Cluster Name (default: DEFAULT_CLUSTER_NAME,
@@ -1112,10 +1114,15 @@ main() {
 
   # Auto-resolve Project Number
   local project_number="${PARAM_PROJECT_NUMBER:-${PROJECT_NUMBER:-${GCP_PROJECT_NUMBER:-}}}"
-  if [ -z "$project_number" ]; then
+  if [ -n "$project_number" ]; then
+    if ! echo "$project_number" | grep -qE '^[0-9]+$'; then
+      print_error "Invalid project number '${project_number}'. Project numbers must be numeric."
+      exit 1
+    fi
+  else
     project_number=$(gcloud projects describe "$project_id" --format="value(projectNumber)" 2>/dev/null || echo "")
   fi
-  if [ -z "$project_number" ]; then
+  if [ -z "$project_number" ] || ! echo "$project_number" | grep -qE '^[0-9]+$'; then
     print_error "Unable to resolve the project number for '$project_id'. Verify the project ID and your access."
     exit 1
   fi

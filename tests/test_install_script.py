@@ -12,6 +12,7 @@ import unittest
 from tests.installer_test_data import (
     INSTALLER_HELP_BANNER,
     INVALID_IMMUTABLE_REFS,
+    MOCK_GCP_PROJECT_NUMBER,
     VALID_IMMUTABLE_REFS,
 )
 
@@ -77,6 +78,13 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
         proc = self._run_install_func(cmd)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn(f"DIR={_REPO_ROOT}", proc.stdout)
+
+    def test_parse_args_project_number(self):
+        """Verifies parse_args captures --project-number."""
+        cmd = f'parse_args --project-number={MOCK_GCP_PROJECT_NUMBER}; echo "NUM=$PARAM_PROJECT_NUMBER"'
+        proc = self._run_install_func(cmd)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn(f"NUM={MOCK_GCP_PROJECT_NUMBER}", proc.stdout)
 
 
 if __name__ == "__main__":
