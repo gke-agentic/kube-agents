@@ -273,9 +273,11 @@ resource "helm_release" "cert_manager" {
   timeout = 600
 
   values = [yamlencode({
-    # cert-manager 1.14's spelling. 1.15 renamed it to crds.enabled/crds.keep;
-    # bumping cert_manager_version past 1.14.x means changing this key too.
-    installCRDs = true
+    # cert-manager 1.15+'s spelling; 1.14 and earlier called it installCRDs.
+    # Dropping cert_manager_version below 1.15.x means changing this key too.
+    crds = {
+      enabled = true
+    }
 
     global = {
       leaderElection = {

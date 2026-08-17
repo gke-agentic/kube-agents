@@ -251,9 +251,9 @@ variable "enable_cert_manager" {
 }
 
 variable "cert_manager_version" {
-  description = "cert-manager chart version, pinned to the release provision_03_gcp_gke_operator.sh installs. Values above 1.14.x need the installCRDs key in main.tf renamed to crds.enabled."
+  description = "cert-manager chart version, pinned to the release provision_03_gcp_gke_operator.sh installs. Values below 1.15.x need the crds.enabled key in main.tf renamed back to installCRDs."
   type        = string
-  default     = "v1.14.4"
+  default     = "v1.21.1"
 }
 
 variable "enable_webhooks" {
