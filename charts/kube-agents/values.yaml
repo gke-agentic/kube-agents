@@ -167,6 +167,12 @@ platformAgent:
       agentHome: "" # CRD default: /opt/data
     # Agent memory persistence. Defaults match both the CRD and the scripts'
     # MEMORY_ENABLED / MEMORY_PROVIDER / USER_PROFILE_ENABLED defaults.
+    # Hindsight-backed providers (kube_agents_memory, hindsight) need the
+    # Hindsight API server and Postgres from
+    # k8s-operator/config/integrations/hindsight/, which only
+    # provision_13_deploy_hindsight.sh deploys — this chart does not. Selecting
+    # one here points the agent at a hindsight-api Service that a chart-only
+    # install never created. The default multiuser_memory needs none of that.
     memory:
       enabled: null # CRD default: false
       provider: "" # CRD default: multiuser_memory

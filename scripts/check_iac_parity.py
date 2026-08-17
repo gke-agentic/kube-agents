@@ -56,8 +56,29 @@ surfaces that have drifted, which is worse than no check at all.
 * ``harness.hermes.dashboardEnabled`` defaults to ``true`` in the CRD and
   ``false`` on the script path. A real inconsistency, tracked in the chart
   README rather than papered over here.
-* The ``github-minter`` module creates IAM and KMS only; importing the GitHub
-  App PEM stays with ``provision_10_deploy_github_minter.sh``.
+* **The GitHub minter's Kubernetes surface is script-only**: the ``github-minter``
+  module creates IAM and KMS only, while the minter Deployment/KSA/NetworkPolicy
+  (``k8s-operator/config/integrations/github/``), the ``github-app-credentials``
+  Secret (``provision_07``), and the App PEM import (``provision_10``) have no
+  Terraform or chart counterpart.
+* **cert-manager is installed differently by design**: the script patches
+  Autopilot deployments to ``--leader-elect=false`` and skips an existing
+  install; the composition moves the leader-election lease into the
+  cert-manager namespace instead, and fails on a pre-existing install
+  (``enable_cert_manager = false`` is the escape). See the comments in
+  ``terraform/examples/full-install/main.tf``.
+* **The Hindsight memory store (``provision_13``) is script-only.**
+  Hindsight-backed memory providers need
+  ``k8s-operator/config/integrations/hindsight/``, which neither the chart nor
+  Terraform deploys; the chart's values comment warns that selecting such a
+  provider on those paths points the agent at a Service that does not exist.
+  The default ``multiuser_memory`` needs none of it.
+* **``full-install`` enables a superset of APIs** (``iam``, ``monitoring``,
+  ``logging``): Terraform must enable what its own resources call, where
+  gcloud enables APIs implicitly.
+* **``googleChat.homeChannel`` is settable from the chart and Terraform only**;
+  ``platform-agent.yaml.template`` hardcodes it empty. A script-path init_var
+  is a follow-up, not silent drift.
 
 Standard library only, so it runs in CI and in a bare clone.
 
@@ -68,6 +89,7 @@ Usage::
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -584,6 +606,117 @@ def check_webhook_paths(f: Failures) -> None:
         )
 
 
+def hcl_string_local(text: str, name: str, path: Path) -> str:
+    """Value of a `name = "value"` line in a Terraform file."""
+    match = re.search(rf'^\s*{re.escape(name)}\s*=\s*"([^"]*)"', text, re.M)
+    if not match:
+        sys.exit(f"ERROR: no {name} assignment in {path.relative_to(REPO)}")
+    return match.group(1)
+
+
+def hcl_resource_buckets(text: str, name: str, path: Path) -> dict:
+    """The requests/limits maps of a `name = { requests = {...} limits = {...} }` local."""
+    block = re.search(rf"{re.escape(name)}\s*=\s*\{{(.*?)\n  \}}", text, re.S)
+    if not block:
+        sys.exit(f"ERROR: no {name} block in {path.relative_to(REPO)}")
+    buckets: dict = {}
+    for bucket in ("requests", "limits"):
+        inner = re.search(rf"{bucket}\s*=\s*\{{(.*?)\}}", block.group(1), re.S)
+        if not inner:
+            sys.exit(
+                f"ERROR: {name} in {path.relative_to(REPO)} has no {bucket} map"
+            )
+        buckets[bucket] = dict(re.findall(r'(\w+)\s*=\s*"([^"]+)"', inner.group(1)))
+    return buckets
+
+
+def check_vertex_litellm_identities(f: Failures) -> None:
+    """The Vertex gateway's KSA and GSA names, picked identically three times.
+
+    common.sh exports them for provision_04/09, the composition hardcodes the
+    KSA as a local and the GSA as a service_account_id, and the chart carries
+    the KSA as litellm.vertex.serviceAccountName. A rename on one surface
+    breaks the Workload Identity chain silently: the binding targets one name,
+    the pod runs as another, and Vertex calls fail only at request time.
+    """
+    common = read(COMMON_SH)
+    ksa = shell_assignment(common, "LITELLM_KSA_NAME", COMMON_SH)
+    gsa = shell_assignment(common, "LITELLM_GSA_NAME", COMMON_SH)
+
+    composition = read(TF_FULL_INSTALL)
+    tf_ksa = hcl_string_local(composition, "litellm_ksa", TF_FULL_INSTALL)
+    if tf_ksa != ksa:
+        f.add(
+            "litellm-identities",
+            f"full-install litellm_ksa is {tf_ksa!r}, common.sh uses {ksa!r}",
+        )
+    # Presence, not position: other modules set service_account_id too, so the
+    # comparison is "the composition names this exact GSA somewhere".
+    if not re.search(rf'^\s*service_account_id\s*=\s*"{re.escape(gsa)}"', composition, re.M):
+        f.add(
+            "litellm-identities",
+            f"full-install has no service_account_id = {gsa!r}, which common.sh "
+            "expects for the Vertex gateway GSA",
+        )
+
+    chart_ksa = dig(simple_yaml(read(CHART_VALUES)), "litellm.vertex.serviceAccountName")
+    if chart_ksa != ksa:
+        f.add(
+            "litellm-identities",
+            f"chart litellm.vertex.serviceAccountName is {chart_ksa!r}, "
+            f"common.sh uses {ksa!r}",
+        )
+
+
+def check_host_label(f: Failures) -> None:
+    """The discovery label marking clusters that host a kube-agents install.
+
+    common.sh applies it in provision_08 (and removes it in teardown_08); the
+    composition writes it as a hardcoded resource_labels map. The Platform
+    Agent's fleet discovery filters on the key, so a one-sided rename makes
+    Terraform-built clusters invisible to it.
+    """
+    label = shell_assignment(read(COMMON_SH), "KUBE_AGENTS_HOST_LABEL", COMMON_SH)
+    composition = read(TF_FULL_INSTALL)
+    match = re.search(r'resource_labels\s*=\s*\{\s*"([^"]+)"\s*=\s*"true"', composition)
+    if not match:
+        sys.exit(
+            f"ERROR: no resource_labels map in {TF_FULL_INSTALL.relative_to(REPO)}"
+        )
+    if match.group(1) != label:
+        f.add(
+            "host-label",
+            f"full-install labels clusters {match.group(1)!r}, "
+            f"common.sh uses {label!r}",
+        )
+
+
+def check_cert_manager_resources(f: Failures) -> None:
+    """The resource quotas both installs give cert-manager's Deployments.
+
+    provision_03 patches all three Deployments with one JSON patch; the
+    composition expresses the same values once as a local and fans it out in
+    chart values. Autopilot bills what is requested, so a one-sided bump
+    quietly changes what the two installs cost.
+    """
+    script = read(PROVISION_03)
+    match = re.search(r"resources_patch='(\[.*?\])'", script)
+    if not match:
+        sys.exit(f"ERROR: no resources_patch in {PROVISION_03.relative_to(REPO)}")
+    patched = json.loads(match.group(1))[0]["value"]
+
+    terraform = hcl_resource_buckets(
+        read(TF_FULL_INSTALL), "cert_manager_resources", TF_FULL_INSTALL
+    )
+    for bucket in ("requests", "limits"):
+        if terraform[bucket] != patched[bucket]:
+            f.add(
+                "cert-manager-resources",
+                f"full-install cert_manager_resources {bucket} is "
+                f"{terraform[bucket]}, provision_03 patches {patched[bucket]}",
+            )
+
+
 CHECKS = (
     check_litellm_image,
     check_litellm_aliases,
@@ -597,6 +730,9 @@ CHECKS = (
     check_litellm_replicas,
     check_cert_manager_version,
     check_webhook_paths,
+    check_vertex_litellm_identities,
+    check_host_label,
+    check_cert_manager_resources,
 )
 
 

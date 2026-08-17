@@ -418,6 +418,80 @@ class WebhookParityTest(unittest.TestCase):
         self.assertEqual([name for name, _ in failures], ["webhook-paths"])
 
 
+class HclExtractorTest(unittest.TestCase):
+    def test_string_local_reads_only_the_named_assignment(self):
+        text = textwrap.dedent(
+            """\
+            locals {
+              other_ksa   = "wrong-name"
+              litellm_ksa = "kubeagents-litellm"
+            }
+            """
+        )
+        self.assertEqual(
+            parity.hcl_string_local(text, "litellm_ksa", FAKE), "kubeagents-litellm"
+        )
+
+    def test_string_local_exits_when_absent(self):
+        with self.assertRaises(SystemExit):
+            parity.hcl_string_local("locals {}\n", "litellm_ksa", FAKE)
+
+    def test_resource_buckets_keeps_requests_and_limits_apart(self):
+        text = textwrap.dedent(
+            """\
+            locals {
+              cert_manager_resources = {
+                requests = {
+                  cpu    = "10m"
+                  memory = "32Mi"
+                }
+                limits = {
+                  cpu    = "100m"
+                  memory = "128Mi"
+                }
+              }
+            }
+            """
+        )
+        buckets = parity.hcl_resource_buckets(text, "cert_manager_resources", FAKE)
+        self.assertEqual(buckets["requests"], {"cpu": "10m", "memory": "32Mi"})
+        self.assertEqual(buckets["limits"], {"cpu": "100m", "memory": "128Mi"})
+
+    def test_resource_buckets_exits_on_a_missing_bucket(self):
+        text = 'cert_manager_resources = {\n    requests = { cpu = "10m" }\n  }\n'
+        with self.assertRaises(SystemExit):
+            parity.hcl_resource_buckets(text, "cert_manager_resources", FAKE)
+
+
+class CertManagerPatchTest(unittest.TestCase):
+    def test_a_changed_terraform_quota_is_reported(self):
+        """Redirect the composition at a scratch copy with a drifted limit."""
+        real = parity.read(parity.TF_FULL_INSTALL)
+        drifted = real.replace('memory = "128Mi"', 'memory = "256Mi"', 1)
+        self.assertNotEqual(real, drifted)
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch = Path(tmp) / "main.tf"
+            scratch.write_text(drifted, encoding="utf-8")
+            with unittest.mock.patch.object(parity, "TF_FULL_INSTALL", scratch):
+                failures = parity.Failures()
+                parity.check_cert_manager_resources(failures)
+        self.assertEqual([name for name, _ in failures], ["cert-manager-resources"])
+
+
+class HostLabelTest(unittest.TestCase):
+    def test_a_renamed_label_key_is_reported(self):
+        real = parity.read(parity.TF_FULL_INSTALL)
+        drifted = real.replace('"kube-agents-host" = "true"', '"kube-agents" = "true"')
+        self.assertNotEqual(real, drifted)
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch = Path(tmp) / "main.tf"
+            scratch.write_text(drifted, encoding="utf-8")
+            with unittest.mock.patch.object(parity, "TF_FULL_INSTALL", scratch):
+                failures = parity.Failures()
+                parity.check_host_label(failures)
+        self.assertEqual([name for name, _ in failures], ["host-label"])
+
+
 class EndToEndTest(unittest.TestCase):
     def test_every_check_passes_against_the_real_tree(self):
         """The checks are only meaningful if the repository itself is in sync."""

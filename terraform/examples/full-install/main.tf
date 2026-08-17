@@ -1,4 +1,7 @@
 locals {
+  # A deliberate superset of what the scripts enable: iam, monitoring, and
+  # logging are here because Terraform must enable every API its own resources
+  # call, where gcloud enables them implicitly. On the divergence lists.
   base_apis = [
     "container.googleapis.com",
     "cloudkms.googleapis.com",
