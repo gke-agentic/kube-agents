@@ -3482,7 +3482,7 @@ func buildPlatformConfigMapEditorRole(agent *agentv1alpha1.PlatformAgent) *rbacv
 			{
 				APIGroups:     []string{""},
 				Resources:     []string{"configmaps"},
-				ResourceNames: []string{agent.Name + "-github-state"},
+				ResourceNames: []string{agent.Name + "-github-state", "github-token-minter-config"},
 				Verbs:         []string{"get", "update", "patch"},
 			},
 		},

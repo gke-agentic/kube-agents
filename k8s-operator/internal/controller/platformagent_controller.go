@@ -522,7 +522,10 @@ func (r *PlatformAgentReconciler) reconcileGithubStateConfigMap(ctx context.Cont
 	if err != nil {
 		if errors.IsNotFound(err) {
 			withCommonLabels(cm, agent)
-			return r.Create(ctx, cm)
+			if err := r.Create(ctx, cm); err != nil {
+				return err
+			}
+			return r.syncGithubTokenMinterConfigMap(ctx, agent, cm.Data["managed_repos"])
 		}
 		return err
 	}
@@ -536,7 +539,10 @@ func (r *PlatformAgentReconciler) reconcileGithubStateConfigMap(ctx context.Cont
 		existing := strings.TrimSpace(found.Data["managed_repos"])
 		if existing == "" {
 			found.Data["managed_repos"] = cmRepo
-			return r.Update(ctx, found)
+			if err := r.Update(ctx, found); err != nil {
+				return err
+			}
+			return r.syncGithubTokenMinterConfigMap(ctx, agent, cmRepo)
 		}
 		repos := parseManagedRepos(existing)
 		present := false
@@ -549,10 +555,79 @@ func (r *PlatformAgentReconciler) reconcileGithubStateConfigMap(ctx context.Cont
 		if !present {
 			repos = append(repos, cmRepo)
 			found.Data["managed_repos"] = strings.Join(repos, ", ")
-			return r.Update(ctx, found)
+			if err := r.Update(ctx, found); err != nil {
+				return err
+			}
+			return r.syncGithubTokenMinterConfigMap(ctx, agent, found.Data["managed_repos"])
 		}
 	}
 
+	return r.syncGithubTokenMinterConfigMap(ctx, agent, found.Data["managed_repos"])
+}
+
+// syncGithubTokenMinterConfigMap ensures that for every repository in managed_repos,
+// a corresponding <repo>.yaml entry exists in github-token-minter-config ConfigMap,
+// and removes any <repo>.yaml entry for repositories that are no longer managed.
+func (r *PlatformAgentReconciler) syncGithubTokenMinterConfigMap(ctx context.Context, agent *agentv1alpha1.PlatformAgent, managedReposStr string) error {
+	minterCM := &corev1.ConfigMap{}
+	err := r.Get(ctx, client.ObjectKey{Name: "github-token-minter-config", Namespace: agent.Namespace}, minterCM)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+
+	if minterCM.Data == nil {
+		return nil
+	}
+
+	baseTemplate, ok := minterCM.Data["default.yaml"]
+	if !ok || strings.TrimSpace(baseTemplate) == "" {
+		return nil
+	}
+
+	repos := parseManagedRepos(managedReposStr)
+	activeKeys := make(map[string]struct{}, len(repos))
+	for _, fullRepo := range repos {
+		bareRepo := fullRepo
+		if idx := strings.LastIndex(fullRepo, "/"); idx != -1 {
+			bareRepo = fullRepo[idx+1:]
+		}
+		bareRepo = strings.TrimSpace(bareRepo)
+		if bareRepo == "" {
+			continue
+		}
+		activeKeys[bareRepo+".yaml"] = struct{}{}
+	}
+
+	updated := false
+
+	// Ensure all active managed repositories have policy entries
+	for key := range activeKeys {
+		if _, exists := minterCM.Data[key]; !exists {
+			minterCM.Data[key] = baseTemplate
+			updated = true
+		}
+	}
+
+	// Prune policy entries for repositories that were removed / unmanaged (preserving default.yaml)
+	for key := range minterCM.Data {
+		if key == "default.yaml" {
+			continue
+		}
+		if !strings.HasSuffix(key, ".yaml") {
+			continue
+		}
+		if _, active := activeKeys[key]; !active {
+			delete(minterCM.Data, key)
+			updated = true
+		}
+	}
+
+	if updated {
+		return r.Update(ctx, minterCM)
+	}
 	return nil
 }
 

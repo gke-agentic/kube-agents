@@ -3475,3 +3475,73 @@ func TestReconcileNetworkPolicy_PrivateIPOverlap(t *testing.T) {
 		t.Errorf("expected 172.16.0.1/32 to be explicitly allowed in API server egress rule")
 	}
 }
+
+func TestSyncGithubTokenMinterConfigMap(t *testing.T) {
+	scheme := setupScheme()
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "test-ns"},
+	}
+
+	minterCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "github-token-minter-config",
+			Namespace: "test-ns",
+		},
+		Data: map[string]string{
+			"default.yaml":    "version: 'minty.abcxyz.dev/v2'\n",
+			"stale-repo.yaml": "version: 'minty.abcxyz.dev/v2'\n",
+		},
+	}
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(agent, minterCM).Build()
+	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
+
+	ctx := context.Background()
+
+	// 1. Sync with managed_repos: "test-org/repo-1, test-org/repo-2"
+	err := r.syncGithubTokenMinterConfigMap(ctx, agent, "test-org/repo-1, test-org/repo-2")
+	if err != nil {
+		t.Fatalf("syncGithubTokenMinterConfigMap failed: %v", err)
+	}
+
+	updatedCM := &corev1.ConfigMap{}
+	if err := cl.Get(ctx, client.ObjectKey{Name: "github-token-minter-config", Namespace: "test-ns"}, updatedCM); err != nil {
+		t.Fatalf("failed to get updated ConfigMap: %v", err)
+	}
+
+	// Verify repo-1.yaml and repo-2.yaml were created
+	if updatedCM.Data["repo-1.yaml"] != "version: 'minty.abcxyz.dev/v2'\n" {
+		t.Errorf("expected repo-1.yaml to be created with base template, got %q", updatedCM.Data["repo-1.yaml"])
+	}
+	if updatedCM.Data["repo-2.yaml"] != "version: 'minty.abcxyz.dev/v2'\n" {
+		t.Errorf("expected repo-2.yaml to be created with base template, got %q", updatedCM.Data["repo-2.yaml"])
+	}
+
+	// Verify stale-repo.yaml was pruned
+	if _, exists := updatedCM.Data["stale-repo.yaml"]; exists {
+		t.Errorf("expected stale-repo.yaml to be pruned from ConfigMap")
+	}
+
+	// Verify default.yaml was preserved
+	if updatedCM.Data["default.yaml"] != "version: 'minty.abcxyz.dev/v2'\n" {
+		t.Errorf("expected default.yaml to be preserved")
+	}
+
+	// 2. Remove repo-2 from managed_repos: "test-org/repo-1"
+	err = r.syncGithubTokenMinterConfigMap(ctx, agent, "test-org/repo-1")
+	if err != nil {
+		t.Fatalf("syncGithubTokenMinterConfigMap failed: %v", err)
+	}
+
+	if err := cl.Get(ctx, client.ObjectKey{Name: "github-token-minter-config", Namespace: "test-ns"}, updatedCM); err != nil {
+		t.Fatalf("failed to get updated ConfigMap: %v", err)
+	}
+
+	// Verify repo-1.yaml exists and repo-2.yaml was pruned
+	if _, exists := updatedCM.Data["repo-1.yaml"]; !exists {
+		t.Errorf("expected repo-1.yaml to remain present")
+	}
+	if _, exists := updatedCM.Data["repo-2.yaml"]; exists {
+		t.Errorf("expected repo-2.yaml to be pruned after removal from managed_repos")
+	}
+}
