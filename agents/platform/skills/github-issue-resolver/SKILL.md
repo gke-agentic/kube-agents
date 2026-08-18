@@ -59,7 +59,6 @@ API call. It also performs the stale sweep, which the card cannot.
   - If `unreachable_repos` is non-empty, note the unreachable repository warning in your final chat update.
   - Proceed to Step 2.
 
-
 ### Step 2: Claim the Issue
 
 Immediately claim the issue before starting your investigation so other agents
