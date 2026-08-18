@@ -506,6 +506,12 @@ an ancestor of pr<N>`. Phase −1 is supposed to withhold the narrowed option in
   `gh pr list --repo "$REPO" --author <login> --state open --json number,title,files`. Read the
   review comments on any sibling touching adjacent paths.
 
+- **No green-suite bypass.** Do not skip hunting candidates because CI or unit tests are passing.
+  Work every angle explicitly against the diff. Pay special attention to error fallbacks that pass
+  raw inputs forward, sibling contract symmetry across related components, and whether
+  negative/malformed inputs are tested against gates rather than assuming happy-path tests cover
+  all branches.
+
 One thing the skill has no way to know about:
 
 - **Merge mechanics are part of this review.** Run `gh pr checks <N> --repo "$REPO"`. If
