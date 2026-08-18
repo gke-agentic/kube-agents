@@ -507,10 +507,7 @@ an ancestor of pr<N>`. Phase −1 is supposed to withhold the narrowed option in
   review comments on any sibling touching adjacent paths.
 
 - **No green-suite bypass.** Do not skip hunting candidates because CI or unit tests are passing.
-  Work every angle explicitly against the diff. Pay special attention to error fallbacks that pass
-  raw inputs forward, sibling contract symmetry across related components, and whether
-  negative/malformed inputs are tested against gates rather than assuming happy-path tests cover
-  all branches.
+  Work every angle explicitly against the diff as defined in `review-adversarial`.
 
 One thing the skill has no way to know about:
 
