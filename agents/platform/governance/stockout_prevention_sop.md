@@ -219,7 +219,7 @@ gcloud logging read 'log_id("container.googleapis.com/cluster-autoscaler-visibil
 - **Remediation Feasibility Gate**: Before proposing a new machine family or Spot tier, verify that:
   1. The target GCP zone actually offers the machine type (`gcloud compute machine-types list --zones=<zone>`).
   2. For On-Demand proposals, the project quota for that family (`N4_CPUS`, `C4_CPUS`, GPU types) is greater than 0 (`gcloud compute regions describe <region> --project=<project>`).
-  3. For Spot proposals, the project's preemptible CPU quota (`PREEMPTIBLE_CPUS` or `PREEMPTIBLE_LOCAL_SSD_GB`) is greater than 0.
+  3. For Spot proposals, the project's preemptible CPU quota (`PREEMPTIBLE_CPUS`) is greater than 0 (and `PREEMPTIBLE_LOCAL_SSD_GB` is greater than 0 if requesting local SSDs).
 - Edit the manifest directly in `<workspace>`, adding the necessary fallback machine families, zones, or quota adjustments.
 - **Mandatory Remediation Comments**: For every modified line in YAML, append an inline `# Remediation: <reason>` comment.
 - Set `remediation.path` to the repo-relative file path, with `kind: manifest`.
