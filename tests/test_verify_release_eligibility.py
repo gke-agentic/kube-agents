@@ -12,6 +12,7 @@ import unittest
 
 from tests.testing.common import get_isolated_test_env
 from tests.testing.release import (
+    INVALID_GA_RELEASE_TAGS,
     MOCK_COLLIDING_RELEASE_TAG,
     MOCK_EMERGENCY_OVERRIDE_REASON,
     MOCK_RC_VALIDATED_TAG,
@@ -99,7 +100,7 @@ exit {docker_exit}
     def test_invalid_target_tag_format_fails(self):
         temp_dir, repo_dir, _, commit_sha, bin_dir = self._create_mock_repo()
         try:
-            for bad_tag in ["main", "v0.1.0", "0.1", "0.1.0-rc1", "release"]:
+            for bad_tag in INVALID_GA_RELEASE_TAGS:
                 with self.subTest(bad_tag=bad_tag):
                     proc = self._run_verify_script(repo_dir, args=[bad_tag, commit_sha], bin_dir=bin_dir)
                     self.assertNotEqual(proc.returncode, 0)

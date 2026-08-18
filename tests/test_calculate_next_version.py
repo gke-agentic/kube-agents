@@ -12,6 +12,7 @@ import unittest
 
 from tests.testing.common import get_isolated_test_env
 from tests.testing.release import (
+    INVALID_GA_RELEASE_TAGS,
     MOCK_BASE_TAG_1_X,
     MOCK_BASE_TAG_PRE_1_0,
     MOCK_COMMIT_MSG_BREAKING_1_X,
@@ -205,6 +206,38 @@ class CalculateNextVersionTest(unittest.TestCase):
             self.assertEqual(proc.returncode, 0)
             # Should detect 0.1.0 as baseline and calculate 0.1.1
             self.assertEqual(proc.stdout.strip(), "0.1.1")
+        finally:
+            temp_dir.cleanup()
+
+    def test_invalid_base_tag_format_fails(self):
+        temp_dir, repo_dir, _ = self._create_mock_repo()
+        try:
+            for bad_tag in INVALID_GA_RELEASE_TAGS:
+                with self.subTest(bad_tag=bad_tag):
+                    proc = self._run_calc_script(repo_dir, args=[bad_tag])
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("not a valid pure numeric SemVer", proc.stderr)
+        finally:
+            temp_dir.cleanup()
+
+    def test_nonexistent_base_tag_fails(self):
+        temp_dir, repo_dir, _ = self._create_mock_repo()
+        try:
+            # Base tag 0.9.9 does not exist in repo -> must fail fast with error
+            proc = self._run_calc_script(repo_dir, args=["0.9.9"])
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("does not exist in git repository", proc.stderr)
+        finally:
+            temp_dir.cleanup()
+
+    def test_nonexistent_target_ref_fails(self):
+        temp_dir, repo_dir, git = self._create_mock_repo()
+        try:
+            git("tag", "-a", MOCK_INITIAL_VERSION, "-m", f"Release {MOCK_INITIAL_VERSION}")
+            # Target ref 'nonexistent-ref' does not exist -> must fail fast
+            proc = self._run_calc_script(repo_dir, args=[MOCK_INITIAL_VERSION, "nonexistent-ref"])
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Target ref 'nonexistent-ref' does not exist", proc.stderr)
         finally:
             temp_dir.cleanup()
 

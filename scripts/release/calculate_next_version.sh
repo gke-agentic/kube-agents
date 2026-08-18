@@ -19,9 +19,23 @@ fi
 
 # 1. Resolve baseline GA SemVer tag (pure numeric X.Y.Z, excluding rc_* tags)
 if [ -n "${BASE_TAG_PARAM}" ]; then
+  if [[ ! "${BASE_TAG_PARAM}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "❌ ERROR: Base tag '${BASE_TAG_PARAM}' is not a valid pure numeric SemVer (e.g. 0.1.0, 0.2.0). 'v' prefix is not supported." >&2
+    exit 1
+  fi
+  if ! git rev-parse --verify "${BASE_TAG_PARAM}^{commit}" >/dev/null 2>&1; then
+    echo "❌ ERROR: Base tag '${BASE_TAG_PARAM}' does not exist in git repository!" >&2
+    exit 1
+  fi
   LATEST_TAG="${BASE_TAG_PARAM}"
 else
   LATEST_TAG="$(git tag -l --sort=version:refname '[0-9]*' 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | tail -n 1 || echo "")"
+fi
+
+# Validate target ref exists in git repository
+if ! git rev-parse --verify "${TARGET_REF_PARAM}^{commit}" >/dev/null 2>&1; then
+  echo "❌ ERROR: Target ref '${TARGET_REF_PARAM}' does not exist in git repository!" >&2
+  exit 1
 fi
 
 if [ -z "${LATEST_TAG}" ]; then
@@ -42,7 +56,10 @@ IFS='.' read -r MAJOR MINOR PATCH <<< "${LATEST_TAG}"
 
 # 2. Inspect commit range for subjects (%s) and bodies (%b)
 COMMITS_RANGE="${LATEST_TAG}..${TARGET_REF_PARAM}"
-COMMITS_SUBJECTS="$(git log "${COMMITS_RANGE}" --format="%s" 2>/dev/null || echo "")"
+if ! COMMITS_SUBJECTS="$(git log "${COMMITS_RANGE}" --format="%s" 2>&1)"; then
+  echo "❌ ERROR: Failed to read commit log for range '${COMMITS_RANGE}': ${COMMITS_SUBJECTS}" >&2
+  exit 1
+fi
 COMMITS_BODIES="$(git log "${COMMITS_RANGE}" --format="%b" 2>/dev/null || echo "")"
 
 if [ -z "${COMMITS_SUBJECTS}" ]; then
