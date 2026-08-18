@@ -497,6 +497,20 @@ func parseManagedRepos(raw string) []string {
 	return res
 }
 
+// reconcileGithubStateConfigMap ensures the <agent-name>-github-state ConfigMap exists to track
+// managed repositories. If spec.integration.github.gitRepo is defined on the CR, it is seeded
+// into managed_repos and kept present on subsequent reconciles without removing any dynamically
+// registered repositories added by the register-github-repo skill.
+//
+// Repository lifecycle and removal:
+// The operator treats spec.integration.github.gitRepo as declared desired state. If that repo
+// is absent from managed_repos in the existing ConfigMap, the reconciler re-appends it.
+// Therefore:
+//   - Dynamically registered repositories (added at runtime via register-github-repo) can be
+//     unregistered by removing them from the ConfigMap's managed_repos string.
+//   - CR-declared repositories must be removed or changed in the PlatformAgent CR itself
+//     (spec.integration.github.gitRepo); removing a CR-declared repo from the ConfigMap alone
+//     will cause the reconciler to re-add it on the next pass.
 func (r *PlatformAgentReconciler) reconcileGithubStateConfigMap(ctx context.Context, agent *agentv1alpha1.PlatformAgent) error {
 	cm := buildGithubStateConfigMap(agent)
 	if err := ctrl.SetControllerReference(agent, cm, r.Scheme); err != nil {
@@ -1057,6 +1071,24 @@ func (r *PlatformAgentReconciler) updateStatusReady(ctx context.Context, agent *
 		}
 	}
 
+	gitRepoErr := error(nil)
+	if agent.Spec.Integration != nil && agent.Spec.Integration.GitHub != nil {
+		if err := agentv1alpha1.ValidateGitHubOrg(agent.Spec.Integration.GitHub.Org); err != nil {
+			gitRepoErr = err
+		} else if err := agentv1alpha1.ValidateGitRepoURLWithOrg(agent.Spec.Integration.GitHub.GitRepo, agent.Spec.Integration.GitHub.Org); err != nil {
+			gitRepoErr = err
+		}
+	}
+
+	degradedStatus := metav1.ConditionFalse
+	if gitRepoErr != nil {
+		newPhase = "Degraded"
+		condStatus = metav1.ConditionFalse
+		condReason = "InvalidGitRepoURL"
+		condMsg = fmt.Sprintf("Invalid gitRepo URL or org (%s); GitOps disabled in config", gitRepoErr.Error())
+		degradedStatus = metav1.ConditionTrue
+	}
+
 	// Cluster event ingestion, reported only while it is switched off. A
 	// permanently-present condition would have to read True on every healthy
 	// install, and True here could only ever mean "the operator asked for a
@@ -1077,6 +1109,9 @@ func (r *PlatformAgentReconciler) updateStatusReady(ctx context.Context, agent *
 			existingWatcherCond.Reason == eventWatcherDisabledReason && existingWatcherCond.Message == eventWatcherDisabledMessage)
 
 	existingCond := meta.FindStatusCondition(agent.Status.Conditions, "Ready")
+	existingDegradedCond := meta.FindStatusCondition(agent.Status.Conditions, "Degraded")
+	degradedUnchanged := (degradedStatus == metav1.ConditionFalse && existingDegradedCond == nil) ||
+		(degradedStatus == metav1.ConditionTrue && existingDegradedCond != nil && existingDegradedCond.Status == metav1.ConditionTrue && existingDegradedCond.Reason == "InvalidGitRepoURL" && existingDegradedCond.Message == condMsg)
 
 	// Check if anything actually changed
 	if agent.Status.Phase == newPhase &&
@@ -1087,6 +1122,7 @@ func (r *PlatformAgentReconciler) updateStatusReady(ctx context.Context, agent *
 		agent.Status.Address == newAddress &&
 		agent.Status.Telemetry.OTLPEndpoint == otlpEndpoint &&
 		agent.Status.Telemetry.OTLPEndpointSource == otlpSource &&
+		degradedUnchanged &&
 		eventWatcherUnchanged &&
 		existingCond != nil && existingCond.Status == condStatus && existingCond.Reason == condReason && existingCond.Message == condMsg {
 		return newPhase, nil
@@ -1113,6 +1149,19 @@ func (r *PlatformAgentReconciler) updateStatusReady(ctx context.Context, agent *
 		LastTransitionTime: now,
 	}
 	meta.SetStatusCondition(&agent.Status.Conditions, condition)
+
+	if degradedStatus == metav1.ConditionTrue {
+		degradedCond := metav1.Condition{
+			Type:               "Degraded",
+			Status:             metav1.ConditionTrue,
+			Reason:             "InvalidGitRepoURL",
+			Message:            condMsg,
+			LastTransitionTime: now,
+		}
+		meta.SetStatusCondition(&agent.Status.Conditions, degradedCond)
+	} else {
+		meta.RemoveStatusCondition(&agent.Status.Conditions, "Degraded")
+	}
 
 	if eventWatcherOn {
 		meta.RemoveStatusCondition(&agent.Status.Conditions, eventWatcherConditionType)

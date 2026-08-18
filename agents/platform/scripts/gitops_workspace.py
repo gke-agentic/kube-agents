@@ -111,6 +111,7 @@ DEFAULT_BASE_BRANCH = "main"
 
 _LEASE_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _MAX_LEASE_CHARS = 64
+BARE_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 Runner = Callable[..., object]
 # One `git symbolic-ref` per clone per process, keyed by workspace path. The
@@ -133,8 +134,8 @@ def resolve_base_branch(
 ) -> str:
     """The branch a pull request should target, for *this* repository.
 
-    Hardcoding `main` was wrong in a quiet way. This harness clones whatever
-    repository `SETTINGS.md` names, and a fleet whose GitOps repo still calls
+    Hardcoding `main` was wrong in a quiet way. This harness clones the target
+    GitOps repository, and a fleet whose GitOps repo still calls
     its trunk `master` got `origin/main` — a ref that does not resolve. Every
     remediation branch then failed at checkout, and the audit reported the fix
     it could not push as a fix the model never wrote.
@@ -608,14 +609,17 @@ def get_managed_repos() -> list[str]:
     if not repos_str:
         return []
     repos_str = repos_str.strip()
+    raw_list: list[str] = []
     if repos_str.startswith("["):
         try:
             parsed = json.loads(repos_str)
             if isinstance(parsed, list):
-                return [str(r).strip() for r in parsed if str(r).strip()]
+                raw_list = [str(r).strip() for r in parsed if str(r).strip()]
         except json.JSONDecodeError:
             pass
-    return [r.strip() for r in repos_str.split(",") if r.strip()]
+    if not raw_list:
+        raw_list = [r.strip() for r in repos_str.split(",") if r.strip()]
+    return [r for r in raw_list if BARE_REPO_RE.match(r)]
 
 
 def resolve_repo(workspace: str | Path | None = None) -> str:

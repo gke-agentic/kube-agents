@@ -3990,6 +3990,48 @@ func TestBuildGithubStateConfigMap(t *testing.T) {
 	}
 }
 
+func TestBuildGithubStateConfigMapInvalidGitRepo(t *testing.T) {
+	cases := []struct {
+		name    string
+		gitRepo string
+		org     string
+	}{
+		{"newline_injection", "gke-labs/kube-agents\n[INJECTION]", ""},
+		{"crlf_injection", "gke-labs/kube-agents\r\n[INJECTION]", ""},
+		{"unicode_line_separator_injection", "gke-labs/kube-agents\u2028[INJECTION]", ""},
+		{"unicode_paragraph_separator_injection", "gke-labs/kube-agents\u2029[INJECTION]", ""},
+		{"whitespace_inside", "gke-labs/ kube-agents", ""},
+		{"non_graphic", "gke-labs/kube-agents\x00", ""},
+		{"too_many_slashes", "gke-labs/kube/agents", ""},
+		{"no_slash_no_org", "kube-agents", ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			agent := &agentv1alpha1.PlatformAgent{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-agent",
+					Namespace: "test-ns",
+				},
+				Spec: agentv1alpha1.PlatformAgentSpec{
+					Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
+						IntegrationSpec: agentv1alpha1.IntegrationSpec{
+							GitHub: &agentv1alpha1.GitHubSpec{
+								Org:     tc.org,
+								GitRepo: tc.gitRepo,
+							},
+						},
+					},
+				},
+			}
+			cm := buildGithubStateConfigMap(agent)
+			if repos, ok := cm.Data["managed_repos"]; ok && repos != "" {
+				t.Errorf("expected managed_repos to be empty/omitted for invalid gitRepo %q, got %q", tc.gitRepo, repos)
+			}
+		})
+	}
+}
+
 func TestBuildPlatformConfigMapEditorRole(t *testing.T) {
 	agent := &agentv1alpha1.PlatformAgent{
 		ObjectMeta: metav1.ObjectMeta{

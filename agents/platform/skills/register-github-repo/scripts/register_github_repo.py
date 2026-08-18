@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -13,14 +14,16 @@ sys.path.append("/opt/data/scripts")
 from github_token_refresh import refresh_git_credentials
 from gitops_workspace import get_managed_repos
 
+BARE_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
 
 def run(cmd, **kwargs):
     return subprocess.run(cmd, text=True, **kwargs)
 
 
 def register_repo(repo: str) -> int:
-    repo = repo.strip()
-    if not repo or repo.count("/") != 1 or any(part == "" for part in repo.split("/")):
+    repo = (repo or "").strip()
+    if not repo or not BARE_REPO_RE.match(repo):
         print(
             "Error: Invalid repository format. Please provide a valid 'owner/repo' string.",
             file=sys.stderr,

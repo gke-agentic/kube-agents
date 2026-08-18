@@ -141,4 +141,4 @@ curl -i -X POST http://github-token-minter.kubeagents-system.svc.cluster.local:8
   }'
 ```
 
-If successful, Minty will return a JSON payload containing the short-lived GitHub access token.
+If successful, Minty will return a JSON payload containing the short-lived, repository-scoped GitHub access token.

@@ -257,7 +257,8 @@ Worked example, for a 3.3 finding on `payments/api`:
 
 ```bash
 ./skills/fleet-audit/scripts/audit_report.py finish --audit obtainability-audit \
-  --findings-file /opt/data/scratch/findings_obtainability-audit.json
+  --findings-file /opt/data/scratch/findings_obtainability-audit.json \
+  [--repo "<owner>/<repo>"]
 ```
 
 One JSON line comes back, carrying `status`, `issue_url`, `new`, `resolved`, `prs_opened`, `prs_closed`, `partial`, `coverage_gaps`, and `silent_ok`. Exit 2 means the validator rejected the document and nothing was published — fix the document, do not retry blind. Exit 1 is fatal. Exit 0 means it published.

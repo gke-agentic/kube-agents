@@ -864,10 +864,12 @@ func buildGithubStateConfigMap(agent *agentv1alpha1.PlatformAgent) *corev1.Confi
 		gitRepo := strings.TrimSpace(agent.Spec.Integration.GitHub.GitRepo)
 		org := strings.TrimSpace(agent.Spec.Integration.GitHub.Org)
 		if gitRepo != "" && gitRepo != "None" {
-			if cleaned, err := agentv1alpha1.CleanRepoSlugWithOrg(gitRepo, org); err == nil {
-				data["managed_repos"] = cleaned
+			if err := agentv1alpha1.ValidateGitRepoURLWithOrg(gitRepo, org); err == nil {
+				if cleaned, err := agentv1alpha1.CleanRepoSlugWithOrg(gitRepo, org); err == nil {
+					data["managed_repos"] = cleaned
+				}
 			} else {
-				manifestsLog.Info("Skipping initial configmap seed due to unparseable GitRepo", "raw", gitRepo)
+				manifestsLog.Info("Skipping initial configmap seed due to unparseable or invalid GitRepo", "raw", gitRepo, "error", err)
 			}
 		}
 	}

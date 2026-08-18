@@ -242,7 +242,8 @@ Worked example, for a 4.4 network-policy outlier:
 
 ```bash
 ./skills/fleet-audit/scripts/audit_report.py finish --audit fleet-consistency-drift \
-  --findings-file /opt/data/scratch/findings_fleet-consistency-drift.json
+  --findings-file /opt/data/scratch/findings_fleet-consistency-drift.json \
+  [--repo "<owner>/<repo>"]
 ```
 
 - One JSON line comes back: `status`, `issue_url`, `new`, `resolved`, `prs_opened`, `prs_closed`, `partial`, `coverage_gaps`, and `silent_ok`.

@@ -68,13 +68,13 @@ images to mirror and override precedence.
 
 ### Enabling GitHub after a first install
 
-`GITHUB_ORG`, `GITHUB_REPO`, and `GITHUB_APP_ID` gate **three** steps, not just step 10:
+`GITHUB_ORG` and `GITHUB_APP_ID` gate **three** steps, not just step 10:
 
-| Step | Gated on        | What it skips otherwise                                                   |
-| ---- | --------------- | ------------------------------------------------------------------------- |
-| 04   | all three       | The Token Minter GSA and its Workload Identity binding                    |
-| 07   | `GITHUB_APP_ID` | The `github-app-credentials` Secret the Minter mounts                     |
-| 10   | all three       | The KMS keyring, the private-key import, and the Minter Deployment itself |
+| Step | Gated on                       | What it skips otherwise                                                   |
+| ---- | ------------------------------ | ------------------------------------------------------------------------- |
+| 04   | `GITHUB_ORG` + `GITHUB_APP_ID` | The Token Minter GSA and its Workload Identity binding                    |
+| 07   | `GITHUB_APP_ID`                | The `github-app-credentials` Secret the Minter mounts                     |
+| 10   | `GITHUB_ORG` + `GITHUB_APP_ID` | The KMS keyring, the private-key import, and the Minter Deployment itself |
 
 So filling these in after an install that ran without them and re-running only step 10 leaves the
 Minter pods in `CreateContainerConfigError` with `secret "github-app-credentials" not found`. Add

@@ -4076,21 +4076,35 @@ def refresh_credentials(repo: str | None = None) -> None:
     refresh_git_credentials(repo)
 
 
-def resolve_repo(audit_id: str | None = None, repo: str | None = None) -> str:
-    """Resolve the GitOps repository as `owner/name`, checking lease record first if audit_id given."""
+BARE_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+
+def resolve_repo(
+    audit_id: str | None = None,
+    repo: str | None = None,
+    workspace: str | Path | None = None,
+) -> str:
+    """Resolve the GitOps repository as `owner/name`, checking explicit repo, workspace, lease record, then ConfigMap."""
     import gitops_workspace
 
     if repo and str(repo).strip():
         r = str(repo).strip()
-        try:
-            managed = gitops_workspace.get_managed_repos()
-        except Exception:
-            managed = []
+        if not BARE_REPO_RE.match(r):
+            raise ValueError(f"Invalid repository format: {r!r}. Expected 'owner/name'.")
+        managed = gitops_workspace.get_managed_repos()
         if managed and r not in managed:
             raise ValueError(
                 f"Repository {r!r} is not in the managed repositories list: {managed}"
             )
         return r
+
+    if workspace is not None:
+        try:
+            w_repo = gitops_workspace.resolve_repo(workspace=workspace)
+            if w_repo and BARE_REPO_RE.match(w_repo):
+                return w_repo
+        except Exception:
+            pass
 
     if audit_id:
         try:
@@ -4137,9 +4151,9 @@ def dry_run_repo_root(audit_id: str, repo: str | None = None) -> Path:
     The clone's location is a pure function of the repository name and this
     stream's lease, so it can be derived without cloning, fetching, or any other
     side effect — which keeps the dry run's promise intact. If it is not on disk
-    yet (nothing has cloned it, or `SETTINGS.md` is absent because this is a
-    laptop and not the pod), fall back rather than fail: a command that is safe
-    to run anywhere has to run anywhere.
+    yet (nothing has cloned it, or the managed repositories ConfigMap is absent
+    because this is a laptop and not the pod), fall back rather than fail: a
+    command that is safe to run anywhere has to run anywhere.
     """
     try:
         import gitops_workspace

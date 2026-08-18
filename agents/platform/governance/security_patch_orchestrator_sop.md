@@ -257,7 +257,8 @@ Worked example, for a 3.5 finding on node pool `batch-a`:
 
 ```bash
 ./skills/fleet-audit/scripts/audit_report.py finish --audit security-patch-orchestrator \
-  --findings-file /opt/data/scratch/findings_security-patch-orchestrator.json
+  --findings-file /opt/data/scratch/findings_security-patch-orchestrator.json \
+  [--repo "<owner>/<repo>"]
 ```
 
 One JSON line comes back with `status`, `issue_url`, `new`, `resolved`, `prs_opened`, `prs_closed`, `partial`, `coverage_gaps`, and `silent_ok`. Exit 2 means the validator rejected the document and nothing was published — fix the document, do not retry blind. Exit 1 is fatal. Exit 0 means it published.

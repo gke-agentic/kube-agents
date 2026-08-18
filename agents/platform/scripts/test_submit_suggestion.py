@@ -88,7 +88,11 @@ class SubmitSuggestionTestCase(unittest.TestCase):
             return "acme/fleet"
 
         self.patch_attr(gitops_workspace, "resolve_repo", local_resolve)
-        self.patch_attr(gitops_workspace, "get_managed_repos", lambda: [])
+        self.patch_attr(
+            gitops_workspace,
+            "get_managed_repos",
+            lambda: ["acme/fleet", "acme/secondary-repo"],
+        )
         real_ensure = gitops_workspace.ensure_workspace
 
         def local_ensure(repo, runner, **kwargs):
@@ -241,6 +245,16 @@ class TestValidateRepo(unittest.TestCase):
         with patch.object(gitops_workspace, "get_managed_repos", return_value=[]):
             self.assertEqual(submit_suggestion.validate_repo("acme/any"), "acme/any")
 
+    def test_raises_when_get_managed_repos_fails(self):
+        with patch.object(
+            gitops_workspace,
+            "get_managed_repos",
+            side_effect=RuntimeError("kubectl failed: Forbidden"),
+        ):
+            with self.assertRaises(RuntimeError) as caught:
+                submit_suggestion.validate_repo("acme/any")
+            self.assertIn("kubectl failed: Forbidden", str(caught.exception))
+
 
 # --------------------------------------------------------------------------- #
 # prepare — leasing a private clone
@@ -304,6 +318,15 @@ class TestPrepare(SubmitSuggestionTestCase):
         stray.write_text("...\n", encoding="utf-8")
         self.prepare()
         self.assertFalse(stray.exists())
+
+    def test_prepare_refused_when_managed_repos_read_fails(self):
+        with patch.object(
+            gitops_workspace,
+            "get_managed_repos",
+            side_effect=RuntimeError("ConfigMap missing"),
+        ):
+            with self.assertRaises(RuntimeError):
+                self.prepare()
 
 
 # --------------------------------------------------------------------------- #
@@ -548,6 +571,17 @@ class TestSubmit(SubmitSuggestionTestCase):
         self.assertTrue(seen)
         for cwd in seen:
             self.assertTrue(str(cwd).strip(), "a git call ran with no cwd")
+
+    def test_submit_refused_when_managed_repos_read_fails(self):
+        payload = self.prepare()
+        self.commit(payload["workspace"])
+        with patch.object(
+            gitops_workspace,
+            "get_managed_repos",
+            side_effect=RuntimeError("ConfigMap missing"),
+        ):
+            with self.assertRaises(RuntimeError):
+                self.submit(payload["branch"], payload["workspace"])
 
 
 # --------------------------------------------------------------------------- #

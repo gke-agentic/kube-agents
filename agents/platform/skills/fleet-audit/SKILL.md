@@ -156,7 +156,10 @@ about is not covered by that guarantee.
 ### Step 3 — `finish`
 
 ```bash
-./skills/fleet-audit/scripts/audit_report.py finish --audit <audit-id> --findings-file <findings_path>
+./skills/fleet-audit/scripts/audit_report.py finish \
+  --audit <audit-id> \
+  --findings-file <findings_path> \
+  [--repo "<owner>/<repo>"]
 ```
 
 The script validates the document, reconciles every finding against the pull requests already open
@@ -569,7 +572,8 @@ per id:
 
 ```bash
 ./skills/fleet-audit/scripts/audit_report.py remediate --audit <audit-id> \
-  --findings-file <findings_path> --finding <id> [--finding <id> …] [--issue <n>]
+  --findings-file <findings_path> --finding <id> [--finding <id> …] [--issue <n>] \
+  [--repo "<owner>/<repo>"]
 ```
 
 **It opens exactly what you name, and nothing else.** The auto-promotion sweep does not ride along:

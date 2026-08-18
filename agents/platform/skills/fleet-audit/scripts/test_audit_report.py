@@ -7508,7 +7508,7 @@ class TestRepoResolution(BaseTestCase):
     directory. The audit crons start in the agent's profile directory, which is
     not a working tree, so that call returned nothing and the run died before
     it could clone anything — the token it needed to clone is repo-scoped, and
-    the repo came from the clone. SETTINGS.md breaks the cycle.
+    the repo came from the clone. The managed repositories ConfigMap breaks the cycle.
     """
 
 
@@ -7558,6 +7558,15 @@ class TestRepoResolution(BaseTestCase):
             with self.assertRaises(ValueError) as caught:
                 audit_report.resolve_repo(repo="acme/unregistered")
             self.assertIn("not in the managed repositories list", str(caught.exception))
+
+    def test_explicit_repo_raises_when_get_managed_repos_fails(self):
+        with patch(
+            "gitops_workspace.get_managed_repos",
+            side_effect=RuntimeError("kubectl failed: Forbidden"),
+        ):
+            with self.assertRaises(RuntimeError) as caught:
+                audit_report.resolve_repo(repo="acme/first")
+            self.assertIn("kubectl failed: Forbidden", str(caught.exception))
 
 
 class TestCredentialOrdering(HarnessTestCase):

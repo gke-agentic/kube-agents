@@ -276,6 +276,55 @@ class HandlePollRoutingTest(unittest.TestCase):
         self.assertEqual(payload["unreachable_repos"], ["broken/repo1", "broken/repo2"])
 
 
+class ValidateRepoOrExitTest(unittest.TestCase):
+    """Test _validate_repo_or_exit error paths and exit codes."""
+
+    def test_valid_repo_in_managed_passes(self):
+        with mock.patch.object(
+            resolver, "get_managed_repos", return_value=["acme/toolkit"]
+        ):
+            resolver._validate_repo_or_exit("acme/toolkit")
+
+    def test_invalid_format_exits(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            with self.assertRaises(SystemExit) as ctx:
+                resolver._validate_repo_or_exit("invalid-repo")
+        self.assertEqual(ctx.exception.code, 1)
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(payload["status"], "ERROR")
+        self.assertEqual(payload["reason"], "INVALID_REPOSITORY")
+
+    def test_configmap_read_failed_exits(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            with mock.patch.object(
+                resolver,
+                "get_managed_repos",
+                side_effect=RuntimeError("kubectl failed: Forbidden"),
+            ):
+                with self.assertRaises(SystemExit) as ctx:
+                    resolver._validate_repo_or_exit("acme/toolkit")
+        self.assertEqual(ctx.exception.code, 1)
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(payload["status"], "ERROR")
+        self.assertEqual(payload["reason"], "CONFIGMAP_READ_FAILED")
+        self.assertIn("Forbidden", payload["error"])
+
+    def test_unmanaged_repo_exits(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            with mock.patch.object(
+                resolver, "get_managed_repos", return_value=["acme/toolkit"]
+            ):
+                with self.assertRaises(SystemExit) as ctx:
+                    resolver._validate_repo_or_exit("other-org/other-repo")
+        self.assertEqual(ctx.exception.code, 1)
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(payload["status"], "ERROR")
+        self.assertEqual(payload["reason"], "UNMANAGED_REPOSITORY")
+
+
 class HandleClaimTest(unittest.TestCase):
     """Test claim operation."""
 
@@ -290,6 +339,22 @@ class HandleClaimTest(unittest.TestCase):
         self.assertEqual(payload["status"], "CLAIMED")
         self.assertEqual(payload["issue_number"], 42)
         self.assertEqual(payload["repository"], "acme/toolkit")
+
+    def test_claim_refused_when_configmap_read_fails(self):
+        args = argparse.Namespace(issue=42, repo="acme/toolkit")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            with mock.patch.object(
+                resolver,
+                "get_managed_repos",
+                side_effect=RuntimeError("kubectl failed: Forbidden"),
+            ):
+                with self.assertRaises(SystemExit) as ctx:
+                    resolver.handle_claim(args)
+        self.assertEqual(ctx.exception.code, 1)
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(payload["status"], "ERROR")
+        self.assertEqual(payload["reason"], "CONFIGMAP_READ_FAILED")
 
 
 class ReportFilePathGuardTest(unittest.TestCase):
@@ -369,6 +434,19 @@ class ReportFilePathGuardTest(unittest.TestCase):
 
     def test_missing_report_inside_scratch_is_rejected_without_publishing(self):
         code, calls = self._transition(os.path.join(self.scratch, "absent.md"))
+        self.assertEqual(code, 1)
+        self.assertEqual(calls, [])
+
+    def test_transition_refused_when_configmap_read_fails(self):
+        report = os.path.join(self.scratch, "report_1.md")
+        with open(report, "w", encoding="utf-8") as handle:
+            handle.write("# findings")
+        with mock.patch.object(
+            resolver,
+            "get_managed_repos",
+            side_effect=RuntimeError("kubectl failed: Forbidden"),
+        ):
+            code, calls = self._transition(report)
         self.assertEqual(code, 1)
         self.assertEqual(calls, [])
 

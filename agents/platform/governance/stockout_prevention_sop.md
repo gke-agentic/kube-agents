@@ -230,7 +230,8 @@ Write the schema exactly as the helper validates it to the `findings_path` retur
 
 ```bash
 ./skills/fleet-audit/scripts/audit_report.py finish --audit stockout-prevention \
-  --findings-file /opt/data/scratch/findings_stockout-prevention.json
+  --findings-file /opt/data/scratch/findings_stockout-prevention.json \
+  [--repo "<owner>/<repo>"]
 ```
 
 One JSON line comes back, carrying `status`, `issue_url`, `new`, `resolved`, `prs_opened`, `prs_closed`, `partial`, `coverage_gaps`, and `silent_ok`. Exit 2 means the validator rejected the document and nothing was published — fix the document, do not retry blind. Exit 1 is fatal. Exit 0 means it published.

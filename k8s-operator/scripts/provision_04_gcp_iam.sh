@@ -29,10 +29,10 @@ init_var_model_provider
 
 if [ -z "${GITHUB_ORG:-}" ]; then
   print_info "The GitHub Token Minter acts as a secure bridge allowing the GKE Agent to access GitHub."
-  print_info "We collect the GitHub Organization and Repository to configure authorization rules, ensuring that"
-  print_info "only the GKE Agent's GCP Service Account can request GitHub access tokens for this specific repository."
-  print_info "The GKE Agent will use this repository to perform write operations on the Kubernetes infrastructure using GitOps."
-  print_info "The repository must be owned by an organization; the Minter cannot mint tokens for personal accounts."
+  print_info "We collect the GitHub Organization to configure authorization rules, ensuring that only the GKE Agent's"
+  print_info "GCP Service Account can request GitHub access tokens for repositories where the GitHub App is installed."
+  print_info "The GKE Agent will use managed repositories to perform write operations on the Kubernetes infrastructure using GitOps."
+  print_info "The target organization must be an organization account; the Minter cannot mint tokens for personal accounts."
 fi
 init_var "GITHUB_ORG" "" "Enter GitHub Organization (optional, for GitHub Token Minter)"
 check_github_org_is_organization "${GITHUB_ORG:-}"

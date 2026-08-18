@@ -13,6 +13,12 @@ import sys
 import time
 import urllib.request
 import urllib.error
+from pathlib import Path
+
+# Add scripts directory so gitops_workspace is importable
+sys.path.append("/opt/defaults/scripts")
+sys.path.append("/opt/data/scripts")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 TOKEN_BROKER_URL = os.getenv("TOKEN_BROKER_URL", "http://github-token-minter.kubeagents-system.svc.cluster.local:8080/token")
 
@@ -96,18 +102,32 @@ def refresh_git_credentials(target_repo: str = None) -> str:
 
     org_name, repo_name = repository.split("/", 1)
 
+    # In a multi-repo deployment, scope the installation token to all managed
+    # repositories within this organization to avoid pod-wide token slot churn.
+    repositories_to_scope = [repo_name]
+    try:
+        from gitops_workspace import get_managed_repos
+
+        for m in get_managed_repos():
+            if "/" in m:
+                m_org, m_repo = m.split("/", 1)
+                if m_org.lower() == org_name.lower() and m_repo not in repositories_to_scope:
+                    repositories_to_scope.append(m_repo)
+    except Exception:
+        pass
+
     headers = {
         "Content-Type": "application/json",
         "X-OIDC-Token": oidc_token
     }
     body = {
         "org_name": org_name,
-        "repositories": [repo_name],
+        "repositories": repositories_to_scope,
         "scope": "platform-agent-scope"
     }
     req_data = json.dumps(body).encode("utf-8")
 
-    log(f"Requesting scoped installation token from Minty for repository: {org_name}/{repo_name}...")
+    log(f"Requesting scoped installation token from Minty for organization {org_name} (repositories: {repositories_to_scope})...")
     
     try:
         req = urllib.request.Request(

@@ -21,6 +21,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
 
 from gitops_workspace import get_managed_repos
 
+BARE_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
 SCRATCH_DIR = "/opt/data/scratch"
 
 # Shell convention for "command not found", reused so a missing binary stays
@@ -185,9 +187,25 @@ def handle_poll(args):
         )
         return
 
+    repos = [r for r in repos if BARE_REPO_RE.match(r)]
     if not repos:
         print(json.dumps({"status": "NOT_CONFIGURED"}))
         return
+
+    # Refresh credentials once per unique organization represented in the managed repos.
+    # Because github_token_refresh scopes the minted token to all managed repositories
+    # in the organization, a single refresh covers all of them without tight-loop slot churn.
+    refreshed_orgs = set()
+    for repo in repos:
+        org = repo.split("/", 1)[0]
+        if org not in refreshed_orgs:
+            try:
+                from github_token_refresh import refresh_git_credentials
+
+                refresh_git_credentials(repo)
+                refreshed_orgs.add(org)
+            except Exception:
+                pass
 
     # Check auth pre-flight safely.
     auth = run_gh(["auth", "status"], check=False)
@@ -204,13 +222,6 @@ def handle_poll(args):
     unreachable_repos = []
 
     for repo in repos:
-        try:
-            from github_token_refresh import refresh_git_credentials
-
-            refresh_git_credentials(repo)
-        except Exception:
-            pass
-
         # Sweep stale issues first
         sweep_stale_issues(repo)
 
@@ -301,7 +312,7 @@ def handle_poll(args):
 
 
 def _validate_repo_or_exit(repo: str) -> None:
-    if not repo or "/" not in repo or repo.count("/") != 1:
+    if not repo or not BARE_REPO_RE.match(repo):
         print(
             json.dumps(
                 {

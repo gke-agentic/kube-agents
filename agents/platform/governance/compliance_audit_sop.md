@@ -373,7 +373,8 @@ Three `rationale`/`risk` pairs in this SOP are check-specific and must not be wr
 
 ```bash
 ./skills/fleet-audit/scripts/audit_report.py finish --audit compliance-audit \
-  --findings-file /opt/data/scratch/findings_compliance-audit.json
+  --findings-file /opt/data/scratch/findings_compliance-audit.json \
+  [--repo "<owner>/<repo>"]
 # -> {"status":"CLEAN"|"OPENED"|"UPDATED","issue_url":...,"new":n,"resolved":m,
 #     "prs_opened":[...],"prs_closed":[...],"partial":false,"coverage_gaps":[],
 #     "silent_ok":true}
