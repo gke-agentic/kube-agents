@@ -66,6 +66,11 @@ const (
 	// is evaluated — so a policy that permits only the link-local address drops every
 	// token fetch. Dataplane V2 (eBPF) evaluates policy pre-NAT at the socket layer,
 	// so the 169.254.169.254/32 on port 80 rule satisfies it directly.
+	//
+	// Ref:
+	// - https://cloud.google.com/kubernetes-engine/docs/how-to/network-policy
+	// - https://docs.cilium.io/en/stable/security/policy/layer3/
+	// - https://github.com/cilium/cilium/issues/12277 (CIDR rules don't match node IPs without --policy-cidr-match-mode=nodes)
 	metadataDaemonIP = "169.254.169.252"
 
 	AnnotationAPIServerCIDR           = "kubeagents.x-k8s.io/apiserver-cidr"
@@ -136,6 +141,7 @@ type PlatformAgentReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments;statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=daemonsets;replicasets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts;persistentvolumeclaims;configmaps;services;pods,verbs=get;list;watch;create;update;patch;delete
+// TODO(release): 'nodes' get/list/watch is deprecated (issue #747) following the removal of dynamic node IP discovery in NetworkPolicy generation; retained for one release for upgrade safety and will be removed in next release.
 // +kubebuilder:rbac:groups="",resources=namespaces;nodes;events;persistentvolumes;resourcequotas;limitranges;endpoints;pods/log,verbs=get;list;watch
 // +kubebuilder:rbac:groups=metrics.k8s.io,resources=nodes;pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch
