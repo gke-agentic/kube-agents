@@ -22,6 +22,8 @@ from tests.testing.release import (
     MOCK_COMMIT_MSG_FEAT,
     MOCK_COMMIT_MSG_FIX,
     MOCK_INITIAL_VERSION,
+    MOCK_NONEXISTENT_REF,
+    MOCK_NONEXISTENT_TAG,
     MOCK_RC_VALIDATED_TAG,
 )
 
@@ -223,8 +225,8 @@ class CalculateNextVersionTest(unittest.TestCase):
     def test_nonexistent_base_tag_fails(self):
         temp_dir, repo_dir, _ = self._create_mock_repo()
         try:
-            # Base tag 0.9.9 does not exist in repo -> must fail fast with error
-            proc = self._run_calc_script(repo_dir, args=["0.9.9"])
+            # Base tag does not exist in repo -> must fail fast with error
+            proc = self._run_calc_script(repo_dir, args=[MOCK_NONEXISTENT_TAG])
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn("does not exist in git repository", proc.stderr)
         finally:
@@ -234,10 +236,10 @@ class CalculateNextVersionTest(unittest.TestCase):
         temp_dir, repo_dir, git = self._create_mock_repo()
         try:
             git("tag", "-a", MOCK_INITIAL_VERSION, "-m", f"Release {MOCK_INITIAL_VERSION}")
-            # Target ref 'nonexistent-ref' does not exist -> must fail fast
-            proc = self._run_calc_script(repo_dir, args=[MOCK_INITIAL_VERSION, "nonexistent-ref"])
+            # Target ref does not exist -> must fail fast
+            proc = self._run_calc_script(repo_dir, args=[MOCK_INITIAL_VERSION, MOCK_NONEXISTENT_REF])
             self.assertNotEqual(proc.returncode, 0)
-            self.assertIn("Target ref 'nonexistent-ref' does not exist", proc.stderr)
+            self.assertIn(f"Target ref '{MOCK_NONEXISTENT_REF}' does not exist", proc.stderr)
         finally:
             temp_dir.cleanup()
 

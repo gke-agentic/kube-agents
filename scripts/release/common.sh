@@ -229,8 +229,19 @@ ensure_git_tag() {
 
 # Clean Promotion: Tags verified container images in GHCR without rebuilding
 promote_release_images() {
-  local commit_sha="$1"
-  local target_tag="$2"
+  local commit_sha="${1:-}"
+  local target_tag="${2:-}"
+
+  if [ -z "${commit_sha}" ] || [ -z "${target_tag}" ]; then
+    echo "❌ ERROR: commit_sha and target_tag are required for promote_release_images." >&2
+    return 1
+  fi
+
+  if [[ ! "${target_tag}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "❌ ERROR: Target release tag '${target_tag}' is not a valid pure numeric SemVer (e.g. 0.1.0, 0.2.0)." >&2
+    return 1
+  fi
+
   local registry_prefix
   registry_prefix="$(get_registry_prefix)"
 
@@ -238,13 +249,21 @@ promote_release_images() {
 
   for img in "${REQUIRED_RELEASE_IMAGES[@]}"; do
     local source_image="${registry_prefix}/${img}:${commit_sha}"
+    local target_image="${registry_prefix}/${img}:${target_tag}"
     echo "  • Promoting ${img}..."
-    if command -v docker >/dev/null 2>&1; then
-      docker buildx imagetools create --tag "${registry_prefix}/${img}:${target_tag}" "${source_image}"
-    else
+
+    if ! command -v docker >/dev/null 2>&1; then
       echo "❌ ERROR: 'docker buildx' CLI is required for image promotion!" >&2
       return 1
     fi
+
+    # Safety Guard: Check if target tag already exists in registry to prevent accidental tag overwriting
+    if docker manifest inspect "${target_image}" >/dev/null 2>&1; then
+      echo "    ℹ️ Target image '${target_image}' already exists in registry. Skipping duplicate promotion."
+      continue
+    fi
+
+    docker buildx imagetools create --tag "${target_image}" "${source_image}"
     echo "    ✅ Promoted ${img} to ${target_tag}"
   done
 }

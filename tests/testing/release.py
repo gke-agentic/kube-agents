@@ -31,7 +31,13 @@ VALID_GA_RELEASE_TAGS = [
     "1.2.3",
 ]
 
-# Unsupported GA release tags (v-prefixed, pre-releases, branches, malformed strings)
+# Mock test hashes and nonexistent references
+MOCK_SAMPLE_COMMIT_SHA = "0123456789abcdef0123456789abcdef01234567"
+MOCK_SAMPLE_SHORT_SHA = "abc1234"
+MOCK_NONEXISTENT_TAG = "0.9.9"
+MOCK_NONEXISTENT_REF = "nonexistent-ref"
+
+# Unsupported GA release tags (v-prefixed, pre-releases, branches, short hashes, malformed strings)
 INVALID_GA_RELEASE_TAGS = [
     "v0.1.0",
     "v0.2.0",
@@ -42,5 +48,6 @@ INVALID_GA_RELEASE_TAGS = [
     "0.1.0-rc1",
     "0.2.3-rc.1",
     "release",
+    MOCK_SAMPLE_SHORT_SHA,
 ]
 
