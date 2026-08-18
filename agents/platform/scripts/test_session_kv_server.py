@@ -16,6 +16,35 @@ os.environ["SESSION_KV_DB_PATH"] = temp_db_path
 # Add the directory containing session_kv_server.py to sys.path so it can be imported
 sys.path.insert(0, str(Path(__file__).parent.absolute()))
 
+# session_kv_server imports agent_common_server, which imports mcp.server.fastmcp.
+# That symbol is absent from some installed versions of the mcp package, and when
+# it is, this whole module fails to import -- so every test in it silently does
+# not run. That is how three denial tests for the /inject authentication came to
+# be passing-by-not-existing. Stub only when the real import fails, so a working
+# environment still exercises the real path.
+try:  # pragma: no cover - depends on the installed mcp version
+    import mcp.server.fastmcp  # noqa: F401
+except Exception:  # pragma: no cover
+    import types
+
+    _stub = types.ModuleType("mcp.server.fastmcp")
+
+    class _FastMCP:  # minimal stand-in; nothing under test touches it
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def tool(self, *args, **kwargs):
+            def decorate(fn):
+                return fn
+
+            return decorate
+
+        def run(self, *args, **kwargs):
+            pass
+
+    _stub.FastMCP = _FastMCP
+    sys.modules["mcp.server.fastmcp"] = _stub
+
 import session_kv_server
 from session_kv_server import clean_workload_name, clean_reason_label, clean_event_message, get_severity_details
 
@@ -629,6 +658,11 @@ class TestSessionKvServerQueryBuilding(unittest.TestCase):
         # rather than a choice they can act on. `<letter>` is still correct in
         # the instruction prose above the template, which the agent reads but
         # never echoes -- so pin the template line, not the whole query.
+        #
+        # Locate it structurally, by its position and label, rather than by the
+        # text under test: selecting the line that contains `apply Option A`
+        # would make the assertions below tautological, and the instruction
+        # prose above the template legitimately says `apply Option <letter>`.
         payload = {
             "reason": "OOMKilled",
             "namespace": "test-ns",
@@ -637,10 +671,57 @@ class TestSessionKvServerQueryBuilding(unittest.TestCase):
             "message": "some message"
         }
         query = session_kv_server._build_agent_query("test-session", payload)
-        cta = next(line for line in query.splitlines() if line.startswith("👉"))
+        what_to_do = query.split("## What to do", 1)[1]
+        cta = next(
+            line for line in what_to_do.splitlines()
+            if line.startswith("- **To authorize:**")
+        )
         self.assertNotIn("<letter>", cta)
         self.assertIn("apply Option A", cta)
         self.assertIn("apply Option B", cta)
+
+    def test_template_uses_only_the_three_permitted_sections(self):
+        # The template says "formatted exactly like this", so it outranks the
+        # persona for this path. SOUL.md section 7 permits exactly three `##`
+        # sections; a fourth labelled block here would override that policy
+        # silently rather than extend it, and the two briefs would contradict.
+        payload = {
+            "reason": "OOMKilled",
+            "namespace": "test-ns",
+            "kind_of_object": "Pod",
+            "name": "test-pod",
+            "message": "some message"
+        }
+        query = session_kv_server._build_agent_query("test-session", payload)
+        headings = [line.strip() for line in query.splitlines() if line.startswith("## ")]
+        self.assertEqual(headings, ["## What's wrong", "## Why", "## What to do"])
+        # The old shape's labelled blocks are gone, not merely relocated.
+        for stale in ("📋 **Incident Triage**", "🛠️ **Proposed Fixes (GitOps):**", "- **Issue:**"):
+            self.assertNotIn(stale, query)
+
+    def test_approval_line_survives_inside_what_to_do(self):
+        # The authorization words are the one thing the reader cannot recover
+        # if the shape change drops them: without them they have a recommended
+        # GitOps fix and no stated way to authorize it.
+        payload = {
+            "reason": "OOMKilled",
+            "namespace": "test-ns",
+            "kind_of_object": "Pod",
+            "name": "test-pod",
+            "message": "some message"
+        }
+        query = session_kv_server._build_agent_query("test-session", payload)
+        body = query.split("## What to do", 1)[1].split("**GitOps PR Instructions", 1)[0]
+        self.assertIn("apply Option A", body)
+        self.assertIn("Recommended: Option", body)
+        # It shares a bullet list with the Options now that the separate `👉`
+        # block is gone, so it has to be labelled as the authorization step or
+        # it reads as one more thing to choose between.
+        authorize = next(
+            line for line in body.splitlines()
+            if line.startswith("- **To authorize:**")
+        )
+        self.assertNotRegex(authorize, r"\*\*Option [A-Z]")
 
 
 if __name__ == "__main__":

@@ -449,7 +449,9 @@ It adds exactly two workloads to `kubeagents-system`.
 
 **1. `hindsight-api` — a `Deployment`, one replica** (`api.yaml`).
 
-- Image `ghcr.io/vectorize-io/hindsight-api:0.9.1`, pinned by digest.
+- Image `ghcr.io/vectorize-io/hindsight-api:0.9.1`, pinned by digest. The pin
+  lives in `images.json` at the repository root and the manifest takes it as a
+  variable, so a mirrored install can point it at an approved registry.
 - Serves HTTP on **8888** behind a ClusterIP `Service` of the same name;
   `/health` backs both probes. Liveness waits 30s because model loading dominates
   cold start.
@@ -469,9 +471,10 @@ It adds exactly two workloads to `kubeagents-system`.
 
 **2. `hindsight-postgresql` — a `StatefulSet`, one replica** (`postgresql.yaml`).
 
-- `ankane/pgvector`, digest-pinned because upstream publishes only a floating
-  `latest` tag and a reschedule could otherwise change the database engine
-  underneath the data. pgvector supplies the vector extension the embeddings need.
+- `ankane/pgvector`, digest-pinned in `images.json` alongside the API image,
+  because upstream publishes only a floating `latest` tag and a reschedule could
+  otherwise change the database engine underneath the data. pgvector supplies the
+  vector extension the embeddings need.
 - One 8Gi `ReadWriteOnce` volume from a `volumeClaimTemplate`. `PGDATA` points at a
   **subdirectory** of the mount, not the root: the RWO volume arrives with a
   `lost+found` entry and `initdb` refuses a non-empty data directory.

@@ -2,6 +2,11 @@
 # Common helper functions for Release Candidate CI/CD automation scripts.
 set -euo pipefail
 
+# gke_dns_endpoint_flag, so release automation reaches a cluster over the same
+# endpoint the installer would.
+# shellcheck source=k8s-operator/scripts/gke_dns_endpoint.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../k8s-operator/scripts" && pwd)/gke_dns_endpoint.sh"
+
 # Centralized definition of required container images and registry defaults
 DEFAULT_REGISTRY_PREFIX="ghcr.io/gke-labs/kube-agents"
 DEFAULT_RELEASE_REPO="gke-labs/kube-agents"

@@ -148,8 +148,9 @@ The exposed ports:
 - `config/integrations/hindsight/` — the Chat Agent's memory store: API Deployment, Postgres/pgvector StatefulSet, and their Service, `NetworkPolicy`, and `PodMonitoring`.
 
 Each is built and applied on its own; there is no aggregate kustomization over
-`config/integrations/`, because all but Hindsight need `envsubst` over the built
-output before it can be applied.
+`config/integrations/`, because every one of them needs `envsubst` over the built
+output before it can be applied — each carries its image as a `${…}` variable so
+a mirrored install can redirect it, and most need other substitutions besides.
 
 Deploy these via `make deploy-*` from `k8s-operator/`:
 

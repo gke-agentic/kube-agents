@@ -22,9 +22,32 @@
 #
 #     python3 scripts/check_image_layers.py
 #
+# Every base image is a build arg so this can be rebuilt behind a firewall,
+# where the public registries are unreachable and the bases have been copied
+# into an approved one. Each takes a full reference rather than a shared
+# registry prefix: `make mirror-images` writes a flat layout that keeps the
+# trailing name only, so gcr.io/distroless/static lands as <prefix>/distroless
+# -static and no amount of prefix-splicing reproduces the original path.
+#
+# HERMES_AGENT_TAG has no default — the release workflows read the one pin from
+# tags.env, and the root Makefile `include`s it — so a direct docker build has
+# to pass it too, or the agent-base stage resolves to a reference with an empty
+# tag:
+#
+#   docker build -f deploy/docker/Dockerfile --target platform \
+#     --build-arg HERMES_AGENT_TAG="$(sed -n 's/^HERMES_AGENT_TAG=//p' tags.env)" \
+#     --build-arg HERMES_AGENT_IMAGE=registry.example.com/mirror/hermes-agent \
+#     --build-arg ENVOY_IMAGE=registry.example.com/mirror/envoy \
+#     --build-arg GOLANG_IMAGE=registry.example.com/mirror/golang .
+#
+# The defaults are the upstream references, so an ordinary build is unchanged.
 ARG HERMES_AGENT_TAG
+ARG HERMES_AGENT_IMAGE=nousresearch/hermes-agent
 ARG ENVOY_VERSION=v1.39.0
-FROM envoyproxy/envoy:${ENVOY_VERSION} AS envoy-bin
+ARG ENVOY_IMAGE=envoyproxy/envoy
+ARG GOLANG_IMAGE=golang
+ARG GOLANG_VERSION=1.26-alpine
+FROM ${ENVOY_IMAGE}:${ENVOY_VERSION} AS envoy-bin
 
 # Every binary in the final image must match the architecture the image ships
 # as, and nothing in this Dockerfile can pin that: the runtime base
@@ -40,7 +63,7 @@ FROM envoyproxy/envoy:${ENVOY_VERSION} AS envoy-bin
 # $BUILDPLATFORM keeps the Go toolchain running natively on the build host; it
 # cross-compiles to TARGETARCH, the architecture of the image being produced.
 # The :-amd64 fallback only fires on builders that don't populate TARGETARCH.
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS watcher-builder
+FROM --platform=$BUILDPLATFORM ${GOLANG_IMAGE}:${GOLANG_VERSION} AS watcher-builder
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /workspace
@@ -49,7 +72,7 @@ WORKDIR /workspace/k8s-operator
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
     go build -ldflags="-w -s" -o /workspace/k8s-event-watcher ./cmd/k8s-event-watcher/
 
-FROM nousresearch/hermes-agent:${HERMES_AGENT_TAG} AS agent-base
+FROM ${HERMES_AGENT_IMAGE}:${HERMES_AGENT_TAG} AS agent-base
 
 USER root
 
@@ -140,9 +163,11 @@ COPY --chmod=0644 deploy/docker/patches/kanban_progress_lines.py /opt/hermes/gat
 # 2026-08-07), so a new build gate does not buy a layer.
 COPY deploy/docker/patches/apply_kanban_progress_lines.py \
      deploy/docker/patches/verify_kanban_progress_lines.py \
+     deploy/docker/patches/patchlib.py \
      /tmp/kanban-progress/
 RUN /opt/hermes/.venv/bin/python3 /tmp/kanban-progress/apply_kanban_progress_lines.py /opt/hermes && \
-    grep -q '"block_loop_detected", "heartbeat")' /opt/hermes/gateway/kanban_watchers.py && \
+    grep -qF 'TERMINAL_KINDS = ' /opt/hermes/gateway/kanban_watchers.py && \
+    grep -qF '+ ("heartbeat",)' /opt/hermes/gateway/kanban_watchers.py && \
     grep -q 'elif kind == "heartbeat":' /opt/hermes/gateway/kanban_watchers.py && \
     grep -q 'note = _progress_note(ev.payload)' /opt/hermes/gateway/kanban_watchers.py && \
     grep -q '_send_res = await _progress_deliver(' /opt/hermes/gateway/kanban_watchers.py && \
@@ -155,9 +180,9 @@ RUN /opt/hermes/.venv/bin/python3 /tmp/kanban-progress/apply_kanban_progress_lin
 # Hotfix: make a dispatched cron run report back, and stop it closing the
 # kanban card of the caller that dispatched it. Upstream discards the run's
 # final response and lets the run inherit HERMES_KANBAN_TASK, which is how
-# three fleet-audit streams published wrong ledgers on 2026-08-04. Nine
-# anchored edits across three files, so the surgery lives in an applier script
-# rather than inline; it fails the build on any anchor that no longer matches.
+# three fleet-audit streams published wrong ledgers on 2026-08-04. Ten edits
+# across three files, so the surgery lives in an applier script rather than
+# inline; it fails the build on any anchor that no longer matches.
 # verify_cron_run_scope.py then exercises the patched code. The applier only
 # proves the anchors matched, and the first regression here was a runtime type
 # error no anchor could have caught: save_job_output returns a pathlib.Path,
@@ -180,9 +205,13 @@ COPY deploy/docker/patches/patchlib.py \
      deploy/docker/patches/apply_cron_run_scope.py \
      deploy/docker/patches/verify_cron_run_scope.py \
      /tmp/
+# The signature grep matches the text the applier inserts, not the signature it
+# inserts into: run_one_job's parameter list is upstream's to reformat, and
+# v2026.8.13 wrapped it onto three lines. The applier locates it by AST.
 RUN /opt/hermes/.venv/bin/python3 /tmp/apply_cron_run_scope.py /opt/hermes && \
-    grep -q "outcome=None) -> bool:" /opt/hermes/cron/scheduler.py && \
+    grep -qF ", outcome=None" /opt/hermes/cron/scheduler.py && \
     grep -q "with cron_run_scope(job_id):" /opt/hermes/tools/cronjob_tools.py && \
+    grep -qF "extra_prompt=extra_prompt, outcome=outcome," /opt/hermes/tools/cronjob_tools.py && \
     grep -q "cron_ownership_violation(tid)" /opt/hermes/tools/kanban_tools.py && \
     grep -q 'outcome\["output_file"\] = str(output_file)' /opt/hermes/cron/scheduler.py && \
     cd /opt/hermes && /opt/hermes/.venv/bin/python3 -c "\
@@ -249,7 +278,7 @@ RUN /opt/hermes/.venv/bin/python3 /tmp/cron-tick-lock/apply_cron_tick_lock_scope
 # minute-ly ticker evicts a daily watchdog's only row inside 17 hours.
 # Retention becomes per job, with a global ceiling and a per-job floor.
 #
-# Must stay AFTER the cron_tick_lock_scope block: two of the fourteen anchors
+# Must stay AFTER the cron_tick_lock_scope block: two of the seventeen anchors
 # are text that patch inserts.
 COPY --chmod=0644 deploy/docker/patches/cron_skip_ledger.py /opt/hermes/tools/cron_skip_ledger.py
 COPY deploy/docker/patches/apply_cron_skip_ledger.py \
@@ -266,6 +295,8 @@ RUN /opt/hermes/.venv/bin/python3 /tmp/cron-skip-ledger/apply_cron_skip_ledger.p
     grep -q "reason=SKIP_INTERPRETER_SHUTDOWN" /opt/hermes/cron/scheduler.py && \
     grep -q "reason=SKIP_DISPATCH_CLAIM_REJECTED" /opt/hermes/cron/scheduler.py && \
     grep -q "reason=SKIP_MISSED_WINDOW" /opt/hermes/cron/jobs.py && \
+    grep -q "reason=SKIP_ALREADY_RUNNING," /opt/hermes/tools/cronjob_tools.py && \
+    grep -q "reason=SKIP_ALREADY_RUNNING_ELSEWHERE" /opt/hermes/tools/cronjob_tools.py && \
     grep -q '"unknown", "skipped"}' /opt/hermes/agent/monitoring/cron_health.py && \
     ! grep -q "LIMIT -1 OFFSET" /opt/hermes/cron/executions.py && \
     cd /opt/hermes && /opt/hermes/.venv/bin/python3 /tmp/cron-skip-ledger/verify_cron_skip_ledger.py && \
@@ -336,6 +367,27 @@ RUN /opt/hermes/.venv/bin/python3 /tmp/cron-tirith-scan/apply_cron_tirith_scan.p
 #     turn, ~70 tokens, no new config key -- it fires only where
 #     kanban.wake_on_events suppressed a wake.
 #
+# The wake edit is now three greps rather than one because v2026.8.13 gave the
+# subscription its own `delivery_mode`, so the patched line is a parenthesized
+# `_wake_kinds_for(...) if wake_agent else set()` and one grep no longer spans
+# it. All three needles are text the applier itself emits, so -- like the
+# signature grep above -- they pin that the edit landed in the shape expected,
+# not that upstream still writes `wake_agent`. They cannot fail independently of
+# the applier: WAKE_ANCHOR carries `if wake_agent` too, so upstream dropping the
+# per-subscription gate fails the substitution first.
+#
+# The pin on upstream is in verify_kanban_notifier.py, which asserts
+# `send_passive = mode != "wake"` is still in the notifier's own source. That
+# string belongs to upstream and no applier writes it, so a rename is caught
+# there -- before the patched line reaches a notifier tick and raises NameError.
+#
+# The first of those greps carries `passive_delivered=send_passive` rather than
+# stopping at `adapter=adapter`, and the argument is not cosmetic: it is the
+# whole difference between narrowing a wake that duplicates a text ping and
+# narrowing one that IS the delivery. `delivery_mode="wake"` skips the ping on a
+# push adapter, so a gate satisfied by `adapter=adapter` alone would pass on a
+# build that drops completions for every wake-only subscriber.
+#
 # The anchors prove only that the text landed, and every way the wake half can
 # go wrong is silent: it fails towards upstream, so a moved hermes_cli.config, a
 # moved gateway.wake, or a DEFAULT_WAKE_KINDS whitelist that fell behind the
@@ -361,7 +413,9 @@ RUN /opt/hermes/.venv/bin/python3 /tmp/kanban-notifier/apply_kanban_notifier.py 
     grep -q "h = _clip_handoff(payload_summary)" /opt/hermes/gateway/kanban_watchers.py && \
     grep -q "r = _clip_handoff(task.result)" /opt/hermes/gateway/kanban_watchers.py && \
     grep -q "handoff = _kanban_handoff_with_result(handoff, task)" /opt/hermes/gateway/kanban_watchers.py && \
-    grep -q '_wake_kinds = _wake_kinds_for(d\["events"\], adapter=adapter)' /opt/hermes/gateway/kanban_watchers.py && \
+    grep -qF 'd["events"], adapter=adapter, passive_delivered=send_passive' /opt/hermes/gateway/kanban_watchers.py && \
+    grep -qF 'if wake_agent' /opt/hermes/gateway/kanban_watchers.py && \
+    grep -qF 'wake_configured=wake_agent,' /opt/hermes/gateway/kanban_watchers.py && \
     grep -q "_kanban_note_suppressed(" /opt/hermes/gateway/kanban_watchers.py && \
     cd /opt/hermes && /opt/hermes/.venv/bin/python3 -c "\
 import sys; from gateway.kanban_notifier import DEFAULT_WAKE_KINDS; \
@@ -380,13 +434,29 @@ sys.exit('heartbeat is in DEFAULT_WAKE_KINDS: every mid-run progress note would 
 # failure at DEBUG and continued, so no name was ever fixed and the identical 33
 # calls were reissued on the next refresh, forever.
 #
-# The patch resolves against the channel rather than the thread, probes each
-# channel once and applies the answer to every entry on it (33 calls -> 1), and
-# backs a channel off for six hours when it genuinely cannot be resolved so the
-# next such bug is bounded rather than perpetual. Entry ids are NOT changed --
-# the thread suffix is what routes a reply to the right thread; only the
-# human-readable name is rewritten, and only its channel part, so two threads in
-# one DM stay distinguishable.
+# v2026.8.13 absorbed the first half: upstream now resolves against the channel
+# rather than the thread and probes each channel once, concurrently, applying the
+# answer to every entry on it (33 calls -> 1). Upstream's shape is kept as-is.
+# What is left to this patch is the repetition -- a channel the bot genuinely
+# cannot resolve is still re-probed on every five-minute refresh forever, which
+# is the unbounded part of the 9,500 -- so the work list comes from
+# _unresolved_by_channel (six-hour miss cache plus a per-refresh cap) and every
+# dead end records itself through _note_unresolvable. Entry ids are NOT changed
+# -- the thread suffix is what routes a reply to the right thread; only the
+# human-readable name is rewritten, by _rename_entry, and only its channel part,
+# so two threads in one DM stay distinguishable.
+#
+# The negative gate is on upstream's unfiltered work list rather than on the old
+# `conversations_info(channel=entry["id"])`, which upstream itself no longer
+# writes and so could no longer fail. Be precise about what the replacement
+# buys, because it is less than it looks: the applier's OLD_RESOLVE anchor
+# already contains `unresolved = [ch for ch in channels ...]` and substitute()
+# demands exactly one occurrence, so the ordinary regression -- upstream
+# reinstating the unfiltered list -- fails the applier, not this grep. What is
+# left to the grep is the case substitute() cannot see: a SECOND occurrence of
+# that work list somewhere else in channel_directory.py, which the applier would
+# leave untouched and every positive gate above would still match. That is a
+# narrow catch, and it is the honest description of one.
 #
 # A grep guard cannot catch this class of bug: the original code resolved every
 # entry, handled the error and logged it, and was wrong only in the value it
@@ -403,9 +473,12 @@ COPY deploy/docker/patches/channel_directory_threads.py \
      /tmp/channel-directory/
 RUN cp /tmp/channel-directory/channel_directory_threads.py /opt/hermes/gateway/channel_directory_threads.py && \
     /opt/hermes/.venv/bin/python3 /tmp/channel-directory/apply_channel_directory_threads.py /opt/hermes && \
-    grep -q "conversations_info(channel=_channel_id)" /opt/hermes/gateway/channel_directory.py && \
+    grep -qF "conversations_info(channel=base_id)" /opt/hermes/gateway/channel_directory.py && \
     grep -q "from gateway.channel_directory_threads import" /opt/hermes/gateway/channel_directory.py && \
-    ! grep -q 'conversations_info(channel=entry\["id"\])' /opt/hermes/gateway/channel_directory.py && \
+    grep -qF "unresolved = _unresolved_by_channel(channels)" /opt/hermes/gateway/channel_directory.py && \
+    grep -qF "_note_unresolvable(" /opt/hermes/gateway/channel_directory.py && \
+    grep -qF "_rename_entry(" /opt/hermes/gateway/channel_directory.py && \
+    ! grep -qF "unresolved = [ch for ch in channels" /opt/hermes/gateway/channel_directory.py && \
     cd /opt/hermes && \
     /opt/hermes/.venv/bin/python3 /tmp/channel-directory/verify_channel_directory_threads.py && \
     rm -rf /tmp/channel-directory
@@ -638,6 +711,15 @@ RUN /opt/hermes/.venv/bin/python3 /tmp/kanban-result/apply_kanban_report_format.
 # parent-dependency promotion and worker `kanban_block` stickiness all still
 # behave exactly as they did before.
 #
+# The counted greps below are the floor's blast radius: exactly the two trip
+# UPDATEs bind `persisted_failures`, and the two below-threshold UPDATEs still
+# bind the raw `failures`, so a floor that leaked into a retry would show up as
+# 3-and-1. The raw count is 1+1 rather than 2 because v2026.8.13 gave the
+# below-threshold spawn path a leading `retry_status` bind -- it restores the
+# phase it claimed from -- so the two below-threshold binds no longer share a
+# string. Counting them separately keeps both pinned; a single `-c` on the
+# shorter text would have matched neither shape reliably.
+#
 # Must stay ahead of the kanban_wake_nudge block below, which anchors on
 # `create_task`, `complete_task` and `unblock_task` in the same file. The six
 # anchors here touch none of those three, and test_kanban_scheduling.py asserts
@@ -657,7 +739,8 @@ RUN /opt/hermes/.venv/bin/python3 /tmp/kanban-scheduling/apply_kanban_scheduling
     grep -q "persisted_failures = max(failures, effective_limit)" /opt/hermes/hermes_cli/kanban_db.py && \
     test "$(grep -c 'lock.startswith(host_prefix)' /opt/hermes/hermes_cli/kanban_db.py)" = "2" && \
     test "$(grep -c '(persisted_failures, error\[:500\], task_id),' /opt/hermes/hermes_cli/kanban_db.py)" = "2" && \
-    test "$(grep -c '(failures, error\[:500\], task_id),' /opt/hermes/hermes_cli/kanban_db.py)" = "2" && \
+    test "$(grep -c '(failures, error\[:500\], task_id),' /opt/hermes/hermes_cli/kanban_db.py)" = "1" && \
+    test "$(grep -c '(retry_status, failures, error\[:500\], task_id),' /opt/hermes/hermes_cli/kanban_db.py)" = "1" && \
     test "$(grep -c 'from hermes_cli.kanban_scheduling import' /opt/hermes/hermes_cli/kanban_db.py)" = "1" && \
     cd /opt/hermes && /opt/hermes/.venv/bin/python3 /tmp/kanban-scheduling/verify_kanban_scheduling.py && \
     rm -rf /tmp/kanban-scheduling

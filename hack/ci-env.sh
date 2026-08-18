@@ -5,6 +5,12 @@
 # Centralizes common variables sourced by ci-deploy.sh, ci-eval-pr.sh, and ci-teardown.sh.
 # ==============================================================================
 
+# gke_dns_endpoint_flag, so every CI get-credentials picks the same endpoint the
+# installer would. Only this helper is pulled in, not k8s-operator/scripts/common.sh,
+# whose state file and print_* helpers CI has no use for.
+# shellcheck source=k8s-operator/scripts/gke_dns_endpoint.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../k8s-operator/scripts" && pwd)/gke_dns_endpoint.sh"
+
 export PROJECT_ID="kube-agents-evals"
 export GCP_PROJECT_ID="${PROJECT_ID}"
 export REGION="${REGION:-us-central1}"

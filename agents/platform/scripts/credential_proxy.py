@@ -1112,6 +1112,36 @@ class CommandExecutor:
     def _managed_kubeconfig(self, target: ClusterTarget) -> Path:
         return self.kubeconfig_dir / f"{target.context_name}.yaml"
 
+    def _dns_endpoint_args(self, gcloud: str, target: ClusterTarget) -> list[str]:
+        """Decide whether this cluster's credentials must name its DNS endpoint.
+
+        The decision itself lives in `gke_endpoint`, shared with the two callers in
+        the agent container. What is local to the sidecar is *how* gcloud runs: the
+        binary is the resolved executable rather than whatever is on PATH, and it
+        goes through `_execute` so the describe is subject to the same timeout,
+        output cap, and working directory as every other command here.
+
+        Imported lazily, as pyyaml is above. This module is otherwise stdlib-only
+        and has to stay importable on its own; a sibling that failed to load would
+        take the whole credential proxy down, where losing the flag only costs the
+        behaviour that shipped before it existed.
+        """
+        try:
+            from gke_endpoint import dns_endpoint_args
+        except ImportError as error:
+            logging.warning(
+                "gke_endpoint is unavailable (%s); falling back to the IP endpoint for %s",
+                error,
+                target.context_name,
+            )
+            return []
+
+        def run(argv: list[str]) -> tuple[int, str]:
+            result = self._execute([gcloud, *argv[1:]])
+            return result.exit_code, result.stdout
+
+        return dns_endpoint_args(target.project, target.cluster, target.location, run=run)
+
     def _ensure_managed_kubeconfig(self, target: ClusterTarget) -> Path:
         """Return the proxy-authored kubeconfig for a cluster, fetching on a miss.
 
@@ -1140,6 +1170,7 @@ class CommandExecutor:
                         target.cluster,
                         f"--location={target.location}",
                         f"--project={target.project}",
+                        *self._dns_endpoint_args(gcloud, target),
                     ],
                     kubeconfig_path=scratch,
                 )

@@ -5,7 +5,15 @@ REPO ?= $(eval REPO := $(LOCATION)-docker.pkg.dev/$(shell gcloud config get core
 
 BAD_SKILLS := $(wildcard agents/*/defaults/skills/*)
 
-.PHONY: default help docker-build docker-build-agents docker-build-credential-proxy docker-push docker-push-agents docker-push-credential-proxy dev-rebuild-agent status prettier-check prettier-write test-python test-python-deps validate prompt-check docs-generate docs-check docs-check-generated docs-check-links docs-check-terminology docs-check-map chart-sync chart-check
+# Base-image overrides for rebuilding where the public registries are
+# unreachable. Each names a full mirrored reference without a tag (the tags
+# stay pinned in the Dockerfile and images.json); unset ones are simply not
+# passed, so an ordinary build is unchanged:
+#   make docker-build HERMES_AGENT_IMAGE=registry.example.com/mirror/hermes-agent
+BASE_IMAGE_VARS := HERMES_AGENT_IMAGE ENVOY_IMAGE GOLANG_IMAGE
+BASE_IMAGE_ARGS := $(foreach v,$(BASE_IMAGE_VARS),$(if $($(v)),--build-arg $(v)=$($(v))))
+
+.PHONY: default help docker-build docker-build-agents docker-build-credential-proxy docker-push docker-push-agents docker-push-credential-proxy dev-rebuild-agent mirror-images images-check status prettier-check prettier-write test-python test-python-deps validate prompt-check docs-generate docs-check docs-check-generated docs-check-links docs-check-terminology docs-check-map chart-sync chart-check iac-parity-check tf-apply tf-destroy
 
 # The agent images this repository builds -- one per `--target` stage in
 # deploy/docker/Dockerfile, which is not the same thing as one per directory
@@ -34,10 +42,10 @@ docker-build-agents: $(foreach agent,$(AGENTS),docker-build-$(agent)) ## Build t
 # otherwise resolve to the build host — an arm64 machine would silently produce
 # an image that crashloops on the cluster (#560).
 $(foreach agent,$(AGENTS),docker-build-$(agent)): docker-build-%:
-	docker build --platform linux/amd64 --build-arg HERMES_AGENT_TAG=$(HERMES_AGENT_TAG) --target $* -t $(REPO)/$*-agent:latest -f deploy/docker/Dockerfile .
+	docker build --platform linux/amd64 $(BASE_IMAGE_ARGS) --build-arg HERMES_AGENT_TAG=$(HERMES_AGENT_TAG) --target $* -t $(REPO)/$*-agent:latest -f deploy/docker/Dockerfile .
 
 docker-build-credential-proxy: ## Build the credential-proxy sidecar image.
-	docker build --platform linux/amd64 --build-arg HERMES_AGENT_TAG=$(HERMES_AGENT_TAG) --target credential-proxy -t $(REPO)/credential-proxy:latest -f deploy/docker/Dockerfile .
+	docker build --platform linux/amd64 $(BASE_IMAGE_ARGS) --build-arg HERMES_AGENT_TAG=$(HERMES_AGENT_TAG) --target credential-proxy -t $(REPO)/credential-proxy:latest -f deploy/docker/Dockerfile .
 
 # Docker pushes
 docker-push: docker-push-agents docker-push-credential-proxy ## Build and push every image to $$REPO.
@@ -52,6 +60,15 @@ docker-push-credential-proxy: docker-build-credential-proxy ## Build and push th
 
 dev-rebuild-agent: ## Fast local iteration: rebuild and redeploy an agent image (e.g. make dev-rebuild-agent ARGS="platform").
 	@$(MAKE) -C k8s-operator dev-rebuild-agent ARGS="$(ARGS)"
+
+# Copy every image in images.json into a registry of your own, for installs
+# that may only pull from an approved one. Run `./scripts/mirror_images.sh
+# --help` for the full set of knobs.
+mirror-images: ## Mirror the images in images.json into MIRROR_PREFIX (e.g. make mirror-images MIRROR_PREFIX=registry.example.com/kube-agents).
+	@./scripts/mirror_images.sh $(ARGS)
+
+images-check: ## Verify images.json still matches every pin it mirrors, and that the chart renders nothing off a public registry when mirrored (CI runs this).
+	@./hack/check-image-inventory.sh
 
 
 status: ## Show the working tree status.
@@ -106,7 +123,8 @@ PYTHON_TEST_DIRS := $(sort $(dir \
 	$(wildcard agents/*/defaults/hooks/*/test_*.py) \
 	$(wildcard deploy/docker/test_*.py) \
 	$(wildcard deploy/docker/patches/test_*.py) \
-	$(wildcard scripts/test_*.py)))
+	$(wildcard scripts/test_*.py) \
+	$(wildcard tests/test_*.py)))
 
 # The same packages as `import` names rather than distribution names, because
 # that is what the preflight below can actually test for: python-dotenv imports
@@ -115,6 +133,19 @@ PYTHON_TEST_IMPORTS := fastapi httpx mcp dotenv plotly pydantic streamlit uvicor
 
 test-python-deps: ## Install the third-party imports `make test-python` needs.
 	@python3 -m pip install -r requirements-test.txt
+
+# One command for "is this branch landable": everything a PR must pass, ordered
+# so the cheapest check fails first.
+#
+# Added because the answer used to be three commands nobody could remember, and
+# a handoff doc had to carry the recipe. If you add a suite, add it here.
+verify: ## Run everything a PR must pass: go build, go vet, go test, python tests.
+	@echo "==> go build"; cd k8s-operator && go build ./...
+	@echo "==> go vet";   cd k8s-operator && go vet ./...
+	@echo "==> go test";  cd k8s-operator && go test ./...
+	@echo "==> python (k8s-operator)"; $(MAKE) --no-print-directory -C k8s-operator test-python
+	@echo "==> python (everything else)"; $(MAKE) --no-print-directory test-python
+	@echo "==> verify OK"
 
 test-python: ## Run the Python unit tests outside k8s-operator/.
 	@if [ -z "$(PYTHON_TEST_DIRS)" ]; then \
@@ -205,6 +236,15 @@ chart-sync: ## Sync the Helm chart's CRD copies and operator ClusterRole rules f
 
 chart-check: ## Verify the chart's CRD/RBAC copies match k8s-operator/config (CI runs this).
 	@./hack/sync-chart-manifests.sh --check
+
+iac-parity-check: ## Verify the provisioning scripts, Terraform, and the Helm chart agree (CI runs this).
+	@python3 scripts/check_iac_parity.py
+
+tf-apply: ## Apply terraform/examples/full-install, adopting KMS resources a previous destroy left behind.
+	@./terraform/examples/full-install/lifecycle.sh apply $(ARGS)
+
+tf-destroy: ## Destroy terraform/examples/full-install, clearing the finalizer, backups, and deletion protection first.
+	@./terraform/examples/full-install/lifecycle.sh destroy $(ARGS)
 
 validate: ## Fail if any skill sits under agents/*/defaults/skills/.
 	@if [ -n "$(BAD_SKILLS)" ]; then \

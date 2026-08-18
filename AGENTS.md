@@ -10,9 +10,9 @@ This repository contains the Kubernetes Agentic Harness (`kube-agents`). It is a
   - `chat/`: The Chat Agent front door — the `default` Hermes profile that receives chat ingress and delegates to specialists.
   - `platform/`: Configuration for the Platform Agent, scaffolded at pod startup into the `platform` profile.
   - `cluster/`: The Cluster Agent profile _template_ (persona, scoped config, and runtime-debugging skills). The Platform Agent scaffolds this into per-cluster Hermes profiles at runtime; it is not deployed directly.
-- `.agents/skills/`: Repository-level skills, not shipped in the agent images — review skills (security audits, docs-drift, skill quality) run against pull requests and clusters, plus the `install-kube-agents`/`uninstall-kube-agents`/`upgrade-kube-agents` lifecycle skills that drive the repository's installer scripts.
+- `.agents/skills/`: Repository-level skills, not shipped in the agent images — review skills (adversarial change review, security audits, docs-drift, IaC parity, skill quality) run against pull requests and clusters, plus the `install-kube-agents`/`uninstall-kube-agents`/`upgrade-kube-agents` lifecycle skills that drive the repository's installer scripts.
 - `charts/`: Canonical Helm charts (`kube-agents`) for deploying the Kube-Agents operator and profiles.
-- `terraform/`: Companion reusable Terraform modules (`gke-cluster`, `kube-agents-iam`, `chat-pubsub`, `github-minter`) for infrastructure provisioning, plus `examples/full-install/`, the single-apply composition that installs the Helm chart on top.
+- `terraform/`: Companion reusable Terraform modules (`gke-cluster`, `kube-agents-iam`, `chat-pubsub`, `github-minter`, `gke-backup-plan`) for infrastructure provisioning, plus `examples/full-install/`, the single-apply composition that installs the Helm chart on top.
 - `deploy/`: Deployment infrastructure code (Dockerfile, Kustomize bases, shared runtime assets).
 - `docs/`: Documentation.
   - `site/`: The published documentation site (Astro + Starlight) — the canonical home for
@@ -23,6 +23,8 @@ This repository contains the Kubernetes Agentic Harness (`kube-agents`). It is a
 - `k8s-operator/`: Go/Kubebuilder operator reconciling `PlatformAgent` Custom Resources, plus provisioning scripts.
 - `examples/`: Example integrations (LiteLLM provider configs, vLLM serving, inference replay).
 - `bench/`: Evaluation harness that runs [kubernetes-sigs/devops-bench](https://github.com/kubernetes-sigs/devops-bench) against the Platform Agent as a pip-installed library.
+- `images.json`: Inventory of every container image an install pulls, with its upstream reference
+  and pin. Read by `make mirror-images`, the provisioning scripts, and the docs generator.
 - `INSTALL.md`: Installation guide.
 - `README.md`: Project overview.
 
@@ -101,6 +103,7 @@ adding a paragraph, check whether the topic already has an owner:
 | End-state architecture                                   | `docs/architecture/`                         |
 | Per-feature design rationale                             | `docs/designs/`                              |
 | What each provisioning script does                       | `k8s-operator/scripts/README.md`             |
+| Which container images an install pulls, and their pins  | `images.json`                                |
 | The install procedure (self-contained, agent-executable) | `INSTALL.md`                                 |
 | What the agent is and is not permitted to do             | the site's `reference/security-and-iam.md`   |
 | How to develop a specific directory                      | that directory's `README.md` (keep it short) |
@@ -108,9 +111,9 @@ adding a paragraph, check whether the topic already has an owner:
 Rules:
 
 - **Do not hand-write a table that mirrors a machine-readable file.** The cron schedule, the skill
-  catalogue, and the provisioning steps are generated into `<!-- BEGIN GENERATED -->` regions by
-  `scripts/generate_docs.py`, which also writes `docs/family-roster.txt` whole. Edit the source,
-  then run `make docs-generate`.
+  catalogue, the provisioning steps, and the container-image inventory are generated into
+  `<!-- BEGIN GENERATED -->` regions by `scripts/generate_docs.py`, which also writes
+  `docs/family-roster.txt` whole. Edit the source, then run `make docs-generate`.
 - **Do not restate the `make` targets.** `make help` prints them from the Makefile. New targets get
   a `## description` comment.
 - **Link rather than summarise** when another page already owns the topic. If you must summarise,
@@ -135,7 +138,10 @@ documentation map (`docs/README.md`) — the same four checks CI runs.
 - Keep changes scoped to the request.
 - Do not commit unrelated formatting changes.
 - Maintain the structure and intent of the agent configuration files.
-- Use Conventional Commits for commit messages.
+- **Conventional Commits & PR Title Enforcement:** All PR titles and commit messages must strictly adhere to the Conventional Commits specification (`type(optional-scope): description`):
+  - **Permitted Types:** `feat` (new user-facing capability), `fix` (bug fix), `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`.
+  - **Breaking Changes:** Mark with `!` before the colon (e.g. `feat!:`, `fix(operator)!:`) or a `BREAKING CHANGE:` footer.
+  - **Release Preparation:** Standardized PR titles ensure consistent commit history and establish the Conventional Commit metadata required for the automated SemVer release pipeline. AI agents must ensure the proposed PR title prefix accurately reflects the changes in the branch diff and confirm classification with the author before opening a PR.
 - Push PR branches to a fork, not to the upstream repository.
 - **Pin GitHub Actions to a full commit SHA.** Every third-party `uses:` in
   `.github/workflows/` must reference a 40-character commit SHA with the human-readable
@@ -145,6 +151,33 @@ documentation map (`docs/README.md`) — the same four checks CI runs.
   SHA and the comment together.
 - Use `.github/PULL_REQUEST_TEMPLATE.md` for PR body structure and level of
   detail. Do not use `--fill` with `gh pr create` as it bypasses the template.
+- **Adversarial self-review before opening a PR, and record it in the PR body.** Run the
+  `review-adversarial` skill (`.agents/skills/review-adversarial/SKILL.md`) against your branch
+  diff, fix what it confirms, and fill in the template's **Self-Review** section with what you
+  looked for, what it found, and the disposition of each finding. This is a required pre-PR step
+  for AI agents working in this repository: you are the change's first hostile reader, and a
+  reviewer who has to find what you could have found spends their attention on the wrong things.
+  This bullet is the canonical statement of the requirement; the site's
+  [contributing guide](docs/site/src/content/docs/contributing.md) and the comment in
+  [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) summarise it — change
+  this list first, then reconcile them to it.
+  - **Run the pass in a context that did not write the change** — a subagent, or a new session,
+    handed the diff range and nothing else. Not your plan, not your reasoning, not the summary you
+    were about to write. Reviewing a diff in the conversation that produced it is the one
+    configuration that reliably does not work: the same context that talked you into the code
+    talks you into approving it, and the blind spot sits exactly where you were already wrong. It
+    is why `.claude/commands/pr-review-batch.md` gives every pull request its own subagent, and a
+    self-review earns it for the same reason.
+  - **A finding you decide not to fix is an answer**, provided the reason is an argument about
+    this change rather than a shrug. "Out of scope", "pre-existing", and "will fix later" are not
+    reasons on their own; the separate issue you filed is.
+  - **Fix what the pass confirms; report what it only suspects.** A finding it could not pin down
+    is an open question for the section, not a licence to rewrite working code — chasing an
+    uncertain finding on your own change is how a self-review makes it worse than it started.
+  - **"No findings" is an answer only alongside what you looked for.** The skill's angles are the
+    vocabulary for that, and a pass that names none of them is indistinguishable from no pass.
+  - **Do not claim more than you did.** A self-review the diff contradicts is worse than none: it
+    spends the reviewer's trust before they reach the code.
 - **Docs-drift review before opening a PR:** run the `review-docs-drift` skill
   (`.agents/skills/review-docs-drift/SKILL.md`) against your branch diff and address its
   Blocking findings. This is a required pre-PR step for AI agents working in this repository;
@@ -170,6 +203,17 @@ documentation map (`docs/README.md`) — the same four checks CI runs.
   - **If the change cannot reach a running installation** — docs-only, a CI workflow, a code path
     that needs infrastructure you do not have — write "Not live-tested" and say why. An empty
     section is not an answer.
+- **IaC parity review when a PR touches more than one install surface's territory:**
+  the provisioning scripts (`k8s-operator/scripts/`, `k8s-operator/config/`), the
+  Terraform modules, and the Helm chart each express the same install, and nothing in
+  the languages keeps them together. `make iac-parity-check`
+  (`scripts/check_iac_parity.py`) enforces the scalar subset — image tags, IAM role
+  bundles, identifiers, KMS and backup defaults — and CI runs it. Run the
+  `review-iac-parity` skill (`.agents/skills/review-iac-parity/SKILL.md`) for the
+  structural drift no scalar comparison catches: a resource only one surface creates,
+  a knob only one surface can express. The scripts and `k8s-operator/config/` are the
+  source of truth; deliberate divergences are listed in both the skill and the
+  script's docstring, and adding one means editing both.
 - **Expect an automated review after opening a PR.** Opening the pull request starts
   `kube-agents-bot`; see
   [Automated Review After Opening a Pull Request](#automated-review-after-opening-a-pull-request)
@@ -193,6 +237,18 @@ Opening a pull request is therefore not the end of the task. The bot introduces 
 on every pull request it picks up, and that comment states its current contract; if it disagrees
 with what follows, believe the comment and fix this section.
 
+**What any reviewer reads first — human or agent, this bot included.** Read the pull request's
+**Self-Review** section before the diff. It tells you what the author already looked for, what they
+found, and what they consciously chose not to fix, so the review can start where theirs stopped.
+Three things to do with it:
+
+- **Absent, empty, or a bare "reviewed it"** → say so as the first thing you report. The section is
+  required (see Pull Request Hygiene) and an unanswered one is the finding.
+- **A claim it makes that the diff does not support** → that is a finding in its own right, and a
+  more serious one than most defects: it misdirects every reader after you.
+- **A finding the author rejected with a reason** → engage with the reason. Restating the finding
+  as though the reason were not there wastes both of you.
+
 **When it runs.** On `opened`, `reopened`, and draft-marked-ready. **Pushing more commits does not
 start another review** — an active branch would otherwise pay for a re-read on every push. To get a
 fresh review of the current commit, comment `/review` on a line of its own (repository owners,
@@ -200,6 +256,17 @@ members, and collaborators only) — that pass is the strict one, only what the 
 while `/review all` re-reads at the width of the automatic first review and includes findings it
 believes are real without being sure. The `agent:ignore` label opts a pull request out entirely and
 outranks both.
+
+**A human reviewer is requested only once its check passes.** The bot posts an `AI Review` check
+run alongside its review — `success` when it found nothing, `neutral` when it did — and
+`.github/workflows/auto_request_review.yml` waits for that check to go green before assigning
+anyone from `.github/auto_request_review.yml`. Opening a pull request no longer pings a human, so
+clearing the findings and commenting `/review` for a clean pass is what puts the change in front of
+a reviewer. Two exceptions: a pull request opened by a bot is assigned as soon as the check
+completes, whatever the conclusion, because Dependabot cannot re-run `/review` on itself; and an
+owner, member, or collaborator can comment `/request-review` (at the start of the comment) to
+assign a reviewer immediately — the override for a finding you have answered but disagree with, or
+for a review that never arrived. Nothing here changes who is picked; that is still the config file.
 
 **How to read it.** A 👀 reaction means the review started; a posted review means it finished.
 Across #630–#699 the 👀 landed within seconds of the trigger, and the review a median of **9
@@ -328,3 +395,36 @@ Four ways that goes wrong quietly:
   handled.
 - `unresolveReviewThread`, same `threadId`, is the undo. Use it the moment the user disagrees with
   something you resolved.
+
+## Before Reviewing Someone Else's Pull Request
+
+The section above is about your own pull request being reviewed, and it already says where a
+reviewer starts: the **Self-Review** section, before the diff. This one is the question that comes
+before even that — whether the review you have been asked for needs to happen at all.
+
+By the time anyone asks, a pull request here has usually been read twice already: `kube-agents-bot`
+reads every one, and "Pull Request Hygiene" separately required the author to run
+`review-adversarial` over their own diff, record the result in **Self-Review**, and exercise the
+change under **Live validation**. Where both of those hold and neither has gone stale, a third
+hostile read is usually redundant spend.
+
+So check for both first — and then **ask rather than decide**. Say what the evidence is and that
+the extra round may be unnecessary; let the person who asked choose whether to spend it. Skipping a
+review unilaterally is not yours to do, and neither is quietly running one you have reason to
+believe nobody needs.
+
+Two things make this go wrong quietly:
+
+- **Currency.** A clean review sitting at an older commit proves nothing about the current head —
+  unless the only commits since it are merges from the base branch, which are not new work to
+  review. Treat a review whose commit has vanished from the branch as stale, not clean. An
+  unresolved review thread says the same thing: work outstanding, however clean the latest review
+  reads.
+- **A Self-Review that is present but unanswered.** "No findings" counts only alongside what was
+  looked for, so a bare "reviewed it" is an absent section with characters in it — and, per the
+  section above, the first finding your review reports rather than a reason to skip it.
+
+[`.claude/commands/pr-review-batch.md`](.claude/commands/pr-review-batch.md) is the canonical home
+for the mechanics — the queries, what counts as a clean verdict, the verdicts they produce, and what
+to put in front of the user. Follow it whether or not the review was started through the slash
+command, and change it rather than this section when the mechanics move.

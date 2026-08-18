@@ -41,10 +41,15 @@ jobs:
               - 'k8s-operator/config/integrations/litellm/**'
               - 'k8s-operator/scripts/provision_09_deploy_litellm.sh'
               - 'k8s-operator/Makefile'
+              # The pin moved out of the manifest and into the inventory, so a
+              # LiteLLM bump changes this file and nothing else above.
+              - 'images.json'
             github:
               - 'k8s-operator/config/integrations/github/**'
               - 'k8s-operator/scripts/provision_10_deploy_github_minter.sh'
               - 'k8s-operator/Makefile'
+              # Same for the token-minter pin.
+              - 'images.json'
 
       - name: Determine target deployments
         id: set-targets

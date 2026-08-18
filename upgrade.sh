@@ -116,8 +116,8 @@ validate_immutable_ref() {
       ;;
   esac
   if [[ ! "$ref" =~ ^[0-9a-fA-F]{40}$ ]] \
-    && [[ ! "$ref" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-    print_error "Image/source ref must be a full 40-character commit SHA or a SemVer release tag (vX.Y.Z)."
+    && [[ ! "$ref" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+    print_error "Image/source ref must be a full 40-character commit SHA or a pure numeric SemVer release tag (X.Y.Z, e.g. 0.1.0)."
     return 1
   fi
 }
@@ -203,6 +203,7 @@ backfill_session_kv_keys() {
 verify_local_source_ref() {
   local repo_dir="$1"
   local expected_ref="$2"
+
   if ! git -C "$repo_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     if [ "$PARAM_DRY_RUN" = "true" ]; then
       print_warning "Dry-run cannot verify source/image alignment because '$repo_dir' is not a Git worktree."
@@ -382,7 +383,25 @@ main() {
   export REGION="$target_region"
 
   print_step "2. Connecting kubectl to GKE Cluster"
-  gcloud container clusters get-credentials "$target_cluster" --location="$target_region" --project="$target_project"
+  # Taken from repo_dir rather than beside this script: upgrade.sh is also run
+  # piped from curl, where BASH_SOURCE names no directory to look in.
+  local dns_helper="${repo_dir}/k8s-operator/scripts/gke_dns_endpoint.sh"
+  GKE_DNS_ENDPOINT_FLAG=""
+  if [ -f "$dns_helper" ]; then
+    # source= points -x runs at the real file; disable=SC1091 covers the bare
+    # `shellcheck upgrade.sh` that CI runs, where the directive locates the file
+    # but following it still needs -x, so the info-level finding fails the job.
+    # shellcheck source=k8s-operator/scripts/gke_dns_endpoint.sh
+    # shellcheck disable=SC1091
+    source "$dns_helper"
+    gke_dns_endpoint_flag "$target_cluster" "$target_region" "$target_project"
+    if [ -n "$GKE_DNS_ENDPOINT_FLAG" ]; then
+      print_info "Cluster '${target_cluster}' publishes an external DNS endpoint; using it."
+    fi
+  fi
+  # Unquoted on purpose: empty must contribute no argument at all.
+  # shellcheck disable=SC2086
+  gcloud container clusters get-credentials "$target_cluster" --location="$target_region" --project="$target_project" $GKE_DNS_ENDPOINT_FLAG
 
   local target_namespace="${NAMESPACE:-kubeagents-system}"
   print_step "3. Reconciling Pod-Scoped Session Keys"
@@ -443,7 +462,10 @@ main() {
   write_report "SUCCESS"
 
   print_step "🎉 Upgrade Complete!"
-  echo -e "${C_GREEN}${C_BOLD}🏆  kube-agents ${PARAM_UPGRADE_MODE} upgrade completed successfully!${C_RESET}"
 }
 
-main "$@"
+if [ "${KUBE_AGENTS_SOURCE_ONLY:-false}" != "true" ]; then
+  main "$@"
+else
+  echo "ℹ️ Sourced upgrade.sh functions without executing main (KUBE_AGENTS_SOURCE_ONLY=true)." >&2
+fi

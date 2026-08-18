@@ -15,6 +15,19 @@ sys.path.insert(0, str(Path(__file__).parent.absolute()))
 try:
     import mcp.server.fastmcp
 except Exception:
+    import importlib
+
+    def _stub_if_missing(name, module):
+        # Stub only a module that really cannot be imported. These entries
+        # outlive this file: unittest discovery imports every test module into
+        # one process, and a fake pydantic left here (a ModuleType bearing
+        # nothing but Field) is what fastapi finds when test_session_kv_server
+        # imports it later in the same run.
+        try:
+            importlib.import_module(name)
+        except Exception:
+            sys.modules[name] = module
+
     mcp_module = types.ModuleType("mcp")
     mcp_module.__path__ = []
     mcp_server = types.ModuleType("mcp.server")
@@ -25,12 +38,10 @@ except Exception:
     )
     pydantic = types.ModuleType("pydantic")
     pydantic.Field = lambda *a, **k: None
-    sys.modules.update({
-        "mcp": mcp_module,
-        "mcp.server": mcp_server,
-        "mcp.server.fastmcp": fastmcp,
-        "pydantic": pydantic,
-    })
+    _stub_if_missing("mcp", mcp_module)
+    _stub_if_missing("mcp.server", mcp_server)
+    _stub_if_missing("mcp.server.fastmcp", fastmcp)
+    _stub_if_missing("pydantic", pydantic)
 
 import platform_mcp_server
 # Override the env helper globally to return static values and avoid running kubectl get secret sub-commands
@@ -317,6 +328,16 @@ class TestSwitchKubeContext(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.home = home
 
+        # gke_endpoint calls gcloud through its own subprocess.run, which the
+        # per-test patch of platform_mcp_server.subprocess.run does not cover.
+        # Left alone these tests shell out to a real gcloud and describe a
+        # cluster that does not exist. Default to "no flag"; the test that cares
+        # overrides it. gke_endpoint's own predicate is covered in
+        # test_gke_endpoint.py.
+        dns = patch('platform_mcp_server.dns_endpoint_args', return_value=[])
+        self.mock_dns = dns.start()
+        self.addCleanup(dns.stop)
+
     @patch('platform_mcp_server.subprocess.run')
     def test_switch_kube_context_all_empty_noop(self, mock_run):
         err, env = switch_kube_context("", "", "")
@@ -366,6 +387,29 @@ class TestSwitchKubeContext(unittest.TestCase):
                 "--project=my-project"
             ],
             capture_output=True, text=True, check=True, timeout=30, env=env
+        )
+        # The cluster is asked about by the same triple that is being switched to.
+        self.mock_dns.assert_called_once_with(
+            "my-project", "my-cluster", "us-central1", env=env
+        )
+
+    @patch('platform_mcp_server.subprocess.run')
+    def test_switch_kube_context_appends_dns_endpoint_when_detected(self, mock_run):
+        # A cluster reachable only over its DNS endpoint: the flag has to reach
+        # gcloud, or the kubeconfig names an IP endpoint nothing can route to.
+        self.mock_dns.return_value = ["--dns-endpoint"]
+
+        err, env = switch_kube_context("my-project", "my-cluster", "us-central1")
+
+        self.assertEqual(err, "")
+        self.assertEqual(
+            mock_run.call_args[0][0],
+            [
+                "gcloud", "container", "clusters", "get-credentials", "my-cluster",
+                "--location=us-central1",
+                "--project=my-project",
+                "--dns-endpoint",
+            ],
         )
 
     @patch('platform_mcp_server.subprocess.run')

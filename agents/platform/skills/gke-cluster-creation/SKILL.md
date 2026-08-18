@@ -355,7 +355,7 @@ gcloud container clusters create <CLUSTER_NAME> \
     `parent` parameter defines the scope
     (`projects/<PROJECT_ID>/locations/<REGION>`).
 
-<!-- kube-agents: cluster-agent coupling (auto-injected by sync-upstream-skills.py) -->
+<!-- kube-agents: local addition (auto-injected by sync-upstream-skills.py) -->
 
 ## Required final step: provision the Cluster Agent profile
 

@@ -35,6 +35,11 @@ resource "google_container_cluster" "autopilot" {
 
   enable_autopilot    = true
   deletion_protection = var.deletion_protection
+  resource_labels     = var.resource_labels
+
+  # Matches provision_01's --enable-fqdn-network-policy. Autopilot always runs
+  # Dataplane V2, so the script's --enable-dataplane-v2 needs no counterpart.
+  enable_fqdn_network_policy = var.enable_fqdn_network_policy
 
   workload_identity_config {
     workload_pool = "${var.project_id}.svc.id.goog"
@@ -44,11 +49,56 @@ resource "google_container_cluster" "autopilot" {
     channel = var.release_channel
   }
 
+  # Whether the DNS-based control plane endpoint serves traffic from outside the
+  # VPC. The Platform Agent reaches fleet clusters from wherever it runs, and a
+  # cluster with only an IP endpoint it cannot route to is unreachable.
+  # allow_external_traffic is the field the agent's detection reads before it
+  # passes `get-credentials --dns-endpoint`; see
+  # k8s-operator/scripts/gke_dns_endpoint.sh.
+  #
+  # Defaults to false, matching GKE's own default and the value every cluster
+  # this module already manages is sitting at. The module did not set this block
+  # before, so defaulting to true would have made the next apply of an existing
+  # root publish an externally reachable control plane on a cluster whose
+  # operator never asked for one -- and this endpoint is governed by IAM alone,
+  # so neither the private endpoint nor master-authorized-networks would be
+  # holding it shut. Opting in is therefore a deliberate edit to the caller's
+  # configuration; the gcloud path (provision_01_gcp_cluster.sh) enables it on
+  # create only, for the same reason.
+  #
+  # Once set either way the field is Terraform-managed, so change it here rather
+  # than with `gcloud container clusters update`: out-of-band it is drift that
+  # the next apply reverts.
+  control_plane_endpoints_config {
+    dns_endpoint_config {
+      allow_external_traffic = var.allow_external_dns_traffic
+    }
+  }
+
   dynamic "database_encryption" {
     for_each = var.enable_database_encryption ? [1] : []
     content {
       state    = "ENCRYPTED"
       key_name = google_kms_crypto_key.gke_key[0].id
+    }
+  }
+
+  # Backup for GKE. provision_01_gcp_cluster.sh creates its cluster with
+  # `--addons=GcpFilestoreCsiDriver,BackupRestore`, so the agent is installed
+  # on a backup-capable cluster either way; the gke-backup-plan module (and
+  # provision_12_gke_backup_plan.sh) then schedules the backups themselves.
+  # The agent has to be enabled on the cluster before a BackupPlan can
+  # target it.
+  #
+  # Only the BackupRestore half is mirrored. Nothing in the harness mounts a
+  # Filestore volume, and this module builds an Autopilot cluster, where
+  # `gcloud container clusters create-auto` has no --addons flag to pass either
+  # half. Recorded in the divergence lists that
+  # .agents/skills/review-iac-parity/SKILL.md and scripts/check_iac_parity.py
+  # share.
+  addons_config {
+    gke_backup_agent_config {
+      enabled = var.enable_backup_agent
     }
   }
 

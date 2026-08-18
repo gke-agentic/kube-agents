@@ -58,13 +58,45 @@ which can still be set individually. Changing it after a first run requires edit
 `REGISTRY_PREFIX` and `*_IMAGE` values in `vars.sh` (saved state wins over a new export); the
 scripts warn when an export is ignored or a saved image no longer matches the prefix.
 
+The images this project does not build — LiteLLM, fluent-bit, the GitHub token minter,
+cert-manager, Hindsight — follow `THIRD_PARTY_REGISTRY_PREFIX`, which is independent of
+`REGISTRY_PREFIX`: neither implies the other, so a fully mirrored install exports both, and
+setting only the first leaves them upstream (the scripts warn when they see that combination,
+since it is also what a half-mirrored install looks like). Their upstream references and pins
+are resolved from `images.json` at the repository root (hence the `jq` prerequisite on steps 03,
+09, 10, and 13), not duplicated here, so the mirror `make mirror-images` populated and the
+install cannot ask for different versions. `LITELLM_IMAGE` (step 09), `GITHUB_MINTER_IMAGE`
+(step 10), and `HINDSIGHT_API_IMAGE` / `HINDSIGHT_POSTGRES_IMAGE` (step 13) override the
+resolution for a single image. Unlike the kube-agents images, these are deliberately **not**
+persisted to `vars.sh`: a saved pin would be a second copy of a version `images.json` already
+owns, and would survive an upgrade that moved it.
+
+Two of these are pinned by digest as well as tag. The mirrored form drops the digest, because
+`make mirror-images` pushes to a tag and a digest names the upstream manifest, not the copy —
+so a mirrored install asks for `<prefix>/hindsight-api:0.9.1` while a default one gets the
+digest-pinned upstream reference.
+
+Two escape hatches cover cert-manager, the one step that applies a manifest this project does not
+own: `CERT_MANAGER_MANIFEST` replaces the upstream URL with a local or mirrored path, and
+`SKIP_CERT_MANAGER=1` skips the install for clusters where the platform team provides it. With a
+third-party prefix set and neither variable in play, step 03 rewrites the manifest's
+`quay.io/jetstack/` images onto the prefix before applying it.
+
 `IMAGE_TAG` is the deliberate exception to `vars.sh` reuse: tags change between deploys, so
 `provision.sh` asks for it once per pipeline run (or takes an exported `IMAGE_TAG`) and shares
-it with every step without saving it. Step 03 also forwards
-`PLATFORM_AGENT_IMAGE`, `CREDENTIAL_PROXY_IMAGE`, and `FLUENT_BIT_IMAGE` overrides to the
-operator Deployment. See the docs site's
-[Docker images page](../../docs/site/src/content/docs/deploy/docker-images.md) for the list of
-images to mirror and override precedence.
+it with every step without saving it. The saved `*_IMAGE` values are therefore bare repository
+paths, and the step that consumes one attaches the current `IMAGE_TAG` through
+`qualify_image_ref` (`common.sh`) unless the value already names a tag or a digest — so pinning
+`OPERATOR_IMAGE=…/k8s-operator:1.4.0` in `vars.sh` survives a run at a different `IMAGE_TAG`.
+Step 03 also forwards `PLATFORM_AGENT_IMAGE`, `CREDENTIAL_PROXY_IMAGE`, and `FLUENT_BIT_IMAGE`
+overrides to the operator Deployment on the same terms; `FLUENT_BIT_IMAGE` is the exception, as
+it names an upstream release whose tag has nothing to do with `IMAGE_TAG`. `install.sh` writes
+no `CREDENTIAL_PROXY_IMAGE`: the operator derives the sidecar from each CR's own agent image,
+and this env var overrides that derivation for every agent in the cluster, so it is for pinning
+the sidecar by hand.
+See the docs site's
+[Docker images page](../../docs/site/src/content/docs/deploy/docker-images.md) for the image
+inventory and override precedence.
 
 ### Enabling GitHub after a first install
 
@@ -112,7 +144,7 @@ Generated from each script's own comment banner.
 | 5 | [`provision_05_gcp_gchat.sh`](provision_05_gcp_gchat.sh) | **Google Chat & Pub/Sub Setup** — Configures the Google Chat backend: Pub/Sub routing, the Agent's Service Account, and grants the Service Account permission to read incoming chat messages. Also enables the Workspace Add-ons and Chat APIs and provisions their service identities — without the Chat API identity, Google Chat fails silently. |
 | 6 | [`provision_06_slack.sh`](provision_06_slack.sh) | **Slack Integration Setup** — Configures Slack bot tokens, app tokens, and home channel settings. |
 | 7 | [`provision_07_gcp_k8s_secrets.sh`](provision_07_gcp_k8s_secrets.sh) | **GKE Kubernetes Secrets Setup** — Idempotent setup script to validate and configure Kubernetes secrets directly. Requires CMEK database encryption unless ALLOW_UNENCRYPTED_SECRETS=true is set. |
-| 8 | [`provision_08_deploy_platform_agent.sh`](provision_08_deploy_platform_agent.sh) | **Deploy PlatformAgent Custom Resource Manifest** — Idempotent script that connects to GKE, renders the platform-agent.yaml template, deploys it to the cluster, and fails unless the operator reconciles the change into the agent Deployment (override the wait budget with AGENT_READY_TIMEOUT, default 600s). Whether the Deployment then rolls out is verified by step 13, after the agent's dependencies exist. |
+| 8 | [`provision_08_deploy_platform_agent.sh`](provision_08_deploy_platform_agent.sh) | **Deploy PlatformAgent Custom Resource Manifest** — Idempotent script that connects to GKE, renders the platform-agent.yaml template, deploys it to the cluster, labels the host cluster for discovery, and fails unless the operator reconciles the change into the agent Deployment (override the wait budget with AGENT_READY_TIMEOUT, default 600s). Whether the Deployment then rolls out is verified by step 13, after the agent's dependencies exist. |
 | 9 | [`provision_09_deploy_litellm.sh`](provision_09_deploy_litellm.sh) | **Deploy LiteLLM Gateway** — Idempotent script that connects to GKE and deploys the LiteLLM Gateway. |
 | 10 | [`provision_10_deploy_github_minter.sh`](provision_10_deploy_github_minter.sh) | **Deploy GitHub Token Minter** — Idempotent script that deploys the GitHub Token Minter. Runs only when GITHUB_ORG and GITHUB_APP_ID are both set; skipped otherwise. |
 | 11 | [`provision_11_deploy_inference_replay.sh`](provision_11_deploy_inference_replay.sh) | **Deploy Inference Replay Proxy (optional)** — Idempotent script that deploys the Inference Replay proxy in front of the LiteLLM gateway. Skipped unless INFERENCE_REPLAY_ENABLED=true. The proxy intercepts the `litellm` Service so agents need no configuration changes. With REPLAY_MODE=off (default) it is a pure pass-through; flip the `inference-replay-config` ConfigMap to `on` to start recording/replaying. |
@@ -131,7 +163,7 @@ Generated from each script's own comment banner.
 | 5 | [`teardown_05_gcp_gchat.sh`](teardown_05_gcp_gchat.sh) | **Teardown Google Chat & Pub/Sub Setup** — Idempotent script to clean up GChat Pub/Sub Topic/Subscription and the Bot GSA. |
 | 6 | [`teardown_06_slack.sh`](teardown_06_slack.sh) | **Teardown Slack Integration Setup** — Idempotent script to clean up Slack integration state and tokens. |
 | 7 | [`teardown_07_gcp_k8s_secrets.sh`](teardown_07_gcp_k8s_secrets.sh) | **Teardown GKE Secrets** — Idempotent script to clean up Kubernetes secrets and sanitize local state. |
-| 8 | [`teardown_08_deploy_platform_agent.sh`](teardown_08_deploy_platform_agent.sh) | **Teardown PlatformAgent Custom Resource** — Idempotent script to clean up the applied PlatformAgent Custom Resource (CR) and delete the local generated manifest file. |
+| 8 | [`teardown_08_deploy_platform_agent.sh`](teardown_08_deploy_platform_agent.sh) | **Teardown PlatformAgent Custom Resource** — Idempotent script to clean up the applied PlatformAgent Custom Resource (CR), remove the host-discovery label, and delete the local generated manifest file. |
 | 9 | [`teardown_09_deploy_litellm.sh`](teardown_09_deploy_litellm.sh) | **Teardown LiteLLM Gateway** — Idempotent script to undeploy the LiteLLM gateway. |
 | 10 | [`teardown_10_deploy_github_minter.sh`](teardown_10_deploy_github_minter.sh) | **Teardown GitHub Token Minter** — Idempotent script to clean up the GitHub Token Minter. |
 | 11 | [`teardown_11_deploy_inference_replay.sh`](teardown_11_deploy_inference_replay.sh) | **Teardown Inference Replay Proxy** — Idempotent script to undeploy the Inference Replay proxy and restore the original LiteLLM Service. Safe to run even when the proxy was never deployed. |
@@ -144,6 +176,7 @@ Generated from each script's own comment banner.
 ### Auxiliary & Development Scripts
 
 - **[common.sh](common.sh)**: Shared utility functions, color output, logging, prompt helpers, and state management.
+- **[gke_dns_endpoint.sh](gke_dns_endpoint.sh)**: `gke_dns_endpoint_flag`, which decides whether a given cluster should be reached with `get-credentials --dns-endpoint`. Kept out of `common.sh` and free of its helpers so `hack/ci-env.sh`, `scripts/release/common.sh`, `upgrade.sh`, and the staging-workload scripts can source the one predicate without also taking on the state file. It sets `GKE_DNS_ENDPOINT_FLAG` rather than echoing, so that callers do not run it in a `$(...)` subshell that would discard its memo of whether the local gcloud offers the flag at all. That answer leaves it empty — as do a cluster with no externally reachable DNS endpoint and a describe call that fails — leaving today's IP-endpoint command untouched.
 - **[platform-agent.yaml.template](platform-agent.yaml.template)**: Manifest template used by `provision_08_deploy_platform_agent.sh` to render the `PlatformAgent` Custom Resource.
 - **[print_instructions_gchat.sh](print_instructions_gchat.sh)**: Helper script that prints Google Chat integration post-provisioning instructions.
 - **[print_instructions_slack.sh](print_instructions_slack.sh)**: Helper script that prints Slack integration post-provisioning instructions.
@@ -166,6 +199,12 @@ To run a dry-run check (simulates commands without modifying cloud resources):
 ```bash
 ./provision.sh --dry-run
 ```
+
+After the `PlatformAgent` resource is applied, provisioning labels its GKE cluster
+`kube-agents-host=true` so the admin portal can discover the host. Label registration is advisory:
+if it fails, provisioning continues and the portal can still connect through manual cluster
+selection. The in-repository runtime receives its host identity from the configured
+`PlatformAgent` cluster name rather than discovering it by label.
 
 ### Run Teardown Pipeline
 
