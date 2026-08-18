@@ -80,6 +80,33 @@ exit {docker_exit}
         finally:
             temp_dir.cleanup()
 
+    def test_ambient_github_ref_name_not_used_as_fallback(self):
+        temp_dir, repo_dir, _, commit_sha, bin_dir = self._create_mock_repo()
+        try:
+            # Even if GITHUB_REF_NAME and GITHUB_SHA are set in environment,
+            # invoking without explicit args or TARGET_TAG must fail fast.
+            proc = self._run_verify_script(
+                repo_dir,
+                args=[],
+                env={"GITHUB_REF_NAME": "0.2.0", "GITHUB_SHA": commit_sha},
+                bin_dir=bin_dir,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Target release tag must be specified", proc.stderr)
+        finally:
+            temp_dir.cleanup()
+
+    def test_invalid_target_tag_format_fails(self):
+        temp_dir, repo_dir, _, commit_sha, bin_dir = self._create_mock_repo()
+        try:
+            for bad_tag in ["main", "v0.1.0", "0.1", "0.1.0-rc1", "release"]:
+                with self.subTest(bad_tag=bad_tag):
+                    proc = self._run_verify_script(repo_dir, args=[bad_tag, commit_sha], bin_dir=bin_dir)
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("not a valid pure numeric SemVer", proc.stderr)
+        finally:
+            temp_dir.cleanup()
+
     def test_auto_resolve_latest_validated_commit(self):
         temp_dir, repo_dir, git, first_sha, bin_dir = self._create_mock_repo()
         try:
@@ -105,7 +132,7 @@ exit {docker_exit}
             outputs = gh_out.read_text()
             self.assertIn("eligible=true", outputs)
             self.assertIn(f"validated_rc_tag={MOCK_RC_VALIDATED_TAG}", outputs)
-            self.assertIn(f"target_commit={first_sha}", outputs)
+            self.assertIn(f"release_commit={first_sha}", outputs)
         finally:
             temp_dir.cleanup()
 
@@ -140,7 +167,7 @@ exit {docker_exit}
             outputs = gh_out.read_text()
             self.assertIn("eligible=true", outputs)
             self.assertIn("emergency_override=true", outputs)
-            self.assertIn(f"target_commit={commit_sha}", outputs)
+            self.assertIn(f"release_commit={commit_sha}", outputs)
         finally:
             temp_dir.cleanup()
 
