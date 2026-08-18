@@ -51,7 +51,8 @@ fi
 RELEASE_COMMIT=""
 if [ -n "${TARGET_COMMIT}" ] && [ "${TARGET_COMMIT}" != "null" ]; then
   if ! RELEASE_COMMIT="$(git rev-parse --verify "${TARGET_COMMIT}^{commit}" 2>/dev/null)"; then
-    RELEASE_COMMIT="${TARGET_COMMIT}"
+    echo "❌ ERROR: Cannot resolve valid Git commit from '${TARGET_COMMIT}'!" >&2
+    exit 1
   fi
 else
   # Auto-resolve commit:

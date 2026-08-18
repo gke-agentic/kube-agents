@@ -15,6 +15,7 @@ from tests.testing.release import (
     INVALID_GA_RELEASE_TAGS,
     MOCK_COLLIDING_RELEASE_TAG,
     MOCK_EMERGENCY_OVERRIDE_REASON,
+    MOCK_NONEXISTENT_REF,
     MOCK_RC_VALIDATED_TAG,
     MOCK_TARGET_RELEASE_TAG,
 )
@@ -105,6 +106,21 @@ exit {docker_exit}
                     proc = self._run_verify_script(repo_dir, args=[bad_tag, commit_sha], bin_dir=bin_dir)
                     self.assertNotEqual(proc.returncode, 0)
                     self.assertIn("not a valid pure numeric SemVer", proc.stderr)
+        finally:
+            temp_dir.cleanup()
+
+    def test_unresolvable_target_commit_fails_fast(self):
+        temp_dir, repo_dir, _, _, bin_dir = self._create_mock_repo()
+        try:
+            for bad_commit in [MOCK_NONEXISTENT_REF, "latest", "0.9.9", "12345"]:
+                with self.subTest(bad_commit=bad_commit):
+                    proc = self._run_verify_script(
+                        repo_dir,
+                        args=[MOCK_TARGET_RELEASE_TAG, bad_commit],
+                        bin_dir=bin_dir,
+                    )
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("Cannot resolve valid Git commit", proc.stderr)
         finally:
             temp_dir.cleanup()
 
@@ -199,6 +215,24 @@ exit {docker_exit}
             )
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn("requires an explicit non-whitespace EMERGENCY_OVERRIDE_REASON", proc.stderr)
+        finally:
+            temp_dir.cleanup()
+
+    def test_unresolvable_target_commit_fails_even_with_emergency_override(self):
+        temp_dir, repo_dir, _, _, bin_dir = self._create_mock_repo()
+        try:
+            env = {
+                "SKIP_RC_VALIDATION": "true",
+                "EMERGENCY_OVERRIDE_REASON": MOCK_EMERGENCY_OVERRIDE_REASON,
+            }
+            proc = self._run_verify_script(
+                repo_dir,
+                args=[MOCK_TARGET_RELEASE_TAG, "latest"],
+                env=env,
+                bin_dir=bin_dir,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Cannot resolve valid Git commit", proc.stderr)
         finally:
             temp_dir.cleanup()
 
