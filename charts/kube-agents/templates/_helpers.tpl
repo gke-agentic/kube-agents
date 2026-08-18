@@ -23,6 +23,66 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
 
 {{/*
+The registry prefix images built from this repo resolve under, or "" to leave
+them on their public defaults. Takes the root context.
+*/}}
+{{- define "kube-agents.imageRegistry" -}}
+{{- (.Values.global | default dict).imageRegistry | default "" | trimSuffix "/" -}}
+{{- end }}
+
+{{/*
+The same for images this project does not build (LiteLLM, fluent-bit). Falls
+back to imageRegistry, since a single-prefix mirror is the common case and a
+chart that mirrored only its own images would render a half-mirrored install —
+the operator handing its managed pods public references after `helm install`
+reported success.
+
+This deliberately does NOT match third_party_registry_prefix in
+k8s-operator/scripts/common.sh, which requires THIRD_PARTY_REGISTRY_PREFIX
+explicitly. The asymmetry is about history, not preference: REGISTRY_PREFIX
+shipped before this inventory existed and has always meant "the registry
+holding the images this project builds", so widening it would redirect working
+installs to images their mirror was never given. global.imageRegistry is new
+here and carries no such promise, so it can take the safer default.
+
+Takes the root context.
+*/}}
+{{- define "kube-agents.thirdPartyImageRegistry" -}}
+{{- $g := .Values.global | default dict -}}
+{{- $g.thirdPartyImageRegistry | default $g.imageRegistry | default "" | trimSuffix "/" -}}
+{{- end }}
+
+{{/*
+Rewrite an image repository onto a registry prefix, keeping only the trailing
+image name: quay.io/jetstack/cert-manager-webhook under "reg.example.com/m"
+becomes reg.example.com/m/cert-manager-webhook. That flat layout is what
+scripts/mirror_images.sh writes and what the operator assumes when it derives
+the credential-proxy reference from the agent one. An empty registry returns
+the repository untouched, so a default install renders byte-identically.
+
+The trailing segment is a stand-in for the real rule. mirror_images.sh names
+each destination after the images.json entry's .name, and a chart cannot read
+images.json at render time, so this reproduces it by convention rather than by
+lookup. Two inventory entries already break that convention
+(hindsight-postgresql, distroless-static) and neither is rendered here; add a
+third that is, and the chart would ask for <prefix>/<segment> while the mirror
+holds <prefix>/<name>. Check 3c in hack/check-image-inventory.sh fails the
+build in that case, which is what keeps the shortcut safe.
+
+Takes a dict: {repository, registry}. Returns the repository only — the
+PlatformAgent CR carries repository and tag in separate fields, so joining
+them here would not suit every caller.
+*/}}
+{{- define "kube-agents.imageRepository" -}}
+{{- $registry := .registry | default "" | trimSuffix "/" -}}
+{{- if $registry -}}
+{{- printf "%s/%s" $registry (.repository | splitList "/" | last) -}}
+{{- else -}}
+{{- .repository -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 The OTLP/HTTP collector base URL for the chart's own consumers (the LiteLLM exporter).
 
 Unset means the GKE Managed OpenTelemetry collector, which is what these consumers have

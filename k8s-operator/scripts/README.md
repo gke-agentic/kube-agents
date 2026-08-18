@@ -58,13 +58,45 @@ which can still be set individually. Changing it after a first run requires edit
 `REGISTRY_PREFIX` and `*_IMAGE` values in `vars.sh` (saved state wins over a new export); the
 scripts warn when an export is ignored or a saved image no longer matches the prefix.
 
+The images this project does not build — LiteLLM, fluent-bit, the GitHub token minter,
+cert-manager, Hindsight — follow `THIRD_PARTY_REGISTRY_PREFIX`, which is independent of
+`REGISTRY_PREFIX`: neither implies the other, so a fully mirrored install exports both, and
+setting only the first leaves them upstream (the scripts warn when they see that combination,
+since it is also what a half-mirrored install looks like). Their upstream references and pins
+are resolved from `images.json` at the repository root (hence the `jq` prerequisite on steps 03,
+09, 10, and 13), not duplicated here, so the mirror `make mirror-images` populated and the
+install cannot ask for different versions. `LITELLM_IMAGE` (step 09), `GITHUB_MINTER_IMAGE`
+(step 10), and `HINDSIGHT_API_IMAGE` / `HINDSIGHT_POSTGRES_IMAGE` (step 13) override the
+resolution for a single image. Unlike the kube-agents images, these are deliberately **not**
+persisted to `vars.sh`: a saved pin would be a second copy of a version `images.json` already
+owns, and would survive an upgrade that moved it.
+
+Two of these are pinned by digest as well as tag. The mirrored form drops the digest, because
+`make mirror-images` pushes to a tag and a digest names the upstream manifest, not the copy —
+so a mirrored install asks for `<prefix>/hindsight-api:0.9.1` while a default one gets the
+digest-pinned upstream reference.
+
+Two escape hatches cover cert-manager, the one step that applies a manifest this project does not
+own: `CERT_MANAGER_MANIFEST` replaces the upstream URL with a local or mirrored path, and
+`SKIP_CERT_MANAGER=1` skips the install for clusters where the platform team provides it. With a
+third-party prefix set and neither variable in play, step 03 rewrites the manifest's
+`quay.io/jetstack/` images onto the prefix before applying it.
+
 `IMAGE_TAG` is the deliberate exception to `vars.sh` reuse: tags change between deploys, so
 `provision.sh` asks for it once per pipeline run (or takes an exported `IMAGE_TAG`) and shares
-it with every step without saving it. Step 03 also forwards
-`PLATFORM_AGENT_IMAGE`, `CREDENTIAL_PROXY_IMAGE`, and `FLUENT_BIT_IMAGE` overrides to the
-operator Deployment. See the docs site's
-[Docker images page](../../docs/site/src/content/docs/deploy/docker-images.md) for the list of
-images to mirror and override precedence.
+it with every step without saving it. The saved `*_IMAGE` values are therefore bare repository
+paths, and the step that consumes one attaches the current `IMAGE_TAG` through
+`qualify_image_ref` (`common.sh`) unless the value already names a tag or a digest — so pinning
+`OPERATOR_IMAGE=…/k8s-operator:1.4.0` in `vars.sh` survives a run at a different `IMAGE_TAG`.
+Step 03 also forwards `PLATFORM_AGENT_IMAGE`, `CREDENTIAL_PROXY_IMAGE`, and `FLUENT_BIT_IMAGE`
+overrides to the operator Deployment on the same terms; `FLUENT_BIT_IMAGE` is the exception, as
+it names an upstream release whose tag has nothing to do with `IMAGE_TAG`. `install.sh` writes
+no `CREDENTIAL_PROXY_IMAGE`: the operator derives the sidecar from each CR's own agent image,
+and this env var overrides that derivation for every agent in the cluster, so it is for pinning
+the sidecar by hand.
+See the docs site's
+[Docker images page](../../docs/site/src/content/docs/deploy/docker-images.md) for the image
+inventory and override precedence.
 
 ### Enabling GitHub after a first install
 
@@ -144,6 +176,7 @@ Generated from each script's own comment banner.
 ### Auxiliary & Development Scripts
 
 - **[common.sh](common.sh)**: Shared utility functions, color output, logging, prompt helpers, and state management.
+- **[gke_dns_endpoint.sh](gke_dns_endpoint.sh)**: `gke_dns_endpoint_flag`, which decides whether a given cluster should be reached with `get-credentials --dns-endpoint`. Kept out of `common.sh` and free of its helpers so `hack/ci-env.sh`, `scripts/release/common.sh`, `upgrade.sh`, and the staging-workload scripts can source the one predicate without also taking on the state file. It sets `GKE_DNS_ENDPOINT_FLAG` rather than echoing, so that callers do not run it in a `$(...)` subshell that would discard its memo of whether the local gcloud offers the flag at all. That answer leaves it empty — as do a cluster with no externally reachable DNS endpoint and a describe call that fails — leaving today's IP-endpoint command untouched.
 - **[platform-agent.yaml.template](platform-agent.yaml.template)**: Manifest template used by `provision_08_deploy_platform_agent.sh` to render the `PlatformAgent` Custom Resource.
 - **[print_instructions_gchat.sh](print_instructions_gchat.sh)**: Helper script that prints Google Chat integration post-provisioning instructions.
 - **[print_instructions_slack.sh](print_instructions_slack.sh)**: Helper script that prints Slack integration post-provisioning instructions.

@@ -34,7 +34,7 @@ A read that returns nothing means the search did not surface it, not that it doe
 
   That marks the job due; the next `profile-cron-tick` picks it up within a minute and runs it in a fresh process, through the identical execute → save → deliver → mark path the schedule uses, so it gets that job's prompt and skills verbatim. The per-job lock means a job already in flight is not started twice.
 
-  Do **not** use `cronjob(action='run')`: it executes the job synchronously inside the session that calls it, which is the re-enactment this bullet exists to prevent.
+  Do **not** use `cronjob(action='run')`: where the session cannot take a detached result — a one-shot `hermes -z`, a stateless HTTP turn, a Kanban worker, a nested cron run — or where the dispatch pool is full, it still executes the job synchronously inside the session that calls it, which is the re-enactment this bullet exists to prevent. Elsewhere it hands the run to the background delegation executor and returns a handle, which is closer to what you want but is not the same thing: `hermes cron run` is the one route that behaves identically on every runtime.
 
   Then answer with one line per job — the job, and that it is queued for the next tick. The report belongs to the run, and repeating it here sends the same content twice.
 

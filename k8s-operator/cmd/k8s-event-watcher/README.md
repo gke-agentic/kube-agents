@@ -162,6 +162,13 @@ In a running Platform Agent pod. Note `--in-cluster` alongside `--profiles-dir`:
 
 For a local run you can hand-build the same layout:
 
+`--dns-endpoint` below assumes `cluster-a` publishes a DNS endpoint with
+`dnsEndpointConfig.allowExternalTraffic` set. Drop the flag if it does not —
+gcloud rejects it on a cluster with no DNS endpoint, and a caller Google treats
+as internal gets a kubeconfig that returns HTTP 403 instead of an error. The
+agent decides this per cluster in
+[`gke_endpoint.py`](../../../agents/platform/scripts/gke_endpoint.py).
+
 ```bash
 mkdir -p /tmp/profiles/cluster-a
 gcloud container clusters get-credentials cluster-a \

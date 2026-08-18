@@ -34,13 +34,20 @@ To apply the manifests directly — the same thing the step does, without the
 readiness gate:
 
 ```sh
-kubectl apply -k k8s-operator/config/integrations/hindsight/ -n kubeagents-system
+cd k8s-operator && make deploy-hindsight
 ```
 
-There is nothing to configure and no prerequisite Secret. Both images are pinned
-by digest; `ankane/pgvector` publishes only a floating `latest`, so the digest is
-the only thing standing between a pod reschedule and a different database engine.
-Re-pin deliberately rather than dropping it.
+Not `kubectl apply -k` on this directory: both images are `${…}` variables, and
+kustomize alone leaves them unsubstituted for the API server to reject. The
+target resolves them from `images.json` and runs `envsubst` first.
+
+There is nothing else to configure and no prerequisite Secret. Both images are
+pinned by digest; `ankane/pgvector` publishes only a floating `latest`, so the
+digest is the only thing standing between a pod reschedule and a different
+database engine. Both pins live in [`images.json`](../../../../images.json) at
+the repository root, not here — that is what lets `make mirror-images` copy them
+and a mirrored install ask for the copy. Re-pin there, deliberately, rather than
+dropping the digest.
 
 ## No credentials
 

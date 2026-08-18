@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest import mock
 
 import credential_proxy
+import gke_endpoint
 from credential_proxy import (
     MAX_REPOSITORY_LENGTH,
     AgentAPIProxyHandler,
@@ -499,6 +500,12 @@ class CommandExecutorTest(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
+        # gke_endpoint memoises "does this gcloud support --dns-endpoint" for the
+        # life of the process, which is right in the sidecar and wrong here: the
+        # first test to reach it caches the answer for a stub gcloud, and every
+        # later test inherits it. Reset so each test decides on its own.
+        gke_endpoint.reset_cache()
+        self.addCleanup(gke_endpoint.reset_cache)
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -779,6 +786,61 @@ class CommandExecutorTest(unittest.TestCase):
 
         self.assertEqual(1, len(seen))
         self.assertFalse(executor._within_workspace(seen[0]))
+
+    # ---- Choosing the control-plane endpoint --------------------------------
+
+    def test_cache_miss_passes_dns_endpoint_when_the_cluster_needs_it(self):
+        # The cold path: a restart empties the state dir, so the proxy refetches
+        # on its own rather than reusing what the agent's get-credentials filed.
+        # A DNS-only cluster has to survive that refetch.
+        executor = self.fake_gcloud(self.executor())
+        pinned = self.caller_kubeconfig(executor)
+        seen = []
+        original = executor._execute
+
+        def record(argv, **kwargs):
+            seen.append(argv)
+            return original(argv, **kwargs)
+
+        with (
+            mock.patch("gke_endpoint.dns_endpoint_args", return_value=["--dns-endpoint"]),
+            mock.patch.object(executor, "_execute", record),
+        ):
+            executor._resolve_kubeconfig(str(pinned))
+
+        fetches = [argv for argv in seen if "get-credentials" in argv]
+        self.assertEqual(1, len(fetches))
+        self.assertEqual("--dns-endpoint", fetches[0][-1])
+
+    def test_dns_endpoint_probe_runs_the_resolved_gcloud_not_whatever_is_on_path(self):
+        # gke_endpoint builds argv starting with the literal "gcloud". In the
+        # sidecar the only gcloud that may run is the resolved executable, so the
+        # adapter has to substitute it.
+        executor = self.fake_gcloud(self.executor())
+        resolved = executor.executables["gcloud"]
+        target = credential_proxy.parse_gke_context(self.CONTEXT)
+        seen = []
+
+        def fake_args(project, cluster, location, *, run=None, env=None):
+            seen.append(run(["gcloud", "container", "clusters", "describe", cluster]))
+            return []
+
+        with mock.patch("gke_endpoint.dns_endpoint_args", fake_args):
+            executor._dns_endpoint_args(resolved, target)
+
+        self.assertEqual(1, len(seen))
+        # The stub exits non-zero without KUBECONFIG set, which is all this needs
+        # to prove: the adapter ran *something*, and it ran it through _execute.
+        self.assertIsInstance(seen[0], tuple)
+
+    def test_missing_gke_endpoint_falls_back_instead_of_failing_the_fetch(self):
+        # credential_proxy is otherwise stdlib-only. Losing a sibling module must
+        # cost the flag, not the whole credential proxy.
+        executor = self.fake_gcloud(self.executor())
+        target = credential_proxy.parse_gke_context(self.CONTEXT)
+
+        with mock.patch.dict(sys.modules, {"gke_endpoint": None}):
+            self.assertEqual([], executor._dns_endpoint_args("gcloud", target))
 
     def test_timeout_kills_command(self):
         result = self.executor(timeout_seconds=1).execute_internal(["/bin/sleep", "10"])

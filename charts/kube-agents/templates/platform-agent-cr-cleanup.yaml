@@ -91,7 +91,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: cleanup
-          image: {{ .Values.platformAgent.cleanupHook.image | quote }}
+          image: "{{ include "kube-agents.imageRepository" (dict "repository" .Values.platformAgent.cleanupHook.image.repository "registry" (include "kube-agents.thirdPartyImageRegistry" .)) }}:{{ .Values.platformAgent.cleanupHook.image.tag }}"
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false

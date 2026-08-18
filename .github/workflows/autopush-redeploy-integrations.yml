@@ -9,6 +9,9 @@ on:
       - "k8s-operator/scripts/provision_09_deploy_litellm.sh"
       - "k8s-operator/scripts/provision_10_deploy_github_minter.sh"
       - "k8s-operator/Makefile"
+      # The LiteLLM and token-minter pins live here, not in the manifests that
+      # consume them, so a version bump touches only this file.
+      - "images.json"
   workflow_dispatch:
     inputs:
       deploy_litellm:

@@ -157,7 +157,9 @@ module "gke_cluster" {
   enable_database_encryption = var.enable_database_encryption
   kms_keyring_name           = var.kms_keyring_name
   kms_key_name               = var.kms_key_name
+  allow_external_dns_traffic = var.allow_external_dns_traffic
   enable_backup_agent        = var.enable_backup_agent
+
   resource_labels = {
     "kube-agents-host" = "true"
   }
@@ -310,6 +312,20 @@ resource "helm_release" "kube_agents" {
   create_namespace = true
 
   values = [yamlencode({
+    # Reaches every image this release pulls, including the two the chart does
+    # not render itself — the agent Deployment and the fluent-bit sidecar the
+    # operator resolves at reconcile time. See the chart README's
+    # "Installing from a mirrored registry".
+    #
+    # It does NOT reach helm_release.cert_manager above: that is a separate
+    # release of an upstream chart, and these values are not passed to it. An
+    # approved-registry cluster needs enable_cert_manager = false and
+    # cert-manager installed by hand from the mirror. The composition's README
+    # says so under "Installing from a mirrored registry".
+    global = {
+      imageRegistry           = var.image_registry
+      thirdPartyImageRegistry = var.third_party_image_registry
+    }
     operator = {
       image = {
         tag = var.image_tag

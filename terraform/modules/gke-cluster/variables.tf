@@ -24,6 +24,12 @@ variable "deletion_protection" {
   default     = true
 }
 
+variable "allow_external_dns_traffic" {
+  description = "Whether the DNS-based control plane endpoint serves traffic from outside the VPC. The Platform Agent's endpoint detection reads this field, and without it a cluster the agent cannot route to over its IP endpoint is unreachable. Defaults to false — GKE's own default, and the value every cluster this module already manages is at — so that upgrading the module does not publish an endpoint on an existing cluster; set it true for a cluster the agent must reach from outside the VPC."
+  type        = bool
+  default     = false
+}
+
 variable "resource_labels" {
   description = "GCP resource labels to apply to the cluster. Set kube-agents-host=true when the cluster hosts kube-agents."
   type        = map(string)

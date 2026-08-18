@@ -79,7 +79,7 @@ Which file owns which category of content is defined once, in the
 canonical-home table in [`AGENTS.md`](../AGENTS.md) — do not duplicate a fact
 outside its home; link to it.
 
-Four artifacts are **generated, not hand-written** — three regions inside
+Five artifacts are **generated, not hand-written** — four regions inside
 hand-written documents, plus one whole file. `scripts/generate_docs.py` (run
 via `make docs-generate`) rewrites everything between the markers; everything
 outside them is hand-written. Never edit inside the markers — edit the source
@@ -91,6 +91,7 @@ and regenerate.
 | `docs/site/src/content/docs/reference/cron-jobs.md` | `<!-- BEGIN GENERATED: cron-jobs -->` | `agents/chat/defaults/cron/jobs.json` and `agents/platform/cron/jobs.json` |
 | `docs/site/src/content/docs/skills/index.mdx` | `{/* BEGIN GENERATED: skill-catalog */}` (MDX comment syntax) | `name`/`description` frontmatter of every `agents/platform/skills/*/SKILL.md` and `agents/cluster/skills/*/SKILL.md` |
 | `k8s-operator/scripts/README.md` | `<!-- BEGIN GENERATED: provisioning-steps -->` | The comment banner in each `k8s-operator/scripts/provision_*.sh` / `teardown_*.sh` script |
+| `docs/site/src/content/docs/deploy/docker-images.md` | `<!-- BEGIN GENERATED: container-images -->` | `images.json` |
 | `docs/family-roster.txt` | whole file (`family-roster`) | The collapsed-family globs in this map's section 4, resolved against `git ls-files` |
 
 CI enforcement: `make docs-check` runs the same checks as
@@ -142,7 +143,9 @@ identifier appears, add its source here.
 | Shared agent defaults (`approvals.*`, `security.*`) | `deploy/shared/defaults/config.yaml` and `renderConfigYAML()` in `k8s-operator/internal/controller/platformagent_manifests.go` |
 | Image defaults and override env vars (`PLATFORM_AGENT_IMAGE` et al.) | `k8s-operator/internal/controller/manifest_helpers.go` |
 | OTLP endpoint default, discovery candidates, and `otlpEndpointSource` values | `k8s-operator/internal/controller/telemetry.go` |
-| Registry prefix default (`REGISTRY_PREFIX`) | `k8s-operator/scripts/common.sh` |
+| Image inventory: every image an install pulls, and its upstream pin | `images.json` |
+| Registry prefix defaults (`REGISTRY_PREFIX`, `THIRD_PARTY_REGISTRY_PREFIX`) | `k8s-operator/scripts/common.sh` |
+| Provisioning image-tag attachment (`qualify_image_ref`) | `k8s-operator/scripts/common.sh` |
 | GKE host-discovery label | `k8s-operator/scripts/common.sh` |
 | GitOps clone layout (`/opt/data/gitops/...`) and leases | `agents/platform/scripts/gitops_workspace.py` |
 | fleet-audit finding-id pattern and rendering caps | `agents/platform/skills/fleet-audit/scripts/audit_report.py` |
@@ -268,6 +271,7 @@ pull request:
 | `docs/designs/gchat-session-metadata-data-flow.md` | Feature design | The implemented attribution path from a Google Chat message to Hermes OTel spans via the `session_store` plugin and the `session_otel_bridge`. | Session metadata allowlist, span stamping, SQLite KV store | Documents implemented behavior; site `reference/attribution.md` summarizes it |
 | `docs/designs/gitops-workspace-leases.md` | Feature design | Gives every concurrent agent a private GitOps clone keyed by a lease, replacing the one shared working tree that audits and suggestions corrupted for each other. | Lease layout, `.lease` marker, reaper, credential-proxy `git` gate | Design of record; implemented (banner in file) |
 | `docs/designs/memory.md` | Feature design | The memory design and the A/B that decided it: what Hermes offers, why a document store and not a flat file, which provider an install gets and where that choice is carried, the two Hindsight pods, how scope tags keep every user apart in one bank, and what the experiment measured. | Background, scaling case, provider choice, two pods, scope tags, `any_strict`, injection path, tools, experiment | Implemented on the Chat Agent profile; TTL mechanism built but deferred, returning soon; #111-#116 open |
+| `docs/designs/pr-comment-conversation.md` | Feature design | How a reviewer commenting on an agent-authored pull request wakes the agent, and how the reply reaches both the PR thread and the originating chat thread. | Token-free cron gate, forge provider protocol, state-free idempotency markers | Design of record; §2 implemented, §§3–6 planned (banner in file) |
 | `docs/designs/semver-deployment-versioning.md` | Feature design | Design rationale for adopting SemVer 2.0.0 across container images, the Helm chart, Terraform modules, release docs, and governance playbooks — decisions, shipped mechanisms, and deliberate exceptions. | OCI Helm charts, Git ref TF modules, version-injection defaults | Implemented; exceptions declared inline |
 | `docs/contributing.md` | Contributor guide | Short entry point: Google CLA and community guidelines, deferring everything else to the site's contributing page and `AGENTS.md`. | CLA, pointers | Human contributors |
 | `docs/credential-isolation-design.md` | Feature design | Design keeping API keys, tokens, and SA credentials out of the agent sandbox container; credentialed operations proxied through an Envoy credential-proxy sidecar. | Pod anatomy, CLI forwarding, guarantee and stated limitation | Canonical design; site `reference/credential-isolation.md` defers here |
@@ -301,7 +305,7 @@ only what the title does not say.
 | `install/quickstart-gke.mdx` | Site page | One-command bootstrap of cluster, operator, and Platform Agent; what just happened; common flags. | `provision.sh`, toggles, uninstall pointer | — |
 | `install/prerequisites.md` | Site page | What must be in place before provisioning: tooling, GCP project, cert-manager, chat platform, LLM credentials. | Prerequisites | — |
 | `install/manual.md` | Site page | Installing the Platform Agent workspace into an existing Hermes-compatible harness by hand. | Copy workspace, register, wire infra | — |
-| `install/helm-and-kind.md` | Site page | Points to the canonical Helm chart and Terraform modules in `main` (published from the first `vX.Y.Z` tag) and states Kind is unsupported. | Chart/module pointers, no Kind | — |
+| `install/helm-and-kind.md` | Site page | Points to the canonical Helm chart and Terraform modules in `main` (published from the first `X.Y.Z` tag) and states Kind is unsupported. | Chart/module pointers, no Kind | — |
 | `install/uninstall.md` | Site page | Removing the agent, operator, and provisioned GCP resources; agent-only vs full teardown. | Teardown | — |
 | `deploy/index.md` | Site page | Hub for the deploy section: Docker, Kustomize, Minty, release versioning, telemetry, GitOps. | Navigation | — |
 | `deploy/kustomize.md` | Site page | What ships in `deploy/kustomize/` and what the operator lays down on top of it. | Base vs operator-created objects | — |

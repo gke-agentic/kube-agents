@@ -164,6 +164,7 @@ execute_cluster() {
         --enable-dataplane-v2 \
         --enable-fqdn-network-policy \
         --managed-otel-scope=COLLECTION_AND_INSTRUMENTATION_COMPONENTS \
+        --enable-dns-access \
         --project "$PROJECT_ID" \
         --quiet
   fi

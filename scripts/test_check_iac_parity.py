@@ -364,21 +364,37 @@ class WebhookParityTest(unittest.TestCase):
     two empty sets. These drive the mismatch branch directly.
     """
 
-    def test_cert_manager_version_regex_reads_the_release_url(self):
-        version = re.search(
-            r"cert-manager/releases/download/(v[\d.]+)/cert-manager\.yaml",
-            parity.read(parity.PROVISION_03),
-        )
-        self.assertIsNotNone(
-            version, "provision_03 no longer applies cert-manager by release URL"
-        )
+    def test_cert_manager_version_comes_from_the_inventory(self):
+        """The inventory pin is what Terraform is compared against.
+
+        provision_03 no longer spells a version out — it builds the release URL
+        from images.json — so the check reads the pin there. Two things have to
+        hold for that to mean anything: the pin exists and matches Terraform,
+        and the script really is deriving its URL from it. If the script went
+        back to a hard-coded version, this check would compare Terraform
+        against a pin nothing installs and still pass.
+        """
+        _, version = parity.inventory_pin("cert-manager-controller")
+        self.assertRegex(version, r"^v[\d.]+$")
         self.assertEqual(
-            version.group(1),
+            version,
             parity.tf_variable_default(
                 parity.read(parity.TF_FULL_INSTALL_VARS),
                 "cert_manager_version",
                 parity.TF_FULL_INSTALL_VARS,
             ),
+        )
+
+        script = parity.read(parity.PROVISION_03)
+        self.assertRegex(
+            script,
+            r"cert-manager/releases/download/\$\{version\}/cert-manager\.yaml",
+            "provision_03 no longer builds the release URL from a version variable",
+        )
+        self.assertRegex(
+            script,
+            r'select\(\.name == "cert-manager-controller"\)',
+            "provision_03 no longer reads the cert-manager pin from images.json",
         )
 
     def test_webhook_paths_are_found_on_both_surfaces(self):

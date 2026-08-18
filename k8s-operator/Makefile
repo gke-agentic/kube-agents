@@ -64,9 +64,12 @@ test: manifests generate fmt vet setup-envtest test-python ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
 .PHONY: test-python
+# Discovery, not a hand-maintained list. The list version was stale: it named
+# three files and missed test_scoped_sa_pool.py and test_session_kv_server.py,
+# so tests that existed and passed locally were never run by this target.
 test-python: ## Run Python tests.
-	cd internal/controller && python3 -m unittest test_leader_elect.py
-	cd ../agents/platform/scripts && python3 -m unittest test_slack_relay_patch.py test_credential_proxy.py test_sitecustomize.py
+	cd internal/controller && python3 -m unittest discover -s . -p 'test_*.py'
+	cd ../agents/platform/scripts && python3 -m unittest discover -s . -p 'test_*.py'
 
 ##@ Build
 
@@ -78,9 +81,15 @@ build: manifests generate fmt vet ## Build manager binary.
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run $(LDFLAGS) ./cmd/main.go
 
+# Base-image overrides for rebuilding where the public registries are
+# unreachable; unset ones are not passed, so an ordinary build is unchanged.
+# The root Makefile carries the same mechanism for the agent images.
+BASE_IMAGE_VARS := GOLANG_IMAGE DISTROLESS_IMAGE
+BASE_IMAGE_ARGS := $(foreach v,$(BASE_IMAGE_VARS),$(if $($(v)),--build-arg $(v)=$($(v))))
+
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build --build-arg VERSION=$(VERSION) -t ${IMG} .
+	$(CONTAINER_TOOL) build $(BASE_IMAGE_ARGS) --build-arg VERSION=$(VERSION) -t ${IMG} .
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
@@ -121,11 +130,46 @@ deploy: kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/c
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUSTOMIZE) build config/default | kubectl delete --ignore-not-found=$(ignore-not-found) -f -
 
-LITELLM_VARS = $$NAMESPACE $$MODEL_PROVIDER $$MODEL_DEFAULT_NAME
+# The integration manifests carry `image: $${..._IMAGE}` so a mirrored install
+# can point them at its own registry. envsubst leaves an unset variable as the
+# empty string rather than failing, which renders `image:` — a null the API
+# server rejects with a message that says nothing about the missing variable.
+# Check first, and name where the value comes from.
+# $(3) says where the script gets the value, because the three integrations do
+# not agree: the two third-party images are resolved from images.json, while
+# the replay proxy is built here and follows REGISTRY_PREFIX.
+require-var = @test -n "$${$(1)}" || { echo "$(1) is not set. Export it, or run $(2), which resolves it from $(3)." >&2; exit 1; }
+
+# The third-party images default to their upstream pin straight from the
+# inventory, so the documented manual sequences (INSTALL.md Step 5, README
+# below) keep working without exporting anything. `?=` means an export still
+# wins, and the provisioning scripts — which are the mirrored path, and know
+# about THIRD_PARTY_REGISTRY_PREFIX — always export. Resolving here rather than
+# hardcoding keeps images.json the only place any of these pins is written; if
+# jq is missing or the entry is gone the variable stays empty and require-var
+# reports it by name.
+IMAGES_JSON ?= $(CURDIR)/../images.json
+image_from_inventory = $(shell jq -r --arg n "$(1)" '.images[] | select(.name == $$n) | "\(.repository):\(.tag)"' "$(IMAGES_JSON)" 2>/dev/null)
+LITELLM_IMAGE ?= $(call image_from_inventory,litellm)
+GITHUB_MINTER_IMAGE ?= $(call image_from_inventory,github-token-minter-server)
+HINDSIGHT_API_IMAGE ?= $(call image_from_inventory,hindsight-api)
+HINDSIGHT_POSTGRES_IMAGE ?= $(call image_from_inventory,hindsight-postgresql)
+# The recipes read these through the shell (envsubst and require-var both want
+# them in the environment), which a plain make variable would not reach.
+export LITELLM_IMAGE
+export GITHUB_MINTER_IMAGE
+export HINDSIGHT_API_IMAGE
+export HINDSIGHT_POSTGRES_IMAGE
+
+LITELLM_VARS = $$NAMESPACE $$MODEL_PROVIDER $$MODEL_DEFAULT_NAME $$LITELLM_IMAGE
 LITELLM_VERTEX_VARS = $(LITELLM_VARS) $$PROJECT_ID $$LITELLM_KSA_NAME $$LITELLM_GSA_NAME $$VERTEX_PROJECT_ID $$VERTEX_LOCATION
+# Hindsight's manifests need no other substitution: the namespace comes from
+# `kubectl apply -n`, and every in-cluster address is a short service name.
+HINDSIGHT_VARS = $$HINDSIGHT_API_IMAGE $$HINDSIGHT_POSTGRES_IMAGE
 
 .PHONY: deploy-litellm
 deploy-litellm: kustomize ## Deploy LiteLLM integration.
+	$(call require-var,LITELLM_IMAGE,scripts/provision_09_deploy_litellm.sh,images.json)
 	@if [ "$$MODEL_PROVIDER" = "chatgpt" ]; then \
 		$(KUSTOMIZE) build config/integrations/litellm/overlays/chatgpt | envsubst '$(LITELLM_VARS)' | kubectl apply -n $${NAMESPACE:-kubeagents-system} -f -; \
 	elif [ "$$MODEL_PROVIDER" = "vertex_ai" ]; then \
@@ -146,14 +190,17 @@ undeploy-litellm: kustomize ## Undeploy LiteLLM integration.
 
 .PHONY: deploy-hindsight
 deploy-hindsight: kustomize ## Deploy the Hindsight memory store.
-	$(KUSTOMIZE) build config/integrations/hindsight | kubectl apply -n $${NAMESPACE:-kubeagents-system} -f -
+	$(call require-var,HINDSIGHT_API_IMAGE,scripts/provision_13_deploy_hindsight.sh,images.json)
+	$(call require-var,HINDSIGHT_POSTGRES_IMAGE,scripts/provision_13_deploy_hindsight.sh,images.json)
+	$(KUSTOMIZE) build config/integrations/hindsight | envsubst '$(HINDSIGHT_VARS)' | kubectl apply -n $${NAMESPACE:-kubeagents-system} -f -
 
 .PHONY: undeploy-hindsight
 undeploy-hindsight: kustomize ## Undeploy the Hindsight memory store (keeps its PVC).
-	$(KUSTOMIZE) build config/integrations/hindsight | kubectl delete --ignore-not-found=$(ignore-not-found) -n $${NAMESPACE:-kubeagents-system} -f -
+	$(KUSTOMIZE) build config/integrations/hindsight | envsubst '$(HINDSIGHT_VARS)' | kubectl delete --ignore-not-found=$(ignore-not-found) -n $${NAMESPACE:-kubeagents-system} -f -
 
 .PHONY: deploy-inference-replay
 deploy-inference-replay: kustomize ## Deploy Inference Replay proxy integration.
+	$(call require-var,REPLAY_IMAGE,scripts/provision_11_deploy_inference_replay.sh,REGISTRY_PREFIX)
 	$(KUSTOMIZE) build config/integrations/inference-replay/base | envsubst '$$NAMESPACE $$REPLAY_IMAGE' | kubectl apply -n $${NAMESPACE:-kubeagents-system} -f -
 
 .PHONY: undeploy-inference-replay
@@ -162,11 +209,12 @@ undeploy-inference-replay: kustomize ## Undeploy Inference Replay proxy integrat
 
 .PHONY: deploy-github
 deploy-github: kustomize ## Deploy GitHub integration.
-	$(KUSTOMIZE) build config/integrations/github | envsubst '$$NAMESPACE $$PROJECT_ID $$REGION $$CLUSTER_NAME $$KMS_KEYRING $$KMS_KEY $$KMS_KEY_VERSION $$KMS_LOCATION $$GITHUB_ORG $$GITHUB_REPO $$GITHUB_MINTER_KSA_NAME $$GITHUB_MINTER_GSA_NAME $$PLATFORM_AGENT_GSA_NAME' | kubectl apply -n $${NAMESPACE:-kubeagents-system} -f -
+	$(call require-var,GITHUB_MINTER_IMAGE,scripts/provision_10_deploy_github_minter.sh,images.json)
+	$(KUSTOMIZE) build config/integrations/github | envsubst '$$NAMESPACE $$PROJECT_ID $$REGION $$CLUSTER_NAME $$KMS_KEYRING $$KMS_KEY $$KMS_KEY_VERSION $$KMS_LOCATION $$GITHUB_ORG $$GITHUB_REPO $$GITHUB_MINTER_KSA_NAME $$GITHUB_MINTER_GSA_NAME $$PLATFORM_AGENT_GSA_NAME $$GITHUB_MINTER_IMAGE' | kubectl apply -n $${NAMESPACE:-kubeagents-system} -f -
 
 .PHONY: undeploy-github
 undeploy-github: kustomize ## Undeploy GitHub integration.
-	$(KUSTOMIZE) build config/integrations/github | envsubst '$$NAMESPACE $$PROJECT_ID $$REGION $$CLUSTER_NAME $$KMS_KEYRING $$KMS_KEY $$KMS_KEY_VERSION $$KMS_LOCATION $$GITHUB_ORG $$GITHUB_REPO $$GITHUB_MINTER_KSA_NAME $$GITHUB_MINTER_GSA_NAME $$PLATFORM_AGENT_GSA_NAME' | kubectl delete --ignore-not-found=$(ignore-not-found) -n $${NAMESPACE:-kubeagents-system} -f -
+	$(KUSTOMIZE) build config/integrations/github | envsubst '$$NAMESPACE $$PROJECT_ID $$REGION $$CLUSTER_NAME $$KMS_KEYRING $$KMS_KEY $$KMS_KEY_VERSION $$KMS_LOCATION $$GITHUB_ORG $$GITHUB_REPO $$GITHUB_MINTER_KSA_NAME $$GITHUB_MINTER_GSA_NAME $$PLATFORM_AGENT_GSA_NAME $$GITHUB_MINTER_IMAGE' | kubectl delete --ignore-not-found=$(ignore-not-found) -n $${NAMESPACE:-kubeagents-system} -f -
 
 
 

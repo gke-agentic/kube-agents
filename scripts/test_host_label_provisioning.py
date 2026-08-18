@@ -54,14 +54,15 @@ class HostLabelProvisioningTest(unittest.TestCase):
     def test_failed_label_removal_happens_after_local_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             scripts = Path(temp_dir)
-            shutil.copy2(SCRIPT_ROOT / "common.sh", scripts / "common.sh")
-            shutil.copy2(
-                SCRIPT_ROOT / "min_versions.sh", scripts / "min_versions.sh"
-            )
-            shutil.copy2(
-                SCRIPT_ROOT / "teardown_08_deploy_platform_agent.sh",
-                scripts / "teardown_08_deploy_platform_agent.sh",
-            )
+            # common.sh sources its siblings from its own directory, so every
+            # one of them has to come along or the copy fails to load at all.
+            for helper in (
+                "common.sh",
+                "min_versions.sh",
+                "gke_dns_endpoint.sh",
+                "teardown_08_deploy_platform_agent.sh",
+            ):
+                shutil.copy2(SCRIPT_ROOT / helper, scripts / helper)
             (scripts / "vars.sh").write_text(
                 "export PROJECT_ID=test-project\n"
                 "export CLUSTER_NAME=test-cluster\n"

@@ -78,6 +78,60 @@ helm install kube-agents ./charts/kube-agents \
   --set platformAgent.deployment.image.tag=latest
 ```
 
+### Installing from a mirrored registry
+
+Clusters that may only pull from an approved registry need every image copied
+there first — `make mirror-images MIRROR_PREFIX=<prefix>` from the repository
+root does that, driven by `images.json`. Then point the chart at the copy:
+
+```bash
+helm install kube-agents ./charts/kube-agents \
+  --namespace kubeagents-system --create-namespace \
+  --set global.imageRegistry=registry.example.com/kube-agents \
+  --set platformAgent.harness.clusterName=my-cluster \
+  --set platformAgent.harness.location=us-central1 \
+  --set platformAgent.harness.projectId=my-gcp-project \
+  --set operator.image.tag=latest \
+  --set platformAgent.deployment.image.tag=latest
+```
+
+This example installs from a checkout, so the two tag overrides above still
+apply — and they have to name the tag the mirror was populated with, which is
+whatever `IMAGE_TAG` `make mirror-images` copied (`latest` by default). From a
+published chart, drop them and let `appVersion` pick the release.
+
+`global.imageRegistry` rewrites each image onto the prefix keeping the trailing
+name only, matching the flat layout `mirror-images` writes. Set
+`global.thirdPartyImageRegistry` as well if the mirror keeps LiteLLM and
+fluent-bit under a different path; it defaults to `global.imageRegistry`.
+
+It reaches more than the containers the chart renders. The operator resolves
+two images at reconcile time that appear in no chart template — the agent image
+for a `PlatformAgent` that omits `spec.deployment.image`, and the fluent-bit
+logging sidecar it injects into every agent pod — so the chart passes both to
+the operator as `PLATFORM_AGENT_IMAGE` and `FLUENT_BIT_IMAGE`. Without that a
+mirrored install reaches `ghcr.io` and Docker Hub minutes after `helm install`
+reported success. `CREDENTIAL_PROXY_IMAGE` is deliberately not passed: the
+operator derives that sidecar from the agent image by swapping the trailing
+name, so it follows the mirror on its own.
+
+The prefix is not a per-image default — it replaces every image's registry and
+path, keeping the trailing name, because that is the flat layout
+`make mirror-images` writes. Setting `litellm.image.repository` while
+`global.imageRegistry` is set therefore changes only the name the prefix is
+joined to, not where the image is pulled from. To place images individually —
+most on the mirror, one somewhere else — leave `global.imageRegistry` empty and
+give each `*.image.repository` its full mirrored path instead; the operator's
+`PLATFORM_AGENT_IMAGE` and `FLUENT_BIT_IMAGE` are rendered from those values
+either way.
+
+Anything in `operator.extraEnv` is appended after the env vars above and
+therefore wins.
+
+Registry authentication is out of scope — the mirror must be readable with the
+nodes' own credentials (an in-project Artifact Registry, or a pull-through
+cache). The chart renders no `imagePullSecrets`.
+
 ### LiteLLM gateway
 
 The agent's baked default model endpoint is
@@ -243,8 +297,37 @@ The hook runs `kubectl` from `alpine/k8s`, because the operator image is
 distroless and carries no client — and because the hook needs a shell: it is
 best-effort on purpose, exiting 0 (`|| true`) even when the wait times out,
 since a failed `pre-delete` hook aborts the entire uninstall — worse than the
-stranded CR it prevents. Use `platformAgent.cleanupHook.image` to point at your
-own mirror; any image with `kubectl` and `/bin/sh` works.
+stranded CR it prevents. It follows `global.thirdPartyImageRegistry` like the
+other third-party images, so a mirrored install needs nothing extra; set
+`platformAgent.cleanupHook.image.repository` and `.tag` to point somewhere else
+entirely — any image with `kubectl` and `/bin/sh` works.
+
+> **Breaking:** `platformAgent.cleanupHook.image` was a single string
+> (`alpine/k8s:1.34.9`) and is now a `{repository, tag}` map, because the
+> registry rewrite needs the two halves separately. A values file that still
+> sets the string form fails the render rather than installing something wrong:
+>
+> ```
+> coalesce.go:286: warning: cannot overwrite table with non table for
+>   kube-agents.platformAgent.cleanupHook.image
+> Error: template: kube-agents/templates/platform-agent-cr-cleanup.yaml:94:85:
+>   can't evaluate field repository in type interface {}
+> ```
+>
+> Split it:
+>
+> ```yaml
+> platformAgent:
+>   cleanupHook:
+>     image:
+>       repository: docker.io/alpine/k8s # was: image: alpine/k8s:1.34.9
+>       tag: "1.34.9"
+> ```
+>
+> The default reference also gained its registry — `alpine/k8s:1.34.9` is now
+> spelled `docker.io/alpine/k8s:1.34.9`. That resolves to the same image on a
+> default install; it is written out because a prefix cannot be prepended to a
+> reference whose registry is implied.
 
 With `platformAgent.cleanupHook.enabled=false`, the ordering is yours to keep:
 

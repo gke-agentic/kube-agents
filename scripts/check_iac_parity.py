@@ -104,6 +104,9 @@ PROVISION_05 = REPO / "k8s-operator/scripts/provision_05_gcp_gchat.sh"
 PROVISION_12 = REPO / "k8s-operator/scripts/provision_12_gke_backup_plan.sh"
 LITELLM_DEPLOYMENT = REPO / "k8s-operator/config/integrations/litellm/base/deployment.yaml"
 LITELLM_CONFIG = REPO / "k8s-operator/config/integrations/litellm/base/config.yaml"
+# The kustomize base substitutes ${LITELLM_IMAGE} rather than carrying a
+# literal, so the pin it used to be read from lives here now.
+IMAGE_INVENTORY = REPO / "images.json"
 CR_TEMPLATE = REPO / "k8s-operator/scripts/platform-agent.yaml.template"
 WEBHOOK_MANIFESTS = REPO / "k8s-operator/config/webhook/manifests.yaml"
 
@@ -269,12 +272,27 @@ def model_names(text: str, path: Path) -> list[str]:
 # ─── checks ───────────────────────────────────────────────────────────────────
 
 
+def inventory_pin(name: str) -> tuple[str, str]:
+    """The repository and tag ``images.json`` carries for an entry.
+
+    Several pins that used to sit in a manifest now live only here, because the
+    manifest substitutes a ``${VAR}`` a mirrored install can redirect. Reading
+    the inventory keeps the checks below comparing against the tag
+    ``make mirror-images`` actually copies rather than one no surface carries
+    any more. Exits rather than reporting a failure: a missing entry means the
+    extractor is looking in the wrong place, not that two surfaces disagree.
+    """
+    entry = next(
+        (i for i in json.loads(read(IMAGE_INVENTORY))["images"] if i.get("name") == name),
+        None,
+    )
+    if not entry or not entry.get("tag"):
+        sys.exit(f"ERROR: no pinned '{name}' entry in {IMAGE_INVENTORY.relative_to(REPO)}")
+    return entry["repository"], entry["tag"]
+
+
 def check_litellm_image(f: Failures) -> None:
-    kustomize = read(LITELLM_DEPLOYMENT)
-    match = re.search(r"image:\s*(\S+/litellm):(\S+)", kustomize)
-    if not match:
-        sys.exit(f"ERROR: no litellm image in {LITELLM_DEPLOYMENT.relative_to(REPO)}")
-    repo, tag = match.group(1), match.group(2)
+    repo, tag = inventory_pin("litellm")
 
     values = simple_yaml(read(CHART_VALUES))
     chart_repo = dig(values, "litellm.image.repository")
@@ -282,8 +300,8 @@ def check_litellm_image(f: Failures) -> None:
     if (chart_repo, chart_tag) != (repo, tag):
         f.add(
             "litellm-image",
-            f"chart pins {chart_repo}:{chart_tag}, kustomize base pins {repo}:{tag} "
-            f"({CHART_VALUES.relative_to(REPO)} vs {LITELLM_DEPLOYMENT.relative_to(REPO)})",
+            f"chart pins {chart_repo}:{chart_tag}, the inventory pins {repo}:{tag} "
+            f"({CHART_VALUES.relative_to(REPO)} vs {IMAGE_INVENTORY.relative_to(REPO)})",
         )
 
     # The example manifests are copies of the same gateway; a version bump that
@@ -293,7 +311,7 @@ def check_litellm_image(f: Failures) -> None:
         if found and found.group(1) != tag:
             f.add(
                 "litellm-image",
-                f"{example.relative_to(REPO)} pins {found.group(1)}, kustomize base pins {tag}",
+                f"{example.relative_to(REPO)} pins {found.group(1)}, the inventory pins {tag}",
             )
 
     # A fourth pin, in a chart of its own and in repository/tag form rather than
@@ -311,7 +329,7 @@ def check_litellm_image(f: Failures) -> None:
             f.add(
                 "litellm-image",
                 f"{staging.relative_to(REPO)} pins {found.group(1)}:{found.group(2)}, "
-                f"kustomize base pins {repo}:{tag}",
+                f"the inventory pins {repo}:{tag}",
             )
 
 
@@ -564,23 +582,22 @@ def check_cert_manager_version(f: Failures) -> None:
     that matters: the chart's CRD key was renamed at 1.15, so a bump on one
     surface alone either skips the CRDs or installs a different API than the
     operator's Certificate is written against.
+
+    The script builds that URL from ``images.json`` rather than spelling a
+    version out, so the mirror and the manifest cannot name different releases.
+    That makes the inventory the third surface, and the one to compare against:
+    the script is consistent with it by construction, Terraform is not.
     """
-    script = read(PROVISION_03)
-    match = re.search(
-        r"cert-manager/releases/download/(v[\d.]+)/cert-manager\.yaml", script
-    )
-    if not match:
-        sys.exit(
-            f"ERROR: no cert-manager release URL in {PROVISION_03.relative_to(REPO)}"
-        )
+    _, version = inventory_pin("cert-manager-controller")
     terraform = tf_variable_default(
         read(TF_FULL_INSTALL_VARS), "cert_manager_version", TF_FULL_INSTALL_VARS
     )
-    if terraform != match.group(1):
+    if terraform != version:
         f.add(
             "cert-manager-version",
             f"terraform cert_manager_version defaults to {terraform}, "
-            f"{PROVISION_03.relative_to(REPO)} installs {match.group(1)}",
+            f"{IMAGE_INVENTORY.relative_to(REPO)} pins cert-manager at {version} "
+            f"(which is what {PROVISION_03.relative_to(REPO)} installs)",
         )
 
 

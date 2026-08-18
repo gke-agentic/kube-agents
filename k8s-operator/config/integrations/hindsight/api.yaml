@@ -47,7 +47,10 @@ spec:
         fsGroup: 1000
       containers:
         - name: api
-          image: ghcr.io/vectorize-io/hindsight-api:0.9.1@sha256:24a079bead8aa58e45d728bf535ea727bfe559d8784024b6b9f89d56646954ab
+          # Resolved from images.json by the deploy target, so a mirrored
+          # install can point it at an approved registry. The pin, digest and
+          # all, lives there rather than here.
+          image: ${HINDSIGHT_API_IMAGE}
           ports:
             - name: http
               containerPort: 8888

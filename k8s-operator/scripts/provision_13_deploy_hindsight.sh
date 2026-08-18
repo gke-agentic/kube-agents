@@ -25,7 +25,7 @@ source "${SCRIPT_DIR}/common.sh" "$@"
 
 # ─── Prerequisites Check ──────────────────────────────────────────────────────
 print_step "Checking Local Prerequisites"
-check_prereqs "gcloud" "kubectl"
+check_prereqs "gcloud" "kubectl" "jq"
 
 # ─── Configuration & State Restoration ────────────────────────────────────────
 print_step "Setting up Configuration State for Hindsight Deployment"
@@ -63,6 +63,15 @@ if ! memory_provider_uses_hindsight "$MEMORY_PROVIDER"; then
   exit 0
 fi
 
+# ─── Image Resolution ─────────────────────────────────────────────────────────
+#
+# Resolved from images.json, and redirected onto THIRD_PARTY_REGISTRY_PREFIX
+# when one is set, so an approved-registry install reaches these two as well.
+# After the gate rather than before it: an install on another memory provider
+# deploys nothing here and has no reason to care whether the mirror holds them.
+init_third_party_image "HINDSIGHT_API_IMAGE" "hindsight-api"
+init_third_party_image "HINDSIGHT_POSTGRES_IMAGE" "hindsight-postgresql"
+
 # ─── Step Implementations ─────────────────────────────────────────────────────
 
 # Step 1: Connect kubectl
@@ -82,8 +91,8 @@ verify_hindsight() {
   return 1
 }
 execute_hindsight() {
-  print_info "Deploying Hindsight memory store into GKE..."
-  export NAMESPACE
+  print_info "Deploying Hindsight memory store (${HINDSIGHT_API_IMAGE}) into GKE..."
+  export NAMESPACE HINDSIGHT_API_IMAGE HINDSIGHT_POSTGRES_IMAGE
   make -C "${OPERATOR_DIR}" deploy-hindsight || return 1
 }
 

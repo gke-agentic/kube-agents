@@ -18,6 +18,11 @@ VARS_FILE="${VARS_FILE:-${SCRIPT_DIR}/vars.sh}"
 # shellcheck source=k8s-operator/scripts/min_versions.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/min_versions.sh"
 
+# gke_dns_endpoint_flag, shared with hack/ci-env.sh and scripts/release/common.sh.
+# Resolved from BASH_SOURCE for the same reason as the line above.
+# shellcheck source=k8s-operator/scripts/gke_dns_endpoint.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gke_dns_endpoint.sh"
+
 # ─── ANSI Colors ──────────────────────────────────────────────────────────────
 # Empty unless stdout is a terminal and NO_COLOR is unset. This pipeline's output
 # is routinely redirected — install.sh tees it to a log, CI captures it — and
@@ -251,6 +256,126 @@ init_var_registry_prefix() {
   # init_var only saves values it prompted for; persist an env-exported
   # prefix too, so the remaining steps and later re-runs reuse it.
   save_var "REGISTRY_PREFIX" "$REGISTRY_PREFIX"
+
+  # Deliberately not prompted for: leaving third-party images upstream is the
+  # supported default, so a prompt would ask every installer to answer a
+  # question only a mirrored install has. Export-only — persisted like every
+  # other knob once it has been given.
+  if [ -n "${THIRD_PARTY_REGISTRY_PREFIX:-}" ]; then
+    case "$THIRD_PARTY_REGISTRY_PREFIX" in
+      *"://"*)
+        print_error "THIRD_PARTY_REGISTRY_PREFIX must be a bare registry path without a scheme (got '$THIRD_PARTY_REGISTRY_PREFIX'). Use e.g. 'registry.example.com/mirror'."
+        exit 1
+        ;;
+    esac
+    save_var "THIRD_PARTY_REGISTRY_PREFIX" "$THIRD_PARTY_REGISTRY_PREFIX"
+  fi
+
+  warn_unmirrored_third_party
+}
+
+# ─── Third-party images ───────────────────────────────────────────────────────
+# Images an install pulls that this project does not build: the LiteLLM
+# gateway, the fluent-bit logging sidecar, the GitHub token minter, and
+# cert-manager. A mirror commonly keeps those under a different path from the
+# kube-agents images, and an install may mirror one set without the other, so
+# they get their own prefix rather than sharing REGISTRY_PREFIX.
+#
+# Their upstream references and pins live in images.json at the repo root — the
+# same file `make mirror-images` copies from — so the pin the mirror was
+# populated with and the pin an install asks for cannot drift apart. That is
+# not hypothetical: the chart and the LiteLLM kustomization each carried their
+# own pin, and one upgrade moved only one of them.
+IMAGES_JSON="${IMAGES_JSON:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)/images.json}"
+
+# The prefix third-party images resolve under, or empty for "leave them
+# upstream". Set by THIRD_PARTY_REGISTRY_PREFIX and by nothing else.
+#
+# Deliberately not inherited from REGISTRY_PREFIX. That variable predates this
+# inventory and has always meant "the registry holding the images this project
+# builds"; a mirror populated to it holds those four and nothing more. Widening
+# it to cert-manager, LiteLLM, fluent-bit, the token minter and Hindsight would redirect an
+# existing install to references its mirror was never given — cert-manager first,
+# where the wait in execute_cert_manager times out on ImagePullBackOff with the
+# cluster already created. A single-prefix mirror is still one export away; it is
+# just no longer assumed. warn_unmirrored_third_party below says so at the point
+# the assumption used to fire.
+third_party_registry_prefix() {
+  local prefix="${THIRD_PARTY_REGISTRY_PREFIX:-}"
+  echo "${prefix%/}"
+}
+
+# Warn once when a custom REGISTRY_PREFIX is set but third-party images are
+# still resolving upstream. That combination is legitimate — it is what every
+# pre-inventory install did — but it is also what a user who expected one
+# prefix to cover everything would see, and the symptom otherwise arrives much
+# later as a pull from a registry they thought they had left behind.
+warn_unmirrored_third_party() {
+  local prefix
+  prefix="$(registry_prefix)"
+  [ "$prefix" = "$DEFAULT_REGISTRY_PREFIX" ] && return 0
+  [ -n "$(third_party_registry_prefix)" ] && return 0
+  print_warning "REGISTRY_PREFIX is '${prefix}', but the third-party images (cert-manager, LiteLLM, fluent-bit, the GitHub token minter and Hindsight) will still be pulled from their upstream registries. Export THIRD_PARTY_REGISTRY_PREFIX (commonly the same value) to mirror those too — see 'make mirror-images'."
+}
+
+# Resolve a third-party image by its images.json name: the upstream reference
+# for a default install, or "<prefix>/<name>:<tag>" once the images have been
+# mirrored. The mirrored form is named after the inventory entry, matching what
+# scripts/mirror_images.sh writes — the entry's .name, not the repository's
+# trailing segment. The two differ for hindsight-postgresql
+# (docker.io/ankane/pgvector), which is exactly the case this line used to get
+# wrong: it said "the trailing image name only" while the code below has always
+# used $name.
+third_party_image() {
+  local name=$1
+  local repository tag prefix
+
+  if [ ! -f "$IMAGES_JSON" ]; then
+    print_error "images.json not found at '${IMAGES_JSON}'; cannot resolve the '${name}' image."
+    return 1
+  fi
+
+  repository="$(jq -r --arg n "$name" '.images[] | select(.name == $n) | .repository' "$IMAGES_JSON")"
+  tag="$(jq -r --arg n "$name" '.images[] | select(.name == $n) | .tag' "$IMAGES_JSON")"
+  if [ -z "$repository" ] || [ "$repository" = "null" ] || [ -z "$tag" ] || [ "$tag" = "null" ]; then
+    print_error "No image named '${name}' with a pinned tag in ${IMAGES_JSON}."
+    return 1
+  fi
+
+  prefix="$(third_party_registry_prefix)"
+  if [ -n "$prefix" ]; then
+    # A pin can carry a digest in the tag position ("0.9.1@sha256:..."), which
+    # names the upstream manifest. It cannot name the mirrored copy: you push
+    # to a tag, never to a digest, so scripts/mirror_images.sh writes
+    # "<prefix>/<name>:<tag>" with the digest stripped. Ask for the copy the
+    # same way it was pushed — keeping the digest here would work only when the
+    # mirror was populated with crane or skopeo, and resolve against nothing at
+    # all after the docker fallback the script warns about.
+    echo "${prefix}/${name}:${tag%%@*}"
+  else
+    echo "${repository}:${tag}"
+  fi
+}
+
+# Export VAR with the resolved reference for an images.json entry, unless it is
+# already set, and warn when an explicitly-set value sits outside the mirror.
+#
+# Deliberately not init_var: that would prompt for, and persist to vars.sh, a
+# pin that images.json already owns. A saved pin is a second copy of the
+# version, and a second copy is what let the chart sit on LiteLLM v1.92.0 for
+# an entire release after the kustomize base moved to v1.95.0. Resolving on
+# every run instead means upgrading the repo upgrades the pin. An operator who
+# genuinely wants a different image still exports the variable, and that value
+# wins here exactly as a saved one would.
+init_third_party_image() {
+  local var_name=$1
+  local image_name=$2
+  if [ -z "${!var_name:-}" ]; then
+    local resolved
+    resolved="$(third_party_image "$image_name")" || return 1
+    export "${var_name}=${resolved}"
+  fi
+  warn_on_third_party_prefix_mismatch "$var_name"
 }
 
 # Warn when a persisted *_IMAGE value no longer lives under the effective
@@ -268,6 +393,62 @@ warn_on_registry_prefix_mismatch() {
       print_warning "${var_name}='${image_val}' does not match REGISTRY_PREFIX '$(registry_prefix)'. The saved value wins; edit ${VARS_FILE} (or unset ${var_name}) to migrate this image to the new registry."
       ;;
   esac
+}
+
+# The same check for an image this project does not build, which belongs under
+# the third-party prefix rather than REGISTRY_PREFIX. A default install leaves
+# that prefix empty and the image upstream, so there is nothing to compare.
+warn_on_third_party_prefix_mismatch() {
+  local var_name=$1
+  local image_val="${!var_name:-}"
+  local prefix
+  prefix="$(third_party_registry_prefix)"
+  if [ -z "$image_val" ] || [ -z "$prefix" ]; then
+    return 0
+  fi
+  case "$image_val" in
+    "$prefix"/*) ;;
+    *)
+      print_warning "${var_name}='${image_val}' is not under the third-party registry prefix '${prefix}'. That value still wins; unset ${var_name} (or edit ${VARS_FILE} if it was persisted there) to pull this image from the mirror."
+      ;;
+  esac
+}
+
+# Attach IMAGE_TAG to an image reference that carries neither a tag nor a
+# digest. The saved *_IMAGE values are deliberately bare repository paths:
+# IMAGE_TAG is scoped to one pipeline run and is never persisted to vars.sh
+# (see init_var_image_tag), so the tag has to be re-attached where the
+# reference is used. Handing a bare path to Kubernetes resolves it to
+# ':latest', which the provisioner never builds or pushes.
+# A reference that already names a tag or digest is returned untouched, so
+# this is safe to apply to a user-supplied override.
+#
+# This is the shell twin of resolveAgentImage() in
+# k8s-operator/internal/controller/manifest_helpers.go, which applies the same
+# split-at-the-last-slash rule to CR-supplied images. The two differ on purpose
+# when no tag is available: the operator is serving a live CR and falls back to
+# "latest", while a provisioning run can still fail and so does, loudly. Change
+# one and check the other.
+qualify_image_ref() {
+  local ref="$1"
+  local tag="${2:-${IMAGE_TAG:-}}"
+  if [ -z "$ref" ]; then
+    print_error "qualify_image_ref: called with an empty image reference"
+    return 1
+  fi
+  # Only the final path segment can hold the tag — a registry host may carry
+  # a port, as in 'registry.example.com:5000/kube-agents/platform-agent'.
+  case "${ref##*/}" in
+    *:* | *@*) ;;
+    *)
+      if [ -z "$tag" ]; then
+        print_error "qualify_image_ref: no tag available for bare reference '${ref}' (IMAGE_TAG is unset). Set IMAGE_TAG, or pin the reference with an explicit tag or digest."
+        return 1
+      fi
+      ref="${ref}:${tag}"
+      ;;
+  esac
+  echo "$ref"
 }
 
 # Cloud KMS has no zonal locations, so a zonal cluster's REGION (eg.
@@ -420,6 +601,7 @@ init_var_image_tag() {
 
 load_state() {
   local env_registry_prefix="${REGISTRY_PREFIX:-}"
+  local env_third_party_prefix="${THIRD_PARTY_REGISTRY_PREFIX:-}"
   if [ -f "$VARS_FILE" ]; then
     chmod 600 "$VARS_FILE" 2>/dev/null || true
     source "$VARS_FILE"
@@ -438,6 +620,13 @@ load_state() {
   if [ -n "$env_registry_prefix" ] && [ -n "${REGISTRY_PREFIX:-}" ] \
     && [ "$env_registry_prefix" != "$REGISTRY_PREFIX" ]; then
     print_warning "Ignoring exported REGISTRY_PREFIX='${env_registry_prefix}': the saved value '${REGISTRY_PREFIX}' from ${VARS_FILE} wins. Edit ${VARS_FILE} (REGISTRY_PREFIX and the saved *_IMAGE values) to change registries."
+  fi
+  # And the same for the third-party prefix, which is the one an operator is
+  # most likely to export on a re-run after pointing cert-manager and
+  # fluent-bit at a different mirror.
+  if [ -n "$env_third_party_prefix" ] && [ -n "${THIRD_PARTY_REGISTRY_PREFIX:-}" ] \
+    && [ "$env_third_party_prefix" != "$THIRD_PARTY_REGISTRY_PREFIX" ]; then
+    print_warning "Ignoring exported THIRD_PARTY_REGISTRY_PREFIX='${env_third_party_prefix}': the saved value '${THIRD_PARTY_REGISTRY_PREFIX}' from ${VARS_FILE} wins. Edit ${VARS_FILE} to change it."
   fi
   if [ "${REQUIRES_IMAGE_TAG:-0}" -eq 1 ]; then
     init_var_image_tag
@@ -627,8 +816,8 @@ github_account_type() {
   fi
 
   # Organization is matched first so it wins even if the payload somehow carries
-  # both spellings. Both spacings are covered because the API is not guaranteed
-  # to keep pretty-printing, and no script here depends on jq.
+  # both spellings, and both spacings are covered because the API is not
+  # guaranteed to keep pretty-printing its JSON.
   case "$body" in
     *'"type": "Organization"'*|*'"type":"Organization"'*) echo "organization" ;;
     *'"type": "User"'*|*'"type":"User"'*) echo "user" ;;
@@ -715,7 +904,13 @@ execute_host_label() {
 
 connect_cluster() {
   print_info "Fetching cluster credentials..."
-  gcloud container clusters get-credentials "$CLUSTER_NAME" --location "$REGION" --project "$PROJECT_ID" --quiet
+  gke_dns_endpoint_flag "$CLUSTER_NAME" "$REGION" "$PROJECT_ID"
+  if [ -n "$GKE_DNS_ENDPOINT_FLAG" ]; then
+    print_info "Cluster '$CLUSTER_NAME' publishes an external DNS endpoint; using it."
+  fi
+  # Unquoted on purpose: empty must contribute no argument at all.
+  # shellcheck disable=SC2086
+  gcloud container clusters get-credentials "$CLUSTER_NAME" --location "$REGION" --project "$PROJECT_ID" --quiet $GKE_DNS_ENDPOINT_FLAG
 }
 
 # Shared readiness budget for stages 08 and 13. Accepts a bare number of

@@ -4,6 +4,11 @@ set -euo pipefail
 
 export REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
+# gke_dns_endpoint_flag, so release automation reaches a cluster over the same
+# endpoint the installer would.
+# shellcheck source=k8s-operator/scripts/gke_dns_endpoint.sh
+source "${REPO_ROOT}/k8s-operator/scripts/gke_dns_endpoint.sh"
+
 # Centralized definition of required container images and registry defaults
 export DEFAULT_REGISTRY_PREFIX="ghcr.io/gke-labs/kube-agents"
 export DEFAULT_RELEASE_REPO="gke-labs/kube-agents"

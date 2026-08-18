@@ -17,6 +17,7 @@ from pathlib import Path
 from datetime import datetime
 from mcp.server.fastmcp import FastMCP
 from agent_common_server import _run_env, CONFIG_PATH
+from gke_endpoint import dns_endpoint_args
 
 DEFAULT_SESSION_KV_DB_PATH = "/var/lib/kube-agents/session/session_kv.db"
 
@@ -424,10 +425,13 @@ def switch_kube_context(project_id: str, cluster_name: str, location: str) -> tu
     kubeconfig_path = _thread_kubeconfig_path(project_id, cluster_name, location)
     env = _run_env({"KUBECONFIG": kubeconfig_path})
 
+    # A fleet cluster reachable only over its DNS endpoint needs the flag, and one
+    # whose DNS endpoint refuses external traffic must not get it — see gke_endpoint.
     cmd = [
         "gcloud", "container", "clusters", "get-credentials", cluster_name,
         f"--location={location}",
-        f"--project={project_id}"
+        f"--project={project_id}",
+        *dns_endpoint_args(project_id, cluster_name, location, env=env),
     ]
     try:
         subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=30, env=env)

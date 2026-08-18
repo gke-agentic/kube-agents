@@ -1302,7 +1302,9 @@ func TestKustomizeNetworkPolicies_PodSelectorMatchesCommonLabels(t *testing.T) {
 	}
 }
 
-func TestFQDNPatternList_MatchesKustomizeManifest(t *testing.T) {
+// fqdnPatternsFromPolicy returns the egress match patterns buildFQDNNetworkPolicy emits.
+func fqdnPatternsFromPolicy(t *testing.T) []string {
+	t.Helper()
 	agent := &agentv1alpha1.PlatformAgent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "platform-agent",
@@ -1323,14 +1325,79 @@ func TestFQDNPatternList_MatchesKustomizeManifest(t *testing.T) {
 	if !ok || len(matchesList) == 0 {
 		t.Fatalf("expected matches list in FQDN policy")
 	}
-	var goPatterns []string
+	var patterns []string
 	for _, m := range matchesList {
 		if mMap, isMap := m.(map[string]interface{}); isMap {
 			if p, isStr := mMap["pattern"].(string); isStr {
-				goPatterns = append(goPatterns, p)
+				patterns = append(patterns, p)
 			}
 		}
 	}
+	return patterns
+}
+
+// fqdnPatternToRegexp compiles an FQDNNetworkPolicy match pattern the way the
+// Dataplane V2 (Cilium) engine does: dots are literal and a wildcard spans DNS
+// characters only, so it stops at a label boundary. GKE documents the same rule
+// — "*.company.com" matches "api.company.com" but not "eu.api.company.com".
+func fqdnPatternToRegexp(t *testing.T, pattern string) *regexp.Regexp {
+	t.Helper()
+	escaped := strings.ReplaceAll(pattern, ".", "[.]")
+	escaped = strings.ReplaceAll(escaped, "*", "[-a-zA-Z0-9_]*")
+	re, err := regexp.Compile("^" + escaped + "$")
+	if err != nil {
+		t.Fatalf("pattern %q does not compile: %v", pattern, err)
+	}
+	return re
+}
+
+// TestFQDNPatternList_MatchesRealHostnames pins the egress allowlist against
+// hostnames the gateway actually dials. TestFQDNPatternList_MatchesKustomizeManifest
+// only proves the two copies of the list agree — it would pass just as happily
+// if both were wrong, which is how "*.gke.goog" was first shipped one label
+// short of every DNS control-plane endpoint it was added to allow.
+func TestFQDNPatternList_MatchesRealHostnames(t *testing.T) {
+	patterns := fqdnPatternsFromPolicy(t)
+
+	hostnames := []string{
+		// GKE DNS-based control plane endpoint: <cluster-hash>-<project-number>.<region>.gke.goog
+		//
+		// Synthetic, but the shape is copied from live clusters: a 36-character
+		// hash, a project number, and a location label. Do not paste a real
+		// endpoint in — the hostname carries the project number of whoever's
+		// cluster it came from, and what this test needs is the shape.
+		"gke-0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b-123456789012.us-central1.gke.goog",
+		// A zonal cluster puts the zone where the region sits, so the label is
+		// longer but the shape is unchanged. Keeping both means a pattern
+		// narrowed to a region-shaped label fails here rather than in the field.
+		"gke-9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e-210987654321.us-central1-a.gke.goog",
+		"container.googleapis.com",
+		"oauth2.googleapis.com",
+		"accounts.google.com",
+		"us-central1-docker.pkg.dev",
+		"us.gcr.io",
+		"github.com",
+		"api.github.com",
+		"objects.githubusercontent.com",
+		"slack.com",
+	}
+
+	for _, host := range hostnames {
+		matched := false
+		for _, p := range patterns {
+			if fqdnPatternToRegexp(t, p).MatchString(host) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			t.Errorf("no FQDN egress pattern matches %q; the gateway cannot reach it under FQDN network policy (patterns: %v)", host, patterns)
+		}
+	}
+}
+
+func TestFQDNPatternList_MatchesKustomizeManifest(t *testing.T) {
+	goPatterns := fqdnPatternsFromPolicy(t)
 
 	path := filepath.Join("..", "..", "..", "deploy", "kustomize", "gke-dataplane-v2", "fqdn-networkpolicy.yaml")
 	data, err := os.ReadFile(path)

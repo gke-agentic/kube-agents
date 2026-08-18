@@ -95,7 +95,44 @@ image tags. It exists because the chart is installed from this checkout, and a
 checkout's `Chart.yaml` carries an `appVersion` placeholder that never matches
 a published image tag — so the chart's usual tag defaulting cannot work here
 (see the [chart README](../../../charts/kube-agents/README.md)). `latest` is
-fine for evaluation; pin a `vX.Y.Z` release tag for production.
+fine for evaluation; pin an `X.Y.Z` release tag for production.
+
+### Installing from a mirrored registry
+
+For a cluster that may only pull from an approved registry, copy the images
+there first — `make mirror-images MIRROR_PREFIX=<prefix> IMAGE_TAG=<tag>` from
+the repository root, driven by `images.json` — then set `image_registry` to the
+same prefix. It reaches the two images the chart never renders as well (the
+agent Deployment and the fluent-bit sidecar the operator resolves at reconcile
+time); the [chart README](../../../charts/kube-agents/README.md) explains how.
+Add `third_party_image_registry` only if the mirror keeps LiteLLM and
+fluent-bit under a different path.
+
+`IMAGE_TAG` is not optional here. The four first-party images take whatever tag
+the mirror step was given (`latest` if it was given none), while Terraform asks
+for `image_tag` — so a mirror populated at `latest` against an `image_tag` of
+`v1.2.3` holds no reference the install will ever request. `terraform apply`
+reports success and the pods sit in ImagePullBackOff. Pass the same value to
+both.
+
+The mirror must be readable with the nodes' own credentials — an Artifact
+Registry in the same project is the simple case. No `imagePullSecrets` are
+rendered.
+
+**cert-manager is not covered.** `image_registry` and
+`third_party_image_registry` are values on `helm_release.kube_agents`;
+`helm_release.cert_manager` is a separate release of an upstream chart and
+never sees them, so with `enable_cert_manager = true` its four images still
+come from `quay.io/jetstack` however the prefixes are set. The chart itself is
+fetched over the network from `https://charts.jetstack.io`, which an air-gapped
+runner cannot reach at all. On a cluster that may only pull from an approved
+registry, set `enable_cert_manager = false` and install cert-manager yourself
+from the mirror before applying — `images.json` carries all four entries
+(`cert-manager-controller`, `-cainjector`, `-webhook`, `-acmesolver`), so
+`make mirror-images` has already copied them. `enable_webhooks` needs
+cert-manager present either way; the composition's `depends_on` only orders the
+release it manages, so with `enable_cert_manager = false` it is on you to have
+cert-manager serving first.
 
 ### IAM roles (`permission_set` and `project_roles`)
 
@@ -173,6 +210,17 @@ composition's own CR on the first apply. See the
 [chart README](../../../charts/kube-agents/README.md) for switching it to
 `Fail` afterwards.
 
+### Reaching the control plane (`allow_external_dns_traffic`)
+
+`allow_external_dns_traffic` (default `false`) is passed to the `gke-cluster`
+module and decides whether the cluster's DNS-based control plane endpoint
+serves traffic from outside the VPC. Set it to `true` for a cluster a Platform
+Agent running elsewhere has to reach; leave it alone for a cluster that should
+stay VPC-only. The default is `false` so that applying an existing root after
+upgrading does not publish an endpoint on a cluster that has none — see the
+[module README](../../modules/gke-cluster/README.md) for why that endpoint is
+not covered by master-authorized-networks.
+
 ### Google Chat and GitHub integrations
 
 With `enable_google_chat = true` the composition provisions the GCP backend
@@ -210,7 +258,7 @@ repository. A standalone consumer would pin a release instead:
 
 ```hcl
 module "gke_cluster" {
-  source = "git::https://github.com/gke-labs/kube-agents.git//terraform/modules/gke-cluster?ref=vX.Y.Z"
+  source = "git::https://github.com/gke-labs/kube-agents.git//terraform/modules/gke-cluster?ref=1.2.0"
   # ...
 }
 ```
