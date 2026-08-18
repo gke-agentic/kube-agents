@@ -76,12 +76,13 @@ makes this line wrong? Inverted or wrong conditions, off-by-one, nil/undefined d
 `await`, unchecked `err`, falsy-zero checks, wrong-variable copy-paste, an error swallowed in a
 catch, unescaped regex metacharacters.
 
-**Audit error handlers and fallback values**: for every `catch`, `except`, `if err != nil`, or
-fallback assignment on a failed resolution, trace the fallback value. Does it preserve the
-invariant downstream code assumes — a normalized 40-character SHA, a validated SemVer, an absolute
-path, a non-nil struct — or does it pass a raw, unvalidated input forward? Check if error
-suppression transforms a failed lookup on a malformed input into a benign empty result (`nil`,
-`""`, `[]`), silently disabling downstream collision, uniqueness, or security guards.
+**Audit error handlers and fallback values**: for every `catch`, `except`, `if err != nil`,
+`if ! cmd` (or `$? != 0`), or fallback assignment on a failed resolution, trace the fallback value.
+Does it preserve the invariant downstream code assumes — a normalized 40-character SHA, a validated
+SemVer, an absolute path, a non-nil struct — or does it pass a raw, unvalidated input forward? Check
+if error suppression (`|| true`, `_ = err`, `except: pass`) transforms a failed lookup on a
+malformed input into a benign empty result (`nil`, `""`, `[]`), silently disabling downstream
+collision, uniqueness, or security guards.
 
 **Angle B — removed-behavior auditor.** For every line the diff deletes or replaces, name the
 invariant it enforced, then find where the new code re-establishes it. If you cannot find it,
