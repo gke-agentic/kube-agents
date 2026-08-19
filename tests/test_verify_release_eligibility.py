@@ -78,7 +78,7 @@ exit {docker_exit}
         try:
             proc = self._run_verify_script(repo_dir, args=[], bin_dir=bin_dir)
             self.assertNotEqual(proc.returncode, 0)
-            self.assertIn("Target release tag must be specified", proc.stderr)
+            self.assertIn("Target release version must be specified", proc.stderr)
         finally:
             temp_dir.cleanup()
 
@@ -94,7 +94,7 @@ exit {docker_exit}
                 bin_dir=bin_dir,
             )
             self.assertNotEqual(proc.returncode, 0)
-            self.assertIn("Target release tag must be specified", proc.stderr)
+            self.assertIn("Target release version must be specified", proc.stderr)
         finally:
             temp_dir.cleanup()
 

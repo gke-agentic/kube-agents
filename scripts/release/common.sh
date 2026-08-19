@@ -12,6 +12,7 @@ source "${REPO_ROOT}/k8s-operator/scripts/gke_dns_endpoint.sh"
 # Centralized definition of required container images and registry defaults
 export DEFAULT_REGISTRY_PREFIX="ghcr.io/gke-labs/kube-agents"
 export DEFAULT_RELEASE_REPO="gke-labs/kube-agents"
+export DEFAULT_INITIAL_VERSION="0.1.0"
 
 # Declarative registry of all 4 required container images
 export REQUIRED_RELEASE_IMAGES=(
@@ -38,6 +39,51 @@ is_truthy() {
 
 is_ci_pipeline() {
   is_truthy "${CI:-}"
+}
+
+# Validates that a string is a valid pure numeric SemVer (X.Y.Z without 'v' prefix)
+validate_pure_numeric_semver() {
+  local ver="${1:-}"
+  local label="${2:-Target release tag}"
+  if [ -z "${ver}" ]; then
+    echo "❌ ERROR: ${label} must be specified." >&2
+    return 1
+  fi
+  if [[ ! "${ver}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "❌ ERROR: ${label} '${ver}' is not a valid pure numeric SemVer (e.g. 0.1.0, 0.2.0). 'v' prefix is not supported." >&2
+    return 1
+  fi
+  return 0
+}
+
+# Hermetic component-wise SemVer 2.0 comparator
+# Returns: 1 if v1 > v2, 0 if v1 == v2, -1 if v1 < v2
+compare_semver() {
+  local v1="$1" v2="$2"
+  if [ "$v1" = "$v2" ]; then echo "0"; return 0; fi
+  local M1 N1 P1 M2 N2 P2
+  IFS='.' read -r M1 N1 P1 <<< "$v1"
+  IFS='.' read -r M2 N2 P2 <<< "$v2"
+  if [ "$M1" -gt "$M2" ]; then echo "1"; return 0; fi
+  if [ "$M1" -lt "$M2" ]; then echo "-1"; return 0; fi
+  if [ "$N1" -gt "$N2" ]; then echo "1"; return 0; fi
+  if [ "$N1" -lt "$N2" ]; then echo "-1"; return 0; fi
+  if [ "$P1" -gt "$P2" ]; then echo "1"; return 0; fi
+  if [ "$P1" -lt "$P2" ]; then echo "-1"; return 0; fi
+  echo "0"
+}
+
+# Finds the latest pure numeric GA SemVer release tag in git repository (e.g. 0.2.0).
+# Accepts an optional fallback default value if no GA tags are found.
+get_latest_ga_tag() {
+  local default_fallback="${1:-}"
+  local latest
+  latest="$(git tag -l --sort=version:refname '[0-9]*' 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | tail -n 1 || true)"
+  if [ -n "${latest}" ]; then
+    echo "${latest}"
+  else
+    echo "${default_fallback}"
+  fi
 }
 
 # Resolves target GitHub repository (e.g. gke-labs/kube-agents)
@@ -197,9 +243,8 @@ ensure_git_tag() {
   target_full_sha="$(git rev-parse --verify "${commit_sha}^{commit}" 2>/dev/null || echo "${commit_sha}")"
 
   # Check if tag already exists in Git
-  if git rev-parse "${rc_tag}" >/dev/null 2>&1; then
-    local existing_sha
-    existing_sha=$(git rev-parse "${rc_tag}^{commit}")
+  local existing_sha
+  if existing_sha="$(git rev-parse --verify "refs/tags/${rc_tag}^{commit}" 2>/dev/null)"; then
     if [ "${existing_sha}" = "${target_full_sha}" ]; then
       echo "✅ Git tag '${rc_tag}' already exists and points to target commit ${target_full_sha}. Idempotent skip."
       return 0
@@ -230,26 +275,23 @@ ensure_git_tag() {
 # Clean Promotion: Tags verified container images in GHCR without rebuilding
 promote_release_images() {
   local commit_sha="${1:-}"
-  local target_tag="${2:-}"
+  local release_version="${2:-}"
 
-  if [ -z "${commit_sha}" ] || [ -z "${target_tag}" ]; then
-    echo "❌ ERROR: commit_sha and target_tag are required for promote_release_images." >&2
+  if [ -z "${commit_sha}" ] || [ -z "${release_version}" ]; then
+    echo "❌ ERROR: commit_sha and release_version are required for promote_release_images." >&2
     return 1
   fi
 
-  if [[ ! "${target_tag}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo "❌ ERROR: Target release tag '${target_tag}' is not a valid pure numeric SemVer (e.g. 0.1.0, 0.2.0)." >&2
-    return 1
-  fi
+  validate_pure_numeric_semver "${release_version}" "Release version" || return 1
 
   local registry_prefix
   registry_prefix="$(get_registry_prefix)"
 
-  echo "🚀 Promoting verified container images (${commit_sha:0:7}) -> (${target_tag})..."
+  echo "🚀 Promoting verified container images (${commit_sha:0:7}) -> (${release_version})..."
 
   for img in "${REQUIRED_RELEASE_IMAGES[@]}"; do
     local source_image="${registry_prefix}/${img}:${commit_sha}"
-    local target_image="${registry_prefix}/${img}:${target_tag}"
+    local target_image="${registry_prefix}/${img}:${release_version}"
     echo "  • Promoting ${img}..."
 
     if ! command -v docker >/dev/null 2>&1; then
@@ -257,13 +299,13 @@ promote_release_images() {
       return 1
     fi
 
-    # Safety Guard: Check if target tag already exists in registry to prevent accidental tag overwriting
+    # Safety Guard: Check if target image tag already exists in registry to prevent accidental overwriting
     if docker manifest inspect "${target_image}" >/dev/null 2>&1; then
       echo "    ℹ️ Target image '${target_image}' already exists in registry. Skipping duplicate promotion."
       continue
     fi
 
     docker buildx imagetools create --tag "${target_image}" "${source_image}"
-    echo "    ✅ Promoted ${img} to ${target_tag}"
+    echo "    ✅ Promoted ${img} to ${release_version}"
   done
 }

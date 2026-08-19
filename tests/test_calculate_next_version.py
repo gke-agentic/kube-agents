@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 import unittest
 
-from tests.testing.common import get_isolated_test_env
+from tests.testing.common import create_mock_git_repo, get_isolated_test_env
 from tests.testing.release import (
     INVALID_GA_RELEASE_TAGS,
     MOCK_BASE_TAG_1_X,
@@ -34,29 +34,7 @@ _CALC_SCRIPT = _REPO_ROOT / "scripts" / "release" / "calculate_next_version.sh"
 class CalculateNextVersionTest(unittest.TestCase):
     def _create_mock_repo(self):
         """Creates a temporary git repository for testing version calculation."""
-        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
-        repo_dir = temp_dir.name
-
-        def git(*args):
-            return subprocess.run(
-                ["git"] + list(args),
-                cwd=repo_dir,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-
-        git("init", "-b", "main")
-        git("config", "user.name", "Test Bot")
-        git("config", "user.email", "bot@example.com")
-        git("config", "commit.gpgsign", "false")
-
-        # Initial commit
-        (pathlib.Path(repo_dir) / "README.md").write_text("Initial")
-        git("add", "README.md")
-        git("commit", "-m", "chore: initial commit")
-
-        return temp_dir, repo_dir, git
+        return create_mock_git_repo()
 
     def _run_calc_script(self, repo_dir, args=None, env=None):
         full_env = get_isolated_test_env(overrides=env)
@@ -240,6 +218,87 @@ class CalculateNextVersionTest(unittest.TestCase):
             proc = self._run_calc_script(repo_dir, args=[MOCK_INITIAL_VERSION, MOCK_NONEXISTENT_REF])
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn(f"Target ref '{MOCK_NONEXISTENT_REF}' does not exist", proc.stderr)
+        finally:
+            temp_dir.cleanup()
+
+
+    def test_explicit_version_success(self):
+        temp_dir, repo_dir, git = self._create_mock_repo()
+        try:
+            git("tag", "-a", MOCK_INITIAL_VERSION, "-m", f"Release {MOCK_INITIAL_VERSION}")
+            gh_out = pathlib.Path(repo_dir) / "gh_output.txt"
+            proc = self._run_calc_script(
+                repo_dir,
+                env={"EXPLICIT_RELEASE_VERSION": "0.3.0", "GITHUB_OUTPUT": str(gh_out)},
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertEqual(proc.stdout.strip(), "0.3.0")
+
+            outputs = gh_out.read_text()
+            self.assertIn("version=0.3.0", outputs)
+            self.assertIn("has_changes=true", outputs)
+            self.assertIn("bump_type=manual", outputs)
+            self.assertIn(f"previous_version={MOCK_INITIAL_VERSION}", outputs)
+        finally:
+            temp_dir.cleanup()
+
+    def test_explicit_version_invalid_format_fails(self):
+        temp_dir, repo_dir, _ = self._create_mock_repo()
+        try:
+            for bad_tag in INVALID_GA_RELEASE_TAGS:
+                with self.subTest(bad_tag=bad_tag):
+                    proc = self._run_calc_script(
+                        repo_dir,
+                        env={"EXPLICIT_RELEASE_VERSION": bad_tag},
+                    )
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("not a valid pure numeric SemVer", proc.stderr)
+        finally:
+            temp_dir.cleanup()
+
+    def test_explicit_version_downgrade_fails(self):
+        temp_dir, repo_dir, git = self._create_mock_repo()
+        try:
+            git("tag", "-a", "0.2.0", "-m", "Release 0.2.0")
+            proc = self._run_calc_script(
+                repo_dir,
+                env={"EXPLICIT_RELEASE_VERSION": "0.1.0"},
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("is lower than latest GA release '0.2.0'", proc.stderr)
+            self.assertIn("Version downgrade is prohibited", proc.stderr)
+        finally:
+            temp_dir.cleanup()
+
+    def test_explicit_version_collision_on_different_commit_fails(self):
+        temp_dir, repo_dir, git = self._create_mock_repo()
+        try:
+            git("tag", "-a", "0.2.0", "-m", "Release 0.2.0")
+
+            # Create a new commit
+            (pathlib.Path(repo_dir) / "new_file.txt").write_text("content")
+            git("add", "new_file.txt")
+            git("commit", "-m", "feat: new commit")
+
+            proc = self._run_calc_script(
+                repo_dir,
+                env={"EXPLICIT_RELEASE_VERSION": "0.2.0"},
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("already exists in git repository on a different commit", proc.stderr)
+        finally:
+            temp_dir.cleanup()
+
+    def test_explicit_version_same_commit_allowed(self):
+        temp_dir, repo_dir, git = self._create_mock_repo()
+        try:
+            git("tag", "-a", "0.2.0", "-m", "Release 0.2.0")
+            proc = self._run_calc_script(
+                repo_dir,
+                env={"EXPLICIT_RELEASE_VERSION": "0.2.0"},
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertEqual(proc.stdout.strip(), "0.2.0")
         finally:
             temp_dir.cleanup()
 
