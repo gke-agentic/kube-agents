@@ -280,7 +280,6 @@ rules:
       - ""
     resourceNames:
       - platformagent-github-state
-      - github-token-minter-config
     resources:
       - configmaps
     verbs:
