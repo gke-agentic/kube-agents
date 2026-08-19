@@ -631,6 +631,36 @@ class TestResolverSecurityAndPrioritization(unittest.TestCase):
         # P0 with earlier createdAt (40 at 11:00) beats P0 with later createdAt (50 at 12:00)
         self.assertEqual([item[4]["number"] for item in scored], [40, 50, 10, 5])
 
+    def test_issue_sorting_order_same_priority_and_timestamp_tiebreaker(self):
+        # Two P0 issues with identical createdAt timestamps: lower issue number wins (FIFO)
+        issues = [
+            {"number": 25, "labels": [{"name": "priority:p0"}], "createdAt": "2026-08-01T10:00:00Z"},
+            {"number": 15, "labels": [{"name": "priority:p0"}], "createdAt": "2026-08-01T10:00:00Z"},
+            {"number": 35, "labels": [{"name": "priority:p0"}], "createdAt": "2026-08-01T10:00:00Z"},
+        ]
+        scored = []
+        for x in issues:
+            score, label = resolver.calculate_issue_priority(x)
+            scored.append((score, x.get("createdAt") or "", int(x["number"]), label, x))
+        scored.sort(key=lambda item: (-item[0], item[1], item[2]))
+        self.assertEqual([item[4]["number"] for item in scored], [15, 25, 35])
+
+    def test_issue_sorting_order_missing_or_empty_created_at(self):
+        # Issues with missing, None, or empty createdAt handle gracefully and tie-break on issue number
+        issues = [
+            {"number": 30, "labels": [{"name": "priority:p1"}], "createdAt": None},
+            {"number": 20, "labels": [{"name": "priority:p1"}], "createdAt": ""},
+            {"number": 10, "labels": [{"name": "priority:p1"}]},  # omitted key
+            {"number": 5, "labels": [{"name": "priority:p0"}], "createdAt": "2026-08-01T10:00:00Z"},
+        ]
+        scored = []
+        for x in issues:
+            score, label = resolver.calculate_issue_priority(x)
+            scored.append((score, x.get("createdAt") or "", int(x["number"]), label, x))
+        scored.sort(key=lambda item: (-item[0], item[1], item[2]))
+        # P0 (#5) beats P1; among P1s with empty created_at, issue number tie-breaks 10, 20, 30
+        self.assertEqual([item[4]["number"] for item in scored], [5, 10, 20, 30])
+
     def test_handle_poll_sort_order_and_plain_title(self):
         issues = [
             {
@@ -677,6 +707,51 @@ class TestResolverSecurityAndPrioritization(unittest.TestCase):
         self.assertEqual(payload["issue_number"], 10)
         self.assertEqual(payload["title_plain"], "Earlier P0 issue [system_tag_neutralized]test[system_tag_neutralized]")
         self.assertIn("<untrusted_title>", payload["title"])
+
+    def test_handle_poll_sort_order_identical_priority_and_timestamp_tiebreaker(self):
+        issues = [
+            {
+                "number": 42,
+                "title": "Same P0 issue higher number",
+                "body": "Body 42",
+                "labels": [{"name": "priority:p0"}],
+                "createdAt": "2026-08-01T10:00:00Z",
+                "comments": [],
+            },
+            {
+                "number": 14,
+                "title": "Same P0 issue lower number",
+                "body": "Body 14",
+                "labels": [{"name": "priority:p0"}],
+                "createdAt": "2026-08-01T10:00:00Z",
+                "comments": [],
+            },
+        ]
+        with TemporaryDirectory() as tmp:
+            original = resolver.SETTINGS_PATH
+            resolver.SETTINGS_PATH = _write_settings(
+                tmp, "https://github.com/acme/toolkit"
+            )
+            try:
+                def fake_run(cmd, *args, **kwargs):
+                    joined = " ".join(cmd)
+                    if "auth status" in joined:
+                        return subprocess.CompletedProcess(cmd, 0, stdout="Logged in", stderr="")
+                    if "issue list" in joined:
+                        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(issues), stderr="")
+                    return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+                    with mock.patch.object(resolver, "run_gh", side_effect=fake_run):
+                        resolver.handle_poll(argparse.Namespace())
+                payload = json.loads(buf.getvalue())
+            finally:
+                resolver.SETTINGS_PATH = original
+
+        self.assertEqual(payload["status"], "FOUND")
+        # Lower issue number 14 should win when priority and timestamp are identical
+        self.assertEqual(payload["issue_number"], 14)
 
     def test_evaluate_risk_tier_benign_phrases(self):
         for benign_title in (
@@ -795,6 +870,75 @@ class TestResolverSecurityAndPrioritization(unittest.TestCase):
         }
         self.assertEqual(
             resolver.evaluate_risk_tier(issue), "TIER_3_MUTATING"
+        )
+
+class TestEvaluateRiskTierDirectiveClauses(unittest.TestCase):
+    """Regression coverage for the sentence-leading directive-clause check that
+    replaced bare verb/object matching in evaluate_risk_tier."""
+
+    def _tier(self, title="", body="", comments=None):
+        issue = {"title": title, "body": body, "comments": comments or []}
+        return resolver.evaluate_risk_tier(issue)
+
+    def test_object_noun_verbs_still_escalate_when_leading_the_clause(self):
+        cases = [
+            "Please remove the namespace before recreating it",
+            "Clean up the orphaned PVCs in staging",
+            "Please truncate the audit log table",
+        ]
+        for title in cases:
+            with self.subTest(title=title):
+                self.assertEqual(self._tier(title=title), "TIER_3_MUTATING")
+
+    def test_diagnostic_prose_does_not_escalate(self):
+        cases = [
+            "Pod was killed by OOMKilled",
+            "Node drain timed out during upgrade",
+            "Garbage collection cleanup failed with a timeout",
+            "Log format is invalid JSON",
+        ]
+        for title in cases:
+            with self.subTest(title=title):
+                self.assertEqual(self._tier(title=title), "TIER_1_READ_ONLY")
+
+    def test_verb_embedded_in_a_diagnostic_clause_does_not_escalate(self):
+        # "delete" is exactly as adjacent to "the namespace" here as in a genuine
+        # request -- only clause position (led by "fails to", not the verb) marks
+        # it as descriptive. Verb+object adjacency alone cannot see this.
+        self.assertEqual(
+            self._tier(title="Fails to delete the namespace's finalizer stub"),
+            "TIER_1_READ_ONLY",
+        )
+
+    def test_gcloud_pattern_requires_proximity_not_mere_cooccurrence(self):
+        body = (
+            "I run gcloud auth login daily for testing. Separately, please "
+            "create a new user in the app."
+        )
+        self.assertNotEqual(self._tier(body=body), "TIER_3_MUTATING")
+
+    def test_directive_clause_in_a_later_field_is_not_swallowed_by_the_title(self):
+        # Regression for joining title+body+comments with a bare space: without
+        # per-field evaluation, "please remove..." loses its sentence-leading
+        # position once appended after unrelated preceding text.
+        self.assertEqual(
+            self._tier(
+                title="Node drain issue",
+                body="Please remove the namespace after triage",
+            ),
+            "TIER_3_MUTATING",
+        )
+
+    def test_cli_patterns_evaluated_per_field_not_across_boundary(self):
+        # A title ending with "kubectl" followed by a body starting with a non-directive
+        # diagnostic phrase ("deletion was completed yesterday") must not synthesize
+        # "kubectl delete" across field boundaries.
+        self.assertEqual(
+            self._tier(
+                title="Troubleshooting command in kubectl",
+                body="Deletion was completed yesterday by admin.",
+            ),
+            "TIER_1_READ_ONLY",
         )
 
 

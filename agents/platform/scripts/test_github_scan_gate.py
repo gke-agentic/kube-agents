@@ -191,6 +191,25 @@ class IssuesSweepTest(unittest.TestCase):
         self.assertIn("#42", card.body)
         self.assertIn("github-issue-resolver", card.body)
 
+    def test_found_uses_title_plain_without_xml_tags(self):
+        with self._poll(
+            {
+                "status": "FOUND",
+                "repository": "gke-labs/kube-agents",
+                "issue_number": 42,
+                "title": "<untrusted_title>Unhealthy Config Controller</untrusted_title>",
+                "title_plain": "Unhealthy Config Controller",
+            }
+        ):
+            result = gate.sweep_issues()
+        self.assertEqual(result.warnings, [])
+        self.assertEqual(len(result.cards), 1)
+        card = result.cards[0]
+        self.assertEqual(
+            card.title, "Triage and resolve gke-labs/kube-agents#42: Unhealthy Config Controller"
+        )
+        self.assertNotIn("<untrusted_title>", card.title)
+
     def test_idempotency_key_is_scoped_to_the_repository(self):
         """#12 on one repo is not #12 on another.
 

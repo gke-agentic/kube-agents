@@ -437,6 +437,30 @@ def calculate_issue_priority(issue: dict) -> tuple[int, str]:
     return score, priority_label
 
 
+# A mutating verb only signals a request when it leads its own clause ("delete
+# the namespace"); the same verb inside a diagnostic clause ("fails to delete
+# the namespace", "PVC delete stuck") does not lead its clause, and no amount
+# of verb+object proximity tuning can tell those two apart -- only clause
+# position can.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?\n])\s+")
+_LEADING_CUE_RE = re.compile(
+    r"^(?:please\s+|kindly\s+|can\s+you\s+|could\s+you\s+|would\s+you\s+|"
+    r"i\s+need\s+you\s+to\s+|we\s+need\s+to\s+|need\s+to\s+|let'?s\s+)?"
+)
+_DIRECTIVE_VERB_RE = re.compile(
+    r"^(delete|remove|destroy|purge|wipe|drain|cleanup|clean\s+up|truncate|overwrite)\b"
+)
+
+
+def _is_directive_clause(sentence: str) -> bool:
+    s = _LEADING_CUE_RE.sub("", sentence.strip(), count=1)
+    return bool(_DIRECTIVE_VERB_RE.match(s))
+
+
+def _contains_directive_mutation(text: str) -> bool:
+    return any(_is_directive_clause(s) for s in _SENTENCE_SPLIT_RE.split(text) if s)
+
+
 def evaluate_risk_tier(issue: dict) -> str:
     """Evaluates the risk tier of an issue based on content keywords and labels.
     Returns one of: TIER_1_READ_ONLY, TIER_2_NON_DESTRUCTIVE, TIER_3_MUTATING.
@@ -459,18 +483,38 @@ def evaluate_risk_tier(issue: dict) -> str:
     for c in issue.get("comments") or []:
         c_body = c.get("body") or ""
         text_parts.append(sanitize_untrusted_text(c_body))
-    sanitized_content = " ".join(str(p) for p in text_parts)
 
     # Convert all backticks to whitespace so commands in both inline spans and fenced code
-    # blocks are scanned for destructive actions rather than being erased from risk evaluation.
-    prose_content = sanitized_content.replace("`", " ").lower()
+    # blocks are scanned for destructive actions rather than being erased from risk
+    # evaluation. Kept per-field (not joined yet) so the sentence-leading check below
+    # sees each field's own text -- joining first would strip a directive verb of its
+    # leading position if the preceding field ends without punctuation.
+    prose_parts = [str(p).replace("`", " ").lower() for p in text_parts]
+    prose_content = " ".join(prose_parts)
 
-    # Explicit destructive / mutating action verbs or privileged request patterns
+    # Literal mutating CLI invocations and privilege/credential requests: evaluated
+    # per field to prevent cross-field boundary token synthesis (e.g. title ending
+    # in "kubectl" and body starting with "delete pod...").
     tier3_patterns = [
-        r"\b(delete|remove|destroy|kill|drain|truncate|overwrite|purge|wipe|cleanup|clean\s+up)\b",
-        r"\b(grant\s+admin|escalate\s+privilege|dump\s+secret|export\s+credential|drop\s+database|drop\s+table|format\s+disk)\b",
+        r"\bkubectl\s+(delete|drain|cordon|taint|replace|patch|scale|exec|run)\b",
+        r"\bgcloud\s+\S+\s+\S+\s+(delete|destroy|resize)\b",
+        r"\bhelm\s+(uninstall|delete|upgrade|rollback)\b",
+        r"\brm\s+-[a-z]*[rf][a-z]*\b",
+        r"\b(grant|escalate)\s+(admin|privilege|permissions|access)\b",
+        r"\b(dump|export|leak|extract)\s+(secret|credentials?|keys?|tokens?|passwords?)\b",
+        r"\b(drop\s+database|drop\s+table|format\s+disk|kill\s+-9|killall)\b",
     ]
-    if any(re.search(pat, prose_content) for pat in tier3_patterns):
+    if any(
+        re.search(pat, part)
+        for part in prose_parts
+        for pat in tier3_patterns
+    ):
+        return "TIER_3_MUTATING"
+
+    # Natural-language mutation requests: checked per field so a directive verb
+    # keeps its sentence-leading position instead of being swallowed by whatever
+    # text precedes it once fields are concatenated.
+    if any(_contains_directive_mutation(part) for part in prose_parts):
         return "TIER_3_MUTATING"
 
     # Check for non-destructive mutations -> Tier 2

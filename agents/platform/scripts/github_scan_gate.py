@@ -208,7 +208,7 @@ def _issue_card(payload: dict, now: datetime | None = None) -> Card:
     """
     number = payload["issue_number"]
     repo = payload.get("repository", "")
-    title = payload.get("title", "") or f"issue #{number}"
+    title = payload.get("title_plain") or payload.get("title", "") or f"issue #{number}"
     bucket = (now or datetime.now(timezone.utc)).strftime(CARD_BUCKET_FORMAT)
     return Card(
         title=f"Triage and resolve {repo}#{number}: {title}"[:200],
