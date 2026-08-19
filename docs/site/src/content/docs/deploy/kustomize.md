@@ -59,7 +59,7 @@ The base [`networkpolicy-apiserver-egress.yaml`](https://github.com/gke-labs/kub
 > - **Static Kustomize Deployments**: When deploying with Kustomize, override the API server CIDR by patching the dedicated `platform-agent-apiserver-egress` policy directly.
 
 > [!IMPORTANT]
-> **Workload Identity metadata egress**: On GKE Dataplane V1 (iptables), the node rewrites `169.254.169.254:80` to the node-local metadata daemon at `169.254.169.252:988` in `nat PREROUTING` before `NetworkPolicy` is evaluated. Dataplane V2 (eBPF) evaluates policy pre-NAT at the socket layer, where the `169.254.169.254/32` rule on ports `80`/`8080` satisfies it directly.
+> **Workload Identity metadata egress**: On GKE Dataplane V1 (iptables), the node DNATs `169.254.169.254:80` to the node-local metadata daemon at `169.254.169.252:988` in `nat PREROUTING` before `NetworkPolicy` is evaluated. Dataplane V2 (eBPF) evaluates policy pre-NAT at the socket layer, where the `169.254.169.254/32` rule on ports `80`/`8080` satisfies it directly. Port `987` (ALTS DirectPath) is intentionally omitted under least privilege since agent components authenticate over standard REST ADC.
 >
 > - **Operator Deployments**: The operator generates both rules (`169.254.169.254/32` on ports `80`/`8080` and `169.254.169.252/32` on port `988`), covering both dataplanes out of the box. Nothing to configure.
 > - **Static Kustomize Deployments**: [`networkpolicy-core-egress.yaml`](https://github.com/gke-labs/kube-agents/blob/main/deploy/kustomize/platform/networkpolicy-core-egress.yaml) ships both rules directly, covering both Dataplane V1 and Dataplane V2 out of the box.
