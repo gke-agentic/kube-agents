@@ -678,7 +678,7 @@ func TestBuildNetworkPolicy(t *testing.T) {
 		},
 	}
 
-	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10", false, "", nil)
+	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10", false, "")
 	if netpol.Name != "test-agent-gateway-netpol" {
 		t.Errorf("expected Name 'test-agent-gateway-netpol', got %s", netpol.Name)
 	}
@@ -786,7 +786,7 @@ func TestBuildNetworkPolicy_DashboardDisabled(t *testing.T) {
 		},
 	}
 
-	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10", false, "", nil)
+	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10", false, "")
 	if len(netpol.Spec.Ingress) != 1 {
 		t.Fatalf("expected 1 Ingress rule, got %d", len(netpol.Spec.Ingress))
 	}
@@ -806,7 +806,7 @@ func TestBuildNetworkPolicy_FQDNEnabled(t *testing.T) {
 		},
 	}
 
-	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10", true, "", nil)
+	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10", true, "")
 	// Expected 8 Egress rules when FQDN is enabled (external HTTPS 0.0.0.0/0:443 is omitted):
 	// 1. Cluster DNS (53)
 	// 2. GCP WI / Metadata server (80, 8080)
@@ -836,13 +836,13 @@ func TestBuildNetworkPolicy_CustomAPIHost(t *testing.T) {
 		},
 	}
 
-	netpolIPv4 := buildNetworkPolicy(agent, []string{"10.0.0.5"}, "10.96.0.10", false, "", nil)
+	netpolIPv4 := buildNetworkPolicy(agent, []string{"10.0.0.5"}, "10.96.0.10", false, "")
 	ruleIPv4 := findAPIServerEgressRule(netpolIPv4)
 	if ruleIPv4 == nil || len(ruleIPv4.To) == 0 || ruleIPv4.To[0].IPBlock == nil || ruleIPv4.To[0].IPBlock.CIDR != "10.0.0.5/32" {
 		t.Errorf("expected IPv4 CIDR '10.0.0.5/32', got %v", ruleIPv4)
 	}
 
-	netpolIPv6 := buildNetworkPolicy(agent, []string{"fd00::1"}, "10.96.0.10", false, "", nil)
+	netpolIPv6 := buildNetworkPolicy(agent, []string{"fd00::1"}, "10.96.0.10", false, "")
 	ruleIPv6 := findAPIServerEgressRule(netpolIPv6)
 	if ruleIPv6 == nil || len(ruleIPv6.To) == 0 || ruleIPv6.To[0].IPBlock == nil || ruleIPv6.To[0].IPBlock.CIDR != "fd00::1/128" {
 		t.Errorf("expected IPv6 CIDR 'fd00::1/128', got %v", ruleIPv6)
@@ -916,7 +916,7 @@ func TestBuildNetworkPolicy_InvalidAPIHost(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			netpol := buildNetworkPolicy(agent, tt.apiHosts, "10.96.0.10", false, "", nil)
+			netpol := buildNetworkPolicy(agent, tt.apiHosts, "10.96.0.10", false, "")
 			rule := findAPIServerEgressRule(netpol)
 			if rule == nil {
 				t.Fatalf("API server egress rule (port 6443) not found in netpol")
@@ -942,8 +942,8 @@ func TestBuildNetworkPolicy_Idempotent(t *testing.T) {
 		},
 	}
 
-	np1 := buildNetworkPolicy(agent, []string{"10.0.0.5"}, "10.96.0.10", false, "", nil)
-	np2 := buildNetworkPolicy(agent, []string{"10.0.0.5"}, "10.96.0.10", false, "", nil)
+	np1 := buildNetworkPolicy(agent, []string{"10.0.0.5"}, "10.96.0.10", false, "")
+	np2 := buildNetworkPolicy(agent, []string{"10.0.0.5"}, "10.96.0.10", false, "")
 	if !reflect.DeepEqual(np1.Spec, np2.Spec) {
 		t.Errorf("buildNetworkPolicy is not idempotent: consecutive calls produced different specs")
 	}
@@ -956,7 +956,7 @@ func TestBuildNetworkPolicy_ExternalHTTPSExceptList(t *testing.T) {
 			Namespace: "test-ns",
 		},
 	}
-	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10", false, "", nil)
+	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10", false, "")
 
 	var httpsRule *networkingv1.NetworkPolicyEgressRule
 	for i := range netpol.Spec.Egress {
@@ -1022,7 +1022,7 @@ func TestBuildNetworkPolicy_ClusterDNS(t *testing.T) {
 	}
 
 	// 1. IPv4 dynamic DNS clusterIP
-	netpolGKE := buildNetworkPolicy(agent, nil, "34.118.224.10", false, "", nil)
+	netpolGKE := buildNetworkPolicy(agent, nil, "34.118.224.10", false, "")
 	dnsRuleGKE := findDNSEgressRule(netpolGKE)
 	if dnsRuleGKE == nil {
 		t.Fatalf("DNS egress rule (port 53) not found in netpolGKE")
@@ -1039,7 +1039,7 @@ func TestBuildNetworkPolicy_ClusterDNS(t *testing.T) {
 	}
 
 	// 2. IPv6 dynamic DNS clusterIP
-	netpolIPv6 := buildNetworkPolicy(agent, nil, "2001:db8::10", false, "", nil)
+	netpolIPv6 := buildNetworkPolicy(agent, nil, "2001:db8::10", false, "")
 	dnsRuleIPv6 := findDNSEgressRule(netpolIPv6)
 	if dnsRuleIPv6 == nil {
 		t.Fatalf("DNS egress rule (port 53) not found in netpolIPv6")
@@ -1056,7 +1056,7 @@ func TestBuildNetworkPolicy_ClusterDNS(t *testing.T) {
 	}
 
 	// 3. Fallback when invalid or empty
-	netpolFallback := buildNetworkPolicy(agent, nil, "invalid-ip", false, "", nil)
+	netpolFallback := buildNetworkPolicy(agent, nil, "invalid-ip", false, "")
 	dnsRuleFallback := findDNSEgressRule(netpolFallback)
 	if dnsRuleFallback == nil {
 		t.Fatalf("DNS egress rule (port 53) not found in netpolFallback")
@@ -1073,7 +1073,7 @@ func TestBuildNetworkPolicy_ClusterDNS(t *testing.T) {
 	}
 }
 
-func TestBuildNetworkPolicy_MetadataNodeIPs(t *testing.T) {
+func TestBuildNetworkPolicy_MetadataDaemonPeers(t *testing.T) {
 	agent := &agentv1alpha1.PlatformAgent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-agent",
@@ -1081,12 +1081,9 @@ func TestBuildNetworkPolicy_MetadataNodeIPs(t *testing.T) {
 		},
 	}
 
-	nodeIPs := []string{"10.150.0.2", "10.150.0.3", "10.150.0.2", "fd00:1::1", "invalid-ip"}
-	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10", false, "", nodeIPs)
+	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10", false, "")
 
-	// The DNAT targets belong on 988 and nowhere else: the node rewrites the port along
-	// with the address, so a node /32 on 80 or 8080 would widen the sandbox's reach
-	// without admitting a single extra token fetch.
+	// The pre-NAT targets belong on 80 and 8080.
 	got80 := egressCIDRsForPort(netpol, 80)
 	want80 := []string{"169.254.169.254/32"}
 	if !reflect.DeepEqual(got80, want80) {
@@ -1098,14 +1095,12 @@ func TestBuildNetworkPolicy_MetadataNodeIPs(t *testing.T) {
 		t.Errorf("expected port 8080 metadata peers %v, got %v", want80, got8080)
 	}
 
-	// Deduplicated, sorted, and formatted /32 for IPv4 and /128 for IPv6.
+	// Port 988 is the post-DNAT destination on Dataplane V1, carrying the metadata
+	// daemon's link-local address (169.254.169.252) and the link-local alias.
 	got988 := egressCIDRsForPort(netpol, 988)
 	want988 := []string{
-		"10.150.0.2/32",
-		"10.150.0.3/32",
 		"169.254.169.252/32",
 		"169.254.169.254/32",
-		"fd00:1::1/128",
 	}
 	if !reflect.DeepEqual(got988, want988) {
 		t.Errorf("expected metadata daemon peers %v, got %v", want988, got988)
@@ -1129,107 +1124,6 @@ func egressCIDRsForPort(netpol *networkingv1.NetworkPolicy, port int32) []string
 		}
 	}
 	return nil
-}
-
-// The link-local address alone is not enough on any GKE datapath, so a policy built
-// with no nodes in the cluster must still carry the daemon's own address.
-func TestBuildNetworkPolicy_MetadataDaemonPeerWithoutNodes(t *testing.T) {
-	agent := &agentv1alpha1.PlatformAgent{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "test-ns"},
-	}
-
-	netpol := buildNetworkPolicy(agent, nil, "10.96.0.10", false, "", nil)
-
-	got := egressCIDRsForPort(netpol, 988)
-	want := []string{"169.254.169.252/32", "169.254.169.254/32"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("expected metadata daemon peers %v, got %v", want, got)
-	}
-}
-
-// The node IPs in the policy have to come from the live Node list. Nothing else in the
-// suite would notice NodeInternalIP being read as NodeExternalIP, which would publish
-// public node addresses and fix nothing.
-func TestReconcileNetworkPolicy_NodeInternalIPs(t *testing.T) {
-	scheme := setupScheme()
-	agent := &agentv1alpha1.PlatformAgent{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "test-ns"},
-	}
-
-	node := func(name, internal, external string) *corev1.Node {
-		return &corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{Name: name},
-			Status: corev1.NodeStatus{
-				Addresses: []corev1.NodeAddress{
-					{Type: corev1.NodeExternalIP, Address: external},
-					{Type: corev1.NodeInternalIP, Address: internal},
-					{Type: corev1.NodeHostName, Address: name},
-				},
-			},
-		}
-	}
-
-	cl := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(agent, node("node-a", "10.150.0.4", "34.1.1.1"), node("node-b", "10.150.0.5", "34.1.1.2")).
-		WithInterceptorFuncs(fakeServerSideApplyInterceptors()).
-		Build()
-
-	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
-
-	ctx := context.Background()
-	if err := r.reconcileNetworkPolicy(ctx, agent, ""); err != nil {
-		t.Fatalf("reconcileNetworkPolicy failed: %v", err)
-	}
-
-	netpol := &networkingv1.NetworkPolicy{}
-	if err := cl.Get(ctx, types.NamespacedName{Namespace: "test-ns", Name: "test-agent-gateway-netpol"}, netpol); err != nil {
-		t.Fatalf("failed to get generated NetworkPolicy: %v", err)
-	}
-
-	got := egressCIDRsForPort(netpol, 988)
-	want := []string{"10.150.0.4/32", "10.150.0.5/32", "169.254.169.252/32", "169.254.169.254/32"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("expected metadata daemon peers %v, got %v", want, got)
-	}
-}
-
-// A failed Node list must abort the reconcile. Carrying on would apply a policy built
-// from an empty node set, stripping the /32s out of a working policy.
-func TestReconcileNetworkPolicy_NodeListErrorAborts(t *testing.T) {
-	scheme := setupScheme()
-	agent := &agentv1alpha1.PlatformAgent{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "test-ns"},
-	}
-
-	interceptors := fakeServerSideApplyInterceptors()
-	interceptors.List = func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
-		if _, ok := list.(*corev1.NodeList); ok {
-			return fmt.Errorf("boom")
-		}
-		return cl.List(ctx, list, opts...)
-	}
-
-	cl := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(agent).
-		WithInterceptorFuncs(interceptors).
-		Build()
-
-	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
-
-	err := r.reconcileNetworkPolicy(context.Background(), agent, "")
-	if err == nil {
-		t.Fatalf("expected reconcileNetworkPolicy to fail when the Node list fails")
-	}
-	if !strings.Contains(err.Error(), "failed to list nodes") {
-		t.Errorf("expected a node-list error, got %v", err)
-	}
-
-	netpol := &networkingv1.NetworkPolicy{}
-	if getErr := cl.Get(context.Background(), types.NamespacedName{Namespace: "test-ns", Name: "test-agent-gateway-netpol"}, netpol); getErr == nil {
-		t.Errorf("expected no NetworkPolicy to be applied after the node list failed")
-	}
 }
 
 func TestPlatformAgentReconciler_Reconcile_InvalidGitRepo(t *testing.T) {

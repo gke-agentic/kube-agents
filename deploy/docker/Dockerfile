@@ -1135,9 +1135,19 @@ COPY --chown=hermes:hermes agents/platform/hindsight/ /opt/platform-template/hin
 # sources are called config.yaml), but the overlay and the merger can share one
 # COPY into the staging directory. Layers are budgeted here — see the note at
 # the top of the file.
+#
+# verify_slack_relay_registry_contract.py rides along in that second COPY, and
+# runs from the same RUN, for the layer budget alone — it has nothing to do
+# with the platform config. It checks the relay patches copied to
+# /opt/defaults/scripts above against the Hermes tree they monkeypatch, which
+# is why it cannot run in CI: `credential-proxy` builds FROM this stage and its
+# chain measured 119 of the 120 layers `scripts/check_image_layers.py` allows,
+# so a COPY/RUN pair of its own is a layer this file does not have. See the
+# module docstring for what a failure here means.
 COPY deploy/shared/defaults/config.yaml /tmp/platform-config/base.yaml
 COPY agents/platform/config.yaml \
      deploy/docker/merge_configs.py \
+     deploy/docker/patches/verify_slack_relay_registry_contract.py \
      /tmp/platform-config/
 RUN /opt/hermes/.venv/bin/python3 /tmp/platform-config/merge_configs.py /tmp/platform-config/base.yaml /tmp/platform-config/config.yaml && \
     cp /tmp/platform-config/base.yaml /opt/platform-template/config.yaml && \
@@ -1149,6 +1159,7 @@ caps = ToolCallGuardrailConfig.from_mapping(cfg.get('tool_loop_guardrails', {}))
 assert caps.max_web_searches == 200, 'per-card web_search budget lost: %r' % caps.max_web_searches; \
 assert caps.max_subagents == 50, 'overlay clobbered max_subagents: %r' % caps.max_subagents; \
 assert cfg.get('agent', {}).get('max_turns') == 250, 'iteration budget lost: %r' % cfg.get('agent', {}).get('max_turns')" && \
+    cd /opt/hermes && PYTHONPATH=/opt/defaults/scripts /opt/hermes/.venv/bin/python3 /tmp/platform-config/verify_slack_relay_registry_contract.py && \
     rm -rf /tmp/platform-config
 
 # Copy the Cluster Agent profile TEMPLATE (persona, config, skills), scaffolded

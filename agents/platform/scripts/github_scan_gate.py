@@ -42,8 +42,11 @@ deliberately broad.
 Each sweep owns its own repo resolution and ``gh`` preflight rather than
 inheriting one from here. That is not an oversight: ``resolver.py poll``
 already does both and already reports precise reason codes
-(``GH_CLI_NOT_FOUND`` vs ``GITHUB_AUTH_NOT_CONFIGURED`` vs ``REPO_UNREACHABLE``)
-that a hoisted preflight here could only flatten or duplicate.
+(``GH_CLI_NOT_FOUND`` vs ``GITHUB_AUTH_NOT_CONFIGURED`` vs
+``GITHUB_TOKEN_REFRESH_FAILED`` vs ``GIT_REPO_UNPARSEABLE`` vs
+``REPO_UNREACHABLE``) that a hoisted preflight here could only flatten or
+duplicate. ``reason`` is rendered through verbatim, so the set is open by
+design and a sweep may add to it without a change here.
 
 Consolidating did take something away: an operator could previously stop one
 poller by disabling its roster entry. ``GITHUB_WATCHER_SWEEPS`` gives that back.
