@@ -86,6 +86,11 @@ get_latest_ga_tag() {
   fi
 }
 
+# Finds the latest validated release candidate tag (rc_*_validated)
+get_latest_validated_rc_tag() {
+  git tag -l --sort=-v:refname 'rc_*_validated' 2>/dev/null | grep -E '^rc_.*_validated$' | head -n 1 || echo ""
+}
+
 # Resolves target GitHub repository (e.g. gke-labs/kube-agents)
 get_target_repo() {
   if [ -n "${GH_ORG:-}" ] && [ -n "${GH_REPO:-}" ]; then
@@ -277,6 +282,13 @@ promote_release_images() {
   local commit_sha="${1:-}"
   local release_version="${2:-}"
 
+  # Sibling symmetry: support swapped args if version was passed first
+  if [[ "${commit_sha}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ ! "${release_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    local tmp="${commit_sha}"
+    commit_sha="${release_version}"
+    release_version="${tmp}"
+  fi
+
   if [ -z "${commit_sha}" ] || [ -z "${release_version}" ]; then
     echo "❌ ERROR: commit_sha and release_version are required for promote_release_images." >&2
     return 1
@@ -284,20 +296,23 @@ promote_release_images() {
 
   validate_pure_numeric_semver "${release_version}" "Release version" || return 1
 
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "❌ ERROR: 'docker buildx' CLI is required for image promotion!" >&2
+    return 1
+  fi
+
+  local resolved_commit
+  resolved_commit="$(git rev-parse --verify "${commit_sha}^{commit}" 2>/dev/null || echo "${commit_sha}")"
+
   local registry_prefix
   registry_prefix="$(get_registry_prefix)"
 
-  echo "🚀 Promoting verified container images (${commit_sha:0:7}) -> (${release_version})..."
+  echo "🚀 Promoting verified container images (${resolved_commit:0:7}) -> (${release_version})..."
 
   for img in "${REQUIRED_RELEASE_IMAGES[@]}"; do
-    local source_image="${registry_prefix}/${img}:${commit_sha}"
+    local source_image="${registry_prefix}/${img}:${resolved_commit}"
     local target_image="${registry_prefix}/${img}:${release_version}"
     echo "  • Promoting ${img}..."
-
-    if ! command -v docker >/dev/null 2>&1; then
-      echo "❌ ERROR: 'docker buildx' CLI is required for image promotion!" >&2
-      return 1
-    fi
 
     # Safety Guard: Check if target image tag already exists in registry to prevent accidental overwriting
     if docker manifest inspect "${target_image}" >/dev/null 2>&1; then

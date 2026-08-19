@@ -175,16 +175,16 @@ class CalculateNextVersionTest(unittest.TestCase):
         temp_dir, repo_dir, git = self._create_mock_repo()
         try:
             git("tag", "-a", MOCK_INITIAL_VERSION, "-m", f"Release {MOCK_INITIAL_VERSION}")
-            git("tag", "-a", MOCK_RC_VALIDATED_TAG, "-m", "RC tag")
             git("tag", "-a", "random-tag", "-m", "Non semver")
 
             (pathlib.Path(repo_dir) / "file1.txt").write_text("fix")
             git("add", "file1.txt")
             git("commit", "-m", MOCK_COMMIT_MSG_FIX)
+            git("tag", "-a", MOCK_RC_VALIDATED_TAG, "-m", "RC tag")
 
             proc = self._run_calc_script(repo_dir)
             self.assertEqual(proc.returncode, 0)
-            # Should detect 0.1.0 as baseline and calculate 0.1.1
+            # Should detect 0.1.0 as baseline (ignoring rc_0.2.0_validated and random-tag) and calculate 0.1.1
             self.assertEqual(proc.stdout.strip(), "0.1.1")
         finally:
             temp_dir.cleanup()
@@ -299,6 +299,123 @@ class CalculateNextVersionTest(unittest.TestCase):
             )
             self.assertEqual(proc.returncode, 0)
             self.assertEqual(proc.stdout.strip(), "0.2.0")
+        finally:
+            temp_dir.cleanup()
+
+    def test_explicit_version_refs_tags_namespace_disambiguation(self):
+        temp_dir, repo_dir, git = self._create_mock_repo()
+        try:
+            # Create a tag 0.2.0 on initial commit
+            git("tag", "-a", "0.2.0", "-m", "Release 0.2.0")
+
+            # Create a branch named 0.2.0 pointing to the same commit
+            git("branch", "0.2.0")
+
+            proc = self._run_calc_script(
+                repo_dir,
+                env={"EXPLICIT_RELEASE_VERSION": "0.2.0"},
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertEqual(proc.stdout.strip(), "0.2.0")
+        finally:
+            temp_dir.cleanup()
+
+    def test_auto_resolve_target_commit_from_validated_rc_tag(self):
+        temp_dir, repo_dir, git = self._create_mock_repo()
+        try:
+            # Initial commit tagged 0.1.0
+            git("tag", "-a", "0.1.0", "-m", "Release 0.1.0")
+
+            # Second commit: fix commit with validated RC tag
+            (pathlib.Path(repo_dir) / "fix.txt").write_text("fix")
+            git("add", "fix.txt")
+            git("commit", "-m", "fix: resolve bug")
+            fix_sha = git("rev-parse", "HEAD").stdout.strip()
+            rc_tag = "rc_2608191200_2222222_validated"
+            git("tag", "-a", rc_tag, fix_sha, "-m", f"Validated {rc_tag}")
+
+            # Third commit on main: unvalidated feat commit
+            (pathlib.Path(repo_dir) / "feat.txt").write_text("feat")
+            git("add", "feat.txt")
+            git("commit", "-m", "feat: new feature on main")
+
+            gh_out = pathlib.Path(repo_dir) / "gh_out.txt"
+            # Running with empty target commit should auto-resolve to fix_sha and compute 0.1.1 (NOT 0.2.0)
+            proc = self._run_calc_script(
+                repo_dir,
+                args=["", ""],
+                env={"GITHUB_OUTPUT": str(gh_out)},
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertEqual(proc.stdout.strip(), "0.1.1")
+
+            outputs = gh_out.read_text()
+            self.assertIn("release_version=0.1.1", outputs)
+            self.assertIn("version=0.1.1", outputs)
+            self.assertIn(f"release_commit={fix_sha}", outputs)
+            self.assertIn("bump_type=patch", outputs)
+        finally:
+            temp_dir.cleanup()
+
+    def test_auto_resolve_target_commit_prefers_newest_rc_tag(self):
+        temp_dir, repo_dir, git = self._create_mock_repo()
+        try:
+            git("tag", "-a", "0.1.0", "-m", "Release 0.1.0")
+
+            # Commit 2: older RC
+            (pathlib.Path(repo_dir) / "file2.txt").write_text("file2")
+            git("add", "file2.txt")
+            git("commit", "-m", "fix: older commit")
+            sha2 = git("rev-parse", "HEAD").stdout.strip()
+            git("tag", "-a", "rc_2608181000_1111111_validated", sha2, "-m", "Older RC")
+
+            # Commit 3: newer RC
+            (pathlib.Path(repo_dir) / "file3.txt").write_text("file3")
+            git("add", "file3.txt")
+            git("commit", "-m", "feat: newer commit")
+            sha3 = git("rev-parse", "HEAD").stdout.strip()
+            git("tag", "-a", "rc_2608191200_2222222_validated", sha3, "-m", "Newer RC")
+
+            gh_out = pathlib.Path(repo_dir) / "gh_out.txt"
+            proc = self._run_calc_script(
+                repo_dir,
+                args=["", ""],
+                env={"GITHUB_OUTPUT": str(gh_out)},
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertEqual(proc.stdout.strip(), "0.2.0")
+
+            outputs = gh_out.read_text()
+            self.assertIn("release_version=0.2.0", outputs)
+            self.assertIn("version=0.2.0", outputs)
+            self.assertIn(f"release_commit={sha3}", outputs)
+        finally:
+            temp_dir.cleanup()
+
+    def test_emergency_override_calculates_from_head(self):
+        temp_dir, repo_dir, git = self._create_mock_repo()
+        try:
+            git("tag", "-a", "0.1.0", "-m", "Release 0.1.0")
+
+            # Commit on main without RC tag
+            (pathlib.Path(repo_dir) / "emergency.txt").write_text("hotfix")
+            git("add", "emergency.txt")
+            git("commit", "-m", "feat: emergency hotfix")
+            head_sha = git("rev-parse", "HEAD").stdout.strip()
+
+            gh_out = pathlib.Path(repo_dir) / "gh_out.txt"
+            proc = self._run_calc_script(
+                repo_dir,
+                args=["", ""],
+                env={"SKIP_RC_VALIDATION": "true", "GITHUB_OUTPUT": str(gh_out)},
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertEqual(proc.stdout.strip(), "0.2.0")
+
+            outputs = gh_out.read_text()
+            self.assertIn("release_version=0.2.0", outputs)
+            self.assertIn("version=0.2.0", outputs)
+            self.assertIn(f"release_commit={head_sha}", outputs)
         finally:
             temp_dir.cleanup()
 

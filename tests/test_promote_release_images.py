@@ -60,6 +60,62 @@ class PromoteReleaseImagesScriptTest(unittest.TestCase):
             self.assertIn("PROMOTING RELEASE CONTAINER IMAGES", proc.stdout)
             for img in MOCK_REQUIRED_RELEASE_IMAGES:
                 self.assertIn(f"Promoting {img}", proc.stdout)
+                self.assertIn(f"Promoted {img} to {MOCK_TARGET_RELEASE_TAG}", proc.stdout)
+        finally:
+            temp_dir.cleanup()
+
+    def test_promote_execution_swapped_arguments(self):
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        try:
+            bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_docker_binary(bin_dir)
+
+            proc = self._run_script(
+                [MOCK_TARGET_RELEASE_TAG, MOCK_SAMPLE_COMMIT_SHA],
+                bin_dir=str(bin_dir),
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn("PROMOTING RELEASE CONTAINER IMAGES", proc.stdout)
+            for img in MOCK_REQUIRED_RELEASE_IMAGES:
+                self.assertIn(f"Promoted {img} to {MOCK_TARGET_RELEASE_TAG}", proc.stdout)
+        finally:
+            temp_dir.cleanup()
+
+    def test_promote_idempotent_skip_when_target_exists(self):
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        try:
+            bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            existing = [
+                f"ghcr.io/gke-labs/kube-agents/{img}:{MOCK_TARGET_RELEASE_TAG}"
+                for img in MOCK_REQUIRED_RELEASE_IMAGES
+            ]
+            create_mock_docker_binary(bin_dir, existing_images=existing)
+
+            proc = self._run_script(
+                [MOCK_SAMPLE_COMMIT_SHA, MOCK_TARGET_RELEASE_TAG],
+                bin_dir=str(bin_dir),
+            )
+            self.assertEqual(proc.returncode, 0)
+            for img in MOCK_REQUIRED_RELEASE_IMAGES:
+                self.assertIn("already exists in registry. Skipping duplicate promotion", proc.stdout)
+        finally:
+            temp_dir.cleanup()
+
+    def test_promote_execution_env_vars(self):
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        try:
+            bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_docker_binary(bin_dir)
+
+            proc = self._run_script(
+                [],
+                env={"RELEASE_COMMIT": MOCK_SAMPLE_COMMIT_SHA, "RELEASE_VERSION": MOCK_TARGET_RELEASE_TAG},
+                bin_dir=str(bin_dir),
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn("PROMOTING RELEASE CONTAINER IMAGES", proc.stdout)
+            for img in MOCK_REQUIRED_RELEASE_IMAGES:
+                self.assertIn(f"Promoted {img} to {MOCK_TARGET_RELEASE_TAG}", proc.stdout)
         finally:
             temp_dir.cleanup()
 

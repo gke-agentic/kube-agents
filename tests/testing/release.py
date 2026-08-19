@@ -59,16 +59,21 @@ MOCK_UNINSTALL_FAIL_SIGNAL = "uninstall: failed as expected"
 MOCK_INSTALL_SUCCESS_SIGNAL = "install: succeeded"
 
 
-def create_mock_docker_binary(bin_dir, log_file=None):
+def create_mock_docker_binary(bin_dir, log_file=None, existing_images=()):
     """Creates a mock docker CLI supporting buildx imagetools and manifest inspect."""
     bin_path = pathlib.Path(bin_dir)
     bin_path.mkdir(parents=True, exist_ok=True)
     docker_path = bin_path / "docker"
     log_path = log_file if log_file else (bin_path / "docker.log")
+    existing_check = ""
+    for img in existing_images:
+        existing_check += f'if [ "$3" = "{img}" ]; then exit 0; fi\n'
+
     content = f"""#!/bin/sh
 echo "mock docker: $@" >> "{log_path}"
 if [ "$1" = "manifest" ] && [ "$2" = "inspect" ]; then
-  exit 0
+  {existing_check}
+  exit 1
 fi
 if [ "$1" = "buildx" ] && [ "$2" = "imagetools" ]; then
   exit 0

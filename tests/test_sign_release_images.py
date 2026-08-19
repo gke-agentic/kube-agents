@@ -71,6 +71,21 @@ class SignReleaseImagesScriptTest(unittest.TestCase):
         finally:
             temp_dir.cleanup()
 
+    def test_local_dry_run_skips_signing(self):
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        try:
+            bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_cosign_binary(bin_dir)
+
+            proc = self._run_script(
+                [MOCK_TARGET_RELEASE_TAG],
+                bin_dir=str(bin_dir),
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn("Dry-run: Cosign image signing", proc.stdout)
+        finally:
+            temp_dir.cleanup()
+
     def test_sign_execution(self):
         temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         try:
@@ -79,6 +94,25 @@ class SignReleaseImagesScriptTest(unittest.TestCase):
 
             proc = self._run_script(
                 [MOCK_TARGET_RELEASE_TAG],
+                env={"CI": "true"},
+                bin_dir=str(bin_dir),
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn("SIGNING RELEASE CONTAINER IMAGES", proc.stdout)
+            for img in MOCK_REQUIRED_RELEASE_IMAGES:
+                self.assertIn(f"Signed ghcr.io/gke-labs/kube-agents/{img}:{MOCK_TARGET_RELEASE_TAG}", proc.stdout)
+        finally:
+            temp_dir.cleanup()
+
+    def test_sign_execution_env_vars(self):
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        try:
+            bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_cosign_binary(bin_dir)
+
+            proc = self._run_script(
+                [],
+                env={"CI": "true", "RELEASE_VERSION": MOCK_TARGET_RELEASE_TAG},
                 bin_dir=str(bin_dir),
             )
             self.assertEqual(proc.returncode, 0)

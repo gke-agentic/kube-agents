@@ -11,9 +11,18 @@ RELEASE_VERSION="${1:-${RELEASE_VERSION:-${TARGET_VERSION:-${TARGET_TAG:-}}}}"
 RELEASE_COMMIT="${2:-${RELEASE_COMMIT:-${TARGET_COMMIT:-}}}"
 TARGET_REPO="$(get_target_repo)"
 
+# Sibling symmetry: support swapped arguments
+if [ -n "${1:-}" ] && [ -n "${2:-}" ]; then
+  if [[ ! "${1}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ "${2}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    local_tmp="${RELEASE_VERSION}"
+    RELEASE_VERSION="${RELEASE_COMMIT}"
+    RELEASE_COMMIT="${local_tmp}"
+  fi
+fi
+
 if [ -z "${RELEASE_VERSION}" ] || [ -z "${RELEASE_COMMIT}" ]; then
-  echo "❌ ERROR: RELEASE_VERSION and RELEASE_COMMIT are required arguments." >&2
-  echo "Usage: $0 <RELEASE_VERSION> <RELEASE_COMMIT>" >&2
+  echo "❌ ERROR: RELEASE_VERSION and RELEASE_COMMIT are required as arguments or environment variables." >&2
+  echo "Usage: $0 (with RELEASE_VERSION and RELEASE_COMMIT in env) or $0 <RELEASE_VERSION> <RELEASE_COMMIT>" >&2
   exit 1
 fi
 

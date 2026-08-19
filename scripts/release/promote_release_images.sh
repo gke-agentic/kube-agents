@@ -10,9 +10,17 @@ source "${SCRIPT_DIR}/common.sh"
 RELEASE_COMMIT="${1:-${RELEASE_COMMIT:-${COMMIT_SHA:-${TARGET_COMMIT:-}}}}"
 RELEASE_VERSION="${2:-${RELEASE_VERSION:-${TARGET_VERSION:-${TARGET_TAG:-}}}}"
 
+# Sibling symmetry: support both <COMMIT> <VERSION> and <VERSION> <COMMIT> signatures
+if [ -n "${1:-}" ] && [ -n "${2:-}" ]; then
+  if [[ "${1}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ ! "${2}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    RELEASE_VERSION="$1"
+    RELEASE_COMMIT="$2"
+  fi
+fi
+
 if [ -z "${RELEASE_COMMIT}" ] || [ -z "${RELEASE_VERSION}" ]; then
-  echo "❌ ERROR: RELEASE_COMMIT and RELEASE_VERSION are required arguments." >&2
-  echo "Usage: $0 <RELEASE_COMMIT> <RELEASE_VERSION>" >&2
+  echo "❌ ERROR: RELEASE_COMMIT and RELEASE_VERSION are required as arguments or environment variables." >&2
+  echo "Usage: $0 (with RELEASE_COMMIT and RELEASE_VERSION in env) or $0 <RELEASE_COMMIT> <RELEASE_VERSION>" >&2
   exit 1
 fi
 

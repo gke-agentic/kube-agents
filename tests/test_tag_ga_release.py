@@ -69,6 +69,37 @@ class TagGAReleaseScriptTest(unittest.TestCase):
         finally:
             temp_dir.cleanup()
 
+    def test_env_vars_invocation_without_args(self):
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            head_commit = git("rev-parse", "HEAD").stdout.strip()
+
+            proc = self._run_script(
+                [],
+                env={"RELEASE_VERSION": "0.3.0", "RELEASE_COMMIT": head_commit},
+                cwd=repo_dir,
+            )
+            self.assertEqual(proc.returncode, 0)
+            tag_commit = git("rev-parse", "0.3.0^{commit}").stdout.strip()
+            self.assertEqual(tag_commit, head_commit)
+        finally:
+            temp_dir.cleanup()
+
+    def test_swapped_args_symmetry(self):
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            head_commit = git("rev-parse", "HEAD").stdout.strip()
+
+            proc = self._run_script(
+                [head_commit, "0.4.0"],
+                cwd=repo_dir,
+            )
+            self.assertEqual(proc.returncode, 0)
+            tag_commit = git("rev-parse", "0.4.0^{commit}").stdout.strip()
+            self.assertEqual(tag_commit, head_commit)
+        finally:
+            temp_dir.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()

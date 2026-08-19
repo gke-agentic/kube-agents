@@ -43,31 +43,22 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Resolve Release Version
-        id: resolve-version
+      - name: Calculate Next Release Version
+        id: calculate-version
         env:
           EXPLICIT_RELEASE_VERSION: ${{ inputs.explicit_release_version }}
           TARGET_COMMIT: ${{ inputs.target_commit }}
-        run: |
-          ./scripts/release/calculate_next_version.sh "" "${TARGET_COMMIT:-HEAD}"
+          SKIP_RC_VALIDATION: ${{ inputs.skip_rc_validation }}
+        run: ./scripts/release/calculate_next_version.sh
 
       - name: Verify Release Eligibility
         id: verify-eligibility
         env:
-          TARGET_VERSION: ${{ steps.resolve-version.outputs.version }}
-          TARGET_COMMIT: ${{ inputs.target_commit }}
+          RELEASE_VERSION: ${{ steps.calculate-version.outputs.release_version }}
+          RELEASE_COMMIT: ${{ steps.calculate-version.outputs.release_commit }}
           SKIP_RC_VALIDATION: ${{ inputs.skip_rc_validation }}
           EMERGENCY_OVERRIDE_REASON: ${{ inputs.emergency_override_reason }}
-        run: |
-          ./scripts/release/verify_release_eligibility.sh "${TARGET_VERSION}" "${TARGET_COMMIT:-}"
-
-      - name: Create Git Tag
-        if: steps.verify-eligibility.outputs.skip_release != 'true'
-        env:
-          RELEASE_VERSION: ${{ steps.resolve-version.outputs.version }}
-          RELEASE_COMMIT: ${{ steps.verify-eligibility.outputs.release_commit }}
-        run: |
-          ./scripts/release/tag_ga_release.sh "${RELEASE_VERSION}" "${RELEASE_COMMIT}"
+        run: ./scripts/release/verify_release_eligibility.sh
 
       - name: Set up Docker Buildx
         if: steps.verify-eligibility.outputs.skip_release != 'true'
@@ -84,10 +75,9 @@ jobs:
       - name: Promote Release Container Images
         if: steps.verify-eligibility.outputs.skip_release != 'true'
         env:
-          RELEASE_COMMIT: ${{ steps.verify-eligibility.outputs.release_commit }}
-          RELEASE_VERSION: ${{ steps.resolve-version.outputs.version }}
-        run: |
-          ./scripts/release/promote_release_images.sh "${RELEASE_COMMIT}" "${RELEASE_VERSION}"
+          RELEASE_COMMIT: ${{ steps.calculate-version.outputs.release_commit }}
+          RELEASE_VERSION: ${{ steps.calculate-version.outputs.release_version }}
+        run: ./scripts/release/promote_release_images.sh
 
       - name: Install Cosign
         if: steps.verify-eligibility.outputs.skip_release != 'true'
@@ -96,17 +86,22 @@ jobs:
       - name: Sign Promoted Container Images
         if: steps.verify-eligibility.outputs.skip_release != 'true'
         env:
-          RELEASE_VERSION: ${{ steps.resolve-version.outputs.version }}
-        run: |
-          ./scripts/release/sign_release_images.sh "${RELEASE_VERSION}"
+          RELEASE_VERSION: ${{ steps.calculate-version.outputs.release_version }}
+        run: ./scripts/release/sign_release_images.sh
+
+      - name: Create Git Tag
+        if: steps.verify-eligibility.outputs.skip_release != 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.calculate-version.outputs.release_version }}
+          RELEASE_COMMIT: ${{ steps.calculate-version.outputs.release_commit }}
+        run: ./scripts/release/tag_ga_release.sh
 
       # Note: If repository tag/release protection rules restrict github-actions[bot],
       # this step or git tag push may fail with 403 unless GITHUB_TOKEN has bypass permissions.
       - name: Publish GitHub Release
         if: steps.verify-eligibility.outputs.skip_release != 'true'
         env:
-          RELEASE_VERSION: ${{ steps.resolve-version.outputs.version }}
-          RELEASE_COMMIT: ${{ steps.verify-eligibility.outputs.release_commit }}
+          RELEASE_VERSION: ${{ steps.calculate-version.outputs.release_version }}
+          RELEASE_COMMIT: ${{ steps.calculate-version.outputs.release_commit }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          ./scripts/release/publish_github_release.sh "${RELEASE_VERSION}" "${RELEASE_COMMIT}"
+        run: ./scripts/release/publish_github_release.sh

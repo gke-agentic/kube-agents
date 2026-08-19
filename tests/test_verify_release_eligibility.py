@@ -78,7 +78,7 @@ exit {docker_exit}
         try:
             proc = self._run_verify_script(repo_dir, args=[], bin_dir=bin_dir)
             self.assertNotEqual(proc.returncode, 0)
-            self.assertIn("Target release version must be specified", proc.stderr)
+            self.assertIn("TARGET_VERSION is required", proc.stderr)
         finally:
             temp_dir.cleanup()
 
@@ -94,7 +94,7 @@ exit {docker_exit}
                 bin_dir=bin_dir,
             )
             self.assertNotEqual(proc.returncode, 0)
-            self.assertIn("Target release version must be specified", proc.stderr)
+            self.assertIn("TARGET_VERSION is required", proc.stderr)
         finally:
             temp_dir.cleanup()
 
@@ -150,6 +150,39 @@ exit {docker_exit}
             self.assertIn("eligible=true", outputs)
             self.assertIn(f"validated_rc_tag={MOCK_RC_VALIDATED_TAG}", outputs)
             self.assertIn(f"release_commit={first_sha}", outputs)
+        finally:
+            temp_dir.cleanup()
+
+    def test_auto_resolve_tag_sorting_prefers_newest(self):
+        temp_dir, repo_dir, git, first_sha, bin_dir = self._create_mock_repo()
+        try:
+            # Tag first commit with older validated RC tag
+            older_tag = "rc_2608181000_1111111_validated"
+            git("tag", "-a", older_tag, first_sha, "-m", f"Validated {older_tag}")
+
+            # Create second commit with newer validated RC tag
+            (pathlib.Path(repo_dir) / "file2.txt").write_text("Second change")
+            git("add", "file2.txt")
+            git("commit", "-m", "feat: second commit")
+            second_sha = git("rev-parse", "HEAD").stdout.strip()
+            newer_tag = "rc_2608191200_2222222_validated"
+            git("tag", "-a", newer_tag, second_sha, "-m", f"Validated {newer_tag}")
+
+            gh_out = pathlib.Path(repo_dir) / "gh_output.txt"
+            # Auto-resolve should deterministically pick newer_tag (second_sha)
+            proc = self._run_verify_script(
+                repo_dir,
+                args=[MOCK_TARGET_RELEASE_TAG],
+                env={"GITHUB_OUTPUT": str(gh_out)},
+                bin_dir=bin_dir,
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn("Auto-resolved latest validated commit", proc.stdout)
+
+            outputs = gh_out.read_text()
+            self.assertIn("eligible=true", outputs)
+            self.assertIn(f"validated_rc_tag={newer_tag}", outputs)
+            self.assertIn(f"release_commit={second_sha}", outputs)
         finally:
             temp_dir.cleanup()
 
@@ -363,6 +396,30 @@ exit {docker_exit}
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn("BLOCKED: Commit", proc.stderr)
             self.assertIn("has NOT passed live RC E2E validation", proc.stderr)
+        finally:
+            temp_dir.cleanup()
+
+    def test_env_vars_invocation_without_args(self):
+        temp_dir, repo_dir, git, commit_sha, bin_dir = self._create_mock_repo()
+        try:
+            git("tag", "-a", MOCK_RC_VALIDATED_TAG, commit_sha, "-m", f"Validated {MOCK_RC_VALIDATED_TAG}")
+            gh_out = pathlib.Path(repo_dir) / "gh_output.txt"
+            proc = self._run_verify_script(
+                repo_dir,
+                args=[],
+                env={
+                    "TARGET_VERSION": MOCK_TARGET_RELEASE_TAG,
+                    "TARGET_COMMIT": commit_sha,
+                    "GITHUB_OUTPUT": str(gh_out),
+                },
+                bin_dir=bin_dir,
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn("ELIGIBLE: Found validated RC tag", proc.stdout)
+
+            outputs = gh_out.read_text()
+            self.assertIn("eligible=true", outputs)
+            self.assertIn(f"release_commit={commit_sha}", outputs)
         finally:
             temp_dir.cleanup()
 

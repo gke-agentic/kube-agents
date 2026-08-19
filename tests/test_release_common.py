@@ -117,6 +117,26 @@ source "{_COMMON_SH}"
         finally:
             temp_dir.cleanup()
 
+    def test_get_latest_validated_rc_tag(self):
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            # Initially no validated tags
+            proc = self._run_common_func('get_latest_validated_rc_tag', cwd=repo_dir)
+            self.assertEqual(proc.returncode, 0)
+            self.assertEqual(proc.stdout.strip(), "")
+
+            # Add mixed tags including older and newer validated RC tags
+            git("tag", "-a", "rc_2608181000_1111111_validated", "-m", "Older RC")
+            git("tag", "-a", "rc_2608191200_2222222_validated", "-m", "Newer RC")
+            git("tag", "-a", "rc_2608191300_3333333", "-m", "Unvalidated RC")
+            git("tag", "-a", "0.2.0", "-m", "GA tag")
+
+            proc = self._run_common_func('get_latest_validated_rc_tag', cwd=repo_dir)
+            self.assertEqual(proc.returncode, 0)
+            self.assertEqual(proc.stdout.strip(), "rc_2608191200_2222222_validated")
+        finally:
+            temp_dir.cleanup()
+
     def test_get_target_repo(self):
         # Default
         proc = self._run_common_func('get_target_repo', env={"GH_ORG": "", "GH_REPO": "", "GITHUB_REPOSITORY": ""})
@@ -186,6 +206,43 @@ source "{_COMMON_SH}"
             self.assertIn("Promoting verified container images", proc.stdout)
             for img in MOCK_REQUIRED_RELEASE_IMAGES:
                 self.assertIn(f"Promoting {img}", proc.stdout)
+                self.assertIn(f"Promoted {img} to {MOCK_TARGET_RELEASE_TAG}", proc.stdout)
+        finally:
+            temp_dir.cleanup()
+
+    def test_promote_release_images_swapped_arguments(self):
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        try:
+            bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_docker_binary(bin_dir)
+
+            proc = self._run_common_func(
+                f'promote_release_images "{MOCK_TARGET_RELEASE_TAG}" "{MOCK_SAMPLE_COMMIT_SHA}"',
+                bin_dir=str(bin_dir),
+            )
+            self.assertEqual(proc.returncode, 0)
+            for img in MOCK_REQUIRED_RELEASE_IMAGES:
+                self.assertIn(f"Promoted {img} to {MOCK_TARGET_RELEASE_TAG}", proc.stdout)
+        finally:
+            temp_dir.cleanup()
+
+    def test_promote_release_images_idempotent_skip(self):
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        try:
+            bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            existing = [
+                f"ghcr.io/gke-labs/kube-agents/{img}:{MOCK_TARGET_RELEASE_TAG}"
+                for img in MOCK_REQUIRED_RELEASE_IMAGES
+            ]
+            create_mock_docker_binary(bin_dir, existing_images=existing)
+
+            proc = self._run_common_func(
+                f'promote_release_images "{MOCK_SAMPLE_COMMIT_SHA}" "{MOCK_TARGET_RELEASE_TAG}"',
+                bin_dir=str(bin_dir),
+            )
+            self.assertEqual(proc.returncode, 0)
+            for img in MOCK_REQUIRED_RELEASE_IMAGES:
+                self.assertIn("already exists in registry. Skipping duplicate promotion", proc.stdout)
         finally:
             temp_dir.cleanup()
 

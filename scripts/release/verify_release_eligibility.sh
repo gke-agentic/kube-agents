@@ -9,10 +9,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
 TARGET_VERSION="${1:-${TARGET_VERSION:-${RELEASE_VERSION:-${TARGET_TAG:-}}}}"
-TARGET_COMMIT="${2:-${TARGET_COMMIT:-}}"
+TARGET_COMMIT="${2:-${TARGET_COMMIT:-${RELEASE_COMMIT:-}}}"
 TARGET_REPO="$(get_target_repo)"
-SKIP_VALIDATION="${SKIP_RC_VALIDATION:-false}"
-EMERGENCY_REASON="${EMERGENCY_OVERRIDE_REASON:-}"
+SKIP_VALIDATION="${SKIP_RC_VALIDATION:-${3:-false}}"
+EMERGENCY_REASON="${EMERGENCY_OVERRIDE_REASON:-${4:-}}"
+
+if [ -z "${TARGET_VERSION}" ]; then
+  echo "❌ ERROR: TARGET_VERSION is required as first argument or environment variable." >&2
+  echo "Usage: $0 <TARGET_VERSION> [TARGET_COMMIT] or TARGET_VERSION=... $0" >&2
+  exit 1
+fi
 
 validate_pure_numeric_semver "${TARGET_VERSION}" "Target release version" || exit 1
 
@@ -57,7 +63,7 @@ else
     echo "ℹ️ Emergency override: defaulted target commit to HEAD (${RELEASE_COMMIT:0:7})"
   else
     # In standard release mode, auto-resolve the latest validated commit with rc_*_validated tag
-    LATEST_VALIDATED_TAG="$(git tag -l --sort=-creatordate 'rc_*_validated' 2>/dev/null | head -n 1 || echo "")"
+    LATEST_VALIDATED_TAG="$(get_latest_validated_rc_tag)"
     if [ -z "${LATEST_VALIDATED_TAG}" ]; then
       echo "❌ ERROR: No validated RC commit found in history! Cannot publish release without a commit carrying 'rc_*_validated' tag." >&2
       exit 1

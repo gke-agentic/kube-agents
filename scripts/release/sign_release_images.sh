@@ -11,7 +11,7 @@ RELEASE_VERSION="${1:-${RELEASE_VERSION:-${TARGET_VERSION:-${TARGET_TAG:-}}}}"
 
 if [ -z "${RELEASE_VERSION}" ]; then
   echo "❌ ERROR: RELEASE_VERSION is required as first argument or environment variable." >&2
-  echo "Usage: $0 <RELEASE_VERSION>" >&2
+  echo "Usage: $0 (with RELEASE_VERSION in env) or $0 <RELEASE_VERSION>" >&2
   exit 1
 fi
 
@@ -25,6 +25,12 @@ if ! command -v cosign >/dev/null 2>&1; then
     echo "⚠️ WARNING: 'cosign' CLI not found in PATH. Skipping local image signing." >&2
     exit 0
   fi
+fi
+
+# Safety Guard: Remote image signing executes exclusively inside CI
+if ! is_ci_pipeline; then
+  echo "⚠️ [Local Execution] Dry-run: Cosign image signing for release '${RELEASE_VERSION}' skipped (runs only in CI)."
+  exit 0
 fi
 
 REGISTRY_PREFIX="$(get_registry_prefix)"

@@ -110,6 +110,45 @@ class PublishGithubReleaseScriptTest(unittest.TestCase):
         finally:
             temp_dir.cleanup()
 
+    def test_publish_execution_with_env_vars(self):
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        try:
+            bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_gh_binary(bin_dir)
+
+            proc = self._run_script(
+                [],
+                env={
+                    "RELEASE_VERSION": MOCK_TARGET_RELEASE_TAG,
+                    "RELEASE_COMMIT": "HEAD",
+                    "CI": "true",
+                    "GH_TOKEN": "mock-token-123",
+                },
+                bin_dir=str(bin_dir),
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn("PUBLISHING GITHUB RELEASE", proc.stdout)
+            self.assertIn(f"Successfully published GitHub Release '{MOCK_TARGET_RELEASE_TAG}'", proc.stdout)
+        finally:
+            temp_dir.cleanup()
+
+    def test_swapped_arguments_symmetry(self):
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        try:
+            bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_gh_binary(bin_dir)
+
+            proc = self._run_script(
+                ["HEAD", MOCK_TARGET_RELEASE_TAG],
+                env={"CI": "true", "GH_TOKEN": "mock-token-123"},
+                bin_dir=str(bin_dir),
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn("PUBLISHING GITHUB RELEASE", proc.stdout)
+            self.assertIn(f"Successfully published GitHub Release '{MOCK_TARGET_RELEASE_TAG}'", proc.stdout)
+        finally:
+            temp_dir.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()
