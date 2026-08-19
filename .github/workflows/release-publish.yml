@@ -1,6 +1,7 @@
 name: Release & Publish (GA)
 
 on:
+  #checkov:skip=CKV_GHA_7:GA release publish workflow requires explicit version override, target commit, and emergency bypass parameters
   workflow_dispatch:
     inputs:
       explicit_release_version:
