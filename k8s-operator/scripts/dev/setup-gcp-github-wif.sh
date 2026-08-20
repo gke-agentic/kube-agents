@@ -110,6 +110,9 @@ if [ "$IS_ADMIN" = true ]; then
 
     # The gke-backup-plan module manages Backup for GKE plans
     "roles/gkebackup.admin"
+
+    # Terraform remote state management (creating and managing gs://<project>-kube-agents-tfstate)
+    "roles/storage.admin"
   )
 fi
 
