@@ -52,11 +52,11 @@ Two properties matter more than the check lists:
 
 ### Pollers file cards; watchdogs deliver reports
 
-`github-repo-watcher` shares the Platform Agent's roster but is a different kind of entry. It runs `github_scan_gate.py` as a `no_agent` subprocess every ten minutes, sweeping the target GitHub repository for work — today, unaddressed open issues. Almost every tick finds nothing, prints nothing, and costs no tokens at all. On the rare tick that does find something, it files a kanban card assigned to the Platform Agent, and the model wakes up then.
+`github-repo-watcher` shares the Platform Agent's roster but is a different kind of entry. It runs `github_scan_gate.py` as a `no_agent` subprocess every ten minutes, sweeping the target GitHub repository for work — today, unaddressed open issues and unanswered review requests on the agent's own pull requests. Almost every tick finds nothing, prints nothing, and costs no tokens at all. On the rare tick that does find something, it files a kanban card assigned to the Platform Agent, and the model wakes up then. One poll covers both sweeps, which is the reason they were consolidated: two jobs would be two credentials' worth of API traffic and two chances to spend a turn on nothing.
 
 That inversion is the point. As a prompt job the same poll ran a third as often and still spent 48 model turns a day — persona, skill, and a deterministic API call — to be told "nothing to do" 47 times. The trade-off is that a card is not a cron run: the roster's `skills`, `model` and `deliver` do not reach the work the card produces. The Tirith scan does reach it, by the other route described above. That is acceptable for a poller, whose product goes to GitHub rather than to a chat channel, and unacceptable for a watchdog, whose product _is_ the delivery — which is why the seven audits are prompt jobs and stay that way. `agents/platform/cron/README.md` holds the full argument.
 
-`deliver: "all"` still matters for the gate itself: a sweep that cannot reach the forge prints one `⚠️` line and that line has to be audible. A sweep can be turned off without touching the roster by setting `GITHUB_WATCHER_SWEEPS` to the comma-separated list you want; unset means all of them.
+`deliver: "all"` still matters for the gate itself: a sweep that cannot reach the forge prints one `⚠️` line and that line has to be audible. A sweep can be turned off without touching the roster by setting `GITHUB_WATCHER_SWEEPS` to the comma-separated list you want; unset means all of them. The pull-request sweep carries three further bounds of its own — a per-tick cap, a total refusal budget per pull request, and a bot allowlist — because its input arrives from a thread anyone can write in, where the issues sweep's does not. All three are `PR_AGENT_`-prefixed environment variables, and [`docs/designs/pr-comment-conversation.md`](https://github.com/gke-labs/kube-agents/blob/main/docs/designs/pr-comment-conversation.md) gives their defaults and the reasoning for each.
 
 ### The retired jobs
 
@@ -103,7 +103,7 @@ Each job in `jobs.json` follows this schema:
   "prompt": "Run the daily fleet security and RBAC posture audit. Read the SOP at 'governance/compliance_audit_sop.md' in your profile home — all 406 lines of it, before you run anything. Its eleven checks are section 2, lines 102-314, so a read that stops early skips almost the entire audit and reports a clean fleet it never looked at. Then execute it exactly, using the fleet-audit skill to open and close the audit run.",
   "skills": ["fleet-audit"],
   "enabled": true,
-  "deliver": "all"
+  "deliver": "chat"
 }
 ```
 
@@ -113,7 +113,7 @@ Each job in `jobs.json` follows this schema:
 - **`skills`** — the skills the work needs. The scheduler prepends each one's content to the prompt, force-loading it ahead of the first turn rather than leaving the load to the model's discretion. The seven audits use `fleet-audit`.
 - **`no_agent`** and **`script`** — a subprocess instead of an LLM turn, used by the four plumbing jobs on the Planning Agent's roster and by `github-repo-watcher` on the Platform Agent's (`script` resolves in that profile's `scripts/`). The governance watchdogs omit both: they are model runs.
 - **`enabled`** — set to `false` to disable a job without deleting its entry.
-- **`deliver`** — where the run's outcome goes: `"all"` sends it to the configured target, `"local"` resolves to no target at all and drops it. Every enabled job on the Platform Agent's roster uses `"all"`, so a watchdog that has stopped working is visible rather than indistinguishable from a quiet fleet.
+- **`deliver`** — where the run's outcome goes: `"all"` sends it to every configured target, `"chat"` hands it to the Chat Agent to post (see [the relay design](https://github.com/gke-labs/kube-agents/blob/main/docs/designs/cron-report-relay.md)), and `"local"` resolves to no target at all and drops it. `"chat"` is one target among them, not an override, so `"all"` reaches it too. No governance job uses `"local"`, so a watchdog that has stopped working is visible rather than indistinguishable from a quiet fleet; which value each one carries is in [`agents/platform/cron/jobs.json`](https://github.com/gke-labs/kube-agents/blob/main/agents/platform/cron/jobs.json).
 
 ## Disabling a watchdog
 
@@ -139,7 +139,7 @@ The `cronjob` tool is not a route to either roster: it is denied to the Planning
 2. Add a job entry to `agents/platform/cron/jobs.json` pointing at it as `governance/<your-sop>.md`. That is the Platform Agent's own roster, fired by [`profile-cron-tick`](#what-fires-the-schedule), so the run gets that profile's persona, toolsets and `skills`. Do not also add the id to the Planning Agent's roster, or the job runs twice.
 3. If the job files findings, add its id to the allowlist in `agents/platform/skills/fleet-audit/scripts/audit_report.py` and set `"skills": ["fleet-audit"]`.
 4. Run `make docs-generate` — the reference table is generated from both rosters, and a cron expression missing from `CRON_CADENCE` in `scripts/generate_docs.py` renders its cadence as `—`.
-5. Redeploy (`provision_08_deploy_platform_agent.sh`, or `dev/dev_rebuild_agent.sh` for a dev workspace). The entry lands on the next pod restart, on new and existing clusters alike — the Platform Agent's roster is merged in full, so no PVC edit is needed. A job on the Planning Agent's roster lands the same way, through step 2c-bis's `cron_jobs_sync.py`, which reconciles that roster in full too; step 2c's narrower `--cron-jobs` allowlist is not a gate a new job has to pass.
+5. Redeploy the agent image at the revision carrying the change (`./upgrade.sh --upgrade-mode=harness --image-tag=<ref>`, or `dev/dev_rebuild_agent.sh` for a dev workspace). The entry lands on the next pod restart, on new and existing clusters alike — the Platform Agent's roster is merged in full, so no PVC edit is needed. A job on the Planning Agent's roster lands the same way, through step 2c-bis's `cron_jobs_sync.py`, which reconciles that roster in full too; step 2c's narrower `--cron-jobs` allowlist is not a gate a new job has to pass.
 
 Keep the schedule realistic — LLM inference on every tick has cost. Hourly or daily is the sweet spot for most SOPs; sub-15-minute cadences should have a clear justification. Stagger start minutes so two audits never contend for the same session.
 

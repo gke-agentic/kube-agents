@@ -30,6 +30,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	nodev1 "k8s.io/api/node/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -152,7 +153,7 @@ type PlatformAgentReconciler struct {
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.gke.io,resources=fqdnnetworkpolicies,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings;roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
 
@@ -263,6 +264,10 @@ func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	// Reconcile Service
 	if err := r.reconcileService(ctx, instance); err != nil {
+		return ctrl.Result{}, err
+	}
+	// Reconcile PodDisruptionBudget
+	if err := r.reconcilePodDisruptionBudget(ctx, instance); err != nil {
 		return ctrl.Result{}, err
 	}
 	// Reconcile NetworkPolicy
@@ -530,6 +535,66 @@ func (r *PlatformAgentReconciler) reconcileService(ctx context.Context, agent *a
 	}
 	if err := r.applyManaged(ctx, agent, svc); err != nil {
 		return fmt.Errorf("failed to apply Service %s/%s: %w", svc.Namespace, svc.Name, err)
+	}
+	return nil
+}
+
+func (r *PlatformAgentReconciler) reconcilePodDisruptionBudget(ctx context.Context, agent *agentv1alpha1.PlatformAgent) error {
+	pdb := buildPlatformPDB(agent)
+	if err := ctrl.SetControllerReference(agent, pdb, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set controller reference on PodDisruptionBudget %s/%s: %w", pdb.Namespace, pdb.Name, err)
+	}
+	if err := r.clearForeignPDBBudgetField(ctx, pdb); err != nil {
+		return err
+	}
+	if err := r.applyManaged(ctx, agent, pdb); err != nil {
+		return fmt.Errorf("failed to apply PodDisruptionBudget %s/%s: %w", pdb.Namespace, pdb.Name, err)
+	}
+	return nil
+}
+
+// clearForeignPDBBudgetField removes whichever of minAvailable/maxUnavailable
+// the desired budget does not use, when the live object carries it anyway.
+//
+// Every other object this controller reconciles recovers from hand-edits on its
+// own, because a server-side apply with ForceOwnership takes back any field it
+// sets. A PodDisruptionBudget does not, and the failure is permanent rather than
+// cosmetic. The two budget fields are mutually exclusive, so the apply cannot
+// simply overwrite the foreign one: SSA does not remove fields it never owned,
+// leaving the merged object with both set, which the API server rejects with
+// "minAvailable and maxUnavailable cannot be both set". That error fails the
+// whole Reconcile, so every step after this one — the NetworkPolicy included —
+// stops running until someone deletes the stray field by hand. An administrator
+// tightening the singleton default to minAvailable is all it takes; observed
+// while drain-testing this budget.
+//
+// Nulling the field through a merge patch deletes it from the object, and with
+// it the other manager's claim in managedFields, so the apply that follows is
+// unambiguous. This runs on the way to a normal apply, not just after damage:
+// when the live object already agrees, the switch falls through and nothing is
+// patched.
+func (r *PlatformAgentReconciler) clearForeignPDBBudgetField(ctx context.Context, desired *policyv1.PodDisruptionBudget) error {
+	var live policyv1.PodDisruptionBudget
+	if err := r.Get(ctx, client.ObjectKeyFromObject(desired), &live); err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to get PodDisruptionBudget %s/%s: %w", desired.Namespace, desired.Name, err)
+	}
+
+	var foreign string
+	switch {
+	case desired.Spec.MaxUnavailable != nil && live.Spec.MinAvailable != nil:
+		foreign = "minAvailable"
+	case desired.Spec.MinAvailable != nil && live.Spec.MaxUnavailable != nil:
+		foreign = "maxUnavailable"
+	default:
+		return nil
+	}
+
+	patch := client.RawPatch(types.MergePatchType, fmt.Appendf(nil, `{"spec":{%q:null}}`, foreign))
+	if err := r.Patch(ctx, &live, patch); err != nil {
+		return fmt.Errorf("failed to clear %s on PodDisruptionBudget %s/%s: %w", foreign, desired.Namespace, desired.Name, err)
 	}
 	return nil
 }
@@ -1126,7 +1191,8 @@ func (r *PlatformAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Service{}).
-		Owns(&networkingv1.NetworkPolicy{})
+		Owns(&networkingv1.NetworkPolicy{}).
+		Owns(&policyv1.PodDisruptionBudget{})
 
 	// Only register AgentPlugin watch if CRD exists in cluster RESTMapper
 	gvk := agentv1alpha1.GroupVersion.WithKind("AgentPlugin")

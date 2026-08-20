@@ -28,6 +28,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	nodev1 "k8s.io/api/node/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -36,7 +37,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apimachinery/pkg/version"
 	"k8s.io/client-go/discovery"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -3177,5 +3180,205 @@ func TestReconcileNetworkPolicy_PrivateIPOverlap(t *testing.T) {
 
 	if !foundAPIRule {
 		t.Errorf("expected 172.16.0.1/32 to be explicitly allowed in API server egress rule")
+	}
+}
+
+// TestReconcilePodDisruptionBudget_CreatesEvictableBudget covers the ordinary
+// path: a single-replica agent gets maxUnavailable: 1, so a node drain is
+// permitted rather than blocked.
+func TestReconcilePodDisruptionBudget_CreatesEvictableBudget(t *testing.T) {
+	ctx := context.Background()
+	scheme := setupScheme()
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "test-ns"},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(agent).
+		WithInterceptorFuncs(fakeServerSideApplyInterceptors()).
+		Build()
+	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
+
+	if err := r.reconcilePodDisruptionBudget(ctx, agent); err != nil {
+		t.Fatalf("reconcilePodDisruptionBudget failed: %v", err)
+	}
+
+	pdb := &policyv1.PodDisruptionBudget{}
+	if err := cl.Get(ctx, types.NamespacedName{Name: "test-agent", Namespace: "test-ns"}, pdb); err != nil {
+		t.Fatalf("failed to get reconciled PodDisruptionBudget: %v", err)
+	}
+	if pdb.Spec.MaxUnavailable == nil || pdb.Spec.MaxUnavailable.IntValue() != 1 {
+		t.Errorf("expected maxUnavailable 1, got %v", pdb.Spec.MaxUnavailable)
+	}
+	if pdb.Spec.MinAvailable != nil {
+		t.Errorf("expected no minAvailable on a single-replica budget, got %v", pdb.Spec.MinAvailable)
+	}
+	if len(pdb.OwnerReferences) != 1 || pdb.OwnerReferences[0].Name != "test-agent" {
+		t.Errorf("expected the PodDisruptionBudget to be owned by the PlatformAgent, got %v", pdb.OwnerReferences)
+	}
+}
+
+// pdbSSAInterceptors emulates the one server-side-apply rule the plain fake
+// client does not: an apply cannot remove a field a different manager owns. The
+// real API server merges the applied object over that field rather than
+// dropping it, and then rejects the result, because minAvailable and
+// maxUnavailable are mutually exclusive. Without this, no test can reproduce
+// the wedge clearForeignPDBBudgetField exists to clear — the stock interceptor
+// replaces the whole object, so the stray field vanishes on its own.
+func pdbSSAInterceptors() interceptor.Funcs {
+	base := fakeServerSideApplyInterceptors()
+	return interceptor.Funcs{
+		Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			if desired, ok := obj.(*policyv1.PodDisruptionBudget); ok && patch.Type() == types.ApplyPatchType {
+				var live policyv1.PodDisruptionBudget
+				if err := cl.Get(ctx, client.ObjectKeyFromObject(desired), &live); err == nil {
+					if live.Spec.MinAvailable != nil && desired.Spec.MaxUnavailable != nil {
+						return errors.NewInvalid(
+							schema.GroupKind{Group: "policy", Kind: "PodDisruptionBudget"},
+							desired.Name,
+							field.ErrorList{field.Invalid(field.NewPath("spec"), desired.Spec,
+								"minAvailable and maxUnavailable cannot be both set")},
+						)
+					}
+				}
+			}
+			return base.Patch(ctx, cl, obj, patch, opts...)
+		},
+	}
+}
+
+// TestReconcilePodDisruptionBudget_RecoversFromForeignBudgetField is the
+// regression test for a permanent reconcile wedge: an administrator hand-sets
+// minAvailable on the operator-managed budget, and because a server-side apply
+// cannot remove a field it never owned, every apply afterwards merges to an
+// object carrying both fields and is rejected. The whole Reconcile fails from
+// that point on, so everything after this step stops running too.
+//
+// It goes through reconcilePodDisruptionBudget rather than calling the helper
+// directly, so that deleting the call — not just gutting the helper — fails.
+func TestReconcilePodDisruptionBudget_RecoversFromForeignBudgetField(t *testing.T) {
+	ctx := context.Background()
+	scheme := setupScheme()
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "test-ns"},
+	}
+	// What an administrator tightening the singleton default leaves behind.
+	live := &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "test-ns"},
+		Spec: policyv1.PodDisruptionBudgetSpec{
+			MinAvailable: ptr.To(intstr.FromInt32(1)),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "test-agent-gateway"},
+			},
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(agent, live).
+		WithInterceptorFuncs(pdbSSAInterceptors()).
+		Build()
+	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
+
+	if err := r.reconcilePodDisruptionBudget(ctx, agent); err != nil {
+		t.Fatalf("reconcilePodDisruptionBudget failed to recover from a foreign budget field: %v", err)
+	}
+
+	pdb := &policyv1.PodDisruptionBudget{}
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(live), pdb); err != nil {
+		t.Fatalf("failed to get PodDisruptionBudget: %v", err)
+	}
+	if pdb.Spec.MinAvailable != nil {
+		t.Errorf("expected minAvailable to be gone, got %v", pdb.Spec.MinAvailable)
+	}
+	if pdb.Spec.MaxUnavailable == nil || pdb.Spec.MaxUnavailable.IntValue() != 1 {
+		t.Errorf("expected maxUnavailable 1, got %v", pdb.Spec.MaxUnavailable)
+	}
+}
+
+// TestBuildPlatformPDB_MaxUnavailableAtEveryReplicaCount pins the shape the
+// Workload Reliability Audit requires: obtainability_audit_sop.md §3.3 is
+// "Always maxUnavailable, never minAvailable", at every replica count. Deriving
+// the field from the replica count instead reads as safe and produces the §3.4
+// drain deadlock the moment a scaled-out agent is scaled back down.
+func TestBuildPlatformPDB_MaxUnavailableAtEveryReplicaCount(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		deployment *agentv1alpha1.DeploymentSpec
+	}{
+		{name: "default single replica"},
+		{
+			name: "high availability",
+			deployment: &agentv1alpha1.DeploymentSpec{
+				Availability: &agentv1alpha1.AvailabilitySpec{Replicas: ptr.To(int32(3))},
+			},
+		},
+		{
+			name:       "scaled to zero",
+			deployment: &agentv1alpha1.DeploymentSpec{ScaleToZero: ptr.To(true)},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pdb := buildPlatformPDB(&agentv1alpha1.PlatformAgent{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "test-ns"},
+				Spec: agentv1alpha1.PlatformAgentSpec{
+					AgentSpec: agentv1alpha1.AgentSpec{Deployment: tc.deployment},
+				},
+			})
+			if pdb.Spec.MinAvailable != nil {
+				t.Errorf("minAvailable must never be set (SOP §3.3), got %v", pdb.Spec.MinAvailable)
+			}
+			if pdb.Spec.MaxUnavailable == nil || pdb.Spec.MaxUnavailable.IntValue() != 1 {
+				t.Errorf("expected maxUnavailable 1, got %v", pdb.Spec.MaxUnavailable)
+			}
+			if pdb.Spec.Selector.MatchLabels["app"] != "test-agent-gateway" {
+				t.Errorf("expected the Deployment's selector, got %v", pdb.Spec.Selector.MatchLabels)
+			}
+		})
+	}
+}
+
+// TestClearForeignPDBBudgetField_LeavesAgreeingBudgetAlone guards against the
+// obvious over-correction: the stripper runs on every reconcile, so it must be
+// a no-op when the live object already carries the field the operator sets, and
+// when there is no live object at all.
+func TestClearForeignPDBBudgetField_LeavesAgreeingBudgetAlone(t *testing.T) {
+	ctx := context.Background()
+	scheme := setupScheme()
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "test-ns"},
+	}
+	live := buildPlatformPDB(agent)
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(agent, live.DeepCopy()).
+		WithInterceptorFuncs(fakeServerSideApplyInterceptors()).
+		Build()
+	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
+
+	before := &policyv1.PodDisruptionBudget{}
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(live), before); err != nil {
+		t.Fatalf("failed to get seeded PodDisruptionBudget: %v", err)
+	}
+	if err := r.clearForeignPDBBudgetField(ctx, live); err != nil {
+		t.Fatalf("clearForeignPDBBudgetField failed: %v", err)
+	}
+	after := &policyv1.PodDisruptionBudget{}
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(live), after); err != nil {
+		t.Fatalf("failed to get PodDisruptionBudget: %v", err)
+	}
+	if after.ResourceVersion != before.ResourceVersion {
+		t.Errorf("expected no write when the live budget already agrees, resourceVersion moved %s -> %s",
+			before.ResourceVersion, after.ResourceVersion)
+	}
+
+	// Nothing to clear on a first reconcile either.
+	missing := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{Name: "absent-agent", Namespace: "test-ns"},
+	}
+	if err := r.clearForeignPDBBudgetField(ctx, buildPlatformPDB(missing)); err != nil {
+		t.Fatalf("expected NotFound to be tolerated, got %v", err)
 	}
 }

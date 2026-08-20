@@ -13,7 +13,7 @@ BAD_SKILLS := $(wildcard agents/*/defaults/skills/*)
 BASE_IMAGE_VARS := HERMES_AGENT_IMAGE ENVOY_IMAGE GOLANG_IMAGE
 BASE_IMAGE_ARGS := $(foreach v,$(BASE_IMAGE_VARS),$(if $($(v)),--build-arg $(v)=$($(v))))
 
-.PHONY: default help docker-build docker-build-agents docker-build-credential-proxy docker-push docker-push-agents docker-push-credential-proxy dev-rebuild-agent mirror-images images-check status prettier-check prettier-write test-python test-python-deps validate prompt-check docs-generate docs-check docs-check-generated docs-check-links docs-check-terminology docs-check-map chart-sync chart-check iac-parity-check tf-apply tf-destroy
+.PHONY: default help docker-build docker-build-agents docker-build-credential-proxy docker-push docker-push-agents docker-push-credential-proxy dev-rebuild-agent mirror-images images-check status prettier-check prettier-write test-python test-python-deps validate prompt-check docs-generate docs-check docs-check-generated docs-check-links docs-check-terminology docs-check-map chart-sync chart-check tf-apply tf-destroy
 
 # The agent images this repository builds -- one per `--target` stage in
 # deploy/docker/Dockerfile, which is not the same thing as one per directory
@@ -112,17 +112,19 @@ prettier-write: ## Reformat all Markdown/YAML in place.
 # per directory rather than once over the tree, because none of them are
 # packages -- `unittest discover` pointed at agents/platform/skills finds
 # nothing and still exits 0, which reads as a passing suite. That also keeps
-# deploy/docker and deploy/docker/patches separate, which they must be: the
-# patch tests import their subject by bare module name, which only resolves
-# with their own directory as the discovery root.
+# deploy/docker, deploy/docker/patches and each deploy/docker/plugins/<name>
+# separate, which they must be: those tests import their subject by bare module
+# name, which only resolves with their own directory as the discovery root.
 PYTHON_TEST_DIRS := $(sort $(dir \
 	$(wildcard admin_console/tests/test_*.py) \
 	$(wildcard agents/*/skills/*/scripts/test_*.py) \
 	$(wildcard agents/*/scripts/test_*.py) \
 	$(wildcard agents/*/defaults/plugins/*/test_*.py) \
+	$(wildcard agents/*/plugins/*/test_*.py) \
 	$(wildcard agents/*/defaults/hooks/*/test_*.py) \
 	$(wildcard deploy/docker/test_*.py) \
 	$(wildcard deploy/docker/patches/test_*.py) \
+	$(wildcard deploy/docker/plugins/*/test_*.py) \
 	$(wildcard scripts/test_*.py) \
 	$(wildcard tests/test_*.py)))
 
@@ -211,7 +213,7 @@ prompt-check: ## Verify the agent's instructions cite skills and files that exis
 	@python3 scripts/check_prompt_assets.py
 
 # Documentation that mirrors a machine-readable source is generated rather than
-# hand-kept: the cron jobs, the skill catalogue and the provisioning steps as
+# hand-kept: the cron jobs, the skill catalogue and the image inventory as
 # <!-- BEGIN GENERATED --> regions, plus docs/family-roster.txt written whole.
 docs-generate: ## Regenerate the generated doc regions and files from their sources.
 	@python3 scripts/generate_docs.py
@@ -236,9 +238,6 @@ chart-sync: ## Sync the Helm chart's CRD copies and operator ClusterRole rules f
 
 chart-check: ## Verify the chart's CRD/RBAC copies match k8s-operator/config (CI runs this).
 	@./hack/sync-chart-manifests.sh --check
-
-iac-parity-check: ## Verify the provisioning scripts, Terraform, and the Helm chart agree (CI runs this).
-	@python3 scripts/check_iac_parity.py
 
 tf-apply: ## Apply terraform/examples/full-install, adopting KMS resources a previous destroy left behind.
 	@./terraform/examples/full-install/lifecycle.sh apply $(ARGS)
