@@ -56,6 +56,11 @@ const (
 	defaultAgentHome            = "/opt/data"
 	defaultStorageSize          = "5Gi"
 	credentialProxyPort         = 8765
+	// dashboardPort is the port `hermes dashboard` listens on. It is loopback-only
+	// (see the readiness probe in buildBaseContainers), so the container port, the
+	// Service port, and the NetworkPolicy rule below all describe a listener that
+	// only kubelet's port-forward can reach.
+	dashboardPort = 9119
 )
 
 // Shared-state ownership. Step 1.5 of deploy/shared/docker-entrypoint.sh reads this
@@ -2766,7 +2771,7 @@ func buildBaseContainers(agent *agentv1alpha1.PlatformAgent, image string, envVa
 			Ports: []corev1.ContainerPort{
 				{
 					Name:          "dashboard",
-					ContainerPort: 9119,
+					ContainerPort: dashboardPort,
 				},
 			},
 			Env: dashboardEnvVars,
@@ -2781,17 +2786,51 @@ func buildBaseContainers(agent *agentv1alpha1.PlatformAgent, image string, envVa
 				},
 			},
 			VolumeMounts: append(dashboardVolumeMounts, extraVolumeMounts...),
-			// The Service publishes :9119 whenever the dashboard is enabled, so
-			// without this the UI port is advertised before anything listens on it.
+			// What this buys is not what a probe on a serving container buys. The
+			// Service's :9119 endpoint is unreachable over the pod network either
+			// way (see dashboardPort), so nothing is being kept out of rotation.
+			// Pod readiness is the AND of every container, so this reports a
+			// broken dashboard through the pod's own Ready condition — and, the
+			// other side of the same coin, a dashboard that hangs or OOM-loops
+			// now withdraws the agent API on :8642 with it. That coupling is the
+			// price of reporting it at all; the alternative is no probe here,
+			// which leaves a dead dashboard silent.
 			//
-			// tcpSocket rather than httpGet: this one binds all interfaces, so kubelet
-			// can reach it on the pod IP, but `hermes dashboard` exposes no health
-			// path we have verified — and a probe against a guessed path that 404s
-			// would hold the whole pod unready, taking the API down with it.
+			// exec on loopback, not tcpSocket. `hermes dashboard` takes no --host
+			// argument here and the CLI's default is 127.0.0.1, so a tcpSocket probe
+			// — which kubelet dials against the pod IP — was refused on every
+			// attempt and this container never went Ready. That held the whole pod
+			// NotReady, drove the CR to Ready=False, and failed the install's
+			// rollout gate on any install that did not pin dashboardEnabled=false
+			// (#822). The comment this replaces asserted the opposite binding.
+			// Same shape, and the same reason, as agentAPIProbe above.
+			//
+			// Binding all interfaces instead is not the smaller fix, and not just
+			// because no auth provider is configured: the dashboard's auth gate
+			// keys on the bind host, so 0.0.0.0 switches authentication on and the
+			// server then exits at startup rather than serve unauthenticated. The
+			// loopback bind is what keeps it usable. scripts/hermes-dashboard-
+			// tunnel.py is canonical on that and on how a human reaches it.
+			//
+			// No --fail and no health path: `hermes dashboard` exposes no health
+			// endpoint we have verified, and demanding a 2xx from a guessed one
+			// would 404 and hold the pod unready for the wrong reason. Without
+			// --fail curl exits 0 on any HTTP status, so serving the SPA at / is
+			// enough and so would be a 401. Plain http:// is right — that tunnel
+			// script relays cleartext HTTP off this port.
+			//
+			// So the exit code passes straight through: 0 means it answered, 7
+			// means connection refused — the exact state that made this container
+			// never go Ready — and 28 means it accepted and then hung. --max-time
+			// sits under TimeoutSeconds so 28 is curl's to report rather than
+			// kubelet's to kill.
 			ReadinessProbe: &corev1.Probe{
 				ProbeHandler: corev1.ProbeHandler{
-					TCPSocket: &corev1.TCPSocketAction{
-						Port: intstr.FromString("dashboard"),
+					Exec: &corev1.ExecAction{
+						Command: []string{
+							"sh", "-c",
+							fmt.Sprintf("curl --silent --show-error --max-time 3 -o /dev/null http://127.0.0.1:%d/", dashboardPort),
+						},
 					},
 				},
 				InitialDelaySeconds: 5,
@@ -3188,9 +3227,14 @@ func buildPlatformService(agent *agentv1alpha1.PlatformAgent) *corev1.Service {
 	}
 
 	if dashboardEnabled {
+		// Connecting to this port from another pod gets connection refused: the
+		// dashboard listens on loopback only (see dashboardPort). It is published
+		// anyway because `kubectl port-forward svc/<agent> 9119:9119` needs the
+		// Service to name the port, and port-forward is how the dashboard is
+		// reached.
 		ports = append(ports, corev1.ServicePort{
 			Name:       "dashboard",
-			Port:       9119,
+			Port:       dashboardPort,
 			TargetPort: intstr.FromString("dashboard"),
 		})
 	}
@@ -3532,9 +3576,14 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, d
 	}
 
 	if isDashboardEnabled(agent) {
+		// Kept in step with the Service port rather than because pod-network
+		// traffic reaches the dashboard — it does not, the listener is loopback
+		// (see dashboardPort). Removing the rule would make the policy the reason
+		// a future non-loopback bind fails, which is not the failure to leave
+		// behind.
 		ingressRules[0].Ports = append(ingressRules[0].Ports, networkingv1.NetworkPolicyPort{
 			Protocol: &tcp,
-			Port:     ptr.To(intstr.FromInt32(9119)),
+			Port:     ptr.To(intstr.FromInt32(dashboardPort)),
 		})
 	}
 

@@ -436,6 +436,30 @@ func TestBuildDeployment(t *testing.T) {
 		if dashboardC.Resources.Limits.Cpu().String() != "1" || dashboardC.Resources.Limits.Memory().String() != "2Gi" {
 			t.Errorf("expected CPU 1 and Mem 2Gi limits on dashboard container, got %v", dashboardC.Resources.Limits)
 		}
+		// The probe has to reach the listener over loopback. `hermes dashboard`
+		// binds 127.0.0.1, so the tcpSocket probe this replaces was dialled by
+		// kubelet against the pod IP, refused every time, and left the container
+		// — and therefore the whole pod — permanently NotReady (#822). Asserting
+		// the shape is the only guard available here: nothing in this suite can
+		// open a socket against the real CLI.
+		switch probe := dashboardC.ReadinessProbe; {
+		case probe == nil:
+			t.Errorf("expected a readiness probe on the dashboard container")
+		case probe.TCPSocket != nil:
+			t.Errorf("dashboard readiness probe must not be tcpSocket: kubelet dials the pod IP and the listener is loopback-only")
+		case probe.Exec == nil || len(probe.Exec.Command) == 0:
+			t.Errorf("expected an exec readiness probe on the dashboard container, got %+v", probe.ProbeHandler)
+		default:
+			cmd := strings.Join(probe.Exec.Command, " ")
+			if !strings.Contains(cmd, "http://127.0.0.1:9119/") {
+				t.Errorf("expected the dashboard readiness probe to target http://127.0.0.1:9119/, got %q", cmd)
+			}
+			// --fail would turn an auth-gated or non-2xx root path into an
+			// unready pod; the probe only asserts that something answers.
+			if strings.Contains(cmd, "--fail") {
+				t.Errorf("dashboard readiness probe must not use curl --fail: any HTTP response proves the listener is up, got %q", cmd)
+			}
+		}
 		if len(dashboardC.Env) != 6 {
 			t.Errorf("expected 6 env vars on dashboard container, got %d", len(dashboardC.Env))
 		} else {
