@@ -25,6 +25,44 @@ export TARGET_NAMESPACE="kubeagents-system"
 export NAMESPACE="${TARGET_NAMESPACE}"
 export PR_ID="${PULL_NUMBER:-local}"
 
+# ─── Helm Bootstrap ──────────────────────────────────────────────────────────
+# The Prow job image carries gcloud, kubectl, and go, but no helm — and
+# ci-deploy.sh / ci-teardown.sh drive the kube-agents chart with it. Install a
+# checksum-pinned binary when the image has none; a machine that already has
+# helm on PATH (a developer laptop, a GitHub runner) is left alone.
+HELM_VERSION="v3.21.4"
+HELM_SHA256_LINUX_AMD64="61f88ab166748cb19604d7884cb100ae9ccb13804ddeb98e08af167eacbb6a14"
+HELM_SHA256_LINUX_ARM64="b54c04b4e0b2540bbdc08c17a121dab70e9a2ed0de5705528fec68a5fd3b85a7"
+
+ensure_helm() {
+  if command -v helm >/dev/null 2>&1; then
+    return 0
+  fi
+  local arch sha dir
+  if [ "$(uname -s)" != "Linux" ]; then
+    echo "ERROR: no helm on PATH and the pinned download covers Linux only. Install helm and re-run." >&2
+    return 1
+  fi
+  case "$(uname -m)" in
+    x86_64) arch="amd64"; sha="$HELM_SHA256_LINUX_AMD64" ;;
+    aarch64 | arm64) arch="arm64"; sha="$HELM_SHA256_LINUX_ARM64" ;;
+    *)
+      echo "ERROR: no helm on PATH and no pinned download for architecture '$(uname -m)'. Install helm and re-run." >&2
+      return 1
+      ;;
+  esac
+  dir="/tmp/kube-agents-helm-${HELM_VERSION}-${arch}"
+  if [ ! -x "${dir}/helm" ]; then
+    mkdir -p "$dir"
+    curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-${arch}.tar.gz" -o "${dir}/helm.tar.gz"
+    echo "${sha}  ${dir}/helm.tar.gz" | sha256sum -c - >/dev/null
+    tar -xzf "${dir}/helm.tar.gz" -C "$dir" --strip-components=1 "linux-${arch}/helm"
+    rm -f "${dir}/helm.tar.gz"
+  fi
+  export PATH="${dir}:${PATH}"
+  echo "Installed helm ${HELM_VERSION} (${arch}) to ${dir}"
+}
+
 # ─── Shared Artifact Collection Handler for Prow Job Failures ───────────────────
 dump_prow_artifacts_on_failure() {
   local exit_code=$?
@@ -49,7 +87,7 @@ dump_prow_artifacts_on_failure() {
     # 2. Current running & previous crashed pod logs (crucial for rollout deadline / CrashLoopBackOff failures)
     kubectl logs deployment/platform-agent-gateway -n "${ns}" --tail=2000 > "${artifact_dir}/platform-agent-gateway.log" 2>&1 || true
     kubectl logs deployment/platform-agent-gateway -n "${ns}" --previous --tail=1000 > "${artifact_dir}/platform-agent-gateway-previous-crash.log" 2>&1 || true
-    kubectl logs deployment/kubeagents-controller-manager -n "${ns}" --tail=1000 > "${artifact_dir}/controller-manager.log" 2>&1 || true
+    kubectl logs deployment/kube-agents-controller-manager -n "${ns}" --tail=1000 > "${artifact_dir}/controller-manager.log" 2>&1 || true
     
     # 3. Detailed Pod Descriptions & K8s Events (explains image pull errors, scheduling blocks, OOMKilled, probe failures)
     kubectl describe pods -n "${ns}" > "${artifact_dir}/k8s-pod-descriptions.txt" 2>&1 || true

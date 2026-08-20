@@ -547,16 +547,58 @@ RUN cp /tmp/channel-directory/channel_directory_threads.py /opt/hermes/gateway/c
 # drives the real patched render_blocks over the reported line and asserts on
 # the elements it returns.
 # See the module docstring in deploy/docker/patches/apply_slack_code_emphasis.py.
+#
+# Google Chat: say the failed-attachment notice in English, and only offer
+# /setup-files where it works. Upstream writes the four user-facing lines of
+# `_post_attachment_fallback` in Spanish, inside an otherwise English adapter,
+# so a user who asked for a report in English gets a Spanish refusal and reads
+# it as the agent having switched language mid-thread. It is not a rare path:
+# native media.upload needs a *per-user* OAuth token, so until each user has run
+# /setup-files in their own DM every attachment lands here, and on the install
+# where this was reported no user had. The second half of the fix is the advice
+# itself: agents/platform/scripts/google_chat_relay_patch.py stubs /setup-files
+# out, and the operator sets GOOGLE_CHAT_RELAY_URL on every install with Google
+# Chat enabled, so on all of them that instruction is a dead end. The notice
+# branches on the _credential_proxy_relay_patched marker that patch leaves on
+# the class, and offers what does work there instead. The direct branch is for
+# an image run outside the operator; it is kept rather than folded away because
+# deleting it hard-codes the instruction off in the one place it works.
+#
+# A grep guard cannot catch this class of bug. The two branches differ only in
+# which strings are appended, so a patch that wired the condition backwards --
+# offering /setup-files precisely where it has been stubbed out -- greps
+# identically to a correct one, and the next reader of the difference is a user
+# following an instruction into a dead end.
+# verify_google_chat_attachment_notice.py therefore builds the real notice from
+# the patched adapter on both branches and asserts on the text.
+#
+# This rides the Slack block's COPY and RUN rather than buying two layers of its
+# own, and it is a different subsystem, which the channel-directory block above
+# treats as grounds for its own pair. The difference is the budget: this stage
+# is the base for `credential-proxy`, the longest chain in the file and the one
+# the layer note at the top of this file is about, so a pair of its own is two
+# layers out of what little that chain has left. Both patches here rewrite an
+# outbound message surface, which is as close to one subject as the grouping
+# gets.
+# See the module docstring in
+# deploy/docker/patches/apply_google_chat_attachment_notice.py.
 COPY deploy/docker/patches/apply_slack_code_emphasis.py \
      deploy/docker/patches/verify_slack_code_emphasis.py \
+     deploy/docker/patches/apply_google_chat_attachment_notice.py \
+     deploy/docker/patches/verify_google_chat_attachment_notice.py \
      deploy/docker/patches/patchlib.py \
-     /tmp/slack-code-emphasis/
-RUN /opt/hermes/.venv/bin/python3 /tmp/slack-code-emphasis/apply_slack_code_emphasis.py /opt/hermes && \
+     /tmp/message-surface/
+RUN /opt/hermes/.venv/bin/python3 /tmp/message-surface/apply_slack_code_emphasis.py /opt/hermes && \
     grep -q "_CODE_SENTINEL_RE" /opt/hermes/plugins/platforms/slack/block_kit.py && \
     ! grep -q "inline code is opaque" /opt/hermes/plugins/platforms/slack/block_kit.py && \
+    /opt/hermes/.venv/bin/python3 /tmp/message-surface/apply_google_chat_attachment_notice.py /opt/hermes && \
+    grep -qF "kube-agents patch: attachment-fallback notice" /opt/hermes/plugins/platforms/google_chat/adapter.py && \
+    grep -qF "_credential_proxy_relay_patched" /opt/hermes/plugins/platforms/google_chat/adapter.py && \
+    ! grep -qF "No he podido adjuntar" /opt/hermes/plugins/platforms/google_chat/adapter.py && \
     cd /opt/hermes && \
-    /opt/hermes/.venv/bin/python3 /tmp/slack-code-emphasis/verify_slack_code_emphasis.py && \
-    rm -rf /tmp/slack-code-emphasis
+    /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_slack_code_emphasis.py && \
+    /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_google_chat_attachment_notice.py && \
+    rm -rf /tmp/message-surface
 
 # Perf: hide worker-only kanban tools from orchestrator profiles. Upstream gates
 # every lifecycle tool with _check_kanban_mode, which is true for any profile

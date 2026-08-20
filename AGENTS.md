@@ -10,7 +10,7 @@ This repository contains the Kubernetes Agentic Harness (`kube-agents`). It is a
   - `chat/`: The Planning Agent front door — the `default` Hermes profile that receives chat ingress, plans the work, and delegates each piece to a specialist.
   - `platform/`: Configuration for the Platform Agent, scaffolded at pod startup into the `platform` profile.
   - `cluster/`: The Cluster Agent profile _template_ (persona, scoped config, and runtime-debugging skills). The Platform Agent scaffolds this into per-cluster Hermes profiles at runtime; it is not deployed directly.
-- `.agents/skills/`: Repository-level skills, not shipped in the agent images — review skills (adversarial change review, security audits, docs-drift, IaC parity, skill quality) run against pull requests and clusters, plus the `install-kube-agents`/`uninstall-kube-agents`/`upgrade-kube-agents` lifecycle skills that drive the repository's installer scripts.
+- `.agents/skills/`: Repository-level skills, not shipped in the agent images — review skills (adversarial change review, security audits, docs-drift, skill quality) run against pull requests and clusters, plus the `install-kube-agents`/`uninstall-kube-agents`/`upgrade-kube-agents` lifecycle skills that drive the repository's installer scripts.
 - `charts/`: Canonical Helm charts (`kube-agents`) for deploying the Kube-Agents operator and profiles.
 - `terraform/`: Companion reusable Terraform modules (`gke-cluster`, `kube-agents-iam`, `chat-pubsub`, `github-minter`, `gke-backup-plan`, `drift-pubsub`) for infrastructure provisioning, plus `examples/full-install/`, the single-apply composition that installs the Helm chart on top. `drift-pubsub` is not yet part of that composition.
 - `deploy/`: Deployment infrastructure code (Dockerfile, Kustomize bases, shared runtime assets).
@@ -20,11 +20,11 @@ This repository contains the Kubernetes Agentic Harness (`kube-agents`). It is a
   - `architecture/`: The end-state architecture specification (`01`–`08`). Describes the target, not
     what ships today.
   - `designs/`: Per-feature design documents.
-- `k8s-operator/`: Go/Kubebuilder operator reconciling `PlatformAgent` Custom Resources, plus provisioning scripts.
+- `k8s-operator/`: Go/Kubebuilder operator reconciling `PlatformAgent` Custom Resources, plus the shared installer helpers under `scripts/`.
 - `examples/`: Example integrations (LiteLLM provider configs, vLLM serving, inference replay).
 - `bench/`: Evaluation harness that runs [kubernetes-sigs/devops-bench](https://github.com/kubernetes-sigs/devops-bench) against the Platform Agent as a pip-installed library.
 - `images.json`: Inventory of every container image an install pulls, with its upstream reference
-  and pin. Read by `make mirror-images`, the provisioning scripts, and the docs generator.
+  and pin. Read by `make mirror-images`, the kustomize deploy targets, and the docs generator.
 - `INSTALL.md`: Installation guide.
 - `README.md`: Project overview.
 
@@ -177,7 +177,7 @@ adding a paragraph, check whether the topic already has an owner:
 | User-facing narrative, how-to, and reference             | `docs/site/src/content/docs/`                |
 | End-state architecture                                   | `docs/architecture/`                         |
 | Per-feature design rationale                             | `docs/designs/`                              |
-| What each provisioning script does                       | `k8s-operator/scripts/README.md`             |
+| Shared installer defaults and the `vars.sh` state model  | `k8s-operator/scripts/README.md`             |
 | Which container images an install pulls, and their pins  | `images.json`                                |
 | The install procedure (self-contained, agent-executable) | `INSTALL.md`                                 |
 | What the agent is and is not permitted to do             | the site's `reference/security-and-iam.md`   |
@@ -186,7 +186,7 @@ adding a paragraph, check whether the topic already has an owner:
 Rules:
 
 - **Do not hand-write a table that mirrors a machine-readable file.** The cron schedule, the skill
-  catalogue, the provisioning steps, and the container-image inventory are generated into
+  catalogue, and the container-image inventory are generated into
   `<!-- BEGIN GENERATED -->` regions by `scripts/generate_docs.py`, which also writes
   `docs/family-roster.txt` whole. Edit the source, then run `make docs-generate`.
 - **Do not restate the `make` targets.** `make help` prints them from the Makefile. New targets get
@@ -322,17 +322,15 @@ documentation map (`docs/README.md`) — the same four checks CI runs.
   observed, what you could not cover. Round-by-round history of a _reviewer's_ findings is the
   exception: it belongs in the threads, where a reply naming the fix and its commit stays attached
   to the finding it answers.
-- **IaC parity review when a PR touches more than one install surface's territory:**
-  the provisioning scripts (`k8s-operator/scripts/`, `k8s-operator/config/`), the
-  Terraform modules, and the Helm chart each express the same install, and nothing in
-  the languages keeps them together. `make iac-parity-check`
-  (`scripts/check_iac_parity.py`) enforces the scalar subset — image tags, IAM role
-  bundles, identifiers, KMS and backup defaults — and CI runs it. Run the
-  `review-iac-parity` skill (`.agents/skills/review-iac-parity/SKILL.md`) for the
-  structural drift no scalar comparison catches: a resource only one surface creates,
-  a knob only one surface can express. The scripts and `k8s-operator/config/` are the
-  source of truth; deliberate divergences are listed in both the skill and the
-  script's docstring, and adding one means editing both.
+- **The install has one engine: Terraform + Helm.** `terraform/examples/full-install`
+  (through its `lifecycle.sh`) owns every GCP resource and the chart owns every
+  Kubernetes resource; `install.sh` / `uninstall.sh` / `upgrade.sh` are front doors
+  that generate `terraform.tfvars` and drive it. Do not add a second expression of an
+  install step — a kubectl-applied manifest a chart template already renders, a gcloud
+  call the composition already makes. The two places manifests still exist twice on
+  purpose (`k8s-operator/config/crd` + `config/rbac` mirrored into the chart by
+  `make chart-check`, and the kustomize integration manifests kept in step with the
+  chart templates for the dev path) each have a check or a comment saying so.
 - **Expect an automated review after opening a PR.** Opening the pull request starts
   `kube-agents-bot`; see
   [Automated Review After Opening a Pull Request](#automated-review-after-opening-a-pull-request)
