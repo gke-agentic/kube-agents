@@ -20,9 +20,11 @@ from tests.testing.common import (
 from tests.testing.release import (
     MOCK_GH_TOKEN,
     MOCK_GH_USER,
+    MOCK_SAMPLE_COMMIT_SHA,
     MOCK_TARGET_RELEASE_TAG,
     create_mock_cosign_binary,
     create_mock_docker_binary,
+    create_mock_git_binary,
     create_mock_helm_binary,
 )
 
@@ -303,19 +305,10 @@ class PublishHelmChartScriptTest(unittest.TestCase):
             bin_dir = pathlib.Path(temp_dir.name) / "bin"
             create_mock_helm_binary(bin_dir)
             create_mock_cosign_binary(bin_dir)
-
-            empty_tree_sha = subprocess.check_output(
-                ["git", "mktree"],
-                input=b"",
-                cwd=str(_REPO_ROOT),
-            ).decode().strip()
-            empty_commit = subprocess.check_output(
-                ["git", "commit-tree", empty_tree_sha, "-m", "empty commit for test"],
-                cwd=str(_REPO_ROOT),
-            ).decode().strip()
+            create_mock_git_binary(bin_dir, fail_archive=True)
 
             proc = self._run_script(
-                [MOCK_TARGET_RELEASE_TAG, empty_commit],
+                [MOCK_TARGET_RELEASE_TAG, MOCK_SAMPLE_COMMIT_SHA],
                 env={"CI": "true"},
                 bin_dir=str(bin_dir),
             )

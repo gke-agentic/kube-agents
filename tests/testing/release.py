@@ -179,3 +179,36 @@ exit 0
     helm_path.chmod(0o755)
     return helm_path, log_path
 
+
+def create_mock_git_binary(
+    bin_dir,
+    log_file=None,
+    resolved_commit=None,
+    fail_rev_parse=False,
+    fail_archive=False,
+):
+    """Creates a mock git CLI supporting rev-parse and archive commands."""
+    bin_path = pathlib.Path(bin_dir)
+    bin_path.mkdir(parents=True, exist_ok=True)
+    git_path = bin_path / "git"
+    log_path = log_file if log_file else (bin_path / "git.log")
+
+    commit_sha = resolved_commit if resolved_commit else MOCK_SAMPLE_COMMIT_SHA
+    rev_parse_action = "exit 1" if fail_rev_parse else f'echo "{commit_sha}"\n  exit 0'
+    archive_exit = "exit 1" if fail_archive else "exit 0"
+
+    content = f"""#!/bin/sh
+echo "mock git: $@" >> "{log_path}"
+if [ "$1" = "rev-parse" ]; then
+  {rev_parse_action}
+fi
+if [ "$1" = "archive" ]; then
+  {archive_exit}
+fi
+exit 0
+"""
+    git_path.write_text(content)
+    git_path.chmod(0o755)
+    return git_path, log_path
+
+
