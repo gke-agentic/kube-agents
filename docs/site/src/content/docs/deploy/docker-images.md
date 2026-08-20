@@ -69,7 +69,7 @@ Needed only to rebuild the images above from source, not to run an install. Each
 
 ## Published images
 
-Published via GitHub Actions workflows on push to `main` (tagged `:latest`) and on SemVer git tag pushes (`*.*.*`, tagged `X.Y.Z`); every publish also adds a commit-SHA tag.
+Built and published via GitHub Actions workflows on push to `main` (tagged with commit SHA and `:latest`). Production SemVer release tags (`X.Y.Z`) are promoted from validated commit images by the release publishing workflow without rebuilding.
 
 ### `platform-agent`
 
