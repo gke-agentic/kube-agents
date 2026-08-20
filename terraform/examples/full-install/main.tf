@@ -390,6 +390,9 @@ resource "helm_release" "kube_agents" {
     global = {
       imageRegistry           = var.image_registry
       thirdPartyImageRegistry = var.third_party_image_registry
+      # Secret names only. The Secrets themselves are created out of band, so
+      # no registry credential is ever written to Terraform state.
+      imagePullSecrets = var.image_pull_secrets
     }
     operator = {
       image = {

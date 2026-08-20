@@ -254,6 +254,95 @@ jobs:
             exit 1
           fi
 
+          # global.imagePullSecrets has to reach every pod the chart renders, and
+          # a `with` block omitted from one of them still renders valid YAML —
+          # the install then works everywhere except the pod nobody remembered,
+          # and on the pre-delete cleanup Job that means a failed uninstall.
+          #
+          # So derive the list from the render rather than freeze it here: a
+          # template added later is checked without anyone remembering to add
+          # it, which a hard-coded list is exactly what fails at. --show-only
+          # per template so a hit in one cannot cover for a miss in another.
+          # Still missed: a template that only renders under non-default values.
+          checked=0
+          for tpl in charts/kube-agents/templates/*.yaml; do
+            rel="templates/$(basename "$tpl")"
+            out=$(helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
+              --set global.imagePullSecrets[0]=regcred --show-only "$rel" 2>/dev/null) || continue
+            grep -qE '^[[:space:]]+containers:' <<<"$out" || continue
+            checked=$((checked + 1))
+            if ! grep -qF 'name: "regcred"' <<<"$out"; then
+              echo "global.imagePullSecrets did not reach the pod spec in $rel" >&2
+              exit 1
+            fi
+          done
+          # Three under these values: the operator, LiteLLM, and the cleanup Job.
+          # A drop means a template stopped rendering and quietly left the loop.
+          if [ "$checked" -lt 3 ]; then
+            echo "expected at least 3 pod-rendering templates, checked $checked" >&2
+            exit 1
+          fi
+          # The PlatformAgent CR carries no pod spec of its own, so the loop
+          # above skips it — and it is what gives the agent pods the operator
+          # renders their pull identity.
+          if ! helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
+            --set global.imagePullSecrets[0]=regcred \
+            --show-only templates/platform-agent-cr.yaml | grep -qF 'name: "regcred"'; then
+            echo "global.imagePullSecrets did not reach the PlatformAgent CR" >&2
+            exit 1
+          fi
+          # The {name: x} spelling Kubernetes itself uses has to work too:
+          # rendered as a value it yields the Secret name "map[name:regcred]",
+          # which the API server accepts and the kubelet cannot find.
+          if ! helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
+            --set global.imagePullSecrets[0].name=regcred \
+            --show-only templates/platform-agent-cr.yaml | grep -qF 'name: "regcred"'; then
+            echo "the {name: x} form of global.imagePullSecrets did not render" >&2
+            exit 1
+          fi
+          # Any other shape, and a name that is empty either way, stops the
+          # render instead of producing a Secret reference nothing resolves.
+          for bad in 'imagePullSecrets: [{secretName: regcred}]' \
+                     'imagePullSecrets: [""]' \
+                     'imagePullSecrets: [{name: ""}]'; do
+            printf 'global:\n  %s\n' "$bad" > /tmp/bad-pull-secrets.yaml
+            if helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
+              -f /tmp/bad-pull-secrets.yaml > /dev/null 2>&1; then
+              echo "expected 'global.$bad' to fail the render" >&2
+              exit 1
+            fi
+          done
+          # The operator needs it as an env var too, for PlatformAgents this
+          # release did not render.
+          if ! helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
+            --set global.imagePullSecrets[0]=regcred \
+            --set global.imagePullSecrets[1]=other \
+            --show-only templates/operator-deployment.yaml \
+            | grep -A1 IMAGE_PULL_SECRETS | grep -qF 'value: "regcred,other"'; then
+            echo "IMAGE_PULL_SECRETS did not follow global.imagePullSecrets" >&2
+            exit 1
+          fi
+          # Unset renders the key nowhere, which is what keeps a default install
+          # byte-identical to one from before this value existed.
+          if helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
+            | grep -qE "imagePullSecrets:|IMAGE_PULL_SECRETS"; then
+            echo "imagePullSecrets rendered while global.imagePullSecrets is empty" >&2
+            exit 1
+          fi
+          # The templates the derive-from-the-render loop above cannot see,
+          # because they render only under non-default values: the hindsight
+          # store (two pod specs) and the minter (one).
+          gated=$(helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
+            --set global.imagePullSecrets[0]=regcred \
+            --set platformAgent.harness.memory.provider=hindsight \
+            "${MINTER_FLAGS[@]}" --set githubMinter.appId=12345 \
+            --show-only templates/hindsight.yaml \
+            --show-only templates/github-minter.yaml)
+          if [ "$(grep -cF 'name: "regcred"' <<<"$gated")" -ne 3 ]; then
+            echo "global.imagePullSecrets did not reach all 3 hindsight/minter pod specs" >&2
+            exit 1
+          fi
+
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:

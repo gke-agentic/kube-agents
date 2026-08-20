@@ -366,6 +366,10 @@ Abstracts the pod/deployment configuration. The controller synthesises a `Deploy
 - `image` — container image repository.
 - `tag` — image tag. Applies only when `image` is set without a tag or digest, falling back to `latest` there; when `image` is omitted, the operator's build-injected default version applies instead.
 - `imagePullPolicy` — one of `Always`, `Never`, `IfNotPresent`. Default `IfNotPresent`.
+- `imagePullSecrets` — Secrets in the agent's namespace holding registry credentials, as
+  `- name: <secret>` entries. Referenced, not created: each must exist before the pod is
+  scheduled. Pod-scoped, so it covers the agent, both injected sidecars, anything in
+  `initContainers`/`sidecars`, and the OCI image volumes `AgentPlugin`s mount.
 - `browserArgs` — extra command-line args for the agent's browser (e.g. `--no-sandbox`).
 - `runtimeClassName` — pod runtime class (e.g. `gvisor`).
 - `env` — additional container environment variables.
@@ -376,6 +380,8 @@ Abstracts the pod/deployment configuration. The controller synthesises a `Deploy
 - `scaleToZero` — when `true`, scales the deployment to 0 replicas (idle cost saving).
 
 Default image: `ghcr.io/gke-labs/kube-agents/platform-agent:<operator release version>` (release builds inject the version; development builds fall back to `latest`), overridable operator-wide via the `PLATFORM_AGENT_IMAGE` env var on the controller manager (see [Docker images § Private / custom registry](/kube-agents/deploy/docker-images/#private--custom-registry)). Rebuild with `make dev-rebuild-agent ARGS="platform"` for local iteration.
+
+`imagePullSecrets` has the same operator-wide form, `IMAGE_PULL_SECRETS` on the controller manager, taking comma-separated Secret names. It differs from the image overrides in one way: a CR that sets `imagePullSecrets` **replaces** the operator's list rather than merging with it, so an agent that names its own registry identity is stating it completely. See [Docker images § Registry authentication](/kube-agents/deploy/docker-images/#registry-authentication).
 
 ## `spec.security`
 
@@ -570,7 +576,7 @@ one reviewable place.
 
 - On create/update, the controller ensures the Deployment, Service, ServiceAccount, and ConfigMaps match the spec.
 - On delete, it garbage-collects owned resources.
-- The admission webhook (behind cert-manager) validates the spec before it's persisted; it enforces at most one `PlatformAgent` per project, forbids sensitive environment variable overrides (`API_SERVER_KEY`, `HERMES_HOME`) and privileged containers/volumes (`hostPath`), and acts as a name-based tripwire against obvious privileged service account names (`cluster-admin`, `system:admin`). Note that full RBAC least-privilege enforcement is handled by controller- and pipeline-level policies rather than the admission webhook.
+- The admission webhook (behind cert-manager) validates the spec before it's persisted; it enforces at most one `PlatformAgent` per project, forbids sensitive environment variable overrides (`API_SERVER_KEY`, `HERMES_HOME`) and privileged containers/volumes (`hostPath`), requires each `imagePullSecrets` entry to name a Secret, and acts as a name-based tripwire against obvious privileged service account names (`cluster-admin`, `system:admin`). Note that full RBAC least-privilege enforcement is handled by controller- and pipeline-level policies rather than the admission webhook.
 - The `kubeagents.x-k8s.io/prevent-deletion: "true"` annotation on a `PlatformAgent` blocks deletion of the resource via the validating webhook (`ValidateDelete`). This serves as an accidental-deletion guardrail rather than an authorization control — `ValidateUpdate` does not block removing the annotation, so any principal with update permissions can patch the annotation off before deleting.
 - The Helm chart renders and applies the CR (the install engine drives it through `terraform apply`); you can also edit it directly with `kubectl edit`.
 

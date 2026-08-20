@@ -140,20 +140,39 @@ for `image_tag` — so a mirror populated at `latest` against an `image_tag` of
 reports success and the pods sit in ImagePullBackOff. Pass the same value to
 both.
 
-The mirror must be readable with the nodes' own credentials — an Artifact
-Registry in the same project is the simple case. No `imagePullSecrets` are
-rendered.
+A mirror the nodes cannot read on their own — Harbor or Artifactory with token
+auth, rather than an Artifact Registry in the same project — needs
+`image_pull_secrets` as well. It takes Secret names, and the Secrets are
+referenced rather than created, which is what keeps registry credentials out of
+Terraform state. Create them before applying, and create the namespace first:
+`create_namespace = true` on the release means Helm has not made it yet.
 
-**cert-manager images follow the same prefix.** `helm_release.cert_manager` is
-a separate release of an upstream chart and never sees the
-`helm_release.kube_agents` values, but the composition passes it the same
-registry through its own image overrides
+```bash
+kubectl create namespace kubeagents-system
+kubectl create secret docker-registry regcred \
+  --namespace kubeagents-system \
+  --docker-server=harbor.example.com \
+  --docker-username=robot\$kube-agents \
+  --docker-password="$TOKEN"
+```
+
+Both are idempotent against what Helm then finds. The names reach every pod the
+chart renders and, through `IMAGE_PULL_SECRETS` on the operator and
+`spec.deployment.imagePullSecrets` on the `PlatformAgent`, the agent pods the
+operator renders too.
+
+**cert-manager images follow the same prefix, but not the same credentials.**
+`helm_release.cert_manager` is a separate release of an upstream chart and
+never sees the `helm_release.kube_agents` values, but the composition passes
+it the same registry through its own image overrides
 (`local.cert_manager_mirror_values`), so its five images
 (`cert-manager-controller`, `-cainjector`, `-webhook`, `-acmesolver`,
 `-startupapicheck`) are pulled as `<prefix>/<name>:<tag>` — the layout
 `make mirror-images` writes from `images.json`, which carries all five
-entries. What is **not** covered is the chart itself: it is fetched over the
-network from `https://charts.jetstack.io`, which an air-gapped runner cannot
+entries. `image_pull_secrets` does **not** reach it, so a mirror that needs
+credentials means installing cert-manager yourself (below). Also not covered
+is the chart itself: it is fetched over the network from
+`https://charts.jetstack.io`, which an air-gapped runner cannot
 reach at all. On such a runner, set `enable_cert_manager = false` and install
 cert-manager yourself from the mirror before applying. `enable_webhooks`
 needs cert-manager present either way; the composition's `depends_on` only

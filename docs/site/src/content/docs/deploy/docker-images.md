@@ -256,9 +256,46 @@ Hermes pin is by digest, and a `docker pull`/`push` round trip changes it.
 
 ### Registry authentication
 
-Out of scope: no install path renders `imagePullSecrets`. The mirror has to be readable with the
-nodes' own credentials — an Artifact Registry in the same project is the simple case — or
-reached through a pull-through cache.
+A mirror the nodes can already read — an Artifact Registry in the same project, or a pull-through
+cache — needs nothing here. One that has to be authenticated to, Harbor or Artifactory with token
+auth, needs `imagePullSecrets`, set in whichever of these matches how the install was made:
+
+- `global.imagePullSecrets` in the Helm chart, a list of Secret names — or of `{name: <secret>}`
+  maps, the shape a `PodSpec` takes; any other shape fails the render. It reaches every pod the
+  chart renders — the operator, the LiteLLM gateway, the `pre-delete` cleanup Job — and, through
+  `IMAGE_PULL_SECRETS` on the controller manager and `spec.deployment.imagePullSecrets` on the
+  `PlatformAgent` it creates, the agent pods the operator renders as well.
+- `image_pull_secrets` in `terraform/examples/full-install`, which passes the same list to the
+  chart.
+- `spec.deployment.imagePullSecrets` on a `PlatformAgent` written by hand, or
+  `IMAGE_PULL_SECRETS` (comma-separated Secret names) on the controller manager as the fleet-wide
+  default for agents that do not set it. The CR **replaces** that default rather than adding to
+  it, on the same terms as `spec.deployment.image` against `PLATFORM_AGENT_IMAGE`.
+
+The list is pod-scoped, so it covers every image in an agent pod: the agent, the credential-proxy
+and fluent-bit sidecars, anything in `initContainers`/`sidecars`, and the OCI image volumes
+`AgentPlugin`s mount. Kubernetes has no per-container split.
+
+The Secrets are referenced, never created. Registry credentials would otherwise live in Helm
+release data and Terraform state, so each Secret has to exist in the agent's namespace before the
+pod is scheduled:
+
+```bash
+kubectl create namespace kubeagents-system
+kubectl create secret docker-registry regcred \
+  --namespace kubeagents-system \
+  --docker-server=harbor.example.com \
+  --docker-username=robot\$kube-agents \
+  --docker-password="$TOKEN"
+```
+
+Two things this does not cover. The provisioning scripts have no flag for it, so `install.sh`
+sets no pull identity for the operator, LiteLLM, and token-minter pods it applies — those need a
+mirror the nodes can read, or a hand-patched Deployment. Agent pods are reachable on that path:
+set `IMAGE_PULL_SECRETS` on the controller manager yourself, the same way `INSTALL.md` documents
+setting `PLATFORM_AGENT_IMAGE`. And cert-manager is a separate Helm release of an upstream chart,
+unaffected by any of the above — on a cluster whose registry needs authenticating to, install it
+yourself from the mirror and set `enable_cert_manager = false`.
 
 ## Local builds
 

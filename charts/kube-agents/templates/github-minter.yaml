@@ -95,6 +95,9 @@ spec:
         {{- include "kube-agents.labels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ $m.ksaName }}
+      {{- with (include "kube-agents.imagePullSecrets" .) }}
+      {{- . | nindent 6 }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001

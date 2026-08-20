@@ -28,6 +28,10 @@ api_server_key = "REPLACE_WITH_A_STRONG_RANDOM_KEY"
 # Only if the mirror keeps third-party images (LiteLLM, fluent-bit) elsewhere;
 # defaults to image_registry.
 # third_party_image_registry = "us-east4-docker.pkg.dev/my-project/mirror"
+# Only if that mirror needs authenticating to (Harbor, Artifactory rather than
+# an Artifact Registry the nodes can already read). Names Secrets you create
+# yourself, in the namespace above, before applying — see the README.
+# image_pull_secrets = ["regcred"]
 
 # Cluster topology. "autopilot" (default) or "standard" — standard reproduces
 # the cluster the retired provisioning scripts built, and is the only mode

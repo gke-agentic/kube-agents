@@ -128,9 +128,39 @@ either way.
 Anything in `operator.extraEnv` is appended after the env vars above and
 therefore wins.
 
-Registry authentication is out of scope — the mirror must be readable with the
-nodes' own credentials (an in-project Artifact Registry, or a pull-through
-cache). The chart renders no `imagePullSecrets`.
+`global.imagePullSecrets` is the pull identity for a mirror the nodes' own
+credentials cannot read — Harbor or Artifactory with token auth, rather than an
+in-project Artifact Registry. An entry is either a bare Secret **name**, so a
+single one is reachable with `--set global.imagePullSecrets[0]=regcred`, or the
+`{name: <secret>}` map a `PodSpec` takes; any other shape fails the render. It
+reaches the same two populations `global.imageRegistry` does: every pod the chart renders
+(operator, LiteLLM, the pre-delete cleanup Job) and the agent pods the operator
+renders, via `IMAGE_PULL_SECRETS` on the manager and `spec.deployment.imagePullSecrets`
+on the `PlatformAgent`. A hand-written `PlatformAgent` that sets that field
+replaces the operator's default rather than adding to it.
+
+The Secrets are referenced, never created: keeping registry credentials out of
+Helm release data is the point, and the chart has no way to write one that would
+not end up there. Create them yourself before installing, which for the usual
+case means creating the namespace first, since Helm has not made it yet:
+
+```bash
+kubectl create namespace kubeagents-system
+kubectl create secret docker-registry regcred \
+  --namespace kubeagents-system \
+  --docker-server=harbor.example.com \
+  --docker-username=robot\$kube-agents \
+  --docker-password="$TOKEN"
+```
+
+Both commands are idempotent against what Helm then finds. The cleanup Job is
+the one to get right: it is a `pre-delete` hook, so a pull it cannot
+authenticate fails `helm uninstall` at the one moment the operator is still
+running to clear the CR's finalizer.
+
+It does not reach cert-manager, which this chart never renders and which
+`operator.webhooks.enabled` requires you to have installed already. Pull that
+one from the mirror through its own chart's values.
 
 ### LiteLLM gateway
 

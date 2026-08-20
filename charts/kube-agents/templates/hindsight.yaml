@@ -67,6 +67,9 @@ spec:
         {{- include "kube-agents.labels" . | nindent 8 }}
     spec:
       serviceAccountName: hindsight
+      {{- with (include "kube-agents.imagePullSecrets" .) }}
+      {{- . | nindent 6 }}
+      {{- end }}
       securityContext:
         fsGroup: 1000
       containers:
@@ -195,6 +198,9 @@ spec:
         app.kubernetes.io/component: postgresql
         {{- include "kube-agents.labels" . | nindent 8 }}
     spec:
+      {{- with (include "kube-agents.imagePullSecrets" .) }}
+      {{- . | nindent 6 }}
+      {{- end }}
       containers:
         - name: postgresql
           # pgvector supplies the vector extension Hindsight's embeddings need.

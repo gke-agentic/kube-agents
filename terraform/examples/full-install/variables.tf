@@ -108,9 +108,26 @@ variable "image_tag" {
 }
 
 variable "image_registry" {
-  description = "Registry prefix for the images built from this project (operator, agent, credential proxy). Empty pulls the public ghcr.io images. Set this for a cluster that may only pull from an approved registry, after copying the images there with `make mirror-images MIRROR_PREFIX=<prefix> IMAGE_TAG=<tag>` from the repository root — the prefix here must be the same one, and that IMAGE_TAG must be the image_tag set below, since the mirror only holds the tag it was told to copy. Registry authentication is out of scope: the mirror has to be readable with the nodes' own credentials, e.g. an Artifact Registry in this project."
+  description = "Registry prefix for the images built from this project (operator, agent, credential proxy). Empty pulls the public ghcr.io images. Set this for a cluster that may only pull from an approved registry, after copying the images there with `make mirror-images MIRROR_PREFIX=<prefix> IMAGE_TAG=<tag>` from the repository root — the prefix here must be the same one, and that IMAGE_TAG must be the image_tag set below, since the mirror only holds the tag it was told to copy. A mirror the nodes' own credentials cannot read (an Artifact Registry in this project can be) also needs image_pull_secrets."
   type        = string
   default     = ""
+}
+
+variable "image_pull_secrets" {
+  description = "Names of docker-registry Secrets in the kube-agents namespace holding credentials for image_registry, for a mirror the nodes cannot read on their own (Harbor, Artifactory). They are referenced, never created: this composition would otherwise hold registry credentials in Terraform state. Create them before `terraform apply` — and create the namespace first, since Helm has not made it yet: `kubectl create namespace <namespace>` then `kubectl create secret docker-registry <name> -n <namespace> --docker-server=... --docker-username=... --docker-password=...`, both idempotent against what Helm then finds. Does not reach helm_release.cert_manager, on the same terms as image_registry: a cluster whose registry needs authenticating to wants enable_cert_manager = false and cert-manager installed by hand."
+  type        = list(string)
+  default     = []
+
+  # A blank entry renders `- name: ""` into four pod specs. The API server
+  # accepts it — core PodSpec validation only rejects a name that differs from
+  # its own trimmed form — and the kubelet then looks for a Secret named "",
+  # fails, and pulls anonymously. That surfaces as ImagePullBackOff, several
+  # layers from the tfvars typo. The operator's webhook rejects the same thing
+  # on a hand-written PlatformAgent.
+  validation {
+    condition     = alltrue([for s in var.image_pull_secrets : trimspace(s) != ""])
+    error_message = "Every image_pull_secrets entry must name a Secret."
+  }
 }
 
 variable "third_party_image_registry" {

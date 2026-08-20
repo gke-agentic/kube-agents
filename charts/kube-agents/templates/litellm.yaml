@@ -89,6 +89,9 @@ spec:
       {{- if eq $provider "vertex_ai" }}
       serviceAccountName: {{ $vertexSA | quote }}
       {{- end }}
+      {{- with (include "kube-agents.imagePullSecrets" .) }}
+      {{- . | nindent 6 }}
+      {{- end }}
       containers:
         - name: litellm-container
           image: "{{ include "kube-agents.imageRepository" (dict "repository" .Values.litellm.image.repository "registry" (include "kube-agents.thirdPartyImageRegistry" .)) }}:{{ .Values.litellm.image.tag }}"

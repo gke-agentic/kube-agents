@@ -15,6 +15,38 @@ global:
   # fluent-bit). Defaults to imageRegistry; set it only when the mirror keeps
   # third-party images under a different path.
   thirdPartyImageRegistry: ""
+  # Secrets holding credentials for a mirror that has to be authenticated to
+  # (Harbor, Artifactory). Leave empty when the nodes can read it themselves —
+  # an Artifact Registry in the same project, or a pull-through cache.
+  #
+  # An entry is either a bare name or the {name: <secret>} map Kubernetes' own
+  # PodSpec uses; both render the same. Anything else fails the render rather
+  # than reaching a pod, because a Secret reference that does not resolve is a
+  # silent fallback to an anonymous pull.
+  #
+  # Referenced, not created: each Secret must already exist in the namespace of
+  # the pod that needs it. That is the release namespace for everything this
+  # chart renders, and the agent's own namespace for a PlatformAgent written
+  # elsewhere against the IMAGE_PULL_SECRETS default below — imagePullSecrets
+  # is a name, not a cross-namespace reference, so a fleet default needs the
+  # Secret in every namespace that runs an agent. Create the namespace and the
+  # Secret before installing, since a pod that cannot pull cannot wait for one
+  # to appear:
+  #
+  #   kubectl create namespace kubeagents-system
+  #   kubectl create secret docker-registry regcred -n kubeagents-system \
+  #     --docker-server=registry.example.com --docker-username=... --docker-password=...
+  #
+  # This reaches every pod of the release AND the agent pods the operator
+  # renders later: it is passed on as IMAGE_PULL_SECRETS on the controller
+  # manager and set on the PlatformAgent CR. A PlatformAgent that sets
+  # spec.deployment.imagePullSecrets itself replaces this rather than adding
+  # to it.
+  #
+  # It does NOT reach the cert-manager release that
+  # terraform/examples/full-install installs alongside — a separate release of
+  # an upstream chart, on the same terms as imageRegistry.
+  imagePullSecrets: []
 
 operator:
   enabled: true
