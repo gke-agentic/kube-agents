@@ -562,6 +562,36 @@ func TestDeriveAgentImageFromOperator(t *testing.T) {
 			operatorImage: "ghcr.io/gke-labs/kube-agents/k8s-operator:latest",
 			expected:      "ghcr.io/gke-labs/kube-agents/platform-agent:latest",
 		},
+		{
+			name:          "registry host with port and SemVer tag",
+			operatorImage: "registry.example.com:5000/kube-agents/k8s-operator:0.2.0",
+			expected:      "registry.example.com:5000/kube-agents/platform-agent:0.2.0",
+		},
+		{
+			name:          "localhost with port and latest tag",
+			operatorImage: "localhost:5000/k8s-operator:latest",
+			expected:      "localhost:5000/platform-agent:latest",
+		},
+		{
+			name:          "registry host with port and digest",
+			operatorImage: "registry.example.com:5000/kube-agents/k8s-operator@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+			expected:      "registry.example.com:5000/kube-agents/platform-agent@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+		},
+		{
+			name:          "registry host with port and no tag",
+			operatorImage: "registry.example.com:5000/kube-agents/k8s-operator",
+			expected:      "registry.example.com:5000/kube-agents/platform-agent:latest",
+		},
+		{
+			name:          "unqualified image with tag",
+			operatorImage: "k8s-operator:0.2.0",
+			expected:      "platform-agent:0.2.0",
+		},
+		{
+			name:          "unqualified image without tag",
+			operatorImage: "k8s-operator",
+			expected:      "platform-agent:latest",
+		},
 	}
 
 	for _, tt := range tests {

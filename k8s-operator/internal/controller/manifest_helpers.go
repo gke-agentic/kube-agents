@@ -178,17 +178,19 @@ func otelTelemetryEnvVars(agentType, name, namespace, endpoint string) []corev1.
 // E.g.:
 //   "ghcr.io/gke-labs/kube-agents/k8s-operator:0.2.0"                -> "ghcr.io/gke-labs/kube-agents/platform-agent:0.2.0"
 //   "ghcr.io/gke-labs/kube-agents/k8s-operator:rc_2608201147_1c06e1a" -> "ghcr.io/gke-labs/kube-agents/platform-agent:rc_2608201147_1c06e1a"
-//   "mirror.corp.internal/kube-agents/k8s-operator:0.2.0"            -> "mirror.corp.internal/kube-agents/platform-agent:0.2.0"
+//   "mirror.corp.internal:5000/kube-agents/k8s-operator:0.2.0"       -> "mirror.corp.internal:5000/kube-agents/platform-agent:0.2.0"
 //   "k8s-operator:1c06e1ab71fdeea55e6100e61c0394206188a5ba"          -> "platform-agent:1c06e1ab71fdeea55e6100e61c0394206188a5ba"
 func deriveAgentImageFromOperator(operatorImage string) string {
 	lastSlash := strings.LastIndex(operatorImage, "/")
 	prefix := ""
+	refPart := operatorImage
 	if lastSlash >= 0 {
 		prefix = operatorImage[:lastSlash+1]
+		refPart = operatorImage[lastSlash+1:]
 	}
 	suffix := ":latest"
-	if tagOrDigest := strings.IndexAny(operatorImage, ":@"); tagOrDigest >= 0 {
-		suffix = operatorImage[tagOrDigest:]
+	if tagOrDigest := strings.IndexAny(refPart, ":@"); tagOrDigest >= 0 {
+		suffix = refPart[tagOrDigest:]
 	}
 	return prefix + appNamePlatformAgent + suffix
 }
