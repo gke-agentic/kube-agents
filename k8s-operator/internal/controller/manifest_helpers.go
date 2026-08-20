@@ -55,6 +55,7 @@ const (
 	// private registry. Set on the controller-manager Deployment; a CR's
 	// spec.deployment.image still takes precedence over PLATFORM_AGENT_IMAGE.
 	platformAgentImageEnvVar   = "PLATFORM_AGENT_IMAGE"
+	operatorImageEnvVar        = "OPERATOR_IMAGE"
 	credentialProxyImageEnvVar = "CREDENTIAL_PROXY_IMAGE" // #nosec G101 -- Environment variable name, not hardcoded credentials
 	fluentBitImageEnvVar       = "FLUENT_BIT_IMAGE"
 
@@ -171,12 +172,36 @@ func otelTelemetryEnvVars(agentType, name, namespace, endpoint string) []corev1.
 	}
 }
 
+// deriveAgentImageFromOperator derives the platform-agent image from an operator image reference.
+// It maps the operator image to the platform-agent image while preserving the registry prefix
+// and the tag or digest.
+// E.g.:
+//   "ghcr.io/gke-labs/kube-agents/k8s-operator:0.2.0"                -> "ghcr.io/gke-labs/kube-agents/platform-agent:0.2.0"
+//   "ghcr.io/gke-labs/kube-agents/k8s-operator:rc_2608201147_1c06e1a" -> "ghcr.io/gke-labs/kube-agents/platform-agent:rc_2608201147_1c06e1a"
+//   "mirror.corp.internal/kube-agents/k8s-operator:0.2.0"            -> "mirror.corp.internal/kube-agents/platform-agent:0.2.0"
+//   "k8s-operator:1c06e1ab71fdeea55e6100e61c0394206188a5ba"          -> "platform-agent:1c06e1ab71fdeea55e6100e61c0394206188a5ba"
+func deriveAgentImageFromOperator(operatorImage string) string {
+	lastSlash := strings.LastIndex(operatorImage, "/")
+	prefix := ""
+	if lastSlash >= 0 {
+		prefix = operatorImage[:lastSlash+1]
+	}
+	suffix := ":latest"
+	if tagOrDigest := strings.IndexAny(operatorImage, ":@"); tagOrDigest >= 0 {
+		suffix = operatorImage[tagOrDigest:]
+	}
+	return prefix + appNamePlatformAgent + suffix
+}
+
 // defaultPlatformAgentImage returns the agent image used when a CR omits
-// spec.deployment.image: the PLATFORM_AGENT_IMAGE env var if set, else the
-// public ghcr.io default.
+// spec.deployment.image: the PLATFORM_AGENT_IMAGE env var if set, else derived
+// from OPERATOR_IMAGE if set, else the public ghcr.io default.
 func defaultPlatformAgentImage() string {
 	if img := os.Getenv(platformAgentImageEnvVar); img != "" {
 		return img
+	}
+	if opImg := os.Getenv(operatorImageEnvVar); opImg != "" {
+		return deriveAgentImageFromOperator(opImg)
 	}
 	return fallbackPlatformAgentImage()
 }
