@@ -89,6 +89,20 @@ jobs:
           RELEASE_VERSION: ${{ steps.calculate-version.outputs.release_version }}
         run: ./scripts/release/sign_release_images.sh
 
+      - name: Set up Helm
+        if: steps.verify-eligibility.outputs.skip_release != 'true'
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.2.3
+
+      - name: Package, Publish and Sign Helm Chart
+        if: steps.verify-eligibility.outputs.skip_release != 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.calculate-version.outputs.release_version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_USER: ${{ github.actor }}
+        run: ./scripts/release/publish_helm_chart.sh
+
       - name: Create Git Tag
         if: steps.verify-eligibility.outputs.skip_release != 'true'
         env:

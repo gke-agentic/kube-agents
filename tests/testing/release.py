@@ -50,6 +50,8 @@ MOCK_PERMISSION_SET = "gke-admin"
 MOCK_REGISTRY_PREFIX = "ghcr.io/mock-org"
 MOCK_CHAT_TOPIC_NAME = "custom-rc-chat-topic"
 MOCK_USER_PROFILE_ENABLED = "true"
+MOCK_GH_TOKEN = "mock-gh-token"
+MOCK_GH_USER = "mock-github-actor"
 
 # Mock invocation signals and file names
 MOCK_CALLS_LOG = "calls.log"
@@ -124,3 +126,56 @@ exit 1
     gh_path.write_text(content)
     gh_path.chmod(0o755)
     return gh_path, log_path
+
+
+def create_mock_helm_binary(bin_dir, log_file=None, fail_lint=False, fail_package=False, fail_push=False):
+    """Creates a mock helm CLI supporting lint, package, and push commands."""
+    bin_path = pathlib.Path(bin_dir)
+    bin_path.mkdir(parents=True, exist_ok=True)
+    helm_path = bin_path / "helm"
+    log_path = log_file if log_file else (bin_path / "helm.log")
+
+    lint_exit = "exit 1" if fail_lint else "exit 0"
+    package_exit = "exit 1" if fail_package else "exit 0"
+    push_exit = "exit 1" if fail_push else "exit 0"
+
+    content = f"""#!/bin/sh
+echo "mock helm: $@" >> "{log_path}"
+if [ "$1" = "lint" ]; then
+  {lint_exit}
+fi
+if [ "$1" = "package" ]; then
+  if [ "{fail_package}" = "True" ]; then
+    exit 1
+  fi
+  dest=""
+  ver=""
+  prev=""
+  for arg in "$@"; do
+    if [ "$prev" = "--destination" ]; then
+      dest="$arg"
+    elif [ "$prev" = "--version" ]; then
+      ver="$arg"
+    fi
+    prev="$arg"
+  done
+  if [ -n "$dest" ] && [ -n "$ver" ]; then
+    touch "$dest/kube-agents-${{ver}}.tgz"
+  fi
+  {package_exit}
+fi
+if [ "$1" = "push" ]; then
+  if [ "{fail_push}" = "True" ]; then
+    echo "mock push error" >&2
+    exit 1
+  fi
+  echo "Pushed: $2 to $3"
+  echo "Digest: sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  {push_exit}
+fi
+exit 0
+"""
+    helm_path.write_text(content)
+    helm_path.chmod(0o755)
+    return helm_path, log_path
+

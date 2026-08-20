@@ -18,8 +18,7 @@ documentation and governance playbooks around them.
 
 1. **OCI registry for Helm charts, not a traditional chart repository.** The chart is
    published as an OCI artifact to GHCR (`oci://ghcr.io/gke-labs/kube-agents/charts/kube-agents`)
-   by `chart-release.yml` (triggered via manual dispatch `workflow_dispatch` with the target release
-   version), reusing existing GHCR auth and storage. The chart `version` tracks `appVersion`: the
+   by `release-publish.yml` (`publish_helm_chart.sh`), reusing existing GHCR auth and storage. The chart `version` tracks `appVersion`: the
    workflow packages with both set from the release version, so there is no independent chart-only
    release train.
 2. **Terraform modules sourced by Git release tag.** Reusable modules live under
@@ -41,7 +40,7 @@ documentation and governance playbooks around them.
 | :------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Container images     | Built once on push to `main` (tagged with commit SHA and `:latest`). Clean Promotion (`release-publish.yml` / `promote_release_images.sh`) promotes verified images to `X.Y.Z` without rebuilding.                                                                            |
 | Operator default tag | Dynamic runtime derivation from running operator container image / `OPERATOR_IMAGE` env var (with `DefaultPlatformAgentVersion` for local development fallback).                                                                                                              |
-| Helm chart           | `charts/kube-agents/` (CRDs, operator, PlatformAgent CR), packaged with version = appVersion = tag, published and cosign-signed by digest via `chart-release.yml` (`workflow_dispatch`).                                                                                      |
+| Helm chart           | `charts/kube-agents/` (CRDs, operator, PlatformAgent CR), packaged with version = appVersion = tag, published and cosign-signed by digest via `release-publish.yml` (`publish_helm_chart.sh`).                                                                                |
 | Terraform modules    | `terraform/modules/{gke-cluster,kube-agents-iam,chat-pubsub,github-minter,drift-pubsub}/`, consumed via `?ref=1.2.0`; `terraform/examples/full-install/` composes the first four plus the chart into one apply (`drift-pubsub` is tagged and consumable but not yet composed) |
 | Release guide        | [Release versioning & promotion](../site/src/content/docs/deploy/release-versioning.md)                                                                                                                                                                                       |
 | Governance           | `standardization_validator_sop.md` Rule 3 (immutable-tag compliance); pre-release artifact checks live in CI (`validate.yml` and the RC pipeline), not in an agent SOP                                                                                                        |
