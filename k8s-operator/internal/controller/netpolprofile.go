@@ -48,6 +48,8 @@ type netpolProfile struct {
 
 // resolveNetpolProfile mirrors resolveOTLPEndpoint's ladder: per-agent
 // annotation, operator flag/env field, kube-dns discovery, documented default.
+// The operator override sits above discovery deliberately, matching telemetry.go:
+// an explicit operator value is authoritative even when kube-dns is discoverable.
 func (r *PlatformAgentReconciler) resolveNetpolProfile(ctx context.Context, agent *agentv1alpha1.PlatformAgent) netpolProfile {
 	log := logf.FromContext(ctx).WithName("netpol-profile")
 	var p netpolProfile
