@@ -174,10 +174,13 @@ func otelTelemetryEnvVars(agentType, name, namespace, endpoint string) []corev1.
 
 // deriveAgentImageFromOperator derives the platform-agent image from an operator image reference.
 // It maps the operator image to the platform-agent image while preserving the registry prefix
-// and the tag or digest.
+// and tag. If the operator image is digest-pinned (@sha256:...), the digest cannot name the
+// platform-agent manifest, so it falls back to a tag if present before the digest (e.g. :v1@sha256:...)
+// or :latest.
 // E.g.:
 //   "ghcr.io/gke-labs/kube-agents/k8s-operator:0.2.0"                -> "ghcr.io/gke-labs/kube-agents/platform-agent:0.2.0"
 //   "ghcr.io/gke-labs/kube-agents/k8s-operator:rc_2608201147_1c06e1a" -> "ghcr.io/gke-labs/kube-agents/platform-agent:rc_2608201147_1c06e1a"
+//   "ghcr.io/gke-labs/kube-agents/k8s-operator@sha256:111111..."    -> "ghcr.io/gke-labs/kube-agents/platform-agent:latest"
 //   "mirror.corp.internal:5000/kube-agents/k8s-operator:0.2.0"       -> "mirror.corp.internal:5000/kube-agents/platform-agent:0.2.0"
 //   "k8s-operator:1c06e1ab71fdeea55e6100e61c0394206188a5ba"          -> "platform-agent:1c06e1ab71fdeea55e6100e61c0394206188a5ba"
 func deriveAgentImageFromOperator(operatorImage string) string {
@@ -188,9 +191,14 @@ func deriveAgentImageFromOperator(operatorImage string) string {
 		prefix = operatorImage[:lastSlash+1]
 		refPart = operatorImage[lastSlash+1:]
 	}
+	// Digest pins (@sha256:...) cannot name a different repository manifest.
+	// Strip digest and fall back to tag or :latest.
+	if digestIdx := strings.Index(refPart, "@"); digestIdx >= 0 {
+		refPart = refPart[:digestIdx]
+	}
 	suffix := ":latest"
-	if tagOrDigest := strings.IndexAny(refPart, ":@"); tagOrDigest >= 0 {
-		suffix = refPart[tagOrDigest:]
+	if tagIdx := strings.Index(refPart, ":"); tagIdx >= 0 {
+		suffix = refPart[tagIdx:]
 	}
 	return prefix + appNamePlatformAgent + suffix
 }

@@ -553,9 +553,14 @@ func TestDeriveAgentImageFromOperator(t *testing.T) {
 			expected:      "mirror.corp.internal/kube-agents/platform-agent:0.2.0",
 		},
 		{
-			name:          "digest pinned image",
+			name:          "digest pinned image falls back to latest",
 			operatorImage: "ghcr.io/gke-labs/kube-agents/k8s-operator@sha256:1111111111111111111111111111111111111111111111111111111111111111",
-			expected:      "ghcr.io/gke-labs/kube-agents/platform-agent@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+			expected:      "ghcr.io/gke-labs/kube-agents/platform-agent:latest",
+		},
+		{
+			name:          "tag and digest pinned image preserves tag",
+			operatorImage: "ghcr.io/gke-labs/kube-agents/k8s-operator:0.2.0@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+			expected:      "ghcr.io/gke-labs/kube-agents/platform-agent:0.2.0",
 		},
 		{
 			name:          "latest tag",
@@ -573,9 +578,14 @@ func TestDeriveAgentImageFromOperator(t *testing.T) {
 			expected:      "localhost:5000/platform-agent:latest",
 		},
 		{
-			name:          "registry host with port and digest",
+			name:          "registry host with port and digest falls back to latest",
 			operatorImage: "registry.example.com:5000/kube-agents/k8s-operator@sha256:1111111111111111111111111111111111111111111111111111111111111111",
-			expected:      "registry.example.com:5000/kube-agents/platform-agent@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+			expected:      "registry.example.com:5000/kube-agents/platform-agent:latest",
+		},
+		{
+			name:          "registry host with port, tag and digest preserves tag",
+			operatorImage: "registry.example.com:5000/kube-agents/k8s-operator:0.2.0@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+			expected:      "registry.example.com:5000/kube-agents/platform-agent:0.2.0",
 		},
 		{
 			name:          "registry host with port and no tag",
