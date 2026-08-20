@@ -313,6 +313,12 @@ promote_release_images() {
 
   echo "🚀 Promoting verified container images (${resolved_commit:0:7}) -> (${release_version})..."
 
+  # Safety Guard: Remote image promotion executes exclusively inside CI
+  if ! is_ci_pipeline; then
+    echo "⚠️ [Local Execution] Dry-run: Remote image promotion to (${release_version}) in ${registry_prefix} skipped (runs only in CI)."
+    return 0
+  fi
+
   for img in "${REQUIRED_RELEASE_IMAGES[@]}"; do
     local source_image="${registry_prefix}/${img}:${resolved_commit}"
     local target_image="${registry_prefix}/${img}:${release_version}"

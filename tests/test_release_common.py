@@ -192,6 +192,22 @@ source "{_COMMON_SH}"
                 self.assertNotEqual(proc.returncode, 0)
                 self.assertIn("not a valid pure numeric SemVer", proc.stderr)
 
+    def test_promote_release_images_local_dry_run(self):
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        try:
+            bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_docker_binary(bin_dir)
+
+            proc = self._run_common_func(
+                f'promote_release_images "{MOCK_SAMPLE_COMMIT_SHA}" "{MOCK_TARGET_RELEASE_TAG}"',
+                bin_dir=str(bin_dir),
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn("Dry-run: Remote image promotion", proc.stdout)
+            self.assertIn("skipped (runs only in CI)", proc.stdout)
+        finally:
+            temp_dir.cleanup()
+
     def test_promote_release_images_execution(self):
         temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         try:
@@ -200,6 +216,7 @@ source "{_COMMON_SH}"
 
             proc = self._run_common_func(
                 f'promote_release_images "{MOCK_SAMPLE_COMMIT_SHA}" "{MOCK_TARGET_RELEASE_TAG}"',
+                env={"CI": "true"},
                 bin_dir=str(bin_dir),
             )
             self.assertEqual(proc.returncode, 0)
@@ -218,6 +235,7 @@ source "{_COMMON_SH}"
 
             proc = self._run_common_func(
                 f'promote_release_images "{MOCK_TARGET_RELEASE_TAG}" "{MOCK_SAMPLE_COMMIT_SHA}"',
+                env={"CI": "true"},
                 bin_dir=str(bin_dir),
             )
             self.assertEqual(proc.returncode, 0)
@@ -238,6 +256,7 @@ source "{_COMMON_SH}"
 
             proc = self._run_common_func(
                 f'promote_release_images "{MOCK_SAMPLE_COMMIT_SHA}" "{MOCK_TARGET_RELEASE_TAG}"',
+                env={"CI": "true"},
                 bin_dir=str(bin_dir),
             )
             self.assertEqual(proc.returncode, 0)
