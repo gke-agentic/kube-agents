@@ -144,7 +144,7 @@ fi
 echo "🔎 Checking for rc_*_validated tags pointing at commit ${RELEASE_COMMIT}..."
 VALIDATED_TAGS="$(git tag --points-at "${RELEASE_COMMIT}" | grep -E '^rc_.*_validated$' || true)"
 
-if [ -z "${VALIDATED_TAGS}" ] && [ "${IS_RESUMING_RELEASE}" != "true" ]; then
+if [ -z "${VALIDATED_TAGS}" ]; then
   echo "❌ BLOCKED: Commit ${RELEASE_COMMIT} has NOT passed live RC E2E validation!" >&2
   echo "   No tag matching 'rc_*_validated' points to this commit." >&2
   echo "   To release this version:" >&2
@@ -155,15 +155,10 @@ if [ -z "${VALIDATED_TAGS}" ] && [ "${IS_RESUMING_RELEASE}" != "true" ]; then
 fi
 
 FIRST_VAL_TAG="$(echo "${VALIDATED_TAGS}" | head -n 1)"
-if [ -n "${FIRST_VAL_TAG}" ]; then
-  echo "✅ ELIGIBLE: Found validated RC tag(s) on commit ${RELEASE_COMMIT}:"
-  for tag in ${VALIDATED_TAGS}; do
-    echo "   • ${tag}"
-  done
-else
-  echo "✅ ELIGIBLE: Resuming release for commit ${RELEASE_COMMIT} with existing release tag ${TARGET_VERSION}."
-  FIRST_VAL_TAG="resumed_${TARGET_VERSION}"
-fi
+echo "✅ ELIGIBLE: Found validated RC tag(s) on commit ${RELEASE_COMMIT}:"
+for tag in ${VALIDATED_TAGS}; do
+  echo "   • ${tag}"
+done
 
 # 6. Verify container images exist in registry
 echo "🔎 Verifying required container images exist in registry for commit ${RELEASE_COMMIT:0:7}..."
@@ -176,6 +171,9 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
   echo "eligible=true" >> "${GITHUB_OUTPUT}"
   echo "validated_rc_tag=${FIRST_VAL_TAG}" >> "${GITHUB_OUTPUT}"
   echo "release_commit=${RELEASE_COMMIT}" >> "${GITHUB_OUTPUT}"
+  if [ "${IS_RESUMING_RELEASE}" = "true" ]; then
+    echo "resuming=true" >> "${GITHUB_OUTPUT}"
+  fi
 fi
 
 exit 0

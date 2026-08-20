@@ -22,6 +22,7 @@ from tests.testing.release import (
     MOCK_GH_USER,
     MOCK_TARGET_RELEASE_TAG,
     create_mock_cosign_binary,
+    create_mock_docker_binary,
     create_mock_helm_binary,
 )
 
@@ -187,6 +188,139 @@ class PublishHelmChartScriptTest(unittest.TestCase):
             )
             self.assertEqual(proc.returncode, 0)
             self.assertIn("Dry-run: Helm chart packaged at", proc.stdout)
+        finally:
+            temp_dir.cleanup()
+
+    def test_ci_idempotent_skip_when_chart_exists(self):
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        try:
+            bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_helm_binary(bin_dir)
+            create_mock_cosign_binary(bin_dir)
+            existing_chart_oci = f"{MOCK_DEFAULT_REGISTRY_PREFIX}/charts/kube-agents:{MOCK_TARGET_RELEASE_TAG}"
+            create_mock_docker_binary(bin_dir, existing_images=[existing_chart_oci])
+
+            proc = self._run_script(
+                [MOCK_TARGET_RELEASE_TAG],
+                env={
+                    "CI": "true",
+                    "GITHUB_REPOSITORY": MOCK_DEFAULT_RELEASE_REPO,
+                    "GH_TOKEN": MOCK_GH_TOKEN,
+                    "GH_USER": MOCK_GH_USER,
+                },
+                bin_dir=str(bin_dir),
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn("already exists in registry. Skipping duplicate publish", proc.stdout)
+        finally:
+            temp_dir.cleanup()
+
+    def test_ci_extract_chart_from_release_commit(self):
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        try:
+            bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_helm_binary(bin_dir)
+            create_mock_cosign_binary(bin_dir)
+
+            proc = self._run_script(
+                [MOCK_TARGET_RELEASE_TAG, "HEAD"],
+                env={
+                    "CI": "true",
+                    "GITHUB_REPOSITORY": MOCK_DEFAULT_RELEASE_REPO,
+                    "GH_TOKEN": MOCK_GH_TOKEN,
+                    "GH_USER": MOCK_GH_USER,
+                },
+                bin_dir=str(bin_dir),
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn("Extracting Helm chart from release commit", proc.stdout)
+            self.assertIn("PUBLISHING AND SIGNING HELM CHART (OCI)", proc.stdout)
+        finally:
+            temp_dir.cleanup()
+
+    def test_ci_extract_chart_from_release_commit_env_var(self):
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        try:
+            bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_helm_binary(bin_dir)
+            create_mock_cosign_binary(bin_dir)
+
+            proc = self._run_script(
+                [],
+                env={
+                    "CI": "true",
+                    "RELEASE_VERSION": MOCK_TARGET_RELEASE_TAG,
+                    "RELEASE_COMMIT": "HEAD",
+                    "GITHUB_REPOSITORY": MOCK_DEFAULT_RELEASE_REPO,
+                    "GH_TOKEN": MOCK_GH_TOKEN,
+                    "GH_USER": MOCK_GH_USER,
+                },
+                bin_dir=str(bin_dir),
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn("Extracting Helm chart from release commit", proc.stdout)
+            self.assertIn("PUBLISHING AND SIGNING HELM CHART (OCI)", proc.stdout)
+        finally:
+            temp_dir.cleanup()
+
+    def test_dry_run_local_execution_with_release_commit(self):
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        try:
+            bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_helm_binary(bin_dir)
+            create_mock_cosign_binary(bin_dir)
+
+            proc = self._run_script(
+                [MOCK_TARGET_RELEASE_TAG, "HEAD"],
+                bin_dir=str(bin_dir),
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn("Extracting Helm chart from release commit", proc.stdout)
+            self.assertIn("Dry-run: Helm chart packaged at", proc.stdout)
+        finally:
+            temp_dir.cleanup()
+
+    def test_invalid_release_commit_fails_fast(self):
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        try:
+            bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_helm_binary(bin_dir)
+            create_mock_cosign_binary(bin_dir)
+
+            proc = self._run_script(
+                [MOCK_TARGET_RELEASE_TAG, "invalid-nonexistent-commit-sha-12345"],
+                env={"CI": "true"},
+                bin_dir=str(bin_dir),
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Cannot resolve valid Git commit for Helm chart packaging", proc.stderr)
+        finally:
+            temp_dir.cleanup()
+
+    def test_chart_extraction_fails_when_commit_has_no_charts_dir(self):
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        try:
+            bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_helm_binary(bin_dir)
+            create_mock_cosign_binary(bin_dir)
+
+            empty_tree_sha = subprocess.check_output(
+                ["git", "mktree"],
+                input=b"",
+                cwd=str(_REPO_ROOT),
+            ).decode().strip()
+            empty_commit = subprocess.check_output(
+                ["git", "commit-tree", empty_tree_sha, "-m", "empty commit for test"],
+                cwd=str(_REPO_ROOT),
+            ).decode().strip()
+
+            proc = self._run_script(
+                [MOCK_TARGET_RELEASE_TAG, empty_commit],
+                env={"CI": "true"},
+                bin_dir=str(bin_dir),
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Failed to extract charts/kube-agents from commit", proc.stderr)
         finally:
             temp_dir.cleanup()
 

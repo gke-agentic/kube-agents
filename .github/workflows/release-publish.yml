@@ -58,6 +58,7 @@ jobs:
           RELEASE_COMMIT: ${{ steps.calculate-version.outputs.release_commit }}
           SKIP_RC_VALIDATION: ${{ inputs.skip_rc_validation }}
           EMERGENCY_OVERRIDE_REASON: ${{ inputs.emergency_override_reason }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./scripts/release/verify_release_eligibility.sh
 
       - name: Set up Docker Buildx
@@ -99,6 +100,7 @@ jobs:
         if: steps.verify-eligibility.outputs.skip_release != 'true'
         env:
           RELEASE_VERSION: ${{ steps.calculate-version.outputs.release_version }}
+          RELEASE_COMMIT: ${{ steps.calculate-version.outputs.release_commit }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_USER: ${{ github.actor }}
         run: ./scripts/release/publish_helm_chart.sh

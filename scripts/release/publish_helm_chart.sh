@@ -9,10 +9,11 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
 RELEASE_VERSION="${1:-${RELEASE_VERSION:-}}"
+RELEASE_COMMIT="${2:-${RELEASE_COMMIT:-}}"
 
 if [ -z "${RELEASE_VERSION}" ]; then
   echo "❌ ERROR: RELEASE_VERSION is required as first argument or environment variable." >&2
-  echo "Usage: $0 (with RELEASE_VERSION in env) or $0 <RELEASE_VERSION>" >&2
+  echo "Usage: $0 (with RELEASE_VERSION in env) or $0 <RELEASE_VERSION> [RELEASE_COMMIT]" >&2
   exit 1
 fi
 
@@ -36,6 +37,23 @@ if ! command -v cosign >/dev/null 2>&1; then
 fi
 
 CHART_DIR="${REPO_ROOT}/charts/kube-agents"
+TMP_EXTRACT_DIR=""
+
+if [ -n "${RELEASE_COMMIT}" ]; then
+  if RESOLVED_COMMIT="$(git rev-parse --verify "${RELEASE_COMMIT}^{commit}" 2>/dev/null)"; then
+    echo "🔍 Extracting Helm chart from release commit ${RESOLVED_COMMIT:0:7}..."
+    TMP_EXTRACT_DIR="$(mktemp -d)"
+    if ! git archive "${RESOLVED_COMMIT}" charts/kube-agents | tar -x -C "${TMP_EXTRACT_DIR}"; then
+      echo "❌ ERROR: Failed to extract charts/kube-agents from commit ${RESOLVED_COMMIT:0:7}!" >&2
+      exit 1
+    fi
+    CHART_DIR="${TMP_EXTRACT_DIR}/charts/kube-agents"
+  else
+    echo "❌ ERROR: Cannot resolve valid Git commit for Helm chart packaging: ${RELEASE_COMMIT}" >&2
+    exit 1
+  fi
+fi
+
 if [ ! -d "${CHART_DIR}" ]; then
   echo "❌ ERROR: Helm chart directory '${CHART_DIR}' not found!" >&2
   exit 1
@@ -49,7 +67,7 @@ helm lint "${CHART_DIR}" \
 
 TMP_CHART_DIR="$(mktemp -d)"
 # shellcheck disable=SC2064
-trap 'rm -rf "${TMP_CHART_DIR}"' EXIT
+trap 'rm -rf "${TMP_CHART_DIR}" ${TMP_EXTRACT_DIR:+"${TMP_EXTRACT_DIR}"}' EXIT
 
 echo "📦 Packaging Helm chart version ${RELEASE_VERSION}..."
 if ! helm package "${CHART_DIR}" --version "${RELEASE_VERSION}" --app-version "${RELEASE_VERSION}" --destination "${TMP_CHART_DIR}"; then
@@ -70,6 +88,12 @@ CHART_OCI_DEST="oci://${REGISTRY_PREFIX}/charts"
 # Safety Guard: Remote chart push and cosign signing executes exclusively inside CI
 if ! is_ci_pipeline; then
   echo "⚠️ [Local Execution] Dry-run: Helm chart packaged at ${local_package}. Remote push to ${CHART_OCI_DEST} and signing skipped (runs only in CI)."
+  exit 0
+fi
+
+# Safety Guard: Check if target chart OCI package already exists in registry to prevent duplicate publishing
+if command -v docker >/dev/null 2>&1 && docker manifest inspect "${REGISTRY_PREFIX}/charts/kube-agents:${RELEASE_VERSION}" >/dev/null 2>&1; then
+  echo "    ℹ️ Helm chart '${REGISTRY_PREFIX}/charts/kube-agents:${RELEASE_VERSION}' already exists in registry. Skipping duplicate publish."
   exit 0
 fi
 

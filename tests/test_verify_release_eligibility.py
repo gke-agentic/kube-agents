@@ -424,31 +424,79 @@ exit {docker_exit}
         finally:
             temp_dir.cleanup()
 
-    def test_resumes_release_when_tag_exists_but_github_release_missing_in_ci(self):
+    def test_resumes_release_when_tag_exists_but_github_release_missing(self):
         temp_dir, repo_dir, git, commit_sha, bin_dir = self._create_mock_repo()
         try:
-            # Tag exists on commit, but mock gh CLI returns 1 on gh release view (release not published)
+            # Commit has validated RC tag and GA tag, but mock gh CLI returns 1 on gh release view (release not published)
+            git("tag", "-a", MOCK_RC_VALIDATED_TAG, commit_sha, "-m", f"Validated {MOCK_RC_VALIDATED_TAG}")
             git("tag", "-a", MOCK_TARGET_RELEASE_TAG, commit_sha, "-m", f"Release {MOCK_TARGET_RELEASE_TAG}")
             create_mock_gh_binary(bin_dir, existing_releases=[])
             gh_out = pathlib.Path(repo_dir) / "gh_output.txt"
             proc = self._run_verify_script(
                 repo_dir,
                 args=[MOCK_TARGET_RELEASE_TAG, commit_sha],
-                env={"CI": "true", "GITHUB_OUTPUT": str(gh_out)},
+                env={"GH_TOKEN": "mock-token", "GITHUB_OUTPUT": str(gh_out)},
                 bin_dir=bin_dir,
             )
             self.assertEqual(proc.returncode, 0)
             self.assertIn("Resuming release workflow", proc.stdout)
-            self.assertIn("ELIGIBLE: Resuming release", proc.stdout)
+            self.assertIn("ELIGIBLE: Found validated RC tag", proc.stdout)
 
             outputs = gh_out.read_text()
             self.assertIn("eligible=true", outputs)
-            self.assertIn("already_released=false", outputs)
-            self.assertIn("skip_release=false", outputs)
+            self.assertIn("resuming=true", outputs)
+            self.assertIn(f"validated_rc_tag={MOCK_RC_VALIDATED_TAG}", outputs)
+            self.assertIn(f"release_commit={commit_sha}", outputs)
         finally:
             temp_dir.cleanup()
 
-    def test_idempotent_skip_when_both_tag_and_github_release_exist_in_ci(self):
+    def test_resumes_release_blocked_when_no_rc_validated_tag(self):
+        temp_dir, repo_dir, git, commit_sha, bin_dir = self._create_mock_repo()
+        try:
+            # GA tag exists, but commit was NEVER validated and has no rc_*_validated tag
+            git("tag", "-a", MOCK_TARGET_RELEASE_TAG, commit_sha, "-m", f"Release {MOCK_TARGET_RELEASE_TAG}")
+            create_mock_gh_binary(bin_dir, existing_releases=[])
+            proc = self._run_verify_script(
+                repo_dir,
+                args=[MOCK_TARGET_RELEASE_TAG, commit_sha],
+                env={"GH_TOKEN": "mock-token"},
+                bin_dir=bin_dir,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("BLOCKED: Commit", proc.stderr)
+            self.assertIn("has NOT passed live RC E2E validation", proc.stderr)
+        finally:
+            temp_dir.cleanup()
+
+    def test_resumes_release_with_emergency_override_when_tag_exists_and_github_release_missing(self):
+        temp_dir, repo_dir, git, commit_sha, bin_dir = self._create_mock_repo()
+        try:
+            # GA tag exists, commit has no RC tag, gh release view fails, but emergency override is provided
+            git("tag", "-a", MOCK_TARGET_RELEASE_TAG, commit_sha, "-m", f"Release {MOCK_TARGET_RELEASE_TAG}")
+            create_mock_gh_binary(bin_dir, existing_releases=[])
+            gh_out = pathlib.Path(repo_dir) / "gh_output.txt"
+            proc = self._run_verify_script(
+                repo_dir,
+                args=[MOCK_TARGET_RELEASE_TAG, commit_sha],
+                env={
+                    "GH_TOKEN": "mock-token",
+                    "SKIP_RC_VALIDATION": "true",
+                    "EMERGENCY_OVERRIDE_REASON": "Emergency security CVE patch",
+                    "GITHUB_OUTPUT": str(gh_out),
+                },
+                bin_dir=bin_dir,
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn("RC E2E validation check is explicitly bypassed", proc.stderr)
+
+            outputs = gh_out.read_text()
+            self.assertIn("eligible=true", outputs)
+            self.assertIn("emergency_override=true", outputs)
+            self.assertIn(f"release_commit={commit_sha}", outputs)
+        finally:
+            temp_dir.cleanup()
+
+    def test_idempotent_skip_when_both_tag_and_github_release_exist(self):
         temp_dir, repo_dir, git, commit_sha, bin_dir = self._create_mock_repo()
         try:
             # Both git tag and GitHub release exist
@@ -458,7 +506,7 @@ exit {docker_exit}
             proc = self._run_verify_script(
                 repo_dir,
                 args=[MOCK_TARGET_RELEASE_TAG, commit_sha],
-                env={"CI": "true", "GITHUB_OUTPUT": str(gh_out)},
+                env={"GH_TOKEN": "mock-token", "GITHUB_OUTPUT": str(gh_out)},
                 bin_dir=bin_dir,
             )
             self.assertEqual(proc.returncode, 0)
