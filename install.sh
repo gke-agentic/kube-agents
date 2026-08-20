@@ -885,7 +885,11 @@ ensure_existing_cluster_cmek() {
 ensure_existing_cluster_workload_identity() {
   local project_id="$1" cluster_name="$2" region="$3"
   local pool
-  pool=$(gcloud container clusters describe "$cluster_name" \
+  # `trap - ERR` inside the substitution: bash 3.2 (macOS's default, the
+  # curl|bash audience) runs the inherited ERR trap in the subshell even
+  # though the outer failure is handled, printing a spurious abort banner
+  # and writing a FAILED report mid-run.
+  pool=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
     --location="$region" --project="$project_id" \
     --format="value(workloadIdentityConfig.workloadPool)" 2>/dev/null) || return 0
   if [ "$pool" = "${project_id}.svc.id.goog" ]; then
@@ -925,7 +929,9 @@ ensure_existing_cluster_workload_identity() {
 ensure_existing_cluster_network_policy() {
   local project_id="$1" cluster_name="$2" region="$3"
   local dp_provider
-  dp_provider=$(gcloud container clusters describe "$cluster_name" \
+  # trap - ERR: same bash-3.2 subshell-trap suppression as the Workload
+  # Identity probe above.
+  dp_provider=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
     --location="$region" --project="$project_id" \
     --format="value(networkConfig.datapathProvider)" 2>/dev/null) || return 0
   if [ "$dp_provider" = "ADVANCED_DATAPATH" ]; then
@@ -933,7 +939,7 @@ ensure_existing_cluster_network_policy() {
     return 0
   fi
   local legacy_np
-  legacy_np=$(gcloud container clusters describe "$cluster_name" \
+  legacy_np=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
     --location="$region" --project="$project_id" \
     --format="value(networkPolicy.enabled)" 2>/dev/null || echo "")
   if [ "$legacy_np" = "True" ] || [ "$legacy_np" = "true" ]; then
@@ -1471,9 +1477,17 @@ main() {
   # 6. Chat & Messaging Platform Integration
   print_step "6. Chat & Messaging Integrations Setup"
   local chat_choice=""
-  if [ "$PARAM_NON_INTERACTIVE" = "true" ] || [ "${PARAM_ENABLE_GOOGLE_CHAT:-false}" = "true" ]; then
-    if [ "${PARAM_ENABLE_GOOGLE_CHAT:-false}" = "true" ]; then
+  if [ "$PARAM_NON_INTERACTIVE" = "true" ] || [ "${PARAM_ENABLE_GOOGLE_CHAT:-false}" = "true" ] || [ "${SLACK_ENABLED:-false}" = "true" ]; then
+    # SLACK_ENABLED (with SLACK_BOT_TOKEN / SLACK_APP_TOKEN and the other
+    # SLACK_* variables) is the non-interactive spelling of the Slack
+    # interview, the same variables the Day-2 menu reads. Without it Slack
+    # would be reachable only through a controlling tty.
+    if [ "${PARAM_ENABLE_GOOGLE_CHAT:-false}" = "true" ] && [ "${SLACK_ENABLED:-false}" = "true" ]; then
+      chat_choice="3"
+    elif [ "${PARAM_ENABLE_GOOGLE_CHAT:-false}" = "true" ]; then
       chat_choice="1"
+    elif [ "${SLACK_ENABLED:-false}" = "true" ]; then
+      chat_choice="2"
     else
       chat_choice="4"
     fi
@@ -1501,11 +1515,14 @@ main() {
     print_error "--google-chat-mode must be either 'default' or 'debug'."
     exit 1
   fi
-  local slack_bot_token=""
-  local slack_app_token=""
-  local slack_allowed_users=""
-  local slack_home_channel=""
-  local slack_home_channel_name=""
+  # Seeded from the environment so the non-interactive path can carry the
+  # Slack settings: prompt_read keeps a non-empty current value there, and
+  # prompts with it as the prefill when there is a tty.
+  local slack_bot_token="${SLACK_BOT_TOKEN:-}"
+  local slack_app_token="${SLACK_APP_TOKEN:-}"
+  local slack_allowed_users="${SLACK_ALLOWED_USERS:-}"
+  local slack_home_channel="${SLACK_HOME_CHANNEL:-}"
+  local slack_home_channel_name="${SLACK_HOME_CHANNEL_NAME:-}"
 
   case "$chat_choice" in
     1)

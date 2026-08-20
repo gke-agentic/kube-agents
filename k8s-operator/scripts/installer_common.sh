@@ -346,7 +346,11 @@ write_tfvars_from_state() {
   # deletion-protection apply and upgrade's full apply both became cluster
   # replacements. A fresh create keeps "standard", the installer's default shape.
   local create_cluster="true" cluster_mode="standard" autopilot_enabled=""
-  if autopilot_enabled=$(gcloud container clusters describe "${CLUSTER_NAME}" \
+  # `trap - ERR` inside the substitution: under bash 3.2 (macOS's default)
+  # the caller's inherited ERR trap fires in this subshell even though the
+  # failure is the tested condition, printing an abort banner and writing a
+  # FAILED report for a probe whose miss is the normal fresh-install path.
+  if autopilot_enabled=$(trap - ERR; gcloud container clusters describe "${CLUSTER_NAME}" \
       --location "${REGION}" --project "${PROJECT_ID}" \
       --format="value(autopilot.enabled)" 2>/dev/null); then
     if [ "$autopilot_enabled" = "True" ]; then
@@ -412,8 +416,12 @@ write_tfvars_from_state() {
       # Every stage exits 0 on its own (|| true inside the substitution):
       # install.sh runs an inherited ERR trap (set -E), and a failing kubectl
       # here — no cluster yet, stale context — must be a silent no-op, not a
-      # trap-and-abort the outer || can never see.
+      # trap-and-abort the outer || can never see. --request-timeout bounds
+      # the other stale-context failure mode: a context whose cluster was
+      # just destroyed black-holes TCP instead of refusing, and eight keys
+      # times a hung connect stalls the install for minutes.
       secret_val="$({ kubectl get secret platform-agent-secrets -n "${NAMESPACE:-kubeagents-system}" \
+        --request-timeout=10s \
         -o jsonpath="{.data.${secret_key}}" 2>/dev/null || true; } | base64 --decode 2>/dev/null || true)"
       if [ -n "$secret_val" ]; then
         export "${secret_key}=${secret_val}"
