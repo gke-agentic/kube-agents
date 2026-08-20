@@ -18,6 +18,7 @@ cd "${REPO_ROOT}"
 # 1. Target Cluster Context
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/ci-env.sh"
+ensure_helm
 
 echo "=== Target Cluster Context ==="
 echo "Project:   $PROJECT_ID"

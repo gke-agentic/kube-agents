@@ -154,8 +154,13 @@ jobs:
           [ -n "$SLACK_BOT_TOKEN" ] && args+=(--set-string "platformAgent.credentials.data.SLACK_BOT_TOKEN=$SLACK_BOT_TOKEN")
           [ -n "$SLACK_APP_TOKEN" ] && args+=(--set-string "platformAgent.credentials.data.SLACK_APP_TOKEN=$SLACK_APP_TOKEN")
           [ -n "$GITHUB_APP_ID" ] && args+=(--set-string "githubMinter.appId=$GITHUB_APP_ID")
+          # --reset-then-reuse-values, not --reuse-values: reuse snapshots the
+          # previous release's chart defaults into its config, so a default
+          # bumped in the checkout's chart (the image pins this workflow
+          # triggers on) would never reach the cluster again. Reset-then-reuse
+          # keeps the release's own values and lets chart defaults refresh.
           helm upgrade kube-agents charts/kube-agents -n kubeagents-system \
-            --reuse-values --set "platformAgent.credentials.create=true" \
+            --reset-then-reuse-values --set "platformAgent.credentials.create=true" \
             "${args[@]}" --wait --timeout 10m
 
   deploy-litellm:
@@ -215,8 +220,12 @@ jobs:
           args=()
           [ -n "$MODEL_PROVIDER" ] && args+=(--set-string "litellm.modelProvider=$MODEL_PROVIDER")
           [ -n "$MODEL_DEFAULT_NAME" ] && args+=(--set-string "litellm.modelDefaultName=$MODEL_DEFAULT_NAME")
+          # --reset-then-reuse-values so the checkout's chart defaults refresh:
+          # this job's main trigger is a litellm.image.tag bump in values.yaml
+          # / images.json, which --reuse-values would shadow forever behind
+          # the previous release's snapshot of the old default.
           helm upgrade kube-agents charts/kube-agents -n kubeagents-system \
-            --reuse-values "${args[@]}" --wait --timeout 10m
+            --reset-then-reuse-values "${args[@]}" --wait --timeout 10m
 
       - name: Verify LiteLLM Deployment Rollout
         run: |
@@ -272,7 +281,7 @@ jobs:
   deploy-github:
     name: Redeploy GitHub Token Minter Integration
     # deploy-litellm is a serializer, not a dependency: both jobs run
-    # `helm upgrade --reuse-values` on the same release, and concurrent
+    # `helm upgrade` on the same release, and concurrent
     # upgrades either collide on the release lock or silently drop whichever
     # --set committed first. The filters overlap (values.yaml, images.json),
     # so an ordinary chart bump would start both at once without this edge.
@@ -366,8 +375,11 @@ jobs:
               -private-key=@"$GITHUB_PEM_PATH")
           fi
           echo "Redeploying GitHub Token Minter via helm upgrade"
+          # --reset-then-reuse-values for the same reason as deploy-litellm:
+          # a githubMinter.image.tag bump is this job's trigger, and only a
+          # refreshed chart default can deliver it.
           helm upgrade kube-agents charts/kube-agents -n kubeagents-system \
-            --reuse-values --set "githubMinter.enabled=true" \
+            --reset-then-reuse-values --set "githubMinter.enabled=true" \
             --set-string "githubMinter.org=$GITHUB_ORG" \
             --set-string "githubMinter.repo=$GITHUB_REPO" \
             --set-string "githubMinter.appId=$GITHUB_APP_ID" \

@@ -113,7 +113,11 @@ jobs:
           IMAGE_TAG: "${{ env.IMAGE_TAG }}"
         run: |
           # Helm re-tags the agent image on the live release; the operator
-          # reconciles the PlatformAgent CR and rolls the Deployment. An
+          # reconciles the PlatformAgent CR and rolls the Deployment.
+          # --reset-then-reuse-values keeps the release's own values while
+          # letting the checkout's chart defaults refresh — plain
+          # --reuse-values would snapshot old defaults into the release
+          # config and shadow every later default bump. An
           # environment without the release predates the Terraform + Helm
           # engine and needs a one-time re-install from the composition.
           if ! helm status kube-agents -n kubeagents-system >/dev/null 2>&1; then
@@ -122,7 +126,7 @@ jobs:
           fi
           echo "Redeploying platform-agent via helm upgrade with image: ${AGENT_IMAGE}:${IMAGE_TAG}"
           helm upgrade kube-agents charts/kube-agents -n kubeagents-system \
-            --reuse-values --set "platformAgent.deployment.image.tag=${IMAGE_TAG}" --wait --timeout 10m
+            --reset-then-reuse-values --set "platformAgent.deployment.image.tag=${IMAGE_TAG}" --wait --timeout 10m
 
       - name: Verify Agent Deployment Rollout
         run: |

@@ -94,8 +94,11 @@ jobs:
         env:
           IMAGE_TAG: ${{ env.IMAGE_TAG }}
         run: |
-          # Helm re-tags the operator image on the live release, keeping every
-          # other value as it is (--reuse-values). An environment without the
+          # Helm re-tags the operator image on the live release, keeping the
+          # release's own values while letting the checkout's chart defaults
+          # refresh (--reset-then-reuse-values; plain --reuse-values would
+          # snapshot old chart defaults into the release config, shadowing
+          # every later default bump). An environment without the
           # release predates the Terraform + Helm engine and has to be
           # re-installed from terraform/examples/full-install once — this
           # fails loudly rather than half-adopting objects Helm does not own.
@@ -108,4 +111,4 @@ jobs:
           # behaviour for crds/), so apply them first.
           kubectl apply --server-side --force-conflicts -f charts/kube-agents/crds/
           helm upgrade kube-agents charts/kube-agents -n kubeagents-system \
-            --reuse-values --set "operator.image.tag=${IMAGE_TAG}" --wait --timeout 10m
+            --reset-then-reuse-values --set "operator.image.tag=${IMAGE_TAG}" --wait --timeout 10m

@@ -103,8 +103,8 @@ Options:
   --project-id ID               GCP Target Project ID
   --cluster-name NAME           GKE Target Cluster Name (default: platform-agent-host)
   --region REGION               GKE GCP Region
-  --source-ref REF              Release tag or commit SHA to fetch the teardown scripts from
-                                when not run from a local checkout (default: main)
+  --source-ref REF              Tag or commit SHA of the release that made the install; that
+                                release's own uninstall.sh is fetched and run in place of this one
   --help, -h, -?                Show this help message
 
 Examples:
@@ -206,22 +206,52 @@ main() {
 
   local script_dir repo_dir
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  if [ -f "${script_dir}/terraform/examples/full-install/lifecycle.sh" ]; then
+  if [ -n "$PARAM_SOURCE_REF" ]; then
+    # The pinned release owns its own teardown: clone it and hand over
+    # wholesale. This script's engine (installer_common.sh, lifecycle.sh
+    # destroy) exists only at post-Terraform refs, and --source-ref exists
+    # precisely for the installs those refs did not make — so continuing in
+    # this main() would source files the clone does not carry. The exec also
+    # releases the flock for the dispatched script and skips the temp-dir
+    # cleanup trap, which must not delete a tree that is still executing.
+    TEMP_REPO_DIR="$(mktemp -d)"
+    repo_dir="${TEMP_REPO_DIR}/kube-agents"
+    print_info "Fetching the teardown engine pinned at '${PARAM_SOURCE_REF}'..."
+    git clone --filter=blob:none --no-checkout https://github.com/gke-labs/kube-agents.git "$repo_dir"
+    git -C "$repo_dir" fetch --depth=1 origin "$PARAM_SOURCE_REF"
+    git -C "$repo_dir" checkout --detach FETCH_HEAD
+    if [ ! -f "${repo_dir}/uninstall.sh" ]; then
+      print_error "'${PARAM_SOURCE_REF}' carries no uninstall.sh; tear the install down with that release's documented procedure."
+      exit 1
+    fi
+    local dispatch_args=()
+    if [ "$PARAM_NON_INTERACTIVE" = "true" ]; then
+      dispatch_args+=(--non-interactive)
+    fi
+    if [ "$PARAM_DRY_RUN" = "true" ]; then
+      dispatch_args+=(--dry-run)
+    fi
+    if [ -n "$PARAM_PROJECT_ID" ]; then
+      dispatch_args+=(--project-id="$PARAM_PROJECT_ID")
+    fi
+    if [ -n "$PARAM_CLUSTER_NAME" ]; then
+      dispatch_args+=(--cluster-name="$PARAM_CLUSTER_NAME")
+    fi
+    if [ -n "$PARAM_REGION" ]; then
+      dispatch_args+=(--region="$PARAM_REGION")
+    fi
+    print_info "Handing over to the '${PARAM_SOURCE_REF}' release's own uninstall.sh..."
+    TEMP_REPO_DIR=""
+    exec bash "${repo_dir}/uninstall.sh" "${dispatch_args[@]}"
+  elif [ -f "${script_dir}/terraform/examples/full-install/lifecycle.sh" ]; then
     repo_dir="$script_dir"
   elif [ -f "$(pwd)/terraform/examples/full-install/lifecycle.sh" ]; then
     repo_dir="$(pwd)"
   else
     TEMP_REPO_DIR="$(mktemp -d)"
     repo_dir="${TEMP_REPO_DIR}/kube-agents"
-    if [ -n "$PARAM_SOURCE_REF" ]; then
-      print_info "Fetching the teardown engine pinned at '${PARAM_SOURCE_REF}'..."
-      git clone --filter=blob:none --no-checkout https://github.com/gke-labs/kube-agents.git "$repo_dir"
-      git -C "$repo_dir" fetch --depth=1 origin "$PARAM_SOURCE_REF"
-      git -C "$repo_dir" checkout --detach FETCH_HEAD
-    else
-      print_warning "No --source-ref given; fetching the teardown engine from main, which may be newer than your installed release."
-      git clone --depth=1 https://github.com/gke-labs/kube-agents.git "$repo_dir"
-    fi
+    print_warning "No --source-ref given; fetching the teardown engine from main, which may be newer than your installed release."
+    git clone --depth=1 https://github.com/gke-labs/kube-agents.git "$repo_dir"
   fi
   # Defaults, validators, and the terraform.tfvars generator shared with
   # install.sh. Print helpers are already defined above, as the file expects.

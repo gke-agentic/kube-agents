@@ -189,18 +189,20 @@ one for the images it does not.
 
 | Install path                      | First-party            | Third party                      | If the second is unset              | Reaches cert-manager |
 | --------------------------------- | ---------------------- | -------------------------------- | ----------------------------------- | -------------------- |
-| `install.sh`                      | `--registry-prefix`    | `--third-party-registry-prefix`  | falls back to the first-party value | **no**               |
+| `install.sh`                      | `--registry-prefix`    | `--third-party-registry-prefix`  | falls back to the first-party value | **yes**              |
 | Helm chart                        | `global.imageRegistry` | `global.thirdPartyImageRegistry` | falls back to the first-party value | n/a                  |
-| Terraform `examples/full-install` | `image_registry`       | `third_party_image_registry`     | falls back to the first-party value | **no**               |
+| Terraform `examples/full-install` | `image_registry`       | `third_party_image_registry`     | falls back to the first-party value | **yes**              |
 
 The rows are one path in three coats: `install.sh` generates the Terraform composition's
 `terraform.tfvars` from its flags, and the composition passes both values to the chart's
 `global.*` keys, so "third party" covers the same set everywhere — LiteLLM, fluent-bit, the
-GitHub token minter, and Hindsight. cert-manager is the exception in every row. The chart never
-renders it — it expects one to be present already — and the composition installs it as a separate
-`helm_release` of the upstream chart that is not passed either prefix. On an approved-registry
-cluster set `enable_cert_manager = false` and install cert-manager yourself from the mirror;
-`images.json` carries all four of its images, so `make mirror-images` has already copied them.
+GitHub token minter, and Hindsight. cert-manager is the chart row's exception: the chart never
+renders it — it expects one to be present already. The composition installs it as a separate
+`helm_release` of the upstream chart and passes the third-party prefix to that release's image
+repositories, so a mirrored install pulls every image — cert-manager's five included — from the
+mirror. On a cluster whose cert-manager comes from somewhere else, set
+`enable_cert_manager = false` and install it yourself; `images.json` carries all five of its
+images, so `make mirror-images` has already copied them.
 The composition's
 [README](https://github.com/gke-labs/kube-agents/blob/main/terraform/examples/full-install/README.md)
 has the detail.
