@@ -1,11 +1,9 @@
 # Installer Helper Scripts
 
-The provisioning pipeline that used to live here (`provision_01…14`, `teardown_01…13`,
-their orchestrators, and the `make gcp-provision-*` targets) was retired in favour of the
-Terraform + Helm engine: `terraform/examples/full-install` driven through its
-`lifecycle.sh`, with the repository-root `install.sh` / `uninstall.sh` / `upgrade.sh` as
-the front doors. What remains in this directory are the helpers those front doors (and the
-dev tooling) still share.
+The install engine is Terraform + Helm: `terraform/examples/full-install` driven through
+its `lifecycle.sh`, with the repository-root `install.sh` / `uninstall.sh` / `upgrade.sh`
+as the front doors. This directory holds the helpers those front doors (and the dev
+tooling) share.
 
 ## Shared defaults live in `installer_common.sh`
 
@@ -46,8 +44,8 @@ else.
 
 - **[installer_common.sh](installer_common.sh)**: shared defaults, validators, `vars.sh`
   persistence, GitHub org checks, and the `terraform.tfvars` generator (table above).
-- **[common.sh](common.sh)**: the remaining pipeline-era utilities the dev tooling and the
-  Prow CI scripts (`hack/ci-deploy.sh`) still use — colour output, `init_var`/`load_state`,
+- **[common.sh](common.sh)**: utilities the dev tooling and the Prow CI scripts
+  (`hack/ci-deploy.sh`) use — colour output, `init_var`/`load_state`,
   registry and third-party-image resolution, cluster connection helpers. Sources
   `installer_common.sh`, so nothing is defined twice.
 - **[gke_dns_endpoint.sh](gke_dns_endpoint.sh)**: `gke_dns_endpoint_flag`, which decides whether a given cluster should be reached with `get-credentials --dns-endpoint`. Kept out of `common.sh` and free of its helpers so `hack/ci-env.sh`, `scripts/release/common.sh`, `upgrade.sh`, and the staging-workload scripts can source the one predicate without also taking on the state file. It sets `GKE_DNS_ENDPOINT_FLAG` rather than echoing, so that callers do not run it in a `$(...)` subshell that would discard its memo of whether the local gcloud offers the flag at all. That answer leaves it empty — as do a cluster with no externally reachable DNS endpoint and a describe call that fails — leaving today's IP-endpoint command untouched.

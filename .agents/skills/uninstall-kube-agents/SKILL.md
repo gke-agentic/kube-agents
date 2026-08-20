@@ -31,8 +31,8 @@ When the command does not run from a local `kube-agents` checkout, pass
 `--source-ref="<SEMVER_TAG_OR_FULL_COMMIT_SHA>"` so the teardown engine is fetched at the same
 revision that was installed; otherwise it is fetched from `main`.
 
-**Installs with no Terraform state** (in GCS or locally) were created by a release with the
-retired script pipeline. This uninstaller exits without touching them — re-run it with
+**Installs with no Terraform state** (in GCS or locally) were created by a pre-Terraform
+release. This uninstaller exits without touching them — re-run it with
 `--source-ref=<that release>` so that release's own teardown runs instead.
 
 Machine-readable JSON status reports are generated at `/tmp/kube-agents-uninstall-report.json`.

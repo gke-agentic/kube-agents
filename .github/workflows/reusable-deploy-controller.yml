@@ -96,9 +96,9 @@ jobs:
         run: |
           # Helm re-tags the operator image on the live release, keeping every
           # other value as it is (--reuse-values). An environment without the
-          # release was installed by the retired script pipeline and has to be
+          # release predates the Terraform + Helm engine and has to be
           # re-installed from terraform/examples/full-install once — this
-          # fails loudly rather than half-adopting someone else's objects.
+          # fails loudly rather than half-adopting objects Helm does not own.
           if ! helm status kube-agents -n kubeagents-system >/dev/null 2>&1; then
             echo "::error::No Helm release 'kube-agents' in kubeagents-system — this environment predates the Terraform + Helm engine and must be re-installed from terraform/examples/full-install before redeploys can run."
             exit 1

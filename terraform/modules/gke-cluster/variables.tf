@@ -10,19 +10,17 @@ variable "cluster_name" {
 
 variable "cluster_mode" {
   description = <<-EOT
-    Which kind of cluster to manage. "autopilot" (the default, and what this
-    module always built before the mode existed) creates a GKE Autopilot
-    cluster. "standard" creates the GKE Standard cluster
-    k8s-operator/scripts/provision_01_gcp_cluster.sh used to create: a
-    default node pool of e2-standard-4 machines, Dataplane V2 with FQDN
+    Which kind of cluster to manage. "autopilot" (the default) creates a GKE
+    Autopilot cluster. "standard" creates a GKE Standard cluster: a default
+    node pool of e2-standard-4 machines, Dataplane V2 with FQDN
     NetworkPolicy, the Filestore CSI and BackupRestore addons, Workload
     Identity, and (by default) CMEK database encryption.
 
-    One provision_01 flag has no Terraform field on either google provider:
-    `--managed-otel-scope=COLLECTION_AND_INSTRUMENTATION_COMPONENTS`. Callers
-    that need the managed OpenTelemetry scope set it once after create with
-    `gcloud container clusters update`; the provider does not know the field,
-    so Terraform never sees or reverts it.
+    The managed OpenTelemetry collection scope
+    (`--managed-otel-scope=COLLECTION_AND_INSTRUMENTATION_COMPONENTS`) has no
+    Terraform field on either google provider. Callers that need it set it
+    once after create with `gcloud container clusters update`; the provider
+    does not know the field, so Terraform never sees or reverts it.
   EOT
   type        = string
   default     = "autopilot"
@@ -64,7 +62,7 @@ variable "deletion_protection" {
 }
 
 variable "allow_external_dns_traffic" {
-  description = "Whether the DNS-based control plane endpoint serves traffic from outside the VPC. The Platform Agent's endpoint detection reads this field, and without it a cluster the agent cannot route to over its IP endpoint is unreachable. Defaults to false — GKE's own default, and the value every cluster this module already manages is at — so that upgrading the module does not publish an endpoint on an existing cluster; set it true for a cluster the agent must reach from outside the VPC. provision_01_gcp_cluster.sh passed --enable-dns-access on create, so installs that mirror the script path set this true."
+  description = "Whether the DNS-based control plane endpoint serves traffic from outside the VPC. The Platform Agent's endpoint detection reads this field, and without it a cluster the agent cannot route to over its IP endpoint is unreachable. Defaults to false — GKE's own default, and the value every cluster this module already manages is at — so that upgrading the module does not publish an endpoint on an existing cluster; set it true for a cluster the agent must reach from outside the VPC (install.sh's generated tfvars always set it true)."
   type        = bool
   default     = false
 }
@@ -96,8 +94,7 @@ variable "enable_database_encryption" {
 
 variable "enable_fqdn_network_policy" {
   description = <<-EOT
-    Whether to enable FQDN NetworkPolicy on the cluster, matching the
-    --enable-fqdn-network-policy flag the retired script path passed. The
+    Whether to enable FQDN NetworkPolicy on the cluster. The
     operator's opt-in FQDNNetworkPolicy companion (the
     kubeagents.x-k8s.io/enable-fqdn-network-policy annotation) can only enforce
     on clusters where this is on.
@@ -131,33 +128,32 @@ variable "enable_backup_agent" {
 }
 
 variable "standard_machine_type" {
-  description = "Machine type for the Standard cluster's default node pool. The default matches the retired provision_01's --machine-type. Only used when cluster_mode = \"standard\"."
+  description = "Machine type for the Standard cluster's default node pool. Only used when cluster_mode = \"standard\"."
   type        = string
   default     = "e2-standard-4"
 }
 
 variable "standard_node_count" {
-  description = "Node count per zone for the Standard cluster's default node pool, matching the retired provision_01's --num-nodes. Only used when cluster_mode = \"standard\"."
+  description = "Node count per zone for the Standard cluster's default node pool. Only used when cluster_mode = \"standard\"."
   type        = number
   default     = 1
 }
 
 variable "enable_gvisor_node_pool" {
   description = <<-EOT
-    Whether to add the dedicated GKE Sandbox (gVisor) node pool that
-    k8s-operator/scripts/provision_02_gvisor_nodepool.sh used to create.
+    Whether to add a dedicated GKE Sandbox (gVisor) node pool.
     Standard mode only: on Autopilot the gvisor RuntimeClass is available
     without a node pool, so requesting the pool there fails at plan time
     rather than silently doing nothing. Works with create_cluster = false —
-    the pool attaches to the named existing Standard cluster, which is how
-    the script supported migration onto a running cluster.
+    the pool attaches to the named existing Standard cluster, so gVisor can
+    be added to a running cluster.
   EOT
   type        = bool
   default     = false
 }
 
 variable "gvisor_pool_name" {
-  description = "Name of the gVisor node pool, matching the retired provision_02's GVISOR_POOL_NAME."
+  description = "Name of the gVisor node pool."
   type        = string
   default     = "gvisor-pool"
 }

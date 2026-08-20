@@ -1,6 +1,6 @@
 {{- /*
-The GitHub token minter (minty), mirroring the envsubst templates that lived in
-k8s-operator/config/integrations/github: the Deployment and Service the
+The GitHub token minter (minty), mirroring k8s-operator/config/integrations/github
+(the kustomize dev path): the Deployment and Service the
 credential proxy calls for short-lived GitHub App tokens, the minty v2 rule
 ConfigMap, the Workload Identity KSA, and the NetworkPolicy. The GCP half —
 the minter GSA, its Workload Identity binding, and the import-only KMS signing
@@ -15,15 +15,18 @@ the module README for the manual command).
 {{- $projectId := required "platformAgent.harness.projectId is required when githubMinter.enabled" .Values.platformAgent.harness.projectId }}
 {{- $location := required "platformAgent.harness.location is required when githubMinter.enabled" .Values.platformAgent.harness.location }}
 {{- $clusterName := required "platformAgent.harness.clusterName is required when githubMinter.enabled" .Values.platformAgent.harness.clusterName }}
-{{- /* KMS rings are regional; a zonal cluster location maps to its region,
-       the same derivation as derive_kms_location in the retired scripts. */}}
+{{- /* KMS rings are regional; a zonal cluster location maps to its region —
+       the same derivation as derive_kms_location in
+       k8s-operator/scripts/installer_common.sh, so chart and installer name
+       the same ring. */}}
 {{- $kmsLocation := $m.kms.location | default (regexReplaceAll "-[a-z]$" $location "") }}
 {{- $allowedSa := $m.allowedServiceAccount | default (printf "kubeagents-platform-gsa@%s.iam.gserviceaccount.com" $projectId) }}
 {{- if $m.appId }}
 ---
-# The App identity the minter signs as. provision_07 used to create this
-# Secret when GITHUB_APP_ID was set; with appId empty the chart renders no
-# Secret and one must exist in the release namespace before the pod is Ready.
+# The App identity the minter signs as. Rendered only when appId is set, so
+# an operator who manages this Secret elsewhere can leave appId empty — the
+# chart then renders no Secret, and one must exist in the release namespace
+# before the pod is Ready.
 apiVersion: v1
 kind: Secret
 metadata:

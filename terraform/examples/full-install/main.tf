@@ -1,7 +1,6 @@
 locals {
-  # A deliberate superset of what the scripts enable: iam, monitoring, and
-  # logging are here because Terraform must enable every API its own resources
-  # call, where gcloud enables them implicitly. On the divergence lists.
+  # iam, monitoring, and logging are here because Terraform must enable every
+  # API its own resources call, where gcloud enables them implicitly.
   base_apis = [
     "container.googleapis.com",
     "cloudkms.googleapis.com",
@@ -9,9 +8,9 @@ locals {
     "cloudresourcemanager.googleapis.com",
     "monitoring.googleapis.com",
     "logging.googleapis.com",
-    # Unconditional, like the retired script path: the cluster is created
-    # with the Backup for GKE agent enabled whether or not a BackupPlan
-    # follows, and the addon cannot be enabled without the API.
+    # Unconditional: the cluster is created with the Backup for GKE agent
+    # enabled whether or not a BackupPlan follows, and the addon cannot be
+    # enabled without the API.
     "gkebackup.googleapis.com",
   ]
   chat_apis = var.enable_google_chat ? [
@@ -100,8 +99,7 @@ locals {
   # Slack, it holds the whole agent pod in CreateContainerConfigError. The
   # tokens legitimately arrive after the first apply, because creating the
   # Slack app is a manual step, so an empty value has to reach the Secret as
-  # an empty value. The retired script path wrote the pair
-  # unconditionally for the same reason.
+  # an empty value.
   slack_credentials = var.enable_slack ? {
     SLACK_BOT_TOKEN = var.slack_bot_token
     SLACK_APP_TOKEN = var.slack_app_token
@@ -109,10 +107,8 @@ locals {
 
   credentials = merge(local.optional_credentials, local.slack_credentials)
 
-  # Verbatim from the resources patch the retired script path applied
-  # to all three cert-manager Deployments. Kept as one local because the script
-  # applies one patch to all three, and three copies here could drift apart
-  # where the script's cannot.
+  # One resources block for all three cert-manager Deployments, kept as a
+  # single local so the three copies cannot drift apart.
   cert_manager_resources = {
     requests = {
       cpu    = "10m"
@@ -134,9 +130,8 @@ locals {
 
   # Mirrored image overrides for helm_release.cert_manager below. Destination
   # names follow images.json (<prefix>/<name>:<tag>) — the contract
-  # `make mirror-images` writes and the retired apply_cert_manager_manifest
-  # rewrite honoured. The tag stays the chart's own appVersion, which is what
-  # images.json pins for the cert-manager entries. Empty when not mirroring,
+  # `make mirror-images` writes. The tag stays the chart's own appVersion,
+  # which is what images.json pins for the cert-manager entries. Empty when not mirroring,
   # so a default install's release values are byte-identical.
   cert_manager_mirror_values = local.third_party_registry == "" ? [] : [yamlencode({
     image      = { repository = "${local.third_party_registry}/cert-manager-controller" }
@@ -299,17 +294,14 @@ module "github_minter" {
 }
 
 # cert-manager, the certificate source for the operator's admission webhooks.
-# The retired script path installed the same version from the release
-# manifest and then patched it; the chart expresses those patches as values.
 #
-# Two divergences from the script, both deliberate:
-#   - the script disables leader election on Autopilot because cert-manager
-#     leases default to kube-system, which Autopilot restricts. Moving the lease
-#     into the cert-manager namespace clears the same restriction without giving
-#     up the lock, so that is what this does.
-#   - the script is idempotent (verify_cert_manager skips an existing install).
-#     Terraform is not: pointing this at a cluster that already runs cert-manager
-#     fails on the existing CRDs. Set enable_cert_manager = false there.
+# Two deliberate choices:
+#   - leader election runs in the cert-manager namespace rather than its
+#     kube-system default, which Autopilot restricts. Moving the lease clears
+#     that restriction without giving up the lock.
+#   - pointing this at a cluster that already runs cert-manager fails on the
+#     existing CRDs rather than adopting them. Set enable_cert_manager = false
+#     there.
 resource "helm_release" "cert_manager" {
   count = var.enable_cert_manager ? 1 : 0
 
@@ -343,9 +335,8 @@ resource "helm_release" "cert_manager" {
       }
     }
 
-    # The quotas the retired script path patched in, so the installs ask the scheduler
-    # for the same thing. Autopilot bills what is requested, and its defaults
-    # are several times these.
+    # Small explicit requests: Autopilot bills what is requested, and its
+    # defaults are several times these.
     resources = local.cert_manager_resources
     cainjector = {
       resources = local.cert_manager_resources
@@ -367,9 +358,8 @@ resource "helm_release" "kube_agents" {
   # This wait is the install's rollout gate, and 600 is not the provider
   # default (300) restated: hindsight-api budgets 300s of startupProbe for its
   # in-process model load on top of a 1.4 GB image pull, so the provider
-  # default gives up on a cold node that is loading normally. The retired
-  # script gate (AGENT_READY_TIMEOUT) used the same 600s. Keep it above the
-  # startup budget plus a slow pull (300+240) and below hindsight-api's
+  # default gives up on a cold node that is loading normally. Keep it above
+  # the startup budget plus a slow pull (300+240) and below hindsight-api's
   # progressDeadlineSeconds (900) — past that the Deployment reports failure
   # and waiting longer buys nothing. tests/test_hindsight_probes.py asserts
   # the ordering.
@@ -443,8 +433,8 @@ resource "helm_release" "kube_agents" {
           tag = var.image_tag
         }
         availability = {
-          # The gVisor pool only exists to run the agent sandboxed, so the two
-          # move together, the way ENABLE_GVISOR did on the script path.
+          # The gVisor pool only exists to run the agent sandboxed, so the
+          # pool and the runtimeClass move together.
           runtimeClassName = var.enable_gvisor_node_pool ? "gvisor" : ""
         }
       }

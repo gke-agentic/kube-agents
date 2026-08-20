@@ -28,10 +28,8 @@ keeps the three in that order, and each one alone looks reasonable — which is
 what these tests are for. The rationale for the individual numbers belongs to
 `api.yaml`'s probe comment, not here.
 
-The gate used to be provision_13's `kubectl rollout status
---timeout=$AGENT_READY_TIMEOUT`; since the Terraform+Helm cutover (#748) it is
-the `helm_release.kube_agents` wait in the full-install composition, whose
-timeout these tests read from main.tf.
+The gate is the `helm_release.kube_agents` wait in the full-install
+composition, whose timeout these tests read from main.tf.
 """
 
 import pathlib
@@ -186,7 +184,7 @@ class RolloutBudgetTest(unittest.TestCase):
             block,
             r"(?m)^\s*wait\s*=\s*true\s*$",
             "helm_release.kube_agents must wait explicitly; the wait is the "
-            "install's only rollout gate since the script pipeline retired",
+            "install's only rollout gate",
         )
         self.assertRegex(
             block,

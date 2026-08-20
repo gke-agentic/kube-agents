@@ -193,7 +193,7 @@ resolve_state_location() {
     print_info "Using the composition's own state (local terraform.tfstate or existing backend_override.tf)."
   else
     print_error "No Terraform state found for '${CLUSTER_NAME}' (gs://$(tf_state_bucket)/$(tf_state_prefix)) and none locally."
-    print_info "If this install was made by a release with the script pipeline (pre-Terraform engine), re-run with --source-ref=<that release> so its own teardown runs."
+    print_info "If this install was made by a pre-Terraform release, re-run with --source-ref=<that release> so its own teardown runs."
     return 1
   fi
 }
@@ -297,8 +297,8 @@ main() {
 
   # The engine is `lifecycle.sh destroy` against the install's Terraform state
   # in GCS (derived from the coordinates, so a fresh clone finds it). An
-  # install with no state anywhere was made by the retired script pipeline —
-  # this uninstaller cannot take it apart, but the release that installed it
+  # install with no state anywhere predates the Terraform engine — this
+  # uninstaller cannot take it apart, but the release that installed it
   # can, which is exactly what --source-ref pins.
   local compose_dir="${repo_dir}/terraform/examples/full-install"
   export KUBE_AGENTS_STATE_PREFIX

@@ -52,7 +52,7 @@ spec:
   replicas: 1
   # 15 minutes, above the default 600s: a cold roll pulls 1.4 GB before the
   # container starts and only then spends the startupProbe budget loading
-  # models. Ported from the kustomize copy (#796), whose api.yaml carries the
+  # models. k8s-operator/config/integrations/hindsight/api.yaml carries the
   # canonical account of these timings.
   progressDeadlineSeconds: 900
   selector:
@@ -131,8 +131,8 @@ spec:
           # Model loading dominates cold start, so startup gets its own probe
           # (5s × 60 = 5 minutes of budget) and liveness/readiness stay tight
           # with no initialDelaySeconds — neither runs until the startupProbe
-          # first succeeds. Ported from the kustomize copy (#796), whose
-          # api.yaml comment is the canonical account of these timings.
+          # first succeeds. The kustomize copy's api.yaml comment is the
+          # canonical account of these timings.
           startupProbe:
             httpGet:
               path: /health

@@ -290,14 +290,14 @@ is the canonical walkthrough, including the pairing-code approval.
 
 `platformAgent.harness.hermes`, `platformAgent.harness.memory`, and
 `platformAgent.deployment.availability` expose the remaining PlatformAgent CR
-fields, so a chart install can reach any CR the retired script path could
-render. Each one defaults
+fields, so a chart install can reach every field of the CR without editing it
+by hand. Each one defaults
 to `null`/`""`, which **omits** the field and lets the CRD's own default apply
 — setting `false` is therefore distinct from leaving it unset, and `replicas: 0`
 means zero rather than unset.
 
-`platformAgent.deployment.image.pullPolicy` defaults to `Always`, matching the
-same template. Under `IfNotPresent` a node that has already cached the tag never
+`platformAgent.deployment.image.pullPolicy` defaults to `Always`. Under
+`IfNotPresent` a node that has already cached the tag never
 picks up a rebuild, which is the normal case for the Terraform composition's
 default `image_tag = "latest"`.
 
@@ -317,9 +317,9 @@ Two knobs need context beyond the chart:
   pool on a Standard cluster — the `gke-cluster` module's
   `enable_gvisor_node_pool` creates one; Autopilot ships the RuntimeClass
   natively.
-- `harness.hermes.dashboardEnabled` is the one field where the two install paths
-  disagree by default: the CRD defaults it to `true`, the script path to
-  `false`. Set it explicitly when the two installs must match.
+- `harness.hermes.dashboardEnabled` defaults to `null`, which leaves the field
+  out of the CR so the CRD default (`true`) applies. Set it explicitly when an
+  install must pin the dashboard on or off rather than float with the CRD.
 
 ### ServiceAccount ownership
 

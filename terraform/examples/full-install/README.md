@@ -12,8 +12,8 @@ install without the interview.
   destroy), including the Cloud KMS API for GKE database encryption and the Chat
   API when Google Chat is enabled.
 - A GKE cluster ([`gke-cluster`](../../modules/gke-cluster) module) — Autopilot
-  by default, `cluster_mode = "standard"` for the shape the retired scripts
-  built (with an optional gVisor node pool), or `create_cluster = false` to
+  by default, `cluster_mode = "standard"` for an e2-standard-4 node pool
+  (with an optional gVisor node pool), or `create_cluster = false` to
   install onto an existing one — with Workload Identity, Cloud KMS database
   encryption (CMEK), the Backup for GKE agent enabled, and the
   `kube-agents-host=true` discovery label applied.
@@ -218,7 +218,7 @@ setting `enable_gke_backup_plan = false` again, and changing
 `backup_encryption_key` — fails on that resource until the backups are purged.
 `make tf-destroy` purges them for you; the
 [module README](../../modules/gke-backup-plan/README.md#teardown-is-not-symmetric)
-has the commands for the other two cases, which no teardown script covers.
+has the commands for the other two cases, which nothing automates.
 
 ### cert-manager
 
@@ -229,7 +229,7 @@ certificate, and cert-manager is what issues it. `enable_cert_manager`
 `cert_manager_version`;
 `enable_webhooks` (default `true`) then turns the webhooks on in the chart.
 
-Three differences from the script path are worth knowing:
+Three behaviours are worth knowing:
 
 - **This is not idempotent against an existing install.** install.sh probes an
   existing cluster for a `cert-manager` Deployment in the `cert-manager`
@@ -242,8 +242,7 @@ Three differences from the script path are worth knowing:
   composition created. On any cluster that shares cert-manager with another
   workload, install it separately and set `enable_cert_manager = false`.
 - **Leader election moves rather than switching off.** cert-manager's leases
-  default to `kube-system`, which Autopilot restricts (the retired script path
-  patched `--leader-elect=false` for the same reason). This sets
+  default to `kube-system`, which Autopilot restricts. This sets
   `global.leaderElection.namespace = "cert-manager"`, which clears the
   restriction without giving up the lock.
 

@@ -170,9 +170,9 @@ Takes a dict: {repository, tag, name (optional), root (the root context)}.
 {{/*
 Whether the Hindsight memory store renders. hindsight.enabled is a tri-state:
 true and false are answers, and null (the default) follows the agent's memory
-provider the way provision_13_deploy_hindsight.sh did — the providers that
-need the Hindsight API get it, everything else does not, and an install cannot
-select hindsight memory and silently receive no store.
+provider — the providers that need the Hindsight API get it, everything else
+does not, so an install cannot select hindsight memory and silently receive
+no store.
 */}}
 {{- define "kube-agents.hindsightEnabled" -}}
 {{- $explicit := .Values.hindsight.enabled -}}

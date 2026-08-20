@@ -89,9 +89,9 @@ ensure_backend() {
     printf '%s' "$desired" >"$BACKEND_OVERRIDE_FILE"
     log "state backend: gs://$bucket/$prefix"
     # -reconfigure, not -migrate-state: the installer path never has local
-    # state worth carrying (script-era installs kept none), and migrating
-    # whatever happens to sit in a reused checkout into the bucket is how an
-    # unrelated experiment overwrites a real install's state.
+    # state worth carrying, and migrating whatever happens to sit in a reused
+    # checkout into the bucket is how an unrelated experiment overwrites a
+    # real install's state.
     terraform init -input=false -reconfigure >/dev/null || {
       warn "terraform init -reconfigure against gs://$bucket failed"
       exit 1

@@ -9,7 +9,7 @@ variable "cluster_name" {
 }
 
 variable "cluster_mode" {
-  description = "Cluster shape: \"autopilot\" (default) or \"standard\". Standard reproduces the cluster the retired provisioning scripts built — e2-standard-4 default pool, Dataplane V2 with FQDN NetworkPolicy, Filestore CSI and BackupRestore addons — and is the only mode that can carry a gVisor node pool."
+  description = "Cluster shape: \"autopilot\" (default) or \"standard\". Standard builds an e2-standard-4 default pool with Dataplane V2, FQDN NetworkPolicy, and the Filestore CSI and BackupRestore addons, and is the only mode that can carry a gVisor node pool."
   type        = string
   default     = "autopilot"
 
@@ -293,7 +293,7 @@ variable "chat_subscription_name" {
 }
 
 variable "hermes_dashboard_enabled" {
-  description = "Whether the Hermes Web UI dashboard is enabled on the agent. null leaves the field out of the CR so the CRD default (true) applies; the retired script path defaulted it to false."
+  description = "Whether the Hermes Web UI dashboard is enabled on the agent. null leaves the field out of the CR so the CRD default (true) applies."
   type        = bool
   default     = null
 }

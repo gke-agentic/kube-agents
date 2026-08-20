@@ -160,8 +160,8 @@ random_hex_32() {
 # Add the pod-scoped Session KV keys to an existing Secret that predates them.
 #
 # A fresh install generates these (the composition's random_password
-# resources; the retired provision_07 before that), and the harness/operator
-# fast paths never touch platform-agent-secrets — `helm upgrade
+# resources), and the harness/operator fast paths never touch
+# platform-agent-secrets — `helm upgrade
 # --reuse-values` re-tags images and nothing else, so a Secret from an old
 # enough install keeps missing the keys until something adds them. The
 # operator marks both Secret references optional, so

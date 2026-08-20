@@ -71,8 +71,8 @@ resource "google_container_cluster" "autopilot" {
   deletion_protection = var.deletion_protection
   resource_labels     = var.resource_labels
 
-  # Matches the retired provision_01's --enable-fqdn-network-policy. Autopilot always runs
-  # Dataplane V2, so the script's --enable-dataplane-v2 needs no counterpart.
+  # Autopilot always runs Dataplane V2, so FQDN NetworkPolicy is the only
+  # datapath knob to set here.
   enable_fqdn_network_policy = var.enable_fqdn_network_policy
 
   workload_identity_config {
@@ -97,8 +97,7 @@ resource "google_container_cluster" "autopilot" {
   # operator never asked for one -- and this endpoint is governed by IAM alone,
   # so neither the private endpoint nor master-authorized-networks would be
   # holding it shut. Opting in is therefore a deliberate edit to the caller's
-  # configuration; the retired gcloud path enabled it on
-  # create only, for the same reason.
+  # configuration.
   #
   # Once set either way the field is Terraform-managed, so change it here rather
   # than with `gcloud container clusters update`: out-of-band it is drift that
@@ -121,10 +120,9 @@ resource "google_container_cluster" "autopilot" {
   # then schedules the backups themselves. The agent has to be enabled on the
   # cluster before a BackupPlan can target it.
   #
-  # Only the BackupRestore half is mirrored here. Nothing in the harness mounts
-  # a Filestore volume, and `gcloud container clusters create-auto` has no
-  # --addons flag to pass either half on Autopilot; the standard cluster below
-  # mirrors both halves of the script's flag.
+  # Only the backup agent is enabled here, without the Filestore CSI driver
+  # the standard cluster below also carries: nothing in the harness mounts a
+  # Filestore volume, and Autopilot manages its own CSI drivers.
   addons_config {
     gke_backup_agent_config {
       enabled = var.enable_backup_agent
@@ -143,21 +141,13 @@ resource "google_container_cluster" "autopilot" {
   ]
 }
 
-# The GKE Standard cluster provision_01_gcp_cluster.sh used to create:
-#   gcloud container clusters create "$CLUSTER_NAME" \
-#       --machine-type=e2-standard-4 --num-nodes=1 \
-#       --workload-pool=PROJECT.svc.id.goog \
-#       --database-encryption-key=... \
-#       --addons=GcpFilestoreCsiDriver,BackupRestore \
-#       --enable-dataplane-v2 --enable-fqdn-network-policy \
-#       --managed-otel-scope=COLLECTION_AND_INSTRUMENTATION_COMPONENTS \
-#       --enable-dns-access
-# Every flag has a first-class field below except --managed-otel-scope, which
-# neither google provider knows (checked against 7.45): that one stays a
-# post-create `gcloud container clusters update` step for callers that want
-# the managed OpenTelemetry collection scope. --enable-dns-access corresponds
-# to allow_external_dns_traffic = true, which installs mirroring the script
-# path pass explicitly.
+# A GKE Standard cluster: e2-standard-4 default node pool (one node per
+# zone), Workload Identity, CMEK database encryption, the Filestore CSI and
+# BackupRestore addons, and Dataplane V2 with FQDN NetworkPolicy. The one
+# piece with no first-class field below is the managed OpenTelemetry
+# collection scope (gcloud's --managed-otel-scope), which neither google
+# provider knows (checked against 7.45): it stays a post-create
+# `gcloud container clusters update` step for callers that want it.
 resource "google_container_cluster" "standard" {
   #checkov:skip=CKV_GCP_12:Dataplane V2 (ADVANCED_DATAPATH) enforces NetworkPolicy without the addon
   #checkov:skip=CKV_GCP_13:Client certificate authentication is disabled by default on current GKE
@@ -169,7 +159,7 @@ resource "google_container_cluster" "standard" {
   #checkov:skip=CKV_GCP_65:Google Groups RBAC integration not required for single-tenant agent host cluster
   #checkov:skip=CKV_GCP_66:Binary authorization not required for quickstart agent deployment module
   #checkov:skip=CKV_GCP_67:Legacy metadata endpoints are disabled by default on current GKE node versions
-  #checkov:skip=CKV_GCP_68:Secure boot stays at the gcloud create default the script cluster had
+  #checkov:skip=CKV_GCP_68:Secure boot stays at the gcloud create default
   #checkov:skip=CKV_GCP_69:Workload metadata is pinned to GKE_METADATA in node_config
   count    = var.create_cluster && var.cluster_mode == "standard" ? 1 : 0
   name     = var.cluster_name
@@ -200,9 +190,9 @@ resource "google_container_cluster" "standard" {
     }
   }
 
-  # --enable-dataplane-v2. Requires VPC-native networking; the empty
-  # ip_allocation_policy lets GKE pick secondary ranges the same way the
-  # script's create call did.
+  # Dataplane V2. Requires VPC-native networking; the empty
+  # ip_allocation_policy lets GKE pick secondary ranges, as
+  # `gcloud container clusters create` does.
   networking_mode = "VPC_NATIVE"
   ip_allocation_policy {
   }
@@ -218,8 +208,7 @@ resource "google_container_cluster" "standard" {
   }
 
   # See the comment on the autopilot resource: same field, same default, same
-  # reason. provision_01 passed --enable-dns-access on create, so installs
-  # mirroring the script path set allow_external_dns_traffic = true.
+  # reason.
   control_plane_endpoints_config {
     dns_endpoint_config {
       allow_external_traffic = var.allow_external_dns_traffic
@@ -234,7 +223,9 @@ resource "google_container_cluster" "standard" {
     }
   }
 
-  # Both halves of provision_01's --addons=GcpFilestoreCsiDriver,BackupRestore.
+  # Filestore CSI for workloads that mount Filestore volumes, and the Backup
+  # for GKE agent, which must be enabled on the cluster before the
+  # gke-backup-plan module can schedule a BackupPlan against it.
   addons_config {
     gcp_filestore_csi_driver_config {
       enabled = true
@@ -286,20 +277,19 @@ data "google_container_cluster" "existing" {
   }
 }
 
-# The dedicated GKE Sandbox (gVisor) node pool provision_02_gvisor_nodepool.sh
-# used to create, flag for flag. Standard only: Autopilot ships the gvisor
-# RuntimeClass without a pool. The count is on the variable alone so that
-# asking for the pool on an Autopilot cluster fails the plan loudly instead of
-# being ignored.
+# A dedicated GKE Sandbox (gVisor) node pool. Standard only: Autopilot ships
+# the gvisor RuntimeClass without a pool. The count is on the variable alone
+# so that asking for the pool on an Autopilot cluster fails the plan loudly
+# instead of being ignored.
 resource "google_container_node_pool" "gvisor" {
-  #checkov:skip=CKV_GCP_68:Secure boot stays at the gcloud create default the script pool had
+  #checkov:skip=CKV_GCP_68:Secure boot stays at the gcloud create default
   count    = var.enable_gvisor_node_pool ? 1 : 0
   name     = var.gvisor_pool_name
   cluster  = local.cluster_name
   location = var.location
   project  = var.project_id
 
-  # Per zone, like the script's --num-nodes=1.
+  # Per zone: a regional location yields one node per zone.
   initial_node_count = 1
 
   node_config {

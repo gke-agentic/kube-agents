@@ -222,7 +222,7 @@ class InstallerCommonTest(unittest.TestCase):
 
     def test_tfvars_generation_recovers_credentials_from_live_secret(self):
         # PERSIST_SECRETS_ON_DISK=false leaves vars.sh without the keys; the
-        # generator reads them back from the live Secret, as provision_07 did.
+        # live Secret is their home, so the generator reads them back from it.
         recovered_b64 = "cmVjb3ZlcmVkLWtleQ=="  # base64("recovered-key")
         kubectl_stub = (
             "#!/usr/bin/env bash\n"

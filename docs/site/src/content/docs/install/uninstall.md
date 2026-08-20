@@ -64,7 +64,7 @@ Four things in the stack are not symmetric — destroying them is not the invers
 
 These steps are irreversible and run **before** Terraform's own prompt, which is why the script asks for one confirmation up front (`--non-interactive` skips it).
 
-**Installs that predate the Terraform engine.** An install with no Terraform state anywhere was created by the retired script pipeline; this uninstaller cannot take it apart, and it exits saying so. Re-run with `--source-ref=<the release that installed it>` so that release's own teardown runs instead:
+**Installs that predate the Terraform engine.** An install with no Terraform state anywhere was created by a pre-Terraform release; this uninstaller cannot take it apart, and it exits saying so. Re-run with `--source-ref=<the release that installed it>` so that release's own teardown runs instead:
 
 ```bash
 curl -fsSL https://gke-labs.github.io/kube-agents/uninstall.sh | bash -s -- --source-ref=<old release tag>

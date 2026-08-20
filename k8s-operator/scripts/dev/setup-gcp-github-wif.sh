@@ -99,16 +99,16 @@ ROLES=(
 if [ "$IS_ADMIN" = true ]; then
   echo "Admin mode selected. Adding extended lifecycle administration roles..."
   ROLES+=(
-    # Required by provision_04_gcp_iam.sh & teardown_04_gcp_iam.sh to create and manage Service Accounts
+    # The kube-agents-iam module creates and deletes the agent's service accounts
     "roles/iam.serviceAccountAdmin"
 
-    # Required by provision_04_gcp_iam.sh & teardown_04_gcp_iam.sh to bind/unbind IAM policies on GCP resources
+    # The kube-agents-iam module binds and unbinds project IAM policies
     "roles/resourcemanager.projectIamAdmin"
 
-    # Required by provision_05_gcp_gchat.sh & teardown_05 for Google Chat Pub/Sub topic and subscription management
+    # The chat-pubsub module manages the Google Chat Pub/Sub topic and subscription
     "roles/pubsub.admin"
 
-    # Required by provision_12_gke_backup_plan.sh & teardown_12_gke_backup_plan.sh to manage Backup for GKE plans
+    # The gke-backup-plan module manages Backup for GKE plans
     "roles/gkebackup.admin"
   )
 fi

@@ -33,8 +33,8 @@ api_server_key = "REPLACE_WITH_A_STRONG_RANDOM_KEY"
 # yourself, in the namespace above, before applying — see the README.
 # image_pull_secrets = ["regcred"]
 
-# Cluster topology. "autopilot" (default) or "standard" — standard reproduces
-# the cluster the retired provisioning scripts built, and is the only mode
+# Cluster topology. "autopilot" (default) or "standard" — standard builds an
+# e2-standard-4 node pool with Dataplane V2, and is the only mode
 # that can carry the gVisor node pool. Set create_cluster = false to install
 # onto an existing cluster (it must already have Workload Identity; CMEK on it
 # stays a gcloud step outside Terraform).

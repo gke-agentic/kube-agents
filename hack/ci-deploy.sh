@@ -103,8 +103,8 @@ gcloud builds submit --config="deploy/docker/cloudbuild-ci.yaml" \
 echo "✓ Container image builds finished in $((SECONDS - STEP_START))s"
 
 # ─── 5. Chart Deployment ──────────────────────────────────────────────────────
-# One helm release carries everything the retired provisioning steps
-# (03 operator, 07 secrets, 08 agent CR, 09 LiteLLM) used to apply piecemeal.
+# One helm release carries the whole install — operator, credentials Secret,
+# agent CR, and LiteLLM — so there is nothing to apply piecemeal or keep in order.
 # Webhooks stay at the chart's default (off): a PR evaluation cluster carries
 # no cert-manager, and admission-webhook coverage belongs to the operator's
 # own test suite rather than this smoke pipeline.

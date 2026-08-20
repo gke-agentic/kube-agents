@@ -281,7 +281,7 @@ hcl_bool() {
 
 # Comma- or space-separated string → HCL list of strings, dropping empty
 # items. Both separators, because --custom-roles documents "space- or
-# comma-separated" and the retired provision_04 honoured both.
+# comma-separated".
 hcl_csv_list() {
   local csv="${1:-}" out="[" first=true item
   local IFS=$', \t\n'
@@ -325,17 +325,16 @@ sys.exit(0 if managed else 1)
 }
 
 # Writes the terraform.tfvars the full-install composition consumes, from the
-# vars.sh variable set in the environment (source vars.sh first). This is what
-# replaced the fourteen provisioning scripts as the engine's input: the same
+# vars.sh variable set in the environment (source vars.sh first). The same
 # generator runs from install.sh, upgrade.sh, and uninstall.sh, so the three
 # front-ends can never describe different installs.
 #
-# create_cluster comes from a liveness probe, not from the interview: the
-# script pipeline was check-then-create, so "use an existing cluster" against a
-# name that does not exist still created it. A cluster that exists but is
-# already in OUR state stays create_cluster = true — flipping it off would
-# remove the resource from configuration and plan the cluster's destruction
-# (lifecycle.sh guards this too).
+# create_cluster comes from a liveness probe, not from the interview, so
+# "use an existing cluster" against a name that does not exist still creates
+# it. A cluster that exists but is already in OUR state stays
+# create_cluster = true — flipping it off would remove the resource from
+# configuration and plan the cluster's destruction (lifecycle.sh guards this
+# too).
 write_tfvars_from_state() {
   local dest="$1"
   local image_tag="${2:-${IMAGE_TAG:-latest}}"
@@ -345,7 +344,7 @@ write_tfvars_from_state() {
   # install the moment a front door regenerated tfvars against it — the
   # autopilot resource's count went to 0, so uninstall's targeted
   # deletion-protection apply and upgrade's full apply both became cluster
-  # replacements. A fresh create keeps "standard", the script-parity shape.
+  # replacements. A fresh create keeps "standard", the installer's default shape.
   local create_cluster="true" cluster_mode="standard" autopilot_enabled=""
   if autopilot_enabled=$(gcloud container clusters describe "${CLUSTER_NAME}" \
       --location "${REGION}" --project "${PROJECT_ID}" \
@@ -378,7 +377,7 @@ write_tfvars_from_state() {
 
   # The generator's create/adopt decision, exported for the callers that need
   # it after the apply: install.sh sets the managed-OTel scope only on a
-  # cluster this install created, the way provision_01 set it on create only.
+  # cluster this install created, never on an adopted one it does not own.
   TFVARS_CREATE_CLUSTER="$create_cluster"
   export TFVARS_CREATE_CLUSTER
 
@@ -392,9 +391,8 @@ write_tfvars_from_state() {
   fi
 
   # vars.sh does not always carry the credentials: PERSIST_SECRETS_ON_DISK=false
-  # keeps them out of it, on script-era installs as well as new ones. Their
-  # home is the live Secret, so recover any missing key from it the way the
-  # retired provision_07 did — best-effort, since on a fresh install there is
+  # keeps them out of it. Their home is the live Secret, so recover any
+  # missing key from it — best-effort, since on a fresh install there is
   # no cluster to ask yet and the keys are still in the environment.
   # SESSION_KV_API_KEY and SESSION_KV_SALT are in the list because an adoption
   # re-install must keep the live salt: regenerating it re-anonymises every
@@ -436,9 +434,9 @@ write_tfvars_from_state() {
   # A pre-existing cert-manager makes the composition's own cert-manager
   # release fail on the existing CRDs, so probe for one on the existing-cluster
   # path. Best-effort: an unreachable cluster leaves the default in place.
-  # SKIP_CERT_MANAGER=true is the explicit opt-out the retired path had — for
-  # the cluster whose cert-manager comes from somewhere else, or the air-gapped
-  # runner that cannot fetch the Jetstack chart from charts.jetstack.io.
+  # SKIP_CERT_MANAGER=true is the explicit opt-out — for the cluster whose
+  # cert-manager comes from somewhere else, or the air-gapped runner that
+  # cannot fetch the Jetstack chart from charts.jetstack.io.
   local enable_cert_manager="true"
   if is_truthy "${SKIP_CERT_MANAGER:-false}"; then
     enable_cert_manager="false"
@@ -494,9 +492,9 @@ write_tfvars_from_state() {
     echo "cluster_name = $(hcl_str "${CLUSTER_NAME}")"
     echo "location     = $(hcl_str "${REGION}")"
     echo ""
-    echo "# The shape the retired provisioning scripts built: a Standard cluster with"
-    echo "# the DNS endpoint open and no deletion protection. An existing cluster"
-    echo "# keeps its own mode — see the probe above."
+    echo "# The installer's default shape: a Standard cluster with the DNS endpoint"
+    echo "# open and no deletion protection. An existing cluster keeps its own"
+    echo "# mode — the generator probes the live cluster before writing this."
     echo "cluster_mode               = $(hcl_str "${cluster_mode}")"
     echo "create_cluster             = ${create_cluster}"
     echo "allow_external_dns_traffic = true"

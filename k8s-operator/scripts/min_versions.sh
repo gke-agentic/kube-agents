@@ -5,20 +5,20 @@
 # The single home for every "you need at least version X" number in the
 # installer front doors. Kept free of side effects — no state loading, no
 # argument parsing, no output at source time — because both the standalone
-# installer (install.sh, which does not source common.sh) and the pipeline
-# scripts (which do, via common.sh) need these numbers. Sourcing this file must
-# be safe from either.
+# installer (install.sh, which does not source common.sh) and the scripts
+# that source common.sh need these numbers. Sourcing this file must be safe
+# from either.
 #
 # Print/exit behaviour lives in the callers; the helpers here only compare.
 # ==============================================================================
 
 # gcloud 576.0.0 (2026-07-14) promoted --managed-otel-scope to GA on
 # `container clusters create`, `create-auto`, and `update`. Earlier releases
-# expose it on the alpha/beta tracks only, so the retired provision_01 — which
-# passes the flag on the GA surface — fails argument parsing before it issues a
-# single API call. That failure arrives *after* the APIs and the Cloud KMS key
-# have been provisioned, which is why the check runs up front rather than being
-# left to gcloud.
+# expose it on the alpha/beta tracks only, so install.sh's post-create
+# `clusters update --managed-otel-scope` — issued on the GA surface — fails
+# argument parsing before it issues a single API call. That failure arrives
+# *after* the cluster and its GCP resources have been applied, which is why
+# the check runs up front rather than being left to gcloud.
 MIN_GCLOUD_VERSION="576.0.0"
 
 # Compare two dotted version strings. Returns 0 when $1 is strictly older than

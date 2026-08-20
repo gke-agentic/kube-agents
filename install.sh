@@ -329,10 +329,10 @@ write_state_var() {
   printf 'export %s=%q\n' "$var_name" "$var_value" >> "$destination"
 }
 
-# Credentials follow PERSIST_SECRETS_ON_DISK, the contract the retired
-# provision_07 honoured: false keeps them out of vars.sh. Exported for this
-# run either way, so the tfvars generator still sees them; later runs recover
-# them from the live Secret (see write_tfvars_from_state).
+# Credentials follow PERSIST_SECRETS_ON_DISK: false keeps them out of
+# vars.sh. Exported for this run either way, so the tfvars generator still
+# sees them; later runs recover them from the live Secret (see
+# write_tfvars_from_state).
 write_secret_state_var() {
   local destination="$1"
   local var_name="$2"
@@ -833,10 +833,10 @@ run_lifecycle_apply() {
   ) 2>&1 | tee "$log_file"
 }
 
-# CMEK on a pre-existing cluster is the one provision_01 behaviour Terraform
-# cannot express: a data source cannot mutate the cluster it reads. Mirrors the
-# retired script — ensure the keyring/key and the GKE service agent's binding,
-# then update the cluster — and skips clusters that are already encrypted, do
+# CMEK on a pre-existing cluster is the one create-path behaviour Terraform
+# cannot express: a data source cannot mutate the cluster it reads. Ensures
+# the keyring/key and the GKE service agent's binding, then updates the
+# cluster, and skips clusters that are already encrypted, do
 # not exist yet (Terraform creates those encrypted), or where the operator
 # explicitly allowed unencrypted secrets.
 ensure_existing_cluster_cmek() {
@@ -877,9 +877,9 @@ ensure_existing_cluster_cmek() {
 
 # Workload Identity on a pre-existing cluster is the other such behaviour:
 # kube-agents requires the pool (every KSA→GSA binding rides it — without it
-# the pods silently run as the node's service account), the retired
-# provision_04 enabled it and migrated legacy node pools, and the module's
-# data source can only read it. No-op when the cluster does not exist yet:
+# the pods silently run as the node's service account), and the module's
+# data source can only read it, so it is enabled here. No-op when the
+# cluster does not exist yet:
 # Terraform creates those with the pool on. The gke-cluster module's
 # postcondition backstops installs driven through bare Terraform.
 ensure_existing_cluster_workload_identity() {
@@ -899,8 +899,8 @@ ensure_existing_cluster_workload_identity() {
 
   # Enabling the pool does not migrate node pools off the legacy GCE metadata
   # server, and pods on such pools still get the node's service account.
-  # Standard-cluster concern, exactly as provision_04's twin step was:
-  # Autopilot pools are managed onto GKE_METADATA already.
+  # Standard-cluster concern: Autopilot pools are managed onto GKE_METADATA
+  # already.
   local legacy_pool
   while IFS= read -r legacy_pool; do
     [ -n "$legacy_pool" ] || continue
@@ -915,14 +915,13 @@ ensure_existing_cluster_workload_identity() {
 }
 
 # NetworkPolicy enforcement on a pre-existing cluster is the third such
-# behaviour (retired provision_03 step 1c): every NetworkPolicy this install
-# ships — LiteLLM's, the minter's, Hindsight's, and the ones the operator
-# generates around the agent — is accepted and silently inert on a cluster
-# with neither Dataplane V2 nor the legacy Calico addon, which is GKE
-# Standard's default shape. Terraform-created clusters always have Dataplane
-# V2; adopted ones get the legacy addon enabled here, exactly as the retired
-# step did. The gke-cluster module's postcondition backstops bare-Terraform
-# installs.
+# behaviour: every NetworkPolicy this install ships — LiteLLM's, the
+# minter's, Hindsight's, and the ones the operator generates around the
+# agent — is accepted and silently inert on a cluster with neither Dataplane
+# V2 nor the legacy Calico addon, which is GKE Standard's default shape.
+# Terraform-created clusters always have Dataplane V2; adopted ones get the
+# legacy addon enabled here. The gke-cluster module's postcondition backstops
+# bare-Terraform installs.
 ensure_existing_cluster_network_policy() {
   local project_id="$1" cluster_name="$2" region="$3"
   local dp_provider
@@ -955,9 +954,9 @@ ensure_existing_cluster_network_policy() {
   print_warning "Legacy Network Policy enabled. FQDN-based NetworkPolicies stay unsupported without Dataplane V2."
 }
 
-# provision_01 passed --managed-otel-scope on create; neither google provider
-# has a field for it, so it is set out-of-band after the apply. Best-effort by
-# design: on a gcloud where the update surface lacks the flag, the install is
+# Neither google provider has a field for --managed-otel-scope, so it is set
+# out-of-band after the apply. Best-effort by design: on a gcloud where the
+# update surface lacks the flag, the install is
 # still complete — only managed OpenTelemetry collection needs a manual step.
 apply_managed_otel_scope() {
   local project_id="$1" cluster_name="$2" region="$3"
@@ -991,8 +990,8 @@ import_github_pem() {
     return 0
   fi
 
-  # Clone the tag and run the CLI from the tree, exactly as the retired
-  # provision_10 did. `go run github.com/abcxyz/github-token-minter/cmd/minty@v2.7.1`
+  # Clone the tag and run the CLI from the tree:
+  # `go run github.com/abcxyz/github-token-minter/cmd/minty@v2.7.1`
   # cannot work: the upstream go.mod declares the module without the /v2 suffix
   # its v2 tags require, so Go rejects the version with or without /v2 in the
   # path. The gcloud-only recovery recipe lives in
@@ -1666,9 +1665,10 @@ main() {
         [ -z "$org_problem" ] && break
 
         print_error "$org_problem"
-        # provision_04_gcp_iam.sh exits on a non-organization, and that would
-        # land after the cluster, node pools and operator are already built.
-        # Settle it here, while nothing has been created yet.
+        # The minter cannot mint tokens for a personal account, and a
+        # non-organization owner would only surface as a failure after the
+        # cluster, node pools and operator are already built. Settle it
+        # here, while nothing has been created yet.
         if [ "$PARAM_NON_INTERACTIVE" = "true" ] || ! has_controlling_tty; then
           print_error "Set GITHUB_ORG to an organization and re-run, or export SKIP_GITHUB_ORG_CHECK=true to bypass this check."
           exit 1
@@ -1693,8 +1693,8 @@ main() {
   fi
   local custom_roles="${PARAM_CUSTOM_ROLES:-}"
   # init_var_platform_agent_permission_set in k8s-operator/scripts/common.sh owns
-  # this rule; repeated here only so the run fails at the prompt instead of eight
-  # steps later inside provision_04_gcp_iam.sh.
+  # this rule; repeated here only so the run fails at the prompt instead of
+  # partway through the apply.
   if [ "$permission_set" = "custom" ] && [ "$PARAM_NON_INTERACTIVE" = "true" ] && [ -z "$custom_roles" ]; then
     print_error "--permission-set=custom requires --custom-roles with at least one role."
     exit 1
@@ -1745,8 +1745,8 @@ main() {
     while [ "$permission_set" = "custom" ] && [ -z "$custom_roles" ]; do
       prompt_read "Custom GCP IAM Roles (space- or comma-separated)" custom_roles ""
       if [ -z "$custom_roles" ]; then
-        # provision_04_gcp_iam.sh exits on an empty custom list; that would land
-        # after the cluster and operator are already provisioned.
+        # An empty custom list would only be rejected once the cluster and
+        # operator are already provisioned; catch it at the prompt.
         print_error "The custom permission set needs at least one role, e.g. roles/container.viewer."
       fi
     done
@@ -1905,8 +1905,9 @@ main() {
   # run and is never persisted here, so the consuming step attaches it with
   # qualify_image_ref.
   #
-  # Two images are absent on purpose. provision_11 derives REPLAY_IMAGE from
-  # REGISTRY_PREFIX itself. CREDENTIAL_PROXY_IMAGE would pin the sidecar for
+  # Two images are absent on purpose. REPLAY_IMAGE belongs to the dev-only
+  # inference-replay deploy, whose make target requires it from the caller.
+  # CREDENTIAL_PROXY_IMAGE would pin the sidecar for
   # every PlatformAgent in the cluster: the operator otherwise derives it from
   # each CR's own agent image, and a cluster-wide env override beats that
   # derivation, so a later re-render of the CR at a new tag would leave the
@@ -2041,11 +2042,11 @@ main() {
   run_lifecycle_apply "$repo_dir" "$provisioning_log"
 
   # The one post-apply step Terraform cannot carry: the managed-OTel scope
-  # (no provider field; the GitHub App key import moved BEFORE the apply,
+  # (no provider field; the GitHub App key import runs BEFORE the apply,
   # since the minter's readiness depends on it and the apply waits on the
   # minter). The OTel scope is set only on a cluster this install created —
-  # provision_01 passed it on create only, and silently changing the
-  # telemetry scope of a cluster somebody else made is not an install's call.
+  # silently changing the telemetry scope of a cluster somebody else made is
+  # not an install's call.
   if [ "${TFVARS_CREATE_CLUSTER:-true}" = "true" ]; then
     apply_managed_otel_scope "$project_id" "$cluster_name" "$region"
   else

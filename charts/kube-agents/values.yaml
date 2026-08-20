@@ -280,12 +280,12 @@ githubMinter:
   # enabled.
   org: ""
   repo: ""
-  # GitHub App ID. Set, the chart creates the github-app-credentials Secret
-  # (what provision_07 used to do); empty, that Secret must already exist in
-  # the release namespace.
+  # GitHub App ID. Set, the chart creates the github-app-credentials Secret;
+  # empty, that Secret must already exist in the release namespace.
   appId: ""
   # KSA/GSA pair for Workload Identity; defaults mirror
-  # terraform/modules/kube-agents-iam and the retired scripts.
+  # terraform/modules/kube-agents-iam, so the binding it creates targets the
+  # KSA the chart renders.
   ksaName: kubeagents-github-minter
   gsaName: kubeagents-github-minter-gsa
   # The GSA email allowed to request platform-agent-scope tokens. Empty
@@ -337,17 +337,16 @@ platformAgent:
     clusterName: ""
     location: ""
     projectId: ""
-    # Hermes runtime knobs, mirroring the HERMES_* variables the provisioning
-    # scripts substitute into platform-agent.yaml.template. `null` omits the
-    # field so the CRD's own default applies — note that the script path
-    # defaults dashboardEnabled to false while the CRD defaults it to true, so
-    # set this explicitly if the two installs must agree.
+    # Hermes runtime knobs. `null` omits the field from the CR so the CRD's
+    # own default applies — dashboardEnabled therefore lands `true` unless an
+    # install pins it, so set it explicitly when it must not float with the
+    # CRD default.
     hermes:
       dashboardEnabled: null
       pluginsDebug: null
       agentHome: "" # CRD default: /opt/data
-    # Agent memory persistence. Defaults match both the CRD and the scripts'
-    # MEMORY_ENABLED / MEMORY_PROVIDER / USER_PROFILE_ENABLED defaults.
+    # Agent memory persistence. `null`/"" omit each field so the CRD's own
+    # defaults apply.
     # Hindsight-backed providers (kube_agents_memory, hindsight) need the
     # Hindsight API server and Postgres, which the chart renders automatically
     # when one is selected here (see the hindsight block above). The default
@@ -360,9 +359,9 @@ platformAgent:
     image:
       repository: ghcr.io/gke-labs/kube-agents/platform-agent
       tag: "" # defaults to Chart.appVersion
-      # Always, matching platform-agent.yaml.template — and load-bearing for the
-      # Terraform composition, whose image_tag defaults to "latest": under
-      # IfNotPresent a node with a cached "latest" never picks up a new build.
+      # Always is load-bearing for the Terraform composition, whose image_tag
+      # defaults to "latest": under IfNotPresent a node with a cached "latest"
+      # never picks up a new build.
       #
       # Set IfNotPresent when you pin `tag` to a release: on an immutable tag
       # Always only adds a registry round-trip per pod start, and turns an
@@ -419,7 +418,7 @@ platformAgent:
   security:
     # Kubernetes ServiceAccount the agent pod runs as. The Workload Identity
     # binding must target this KSA (see the chart README); the default matches
-    # the provisioning scripts (k8s-operator/scripts/common.sh).
+    # PLATFORM_AGENT_KSA_NAME in k8s-operator/scripts/common.sh.
     # Ownership: with serviceAccountAnnotations set, the OPERATOR creates and
     # manages the KSA; with no annotations, the operator treats it as
     # user-managed and the CHART creates it instead.
@@ -452,7 +451,7 @@ platformAgent:
     #     losing chat-thread resolution and incident lookup.
     #   - identity hashing falls back to a per-pod random salt with a warning.
     # Upgrading an install that predates these keys is the case that hits this:
-    # add them to the existing Secret (upgrade.sh does it for script installs).
+    # add them to the existing Secret (upgrade.sh backfills them additively).
     create: false
     data: {}
   integration:

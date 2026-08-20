@@ -22,9 +22,9 @@ Before building or deploying the operator, ensure you have the following install
 
 ## Bootstrapping GCP & GKE Infrastructure
 
-The provisioning pipeline that used to live here (`make gcp-provision` and the numbered
-`scripts/provision_*.sh` steps) was retired in favour of the Terraform + Helm engine. To stand up a
-real GKE/GCP environment, use the repository-root installer, or drive the composition directly:
+The install engine is Terraform + Helm: `terraform/examples/full-install` owns every GCP
+resource and `charts/kube-agents` every Kubernetes resource. To stand up a real GKE/GCP
+environment, use the repository-root installer, or drive the composition directly:
 
 ```bash
 # The zero-friction path: interview, terraform.tfvars generation, apply.
