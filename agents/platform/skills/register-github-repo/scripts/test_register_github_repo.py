@@ -44,8 +44,8 @@ class TestRegisterGitHubRepo(unittest.TestCase):
     def test_already_registered_returns_0(self, _mock_get_managed, mock_run, _mock_refresh):
         mock_run.return_value = MagicMock(returncode=0)
         self.assertEqual(register_github_repo.register_repo("acme/fleet"), 0)
-        # Verify patch was NOT called
-        mock_run.assert_called_once()  # only gh repo view was called
+        # Verify no run commands were invoked since it early-exits
+        mock_run.assert_not_called()
 
     @patch("register_github_repo.refresh_git_credentials")
     @patch("register_github_repo.get_managed_repos", return_value=["acme/first"])
@@ -53,8 +53,8 @@ class TestRegisterGitHubRepo(unittest.TestCase):
     def test_successful_registration_patches_configmap(self, mock_run, _mock_get_managed, _mock_refresh):
         mock_run.return_value = MagicMock(returncode=0)
         self.assertEqual(register_github_repo.register_repo("acme/second"), 0)
-        # Check that kubectl patch was called with merged repos
-        patch_call = mock_run.call_args_list[-1]
+        # Check that kubectl patch was called first
+        patch_call = mock_run.call_args_list[0]
         cmd = patch_call[0][0]
         self.assertEqual(cmd[0], "kubectl")
         self.assertEqual(cmd[1], "patch")
@@ -64,15 +64,15 @@ class TestRegisterGitHubRepo(unittest.TestCase):
     @patch("register_github_repo.get_managed_repos", return_value=["acme/first"])
     @patch("register_github_repo.run")
     def test_kubectl_missing_on_patch(self, mock_run, _mock_get_managed, _mock_refresh):
-        # First call (gh) succeeds, second call (kubectl) raises FileNotFoundError
-        mock_run.side_effect = [MagicMock(returncode=0), FileNotFoundError("kubectl")]
+        # First call (kubectl) raises FileNotFoundError
+        mock_run.side_effect = FileNotFoundError("kubectl")
         self.assertEqual(register_github_repo.register_repo("acme/second"), 1)
 
     @patch("register_github_repo.refresh_git_credentials")
     @patch("register_github_repo.get_managed_repos", return_value=["acme/first"])
     @patch("register_github_repo.run")
     def test_kubectl_patch_error(self, mock_run, _mock_get_managed, _mock_refresh):
-        mock_run.side_effect = [MagicMock(returncode=0), subprocess.CalledProcessError(1, ["kubectl"], stderr="Conflict")]
+        mock_run.side_effect = subprocess.CalledProcessError(1, ["kubectl"], stderr="Conflict")
         self.assertEqual(register_github_repo.register_repo("acme/second"), 1)
 
 
