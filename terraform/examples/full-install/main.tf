@@ -364,6 +364,18 @@ resource "helm_release" "kube_agents" {
   namespace        = var.namespace
   create_namespace = true
 
+  # This wait is the install's rollout gate, and 600 is not the provider
+  # default (300) restated: hindsight-api budgets 300s of startupProbe for its
+  # in-process model load on top of a 1.4 GB image pull, so the provider
+  # default gives up on a cold node that is loading normally. The retired
+  # script gate (AGENT_READY_TIMEOUT) used the same 600s. Keep it above the
+  # startup budget plus a slow pull (300+240) and below hindsight-api's
+  # progressDeadlineSeconds (900) — past that the Deployment reports failure
+  # and waiting longer buys nothing. tests/test_hindsight_probes.py asserts
+  # the ordering.
+  wait    = true
+  timeout = 600
+
   values = [yamlencode({
     # Reaches every image this release pulls, including the two the chart does
     # not render itself — the agent Deployment and the fluent-bit sidecar the

@@ -680,27 +680,6 @@ connect_cluster() {
   gcloud container clusters get-credentials "$CLUSTER_NAME" --location "$REGION" --project "$PROJECT_ID" --quiet $GKE_DNS_ENDPOINT_FLAG
 }
 
-# Shared readiness budget for agent and Hindsight rollouts. Accepts a bare number of
-# seconds or an s/m/h suffix. kubectl rejects a bare integer for --timeout
-# ("time: missing unit in duration"), and without this normalization that
-# parse error would be reported as the rollout having failed.
-init_agent_ready_timeout() {
-  AGENT_READY_TIMEOUT="${AGENT_READY_TIMEOUT:-600s}"
-  if [[ "$AGENT_READY_TIMEOUT" =~ ^[0-9]+$ ]]; then
-    AGENT_READY_TIMEOUT="${AGENT_READY_TIMEOUT}s"
-  fi
-  if [[ ! "$AGENT_READY_TIMEOUT" =~ ^[0-9]+[smh]$ ]]; then
-    print_error "AGENT_READY_TIMEOUT must be a duration like 600s, 10m or 1h (got '${AGENT_READY_TIMEOUT}')."
-    exit 1
-  fi
-  case "$AGENT_READY_TIMEOUT" in
-    *s) AGENT_READY_TIMEOUT_SECONDS="${AGENT_READY_TIMEOUT%s}" ;;
-    *m) AGENT_READY_TIMEOUT_SECONDS="$(( ${AGENT_READY_TIMEOUT%m} * 60 ))" ;;
-    *h) AGENT_READY_TIMEOUT_SECONDS="$(( ${AGENT_READY_TIMEOUT%h} * 3600 ))" ;;
-  esac
-  export AGENT_READY_TIMEOUT AGENT_READY_TIMEOUT_SECONDS
-}
-
 ensure_k8s_resource_exists() {
   local resource=$1         # e.g., "deployment/cert-manager-cainjector"
   local namespace=$2        # e.g., "cert-manager"
