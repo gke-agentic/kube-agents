@@ -3484,13 +3484,13 @@ func formatCIDRPeers(raw []string, enforceMinPrefix bool) []networkingv1.Network
 
 // buildNetworkPolicy generates the restrictive NetworkPolicy manifest for PlatformAgent.
 // Note: This is the operator-generated version; Kustomize static deployments use deploy/kustomize/platform/.
-func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, dnsClusterIP string, fqdnEnabled bool, otlpEndpoint string) *networkingv1.NetworkPolicy {
+func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, profile netpolProfile, fqdnEnabled bool, otlpEndpoint string) *networkingv1.NetworkPolicy {
 	udp := corev1.ProtocolUDP
 	tcp := corev1.ProtocolTCP
 
-	dnsClusterIP = strings.Trim(dnsClusterIP, "[]")
+	dnsClusterIP := strings.Trim(profile.DNSClusterIP, "[]")
 	if dnsClusterIP == "" || net.ParseIP(dnsClusterIP) == nil {
-		dnsClusterIP = "10.96.0.10"
+		dnsClusterIP = defaultDNSClusterIP
 	}
 	dnsCidr := dnsClusterIP + "/32"
 	if strings.Contains(dnsClusterIP, ":") {
@@ -3509,7 +3509,7 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, d
 	// Everything the rewritten packet can be addressed to, all of it on port 988:
 	// the metadata daemon's own link-local address on the iptables datapath.
 	// See metadataDaemonIP.
-	metadataDaemonPeers := formatCIDRPeers([]string{metadataLinkLocalIP, metadataDaemonIP}, true)
+	metadataDaemonPeers := formatCIDRPeers([]string{metadataLinkLocalIP, profile.MetadataDaemonIP}, true)
 
 	ingressRules := []networkingv1.NetworkPolicyIngressRule{
 		{
