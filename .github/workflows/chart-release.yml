@@ -4,14 +4,18 @@ permissions:
   contents: read
 
 on:
-  push:
-    tags:
-      - "[0-9]*.[0-9]*.[0-9]*"
+  #checkov:skip=CKV_GHA_7:Manual dispatch requires chart version input
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Chart version to publish (e.g. 0.2.0)"
+        required: true
+        type: string
 
 # Queue rather than cancel re-runs of the same tag. Different tags still run
 # in parallel, which is fine: each publishes its own immutable chart version.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ inputs.version }}
   cancel-in-progress: false
 
 jobs:
@@ -41,7 +45,7 @@ jobs:
       - name: Lint, Package and Push Canonical Chart
         env:
           REPOSITORY: ${{ github.repository }}
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ inputs.version }}
         run: |
           REPO_DOWNCASE=$(echo "$REPOSITORY" | tr '[:upper:]' '[:lower:]')
           # Required harness values have no defaults; lint needs stand-ins.
