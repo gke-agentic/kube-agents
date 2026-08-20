@@ -91,6 +91,7 @@ echo "Granting necessary roles to the Service Account..."
 ROLES=(
   "roles/cloudkms.admin"
   "roles/container.admin"
+  "roles/compute.viewer"
   "roles/serviceusage.serviceUsageAdmin"
   "roles/serviceusage.serviceUsageConsumer"
 )
