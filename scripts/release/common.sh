@@ -173,21 +173,23 @@ find_latest_built_commit() {
   fi
 
   local fetch_ok="false"
-  if [ -n "${target_repo}" ]; then
-    # bash 3.2 compatibility: guard empty array expansion under set -u
-    if git fetch "https://github.com/${target_repo}.git" main --tags ${depth_arg[@]+"${depth_arg[@]}"} >/dev/null 2>&1; then
-      fetch_ok="true"
-    else
-      echo "⚠️ Warning: Failed to fetch from target_repo (${target_repo}), falling back to origin..." >&2
+  if is_ci_pipeline; then
+    if [ -n "${target_repo}" ]; then
+      # bash 3.2 compatibility: guard empty array expansion under set -u
+      if git fetch "https://github.com/${target_repo}.git" main --tags ${depth_arg[@]+"${depth_arg[@]}"} >/dev/null 2>&1; then
+        fetch_ok="true"
+      else
+        echo "⚠️ Warning: Failed to fetch from target_repo (${target_repo}), falling back to origin..." >&2
+      fi
     fi
-  fi
 
-  if [ "${fetch_ok}" != "true" ]; then
-    # bash 3.2 compatibility: guard empty array expansion under set -u
-    if git fetch origin main --tags ${depth_arg[@]+"${depth_arg[@]}"} >/dev/null 2>&1; then
-      fetch_ok="true"
-    else
-      echo "⚠️ Warning: Failed to fetch from origin remote, checking available local refs..." >&2
+    if [ "${fetch_ok}" != "true" ]; then
+      # bash 3.2 compatibility: guard empty array expansion under set -u
+      if git fetch origin main --tags ${depth_arg[@]+"${depth_arg[@]}"} >/dev/null 2>&1; then
+        fetch_ok="true"
+      else
+        echo "⚠️ Warning: Failed to fetch from origin remote, checking available local refs..." >&2
+      fi
     fi
   fi
 
@@ -236,11 +238,13 @@ ensure_git_tag() {
   local target_repo
   target_repo="$(get_target_repo)"
 
-  # Fetch remote tags to ensure local view is updated
-  if [ -n "${target_repo}" ]; then
-    git fetch "https://github.com/${target_repo}.git" --tags >/dev/null 2>&1 || git fetch origin --tags >/dev/null 2>&1 || true
-  else
-    git fetch origin --tags >/dev/null 2>&1 || true
+  # Synchronize remote tags only in CI environments
+  if is_ci_pipeline; then
+    if [ -n "${target_repo}" ]; then
+      git fetch "https://github.com/${target_repo}.git" --tags >/dev/null 2>&1 || git fetch origin --tags >/dev/null 2>&1 || true
+    else
+      git fetch origin --tags >/dev/null 2>&1 || true
+    fi
   fi
 
   # Canonicalize commit SHA to full 40-character hash before comparison

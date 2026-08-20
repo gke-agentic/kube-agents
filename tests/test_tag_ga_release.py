@@ -18,6 +18,7 @@ from tests.testing.common import (
     get_isolated_test_env,
 )
 from tests.testing.release import (
+    MOCK_EXPLICIT_RELEASE_VERSION_NEXT,
     MOCK_TARGET_RELEASE_TAG,
 )
 
@@ -76,11 +77,11 @@ class TagGAReleaseScriptTest(unittest.TestCase):
 
             proc = self._run_script(
                 [],
-                env={"RELEASE_VERSION": "0.3.0", "RELEASE_COMMIT": head_commit},
+                env={"RELEASE_VERSION": MOCK_EXPLICIT_RELEASE_VERSION_NEXT, "RELEASE_COMMIT": head_commit},
                 cwd=repo_dir,
             )
             self.assertEqual(proc.returncode, 0)
-            tag_commit = git("rev-parse", "0.3.0^{commit}").stdout.strip()
+            tag_commit = git("rev-parse", f"{MOCK_EXPLICIT_RELEASE_VERSION_NEXT}^{{commit}}").stdout.strip()
             self.assertEqual(tag_commit, head_commit)
         finally:
             temp_dir.cleanup()
@@ -91,11 +92,11 @@ class TagGAReleaseScriptTest(unittest.TestCase):
             head_commit = git("rev-parse", "HEAD").stdout.strip()
 
             proc = self._run_script(
-                [head_commit, "0.4.0"],
+                [head_commit, MOCK_TARGET_RELEASE_TAG],
                 cwd=repo_dir,
             )
             self.assertEqual(proc.returncode, 0)
-            tag_commit = git("rev-parse", "0.4.0^{commit}").stdout.strip()
+            tag_commit = git("rev-parse", f"{MOCK_TARGET_RELEASE_TAG}^{{commit}}").stdout.strip()
             self.assertEqual(tag_commit, head_commit)
         finally:
             temp_dir.cleanup()

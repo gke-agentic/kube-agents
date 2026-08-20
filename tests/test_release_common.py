@@ -246,6 +246,33 @@ source "{_COMMON_SH}"
         finally:
             temp_dir.cleanup()
 
+    def test_ensure_git_tag_hermetic_local_execution(self):
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            head_commit = git("rev-parse", "HEAD").stdout.strip()
+
+            # Local execution should create tag without remote operations
+            proc = self._run_common_func(
+                f'ensure_git_tag "{MOCK_TARGET_RELEASE_TAG}" "{head_commit}" "Test release {MOCK_TARGET_RELEASE_TAG}"',
+                cwd=repo_dir,
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn(f"Dry-run: Git tag '{MOCK_TARGET_RELEASE_TAG}' created locally", proc.stdout)
+
+            # Tag is locally created
+            tag_commit = git("rev-parse", f"{MOCK_TARGET_RELEASE_TAG}^{{commit}}").stdout.strip()
+            self.assertEqual(tag_commit, head_commit)
+
+            # Idempotent skip on second run
+            proc2 = self._run_common_func(
+                f'ensure_git_tag "{MOCK_TARGET_RELEASE_TAG}" "{head_commit}" "Test release {MOCK_TARGET_RELEASE_TAG}"',
+                cwd=repo_dir,
+            )
+            self.assertEqual(proc2.returncode, 0)
+            self.assertIn("Idempotent skip", proc2.stdout)
+        finally:
+            temp_dir.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()
