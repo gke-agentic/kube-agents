@@ -163,6 +163,41 @@ persist_state_var() {
   chmod 600 "$state_file" 2>/dev/null || true
 }
 
+# Decide WHERE the state lives before pinning the backend. Exporting
+# KUBE_AGENTS_STATE_BUCKET first would make lifecycle.sh's ensure_backend
+# `terraform init -reconfigure` onto the (possibly empty) remote prefix —
+# abandoning a hand-driven install's local state, so the destroy plans
+# nothing and reports success with the CR and backups already gone and
+# every GCP resource still live.
+#
+# Needs installer_common.sh sourced (tf_state_bucket/tf_state_prefix) and the
+# target coordinates exported. Unit-tested in tests/test_uninstall_script.py;
+# keep the branch order — remote state wins, an explicitly named bucket with
+# no state is an error, local state is honoured only when nothing is remote,
+# and no state anywhere refuses rather than guesses.
+resolve_state_location() {
+  local compose_dir="$1"
+  if gcloud storage cat "gs://$(tf_state_bucket)/$(tf_state_prefix)/default.tfstate" >/dev/null 2>&1; then
+    # Remote state where the installer keeps it (or where the caller pointed
+    # us): pin the backend for lifecycle.sh.
+    export KUBE_AGENTS_STATE_BUCKET="${KUBE_AGENTS_STATE_BUCKET:-auto}"
+  elif [ -n "${KUBE_AGENTS_STATE_BUCKET:-}" ]; then
+    # The caller named a bucket and it holds no state for this cluster:
+    # error out rather than fall back to guessing.
+    print_error "No Terraform state at gs://$(tf_state_bucket)/$(tf_state_prefix) (KUBE_AGENTS_STATE_BUCKET was set explicitly)."
+    return 1
+  elif [ -f "${compose_dir}/terraform.tfstate" ] || [ -f "${compose_dir}/backend_override.tf" ]; then
+    # A hand-driven install: local state, or an existing backend override
+    # pointing wherever its author keeps state. Leave the backend variable
+    # unset so lifecycle.sh touches neither.
+    print_info "Using the composition's own state (local terraform.tfstate or existing backend_override.tf)."
+  else
+    print_error "No Terraform state found for '${CLUSTER_NAME}' (gs://$(tf_state_bucket)/$(tf_state_prefix)) and none locally."
+    print_info "If this install was made by a release with the script pipeline (pre-Terraform engine), re-run with --source-ref=<that release> so its own teardown runs."
+    return 1
+  fi
+}
+
 main() {
   parse_args "$@"
   print_banner
@@ -268,31 +303,7 @@ main() {
   local compose_dir="${repo_dir}/terraform/examples/full-install"
   export KUBE_AGENTS_STATE_PREFIX
   KUBE_AGENTS_STATE_PREFIX="$(tf_state_prefix)"
-  # Decide WHERE the state lives before pinning the backend. Exporting
-  # KUBE_AGENTS_STATE_BUCKET first would make lifecycle.sh's ensure_backend
-  # `terraform init -reconfigure` onto the (possibly empty) remote prefix —
-  # abandoning a hand-driven install's local state, so the destroy plans
-  # nothing and reports success with the CR and backups already gone and
-  # every GCP resource still live.
-  if gcloud storage cat "gs://$(tf_state_bucket)/$(tf_state_prefix)/default.tfstate" >/dev/null 2>&1; then
-    # Remote state where the installer keeps it (or where the caller pointed
-    # us): pin the backend for lifecycle.sh.
-    export KUBE_AGENTS_STATE_BUCKET="${KUBE_AGENTS_STATE_BUCKET:-auto}"
-  elif [ -n "${KUBE_AGENTS_STATE_BUCKET:-}" ]; then
-    # The caller named a bucket and it holds no state for this cluster:
-    # error out rather than fall back to guessing.
-    print_error "No Terraform state at gs://$(tf_state_bucket)/$(tf_state_prefix) (KUBE_AGENTS_STATE_BUCKET was set explicitly)."
-    exit 1
-  elif [ -f "${compose_dir}/terraform.tfstate" ] || [ -f "${compose_dir}/backend_override.tf" ]; then
-    # A hand-driven install: local state, or an existing backend override
-    # pointing wherever its author keeps state. Leave the backend variable
-    # unset so lifecycle.sh touches neither.
-    print_info "Using the composition's own state (local terraform.tfstate or existing backend_override.tf)."
-  else
-    print_error "No Terraform state found for '${target_cluster}' (gs://$(tf_state_bucket)/$(tf_state_prefix)) and none locally."
-    print_info "If this install was made by a release with the script pipeline (pre-Terraform engine), re-run with --source-ref=<that release> so its own teardown runs."
-    exit 1
-  fi
+  resolve_state_location "$compose_dir" || exit 1
 
   # terraform destroy still evaluates the configuration, so required variables
   # must be present even from a fresh clone; the placeholder key feeds nothing
@@ -313,4 +324,8 @@ main() {
   print_info "If this project will not host kube-agents again, delete the bucket yourself: gcloud storage rm -r gs://$(tf_state_bucket)"
 }
 
-main "$@"
+if [ "${KUBE_AGENTS_SOURCE_ONLY:-false}" != "true" ]; then
+  main "$@"
+else
+  echo "ℹ️ Sourced uninstall.sh functions without executing main (KUBE_AGENTS_SOURCE_ONLY=true)." >&2
+fi

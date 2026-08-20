@@ -159,9 +159,12 @@ random_hex_32() {
 
 # Add the pod-scoped Session KV keys to an existing Secret that predates them.
 #
-# provision_07_gcp_k8s_secrets.sh generates these, and the upgrade path does not
-# run it: every mode runs provision_03 and provision_08, and neither touches
-# platform-agent-secrets. The operator marks both Secret references optional, so
+# A fresh install generates these (the composition's random_password
+# resources; the retired provision_07 before that), and the harness/operator
+# fast paths never touch platform-agent-secrets — `helm upgrade
+# --reuse-values` re-tags images and nothing else, so a Secret from an old
+# enough install keeps missing the keys until something adds them. The
+# operator marks both Secret references optional, so
 # a Secret without the keys yields containers without the variables rather than
 # a failed mount — and the k8s-event-watcher treats an empty --token-env
 # variable as fatal, so it exits on every start and NO cluster events are
@@ -477,6 +480,24 @@ main() {
     full)
       print_step "4. Executing Full Atomic Upgrade (Terraform + Helm)"
       apply_crd_upgrades
+      # install.sh's post-generation minter guard, without its import step:
+      # an upgrade never imports the App key, so a vars.sh that enables the
+      # minter against a key with no ENABLED version would wedge the apply on
+      # the minter's readiness until the helm timeout fails the upgrade.
+      # Refuse up front instead and name the two ways out.
+      if grep -q '^enable_github_minter = true$' \
+        "${repo_dir}/terraform/examples/full-install/terraform.tfvars" 2>/dev/null; then
+        minter_enabled_version="$({ gcloud kms keys versions list \
+          --key "${KMS_KEY:-github-token-minter-key}" \
+          --keyring "${KMS_KEYRING:-github-token-minter-keyring}" \
+          --location "$(derive_kms_location "${REGION}")" --project "${PROJECT_ID}" \
+          --filter='state=ENABLED' --format='value(name)' 2>/dev/null || true; } | head -1)"
+        if [ -z "$minter_enabled_version" ]; then
+          print_error "The GitHub minter is enabled in the generated configuration, but its KMS signing key has no ENABLED version — the apply would wait on a minter that can never become ready."
+          print_info "Import the App key with install.sh (which runs the import before its apply), or unset GITHUB_APP_ID in vars.sh to upgrade without the minter."
+          exit 1
+        fi
+      fi
       # A full terraform apply against the regenerated tfvars: both image tags
       # move, and every setting saved in vars.sh is re-rendered — the successor
       # of the old path's re-render of the CR from saved state.

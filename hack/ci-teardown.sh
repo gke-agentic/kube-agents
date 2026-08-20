@@ -5,10 +5,9 @@
 # Cleans up PR-scoped Kubernetes resources from target GKE cluster.
 # Preserves static cluster & GCP IAM setup for fast re-use across PR runs.
 #
-#  - Step 9 (teardown_09): LiteLLM Gateway Teardown
-#  - Step 8 (teardown_08): PlatformAgent CR Teardown
-#  - Step 7 (teardown_07): Secrets Teardown
-#  - Step 3 (teardown_03): Operator & CRD Teardown
+# One `helm uninstall` (the release owns every Kubernetes object ci-deploy.sh
+# created) plus an explicit CRD delete, since the chart leaves CRDs behind by
+# Helm's own design.
 # ==============================================================================
 
 set -uo pipefail
