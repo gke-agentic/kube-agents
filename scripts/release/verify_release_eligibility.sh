@@ -76,19 +76,38 @@ fi
 # 3. Idempotent check and collision detection (always evaluated before validation checks)
 EXISTING_RELEASE_TAGS="$(git tag --points-at "${RELEASE_COMMIT}" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' || true)"
 
+IS_RESUMING_RELEASE="false"
 for ex_tag in ${EXISTING_RELEASE_TAGS}; do
-  # Scenario A: Re-running the exact same release version -> Safe Idempotent Skip
+  # Scenario A: Re-running the exact same release version -> Safe Idempotent Skip only if release is complete
   if [ "${ex_tag}" = "${TARGET_VERSION}" ]; then
-    echo "ℹ️ IDEMPOTENT SKIP: Release version ${TARGET_VERSION} for commit ${RELEASE_COMMIT} is already published."
-    echo "ℹ️ Skipping duplicate build and publish steps."
-    if [ -n "${GITHUB_OUTPUT:-}" ]; then
-      echo "eligible=false" >> "${GITHUB_OUTPUT}"
-      echo "already_released=true" >> "${GITHUB_OUTPUT}"
-      echo "skip_release=true" >> "${GITHUB_OUTPUT}"
-      echo "existing_tag=${ex_tag}" >> "${GITHUB_OUTPUT}"
-      echo "release_commit=${RELEASE_COMMIT}" >> "${GITHUB_OUTPUT}"
+    if is_ci_pipeline || [ -n "${GH_TOKEN:-}" ]; then
+      if command -v gh >/dev/null 2>&1 && gh release view "${TARGET_VERSION}" --repo "${TARGET_REPO}" >/dev/null 2>&1; then
+        echo "ℹ️ IDEMPOTENT SKIP: Release version ${TARGET_VERSION} and GitHub Release for commit ${RELEASE_COMMIT} are already published."
+        echo "ℹ️ Skipping duplicate build and publish steps."
+        if [ -n "${GITHUB_OUTPUT:-}" ]; then
+          echo "eligible=false" >> "${GITHUB_OUTPUT}"
+          echo "already_released=true" >> "${GITHUB_OUTPUT}"
+          echo "skip_release=true" >> "${GITHUB_OUTPUT}"
+          echo "existing_tag=${ex_tag}" >> "${GITHUB_OUTPUT}"
+          echo "release_commit=${RELEASE_COMMIT}" >> "${GITHUB_OUTPUT}"
+        fi
+        exit 0
+      else
+        echo "⚠️ Git tag '${TARGET_VERSION}' already points to commit ${RELEASE_COMMIT:0:7}, but GitHub Release does not exist yet. Resuming release workflow..."
+        IS_RESUMING_RELEASE="true"
+      fi
+    else
+      echo "ℹ️ IDEMPOTENT SKIP: Release version ${TARGET_VERSION} for commit ${RELEASE_COMMIT} is already published (local dry-run)."
+      echo "ℹ️ Skipping duplicate build and publish steps."
+      if [ -n "${GITHUB_OUTPUT:-}" ]; then
+        echo "eligible=false" >> "${GITHUB_OUTPUT}"
+        echo "already_released=true" >> "${GITHUB_OUTPUT}"
+        echo "skip_release=true" >> "${GITHUB_OUTPUT}"
+        echo "existing_tag=${ex_tag}" >> "${GITHUB_OUTPUT}"
+        echo "release_commit=${RELEASE_COMMIT}" >> "${GITHUB_OUTPUT}"
+      fi
+      exit 0
     fi
-    exit 0
   else
     # Scenario B: Collision (attempting to release the same commit under a DIFFERENT tag) -> Hard block
     echo "❌ ERROR: Collision detected! Commit ${RELEASE_COMMIT} is already published under release ${ex_tag}." >&2
@@ -125,7 +144,7 @@ fi
 echo "🔎 Checking for rc_*_validated tags pointing at commit ${RELEASE_COMMIT}..."
 VALIDATED_TAGS="$(git tag --points-at "${RELEASE_COMMIT}" | grep -E '^rc_.*_validated$' || true)"
 
-if [ -z "${VALIDATED_TAGS}" ]; then
+if [ -z "${VALIDATED_TAGS}" ] && [ "${IS_RESUMING_RELEASE}" != "true" ]; then
   echo "❌ BLOCKED: Commit ${RELEASE_COMMIT} has NOT passed live RC E2E validation!" >&2
   echo "   No tag matching 'rc_*_validated' points to this commit." >&2
   echo "   To release this version:" >&2
@@ -136,10 +155,15 @@ if [ -z "${VALIDATED_TAGS}" ]; then
 fi
 
 FIRST_VAL_TAG="$(echo "${VALIDATED_TAGS}" | head -n 1)"
-echo "✅ ELIGIBLE: Found validated RC tag(s) on commit ${RELEASE_COMMIT}:"
-for tag in ${VALIDATED_TAGS}; do
-  echo "   • ${tag}"
-done
+if [ -n "${FIRST_VAL_TAG}" ]; then
+  echo "✅ ELIGIBLE: Found validated RC tag(s) on commit ${RELEASE_COMMIT}:"
+  for tag in ${VALIDATED_TAGS}; do
+    echo "   • ${tag}"
+  done
+else
+  echo "✅ ELIGIBLE: Resuming release for commit ${RELEASE_COMMIT} with existing release tag ${TARGET_VERSION}."
+  FIRST_VAL_TAG="resumed_${TARGET_VERSION}"
+fi
 
 # 6. Verify container images exist in registry
 echo "🔎 Verifying required container images exist in registry for commit ${RELEASE_COMMIT:0:7}..."

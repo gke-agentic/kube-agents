@@ -18,6 +18,7 @@ from tests.testing.release import (
     MOCK_NONEXISTENT_REF,
     MOCK_RC_VALIDATED_TAG,
     MOCK_TARGET_RELEASE_TAG,
+    create_mock_gh_binary,
 )
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -420,6 +421,54 @@ exit {docker_exit}
             outputs = gh_out.read_text()
             self.assertIn("eligible=true", outputs)
             self.assertIn(f"release_commit={commit_sha}", outputs)
+        finally:
+            temp_dir.cleanup()
+
+    def test_resumes_release_when_tag_exists_but_github_release_missing_in_ci(self):
+        temp_dir, repo_dir, git, commit_sha, bin_dir = self._create_mock_repo()
+        try:
+            # Tag exists on commit, but mock gh CLI returns 1 on gh release view (release not published)
+            git("tag", "-a", MOCK_TARGET_RELEASE_TAG, commit_sha, "-m", f"Release {MOCK_TARGET_RELEASE_TAG}")
+            create_mock_gh_binary(bin_dir, existing_releases=[])
+            gh_out = pathlib.Path(repo_dir) / "gh_output.txt"
+            proc = self._run_verify_script(
+                repo_dir,
+                args=[MOCK_TARGET_RELEASE_TAG, commit_sha],
+                env={"CI": "true", "GITHUB_OUTPUT": str(gh_out)},
+                bin_dir=bin_dir,
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn("Resuming release workflow", proc.stdout)
+            self.assertIn("ELIGIBLE: Resuming release", proc.stdout)
+
+            outputs = gh_out.read_text()
+            self.assertIn("eligible=true", outputs)
+            self.assertIn("already_released=false", outputs)
+            self.assertIn("skip_release=false", outputs)
+        finally:
+            temp_dir.cleanup()
+
+    def test_idempotent_skip_when_both_tag_and_github_release_exist_in_ci(self):
+        temp_dir, repo_dir, git, commit_sha, bin_dir = self._create_mock_repo()
+        try:
+            # Both git tag and GitHub release exist
+            git("tag", "-a", MOCK_TARGET_RELEASE_TAG, commit_sha, "-m", f"Release {MOCK_TARGET_RELEASE_TAG}")
+            create_mock_gh_binary(bin_dir, existing_releases=[MOCK_TARGET_RELEASE_TAG])
+            gh_out = pathlib.Path(repo_dir) / "gh_output.txt"
+            proc = self._run_verify_script(
+                repo_dir,
+                args=[MOCK_TARGET_RELEASE_TAG, commit_sha],
+                env={"CI": "true", "GITHUB_OUTPUT": str(gh_out)},
+                bin_dir=bin_dir,
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn("IDEMPOTENT SKIP", proc.stdout)
+            self.assertIn("Release version 0.2.0 and GitHub Release for commit", proc.stdout)
+
+            outputs = gh_out.read_text()
+            self.assertIn("eligible=false", outputs)
+            self.assertIn("already_released=true", outputs)
+            self.assertIn("skip_release=true", outputs)
         finally:
             temp_dir.cleanup()
 
