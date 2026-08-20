@@ -281,6 +281,33 @@ ensure_git_tag() {
   fi
 }
 
+# Retrieves canonical manifest digest (sha256:...) for a remote container image
+get_image_manifest_digest() {
+  local img="${1:-}"
+  if [ -z "${img}" ] || ! command -v docker >/dev/null 2>&1; then
+    return 1
+  fi
+
+  local digest=""
+  if digest="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "${img}" 2>/dev/null)" && [ -n "${digest}" ] && [ "${digest}" != "<no value>" ]; then
+    echo "${digest}"
+    return 0
+  fi
+
+  # Fallback to computing raw manifest sha256 if raw inspect succeeds
+  local raw_output
+  if raw_output="$(docker buildx imagetools inspect --raw "${img}" 2>/dev/null)" && [ -n "${raw_output}" ]; then
+    local raw_sha
+    raw_sha="$(printf '%s' "${raw_output}" | sha256sum | awk '{print $1}')"
+    if [ -n "${raw_sha}" ]; then
+      echo "sha256:${raw_sha}"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
 # Clean Promotion: Tags verified container images in GHCR without rebuilding
 promote_release_images() {
   local commit_sha="${1:-}"
@@ -324,10 +351,23 @@ promote_release_images() {
     local target_image="${registry_prefix}/${img}:${release_version}"
     echo "  • Promoting ${img}..."
 
-    # Safety Guard: Check if target image tag already exists in registry to prevent accidental overwriting
-    if docker manifest inspect "${target_image}" >/dev/null 2>&1; then
-      echo "    ℹ️ Target image '${target_image}' already exists in registry. Skipping duplicate promotion."
-      continue
+    # Safety Guard: Check if target image tag already exists in registry
+    local target_digest=""
+    if target_digest="$(get_image_manifest_digest "${target_image}")"; then
+      local source_digest=""
+      if ! source_digest="$(get_image_manifest_digest "${source_image}")"; then
+        echo "❌ ERROR: Target image '${target_image}' already exists in registry, but failed to inspect source image '${source_image}'!" >&2
+        return 1
+      fi
+
+      if [ "${target_digest}" = "${source_digest}" ]; then
+        echo "    ℹ️ Target image '${target_image}' already exists in registry and matches source image (${resolved_commit:0:7}). Skipping duplicate promotion."
+        continue
+      else
+        echo "❌ ERROR: Target image '${target_image}' already exists in registry (digest: ${target_digest}) but does NOT match source image '${source_image}' (digest: ${source_digest})!" >&2
+        echo "Release promotion blocked to prevent artifact mismatch across commits." >&2
+        return 1
+      fi
     fi
 
     docker buildx imagetools create --tag "${target_image}" "${source_image}"

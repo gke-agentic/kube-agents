@@ -61,23 +61,68 @@ MOCK_UNINSTALL_FAIL_SIGNAL = "uninstall: failed as expected"
 MOCK_INSTALL_SUCCESS_SIGNAL = "install: succeeded"
 
 
-def create_mock_docker_binary(bin_dir, log_file=None, existing_images=()):
+def create_mock_docker_binary(bin_dir, log_file=None, existing_images=(), image_digests=None):
     """Creates a mock docker CLI supporting buildx imagetools and manifest inspect."""
     bin_path = pathlib.Path(bin_dir)
     bin_path.mkdir(parents=True, exist_ok=True)
     docker_path = bin_path / "docker"
     log_path = log_file if log_file else (bin_path / "docker.log")
-    existing_check = ""
-    for img in existing_images:
-        existing_check += f'if [ "$3" = "{img}" ]; then exit 0; fi\n'
+
+    digests_map = {}
+    if isinstance(existing_images, dict):
+        digests_map.update(existing_images)
+    elif isinstance(existing_images, (list, tuple, set)):
+        for img in existing_images:
+            digests_map[img] = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    if image_digests:
+        digests_map.update(image_digests)
+
+    manifest_checks = ""
+    imagetools_checks = ""
+    for img, dig in digests_map.items():
+        manifest_checks += f'  if [ "$3" = "{img}" ]; then exit 0; fi\n'
+        imagetools_checks += f"""    if [ "$target_arg" = "{img}" ]; then
+      if [ "$is_format" = "true" ]; then
+        echo "{dig}"
+        exit 0
+      fi
+      if [ "$is_raw" = "true" ]; then
+        printf '%s\\n' '{{"mediaType":"application/vnd.oci.image.index.v1+json","digest":"{dig}"}}'
+        exit 0
+      fi
+      echo "Name: {img}"
+      echo "Digest: {dig}"
+      exit 0
+    fi
+"""
 
     content = f"""#!/bin/sh
 echo "mock docker: $@" >> "{log_path}"
 if [ "$1" = "manifest" ] && [ "$2" = "inspect" ]; then
-  {existing_check}
-  exit 1
+{manifest_checks}  exit 1
 fi
 if [ "$1" = "buildx" ] && [ "$2" = "imagetools" ]; then
+  if [ "$3" = "inspect" ]; then
+    is_format="false"
+    is_raw="false"
+    target_arg=""
+    prev=""
+    for arg in "$@"; do
+      if [ "$arg" = "--raw" ]; then
+        is_raw="true"
+      elif [ "$prev" = "--format" ]; then
+        is_format="true"
+      elif [ "$arg" != "buildx" ] && [ "$arg" != "imagetools" ] && [ "$arg" != "inspect" ] && [ "$arg" != "--format" ] && [ "$arg" != "--raw" ]; then
+        target_arg="$arg"
+      fi
+      prev="$arg"
+    done
+{imagetools_checks}    echo "ERROR: image not found: $target_arg" >&2
+    exit 1
+  fi
+  if [ "$3" = "create" ]; then
+    exit 0
+  fi
   exit 0
 fi
 exit 0

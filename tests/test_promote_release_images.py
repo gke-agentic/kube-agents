@@ -106,6 +106,9 @@ class PromoteReleaseImagesScriptTest(unittest.TestCase):
             existing = [
                 f"ghcr.io/gke-labs/kube-agents/{img}:{MOCK_TARGET_RELEASE_TAG}"
                 for img in MOCK_REQUIRED_RELEASE_IMAGES
+            ] + [
+                f"ghcr.io/gke-labs/kube-agents/{img}:{MOCK_SAMPLE_COMMIT_SHA}"
+                for img in MOCK_REQUIRED_RELEASE_IMAGES
             ]
             create_mock_docker_binary(bin_dir, existing_images=existing)
 
@@ -116,7 +119,32 @@ class PromoteReleaseImagesScriptTest(unittest.TestCase):
             )
             self.assertEqual(proc.returncode, 0)
             for img in MOCK_REQUIRED_RELEASE_IMAGES:
-                self.assertIn("already exists in registry. Skipping duplicate promotion", proc.stdout)
+                self.assertIn("already exists in registry and matches source image", proc.stdout)
+        finally:
+            temp_dir.cleanup()
+
+    def test_promote_fails_when_target_exists_with_mismatched_digest(self):
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        try:
+            bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            digests = {}
+            for img in MOCK_REQUIRED_RELEASE_IMAGES:
+                digests[f"ghcr.io/gke-labs/kube-agents/{img}:{MOCK_TARGET_RELEASE_TAG}"] = (
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                )
+                digests[f"ghcr.io/gke-labs/kube-agents/{img}:{MOCK_SAMPLE_COMMIT_SHA}"] = (
+                    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                )
+            create_mock_docker_binary(bin_dir, image_digests=digests)
+
+            proc = self._run_script(
+                [MOCK_SAMPLE_COMMIT_SHA, MOCK_TARGET_RELEASE_TAG],
+                env={"CI": "true"},
+                bin_dir=str(bin_dir),
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("does NOT match source image", proc.stderr)
+            self.assertIn("Release promotion blocked", proc.stderr)
         finally:
             temp_dir.cleanup()
 
