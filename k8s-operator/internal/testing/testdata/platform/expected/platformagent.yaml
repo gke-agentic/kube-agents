@@ -597,6 +597,19 @@ spec:
           ports:
             - containerPort: 8642
               name: api
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - 'curl --fail --silent --show-error -o /dev/null -H "Authorization: Bearer
+                  $API_SERVER_KEY" http://127.0.0.1:8642/api/sessions?limit=1; rc=$?;
+                  [ "$rc" -eq 0 ] && exit 0; [ "$rc" -eq 7 ] && [ "$ENABLE_LEADER_ELECTION"
+                  = "true" ] && exit 0; exit "$rc"'
+            failureThreshold: 3
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 5
           resources:
             limits:
               cpu: "3"
@@ -609,6 +622,19 @@ spec:
             capabilities:
               drop:
                 - ALL
+          startupProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - 'curl --fail --silent --show-error -o /dev/null -H "Authorization: Bearer
+                  $API_SERVER_KEY" http://127.0.0.1:8642/api/sessions?limit=1; rc=$?;
+                  [ "$rc" -eq 0 ] && exit 0; [ "$rc" -eq 7 ] && [ "$ENABLE_LEADER_ELECTION"
+                  = "true" ] && exit 0; exit "$rc"'
+            failureThreshold: 60
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
           volumeMounts:
             - mountPath: /opt/data
               name: platform-agent-data-vol
@@ -650,6 +676,13 @@ spec:
           ports:
             - containerPort: 9119
               name: dashboard
+          readinessProbe:
+            failureThreshold: 3
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            tcpSocket:
+              port: dashboard
+            timeoutSeconds: 5
           resources:
             limits:
               cpu: "1"
@@ -971,6 +1004,34 @@ spec:
     app: platformagent-gateway
 status:
   loadBalancer: {}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  labels:
+    app.kubernetes.io/instance: kubeagents-system-platformagent
+    app.kubernetes.io/managed-by: platformagent-controller
+    app.kubernetes.io/name: platform-agent
+    app.kubernetes.io/part-of: kube-agents
+  name: platformagent
+  namespace: kubeagents-system
+  ownerReferences:
+    - apiVersion: kubeagents.x-k8s.io/v1alpha1
+      blockOwnerDeletion: true
+      controller: true
+      kind: PlatformAgent
+      name: platformagent
+      uid: ""
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: platformagent-gateway
+status:
+  currentHealthy: 0
+  desiredHealthy: 0
+  disruptionsAllowed: 0
+  expectedPods: 0
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

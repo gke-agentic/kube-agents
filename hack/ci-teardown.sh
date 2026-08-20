@@ -36,10 +36,11 @@ gcloud container clusters get-credentials "$CLUSTER_NAME" --region "$REGION" --p
   exit 1
 }
 
-# Safety check: Verify active kubectl context matches target cluster before running teardown steps
+# Safety check: Verify active kubectl context matches target cluster and project before running teardown steps
 CURRENT_CTX="$(kubectl config current-context 2>/dev/null || echo "")"
-if [[ "$CURRENT_CTX" != *"${CLUSTER_NAME}"* && "$CURRENT_CTX" != *"${PROJECT_ID}"* ]]; then
-  echo "ERROR: Active kubectl context ('${CURRENT_CTX}') does not match target cluster '${CLUSTER_NAME}'! Aborting teardown for safety."
+EXPECTED_CTX="gke_${PROJECT_ID}_${REGION}_${CLUSTER_NAME}"
+if [[ "$CURRENT_CTX" != "$EXPECTED_CTX" ]]; then
+  echo "ERROR: Active kubectl context ('${CURRENT_CTX}') does not match expected context ('${EXPECTED_CTX}')! Aborting teardown for safety."
   exit 1
 fi
 

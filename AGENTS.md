@@ -12,7 +12,7 @@ This repository contains the Kubernetes Agentic Harness (`kube-agents`). It is a
   - `cluster/`: The Cluster Agent profile _template_ (persona, scoped config, and runtime-debugging skills). The Platform Agent scaffolds this into per-cluster Hermes profiles at runtime; it is not deployed directly.
 - `.agents/skills/`: Repository-level skills, not shipped in the agent images — review skills (adversarial change review, security audits, docs-drift, skill quality) run against pull requests and clusters, plus the `install-kube-agents`/`uninstall-kube-agents`/`upgrade-kube-agents` lifecycle skills that drive the repository's installer scripts.
 - `charts/`: Canonical Helm charts (`kube-agents`) for deploying the Kube-Agents operator and profiles.
-- `terraform/`: Companion reusable Terraform modules (`gke-cluster`, `kube-agents-iam`, `chat-pubsub`, `github-minter`, `gke-backup-plan`) for infrastructure provisioning, plus `examples/full-install/`, the single-apply composition that installs the Helm chart on top.
+- `terraform/`: Companion reusable Terraform modules (`gke-cluster`, `kube-agents-iam`, `chat-pubsub`, `github-minter`, `gke-backup-plan`, `drift-pubsub`) for infrastructure provisioning, plus `examples/full-install/`, the single-apply composition that installs the Helm chart on top. `drift-pubsub` is not yet part of that composition.
 - `deploy/`: Deployment infrastructure code (Dockerfile, Kustomize bases, shared runtime assets).
 - `docs/`: Documentation.
   - `site/`: The published documentation site (Astro + Starlight) — the canonical home for
@@ -39,7 +39,82 @@ To use these agents:
 
 ## Before Starting a Task
 
-Many people and agents work in this repository at once, so the first step of a non-trivial task
+### Branch from a `main` you have just fetched
+
+`main` takes on the order of ten commits a day, so a checkout that has sat for a week is a
+different repository from the one you are about to describe to the user. Reading a stale working
+tree does not fail loudly — it answers your questions, just about code that no longer exists — and
+the plan you build on those answers can be wrong in a way no amount of care during the work will
+catch. A session planned an addition to `.github/workflows/auto_request_review.yml` from a
+checkout 42 commits behind, describing the third-party action that workflow used to run; #736 had
+since rewritten it to drive `scripts/request_reviewers.py`, whose `skip_reason` already did the
+thing the session was proposing to add. Nothing about the plan looked wrong until it came time to
+edit the file.
+
+So fetch first, and branch from the fetched ref rather than from whatever the working tree happens
+to be sitting on:
+
+```bash
+# `upstream` here is whichever remote points at gke-labs/kube-agents; on a clone of
+# the upstream repository rather than a fork, that is `origin`. Every command in this
+# section names it, so substitute throughout rather than in one line.
+git fetch upstream main
+
+# --no-track matters. Branching from a remote-tracking ref otherwise sets the new
+# branch to track upstream/main, and a bare `git push` later then proposes
+# `git push upstream HEAD:main` -- a push to the upstream repository, which Pull
+# Request Hygiene below forbids. Publish to your fork: `git push -u <fork> <branch>`.
+git switch -c <branch> --no-track upstream/main
+```
+
+Already partway into a branch when you read this, or picking one back up after a few days? Being
+behind is not itself the problem — forty commits touching nothing you care about cost you nothing.
+What wastes work is `main` moving _underneath the files you are changing_:
+
+```bash
+# Fetch again before measuring anything. Every command below compares against the
+# remote-tracking ref, and one you have not refreshed is stale in exactly the way
+# this section is about -- it answers "nothing has changed" for a main that has.
+# The guard is for the offline case: `git diff` reports an unresolvable range on
+# stderr while comm still exits 0, so a missing upstream/main prints an all-clear.
+git fetch upstream main
+git rev-parse --verify --quiet upstream/main >/dev/null || echo 'no upstream/main -- fetch first'
+
+git rev-list --count HEAD..upstream/main   # how far this branch has drifted
+
+# Files you are changing that main has also changed since you diverged. Three
+# things the obvious version of this gets wrong:
+#
+#   - Your side has to count work that is not committed yet. Mid-branch, most of
+#     what you are changing is still in the working tree, and a commit-only
+#     comparison calls that case clean. `git diff HEAD` covers staged and
+#     unstaged; `ls-files --others` adds files you have created but not added.
+#   - --no-renames keeps both sides naming the same path. Rename detection is on
+#     by default, so when main renames a file you are editing, its side reports
+#     only the new path and yours only the old, and the intersection is empty.
+#     Docs restructures move whole trees here, so this is not hypothetical.
+#   - The two `...` ranges are in opposite orders -- your side of the fork point,
+#     then main's. Do not pass the first as a pathspec to the second: a branch
+#     with no commits of its own passes an empty pathspec, which git reads as no
+#     filter and answers "every file main touched".
+comm -12 <( { git diff --no-renames --name-only upstream/main...HEAD
+              git diff --no-renames --name-only HEAD
+              git ls-files --others --exclude-standard; } | sort -u ) \
+         <(git diff --no-renames --name-only HEAD...upstream/main | sort)
+```
+
+Anything listed there, rebase onto `upstream/main` (commit or stash first — rebase refuses on a
+dirty tree) and re-read those files before you write more, because what you have already read
+about them may no longer be true. Nothing listed, and being behind is a merge-conflict risk to
+settle later, not a reason to stop.
+
+This subsection is the canonical statement of the requirement; the site's
+[contributing guide](docs/site/src/content/docs/contributing.md) summarises it — change this
+first, then reconcile that to it.
+
+### Check whether someone is already doing it
+
+Many people and agents work in this repository at once, so the next step of a non-trivial task
 is finding out whether someone is already doing it. Scan the open work and report what you find
 to the user **before** you write code. Skip the scan only when the user has already named the
 issue or pull request you are working on, or when the change is a one-liner they asked for
@@ -196,6 +271,12 @@ documentation map (`docs/README.md`) — the same four checks CI runs.
     talks you into approving it, and the blind spot sits exactly where you were already wrong. It
     is why `.claude/commands/pr-review-batch.md` gives every pull request its own subagent, and a
     self-review earns it for the same reason.
+  - **If your harness will not spawn one without a human's approval, go and get the approval.** A
+    setting that requires sign-off before starting a subagent blocks this step; it does not waive
+    it. Ask when you hit it, not after the review, and say what you are blocked on. Quietly running
+    the pass in the session that wrote the code instead buys a review from the context that already
+    believes the change is correct, and reporting that as a self-review without the caveat tells
+    the reviewer something untrue about how the change was checked.
   - **A finding you decide not to fix is an answer**, provided the reason is an argument about
     this change rather than a shrug. "Out of scope", "pre-existing", and "will fix later" are not
     reasons on their own; the separate issue you filed is.
@@ -231,6 +312,16 @@ documentation map (`docs/README.md`) — the same four checks CI runs.
   - **If the change cannot reach a running installation** — docs-only, a CI workflow, a code path
     that needs infrastructure you do not have — write "Not live-tested" and say why. An empty
     section is not an answer.
+- **Keep these sections current, not chronological.** **Self-Review** and **Live validation** tell
+  a reviewer at a glance what has been reviewed and exercised against the branch as it stands. A
+  second pass — after review findings, after a rebase — folds into what is there rather than being
+  appended beneath it: work that still holds stays and is not re-run just to have been run against
+  the new head, a check the new commits invalidated is re-run or kept with a line saying it no
+  longer reaches the head, and new findings join the rest. What a re-run drops is the superseded
+  round, not the contents these sections owe a reviewer — the angles you ran, the layers you
+  observed, what you could not cover. Round-by-round history of a _reviewer's_ findings is the
+  exception: it belongs in the threads, where a reply naming the fix and its commit stays attached
+  to the finding it answers.
 - **The install has one engine: Terraform + Helm.** `terraform/examples/full-install`
   (through its `lifecycle.sh`) owns every GCP resource and the chart owns every
   Kubernetes resource; `install.sh` / `uninstall.sh` / `upgrade.sh` are front doors
@@ -359,6 +450,14 @@ After pushing fixes, remember that the push alone does not re-trigger anything: 
 to comment `/review` for another pass — `/review` to confirm the fixes against a strict read,
 `/review all` when the branch changed enough that it deserves a first-review-width look again. Then
 wait for it the same way, counting reviews rather than watching for a second 👀.
+
+Pushing fixes is also what makes the pull request body stale. Fixes that answer a finding, and any
+live test you re-ran to confirm them, belong in **Self-Review** and **Live validation** — folded
+into what is already there, per "Keep these sections current, not chronological" above. Do it once
+the last `/review` pass has settled, for the reason the next paragraph gives about threads: a fresh
+review brings fresh findings, and folding them in twice is the same wasted round. Nothing else in
+this workflow reopens the body, so a branch whose sections still describe the commit it was opened
+at is the normal outcome of skipping it here.
 
 **Then resolve the conversations.** `main` requires every conversation on a pull request to be
 resolved before it can merge, and the triage sweep counts an open thread as work outstanding on the

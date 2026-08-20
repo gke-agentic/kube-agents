@@ -11,7 +11,9 @@
 # shellcheck source=k8s-operator/scripts/gke_dns_endpoint.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../k8s-operator/scripts" && pwd)/gke_dns_endpoint.sh"
 
-export PROJECT_ID="kube-agents-evals"
+# TODO(boskos): Once oss-test-infra#2655 merges and deploys Boskos project leasing,
+# consider failing closed if JOB_NAME is set and PROJECT_ID is unset.
+export PROJECT_ID="${PROJECT_ID:-kube-agents-evals}"
 export GCP_PROJECT_ID="${PROJECT_ID}"
 export REGION="${REGION:-us-central1}"
 
@@ -39,7 +41,7 @@ dump_prow_artifacts_on_failure() {
       echo "=== ACTIVE KUBECTL CONTEXT ==="
       kubectl config current-context 2>&1 || true
       echo "=== RECENT CLOUD BUILDS ==="
-      gcloud builds list --project="${PROJECT_ID:-kube-agents-evals}" --limit=5 2>&1 || true
+      gcloud builds list --project="${PROJECT_ID}" --limit=5 2>&1 || true
       echo "=== PORT FORWARD LOG (/tmp/pf-8642.log) ==="
       cat /tmp/pf-8642.log 2>&1 || true
     } > "${artifact_dir}/ci-failure-summary.txt" 2>&1 || true

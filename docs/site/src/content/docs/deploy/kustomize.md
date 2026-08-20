@@ -141,11 +141,11 @@ The exposed ports:
 - `config/crd/` — the `PlatformAgent` and `AgentPlugin` CRDs.
 - `config/rbac/` — ClusterRoles + bindings for the manager.
 - `config/webhook/` — admission webhook config (validating + mutating). The Service targets port `10250` on the manager pod for the GKE firewall reason in [Admission webhooks](/kube-agents/operator/#admission-webhooks).
-- `config/manager/` — Deployment for the controller manager.
-- `config/integrations/github/` — Minty deployment.
-- `config/integrations/litellm/` — LiteLLM Deployment + Service (plus `NetworkPolicy`, `PodMonitoring`, and a `vertex_ai` overlay).
-- `config/integrations/inference-replay/` — replay proxy Deployment, Service, and PVC.
-- `config/integrations/hindsight/` — the Planning Agent's memory store: API Deployment, Postgres/pgvector StatefulSet, and their Service, `NetworkPolicy`, and `PodMonitoring`.
+- `config/manager/` — Deployment for the controller manager, plus its `PodDisruptionBudget`.
+- `config/integrations/github/` — Minty deployment and its `PodDisruptionBudget`.
+- `config/integrations/litellm/` — LiteLLM Deployment + Service (plus `PodDisruptionBudget`, `NetworkPolicy`, `PodMonitoring`, and a `vertex_ai` overlay).
+- `config/integrations/inference-replay/` — replay proxy Deployment, Service, PVC, and `PodDisruptionBudget`.
+- `config/integrations/hindsight/` — the Planning Agent's memory store: API Deployment, Postgres/pgvector StatefulSet, and their Service, `PodDisruptionBudget`s, `NetworkPolicy`, and `PodMonitoring`.
 
 Each is built and applied on its own; there is no aggregate kustomization over
 `config/integrations/`, because every one of them needs `envsubst` over the built
