@@ -28,19 +28,22 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
-  packages: write
-  id-token: write
+  contents: read
 
 jobs:
   publish-release:
     name: Publish GA Release
     runs-on: ubuntu-latest
-    if: github.repository == 'gke-labs/kube-agents'
+    if: github.repository == 'gke-labs/kube-agents' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: refs/heads/main
           fetch-depth: 0
 
       - name: Calculate Next Release Version
