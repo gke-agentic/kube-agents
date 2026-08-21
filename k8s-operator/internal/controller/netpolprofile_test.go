@@ -18,11 +18,13 @@ package controller
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	agentv1alpha1 "github.com/gke-labs/kube-agents/k8s-operator/api/v1alpha1"
@@ -44,11 +46,20 @@ func TestResolveNetpolProfile(t *testing.T) {
 		}
 
 		profile := r.resolveNetpolProfile(context.Background(), agent)
-		if profile.DNSClusterIP != defaultDNSClusterIP {
-			t.Errorf("got DNSClusterIP %q, want default %q", profile.DNSClusterIP, defaultDNSClusterIP)
+		if !profile.Generated {
+			t.Errorf("got Generated=false, want true")
+		}
+		if !reflect.DeepEqual(profile.DNSClusterIPs, []string{defaultDNSClusterIP}) {
+			t.Errorf("got DNSClusterIPs %v, want [%s]", profile.DNSClusterIPs, defaultDNSClusterIP)
+		}
+		if profile.DNSSource != netpolSourceDefault {
+			t.Errorf("got DNSSource %q, want %q", profile.DNSSource, netpolSourceDefault)
 		}
 		if profile.MetadataDaemonIP != metadataDaemonIP {
 			t.Errorf("got MetadataDaemonIP %q, want default %q", profile.MetadataDaemonIP, metadataDaemonIP)
+		}
+		if profile.MetadataDaemonSource != netpolSourceDefault {
+			t.Errorf("got MetadataDaemonSource %q, want %q", profile.MetadataDaemonSource, netpolSourceDefault)
 		}
 	})
 
@@ -65,11 +76,41 @@ func TestResolveNetpolProfile(t *testing.T) {
 		}
 
 		profile := r.resolveNetpolProfile(context.Background(), agent)
-		if profile.DNSClusterIP != "34.118.224.10" {
-			t.Errorf("got DNSClusterIP %q, want discovered %q", profile.DNSClusterIP, "34.118.224.10")
+		if !reflect.DeepEqual(profile.DNSClusterIPs, []string{"34.118.224.10"}) {
+			t.Errorf("got DNSClusterIPs %v, want [34.118.224.10]", profile.DNSClusterIPs)
+		}
+		if profile.DNSSource != netpolSourceDiscovered {
+			t.Errorf("got DNSSource %q, want %q", profile.DNSSource, netpolSourceDiscovered)
 		}
 		if profile.MetadataDaemonIP != metadataDaemonIP {
 			t.Errorf("got MetadataDaemonIP %q, want %q", profile.MetadataDaemonIP, metadataDaemonIP)
+		}
+		if profile.MetadataDaemonSource != netpolSourceDefault {
+			t.Errorf("got MetadataDaemonSource %q, want %q", profile.MetadataDaemonSource, netpolSourceDefault)
+		}
+	})
+
+	t.Run("DiscoveryKubeDNS_DualStack", func(t *testing.T) {
+		t.Parallel()
+		kubeDNSSvc := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "kube-dns"},
+			Spec: corev1.ServiceSpec{
+				ClusterIPs: []string{"10.96.0.10", "2001:db8::10"},
+			},
+		}
+		client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(kubeDNSSvc).Build()
+		r := &PlatformAgentReconciler{Client: client, Scheme: scheme}
+		agent := &agentv1alpha1.PlatformAgent{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
+		}
+
+		profile := r.resolveNetpolProfile(context.Background(), agent)
+		wantIPs := []string{"10.96.0.10", "2001:db8::10"}
+		if !reflect.DeepEqual(profile.DNSClusterIPs, wantIPs) {
+			t.Errorf("got DNSClusterIPs %v, want %v", profile.DNSClusterIPs, wantIPs)
+		}
+		if profile.DNSSource != netpolSourceDiscovered {
+			t.Errorf("got DNSSource %q, want %q", profile.DNSSource, netpolSourceDiscovered)
 		}
 	})
 
@@ -91,15 +132,63 @@ func TestResolveNetpolProfile(t *testing.T) {
 		}
 
 		profile := r.resolveNetpolProfile(context.Background(), agent)
-		if profile.DNSClusterIP != "10.0.0.53" {
-			t.Errorf("got DNSClusterIP %q, want operator override %q", profile.DNSClusterIP, "10.0.0.53")
+		if !reflect.DeepEqual(profile.DNSClusterIPs, []string{"10.0.0.53"}) {
+			t.Errorf("got DNSClusterIPs %v, want [10.0.0.53]", profile.DNSClusterIPs)
+		}
+		if profile.DNSSource != netpolSourceOperatorEnv {
+			t.Errorf("got DNSSource %q, want %q", profile.DNSSource, netpolSourceOperatorEnv)
 		}
 		if profile.MetadataDaemonIP != "169.254.169.250" {
-			t.Errorf("got MetadataDaemonIP %q, want operator override %q", profile.MetadataDaemonIP, "169.254.169.250")
+			t.Errorf("got MetadataDaemonIP %q, want %q", profile.MetadataDaemonIP, "169.254.169.250")
+		}
+		if profile.MetadataDaemonSource != netpolSourceOperatorEnv {
+			t.Errorf("got MetadataDaemonSource %q, want %q", profile.MetadataDaemonSource, netpolSourceOperatorEnv)
 		}
 	})
 
-	t.Run("AnnotationWinsOverOperatorOverride", func(t *testing.T) {
+	t.Run("SpecWinsOverOperatorOverride", func(t *testing.T) {
+		t.Parallel()
+		kubeDNSSvc := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "kube-dns"},
+			Spec:       corev1.ServiceSpec{ClusterIP: "34.118.224.10"},
+		}
+		client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(kubeDNSSvc).Build()
+		r := &PlatformAgentReconciler{
+			Client:                   client,
+			Scheme:                   scheme,
+			DNSClusterIPOverride:     "10.0.0.53",
+			MetadataDaemonIPOverride: "169.254.169.250",
+		}
+		agent := &agentv1alpha1.PlatformAgent{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
+			Spec: agentv1alpha1.PlatformAgentSpec{
+				AgentSpec: agentv1alpha1.AgentSpec{
+					NetworkPolicy: &agentv1alpha1.NetworkPolicySpec{
+						DNSClusterIPs: []string{"10.100.0.10"},
+						MetadataDaemon: &agentv1alpha1.MetadataDaemonSpec{
+							Endpoint: "169.254.169.245",
+						},
+					},
+				},
+			},
+		}
+
+		profile := r.resolveNetpolProfile(context.Background(), agent)
+		if !reflect.DeepEqual(profile.DNSClusterIPs, []string{"10.100.0.10"}) {
+			t.Errorf("got DNSClusterIPs %v, want [10.100.0.10]", profile.DNSClusterIPs)
+		}
+		if profile.DNSSource != netpolSourceSpec {
+			t.Errorf("got DNSSource %q, want %q", profile.DNSSource, netpolSourceSpec)
+		}
+		if profile.MetadataDaemonIP != "169.254.169.245" {
+			t.Errorf("got MetadataDaemonIP %q, want %q", profile.MetadataDaemonIP, "169.254.169.245")
+		}
+		if profile.MetadataDaemonSource != netpolSourceSpec {
+			t.Errorf("got MetadataDaemonSource %q, want %q", profile.MetadataDaemonSource, netpolSourceSpec)
+		}
+	})
+
+	t.Run("AnnotationWinsOverSpec", func(t *testing.T) {
 		t.Parallel()
 		kubeDNSSvc := &corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "kube-dns"},
@@ -121,14 +210,121 @@ func TestResolveNetpolProfile(t *testing.T) {
 					AnnotationMetadataDaemonIP: "169.254.169.240",
 				},
 			},
+			Spec: agentv1alpha1.PlatformAgentSpec{
+				AgentSpec: agentv1alpha1.AgentSpec{
+					NetworkPolicy: &agentv1alpha1.NetworkPolicySpec{
+						DNSClusterIPs: []string{"10.100.0.10"},
+						MetadataDaemon: &agentv1alpha1.MetadataDaemonSpec{
+							Endpoint: "169.254.169.245",
+						},
+					},
+				},
+			},
 		}
 
 		profile := r.resolveNetpolProfile(context.Background(), agent)
-		if profile.DNSClusterIP != "172.16.0.10" {
-			t.Errorf("got DNSClusterIP %q, want annotation %q", profile.DNSClusterIP, "172.16.0.10")
+		if !reflect.DeepEqual(profile.DNSClusterIPs, []string{"172.16.0.10"}) {
+			t.Errorf("got DNSClusterIPs %v, want [172.16.0.10]", profile.DNSClusterIPs)
+		}
+		if profile.DNSSource != netpolSourceAnnotation {
+			t.Errorf("got DNSSource %q, want %q", profile.DNSSource, netpolSourceAnnotation)
 		}
 		if profile.MetadataDaemonIP != "169.254.169.240" {
-			t.Errorf("got MetadataDaemonIP %q, want annotation %q", profile.MetadataDaemonIP, "169.254.169.240")
+			t.Errorf("got MetadataDaemonIP %q, want [169.254.169.240]", profile.MetadataDaemonIP)
+		}
+		if profile.MetadataDaemonSource != netpolSourceAnnotation {
+			t.Errorf("got MetadataDaemonSource %q, want %q", profile.MetadataDaemonSource, netpolSourceAnnotation)
+		}
+	})
+
+	t.Run("MetadataDaemonSuppression", func(t *testing.T) {
+		t.Parallel()
+		client := fake.NewClientBuilder().WithScheme(scheme).Build()
+		r := &PlatformAgentReconciler{Client: client, Scheme: scheme}
+		agent := &agentv1alpha1.PlatformAgent{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
+			Spec: agentv1alpha1.PlatformAgentSpec{
+				AgentSpec: agentv1alpha1.AgentSpec{
+					NetworkPolicy: &agentv1alpha1.NetworkPolicySpec{
+						MetadataDaemon: &agentv1alpha1.MetadataDaemonSpec{
+							Endpoint: "",
+						},
+					},
+				},
+			},
+		}
+
+		profile := r.resolveNetpolProfile(context.Background(), agent)
+		if profile.MetadataDaemonIP != "" {
+			t.Errorf("got MetadataDaemonIP %q, want empty (suppressed)", profile.MetadataDaemonIP)
+		}
+		if profile.MetadataDaemonSource != netpolSourceSuppressed {
+			t.Errorf("got MetadataDaemonSource %q, want %q", profile.MetadataDaemonSource, netpolSourceSuppressed)
+		}
+	})
+
+	t.Run("NetworkPolicyDisabled", func(t *testing.T) {
+		t.Parallel()
+		client := fake.NewClientBuilder().WithScheme(scheme).Build()
+		r := &PlatformAgentReconciler{Client: client, Scheme: scheme}
+		agent := &agentv1alpha1.PlatformAgent{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
+			Spec: agentv1alpha1.PlatformAgentSpec{
+				AgentSpec: agentv1alpha1.AgentSpec{
+					NetworkPolicy: &agentv1alpha1.NetworkPolicySpec{
+						Enabled: ptr.To(false),
+					},
+				},
+			},
+		}
+
+		profile := r.resolveNetpolProfile(context.Background(), agent)
+		if profile.Generated {
+			t.Errorf("got Generated=true, want false")
+		}
+	})
+
+	t.Run("AdditionalEgress", func(t *testing.T) {
+		t.Parallel()
+		client := fake.NewClientBuilder().WithScheme(scheme).Build()
+		r := &PlatformAgentReconciler{Client: client, Scheme: scheme}
+		agent := &agentv1alpha1.PlatformAgent{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
+			Spec: agentv1alpha1.PlatformAgentSpec{
+				AgentSpec: agentv1alpha1.AgentSpec{
+					NetworkPolicy: &agentv1alpha1.NetworkPolicySpec{
+						AdditionalEgress: []agentv1alpha1.EgressRule{
+							{
+								To: []agentv1alpha1.EgressPeer{
+									{CIDR: "10.0.0.0/16", Except: []string{"10.0.1.0/24"}},
+									{CIDR: "192.168.1.5"}, // bare IP -> /32
+								},
+								Ports: []agentv1alpha1.EgressPort{
+									{Protocol: "TCP", Port: 5432},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		profile := r.resolveNetpolProfile(context.Background(), agent)
+		if len(profile.AdditionalEgress) != 1 {
+			t.Fatalf("got %d additional egress rules, want 1", len(profile.AdditionalEgress))
+		}
+		rule := profile.AdditionalEgress[0]
+		if len(rule.To) != 2 {
+			t.Errorf("got %d peers, want 2", len(rule.To))
+		}
+		if rule.To[0].IPBlock.CIDR != "10.0.0.0/16" {
+			t.Errorf("got CIDR %q, want 10.0.0.0/16", rule.To[0].IPBlock.CIDR)
+		}
+		if len(rule.To[0].IPBlock.Except) != 1 || rule.To[0].IPBlock.Except[0] != "10.0.1.0/24" {
+			t.Errorf("got Except %v, want [10.0.1.0/24]", rule.To[0].IPBlock.Except)
+		}
+		if rule.To[1].IPBlock.CIDR != "192.168.1.5/32" {
+			t.Errorf("got CIDR %q, want 192.168.1.5/32", rule.To[1].IPBlock.CIDR)
 		}
 	})
 
@@ -158,8 +354,8 @@ func TestResolveNetpolProfile(t *testing.T) {
 
 		// Invalid annotations and overrides are ignored: DNS falls back to discovered, daemon falls back to default.
 		profile := r.resolveNetpolProfile(context.Background(), agent)
-		if profile.DNSClusterIP != "34.118.224.10" {
-			t.Errorf("got DNSClusterIP %q, want fallback to discovered %q", profile.DNSClusterIP, "34.118.224.10")
+		if !reflect.DeepEqual(profile.DNSClusterIPs, []string{"34.118.224.10"}) {
+			t.Errorf("got DNSClusterIPs %v, want fallback to discovered [34.118.224.10]", profile.DNSClusterIPs)
 		}
 		if profile.MetadataDaemonIP != metadataDaemonIP {
 			t.Errorf("got MetadataDaemonIP %q, want fallback to default %q", profile.MetadataDaemonIP, metadataDaemonIP)
