@@ -45,6 +45,7 @@ jobs:
         with:
           ref: refs/heads/main
           fetch-depth: 0
+          token: ${{ secrets.RELEASE_BOT_TOKEN }}
 
       - name: Calculate Next Release Version
         id: calculate-version
@@ -61,7 +62,7 @@ jobs:
           RELEASE_COMMIT: ${{ steps.calculate-version.outputs.release_commit }}
           SKIP_RC_VALIDATION: ${{ inputs.skip_rc_validation }}
           EMERGENCY_OVERRIDE_REASON: ${{ inputs.emergency_override_reason }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
         run: ./scripts/release/verify_release_eligibility.sh
 
       - name: Set up Docker Buildx
@@ -104,7 +105,7 @@ jobs:
         env:
           RELEASE_VERSION: ${{ steps.calculate-version.outputs.release_version }}
           RELEASE_COMMIT: ${{ steps.calculate-version.outputs.release_commit }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
           GH_USER: ${{ github.actor }}
         run: ./scripts/release/publish_helm_chart.sh
 
@@ -113,14 +114,13 @@ jobs:
         env:
           RELEASE_VERSION: ${{ steps.calculate-version.outputs.release_version }}
           RELEASE_COMMIT: ${{ steps.calculate-version.outputs.release_commit }}
+          GH_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
         run: ./scripts/release/tag_ga_release.sh
 
-      # Note: If repository tag/release protection rules restrict github-actions[bot],
-      # this step or git tag push may fail with 403 unless GITHUB_TOKEN has bypass permissions.
       - name: Publish GitHub Release
         if: steps.verify-eligibility.outputs.skip_release != 'true'
         env:
           RELEASE_VERSION: ${{ steps.calculate-version.outputs.release_version }}
           RELEASE_COMMIT: ${{ steps.calculate-version.outputs.release_commit }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
         run: ./scripts/release/publish_github_release.sh

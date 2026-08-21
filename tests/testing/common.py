@@ -106,7 +106,7 @@ def get_isolated_test_env(overrides=None, bin_dir=None):
     env = {
         k: v
         for k, v in os.environ.items()
-        if not k.startswith(("GITHUB_", "RUNNER_")) and k not in ("CI", "CONTINUOUS_INTEGRATION")
+        if not k.startswith(("GITHUB_", "RUNNER_")) and k not in ("CI", "CONTINUOUS_INTEGRATION", "GH_TOKEN")
     }
     if bin_dir:
         env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
