@@ -190,6 +190,7 @@ def run_cmd(
         "USE_GKE_GCLOUD_AUTH_PLUGIN": "True",
         "CLOUDSDK_PYTHON_SITEPACKAGES": "0",
         "PYTHONNOUSERSITE": "1",
+        "CLOUDSDK_CONTAINER_USE_APPLICATION_DEFAULT_CREDENTIALS": "false",
         **(env or {}),
     }
     if "CLOUDSDK_PYTHON" in run_env:

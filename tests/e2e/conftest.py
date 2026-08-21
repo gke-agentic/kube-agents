@@ -36,6 +36,7 @@ def pytest_configure(config: pytest.Config) -> None:
     os.environ["PYTHONNOUSERSITE"] = "1"
     if "USE_GKE_GCLOUD_AUTH_PLUGIN" not in os.environ:
         os.environ["USE_GKE_GCLOUD_AUTH_PLUGIN"] = "True"
+    os.environ["CLOUDSDK_CONTAINER_USE_APPLICATION_DEFAULT_CREDENTIALS"] = "false"
 
 
 def _parse_yaml_fallback(content: str) -> Dict[str, Any]:
@@ -233,6 +234,10 @@ def ensure_cluster_credentials(
 ) -> None:
     """Configures kubectl context for the target GKE cluster."""
     if gcp_project_id and gke_cluster_name and gcp_region:
+        subprocess.run(
+            ["gcloud", "config", "set", "container/use_application_default_credentials", "false", "--quiet"],
+            capture_output=True,
+        )
         subprocess.run(
             [
                 "gcloud", "container", "clusters", "get-credentials",

@@ -21,6 +21,7 @@ if "CLOUDSDK_PYTHON" in os.environ:
 os.environ["CLOUDSDK_PYTHON_SITEPACKAGES"] = "0"
 os.environ["PYTHONNOUSERSITE"] = "1"
 os.environ["USE_GKE_GCLOUD_AUTH_PLUGIN"] = "True"
+os.environ["CLOUDSDK_CONTAINER_USE_APPLICATION_DEFAULT_CREDENTIALS"] = "false"
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 _DEFAULT_CONFIG_PATH = _REPO_ROOT / "tests" / "e2e" / "e2e_config.yaml"
@@ -98,6 +99,10 @@ def load_yaml_config(config_path: pathlib.Path) -> Dict[str, Any]:
 
 def connect_gke_credentials(project_id: str, cluster_name: str, region: str) -> None:
     """Configures kubectl context for target GKE cluster and verifies API server connectivity."""
+    subprocess.run(
+        ["gcloud", "config", "set", "container/use_application_default_credentials", "false", "--quiet"],
+        capture_output=True,
+    )
     cmd = [
         "gcloud",
         "container",
@@ -177,6 +182,7 @@ def run_environment_tests(
         "USE_GKE_GCLOUD_AUTH_PLUGIN": "True",
         "CLOUDSDK_PYTHON_SITEPACKAGES": "0",
         "PYTHONNOUSERSITE": "1",
+        "CLOUDSDK_CONTAINER_USE_APPLICATION_DEFAULT_CREDENTIALS": "false",
         "PATH": f"{pathlib.Path.home()}/.local/bin:{os.environ.get('PATH', '')}",
         "GCP_PROJECT_ID": project_id,
         "GKE_CLUSTER_NAME": cluster_name,

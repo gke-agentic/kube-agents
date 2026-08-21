@@ -26,6 +26,8 @@ unset CLOUDSDK_PYTHON || true
 export CLOUDSDK_PYTHON_SITEPACKAGES="0"
 export PYTHONNOUSERSITE="1"
 export USE_GKE_GCLOUD_AUTH_PLUGIN="True"
+export CLOUDSDK_CONTAINER_USE_APPLICATION_DEFAULT_CREDENTIALS="false"
+gcloud config set container/use_application_default_credentials false --quiet || true
 
 gke_dns_endpoint_flag "${CLUSTER_NAME}" "${REGION}" "${PROJECT_ID}"
 # Unquoted on purpose: empty must contribute no argument. See gke_dns_endpoint.sh.
