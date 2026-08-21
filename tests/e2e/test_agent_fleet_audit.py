@@ -174,7 +174,7 @@ def test_github_token_minter_credential_isolation(
     3. The private GitHub App credentials secret is NOT mounted or injected into agent containers.
     """
     if not gcp_project_id or not gke_cluster_name:
-        pytest.skip("GCP_PROJECT_ID or GKE_CLUSTER_NAME unset; skipping GitHub integration check.")
+        pytest.fail("GCP_PROJECT_ID and GKE_CLUSTER_NAME are required for credential isolation verification.")
 
     # 1. Verify minter config or settings ConfigMap exists
     res_minter = subprocess.run(
@@ -189,7 +189,7 @@ def test_github_token_minter_credential_isolation(
             text=True,
         )
         if res_settings.returncode != 0:
-            pytest.skip(f"Neither github-token-minter-config nor platform-agent-settings ConfigMap found in '{agent_namespace}'.")
+            pytest.fail(f"Neither github-token-minter-config nor platform-agent-settings ConfigMap found in namespace '{agent_namespace}'.")
 
     # 2. Verify Credential Isolation: Secret 'github-app-credentials' is NOT mounted or injected into agent containers
     res_deploys = subprocess.run(
@@ -206,7 +206,7 @@ def test_github_token_minter_credential_isolation(
         if not any(excluded in d.get("metadata", {}).get("name", "").lower() for excluded in ("minter", "minty", "operator", "hindsight", "fluent-bit", "cert-manager"))
     ]
     if not agent_deploys:
-        pytest.skip(f"No agent deployments found in namespace '{agent_namespace}'")
+        pytest.fail(f"No agent deployments found in namespace '{agent_namespace}'")
 
     forbidden_secrets = {"github-app-credentials", "github-app-private-key", "minty-github-app-key"}
 
@@ -266,7 +266,7 @@ def test_github_target_repository_configuration(
 ) -> None:
     """Verifies that GitHub App, Org, and Repo configuration parameters are properly wired for E2E tests."""
     if not github_repo:
-        pytest.skip("No GITHUB_REPO or GitOps repo configured; skipping repository target check.")
+        pytest.fail("GITHUB_REPO (or GITOPS_REPO) is required for E2E promotion validation.")
 
     assert "/" in github_repo, f"Expected GITHUB_REPO in 'owner/repo' format, got '{github_repo}'"
     owner, repo_name = github_repo.split("/", 1)

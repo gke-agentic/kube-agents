@@ -1685,7 +1685,7 @@ def test_e2e_operator_cluster(rebuild_operator: bool = False, test_destructive_c
     reg = get_registry() if (os.environ.get("REGISTRY") or os.environ.get("CONTAINER_REGISTRY") or os.environ.get("REGISTRY_PREFIX")) else ""
     if not ctx or not reg:
         import pytest
-        pytest.skip("KUBE_CONTEXT and REGISTRY environment variables must be set; skipping operator plugin validation.")
+        pytest.fail("KUBE_CONTEXT and REGISTRY environment variables must be set to validate operator plugins.")
 
     rebuild = rebuild_operator or REBUILD_OPERATOR
     destructive_crd = test_destructive_crd or TEST_DESTRUCTIVE_CRD

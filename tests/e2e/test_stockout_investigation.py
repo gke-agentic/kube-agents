@@ -75,7 +75,7 @@ def ensure_stockout_plugin_installed(
 ) -> None:
     """Ensures that the Pub/Sub topic, logging sinks, and AgentPlugin are configured on the cluster."""
     if not gcp_project_id or not gke_cluster_name:
-        pytest.skip("GCP_PROJECT_ID or GKE_CLUSTER_NAME unset; skipping stockout tests.")
+        pytest.fail("GCP_PROJECT_ID and GKE_CLUSTER_NAME are required for stockout E2E tests.")
 
     # 1. Ensure PubSub topic exists
     topic = os.environ.get("STOCKOUT_TOPIC", "gke-stockout-alerts-topic")

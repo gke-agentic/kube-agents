@@ -97,7 +97,7 @@ def load_yaml_config(config_path: pathlib.Path) -> Dict[str, Any]:
 
 
 def connect_gke_credentials(project_id: str, cluster_name: str, region: str) -> None:
-    """Configures kubectl context for target GKE cluster."""
+    """Configures kubectl context for target GKE cluster and verifies API server connectivity."""
     cmd = [
         "gcloud",
         "container",
@@ -110,10 +110,18 @@ def connect_gke_credentials(project_id: str, cluster_name: str, region: str) -> 
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode != 0:
         print(
-            f"Warning: Could not connect kubectl to cluster '{cluster_name}': {res.stderr.strip()}",
+            f"Error: Failed to connect kubectl to GKE cluster '{cluster_name}': {res.stderr.strip()}",
             file=sys.stderr,
         )
-        return
+        sys.exit(1)
+
+    info_res = subprocess.run(["kubectl", "cluster-info"], capture_output=True, text=True)
+    if info_res.returncode != 0:
+        print(
+            f"Error: Kubectl cannot communicate with cluster API server for '{cluster_name}': {info_res.stderr.strip()}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     print(f"✓ Connected kubectl context to cluster '{cluster_name}' in '{region}'.")
 
@@ -147,7 +155,16 @@ def run_environment_tests(
     print(f"Tests:      {', '.join(tests)}")
     print("=" * 60 + "\n")
 
-    if project_id and cluster_name and region:
+    # Cluster-backed environments must have valid project_id and cluster_name
+    if env_name != "gchat-e2e":
+        if not project_id or not cluster_name:
+            print(
+                f"Error: E2E environment '{env_name}' requires GCP_PROJECT_ID and GKE_CLUSTER_NAME environment variables.",
+                file=sys.stderr,
+            )
+            return 1
+        connect_gke_credentials(project_id, cluster_name, region)
+    elif project_id and cluster_name:
         connect_gke_credentials(project_id, cluster_name, region)
 
     # Merge custom environment variables: YAML defaults must not override explicit workflow environment
@@ -227,7 +244,7 @@ def main() -> None:
             defaults,
             extra_args,
         )
-        if exit_code not in (0, 5):
+        if exit_code != 0:
             overall_exit_code = exit_code
 
     sys.exit(overall_exit_code)
