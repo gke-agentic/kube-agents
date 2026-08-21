@@ -57,9 +57,9 @@ if gh release view "${RELEASE_VERSION}" --repo "${TARGET_REPO}" >/dev/null 2>&1;
   exit 0
 fi
 
-# Safety Guard: Remote release creation executes only inside CI or with explicit token
-if ! is_ci_pipeline && [ -z "${GH_TOKEN:-}" ]; then
-  echo "⚠️ [Local Execution] Dry-run: GitHub release '${RELEASE_VERSION}' creation skipped (runs only in CI or with GH_TOKEN set)."
+# Safety Guard: Remote release creation executes exclusively inside CI
+if ! is_ci_pipeline; then
+  echo "⚠️ [Local Execution] Dry-run: GitHub release '${RELEASE_VERSION}' creation skipped (runs only in CI)."
   exit 0
 fi
 

@@ -90,6 +90,26 @@ class PublishGithubReleaseScriptTest(unittest.TestCase):
             )
             self.assertEqual(proc.returncode, 0)
             self.assertIn("Dry-run: GitHub release", proc.stdout)
+            self.assertIn("creation skipped (runs only in CI)", proc.stdout)
+        finally:
+            temp_dir.cleanup()
+
+    def test_local_dry_run_with_gh_token_set(self):
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        try:
+            bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_gh_binary(bin_dir)
+
+            proc = self._run_script(
+                [MOCK_TARGET_RELEASE_TAG, "HEAD"],
+                env={"GH_TOKEN": "mock-token-123"},
+                bin_dir=str(bin_dir),
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn("Dry-run: GitHub release", proc.stdout)
+            self.assertIn("creation skipped (runs only in CI)", proc.stdout)
+            gh_log = (bin_dir / "gh.log").read_text()
+            self.assertNotIn("mock gh: release create", gh_log)
         finally:
             temp_dir.cleanup()
 
