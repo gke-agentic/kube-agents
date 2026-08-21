@@ -16,14 +16,6 @@ import subprocess
 import sys
 from typing import Any, Dict, List, Optional
 
-# Prevent google-auth ADC / site-packages crash in gcloud/kubectl
-if "GOOGLE_APPLICATION_CREDENTIALS" in os.environ and os.path.isfile(os.environ["GOOGLE_APPLICATION_CREDENTIALS"]):
-    subprocess.run(
-        ["gcloud", "auth", "activate-service-account", f"--key-file={os.environ['GOOGLE_APPLICATION_CREDENTIALS']}", "--quiet"],
-        capture_output=True,
-    )
-    del os.environ["GOOGLE_APPLICATION_CREDENTIALS"]
-
 if "CLOUDSDK_PYTHON" in os.environ:
     del os.environ["CLOUDSDK_PYTHON"]
 os.environ["CLOUDSDK_PYTHON_SITEPACKAGES"] = "0"

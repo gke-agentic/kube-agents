@@ -27,11 +27,6 @@ export CLOUDSDK_PYTHON_SITEPACKAGES="0"
 export PYTHONNOUSERSITE="1"
 export USE_GKE_GCLOUD_AUTH_PLUGIN="True"
 
-if [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] && [ -f "${GOOGLE_APPLICATION_CREDENTIALS}" ]; then
-  gcloud auth activate-service-account --key-file="${GOOGLE_APPLICATION_CREDENTIALS}" --quiet || true
-  unset GOOGLE_APPLICATION_CREDENTIALS
-fi
-
 gke_dns_endpoint_flag "${CLUSTER_NAME}" "${REGION}" "${PROJECT_ID}"
 # Unquoted on purpose: empty must contribute no argument. See gke_dns_endpoint.sh.
 gcloud container clusters get-credentials "${CLUSTER_NAME}" --location "${REGION}" --project "${PROJECT_ID}" \

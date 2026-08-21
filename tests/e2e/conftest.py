@@ -29,14 +29,7 @@ _DEFAULT_CONFIG_PATH = _REPO_ROOT / "tests" / "e2e" / "e2e_config.yaml"
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Configures session environment variables and ensures kubeconfig authentication."""
-    if "GOOGLE_APPLICATION_CREDENTIALS" in os.environ and os.path.isfile(os.environ["GOOGLE_APPLICATION_CREDENTIALS"]):
-        subprocess.run(
-            ["gcloud", "auth", "activate-service-account", f"--key-file={os.environ['GOOGLE_APPLICATION_CREDENTIALS']}", "--quiet"],
-            capture_output=True,
-        )
-        del os.environ["GOOGLE_APPLICATION_CREDENTIALS"]
-
+    """Configures session environment variables and ensures gke auth plugin settings."""
     if "CLOUDSDK_PYTHON" in os.environ:
         del os.environ["CLOUDSDK_PYTHON"]
     os.environ["CLOUDSDK_PYTHON_SITEPACKAGES"] = "0"

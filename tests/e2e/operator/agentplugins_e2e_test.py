@@ -192,8 +192,6 @@ def run_cmd(
         "PYTHONNOUSERSITE": "1",
         **(env or {}),
     }
-    if "GOOGLE_APPLICATION_CREDENTIALS" in run_env:
-        del run_env["GOOGLE_APPLICATION_CREDENTIALS"]
     if "CLOUDSDK_PYTHON" in run_env:
         del run_env["CLOUDSDK_PYTHON"]
     res = subprocess.run(

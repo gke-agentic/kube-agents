@@ -63,20 +63,17 @@ SCOPES: list[str] = [
 def credentials() -> Any:
     """Returns GCP credentials authenticated with required Chat and Pub/Sub scopes."""
     if not HAS_GOOGLE_LIBS:
-        pytest.skip("google-api-python-client or google-auth not installed; skipping Google Chat E2E test.")
-    try:
-        creds, _ = google.auth.default(scopes=SCOPES)
-        return creds
-    except Exception as e:
-        pytest.skip(f"Google Chat credentials not available: {e}; skipping Google Chat E2E test.")
+        pytest.fail("google-api-python-client or google-auth not installed; Google Chat E2E test requires Google client libraries.")
+    creds, _ = google.auth.default(scopes=SCOPES)
+    return creds
 
 
 @pytest.fixture(scope="module")
 def chat_service(credentials: Credentials) -> Resource:
     """Builds authenticated Google Chat API service for creating prompt messages using Service Account WIF."""
     if not CHAT_SPACE_ID:
-        pytest.skip(
-            "CHAT_SPACE_ID environment variable is unset; skipping Google Chat E2E test.\n"
+        pytest.fail(
+            "CHAT_SPACE_ID environment variable is required (e.g., spaces/AAQAfrKMyng)\n"
             "Tip: SRE variables can be loaded by running 'source k8s-operator/scripts/vars.sh'"
         )
 
@@ -94,9 +91,9 @@ def poll_chat_service(credentials: Credentials) -> Resource:
 
     if refresh_token or client_id or client_secret:
         if not (refresh_token and client_id and client_secret):
-            pytest.skip(
-                "Incomplete OTA credentials configuration (E2E_CHAT_REFRESH_TOKEN, E2E_CHAT_CLIENT_ID, E2E_CHAT_CLIENT_SECRET); "
-                "skipping Google Chat poll service."
+            pytest.fail(
+                "Incomplete OTA credentials configuration. "
+                "Please ensure E2E_CHAT_REFRESH_TOKEN, E2E_CHAT_CLIENT_ID, and E2E_CHAT_CLIENT_SECRET are all set."
             )
         user_creds = UserCredentials(
             token=None,
@@ -152,12 +149,7 @@ def test_gchat_agent_math_response(
             body={"text": prompt_body}
         ).execute()
     except HttpError as err:
-        if "not a member of this space" in str(err) or err.resp.status in (403, 404):
-            pytest.skip(
-                f"Chat App is not a member of space '{CHAT_SPACE_ID}'. "
-                f"Add the Chat App to the Google Chat space to enable live chat validation: {err}"
-            )
-        pytest.fail(f"Failed to post message to Google Chat space: {err}")
+        pytest.fail(f"Failed to post message to Google Chat space '{CHAT_SPACE_ID}': {err}")
 
     message_name: str = sent_message.get("name", "")
     thread_name: str = sent_message.get("thread", {}).get("name", "")
