@@ -8,10 +8,10 @@
 
 The `kube-agents` test execution model partitions tests across three distinct automation tiers:
 
-| Tier | Trigger | Purpose | Execution Target |
-| :--- | :--- | :--- | :--- |
-| **Tier 1: PR CI** | Pull Request (`pull_request`) | Fast, offline unit and structural validation on every change | `make test-python`, `make validate`, `make docs-check` |
-| **Tier 2: RC Promotion Gate** | Release Candidate build (`rc-release-pipeline.yml`) | Validates candidate container images on a freshly provisioned GKE cluster before tagging `_validated` | `make test-e2e` (`scripts/release/execute_e2e_tests.py`) |
+| Tier                            | Trigger                                                                             | Purpose                                                                                                | Execution Target                                                      |
+| :------------------------------ | :---------------------------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------- |
+| **Tier 1: PR CI**               | Pull Request (`pull_request`)                                                       | Fast, offline unit and structural validation on every change                                           | `make test-python`, `make validate`, `make docs-check`                |
+| **Tier 2: RC Promotion Gate**   | Release Candidate build (`rc-release-pipeline.yml`)                                 | Validates candidate container images on a freshly provisioned GKE cluster before tagging `_validated`  | `make test-e2e` (`scripts/release/execute_e2e_tests.py`)              |
 | **Tier 3: Nightly & On-Demand** | Nightly cron or manual dispatch (`e2e-nightly-matrix.yml`, `e2e-manual-runner.yml`) | Full matrix across multi-cluster environments, live audit streams, and GPU/scarcity stockout scenarios | `make test-e2e` with `FLEET_AUDIT_LIVE=all`, `STOCKOUT_SCENARIOS=all` |
 
 ---
@@ -64,18 +64,18 @@ Exercises bidirectional communication through Google Chat:
 
 The stockout investigator test harness in `agentplugins/gke-stockout-investigator/scenarios/` covers 10 failure modes:
 
-| Scenario | Mode / Failure Condition | Scope in RC Gate | Scope in Nightly / Manual Matrix |
-| :--- | :--- | :---: | :---: |
-| `01-gpu-regional-scarcity` | Regional GPU quota exhaustion | Skipped (requires GPU pool) | ✅ (`STOCKOUT_SCENARIOS=01`) |
-| `02-tpu-slice-fragmentation` | Multi-node TPU slice allocation failure | Skipped (requires TPU pool) | ✅ (`STOCKOUT_SCENARIOS=02`) |
-| `03-large-vm-shape-scarcity` | High-memory/large compute shape unavailability | Skipped (heavy resource) | ✅ (`STOCKOUT_SCENARIOS=03`) |
-| `04-missing-zone-fallback` | Pod unschedulable due to single-zone compute constraints | ✅ **Executed in RC** | ✅ |
-| `05-spot-preemption-storm` | Rapid spot instance eviction cascade | Skipped | ✅ (`STOCKOUT_SCENARIOS=05`) |
-| `06-ip-exhaustion-secondary-range` | Pod CIDR exhaustion blocking node scaling | Skipped | ✅ (`STOCKOUT_SCENARIOS=06`) |
-| `07-hyperdisk-incompatibility` | Storage volume type mismatch across zones | Skipped | ✅ (`STOCKOUT_SCENARIOS=07`) |
-| `08-reservation-affinity-mismatch` | Specific reservation label mismatch | Skipped | ✅ (`STOCKOUT_SCENARIOS=08`) |
-| `09-quota-exhaustion-disk-ssd` | Regional SSD quota depletion | Skipped | ✅ (`STOCKOUT_SCENARIOS=09`) |
-| `10-false-signal` | Transient pod pending without real stockout | ✅ **Executed in RC** | ✅ |
+| Scenario                           | Mode / Failure Condition                                 |      Scope in RC Gate       | Scope in Nightly / Manual Matrix |
+| :--------------------------------- | :------------------------------------------------------- | :-------------------------: | :------------------------------: |
+| `01-gpu-regional-scarcity`         | Regional GPU quota exhaustion                            | Skipped (requires GPU pool) |   ✅ (`STOCKOUT_SCENARIOS=01`)   |
+| `02-tpu-slice-fragmentation`       | Multi-node TPU slice allocation failure                  | Skipped (requires TPU pool) |   ✅ (`STOCKOUT_SCENARIOS=02`)   |
+| `03-large-vm-shape-scarcity`       | High-memory/large compute shape unavailability           |  Skipped (heavy resource)   |   ✅ (`STOCKOUT_SCENARIOS=03`)   |
+| `04-missing-zone-fallback`         | Pod unschedulable due to single-zone compute constraints |    ✅ **Executed in RC**    |                ✅                |
+| `05-spot-preemption-storm`         | Rapid spot instance eviction cascade                     |           Skipped           |   ✅ (`STOCKOUT_SCENARIOS=05`)   |
+| `06-ip-exhaustion-secondary-range` | Pod CIDR exhaustion blocking node scaling                |           Skipped           |   ✅ (`STOCKOUT_SCENARIOS=06`)   |
+| `07-hyperdisk-incompatibility`     | Storage volume type mismatch across zones                |           Skipped           |   ✅ (`STOCKOUT_SCENARIOS=07`)   |
+| `08-reservation-affinity-mismatch` | Specific reservation label mismatch                      |           Skipped           |   ✅ (`STOCKOUT_SCENARIOS=08`)   |
+| `09-quota-exhaustion-disk-ssd`     | Regional SSD quota depletion                             |           Skipped           |   ✅ (`STOCKOUT_SCENARIOS=09`)   |
+| `10-false-signal`                  | Transient pod pending without real stockout              |    ✅ **Executed in RC**    |                ✅                |
 
 ---
 
@@ -83,15 +83,15 @@ The stockout investigator test harness in `agentplugins/gke-stockout-investigato
 
 The test runner `scripts/release/execute_e2e_tests.py` reads configuration from `tests/e2e/e2e_config.yaml` and environment variables:
 
-| Variable | Description | Default |
-| :--- | :--- | :--- |
-| `GCP_PROJECT_ID` | Target Google Cloud Project ID | None (required) |
-| `GKE_CLUSTER_NAME` | Target GKE cluster name | None (required) |
-| `GKE_LOCATION` | Target cluster zone or region | `us-central1-c` |
-| `STOCKOUT_SCENARIOS` | Comma-separated scenario numbers or `all` | `04,10` |
-| `FLEET_AUDIT_STREAMS` | Specific audit stream names or `all` | `governance-audit` |
-| `FLEET_AUDIT_LIVE` | Enables live in-cluster audit execution | `all` in nightly, smoke in RC |
-| `E2E_ENV` | Target environment selector | `all` |
+| Variable              | Description                               | Default                       |
+| :-------------------- | :---------------------------------------- | :---------------------------- |
+| `GCP_PROJECT_ID`      | Target Google Cloud Project ID            | None (required)               |
+| `GKE_CLUSTER_NAME`    | Target GKE cluster name                   | None (required)               |
+| `GKE_LOCATION`        | Target cluster zone or region             | `us-central1-c`               |
+| `STOCKOUT_SCENARIOS`  | Comma-separated scenario numbers or `all` | `04,10`                       |
+| `FLEET_AUDIT_STREAMS` | Specific audit stream names or `all`      | `governance-audit`            |
+| `FLEET_AUDIT_LIVE`    | Enables live in-cluster audit execution   | `all` in nightly, smoke in RC |
+| `E2E_ENV`             | Target environment selector               | `all`                         |
 
 ### Running Locally
 
