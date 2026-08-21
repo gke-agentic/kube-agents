@@ -131,8 +131,21 @@ jobs:
 
       - name: Verify Agent Deployment Rollout
         run: |
+          # This is the only step that waits for the agent to come up. The
+          # helm --wait above returns in seconds because the chart's resource
+          # is the PlatformAgent CR, not the Deployment: the CR is ready
+          # immediately and the operator reconciles it into
+          # platform-agent-gateway afterwards, so --wait never watches the
+          # slow part.
+          #
+          # 180s was under the cold-start cost and failed deploys that had
+          # actually succeeded. On Autopilot a rollout onto a scaled-down node
+          # pays node scale-up plus an agent image pull before the container
+          # even starts: measured 215s in autopush and 259s in staging, the
+          # latter spending 212s of it pre-Initialized. Both reported red
+          # while the pod went Ready moments later.
           echo "Waiting for rollout of platform-agent-gateway deployment..."
-          if ! kubectl rollout status deployment/platform-agent-gateway -n ${{ env.NAMESPACE }} --timeout=180s; then
+          if ! kubectl rollout status deployment/platform-agent-gateway -n ${{ env.NAMESPACE }} --timeout=600s; then
             echo "::error::Rollout failed! Printing debug logs..."
             kubectl describe deployment/platform-agent-gateway -n ${{ env.NAMESPACE }} || true
             kubectl get pods -n ${{ env.NAMESPACE }} -l app=platform-agent-gateway || true
