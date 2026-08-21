@@ -5,14 +5,16 @@ on:
   workflow_dispatch:
     inputs:
       test_environment:
-        description: "Target test environment (cluster-e2e, audit-e2e, gchat-e2e, all)"
+        description: "Target test environment (rc-e2e, nightly-e2e, investigations-e2e, audit-e2e, agent-plugin-e2e, gchat-e2e, all)"
         required: false
-        default: "cluster-e2e"
+        default: "rc-e2e"
         type: choice
         options:
-          - "cluster-e2e"
+          - "rc-e2e"
+          - "nightly-e2e"
+          - "investigations-e2e"
           - "audit-e2e"
-          - "operator-e2e"
+          - "agent-plugin-e2e"
           - "gchat-e2e"
           - "all"
       stockout_scenarios:
@@ -30,11 +32,6 @@ on:
         required: false
         default: "false"
         type: string
-      fleet_audit_live:
-        description: "Live on-demand fleet audit stream dispatch ('all', 'stockout-prevention', or 'false')"
-        required: false
-        default: "false"
-        type: string
 
 permissions:
   contents: read
@@ -42,7 +39,7 @@ permissions:
 
 jobs:
   run-e2e:
-    name: Run E2E (${{ inputs.test_environment || 'cluster-e2e' }})
+    name: Run E2E (${{ inputs.test_environment || 'rc-e2e' }})
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -102,7 +99,6 @@ jobs:
           STOCKOUT_SCENARIOS: ${{ inputs.stockout_scenarios }}
           FLEET_AUDIT_STREAMS: ${{ inputs.fleet_audit_streams || 'all' }}
           REBUILD_OPERATOR: ${{ inputs.rebuild_operator }}
-          FLEET_AUDIT_LIVE: ${{ inputs.fleet_audit_live || 'false' }}
           CHAT_TOPIC_NAME: ${{ vars.CHAT_TOPIC_NAME }}
           E2E_CHAT_CLIENT_ID: ${{ secrets.E2E_CHAT_CLIENT_ID }}
           E2E_CHAT_CLIENT_SECRET: ${{ secrets.E2E_CHAT_CLIENT_SECRET }}

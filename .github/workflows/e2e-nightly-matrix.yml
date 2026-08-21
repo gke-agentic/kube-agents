@@ -17,16 +17,19 @@ on:
         required: false
         default: "all"
         type: string
-      fleet_audit_live:
-        description: "Live in-cluster audit probe ('all' or 'false')"
+      test_environment:
+        description: "Target test environment ('nightly-e2e', 'rc-e2e', 'investigations-e2e', 'audit-e2e', 'agent-plugin-e2e', 'gchat-e2e', 'all')"
         required: false
-        default: "all"
-        type: string
-      target_environment:
-        description: "Target deployment environment"
-        required: false
-        default: "autopush"
-        type: string
+        default: "nightly-e2e"
+        type: choice
+        options:
+          - "nightly-e2e"
+          - "rc-e2e"
+          - "investigations-e2e"
+          - "audit-e2e"
+          - "agent-plugin-e2e"
+          - "gchat-e2e"
+          - "all"
 
 concurrency:
   group: e2e-nightly-matrix
@@ -97,8 +100,7 @@ jobs:
           GITHUB_REPO: ${{ vars.GH_REPO || 'test-org-kube-agent/agents-repo' }}
           STOCKOUT_SCENARIOS: ${{ inputs.stockout_scenarios || 'all' }}
           FLEET_AUDIT_STREAMS: ${{ inputs.fleet_audit_streams || 'all' }}
-          FLEET_AUDIT_LIVE: ${{ inputs.fleet_audit_live || 'all' }}
-          E2E_ENV: "all"
+          E2E_ENV: ${{ inputs.test_environment || 'nightly-e2e' }}
           CHAT_TOPIC_NAME: ${{ vars.CHAT_TOPIC_NAME }}
           E2E_CHAT_CLIENT_ID: ${{ secrets.E2E_CHAT_CLIENT_ID }}
           E2E_CHAT_CLIENT_SECRET: ${{ secrets.E2E_CHAT_CLIENT_SECRET }}

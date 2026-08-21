@@ -8,11 +8,11 @@
 
 The `kube-agents` test execution model partitions tests across three distinct automation tiers:
 
-| Tier                            | Trigger                                                                             | Purpose                                                                                                | Execution Target                                                      |
-| :------------------------------ | :---------------------------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------- |
-| **Tier 1: PR CI**               | Pull Request (`pull_request`)                                                       | Fast, offline unit and structural validation on every change                                           | `make test-python`, `make validate`, `make docs-check`                |
-| **Tier 2: RC Promotion Gate**   | Release Candidate build (`rc-release-pipeline.yml`)                                 | Validates candidate container images on a freshly provisioned GKE cluster before tagging `_validated`  | `make test-e2e` (`scripts/release/execute_e2e_tests.py`)              |
-| **Tier 3: Nightly & On-Demand** | Nightly cron or manual dispatch (`e2e-nightly-matrix.yml`, `e2e-manual-runner.yml`) | Full matrix across multi-cluster environments, live audit streams, and GPU/scarcity stockout scenarios | `make test-e2e` with `FLEET_AUDIT_LIVE=all`, `STOCKOUT_SCENARIOS=all` |
+| Tier                            | Trigger                                                                             | Purpose                                                                                               | Execution Target                                                         |
+| :------------------------------ | :---------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------- | :----------------------------------------------------------------------- |
+| **Tier 1: PR CI**               | Pull Request (`pull_request`)                                                       | Fast, offline unit and structural validation on every change                                          | `make test-python`, `make validate`, `make docs-check`                   |
+| **Tier 2: RC Promotion Gate**   | Release Candidate build (`rc-release-pipeline.yml`)                                 | Validates candidate container images on a freshly provisioned GKE cluster before tagging `_validated` | `make test-e2e` (`scripts/release/execute_e2e_tests.py`)                 |
+| **Tier 3: Nightly & On-Demand** | Nightly cron or manual dispatch (`e2e-nightly-matrix.yml`, `e2e-manual-runner.yml`) | Full matrix across multi-cluster environments, audit streams, and GPU/scarcity stockout scenarios     | `make test-e2e` with `FLEET_AUDIT_STREAMS=all`, `STOCKOUT_SCENARIOS=all` |
 
 ---
 
@@ -34,7 +34,7 @@ Validates cluster hardening, credential isolation, and audit watchdog capabiliti
 
 - **Baseline Hardening**: Asserts that the target GKE cluster enforces Workload Identity, Datapath V2, and Shielded Nodes.
 - **GitHub Token Minter Credential Isolation**: Verifies that raw GitHub App private keys (`github-app-credentials`) remain exclusively in the `github-minter` namespace and are never mounted or accessible to agent execution pods.
-- **Fleet Audit Stream Dispatch**: Executes fleet audit streams against the active cluster, verifying findings schema and ledger generation. In RC gates, runs a focused smoke check; in nightly pipelines (`FLEET_AUDIT_LIVE=all`), exercises all streams.
+- **Fleet Audit Stream Dispatch**: Executes fleet audit stream ledger rendering and schema validation across all configured streams (`FLEET_AUDIT_STREAMS=all`).
 
 ### Stage 2: In-Cluster Agent API & Operator Reconciliation (`test_agent_api_health.py`, `operator/agentplugins_e2e_test.py`)
 
@@ -93,10 +93,23 @@ The test runner `scripts/release/execute_e2e_tests.py` reads configuration from 
 | `FLEET_AUDIT_LIVE`    | Enables live in-cluster audit execution   | `all` in nightly, smoke in RC |
 | `E2E_ENV`             | Target environment selector               | `all`                         |
 
+### Test Environments
+
+The test harness provides modular and composite environments configured in `tests/e2e/e2e_config.yaml`:
+
+| Environment          | Description                                                                                            | Included Test Suites                                                                                                                                  |
+| :------------------- | :----------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rc-e2e`             | Release Candidate promotion gate: Agent API health, audit ledger, and fast stockout RCA (Scenario 04)  | `test_agent_api_health.py`, `test_agent_fleet_audit.py`, `test_stockout_investigation.py`                                                             |
+| `nightly-e2e`        | Full Nightly Matrix: all audit streams, all stockout scenarios, operator plugins, and chat integration | `test_agent_api_health.py`, `test_agent_fleet_audit.py`, `test_stockout_investigation.py`, `operator/agentplugins_e2e_test.py`, `gchat_agent_test.py` |
+| `investigations-e2e` | In-cluster Agent API health and stockout alert investigation scenarios                                 | `test_agent_api_health.py`, `test_stockout_investigation.py`                                                                                          |
+| `audit-e2e`          | Fleet SRE audit ledger generation, credential isolation, and stream evaluation                         | `test_agent_api_health.py`, `test_agent_fleet_audit.py`                                                                                               |
+| `agent-plugin-e2e`   | Operator AgentPlugin CR lifecycle and Hermes overlay reconciliation                                    | `operator/agentplugins_e2e_test.py`                                                                                                                   |
+| `gchat-e2e`          | Live Google Chat integration and Pub/Sub messaging                                                     | `gchat_agent_test.py`                                                                                                                                 |
+
 ### Running Locally
 
 ```bash
-# Set cluster context and run full E2E suite
+# Set cluster context and run default investigation E2E suite
 export GCP_PROJECT_ID="my-gcp-project"
 export GKE_CLUSTER_NAME="my-cluster"
 make test-e2e

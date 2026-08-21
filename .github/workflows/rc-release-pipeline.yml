@@ -127,6 +127,7 @@ jobs:
           GITHUB_ORG: ${{ vars.GH_ORG || 'test-org-kube-agent' }}
           GITHUB_REPO: ${{ vars.GH_REPO || 'test-org-kube-agent/agents-repo' }}
           STOCKOUT_SCENARIOS: "04"
+          E2E_ENV: "rc-e2e"
           CHAT_TOPIC_NAME: ${{ vars.CHAT_TOPIC_NAME }}
           E2E_CHAT_CLIENT_ID: ${{ secrets.E2E_CHAT_CLIENT_ID }}
           E2E_CHAT_CLIENT_SECRET: ${{ secrets.E2E_CHAT_CLIENT_SECRET }}

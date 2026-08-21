@@ -144,11 +144,7 @@ def agent_namespace() -> str:
     return cfg.get("namespace") or "kubeagents-system"
 
 
-@pytest.fixture(scope="session")
-def fleet_audit_live() -> str:
-    """Resolves FLEET_AUDIT_LIVE configuration from environment (enabled in nightly matrix)."""
-    val = os.environ.get("FLEET_AUDIT_LIVE", "")
-    return str(val).strip().lower()
+
 
 
 @pytest.fixture(scope="session")
