@@ -328,6 +328,38 @@ func TestResolveNetpolProfile(t *testing.T) {
 		}
 	})
 
+	t.Run("AdditionalEgress_NoPeers_NeverEmitsAllowAll", func(t *testing.T) {
+		t.Parallel()
+		client := fake.NewClientBuilder().WithScheme(scheme).Build()
+		r := &PlatformAgentReconciler{Client: client, Scheme: scheme}
+		agent := &agentv1alpha1.PlatformAgent{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
+			Spec: agentv1alpha1.PlatformAgentSpec{
+				AgentSpec: agentv1alpha1.AgentSpec{
+					NetworkPolicy: &agentv1alpha1.NetworkPolicySpec{
+						AdditionalEgress: []agentv1alpha1.EgressRule{
+							{
+								// Ports with no peers or invalid CIDRs must NOT produce an allow-all egress rule
+								To: []agentv1alpha1.EgressPeer{
+									{CIDR: "invalid-cidr"},
+									{CIDR: "0.0.0.0/0"}, // rejected by /12 min prefix check
+								},
+								Ports: []agentv1alpha1.EgressPort{
+									{Protocol: "TCP", Port: 443},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		profile := r.resolveNetpolProfile(context.Background(), agent)
+		if len(profile.AdditionalEgress) != 0 {
+			t.Fatalf("expected 0 additional egress rules for invalid/dropped peers, got %d: %+v", len(profile.AdditionalEgress), profile.AdditionalEgress)
+		}
+	})
+
 	t.Run("InvalidInputsIgnored", func(t *testing.T) {
 		t.Parallel()
 		kubeDNSSvc := &corev1.Service{

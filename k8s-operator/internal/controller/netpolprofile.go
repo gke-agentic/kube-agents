@@ -293,7 +293,10 @@ func toEgressRules(rules []agentv1alpha1.EgressRule) []networkingv1.NetworkPolic
 			})
 		}
 
-		if len(peers) > 0 || len(ports) > 0 {
+		// In NetworkPolicy semantics, an egress rule with Ports but To: nil allows egress
+		// to ALL destinations (0.0.0.0/0). To prevent unintentional egress widening,
+		// require at least one valid peer before emitting an additional egress rule.
+		if len(peers) > 0 {
 			out = append(out, networkingv1.NetworkPolicyEgressRule{
 				Ports: ports,
 				To:    peers,
