@@ -138,15 +138,16 @@ exit 0
     return docker_path, log_path
 
 
-def create_mock_cosign_binary(bin_dir, log_file=None):
+def create_mock_cosign_binary(bin_dir, log_file=None, fail_sign=False):
     """Creates a mock cosign CLI supporting sign commands."""
     bin_path = pathlib.Path(bin_dir)
     bin_path.mkdir(parents=True, exist_ok=True)
     cosign_path = bin_path / "cosign"
     log_path = log_file if log_file else (bin_path / "cosign.log")
+    exit_code = 1 if fail_sign else 0
     content = f"""#!/bin/sh
 echo "mock cosign: $@" >> "{log_path}"
-exit 0
+exit {exit_code}
 """
     cosign_path.write_text(content)
     cosign_path.chmod(0o755)

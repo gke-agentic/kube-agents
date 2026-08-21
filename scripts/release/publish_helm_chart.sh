@@ -91,49 +91,57 @@ if ! is_ci_pipeline; then
   exit 0
 fi
 
-# Safety Guard: Check if target chart OCI package already exists in registry to prevent duplicate publishing
-if command -v docker >/dev/null 2>&1 && docker manifest inspect "${REGISTRY_PREFIX}/charts/kube-agents:${RELEASE_VERSION}" >/dev/null 2>&1; then
-  echo "    ℹ️ Helm chart '${REGISTRY_PREFIX}/charts/kube-agents:${RELEASE_VERSION}' already exists in registry. Skipping duplicate publish."
-  exit 0
-fi
+CHART_TAG_REF="${REGISTRY_PREFIX}/charts/kube-agents:${RELEASE_VERSION}"
+CHART_DIGEST=""
 
-# Securely authenticate with registry if credentials are provided in the environment
-if [ -n "${GH_TOKEN:-}" ]; then
-  AUTH_ACTOR="${GH_USER:-${GITHUB_ACTOR:-oauth2}}"
-  echo "🔑 Logging in to ${REGISTRY_HOST} via Helm..."
-  if ! printf '%s' "${GH_TOKEN}" | helm registry login "${REGISTRY_HOST}" -u "${AUTH_ACTOR}" --password-stdin >/dev/null 2>&1; then
-    echo "❌ ERROR: Failed to authenticate to ${REGISTRY_HOST} with Helm!" >&2
+# Safety Guard: Check if target chart OCI package already exists in registry to prevent duplicate push
+if CHART_DIGEST="$(get_image_manifest_digest "${CHART_TAG_REF}" 2>/dev/null)" && [ -n "${CHART_DIGEST}" ]; then
+  echo "    ℹ️ Helm chart '${CHART_TAG_REF}' already exists in registry (digest: ${CHART_DIGEST}). Skipping duplicate push."
+elif command -v docker >/dev/null 2>&1 && docker manifest inspect "${CHART_TAG_REF}" >/dev/null 2>&1; then
+  echo "    ℹ️ Helm chart '${CHART_TAG_REF}' already exists in registry. Skipping duplicate push."
+else
+  # Securely authenticate with registry if credentials are provided in the environment
+  if [ -n "${GH_TOKEN:-}" ]; then
+    AUTH_ACTOR="${GH_USER:-${GITHUB_ACTOR:-oauth2}}"
+    echo "🔑 Logging in to ${REGISTRY_HOST} via Helm..."
+    if ! printf '%s' "${GH_TOKEN}" | helm registry login "${REGISTRY_HOST}" -u "${AUTH_ACTOR}" --password-stdin >/dev/null 2>&1; then
+      echo "❌ ERROR: Failed to authenticate to ${REGISTRY_HOST} with Helm!" >&2
+      exit 1
+    fi
+    echo "✅ Successfully logged in to ${REGISTRY_HOST} via Helm."
+  fi
+
+  echo "======================================================================"
+  echo "📦 PUBLISHING AND SIGNING HELM CHART (OCI)"
+  echo "Release Version: ${RELEASE_VERSION}"
+  echo "OCI Destination: ${CHART_OCI_DEST}"
+  echo "======================================================================"
+
+  if ! PUSH_OUTPUT=$(helm push "${local_package}" "${CHART_OCI_DEST}" 2>&1); then
+    echo "${PUSH_OUTPUT}" >&2
+    echo "❌ ERROR: Failed to push Helm chart to ${CHART_OCI_DEST}!" >&2
     exit 1
   fi
-  echo "✅ Successfully logged in to ${REGISTRY_HOST} via Helm."
-fi
+  echo "${PUSH_OUTPUT}"
 
-echo "======================================================================"
-echo "📦 PUBLISHING AND SIGNING HELM CHART (OCI)"
-echo "Release Version: ${RELEASE_VERSION}"
-echo "OCI Destination: ${CHART_OCI_DEST}"
-echo "======================================================================"
-
-if ! PUSH_OUTPUT=$(helm push "${local_package}" "${CHART_OCI_DEST}" 2>&1); then
-  echo "${PUSH_OUTPUT}" >&2
-  echo "❌ ERROR: Failed to push Helm chart to ${CHART_OCI_DEST}!" >&2
-  exit 1
-fi
-echo "${PUSH_OUTPUT}"
-
-CHART_DIGEST=$(echo "${PUSH_OUTPUT}" | awk '/^Digest:/ {print $2}')
-if [ -z "${CHART_DIGEST}" ]; then
-  echo "❌ ERROR: Could not extract chart digest from helm push output!" >&2
-  exit 1
+  CHART_DIGEST=$(echo "${PUSH_OUTPUT}" | awk '/^Digest:/ {print $2}')
+  if [ -z "${CHART_DIGEST}" ]; then
+    echo "❌ ERROR: Could not extract chart digest from helm push output!" >&2
+    exit 1
+  fi
 fi
 
 if command -v cosign >/dev/null 2>&1; then
-  echo "🛡️ Signing Helm chart with Cosign..."
-  if ! cosign sign --yes "${REGISTRY_PREFIX}/charts/kube-agents@${CHART_DIGEST}"; then
-    echo "❌ ERROR: Failed to sign Helm chart digest ${CHART_DIGEST} with cosign!" >&2
+  SIGN_TARGET="${REGISTRY_PREFIX}/charts/kube-agents${CHART_DIGEST:+@${CHART_DIGEST}}"
+  if [ -z "${CHART_DIGEST}" ]; then
+    SIGN_TARGET="${CHART_TAG_REF}"
+  fi
+  echo "🛡️ Signing Helm chart with Cosign (${SIGN_TARGET})..."
+  if ! cosign sign --yes "${SIGN_TARGET}"; then
+    echo "❌ ERROR: Failed to sign Helm chart ${SIGN_TARGET} with cosign!" >&2
     exit 1
   fi
-  echo "✅ Successfully signed Helm chart digest ${CHART_DIGEST}."
+  echo "✅ Successfully signed Helm chart digest ${CHART_DIGEST:-${SIGN_TARGET}}."
 fi
 
 echo "✅ Successfully published Helm chart ${RELEASE_VERSION} to ${CHART_OCI_DEST}."

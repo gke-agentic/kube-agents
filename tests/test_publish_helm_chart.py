@@ -219,7 +219,39 @@ class PublishHelmChartScriptTest(unittest.TestCase):
                 bin_dir=str(bin_dir),
             )
             self.assertEqual(proc.returncode, 0)
-            self.assertIn("already exists in registry. Skipping duplicate publish", proc.stdout)
+            self.assertIn("already exists in registry", proc.stdout)
+            self.assertIn("Skipping duplicate push", proc.stdout)
+            self.assertIn("Successfully signed Helm chart", proc.stdout)
+            helm_log = (bin_dir / "helm.log").read_text()
+            self.assertNotIn("mock helm: push", helm_log)
+            cosign_log = (bin_dir / "cosign.log").read_text()
+            self.assertIn("mock cosign: sign --yes", cosign_log)
+        finally:
+            temp_dir.cleanup()
+
+    def test_ci_signing_failure_when_chart_already_exists(self):
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        try:
+            bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_helm_binary(bin_dir)
+            create_mock_cosign_binary(bin_dir, fail_sign=True)
+            existing_chart_oci = f"{MOCK_DEFAULT_REGISTRY_PREFIX}/charts/kube-agents:{MOCK_TARGET_RELEASE_TAG}"
+            create_mock_docker_binary(bin_dir, existing_images=[existing_chart_oci])
+
+            proc = self._run_script(
+                [MOCK_TARGET_RELEASE_TAG],
+                env={
+                    "CI": "true",
+                    "GITHUB_REPOSITORY": MOCK_DEFAULT_RELEASE_REPO,
+                    "GH_TOKEN": MOCK_GH_TOKEN,
+                    "GH_USER": MOCK_GH_USER,
+                },
+                bin_dir=str(bin_dir),
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("already exists in registry", proc.stdout)
+            self.assertIn("Skipping duplicate push", proc.stdout)
+            self.assertIn("Failed to sign Helm chart", proc.stderr)
         finally:
             temp_dir.cleanup()
 

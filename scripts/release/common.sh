@@ -305,6 +305,17 @@ get_image_manifest_digest() {
     fi
   fi
 
+  # Fallback to computing manifest sha256 from docker manifest inspect if available
+  local manifest_output
+  if manifest_output="$(docker manifest inspect "${img}" 2>/dev/null)" && [ -n "${manifest_output}" ]; then
+    local manifest_sha
+    manifest_sha="$(printf '%s' "${manifest_output}" | sha256sum | awk '{print $1}')"
+    if [ -n "${manifest_sha}" ]; then
+      echo "sha256:${manifest_sha}"
+      return 0
+    fi
+  fi
+
   return 1
 }
 
