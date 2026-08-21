@@ -36,14 +36,15 @@ import (
 )
 
 var (
-	// DefaultPlatformAgentVersion is injected at build time via -ldflags "-X ...DefaultPlatformAgentVersion=X.Y.Z"
-	// or defaults to "latest" during local development.
+	// DefaultPlatformAgentVersion is the fallback tag for local development
+	// or environments where OPERATOR_IMAGE is not set (defaults to "latest").
 	DefaultPlatformAgentVersion = "latest"
 )
 
-// fallbackPlatformAgentImage derives its tag from DefaultPlatformAgentVersion
-// at call time (not folded at init), so release builds default to the matching
-// versioned image and tests can pin the derivation by overriding the variable.
+// fallbackPlatformAgentImage returns the default platform-agent image using
+// DefaultPlatformAgentVersion at call time (not folded at init), serving as the
+// static fallback when neither PLATFORM_AGENT_IMAGE nor OPERATOR_IMAGE is configured.
+// Tests can pin the derivation by overriding DefaultPlatformAgentVersion.
 func fallbackPlatformAgentImage() string {
 	return "ghcr.io/gke-labs/kube-agents/platform-agent:" + DefaultPlatformAgentVersion
 }
