@@ -37,24 +37,6 @@ gke_dns_endpoint_flag "${CLUSTER_NAME}" "${REGION}" "${PROJECT_ID}"
 gcloud container clusters get-credentials "${CLUSTER_NAME}" --location "${REGION}" --project "${PROJECT_ID}" \
   ${GKE_DNS_ENDPOINT_FLAG}
 
-TOKEN="$(gcloud auth print-access-token 2>/dev/null || true)"
-if [ -n "${TOKEN}" ]; then
-  python3 -c "
-import json, os, pathlib, subprocess
-res = subprocess.run(['kubectl', 'config', 'view', '--raw', '-o', 'json'], capture_output=True, text=True)
-if res.returncode == 0 and res.stdout.strip():
-    data = json.loads(res.stdout)
-    token = '''${TOKEN}'''
-    for u in data.get('users', []):
-        u.get('user', {}).pop('exec', None)
-        u.setdefault('user', {})['token'] = token
-    cfg_file = os.environ.get('KUBECONFIG') or str(pathlib.Path.home() / '.kube' / 'config')
-    p = pathlib.Path(cfg_file)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(data, indent=2), encoding='utf-8')
-" || true
-fi
-
 echo "🔑 Configuring Docker authentication for Artifact Registry (${REGION}-docker.pkg.dev)..."
 gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet || true
 

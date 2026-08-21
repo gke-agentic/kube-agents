@@ -44,25 +44,6 @@ def pytest_configure(config: pytest.Config) -> None:
     if "USE_GKE_GCLOUD_AUTH_PLUGIN" not in os.environ:
         os.environ["USE_GKE_GCLOUD_AUTH_PLUGIN"] = "True"
 
-    # Inject bearer token into current kubeconfig users if available and strip exec plugin
-    try:
-        token_proc = subprocess.run(["gcloud", "auth", "print-access-token"], capture_output=True, text=True, timeout=10)
-        if token_proc.returncode == 0 and token_proc.stdout.strip():
-            token = token_proc.stdout.strip()
-            res = subprocess.run(["kubectl", "config", "view", "--raw", "-o", "json"], capture_output=True, text=True, timeout=5)
-            if res.returncode == 0 and res.stdout.strip():
-                import json
-                data = json.loads(res.stdout)
-                for u in data.get("users", []):
-                    u.get("user", {}).pop("exec", None)
-                    u.setdefault("user", {})["token"] = token
-                cfg_file = os.environ.get("KUBECONFIG") or str(pathlib.Path.home() / ".kube" / "config")
-                p = pathlib.Path(cfg_file)
-                p.parent.mkdir(parents=True, exist_ok=True)
-                p.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    except Exception:
-        pass
-
 
 def _parse_yaml_fallback(content: str) -> Dict[str, Any]:
     """Fallback parser for simple environments list and env_vars in e2e_config.yaml."""
@@ -257,7 +238,7 @@ def ensure_cluster_credentials(
     gke_cluster_name: Optional[str],
     gcp_region: str,
 ) -> None:
-    """Configures kubectl context for the target GKE cluster and embeds bearer token."""
+    """Configures kubectl context for the target GKE cluster."""
     if gcp_project_id and gke_cluster_name and gcp_region:
         subprocess.run(
             [
@@ -269,22 +250,6 @@ def ensure_cluster_credentials(
             capture_output=True,
             text=True,
         )
-        token_res = subprocess.run(["gcloud", "auth", "print-access-token"], capture_output=True, text=True)
-        token = token_res.stdout.strip()
-        if token_res.returncode == 0 and token:
-            try:
-                view_res = subprocess.run(["kubectl", "config", "view", "--raw", "-o", "json"], capture_output=True, text=True)
-                if view_res.returncode == 0 and view_res.stdout.strip():
-                    data = json.loads(view_res.stdout)
-                    for user_entry in data.get("users", []):
-                        user_entry.get("user", {}).pop("exec", None)
-                        user_entry.setdefault("user", {})["token"] = token
-                    kubeconfig_env = os.environ.get("KUBECONFIG")
-                    p = pathlib.Path(kubeconfig_env) if kubeconfig_env else (pathlib.Path.home() / ".kube" / "config")
-                    p.parent.mkdir(parents=True, exist_ok=True)
-                    p.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            except Exception:
-                pass
 
 
 

@@ -105,7 +105,7 @@ def load_yaml_config(config_path: pathlib.Path) -> Dict[str, Any]:
 
 
 def connect_gke_credentials(project_id: str, cluster_name: str, region: str) -> None:
-    """Configures kubectl context for target GKE cluster and replaces exec auth with bearer token."""
+    """Configures kubectl context for target GKE cluster."""
     cmd = [
         "gcloud",
         "container",
@@ -122,23 +122,6 @@ def connect_gke_credentials(project_id: str, cluster_name: str, region: str) -> 
             file=sys.stderr,
         )
         return
-
-    # Strip exec plugin from kubeconfig and embed active bearer token to avoid Python collisions
-    token_proc = subprocess.run(["gcloud", "auth", "print-access-token"], capture_output=True, text=True)
-    if token_proc.returncode == 0 and token_proc.stdout.strip():
-        token = token_proc.stdout.strip()
-        raw_cfg = subprocess.run(["kubectl", "config", "view", "--raw", "-o", "json"], capture_output=True, text=True)
-        if raw_cfg.returncode == 0 and raw_cfg.stdout.strip():
-            try:
-                data = json.loads(raw_cfg.stdout)
-                for u in data.get("users", []):
-                    u.get("user", {}).pop("exec", None)
-                    u.setdefault("user", {})["token"] = token
-                cfg_path = pathlib.Path(os.environ.get("KUBECONFIG") or (pathlib.Path.home() / ".kube" / "config"))
-                cfg_path.parent.mkdir(parents=True, exist_ok=True)
-                cfg_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            except Exception:
-                pass
 
     print(f"✓ Connected kubectl context to cluster '{cluster_name}' in '{region}'.")
 
