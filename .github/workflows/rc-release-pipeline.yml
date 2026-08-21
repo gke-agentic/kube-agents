@@ -96,11 +96,12 @@ jobs:
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
           credentials_json: ${{ secrets.GCP_SA_KEY || '' }}
 
-      - name: Set up Google Cloud SDK
-        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+      - name: Authenticate to GKE
+        uses: google-github-actions/get-gke-credentials@3da1e46a907576cefaa90c484278bb5b259dd395 # v3.0.0
         with:
-          version: "579.0.0"
-          install_components: "beta,gke-gcloud-auth-plugin"
+          cluster_name: ${{ vars.GKE_CLUSTER_NAME }}
+          location: ${{ vars.GCP_REGION || 'us-east4' }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
 
       - name: Connect to GKE & Wait for Pod Readiness
         env:
