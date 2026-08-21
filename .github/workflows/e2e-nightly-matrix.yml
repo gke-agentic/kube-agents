@@ -12,6 +12,16 @@ on:
         required: false
         default: "all"
         type: string
+      fleet_audit_streams:
+        description: "Fleet audit stream filter ('all' or specific streams, e.g. 'stockout-prevention')"
+        required: false
+        default: "all"
+        type: string
+      fleet_audit_live:
+        description: "Live in-cluster audit probe ('all' or 'false')"
+        required: false
+        default: "all"
+        type: string
       target_environment:
         description: "Target deployment environment"
         required: false
@@ -85,8 +95,8 @@ jobs:
           GITHUB_ORG: ${{ vars.GH_ORG || 'test-org-kube-agent' }}
           GITHUB_REPO: ${{ vars.GH_REPO || 'test-org-kube-agent/agents-repo' }}
           STOCKOUT_SCENARIOS: ${{ inputs.stockout_scenarios || 'all' }}
-          FLEET_AUDIT_STREAMS: "all"
-          FLEET_AUDIT_LIVE: "all"
+          FLEET_AUDIT_STREAMS: ${{ inputs.fleet_audit_streams || 'all' }}
+          FLEET_AUDIT_LIVE: ${{ inputs.fleet_audit_live || 'all' }}
           E2E_ENV: "all"
           CHAT_TOPIC_NAME: ${{ vars.CHAT_TOPIC_NAME }}
           E2E_CHAT_CLIENT_ID: ${{ secrets.E2E_CHAT_CLIENT_ID }}
