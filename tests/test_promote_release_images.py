@@ -78,6 +78,8 @@ class PromoteReleaseImagesScriptTest(unittest.TestCase):
             for img in MOCK_REQUIRED_RELEASE_IMAGES:
                 self.assertIn(f"Promoting {img}", proc.stdout)
                 self.assertIn(f"Promoted {img} to {MOCK_TARGET_RELEASE_TAG}", proc.stdout)
+            docker_log = pathlib.Path(temp_dir.name) / "bin" / "docker.log"
+            self.assertIn("--prefer-index=false", docker_log.read_text())
         finally:
             temp_dir.cleanup()
 
@@ -111,6 +113,36 @@ class PromoteReleaseImagesScriptTest(unittest.TestCase):
                 for img in MOCK_REQUIRED_RELEASE_IMAGES
             ]
             create_mock_docker_binary(bin_dir, existing_images=existing)
+
+            proc = self._run_script(
+                [MOCK_SAMPLE_COMMIT_SHA, MOCK_TARGET_RELEASE_TAG],
+                env={"CI": "true"},
+                bin_dir=str(bin_dir),
+            )
+            self.assertEqual(proc.returncode, 0)
+            for img in MOCK_REQUIRED_RELEASE_IMAGES:
+                self.assertIn("already exists in registry and matches source image", proc.stdout)
+        finally:
+            temp_dir.cleanup()
+
+    def test_promote_idempotent_skip_when_target_is_index_wrapping_source_manifest(self):
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        try:
+            bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            source_sha = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            target_index_sha = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            raw_index = f'{{"mediaType":"application/vnd.oci.image.index.v1+json","digest":"{target_index_sha}","manifests":[{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{source_sha}"}}]}}'
+            digests = {}
+            for img in MOCK_REQUIRED_RELEASE_IMAGES:
+                digests[f"ghcr.io/gke-labs/kube-agents/{img}:{MOCK_TARGET_RELEASE_TAG}"] = {
+                    "format": target_index_sha,
+                    "raw": raw_index,
+                }
+                digests[f"ghcr.io/gke-labs/kube-agents/{img}:{MOCK_SAMPLE_COMMIT_SHA}"] = {
+                    "format": source_sha,
+                    "raw": f'{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{source_sha}"}}',
+                }
+            create_mock_docker_binary(bin_dir, image_digests=digests)
 
             proc = self._run_script(
                 [MOCK_SAMPLE_COMMIT_SHA, MOCK_TARGET_RELEASE_TAG],

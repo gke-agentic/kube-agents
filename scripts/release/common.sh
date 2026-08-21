@@ -360,7 +360,9 @@ promote_release_images() {
         return 1
       fi
 
-      if [ "${target_digest}" = "${source_digest}" ]; then
+      local raw_target=""
+      if [ "${target_digest}" = "${source_digest}" ] || \
+         ( [ -n "${source_digest}" ] && raw_target="$(docker buildx imagetools inspect --raw "${target_image}" 2>/dev/null)" && printf '%s' "${raw_target}" | grep -q "${source_digest}" ); then
         echo "    ℹ️ Target image '${target_image}' already exists in registry and matches source image (${resolved_commit:0:7}). Skipping duplicate promotion."
         continue
       else
@@ -370,7 +372,7 @@ promote_release_images() {
       fi
     fi
 
-    docker buildx imagetools create --tag "${target_image}" "${source_image}"
+    docker buildx imagetools create --prefer-index=false --tag "${target_image}" "${source_image}"
     echo "    ✅ Promoted ${img} to ${release_version}"
   done
 }

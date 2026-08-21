@@ -81,17 +81,23 @@ def create_mock_docker_binary(bin_dir, log_file=None, existing_images=(), image_
     imagetools_checks = ""
     for img, dig in digests_map.items():
         manifest_checks += f'  if [ "$3" = "{img}" ]; then exit 0; fi\n'
+        if isinstance(dig, dict):
+            fmt_val = dig.get("format", "")
+            raw_val = dig.get("raw", "")
+        else:
+            fmt_val = dig
+            raw_val = f'{{"mediaType":"application/vnd.oci.image.index.v1+json","digest":"{dig}","manifests":[{{"digest":"{dig}"}}]}}'
         imagetools_checks += f"""    if [ "$target_arg" = "{img}" ]; then
       if [ "$is_format" = "true" ]; then
-        echo "{dig}"
+        echo "{fmt_val}"
         exit 0
       fi
       if [ "$is_raw" = "true" ]; then
-        printf '%s\\n' '{{"mediaType":"application/vnd.oci.image.index.v1+json","digest":"{dig}"}}'
+        printf '%s\\n' '{raw_val}'
         exit 0
       fi
       echo "Name: {img}"
-      echo "Digest: {dig}"
+      echo "Digest: {fmt_val}"
       exit 0
     fi
 """
