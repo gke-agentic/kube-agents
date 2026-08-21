@@ -233,6 +233,11 @@ def ensure_cluster_credentials(
     gcp_region: str,
 ) -> None:
     """Configures kubectl context for the target GKE cluster."""
+    # If kubectl already has working credentials (e.g. from get-gke-credentials or existing context), don't overwrite
+    check_res = subprocess.run(["kubectl", "cluster-info"], capture_output=True, text=True)
+    if check_res.returncode == 0:
+        return
+
     if gcp_project_id and gke_cluster_name and gcp_region:
         subprocess.run(
             ["gcloud", "config", "set", "container/use_application_default_credentials", "false", "--quiet"],

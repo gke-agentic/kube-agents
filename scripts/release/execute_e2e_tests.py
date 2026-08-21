@@ -107,6 +107,12 @@ def load_yaml_config(config_path: pathlib.Path) -> Dict[str, Any]:
 
 def connect_gke_credentials(project_id: str, cluster_name: str, region: str) -> None:
     """Configures kubectl context for target GKE cluster and verifies API server connectivity."""
+    # First check if kubectl already has working credentials (e.g. configured by google-github-actions/get-gke-credentials)
+    info_res = subprocess.run(["kubectl", "cluster-info"], capture_output=True, text=True)
+    if info_res.returncode == 0:
+        print(f"✓ Using established kubectl cluster connection for '{cluster_name}'.")
+        return
+
     subprocess.run(
         ["gcloud", "config", "set", "container/use_application_default_credentials", "false", "--quiet"],
         capture_output=True,
