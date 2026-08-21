@@ -405,12 +405,17 @@ Optional, and omitting it is the point: with the field absent the operator disco
 
 Configures the operator-generated egress `NetworkPolicy`.
 
-- `enabled` (bool, optional) — toggle operator-managed NetworkPolicy generation. Default `true` (unset means on). Setting `false` stops generation and deletes only the operator-owned policy.
-- `dnsClusterIPs` ([]string, optional, max 8 items) — pins the cluster DNS Service ClusterIPs in rule 1, suppressing dynamic discovery from `kube-system/kube-dns`.
-- `metadataDaemon.endpoint` (string, optional) — pins the node-local cloud metadata daemon IP in rule 3. An explicit `""` suppresses rule 3 entirely for datapaths without a post-NAT daemon.
-- `additionalEgress` ([]EgressRule, optional, max 32 items) — appends custom CIDR and port egress rules verbatim to the generated policy.
+- `enabled` (bool, optional) — toggle operator-managed NetworkPolicy generation. Default `true` (unset
+  means on). Setting `false` stops generation and deletes only the operator-owned policy.
+- `dnsClusterIPs` ([]string, optional, max 8 items) — pins the cluster DNS Service ClusterIPs in
+  rule 1, suppressing dynamic discovery from `kube-system/kube-dns`.
+- `metadataDaemon.endpoint` (string, optional) — pins the node-local cloud metadata daemon IP in
+  rule 3. An explicit `""` suppresses rule 3 entirely for datapaths without a post-NAT daemon.
+- `additionalEgress` ([]EgressRule, optional, max 32 items) — appends custom CIDR and port egress
+  rules verbatim to the generated policy.
 
-Annotations (`kubeagents.x-k8s.io/dns-cluster-ip` and `kubeagents.x-k8s.io/metadata-daemon-ip`) remain available as escape hatches and take precedence over `spec.networkPolicy`.
+Annotations (`kubeagents.x-k8s.io/dns-cluster-ip` and `kubeagents.x-k8s.io/metadata-daemon-ip`) remain
+available as escape hatches and take precedence over `spec.networkPolicy`.
 
 ## `spec.integration`
 
