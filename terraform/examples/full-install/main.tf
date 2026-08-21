@@ -469,9 +469,9 @@ resource "helm_release" "kube_agents" {
             homeChannelName = var.slack_home_channel_name
           }
         } : {},
-        (var.github_org != "" || var.github_repo != "") ? {
+        (local.github_org != "" || var.github_repo != "") ? {
           github = merge(
-            var.github_org != "" ? { org = var.github_org } : {},
+            local.github_org != "" ? { org = local.github_org } : {},
             var.github_repo != "" ? { gitRepo = var.github_repo } : {}
           )
         } : {}
