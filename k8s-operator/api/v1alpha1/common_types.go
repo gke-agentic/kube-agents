@@ -540,7 +540,7 @@ type MetadataDaemonSpec struct {
 	// Endpoint is the daemon IP. "" (explicitly set) suppresses rule 3 entirely;
 	// the empty alternative in the pattern is required because the API server
 	// validates an explicitly-set "", which omitempty does not suppress.
-	// +kubebuilder:validation:Pattern=`^$|^(([0-9]{1,3}\.){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4})$`
+	// +kubebuilder:validation:Pattern=`^($|(([0-9]{1,3}\.){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))$`
 	// +kubebuilder:validation:MaxLength=45
 	Endpoint string `json:"endpoint"`
 }
@@ -562,7 +562,7 @@ type EgressPeer struct {
 	// CIDR is an IPv4/IPv6 block or host IP, e.g. 10.0.0.0/24 or 10.0.0.1.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=49
-	// +kubebuilder:validation:Pattern=`^(([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?)|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}(/[0-9]{1,3})?)$`
+	// +kubebuilder:validation:Pattern=`^((([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?)|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}(/[0-9]{1,3})?))$`
 	CIDR string `json:"cidr"`
 	// +kubebuilder:validation:MaxItems=16
 	// +optional
