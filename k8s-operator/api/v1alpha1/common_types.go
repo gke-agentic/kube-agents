@@ -647,7 +647,7 @@ type NetworkPolicyStatus struct {
 	// +optional
 	DNSClusterIPs []string `json:"dnsClusterIPs,omitempty"`
 
-	// DNSClusterIPsSource: Spec, Annotation, OperatorEnv, Discovered, or Default.
+	// DNSClusterIPsSource reports which rung answered the DNS ClusterIP (Annotation, Spec, OperatorEnv, Discovered, or Default).
 	// +optional
 	DNSClusterIPsSource string `json:"dnsClusterIPsSource,omitempty"`
 
@@ -655,7 +655,7 @@ type NetworkPolicyStatus struct {
 	// +optional
 	MetadataDaemonIP string `json:"metadataDaemonIP,omitempty"`
 
-	// MetadataDaemonIPSource: Spec, Annotation, OperatorEnv, Default, or Suppressed.
+	// MetadataDaemonIPSource reports which rung answered the metadata daemon IP (Annotation, Spec, OperatorEnv, Default, or Suppressed).
 	// +optional
 	MetadataDaemonIPSource string `json:"metadataDaemonIPSource,omitempty"`
 }

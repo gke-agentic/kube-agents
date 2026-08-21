@@ -9438,8 +9438,8 @@ spec:
                       type: array
                     dnsClusterIPsSource:
                       description: DNSClusterIPsSource reports which rung answered
-                        the DNS ClusterIP: "Annotation", "Spec", "OperatorEnv",
-                        "Discovered", or "Default".
+                        the DNS ClusterIP (Annotation, Spec, OperatorEnv, Discovered,
+                        or Default).
                       type: string
                     generated:
                       description: Generated reports whether the operator generated
@@ -9451,9 +9451,9 @@ spec:
                         suppressed.
                       type: string
                     metadataDaemonIPSource:
-                      description: 'MetadataDaemonIPSource reports which rung answered
-                        the metadata daemon IP: "Annotation", "Spec", "OperatorEnv",
-                        "Default", or "Suppressed".'
+                      description: MetadataDaemonIPSource reports which rung answered
+                        the metadata daemon IP (Annotation, Spec, OperatorEnv,
+                        Default, or Suppressed).
                       type: string
                   required:
                     - generated
