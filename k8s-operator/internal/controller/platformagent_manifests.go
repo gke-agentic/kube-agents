@@ -1816,9 +1816,20 @@ func buildPodTemplateSpec(agent *agentv1alpha1.PlatformAgent, configHash, fluent
 		Name:  "CREDENTIAL_PROXY_URL",
 		Value: fmt.Sprintf("http://127.0.0.1:%d", credentialProxyPort),
 	})
+	// /command is where s6-overlay's symlinks tarball installs its own tools
+	// (s6-setuidgid, s6-svc, s6-svstat, ...). cont-init.d/01-hermes-setup
+	// (docker/stage2-hook.sh) is wrapped as `#!/command/with-contenv sh`,
+	// which sources the container environment -- including this Deployment's
+	// PATH -- into the shell that then calls `s6-setuidgid hermes ...` to
+	// drop privileges before the config-schema migration. Omitting /command
+	// here means that call resolves to nothing, stage2-hook.sh's own
+	// `|| echo "[stage2] Warning: ... continuing"` swallows the failure, and
+	// the migration silently never runs. docker/entrypoint-dispatch.sh
+	// restores the same directory for its own non-PID-1 fallback ("restoring
+	// the s6 helper PATH first") for the identical reason.
 	envVars = append(envVars, corev1.EnvVar{
 		Name:  "PATH",
-		Value: "/opt/credential-proxy/bin:/opt/hermes/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		Value: "/opt/credential-proxy/bin:/command:/opt/hermes/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 	})
 	envVars = append(envVars, corev1.EnvVar{
 		Name:  "PYTHONPATH",

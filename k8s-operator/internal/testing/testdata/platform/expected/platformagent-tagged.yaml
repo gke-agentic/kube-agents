@@ -580,7 +580,7 @@ spec:
             - name: CREDENTIAL_PROXY_URL
               value: http://127.0.0.1:8765
             - name: PATH
-              value: /opt/credential-proxy/bin:/opt/hermes/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+              value: /opt/credential-proxy/bin:/command:/opt/hermes/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
             - name: PYTHONPATH
               value: /opt/defaults/scripts
             - name: HINDSIGHT_API_URL
