@@ -934,11 +934,17 @@ def summarise_for_prompt(ledger: Dict[str, Any], now: Optional[_dt.datetime] = N
     run and the thing that makes the occurrence count meaningless.
 
     The location is here because identity depends on it: `fingerprint` hashes
-    signal, title and location together, and the skill tells a run to re-report
-    a known finding with the same title *and* location. A summary that shows
-    only the title asks for something it did not supply -- the run picks a
-    plausible location, the fingerprint differs, the count restarts at one, and
-    nothing is ever promoted. The gate looks like it is working the whole time.
+    the title and the location's file reference together, and the skill tells a
+    run to re-report a known finding with the same title *and* location. A
+    summary that shows only the title asks for something it did not supply --
+    the run picks a plausible location, the fingerprint differs, the count
+    restarts at one, and nothing is ever promoted. The gate looks like it is
+    working the whole time.
+
+    Showing the signal class is for the reader rather than for identity, which
+    no longer depends on it. That is deliberate slack: a run that re-classifies
+    a finding it is otherwise re-reporting faithfully should not lose its count
+    over the label, and one live afternoon produced exactly that.
     """
     now = now or utcnow()
     entries = sorted(
