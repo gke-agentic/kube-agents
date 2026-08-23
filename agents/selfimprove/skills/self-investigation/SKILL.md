@@ -9,7 +9,10 @@ The procedure for one run. Work the phases in order; each narrows what the next 
 
 Everything here is read-only. You have no kubectl, no gcloud, and no write path to the installation
 you are auditing — see SOUL.md §1 for the two grants that exist and why neither is yours. `EVIDENCE`
-below means `python3 /opt/selfimprove/scripts/selfimprove_evidence.py`.
+below means `/opt/hermes/.venv/bin/python3 /opt/selfimprove/scripts/selfimprove_evidence.py` — the
+venv interpreter, not a bare `python3`: the `kubernetes` package the `k8s` subcommands import is
+installed only into that venv, and a bare `python3` on PATH resolves to the system interpreter and
+fails every `k8s` call with `ModuleNotFoundError: No module named 'kubernetes'`.
 
 ## 0. Orient (2 minutes, do not skip)
 
