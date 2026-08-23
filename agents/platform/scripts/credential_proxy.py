@@ -19,6 +19,7 @@ import signal
 import shutil
 import socketserver
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -1927,8 +1928,17 @@ def parse_args() -> argparse.Namespace:
 
 
 if __name__ == "__main__":
+    # stream=sys.stdout: GKE's logging agent classifies a container's stderr
+    # stream as ERROR severity by default for unstructured (non-JSON) text.
+    # Without an explicit stream, Python's StreamHandler defaults to stderr,
+    # so every INFO/WARNING line this module logs -- routine access logs,
+    # Slack relay warnings -- was stamped ERROR in Cloud Logging. stderr is
+    # left for uncaught exceptions and process-fatal output, which Python's
+    # default exception hook still writes there independently of this
+    # handler.
     logging.basicConfig(
         level=os.getenv("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        stream=sys.stdout,
     )
     serve(parse_args())
