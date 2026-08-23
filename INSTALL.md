@@ -59,7 +59,7 @@ _(Alternatively via GitHub raw URL: `curl -fsSL https://raw.githubusercontent.co
 - **Chat Integrations**: Configures Google Chat and/or Slack when selected.
 - **AI Model Credentials**: Prompts for Gemini, OpenAI, or Anthropic credentials, or selects Vertex AI (no key — Workload Identity).
 - **Long-Term Memory**: Asks whether the agents should remember anything between conversations, and if so which store (`--memory=file|hindsight|off`, default `file`). The default is **on**, and it is the store this repository shipped before the searchable one existed, so an upgrade that says nothing about memory keeps what it already has: per-user Markdown inside the pod (`multiuser_memory`), no extra services, suited to **small or personal** deployments — but the whole store is loaded into the model's context every turn, so it stops scaling past a few pages. Pick `hindsight` for **enterprise** deployments — ranked recall that stays affordable as the store grows, at the cost of an API server and a Postgres database in the cluster; it selects the `kube_agents_memory` provider. Pick `off` to retain nothing and run no database. The measurements behind that split, and how to change it later, are in [`docs/designs/memory.md`](docs/designs/memory.md).
-- **Automated Engine Execution**: Writes `k8s-operator/scripts/vars.sh` (the install's machine-readable record), generates `terraform/examples/full-install/terraform.tfvars` from it, and launches `lifecycle.sh apply` — a single `terraform apply` that provisions every GCP resource and installs the Helm chart, with the Terraform state kept in a versioned GCS bucket (`<project>-kube-agents-tfstate`).
+- **Automated Engine Execution**: Writes `k8s-operator/scripts/vars.sh` (the install's machine-readable record), generates `terraform/examples/full-install/terraform.tfvars` from it, and launches `lifecycle.sh apply` — a single `terraform apply` that provisions the install's GCP resources and installs the Helm chart, with the Terraform state kept in a versioned GCS bucket (`<project>-kube-agents-tfstate`).
 
 The installer's engine is [Method 1](#method-1-the-install-engine--terraform--helm): the
 [`terraform/examples/full-install`](terraform/examples/full-install/README.md) composition, which is
@@ -143,12 +143,15 @@ This is the engine [Method 0](#method-0-zero-friction-one-liner-installation-fas
 directly when the install should live in version-controlled IaC (GitOps, CI-driven environments)
 instead of an interview. One `terraform apply` of the
 [`terraform/examples/full-install`](terraform/examples/full-install/README.md) composition
-provisions every GCP resource — the GKE cluster (`cluster_mode = "autopilot"` or `"standard"`, or
-`create_cluster = false` for a cluster somebody else made), the agent's identity and IAM, optionally
-the Google Chat backend, the GitHub minter's KMS resources, and a Backup for GKE plan — and installs
-the [`charts/kube-agents`](charts/kube-agents/README.md) Helm chart on top, which owns every
-Kubernetes resource (operator, PlatformAgent CR, LiteLLM gateway, and the optional Hindsight store
-and GitHub minter workloads).
+provisions the GCP resources an install needs — the GKE cluster (`cluster_mode = "autopilot"` or
+`"standard"`, or `create_cluster = false` for a cluster somebody else made), the agent's identity
+and IAM, optionally the Google Chat backend, the GitHub minter's KMS resources, and a Backup for GKE
+plan — and installs the [`charts/kube-agents`](charts/kube-agents/README.md) Helm chart on top,
+which owns every Kubernetes resource (operator, PlatformAgent CR, LiteLLM gateway, and the optional
+Hindsight store, GitHub minter, and self-improvement CronJob workloads). Two modules are tagged and
+consumable but not yet part of the composition — `drift-pubsub` and `kube-agents-selfimprove`, the
+latter being the Google half of the self-improvement loop — so an install that enables either
+applies that module itself.
 
 - **Canonical guide (self-contained):** [`terraform/examples/full-install/README.md`](terraform/examples/full-install/README.md)
 - Drive it through [`lifecycle.sh`](terraform/examples/full-install/lifecycle.sh) rather than bare

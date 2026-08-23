@@ -201,6 +201,31 @@ KMS signing key come from `terraform/modules/github-minter`, and the App
 private key must be imported into that key (see the module README) before the
 Deployment passes its readiness probe.
 
+### Self-improvement loop
+
+`selfImprovement.*` renders an hourly CronJob that investigates kube-agents
+itself — its source, its harness, and the installation it runs in — plus the
+ServiceAccount, Role and two RoleBindings it reads with, a ledger ConfigMap it
+counts findings in, its profile ConfigMap, and a NetworkPolicy. Eight objects,
+all behind `selfImprovement.enabled`, which defaults to false: off renders
+nothing at all rather than something idle.
+
+`mode` decides how far its output travels. `report-only` (the default) writes
+findings to the ledger ConfigMap and stops — no GitHub credential, no
+credential-proxy sidecar, and no `git` or `gh` on the runner's `PATH`. `fork`
+and `upstream` additionally render `self-improvement-minter.yaml`: a **second**
+minty Deployment, separate from `githubMinter`'s, with its own KSA, Secret, rule
+ConfigMap, Service and NetworkPolicy, so the loop's token cannot reach the
+GitOps repositories and the agent's cannot reach this one. Both need
+`github.appId` and
+`github.forkRepo`; the render fails with a named message when either is missing.
+
+The Google half — the investigator GSA, the minter GSA, and the import-only KMS
+signing key — comes from `terraform/modules/kube-agents-selfimprove`, which is
+not yet part of `terraform/examples/full-install`. The design of record, and the
+list of where the implementation diverged from it, is
+[`docs/designs/self-improvement.md`](../../docs/designs/self-improvement.md).
+
 ### Telemetry
 
 `telemetry.otlpEndpoint` (default `""`) is the OTLP/HTTP collector base URL.

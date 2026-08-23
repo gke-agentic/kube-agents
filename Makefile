@@ -26,6 +26,14 @@ BASE_IMAGE_ARGS := $(foreach v,$(BASE_IMAGE_VARS),$(if $($(v)),--build-arg $(v)=
 # adding a Dockerfile stage, so name them here rather than guessing.
 AGENTS := platform
 
+# The revision baked into /opt/build-info.json, so a running pod can say which
+# commit it is. `--dirty` because a local build usually is, and the
+# self-improvement runner fetches the source at this revision to read the code
+# it is investigating: a clean SHA on a modified tree would point it at a commit
+# that does not contain the change. Empty outside a git checkout, which the
+# runner treats as unknown and refuses to investigate rather than guessing.
+GIT_SHA ?= $(shell git describe --always --dirty --exclude '*' 2>/dev/null)
+
 
 default: docker-build
 
@@ -42,7 +50,7 @@ docker-build-agents: $(foreach agent,$(AGENTS),docker-build-$(agent)) ## Build t
 # otherwise resolve to the build host — an arm64 machine would silently produce
 # an image that crashloops on the cluster (#560).
 $(foreach agent,$(AGENTS),docker-build-$(agent)): docker-build-%:
-	docker build --platform linux/amd64 $(BASE_IMAGE_ARGS) --build-arg HERMES_AGENT_TAG=$(HERMES_AGENT_TAG) --target $* -t $(REPO)/$*-agent:latest -f deploy/docker/Dockerfile .
+	docker build --platform linux/amd64 $(BASE_IMAGE_ARGS) --build-arg HERMES_AGENT_TAG=$(HERMES_AGENT_TAG) --build-arg GIT_SHA=$(GIT_SHA) --build-arg IMAGE_TAG=latest --target $* -t $(REPO)/$*-agent:latest -f deploy/docker/Dockerfile .
 
 docker-build-credential-proxy: ## Build the credential-proxy sidecar image.
 	docker build --platform linux/amd64 $(BASE_IMAGE_ARGS) --build-arg HERMES_AGENT_TAG=$(HERMES_AGENT_TAG) --target credential-proxy -t $(REPO)/credential-proxy:latest -f deploy/docker/Dockerfile .

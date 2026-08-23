@@ -7,6 +7,12 @@ sidebar:
 
 Minty is the GitHub Token Minter — an in-cluster service that mints short-lived (1-hour) GitHub App installation tokens on demand for the Platform Agent's `submit-suggestion`, `fleet-audit`, and `github-issue-resolver` skills. The GitHub App's private key never leaves GCP KMS.
 
+Everything below describes that instance, the one `githubMinter.*` renders. An install can run a
+second, unrelated one: the [self-improvement loop](https://github.com/gke-labs/kube-agents/blob/main/docs/designs/self-improvement.md) renders its own minter,
+its own KSA, and its own KMS key under `selfImprovement.*` when its mode is `fork` or `upstream`,
+so the loop's token cannot reach the GitOps repositories and the agent's cannot reach kube-agents.
+The differences that matter are collected in [Two minters, one page](#two-minters-one-page).
+
 GCP half (minter GSA, Workload Identity binding, import-only KMS signing key): [`terraform/modules/github-minter`](https://github.com/gke-labs/kube-agents/tree/main/terraform/modules/github-minter).
 Kubernetes half (Deployment, Service, NetworkPolicy, KSA, rule ConfigMap, `github-app-credentials` Secret): the chart's `githubMinter.*` values; the dev copy is `make -C k8s-operator deploy-github`.
 Full README: [`k8s-operator/config/integrations/github/README.md`](https://github.com/gke-labs/kube-agents/blob/main/k8s-operator/config/integrations/github/README.md).
@@ -30,7 +36,7 @@ Create the repo under an organization, or transfer an existing one into it. A fr
 ### GitHub App
 
 1. Create a new GitHub App, owned either by the organization or by your personal account.
-2. Assign permissions: `Contents: Read & write`, `Pull requests: Read & write`, `Issues: Read & write`.
+2. Assign permissions: `Contents: Read & write`, `Pull requests: Read & write`, `Issues: Read & write`. This is the Platform Agent's App; the loop's App is a separate one and grants less (see below).
 3. Note the **App ID**.
 4. Generate and download a **private key** (`.pem` file).
 5. Install the App on the target GitOps repo.
@@ -79,11 +85,15 @@ kubectl run debug-box --rm -it \
   --image=curlimages/curl \
   --namespace=kubeagents-system \
   --serviceaccount=kubeagents-platform-agent \
-  --labels="app=platform-agent" \
+  --labels="kubeagents.x-k8s.io/has-credential-proxy=true" \
   -- sh
 ```
 
-The `app=platform-agent` label is required: Minty's `NetworkPolicy` only accepts ingress from pods carrying it.
+The label is required and is the one the policy actually selects on: `github-token-minter-policy`
+admits ingress from pods carrying `kubeagents.x-k8s.io/has-credential-proxy: "true"`, which the
+operator stamps on the agent pod. A debug pod without it is dropped by the NetworkPolicy before
+Minty sees the request, which looks like a timeout rather than a refusal. The loop's minter selects
+on a different label — see below.
 
 From inside the pod (the OIDC `audience` must match the Minty service URL, and the token is passed in the `X-OIDC-Token` header — not `Authorization`):
 
@@ -100,7 +110,30 @@ curl -i -X POST http://github-token-minter.kubeagents-system.svc.cluster.local:8
 
 A 200 response whose body is the short-lived GitHub installation token means the pipeline works end-to-end.
 
+## Two minters, one page
+
+`selfImprovement.mode: fork` or `upstream` renders a second Minty Deployment,
+`kube-agents-selfimprove-token-minter`, alongside the one above. It is the same image and the same
+protocol, and everything in "How it works" applies to it unchanged. Four things differ:
+
+- **Its App is a different App**, installed on kube-agents and on your fork of it rather than on a
+  GitOps repository, and configured through `selfImprovement.github.*` rather than `githubMinter.*`.
+- **Its rule grants no `issues` permission.** In `upstream` mode it grants `contents: write` on the
+  fork and `pull_requests: write` on the upstream — never both on one repository, so a token that
+  can push cannot merge and a token that can open a pull request cannot write code. `report-only`,
+  the default mode, renders no minter at all.
+- **Its NetworkPolicy admits a different label.** Ingress comes from pods carrying
+  `kubeagents.x-k8s.io/selfimprove: "true"`, which only the CronJob's pod has, so the Platform Agent
+  cannot reach it and the loop cannot reach the Platform Agent's.
+- **Its Google half is a different module** — `terraform/modules/kube-agents-selfimprove` with
+  `create_minter = true`, which provisions its own GSA and its own import-only KMS key.
+
+The scope name is the one thing that is _not_ different: both rules call it `platform-agent-scope`,
+because the client that requests the token hardcodes that string. It names the scope, not the
+requester.
+
 ## Where to go next
 
 - [Declarative workflow](/kube-agents/concepts/declarative-workflow/) — the `submit-suggestion` skill that uses Minty.
 - [`k8s-operator/config/integrations/github/README.md`](https://github.com/gke-labs/kube-agents/blob/main/k8s-operator/config/integrations/github/README.md) — full Minty install detail.
+- [Security and IAM](/kube-agents/reference/security-and-iam/) — the self-improvement loop's two identities, and how they are kept apart from the agent's.

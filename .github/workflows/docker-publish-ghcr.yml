@@ -57,8 +57,34 @@ jobs:
           tags: |
             ghcr.io/${{ env.IMAGE_REPOSITORY }}/platform-agent:latest
             ghcr.io/${{ env.IMAGE_REPOSITORY }}/platform-agent:${{ github.sha }}
+          # GIT_SHA/IMAGE_TAG are the revision stamp deploy/docker/Dockerfile
+          # writes into /opt/build-info.json. Without them a published image
+          # cannot say which commit it is, and the self-improvement runner
+          # refuses to investigate rather than guess at `main` -- so an unstamped
+          # publish makes the feature permanently inert on every install that
+          # pulls from here. Both ARGs sit at the end of the Dockerfile, so a
+          # changing SHA invalidates one ~100-byte layer and nothing above it.
+          # Keep these lines free of `#`: the action parses the block verbatim.
           build-args: |
             HERMES_AGENT_TAG=${{ env.HERMES_AGENT_TAG }}
+            GIT_SHA=${{ github.sha }}
+            IMAGE_TAG=${{ github.sha }}
+
+      - name: Verify the revision stamp
+        # The build args above are the only thing standing between a published
+        # image and one the self-improvement runner refuses to investigate, and
+        # a dropped `build-args` line fails silently: the Dockerfile defaults
+        # both to empty and the build succeeds. Read the label back off what was
+        # actually pushed.
+        run: |
+          REF="ghcr.io/${{ env.IMAGE_REPOSITORY }}/platform-agent:${{ github.sha }}"
+          REVISION=$(docker buildx imagetools inspect "$REF" \
+            --format '{{ index .Image.Config.Labels "org.opencontainers.image.revision" }}')
+          if [ "$REVISION" != "${{ github.sha }}" ]; then
+            echo "::error::$REF carries revision '$REVISION', expected '${{ github.sha }}'. The GIT_SHA build arg did not reach the image." >&2
+            exit 1
+          fi
+          echo "revision stamp OK: $REVISION"
 
       - name: Build and Push Replay Proxy (GHCR)
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0

@@ -115,6 +115,25 @@ if [ -z "$HERMES_AGENT_TAG" ]; then
 fi
 
 DEV_TAG="dev-$(date +%Y%m%d-%H%M%S)"
+
+# The revision stamp baked into /opt/build-info.json. The full 40-character SHA,
+# because that is what the Dockerfile documents builds as passing and what a
+# depth-1 `git fetch` of one commit requires; `git describe --always` would give
+# an abbreviation instead, which codeload accepts and `git fetch` does not.
+#
+# A dev build is usually dirty, and `-dirty` is the honest answer: the
+# self-improvement runner fetches the source at this revision to read the code
+# it is investigating, and a clean SHA on a tree with uncommitted changes would
+# send it to a commit that does not contain them. `git status --porcelain`
+# rather than `describe --dirty`, which reports only tracked modifications and
+# calls a tree with a new untracked file clean.
+#
+# Empty if this is not a git checkout, which the runner treats as "unknown" and
+# refuses to investigate rather than guessing.
+GIT_SHA="$(git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null || echo "")"
+if [ -n "$GIT_SHA" ] && [ -n "$(git -C "${REPO_ROOT}" status --porcelain 2>/dev/null)" ]; then
+  GIT_SHA="${GIT_SHA}-dirty"
+fi
 IMAGE_BASE="$REGION-docker.pkg.dev/$PROJECT_ID/$GCP_ARTIFACT_REGISTRY_REPO_NAME/$IMAGE_NAME"
 IMAGE_URI="$IMAGE_BASE:$DEV_TAG"
 IMAGE_URI_LATEST="$IMAGE_BASE:latest"
@@ -153,7 +172,7 @@ execute_image_build() {
     docker pull "$IMAGE_URI_LATEST" 2>/dev/null || true
     # --platform linux/amd64: these images deploy to amd64 GKE nodes, and the
     # multi-arch bases otherwise resolve to this machine's architecture (#560).
-    DOCKER_BUILDKIT=1 docker build --platform linux/amd64 --cache-from "$IMAGE_URI_LATEST" --build-arg BUILDKIT_INLINE_CACHE=1 --build-arg HERMES_AGENT_TAG="$HERMES_AGENT_TAG" --target "$AGENT_TARGET" -t "$IMAGE_URI" -t "$IMAGE_URI_LATEST" -f "${REPO_ROOT}/deploy/docker/Dockerfile" "${REPO_ROOT}" || return 1
+    DOCKER_BUILDKIT=1 docker build --platform linux/amd64 --cache-from "$IMAGE_URI_LATEST" --build-arg BUILDKIT_INLINE_CACHE=1 --build-arg HERMES_AGENT_TAG="$HERMES_AGENT_TAG" --build-arg GIT_SHA="$GIT_SHA" --build-arg IMAGE_TAG="$DEV_TAG" --target "$AGENT_TARGET" -t "$IMAGE_URI" -t "$IMAGE_URI_LATEST" -f "${REPO_ROOT}/deploy/docker/Dockerfile" "${REPO_ROOT}" || return 1
     print_info "Pushing images to Artifact Registry ($IMAGE_BASE)..."
     docker push "$IMAGE_URI" || return 1
     docker push "$IMAGE_URI_LATEST" || return 1
@@ -167,7 +186,7 @@ execute_image_build() {
       cd "${REPO_ROOT}"
       gcloud builds submit \
           --config="deploy/docker/cloudbuild.yaml" \
-          --substitutions="_IMAGE_URI=${IMAGE_URI},_IMAGE_URI_LATEST=${IMAGE_URI_LATEST},_TARGET=${AGENT_TARGET},_HERMES_AGENT_TAG=${HERMES_AGENT_TAG}" \
+          --substitutions="_IMAGE_URI=${IMAGE_URI},_IMAGE_URI_LATEST=${IMAGE_URI_LATEST},_TARGET=${AGENT_TARGET},_HERMES_AGENT_TAG=${HERMES_AGENT_TAG},_GIT_SHA=${GIT_SHA},_IMAGE_TAG=${DEV_TAG}" \
           --project="${PROJECT_ID}" \
           ${BUILD_POOL_ARGS[@]+"${BUILD_POOL_ARGS[@]}"} \
           .

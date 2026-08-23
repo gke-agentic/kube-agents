@@ -210,6 +210,11 @@ litellm:
   # disable podMonitoring off-GKE — the PodMonitoring CRD is GKE-managed, and
   # helm template/lint cannot catch its absence: a non-GKE install fails at
   # apply time.
+  # Renders the loop's own NetworkPolicies -- one for the runner, one for the
+  # minter -- and nothing else; the agent's are unaffected either way. Off is
+  # for a cluster running a different policy engine, or one where the CIDRs
+  # below cannot be made to match. There is no partial setting: with this false
+  # the runner's egress is whatever the cluster's default is.
   networkPolicy: true
   podMonitoring: true
 
@@ -261,6 +266,11 @@ hindsight:
     # volumeClaimTemplate size. Immutable once the StatefulSet exists.
     storage: 8Gi
   # Disable podMonitoring off-GKE, same caveat as litellm.podMonitoring.
+  # Renders the loop's own NetworkPolicies -- one for the runner, one for the
+  # minter -- and nothing else; the agent's are unaffected either way. Off is
+  # for a cluster running a different policy engine, or one where the CIDRs
+  # below cannot be made to match. There is no partial setting: with this false
+  # the runner's egress is whatever the cluster's default is.
   networkPolicy: true
   podMonitoring: true
   podDisruptionBudget:
@@ -314,6 +324,11 @@ githubMinter:
     limits:
       cpu: 500m
       memory: 256Mi
+  # Renders the loop's own NetworkPolicies -- one for the runner, one for the
+  # minter -- and nothing else; the agent's are unaffected either way. Off is
+  # for a cluster running a different policy engine, or one where the CIDRs
+  # below cannot be made to match. There is no partial setting: with this false
+  # the runner's egress is whatever the cluster's default is.
   networkPolicy: true
   podDisruptionBudget:
     # Renders maxUnavailable: 1 at any replicaCount. Deliberately not
@@ -478,3 +493,213 @@ platformAgent:
       allowedUsers: []
       homeChannel: ""
       homeChannelName: ""
+
+# The self-improvement loop: an hourly, read-only investigation of kube-agents
+# itself — its source, its harness, and this installation — which grades what it
+# finds and, above the gate below, opens a pull request -- against the fork
+# under `mode: fork`, against the upstream repository under `mode: upstream`,
+# and against nothing at all under the default. Distinct from
+# the fleet audits, which look outward at the managed clusters. Rendered only
+# when enabled: with this off the chart emits nothing for it, so an install that
+# leaves it alone carries none of it. See docs/designs/self-improvement.md.
+selfImprovement:
+  enabled: false
+  schedule: "0 * * * *"
+  # Hard stop for one investigation, enforced by the Job. A run that hits this
+  # is itself a finding — the loop is meant to fit in an hour.
+  activeDeadlineSeconds: 3600
+  # Bounds the agent turn inside that, so the runner still gets to write its
+  # ledger when the investigation overruns. Keep it under activeDeadlineSeconds
+  # by a few minutes: the runner's own timeout ends the turn and files what it
+  # found, while the Job's deadline kills the pod, which records only a `killed`
+  # row with whatever counts had accumulated.
+  investigateTimeoutSeconds: 3000
+  # Same, for each pull-request turn in fork/upstream mode.
+  fileTimeoutSeconds: 900
+
+  # report-only  ledger only, no GitHub credential, no write path out of the cluster
+  # fork         branches and pull requests to a fork
+  # upstream     cross-fork pull requests against github.upstreamRepo
+  #
+  # report-only is not a degraded mode. It renders no credential proxy and no
+  # minter, so the runner has no GitHub identity at all — which is what makes it
+  # the right first thing to turn on.
+  #
+  # upstream mode is incomplete today: it pushes the branch and then fails to
+  # open the pull request. The fork and the base are different App
+  # installations, `gh` holds one token per host, and the runner can hold only
+  # the push target's. See §12 of docs/designs/self-improvement.md. Use fork
+  # mode unless you are working on that gap.
+  mode: report-only
+
+  # Which of the seven signal classes to investigate. Narrowing this is the
+  # cheapest way to cut the loop's cost.
+  signals: [errors, inefficiency, latency, responses, delivery, forge, other]
+
+  # The agent Deployment the runner observes, and cross-checks its own image
+  # against. A mismatch aborts the run rather than attributing findings to a
+  # revision that is not deployed.
+  observedDeployment: ""
+
+  # Investigate even when the image carries no revision stamp (a build that
+  # passed no GIT_SHA). The run then reads source at `main`, which may not be
+  # the code the pod is running, and every finding says so. Off: an unstamped
+  # image refuses to investigate.
+  allowUnstampedImage: false
+
+  gate:
+    # A finding is promoted when it matches a rule, has been seen often enough
+    # inside the last 24 hours, is out of cooldown, and the day's budget is
+    # unspent. Everything else stays in the ledger and keeps counting.
+    #
+    # A severity with no rule is never promoted, which is how `medium` and
+    # `low` are excluded: by omission, not by a separate switch.
+    #
+    # An occurrence is one RUN that reported the finding, not one sighting the
+    # agent claims -- a self-reported count is a number the agent writes and the
+    # gate reads, which is exactly the shape an injected instruction would use
+    # to promote itself. So `schedule` above is the ceiling: hourly means at
+    # most 24, and a daily schedule means at most 1, at which point the `high`
+    # rule below can never fire. Lengthen the schedule and lower these to match;
+    # nothing checks the pair for you.
+    rules:
+      - severity: critical
+        minOccurrencesPerDay: 1
+      - severity: high
+        minOccurrencesPerDay: 5
+    # The backstop that matters most. Whatever the rules say, the loop opens at
+    # most this many pull requests a day.
+    #
+    # This and `minOccurrencesPerDay` above are read the same way: `.inf` is
+    # taken as the intent it expresses -- no ceiling here, never promote there --
+    # a negative is taken as zero, and anything that is not a number at all
+    # falls back to the default. Each of those says so in the run log.
+    maxPullRequestsPerDay: 2
+    # Do not re-open the same fingerprint inside this window. It also sets how
+    # long the ledger keeps a promotion record, since the cooldown is the only
+    # thing that reads one. Anything unusable -- negative, `.inf`, not a number
+    # -- falls back to 24 with a line in the run log, and a value past ten years
+    # is clamped there, that being where the date arithmetic stops working
+    # rather than a policy limit. Use a large number for "never re-file this".
+    cooldownHours: 24
+
+  github:
+    # Where the run reads its own source from, in every mode including
+    # report-only -- the tarball comes from here, so this is not a
+    # GitHub-write-path setting and the default is right for almost everyone.
+    # Under `upstream` it is additionally the repository pull requests are
+    # opened against.
+    upstreamRepo: gke-labs/kube-agents
+    # Required when mode is fork or upstream, where it is the repository
+    # branches are pushed to; ignored under report-only. Must not equal
+    # upstreamRepo -- the chart refuses that, because it would mint
+    # `contents: write` on the upstream.
+    forkRepo: ""
+    # GitHub App ID for the loop's OWN App — deliberately not the one
+    # githubMinter uses. Two Apps means the loop's token cannot reach the
+    # GitOps repositories and the agent's cannot reach this one, and either can
+    # be revoked without the other noticing.
+    appId: ""
+    ksaName: kubeagents-selfimprove
+    # The investigator's Google service account. Two render-time checks, because
+    # two different limits apply and they bite in different modes.
+    #
+    # In every mode including report-only, this has to be a usable GCP service
+    # account id — 6 to 30 characters matching `[a-z][a-z0-9-]{4,28}[a-z0-9]`.
+    # It reaches a Workload Identity annotation on the runner's KSA, and GCP
+    # does not reject an annotation naming an account that cannot exist: the
+    # pod starts and every telemetry read inside it 403s, an hour into a run,
+    # with no error anywhere naming the id.
+    #
+    # Under fork and upstream a tighter cap of 23 applies, because the minter's
+    # account is this plus `-minter` and `kubeagents-selfimprove-gsa-minter`
+    # would be 33. That one used to be the only check, which left the default
+    # mode unguarded.
+    gsaName: kubeagents-selfimprove
+    kms:
+      keyring: selfimprove-token-minter-keyring
+      key: selfimprove-token-minter-key
+      keyVersion: "1"
+      # Empty derives the region from platformAgent.harness.location.
+      location: ""
+    # Keep in step with images.json — the same minter build githubMinter runs.
+    image:
+      repository: us-docker.pkg.dev/abcxyz-artifacts/docker-images/github-token-minter-server
+      tag: v2.7.1-amd64
+      pullPolicy: IfNotPresent
+
+  # No volumeSnapshot block. The design's §3.4 argues for snapshotting the
+  # agent's volume to read its SQLite stores, and §12 records that the path is
+  # not built -- so there is no flag here, rather than one that would accept
+  # `enabled: true` and do nothing with it.
+
+  # Empty uses the in-cluster LiteLLM Service the agent uses. Set to give the
+  # loop its own model budget, or to point it at a cheaper model than the one
+  # answering users.
+  model:
+    endpoint: ""
+    name: model-default
+
+  # Where the run's counts and filed pull requests live between runs. A
+  # ConfigMap in the release namespace, granted to the runner by name so the
+  # grant cannot reach a second object. Deliberately not one the agent's
+  # Deployment references — the operator hashes those into the pod template,
+  # so writing to one would roll the agent every hour.
+  ledgerConfigMap: kube-agents-selfimprove-ledger
+
+  # emptyDir sizes for the run's private Hermes home (profile, logs, sessions)
+  # and the source checkout it fetches.
+  workspaceSizeLimit: 4Gi
+
+  # RuntimeClass for the CronJob pod. Empty inherits
+  # platformAgent.deployment.availability.runtimeClassName, on the reasoning that an
+  # install that decided the agent needed a sandboxed kernel did not decide
+  # that the pod running the same image over source fetched from GitHub did
+  # not. Setting it here overrides that -- to a different class, not to none:
+  # empty is what asks for the agent's, so there is no way to say "sandbox the
+  # agent and not the loop" from this key alone.
+  runtimeClassName: ""
+
+  # Renders the loop's own NetworkPolicies -- one for the runner, one for the
+  # minter -- and nothing else; the agent's are unaffected either way. Off is
+  # for a cluster running a different policy engine, or one where the CIDRs
+  # below cannot be made to match. There is no partial setting: with this false
+  # the runner's egress is whatever the cluster's default is.
+  networkPolicy: true
+
+  # The cluster DNS VIP, for the port 53 egress rule on both the runner and the
+  # token minter. A NetworkPolicy matches the address the pod dials, which is
+  # the Service VIP rather than a kube-dns pod, so the selectors alone are not
+  # enough on every cluster. Empty allows both service-CIDR conventions GKE
+  # ships -- 34.118.224.10 and 10.96.0.10, the same pair as `apiServerCIDRs` one
+  # octet along. Set it if `kubectl get svc kube-dns -n kube-system` shows
+  # neither, or nothing the loop reads will resolve.
+  dnsCIDRs: []
+
+  # The API server, as its own egress rule, so the wide 443 rule can exclude the
+  # private ranges and still leave the runner able to read its own Pod and write
+  # the ledger.
+  #
+  # Whatever is set here is added to, not substituted for, what the chart
+  # discovers: the ClusterIP defaults GKE ships (34.118.224.1 on the current
+  # range, 10.96.0.1 on the classic one) plus every address in the
+  # default/kubernetes Endpoints, looked up at install time. The Endpoints half
+  # is the one that matters on GKE Dataplane V2, which evaluates egress against
+  # the post-translation destination -- the control-plane endpoint, typically a
+  # private address the wide 443 rule deliberately excludes. Naming only the
+  # ClusterIP there produces a drop rather than a reject, so the runner hangs on
+  # its first read instead of failing.
+  #
+  # `lookup` returns nothing under `helm template` and during a dry run. Set this
+  # explicitly for any install rendered that way whose API server is not at one
+  # of the two defaults -- `kubectl get endpoints kubernetes -n default` prints
+  # the address -- or the ledger write fails and each run's findings are lost.
+  apiServerCIDRs: []
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi

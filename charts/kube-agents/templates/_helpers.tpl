@@ -143,6 +143,33 @@ them here would not suit every caller.
 {{- end }}
 
 {{/*
+The credential-proxy sidecar's repository, derived from the agent's the way
+resolveCredentialProxyImage does it in
+k8s-operator/internal/controller/platformagent_manifests.go: a trailing
+`platform-agent` becomes `credential-proxy`, and any other name gains a
+`-credential-proxy` suffix.
+
+Two rules rather than one because the second is what a fork hits. Replacing the
+suffix `/platform-agent` looks equivalent and is not: an install whose image is
+`ghcr.io/acme/ka-platform-agent` has no such suffix, so the replacement returns
+the string unchanged and the sidecar is handed the *agent* image. That container
+starts, runs the agent entrypoint, never serves the proxy's port, and the pod
+sits un-ready with no event naming the image -- so the failure reads as a
+credential problem rather than a rendering one.
+
+Takes the agent repository. Returns a repository, not a reference: the tag is
+the caller's and has to be the agent's own, so the two can never diverge.
+Compose with kube-agents.imageRepository above, in that order, to place the
+result on a mirror registry.
+*/}}
+{{- define "kube-agents.credentialProxyRepository" -}}
+{{- $name := . | splitList "/" | last -}}
+{{- $proxy := ternary "credential-proxy" (printf "%s-credential-proxy" $name) (eq $name "platform-agent") -}}
+{{- $prefix := . | trimSuffix $name | trimSuffix "/" -}}
+{{- if $prefix -}}{{- printf "%s/%s" $prefix $proxy -}}{{- else -}}{{- $proxy -}}{{- end -}}
+{{- end }}
+
+{{/*
 A complete third-party image reference, reproducing third_party_image() from
 k8s-operator/scripts/common.sh: mirrored installs pull <prefix>/<name>:<tag>
 with any @sha256 digest dropped — `make mirror-images` pushes by tag, and the
