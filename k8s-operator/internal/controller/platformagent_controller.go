@@ -40,6 +40,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -1087,7 +1088,15 @@ func (r *PlatformAgentReconciler) updateStatusReady(ctx context.Context, agent *
 		})
 	}
 
-	return newPhase, r.Status().Update(ctx, agent)
+	updateErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &agentv1alpha1.PlatformAgent{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: agent.Namespace, Name: agent.Name}, latest); err != nil {
+			return err
+		}
+		latest.Status = agent.Status
+		return r.Status().Update(ctx, latest)
+	})
+	return newPhase, updateErr
 }
 
 func (r *PlatformAgentReconciler) getDeploymentStatusDetails(ctx context.Context, agent *agentv1alpha1.PlatformAgent) (phase string, reason string, message string) {
@@ -1159,7 +1168,14 @@ func (r *PlatformAgentReconciler) updateStatusDegraded(ctx context.Context, agen
 		LastTransitionTime: now,
 	}
 	meta.SetStatusCondition(&agent.Status.Conditions, condition)
-	return r.Status().Update(ctx, agent)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &agentv1alpha1.PlatformAgent{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: agent.Namespace, Name: agent.Name}, latest); err != nil {
+			return err
+		}
+		latest.Status = agent.Status
+		return r.Status().Update(ctx, latest)
+	})
 }
 
 // SetupWithManager sets up the controller with the Manager.
