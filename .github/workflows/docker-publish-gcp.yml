@@ -43,13 +43,29 @@ jobs:
 
       - name: Build and Push Platform Agent (GCP Cloud Build)
         id: gcp-platform
+        # _GIT_SHA/_IMAGE_TAG are the revision stamp cloudbuild.yaml turns into
+        # /opt/build-info.json. Their substitution defaults are empty strings, so
+        # omitting them here builds silently and produces an image the
+        # self-improvement runner refuses to investigate.
         run: |
           gcloud builds submit \
             --config=deploy/docker/cloudbuild.yaml \
-            --substitutions="_IMAGE_URI=$GCP_REGISTRY/platform-agent:$GITHUB_SHA,_IMAGE_URI_LATEST=$GCP_REGISTRY/platform-agent:latest,_TARGET=platform,_HERMES_AGENT_TAG=$HERMES_AGENT_TAG" \
+            --substitutions="_IMAGE_URI=$GCP_REGISTRY/platform-agent:$GITHUB_SHA,_IMAGE_URI_LATEST=$GCP_REGISTRY/platform-agent:latest,_TARGET=platform,_HERMES_AGENT_TAG=$HERMES_AGENT_TAG,_GIT_SHA=$GITHUB_SHA,_IMAGE_TAG=$GITHUB_SHA" \
             .
           DIGEST=$(gcloud artifacts docker images describe "$GCP_REGISTRY/platform-agent:$GITHUB_SHA" --format="value(image_summary.digest)")
           echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          # A dropped substitution fails silently -- the Dockerfile defaults
+          # GIT_SHA to empty and the build succeeds -- so read the label back
+          # off what was pushed rather than trusting the line above.
+          docker pull --quiet "$GCP_REGISTRY/platform-agent@$DIGEST" >/dev/null
+          REVISION=$(docker inspect \
+            --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+            "$GCP_REGISTRY/platform-agent@$DIGEST")
+          if [ "$REVISION" != "$GITHUB_SHA" ]; then
+            echo "::error::platform-agent@$DIGEST carries revision '$REVISION', expected '$GITHUB_SHA'. The _GIT_SHA substitution did not reach the image." >&2
+            exit 1
+          fi
+          echo "revision stamp OK: $REVISION"
 
       - name: Build and Push Replay Proxy (GCP Cloud Build)
         id: gcp-replay-proxy

@@ -78,6 +78,8 @@ steps:
           -f deploy/docker/Dockerfile \
           --target platform \
           --build-arg HERMES_AGENT_TAG="$_HERMES_AGENT_TAG" \
+          --build-arg GIT_SHA="$_GIT_SHA" \
+          --build-arg IMAGE_TAG="$_IMAGE_TAG" \
           .
 
   # No --cache-from and no waitFor: this runs straight after platform on the
@@ -147,3 +149,8 @@ substitutions:
   _CACHE_IMAGE: ""
   _HERMES_AGENT_TAG: ""
   _REQUIRE_CACHE: "false"
+  # The revision stamp for /opt/build-info.json. Empty is legal and means
+  # "unknown"; hack/ci-deploy.sh passes the PR head SHA under Prow and nothing
+  # when run locally, where there is no pushed commit to stamp against.
+  _GIT_SHA: ""
+  _IMAGE_TAG: ""
