@@ -554,7 +554,7 @@ is usually not a kube-agents maintainer, the destination is a mode rather than a
 
 - **`report-only` (the default when the feature is enabled).** No GitHub credential, no minter
   rendered, no credential-proxy sidecar, and no `git` or `gh` on the runner's `PATH`. Findings
-  accumulate in the ledger and are read with `kubectl get configmap`. Everything in §§2–5 runs, and
+  accumulate in the ledger and are read with `make selfimprove-ledger`. Everything in §§2–5 runs, and
   nothing the loop _produces_ leaves the cluster. That is narrower than "no egress", and the
   difference is worth stating: the run still fetches its own source over HTTPS, still calls the
   Google telemetry APIs, and still has web search enabled, so the NetworkPolicy allows outbound 443
@@ -844,6 +844,20 @@ There is no `volumeSnapshot` key. §3.4 argues for snapshotting the agent's volu
 that the path is not built, so the chart ships no flag rather than one that would accept
 `enabled: true` and do nothing.
 
+### 9.1 Reading the ledger
+
+`make selfimprove-ledger` renders the ConfigMap as a report: the last run and the run count first,
+then the run history, then the findings worst-first, then every pull request the loop has opened.
+`scripts/selfimprove_ledger_view.py --help` has the filters; `--file` reads a ledger already on disk
+and needs no cluster, and `--json` prints the document for piping into `jq`.
+
+Two of its columns are derived rather than stored, and both come from `selfimprove_ledger`'s own
+functions rather than a second implementation. `SEEN` is `occurrences_in_window` — runs, not claimed
+counts, per §7.2 — while `REPORTED` is the untrusted number beside it. The gate line under each
+finding is `evaluate_gate` replayed over the whole ledger against the CronJob's current gate, which
+answers "what would the next run do with this" and is deliberately not a record of what any past run
+decided: a run only ever gates the findings it saw that hour.
+
 ## 10. Failure modes it takes a position on
 
 **The loop investigates itself.** Its own runs produce logs and errors in the same namespace, and a
@@ -1009,7 +1023,7 @@ the ledger's `outcome` answers how the investigation went; conflating the two pu
 in the Job history's failed bucket, and a CronJob whose every run shows `Error` is one nobody reads.
 `selfimprove-fork-3` promoted a finding, minted a token and wrote its ledger, and reported itself
 failed. The counter-argument — that an operator wants Job status to surface a loop that never
-completes cleanly — is answered by `outcome` being in every ledger row, one `kubectl get configmap`
+completes cleanly — is answered by `outcome` being in every ledger row, one `make selfimprove-ledger`
 away, rather than by a false alarm every hour. This is also what keeps `backoffLimit: 0` honest:
 non-zero now means nothing durable came out of the run, and those are exactly the failures a retry
 inside the same `activeDeadlineSeconds` could not have helped. That deadline bounds the Job across

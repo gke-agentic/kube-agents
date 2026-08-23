@@ -69,6 +69,11 @@ docker-push-credential-proxy: docker-build-credential-proxy ## Build and push th
 dev-rebuild-agent: ## Fast local iteration: rebuild and redeploy an agent image (e.g. make dev-rebuild-agent ARGS="platform").
 	@$(MAKE) -C k8s-operator dev-rebuild-agent ARGS="$(ARGS)"
 
+# Read-only. Run `./scripts/selfimprove_ledger_view.py --help` for the filters,
+# and pass them through here as ARGS (e.g. ARGS="--detail 3").
+selfimprove-ledger: ## Show the self-improvement ledger from the current cluster (e.g. make selfimprove-ledger ARGS="--severity high").
+	@./scripts/selfimprove_ledger_view.py $(ARGS)
+
 # Copy every image in images.json into a registry of your own, for installs
 # that may only pull from an approved one. Run `./scripts/mirror_images.sh
 # --help` for the full set of knobs.
