@@ -195,6 +195,12 @@ _LOCATION_NORMALISERS: Tuple[Tuple[re.Pattern, str], ...] = (
     (re.compile(r":\d+(?::\d+)?\b"), ":<LINE>"),
 )
 
+#: The first `path.ext:<LINE>` token in a normalised location, which is the part
+#: of the field the agent is not free to vary. Everything after it is prose it
+#: writes differently each run, and hashing that prose is what split one live
+#: finding across three rows -- see `primary_location`.
+_PRIMARY_LOCATION = re.compile(r"[a-z0-9_.\-/]+\.[a-z0-9]+:<LINE>")
+
 
 def normalise(text: str) -> str:
     """Strip the parts of a message that differ between two sightings of one bug.
@@ -220,18 +226,72 @@ def normalise_location(text: str) -> str:
     return out.strip()
 
 
+def primary_location(text: str) -> str:
+    """The one file reference in a location, with the agent's prose discarded.
+
+    `location` is free text and the agent writes it at whatever length it feels
+    like. Two sightings of one finding arrived as
+
+        k8s-operator/.../platformagent_manifests.go:1820 (the operator's
+        hardcoded PATH env var: "...") and /opt/hermes/docker/stage2-hook.sh:480
+        (`s6-setuidgid hermes ...`)
+
+    and
+
+        k8s-operator/.../platformagent_manifests.go:1820
+
+    -- the same place, described twice. Hashing the whole string made them two
+    findings. Reducing it to the leading `path:<LINE>` token keeps the part that
+    identifies the site and drops the part that is a writing-style coin flip.
+
+    Falls back to the full normalised location when there is no file reference
+    to find, which is the old behaviour: a location like "the gchat webhook" has
+    nothing better to offer, and an empty fingerprint component would collide
+    every such finding into one row.
+    """
+    out = normalise_location(text)
+    match = _PRIMARY_LOCATION.search(out)
+    return match.group(0) if match else out
+
+
 def fingerprint(signal: str, title: str, location: str = "") -> str:
     """Identity for a finding across runs.
 
-    Signal class, normalised title and code location, because those are the
-    three things that stay the same when the same bug fires twice. Severity is
-    deliberately NOT in it: a finding that gets re-graded is the same finding,
-    and putting the grade in the identity would reset its occurrence count every
-    time the agent changed its mind.
+    Normalised title plus the one file reference in the location, because those
+    are what stay the same when the same bug fires twice.
+
+    Severity is deliberately NOT in it: a finding that gets re-graded is the
+    same finding, and putting the grade in the identity would reset its
+    occurrence count every time the agent changed its mind.
+
+    `signal` is excluded for that same reason, and the argument survives only
+    because a live run proved it. The classification is as much a judgement call
+    as the grade -- the loop filed one finding as `errors` at 3:54 pm and the
+    identical title as `inefficiency` at 5:07 pm -- so leaving it in the hash
+    reset the count on a re-classification exactly the way severity would. It
+    stays in the signature because every caller has one to hand and dropping the
+    parameter would be a churnier change than ignoring it.
+
+    Between them those two exclusions are what stop the failure `record_finding`
+    warns about: a finding whose identity moves every run sits at a count of one
+    forever and never promotes, and nothing reports that it is happening. The
+    live ledger held three rows for one `/command` PATH finding, one per
+    sighting, none of them ever able to reach `minOccurrencesPerDay`.
+
+    Both exclusions narrow the identity, so the risk they add is two genuinely
+    different findings colliding on one row. That is the safe direction to err
+    in: a collision inflates a count and files one pull request carrying both
+    sets of evidence, while the split it replaces silently files nothing at all.
+    Titles here run to `MAX_TITLE_CHARS` and are specific enough that a
+    collision needs two findings to agree on their whole sentence.
+
+    Changing the material re-fingerprints every finding, so the rows already in
+    a ledger orphan: their promotions stay, and so do the cooldowns those
+    promotions hold, while new sightings accumulate on new rows. A one-time
+    reset of the occurrence counts, which the gate recovers from within
+    `minOccurrencesPerDay`.
     """
-    material = "|".join(
-        [(signal or "other").strip().lower(), normalise(title), normalise_location(location)]
-    )
+    material = "|".join([normalise(title), primary_location(location)])
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
 
 
@@ -922,6 +982,55 @@ LEDGER_KEY = "ledger.json"
 # stops short of it while a `prune`d rewrite still fits.
 LEDGER_MAX_BYTES = 768 * 1024
 
+# How many times `save` will re-read, merge and retry against a conflicting
+# writer before giving up. Four because each attempt costs one GET and one
+# PATCH and the contended case is meant to be rare -- a run losing four races in
+# a row is a standing second writer, which the 409 message says to go and find,
+# not something a fifth attempt fixes.
+LEDGER_WRITE_ATTEMPTS = 4
+
+
+#: The `metadata.resourceVersion` each (namespace, name) was last seen at, set
+#: by `load` and consumed by `save` as an optimistic-concurrency precondition.
+#:
+#: A module global rather than a return value because `load` and `save` are
+#: called from opposite ends of the run and threading a token between them would
+#: put a Kubernetes implementation detail through every caller. The runner is a
+#: single-shot process handling one ledger, so there is one entry and nothing
+#: races it.
+_OBSERVED_RESOURCE_VERSION: Dict[Tuple[str, str], str] = {}
+
+
+def _api_client():
+    """A CoreV1Api bound to whichever kubeconfig this process can find."""
+    from kubernetes import client, config as kube_config  # noqa: PLC0415  (cluster-only import)
+
+    try:
+        kube_config.load_incluster_config()
+    except Exception:  # pragma: no cover - only reachable outside a pod
+        kube_config.load_kube_config()
+    return client, client.CoreV1Api()
+
+
+def _read(api, client, namespace: str, name: str) -> Tuple[Dict[str, Any], Optional[str]]:
+    """The ledger in the ConfigMap and the resourceVersion it was read at."""
+    try:
+        cm = api.read_namespaced_config_map(
+            name=name, namespace=namespace, _request_timeout=API_TIMEOUT
+        )
+    except client.exceptions.ApiException as exc:
+        if exc.status in (403, 404):
+            return empty_ledger(), None
+        raise
+    version = getattr(cm.metadata, "resource_version", None)
+    raw = (cm.data or {}).get(LEDGER_KEY)
+    if not raw:
+        return empty_ledger(), version
+    try:
+        return coerce(json.loads(raw)), version
+    except (TypeError, ValueError):
+        return empty_ledger(), version
+
 
 def load(namespace: str, name: str) -> Dict[str, Any]:
     """Read the ledger ConfigMap, or start a fresh one if it does not exist.
@@ -931,29 +1040,107 @@ def load(namespace: str, name: str) -> Dict[str, Any]:
     ledger rather than an exception, because a run that cannot read history is
     still a run that can find things. The difference is visible in the run
     record, which says which happened.
-    """
-    from kubernetes import client, config as kube_config  # noqa: PLC0415  (cluster-only import)
 
-    try:
-        kube_config.load_incluster_config()
-    except Exception:  # pragma: no cover - only reachable outside a pod
-        kube_config.load_kube_config()
-    api = client.CoreV1Api()
-    try:
-        cm = api.read_namespaced_config_map(
-            name=name, namespace=namespace, _request_timeout=API_TIMEOUT
+    Also records the resourceVersion for `save` to write against. An unreadable
+    ConfigMap records nothing, so the write that follows is unconditional --
+    there is no version to be stale relative to, and refusing to write because
+    the read failed would turn a permissions problem into a lost run.
+    """
+    client, api = _api_client()
+    ledger, version = _read(api, client, namespace, name)
+    if version:
+        _OBSERVED_RESOURCE_VERSION[(namespace, name)] = version
+    else:
+        _OBSERVED_RESOURCE_VERSION.pop((namespace, name), None)
+    return ledger
+
+
+def _newest_first(entries: Any) -> List[Dict[str, Any]]:
+    """Timestamped rows, deduplicated and ordered oldest first."""
+    rows = [e for e in (entries or []) if isinstance(e, dict)]
+    return sorted(rows, key=lambda e: str(e.get("at") or ""))
+
+
+def _union(base: Any, incoming: Any, key) -> List[Dict[str, Any]]:
+    """Append-only rows from both sides, one row per `key`, oldest first.
+
+    `incoming` wins a tie so that a row this run rewrote -- a promotion whose
+    URL arrived late, say -- lands rather than being masked by the copy the
+    other writer already had.
+    """
+    merged: Dict[Any, Dict[str, Any]] = {}
+    for row in _newest_first(base):
+        merged[key(row)] = row
+    for row in _newest_first(incoming):
+        merged[key(row)] = row
+    return _newest_first(merged.values())
+
+
+def merge(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+    """Fold this run's ledger into one another writer moved underneath it.
+
+    Only reached on a 409, so `base` is what is in the ConfigMap now and
+    `incoming` is what this run built from an older read of it. Almost
+    everything the ledger holds is append-only and timestamped, which is what
+    makes a merge well defined rather than a guess:
+
+    - `runs`, `sightings` and `promotions` are unions keyed on their timestamps.
+      Neither writer's rows are dropped, which is the whole point -- a lost
+      promotion record releases a cooldown and files a duplicate pull request at
+      a maintainer.
+    - `refused` keeps the earlier of the two. Its timestamp is how long a
+      finding has been waiting on a human, and `record_refusal` already refuses
+      to move it forward.
+    - `first_seen` keeps the earlier, for the same reason.
+    - Everything else on a finding -- severity, title, summary, evidence -- is
+      the agent's current description of it, so the newer writer wins.
+
+    Rows only `base` has are carried through untouched. That does resurrect a
+    finding this run's `prune` had just dropped, and the alternative is worse:
+    telling the two apart needs a record of what was pruned, while a resurrected
+    row is pruned again by the next run on the same criterion, an hour later.
+    """
+    out = {
+        "version": incoming.get("version") or base.get("version") or LEDGER_VERSION,
+        "runs": _union(
+            base.get("runs"),
+            incoming.get("runs"),
+            key=lambda r: (str(r.get("at") or ""), str(r.get("revision") or "")),
+        ),
+        "findings": {},
+    }
+
+    base_findings = base.get("findings") or {}
+    incoming_findings = incoming.get("findings") or {}
+    for fp in set(base_findings) | set(incoming_findings):
+        old = base_findings.get(fp)
+        new = incoming_findings.get(fp)
+        if not isinstance(old, dict):
+            out["findings"][fp] = new
+            continue
+        if not isinstance(new, dict):
+            out["findings"][fp] = old
+            continue
+
+        entry = dict(old)
+        entry.update(new)
+        entry["sightings"] = _union(
+            old.get("sightings"), new.get("sightings"), key=lambda s: str(s.get("at") or "")
         )
-    except client.exceptions.ApiException as exc:
-        if exc.status in (403, 404):
-            return empty_ledger()
-        raise
-    raw = (cm.data or {}).get(LEDGER_KEY)
-    if not raw:
-        return empty_ledger()
-    try:
-        return coerce(json.loads(raw))
-    except (TypeError, ValueError):
-        return empty_ledger()
+        entry["promotions"] = _union(
+            old.get("promotions"),
+            new.get("promotions"),
+            key=lambda p: (str(p.get("at") or ""), str(p.get("url") or "")),
+        )
+        seens = [s for s in (old.get("first_seen"), new.get("first_seen")) if s]
+        if seens:
+            entry["first_seen"] = min(seens)
+        refusals = [r for r in (old.get("refused"), new.get("refused")) if isinstance(r, dict)]
+        if refusals:
+            entry["refused"] = min(refusals, key=lambda r: str(r.get("at") or ""))
+        out["findings"][fp] = entry
+
+    return out
 
 
 class LedgerWriteError(RuntimeError):
@@ -1008,66 +1195,104 @@ def save(namespace: str, name: str, ledger: Dict[str, Any]) -> None:
     the one grant that would let a compromised investigation write a ConfigMap
     of its choosing into the namespace the agent runs in.
 
-    No `resourceVersion` precondition, deliberately. `load` runs at the top of
-    the run and this at the bottom, so the read-modify-write window is the whole
-    of `activeDeadlineSeconds` -- four hours by default. A precondition over a
-    window that wide turns anything that touches the object meanwhile, a `helm
-    upgrade` reapplying the chart's labels included, into a 409 that loses the
-    entire run's findings. `concurrencyPolicy: Forbid` already serialises the
-    only automated writer, and losing a whole run to protect a counter is the
-    worse trade.
+    Written against the `resourceVersion` `load` observed, so a writer that
+    moved the object in between gets a 409 here instead of being overwritten.
+    This used to be unconditional, and the reasoning for that was sound as far
+    as it went: `load` runs at the top of the run and this at the bottom, so the
+    precondition spans the whole of `activeDeadlineSeconds` -- four hours by
+    default -- and a 409 over a window that wide would be common. What made it
+    wrong was treating a 409 as fatal. It is not, now that `merge` exists: the
+    conflict is caught below, this run's rows are folded into whatever is there
+    now, and the write is retried. Nobody's findings are lost either way, which
+    is what the unconditional write could not say.
 
-    What `Forbid` does not cover is a Job created by hand, which the CronJob
-    does not own. A live test ran one alongside two scheduled runs and its
-    closing write took the ledger back to its own view of it: the other two runs
-    lost their rows, and with them the promotion records for two pull requests
-    already open. A lost occurrence count only delays a promotion; a lost
-    promotion record removes the only thing holding the cooldown, so the finding
-    is filed again and the maintainer gets a duplicate. Suspend the CronJob
-    before running a Job by hand.
+    It could not say it because `concurrencyPolicy: Forbid` serialises the
+    CronJob's own runs and nothing else. A Job created by hand is not owned by
+    the CronJob, so `Forbid` does not see it -- and a live test ran one
+    alongside two scheduled runs. Its closing write took the ledger back to its
+    own view of it: the other two runs lost their rows, and with them the
+    promotion records for two pull requests already open. A lost sighting only
+    delays a promotion; a lost promotion record removes the only thing holding
+    the cooldown, so the finding is filed again and the maintainer gets the
+    duplicate the gate exists to prevent.
+
+    `patch` rather than `replace` also matters to the precondition working at
+    all: a strategic-merge patch carrying `metadata.resourceVersion` is rejected
+    with a 409 when it does not match, which is the whole mechanism.
     """
-    from kubernetes import client, config as kube_config  # noqa: PLC0415
+    client, api = _api_client()
+    key = (namespace, name)
 
-    body = {"data": {LEDGER_KEY: _ledger_json(ledger)}}
-    try:
-        kube_config.load_incluster_config()
-    except Exception:  # pragma: no cover
-        kube_config.load_kube_config()
-    api = client.CoreV1Api()
-    try:
-        api.patch_namespaced_config_map(
-            name=name, namespace=namespace, body=body, _request_timeout=API_TIMEOUT
-        )
-    except client.exceptions.ApiException as exc:
-        detail = {
-            404: (
-                f"ConfigMap {namespace}/{name} does not exist. The chart renders "
-                "it alongside the CronJob, so either it was deleted or "
-                "selfImprovement.ledgerConfigMap does not match what was rendered."
-            ),
-            403: (
-                f"not permitted to patch ConfigMap {namespace}/{name}. The Role "
-                "grants get/update/patch on exactly one name -- check that "
-                "SELFIMPROVE_LEDGER_CONFIGMAP matches the resourceNames in it."
-            ),
-            413: (
-                f"ConfigMap {namespace}/{name} is too large for the API server. "
-                "Findings are accumulating faster than the retention window "
-                "prunes them."
-            ),
-        }.get(exc.status, f"HTTP {exc.status}: {exc.reason}")
-        raise LedgerWriteError(f"could not write the ledger: {detail}") from exc
-    except Exception as exc:  # noqa: BLE001 -- a timeout is not an ApiException
-        # Same reason `API_TIMEOUT` exists: a dropped egress path to the API
-        # server produces no HTTP status to key the table above on, and without
-        # this clause it escapes as a bare urllib3 error rather than the typed
-        # LedgerWriteError the caller checks for.
-        raise LedgerWriteError(
-            f"could not write the ledger: the API server did not answer within "
-            f"{API_TIMEOUT[1]}s ({exc}). Check egress to the API server from the "
-            "runner pod -- on GKE Dataplane V2 the NetworkPolicy must allow the "
-            "address in the default/kubernetes Endpoints, not just the ClusterIP."
-        ) from exc
+    for attempt in range(LEDGER_WRITE_ATTEMPTS):
+        body: Dict[str, Any] = {"data": {LEDGER_KEY: _ledger_json(ledger)}}
+        version = _OBSERVED_RESOURCE_VERSION.get(key)
+        if version:
+            body["metadata"] = {"resourceVersion": version}
+        try:
+            written = api.patch_namespaced_config_map(
+                name=name, namespace=namespace, body=body, _request_timeout=API_TIMEOUT
+            )
+        except client.exceptions.ApiException as exc:
+            if exc.status == 409 and attempt < LEDGER_WRITE_ATTEMPTS - 1:
+                # Somebody wrote between `load` and here. Take their document,
+                # fold this run's rows into it, and write against the version
+                # they left behind. A read that now fails drops the precondition
+                # rather than the run: the next attempt is unconditional, which
+                # is exactly the old behaviour and still better than losing the
+                # findings.
+                remote, remote_version = _read(api, client, namespace, name)
+                ledger = merge(remote, ledger)
+                if remote_version:
+                    _OBSERVED_RESOURCE_VERSION[key] = remote_version
+                else:
+                    _OBSERVED_RESOURCE_VERSION.pop(key, None)
+                continue
+            raise _write_error(namespace, name, exc) from exc
+        except Exception as exc:  # noqa: BLE001 -- a timeout is not an ApiException
+            # Same reason `API_TIMEOUT` exists: a dropped egress path to the API
+            # server produces no HTTP status to key the table on, and without
+            # this clause it escapes as a bare urllib3 error rather than the
+            # typed LedgerWriteError the caller checks for.
+            raise LedgerWriteError(
+                f"could not write the ledger: the API server did not answer within "
+                f"{API_TIMEOUT[1]}s ({exc}). Check egress to the API server from the "
+                "runner pod -- on GKE Dataplane V2 the NetworkPolicy must allow the "
+                "address in the default/kubernetes Endpoints, not just the ClusterIP."
+            ) from exc
+
+        observed = getattr(getattr(written, "metadata", None), "resource_version", None)
+        if observed:
+            _OBSERVED_RESOURCE_VERSION[key] = observed
+        return
+
+
+def _write_error(namespace: str, name: str, exc) -> LedgerWriteError:
+    """The message a human needs for each way the write can be refused."""
+    detail = {
+        404: (
+            f"ConfigMap {namespace}/{name} does not exist. The chart renders "
+            "it alongside the CronJob, so either it was deleted or "
+            "selfImprovement.ledgerConfigMap does not match what was rendered."
+        ),
+        403: (
+            f"not permitted to patch ConfigMap {namespace}/{name}. The Role "
+            "grants get/update/patch on exactly one name -- check that "
+            "SELFIMPROVE_LEDGER_CONFIGMAP matches the resourceNames in it."
+        ),
+        409: (
+            f"ConfigMap {namespace}/{name} was modified by another writer "
+            f"{LEDGER_WRITE_ATTEMPTS} times while this run tried to merge into "
+            "it. Something is writing the ledger continuously -- look for a Job "
+            "created by hand alongside the CronJob, which `concurrencyPolicy: "
+            "Forbid` does not serialise."
+        ),
+        413: (
+            f"ConfigMap {namespace}/{name} is too large for the API server. "
+            "Findings are accumulating faster than the retention window "
+            "prunes them."
+        ),
+    }.get(exc.status, f"HTTP {exc.status}: {exc.reason}")
+    return LedgerWriteError(f"could not write the ledger: {detail}")
 
 
 def clone(ledger: Dict[str, Any]) -> Dict[str, Any]:
