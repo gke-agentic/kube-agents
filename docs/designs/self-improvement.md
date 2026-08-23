@@ -611,11 +611,23 @@ so the design implements both under distinct names rather than picking one:
   regression makes every run produce a fresh critical finding.
 
 Counting requires identity across runs, which is the same problem the fleet audit solved. A finding
-is fingerprinted over its signal class, the normalised message with identifiers and timestamps
-stripped, and the code location in the cloned revision; the ledger holds the fingerprint, first and
-last seen, a rolling 24-hour count, the current grade, and any pull request already opened for it.
+is fingerprinted over the normalised title, with identifiers and timestamps stripped, plus the one
+`path:line` reference in its location, with the line number collapsed so the identity survives a
+commit above it. The ledger holds the fingerprint, first and last seen, a rolling 24-hour count, the
+current grade, and any pull request already opened for it.
 [`fleet-audit-issue-ledger.md`](fleet-audit-issue-ledger.md) is the precedent for the dedup and
 lifecycle, and this feature should follow it rather than invent a second scheme.
+
+Neither the severity nor the signal class is part of that identity, and the two exclusions have the
+same justification: both are the agent's judgement about a finding rather than the finding, so a
+re-grade or a re-classification would reset the count and the finding would never promote. Signal
+was in the material at first and a live run took it out — the loop reported one `/command` PATH
+finding as `errors` and the byte-identical title as `inefficiency` an hour later. The location is
+reduced to its file reference for the same reason: the agent wrote that field as a 300-character
+sentence naming two files on one run and as a bare `file.go:1820` on the next, and hashing the prose
+made those two findings. Three rows, one bug, each stuck at a count of one. Narrowing the identity
+trades a split for a possible collision, which is the right way round — a collision files one pull
+request carrying both sets of evidence, while a split silently files nothing.
 
 ### 7.3 The gate
 
@@ -1291,22 +1303,29 @@ is still going, so a run that uses its whole four-hour deadline costs the three 
 shipped thresholds are set under the pessimistic number rather than the optimistic one, which is why
 widening the deadline in §9 came with lowering them.
 
-**The ledger write is last-writer-wins.** `selfimprove_ledger.save` sends no `resourceVersion`
-precondition, so a second writer that lands between this run's read and its write is overwritten
-without a word. Nothing in §7 said either way, and the obvious fix is wrong here: the read happens at
-the top of the run and the write at the bottom, so the window is the whole of
-`activeDeadlineSeconds` — four hours by default. A precondition across a window that wide would turn
-a
-concurrent `helm upgrade` reapplying the chart's labels into a 409 that loses the run's findings
-entirely. `concurrencyPolicy: Forbid` already serialises the only automated writer. The exposure that remains
-is a manually-triggered Job, or a `kubectl edit`, overlapping a scheduled run — `Forbid` governs the
-CronJob's own Jobs, and a Job created by hand is not one of them.
+**The ledger write was last-writer-wins, and is not any more.** `selfimprove_ledger.save` used to
+send no `resourceVersion` precondition, so a second writer landing between this run's read and its
+write was overwritten without a word. The reasoning was that the read happens at the top of the run
+and the write at the bottom, making the window the whole of `activeDeadlineSeconds` — four hours by
+default — and a precondition across a window that wide would turn a concurrent `helm upgrade`
+reapplying the chart's labels into a 409 that lost the run's findings entirely.
+`concurrencyPolicy: Forbid` serialises the CronJob's own Jobs and nothing else, so what remained
+exposed was a Job created by hand, or a `kubectl edit`, overlapping a scheduled run.
 
-That exposure is not only about occurrence counts, which was the first thing this paragraph said and
-was too kind. A live test hit it: a hand-created Job ran alongside two scheduled runs and its closing
-write took the ledger back to its own view of it, dropping the other two runs' rows and, with them,
-the promotion records for two pull requests that had already been opened. An occurrence count that
-goes backwards delays a promotion. A promotion record that disappears removes the only thing holding
-the cooldown, so the finding is re-filed the next time it is seen and the maintainer gets a duplicate
-of a pull request already in their queue. Do not run a Job by hand against an install whose CronJob
-is enabled; suspend the CronJob first.
+A live test hit it. A hand-created Job ran alongside two scheduled runs and its closing write took
+the ledger back to its own view of it, dropping the other two runs' rows and, with them, the
+promotion records for two pull requests that had already been opened. An occurrence count that goes
+backwards delays a promotion. A promotion record that disappears removes the only thing holding the
+cooldown, so the finding is re-filed the next time it is seen and the maintainer gets a duplicate of
+a pull request already in their queue — the outcome the gate exists to prevent.
+
+What was wrong in the original reasoning was not the precondition but treating a 409 as fatal.
+`save` now writes against the version `load` observed and, on a conflict, re-reads, folds this run's
+rows into whatever is there now, and retries — four times before giving up with a message saying to
+go and find the second writer. The merge is well defined because the ledger is almost all
+append-only and timestamped: `runs`, `sightings` and `promotions` are unions keyed on their
+timestamps, `refused` and `first_seen` keep the earlier of the two because both measure how long a
+human has had the finding, and the agent's description of a finding comes from the newer writer.
+Neither writer loses rows, which is what the unconditional write could not say. The merge runs only
+on a 409, so the uncontended path still writes the run's document verbatim and a `prune` is not
+undone by the pre-prune copy still in the ConfigMap.

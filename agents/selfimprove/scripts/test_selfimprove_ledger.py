@@ -122,10 +122,45 @@ class FingerprintTests(unittest.TestCase):
         two, _ = L.record_finding(L.empty_ledger(), finding(severity="critical"), "abc", NOW)
         self.assertEqual(one, two)
 
-    def test_signal_and_location_are_part_of_identity(self):
+    def test_location_is_part_of_identity(self):
         base = L.fingerprint("errors", "Same title", "a.py:1")
-        self.assertNotEqual(base, L.fingerprint("latency", "Same title", "a.py:1"))
         self.assertNotEqual(base, L.fingerprint("errors", "Same title", "b.py:1"))
+
+    def test_signal_is_not_part_of_identity(self):
+        """A re-classified finding is the same finding, like a re-graded one.
+
+        Observed live: the loop filed one `/command` PATH finding as `errors`
+        and the byte-identical title as `inefficiency` an hour later. With
+        signal in the hash that is two rows of one sighting each, neither able
+        to reach `minOccurrencesPerDay`.
+        """
+        base = L.fingerprint("errors", "Same title", "a.py:1")
+        self.assertEqual(base, L.fingerprint("latency", "Same title", "a.py:1"))
+
+    def test_location_prose_after_the_file_reference_is_not_part_of_identity(self):
+        """The two shapes one live finding actually arrived in.
+
+        Same site, described at two lengths on consecutive runs. Hashing the
+        whole field made them separate findings.
+        """
+        verbose = (
+            "k8s-operator/internal/controller/platformagent_manifests.go:1820 (the "
+            'operator\'s hardcoded PATH env var: "/opt/credential-proxy/bin:'
+            '/opt/hermes/.venv/bin:/usr/bin") and /opt/hermes/docker/stage2-hook.sh:480 '
+            "(`s6-setuidgid hermes ...`)"
+        )
+        terse = "k8s-operator/internal/controller/platformagent_manifests.go:1820"
+        self.assertEqual(
+            L.fingerprint("errors", "Same title", verbose),
+            L.fingerprint("errors", "Same title", terse),
+        )
+
+    def test_a_location_with_no_file_reference_still_discriminates(self):
+        """The fallback must not collapse every prose location onto one row."""
+        self.assertNotEqual(
+            L.fingerprint("errors", "Same title", "the gchat webhook"),
+            L.fingerprint("errors", "Same title", "the slack webhook"),
+        )
 
 
 class RecordFindingTests(unittest.TestCase):
@@ -989,6 +1024,208 @@ class LedgerApiTimeoutTests(unittest.TestCase):
         finally:
             undo()
         self.assertEqual(L.API_TIMEOUT, calls[0]["_request_timeout"])
+
+
+class _FakeConfigMap:
+    """A ConfigMap that enforces resourceVersion the way the API server does."""
+
+    def __init__(self):
+        self.data = {}
+        self.version = 1
+        self.before_patch = None  # a hook simulating another writer landing first
+
+    def _snapshot(self):
+        import types
+
+        return types.SimpleNamespace(
+            data=dict(self.data),
+            metadata=types.SimpleNamespace(resource_version=str(self.version)),
+        )
+
+    def read(self, **kwargs):
+        return self._snapshot()
+
+    def patch(self, **kwargs):
+        if self.before_patch is not None:
+            hook, self.before_patch = self.before_patch, None
+            hook(self)
+        body = kwargs["body"]
+        expected = (body.get("metadata") or {}).get("resourceVersion")
+        if expected is not None and expected != str(self.version):
+            raise _FakeApiException(409)
+        self.data.update(body.get("data") or {})
+        self.version += 1
+        return self._snapshot()
+
+    def ledger(self):
+        return json.loads(self.data[L.LEDGER_KEY])
+
+    def write_ledger(self, ledger):
+        self.data[L.LEDGER_KEY] = json.dumps(ledger)
+        self.version += 1
+
+
+def _install_stateful_kubernetes(cm):
+    """Like `_install_fake_kubernetes`, but backed by a ConfigMap that persists."""
+    import types
+
+    core = types.SimpleNamespace(
+        read_namespaced_config_map=cm.read,
+        patch_namespaced_config_map=cm.patch,
+    )
+    client = types.SimpleNamespace(
+        CoreV1Api=lambda: core,
+        exceptions=types.SimpleNamespace(ApiException=_FakeApiException),
+    )
+    pkg = types.ModuleType("kubernetes")
+    pkg.client = client
+    pkg.config = types.SimpleNamespace(
+        load_incluster_config=lambda: None, load_kube_config=lambda: None
+    )
+    saved = sys.modules.get("kubernetes")
+    sys.modules["kubernetes"] = pkg
+    L._OBSERVED_RESOURCE_VERSION.clear()
+
+    def undo():
+        L._OBSERVED_RESOURCE_VERSION.clear()
+        if saved is None:
+            sys.modules.pop("kubernetes", None)
+        else:
+            sys.modules["kubernetes"] = saved
+
+    return undo
+
+
+class MergeTests(unittest.TestCase):
+    """`merge` is what makes a 409 survivable instead of fatal."""
+
+    def _promoted(self, url, at, fp="abc"):
+        ledger = L.empty_ledger()
+        ledger["findings"][fp] = {
+            "fingerprint": fp,
+            "first_seen": at,
+            "sightings": [{"at": at}],
+            "promotions": [{"at": at, "url": url, "revision": "rev"}],
+        }
+        return ledger
+
+    def test_neither_writers_promotions_are_lost(self):
+        """The live failure, reduced: two runs, two pull requests, one row."""
+        merged = L.merge(
+            self._promoted("https://example.test/1", "2026-08-23T16:40:00Z"),
+            self._promoted("https://example.test/2", "2026-08-23T17:07:00Z"),
+        )
+        urls = [p["url"] for p in merged["findings"]["abc"]["promotions"]]
+        self.assertEqual(["https://example.test/1", "https://example.test/2"], urls)
+
+    def test_runs_from_both_writers_survive(self):
+        base, incoming = L.empty_ledger(), L.empty_ledger()
+        base["runs"] = [{"at": "2026-08-23T16:00:00Z", "revision": "a", "outcome": "ok"}]
+        incoming["runs"] = [{"at": "2026-08-23T17:00:00Z", "revision": "b", "outcome": "ok"}]
+        self.assertEqual(
+            ["a", "b"], [r["revision"] for r in L.merge(base, incoming)["runs"]]
+        )
+
+    def test_a_row_written_twice_is_not_duplicated(self):
+        """The uncontended shape: both sides hold the same row."""
+        one = self._promoted("https://example.test/1", "2026-08-23T16:40:00Z")
+        self.assertEqual(1, len(L.merge(one, L.clone(one))["findings"]["abc"]["promotions"]))
+
+    def test_the_earlier_refusal_and_first_seen_win(self):
+        """Both fields measure how long a human has had the finding."""
+        base = self._promoted("u", "2026-08-23T16:00:00Z")
+        base["findings"]["abc"]["refused"] = {"at": "2026-08-23T16:00:00Z", "reason": "first"}
+        incoming = self._promoted("u", "2026-08-23T18:00:00Z")
+        incoming["findings"]["abc"]["refused"] = {"at": "2026-08-23T18:00:00Z", "reason": "later"}
+        merged = L.merge(base, incoming)["findings"]["abc"]
+        self.assertEqual("first", merged["refused"]["reason"])
+        self.assertEqual("2026-08-23T16:00:00Z", merged["first_seen"])
+
+    def test_the_newer_writers_description_wins(self):
+        base = self._promoted("u", "2026-08-23T16:00:00Z")
+        base["findings"]["abc"]["severity"] = "low"
+        incoming = self._promoted("u", "2026-08-23T18:00:00Z")
+        incoming["findings"]["abc"]["severity"] = "critical"
+        self.assertEqual("critical", L.merge(base, incoming)["findings"]["abc"]["severity"])
+
+    def test_a_finding_only_the_other_writer_has_is_carried_through(self):
+        base = self._promoted("u", "2026-08-23T16:00:00Z", fp="theirs")
+        incoming = self._promoted("u", "2026-08-23T18:00:00Z", fp="mine")
+        self.assertEqual({"theirs", "mine"}, set(L.merge(base, incoming)["findings"]))
+
+
+class ConcurrentWriteTests(unittest.TestCase):
+    """A hand-created Job racing the CronJob, which `Forbid` does not serialise."""
+
+    def test_a_conflicting_write_merges_instead_of_clobbering(self):
+        cm = _FakeConfigMap()
+        cm.write_ledger(L.empty_ledger())
+        undo = _install_stateful_kubernetes(cm)
+        try:
+            mine = L.load("kube-agents", "ledger")
+            mine["runs"] = [{"at": "2026-08-23T17:24:00Z", "revision": "mine", "outcome": "ok"}]
+
+            # Somebody else's run lands between my load and my save.
+            theirs = L.empty_ledger()
+            theirs["runs"] = [{"at": "2026-08-23T16:40:00Z", "revision": "theirs", "outcome": "ok"}]
+            cm.before_patch = lambda c: c.write_ledger(theirs)
+
+            L.save("kube-agents", "ledger", mine)
+        finally:
+            undo()
+        self.assertEqual(
+            ["theirs", "mine"], [r["revision"] for r in cm.ledger()["runs"]]
+        )
+
+    def test_an_uncontended_write_still_applies_a_prune(self):
+        """The merge must not resurrect rows when nothing actually conflicted.
+
+        `save` merges only on a 409, so the ordinary path writes this run's
+        document verbatim -- otherwise every `prune` would be undone by the
+        pre-prune copy still sitting in the ConfigMap.
+        """
+        cm = _FakeConfigMap()
+        stale = L.empty_ledger()
+        stale["findings"]["old"] = {"fingerprint": "old", "sightings": [], "promotions": []}
+        cm.write_ledger(stale)
+        undo = _install_stateful_kubernetes(cm)
+        try:
+            pruned = L.load("kube-agents", "ledger")
+            pruned["findings"].pop("old")
+            L.save("kube-agents", "ledger", pruned)
+        finally:
+            undo()
+        self.assertEqual({}, cm.ledger()["findings"])
+
+    def test_giving_up_names_the_writer_to_go_and_find(self):
+        cm = _FakeConfigMap()
+        cm.write_ledger(L.empty_ledger())
+
+        def always_conflict(c):
+            c.version += 1
+            c.before_patch = always_conflict
+
+        undo = _install_stateful_kubernetes(cm)
+        try:
+            L.load("kube-agents", "ledger")
+            cm.before_patch = always_conflict
+            with self.assertRaises(L.LedgerWriteError) as caught:
+                L.save("kube-agents", "ledger", L.empty_ledger())
+        finally:
+            undo()
+        self.assertIn("created by hand", str(caught.exception))
+
+    def test_an_unreadable_ledger_writes_unconditionally(self):
+        """A 403/404 read leaves no version, and must not block the write."""
+        cm = _FakeConfigMap()
+        cm.write_ledger(L.empty_ledger())
+        undo = _install_stateful_kubernetes(cm)
+        try:
+            # No `load`, so nothing observed a resourceVersion.
+            L.save("kube-agents", "ledger", L.empty_ledger())
+        finally:
+            undo()
+        self.assertIn(L.LEDGER_KEY, cm.data)
 
 
 if __name__ == "__main__":
