@@ -57,6 +57,11 @@ BUILD_INFO_PATH = "/opt/build-info.json"
 TEMPLATE_DIR = "/opt/selfimprove"
 HERMES_BIN = "/opt/hermes/.venv/bin/hermes"
 HERMES_TREE = "/opt/hermes"
+#: The interpreter selfimprove_evidence.py's `k8s` subcommands need: `kubernetes`
+#: is installed only into this venv (see deploy/docker/Dockerfile), never into the
+#: system python3 that a bare `python3` on PATH resolves to. Every example command
+#: handed to the investigation invokes the tool through this path for that reason.
+VENV_PYTHON = "/opt/hermes/.venv/bin/python3"
 
 #: Where the credential-proxy shims live. The chart puts this on the container's
 #: PATH in fork and upstream mode and leaves it off under report-only; `run_agent`
@@ -915,17 +920,20 @@ def build_brief(
         - Signal classes in scope this run: %(signals)s
 
         YOUR ONLY EVIDENCE TOOLS
-        Run these with the shell. They are read-only by grant, not by convention: this pod's
-        Google service account holds logging/trace/monitoring viewer and no GKE roles, and its
-        Kubernetes service account is bound to `view` on one namespace.
+        Run these with the shell, through %(venv_python)s and not the plain `python3` that may be
+        first on PATH: the `kubernetes` package the `k8s` subcommands import is installed only into
+        that interpreter's venv, and a bare `python3` resolving to the system interpreter fails
+        every `k8s` call with ModuleNotFoundError. They are read-only by grant, not by convention:
+        this pod's Google service account holds logging/trace/monitoring viewer and no GKE roles,
+        and its Kubernetes service account is bound to `view` on one namespace.
 
-          python3 %(tools)s logs --hours 24 --severity ERROR --limit 50
-          python3 %(tools)s logs --agent-files --query 'jsonPayload.message:"Traceback"'
-          python3 %(tools)s logs-count --hours 24 --severity ERROR
-          python3 %(tools)s traces --hours 24 --limit 50
-          python3 %(tools)s traces --hours 24 --limit 10 --full   # + the slowest spans inside each
-          python3 %(tools)s metrics --filter 'metric.type="kubernetes.io/container/restart_count"'
-          python3 %(tools)s k8s pods|deployments|events|configmaps|platformagents|agentplugins
+          %(venv_python)s %(tools)s logs --hours 24 --severity ERROR --limit 50
+          %(venv_python)s %(tools)s logs --agent-files --query 'jsonPayload.message:"Traceback"'
+          %(venv_python)s %(tools)s logs-count --hours 24 --severity ERROR
+          %(venv_python)s %(tools)s traces --hours 24 --limit 50
+          %(venv_python)s %(tools)s traces --hours 24 --limit 10 --full   # + the slowest spans inside each
+          %(venv_python)s %(tools)s metrics --filter 'metric.type="kubernetes.io/container/restart_count"'
+          %(venv_python)s %(tools)s k8s pods|deployments|events|configmaps|platformagents|agentplugins
 
         Run each with --help before guessing at flags. You have no kubectl, no gcloud and no
         cluster write path of any kind; do not try to acquire one.
@@ -970,6 +978,7 @@ def build_brief(
         "mode": mode,
         "signals": ", ".join(signals),
         "tools": tools,
+        "venv_python": VENV_PYTHON,
         # Said only when it is true. Promising a continuation the run cannot
         # afford is worse than promising nothing: it invites the agent to defer
         # the write it was just told to do early, which is the exact habit the
