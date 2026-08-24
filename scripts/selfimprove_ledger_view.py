@@ -147,16 +147,22 @@ def pr_ref(url: str) -> str:
     return "%s/%s#%s" % match.groups() if match else url
 
 
-def hyperlink(text: str, url: str, palette: Palette) -> str:
+def hyperlink(text: str, url: str, palette: Palette, link_id: str = "") -> str:
     """OSC 8, gated on the same signal as colour.
 
     Terminals that do not implement it ignore the sequence, but a pipe or a
     file keeps the bytes, so this follows `--color`: that flag already means
     "a human is looking at this in a terminal".
+
+    `link_id` is OSC 8's `id=` parameter, which exists to say that two
+    separately-emitted runs are one hyperlink. Anything that wraps across table
+    rows needs it: without it a terminal treats each row as its own link and
+    highlights only the line under the pointer, and with it the whole location
+    lights up as one.
     """
     if not palette.enabled or not url:
         return text
-    return "\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\" % (url, text)
+    return "\x1b]8;%s;%s\x1b\\%s\x1b]8;;\x1b\\" % ("id=%s" % link_id if link_id else "", url, text)
 
 
 #: A URL anywhere in a string, stripped before locations are parsed so that the
@@ -472,6 +478,10 @@ def render_table(
 
     vertical = palette(box["v"], "dim")
 
+    # Distinguishes one wrapped link from another, so that two locations in the
+    # same table are never fused into one hyperlink by a shared `id=`.
+    link_seq = [0]
+
     def emit(cells: Sequence[Sequence[Any]]) -> List[str]:
         wrapped = [
             _cell_lines(str(cells[i][0]) if i < len(cells) else "", widths[i])
@@ -479,8 +489,11 @@ def render_table(
         ]
         height = max(len(w) for w in wrapped)
         # How many lines each paragraph of each cell ended up occupying, which
-        # is what decides whether a per-paragraph link is drawable.
+        # is what decides whether a per-paragraph link needs an `id=` to hold
+        # its pieces together.
         spans = [collections.Counter(para for _, para in w) for w in wrapped]
+        link_seq[0] += 1
+        row_seq = link_seq[0]
         lines = []
         for line_no in range(height):
             pieces = []
@@ -493,20 +506,28 @@ def render_table(
                 per_line_url = cell[4] if len(cell) > 4 else None
                 if per_line and para in per_line:
                     style = per_line[para]
-                # Only an unwrapped, non-empty line is linked. A hyperlink
-                # spanning two rows of a table renders as two separate links in
-                # most terminals and as escape soup in the rest; and one
-                # wrapped around the blank padding lines beneath a short cell
-                # -- which a taller neighbouring column produces on nearly
-                # every row -- is pure litter, since a zero-width link has
-                # nothing for a reader to click.
+                # A whole-cell URL is drawn only on an unwrapped cell, because
+                # it has no way to say which of several paragraphs it belongs
+                # to. A blank line is never linked either -- the padding
+                # beneath a short cell, which a taller neighbouring column
+                # produces on nearly every row, would otherwise carry a
+                # zero-width link with nothing for a reader to click.
                 linkable = bool(url) and len(wrapped[i]) == 1
+                link_id = ""
                 if per_line_url and para in per_line_url:
                     url = per_line_url[para]
-                    linkable = spans[i][para] == 1
+                    # A per-paragraph link is drawn even when its paragraph
+                    # wraps, joined across the rows by `id=`. Dropping it
+                    # instead cost the location column every link it had at any
+                    # normal terminal width: a path with a line number needs
+                    # around 120 columns of FINDING to fit on one line, so an
+                    # 80-column terminal rendered no file links at all.
+                    linkable = True
+                    if spans[i][para] > 1:
+                        link_id = "%d.%d.%d" % (row_seq, i, para)
                 rendered = palette(raw, style)
-                if url and raw and linkable:
-                    rendered = hyperlink(rendered, url, palette)
+                if url and raw.strip() and linkable:
+                    rendered = hyperlink(rendered, url, palette, link_id)
                 pieces.append(_pad(rendered, widths[i], column.align))
             lines.append(vertical + " " + (" " + vertical + " ").join(pieces) + " " + vertical)
         return lines

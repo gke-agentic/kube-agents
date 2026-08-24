@@ -24,6 +24,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import tempfile
 import unittest
 from unittest import mock
@@ -228,16 +229,42 @@ class TestTableRendering(unittest.TestCase):
             0,
         )
 
-    def test_a_per_paragraph_link_is_dropped_when_that_paragraph_wraps(self):
-        """A link split across two table rows renders as two links, so a
-        paragraph too long for the column loses its link rather than being
-        drawn broken. The text still shows."""
+    def test_a_wrapped_per_paragraph_link_is_drawn_on_every_row_it_spans(self):
+        """A location is longer than the column at any ordinary width, so
+        dropping wrapped links left the table with none. Each row it spans is
+        linked, and a shared `id=` makes a terminal treat them as one."""
         columns = [view.Column("C", wrap=True, min_width=12)]
         url = "https://github.com/o/r/blob/abc/x.go#L1"
         cell = ("t\nsome/quite/long/path/that/will/wrap.go:1", None, None, None, {1: url})
         lines = self.render(columns, [[cell]], width=24)
-        self.assertEqual(sum(line.count("\x1b]8;;") for line in lines), 0)
+        opens = [m for line in lines for m in re.findall(r"\x1b\]8;([^;]*);([^\x1b]*)\x1b", line)]
+        self.assertGreater(len(opens), 1, "the paragraph should have wrapped")
+        self.assertEqual({url}, {u for _, u in opens if u})
+        ids = {p for p, u in opens if u}
+        self.assertEqual(len(ids), 1)
+        self.assertTrue(ids.pop().startswith("id="))
         self.assertIn("wrap.go", "".join(view.plain(line) for line in lines))
+
+    def test_two_wrapped_links_in_one_table_do_not_share_an_id(self):
+        """A shared `id=` means "one hyperlink", so reusing it across two
+        findings would fuse two destinations into one."""
+        columns = [view.Column("C", wrap=True, min_width=12)]
+        rows = [
+            [("t\nsome/quite/long/path/one.go:1", None, None, None, {1: "https://x/a"})],
+            [("t\nsome/quite/long/path/two.go:2", None, None, None, {1: "https://x/b"})],
+        ]
+        lines = self.render(columns, rows, width=24)
+        ids = {m for line in lines for m in re.findall(r"\x1b\]8;(id=[^;]*);[^\x1b]", line)}
+        self.assertEqual(len(ids), 2)
+
+    def test_blank_padding_lines_are_never_linked(self):
+        """A short cell beside a tall one is padded with blank lines; a link on
+        one is invisible and unclickable."""
+        columns = [view.Column("A", wrap=True, min_width=12), view.Column("B", wrap=True, min_width=12)]
+        rows = [[("x.go:1", None, None, None, {0: "https://x/a"}), ("many words that wrap over rows", None)]]
+        for line in self.render(columns, rows, width=32):
+            if "x.go" not in view.plain(line):
+                self.assertNotIn("\x1b]8;", line)
 
     def test_a_per_paragraph_link_does_not_change_the_layout(self):
         columns = [view.Column("C", wrap=True, min_width=40)]
