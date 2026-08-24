@@ -35,7 +35,7 @@ A standard operating procedure in `agents/platform/governance/`. Codifies how a 
 
 ### Skill
 
-A Claude-style `SKILL.md` bundle in `agents/platform/skills/` (Platform Agent), `agents/cluster/skills/` (Cluster Agents), or `agents/selfimprove/skills/` (the self-improvement loop, off by default). Loaded on demand based on its frontmatter `description`.
+A Claude-style `SKILL.md` bundle in `agents/platform/skills/` (Platform Agent) or `agents/cluster/skills/` (Cluster Agents), loaded on demand based on its frontmatter `description`. `agents/selfimprove/skills/` holds two more, off by default, which are the written procedure of the self-improvement loop's two turns rather than skills any agent here loads.
 
 ### Watchdog
 

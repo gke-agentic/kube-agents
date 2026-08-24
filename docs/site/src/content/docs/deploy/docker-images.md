@@ -43,7 +43,7 @@ Pinned here so `make mirror-images` and the install ask for the same version.
 | `litellm` | `ghcr.io/berriai/litellm` | `v1.96.2` | `LITELLM_IMAGE` | The LiteLLM gateway, from either the chart or the kustomize integration. |
 | `fluent-bit` | `docker.io/fluent/fluent-bit` | `5.1.0` | `FLUENT_BIT_IMAGE` | The logging sidecar the operator injects into every agent pod. |
 | `k8s` | `docker.io/alpine/k8s` | `1.34.9` | — | The chart's pre-delete cleanup hook Job. |
-| `github-token-minter-server` | `us-docker.pkg.dev/abcxyz-artifacts/docker-images/github-token-minter-server` | `v2.7.1-amd64` | `GITHUB_MINTER_IMAGE` | The optional GitHub integration, and the self-improvement loop's own minter under its fork and upstream modes. |
+| `github-token-minter-server` | `us-docker.pkg.dev/abcxyz-artifacts/docker-images/github-token-minter-server` | `v2.7.1-amd64` | `GITHUB_MINTER_IMAGE` | The optional GitHub integration. |
 | `hindsight-api` | `ghcr.io/vectorize-io/hindsight-api` | `0.9.1@sha256:24a079bead8aa58e45d728bf535ea727bfe559d8784024b6b9f89d56646954ab` | `HINDSIGHT_API_IMAGE` | The chart, when the memory provider uses Hindsight (make deploy-hindsight for the kustomize dev path). |
 | `hindsight-postgresql` | `docker.io/ankane/pgvector` | `latest@sha256:956744bd14e9cbdf639c61c2a2a7c7c2c48a9c8cdd42f7de4ac034f4e96b90f8` | `HINDSIGHT_POSTGRES_IMAGE` | The chart, alongside the Hindsight API. |
 | `cert-manager-controller` | `quay.io/jetstack/cert-manager-controller` | `v1.21.1` | — | cert-manager, installed by the full-install composition unless enable_cert_manager is false. |
@@ -73,7 +73,7 @@ Built and published via GitHub Actions workflows on push to `main` (tagged with 
 
 ### `platform-agent`
 
-The agent Deployment image. Built from the `platform` target of [`deploy/docker/Dockerfile`](https://github.com/gke-labs/kube-agents/blob/main/deploy/docker/Dockerfile) on top of `nousresearch/hermes-agent`. It lays down the Planning Agent workspace at `/opt/defaults` (the `default` profile) plus three profile templates: the Platform Agent at `/opt/platform-template`, scaffolded into the `platform` profile at startup by the entrypoint; the Cluster Agent at `/opt/cluster-template`, scaffolded into per-cluster `cluster-*` profiles at runtime by `cluster_agent_profile.py`; and the self-improvement investigator at `/opt/selfimprove`, which `selfimprove_run.py` copies onto an emptyDir at the start of each run. The same image runs the self-improvement CronJob, which is how the loop reads the source of the revision the agent is running.
+The agent Deployment image. Built from the `platform` target of [`deploy/docker/Dockerfile`](https://github.com/gke-labs/kube-agents/blob/main/deploy/docker/Dockerfile) on top of `nousresearch/hermes-agent`. It lays down the Planning Agent workspace at `/opt/defaults` (the `default` profile) plus three profile templates: the Platform Agent at `/opt/platform-template`, scaffolded into the `platform` profile at startup by the entrypoint; the Cluster Agent at `/opt/cluster-template`, scaffolded into per-cluster `cluster-*` profiles at runtime by `cluster_agent_profile.py`; and the self-improvement investigator at `/opt/selfimprove`, which `selfimprove_run.py` copies onto an emptyDir at the start of each run. The same image runs the self-improvement CronJob, and carries the build stamp the loop reads to learn which revision the agent is running before fetching that source from GitHub.
 
 - **Published by**: [`.github/workflows/docker-publish-ghcr.yml`](https://github.com/gke-labs/kube-agents/blob/main/.github/workflows/docker-publish-ghcr.yml)
 - **Also to GAR**: [`docker-publish-gcp.yml`](https://github.com/gke-labs/kube-agents/blob/main/.github/workflows/docker-publish-gcp.yml)
@@ -158,21 +158,26 @@ Bumping Hermes = updating `tags.env` (a single-line change) and rebuilding.
 The agent image takes two more build args, both defaulting to empty:
 
 ```bash
-docker build --platform linux/amd64 \
+docker build --platform linux/amd64 --target platform \
   --build-arg GIT_SHA="$(git rev-parse HEAD)" \
   --build-arg IMAGE_TAG=dev-local \
   -f deploy/docker/Dockerfile .
 ```
 
+`--target platform` is not optional. The Dockerfile's last stage is a test stage, so a build
+without it produces something other than the agent image.
+
 They are written to `/opt/build-info.json` inside the image
 (`{"revision":"<sha>","tag":"<tag>"}`) and set the OCI
 `org.opencontainers.image.revision` label. The
 [self-improvement loop](https://github.com/gke-labs/kube-agents/blob/main/docs/designs/self-improvement.md)
-reads that file to decide which source revision it is auditing; an empty
-`revision` makes it refuse the run rather than guess at `main`, so a build whose
-image will run the loop must pass `GIT_SHA`. Nothing else in the product reads
-it, and the args sit at the end of the stage so a changing SHA rebuilds only the
-instruction that writes the file.
+reads that file to decide which source revision it is auditing. An empty
+`revision` makes it refuse the run by default rather than guess, so a build whose
+image will run the loop should pass `GIT_SHA`; an install that cannot can set
+`selfImprovement.allowUnstampedImage: true` and get an investigation against
+`main`, whose line numbers may belong to neither the running image nor its
+source. Nothing else in the product reads the file, and the args sit at the end
+of the stage so a changing SHA rebuilds only the instruction that writes it.
 
 ## Private / custom registry
 

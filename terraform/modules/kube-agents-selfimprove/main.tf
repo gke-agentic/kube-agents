@@ -4,7 +4,8 @@
 # identity is not here at all: it is a personal access token held by a robot
 # account, created out of band and mounted from a Kubernetes Secret, so there is
 # no GCP resource behind it. Sec. 6 of docs/designs/self-improvement.md says what
-# that trades away against the GitHub App this module used to provision.
+# that credential trades away against a GitHub App, and why the loop takes the
+# trade.
 #
 # Kept out of kube-agents-iam deliberately. That module grants the Platform
 # Agent what it needs to manage the fleet -- up to container.admin, under the

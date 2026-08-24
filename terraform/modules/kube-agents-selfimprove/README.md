@@ -8,7 +8,7 @@ The loop's GitHub identity has no GCP resource behind it. In `fork` and `upstrea
 authenticates as a robot account holding a personal access token, mounted from a Kubernetes Secret
 that is created out of band, so there is nothing here to provision for it — no minter account, no
 KMS signing key, no App. Sec. 6 of [`docs/designs/self-improvement.md`](../../../docs/designs/self-improvement.md)
-records what that trades away against the GitHub App this module used to create.
+records what that credential trades away against a GitHub App, and why the loop takes the trade.
 
 The investigator's grant is three viewer roles and stops there. It has no `container.*` role at
 all: Kubernetes reads go through the pod's Kubernetes service account, which the chart binds to
@@ -45,11 +45,13 @@ kubectl -n kubeagents-system create secret generic kube-agents-selfimprove-pat \
   --from-literal=token=<the robot account's personal access token>
 ```
 
-Name it in `selfImprovement.github.patSecret`. A classic token needs the `repo` scope — or
-`public_repo` if every repository involved is public — held by an account with write access to
-`selfImprovement.github.forkRepo`. One token covers both repositories under `upstream` mode, which
-is what a GitHub App could not do: fork and base are different installations and `gh` stores one
-token per host.
+Name it in `selfImprovement.github.patSecret`. The token needs the `repo` **and** `read:org` scopes,
+held by an account with write access to `selfImprovement.github.forkRepo`. Both are mandatory:
+`gh auth login --with-token` validates the scope set before it stores anything, so a `public_repo`
+token is refused at sidecar startup — and that refusal is swallowed on purpose, so the install comes
+up healthy and every hourly run SKIPs with no credential for as long as nobody looks. One token
+covers both repositories under `upstream` mode, which is what a GitHub App could not do: fork and
+base are different installations and `gh` stores one token per host.
 
 Use a robot account, not a person's. Nothing in the install rotates or expires the token, so its
 lifetime is an operator's to manage, and its blast radius is every repository the account can write
@@ -57,24 +59,37 @@ to rather than a per-repository rule set.
 
 ## Names have to match the chart
 
-Two values are agreed between this module and the chart, and nothing checks them at apply time:
+Four values are agreed between this module and the chart, and nothing compares them at apply time:
 
-| Terraform            | Chart                            |
-| -------------------- | -------------------------------- |
-| `service_account_id` | `selfImprovement.github.gsaName` |
-| `ksa_name`           | `selfImprovement.github.ksaName` |
+| Terraform            | Chart                             |
+| -------------------- | --------------------------------- |
+| `service_account_id` | `selfImprovement.github.gsaName`  |
+| `ksa_name`           | `selfImprovement.github.ksaName`  |
+| `namespace`          | the release namespace             |
+| `project_id`         | `platformAgent.harness.projectId` |
 
-Both are checked for shape in two places — the variable validation here and the chart's render-time
-guard — because either can be applied without the other, and an id GCP rejects fails at apply while
-an id the chart rejects fails at render. The cap is 30, which is GCP's own.
+A mismatch produces a Workload Identity binding that applies cleanly and authenticates nothing, and
+nothing catches it: a `terraform apply` and a `helm install` never see each other's values. What
+each side does check is shape. `service_account_id` is validated here and `gsaName` again in the
+chart, because either can be applied without the other, and an id GCP rejects fails at apply while
+an id the chart rejects fails at render; the 30-character cap in both is GCP's own limit on a
+service account id. `ksa_name` is validated here only, against the RFC 1123 subdomain rule
+Kubernetes applies to a ServiceAccount name — a longer cap, and a different one. `namespace` and
+`project_id` are checked nowhere and are yours to get right.
 
 ## Usage
 
 ```hcl
 module "selfimprove" {
-  source = "../../modules/kube-agents-selfimprove"
+  source = "git::https://github.com/gke-labs/kube-agents.git//terraform/modules/kube-agents-selfimprove?ref=<tag>"
 
   project_id = var.project_id
   namespace  = "kubeagents-system"
 }
 ```
+
+`<tag>` is a placeholder here and not a formatting convention: no release tag contains this module
+yet, so pin a commit SHA until one does. The
+[Release versioning & promotion guide](../../../docs/site/src/content/docs/deploy/release-versioning.md)
+covers SemVer pinning for the modules that are released, and
+[`github-minter`](../github-minter/README.md) shows the finished shape.

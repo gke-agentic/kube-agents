@@ -28,4 +28,14 @@ variable "ksa_name" {
   description = "Kubernetes service account the CronJob runs as. Must match selfImprovement.github.ksaName."
   type        = string
   default     = "kubeagents-selfimprove"
+
+  validation {
+    # An RFC 1123 subdomain, which is what Kubernetes accepts for a
+    # ServiceAccount name. This value is interpolated into a Workload Identity
+    # member string, where a name Kubernetes would reject still applies cleanly
+    # and binds nothing -- the failure surfaces later as a CronJob that cannot
+    # authenticate, with no error naming this variable.
+    condition     = can(regex("^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$", var.ksa_name)) && length(var.ksa_name) <= 253
+    error_message = "ksa_name must be a valid RFC 1123 subdomain: lowercase letters, digits, '-' and '.', starting and ending alphanumeric, at most 253 characters."
+  }
 }

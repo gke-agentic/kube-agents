@@ -148,10 +148,14 @@ provisions the GCP resources an install needs — the GKE cluster (`cluster_mode
 and IAM, optionally the Google Chat backend, the GitHub minter's KMS resources, and a Backup for GKE
 plan — and installs the [`charts/kube-agents`](charts/kube-agents/README.md) Helm chart on top,
 which owns every Kubernetes resource (operator, PlatformAgent CR, LiteLLM gateway, and the optional
-Hindsight store, GitHub minter, and self-improvement CronJob workloads). Two modules are tagged and
-consumable but not yet part of the composition — `drift-pubsub` and `kube-agents-selfimprove`, the
-latter being the Google half of the self-improvement loop — so an install that enables either
-applies that module itself.
+Hindsight store, GitHub minter, and self-improvement CronJob workloads). Two modules sit outside
+the composition, so an install that enables either applies that module itself: `drift-pubsub`,
+which is in the release tags and consumable by `?ref=`, and `kube-agents-selfimprove` — the Google
+half of the self-improvement loop — which is not yet in a tag and has to be pinned by commit SHA.
+Turning that loop's `fork` or `upstream` mode on also needs a GitHub token in a Secret you create
+by hand; the chart fails the render without it, and
+[`terraform/modules/kube-agents-selfimprove/README.md`](terraform/modules/kube-agents-selfimprove/README.md)
+has the command and the scopes.
 
 - **Canonical guide (self-contained):** [`terraform/examples/full-install/README.md`](terraform/examples/full-install/README.md)
 - Drive it through [`lifecycle.sh`](terraform/examples/full-install/lifecycle.sh) rather than bare
