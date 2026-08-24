@@ -98,6 +98,30 @@ FORGE_PREFLIGHT_TIMEOUT_SECONDS = 60
 #: never granted on that repository.
 FORGE_PUSH_PERMISSIONS = ("WRITE", "MAINTAIN", "ADMIN")
 
+#: `gh`'s dedicated exit code for "this needed a credential and there isn't
+#: one". Every other failure mode comes back as 1, so it is what separates a
+#: token that was never seeded from one that was and cannot see the repository.
+GH_AUTH_EXIT_CODE = 4
+
+#: Appended to the preflight's error when `gh` reports no credential at all.
+#: Both remedies `gh` prints -- run `gh auth login`, or set `GH_TOKEN` -- are
+#: addressed to a person at a terminal and neither is reachable from here: the
+#: login already happened, in the sidecar, at boot, and this container never
+#: sees the token. So the message has to point at the step that actually failed.
+#: It is worth the four lines because the bootstrap command ends in `; true`, on
+#: purpose, so that a bad token cannot stop the pod from starting -- which also
+#: means `gh auth login`'s own diagnosis was discarded an hour before anyone
+#: read this, and this is the first and only place the failure surfaces.
+FORGE_UNAUTHENTICATED_HINT = (
+    "\nNo credential reached `gh`. Nothing in this container can fix that: the "
+    "sidecar runs `gh auth login --with-token` at startup against the mounted "
+    "personal access token, and its failure is deliberately swallowed so a bad "
+    "token cannot stop the pod from booting. Check the Secret named by "
+    "`selfimprove.github.patSecret` -- an empty or absent `token` key, or a "
+    "token missing the `repo` and `read:org` scopes that `gh auth login` "
+    "validates before it stores anything."
+)
+
 #: What an unstamped image reads instead of a revision, when
 #: `allowUnstampedImage` permits it at all.
 DEFAULT_FALLBACK_REF = "main"
@@ -1660,8 +1684,15 @@ def _gh_repo_view(repository: str, fields: str) -> dict:
         # the same wire response as one that does not exist.
         detail = (done.stderr or done.stdout or "").strip()[:400]
         raise RuntimeError(
-            "`gh repo view %s` exited %d%s"
-            % (repository, done.returncode, ": %s" % detail if detail else "")
+            "`gh repo view %s` exited %d%s%s"
+            % (
+                repository,
+                done.returncode,
+                ": %s" % detail if detail else "",
+                FORGE_UNAUTHENTICATED_HINT
+                if done.returncode == GH_AUTH_EXIT_CODE
+                else "",
+            )
         )
     try:
         parsed = json.loads(done.stdout)
