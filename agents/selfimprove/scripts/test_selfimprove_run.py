@@ -1270,7 +1270,7 @@ class ForgeCredentialTests(unittest.TestCase):
         self.assertIn("did not return JSON", str(caught.exception))
 
 
-class FilingMintTests(unittest.TestCase):
+class FilingPreflightTests(unittest.TestCase):
     """What `file_pull_request` does with the preflight, on both outcomes."""
 
     def setUp(self):
@@ -1353,7 +1353,7 @@ class FilingOutcomeTests(unittest.TestCase):
         R.run_agent = lambda *a, **k: (self.code, self.stdout, None)
         # Stubbed, because every case below is about what the runner concludes
         # from the turn's output and none of them is about the credential. The
-        # minting failure path has its own class.
+        # credential-failure path has its own class.
         self.prior_verify = R.verify_forge_credential
         self.checked = []
         R.verify_forge_credential = lambda push, pr: self.checked.append(push)

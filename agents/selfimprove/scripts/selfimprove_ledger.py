@@ -796,8 +796,8 @@ def evaluate_gate(
             # ordinary `SKIPPED` deliberately charges nothing and starts no
             # cooldown so a better-evidenced run can retry; applied to a
             # permanent refusal that same generosity promotes the finding again
-            # every hour, and each promotion costs a minted token and a filing
-            # turn's model budget to reach the same no. The finding stays in the
+            # every hour, and each promotion costs a filing turn's model budget
+            # to reach the same no. The finding stays in the
             # ledger and keeps counting, which is the point -- a human reads it
             # there -- it is only never promoted again.
             reasons[fp] = "held: the filing turn refused this permanently (%s)" % (

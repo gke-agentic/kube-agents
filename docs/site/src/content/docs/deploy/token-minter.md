@@ -110,30 +110,27 @@ curl -i -X POST http://github-token-minter.kubeagents-system.svc.cluster.local:8
 
 A 200 response whose body is the short-lived GitHub installation token means the pipeline works end-to-end.
 
-## Two minters, one page
+## The self-improvement loop does not use this
 
-`selfImprovement.mode: fork` or `upstream` renders a second Minty Deployment,
-`kube-agents-selfimprove-token-minter`, alongside the one above. It is the same image and the same
-protocol, and everything in "How it works" applies to it unchanged. Four things differ:
+There is one minter in an install, and this page describes it. The self-improvement loop
+(`selfImprovement.mode: fork` or `upstream`) authenticates to GitHub as a robot account holding a
+classic personal access token, mounted from a Kubernetes Secret you create by hand and named in
+`selfImprovement.github.patSecret`. It has no App, no rule file and no minter of its own, and its
+pod is given no `TOKEN_BROKER_URL`, so nothing it runs can reach the minter above either. The
+minter's NetworkPolicy independently declines it: ingress requires
+`kubeagents.x-k8s.io/has-credential-proxy: "true"`, and the CronJob's pod carries
+`kubeagents.x-k8s.io/selfimprove: "true"` instead.
 
-- **Its App is a different App**, installed on kube-agents and on your fork of it rather than on a
-  GitOps repository, and configured through `selfImprovement.github.*` rather than `githubMinter.*`.
-- **Its rule grants no `issues` permission.** In `upstream` mode it grants `contents: write` on the
-  fork and `pull_requests: write` on the upstream — never both on one repository, so a token that
-  can push cannot merge and a token that can open a pull request cannot write code. `report-only`,
-  the default mode, renders no minter at all.
-- **Its NetworkPolicy admits a different label.** Ingress comes from pods carrying
-  `kubeagents.x-k8s.io/selfimprove: "true"`, which only the CronJob's pod has, so the Platform Agent
-  cannot reach it and the loop cannot reach the Platform Agent's.
-- **Its Google half is a different module** — `terraform/modules/kube-agents-selfimprove` with
-  `create_minter = true`, which provisions its own GSA and its own import-only KMS key.
-
-The scope name is the one thing that is _not_ different: both rules call it `platform-agent-scope`,
-because the client that requests the token hardcodes that string. It names the scope, not the
-requester.
+That is a deliberate trade rather than an omission. An App installation could have been granted
+`contents: write` on the fork and `pull_requests: write` on the upstream and nothing else; a classic
+token carries `repo` wherever its account can reach, and nothing rotates it. What it buys is that
+one credential covers a cross-fork pull request, which two App installations cannot — `gh` stores
+one token per host, so the second would discard the first.
+[`docs/designs/self-improvement.md`](https://github.com/gke-labs/kube-agents/blob/main/docs/designs/self-improvement.md)
+§6 is canonical for the whole argument.
 
 ## Where to go next
 
 - [Declarative workflow](/kube-agents/concepts/declarative-workflow/) — the `submit-suggestion` skill that uses Minty.
 - [`k8s-operator/config/integrations/github/README.md`](https://github.com/gke-labs/kube-agents/blob/main/k8s-operator/config/integrations/github/README.md) — full Minty install detail.
-- [Security and IAM](/kube-agents/reference/security-and-iam/) — the self-improvement loop's two identities, and how they are kept apart from the agent's.
+- [Security and IAM](/kube-agents/reference/security-and-iam/) — the self-improvement loop's identities, and how they are kept apart from the agent's.
