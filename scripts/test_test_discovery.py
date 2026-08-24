@@ -37,6 +37,11 @@ EXCLUDED = {
     # pytest-native (fixtures, parametrize); unittest discovery collects two
     # of its tests and errors on both. Runs under `make test-bench`.
     "bench/tests": "pytest-native, runs under make test-bench",
+    # Runs in its own CI job (`integration` in python-tests.yml) during its
+    # probation period, so a flake in a young seam test cannot red the
+    # already-gating unit and coverage jobs. Joins the unit sweep when the
+    # job becomes a required check.
+    "tests/integration": "own CI job during probation, make test-integration",
     # tests/e2e is deliberately NOT here: its file is gchat_agent_test.py,
     # which the test_*.py pattern never matches. If a test_*.py ever lands
     # there, the orphan check below fires and forces this list to say why the
@@ -51,8 +56,11 @@ EXCLUDED = {
     "tests/memory": "hermes-agent dependency, decision pending",
 }
 
-# Directory names that are never test homes, at any depth.
-IGNORED_NAMES = {".venv", "node_modules", "__pycache__", ".git", ".coverage-data"}
+# Directory names that are never test homes, at any depth. .terraform holds
+# provider and module downloads (an initialized module can carry its own
+# upstream test files), so a worktree where tofu init ever ran would
+# otherwise red this guard on vendored tests.
+IGNORED_NAMES = {".venv", "node_modules", "__pycache__", ".git", ".coverage-data", ".terraform"}
 
 
 def discovered_dirs():
