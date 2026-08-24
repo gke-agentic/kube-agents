@@ -25,6 +25,7 @@ gates the findings it saw that hour.
 from __future__ import annotations
 
 import argparse
+import collections
 import datetime as _dt
 import json
 import os
@@ -156,6 +157,125 @@ def hyperlink(text: str, url: str, palette: Palette) -> str:
     if not palette.enabled or not url:
         return text
     return "\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\" % (url, text)
+
+
+#: A URL anywhere in a string, stripped before locations are parsed so that the
+#: `github.com` in one is not mistaken for a file called `com`.
+_URL_ANYWHERE = re.compile(r"https?://\S+")
+
+#: Either a dotted path with an optional `:line` or `:line-line`, or a bare
+#: `:line` continuing the path before it. The extension must start with a
+#: letter: that is what keeps `v2026.8.13` and `1.5s` out without a list of
+#: known suffixes.
+_LOCATION_REF = re.compile(
+    r"(?P<path>(?:[\w.+-]+/)*[\w.+-]+\.[A-Za-z]\w*)(?::(?P<line>\d+(?:-\d+)?))?"
+    r"|(?<![\w.]):(?P<bare>\d+(?:-\d+)?)"
+)
+
+
+def repo_toplevel(root: Optional[str] = None) -> frozenset:
+    """Top-level entries of the kube-agents checkout this script ships in.
+
+    This set is what tells a repo-relative path from everything else a location
+    string contains, and it has to be derived rather than listed. The live
+    ledger holds a finding in `agent/anthropic_adapter.py`, which is the Hermes
+    harness and not this repository at all; linking it to a kube-agents blob URL
+    would send the reader to a 404 that looks like the finding is stale rather
+    than like the link is wrong. Deriving the set also means a new top-level
+    directory needs no edit here.
+
+    Empty when the directory is not a kube-agents checkout, which switches every
+    file link off rather than guessing.
+    """
+    base = REPO_ROOT if root is None else pathlib.Path(root)
+    if not (base / "AGENTS.md").is_file():
+        return frozenset()
+    try:
+        return frozenset(entry.name for entry in base.iterdir() if entry.name != ".git")
+    except OSError:
+        return frozenset()
+
+
+def location_refs(location: str, roots: frozenset) -> List[Tuple[str, Optional[str]]]:
+    """The `path:line` references a location string names, in order, deduped.
+
+    A location is whatever the investigating agent wrote. Most are a bare
+    `path:line`, but the ones that are not run to prose -- a parenthetical after
+    the path, then a second reference given as a bare `:1162` -- so a bare line
+    number attaches to the path before it.
+
+    A candidate whose first segment is not a top-level entry of this repository
+    is dropped. That single rule does two jobs: it rejects the things that only
+    look like paths (`e.g.` parses as a file named `e` with extension `g`) and
+    it rejects real paths in other repositories.
+    """
+    if not roots:
+        return []
+    refs: List[Tuple[str, Optional[str]]] = []
+    current: Optional[str] = None
+    for match in _LOCATION_REF.finditer(_URL_ANYWHERE.sub(" ", location or "")):
+        path, line, bare = match.group("path"), match.group("line"), match.group("bare")
+        if path:
+            if path.split("/")[0] not in roots:
+                if "/" in path:
+                    # A real path, in another repository. Forget the running
+                    # one, so a trailing `:120` is not attached to whatever
+                    # repo-relative path came before *that*.
+                    current = None
+                # Without a slash it is far more likely to be code than a path
+                # -- `r.Status()` in a backticked snippet parses as one -- and
+                # letting that clear the running path costs the `:1162` that
+                # follows it a link it should have had.
+                continue
+            current = path
+            refs.append((path, line))
+        elif bare and current:
+            refs.append((current, bare))
+    seen = set()
+    return [ref for ref in refs if not (ref in seen or seen.add(ref))]
+
+
+def blob_url(repo: str, revision: str, path: str, line: Optional[str] = None) -> str:
+    """GitHub's permalink for `path` at `revision`, anchored on `line`.
+
+    Pinned to the revision the finding was made against rather than to a branch:
+    the line number is only meaningful against the code the agent read, and a
+    branch link drifts out from under it on the next commit.
+    """
+    if not repo or not revision or not path:
+        return ""
+    url = "https://github.com/%s/blob/%s/%s" % (repo, revision, path)
+    if not line:
+        return url
+    # GitHub spells a range `#L10-L20`, with the `L` repeated; a location writes
+    # it `10-20`.
+    return url + "#L%s" % line.replace("-", "-L")
+
+
+def location_links(
+    entry: Dict[str, Any], repo: str, roots: frozenset
+) -> List[Tuple[str, str]]:
+    """`(label, url)` for every file reference in a finding's location."""
+    revision = str(entry.get("revision") or "")
+    links = []
+    for path, line in location_refs(str(entry.get("location") or ""), roots):
+        url = blob_url(repo, revision, path, line)
+        if url:
+            links.append(("%s:%s" % (path, line) if line else path, url))
+    return links
+
+
+def target_repo(env: Dict[str, str]) -> str:
+    """The `owner/name` a finding's revision can be resolved against.
+
+    The fork in fork mode, because that is where the revision the runner checked
+    out is guaranteed to exist -- upstream may not have the branch yet. Under
+    report-only nothing is pushed anywhere, so the upstream repository is the
+    only honest answer.
+    """
+    if env.get("SELFIMPROVE_MODE") == "report-only":
+        return env.get("SELFIMPROVE_UPSTREAM_REPO", "") or ""
+    return env.get("SELFIMPROVE_FORK_REPO") or env.get("SELFIMPROVE_UPSTREAM_REPO") or ""
 
 
 # --------------------------------------------------------------------------
@@ -334,9 +454,15 @@ def render_table(
 ) -> List[str]:
     """Render `rows` into a bordered table.
 
-    A cell is a tuple of up to four parts: the text, a style for all of it, a
-    URL to hyperlink it with, and a `{paragraph index: style}` override for a
-    cell whose newline-separated parts want colouring individually.
+    A cell is a tuple of up to five parts: the text, a style for all of it, a
+    URL to hyperlink it with, a `{paragraph index: style}` override for a cell
+    whose newline-separated parts want colouring individually, and a
+    `{paragraph index: URL}` for one that wants them linked individually.
+
+    The two URL forms differ in what has to be unwrapped for the link to be
+    drawn -- the whole cell for the plain one, only the paragraph itself for the
+    per-paragraph one. A cell stacking a title over a location has no single-line
+    form to reach, so a whole-cell URL on it would never render at all.
     """
     columns, rows, dropped = _fit_columns(columns, rows, width)
     widths = _resolve_widths(columns, rows, width)
@@ -352,6 +478,9 @@ def render_table(
             for i in range(len(columns))
         ]
         height = max(len(w) for w in wrapped)
+        # How many lines each paragraph of each cell ended up occupying, which
+        # is what decides whether a per-paragraph link is drawable.
+        spans = [collections.Counter(para for _, para in w) for w in wrapped]
         lines = []
         for line_no in range(height):
             pieces = []
@@ -361,9 +490,9 @@ def render_table(
                 style = cell[1] if len(cell) > 1 else None
                 url = cell[2] if len(cell) > 2 else None
                 per_line = cell[3] if len(cell) > 3 else None
+                per_line_url = cell[4] if len(cell) > 4 else None
                 if per_line and para in per_line:
                     style = per_line[para]
-                rendered = palette(raw, style)
                 # Only an unwrapped, non-empty line is linked. A hyperlink
                 # spanning two rows of a table renders as two separate links in
                 # most terminals and as escape soup in the rest; and one
@@ -371,7 +500,12 @@ def render_table(
                 # -- which a taller neighbouring column produces on nearly
                 # every row -- is pure litter, since a zero-width link has
                 # nothing for a reader to click.
-                if url and raw and len(wrapped[i]) == 1:
+                linkable = bool(url) and len(wrapped[i]) == 1
+                if per_line_url and para in per_line_url:
+                    url = per_line_url[para]
+                    linkable = spans[i][para] == 1
+                rendered = palette(raw, style)
+                if url and raw and linkable:
                     rendered = hyperlink(rendered, url, palette)
                 pieces.append(_pad(rendered, widths[i], column.align))
             lines.append(vertical + " " + (" " + vertical + " ").join(pieces) + " " + vertical)
@@ -716,7 +850,8 @@ def render_header(
         base = env.get("SELFIMPROVE_BASE_BRANCH") or ""
         detail = ""
         if mode != "report-only" and target:
-            detail = " → %s%s" % (target, " (base %s)" % base if base else "")
+            shown = hyperlink(target, "https://github.com/%s" % target, palette)
+            detail = " → %s%s" % (shown, " (base %s)" % base if base else "")
         lines.append(field("mode", palette(mode, "bold") + detail))
 
     if cronjob:
@@ -825,6 +960,8 @@ def render_findings(
     sort: str,
     min_severity: Optional[str],
     signal: Optional[str],
+    repo: str = "",
+    roots: frozenset = frozenset(),
 ) -> Tuple[List[str], List[Dict[str, Any]]]:
     entries = sorted_findings(ledger)
     if min_severity:
@@ -876,9 +1013,17 @@ def render_findings(
         # worth, because the ones that run to 400 characters are prose about
         # the location rather than a `path:line`; `--detail` has all of it.
         parts = [(str(entry.get("title") or "(untitled)"), None)]
+        para_urls: Dict[int, str] = {}
         location = str(entry.get("location") or "")
         if location:
             parts.append((clip(location.split(" and ")[0], 110), "cyan"))
+            # The paragraph is linked as a whole, to the first file it names --
+            # the same reference the clip keeps. `--detail` links each of them
+            # separately, which is the only place a location naming three files
+            # has the room to offer three links.
+            links = location_links(entry, repo, roots)
+            if links:
+                para_urls[len(parts) - 1] = links[0][1]
         verdict = verdicts.get(str(entry.get("fingerprint", "")), "")
         if verdict:
             parts.append((verdict, verdict_style(verdict)))
@@ -897,6 +1042,7 @@ def render_findings(
                     None,
                     None,
                     {i: style for i, (_, style) in enumerate(parts) if style},
+                    para_urls,
                 ),
             ]
         )
@@ -946,7 +1092,14 @@ def render_promotions(
 
 
 def render_detail(
-    entry: Dict[str, Any], verdict: str, now: _dt.datetime, palette: Palette, width: int, utc: bool
+    entry: Dict[str, Any],
+    verdict: str,
+    now: _dt.datetime,
+    palette: Palette,
+    width: int,
+    utc: bool,
+    repo: str = "",
+    roots: frozenset = frozenset(),
 ) -> List[str]:
     severity = str(entry.get("severity", "?")).lower()
     wrap = max(40, width - 4)
@@ -967,6 +1120,17 @@ def render_detail(
     out = [head, ""]
     out.extend(block("title", str(entry.get("title") or "(untitled)"), "bold"))
     out.extend(block("location", str(entry.get("location") or "(not localised)"), "cyan"))
+
+    # The location as written is prose and stays that way; these are the file
+    # references pulled out of it, one per line so each is short enough to
+    # survive as a single clickable link, pinned to the revision the finding was
+    # made against. A location that names files in another repository, or names
+    # none at all, produces no block rather than a dead link.
+    links = location_links(entry, repo, roots)
+    if links:
+        out.append(palette("  open", "dim"))
+        out.extend("    " + hyperlink(palette(label, "blue"), url, palette) for label, url in links)
+        out.append("")
 
     seen = occurrences(entry, now)
     said = reported(entry, now)
@@ -1146,6 +1310,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     env = cronjob_env(cronjob)
     gate = parse_gate(env)
     verdicts = gate_verdicts(ledger, gate, now)
+    repo, roots = target_repo(env), repo_toplevel()
 
     if args.detail:
         entries = sorted_findings(ledger)
@@ -1158,7 +1323,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
             return 1
         for line in render_detail(
-            entry, verdicts.get(str(entry.get("fingerprint", "")), ""), now, palette, width, args.utc
+            entry,
+            verdicts.get(str(entry.get("fingerprint", "")), ""),
+            now,
+            palette,
+            width,
+            args.utc,
+            repo,
+            roots,
         ):
             print(line)
         return 0
@@ -1173,7 +1345,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     out.append("")
     out.append(palette("FINDINGS", "head"))
     table, entries = render_findings(
-        ledger, verdicts, now, palette, width, box, args.sort, args.severity, args.signal
+        ledger, verdicts, now, palette, width, box, args.sort, args.severity, args.signal, repo, roots
     )
     out.extend(table)
 

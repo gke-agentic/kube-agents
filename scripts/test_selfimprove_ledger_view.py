@@ -212,6 +212,40 @@ class TestTableRendering(unittest.TestCase):
         title = [l for l in lines if "title" in view.plain(l)][0]
         self.assertNotIn(view.STYLES["cyan"], title)
 
+    def test_a_per_paragraph_link_reaches_a_cell_no_whole_cell_link_could(self):
+        """The FINDING cell always stacks a title over a location, so it never
+        has the single-line form a whole-cell URL requires. The per-paragraph
+        map is the only way its location is ever clickable."""
+        columns = [view.Column("C", wrap=True, min_width=40)]
+        url = "https://github.com/o/r/blob/abc/x.go#L1"
+        cell = ("a title\nx.go:1", None, None, {1: "cyan"}, {1: url})
+        lines = self.render(columns, [[cell]], width=50)
+        self.assertEqual(sum(line.count("\x1b]8;;" + url) for line in lines), 1)
+        # The whole-cell form on the same cell renders no link at all.
+        plain_cell = ("a title\nx.go:1", None, url)
+        self.assertEqual(
+            sum(l.count("\x1b]8;;" + url) for l in self.render(columns, [[plain_cell]], width=50)),
+            0,
+        )
+
+    def test_a_per_paragraph_link_is_dropped_when_that_paragraph_wraps(self):
+        """A link split across two table rows renders as two links, so a
+        paragraph too long for the column loses its link rather than being
+        drawn broken. The text still shows."""
+        columns = [view.Column("C", wrap=True, min_width=12)]
+        url = "https://github.com/o/r/blob/abc/x.go#L1"
+        cell = ("t\nsome/quite/long/path/that/will/wrap.go:1", None, None, None, {1: url})
+        lines = self.render(columns, [[cell]], width=24)
+        self.assertEqual(sum(line.count("\x1b]8;;") for line in lines), 0)
+        self.assertIn("wrap.go", "".join(view.plain(line) for line in lines))
+
+    def test_a_per_paragraph_link_does_not_change_the_layout(self):
+        columns = [view.Column("C", wrap=True, min_width=40)]
+        url = "https://github.com/o/r/blob/abc/x.go#L1"
+        linked = self.render(columns, [[("a title\nx.go:1", None, None, None, {1: url})]])
+        bare = self.render(columns, [[("a title\nx.go:1", None)]])
+        self.assertEqual([view.plain(l) for l in linked], [view.plain(l) for l in bare])
+
     def test_long_unbroken_text_is_broken_rather_than_overflowing(self):
         columns = [view.Column("P", wrap=True, min_width=10)]
         rows = [[("a/very/long/path/with/no/spaces/at/all/in/it/anywhere.go:1090", None)]]
@@ -746,6 +780,179 @@ class TestDetail(unittest.TestCase):
         text = self.detail(entry)
         self.assertNotIn("evidence", text)
         self.assertNotIn("proposed fix", text)
+
+
+#: Stands in for the repository's top-level entries. Real runs derive this from
+#: the checkout the script ships in; pinning it here keeps the tests from
+#: changing meaning the next time a top-level directory is added or removed.
+ROOTS = frozenset({"agents", "k8s-operator", "charts", "docs", "scripts", "images.json"})
+REPO = "gke-agentic/kube-agents"
+
+
+class TestLocationParsing(unittest.TestCase):
+    def refs(self, location, roots=ROOTS):
+        return view.location_refs(location, roots)
+
+    def test_a_bare_path_and_line(self):
+        self.assertEqual(
+            self.refs("k8s-operator/cmd/main.go:108"), [("k8s-operator/cmd/main.go", "108")]
+        )
+
+    def test_a_path_with_no_line(self):
+        self.assertEqual(self.refs("images.json"), [("images.json", None)])
+
+    def test_a_second_reference_given_as_a_bare_line_number(self):
+        """The live ledger writes `...controller.go:1090 (...) and :1162 (...)`,
+        so a bare line number attaches to the path before it."""
+        location = "k8s-operator/internal/controller/platformagent_controller.go:1090 (a) and :1162 (b)"
+        self.assertEqual(
+            self.refs(location),
+            [
+                ("k8s-operator/internal/controller/platformagent_controller.go", "1090"),
+                ("k8s-operator/internal/controller/platformagent_controller.go", "1162"),
+            ],
+        )
+
+    def test_code_in_the_prose_does_not_detach_a_following_bare_line(self):
+        """Regression: the backticked `r.Status().Update(...)` between the two
+        references parses as a dotted path, and treating it as a foreign one
+        cost `:1162` its link."""
+        location = (
+            "k8s-operator/internal/controller/platformagent_controller.go:1090 "
+            "(`return newPhase, r.Status().Update(ctx, agent)`) and :1162 (the other)"
+        )
+        self.assertEqual(len(self.refs(location)), 2)
+
+    def test_a_real_path_in_another_repository_does_detach_it(self):
+        self.assertEqual(self.refs("agent/foo.py:10 and :20"), [])
+
+    def test_a_line_range_is_kept_whole(self):
+        self.assertEqual(
+            self.refs("charts/kube-agents/templates/self-improvement.yaml:611-612"),
+            [("charts/kube-agents/templates/self-improvement.yaml", "611-612")],
+        )
+
+    def test_another_repositorys_paths_are_not_linked(self):
+        """`agent/anthropic_adapter.py` is the Hermes harness. A kube-agents
+        blob URL for it 404s, which reads as a stale finding rather than a bad
+        link."""
+        self.assertEqual(self.refs("agent/anthropic_adapter.py:136 (_is_claude_model)"), [])
+
+    def test_prose_that_only_looks_like_a_path_is_rejected(self):
+        for text in ("e.g. the handler", "hermes v2026.8.13 took 1.5s", "see Note: 4"):
+            self.assertEqual(self.refs(text), [], text)
+
+    def test_a_url_in_the_prose_is_not_mined_for_paths(self):
+        self.assertEqual(self.refs("see https://github.com/o/r/blob/main/x.py here"), [])
+
+    def test_repeats_are_collapsed(self):
+        self.assertEqual(len(self.refs("docs/a.md:1 and docs/a.md:1")), 1)
+
+    def test_no_roots_means_no_references(self):
+        self.assertEqual(self.refs("k8s-operator/cmd/main.go:108", frozenset()), [])
+
+
+class TestBlobUrls(unittest.TestCase):
+    def test_pins_the_revision_the_finding_was_made_against(self):
+        self.assertEqual(
+            view.blob_url(REPO, "abc123", "k8s-operator/cmd/main.go", "108"),
+            "https://github.com/gke-agentic/kube-agents/blob/abc123/k8s-operator/cmd/main.go#L108",
+        )
+
+    def test_a_range_repeats_the_L_the_way_github_spells_it(self):
+        self.assertTrue(view.blob_url(REPO, "abc", "x.py", "48-54").endswith("#L48-L54"))
+
+    def test_no_line_means_no_anchor(self):
+        self.assertTrue(view.blob_url(REPO, "abc", "x.py").endswith("/x.py"))
+
+    def test_a_missing_ingredient_yields_no_url(self):
+        self.assertEqual(view.blob_url("", "abc", "x.py", "1"), "")
+        self.assertEqual(view.blob_url(REPO, "", "x.py", "1"), "")
+        self.assertEqual(view.blob_url(REPO, "abc", "", "1"), "")
+
+    def test_a_finding_with_no_revision_is_not_linked(self):
+        entry = finding("aaaa", "high", "t", revision="")
+        self.assertEqual(view.location_links(entry, REPO, ROOTS), [])
+
+
+class TestRepoToplevel(unittest.TestCase):
+    def test_derives_the_set_from_the_checkout_this_script_ships_in(self):
+        roots = view.repo_toplevel()
+        self.assertIn("k8s-operator", roots)
+        self.assertIn("agents", roots)
+        self.assertNotIn(".git", roots)
+        self.assertNotIn("agent", roots)
+
+    def test_a_directory_that_is_not_a_checkout_switches_linking_off(self):
+        with tempfile.TemporaryDirectory() as empty:
+            self.assertEqual(view.repo_toplevel(empty), frozenset())
+
+
+class TestTargetRepo(unittest.TestCase):
+    def test_fork_mode_resolves_against_the_fork(self):
+        env = {
+            "SELFIMPROVE_MODE": "fork",
+            "SELFIMPROVE_FORK_REPO": "fork/repo",
+            "SELFIMPROVE_UPSTREAM_REPO": "up/repo",
+        }
+        self.assertEqual(view.target_repo(env), "fork/repo")
+
+    def test_report_only_resolves_against_upstream(self):
+        """Nothing is pushed to a fork under report-only, so the revision is
+        only findable upstream."""
+        env = {
+            "SELFIMPROVE_MODE": "report-only",
+            "SELFIMPROVE_FORK_REPO": "fork/repo",
+            "SELFIMPROVE_UPSTREAM_REPO": "up/repo",
+        }
+        self.assertEqual(view.target_repo(env), "up/repo")
+
+    def test_no_configuration_yields_no_repo(self):
+        self.assertEqual(view.target_repo({}), "")
+
+
+class TestLocationLinksInTheReport(unittest.TestCase):
+    def test_the_findings_table_links_the_location(self):
+        table, _ = view.render_findings(
+            ledger(), {}, NOW, view.Palette(True), 200, view.BOX_UNICODE,
+            "severity", None, None, REPO, ROOTS,
+        )
+        text = "\n".join(table)
+        self.assertIn(
+            "\x1b]8;;https://github.com/gke-agentic/kube-agents/blob/"
+            "aa3b7aa1111111111111111111111111111111/"
+            "k8s-operator/internal/controller/platformagent_controller.go#L1090",
+            text,
+        )
+
+    def test_no_repo_means_no_links_and_the_same_text(self):
+        args = (ledger(), {}, NOW, view.Palette(True), 200, view.BOX_UNICODE, "severity", None, None)
+        linked, _ = view.render_findings(*args, REPO, ROOTS)
+        bare, _ = view.render_findings(*args)
+        self.assertNotIn("\x1b]8;;", "\n".join(bare))
+        self.assertEqual([view.plain(l) for l in linked], [view.plain(l) for l in bare])
+
+    def test_detail_lists_every_reference_separately(self):
+        entry = finding(
+            "aaaa",
+            "high",
+            "t",
+            location="k8s-operator/cmd/main.go:108 and agents/platform/scripts/x.py:4",
+        )
+        text = "\n".join(
+            view.render_detail(entry, "", NOW, view.Palette(True), 100, True, REPO, ROOTS)
+        )
+        self.assertIn("open", view.plain(text))
+        self.assertIn("main.go#L108", text)
+        self.assertIn("x.py#L4", text)
+
+    def test_detail_omits_the_block_when_nothing_is_linkable(self):
+        entry = finding("aaaa", "high", "t", location="agent/anthropic_adapter.py:136")
+        text = "\n".join(
+            view.render_detail(entry, "", NOW, view.Palette(True), 100, True, REPO, ROOTS)
+        )
+        self.assertNotIn("\x1b]8;;", text)
+        self.assertIn("anthropic_adapter", view.plain(text))
 
 
 class TestEndToEnd(unittest.TestCase):

@@ -870,6 +870,14 @@ finding is `evaluate_gate` replayed over the whole ledger against the CronJob's 
 answers "what would the next run do with this" and is deliberately not a record of what any past run
 decided: a run only ever gates the findings it saw that hour.
 
+File locations are OSC 8 hyperlinks to GitHub, pinned to the revision the finding was made against
+rather than to a branch, because the line number is only meaningful against the code the agent read.
+The findings table links the first reference in a location; `--detail` lists every one of them. What
+gets linked is decided by the first path segment: it has to be a top-level entry of this repository,
+which is derived from the checkout the script ships in rather than listed. That rule is what keeps a
+finding in `agent/anthropic_adapter.py` — the Hermes harness, a different repository — from getting
+a kube-agents URL that 404s, and a 404 reads as a stale finding rather than as a bad link.
+
 ## 10. Failure modes it takes a position on
 
 **The loop investigates itself.** Its own runs produce logs and errors in the same namespace, and a
