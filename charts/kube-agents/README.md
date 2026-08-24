@@ -206,9 +206,17 @@ Deployment passes its readiness probe.
 `selfImprovement.*` renders an hourly CronJob that investigates kube-agents
 itself — its source, its harness, and the installation it runs in — plus the
 ServiceAccount, Role and two RoleBindings it reads with, a ledger ConfigMap it
-counts findings in, its profile ConfigMap, and a NetworkPolicy. Eight objects,
-all behind `selfImprovement.enabled`, which defaults to false: off renders
-nothing at all rather than something idle.
+counts findings in, its profile ConfigMap, and a NetworkPolicy. Eight objects in
+`report-only`; `fork` and `upstream` add a ninth, the ConfigMap holding the
+credential proxy's deny policy. `selfImprovement.networkPolicy: false` drops the
+NetworkPolicy and takes one off either count. All of them sit behind
+`selfImprovement.enabled`, which defaults to false: off renders nothing at all
+rather than something idle.
+
+One object outlives that switch. The ledger ConfigMap carries
+`helm.sh/resource-policy: keep`, so turning the loop off — or uninstalling the
+release — leaves it in the namespace with its findings and promotion records
+intact. Delete it by hand if you want the history gone.
 
 `mode` decides how far its output travels. `report-only` (the default) writes
 findings to the ledger ConfigMap and stops — no GitHub credential, no
