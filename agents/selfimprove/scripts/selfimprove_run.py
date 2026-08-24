@@ -98,6 +98,15 @@ FORGE_PREFLIGHT_TIMEOUT_SECONDS = 60
 #: never granted on that repository.
 FORGE_PUSH_PERMISSIONS = ("WRITE", "MAINTAIN", "ADMIN")
 
+#: And what it has to say about the *pull request* target before asking the
+#: filing turn to label anything. Opening a pull request against a repository
+#: needs only read -- that is what a fork-based contribution is -- but attaching
+#: a label to one needs TRIAGE, because a label is repository metadata rather
+#: than part of the proposal. The two permissions come apart in exactly the
+#: configuration upstream mode exists for: a robot with ADMIN on its own fork
+#: and READ on the repository it is contributing to.
+FORGE_LABEL_PERMISSIONS = ("TRIAGE", "WRITE", "MAINTAIN", "ADMIN")
+
 #: `gh`'s dedicated exit code for "this needed a credential and there isn't
 #: one". Every other failure mode comes back as 1, so it is what separates a
 #: token that was never seeded from one that was and cannot see the repository.
@@ -1719,7 +1728,7 @@ def _gh_repo_view(repository: str, fields: str, cwd: str) -> dict:
     return parsed
 
 
-def verify_forge_credential(push_target: str, pr_target: str, cwd: str) -> None:
+def verify_forge_credential(push_target: str, pr_target: str, cwd: str) -> bool:
     """Prove the seeded token can do this turn's writes, before paying for one.
 
     Nothing is minted here and nothing needs to be. This pod's
@@ -1747,6 +1756,12 @@ def verify_forge_credential(push_target: str, pr_target: str, cwd: str) -> None:
 
     Raises RuntimeError so the caller can abort the turn before paying for it.
 
+    Returns whether the token may attach labels to a pull request on
+    `pr_target`, which is a second question the same two reads already answer.
+    Read is enough to open a pull request and not enough to label one, so the
+    caller uses this to decide whether to ask the turn for labels at all rather
+    than let it discover the refusal one failed `gh pr edit` at a time.
+
     `cwd` is the runner's home, which is also the proxy's workspace root. Both
     reads run from there for the reason `_gh_repo_view` gives.
     """
@@ -1758,16 +1773,38 @@ def verify_forge_credential(push_target: str, pr_target: str, cwd: str) -> None:
             "with write access to that repository."
             % (seen or "no permission", push_target, "/".join(FORGE_PUSH_PERMISSIONS))
         )
-    if pr_target != push_target:
-        _gh_repo_view(pr_target, "nameWithOwner", cwd)
+    # `viewerPermission` rather than `nameWithOwner` for the second read: it is
+    # the same one call and the same proof of reachability -- an invisible
+    # repository fails `gh repo view` whatever field was asked for -- while also
+    # answering the label question. Asking for the cheaper field would mean
+    # paying for a third read later, or guessing.
+    pr_permission = (
+        seen
+        if pr_target == push_target
+        else _gh_repo_view(pr_target, "viewerPermission", cwd).get("viewerPermission")
+    )
+    may_label = pr_permission in FORGE_LABEL_PERMISSIONS
     log(
         "GitHub token verified: %s on %s%s"
         % (
             seen,
             push_target,
-            ", %s readable" % pr_target if pr_target != push_target else "",
+            ", %s on %s" % (pr_permission or "no permission", pr_target)
+            if pr_target != push_target
+            else "",
         )
     )
+    if not may_label:
+        log(
+            "the token has %s on %s, which cannot attach labels (needs %s); "
+            "this run opens its pull requests unlabelled"
+            % (
+                pr_permission or "no permission",
+                pr_target,
+                "/".join(FORGE_LABEL_PERMISSIONS),
+            )
+        )
+    return may_label
 
 
 def usable_label(name: str, knob: str) -> str:
@@ -1853,14 +1890,49 @@ def file_pull_request(
     # already proved writable, and the push goes to it. A turn left to infer the
     # slug from `git remote` will sometimes infer the other one.
     push_target = fork or upstream
-    labels = [
-        name
-        for name in (
-            usable_label(pr_label, "prLabel"),
-            severity_label(entry, severity_label_prefix),
-        )
-        if name
-    ]
+    # Check the credential before the turn, not during it. Doing it here rather
+    # than letting the turn find out means a bad token costs two API reads
+    # instead of the turn's entire model budget, and the message names the cause
+    # rather than surfacing as `git push` asking for a username on a terminal
+    # that is not attached to anything.
+    #
+    # There is no expiry story to tell alongside it. The token is a personal
+    # access token seeded once at the sidecar's startup, so it is exactly as
+    # valid at the end of a filing turn as at the beginning, whatever
+    # `fileTimeoutSeconds` says. What replaced the old one-hour warning is the
+    # opposite risk, and it is the operator's: a token nothing rotates stays
+    # good until somebody revokes it.
+    #
+    # Before the prompt rather than after it, because the prompt has to say
+    # whether to label, and only this call knows. It used to sit below the whole
+    # substitution dict, which meant the turn was told to apply labels the token
+    # could not attach and found out one refused `gh pr edit` at a time.
+    try:
+        may_label = verify_forge_credential(push_target, upstream, home)
+    except RuntimeError as exc:
+        log("not filing %s: %s" % (entry.get("fingerprint", "?"), exc))
+        # SKIPPED, so nothing is charged. No pull request was opened and the
+        # finding is untouched -- the credential is the loop's problem, not the
+        # finding's, and burning its gate eligibility over a token nobody
+        # renewed would hide the real fault behind a cooldown.
+        return SKIPPED, "could not verify the GitHub token for %s" % push_target
+    # Empty when the token cannot attach one, which drops the prompt to its
+    # "this install opens them unlabelled" branch. Not a degradation to apologise
+    # for: in upstream mode the robot is an outside contributor to the base
+    # repository and will never have TRIAGE on it, so the labels are unreachable
+    # by construction there rather than by misconfiguration.
+    labels = (
+        [
+            name
+            for name in (
+                usable_label(pr_label, "prLabel"),
+                severity_label(entry, severity_label_prefix),
+            )
+            if name
+        ]
+        if may_label
+        else []
+    )
     # Everything in this block came, directly or at one remove, from log lines,
     # HTTP responses and Kubernetes object fields the loop does not control.
     # This is the one turn in the whole feature that holds a GitHub credential,
@@ -2000,27 +2072,6 @@ def file_pull_request(
         "mode": mode,
         "install": describe_install(),
     }
-    # Check the credential before the turn, not during it. Doing it here rather
-    # than letting the turn find out means a bad token costs two API reads
-    # instead of the turn's entire model budget, and the message names the cause
-    # rather than surfacing as `git push` asking for a username on a terminal
-    # that is not attached to anything.
-    #
-    # There is no expiry story to tell alongside it. The token is a personal
-    # access token seeded once at the sidecar's startup, so it is exactly as
-    # valid at the end of a filing turn as at the beginning, whatever
-    # `fileTimeoutSeconds` says. What replaced the old one-hour warning is the
-    # opposite risk, and it is the operator's: a token nothing rotates stays
-    # good until somebody revokes it.
-    try:
-        verify_forge_credential(push_target, upstream, home)
-    except RuntimeError as exc:
-        log("not filing %s: %s" % (entry.get("fingerprint", "?"), exc))
-        # SKIPPED, so nothing is charged. No pull request was opened and the
-        # finding is untouched -- the credential is the loop's problem, not the
-        # finding's, and burning its gate eligibility over a token nobody
-        # renewed would hide the real fault behind a cooldown.
-        return SKIPPED, "could not verify the GitHub token for %s" % push_target
     # The one turn that gets the shims. It is only reached in fork and upstream
     # mode, after the gate, on a finding whose untrusted text is fenced above.
     code, stdout, _ = run_agent(

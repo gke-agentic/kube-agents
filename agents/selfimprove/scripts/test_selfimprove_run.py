@@ -1214,23 +1214,58 @@ class ForgeCredentialTests(unittest.TestCase):
         credential grounds every filing turn on the install. That is what
         happened on the reference install: outcome=ok, promoted=2, filed=0.
         """
-        self.answers["gke-labs/kube-agents"] = (0, '{"nameWithOwner":"gke-labs/kube-agents"}', "")
+        self.answers["gke-labs/kube-agents"] = (0, '{"viewerPermission":"READ"}', "")
         R.verify_forge_credential("adamparco/kube-agents", "gke-labs/kube-agents", HOME)
         self.assertEqual(2, len(self.calls))
         for _argv, kwargs in self.calls:
             self.assertEqual(HOME, kwargs["cwd"])
 
+    def test_read_on_the_pr_target_opens_but_cannot_label(self):
+        """The upstream-mode shape: ADMIN on the robot's own fork, READ on the
+        repository it contributes to. That is enough to open a pull request and
+        not enough to attach a label, so the preflight passes and answers False.
+        """
+        self.answers["gke-labs/kube-agents"] = (0, '{"viewerPermission":"READ"}', "")
+        self.assertFalse(
+            R.verify_forge_credential("adamparco/kube-agents", "gke-labs/kube-agents", HOME)
+        )
+
+    def test_triage_on_the_pr_target_is_enough_to_label(self):
+        """TRIAGE is the least permission that can attach a label, and it cannot
+        push -- which is why labelling gets its own tuple rather than reusing
+        `FORGE_PUSH_PERMISSIONS`.
+        """
+        self.answers["gke-labs/kube-agents"] = (0, '{"viewerPermission":"TRIAGE"}', "")
+        self.assertTrue(
+            R.verify_forge_credential("adamparco/kube-agents", "gke-labs/kube-agents", HOME)
+        )
+
+    def test_one_repository_answers_the_label_question_from_the_push_read(self):
+        """Fork mode points both targets at the same repository. The permission
+        is already in hand, so asking GitHub twice for it would buy nothing.
+        """
+        self.assertTrue(
+            R.verify_forge_credential("adamparco/kube-agents", "adamparco/kube-agents", HOME)
+        )
+        self.assertEqual(1, len(self.calls))
+
     def test_upstream_mode_also_checks_the_base_is_reachable(self):
         """Reachable, not writable. Opening a pull request from a fork asks
         nothing of the base beyond read, so requiring write there would refuse
-        the exact configuration upstream mode exists for."""
-        self.answers["gke-labs/kube-agents"] = (0, '{"nameWithOwner":"gke-labs/kube-agents"}', "")
+        the exact configuration upstream mode exists for.
+
+        The field asked for is `viewerPermission` rather than the cheaper
+        `nameWithOwner`: reachability is proved either way, because an invisible
+        repository fails `gh repo view` whatever was requested, and the
+        permission is what decides whether to ask the turn for labels.
+        """
+        self.answers["gke-labs/kube-agents"] = (0, '{"viewerPermission":"READ"}', "")
         R.verify_forge_credential("adamparco/kube-agents", "gke-labs/kube-agents", HOME)
         self.assertEqual(
             ["adamparco/kube-agents", "gke-labs/kube-agents"],
             [argv[3] for argv, _ in self.calls],
         )
-        self.assertEqual("nameWithOwner", self.calls[1][0][5])
+        self.assertEqual("viewerPermission", self.calls[1][0][5])
 
     def test_read_on_the_push_target_is_not_enough(self):
         """READ is what a token with no `repo` scope sees on a public repository,
@@ -1352,7 +1387,7 @@ class FilingPreflightTests(unittest.TestCase):
     def test_fork_mode_checks_the_fork_only(self):
         """Which is also the base under fork mode, so one read covers the turn."""
         checked = []
-        R.verify_forge_credential = lambda push, pr, cwd: checked.append((push, pr))
+        R.verify_forge_credential = lambda push, pr, cwd: (checked.append((push, pr)), True)[1]
         self._file("fork", "adamparco/kube-agents", "adamparco/kube-agents")
         self.assertEqual([("adamparco/kube-agents", "adamparco/kube-agents")], checked)
 
@@ -1361,7 +1396,7 @@ class FilingPreflightTests(unittest.TestCase):
         to carry both -- which is the thing one classic PAT buys over two App
         installations."""
         checked = []
-        R.verify_forge_credential = lambda push, pr, cwd: checked.append((push, pr))
+        R.verify_forge_credential = lambda push, pr, cwd: (checked.append((push, pr)), True)[1]
         self._file("upstream", "gke-labs/kube-agents", "adamparco/kube-agents")
         self.assertEqual([("adamparco/kube-agents", "gke-labs/kube-agents")], checked)
 
@@ -1408,7 +1443,7 @@ class FilingOutcomeTests(unittest.TestCase):
         # credential-failure path has its own class.
         self.prior_verify = R.verify_forge_credential
         self.checked = []
-        R.verify_forge_credential = lambda push, pr, cwd: self.checked.append(push)
+        R.verify_forge_credential = lambda push, pr, cwd: (self.checked.append(push), True)[1]
 
     def tearDown(self):
         R.run_agent = self.prior
@@ -1693,7 +1728,7 @@ class BaseBranchTests(unittest.TestCase):
         R.run_agent = lambda prompt, *a, **k: (self.prompts.append(prompt), (0, "", None))[1]
         self.addCleanup(setattr, R, "run_agent", self.prior)
         self.prior_verify = R.verify_forge_credential
-        R.verify_forge_credential = lambda push, pr, cwd: None
+        R.verify_forge_credential = lambda push, pr, cwd: True
         self.addCleanup(setattr, R, "verify_forge_credential", self.prior_verify)
 
     def _prompt(self, *args):
@@ -1795,7 +1830,7 @@ class PullRequestLabelTests(unittest.TestCase):
         R.run_agent = lambda prompt, *a, **k: (self.prompts.append(prompt), (0, "", None))[1]
         self.addCleanup(setattr, R, "run_agent", self.prior)
         self.prior_verify = R.verify_forge_credential
-        R.verify_forge_credential = lambda push, pr, cwd: None
+        R.verify_forge_credential = lambda push, pr, cwd: True
         self.addCleanup(setattr, R, "verify_forge_credential", self.prior_verify)
 
     def _prompt(self, *args, **kwargs):
@@ -1819,6 +1854,21 @@ class PullRequestLabelTests(unittest.TestCase):
         self.assertIn(
             "Label the pull request: `self-improvement`", self._prompt("self-improvement")
         )
+
+    def test_a_token_that_cannot_label_is_not_asked_to(self):
+        """What the reference install did on its first successful filing: the
+        robot has READ on the base repository, so both `gh pr edit --add-label`
+        commands were refused and the turn reported failure on a pull request
+        that had in fact opened. The permission is known before the prompt is
+        built, so the turn is not asked for something it cannot do -- and the
+        prompt's claim that "your token can attach an existing label" stops
+        being false, because it is only reached when it is true.
+        """
+        R.verify_forge_credential = lambda push, pr, cwd: False
+        prompt = self._prompt("self-improvement")
+        self.assertIn("Label the pull request: no -- this install opens them unlabelled.", prompt)
+        self.assertNotIn("--add-label", prompt)
+        self.assertNotIn("can attach an existing label", prompt)
 
     def test_it_names_the_label_in_the_command_too(self):
         """A label named once is a label the turn has to re-type from prose."""
@@ -1991,7 +2041,7 @@ class TokenRefusalTests(unittest.TestCase):
         R.run_agent = lambda prompt, *a, **k: (self.prompts.append(prompt), (0, "", None))[1]
         self.addCleanup(setattr, R, "run_agent", self.prior)
         self.prior_verify = R.verify_forge_credential
-        R.verify_forge_credential = lambda push, pr, cwd: None
+        R.verify_forge_credential = lambda push, pr, cwd: True
         self.addCleanup(setattr, R, "verify_forge_credential", self.prior_verify)
         self.prior_log = R.log
         R.log = self.logs.append
@@ -2465,7 +2515,7 @@ class FilingWiringAndRefusalTests(unittest.TestCase):
             ("fetch_source", lambda *a, **k: "/src"),
             ("hermes_pin", lambda root: ""),
             ("scaffold_home", lambda home: None),
-            ("verify_forge_credential", lambda push, pr, cwd: None),
+            ("verify_forge_credential", lambda push, pr, cwd: True),
             ("run_agent", self._investigate),
             ("file_pull_request", self._file),
             # Reading it would be an API call, and `seconds_left` already
