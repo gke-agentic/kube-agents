@@ -286,10 +286,20 @@ def fingerprint(signal: str, title: str, location: str = "") -> str:
     collision needs two findings to agree on their whole sentence.
 
     Changing the material re-fingerprints every finding, so the rows already in
-    a ledger orphan: their promotions stay, and so do the cooldowns those
-    promotions hold, while new sightings accumulate on new rows. A one-time
-    reset of the occurrence counts, which the gate recovers from within
-    `minOccurrencesPerDay`.
+    a ledger orphan. The occurrence counts restart, which the gate does recover
+    from within `minOccurrencesPerDay`. The promotions do not recover: a record
+    stays on a row the new function can no longer produce, so the cooldown it
+    holds can never fire, while the live row that now represents the finding
+    carries none. Every run with budget then re-promotes a finding that is
+    already filed and spends a whole turn rediscovering its own pull request.
+    Narrowing the material here orphaned seven rows on the live install, two of
+    them holding pull-request records.
+
+    Re-keying is the repair, and it is mechanical rather than a guess: an
+    orphaned row's own title and location hash to the live row's identity under
+    the new function, so the rows that should merge identify themselves. Merge
+    the sightings and promotions, keep the live row's assessment, and do it in
+    the same change that moves the material.
     """
     material = "|".join([normalise(title), primary_location(location)])
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
