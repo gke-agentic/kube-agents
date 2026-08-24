@@ -53,6 +53,21 @@ def gate(**overrides):
     return base
 
 
+def seen_by(ledger, what, runs=L.MIN_CORROBORATING_RUNS, at=NOW, revision="abc"):
+    """Record one finding as `runs` separate runs saw it, an hour apart. Returns its fingerprint.
+
+    Most of the gate tests below are about something other than the occurrence
+    count -- the budget, the cooldown, a refusal -- and each of them still has
+    to get its finding past `MIN_CORROBORATING_RUNS` before the part it is
+    testing is reached. This puts that in one place rather than scattering
+    two-line loops through them.
+    """
+    fp = ""
+    for age in range(runs - 1, -1, -1):
+        fp, _ = L.record_finding(ledger, what, revision, at - dt.timedelta(hours=age))
+    return fp
+
+
 class NormaliseTests(unittest.TestCase):
     def test_strips_the_parts_that_differ_between_sightings(self):
         a = L.normalise("pod platform-agent-gateway-7d9f4c8b6-xk2vn failed at 2026-08-22T09:14:03Z")
@@ -102,6 +117,39 @@ class NormaliseLocationTests(unittest.TestCase):
             L.normalise_location("selfimprove_run.py:88:14"),
             L.normalise_location("selfimprove_run.py:91:3"),
         )
+
+    def test_a_line_number_written_as_prose_collapses_like_a_colon_one(self):
+        """`path:line` is a convention, not something the agent is held to.
+
+        Nothing validates the shape of `location`, and the same agent writes it
+        differently on different runs. Only the colon form was collapsed, so
+        "foo.go line 412" and "foo.go line 418" were two rows accumulating one
+        sighting each while the gate waited for either to reach five.
+        """
+        forms = [
+            "k8s-operator/foo.go line 412",
+            "k8s-operator/foo.go line 418",
+            "k8s-operator/foo.go, line 412",
+            "k8s-operator/foo.go at line 412",
+            "k8s-operator/foo.go around lines 412-418",
+            "k8s-operator/foo.go#L412",
+            "k8s-operator/foo.go#L412-L418",
+            "k8s-operator/foo.go:412",
+        ]
+        collapsed = {L.primary_location(form) for form in forms}
+        self.assertEqual(1, len(collapsed), collapsed)
+
+    def test_a_file_with_no_line_number_reduces_to_the_file(self):
+        self.assertEqual(
+            L.primary_location("selfimprove_run.py (the filing turn)"),
+            L.primary_location("selfimprove_run.py"),
+        )
+
+    def test_prose_that_looks_like_a_filename_is_not_taken_for_one(self):
+        """The fallback must not read a version number or an abbreviation as a path."""
+        for text in ("kubernetes 1.21 nodes", "the gchat webhook, e.g. the retry"):
+            with self.subTest(text=text):
+                self.assertEqual(L.primary_location(text), L.normalise_location(text))
 
 
 class FingerprintTests(unittest.TestCase):
@@ -235,6 +283,152 @@ class RecordFindingTests(unittest.TestCase):
         self.assertIn("rule wants 5", reasons[fp])
 
 
+class DescriptionSubstitutionTests(unittest.TestCase):
+    """Reaching an established row by echoing the title it was given.
+
+    Recomputing the fingerprint stops an agent *inventing* an identity, and does
+    nothing about the identity it is handed. The next run's brief carries every
+    known finding's title and location and asks for both back verbatim, so a run
+    can land on a row four honest runs built up and replace what it says. Same
+    fingerprint, five occurrences, promoted -- and the pull request argues for
+    whatever the fifth run wrote. The row's count belongs to the description it
+    was counted for, so a description with nothing in common with the stored one
+    starts again.
+    """
+
+    OTHER = dict(
+        summary=(
+            "Cluster agent profiles are scaffolded with a kubeconfig that grants "
+            "cluster-admin, which no runtime debugging skill needs."
+        ),
+        proposed_fix=(
+            "Bind the scaffolded profile to a read-only ClusterRole and delete the "
+            "admin binding the operator creates."
+        ),
+        user_impact=(
+            "A prompt injection reaching any cluster agent inherits administrative "
+            "rights over the whole cluster."
+        ),
+        evidence=["2026-08-22T11:00:00Z clusterrolebinding/cluster-agent-admin created"],
+    )
+
+    def _four_honest_runs(self):
+        ledger = L.empty_ledger()
+        fp = ""
+        for age in range(4, 0, -1):
+            fp, _ = L.record_finding(
+                ledger,
+                finding(
+                    severity="high",
+                    evidence=["2026-08-22T0%d:00:00Z E secrets is forbidden" % age],
+                ),
+                "abc",
+                NOW - dt.timedelta(hours=age),
+            )
+        return ledger, fp
+
+    def test_an_honest_re_report_with_fresh_evidence_keeps_the_count(self):
+        """The documented path, and the one a false positive here would break.
+
+        SOUL.md sec. 4 tells a run to re-report a known finding with the same
+        title and location and this run's own evidence, so the descriptions
+        differ every hour by design. Nothing may reset on that.
+        """
+        ledger, fp = self._four_honest_runs()
+        L.record_finding(
+            ledger,
+            finding(
+                severity="high",
+                summary="The reconcile loop retries forever, once a second.",
+                evidence=["2026-08-22T11:59:00Z E0822 secrets is forbidden"],
+            ),
+            "abc",
+            NOW,
+        )
+        self.assertEqual(5, L.occurrences_in_window(ledger["findings"][fp], NOW))
+        self.assertNotIn("description_reset", ledger["findings"][fp])
+
+    def test_a_wholesale_rewrite_of_a_known_row_restarts_its_count(self):
+        ledger, fp = self._four_honest_runs()
+        _, entry = L.record_finding(
+            ledger, finding(severity="high", **self.OTHER), "abc", NOW
+        )
+        self.assertEqual(1, L.occurrences_in_window(entry, NOW))
+        self.assertEqual(4, entry["description_reset"]["dropped"])
+        self.assertEqual(L.to_iso(NOW), entry["description_reset"]["at"])
+
+    def test_the_rewrite_cannot_promote_on_the_count_it_reached(self):
+        """The consequence, which is the reason any of this is here."""
+        ledger, fp = self._four_honest_runs()
+        L.record_finding(ledger, finding(severity="high", **self.OTHER), "abc", NOW)
+        promoted, reasons = L.evaluate_gate(ledger, gate(), [fp], NOW)
+        self.assertEqual(promoted, [])
+        self.assertIn("1 occurrence", reasons[fp])
+
+    def test_a_rewrite_releases_neither_the_cooldown_nor_a_refusal(self):
+        """Resetting more than the count would make this worse than the theft.
+
+        A rewrite that dropped the promotion record would clear the cooldown and
+        let the finding be filed again, and one that dropped `refused` would
+        restore the hourly retry of a permanent no. Both are reachable by the
+        same agent, so the reset stops at the sightings.
+        """
+        ledger, fp = self._four_honest_runs()
+        L.record_promotion(ledger, fp, "https://example.invalid/pr/1", "abc", NOW - dt.timedelta(hours=1))
+        L.record_refusal(ledger, fp, "SKIPPED: out of bounds", "abc", NOW - dt.timedelta(hours=1))
+        first_seen = ledger["findings"][fp]["first_seen"]
+        _, entry = L.record_finding(
+            ledger, finding(severity="critical", **self.OTHER), "abc", NOW
+        )
+        self.assertEqual(1, len(entry["promotions"]))
+        self.assertIn("refused", entry)
+        self.assertEqual(first_seen, entry["first_seen"])
+
+    def test_a_second_turn_in_the_same_run_may_rewrite_its_own_entry(self):
+        """The continuation brief tells it to, so this must not be read as theft."""
+        ledger = L.empty_ledger()
+        L.record_finding(ledger, finding(severity="high"), "abc", NOW)
+        _, entry = L.record_finding(ledger, finding(severity="high", **self.OTHER), "abc", NOW)
+        self.assertEqual(1, L.occurrences_in_window(entry, NOW))
+        self.assertNotIn("description_reset", entry)
+        self.assertEqual(self.OTHER["summary"], entry["summary"])
+
+    def test_a_row_too_terse_to_compare_is_left_alone(self):
+        """The check withholds an answer rather than guessing at one.
+
+        A finding whose whole description is a handful of words has no
+        vocabulary to measure, and guessing there would reset honest rows.
+        """
+        ledger = L.empty_ledger()
+        terse = dict(summary="It hangs.", proposed_fix="Fix it.", user_impact="", evidence=[])
+        for age in (2, 1):
+            fp, _ = L.record_finding(
+                ledger, finding(**terse), "abc", NOW - dt.timedelta(hours=age)
+            )
+        _, entry = L.record_finding(
+            ledger, finding(summary="It leaks.", proposed_fix="Close it.", user_impact=""), "abc", NOW
+        )
+        self.assertEqual(3, L.occurrences_in_window(entry, NOW))
+
+    def test_a_run_that_omits_a_description_does_not_blank_the_stored_one(self):
+        """An absent field is a run not repeating itself, not a retraction."""
+        ledger = L.empty_ledger()
+        L.record_finding(ledger, finding(), "abc", NOW - dt.timedelta(hours=1))
+        stripped = finding()
+        for field in ("summary", "proposed_fix", "evidence"):
+            stripped.pop(field)
+        _, entry = L.record_finding(ledger, stripped, "abc", NOW)
+        self.assertEqual("The reconcile loop retries forever.", entry["summary"])
+        self.assertEqual("Fail the reconcile with a clear status condition.", entry["proposed_fix"])
+        self.assertTrue(entry["evidence"])
+
+    def test_a_new_row_still_gets_every_field(self):
+        """The shape of an entry does not depend on what the first run filled in."""
+        _, entry = L.record_finding(L.empty_ledger(), {"title": "Bare"}, "abc", NOW)
+        for field in ("summary", "proposed_fix", "user_impact", "evidence"):
+            self.assertIn(field, entry)
+
+
 class OccurrenceWindowTests(unittest.TestCase):
     def test_counts_only_inside_the_window(self):
         entry = {
@@ -313,10 +507,39 @@ class GateTests(unittest.TestCase):
         self.assertEqual(promoted, [])
         self.assertIn("no promotion rule", reasons[fp])
 
-    def test_critical_clears_on_a_single_occurrence(self):
+    def test_critical_clears_at_the_corroboration_floor_and_not_below_it(self):
+        """`critical: 1` is what the chart ships, and one run is still not enough.
+
+        Severity is the agent's grading of its own finding, arrived at from
+        production log text it does not control, so `minOccurrencesPerDay: 1`
+        made one self-graded field sufficient to open a pull request on a first
+        sighting. The floor is the invariant that nothing the agent writes about
+        a finding promotes it on one run's say-so.
+        """
         ledger, fp = self._ledger_with(1, severity="critical")
+        promoted, reasons = L.evaluate_gate(ledger, gate(), [fp], NOW)
+        self.assertEqual(promoted, [])
+        self.assertIn("one run's say-so", reasons[fp])
+
+        ledger, fp = self._ledger_with(L.MIN_CORROBORATING_RUNS, severity="critical")
         promoted, _ = L.evaluate_gate(ledger, gate(), [fp], NOW)
         self.assertEqual(promoted, [fp])
+
+    def test_the_floor_does_not_loosen_a_stricter_rule(self):
+        """It is a floor, not the threshold: `high: 5` still wants five."""
+        ledger, fp = self._ledger_with(L.MIN_CORROBORATING_RUNS, severity="high")
+        promoted, reasons = L.evaluate_gate(ledger, gate(), [fp], NOW)
+        self.assertEqual(promoted, [])
+        self.assertIn("rule wants 5", reasons[fp])
+
+    def test_no_severity_can_be_configured_below_the_floor(self):
+        """An operator writing `minOccurrencesPerDay: 0` does not get a first-sighting file."""
+        rules = [{"severity": s, "minOccurrencesPerDay": 0} for s in L.SEVERITIES]
+        for severity in L.SEVERITIES:
+            with self.subTest(severity=severity):
+                ledger, fp = self._ledger_with(1, severity=severity)
+                promoted, _ = L.evaluate_gate(ledger, gate(rules=rules), [fp], NOW)
+                self.assertEqual(promoted, [])
 
     def test_cooldown_blocks_a_refile(self):
         ledger, fp = self._ledger_with(9)
@@ -339,38 +562,34 @@ class GateTests(unittest.TestCase):
         candidate is considered.
         """
         ledger = L.empty_ledger()
-        fps = []
-        for i in range(6):
-            fp, _ = L.record_finding(
+        fps = [
+            seen_by(
                 ledger,
                 finding(severity="critical", title="Critical number %d" % i, location="a.py:%d" % i),
-                "abc",
-                NOW,
             )
-            fps.append(fp)
+            for i in range(6)
+        ]
         promoted, reasons = L.evaluate_gate(ledger, gate(), fps, NOW)
         self.assertEqual(len(promoted), 2)
         self.assertEqual(sum(1 for r in reasons.values() if "budget" in r), 4)
 
     def test_the_budget_spans_runs_not_just_one_run(self):
         ledger = L.empty_ledger()
-        old, _ = L.record_finding(ledger, finding(title="Earlier", location="a.py:1"), "abc", NOW)
+        old = seen_by(ledger, finding(title="Earlier", location="a.py:1"))
         L.record_promotion(ledger, old, "https://example.invalid/pr/1", "abc", NOW - dt.timedelta(hours=1))
         L.record_promotion(ledger, old, "https://example.invalid/pr/2", "abc", NOW - dt.timedelta(hours=2))
-        fresh, _ = L.record_finding(
-            ledger, finding(severity="critical", title="Now", location="b.py:1"), "abc", NOW
-        )
+        fresh = seen_by(ledger, finding(severity="critical", title="Now", location="b.py:1"))
         promoted, reasons = L.evaluate_gate(ledger, gate(), [fresh], NOW)
         self.assertEqual(promoted, [])
         self.assertIn("budget", reasons[fresh])
 
     def test_worse_severities_are_considered_first_under_a_tight_budget(self):
         ledger = L.empty_ledger()
-        high, _ = L.record_finding(
-            ledger, finding(severity="high", occurrences=50, title="High", location="a.py:1"), "abc", NOW
+        high = seen_by(
+            ledger, finding(severity="high", occurrences=50, title="High", location="a.py:1")
         )
-        critical, _ = L.record_finding(
-            ledger, finding(severity="critical", occurrences=1, title="Critical", location="b.py:1"), "abc", NOW
+        critical = seen_by(
+            ledger, finding(severity="critical", occurrences=1, title="Critical", location="b.py:1")
         )
         promoted, _ = L.evaluate_gate(ledger, gate(maxPullRequestsPerDay=1), [high, critical], NOW)
         self.assertEqual(promoted, [critical])
@@ -442,12 +661,8 @@ class RefusalTests(unittest.TestCase):
         day's real pull requests, which is a worse outcome than the retry.
         """
         ledger, refused = self._refused_ledger()
-        real, _ = L.record_finding(
-            ledger, finding(severity="critical", title="Real", location="a.py:1"), "abc", NOW
-        )
-        other, _ = L.record_finding(
-            ledger, finding(severity="critical", title="Other", location="b.py:1"), "abc", NOW
-        )
+        real = seen_by(ledger, finding(severity="critical", title="Real", location="a.py:1"))
+        other = seen_by(ledger, finding(severity="critical", title="Other", location="b.py:1"))
         promoted, _ = L.evaluate_gate(ledger, gate(), [refused, real, other], NOW)
         self.assertEqual(sorted(promoted), sorted([real, other]))
         self.assertEqual([], ledger["findings"][refused].get("promotions"))
@@ -483,8 +698,7 @@ class RefusalTests(unittest.TestCase):
 
     def _ledger_promotable(self):
         ledger = L.empty_ledger()
-        fp, _ = L.record_finding(ledger, finding(severity="critical"), "abc", NOW)
-        return ledger, fp
+        return ledger, seen_by(ledger, finding(severity="critical"))
 
 
 class CooldownSanitisingTests(unittest.TestCase):
@@ -544,7 +758,7 @@ class CooldownSanitisingTests(unittest.TestCase):
         so nothing else stopped it either.
         """
         ledger = L.empty_ledger()
-        fp, _ = L.record_finding(ledger, finding(severity="critical"), "abc", NOW)
+        fp = seen_by(ledger, finding(severity="critical"))
         L.record_promotion(ledger, fp, "https://example/1", "abc", NOW - dt.timedelta(hours=1))
         promoted, reasons = L.evaluate_gate(
             ledger, gate(cooldownHours=-5), [fp], NOW
@@ -612,15 +826,13 @@ class GateCountSanitisingTests(unittest.TestCase):
         while silently filing nothing.
         """
         ledger = L.empty_ledger()
-        fps = []
-        for i in range(6):
-            fp, _ = L.record_finding(
+        fps = [
+            seen_by(
                 ledger,
                 finding(severity="critical", title="Critical %d" % i, location="a.py:%d" % i),
-                "abc",
-                NOW,
             )
-            fps.append(fp)
+            for i in range(6)
+        ]
         promoted, _ = L.evaluate_gate(
             ledger, gate(maxPullRequestsPerDay=float("inf")), fps, NOW
         )
@@ -670,6 +882,39 @@ class GateCountSanitisingTests(unittest.TestCase):
         for rules in (None, "critical", ["critical"], [None]):
             with self.subTest(rules=rules):
                 L.gate_notes({"rules": rules})
+
+    def test_a_malformed_rules_list_holds_instead_of_killing_the_run(self):
+        """`rules` is whatever the operator put in values.yaml.
+
+        `gate_notes` already stepped over anything that was not a mapping and
+        `evaluate_gate` did not, so the two read the same config differently and
+        the one that decided was the strict one: a string was iterated as
+        characters and raised `AttributeError` on the first `.get`. That escaped
+        the runner after the investigation was already paid for, so the run's
+        findings were lost with no ledger row to show for them -- again on the
+        hour, and with `backoffLimit: 0` no retry in between.
+        """
+        ledger = L.empty_ledger()
+        fp = seen_by(ledger, finding(severity="critical"))
+        for rules in ("not a list", 5, {"critical": 1}, ["critical"], [None], [[]]):
+            with self.subTest(rules=rules):
+                promoted, reasons = L.evaluate_gate(
+                    L.clone(ledger), gate(rules=rules), [fp], NOW
+                )
+                self.assertEqual(promoted, [])
+                self.assertIn("no promotion rule", reasons[fp])
+
+    def test_a_usable_rule_beside_a_malformed_one_still_works(self):
+        ledger = L.empty_ledger()
+        fp = seen_by(ledger, finding(severity="critical"))
+        rules = ["nonsense", {"severity": "critical", "minOccurrencesPerDay": 1}, None]
+        promoted, _ = L.evaluate_gate(ledger, gate(rules=rules), [fp], NOW)
+        self.assertEqual(promoted, [fp])
+
+    def test_gate_notes_says_the_rules_were_unusable(self):
+        """A gate that promotes nothing must not look like a gate holding things."""
+        self.assertTrue(any("not a list" in n for n in L.gate_notes({"rules": "critical"})))
+        self.assertTrue(any("not mappings" in n for n in L.gate_notes({"rules": ["critical"]})))
 
 
 class PruneTests(unittest.TestCase):
@@ -762,6 +1007,63 @@ class PruneTests(unittest.TestCase):
             "https://example.invalid/pr/%d" % (L.MAX_PROMOTIONS + 4),
         )
 
+    def test_the_trim_never_drops_a_promotion_the_budget_still_counts(self):
+        """Trimming to MAX_PROMOTIONS un-spent the day's budget.
+
+        `promotions_today` counts the rows that survive `prune`, so at any
+        cooldown short enough to file the same finding more than MAX_PROMOTIONS
+        times in a day -- `cooldownHours: 0` is a documented setting -- each
+        trim handed back a slot. The counter saturated and the loop filed 24
+        pull requests against a ceiling of 20.
+        """
+        ledger = L.empty_ledger()
+        fp = seen_by(ledger, finding())
+        for hour in range(20):
+            L.record_promotion(
+                ledger,
+                fp,
+                "https://example.invalid/pr/%d" % hour,
+                "abc",
+                NOW - dt.timedelta(hours=20 - hour),
+            )
+        L.prune(ledger, NOW, cooldown_hours=0)
+        self.assertEqual(20, L.promotions_today(ledger, NOW))
+
+    def test_older_promotions_are_still_trimmed(self):
+        """The bound is kept for everything the budget has stopped counting."""
+        ledger = L.empty_ledger()
+        fp = seen_by(ledger, finding())
+        for day in range(L.MAX_PROMOTIONS + 5):
+            L.record_promotion(
+                ledger,
+                fp,
+                "https://example.invalid/pr/%d" % day,
+                "abc",
+                NOW - dt.timedelta(days=L.MAX_PROMOTIONS + 5 - day),
+            )
+        L.prune(ledger, NOW, cooldown_hours=0)
+        self.assertEqual(L.MAX_PROMOTIONS, len(ledger["findings"][fp]["promotions"]))
+
+    def test_the_daily_ceiling_holds_across_a_prune(self):
+        """The consequence, end to end: prune, then ask the gate for one more."""
+        ledger = L.empty_ledger()
+        old = seen_by(ledger, finding(title="Filed", location="a.py:1"))
+        for hour in range(20):
+            L.record_promotion(
+                ledger,
+                old,
+                "https://example.invalid/pr/%d" % hour,
+                "abc",
+                NOW - dt.timedelta(hours=20 - hour),
+            )
+        L.prune(ledger, NOW, cooldown_hours=0)
+        fresh = seen_by(ledger, finding(severity="critical", title="Fresh", location="b.py:1"))
+        promoted, reasons = L.evaluate_gate(
+            ledger, gate(maxPullRequestsPerDay=20, cooldownHours=0), [fresh], NOW
+        )
+        self.assertEqual(promoted, [])
+        self.assertIn("budget", reasons[fresh])
+
 
 class EntrySizeTests(unittest.TestCase):
     """The ledger is a ConfigMap. One run's evidence must not be able to fill it,
@@ -774,12 +1076,51 @@ class EntrySizeTests(unittest.TestCase):
         self.assertEqual(entry["evidence"], finding()["evidence"])
         self.assertEqual(entry["summary"], finding()["summary"])
 
-    def test_an_oversized_evidence_array_is_dropped_not_half_serialised(self):
+    def test_an_oversized_evidence_array_keeps_what_fits_and_says_what_it_dropped(self):
+        """Whole elements, because the element is the unit a reviewer reads.
+
+        The array is the log lines the finding rests on. Replacing all twenty
+        with a note left the reviewer nothing to judge it by; keeping the first
+        few and saying how many went is the same number of bytes spent better.
+        """
         ledger = L.empty_ledger()
-        huge = ["x" * 4096 for _ in range(20)]
+        huge = ["x" * 1024 for _ in range(20)]
         _, entry = L.record_finding(ledger, finding(evidence=huge), "abc", NOW)
-        self.assertIsInstance(entry["evidence"], str)
-        self.assertIn("over the", entry["evidence"])
+        self.assertIsInstance(entry["evidence"], list)
+        self.assertGreater(len(entry["evidence"]), 1)
+        self.assertIn("dropped", entry["evidence"][-1])
+        self.assertLessEqual(
+            len(json.dumps(entry["evidence"]).encode("utf-8")),
+            L.MAX_FIELD_TEXT_BYTES + 200,
+        )
+
+    def test_one_run_of_findings_cannot_wedge_the_ledger(self):
+        """The cap this class asserts is per entry, and it was per field.
+
+        A finding filling all four text fields cost about 49KiB, so sixteen of
+        them -- one unremarkable run -- put the ledger over LEDGER_MAX_BYTES.
+        `save` then raised on that run and on every run after it, because each
+        one re-read the oversized ledger and raised before it could write the
+        pruned, smaller one.
+        """
+        ledger = L.empty_ledger()
+        for i in range(16):
+            L.record_finding(
+                ledger,
+                finding(
+                    title="Finding %d" % i,
+                    location="a.py:%d" % i,
+                    summary="s" * 100_000,
+                    proposed_fix="f" * 100_000,
+                    user_impact="u" * 100_000,
+                    evidence=["e" * 100_000],
+                ),
+                "abc",
+                NOW,
+            )
+        self.assertLessEqual(
+            len(json.dumps(ledger).encode("utf-8")), L.LEDGER_MAX_BYTES
+        )
 
     def test_an_oversized_summary_is_truncated_and_says_so(self):
         ledger = L.empty_ledger()
@@ -924,6 +1265,111 @@ class AgentGradedFieldTests(unittest.TestCase):
         self.assertIn("conf=medium", L.summarise_for_prompt(ledger, NOW))
 
 
+class LedgerSizeTests(unittest.TestCase):
+    """What `save` does with a ledger that no longer fits in a ConfigMap.
+
+    Raising was the whole of it, and the raise was a trap: `save` is the last
+    thing a run does, so an oversized ledger stayed oversized. Every later run
+    read it, pruned it, found the result still too large -- retention is a fixed
+    30 days and not settable from the chart -- and raised before writing the
+    smaller document that would have fixed it. Each of those runs also lost its
+    own findings, because the write is where a run's output becomes durable.
+    """
+
+    def _fat_ledger(self, rows=60):
+        ledger = L.empty_ledger()
+        for i in range(rows):
+            fp = "fp%03d" % i
+            ledger["findings"][fp] = {
+                "fingerprint": fp,
+                "severity": "high",
+                "title": "Finding %d" % i,
+                "location": "a.py:%d" % i,
+                "summary": "s" * L.MAX_FIELD_TEXT_BYTES,
+                "evidence": ["e" * L.MAX_FIELD_TEXT_BYTES],
+                "proposed_fix": "f" * L.MAX_FIELD_TEXT_BYTES,
+                "user_impact": "u" * L.MAX_FIELD_TEXT_BYTES,
+                "first_seen": L.to_iso(NOW),
+                "last_seen": L.to_iso(NOW),
+                "sightings": [{"at": L.to_iso(NOW), "count": 1}],
+                "promotions": [
+                    {"at": L.to_iso(NOW), "url": "https://example.invalid/pr/%d" % i, "revision": "abc"}
+                ],
+            }
+        return ledger
+
+    def test_an_ordinary_ledger_is_serialised_untouched(self):
+        ledger = L.empty_ledger()
+        L.record_finding(ledger, finding(), "abc", NOW)
+        self.assertEqual(json.loads(L._ledger_json(ledger)), ledger)
+
+    def test_an_oversized_ledger_sheds_prose_rather_than_refusing_to_write(self):
+        fat = self._fat_ledger()
+        body = L._ledger_json(fat)
+        self.assertLessEqual(len(body.encode("utf-8")), L.LEDGER_MAX_BYTES)
+        self.assertIn(L.SHED_MARKER, body)
+
+    def test_shedding_does_not_touch_what_the_gate_reads(self):
+        """A shed sighting stops a finding promoting; a shed promotion re-files it."""
+        fat = self._fat_ledger()
+        out = json.loads(L._ledger_json(fat))
+        for fp, entry in fat["findings"].items():
+            self.assertEqual(entry["sightings"], out["findings"][fp]["sightings"])
+            self.assertEqual(entry["promotions"], out["findings"][fp]["promotions"])
+            self.assertEqual(entry["title"], out["findings"][fp]["title"])
+            self.assertEqual(entry["severity"], out["findings"][fp]["severity"])
+
+    def test_the_caller_is_not_handed_a_shed_ledger(self):
+        """`_ledger_json` serialises; it does not edit the run's own document."""
+        fat = self._fat_ledger()
+        L._ledger_json(fat)
+        self.assertEqual(L.MAX_FIELD_TEXT_BYTES, len(fat["findings"]["fp000"]["summary"]))
+
+    def test_the_run_history_goes_before_any_finding_does(self):
+        """It is a log with no reader but a human, so it is the cheapest thing to lose."""
+        fat = self._fat_ledger(rows=13)
+        fat["runs"] = [
+            {"at": L.to_iso(NOW), "revision": "r%d" % i, "outcome": "ok", "note": "n" * 50_000}
+            for i in range(L.RUN_HISTORY)
+        ]
+        out = json.loads(L._ledger_json(fat))
+        self.assertEqual(5, len(out["runs"]))
+        self.assertNotIn(L.SHED_MARKER, json.dumps(out["findings"]))
+
+    def test_a_ledger_that_cannot_be_got_under_the_cap_still_raises(self):
+        ledger = L.empty_ledger()
+        for i in range(3000):
+            fp = "fingerprint-%06d" % i
+            ledger["findings"][fp] = {
+                "fingerprint": fp,
+                "severity": "high",
+                "title": "Finding %d" % i,
+                "location": "a.py:%d" % i,
+                "first_seen": L.to_iso(NOW),
+                "last_seen": L.to_iso(NOW),
+                "sightings": [{"at": L.to_iso(NOW), "count": 1}],
+                "promotions": [],
+            }
+        with self.assertRaises(L.LedgerWriteError) as caught:
+            L._ledger_json(ledger)
+        self.assertIn("3000 finding rows", str(caught.exception))
+
+    def test_the_refusal_does_not_advise_a_setting_that_does_nothing(self):
+        """It used to say to shorten `gate.cooldownHours`.
+
+        `prune` keeps a promotion for whichever of the cooldown and its 30-day
+        `retain_days` is longer, and no caller passes `retain_days`, so nothing
+        below 720 hours changes anything at all. The advice sent an operator to
+        a knob that could not affect the failure they were reading about.
+        """
+        ledger = L.empty_ledger()
+        ledger["findings"]["x"] = {"fingerprint": "x", "title": "t" * (L.LEDGER_MAX_BYTES + 1)}
+        with self.assertRaises(L.LedgerWriteError) as caught:
+            L._ledger_json(ledger)
+        self.assertNotIn("cooldownHours", str(caught.exception))
+        self.assertIn("30 days", str(caught.exception))
+
+
 class _FakeApiException(Exception):
     def __init__(self, status):
         super().__init__("api exception %s" % status)
@@ -962,8 +1408,10 @@ def _install_fake_kubernetes(raises, calls):
     pkg.config = config
     saved = sys.modules.get("kubernetes")
     sys.modules["kubernetes"] = pkg
+    L._UNPARSEABLE.clear()
 
     def undo():
+        L._UNPARSEABLE.clear()
         if saved is None:
             sys.modules.pop("kubernetes", None)
         else:
@@ -1084,9 +1532,11 @@ def _install_stateful_kubernetes(cm):
     saved = sys.modules.get("kubernetes")
     sys.modules["kubernetes"] = pkg
     L._OBSERVED_RESOURCE_VERSION.clear()
+    L._UNPARSEABLE.clear()
 
     def undo():
         L._OBSERVED_RESOURCE_VERSION.clear()
+        L._UNPARSEABLE.clear()
         if saved is None:
             sys.modules.pop("kubernetes", None)
         else:
@@ -1151,6 +1601,63 @@ class MergeTests(unittest.TestCase):
         base = self._promoted("u", "2026-08-23T16:00:00Z", fp="theirs")
         incoming = self._promoted("u", "2026-08-23T18:00:00Z", fp="mine")
         self.assertEqual({"theirs", "mine"}, set(L.merge(base, incoming)["findings"]))
+
+    def test_last_seen_decides_the_description_not_the_argument_order(self):
+        """`incoming` is this run's document, built from a read that predates `base`.
+
+        Taking it as the newer side by position was backwards whenever the other
+        writer had seen the finding more recently -- and severity is one of the
+        scalars, so the stale read's grading decided the next run's gate.
+        """
+        base = self._promoted("u", "2026-08-23T18:00:00Z")
+        base["findings"]["abc"].update(last_seen="2026-08-23T18:00:00Z", severity="critical")
+        incoming = self._promoted("u", "2026-08-23T16:00:00Z")
+        incoming["findings"]["abc"].update(last_seen="2026-08-23T16:00:00Z", severity="low")
+        merged = L.merge(base, incoming)["findings"]["abc"]
+        self.assertEqual("critical", merged["severity"])
+        self.assertEqual("2026-08-23T18:00:00Z", merged["last_seen"])
+
+    def test_an_undated_refusal_does_not_outrank_a_dated_one(self):
+        """The earliest refusal wins, and an undated one has no place in that order.
+
+        Sorting on `str(at or "")` put it first every time, because the empty
+        string precedes every timestamp: the one record that cannot say how long
+        a finding has been waiting on a human was the one that always survived.
+        """
+        base = self._promoted("u", "2026-08-23T16:00:00Z")
+        base["findings"]["abc"]["refused"] = {"at": "2026-08-23T16:00:00Z", "reason": "dated"}
+        incoming = self._promoted("u", "2026-08-23T18:00:00Z")
+        incoming["findings"]["abc"]["refused"] = {"reason": "undated"}
+        self.assertEqual("dated", L.merge(base, incoming)["findings"]["abc"]["refused"]["reason"])
+        self.assertEqual("dated", L.merge(incoming, base)["findings"]["abc"]["refused"]["reason"])
+
+    def test_two_undated_refusals_keep_the_one_already_in_the_configmap(self):
+        base = self._promoted("u", "2026-08-23T16:00:00Z")
+        base["findings"]["abc"]["refused"] = {"reason": "theirs"}
+        incoming = self._promoted("u", "2026-08-23T18:00:00Z")
+        incoming["findings"]["abc"]["refused"] = {"reason": "mine"}
+        self.assertEqual("theirs", L.merge(base, incoming)["findings"]["abc"]["refused"]["reason"])
+
+    def test_a_row_that_is_not_a_mapping_on_either_side_is_dropped(self):
+        """Writing it back as `null` made every later reader fall over.
+
+        A fingerprint only the hand-edited side had, holding a string, came out
+        of the merge as `{"<fp>": null}` -- and `summarise_for_prompt` calls
+        `.get` on each value, so the next run died building its own brief.
+        """
+        base, incoming = L.empty_ledger(), L.empty_ledger()
+        base["findings"]["junk"] = "a string somebody pasted in"
+        merged = L.merge(base, incoming)
+        self.assertNotIn("junk", merged["findings"])
+        self.assertIsInstance(L.summarise_for_prompt(merged, NOW), str)
+
+    def test_a_mapping_on_one_side_survives_junk_on_the_other(self):
+        base = L.empty_ledger()
+        base["findings"]["abc"] = "junk"
+        incoming = self._promoted("u", "2026-08-23T18:00:00Z")
+        self.assertEqual(
+            "u", L.merge(base, incoming)["findings"]["abc"]["promotions"][0]["url"]
+        )
 
 
 class ConcurrentWriteTests(unittest.TestCase):
@@ -1225,6 +1732,110 @@ class ConcurrentWriteTests(unittest.TestCase):
         finally:
             undo()
         self.assertIn(L.LEDGER_KEY, cm.data)
+
+
+class CorruptLedgerTests(unittest.TestCase):
+    """A `ledger.json` that exists and will not parse.
+
+    It used to be indistinguishable from a first run: `_read` swallowed the
+    `ValueError` and returned an empty ledger *with* the resourceVersion, so the
+    precondition matched and `save` wrote the empty ledger over months of
+    accumulated findings. A ConfigMap keeps no revisions, so that is the end of
+    them -- the occurrence counts every gate decision rests on, and the
+    promotion records that stop already-filed findings being filed again.
+    """
+
+    CORRUPT = '{"version": 1, "findings": {"abc": '
+
+    def _corrupt_cm(self):
+        cm = _FakeConfigMap()
+        cm.data[L.LEDGER_KEY] = self.CORRUPT
+        cm.version += 1
+        return cm
+
+    def test_the_corrupt_text_is_left_exactly_where_it_was(self):
+        cm = self._corrupt_cm()
+        undo = _install_stateful_kubernetes(cm)
+        try:
+            ledger = L.load("kube-agents", "ledger")
+            L.record_finding(ledger, finding(), "abc", NOW)
+            with self.assertRaises(L.LedgerWriteError):
+                L.save("kube-agents", "ledger", ledger)
+        finally:
+            undo()
+        self.assertEqual(self.CORRUPT, cm.data[L.LEDGER_KEY])
+
+    def test_the_refusal_names_the_key_and_a_way_out(self):
+        """Every run stops here until a human acts, so the message has to be enough."""
+        cm = self._corrupt_cm()
+        undo = _install_stateful_kubernetes(cm)
+        try:
+            L.load("kube-agents", "ledger")
+            with self.assertRaises(L.LedgerWriteError) as caught:
+                L.save("kube-agents", "ledger", L.empty_ledger())
+        finally:
+            undo()
+        message = str(caught.exception)
+        self.assertIn(L.LEDGER_KEY, message)
+        self.assertIn("kube-agents/ledger", message)
+        self.assertIn("Nothing has been written", message)
+        self.assertIn("kubectl", message)
+
+    def test_a_conflicting_writer_that_left_garbage_is_not_clobbered_either(self):
+        """The 409 path re-reads, and it used to merge into the same empty placeholder.
+
+        `merge` carries rows only the base has, so merging into a placeholder
+        that has none of them writes this run's document over the other
+        writer's -- the loss `load` refuses above, reached through the retry.
+        """
+        cm = _FakeConfigMap()
+        cm.write_ledger(L.empty_ledger())
+        undo = _install_stateful_kubernetes(cm)
+        try:
+            mine = L.load("kube-agents", "ledger")
+            L.record_finding(mine, finding(), "abc", NOW)
+
+            def corrupt(c):
+                c.data[L.LEDGER_KEY] = self.CORRUPT
+                c.version += 1
+
+            cm.before_patch = corrupt
+            with self.assertRaises(L.LedgerWriteError) as caught:
+                L.save("kube-agents", "ledger", mine)
+        finally:
+            undo()
+        self.assertEqual(self.CORRUPT, cm.data[L.LEDGER_KEY])
+        self.assertIn("not valid JSON", str(caught.exception))
+
+    def test_an_empty_key_is_a_first_run_and_still_writes(self):
+        """The case that must not be caught by this: nothing there yet."""
+        cm = _FakeConfigMap()
+        cm.data[L.LEDGER_KEY] = ""
+        cm.version += 1
+        undo = _install_stateful_kubernetes(cm)
+        try:
+            ledger = L.load("kube-agents", "ledger")
+            L.record_finding(ledger, finding(), "abc", NOW)
+            L.save("kube-agents", "ledger", ledger)
+        finally:
+            undo()
+        self.assertEqual(1, len(cm.ledger()["findings"]))
+
+    def test_a_repaired_ledger_writes_again(self):
+        """The refusal is a state of the ConfigMap, not of the process."""
+        cm = self._corrupt_cm()
+        undo = _install_stateful_kubernetes(cm)
+        try:
+            L.load("kube-agents", "ledger")
+            with self.assertRaises(L.LedgerWriteError):
+                L.save("kube-agents", "ledger", L.empty_ledger())
+            cm.write_ledger(L.empty_ledger())
+            ledger = L.load("kube-agents", "ledger")
+            L.record_finding(ledger, finding(), "abc", NOW)
+            L.save("kube-agents", "ledger", ledger)
+        finally:
+            undo()
+        self.assertEqual(1, len(cm.ledger()["findings"]))
 
 
 if __name__ == "__main__":

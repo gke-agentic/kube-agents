@@ -64,6 +64,37 @@ SIGNALS = (
 #: per day, so the window is a day.
 COUNT_WINDOW_HOURS = 24
 
+#: The fewest separate runs that must have reported a finding before any rule
+#: promotes it, whatever the finding says about itself.
+#:
+#: `severity` is the last gate input the agent still writes. `evaluate_gate`
+#: picks the rule by it, so the threshold a finding has to clear is chosen by
+#: the text being graded -- and against the shipped rules (`critical` at one
+#: occurrence) a finding on its first ever sighting, self-graded `critical`,
+#: was promoted. That is the failure `occurrences_in_window` and
+#: `record_finding` are each written to prevent, arriving through the one field
+#: they left alone: an agent reading production logs is reading text anyone
+#: with a code path into them can write, so a single field it controls must not
+#: be enough to open a pull request.
+#:
+#: The floor is the narrowest fix that states the invariant directly: **no
+#: finding is promoted on one run's say-so.** Severity still chooses how much
+#: more corroboration than this is needed -- `high` at 3 and `medium` at 5 are
+#: untouched -- it just cannot ask for less. Two rather than a larger number
+#: because the cost lands on the honest case: a real `critical` now waits for
+#: the next run, which is an hour on the shipped schedule, and every hour of
+#: that delay buys nothing further once a second independent investigation has
+#: confirmed the finding.
+#:
+#: What it does not do is stop an inflated grade jumping the queue: the
+#: promotion order is still severity-first, so a corroborated finding that
+#: calls itself `critical` is considered ahead of an honest `high`. That
+#: residue is bounded in a way the promotion was not -- ordering only reorders
+#: findings that have already cleared this floor and their own rule, and a
+#: finding the budget defers keeps its counts and is reconsidered next run --
+#: so it costs a delay rather than a pull request nobody earned.
+MIN_CORROBORATING_RUNS = 2
+
 #: Ten years, as an upper bound on `cooldownHours`. Not a policy limit -- it is
 #: the point past which the arithmetic stops working. `prune` computes
 #: `now - timedelta(hours=cooldown)`, and a large enough value walks that date
@@ -96,11 +127,24 @@ RUN_HISTORY = 48
 #: a record to keep growing.
 MAX_PROMOTIONS = 10
 
-#: Cap on the agent-supplied prose in one entry -- `evidence`, `summary`,
-#: `proposed_fix` and `user_impact`. Truncating one finding's evidence costs a
-#: reviewer some context; letting it push the ledger past LEDGER_MAX_BYTES costs
-#: every future run, because `save` then raises and nothing is recorded at all.
+#: Cap on the agent-supplied prose in one entry, across `evidence`, `summary`,
+#: `proposed_fix` and `user_impact` together. Truncating one finding's evidence
+#: costs a reviewer some context; letting it push the ledger past
+#: LEDGER_MAX_BYTES costs every future run, because `save` then raises and
+#: nothing is recorded at all.
+#:
+#: Across the four rather than each: this was a per-field cap, and a finding
+#: filling every field cost about 49KiB, so sixteen findings -- one unremarkable
+#: run -- exceeded the 768KiB ledger cap. `_shed_to_fit` is the backstop for a
+#: ledger that is over anyway; this is what keeps one run from getting it there,
+#: which is what `EntrySizeTests` has always claimed.
 MAX_ENTRY_TEXT_BYTES = 16 * 1024
+
+#: The share of that budget any one of the four fields may take. Equal shares
+#: rather than a running budget spent in field order, because the order would
+#: decide which field survives a verbose run and there is no honest reason to
+#: rank them: whichever of the four is oversized is the one that pays.
+MAX_FIELD_TEXT_BYTES = MAX_ENTRY_TEXT_BYTES // 4
 
 #: `title` and `location` are agent-supplied too, and were the two that escaped
 #: the cap above. They get their own, far smaller, because they are not prose:
@@ -191,7 +235,28 @@ _NORMALISERS: Tuple[Tuple[re.Pattern, str], ...] = (
 #: counts a title might legitimately carry ("retried 40 times") are the ones
 #: SOUL.md sec. 4 already tells the agent to put in the evidence instead, so
 #: the case this rule would have covered should not arise.
+#:
+#: All three forms are here because only the first was, and a location that
+#: writes its line number in words split into a fresh row per commit:
+#: `k8s-operator/foo.go line 412` and `k8s-operator/foo.go line 418` are the
+#: same place, and neither matched `:\d+`, so neither reached `<LINE>` and the
+#: two hashed differently. A finding whose identity moves like that sits at one
+#: occurrence for ever and never promotes, which is the failure `fingerprint`
+#: describes and the one nothing reports while it is happening.
 _LOCATION_NORMALISERS: Tuple[Tuple[re.Pattern, str], ...] = (
+    # `#L412`, `#L412-L418`: what a GitHub permalink pastes as.
+    (re.compile(r"#l\d+(?:\s*-\s*l?\d+)?\b", re.I), ":<LINE>"),
+    # "line 412", ", around line 412", ": lines 412-418". The leading class
+    # eats the punctuation the agent put between the path and the words, so
+    # what is left joins the path the way `path:412` already did.
+    (
+        re.compile(
+            r"[\s,;:(]*\b(?:at|around|near|approx(?:\.|imately)?)?\s*lines?\s*#?\s*\d+"
+            r"(?:\s*[-–]\s*\d+)?",
+            re.I,
+        ),
+        ":<LINE>",
+    ),
     (re.compile(r":\d+(?::\d+)?\b"), ":<LINE>"),
 )
 
@@ -200,6 +265,20 @@ _LOCATION_NORMALISERS: Tuple[Tuple[re.Pattern, str], ...] = (
 #: writes differently each run, and hashing that prose is what split one live
 #: finding across three rows -- see `primary_location`.
 _PRIMARY_LOCATION = re.compile(r"[a-z0-9_.\-/]+\.[a-z0-9]+:<LINE>")
+
+#: The same thing for a location that names a file and no line at all --
+#: `selfimprove_run.py (the filing turn)` and `selfimprove_run.py` are one
+#: place described twice, and without this the prose after the path went into
+#: the hash.
+#:
+#: Stricter about the extension than the pattern above, which can afford to be
+#: loose because `:<LINE>` already says the token is a file reference. With
+#: nothing to anchor on, `[a-z0-9]+` would read the `e.g` of "e.g. the gateway"
+#: and the `1.21` of a version string as filenames and collapse every location
+#: containing one onto a single row. Two to six characters starting with a
+#: letter covers `.go`, `.py`, `.yaml`, `.tf` and every other extension in this
+#: tree.
+_FILE_REFERENCE = re.compile(r"[a-z0-9_.\-/]*[a-z0-9_\-/]\.[a-z][a-z0-9]{1,5}(?![a-z0-9])")
 
 
 def normalise(text: str) -> str:
@@ -244,13 +323,17 @@ def primary_location(text: str) -> str:
     findings. Reducing it to the leading `path:<LINE>` token keeps the part that
     identifies the site and drops the part that is a writing-style coin flip.
 
+    A location that names a file without a line number goes through the same
+    reduction, on the same argument -- `selfimprove_run.py (the filing turn)`
+    and `selfimprove_run.py` are one place -- and only the anchor differs.
+
     Falls back to the full normalised location when there is no file reference
     to find, which is the old behaviour: a location like "the gchat webhook" has
     nothing better to offer, and an empty fingerprint component would collide
     every such finding into one row.
     """
     out = normalise_location(text)
-    match = _PRIMARY_LOCATION.search(out)
+    match = _PRIMARY_LOCATION.search(out) or _FILE_REFERENCE.search(out)
     return match.group(0) if match else out
 
 
@@ -430,7 +513,27 @@ def prune(
         if isinstance(promotions, list) and len(promotions) > MAX_PROMOTIONS:
             # Newest kept: the cooldown reads the most recent one, so dropping
             # from the front is the only end that costs nothing.
-            entry["promotions"] = promotions[-MAX_PROMOTIONS:]
+            #
+            # Except that it did cost something. `promotions_today` counts these
+            # rows, so a promotion trimmed here stopped being charged against
+            # `maxPullRequestsPerDay`, and at any cooldown under roughly
+            # 24/MAX_PROMOTIONS hours -- `cooldownHours: 0` is a documented
+            # setting -- one finding opened 24 pull requests in a day against a
+            # ceiling of 20, with the counter saturating at 11. So the trim
+            # spares everything the budget still has to see: the invariant is
+            # that a promotion inside COUNT_WINDOW_HOURS survives `prune`, and
+            # MAX_PROMOTIONS bounds only the older records, which nothing but
+            # the cooldown reads.
+            kept = promotions[-MAX_PROMOTIONS:]
+            chargeable = []
+            for promotion in promotions[:-MAX_PROMOTIONS]:
+                at = from_iso(promotion.get("at", "")) if isinstance(promotion, dict) else None
+                # An unparseable date is dropped here rather than held the way
+                # `_promoted_since` holds one: `promotions_today` cannot count
+                # it either, so keeping it protects no budget.
+                if at is not None and at >= sighting_cutoff:
+                    chargeable.append(promotion)
+            entry["promotions"] = chargeable + kept
         last_seen = from_iso(entry.get("last_seen", ""))
         stale = last_seen is None or last_seen < finding_cutoff
         if stale and not _promoted_since(entry, promotion_cutoff):
@@ -484,34 +587,158 @@ def _one_line(value: Any) -> str:
     return " ".join(str(value if value is not None else "").split())
 
 
-def _bounded(value: Any) -> Any:
-    """`value` if it fits in MAX_ENTRY_TEXT_BYTES, otherwise a truncated stand-in.
+def _clipped_bytes(value: str, limit: int) -> str:
+    """`value` cut to `limit` bytes, with the cut marked. Never splits a character."""
+    encoded = value.encode("utf-8")
+    if len(encoded) <= limit:
+        return value
+    kept = encoded[:limit].decode("utf-8", "ignore")
+    return kept + "\n[truncated: %d bytes over the %d-byte cap on one field]" % (
+        len(encoded) - limit,
+        limit,
+    )
 
-    Strings are cut and marked; anything else -- `evidence` is an array of
-    strings when the agent follows the skill and could be any JSON when it does
-    not -- is replaced by a note rather than half-serialised, because a
-    structure cut mid-way is not JSON and would fail the next `load`.
+
+def _json_size(value: Any) -> Optional[int]:
+    """Bytes `value` costs in the serialised ledger, or None if it cannot go there."""
+    try:
+        return len(json.dumps(value, default=str).encode("utf-8"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _bounded(value: Any, limit: int = MAX_FIELD_TEXT_BYTES) -> Any:
+    """`value` if it fits in `limit` bytes, otherwise cut down to something that does.
+
+    Strings are truncated and marked. A list -- `evidence` is an array of
+    strings when the agent follows the skill -- keeps whole elements until the
+    budget is spent and then says how many it dropped, because the element is
+    the unit a reviewer reads and an array cut to nothing tells them less than
+    its first few lines would. Anything else is replaced by a note rather than
+    half-serialised: a structure cut mid-way is not JSON and would fail the
+    next `load`.
     """
     if value is None:
         return None
     if isinstance(value, str):
-        encoded = value.encode("utf-8")
-        if len(encoded) <= MAX_ENTRY_TEXT_BYTES:
-            return value
-        kept = encoded[:MAX_ENTRY_TEXT_BYTES].decode("utf-8", "ignore")
-        return kept + "\n[truncated: %d bytes over the per-entry cap]" % (
-            len(encoded) - MAX_ENTRY_TEXT_BYTES
-        )
-    try:
-        size = len(json.dumps(value, default=str).encode("utf-8"))
-    except (TypeError, ValueError):
+        return _clipped_bytes(value, limit)
+    if isinstance(value, list):
+        kept: List[Any] = []
+        spent = 0
+        for position, item in enumerate(value):
+            size = _json_size(item)
+            if size is not None and spent + size <= limit:
+                kept.append(item)
+                spent += size
+                continue
+            # A string that does not fit can still contribute its opening
+            # bytes, as long as what is left of the budget is worth reading; a
+            # scrap of a few dozen bytes is noise next to the marker saying so.
+            partial = isinstance(item, str) and (limit - spent) > 512
+            if partial:
+                kept.append(_clipped_bytes(item, limit - spent))
+            dropped = len(value) - position - (1 if partial else 0)
+            kept.append(
+                "[dropped %d of %d entries: over the %d-byte cap on one field]"
+                % (dropped, len(value), limit)
+            )
+            break
+        return kept
+    size = _json_size(value)
+    if size is None:
         return "[dropped: not serialisable]"
-    if size <= MAX_ENTRY_TEXT_BYTES:
+    if size <= limit:
         return value
-    return "[dropped: %d bytes, over the %d-byte per-entry cap]" % (
-        size,
-        MAX_ENTRY_TEXT_BYTES,
-    )
+    return "[dropped: %d bytes, over the %d-byte cap on one field]" % (size, limit)
+
+
+def _describe(entry: Dict[str, Any], field: str, value: Any) -> None:
+    """Store one agent-written description field on `entry`, bounded.
+
+    An empty value does not overwrite what is already there. A run that omits
+    `proposed_fix` is not retracting the one the row carries -- it is a run that
+    did not repeat it -- and blanking the field would take a reviewer's account
+    of the finding away with nothing recording that it happened. A new row still
+    gets the empty value, so the shape of an entry does not depend on what the
+    first run chose to fill in.
+    """
+    if isinstance(value, str):
+        value = value.strip()
+    stored = _bounded(value)
+    if field in entry and not stored:
+        return
+    entry[field] = stored
+
+
+#: The three fields a re-report of a known finding is describing the same thing
+#: with. `evidence` is deliberately not among them: SOUL.md sec. 4 asks each run
+#: for its own fresh log lines, so evidence differing between two sightings is
+#: the design working rather than a signal of anything.
+DESCRIPTION_FIELDS = ("summary", "proposed_fix", "user_impact")
+
+#: How much of the shorter description's vocabulary the two sightings have to
+#: share before the ledger goes on believing they are the same finding.
+#:
+#: Low, and deliberately so. The check exists to catch a wholesale substitution
+#: -- the same title and location with every descriptive field replaced -- and
+#: the cost of the two errors is not symmetric. A miss leaves things as they
+#: were. A false positive restarts an honest finding's count, which delays a
+#: promotion by a run, and if it recurred every run it would be the "never
+#: accumulates, never promotes, nothing says so" failure this module is most
+#: afraid of. Two descriptions of one problem, written from the same logs by
+#: the same model, share far more than a seventh of their words; two
+#: descriptions of different problems share little more than their English.
+DESCRIPTION_OVERLAP = 0.15
+
+#: Words worth comparing: four characters or more, so that the count is not
+#: dominated by articles and prepositions any two English paragraphs share.
+_DESCRIPTION_WORD = re.compile(r"[a-z0-9][a-z0-9_.\-/]{3,}")
+
+#: Below this many distinct words there is not enough of a description to say
+#: anything about, and the check stands aside rather than guessing.
+_DESCRIPTION_MIN_WORDS = 8
+
+
+def _description_words(source: Dict[str, Any]) -> set:
+    """The vocabulary of a finding's description, from an entry or a raw finding."""
+    parts = []
+    for field in DESCRIPTION_FIELDS:
+        value = source.get(field)
+        if isinstance(value, str):
+            parts.append(value)
+        elif value:
+            parts.append(json.dumps(value, default=str))
+    return set(_DESCRIPTION_WORD.findall(" ".join(parts).lower()))
+
+
+def describes_the_same_thing(stored: Dict[str, Any], incoming: Dict[str, Any]) -> bool:
+    """Is this run describing the finding the stored row accumulated its count for?
+
+    A finding's identity is its title and its location, and the next run's
+    brief hands it both and tells it to reuse them word for word -- which is
+    what makes the count accumulate, and also what makes the count stealable. A
+    run that echoes two strings it was given can land on a row four honest runs
+    built up and rewrite every descriptive field underneath it: same
+    fingerprint, five occurrences, promoted, and the pull request argues for
+    whatever the fifth run wrote. That is not hypothetical for an agent whose
+    input is production log text.
+
+    Nothing here can tell a hijack from an honest re-report by authority --
+    both arrive as one run's JSON -- so it is decided on the text. Overlap of
+    the shorter description's vocabulary rather than of the union, because the
+    honest case includes a terse re-report of a verbose original, and measuring
+    against the longer of the two would read brevity as substitution.
+
+    Stands aside when either side is too short to have a vocabulary. `True`
+    then, not `False`: the check withholds its answer rather than inventing one,
+    and the caller only acts on a definite no.
+    """
+    old = _description_words(stored)
+    new = _description_words(incoming)
+    if len(old) < _DESCRIPTION_MIN_WORDS or len(new) < _DESCRIPTION_MIN_WORDS:
+        return True
+    shared = len(old & new)
+    return shared >= DESCRIPTION_OVERLAP * min(len(old), len(new))
 
 
 def record_finding(
@@ -536,6 +763,16 @@ def record_finding(
     its count at one forever and never promote at all. And the occurrence count
     is stored as evidence but contributes exactly one to the window -- see
     `occurrences_in_window`.
+
+    Recomputing is only half of it, and the half that is easy to overstate. The
+    material is the title and the location, both of which the brief hands the
+    next run and asks it to copy, so an agent can reach an existing row without
+    guessing anything -- it is told how. What stops that being worth doing is
+    below: a run whose description of the finding has nothing in common with
+    the one the row accumulated its sightings for starts the count again. The
+    invariant is that a row's occurrences belong to the description they were
+    counted for, so echoing a known title buys the echoing run its own sighting
+    and nothing else.
     """
     now = now or utcnow()
     signal = str(finding.get("signal", "other")).strip().lower()
@@ -559,6 +796,7 @@ def record_finding(
     except (TypeError, ValueError):
         count = 1
 
+    stamp = to_iso(now)
     entry = ledger["findings"].get(fp)
     if entry is None:
         entry = {
@@ -569,13 +807,42 @@ def record_finding(
         }
         ledger["findings"][fp] = entry
 
+    # What this run inherits by matching the fingerprint: the sightings other
+    # runs left. A rewrite inside one run is not this -- the continuation brief
+    # tells a second turn to edit its own entry in place and rewrite the
+    # description freely -- so only sightings stamped by an earlier run count.
+    inherited = [
+        sighting
+        for sighting in entry.get("sightings", [])
+        if isinstance(sighting, dict) and sighting.get("at") != stamp
+    ]
+    if inherited and not describes_the_same_thing(entry, finding):
+        # The row keeps its identity, its promotions and any refusal -- dropping
+        # a promotion record here would turn a rewrite into a way to clear a
+        # cooldown and re-file, which is worse than the theft it answers -- and
+        # loses only the thing a rewrite has no claim on, which is the evidence
+        # other runs accumulated for a different description. `first_seen`
+        # stays for the same reason the promotions do: it belongs to the
+        # identity, and the reset is recorded next to it rather than hidden by
+        # moving it.
+        entry["sightings"] = [
+            sighting
+            for sighting in entry.get("sightings", [])
+            if isinstance(sighting, dict) and sighting.get("at") == stamp
+        ]
+        entry["description_reset"] = {
+            "at": stamp,
+            "revision": revision,
+            "dropped": len(inherited),
+        }
+
     entry["signal"] = signal
     entry["severity"] = severity
     entry["title"] = title
     entry["location"] = location
-    entry["summary"] = _bounded(str(finding.get("summary", "")).strip())
-    entry["evidence"] = _bounded(finding.get("evidence"))
-    entry["proposed_fix"] = _bounded(str(finding.get("proposed_fix", "")).strip())
+    _describe(entry, "summary", str(finding.get("summary", "")))
+    _describe(entry, "evidence", finding.get("evidence"))
+    _describe(entry, "proposed_fix", str(finding.get("proposed_fix", "")))
     # SOUL.md asks the agent for both, so both are kept. `confidence` is not a
     # gate input -- an agent that could raise its own confidence past a
     # threshold would be setting the same kind of field the fingerprint and the
@@ -584,7 +851,7 @@ def record_finding(
     # last seen at `low` is the one to go back and confirm.
     confidence = str(finding.get("confidence", "")).strip().lower()
     entry["confidence"] = confidence if confidence in CONFIDENCES else ""
-    entry["user_impact"] = _bounded(str(finding.get("user_impact", "")).strip())
+    _describe(entry, "user_impact", str(finding.get("user_impact", "")))
     entry["revision"] = revision
     entry["last_seen"] = to_iso(now)
 
@@ -595,7 +862,6 @@ def record_finding(
     # an investigation that emitted its one finding five times would otherwise
     # clear `minOccurrencesPerDay: 5` by itself.
     sightings = entry.setdefault("sightings", [])
-    stamp = to_iso(now)
     if sightings and isinstance(sightings[-1], dict) and sightings[-1].get("at") == stamp:
         try:
             sightings[-1]["count"] = max(0, int(sightings[-1].get("count", 1))) + count
@@ -705,9 +971,20 @@ def gate_notes(gate: Dict[str, Any]) -> List[str]:
         sanitise_gate_count(gate.get("maxPullRequestsPerDay", 0), "maxPullRequestsPerDay", 0)[1],
         sanitise_cooldown_hours(gate.get("cooldownHours", COUNT_WINDOW_HOURS))[1],
     ]
-    for rule in gate.get("rules") or []:
-        if not isinstance(rule, dict):
-            continue
+    raw = gate.get("rules")
+    if raw is not None and not isinstance(raw, list):
+        notes.append(
+            "gate.rules is a %s, not a list: no severity has a promotion rule, "
+            "so nothing will be promoted" % type(raw).__name__
+        )
+    elif isinstance(raw, list):
+        malformed = sum(1 for rule in raw if not isinstance(rule, dict))
+        if malformed:
+            notes.append(
+                "gate.rules: ignoring %d of %d entries that are not mappings"
+                % (malformed, len(raw))
+            )
+    for rule in _rules(gate):
         severity = str(rule.get("severity", "?")).strip().lower()
         notes.append(
             sanitise_gate_count(
@@ -717,6 +994,28 @@ def gate_notes(gate: Dict[str, Any]) -> List[str]:
             )[1]
         )
     return [note for note in notes if note]
+
+
+def _rules(gate: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The promotion rules in `gate`, with anything that is not one dropped.
+
+    The gate arrives from Helm values by way of a ConfigMap, so `rules` is
+    whatever the operator wrote there. `evaluate_gate` used to iterate it
+    directly: a string iterated as characters and raised `AttributeError` on the
+    first `.get`, which propagated out of the runner and lost the whole run's
+    findings before anything could be written to the ledger -- hourly, with no
+    row to show for it and `backoffLimit: 0` meaning no retry. `gate_notes`
+    already stepped over non-mappings, so the two disagreed about the same
+    config, and the one that logged was the forgiving one.
+
+    Dropping rather than raising, and the same reading for both callers. A gate
+    with no usable rules promotes nothing, which is the safe direction, and
+    `gate_notes` says so in the run log.
+    """
+    raw = (gate or {}).get("rules")
+    if not isinstance(raw, list):
+        return []
+    return [rule for rule in raw if isinstance(rule, dict)]
 
 
 def _rule_for(severity: str, rules: Iterable[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -756,9 +1055,16 @@ def evaluate_gate(
     The budget is counted from the ledger, so promotions this run consumes it
     too -- otherwise a run finding six criticals would open six pull requests
     against a ceiling of two.
+
+    Over all of it sits `MIN_CORROBORATING_RUNS`: severity is the finding's own
+    account of itself, and with `critical: 1` shipped in the chart it was the
+    one agent-written field that decided a promotion outright. The floor is the
+    invariant that no single self-graded field turns a first sighting into a
+    pull request -- severity still chooses how much more than the floor a
+    finding needs, it just cannot choose less.
     """
     now = now or utcnow()
-    rules = gate.get("rules") or []
+    rules = _rules(gate)
     budget, _ = sanitise_gate_count(
         gate.get("maxPullRequestsPerDay", 0), "maxPullRequestsPerDay", 0
     )
@@ -812,9 +1118,23 @@ def evaluate_gate(
         threshold, _ = sanitise_gate_count(
             rule.get("minOccurrencesPerDay", 1), "minOccurrencesPerDay", 1
         )
+        # The floor is applied here rather than at `sanitise_gate_count`, which
+        # reads the operator's number and should keep reporting what they wrote.
+        required = max(threshold, MIN_CORROBORATING_RUNS)
         seen = occurrences_in_window(entry, now)
-        if seen < threshold:
-            reasons[fp] = "held: %d occurrence(s) in %dh, rule wants %d" % (seen, COUNT_WINDOW_HOURS, threshold)
+        if seen < required:
+            if required > threshold:
+                reasons[fp] = (
+                    "held: %d occurrence(s) in %dh, rule wants %d but no finding is "
+                    "promoted on one run's say-so (floor %d)"
+                    % (seen, COUNT_WINDOW_HOURS, threshold, MIN_CORROBORATING_RUNS)
+                )
+            else:
+                reasons[fp] = "held: %d occurrence(s) in %dh, rule wants %d" % (
+                    seen,
+                    COUNT_WINDOW_HOURS,
+                    required,
+                )
             continue
         last = None
         for promotion in entry.get("promotions", []) or []:
@@ -886,6 +1206,21 @@ def record_refusal(
     someone reading the ConfigMap, which is also the only place this is
     reversible from: nothing clears a refusal, so an entry written in error
     stays until a maintainer deletes the key by hand.
+
+    That the hold does not expire is deliberate, not an omission. The refusal is
+    about what a fix would have to touch -- the loop's own gate, ledger or
+    grants -- and no amount of elapsed time changes that answer, so an expiry
+    would only put the finding back in front of the filing turn to be refused
+    again, which is the hourly retry this exists to stop. What is missing is a
+    way to undo one, and it is missing because the loop has no writer for it: an
+    agent that could clear its own refusals could clear the one holding a change
+    to the gate. Clearing it is a maintainer's edit, so the repair is here:
+
+        kubectl -n <ns> get configmap <ledger> -o yaml   # find the fingerprint
+        # then remove that finding's "refused" key and patch the ConfigMap back
+
+    A cruder version -- delete the whole finding row -- also works and costs the
+    occurrence count, which the next run starts rebuilding.
     """
     entry = ledger["findings"].get(fp)
     if entry is None:
@@ -1016,6 +1351,14 @@ LEDGER_WRITE_ATTEMPTS = 4
 #: races it.
 _OBSERVED_RESOURCE_VERSION: Dict[Tuple[str, str], str] = {}
 
+#: The (namespace, name) whose `ledger.json` was there but would not parse, set
+#: by `load` and consumed by `save` as a refusal to write.
+#:
+#: Separate from the resourceVersion map because it means the opposite thing. A
+#: version says "write against this"; this says "do not write at all", and the
+#: two are set from the same read.
+_UNPARSEABLE: Dict[Tuple[str, str], bool] = {}
+
 
 def _api_client():
     """A CoreV1Api bound to whichever kubeconfig this process can find."""
@@ -1028,24 +1371,31 @@ def _api_client():
     return client, client.CoreV1Api()
 
 
-def _read(api, client, namespace: str, name: str) -> Tuple[Dict[str, Any], Optional[str]]:
-    """The ledger in the ConfigMap and the resourceVersion it was read at."""
+def _read(api, client, namespace: str, name: str) -> Tuple[Dict[str, Any], Optional[str], bool]:
+    """The ledger, the resourceVersion it was read at, and whether it parsed.
+
+    The third value distinguishes the two ways an empty ledger comes back. No
+    ConfigMap, no key, or a key holding an empty string is a first run and parses
+    fine. A key holding text that is not JSON is a ledger that exists and cannot
+    be read, and the caller has to know: the empty dictionary returned alongside
+    it is a placeholder, not history.
+    """
     try:
         cm = api.read_namespaced_config_map(
             name=name, namespace=namespace, _request_timeout=API_TIMEOUT
         )
     except client.exceptions.ApiException as exc:
         if exc.status in (403, 404):
-            return empty_ledger(), None
+            return empty_ledger(), None, True
         raise
     version = getattr(cm.metadata, "resource_version", None)
     raw = (cm.data or {}).get(LEDGER_KEY)
     if not raw:
-        return empty_ledger(), version
+        return empty_ledger(), version, True
     try:
-        return coerce(json.loads(raw)), version
+        return coerce(json.loads(raw)), version, True
     except (TypeError, ValueError):
-        return empty_ledger(), version
+        return empty_ledger(), version, False
 
 
 def load(namespace: str, name: str) -> Dict[str, Any]:
@@ -1054,20 +1404,32 @@ def load(namespace: str, name: str) -> Dict[str, Any]:
     A missing ConfigMap is the first run on a chart that renders it, and a
     ConfigMap the Role cannot read is a misconfiguration -- both give an empty
     ledger rather than an exception, because a run that cannot read history is
-    still a run that can find things. The difference is visible in the run
-    record, which says which happened.
+    still a run that can find things.
 
     Also records the resourceVersion for `save` to write against. An unreadable
     ConfigMap records nothing, so the write that follows is unconditional --
     there is no version to be stale relative to, and refusing to write because
     the read failed would turn a permissions problem into a lost run.
+
+    A third case is not either of those, and used to be treated as both: a
+    `ledger.json` that exists and will not parse. It came back as an empty
+    ledger *with* the resourceVersion, so the run built its findings on nothing,
+    the precondition matched, and `save` wrote the empty ledger over months of
+    history -- irreversibly, since a ConfigMap keeps no revisions. It is
+    recorded here instead and `save` refuses, which costs this run's findings
+    and keeps everything else. The whole of the recovery is that the corrupt
+    text is still in the ConfigMap for a human to look at.
     """
     client, api = _api_client()
-    ledger, version = _read(api, client, namespace, name)
+    ledger, version, parsed = _read(api, client, namespace, name)
     if version:
         _OBSERVED_RESOURCE_VERSION[(namespace, name)] = version
     else:
         _OBSERVED_RESOURCE_VERSION.pop((namespace, name), None)
+    if parsed:
+        _UNPARSEABLE.pop((namespace, name), None)
+    else:
+        _UNPARSEABLE[(namespace, name)] = True
     return ledger
 
 
@@ -1109,7 +1471,12 @@ def merge(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
       to move it forward.
     - `first_seen` keeps the earlier, for the same reason.
     - Everything else on a finding -- severity, title, summary, evidence -- is
-      the agent's current description of it, so the newer writer wins.
+      the agent's current description of it, so the newer writer wins. Which is
+      newer is `last_seen`, not which argument it arrived in. `incoming` is this
+      run's document, built from a read that predates whatever is in `base` now,
+      so taking it as the newer side by position was backwards whenever the
+      other writer had seen the finding more recently -- and severity is one of
+      the scalars, so the losing side's grading decided the next run's gate.
 
     Rows only `base` has are carried through untouched. That does resurrect a
     finding this run's `prune` had just dropped, and the alternative is worse:
@@ -1131,6 +1498,12 @@ def merge(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
     for fp in set(base_findings) | set(incoming_findings):
         old = base_findings.get(fp)
         new = incoming_findings.get(fp)
+        if not isinstance(old, dict) and not isinstance(new, dict):
+            # Neither side has a row worth carrying. Writing one anyway put
+            # `{"<fingerprint>": null}` into the ledger, which every later
+            # reader treats as an entry -- `summarise_for_prompt` calls `.get`
+            # on it and takes the run down before the agent is ever prompted.
+            continue
         if not isinstance(old, dict):
             out["findings"][fp] = new
             continue
@@ -1138,8 +1511,16 @@ def merge(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
             out["findings"][fp] = old
             continue
 
-        entry = dict(old)
-        entry.update(new)
+        # Whichever side saw the finding last describes it. A row with no
+        # `last_seen` sorts below one that has it, and a tie goes to `new` --
+        # the behaviour when the two are the same run, where either answer is
+        # the same answer.
+        if str(old.get("last_seen") or "") > str(new.get("last_seen") or ""):
+            entry = dict(new)
+            entry.update(old)
+        else:
+            entry = dict(old)
+            entry.update(new)
         entry["sightings"] = _union(
             old.get("sightings"), new.get("sightings"), key=lambda s: str(s.get("at") or "")
         )
@@ -1152,8 +1533,16 @@ def merge(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
         if seens:
             entry["first_seen"] = min(seens)
         refusals = [r for r in (old.get("refused"), new.get("refused")) if isinstance(r, dict)]
-        if refusals:
-            entry["refused"] = min(refusals, key=lambda r: str(r.get("at") or ""))
+        # Earliest wins, but only among refusals that carry a date. Sorting on
+        # `str(at or "")` put an undated refusal first every time, because the
+        # empty string precedes every timestamp -- so the one record that cannot
+        # say how long a finding has been waiting on a human was the one that
+        # always survived the merge.
+        dated = [r for r in refusals if from_iso(str(r.get("at") or "")) is not None]
+        if dated:
+            entry["refused"] = min(dated, key=lambda r: str(r.get("at")))
+        elif refusals:
+            entry["refused"] = refusals[0]
         out["findings"][fp] = entry
 
     return out
@@ -1169,29 +1558,84 @@ class LedgerWriteError(RuntimeError):
     """
 
 
+#: What replaces a description field shed to get the ledger under the cap.
+SHED_MARKER = "[dropped: the ledger was over the %d-byte cap]" % LEDGER_MAX_BYTES
+
+
+def _shed_to_fit(ledger: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """A copy of `ledger` under the cap, or None if it cannot be got there.
+
+    Sheds in the order of what a lost field costs. The run history goes first:
+    it is a log, nothing reads it but a human, and the newest few rows carry
+    what a human wants. Then the agent-written prose, largest field first --
+    those are the bytes, and the field is replaced by a marker rather than
+    removed so a reader sees that the finding once carried a summary.
+
+    What is never shed is what the gate reads: fingerprints, sightings,
+    promotions, refusals. A row that loses its sightings loses its occurrence
+    count, so the finding stops promoting; one that loses a promotion record
+    stops holding its cooldown and is filed again. Shedding those to save bytes
+    would trade a loud failure for a quiet wrong answer.
+    """
+    out = copy.deepcopy(ledger)
+    runs = out.get("runs")
+    if isinstance(runs, list) and len(runs) > 5:
+        out["runs"] = runs[-5:]
+    if len(json.dumps(out, indent=1, sort_keys=True).encode("utf-8")) <= LEDGER_MAX_BYTES:
+        return out
+
+    prose = []
+    for fp, entry in (out.get("findings") or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        for field in ("evidence",) + DESCRIPTION_FIELDS:
+            size = _json_size(entry.get(field))
+            if size is not None and size > len(SHED_MARKER):
+                prose.append((size, fp, field))
+    for _, fp, field in sorted(prose, reverse=True):
+        out["findings"][fp][field] = SHED_MARKER
+        if len(json.dumps(out, indent=1, sort_keys=True).encode("utf-8")) <= LEDGER_MAX_BYTES:
+            return out
+    return None
+
+
 def _ledger_json(ledger: Dict[str, Any]) -> str:
-    """Serialise, and refuse to write something the API server will reject.
+    """Serialise, shedding prose if that is what it takes to stay writable.
 
     A ConfigMap is capped at 1MiB across all keys. The ledger only grows -- new
     fingerprints arrive, `prune` drops findings older than the window -- so an
     install with a wide finding surface reaches the cap eventually, and the
     failure is a 413 on the write rather than anything visible in the run. Trip
-    at 768KiB instead, while there is still room to write the smaller ledger
-    that `prune` produces on the next run.
+    at 768KiB instead.
+
+    Raising there was the whole of it, and the raise was a trap. `save` is the
+    last thing a run does, so a ledger over the cap is over the cap for every
+    run after it too: each one reads it, prunes it, finds the result still too
+    large -- 30 days of retention is not shortenable from the chart -- and
+    raises before writing the smaller document that would have fixed it. The
+    error text said the opposite, that the next run's `prune` would leave room.
+    So shed first and raise only if shedding is not enough, which puts the
+    ledger back under the cap on the same run that noticed.
     """
     body = json.dumps(ledger, indent=1, sort_keys=True)
-    if len(body.encode("utf-8")) > LEDGER_MAX_BYTES:
-        raise LedgerWriteError(
-            f"ledger is {len(body.encode('utf-8'))} bytes, over the "
-            f"{LEDGER_MAX_BYTES}-byte cap ({LEDGER_MAX_BYTES // 1024}KiB of the "
-            "API server's 1MiB ConfigMap limit). Every text field an entry "
-            "carries is capped, so the cause is row count rather than row size: "
-            "either unbounded distinct fingerprints -- look for a finding title "
-            f"that carries a timestamp, a pod name or a request id -- or {len(ledger.get('findings') or {})} "
-            "findings that are each legitimate, in which case shorten "
-            "gate.cooldownHours so promoted rows age out sooner."
-        )
-    return body
+    size = len(body.encode("utf-8"))
+    if size <= LEDGER_MAX_BYTES:
+        return body
+    shed = _shed_to_fit(ledger)
+    if shed is not None:
+        return json.dumps(shed, indent=1, sort_keys=True)
+    raise LedgerWriteError(
+        f"ledger is {size} bytes, over the "
+        f"{LEDGER_MAX_BYTES}-byte cap ({LEDGER_MAX_BYTES // 1024}KiB of the "
+        "API server's 1MiB ConfigMap limit), and dropping every summary and "
+        "evidence array it carries still does not bring it under. What is left "
+        f"is {len(ledger.get('findings') or {})} finding rows and their "
+        "sightings and promotions, which are not droppable because the gate "
+        "reads them. Look for unbounded distinct fingerprints -- a finding "
+        "title carrying a timestamp, a pod name or a request id -- and expect "
+        "to prune the ConfigMap by hand: retention is a fixed 30 days and is "
+        "not settable from the chart."
+    )
 
 
 def save(namespace: str, name: str, ledger: Dict[str, Any]) -> None:
@@ -1238,6 +1682,8 @@ def save(namespace: str, name: str, ledger: Dict[str, Any]) -> None:
     """
     client, api = _api_client()
     key = (namespace, name)
+    if _UNPARSEABLE.get(key):
+        raise _corrupt_error(namespace, name)
 
     for attempt in range(LEDGER_WRITE_ATTEMPTS):
         body: Dict[str, Any] = {"data": {LEDGER_KEY: _ledger_json(ledger)}}
@@ -1256,7 +1702,13 @@ def save(namespace: str, name: str, ledger: Dict[str, Any]) -> None:
                 # rather than the run: the next attempt is unconditional, which
                 # is exactly the old behaviour and still better than losing the
                 # findings.
-                remote, remote_version = _read(api, client, namespace, name)
+                remote, remote_version, parsed = _read(api, client, namespace, name)
+                if not parsed:
+                    # Merging into the placeholder empty ledger would write this
+                    # run's rows over the other writer's document -- the same
+                    # loss `load` refuses above, reached by the other door.
+                    _UNPARSEABLE[key] = True
+                    raise _corrupt_error(namespace, name) from exc
                 ledger = merge(remote, ledger)
                 if remote_version:
                     _OBSERVED_RESOURCE_VERSION[key] = remote_version
@@ -1309,6 +1761,20 @@ def _write_error(namespace: str, name: str, exc) -> LedgerWriteError:
         ),
     }.get(exc.status, f"HTTP {exc.status}: {exc.reason}")
     return LedgerWriteError(f"could not write the ledger: {detail}")
+
+
+def _corrupt_error(namespace: str, name: str) -> LedgerWriteError:
+    """The refusal to overwrite a ledger that would not parse, and its repair."""
+    return LedgerWriteError(
+        f"could not write the ledger: the {LEDGER_KEY} key in ConfigMap "
+        f"{namespace}/{name} is not valid JSON, so this run read no history and "
+        "writing would replace whatever is there with an empty ledger. Nothing "
+        "has been written. Recover the accumulated findings by hand -- "
+        f"`kubectl -n {namespace} get configmap {name} -o yaml` to read the "
+        f"text, then repair it, or `kubectl -n {namespace} patch configmap "
+        f"{name} --type merge -p '{{\"data\":{{\"{LEDGER_KEY}\":\"\"}}}}'` to "
+        "start over -- and every run until then will stop here."
+    )
 
 
 def clone(ledger: Dict[str, Any]) -> Dict[str, Any]:

@@ -77,8 +77,12 @@ commit between the deployed revision and the base as part of your change.
   for the directory you changed:
 
   ```bash
-  cd <the directory holding the test_*.py files> && python3 -m unittest discover -p 'test_*.py'
+  cd <the "Write the fix in" path>/<the directory holding the test_*.py files>
+  python3 -m unittest discover -p 'test_*.py'
   ```
+
+  The fix tree, not the evidence tree. Both hold a copy of the same file and only one of them has
+  your change in it; running the evidence tree's copy passes without testing anything you wrote.
 
   It is **not** `go build`, which needs a Go toolchain this image does not carry; not
   `make docs-check`, which shells out to `git ls-files`; and not `make test-python`, which pulls in
@@ -170,19 +174,26 @@ rules cannot read.
 
 ```bash
 curl -sSf "https://api.github.com/repos/<the Upstream from your brief>/compare/<the base from your brief>...<the owner half of 'Push branches to'>:<your branch>" \
-  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["status"], len(d.get("files") or []))'
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["status"], d["ahead_by"], d["behind_by"], len(d.get("files") or []))'
 ```
 
 Spell the head `owner:branch`. Under `mode: upstream` your branch is on the fork and the base is on
 a different repository, and a bare branch name is looked up on the base, where it does not exist.
 
-`ahead` — or `identical` — and a file count matching what you committed is the answer you expect.
-`git show --stat HEAD` says how many files you actually changed, and the two numbers must agree.
+**The file count is the check; the status is not.** `files` here is the three-dot diff — what is on
+your branch since it and the base last agreed — so it lists your commits and nothing the base did
+afterwards. Compare it against `git show --stat HEAD`, which says how many files you actually
+changed. The two must agree.
 
-If they disagree, you branched in the wrong tree or the base moved under you in a way worth a
-human's attention. Open nothing. Print `SKIPPED: the diff would be <n> files, not <m>` and end the
-turn. The finding keeps its counts and a later run files it; a pull request nobody can review does
-not.
+All three of `identical`, `ahead` and `diverged` are fine. `diverged` only says the base branch
+moved after your clone, which on a repository taking ten commits a day is the expected outcome of a
+filing turn that ran for a while; the merge is still clean unless it touched your files, and that is
+the reviewer's call and GitHub's, not yours. `behind_by` is printed so you can mention it in the
+body when it is large.
+
+If the file counts disagree, you branched in the wrong tree. Open nothing. Print
+`SKIPPED: the diff would be <n> files, not <m>` and end the turn. The finding keeps its counts and a
+later run files it; a pull request nobody can review does not.
 
 If the call itself fails — a fork the anonymous API cannot see, a refused connection — that is not
 evidence either way, so do not skip on it. Open the pull request and say in the body that the diff

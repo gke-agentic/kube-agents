@@ -128,8 +128,70 @@ def want_colour(choice: str, stream=None) -> bool:
 
 
 def plain(text: str) -> str:
-    """Width-measuring view of a string: what it looks like with colour off."""
+    """Width-measuring view of a string: what it looks like with colour off.
+
+    This strips the two forms this file emits and nothing else, which is only a
+    correct measurement because `scrub_document` has already taken the control
+    characters out of everything else. An escape sequence that reached a cell
+    from the ledger would measure here as zero columns wide, so the table would
+    both misalign and pass the assertions that exist to catch misalignment.
+    """
     return _ANSI.sub("", text)
+
+
+# --------------------------------------------------------------------------
+# Untrusted text
+# --------------------------------------------------------------------------
+
+#: Everything a terminal acts on rather than draws: the C0 controls except
+#: newline and tab, DEL, the C1 range (0x9B is CSI to a terminal that decodes
+#: it), the Unicode line and paragraph separators, the bidirectional overrides,
+#: and the zero-width no-break space.
+_CONTROL = re.compile(
+    r"[\x00-\x08\x0b-\x1f\x7f-\x9f"
+    r"\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]"
+)
+
+
+def scrub(value: Any) -> Any:
+    """Make one string safe to print, without hiding what it said.
+
+    Every field this report draws is text the investigating agent wrote out of
+    production logs, and a log line holds whatever reached it. A `summary`
+    carrying an OSC 8 introducer renders as an ordinary sentence linked to
+    somebody else's site -- the same sequence this file uses for its own links,
+    so a terminal has no way to tell them apart -- and a `title` carrying the
+    CSI sequence for "erase display" clears the screen the report is being read
+    on and leaves the row it was in short of its own width.
+
+    Only the control characters are removed. What surrounded them stays and
+    prints as the literal `]8;;https://evil.example/pwn` it is: inert, and
+    visible, which deleting the whole sequence would not be -- a reader would
+    be looking at doctored text with nothing to say so.
+
+    Non-strings pass through unchanged, so this can be mapped over a decoded
+    JSON document without turning its numbers into strings.
+    """
+    if not isinstance(value, str):
+        return value
+    return _CONTROL.sub("", value.replace("\t", " "))
+
+
+def scrub_document(value: Any) -> Any:
+    """`scrub` over every string in a decoded JSON document, keys included.
+
+    At the boundary rather than at each call site: a ledger field reaches the
+    terminal from a dozen places -- table cells, `--detail` blocks, the header,
+    a hyperlink's label -- and one of them forgotten is the whole property lost.
+    Keys are scrubbed alongside values because the findings map is keyed by
+    fingerprint and the gate's verdicts are looked up by the `fingerprint`
+    field, so scrubbing one and not the other would quietly stop them matching.
+    """
+    if isinstance(value, dict):
+        return {scrub_document(key): scrub_document(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [scrub_document(item) for item in value]
+    return scrub(value)
 
 
 _PR_URL = re.compile(r"https://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)/?$")
@@ -147,6 +209,14 @@ def pr_ref(url: str) -> str:
     return "%s/%s#%s" % match.groups() if match else url
 
 
+#: The only schemes this will make clickable. A promotion's `url` is a ledger
+#: field like every other, and OSC 8 does not care what it wraps -- a terminal
+#: handed `file:///` or a scheme the desktop has registered may pass it to the
+#: operating system on a click. An unlinkable URL still prints as its own text,
+#: so nothing is hidden by declining to link it.
+_LINKABLE_URL = re.compile(r"https?://", re.IGNORECASE)
+
+
 def hyperlink(text: str, url: str, palette: Palette, link_id: str = "") -> str:
     """OSC 8, gated on the same signal as colour.
 
@@ -160,7 +230,7 @@ def hyperlink(text: str, url: str, palette: Palette, link_id: str = "") -> str:
     highlights only the line under the pointer, and with it the whole location
     lights up as one.
     """
-    if not palette.enabled or not url:
+    if not palette.enabled or not url or not _LINKABLE_URL.match(url):
         return text
     return "\x1b]8;%s;%s\x1b\\%s\x1b]8;;\x1b\\" % ("id=%s" % link_id if link_id else "", url, text)
 
@@ -241,17 +311,53 @@ def location_refs(location: str, roots: frozenset) -> List[Tuple[str, Optional[s
     return [ref for ref in refs if not (ref in seen or seen.add(ref))]
 
 
+#: One segment of a path or a repository name, in the character set
+#: `location_refs` yields. `.` and `..` match it and are rejected separately,
+#: because those two are the segments a browser resolves rather than requests.
+_URL_SEGMENT = re.compile(r"^[\w.+-]+$")
+
+#: `10` or `10-20`, which is all a line anchor is ever built from.
+_LINE_ANCHOR = re.compile(r"^\d+(?:-\d+)?$")
+
+
+def _url_safe(value: str, segments: int = 0) -> bool:
+    """True when `value` is `/`-joined segments a URL can carry unchanged."""
+    parts = value.split("/")
+    if segments and len(parts) != segments:
+        return False
+    return all(
+        part not in (".", "..") and _URL_SEGMENT.match(part) is not None for part in parts
+    )
+
+
 def blob_url(repo: str, revision: str, path: str, line: Optional[str] = None) -> str:
     """GitHub's permalink for `path` at `revision`, anchored on `line`.
 
     Pinned to the revision the finding was made against rather than to a branch:
     the line number is only meaningful against the code the agent read, and a
     branch link drifts out from under it on the next commit.
+
+    None of the three pieces is trusted to be what it is called. The path is cut
+    out of a location string the investigating agent wrote and the revision is a
+    ledger field beside it, and a `..` segment in either walks the link out of
+    the repository while the label next to it goes on naming a file inside it: a
+    browser resolves
+    `github.com/o/r/blob/../../../../attacker/repo/blob/main/x.py` to
+    `github.com/attacker/repo/blob/main/x.py`, and what the reader sees is
+    `x.py:12` and a link they have every reason to trust. So each piece has to
+    be plain path segments, and anything else is given no link at all -- the
+    same degradation as a finding with no revision.
     """
     if not repo or not revision or not path:
         return ""
+    if not _url_safe(repo, segments=2) or not _url_safe(revision, segments=1):
+        return ""
+    if not _url_safe(path):
+        return ""
     url = "https://github.com/%s/blob/%s/%s" % (repo, revision, path)
     if not line:
+        return url
+    if not _LINE_ANCHOR.match(str(line)):
         return url
     # GitHub spells a range `#L10-L20`, with the `L` repeated; a location writes
     # it `10-20`.
@@ -554,6 +660,11 @@ def render_table(
 # --------------------------------------------------------------------------
 
 
+#: Where an unparseable or missing timestamp sorts: before every real one, so a
+#: "newest first" list puts the rows nobody can date at the bottom.
+UNDATED = _dt.datetime.min.replace(tzinfo=_dt.timezone.utc)
+
+
 def parse_iso(text: Any) -> Optional[_dt.datetime]:
     if not isinstance(text, str) or not text.strip():
         return None
@@ -590,12 +701,24 @@ def stamp(when: Optional[_dt.datetime], utc: bool) -> str:
 
     Local by default with the zone spelled out, because the question this
     answers is almost always "did that happen while I was looking at it".
+
+    A stamp at either end of the calendar cannot be moved into another zone --
+    `0001-01-01T00:00:00Z` read anywhere west of UTC is before `datetime.min`,
+    and `astimezone` raises `OverflowError` rather than clamping. `parse_iso`
+    survives that input deliberately, because refusing to parse it would lose
+    the row it belongs to, so the conversion is where the guard belongs. Such a
+    stamp is printed as stored rather than dropped: it is almost certainly the
+    zero value of something that failed to write a real one, which is worth
+    seeing.
     """
     if when is None:
         return "-"
+    try:
+        local = when.astimezone(_dt.timezone.utc if utc else None)
+    except (OverflowError, OSError, ValueError):
+        return when.isoformat(sep=" ", timespec="minutes")
     if utc:
-        return when.astimezone(_dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    local = when.astimezone()
+        return local.strftime("%Y-%m-%d %H:%M UTC")
     # %-I is a glibc/BSD extension, which covers Linux and macOS; the zero-pad
     # fallback keeps this from raising anywhere else.
     try:
@@ -726,10 +849,22 @@ def cronjob_env(cronjob: Optional[Dict[str, Any]]) -> Dict[str, str]:
 # --------------------------------------------------------------------------
 
 
+def records(value: Any) -> List[Dict[str, Any]]:
+    """The object members of a field that ought to be a list of them.
+
+    A ledger is JSON that something else wrote: an older run, a `kubectl edit`,
+    a hand-assembled file passed to `--file`. `sightings: 4` and
+    `promotions: "none"` are not reasons for a read-only report to end in a
+    traceback, and iterating a field that is not a list is how it did.
+    """
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
 def sorted_findings(ledger: Dict[str, Any]) -> List[Dict[str, Any]]:
     findings = ledger.get("findings")
-    entries = list(findings.values()) if isinstance(findings, dict) else list(findings or [])
-    return [e for e in entries if isinstance(e, dict)]
+    if isinstance(findings, dict):
+        return [entry for entry in findings.values() if isinstance(entry, dict)]
+    return records(findings)
 
 
 def severity_rank(entry: Dict[str, Any]) -> int:
@@ -737,16 +872,57 @@ def severity_rank(entry: Dict[str, Any]) -> int:
     return SEVERITY_ORDER.index(severity) if severity in SEVERITY_ORDER else len(SEVERITY_ORDER)
 
 
+def severity_floor_rank(entry: Dict[str, Any]) -> int:
+    """`severity_rank` for the `--severity` floor, where unknown sits with `low`.
+
+    Ranking an unrecognised severity past `low` is right for the sort -- a
+    severity this tool cannot interpret belongs at the end of the table -- and
+    wrong for the filter, which keeps everything at or above the floor. The help
+    text calls `--severity` a floor and `low` is the bottom of the scale, so
+    `--severity low` has to hide nothing. It was hiding precisely the findings
+    nobody can triage at a glance, and saying nothing about having done it.
+    """
+    return min(severity_rank(entry), len(SEVERITY_ORDER) - 1)
+
+
 def occurrences(entry: Dict[str, Any], now: _dt.datetime) -> Optional[int]:
     if ledger_mod is None:
         return None
-    return ledger_mod.occurrences_in_window(entry, now)
+    try:
+        return ledger_mod.occurrences_in_window(entry, now)
+    except (AttributeError, TypeError, ValueError):
+        # The loop's own function, handed a ledger the loop did not write: it
+        # iterates `sightings`, and `sightings: 4` is not iterable. A count this
+        # cannot establish renders as "?", which is what a missing module
+        # already renders as.
+        return None
 
 
 def reported(entry: Dict[str, Any], now: _dt.datetime) -> Optional[int]:
     if ledger_mod is None:
         return None
-    return ledger_mod.reported_occurrences_in_window(entry, now)
+    try:
+        return ledger_mod.reported_occurrences_in_window(entry, now)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def promotions_today(ledger: Dict[str, Any], now: _dt.datetime) -> Optional[int]:
+    """`ledger_mod.promotions_today`, or None when it cannot be asked.
+
+    It indexes `ledger["findings"]` as a mapping and reads every entry as one,
+    while `sorted_findings` deliberately accepts the list form too -- so the
+    header can be handed a ledger the rest of the report renders happily and
+    this number cannot be had from it. None means "?", not zero: a budget line
+    reading "0 of 3" on a ledger nobody could count would be a wrong answer
+    rather than a missing one.
+    """
+    if ledger_mod is None or not isinstance(ledger.get("findings"), dict):
+        return None
+    try:
+        return ledger_mod.promotions_today(ledger, now)
+    except (AttributeError, TypeError, ValueError):
+        return None
 
 
 def gate_verdicts(ledger: Dict[str, Any], gate: Dict[str, Any], now: _dt.datetime) -> Dict[str, str]:
@@ -756,10 +932,17 @@ def gate_verdicts(ledger: Dict[str, Any], gate: Dict[str, Any], now: _dt.datetim
     findings = ledger.get("findings")
     if not isinstance(findings, dict):
         return {}
-    order = sorted(findings.items(), key=lambda kv: (severity_rank(kv[1]), kv[0]))
+    # Only the entries that are objects, and filtered before the sort rather
+    # than inside the `try` below it: `severity_rank` reads an entry as a
+    # mapping, so one scalar value in the findings map raised `AttributeError`
+    # out here where nothing caught it. Passing the filtered map on also means a
+    # malformed entry costs its own verdict instead of everybody's, which is
+    # what the blanket `except` made of it once the sort was survivable.
+    usable = {fp: entry for fp, entry in findings.items() if isinstance(entry, dict)}
+    order = sorted(usable.items(), key=lambda kv: (severity_rank(kv[1]), str(kv[0])))
     try:
         _, reasons = ledger_mod.evaluate_gate(
-            {"findings": findings, "runs": ledger.get("runs", [])},
+            {"findings": usable, "runs": ledger.get("runs", [])},
             gate,
             [fp for fp, _ in order],
             now,
@@ -767,6 +950,40 @@ def gate_verdicts(ledger: Dict[str, Any], gate: Dict[str, Any], now: _dt.datetim
     except Exception:  # noqa: BLE001 - a viewer must not fail on a malformed gate
         return {}
     return reasons
+
+
+def select_findings(
+    ledger: Dict[str, Any],
+    now: _dt.datetime,
+    sort: str = "severity",
+    min_severity: Optional[str] = None,
+    signal: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """The findings the table lists, filtered and ordered exactly as it lists them.
+
+    One function rather than one per caller, because the row numbers the table
+    prints are positions in this list and `--detail 3` has to mean the third row
+    the reader just saw. It did not: the detail path rebuilt the list with the
+    default severity sort and no filters at all, so under `--sort seen` row 1
+    and `--detail 1` were two different findings, and `--severity high
+    --detail 3` opened one the table had never listed.
+    """
+    entries = sorted_findings(ledger)
+    if min_severity:
+        ceiling = SEVERITY_ORDER.index(min_severity)
+        entries = [e for e in entries if severity_floor_rank(e) <= ceiling]
+    if signal:
+        entries = [e for e in entries if str(e.get("signal", "")).lower() == signal.lower()]
+
+    if sort == "seen":
+        entries.sort(key=lambda e: -(occurrences(e, now) or 0))
+    elif sort == "last":
+        entries.sort(key=lambda e: str(e.get("last_seen", "")), reverse=True)
+    elif sort == "first":
+        entries.sort(key=lambda e: str(e.get("first_seen", "")))
+    else:
+        entries.sort(key=lambda e: (severity_rank(e), -(occurrences(e, now) or 0)))
+    return entries
 
 
 def verdict_style(verdict: str) -> str:
@@ -799,10 +1016,14 @@ def collect_promotions(entries: Sequence[Dict[str, Any]]) -> List[Tuple[Dict[str
     pairs = [
         (promotion, entry)
         for entry in entries
-        for promotion in (entry.get("promotions") or [])
-        if isinstance(promotion, dict)
+        for promotion in records(entry.get("promotions"))
     ]
-    pairs.sort(key=lambda pair: str(pair[0].get("at") or ""), reverse=True)
+    # Ordered on the parsed instant rather than on the text of it. `to_iso`
+    # writes `...Z`, which happens to sort correctly as a string, and the same
+    # instant written `+00:00` by whoever last edited the ConfigMap does not:
+    # `19:00:00-01:00` is an hour after `19:00:00Z` and sorts an hour before it,
+    # because `-` is below `Z`. The table says newest first.
+    pairs.sort(key=lambda pair: parse_iso(pair[0].get("at")) or UNDATED, reverse=True)
     return pairs
 
 
@@ -824,7 +1045,7 @@ def render_header(
     palette: Palette,
     utc: bool,
 ) -> List[str]:
-    runs = [r for r in (ledger.get("runs") or []) if isinstance(r, dict)]
+    runs = records(ledger.get("runs"))
     entries = sorted_findings(ledger)
     last = runs[-1] if runs else None
     last_at = parse_iso(last.get("at")) if last else None
@@ -853,13 +1074,21 @@ def render_header(
     def field(label: str, value: str) -> str:
         return "  %s %s" % (palette(label.ljust(10), "dim"), value)
 
+    # Not "all time", which is what this claimed. `prune` deletes a finding a
+    # month after its last sighting and keeps only the ten most recent
+    # promotions on the ones that survive, so the number goes down as well as
+    # up and an install that has filed for a year reports a fraction of it.
+    # What it counts is the promotion records the document still holds -- and a
+    # record is not proof of a pull request either, since
+    # `record_promotion(confirmed=False)` writes one for a filing turn that
+    # ended without a URL, so those are counted out loud rather than folded in.
     filed = collect_promotions(entries)
+    unconfirmed = sum(1 for promotion, _ in filed if promotion.get("unconfirmed"))
+    filed_text = "· %d pull request(s) the ledger still lists" % len(filed)
+    if unconfirmed:
+        filed_text += " (%d unconfirmed)" % unconfirmed
     lines.append(
-        field(
-            "findings",
-            "%d in the ledger  %s"
-            % (len(entries), palette("· %d pull request(s) opened all time" % len(filed), "dim")),
-        )
+        field("findings", "%d in the ledger  %s" % (len(entries), palette(filed_text, "dim")))
     )
     lines.append(field("source", source))
     if source != "file":
@@ -889,16 +1118,32 @@ def render_header(
         )
 
     if gate:
-        budget = gate.get("maxPullRequestsPerDay", 0)
-        spent = ledger_mod.promotions_today(ledger, now) if ledger_mod else None
-        cooldown = gate.get("cooldownHours", "?")
-        used = "%s of %s" % (spent if spent is not None else "?", budget)
-        style = "yellow" if (spent is not None and budget and spent >= budget) else None
+        # The gate's own reading of its own numbers, not the raw ones. This line
+        # printed what the ConfigMap said while `evaluate_gate` ran both through
+        # the sanitisers below, so the two disagreed exactly where it mattered:
+        # `{maxPullRequestsPerDay: .inf, cooldownHours: .inf}` rendered
+        # "1 of inf ... infh cooldown" against an enforced 1000000 and 24 hours,
+        # which a maintainer reads as "nothing will ever re-file" on an install
+        # re-filing every day. A quoted `"3"` did not render at all -- comparing
+        # the spend against a string raised TypeError and took the report down.
+        if ledger_mod is None:
+            budget_text, cooldown_text, style = "? of ?", "?", None
+        else:
+            budget, _ = ledger_mod.sanitise_gate_count(
+                gate.get("maxPullRequestsPerDay", 0), "maxPullRequestsPerDay", 0
+            )
+            cooldown, _ = ledger_mod.sanitise_cooldown_hours(
+                gate.get("cooldownHours", ledger_mod.COUNT_WINDOW_HOURS)
+            )
+            spent = promotions_today(ledger, now)
+            budget_text = "%s of %d" % ("?" if spent is None else spent, budget)
+            cooldown_text = "%g" % cooldown
+            style = "yellow" if (spent is not None and budget and spent >= budget) else None
         lines.append(
             field(
                 "budget",
                 "%s pull requests in the last 24h  %s"
-                % (palette(used, style), palette("· %sh cooldown" % cooldown, "dim")),
+                % (palette(budget_text, style), palette("· %sh cooldown" % cooldown_text, "dim")),
             )
         )
 
@@ -931,7 +1176,7 @@ def render_runs(
     box: Dict[str, str],
     utc: bool,
 ) -> List[str]:
-    runs = [r for r in (ledger.get("runs") or []) if isinstance(r, dict)]
+    runs = records(ledger.get("runs"))
     if not runs:
         return [palette("  no runs recorded yet", "dim")]
     shown = runs[-limit:] if limit > 0 else runs
@@ -984,21 +1229,7 @@ def render_findings(
     repo: str = "",
     roots: frozenset = frozenset(),
 ) -> Tuple[List[str], List[Dict[str, Any]]]:
-    entries = sorted_findings(ledger)
-    if min_severity:
-        ceiling = SEVERITY_ORDER.index(min_severity)
-        entries = [e for e in entries if severity_rank(e) <= ceiling]
-    if signal:
-        entries = [e for e in entries if str(e.get("signal", "")).lower() == signal.lower()]
-
-    if sort == "seen":
-        entries.sort(key=lambda e: -(occurrences(e, now) or 0))
-    elif sort == "last":
-        entries.sort(key=lambda e: str(e.get("last_seen", "")), reverse=True)
-    elif sort == "first":
-        entries.sort(key=lambda e: str(e.get("first_seen", "")))
-    else:
-        entries.sort(key=lambda e: (severity_rank(e), -(occurrences(e, now) or 0)))
+    entries = select_findings(ledger, now, sort, min_severity, signal)
 
     if not entries:
         return [palette("  no findings match", "dim")], entries
@@ -1024,7 +1255,7 @@ def render_findings(
         severity = str(entry.get("severity", "?")).lower()
         seen = occurrences(entry, now)
         said = reported(entry, now)
-        promotions = [p for p in (entry.get("promotions") or []) if isinstance(p, dict)]
+        promotions = records(entry.get("promotions"))
         # Three facts stacked in one cell, coloured apart so the eye can pick
         # out the one it came for. Location goes under the title rather than
         # into a column of its own because it is a `path:line` routinely longer
@@ -1037,15 +1268,35 @@ def render_findings(
         para_urls: Dict[int, str] = {}
         location = str(entry.get("location") or "")
         if location:
-            parts.append((clip(location.split(" and ")[0], 110), "cyan"))
-            # The paragraph is linked as a whole, to the first file it names --
-            # the same reference the clip keeps. `--detail` links each of them
-            # separately, which is the only place a location naming three files
-            # has the room to offer three links.
-            links = location_links(entry, repo, roots)
-            if links:
-                para_urls[len(parts) - 1] = links[0][1]
+            shown = clip(location.split(" and ")[0], 110)
+            parts.append((shown, "cyan"))
+            # The paragraph is linked as a whole, to the first file the shown
+            # text names -- not to the first one the whole location names, which
+            # is a different reference whenever the split or the clip drops a
+            # file. `agent/anthropic_adapter.py:42 and
+            # agents/selfimprove/scripts/selfimprove_ledger.py:9` labelled the
+            # first, which is the Hermes harness and unlinkable, and linked the
+            # second: a label and a destination naming different files, in the
+            # one column whose whole job is telling a maintainer where to look.
+            # No reference inside the shown text, no link. `--detail` links each
+            # of them separately, which is the only place a location naming
+            # three files has the room to offer three links.
+            for label, url in location_links(entry, repo, roots):
+                if label in shown:
+                    para_urls[len(parts) - 1] = url
+                    break
         verdict = verdicts.get(str(entry.get("fingerprint", "")), "")
+        if not verdict and isinstance(entry.get("refused"), dict):
+            # The gate verdict says this too, but only where there is a gate to
+            # replay -- and there is none under `--file`, none under
+            # `--no-cronjob`, and none on an install whose CronJob has been
+            # removed. A permanent refusal is not a simulation of anything: it
+            # is a decision a filing turn already made and wrote into the
+            # ledger, and a row that omits it reads as an ordinary live finding
+            # the loop is still working on.
+            verdict = "refused permanently: %s" % (
+                entry["refused"].get("reason") or "no reason recorded"
+            )
         if verdict:
             parts.append((verdict, verdict_style(verdict)))
         rows.append(
@@ -1184,7 +1435,7 @@ def render_detail(
     out.extend(block("evidence", str(entry.get("evidence") or ""), "dim"))
     out.extend(block("proposed fix", str(entry.get("proposed_fix") or "")))
 
-    promotions = [p for p in (entry.get("promotions") or []) if isinstance(p, dict)]
+    promotions = records(entry.get("promotions"))
     if promotions:
         out.extend(
             block(
@@ -1219,19 +1470,31 @@ def render_detail(
     return out
 
 
-def match_finding(entries: List[Dict[str, Any]], needle: str) -> Optional[Dict[str, Any]]:
+def match_finding(
+    entries: List[Dict[str, Any]],
+    needle: str,
+    pool: Optional[Sequence[Dict[str, Any]]] = None,
+) -> Optional[Dict[str, Any]]:
     """Accepts a table row number or a fingerprint prefix, in that order.
 
     Row number first because it is what the reader has just been shown, and a
     16-hex-character fingerprint is never a bare integer, so the two cannot
-    collide.
+    collide. "What the reader has just been shown" only holds if `entries` is
+    the list the table numbered -- `--sort` applied, `--severity` and `--signal`
+    applied -- which is what `select_findings` is for.
+
+    A fingerprint is looked up in `pool` instead, the whole ledger by default.
+    Unlike a row number it is a name that outlives the table it was read from,
+    so `--severity critical --detail cccc` opens the finding rather than
+    reporting that nothing matches.
     """
     if needle.isdigit():
         index = int(needle)
         if 1 <= index <= len(entries):
             return entries[index - 1]
     lowered = needle.lower()
-    hits = [e for e in entries if str(e.get("fingerprint", "")).lower().startswith(lowered)]
+    searched = entries if pool is None else pool
+    hits = [e for e in searched if str(e.get("fingerprint", "")).lower().startswith(lowered)]
     return hits[0] if len(hits) == 1 else None
 
 
@@ -1308,10 +1571,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             source = current_context(args.context)
             cronjob = None if args.no_cronjob else load_cronjob(args.namespace, args.cronjob, args.context)
     except LoadError as exc:
-        print("error: %s" % exc, file=sys.stderr)
+        # Scrubbed like everything else: a LoadError carries kubectl's stderr,
+        # which is a server message this tool did not compose.
+        print("error: %s" % scrub(str(exc)), file=sys.stderr)
         return 1
     except (OSError, ValueError) as exc:
-        print("error: could not read the ledger: %s" % exc, file=sys.stderr)
+        print("error: could not read the ledger: %s" % scrub(str(exc)), file=sys.stderr)
         return 1
 
     if args.json:
@@ -1321,6 +1586,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not isinstance(ledger, dict) or "findings" not in ledger:
         print("error: that does not look like a ledger (no `findings` key)", file=sys.stderr)
         return 1
+
+    # The boundary. Everything past this point draws ledger text into a
+    # terminal, and this is the last place it is still data. `--json` above is
+    # deliberately outside it: `json.dumps` escapes a control character to
+    # `\u001b` rather than emitting it, so that path is already inert, and
+    # somebody piping the document into `jq` wants what the ConfigMap holds.
+    # `raw` stays as read too -- it is measured, never printed, and the size
+    # meter should report the bytes the ConfigMap is actually carrying.
+    ledger = scrub_document(ledger)
+    cronjob = scrub_document(cronjob)
+    source = scrub(source)
 
     palette = Palette(want_colour(args.color))
     box = BOX_ASCII if args.ascii else BOX_UNICODE
@@ -1334,9 +1610,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     repo, roots = target_repo(env), repo_toplevel()
 
     if args.detail:
-        entries = sorted_findings(ledger)
-        entries.sort(key=lambda e: (severity_rank(e), -(occurrences(e, now) or 0)))
-        entry = match_finding(entries, args.detail)
+        # The same list the table would have printed, under the same `--sort`
+        # and the same filters, because `--detail 3` means the third row of it.
+        listed = select_findings(ledger, now, args.sort, args.severity, args.signal)
+        entry = match_finding(listed, args.detail, sorted_findings(ledger))
         if entry is None:
             print(
                 "error: no finding matches %r (try a row number or a fingerprint prefix)" % args.detail,

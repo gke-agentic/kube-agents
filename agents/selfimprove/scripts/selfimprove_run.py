@@ -53,6 +53,7 @@ import subprocess
 import sys
 import tarfile
 import textwrap
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -128,18 +129,31 @@ GH_AUTH_EXIT_CODE = 4
 #: login already happened, in the sidecar, at boot, and this container never
 #: sees the token. So the message has to point at the step that actually failed.
 #: It is worth the four lines because the bootstrap command ends in `; true`, on
-#: purpose, so that a bad token cannot stop the pod from starting -- which also
-#: means `gh auth login`'s own diagnosis was discarded an hour before anyone
-#: read this, and this is the first and only place the failure surfaces.
+#: purpose, so that a bad token cannot stop the pod from starting -- which means
+#: the pod is up and healthy while holding no usable credential, and this
+#: preflight is where that first becomes visible. `gh auth login`'s own
+#: diagnosis is not lost with it: the bootstrap redirects into
+#: `BOOTSTRAP_LOG_PATH` on the shared workspace, and `read_bootstrap_log`
+#: appends it below.
 FORGE_UNAUTHENTICATED_HINT = (
     "\nNo credential reached `gh`. Nothing in this container can fix that: the "
     "sidecar runs `gh auth login --with-token` at startup against the mounted "
-    "personal access token, and its failure is deliberately swallowed so a bad "
-    "token cannot stop the pod from booting. Check the Secret named by "
-    "`selfimprove.github.patSecret` -- an empty or absent `token` key, or a "
+    "personal access token, and its exit status is deliberately discarded so a "
+    "bad token cannot stop the pod from booting. Check the Secret named by "
+    "`selfImprovement.github.patSecret` -- an empty or absent `token` key, or a "
     "token missing the `repo` and `read:org` scopes that `gh auth login` "
     "validates before it stores anything."
 )
+
+#: Where the sidecar's bootstrap command redirects `gh auth login`'s output.
+#: Set by the chart on both containers; the default matches what it renders, so
+#: a hand-run outside the chart looks in the same place.
+BOOTSTRAP_LOG_PATH = os.environ.get(
+    "SELFIMPROVE_BOOTSTRAP_LOG", "/home/selfimprove/.credential-bootstrap.log"
+)
+
+#: How much of that log to quote. It is `gh`'s error, which is a line or two.
+BOOTSTRAP_LOG_TAIL_BYTES = 600
 
 #: What an unstamped image reads instead of a revision, when
 #: `allowUnstampedImage` permits it at all.
@@ -157,6 +171,11 @@ RUN_STARTED = time.time()
 #: Set once from `job_started_at()`, in seconds, and only downward -- see
 #: `seconds_left`.
 _DEADLINE_EPOCH: Optional[float] = None
+
+#: Whether `job_started_at()` has already tried and failed. Separate from
+#: `_DEADLINE_EPOCH` because `None` there means "not read yet" and would
+#: otherwise make every caller retry two API reads that will not succeed.
+_DEADLINE_EPOCH_UNREADABLE = False
 
 #: Seconds held back from the deadline for the ledger write and the final log.
 #: The ledger is the run's entire output in report-only mode, so being killed
@@ -189,10 +208,17 @@ def record_kill(signum: int = 15) -> bool:
     everything around it, including the clone and the scaffold, which are not
     measured against the deadline at all.
 
-    Kubernetes sends SIGTERM and waits the pod's grace period -- 30 seconds by
-    default, and the chart does not shorten it -- before SIGKILL. That is time
-    enough for one ConfigMap PATCH and nothing more, which is why this writes
-    the row and does not try to salvage the turn.
+    Kubernetes sends SIGTERM and waits the pod's grace period before SIGKILL,
+    which is why this writes the row and does not try to salvage the turn.
+
+    The write is bounded here rather than left to run as long as it likes.
+    `ledger_mod.save` retries a conflicted PATCH, and its attempts and their
+    timeouts multiply out to well over two minutes on the 409 path -- so on any
+    grace period shorter than that, a handler that simply called `save` would be
+    SIGKILLed part-way through and leave no trace at all, which is the one
+    outcome this function exists to prevent. Running it on a daemon thread and
+    joining with a budget means the process either writes the row or says it
+    could not, and `os._exit` in the caller discards the thread either way.
     """
     if not _KILL_CONTEXT.get("armed"):
         log("signal %d arrived with no ledger to record it in; nothing to write" % signum)
@@ -222,10 +248,26 @@ def record_kill(signum: int = 15) -> bool:
             % (signum, int(time.time() - RUN_STARTED), _KILL_CONTEXT.get("stage", "unknown")),
             filed=int(_KILL_CONTEXT.get("filed", 0)),
         )
-    try:
-        ledger_mod.save(_KILL_CONTEXT["namespace"], _KILL_CONTEXT["ledger_name"], ledger)
-    except Exception as exc:  # noqa: BLE001 - a dying process reports and stops
-        log("LEDGER WRITE FAILED while recording the kill: %s" % exc)
+    failure: List[BaseException] = []
+
+    def write() -> None:
+        try:
+            ledger_mod.save(_KILL_CONTEXT["namespace"], _KILL_CONTEXT["ledger_name"], ledger)
+        except BaseException as exc:  # noqa: BLE001 - a dying process reports and stops
+            failure.append(exc)
+
+    writer = threading.Thread(target=write, name="record-kill-save", daemon=True)
+    writer.start()
+    writer.join(KILL_WRITE_BUDGET_SECONDS)
+    if writer.is_alive():
+        log(
+            "LEDGER WRITE did not finish within %ds of the signal; the row may not have landed. "
+            "If this recurs, raise terminationGracePeriodSeconds on the CronJob's pod template."
+            % KILL_WRITE_BUDGET_SECONDS
+        )
+        return False
+    if failure:
+        log("LEDGER WRITE FAILED while recording the kill: %s" % failure[0])
         return False
     if _KILL_CONTEXT.get("recorded"):
         log("signal %d during the final write; the run's own row went out" % signum)
@@ -290,6 +332,16 @@ def env_int(name: str, default: int) -> int:
         return default
 
 
+#: How long `record_kill` waits for that last ledger write before giving up and
+#: saying so. Sized to fit inside the pod's termination grace period, because the
+#: alternative to giving up is being SIGKILLed part-way through with nothing
+#: logged at all. `ledger_mod.save` retries a conflicted write and can take
+#: minutes on its own, so this is a ceiling it does not know about. The default
+#: fits Kubernetes' own default grace period of 30 seconds; an install that
+#: lengthens the grace period raises this with it.
+KILL_WRITE_BUDGET_SECONDS = max(1, env_int("SELFIMPROVE_KILL_WRITE_BUDGET", 25))
+
+
 def cooldown_hours_from(gate: Dict[str, Any]) -> float:
     """The cooldown, from operator-supplied config.
 
@@ -344,10 +396,21 @@ def job_started_at(namespace: str) -> Optional[float]:
     `RUN_STARTED`. That fallback is the old, optimistic behaviour, which is
     right: an unreachable API is not a reason to refuse to investigate, and the
     reserve still covers the ordinary case.
+
+    The failure is cached too, not only the success. `seconds_left` is called
+    before every turn and before every filing attempt, so a cluster whose API
+    server is refusing reads used to pay two `read_namespaced_*` calls at
+    `KUBE_API_TIMEOUT` each, on each of those calls, to arrive at the same None
+    -- spending the deadline it was trying to measure. One attempt per process is
+    enough: the Job's start time does not change, so an answer that could not be
+    read at the top of a run will not appear later in it.
     """
-    global _DEADLINE_EPOCH
+    global _DEADLINE_EPOCH, _DEADLINE_EPOCH_UNREADABLE
     if _DEADLINE_EPOCH is not None:
         return _DEADLINE_EPOCH
+    if _DEADLINE_EPOCH_UNREADABLE:
+        return None
+    _DEADLINE_EPOCH_UNREADABLE = True
     pod_name = env("POD_NAME")
     if not pod_name:
         return None
@@ -539,37 +602,58 @@ def observed_images(namespace: str, deployment: str) -> Tuple[Optional[str], Lis
     return primary or (images[0] if images else None), images
 
 
-def own_image(namespace: str) -> Optional[str]:
-    """This pod's own runner-container image, read from the API rather than assumed.
+def own_image(namespace: str) -> Tuple[Optional[str], Optional[str]]:
+    """This pod's own runner-container image and its resolved digest.
 
-    The operator answers the same question the same way -- it reads its own Pod
-    to set OPERATOR_IMAGE -- so this is a pattern the codebase already has. The
-    downward API cannot supply an image, which is why this is an API read and
-    not an env var: an env var would say what the chart *intended* to schedule,
-    and the whole point of the check is to catch the case where that is no
-    longer what is running.
+    Read from the API rather than assumed. The operator answers the same
+    question the same way -- it reads its own Pod to set OPERATOR_IMAGE -- so
+    this is a pattern the codebase already has. The downward API cannot supply
+    an image, which is why this is an API read and not an env var: an env var
+    would say what the chart *intended* to schedule, and the whole point of the
+    check is to catch the case where that is no longer what is running.
+
+    The digest comes from `.status.containerStatuses[].imageID` and is what the
+    kubelet actually pulled. It is returned alongside the reference because the
+    reference on its own cannot answer the question the cross-check is asking --
+    see `resolve_revision`.
     """
     pod_name = env("POD_NAME")
     if not pod_name:
-        return None
+        return None, None
     try:
         client = _kube_client()
     except Exception:
-        return None
+        return None, None
     core = client.CoreV1Api()
     try:
         pod = core.read_namespaced_pod(
             name=pod_name, namespace=namespace, _request_timeout=KUBE_API_TIMEOUT
         )
     except client.exceptions.ApiException:
-        return None
+        return None, None
     except Exception as exc:  # noqa: BLE001 -- a timeout is not an ApiException
         log("could not reach the API server to read this pod (%s)" % exc)
-        return None
+        return None, None
+    statuses = {s.name: s for s in (pod.status.container_statuses or [])} if pod.status else {}
     for container in pod.spec.containers:
         if container.name == "runner":
-            return container.image
-    return pod.spec.containers[0].image if pod.spec.containers else None
+            status = statuses.get("runner")
+            return container.image, (getattr(status, "image_id", None) or None)
+    if not pod.spec.containers:
+        return None, None
+    first = pod.spec.containers[0]
+    status = statuses.get(first.name)
+    return first.image, (getattr(status, "image_id", None) or None)
+
+
+def is_mutable_reference(reference: Optional[str]) -> bool:
+    """Whether `reference` names a tag that can be repointed, rather than a digest.
+
+    `repo@sha256:...` names one build forever. `repo:latest`, `repo:v1` and a
+    bare `repo` name whatever was pushed there most recently, so two pods can
+    agree on the string and be running different code.
+    """
+    return bool(reference) and "@sha256:" not in str(reference)
 
 
 #: What a `revision` in /opt/build-info.json has to look like to count as a
@@ -594,7 +678,7 @@ def resolve_revision(namespace: str, deployment: str, allow_fallback: bool) -> D
         # a missing one. The string itself travels into the refusal and the
         # ledger; "no revision" and "a revision of `main`" want different fixes.
         revision = ""
-    runner_image = own_image(namespace)
+    runner_image, runner_image_id = own_image(namespace)
     agent_image, all_images = observed_images(namespace, deployment)
 
     # `git describe --dirty` appends `-dirty` when the tree had uncommitted
@@ -612,6 +696,7 @@ def resolve_revision(namespace: str, deployment: str, allow_fallback: bool) -> D
         "malformed_revision": malformed,
         "build_info": info,
         "runner_image": runner_image,
+        "runner_image_id": runner_image_id,
         "agent_image": agent_image,
         "deployment_images": all_images,
         "stamped": bool(revision),
@@ -635,7 +720,26 @@ def resolve_revision(namespace: str, deployment: str, allow_fallback: bool) -> D
         )
     else:
         result["image_match"] = runner_image == agent_image
-        result["image_check"] = "matched" if result["image_match"] else "mismatch"
+        if not result["image_match"]:
+            result["image_check"] = "mismatch"
+        elif is_mutable_reference(runner_image):
+            # Both pods name the same *tag*, which is the strongest statement
+            # this check can make without a second API read: answering "are they
+            # the same build" needs `.status.containerStatuses[].imageID` from
+            # the agent's pods, and that is a `pods` list the loop's Role does
+            # not grant and should not. So a tag match is reported as what it
+            # is. A tag is repointed by every push, and the agent pod is not
+            # restarted when it moves, so the two can agree on the string for
+            # weeks while running different code. Not a refusal: the chart's
+            # default tag is mutable, so refusing here would disable the loop on
+            # a stock install. The `revision` stamp below is the real guard --
+            # it is baked into the layer and cannot be repointed.
+            result["image_check"] = (
+                "matched (%s is a mutable tag, so this does not prove the two pods "
+                "are running the same build)" % runner_image
+            )
+        else:
+            result["image_check"] = "matched"
         if not result["image_match"]:
             result["refuse"] = (
                 "the runner is on %s and the agent Deployment is on %s. The CronJob and the "
@@ -693,33 +797,49 @@ def fetch_source(
     mode exists to not have. The tarball is byte-identical to a checkout at that
     commit, which is all an investigation reads.
 
-    Under fork or upstream, a real `git` checkout, because a tarball is not one:
-    it has no `.git`, and `file-pull-request/SKILL.md` §1 opens with
-    `git switch -c`. Hand that skill a tarball and every filing turn dies on
-    "not a git repository" after the whole investigation has been paid for --
-    the loop would find things, promote them, and never once file. The shims are
-    on the PATH in exactly these two modes, so the clone costs no credential the
-    mode does not already have.
+    Under fork or upstream, a real `git` checkout is preferred, because the
+    evidence a finding cites is easier to trust from a tree whose provenance
+    `git` can state. The shims are on the PATH in exactly these two modes, so the
+    clone costs no credential the mode does not already have.
+
+    A tarball fallback here is no longer fatal to filing. It was, until the
+    filing turn was given a checkout of its own at the base tip: the turn's first
+    act is `git switch -c`, so an investigation tree with no `.git` used to take
+    every promoted finding down with it. `fetch_base_checkout` now fetches that
+    tree independently, and a fallback here costs the run `git`-backed evidence
+    and nothing else.
     """
     if for_git:
         root = _fetch_source_git(repo, ref, dest, timeout, fork)
         if root:
             return root
-        log("the git checkout failed; falling back to the tarball. Filing will not work from it")
+        log(
+            "the git checkout failed; falling back to the tarball. The investigation reads the "
+            "same tree either way, and the filing turn fetches its own"
+        )
     url = "https://codeload.github.com/%s/tar.gz/%s" % (repo, ref)
     log("fetching %s" % url)
+    # Broad rather than the two urllib error classes this used to name. A read
+    # that times out mid-body raises `TimeoutError`, a reset connection
+    # `ConnectionResetError`, a short body `http.client.IncompleteRead`, a
+    # corrupt archive `tarfile.ReadError`, and `_safe_extract` raises
+    # `RuntimeError` by design -- none of which are `URLError`. This runs after
+    # the SIGTERM handler is armed and before `record_run`, so anything escaping
+    # here ends the Job with a traceback and no ledger row at all: the run is
+    # invisible rather than merely failed. Returning None puts it on the path
+    # that records why.
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:
             payload = response.read()
-    except (urllib.error.URLError, urllib.error.HTTPError) as exc:
-        log("could not fetch %s: %s" % (url, exc))
+        os.makedirs(dest, exist_ok=True)
+        with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as tar:
+            # The archive is one top-level directory, <repo>-<ref>.
+            members = tar.getmembers()
+            top = members[0].name.split("/")[0] if members else ""
+            _safe_extract(tar, dest)
+    except Exception as exc:  # noqa: BLE001 - see the comment above
+        log("could not fetch %s: %s: %s" % (url, type(exc).__name__, exc))
         return None
-    os.makedirs(dest, exist_ok=True)
-    with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as tar:
-        # The archive is one top-level directory, <repo>-<ref>.
-        members = tar.getmembers()
-        top = members[0].name.split("/")[0] if members else ""
-        _safe_extract(tar, dest)
     root = os.path.join(dest, top)
     return root if os.path.isdir(root) else None
 
@@ -742,8 +862,11 @@ def _write_lease_marker(dest: str, repo: str) -> None:
 
     The gate exists because the agent pod runs many skills against one shared
     PersistentVolumeClaim and a clone at the workspace root was a tree they all
-    wrote to at once. Nothing here is shared: the home is a per-Job emptyDir and
-    `concurrencyPolicy: Forbid` guarantees one runner. Writing the marker rather
+    wrote to at once. Nothing here is shared: the home is a per-Job emptyDir, so
+    two runners overlapping would each get their own and neither would see the
+    other's. That is a stronger guarantee than `concurrencyPolicy: Forbid`, which
+    suppresses only the *scheduled* run and does nothing about a Job created by
+    hand -- the ledger carries the incident where exactly that happened. Writing the marker rather
     than setting `CREDENTIAL_PROXY_REQUIRE_GIT_LEASE=0` keeps the floor armed for
     anything else in the pod, and keeps the reason in one place instead of in an
     env var whose name says only that a check was turned off.
@@ -785,10 +908,32 @@ def _fetch_source_git(repo: str, ref: str, dest: str, timeout: int, fork: str) -
     `fork` is where a branch may be pushed. The skill says never push to
     upstream; giving the fork its own name is what lets it say
     `git push fork HEAD` rather than construct a URL.
+
+    `timeout` bounds the whole checkout rather than each step, which is what the
+    callers pass it as. Applied per-step it multiplies by the number of steps --
+    five with a fork -- so the 180 seconds `fetch_base_checkout` documents was
+    really 900, and the investigation's fetch at the same default was 720. Both
+    sit inside an hourly schedule whose remaining budget is computed downstream,
+    so the overrun does not fail loudly; it silently spends the filing turn's
+    time.
     """
     root = os.path.join(dest, "repo")
     if os.path.isdir(os.path.join(root, ".git")):
-        return root
+        # A checkout is here already. Nothing in a correct run puts one here --
+        # the investigation and each finding get their own `dest` on a per-Job
+        # emptyDir -- so rather than adopt it, confirm it is a checkout of the
+        # repository that was asked for. The path is derivable from the
+        # fingerprint, and this tree is where the filing turn writes and commits;
+        # a planted one would put attacker-chosen files into a pull request under
+        # the robot's name. Checking the remote costs one `git` invocation and
+        # removes the need to reason about who else can write the emptyDir.
+        if _git_origin_is(root, repo, timeout):
+            return root
+        log(
+            "a checkout already exists at %s but its `origin` is not %s. Refusing to reuse it."
+            % (root, repo)
+        )
+        return None
     os.makedirs(root, exist_ok=True)
     _write_lease_marker(dest, repo)
     steps = [
@@ -799,9 +944,14 @@ def _fetch_source_git(repo: str, ref: str, dest: str, timeout: int, fork: str) -
     ]
     if fork:
         steps.insert(2, ["git", "remote", "add", "fork", "https://github.com/%s.git" % fork])
+    deadline = time.monotonic() + max(1, timeout)
     for step in steps:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            log("the checkout of %s at %s did not finish within %ds" % (repo, ref, timeout))
+            return None
         try:
-            done = subprocess.run(step, cwd=root, capture_output=True, text=True, timeout=timeout)
+            done = subprocess.run(step, cwd=root, capture_output=True, text=True, timeout=remaining)
         except (OSError, subprocess.SubprocessError) as exc:
             log("`%s` could not run: %s" % (" ".join(step), exc))
             return None
@@ -810,6 +960,37 @@ def _fetch_source_git(repo: str, ref: str, dest: str, timeout: int, fork: str) -
             return None
     log("git checkout of %s at %s in %s" % (repo, ref, root))
     return root
+
+
+def _git_origin_is(root: str, repo: str, timeout: int) -> bool:
+    """Whether the checkout at `root` has `origin` pointing at `repo`.
+
+    Compared case-insensitively and with a trailing `.git` and any trailing
+    slash removed, because those are the same repository to GitHub and differing
+    on them would reject a tree this function is only asked about when something
+    already went unusually right.
+    """
+
+    def canonical(url: str) -> str:
+        trimmed = url.strip().rstrip("/")
+        if trimmed.endswith(".git"):
+            trimmed = trimmed[: -len(".git")]
+        return trimmed.lower()
+
+    try:
+        done = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=max(1, min(timeout, 30)),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log("could not read the `origin` remote in %s: %s" % (root, exc))
+        return False
+    if done.returncode != 0:
+        return False
+    return canonical(done.stdout) == canonical("https://github.com/%s" % repo)
 
 
 def checkout_dirname(fingerprint: str) -> str:
@@ -919,6 +1100,27 @@ def scaffold_home(home: str) -> None:
     -- a run cannot accumulate state that changes how the next one behaves.
     """
     os.makedirs(home, exist_ok=True)
+    restore_profile_assets(home)
+    for sub in ("logs", "sessions", "memories", "cache"):
+        os.makedirs(os.path.join(home, sub), exist_ok=True)
+
+
+def restore_profile_assets(home: str) -> None:
+    """Re-copy SOUL.md, config.yaml and the skills from the image.
+
+    Called once at scaffold time and again before each filing turn, because
+    `run_agent` sets `HERMES_WRITE_SAFE_ROOT` to this same directory: the
+    profile the filing turn is about to read sits inside the only tree the
+    investigation turn was allowed to write. An investigation that reads a
+    finding whose text tells it to edit `skills/file-pull-request/SKILL.md` --
+    the loop reads unreviewed pull requests and issue comments, so that text can
+    come from anyone -- would otherwise hand the filing turn instructions the
+    image never shipped. Restoring is cheap (a few kilobytes) and makes the turn
+    boundary the trust boundary it is documented to be.
+
+    The skills tree is removed rather than merged, so a directory the previous
+    turn *added* goes too; `copytree(dirs_exist_ok=True)` would leave it.
+    """
     # No AGENTS.md, unlike the platform, cluster and chat profiles. Those hold
     # operating rules for an agent working in a user's repository; this profile
     # works in a checkout of kube-agents, which ships its own AGENTS.md and
@@ -930,9 +1132,8 @@ def scaffold_home(home: str) -> None:
             shutil.copy2(src, os.path.join(home, name))
     skills_src = os.path.join(TEMPLATE_DIR, "skills")
     if os.path.isdir(skills_src):
+        shutil.rmtree(os.path.join(home, "skills"), ignore_errors=True)
         shutil.copytree(skills_src, os.path.join(home, "skills"), dirs_exist_ok=True)
-    for sub in ("logs", "sessions", "memories", "cache"):
-        os.makedirs(os.path.join(home, sub), exist_ok=True)
 
 
 def build_brief(
@@ -1344,6 +1545,16 @@ def run_agent(
         # Deliberately False rather than whatever the usage file says: the
         # process was killed mid-turn, so it did not finish however far it got.
         return 124, partial, False
+    except OSError as exc:
+        # The binary is missing, not executable, or the fork failed. This used to
+        # escape, and it escapes into a run that has already armed the kill
+        # handler and not yet reached `record_run` -- so the Job ends on a
+        # traceback with no ledger row, and the hourly schedule repeats it
+        # silently. `_fetch_source_git` and `_gh_repo_view` both catch it; this
+        # is the one subprocess call in the file that did not.
+        log("agent turn (%s) could not start: %s: %s" % (label, type(exc).__name__, exc))
+        log_usage(usage_path, label)
+        return 127, "", False
     elapsed = time.time() - started
     log("agent turn (%s) exited %d after %.0fs" % (label, completed.returncode, elapsed))
     ran_to_completion = log_usage(usage_path, label)
@@ -1533,11 +1744,22 @@ def recover_findings(text: str) -> Optional[List[Dict[str, Any]]]:
     an unrelated JSON blob in the prose from being promoted to a finding, and
     deduplicating on the candidate text is because a fenced object is offered
     twice: once as the fence body, once as a balanced run inside it.
+
+    Every list candidate is considered and the richest one wins, rather than the
+    first. `_json_candidates` yields in document order, so returning on the first
+    list meant a turn that wrote `[]` before its real answer -- an opening
+    "nothing yet", an illustrative empty array in prose, a first attempt it went
+    on to revise -- reported nothing found, and the whole hour's investigation
+    went in the ledger as a zero. The tie-break is the number of objects with a
+    title, so a longer list of unusable fragments does not beat a short list of
+    real findings, and an earlier candidate keeps the tie.
     """
     if not text or not text.strip():
         return None
     salvaged: List[Dict[str, Any]] = []
     seen: set = set()
+    best: Optional[List[Dict[str, Any]]] = None
+    best_titled = -1
     for candidate in _json_candidates(text):
         try:
             parsed = json.loads(candidate)
@@ -1546,12 +1768,22 @@ def recover_findings(text: str) -> Optional[List[Dict[str, Any]]]:
         if isinstance(parsed, dict) and isinstance(parsed.get("findings"), list):
             parsed = parsed["findings"]
         if isinstance(parsed, list):
-            return [item for item in parsed if isinstance(item, dict)]
+            items = [item for item in parsed if isinstance(item, dict)]
+            titled = sum(1 for item in items if str(item.get("title", "")).strip())
+            if titled > best_titled:
+                best, best_titled = items, titled
+            continue
         if isinstance(parsed, dict) and str(parsed.get("title", "")).strip():
             key = json.dumps(parsed, sort_keys=True)
             if key not in seen:
                 seen.add(key)
                 salvaged.append(parsed)
+    if best is not None and (best_titled > 0 or not salvaged):
+        # An empty list is a real answer -- "I looked and found nothing" -- and
+        # is returned as such. It loses only to objects salvaged from a
+        # truncated array, which are evidence the turn did find something and
+        # was cut off before it could close the bracket.
+        return best
     return salvaged or None
 
 
@@ -1671,6 +1903,15 @@ UNCONFIRMED = "unconfirmed"
 #: deferral about an out-of-bounds bug, and an unanchored match reads it as a
 #: refusal and buries it.
 OUT_OF_BOUNDS_MARKER = "out of bounds"
+#: The refusals that retire a finding rather than deferring it. Longest form
+#: first where one is a prefix of another, though `is_permanent_refusal` keeps
+#: looking after a marker that matches without a separator, so the order is for
+#: the reader rather than the match.
+PERMANENT_REFUSAL_MARKERS = (
+    OUT_OF_BOUNDS_MARKER,
+    "injected instruction in the finding",
+    "injected instruction",
+)
 
 #: What `gh pr create` prints when it has opened one, and the only shape of
 #: github.com link the runner will read as proof that it did. A trailing path is
@@ -1686,11 +1927,35 @@ def is_permanent_refusal(reason: Optional[str]) -> bool:
     three words, so they are required where it puts them: first, once `SKIPPED`
     and its punctuation are off the front. Everything after them is the turn's
     own prose and is not searched.
+
+    The marker has to be followed by a separator or the end of the line, not by
+    more words. "Out of bounds" is also a bug class -- an out-of-bounds read is
+    exactly the kind of thing this loop finds in `k8s-operator/` -- so a turn
+    writing `SKIPPED: out of bounds read in _match_bracket, already filed as
+    #12` was deferring on evidence and got recorded as a permanent policy
+    refusal, retiring a real finding forever with no way to clear it.
+
+    `injected instruction` is permanent for the opposite reason. A finding whose
+    text talked the turn into stopping is identified by a title and a location
+    the attacker wrote, so re-filing it hourly re-buys the injection at a full
+    filing turn each time and never retires. Treating it as permanent is the
+    behaviour that stops paying; the finding is still visible in the ledger for
+    a maintainer who wants to look at what was refused and why.
     """
     text = (reason or "").strip().lower()
     if text.startswith("skipped"):
         text = text[len("skipped") :].lstrip(" \t:-—")
-    return text.startswith(OUT_OF_BOUNDS_MARKER)
+    for marker in PERMANENT_REFUSAL_MARKERS:
+        if not text.startswith(marker):
+            continue
+        # The marker must end the phrase, not start a longer one. What follows
+        # it is either nothing or the punctuation the skill puts before the
+        # reason -- another *word* means the turn was describing something,
+        # which is the "out of bounds read" case above.
+        rest = text[len(marker) :].lstrip(" \t")
+        if not rest or rest[0] in ":-—.,;":
+            return True
+    return False
 
 
 def _fenced(fields: Dict[str, str]) -> str:
@@ -1766,7 +2031,7 @@ def _gh_repo_view(repository: str, fields: str, cwd: str) -> dict:
                 repository,
                 done.returncode,
                 ": %s" % detail if detail else "",
-                FORGE_UNAUTHENTICATED_HINT
+                FORGE_UNAUTHENTICATED_HINT + read_bootstrap_log()
                 if done.returncode == GH_AUTH_EXIT_CODE
                 else "",
             )
@@ -1784,6 +2049,32 @@ def _gh_repo_view(repository: str, fields: str, cwd: str) -> dict:
             % (repository, type(parsed).__name__)
         )
     return parsed
+
+
+def read_bootstrap_log() -> str:
+    """The tail of the sidecar's `gh auth login` output, quoted for the operator.
+
+    Advisory, and treated as such. `/home/selfimprove` is the runner's
+    `HERMES_WRITE_SAFE_ROOT` as well as the shared workspace, so an investigation
+    turn can write this file: what comes back is quoted as a claim, truncated,
+    and stripped of the control characters that would let it repaint the log it
+    is being printed into. Nothing branches on its contents.
+
+    Empty string when there is nothing to say, so the caller can concatenate.
+    """
+    try:
+        with open(BOOTSTRAP_LOG_PATH, "r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+    except OSError:
+        return ""
+    tail = text[-BOOTSTRAP_LOG_TAIL_BYTES:].strip()
+    if not tail:
+        return ""
+    printable = "".join(c if c == "\n" or c.isprintable() else " " for c in tail)
+    return (
+        "\n\nThe sidecar's bootstrap left this in %s. Unverified -- the runner's own turns "
+        "can write there too:\n%s" % (BOOTSTRAP_LOG_PATH, textwrap.indent(printable, "  "))
+    )
 
 
 def verify_forge_credential(push_target: str, pr_target: str, cwd: str) -> bool:
@@ -1941,7 +2232,20 @@ def file_pull_request(
     when there is one. Three outcomes rather than a URL-or-None because the
     caller has to charge two of them against the gate and must not charge the
     third, and a bare `None` cannot say which it is.
+
+    `timeout` bounds this whole function, not the model turn inside it. Two
+    things run first -- a credential check worth up to two 60-second `gh` calls
+    and a shallow fetch worth up to 180 seconds -- and the turn used to be handed
+    the full figure regardless, so a slow preamble put the model turn up to five
+    minutes past the deadline the caller had already computed against. The
+    reserve `seconds_left` holds back for the ledger write is 90 seconds, which
+    does not cover that. What is spent here is measured and deducted below.
     """
+    started = time.monotonic()
+    # The investigation turn ran with `HERMES_WRITE_SAFE_ROOT` set to this same
+    # home, so the skill this turn is about to follow was writable by the turn
+    # before it. Put the image's copy back first. See `restore_profile_assets`.
+    restore_profile_assets(home)
     now = ledger_mod.utcnow()
     # Computed once here because three things downstream need the same answer:
     # the preflight checks write on it, the prompt names it as the repository
@@ -2070,8 +2374,8 @@ def file_pull_request(
           A checkout at the tip of %(base_branch)s, fetched for this finding alone. Branch here,
           edit here, commit here.
         - The evidence came from: %(source_root)s
-          A checkout at %(revision)s, the commit the observed pod is running. Read it to see what
-          the finding saw -- its line numbers are this tree's -- and change nothing in it. It may
+          A checkout at %(source_ref)s, the commit the observed pod was built from. Read it to see
+          what the finding saw -- its line numbers are this tree's -- and change nothing in it. It may
           be behind %(base_branch)s, and where the two trees differ, the tree above is the one that
           matters: a finding that is no longer true there has already been fixed, and the answer is
           to open nothing.
@@ -2107,6 +2411,14 @@ def file_pull_request(
         "reported": ledger_mod.reported_occurrences_in_window(entry, now),
         "first_seen": entry.get("first_seen", "?"),
         "revision": identity["revision"],
+        # The ref the evidence tree was actually fetched at, which is not always
+        # the revision the image is stamped with: a `-dirty` stamp names no
+        # commit, and `resolve_revision` strips the suffix before fetching. The
+        # prompt used to print the stamp for both, so on a development image the
+        # turn was told to read a checkout at a commit that does not exist --
+        # and the difference is largest exactly when it matters, because a dirty
+        # image is the one whose running code is not in any tree.
+        "source_ref": identity["fetch_ref"],
         "untrusted": untrusted,
         "fence": FENCE,
         "base_root": base_root,
@@ -2166,10 +2478,29 @@ def file_pull_request(
         "mode": mode,
         "install": describe_install(),
     }
+    # What the preamble left. See the docstring: the credential check and the
+    # base fetch come out of `timeout`, and handing the turn the undiminished
+    # figure is how a filing turn ends up running past the deadline the caller
+    # sized it against.
+    model_budget = timeout - int(time.monotonic() - started)
+    if model_budget < MIN_TURN_SECONDS:
+        # SKIPPED, not UNCONFIRMED: nothing was opened, so nothing may be
+        # charged. The finding keeps its counts and the next run files it first.
+        log(
+            "not filing %s: the preflight and the base checkout left %ds of a %ds budget, under "
+            "the %ds floor a turn needs"
+            % (entry.get("fingerprint", "?"), max(model_budget, 0), timeout, MIN_TURN_SECONDS)
+        )
+        return SKIPPED, "not enough of the filing budget survived the preflight"
+    if model_budget < timeout:
+        log(
+            "filing %s with %ds of its %ds budget; the preflight took the rest"
+            % (entry.get("fingerprint", "?"), model_budget, timeout)
+        )
     # The one turn that gets the shims. It is only reached in fork and upstream
     # mode, after the gate, on a finding whose untrusted text is fenced above.
     code, stdout, _ = run_agent(
-        prompt, home, timeout, "file:%s" % entry.get("fingerprint", "?"), allow_forge=True
+        prompt, home, model_budget, "file:%s" % entry.get("fingerprint", "?"), allow_forge=True
     )
     lines = [l.strip() for l in stdout.splitlines() if l.strip()]
     # Whichever outcome marker the turn wrote *last*, scanning up from the end.
@@ -2197,9 +2528,32 @@ def file_pull_request(
     # reason: a search URL or a repository URL is something a turn quotes while
     # explaining itself, and only `/pull/<n>` is something it can only have got
     # by opening one.
+    #
+    # What is recorded is the match, not the line. The pattern is anchored at the
+    # start and not at the end -- deliberately, because a turn that adds a remark
+    # after the URL has still opened the pull request, and calling that
+    # UNCONFIRMED files it a second time next hour. But the line is agent output
+    # quoting text the loop does not control, so returning it whole put arbitrary
+    # prose into a ledger row that the viewer renders and a maintainer reads as
+    # "the pull request this finding opened". `group(0)` is the URL and stops at
+    # the last digit, so `.../pull/12 <anything>` records `.../pull/12`. The
+    # sibling SKIPPED path below already truncated for the same reason.
     for line in reversed(lines):
-        if PULL_REQUEST_URL_RE.match(line):
-            return FILED, line
+        match = PULL_REQUEST_URL_RE.match(line)
+        if match:
+            url = match.group(0)
+            # And it has to be a pull request on the repository this turn was
+            # told to open one against. A URL under any other repository is
+            # either a link the turn quoted or one it was talked into printing;
+            # charging a daily slot and a 24-hour cooldown for it would retire
+            # the finding against a pull request nobody can find.
+            # Compared lowercased: GitHub slugs are case-insensitive, so a turn
+            # that types the owner with different capitalisation opened the same
+            # pull request and should not be read as having opened none.
+            if not url.lower().startswith(("https://github.com/%s/pull/" % upstream).lower()):
+                log("ignoring a pull request URL that is not on %s: %s" % (upstream, url))
+                continue
+            return FILED, url
         # `SKIPPED:` is the skill's word for "I looked and decided not to open
         # one" -- the finding was stale, already filed, closed unmerged, or the
         # turn was not confident. Nothing was opened, so nothing may be charged:
@@ -2236,11 +2590,27 @@ def main(argv: Optional[List[str]] = None) -> int:
     ledger_name = env("SELFIMPROVE_LEDGER_CONFIGMAP", "kube-agents-selfimprove-ledger")
     upstream = env("SELFIMPROVE_UPSTREAM_REPO", DEFAULT_UPSTREAM)
     fork = env("SELFIMPROVE_FORK_REPO")
-    # Where a pull request is based, which is not always where its head came
-    # from. The runner branches from the deployed revision, and on an install
-    # pinned to a branch of its own that revision is not on `main` -- so GitHub
-    # renders the difference as part of the change. See the value's comment in
-    # charts/kube-agents/values.yaml for the live run this cost.
+    # Where the *evidence* is read from, which is a different question from
+    # where a pull request is based. The base is a policy choice; the source has
+    # to be a repository that actually holds the commit the running image is
+    # stamped at. Under fork mode `upstream` is the fork, and a fork does not
+    # sync itself -- a month-old one holds no such object, so codeload 404s and
+    # the run investigates with nothing after paying for the fetch. One variable
+    # answering both questions is what made fork mode do that.
+    #
+    # Falls back to `upstream` rather than to DEFAULT_UPSTREAM: an install
+    # running an image older than the chart that renders this variable gets the
+    # behaviour it had before, which under report-only and upstream mode is
+    # already correct.
+    source_repo = env("SELFIMPROVE_SOURCE_REPO") or upstream
+    # Where a pull request is based. The filing turn fetches a checkout at this
+    # branch's tip and branches there, so the diff is the fix and nothing else
+    # whatever commit the image is stamped at. It is not always `main`: an
+    # install pinned to a branch of its own bases against that branch, and
+    # getting it wrong renders the distance between the two as part of the
+    # change. See the value's comment in charts/kube-agents/values.yaml for the
+    # live run that cost, back when the turn branched from the deployed
+    # revision instead.
     base_branch = env("SELFIMPROVE_BASE_BRANCH", "main") or "main"
     # `os.environ.get` rather than `env`, which is the only read in this
     # function that needs the distinction: `env` is `os.environ.get(name) or
@@ -2361,7 +2731,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     workspace = os.path.join(home, "src")
     source_root = fetch_source(
-        upstream,
+        source_repo,
         identity["fetch_ref"],
         workspace,
         for_git=mode != "report-only",
@@ -2659,8 +3029,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     # is still reachable when the loop runs out of turns or clock, so exiting 1
     # on it put the ordinary run in the failed bucket -- and a CronJob whose
     # every run shows `Error` is one nobody reads. Live run `selfimprove-fork-3`
-    # promoted a finding, filed it and wrote its ledger, and reported
-    # itself failed. The counter-argument, that an operator wants Job status to
+    # promoted a finding and wrote its ledger -- `outcome=truncated findings=1
+    # promoted=1 filed=0`, the filing turn having run out of clock -- and
+    # reported itself failed. The counter-argument, that an operator wants Job status to
     # surface a loop that never completes cleanly, is real and is answered
     # somewhere better: `outcome` is in every ledger row, so the history is one
     # `kubectl get configmap` away and does not cost a false alarm an hour.

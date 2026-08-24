@@ -95,9 +95,11 @@ evidence, the grade is one lower than you were arguing for.
 ## 4. Fingerprints
 
 Each finding carries a `title` and a `location` (a `path:line`, a resource, or a component name).
-Those two, with the signal, are hashed into the identity the ledger counts by. So write them as if
-the next run will write them again from the same evidence, because that is exactly what has to
-happen for the count to accumulate:
+Those two, and nothing else, are hashed into the identity the ledger counts by — the signal is not
+part of it, so the same defect found through the logs one hour and through the events the next is
+one finding with two sightings rather than two findings with one each. Write them as if the next
+run will write them again from the same evidence, because that is exactly what has to happen for
+the count to accumulate:
 
 - Titles describe the class, not the instance. "Platform Agent MCP startup exceeds its connect
   timeout" — not "pod platform-agent-gateway-7d9f4 timed out at 14:03".

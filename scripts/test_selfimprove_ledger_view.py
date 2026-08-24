@@ -26,6 +26,7 @@ import os
 import pathlib
 import re
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -112,6 +113,31 @@ def ledger_file(document):
         os.unlink(path)
 
 
+@contextlib.contextmanager
+def local_zone(name):
+    """Run the block as though the reader's machine were in `name`.
+
+    Some of what `stamp` has to survive depends on which side of UTC the reader
+    is on, and a test that only fails in Los Angeles is a test that passes here.
+    """
+    previous = os.environ.get("TZ")
+    os.environ["TZ"] = name
+    time.tzset()
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous
+        time.tzset()
+
+
+#: One OSC 8 hyperlink, in the exact form this file emits for its own links, so
+#: a terminal has no way to tell it from one the viewer meant.
+INJECTED_LINK = "\x1b]8;;https://evil.example/pwn\x1b\\click here\x1b]8;;\x1b\\"
+
+
 def run_main(argv):
     """`main` with stdout captured, returning (exit code, text)."""
     buffer = io.StringIO()
@@ -162,6 +188,137 @@ class TestWidthMeasurement(unittest.TestCase):
         palette = view.Palette(True)
         padded = view._pad(palette("ab", "red"), 6, "l")
         self.assertEqual(len(view.plain(padded)), 6)
+
+
+class TestScrubbingUntrustedText(unittest.TestCase):
+    """Every field this report draws is text an agent read in production logs.
+
+    A log line holds whatever reached it, so a `summary` can carry the OSC 8
+    introducer this file uses for its own links and a `title` can carry the CSI
+    sequence for "erase display". `plain` is no defence: it strips the two forms
+    the viewer emits, which means an injected one measures zero columns wide, so
+    the table both misaligns and passes the assertions above that exist to catch
+    misalignment. `--color never` is no defence either -- it gates what this file
+    emits and says nothing about what the ledger holds.
+    """
+
+    def test_an_osc_8_introducer_loses_its_escape_and_keeps_its_text(self):
+        scrubbed = view.scrub(INJECTED_LINK)
+        self.assertNotIn("\x1b", scrubbed)
+        self.assertIn("evil.example", scrubbed)
+
+    def test_an_erase_display_sequence_is_defused_in_place(self):
+        self.assertEqual(view.scrub("A\x1b[2Jbcd"), "A[2Jbcd")
+
+    def test_the_single_byte_c1_introducer_goes_too(self):
+        r"""0x9b is CSI to a terminal that decodes the C1 range, so `\x9b2J` is
+        the instruction `\x1b[2J` spells in three bytes, and a filter looking
+        only for ESC walks straight past it."""
+        self.assertEqual(view.scrub("A\x9b2Jbcd"), "A2Jbcd")
+
+    def test_a_bidirectional_override_is_removed(self):
+        """U+202E reverses the run after it, so a location can display a path it
+        does not contain -- the Trojan Source trick, and a `path:line` is exactly
+        the string a reader takes at face value."""
+        self.assertEqual(view.scrub("main\u202egpj.exe"), "maingpj.exe")
+
+    def test_a_tab_becomes_a_space_rather_than_jumping_a_column(self):
+        self.assertEqual(view.scrub("a\tb"), "a b")
+
+    def test_a_newline_survives_because_a_cell_stacks_paragraphs_on_it(self):
+        self.assertEqual(view.scrub("a\nb"), "a\nb")
+
+    def test_a_non_string_is_returned_as_it_came(self):
+        for value in (5, 1.5, True, None):
+            self.assertIs(view.scrub(value), value)
+
+    def test_scrub_document_reaches_nested_values_and_keys(self):
+        """Keys as well as values: the findings map is keyed by fingerprint and
+        the gate's verdicts are looked up by the `fingerprint` field, so
+        scrubbing one and not the other would quietly stop them matching."""
+        document = {"aa\x1b[2Jbb": [{"t": "x\x1b[31my"}, 4]}
+        self.assertEqual(view.scrub_document(document), {"aa[2Jbb": [{"t": "x[31my"}, 4]})
+
+    def test_only_an_http_url_is_made_clickable(self):
+        """A promotion's `url` is a ledger field like every other, and OSC 8 does
+        not care what it wraps: a terminal handed `file:///` or a scheme the
+        desktop has registered may pass it to the operating system on a click."""
+        palette = view.Palette(True)
+        for url in ("file:///etc/passwd", "javascript:alert(1)", "vscode://x/y"):
+            self.assertEqual(view.hyperlink("label", url, palette), "label", url)
+        self.assertIn(
+            "\x1b]8;;https://example.com", view.hyperlink("label", "https://example.com", palette)
+        )
+
+    # ----------------------------------------------------------------------
+    # The boundary, exercised through `main`: sanitising happens once where the
+    # document arrives, not at each of the dozen call sites that draw a field.
+
+    def injected(self):
+        """A ledger carrying an escape sequence in every field the report draws."""
+        document = ledger()
+        entry = document["findings"]["aaaa000000000000"]
+        entry["title"] = "A title\x1b[2J"
+        entry["summary"] = INJECTED_LINK
+        entry["evidence"] = INJECTED_LINK
+        entry["signal"] = "errors\x1b[31m"
+        entry["confidence"] = "high\x9b2J"
+        entry["location"] = "k8s-operator/cmd/main.go:1\u202e"
+        entry["promotions"] = [{"at": iso(1), "url": INJECTED_LINK}]
+        document["runs"][0]["note"] = INJECTED_LINK
+        document["runs"][0]["outcome"] = "ok\x1b[5m"
+        return document
+
+    def test_no_escape_from_the_ledger_survives_into_the_report(self):
+        with ledger_file(self.injected()) as path:
+            code, text = run_main(["--file", path, "--color", "never", "--width", "170"])
+        self.assertEqual(code, 0)
+        self.assertNotIn("\x1b", text)
+        self.assertNotIn("\x9b", text)
+
+    def test_the_defused_text_is_still_on_the_page(self):
+        """Only the control character is removed. Deleting the whole sequence
+        would leave a reader looking at doctored text with nothing to say so."""
+        with ledger_file(self.injected()) as path:
+            _, text = run_main(["--file", path, "--color", "never", "--width", "170"])
+        self.assertIn("evil.example", text)
+
+    def assertNoInjectedLink(self, text):
+        """No OSC 8 hyperlink in `text` points anywhere the ledger asked it to.
+
+        Matched on the host rather than the whole URL because the label a
+        promotion is drawn with is clipped to the column, and the clipped form
+        is what the pre-existing code made clickable.
+        """
+        targets = [url for _, url in re.findall(r"\x1b\]8;([^;]*);([^\x1b]*)\x1b", text)]
+        self.assertEqual([url for url in targets if "evil.example" in url], [])
+
+    def test_a_ledger_hyperlink_never_becomes_the_reports_hyperlink(self):
+        """With colour on the viewer emits OSC 8 itself, which is the one
+        sequence a terminal cannot tell from an injected one."""
+        with ledger_file(self.injected()) as path:
+            _, text = run_main(["--file", path, "--color", "always", "--width", "170"])
+        self.assertNoInjectedLink(text)
+
+    def test_the_detail_view_is_behind_the_same_boundary(self):
+        with ledger_file(self.injected()) as path:
+            code, text = run_main(["--file", path, "--color", "always", "--detail", "aaaa"])
+        self.assertEqual(code, 0)
+        self.assertNotIn("\x1b[2J", text)
+        self.assertNoInjectedLink(text)
+
+    def test_json_still_carries_exactly_what_the_configmap_holds(self):
+        """`--json` is deliberately outside the boundary: `json.dumps` escapes a
+        control character rather than emitting it, so that path is already inert,
+        and somebody piping the document into `jq` wants the bytes as stored."""
+        document = self.injected()
+        with ledger_file(document) as path:
+            _, text = run_main(["--file", path, "--json"])
+        self.assertNotIn("\x1b", text)
+        self.assertEqual(
+            json.loads(text)["findings"]["aaaa000000000000"]["summary"],
+            document["findings"]["aaaa000000000000"]["summary"],
+        )
 
 
 class TestTableRendering(unittest.TestCase):
@@ -232,10 +389,16 @@ class TestTableRendering(unittest.TestCase):
     def test_a_wrapped_per_paragraph_link_is_drawn_on_every_row_it_spans(self):
         """A location is longer than the column at any ordinary width, so
         dropping wrapped links left the table with none. Each row it spans is
-        linked, and a shared `id=` makes a terminal treat them as one."""
+        linked, and a shared `id=` makes a terminal treat them as one.
+
+        The label and the destination name the same file. That is the property
+        the location cell exists for, and the fixture used to assert it with a
+        path the URL did not contain, which is the bug it should have caught.
+        """
         columns = [view.Column("C", wrap=True, min_width=12)]
-        url = "https://github.com/o/r/blob/abc/x.go#L1"
-        cell = ("t\nsome/quite/long/path/that/will/wrap.go:1", None, None, None, {1: url})
+        path = "some/quite/long/path/that/will/wrap.go"
+        url = "https://github.com/o/r/blob/abc/%s#L1" % path
+        cell = ("t\n%s:1" % path, None, None, None, {1: url})
         lines = self.render(columns, [[cell]], width=24)
         opens = [m for line in lines for m in re.findall(r"\x1b\]8;([^;]*);([^\x1b]*)\x1b", line)]
         self.assertGreater(len(opens), 1, "the paragraph should have wrapped")
@@ -243,7 +406,10 @@ class TestTableRendering(unittest.TestCase):
         ids = {p for p, u in opens if u}
         self.assertEqual(len(ids), 1)
         self.assertTrue(ids.pop().startswith("id="))
-        self.assertIn("wrap.go", "".join(view.plain(line) for line in lines))
+        # Reassembled across the rows it wrapped over: borders and padding out,
+        # and what is left has to be the path the URL points at.
+        visible = re.sub(r"[│|\s]", "", "".join(view.plain(line) for line in lines))
+        self.assertIn(url.split("/blob/abc/", 1)[1].split("#", 1)[0], visible)
 
     def test_two_wrapped_links_in_one_table_do_not_share_an_id(self):
         """A shared `id=` means "one hyperlink", so reusing it across two
@@ -512,8 +678,17 @@ class TestReusesTheLoopsOwnMaths(unittest.TestCase):
     def test_no_gate_means_no_verdicts_rather_than_a_guess(self):
         self.assertEqual(view.gate_verdicts(ledger(), {}, NOW), {})
 
-    def test_a_malformed_gate_does_not_take_the_report_down(self):
-        self.assertEqual(view.gate_verdicts(ledger(), {"rules": "not a list"}, NOW), {})
+    def test_a_malformed_gate_holds_everything_rather_than_taking_the_report_down(self):
+        """`rules` is a string, so no rule can match anything.
+
+        Every finding gets a verdict saying so. The distinction worth keeping is
+        against `{}`, which is what an *absent* gate returns and which renders no
+        verdict column at all -- a malformed one is a configuration error the
+        reader should see, not a gate that isn't there.
+        """
+        verdicts = view.gate_verdicts(ledger(), {"rules": "not a list"}, NOW)
+        self.assertEqual(sorted(verdicts), ["aaaa000000000000", "bbbb111111111111", "cccc222222222222"])
+        self.assertTrue(all(v.startswith("held: no promotion rule") for v in verdicts.values()))
 
     def test_verdict_styles_separate_the_three_outcomes(self):
         self.assertEqual(view.verdict_style("promoted: medium at 2 occurrence(s)"), "green")
@@ -570,6 +745,66 @@ class TestFindingSelection(unittest.TestCase):
         _, entries = self.render(document)
         self.assertEqual(entries[-1]["fingerprint"], "aaaa000000000000")
 
+    def test_a_severity_floor_of_low_hides_nothing_at_all(self):
+        """`--severity` is documented as a floor and `low` is the bottom of the
+        scale, so `--severity low` has to drop nothing. An unrecognised severity
+        ranked past `low` for the sort, the filter reused that rank, and the
+        findings nobody can triage at a glance were the ones it silently hid."""
+        document = ledger()
+        document["findings"]["aaaa000000000000"]["severity"] = "catastrophic"
+        _, entries = self.render(document, severity="low")
+        self.assertEqual(len(entries), 3)
+
+    def test_an_unknown_severity_filters_as_the_bottom_of_the_scale(self):
+        """Ranked with `low` for the floor, and still last in the sort: the two
+        are different questions about the same unrecognised word."""
+        document = ledger()
+        document["findings"]["aaaa000000000000"]["severity"] = "catastrophic"
+        _, kept = self.render(document, severity="low")
+        _, dropped = self.render(document, severity="medium")
+        self.assertIn("aaaa000000000000", [e["fingerprint"] for e in kept])
+        self.assertNotIn("aaaa000000000000", [e["fingerprint"] for e in dropped])
+
+    def test_a_permanent_refusal_shows_with_no_gate_to_replay(self):
+        """`refused` is a decision a filing turn already made and wrote into the
+        ledger, not a simulation of one -- and there is no gate to replay under
+        `--file`, under `--no-cronjob`, or on an install whose CronJob has been
+        removed. A row that omits it reads as an ordinary live finding the loop
+        is still working on."""
+        document = ledger()
+        document["findings"]["cccc222222222222"]["refused"] = {
+            "at": iso(2),
+            "reason": "touches the gate",
+            "revision": "abc1234",
+        }
+        text = "".join(self.render(document)[0])
+        self.assertIn("refused permanently", text)
+        self.assertIn("touches the gate", text)
+
+    def test_a_refusal_with_no_reason_recorded_still_says_it_was_refused(self):
+        document = ledger()
+        document["findings"]["cccc222222222222"]["refused"] = {"at": iso(2)}
+        self.assertIn("no reason recorded", "".join(self.render(document)[0]))
+
+    def test_a_gate_verdict_is_not_displaced_by_the_intrinsic_one(self):
+        """Where there is a gate, its wording is the richer of the two -- it
+        knows why the finding is held, not only that it was once refused."""
+        document = ledger()
+        document["findings"]["cccc222222222222"]["refused"] = {"at": iso(2), "reason": "the gate"}
+        lines, _ = view.render_findings(
+            document,
+            {"cccc222222222222": "held: no promotion rule for low"},
+            NOW,
+            view.Palette(False),
+            160,
+            view.BOX_UNICODE,
+            "severity",
+            None,
+            None,
+        )
+        self.assertIn("no promotion rule", "".join(lines))
+        self.assertNotIn("refused permanently", "".join(lines))
+
     def test_findings_may_be_a_list_as_well_as_a_dict(self):
         document = ledger(findings=list(ledger()["findings"].values()))
         self.assertEqual(len(view.sorted_findings(document)), 3)
@@ -617,6 +852,35 @@ class TestPromotions(unittest.TestCase):
         text = "".join(lines)
         self.assertIn("no URL recorded", text)
         self.assertIn("unconfirmed", text)
+
+    def test_promotions_are_ordered_on_the_instant_not_on_the_text(self):
+        """`to_iso` writes `...Z`, which happens to sort correctly as a string;
+        the same instant written `+00:00` by whoever last edited the ConfigMap
+        does not. `19:00:00-01:00` is an hour after `19:00:00Z` and sorts an hour
+        before it, because `-` is below `Z`."""
+        document = ledger()
+        document["findings"]["aaaa000000000000"]["promotions"] = [
+            {"at": "2026-08-23T19:00:00Z", "url": "https://github.com/o/r/pull/1"}
+        ]
+        document["findings"]["cccc222222222222"]["promotions"] = [
+            {"at": "2026-08-23T19:00:00-01:00", "url": "https://github.com/o/r/pull/2"}
+        ]
+        pairs = view.collect_promotions(view.sorted_findings(document))
+        self.assertEqual([p["url"].rsplit("/", 1)[-1] for p, _ in pairs], ["2", "1", "160"])
+
+    def test_a_promotion_nobody_can_date_sorts_last_rather_than_raising(self):
+        document = ledger()
+        document["findings"]["aaaa000000000000"]["promotions"] = [
+            {"at": "whenever", "url": "https://github.com/o/r/pull/1"}
+        ]
+        pairs = view.collect_promotions(view.sorted_findings(document))
+        self.assertEqual([p["url"].rsplit("/", 1)[-1] for p, _ in pairs], ["160", "1"])
+
+    def test_a_scalar_promotions_field_is_skipped_rather_than_iterated(self):
+        document = ledger()
+        document["findings"]["aaaa000000000000"]["promotions"] = "none"
+        pairs = view.collect_promotions(view.sorted_findings(document))
+        self.assertEqual([p["url"].rsplit("/", 1)[-1] for p, _ in pairs], ["160"])
 
     def test_the_promotion_table_stays_aligned(self):
         pairs = view.collect_promotions(view.sorted_findings(ledger()))
@@ -677,8 +941,24 @@ class TestHeader(unittest.TestCase):
         document["runs"] = document["runs"][:1]
         self.assertIn("1 run recorded", self.header(document)[0])
 
-    def test_the_pull_request_count_is_all_time(self):
-        self.assertIn("1 pull request(s) opened all time", "\n".join(self.header()))
+    def test_the_pull_request_count_does_not_claim_to_be_all_time(self):
+        """`prune` deletes a finding a month after its last sighting and keeps
+        only the ten most recent promotions on the ones that survive, so the
+        number goes down as well as up and an install filing for a year reports
+        a fraction of it. What it counts is what the document still holds."""
+        text = "\n".join(self.header())
+        self.assertIn("1 pull request(s) the ledger still lists", text)
+        self.assertNotIn("all time", text)
+
+    def test_a_promotion_with_no_url_is_counted_out_loud(self):
+        """`record_promotion(confirmed=False)` writes a record for a filing turn
+        that charged the budget without printing a link, so a promotion record is
+        not by itself evidence of a pull request."""
+        document = ledger()
+        document["findings"]["aaaa000000000000"]["promotions"] = [
+            {"at": iso(1), "unconfirmed": True}
+        ]
+        self.assertIn("(1 unconfirmed)", "\n".join(self.header(document)))
 
     def test_a_file_source_does_not_claim_a_configmap(self):
         self.assertNotIn("configmap", "\n".join(self.header()))
@@ -727,6 +1007,36 @@ class TestHeader(unittest.TestCase):
         text = "\n".join(self.header(gate=GATE))
         self.assertIn("1 of 3 pull requests", text)
         self.assertIn("24h cooldown", text)
+
+    def test_the_budget_line_reports_what_the_gate_will_enforce(self):
+        """The gate's own reading of its own numbers, not the raw ones. YAML
+        spells infinity `.inf` and both knobs have an intent an operator might
+        reach for it to express, so the gate clamps rather than rejects -- and a
+        header printing the raw value told a maintainer nothing would ever
+        re-file while the install re-filed every day."""
+        if view.ledger_mod is None:
+            self.skipTest("selfimprove_ledger is not importable from this checkout")
+        text = "\n".join(
+            self.header(
+                gate={"maxPullRequestsPerDay": float("inf"), "cooldownHours": float("inf")}
+            )
+        )
+        self.assertIn("1 of %d pull requests" % view.ledger_mod.MAX_GATE_COUNT, text)
+        self.assertIn("%gh cooldown" % view.ledger_mod.COUNT_WINDOW_HOURS, text)
+
+    def test_a_quoted_budget_renders_rather_than_taking_the_report_down(self):
+        """Comparing the spend against `"3"` raised TypeError out of the header,
+        which lost the whole report to a quoting mistake in the gate."""
+        if view.ledger_mod is None:
+            self.skipTest("selfimprove_ledger is not importable from this checkout")
+        text = "\n".join(self.header(gate={"maxPullRequestsPerDay": "3", "cooldownHours": "24"}))
+        self.assertIn("1 of 3 pull requests", text)
+
+    def test_a_spent_budget_is_reported_as_spent(self):
+        if view.ledger_mod is None:
+            self.skipTest("selfimprove_ledger is not importable from this checkout")
+        text = "\n".join(self.header(gate={"maxPullRequestsPerDay": 1, "cooldownHours": 24}))
+        self.assertIn("1 of 1 pull requests", text)
 
     def test_the_size_meter_measures_the_ledger_against_the_cap(self):
         text = "\n".join(self.header())
@@ -901,6 +1211,35 @@ class TestBlobUrls(unittest.TestCase):
         entry = finding("aaaa", "high", "t", revision="")
         self.assertEqual(view.location_links(entry, REPO, ROOTS), [])
 
+    def test_a_traversal_in_the_revision_is_not_linked(self):
+        """A browser resolves the `..` away, so the link leaves the repository
+        while the label beside it goes on naming a file inside it: the reader
+        sees `agents/x.py:12` over a link to somebody else's repository."""
+        self.assertEqual(
+            view.blob_url(REPO, "../../../../attacker/repo/blob/main", "agents/x.py", "12"), ""
+        )
+
+    def test_a_traversal_in_the_path_is_not_linked(self):
+        """The path is cut out of a location string the investigating agent
+        wrote, which is prose derived from production logs."""
+        self.assertEqual(view.blob_url(REPO, "abc123", "../../attacker/x.py", "1"), "")
+        self.assertEqual(view.blob_url(REPO, "abc123", "agents/../../x.py", "1"), "")
+
+    def test_a_repo_that_is_not_two_plain_segments_is_not_linked(self):
+        for bad in ("o", "o/r/extra", "o/r#x", "o/r?x=1", "https://evil.example/o/r", "o/.."):
+            self.assertEqual(view.blob_url(bad, "abc", "x.py", "1"), "", bad)
+
+    def test_a_branch_name_is_still_a_revision_the_loop_writes(self):
+        """The runner falls back to a bare ref when it cannot resolve a SHA and
+        marks a dirty tree `-dirty`, so a hex-only rule would drop both and take
+        every link on those runs with it."""
+        self.assertTrue(view.blob_url(REPO, "main", "x.py", "1").endswith("/blob/main/x.py#L1"))
+        self.assertIn("/blob/abc123-dirty/", view.blob_url(REPO, "abc123-dirty", "x.py", "1"))
+
+    def test_an_anchor_that_is_not_a_line_number_is_dropped_rather_than_appended(self):
+        url = view.blob_url(REPO, "abc123", "x.py", "1 onerror=alert(1)")
+        self.assertTrue(url.endswith("/x.py"), url)
+
 
 class TestRepoToplevel(unittest.TestCase):
     def test_derives_the_set_from_the_checkout_this_script_ships_in(self):
@@ -952,6 +1291,39 @@ class TestLocationLinksInTheReport(unittest.TestCase):
             text,
         )
 
+    def test_the_table_never_links_a_file_its_label_does_not_name(self):
+        """The label is the first location, clipped; the URL was computed over
+        all of them. `agent/anthropic_adapter.py:42 and
+        agents/selfimprove/scripts/selfimprove_ledger.py:9` printed the first --
+        the Hermes harness, and deliberately unlinkable -- over a link to the
+        second, so the one column whose job is saying where to look named one
+        file and went to another."""
+        document = ledger()
+        document["findings"]["aaaa000000000000"]["location"] = (
+            "agent/anthropic_adapter.py:42 and agents/selfimprove/scripts/selfimprove_ledger.py:9"
+        )
+        table, _ = view.render_findings(
+            document, {}, NOW, view.Palette(True), 200, view.BOX_UNICODE,
+            "severity", None, None, REPO, ROOTS,
+        )
+        text = "\n".join(table)
+        self.assertIn("agent/anthropic_adapter.py:42", view.plain(text))
+        self.assertNotIn("selfimprove_ledger.py", text)
+
+    def test_a_second_location_does_not_capture_the_first_ones_link(self):
+        """Both are linkable here, so the label is the first and so is the URL."""
+        document = ledger()
+        document["findings"]["aaaa000000000000"]["location"] = (
+            "k8s-operator/cmd/main.go:108 and scripts/generate_docs.py:4"
+        )
+        table, _ = view.render_findings(
+            document, {}, NOW, view.Palette(True), 200, view.BOX_UNICODE,
+            "severity", None, None, REPO, ROOTS,
+        )
+        text = "\n".join(table)
+        self.assertIn("main.go#L108", text)
+        self.assertNotIn("generate_docs.py#L4", text)
+
     def test_no_repo_means_no_links_and_the_same_text(self):
         args = (ledger(), {}, NOW, view.Palette(True), 200, view.BOX_UNICODE, "severity", None, None)
         linked, _ = view.render_findings(*args, REPO, ROOTS)
@@ -980,6 +1352,124 @@ class TestLocationLinksInTheReport(unittest.TestCase):
         )
         self.assertNotIn("\x1b]8;;", text)
         self.assertIn("anthropic_adapter", view.plain(text))
+
+
+class TestAMalformedLedgerStillRenders(unittest.TestCase):
+    """A read-only report is never worth a traceback.
+
+    Every shape below is one a ledger can plausibly hold -- an older schema, a
+    `kubectl edit`, a file handed to `--file` -- and each ended the whole report
+    rather than the one row it belongs to.
+    """
+
+    def test_a_scalar_sightings_field_renders_as_an_unknown_count(self):
+        """The loop's own counter iterates `sightings`, and `sightings: 4` is
+        not iterable. "?" is what a count this cannot establish already renders
+        as when the module itself is missing."""
+        entry = finding("dddd333333333333", "medium", "t", sightings=4)
+        self.assertIsNone(view.occurrences(entry, NOW))
+        self.assertIsNone(view.reported(entry, NOW))
+
+    def test_a_scalar_sightings_field_costs_the_row_only_its_count(self):
+        document = ledger()
+        document["findings"]["aaaa000000000000"]["sightings"] = 4
+        lines, entries = view.render_findings(
+            document, {}, NOW, view.Palette(False), 160, view.BOX_UNICODE, "severity", None, None
+        )
+        self.assertEqual(len(entries), 3)
+        self.assertIn("A medium finding", "".join(lines))
+
+    def test_a_scalar_runs_field_reads_as_no_runs(self):
+        with ledger_file(ledger(runs="none")) as path:
+            code, text = run_main(["--file", path, "--color", "never", "--width", "150"])
+        self.assertEqual(code, 0)
+        self.assertIn("no runs recorded yet", text)
+        self.assertIn("0 runs recorded", text)
+
+    def test_a_timestamp_at_the_start_of_the_calendar_is_printed_as_stored(self):
+        """`astimezone` raises rather than clamping at the edges of the
+        calendar. `parse_iso` survives the input deliberately -- refusing to
+        parse it would lose the row it belongs to -- so the conversion is where
+        the guard belongs, and the value is worth seeing: it is almost certainly
+        the zero value of something that failed to write a real one."""
+        when = view.parse_iso("0001-01-01T00:00:00+05:00")
+        self.assertEqual(view.stamp(when, True), "0001-01-01 00:00+05:00")
+
+    def test_a_year_one_timestamp_survives_a_reader_west_of_utc(self):
+        """The reported crash: `0001-01-01T00:00:00Z` in any zone behind UTC is
+        before `datetime.min`, so it depends on where the reader is sitting."""
+        if not hasattr(time, "tzset"):
+            self.skipTest("this platform cannot be told which zone it is in")
+        with local_zone("America/New_York"):
+            self.assertEqual(
+                view.stamp(view.parse_iso("0001-01-01T00:00:00Z"), False), "0001-01-01 00:00+00:00"
+            )
+
+    def test_a_run_dated_at_the_start_of_the_calendar_does_not_end_the_report(self):
+        document = ledger()
+        document["runs"][0]["at"] = "0001-01-01T00:00:00+05:00"
+        with ledger_file(document) as path:
+            code, text = run_main(["--file", path, "--color", "never", "--width", "150"])
+        self.assertEqual(code, 0)
+        self.assertIn("0001-01-01", text)
+
+    def test_a_scalar_finding_costs_only_its_own_verdict(self):
+        """`severity_rank` reads an entry as a mapping, so one scalar in the
+        findings map raised where nothing caught it. Widening the `try` around
+        the gate would have been worse: it drops every verdict in the ledger for
+        one malformed entry."""
+        if view.ledger_mod is None:
+            self.skipTest("selfimprove_ledger is not importable from this checkout")
+        document = ledger()
+        document["findings"]["dddd333333333333"] = "not a finding"
+        self.assertEqual(set(view.gate_verdicts(document, GATE, NOW)), set(ledger()["findings"]))
+
+    def test_a_scalar_finding_does_not_cost_the_others_their_verdicts(self):
+        """Widening the `try` around the gate would have been the easy fix and
+        the worse one: one malformed entry then silently drops every verdict in
+        the ledger, and a table with no verdicts looks like a table with a gate
+        that holds nothing."""
+        if view.ledger_mod is None:
+            self.skipTest("selfimprove_ledger is not importable from this checkout")
+        document = ledger()
+        document["findings"]["dddd333333333333"] = "not a finding"
+        verdicts = view.gate_verdicts(document, GATE, NOW)
+        lines, entries = view.render_findings(
+            document, verdicts, NOW, view.Palette(False), 160, view.BOX_UNICODE,
+            "severity", None, None,
+        )
+        self.assertEqual(len(entries), 3)
+        self.assertIn("cooldown", "".join(lines))
+
+    def test_a_list_shaped_findings_field_with_a_gate_reports_an_unknown_spend(self):
+        """`sorted_findings` accepts the list form and the loop's own
+        `promotions_today` indexes the mapping one, so the header can be handed
+        a ledger the rest of the report renders happily. "?" rather than 0: a
+        budget line reading "0 of 3" on a ledger nobody could count is a wrong
+        answer, not a missing one."""
+        if view.ledger_mod is None:
+            self.skipTest("selfimprove_ledger is not importable from this checkout")
+        document = ledger(findings=list(ledger()["findings"].values()))
+        text = "\n".join(
+            view.render_header(
+                document, "{}", "file", "ns", "cm", None, {}, GATE, NOW, view.Palette(False), True
+            )
+        )
+        self.assertIn("? of 3 pull requests", text)
+
+    def test_a_finding_with_no_title_or_location_says_so(self):
+        """The fixture above supplies every key, so the placeholders never ran.
+        A finding written by an older schema, or by a turn that gave up part-way
+        through, is what they are for."""
+        document = ledger(
+            findings={"dddd333333333333": {"fingerprint": "dddd333333333333", "severity": "high"}}
+        )
+        with ledger_file(document) as path:
+            code, table = run_main(["--file", path, "--color", "never", "--width", "150"])
+            _, detail = run_main(["--file", path, "--color", "never", "--detail", "1"])
+        self.assertEqual(code, 0)
+        self.assertIn("(untitled)", table)
+        self.assertIn("(not localised)", detail)
 
 
 class TestEndToEnd(unittest.TestCase):
@@ -1017,10 +1507,18 @@ class TestEndToEnd(unittest.TestCase):
         self.assertIn("none recorded", text)
 
     def test_no_color_is_honoured_end_to_end(self):
-        with ledger_file(ledger()) as path:
+        """Against a ledger that carries escape sequences, not a benign one.
+        NO_COLOR gates what this file emits and says nothing about what the
+        ledger holds, so a fixture with no escapes in it asserted nothing: the
+        report came out clean whether or not any of them were being filtered."""
+        document = ledger()
+        document["findings"]["aaaa000000000000"]["title"] = "A medium finding\x1b[31m"
+        document["runs"][0]["note"] = INJECTED_LINK
+        with ledger_file(document) as path:
             with mock.patch.dict(os.environ, {"NO_COLOR": "1"}, clear=False):
                 _, text = run_main(["--file", path, "--width", "150"])
         self.assertNotIn("\033[", text)
+        self.assertNotIn("\x1b]8;", text)
 
     def test_ascii_mode_is_pipe_safe(self):
         with ledger_file(ledger()) as path:
@@ -1050,6 +1548,77 @@ class TestEndToEnd(unittest.TestCase):
             code, text = run_main(["--file", path, "--color", "never", "--detail", "cccc"])
         self.assertEqual(code, 0)
         self.assertIn("A low finding", text)
+
+    def test_detail_by_row_number_follows_the_sort(self):
+        """The row numbers the table prints are positions in the list `--sort`
+        ordered, so `--detail 1` has to open the row the reader has just seen at
+        number 1. It rebuilt the list with the default severity sort instead."""
+        document = ledger()
+        document["findings"]["cccc222222222222"]["last_seen"] = iso(0)
+        with ledger_file(document) as path:
+            code, text = run_main(
+                ["--file", path, "--color", "never", "--sort", "last", "--detail", "1"]
+            )
+        self.assertEqual(code, 0)
+        self.assertIn("A low finding", text)
+        self.assertNotIn("A critical finding", text)
+
+    def test_detail_by_row_number_counts_only_the_rows_the_filters_left(self):
+        with ledger_file(ledger()) as path:
+            code, text = run_main(
+                ["--file", path, "--color", "never", "--signal", "inefficiency", "--detail", "1"]
+            )
+            self.assertEqual(code, 0)
+            self.assertIn("A low finding", text)
+            # One row survived the filter, so there is no second one to open.
+            missing, _ = run_main(
+                ["--file", path, "--color", "never", "--signal", "inefficiency", "--detail", "2"]
+            )
+        self.assertEqual(missing, 1)
+
+    def test_detail_by_row_number_respects_a_severity_floor(self):
+        """`--severity critical` leaves one row, so there is no row 2 to open.
+        It opened the second finding of the unfiltered ledger, which the reader
+        was not looking at and the filter had deliberately hidden."""
+        with ledger_file(ledger()) as path:
+            code, text = run_main(
+                ["--file", path, "--color", "never", "--severity", "critical", "--detail", "1"]
+            )
+            self.assertEqual(code, 0)
+            self.assertIn("A critical finding", text)
+            missing, _ = run_main(
+                ["--file", path, "--color", "never", "--severity", "critical", "--detail", "2"]
+            )
+        self.assertEqual(missing, 1)
+
+    def test_detail_by_fingerprint_reaches_a_finding_the_filter_hid(self):
+        """Unlike a row number, a fingerprint is a name that outlives the table
+        it was read from, so it is looked up across the whole ledger."""
+        with ledger_file(ledger()) as path:
+            code, text = run_main(
+                ["--file", path, "--color", "never", "--severity", "critical", "--detail", "cccc"]
+            )
+        self.assertEqual(code, 0)
+        self.assertIn("A low finding", text)
+
+    def test_the_sort_flag_reaches_the_table(self):
+        document = ledger()
+        document["findings"]["cccc222222222222"]["last_seen"] = iso(0)
+        with ledger_file(document) as path:
+            _, text = run_main(
+                ["--file", path, "--color", "never", "--width", "170", "--sort", "last"]
+            )
+        section = text.split("FINDINGS")[1].split("PULL REQUESTS")[0]
+        self.assertLess(section.index("A low finding"), section.index("A critical finding"))
+
+    def test_the_signal_flag_reaches_the_table(self):
+        with ledger_file(ledger()) as path:
+            _, text = run_main(
+                ["--file", path, "--color", "never", "--width", "170", "--signal", "latency"]
+            )
+        section = text.split("FINDINGS")[1].split("PULL REQUESTS")[0]
+        self.assertIn("A critical finding", section)
+        self.assertNotIn("A low finding", section)
 
     def test_detail_that_matches_nothing_fails_with_advice(self):
         with ledger_file(ledger()) as path:
