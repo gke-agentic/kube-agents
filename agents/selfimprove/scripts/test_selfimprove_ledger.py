@@ -388,9 +388,8 @@ class RefusalTests(unittest.TestCase):
     The loop is allowed to report a defect in its own gate, ledger or grants and
     is never allowed to fix one, so that finding comes back from every filing
     turn with the same no. Without a record of the refusal the gate offers it
-    again an hour later, and each retry costs a minted GitHub token and a whole
-    turn's model budget to reach an answer nothing about the next run can
-    change.
+    again an hour later, and each retry costs a whole turn's model budget to
+    reach an answer nothing about the next run can change.
     """
 
     def _refused_ledger(self):

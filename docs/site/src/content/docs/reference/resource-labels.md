@@ -18,16 +18,16 @@ kubectl get all,configmap,pvc,serviceaccount,secret -A \
 
 Every install path sets `name`, `instance`, `part-of`, and `managed-by`:
 
-| Source                                    | `name`                                                                                        | `instance`                 | `part-of`     | `managed-by`               |
-| ----------------------------------------- | --------------------------------------------------------------------------------------------- | -------------------------- | ------------- | -------------------------- |
-| PlatformAgent controller output (per CR)  | `platform-agent`                                                                              | `<namespace>-<agent name>` | `kube-agents` | `platformagent-controller` |
-| Operator install (`k8s-operator/config/`) | `kube-agents-operator`                                                                        | `kube-agents-operator`     | `kube-agents` | `kustomize`                |
-| Helm chart (`charts/kube-agents/`)        | `kube-agents`, `kube-agents-operator`, or `litellm`                                           | `<release name>`           | `kube-agents` | `Helm`                     |
-| Self-improvement loop (Helm chart)        | `kube-agents-selfimprove`, or `kube-agents-selfimprove-token-minter` for the minter's objects | `<release name>`           | `kube-agents` | `Helm`                     |
-| LiteLLM integration                       | `litellm`                                                                                     | `litellm`                  | `kube-agents` | `kustomize`                |
-| GitHub token minter                       | `github-token-minter`                                                                         | `github-token-minter`      | `kube-agents` | `kustomize`                |
-| Inference replay                          | `inference-replay`                                                                            | `inference-replay`         | `kube-agents` | `kustomize`                |
-| Hindsight memory store                    | `hindsight`                                                                                   | `hindsight`                | `kube-agents` | `kustomize`                |
+| Source                                    | `name`                                              | `instance`                 | `part-of`     | `managed-by`               |
+| ----------------------------------------- | --------------------------------------------------- | -------------------------- | ------------- | -------------------------- |
+| PlatformAgent controller output (per CR)  | `platform-agent`                                    | `<namespace>-<agent name>` | `kube-agents` | `platformagent-controller` |
+| Operator install (`k8s-operator/config/`) | `kube-agents-operator`                              | `kube-agents-operator`     | `kube-agents` | `kustomize`                |
+| Helm chart (`charts/kube-agents/`)        | `kube-agents`, `kube-agents-operator`, or `litellm` | `<release name>`           | `kube-agents` | `Helm`                     |
+| Self-improvement loop (Helm chart)        | `kube-agents-selfimprove`                           | `<release name>`           | `kube-agents` | `Helm`                     |
+| LiteLLM integration                       | `litellm`                                           | `litellm`                  | `kube-agents` | `kustomize`                |
+| GitHub token minter                       | `github-token-minter`                               | `github-token-minter`      | `kube-agents` | `kustomize`                |
+| Inference replay                          | `inference-replay`                                  | `inference-replay`         | `kube-agents` | `kustomize`                |
+| Hindsight memory store                    | `hindsight`                                         | `hindsight`                | `kube-agents` | `kustomize`                |
 
 `component` is set by one source only, Hindsight, and everywhere else by nothing: the object's own
 `name` already says what it is, and a second key that has to stay consistent with the first is a key
@@ -127,7 +127,7 @@ The self-improvement loop, which the chart renders only when `selfImprovement.en
 
 ```bash
 kubectl get all,configmap,serviceaccount,secret,networkpolicy,role,rolebinding -A \
-  -l 'app.kubernetes.io/name in (kube-agents-selfimprove,kube-agents-selfimprove-token-minter)'
+  -l 'app.kubernetes.io/name=kube-agents-selfimprove'
 ```
 
 Cluster-scoped RBAC the project owns — the objects most easily orphaned, since a namespaced

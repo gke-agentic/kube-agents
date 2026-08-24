@@ -1562,8 +1562,8 @@ UNCONFIRMED = "unconfirmed"
 #: gate, ledger or grants. The two are worth separating because they want
 #: opposite handling: an evidence deferral is retried by the next run and must
 #: keep its counts, while this answer will not change no matter how good the
-#: evidence gets, and retrying it hourly costs a minted token and a filing
-#: turn's whole budget each time to arrive at the same no.
+#: evidence gets, and retrying it hourly costs a filing turn's whole budget
+#: each time to arrive at the same no.
 #:
 #: Matched at the head of the reason rather than anywhere in it, because the
 #: two ways of getting this wrong do not cost the same. A miss costs the hourly
@@ -1804,10 +1804,10 @@ def file_pull_request(
     third, and a bare `None` cannot say which it is.
     """
     now = ledger_mod.utcnow()
-    # Computed here rather than at the mint below, because the prompt needs to
-    # name it: the turn's recovery from an expired token is a re-mint for this
-    # exact repository, and a turn that has to infer the slug from `git remote`
-    # will sometimes infer the other one.
+    # Computed once here because three things downstream need the same answer:
+    # the preflight checks write on it, the prompt names it as the repository
+    # already proved writable, and the push goes to it. A turn left to infer the
+    # slug from `git remote` will sometimes infer the other one.
     push_target = fork or upstream
     labels = [
         name
@@ -2470,7 +2470,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     # is still reachable when the loop runs out of turns or clock, so exiting 1
     # on it put the ordinary run in the failed bucket -- and a CronJob whose
     # every run shows `Error` is one nobody reads. Live run `selfimprove-fork-3`
-    # promoted a finding, minted a token and wrote its ledger, and reported
+    # promoted a finding, filed it and wrote its ledger, and reported
     # itself failed. The counter-argument, that an operator wants Job status to
     # surface a loop that never completes cleanly, is real and is answered
     # somewhere better: `outcome` is in every ledger row, so the history is one

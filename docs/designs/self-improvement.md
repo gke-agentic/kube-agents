@@ -3,7 +3,7 @@
 > **STATUS — implemented, off by default.** The runner lives in
 > [`agents/selfimprove/`](../../agents/selfimprove/), the manifests in
 > [`charts/kube-agents/templates/self-improvement.yaml`](../../charts/kube-agents/templates/self-improvement.yaml)
-> and its minter sibling, the Google identity in
+> the Google identity in
 > [`terraform/modules/kube-agents-selfimprove/`](../../terraform/modules/kube-agents-selfimprove/).
 > `selfImprovement.enabled` defaults to false and `mode` defaults to `report-only`, so an install
 > that does nothing gets nothing. §12 records where the built thing diverged from this document.
@@ -39,7 +39,7 @@ one.
 | Who reviews it        | the cluster owner                                      | this repository's maintainers                                                |
 | Worst case from a bug | a wrong change proposed against a customer's cluster   | a pull request nobody merges                                                 |
 | Cadence               | the roster in `agents/platform/cron/jobs.json`         | hourly, off unless switched on                                               |
-| Identity              | `platform-agent-scope`, the GitOps repo                | a separate GitHub App on separate repositories (§6)                          |
+| Identity              | `platform-agent-scope`, the GitOps repo                | a robot account's personal access token, held by the loop alone (§6)         |
 
 Three consequences follow immediately, and the rest of the design is mostly working them out.
 
@@ -64,14 +64,13 @@ writes the finding, grades it honestly, and the filing turn then declines it per
 in the ledger for a human. What makes that survivable rather than an hourly tax is that the refusal
 is recorded — `record_refusal` marks the finding and the gate stops offering it, charging nothing
 against the day's budget, because nothing reached anyone's review queue. Without that the gate would
-promote it again every hour, minting a token and spending a filing turn each time to reach the same
-answer.
+promote it again every hour, spending a filing turn each time to reach the same answer.
 
 **The reviewer is not the operator.** A fleet-audit finding lands in front of the person who runs
 the cluster it is about. A self-improvement finding lands in front of kube-agents maintainers, who
 may have no relationship with the install that produced it. An install therefore cannot be opted
 into publishing on its behalf: the default mode files nothing anywhere, and reaching the upstream
-repository takes a GitHub App the operator has to install deliberately.
+repository takes a token the operator has to create, scope and mount deliberately.
 
 **A finding is not an incident.** The loop never pages, never posts to the home channel unless
 asked to, and never opens a kanban card on the board the Platform Agent works from. Its output is
@@ -170,8 +169,8 @@ stdout as `json_lines` — from where GKE's node agent ships it to Cloud Logging
 
 That is the whole log-access story for an isolated runner: it queries Cloud Logging with
 `roles/logging.viewer`, filtered to the install's namespace and `jsonPayload.log_source`. It never
-mounts the data volume, never execs into the pod, and gets the operator's, the credential proxy's
-and the minter's container logs from the same place. The sidecar is already deployed on every agent
+mounts the data volume, never execs into the pod, and gets the operator's and the credential
+proxy's container logs from the same place. The sidecar is already deployed on every agent
 pod, so no change to the observed system is needed to make its logs readable.
 
 ### 3.2 Traces and metrics
@@ -373,37 +372,35 @@ when the key is false.
 
 ### 5.3 The isolation ledger
 
-| Resource                | Shared with the agent? | Why                                                                                              |
-| ----------------------- | ---------------------- | ------------------------------------------------------------------------------------------------ |
-| Pod / process           | no                     | separate `CronJob`; the agent is unaware of it                                                   |
-| Container image         | **yes**                | deliberate: it is how the runner knows the deployed revision (§2), and it adds no image to pin   |
-| Kubernetes SA           | no                     | `kubeagents-selfimprove`, `view` on one namespace                                                |
-| Google SA               | no                     | `kubeagents-selfimprove`, read roles on logging, trace and monitoring                            |
-| Data volume             | no                     | `emptyDir`; the agent's `ReadWriteOnce` claim is never mounted                                   |
-| GitHub App and identity | no                     | a separate App, a separate minter, a separate scope (§6)                                         |
-| Credential proxy        | separate instance      | the same script and image, its own process, pointed at its own minter                            |
-| Minter                  | separate Deployment    | `kube-agents-selfimprove-token-minter`; `templates/github-minter.yaml` is not edited             |
-| Model endpoint          | **yes** by default     | the in-cluster LiteLLM Service; duplicating a gateway buys nothing. Overridable for budget split |
-| Chat platforms          | no                     | the runner has no Slack or Google Chat credential and no home channel                            |
-| Kanban board            | no                     | findings go to the ledger, not to the board the agent works from                                 |
-| Telemetry               | no                     | `hermes_otel` needs egress to the collector namespace the runner's NetworkPolicy does not open   |
+| Resource         | Shared with the agent? | Why                                                                                              |
+| ---------------- | ---------------------- | ------------------------------------------------------------------------------------------------ |
+| Pod / process    | no                     | separate `CronJob`; the agent is unaware of it                                                   |
+| Container image  | **yes**                | deliberate: it is how the runner knows the deployed revision (§2), and it adds no image to pin   |
+| Kubernetes SA    | no                     | `kubeagents-selfimprove`, `view` on one namespace                                                |
+| Google SA        | no                     | `kubeagents-selfimprove`, read roles on logging, trace and monitoring                            |
+| Data volume      | no                     | `emptyDir`; the agent's `ReadWriteOnce` claim is never mounted                                   |
+| GitHub identity  | no                     | a robot account's personal access token, in its own Secret (§6)                                  |
+| Credential proxy | separate instance      | the same script and image, its own process, holding its own `gh` state                           |
+| Minter           | **not reached at all** | no `TOKEN_BROKER_URL`, and the platform minter's ingress policy does not admit this pod          |
+| Model endpoint   | **yes** by default     | the in-cluster LiteLLM Service; duplicating a gateway buys nothing. Overridable for budget split |
+| Chat platforms   | no                     | the runner has no Slack or Google Chat credential and no home channel                            |
+| Kanban board     | no                     | findings go to the ledger, not to the board the agent works from                                 |
+| Telemetry        | no                     | `hermes_otel` needs egress to the collector namespace the runner's NetworkPolicy does not open   |
 
 Only two entries are `yes`, and both are argued for rather than inherited. Everything the feature
-adds is rendered by two new chart templates: `templates/self-improvement.yaml`, and
-`templates/self-improvement-minter.yaml` for the separate minter the filing modes need. Both are
-guarded on `selfImprovement.enabled` and the minter on `mode != report-only` as well, so with the
-flag off neither renders anything and the install is byte-identical to one from a chart that never
-had the feature.
+adds is rendered by one new chart template, `templates/self-improvement.yaml`, guarded on
+`selfImprovement.enabled`, so with the flag off it renders nothing and the install is byte-identical
+to one from a chart that never had the feature.
 
-**One label must not be copied.** The minter's ingress policy admits pods carrying
+**One label must not be copied.** The platform minter's ingress policy admits pods carrying
 `kubeagents.x-k8s.io/has-credential-proxy: "true"`
 ([`github-minter.yaml:199-206`](../../charts/kube-agents/templates/github-minter.yaml)), and the
 operator stamps that label on agent pods (`platformagent_manifests.go:1930`). The runner pod runs a
 credential proxy and so invites the label by analogy — and carrying it would let the runner reach
-the _platform_ minter and mint tokens for the customer's GitOps repository, silently undoing §6.
-The runner is labelled `kubeagents.x-k8s.io/selfimprove: "true"` instead, its own minter admits only
-that, and the platform minter continues to admit only the other. Neither can reach the other's
-broker.
+the platform minter and mint tokens for the customer's GitOps repository, silently undoing §6.
+The runner is labelled `kubeagents.x-k8s.io/selfimprove: "true"` instead, which that policy does not
+admit. It is belt to the braces of the loop having no `TOKEN_BROKER_URL` to dial the minter with:
+either alone would do, and the label is the one an operator can see in `kubectl get pod --show-labels`.
 
 ### 5.4 Read-only, in three layers
 
@@ -432,128 +429,172 @@ cannot reach a second object, and it is the runner's own bookkeeping rather than
 system under observation. Where §3.4's snapshot path is enabled, add two short-lived objects per
 run to that list.
 
-## 6. Minting GitHub tokens without touching the existing flow
+## 6. The loop's GitHub credential
 
-This is the part of the requirement that looked hardest and turns out to be nearly free, because
-the seam already exists.
+The loop authenticates to GitHub as a robot account holding a classic personal access token. The
+token is created out of band, lives in a Kubernetes Secret the chart never sees the contents of, and
+is seeded into `gh` once at the credential proxy sidecar's startup. No GitHub App, no minter, no KMS
+key, and no change to any code the Platform Agent runs.
 
-### 6.1 Why the existing minter cannot simply be reused
+### 6.1 Why not the existing minter, and why not a second one
 
 [`templates/github-minter.yaml`](../../charts/kube-agents/templates/github-minter.yaml) renders one
 minty config, keyed `<org>-<repo>.yaml`, holding one scope named `platform-agent-scope` whose rule
 is `assertion.email in ['<platform GSA>']` and whose `repositories` list is the single GitOps repo.
 A Terraform validation in `terraform/examples/full-install/main.tf` enforces the single repository.
 
-Both ways of extending it are bad. Adding the upstream repository to the existing scope widens the
+Reusing it is out on two counts. Adding the upstream repository to the existing scope widens the
 _Platform Agent's own token_ to reach `gke-labs/kube-agents` — a standing privilege increase for the
-component that talks to customers, in exchange for a feature that is off by default. Adding a second
-scope to the same config file means editing the shared template, so every install renders the
-change whether or not it wants the feature, and the blast radius of a templating mistake is every
-deployment.
+component that talks to customers, in exchange for a feature that is off by default. And the loop
+needs a different GitHub App in any case: the existing App is installed on the customer's GitOps
+repository, and opening pull requests against `gke-labs/kube-agents` requires an App installed
+there, with a different app ID and a different private key.
 
-There is also a plain fact that settles it: this needs a _different GitHub App_. The existing App is
-installed on the customer's GitOps repository. Opening pull requests against `gke-labs/kube-agents`
-requires an App installed there, with a different app ID and a different private key. Sharing a
-minter between two Apps was never on the table.
+So the first implementation of this design rendered a second minty Deployment — Service, ConfigMap,
+KSA, GSA annotation, KMS key reference and NetworkPolicy — plus a second GSA and a second
+import-only KMS key in Terraform, and a second GitHub App an operator had to create, install on two
+repositories, and import the private key of. It worked under `fork` mode and never worked under
+`upstream`, for a reason no amount of care in the templates could fix: the fork and the base live
+under different owners, so they are different App installations issuing different tokens, and `gh`
+stores one token per host. Minting the second discarded the first. The branch landed and
+`gh pr create` against the base failed, every time.
 
-### 6.2 A second minter, and one call into it
+A personal access token has no such problem. One classic token carries the account's `repo` scope
+wherever the account has access, so the push and the pull request are the same credential, and
+`upstream` mode works. It also deletes the entire second minter: one Helm template, four Terraform
+resources, a KMS key ring nothing can ever delete, and the operator step of registering a GitHub App
+and importing a PEM.
 
-The self-improvement template renders its own `kube-agents-selfimprove-token-minter` — Deployment,
-Service, ConfigMap, KSA, GSA annotation, KMS key reference and NetworkPolicy — structurally a copy
-of the existing one with different values, and rendered only when the feature is enabled. The
-existing template is not touched.
+What it costs is set out in §6.4. The short version is that the token is coarser than an App
+installation and nothing rotates it.
 
-Pointing the runner at it takes one environment variable.
-[`github_token_refresh.py:17`](../../agents/platform/scripts/github_token_refresh.py) reads
+### 6.2 Seeding it, without touching shared code
 
-```python
-TOKEN_BROKER_URL = os.getenv("TOKEN_BROKER_URL", "http://github-token-minter.kubeagents-system.svc.cluster.local:8080/token")
+The credential proxy sidecar runs `CREDENTIAL_PROXY_BOOTSTRAP_COMMAND` before it binds its socket
+([`credential_proxy.py:1824`](../../agents/platform/scripts/credential_proxy.py)), inside
+`self.environment` — the same dict, carrying the same `HOME` and `GH_CONFIG_DIR`, that `_execute`
+later runs every shimmed command in. That is what makes one line enough:
+
+```sh
+if [ -s /var/run/secrets/selfimprove-github/token ]; then
+gh auth login --with-token < /var/run/secrets/selfimprove-github/token && gh auth setup-git;
+fi; true
 ```
 
-and the credential proxy already forwards `TOKEN_BROKER_URL` into the subprocess environment
-(`credential_proxy.py:890`) before running that script for `/v1/github/refresh`
-(`credential_proxy.py:1640-1642`). Setting it on the runner's sidecar to
-`http://kube-agents-selfimprove-token-minter.<namespace>.svc.cluster.local:8080/token` is what points
-the loop at its own App. No proxy changes and no operator changes.
+`gh` and `git` are authenticated from that moment, for the life of the pod, and the runner's own
+`git push` and `gh pr create` find the credential already there.
 
-It is not, however, the whole integration, and an earlier draft of this section said it was.
-`TOKEN_BROKER_URL` tells the proxy _which_ minter to call; something still has to call it. The
-Platform Agent gets its first token from `CREDENTIAL_PROXY_BOOTSTRAP_COMMAND`, and this pod
-deliberately sets that to the empty string — the agent's copy runs `gcloud container clusters
-get-credentials`, and a kubeconfig for a managed cluster is precisely the credential this loop is
-designed not to hold. So the runner makes the call itself: `mint_forge_credential` in
-[`selfimprove_run.py`](../../agents/selfimprove/scripts/selfimprove_run.py) POSTs
-`{"repository": "<push target>"}` to `$CREDENTIAL_PROXY_URL/v1/github/refresh` immediately before the
-filing turn starts, and returns `SKIPPED` without spending the turn's budget if the mint fails. The
-token never enters the runner's address space; the sidecar writes it into the `gh` state it owns.
+Three details in it are load-bearing:
 
-Before the turn rather than inside it, for two reasons. A mint that fails inside the turn fails at
-`git push`, an hour of model budget after the point where the cause was knowable, and it fails as
-`git` prompting for a username on a terminal nothing is attached to. And the runner can report a
-minting failure as the loop's own fault — `SKIPPED`, no charge against the day's ceiling and no
-cooldown — where a turn that dies mid-push is `UNCONFIRMED` and costs the finding a slot.
+- **The redirect.** `bootstrap()` runs the command with `stdin=subprocess.DEVNULL`, so
+  `--with-token` has to read the token from a file rather than from a pipe.
+- **`; true`.** A non-zero exit from the bootstrap command raises and kills the sidecar, taking the
+  whole run with it. A missing or unreadable Secret should cost the filing turn, not the
+  investigation — §6.3 is what turns it into a clean `SKIPPED`.
+- **`defaultMode: 0440` on the Secret volume.** A Secret volume is owned `root:fsGroup` and both
+  containers run as uid 10000, so `0400` is unreadable by the process that needs it — and it fails
+  _silently_, because `[ -s ]` stats the file rather than reading it, so the guard passes, the
+  redirect is refused, and `; true` swallows the refusal.
 
-**Expiry is handled by that ordering, not by a refresher.** A GitHub App installation token lives
-one hour and GitHub offers no way to ask for longer, so a filing turn shorter than an hour cannot
-outlive the token minted at its start — and `fileTimeoutSeconds` defaults to 3000. A run filing
-several pull requests mints once per turn rather than once per run, so the second one starts fresh
-too. What that leaves is an operator who raises the timeout past 3300 seconds, where a push
-at the end of a turn can meet an expired credential: the runner logs a warning naming the setting,
-and the turn's prompt carries the recovery, which is one call to
-`github_token_refresh.py <push target>` and one retry. The endpoint mints a new token on every call
-and caches nothing, so a refresh is always a fresh hour. Retrying more than once is pointless and
-the prompt says so — a second refusal is a permission the token does not carry, most often a `403`
-from the upstream under `upstream` mode, which is the deviation below and not an expiry.
+It is still not the agent's copy of that variable, which runs `gcloud container clusters
+get-credentials`. A kubeconfig for a managed cluster is precisely the credential this loop is
+designed not to hold.
 
-**Upstream mode still needs a second token, and does not get one.** Under `fork` mode the fork is
-both the push target and the pull request's base, so one mint covers the turn. Under `upstream` mode
-they are different repositories under different owners, therefore different App installations and
-different tokens — and `gh` holds one token per host, so minting the second would discard the first.
-The runner mints for the push target and logs that it has done so; the branch lands and
-`gh pr create` against the base fails. Fixing it means either a `GH_TOKEN`-per-invocation shim or a
-second proxy instance, and neither is built. §12 carries this as a known deviation.
+The Secret is mounted into the sidecar and **not** into the runner. `run_agent` strips the shim
+directory from `PATH` and pops `CREDENTIAL_PROXY_URL` for every turn but the filing one, which
+removes environment variables and nothing else — a file mounted into the runner would stay readable
+by the investigation turn, which has no business holding a write credential.
 
-One wart, named so nobody has to rediscover it: the scope name in the request body is the literal
-`"platform-agent-scope"` (`github_token_refresh.py:103`). Scope names are per-config-file, so the
-self-improvement minty config uses that same name and everything works unmodified. It reads oddly
-in a config that has nothing to do with the platform agent. Making it configurable is a one-line
-`os.getenv` on a shared file; the trade is a misleading identifier against an edit to the credential
-path, and the identifier is the cheaper cost.
+`TOKEN_BROKER_URL` is deliberately left unset on this pod. It is what would point the sidecar's
+`/v1/github/refresh` endpoint at a minter; unset, that endpoint cannot mint anything here, so
+nothing the loop runs can obtain an App token for a repository an operator never granted.
+[`github_token_refresh.py`](../../agents/platform/scripts/github_token_refresh.py) and
+[`credential_proxy.py`](../../agents/platform/scripts/credential_proxy.py) are unmodified by this
+feature, and so is the operator — the isolation is that the loop's credential path is entirely in
+its own chart template and its own runner.
 
-**The separate proxy instance is required, not merely tidy.** A minted token is cached by
-`gh auth login --with-token` into the sidecar's private `hosts.yml`, and `gh` holds one token per
-host. Two identities sharing one credential proxy would share one `github.com` entry and overwrite
-each other, so whichever refreshed last would own both flows — the failure being that the Platform
-Agent's next GitOps push runs under the self-improvement App, or the reverse. Separate proxies mean
-separate state directories and no interaction at all.
+### 6.3 Proving the token before the turn is paid for
 
-**And the proxy is not where the boundary lives.** `_handle_github_refresh` validates only that the
-repository string looks like `owner/name`; there is no repo allowlist in the proxy. The boundary is
-three things outside it: whether a rule file for that repository is mounted in the minter, whether
-the CEL `assertion.email` matches the one permitted caller, and — decisively — which repositories
-the GitHub App is installed on. All three differ between the two minters, which is why the
-separation holds even though the code path is identical.
+Seeding at startup removes the per-turn mint, and with it the side effect that used to catch a
+broken credential early. `verify_forge_credential` in
+[`selfimprove_run.py`](../../agents/selfimprove/scripts/selfimprove_run.py) replaces it, immediately
+before the filing turn starts:
 
-**One prerequisite is manual and cannot be Terraformed.** The App's private key is never a
-Kubernetes Secret or a Secret Manager entry; it is imported once into an import-only KMS key, and
-the minter fails its readiness probe until that import has happened. `install.sh` automates it for
-the existing minter via `import_github_pem()`. A second App means a second import, sequenced before
-the second minter can become ready, and an operator moving to `fork` or `upstream` mode should
-expect that step.
+- `gh repo view <push target> --json viewerPermission` must return `WRITE`, `MAINTAIN` or `ADMIN`.
+  That is the same permission `git push` will be checked against.
+- Under `upstream` mode, `gh repo view <base>` must succeed. Reachability only — opening a pull
+  request from a fork asks nothing of the base beyond read, and requiring write there would refuse
+  the exact configuration the mode exists for.
 
-### 6.3 Fork topology and the three modes
+`gh repo view` rather than `gh auth status`, because `selfimprove.unlisted-gh-subcommand` in the
+sidecar's deny policy allows `pr`, `search`, `issue`, `repo`, `version` and `help` and refuses
+everything else. A preflight the policy blocks is a preflight that fails every run.
+
+Before the turn rather than inside it, for the same two reasons the mint was. A credential that
+fails inside the turn fails at `git push`, an hour of model budget after the point where the cause
+was knowable, and it fails as `git` prompting for a username on a terminal nothing is attached to.
+And the runner can report a credential failure as the loop's own fault — `SKIPPED`, no charge
+against the day's ceiling and no cooldown — where a turn that dies mid-push is `UNCONFIRMED` and
+costs the finding a slot.
+
+This is strictly stronger than minting was. A mint proved the minter would issue a token; it did not
+prove the token could write anything. Two reads now catch a mis-scoped token, a revoked token and a
+Secret that never mounted, in seconds rather than an hour.
+
+**There is no expiry story.** A personal access token does not expire partway through a turn, so
+`fileTimeoutSeconds` is a share of the hourly schedule rather than a credential deadline, and the
+filing prompt no longer carries a refresher. It must not: the script it used to name reaches a
+minter this pod has no `TOKEN_BROKER_URL` for, and a turn that ran it would read the resulting 502
+as the credential being broken. The prompt says to retry once and then print
+`SKIPPED: GitHub refused the credential`.
+
+**The separate proxy instance is required, not merely tidy.** `gh auth login --with-token` caches
+into the sidecar's private `hosts.yml`, and `gh` holds one token per host. Two identities sharing
+one credential proxy would share one `github.com` entry and overwrite each other, so whichever
+authenticated last would own both flows — the failure being that the Platform Agent's next GitOps
+push runs as the loop's robot account, or the reverse. Separate proxies mean separate state
+directories and no interaction at all.
+
+### 6.4 What the token costs, against the App it replaced
+
+Three things get worse, and they are the reason this section exists rather than a note in §12.
+
+**It is coarser.** An App installation could be granted `contents: write` on the fork and
+`pull_requests: write` on the upstream and nothing else. A classic token carries `repo` — read and
+write on every repository the account can reach. The narrowing that remains is the account: use a
+robot that is a member of nothing else, and its reach is the fork plus whatever public repositories
+anyone can open a pull request against. Inside the pod, the deny policy is what stops the token
+being used for more than opening a pull request: no `merge`, no `review`, no `gh api`, no
+subcommand outside the six listed above. That is a policy check on argv, not a permission boundary,
+and §11 says so.
+
+**Nothing rotates it.** An App installation token lived an hour by construction. This one lives
+until somebody revokes it. Its lifetime is an operator's to manage, and an install that never
+revokes it is an install with a standing write credential in a Secret.
+
+**Its permissions are not visible in the install.** A minty rule file said, in the cluster, exactly
+what the loop could do. A token says nothing about itself; `verify_forge_credential` reads the
+permission back from GitHub at filing time, which is the closest thing to that and is a runtime
+check rather than a reviewable declaration.
+
+Against those: `upstream` mode works, which it did not before; there is no GitHub App to register,
+install and keep installed; there is no KMS key that can never be deleted; and the loop's credential
+path shares no code with the Platform Agent's, so a change to one cannot break the other.
+
+### 6.5 Fork topology and the three modes
 
 Repository policy is that branches are pushed to a fork, never to `gke-labs/kube-agents`. A
-cross-fork pull request needs `contents: write` on the fork, to push the branch, and
-`pull_requests: write` on the upstream, to open the PR against it — so the App is installed on both
-and its scope lists both. That is the one place a scope in this design names two repositories, and
-both belong to the self-improvement App.
+cross-fork pull request needs write on the fork, to push the branch, and the ability to open a pull
+request against the upstream — which any authenticated account has on a public repository. One
+token covers both. The chart refuses a configuration where `forkRepo` equals the upstream under
+`upstream` mode, and with one token carrying the same permissions everywhere that guard is now the
+only thing stopping the loop pushing a branch to the upstream directly.
 
 Because that is a real amount of GitHub administration, and because the operator running an install
 is usually not a kube-agents maintainer, the destination is a mode rather than an assumption:
 
-- **`report-only` (the default when the feature is enabled).** No GitHub credential, no minter
-  rendered, no credential-proxy sidecar, and no `git` or `gh` on the runner's `PATH`. Findings
+- **`report-only` (the default when the feature is enabled).** No GitHub credential, no
+  credential-proxy sidecar, and no `git` or `gh` on the runner's `PATH`. Findings
   accumulate in the ledger and are read with `make selfimprove-ledger`. Everything in §§2–5 runs, and
   nothing the loop _produces_ leaves the cluster. That is narrower than "no egress", and the
   difference is worth stating: the run still fetches its own source over HTTPS, still calls the
@@ -795,24 +836,17 @@ selfImprovement:
     # `severity:critical` through `severity:low` and nothing else.
     prLabel: self-improvement
     severityLabelPrefix: "severity:"
-    # The loop's OWN App, deliberately not the one githubMinter uses (§6.2).
-    appId: ""
+    # A Secret holding the robot account's personal access token, created out of
+    # band (§6.2). Required under fork and upstream, and the render fails
+    # without it rather than deploying a loop that cannot file. The chart never
+    # sees the value: it names the Secret in a volume the sidecar mounts.
+    patSecret: ""
+    patSecretKey: token
     ksaName: kubeagents-selfimprove
-    # Two render-time checks. In every mode this must be a usable GCP service
-    # account id (6–30 characters), because it reaches a Workload Identity
-    # annotation GCP will accept even when the account cannot exist. Under fork
-    # and upstream a cap of 23 also applies: the minter's account is this plus
-    # `-minter`, which is why this cannot carry a `-gsa` suffix of its own.
+    # A usable GCP service account id (6–30 characters, GCP's own cap), checked
+    # at render because it reaches a Workload Identity annotation GCP accepts
+    # even when the account behind it does not exist.
     gsaName: kubeagents-selfimprove
-    kms:
-      keyring: selfimprove-token-minter-keyring
-      key: selfimprove-token-minter-key
-      keyVersion: "1"
-      location: "" # empty derives it from platformAgent.harness.location
-    image: # the same minter build githubMinter runs; keep in step with images.json
-      repository: us-docker.pkg.dev/abcxyz-artifacts/docker-images/github-token-minter-server
-      tag: v2.7.1-amd64
-      pullPolicy: IfNotPresent
 
   # Empty uses the in-cluster LiteLLM Service the agent uses. Set to give the
   # loop its own model budget, or a cheaper model than the one answering users.
@@ -829,9 +863,9 @@ selfImprovement:
   workspaceSizeLimit: 4Gi
 
   networkPolicy: true
-  # The cluster DNS VIP, for the port 53 egress rule on the runner and the
-  # minter. A policy matches the address the pod dials, so the kube-dns pod
-  # selectors alone are not enough. Empty allows both GKE service-CIDR
+  # The cluster DNS VIP, for the runner's port 53 egress rule. A policy matches
+  # the address the pod dials, so the kube-dns pod selectors alone are not
+  # enough. Empty allows both GKE service-CIDR
   # conventions (34.118.224.10, 10.96.0.10).
   dnsCIDRs: []
   # Added to the ClusterIP defaults (34.118.224.1, 10.96.0.1) and to every
@@ -1256,26 +1290,24 @@ after the model budget has been spent. The alternative, aborting the run, throws
 investigation over a transient network failure. Neither is right; the log line is the disclosure,
 and the run's brief does not carry it.
 
-**`upstream` mode cannot open its pull request.** §6.2 originally claimed that setting
-`TOKEN_BROKER_URL` was the entire integration; it is not, and the runner now mints explicitly. What
-one explicit mint cannot do is serve two repositories. Under `upstream` mode the branch is pushed to
-the fork and the pull request is opened against a repository under a different owner — a second App
-installation, a second token, and `gh` stores one token per host, so the second mint would discard
-the first. The runner mints for the push target and logs that it has: the branch lands, `gh pr
-create` gets a 404, and the finding is charged as `UNCONFIRMED`. `fork` mode is unaffected, because
-there the fork is both the push target and the base and one token covers the turn. The fix is a
-`GH_TOKEN`-per-invocation shim or a second proxy instance; until one exists, `upstream` mode files
-branches, not pull requests.
+**`upstream` mode could not open its pull request, and now can.** Recorded here because the fix
+changed the design rather than the code alone. The App path minted per repository, and under
+`upstream` mode the push target and the base are under different owners — a second App
+installation, a second token, and `gh` stores one token per host, so the second mint discarded the
+first. The branch landed, `gh pr create` got a 404, and the finding was charged `UNCONFIRMED`.
+§6 now specifies one classic personal access token instead, which carries the account's `repo`
+scope on both repositories at once, so both halves of the turn run under the same credential. What
+that costs is §6.4.
 
-**No issue-filing path.** §6.3 and §8 both proposed one: a harness finding, or a finding whose fix
+**No issue-filing path.** §6.5 and §8 both proposed one: a harness finding, or a finding whose fix
 is not obvious, would become an issue rather than a pull request. Neither is built, and the reason
-is the credential. The minty rule for `upstream` mode grants `pull_requests: write` and nothing
-else, deliberately — that is the narrowest scope that can open a pull request on a repository the
-loop does not own. Opening an issue needs `issues: write`, a second write scope on a public
-repository, taken so that an agent reading attacker-reachable log text has a second thing it can
-create. The exchange is not worth it for an output a maintainer can get by reading the ledger. Every
-non-pull-request outcome is therefore a `SKIPPED: <why>` line and a ledger row that keeps counting,
-which is also what the filing skill implements.
+is now the deny policy rather than the credential — a classic token's `repo` scope would open an
+issue happily, but `gh issue` is one of the six subcommands the sidecar allows and `gh label` is
+not, and the filing skill is written against pull requests throughout. Adding it means a second
+output shape in the skill, in the ledger's `filed` accounting and in the duplicate check, for an
+output a maintainer can get by reading the ledger. Every non-pull-request outcome is therefore a
+`SKIPPED: <why>` line and a ledger row that keeps counting, which is also what the filing skill
+implements.
 
 **Identity is `(signal, title, location)`, and the precedent bans the title.** §7.2 named
 [`fleet-audit-issue-ledger.md`](fleet-audit-issue-ledger.md) as the precedent to follow rather than

@@ -568,7 +568,7 @@ selfImprovement:
   # more work than it looks like — re-read the finding against the tree, write
   # the patch, commit, push, open the pull request — and 900s was not enough for
   # it on the install this was validated against: live run `selfimprove-fork-3`
-  # promoted a finding, minted a token, and then hit the budget mid-turn with
+  # promoted a finding and then hit the budget mid-turn with
   # nothing pushed, recording `filed=0`. The investigate turns measured on the
   # same install all ended at the 90-iteration cap, well short of
   # investigateTimeoutSeconds. `budgeted` clamps to what actually remains and
