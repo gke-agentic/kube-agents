@@ -86,15 +86,17 @@ HANDOFF_CHARS = 3000
 
 DEFAULT_UPSTREAM = "gke-labs/kube-agents"
 
-#: How long a GitHub App installation token lives. GitHub fixes this at an hour
-#: and offers no way to ask for more, so it is a constant here rather than a
-#: setting: the runner mints immediately before the filing turn, and everything
-#: about expiry follows from whether that turn can outlast the number.
-GITHUB_TOKEN_TTL_SECONDS = 3600
-#: How close to expiry a filing turn's budget may come before the runner says
-#: so. Five minutes is the push and the `gh pr create`, which is the part of the
-#: turn that actually needs the credential and the part that happens last.
-GITHUB_TOKEN_MARGIN_SECONDS = 300
+#: How long `verify_forge_credential` waits on one `gh repo view`. Two of them
+#: run before a filing turn starts, so this is time taken off the turn's own
+#: budget -- long enough that a slow GitHub does not read as a bad token, short
+#: enough that an unreachable one does not eat the turn.
+FORGE_PREFLIGHT_TIMEOUT_SECONDS = 60
+
+#: What `gh repo view --json viewerPermission` has to say about the push target
+#: before a filing turn is worth paying for. READ and TRIAGE cannot push a
+#: branch, and a token that carries either is a token whose `repo` scope was
+#: never granted on that repository.
+FORGE_PUSH_PERMISSIONS = ("WRITE", "MAINTAIN", "ADMIN")
 
 #: What an unstamped image reads instead of a revision, when
 #: `allowUnstampedImage` permits it at all.
@@ -1622,62 +1624,106 @@ def _fenced(fields: Dict[str, str]) -> str:
     return "\n".join(lines)
 
 
-def mint_forge_credential(repository: str) -> None:
-    """Have the sidecar mint a GitHub token for `repository` and cache it.
+def _gh_repo_view(repository: str, fields: str) -> dict:
+    """`gh repo view <repository> --json <fields>`, parsed. Raises RuntimeError.
 
-    Setting `TOKEN_BROKER_URL` tells the credential proxy *which* minter to call;
-    it does not call one. Nothing mints on demand either -- `_execute` has no
-    pre-exec hook and this pod's `CREDENTIAL_PROXY_BOOTSTRAP_COMMAND` is
-    deliberately empty, because the agent's copy of it runs `gcloud container
-    clusters get-credentials` and a kubeconfig is the one credential this loop
-    must not hold. So without this call the filing turn reaches `git push` with
-    no credential at all: the remotes `_fetch_source_git` adds are anonymous
-    HTTPS, and the push fails after the model budget for the turn is spent.
+    Through the shim, so the sidecar's deny policy reads this argv like any
+    other. `repo` is one of the six subcommands
+    `selfimprove.unlisted-gh-subcommand` allows, which is why the preflight is
+    built out of `repo view` and not `gh auth status`: the latter is refused,
+    and a preflight the policy blocks is a preflight that fails every run.
+    """
+    argv = ["gh", "repo", "view", repository, "--json", fields]
+    try:
+        done = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=FORGE_PREFLIGHT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            "`gh repo view %s` did not answer within %ds"
+            % (repository, FORGE_PREFLIGHT_TIMEOUT_SECONDS)
+        ) from exc
+    except OSError as exc:
+        # No `gh` on PATH at all, which in this pod means the shim directory is
+        # missing rather than the binary -- there is no real `gh` in the runner
+        # container, only `/opt/credential-proxy/bin/gh`.
+        raise RuntimeError("could not run `gh`: %s" % exc) from exc
+    if done.returncode != 0:
+        # stderr carries gh's own diagnosis and the three common ones are
+        # indistinguishable without it: `authentication required` is a token the
+        # bootstrap command never seeded, `HTTP 401 Bad credentials` is a token
+        # that was revoked or expired, and `Could not resolve to a Repository`
+        # is a name this token cannot see -- which for a private repository is
+        # the same wire response as one that does not exist.
+        detail = (done.stderr or done.stdout or "").strip()[:400]
+        raise RuntimeError(
+            "`gh repo view %s` exited %d%s"
+            % (repository, done.returncode, ": %s" % detail if detail else "")
+        )
+    try:
+        parsed = json.loads(done.stdout)
+    except ValueError as exc:
+        raise RuntimeError(
+            "`gh repo view %s` did not return JSON: %s"
+            % (repository, (done.stdout or "").strip()[:200])
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError(
+            "`gh repo view %s` returned %s, not an object"
+            % (repository, type(parsed).__name__)
+        )
+    return parsed
 
-    The endpoint is the same one the Platform Agent's `github_token_refresh.py`
-    uses, and the token never enters this process -- the sidecar writes it into
-    the `gh`/`git` state it owns, which is why there is nothing here to redact.
+
+def verify_forge_credential(push_target: str, pr_target: str) -> None:
+    """Prove the seeded token can do this turn's writes, before paying for one.
+
+    Nothing is minted here and nothing needs to be. This pod's
+    `CREDENTIAL_PROXY_BOOTSTRAP_COMMAND` runs `gh auth login --with-token`
+    against a personal access token mounted from a Secret, at the sidecar's
+    startup and inside the environment the shims later execute in -- so `gh` and
+    `git` are already authenticated by the time this runner starts. (It is still
+    not the agent's copy of that variable, which runs `gcloud container clusters
+    get-credentials`; a kubeconfig is the one credential this loop must not
+    hold.)
+
+    What is left is the question minting used to answer as a side effect: does
+    the credential actually work *here*. A token seeded at boot fails at the
+    same two places a minted one did -- absent, revoked, or scoped to neither
+    repository -- and without this call the filing turn discovers that at `git
+    push`, after its model budget is spent. Two reads answer it:
+
+    - `push_target` needs write. That is where the branch goes under both modes,
+      and `viewerPermission` is the same permission `git push` will be checked
+      against.
+    - `pr_target`, when it differs, needs only to be reachable. Opening a pull
+      request from a fork asks nothing of the base repository beyond read, so
+      requiring write there would refuse the exact configuration upstream mode
+      exists for.
 
     Raises RuntimeError so the caller can abort the turn before paying for it.
     """
-    proxy_url = env("CREDENTIAL_PROXY_URL").strip()
-    if not proxy_url:
+    seen = _gh_repo_view(push_target, "viewerPermission").get("viewerPermission")
+    if seen not in FORGE_PUSH_PERMISSIONS:
         raise RuntimeError(
-            "CREDENTIAL_PROXY_URL is unset, so there is no sidecar to mint a "
-            "GitHub token from. In fork and upstream mode the chart sets it; an "
-            "empty value means the pod was rendered without the credential proxy."
+            "the GitHub token has %s on %s, and pushing a branch needs one of %s. "
+            "For a classic token that is the `repo` scope, granted to an account "
+            "with write access to that repository."
+            % (seen or "no permission", push_target, "/".join(FORGE_PUSH_PERMISSIONS))
         )
-    request = urllib.request.Request(
-        proxy_url.rstrip("/") + "/v1/github/refresh",
-        data=json.dumps({"repository": repository}).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
+    if pr_target != push_target:
+        _gh_repo_view(pr_target, "nameWithOwner")
+    log(
+        "GitHub token verified: %s on %s%s"
+        % (
+            seen,
+            push_target,
+            ", %s readable" % pr_target if pr_target != push_target else "",
+        )
     )
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            if response.status != 200:
-                raise RuntimeError(
-                    "the credential sidecar returned HTTP %s" % response.status
-                )
-    except urllib.error.HTTPError as exc:
-        # The body carries minty's own diagnosis, and the three common failures
-        # are indistinguishable without it: a 404 is an App not installed on the
-        # org, a 403 is a rule whose `assertion.email` did not match this pod's
-        # service account, and a 500 is usually a repository outside the scope.
-        detail = ""
-        try:
-            detail = exc.read().decode("utf-8", "replace").strip()[:400]
-        except Exception:  # pragma: no cover - diagnostic path only
-            pass
-        raise RuntimeError(
-            "minting a GitHub token for %s failed with HTTP %s%s"
-            % (repository, exc.code, ": %s" % detail if detail else "")
-        ) from exc
-    except Exception as exc:
-        raise RuntimeError(
-            "minting a GitHub token for %s failed: %s" % (repository, exc)
-        ) from exc
-    log("minted a GitHub token for %s" % repository)
 
 
 def usable_label(name: str, knob: str) -> str:
@@ -1827,16 +1873,15 @@ def file_pull_request(
           not fail -- it opens a pull request whose diff is every commit between that branch and
           the revision you branched from, which is unreviewable and looks like your change.
         - Label the pull request: %(pr_labels)s
-        - If GitHub refuses to authenticate you, the token expired -- it is minted fresh for
-          this turn and lives one hour. `git push` fails with `Authentication failed` or asks
-          for a username on a terminal nothing is attached to; `gh` fails with `HTTP 401` or
-          `Bad credentials`. Mint another and retry the command once:
-
-              /opt/defaults/scripts/github_token_refresh.py %(push_target)s
-
-          That reaches the same sidecar the runner used and always mints a new token, so it
-          is safe to run at any point. Retry once and not in a loop: a second refusal is a
-          permission the token does not carry, and minting again will not add one.
+        - If GitHub refuses to authenticate you, stop. The credential is a personal access
+          token seeded into `gh` when this pod started, and the runner proved it could write
+          to %(push_target)s moments before this turn began -- so there is nothing to renew
+          and no refresher to run. `git push` failing with `Authentication failed`, or asking
+          for a username on a terminal nothing is attached to, or `gh` returning `HTTP 401`
+          or `Bad credentials`, means the token was revoked mid-turn or the command is
+          reaching a repository the token does not cover. Retry the command once in case it
+          is neither; if it refuses again, print
+          `SKIPPED: GitHub refused the credential` and open nothing.
         - Mode: %(mode)s
         - Install that produced this: %(install)s
           The pull request body has to name it, per the `file-pull-request` skill: a maintainer
@@ -1863,10 +1908,10 @@ def file_pull_request(
         # prompt says why rather than leaving the turn to discover it: `gh pr
         # create --label` resolves the name before it creates anything and
         # fails the whole command on a label the repository does not have, so
-        # the obvious spelling trades the pull request for the tag. The token
-        # cannot create the label either -- `pull_requests: write` attaches an
-        # existing one, and creating one is an `issues: write` the loop is
-        # deliberately not granted (self-improvement-minter.yaml).
+        # the obvious spelling trades the pull request for the tag. The turn
+        # cannot create the label either: `gh label` is outside the six
+        # subcommands `selfimprove.unlisted-gh-subcommand` allows, so the
+        # sidecar refuses it whatever the token could do.
         #
         # One `gh pr edit` per label, and that is the reason for the list rather
         # than a comma-separated flag. `--add-label 'a,b'` resolves both names
@@ -1911,49 +1956,27 @@ def file_pull_request(
         "mode": mode,
         "install": describe_install(),
     }
-    # Mint before the turn, not during it. The push target is what needs the
-    # credential: the branch goes to the fork under both modes, and under fork
-    # mode the fork is also the pull request's base, so one token covers the
-    # whole turn. Doing it here rather than inside the turn means a minting
-    # failure costs a log line instead of the turn's entire model budget, and
-    # the message names the cause rather than surfacing as `git push` asking
-    # for a username on a terminal that is not attached to anything.
+    # Check the credential before the turn, not during it. Doing it here rather
+    # than letting the turn find out means a bad token costs two API reads
+    # instead of the turn's entire model budget, and the message names the cause
+    # rather than surfacing as `git push` asking for a username on a terminal
+    # that is not attached to anything.
     #
-    # Minting immediately before the turn is also what keeps the token alive for
-    # all of it. A GitHub App installation token lasts an hour and the number is
-    # not configurable, so the ordering here -- rather than a refresher thread --
-    # is the whole expiry story for a turn inside that hour. A turn budget that
-    # is not inside it is an operator's `fileTimeoutSeconds`, and it gets a
-    # warning below and a documented recovery in the prompt.
-    if timeout > GITHUB_TOKEN_TTL_SECONDS - GITHUB_TOKEN_MARGIN_SECONDS:
-        log(
-            "this filing turn may run for %ds, which is inside the last %d minutes of a "
-            "GitHub token's one-hour life; a push late in the turn can fail on an expired "
-            "credential. The turn is told how to mint another, but the setting to change is "
-            "selfImprovement.fileTimeoutSeconds."
-            % (timeout, GITHUB_TOKEN_MARGIN_SECONDS // 60)
-        )
-    if push_target != upstream:
-        # Upstream mode. The fork and the base live under different owners, so
-        # they are different App installations and different tokens -- and `gh`
-        # keeps one token per host, so minting the second would discard the
-        # first. The push will work and `gh pr create` against the base will
-        # not. Said out loud here because the alternative is a maintainer
-        # reading a 404 from `gh` and looking for the bug in the skill.
-        log(
-            "upstream mode: minting for the push target %s only. Opening the pull request "
-            "against %s needs a second token this runner cannot hold at the same time, so "
-            "expect the branch to land and the pull request to fail." % (push_target, upstream)
-        )
+    # There is no expiry story to tell alongside it. The token is a personal
+    # access token seeded once at the sidecar's startup, so it is exactly as
+    # valid at the end of a filing turn as at the beginning, whatever
+    # `fileTimeoutSeconds` says. What replaced the old one-hour warning is the
+    # opposite risk, and it is the operator's: a token nothing rotates stays
+    # good until somebody revokes it.
     try:
-        mint_forge_credential(push_target)
+        verify_forge_credential(push_target, upstream)
     except RuntimeError as exc:
         log("not filing %s: %s" % (entry.get("fingerprint", "?"), exc))
         # SKIPPED, so nothing is charged. No pull request was opened and the
         # finding is untouched -- the credential is the loop's problem, not the
-        # finding's, and burning its gate eligibility over a broken minter would
-        # hide the real fault behind a cooldown.
-        return SKIPPED, "could not mint a GitHub token for %s" % push_target
+        # finding's, and burning its gate eligibility over a token nobody
+        # renewed would hide the real fault behind a cooldown.
+        return SKIPPED, "could not verify the GitHub token for %s" % push_target
     # The one turn that gets the shims. It is only reached in fork and upstream
     # mode, after the gate, on a finding whose untrusted text is fenced above.
     code, stdout, _ = run_agent(
@@ -2060,10 +2083,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     # with no turn run, no findings and an `outcome` nothing set, and the run
     # would report itself truncated having never started the agent.
     investigate_max_turns = max(1, env_int("SELFIMPROVE_INVESTIGATE_MAX_TURNS", 6))
-    # Under GITHUB_TOKEN_TTL_SECONDS - GITHUB_TOKEN_MARGIN_SECONDS = 3300, or
-    # every filing turn starts by warning that its own token may expire before
-    # it finishes. That warning is worth keeping meaningful, so the budget stays
-    # below it rather than the threshold moving.
+    # 3000 to match `fileTimeoutSeconds` in charts/kube-agents/values.yaml. It
+    # is a share of the hourly schedule, not a credential deadline: the token
+    # this turn uses was seeded at pod startup and does not expire partway
+    # through, so what bounds the number is how much of an hour one finding may
+    # spend before the next run is due.
     file_timeout = env_int("SELFIMPROVE_FILE_TIMEOUT", 3000)
     deadline = env_int("SELFIMPROVE_DEADLINE", 0)
     home = env("SELFIMPROVE_HOME", "/home/selfimprove")

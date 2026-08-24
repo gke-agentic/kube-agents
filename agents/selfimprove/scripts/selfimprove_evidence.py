@@ -1029,7 +1029,7 @@ def _is_self(*values: Any) -> bool:
     is looking at.
 
     Substring rather than exact match because the names are all derived from
-    `SELF_SERVICE_NAME` by suffix -- `-token-minter`, `-ledger`, the CronJob's
+    `SELF_SERVICE_NAME` by suffix -- `-ledger`, `-investigator`, the CronJob's
     generated pod suffix -- and a list of them would go stale the first time
     one was added.
     """

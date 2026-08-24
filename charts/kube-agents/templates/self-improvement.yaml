@@ -6,8 +6,10 @@ that leaves the feature off gets no ServiceAccount, no RBAC, no CronJob and no
 NetworkPolicy from it. That is the isolation requirement expressed as a render
 condition rather than as a runtime flag: off means absent, not present-and-idle.
 
-The second GitHub identity is in self-improvement-minter.yaml, rendered only for
-the fork and upstream modes.
+The second GitHub identity is a personal access token held by a robot account,
+mounted into the credential proxy sidecar and seeded into `gh` at its startup.
+It is rendered only for the fork and upstream modes. There is no minter and no
+GitHub App: see sec. 6 of the design for what that trades away.
 */ -}}
 {{- if .Values.selfImprovement.enabled }}
 {{- $si := .Values.selfImprovement }}
@@ -16,8 +18,8 @@ the fork and upstream modes.
 Fixed, not release-scoped. The design's sec. 5.3 names these objects literally,
 which is the same commitment from the other end.
 These names are an external contract, not a per-release detail: the Workload
-Identity bindings in terraform/modules/kube-agents-selfimprove bind by literal
-KSA name, and its `minter_ksa_name` defaults to `<this>-token-minter`. A
+Identity binding in terraform/modules/kube-agents-selfimprove binds by literal
+KSA name. A
 release-scoped name would mean a terraform apply per release name. The cost is
 that two chart releases in one namespace collide, which the `-selfimprove`
 objects share with the rest of this install's cluster-scoped assumptions.
@@ -32,37 +34,54 @@ objects share with the rest of this install's cluster-scoped assumptions.
 {{- fail (printf "selfImprovement.mode=%s needs selfImprovement.github.forkRepo: branches are pushed to a fork, never to the upstream repository" $mode) }}
 {{- end }}
 {{- /*
-And the App id, for the same reason it is worth failing on the fork: without it
-the minter's Secret does not render and its Deployment references it anyway, so
-the install comes up with an hourly CronJob that investigates for an hour or
-more and then cannot file, behind a CreateContainerConfigError on a pod nobody
-is watching. Render time is where that is one line of output instead.
+And the Secret holding the token, for the same reason it is worth failing on the
+fork: without it the sidecar's volume does not resolve and the pod never starts,
+so the install comes up with an hourly CronJob stuck in
+CreateContainerConfigError that nobody is watching. Render time is where that is
+one line of output instead.
+
+The Secret is not created by this chart, following
+platformAgent.credentials.create: false -- a token pasted into values.yaml ends
+up in version control and in Helm's release state. `kubectl create secret` is
+the documented route, and INSTALL.md carries it.
 */ -}}
-{{- if and $needsForge (not $si.github.appId) }}
-{{- fail (printf "selfImprovement.mode=%s needs selfImprovement.github.appId: the minter signs as the loop's own GitHub App and cannot start without its id" $mode) }}
+{{- if and $needsForge (not $si.github.patSecret) }}
+{{- fail (printf "selfImprovement.mode=%s needs selfImprovement.github.patSecret: the loop authenticates to GitHub as a robot account holding a personal access token, and the Secret carrying it is created out of band. See docs/designs/self-improvement.md sec. 6." $mode) }}
 {{- end }}
+{{- $patKey := $si.github.patSecretKey | default "token" }}
+{{- /*
+Where the token is mounted inside the sidecar, and nowhere else. Not a value an
+operator sets: it appears in the bootstrap command below and in the volumeMount,
+and the two have to agree.
+*/ -}}
+{{- $patDir := "/var/run/secrets/selfimprove-github" }}
+{{- $patPath := printf "%s/%s" $patDir $patKey }}
 {{- $upstreamRepo := $si.github.upstreamRepo | default "gke-labs/kube-agents" }}
 {{- /*
-The fork and the upstream have to be two different repositories, and upstream
-mode is where saying so matters. The minter keys its per-repository rules by
-slug: the fork's carries `contents: write` because a branch is pushed to it, the
-upstream's carries `pull_requests: write` and deliberately not that. Set both to
-the same slug and the two rules collapse into one, the wider grant wins, and the
-loop holds push access to gke-labs/kube-agents -- available on every run, not as
-the result of a mistake somebody could notice. There is no configuration this
-serves: a pull request whose head and base are the same repository is what fork
-mode already is, and it does not need the upstream field set to reach it.
+The fork and the upstream have to be two different repositories, and under the
+personal access token this check carries more weight than it used to, not less.
+
+It used to be about the minter: it keyed per-repository rules by slug, the
+fork's carrying `contents: write` and the upstream's deliberately not, and one
+slug for both collapsed the pair into a push grant on the upstream. A single
+token cannot express that split at all -- it carries one permission set
+everywhere the robot account can reach -- so nothing downstream of here
+distinguishes the two repositories by grant. This line is what stops the loop
+pushing a branch to the upstream, and it is now the only thing that does.
+
+There is no configuration it costs: a pull request whose head and base are the
+same repository is what fork mode already is, and reaching that does not need
+the upstream field set.
 */ -}}
 {{- if and (eq $mode "upstream") (eq $si.github.forkRepo $upstreamRepo) }}
-{{- fail (printf "selfImprovement.github.forkRepo and upstreamRepo are both %q. In upstream mode they must differ: the fork is granted contents: write and the upstream deliberately is not, and one slug for both collapses the two into a push grant on the upstream. Use fork mode to open pull requests against one repository." $upstreamRepo) }}
+{{- fail (printf "selfImprovement.github.forkRepo and upstreamRepo are both %q. In upstream mode they must differ: branches are pushed to the fork and pull requests are opened against the upstream, and one slug for both makes the loop push to the upstream instead. Use fork mode to open pull requests against one repository." $upstreamRepo) }}
 {{- end }}
 {{- /*
 Where the pull request is opened, which is the fork under fork mode and the
 upstream under upstream mode. `SELFIMPROVE_UPSTREAM_REPO` names it because that
 is what the filing turn's prompt calls the base, and rendering the upstream slug
-into it under fork mode sent the turn to open a pull request against a
-repository the minter had issued no rule for -- so the token either did not
-cover it or did not exist, an hour into a run, on the loop's only write.
+into it under fork mode sent the turn to open a pull request against the wrong
+repository an hour into a run, on the loop's only write.
 */ -}}
 {{- $prTarget := ternary $si.github.forkRepo $upstreamRepo (eq $mode "fork") }}
 {{- /*
@@ -79,19 +98,20 @@ missing value.
 */ -}}
 {{- $project := required "platformAgent.harness.projectId is required when selfImprovement.enabled: the loop reads Cloud Logging, Cloud Trace and Cloud Monitoring through Workload Identity, which is addressed by project" .Values.platformAgent.harness.projectId }}
 {{- /*
-The investigator's own GSA id, checked in every mode. The tighter 23-character
-cap lives in self-improvement-minter.yaml because it comes from appending
-`-minter`, and that template renders only under fork and upstream -- which left
-report-only, the default, running this value into a Workload Identity
-annotation with nothing checking it at all. GCP will not hold an account
-outside `[a-z][a-z0-9-]{4,28}[a-z0-9]`, so a longer or malformed id annotates
-the KSA for an account that cannot exist; the binding is not rejected, the pod
-starts, and every telemetry read inside it 403s an hour into a run with no
-error naming the id. Fail at render instead.
+The investigator's own GSA id, checked in every mode. GCP will not hold an
+account outside `[a-z][a-z0-9-]{4,28}[a-z0-9]`, so a longer or malformed id
+annotates the KSA for an account that cannot exist; the binding is not rejected,
+the pod starts, and every telemetry read inside it 403s an hour into a run with
+no error naming the id. Fail at render instead.
+
+There used to be a tighter 23-character cap for the fork and upstream modes,
+because the minter's account was this id plus `-minter` and the pair had to fit
+in 30. The token replaced the minter, so that account is gone and the cap with
+it: 30 applies in every mode now.
 */ -}}
 {{- $gsaName := $si.github.gsaName | default "kubeagents-selfimprove" }}
 {{- if not (regexMatch "^[a-z][a-z0-9-]{4,28}[a-z0-9]$" $gsaName) }}
-{{- fail (printf "selfImprovement.github.gsaName %q (%d characters) is not a usable GCP service account id. It must be 6 to 30 characters, start with a lowercase letter, end with a lowercase letter or digit, and contain only lowercase letters, digits and hyphens. Under fork or upstream mode a further cap of 23 applies, because the minter's account is this plus `-minter`." $gsaName (len $gsaName)) }}
+{{- fail (printf "selfImprovement.github.gsaName %q (%d characters) is not a usable GCP service account id. It must be 6 to 30 characters, start with a lowercase letter, end with a lowercase letter or digit, and contain only lowercase letters, digits and hyphens." $gsaName (len $gsaName)) }}
 {{- end }}
 {{- /*
 The KSA the CronJob runs as. Defaulted to the literal `kubeagents-selfimprove`
@@ -367,11 +387,13 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    # The two in-namespace services the run actually dials: the model gateway,
-    # and -- in fork and upstream mode -- the token minter the credential proxy
-    # sidecar asks for an installation token. Both ports because a ClusterIP
-    # Service is DNATed before policy is evaluated on some CNIs and after it on
-    # others, so 80 is litellm's Service port and 8080 is its container's.
+    # The one in-namespace service the run actually dials: the model gateway.
+    # It used to be two -- the loop's token minter was the other, and dropping
+    # it is what removing the GitHub App bought at the network layer, since the
+    # credential now arrives on a mounted volume rather than over a Service.
+    # Both ports because a ClusterIP Service is DNATed before policy is
+    # evaluated on some CNIs and after it on others, so 80 is litellm's Service
+    # port and 8080 is its container's.
     #
     # Named rather than `podSelector: {}`, which was every pod in the namespace
     # on both ports, under a block comment claiming egress goes "only to what an
@@ -384,11 +406,6 @@ spec:
         - podSelector:
             matchLabels:
               app: litellm
-        {{- if $needsForge }}
-        - podSelector:
-            matchLabels:
-              app: {{ $name }}-token-minter
-        {{- end }}
       ports:
         - protocol: TCP
           port: 8080
@@ -544,7 +561,9 @@ spec:
             # load-bearing: that label is the ingress selector on the existing
             # github-token-minter's NetworkPolicy, so wearing it would let this
             # pod reach the minter that issues tokens for the user's GitOps
-            # repositories. The loop gets its own minter or it gets none.
+            # repositories. That minter is the Platform Agent's and stays; the
+            # loop reaching it is exactly the isolation failure this prevents.
+            # The loop carries its own robot account's token or none at all.
             kubeagents.x-k8s.io/selfimprove: "true"
         spec:
           restartPolicy: Never
@@ -603,25 +622,53 @@ spec:
                   value: /home/selfimprove
                 - name: KSA_TOKEN_FILE
                   value: /var/run/secrets/kubeagents/serviceaccount/token
-                # The whole integration seam. One variable decides which minter
-                # is called, so a second GitHub identity costs a second Service
-                # and this line -- no change to credential_proxy.py, no change
-                # to the existing minter, and nothing the agent's own path can
-                # observe. See docs/designs/self-improvement.md sec. 6.
-                - name: TOKEN_BROKER_URL
-                  value: http://{{ $name }}-token-minter.{{ $ns }}.svc.cluster.local:8080/token
+                # No TOKEN_BROKER_URL. This loop mints nothing: its GitHub
+                # identity is a robot account's personal access token, seeded
+                # into `gh` by the bootstrap command below. Leaving the variable
+                # unset is what keeps `github_token_refresh.py` -- the Platform
+                # Agent's minting helper, which this sidecar image still carries
+                # -- from being usable here at all. See
+                # docs/designs/self-improvement.md sec. 6.
+                #
                 # No event watcher here. It watches cluster API servers and
                 # opens triage sessions, which is the outward-facing job this
                 # pod must not do -- and it never terminates, so it would also
                 # keep the Job from completing even as a sidecar.
                 - name: EVENT_WATCHER_ENABLED
                   value: "false"
-                # No cluster bootstrap. The agent's proxy runs `gcloud
-                # container clusters get-credentials` at startup; this one must
-                # not, because a kubeconfig for a managed cluster is exactly
-                # the credential the loop is designed not to hold.
+                # The integration seam, and the whole of the loop's GitHub
+                # identity. `bootstrap()` runs this once at sidecar startup,
+                # before serve() binds the listener the runner's startupProbe
+                # waits on -- so the credential is installed before the runner
+                # exists, and the runner never races it.
+                #
+                # It runs with the executor's own environment
+                # (credential_proxy.py, self.environment), whose GH_CONFIG_DIR
+                # and HOME are the same ones `_execute` later hands to the
+                # proxied `gh` and `git`. That is what makes seeding here
+                # visible to the shims: the state lands under
+                # CREDENTIAL_PROXY_STATE_DIR, not in this container's $HOME.
+                #
+                # Still not the agent's bootstrap, which runs `gcloud container
+                # clusters get-credentials`. A kubeconfig for a managed cluster
+                # is the one credential the loop must not hold, and this command
+                # is written out here rather than inherited precisely so that
+                # stays true.
+                #
+                # `; true` is deliberate and load-bearing. A non-zero exit makes
+                # bootstrap() raise, which kills the sidecar, which fails the
+                # pod -- taking down an hourly run whose investigation phase
+                # needs no credential at all. A missing or malformed token
+                # instead costs only the filing turn, where
+                # verify_forge_credential names it and returns SKIPPED. The
+                # trade is that a bad token is quiet here: bootstrap() pipes
+                # this command's output and logs it only on failure, so an exit
+                # of 0 discards it. The ledger is where you find out.
                 - name: CREDENTIAL_PROXY_BOOTSTRAP_COMMAND
-                  value: ""
+                  value: >-
+                    if [ -s {{ $patPath }} ]; then
+                    gh auth login --with-token < {{ $patPath }} && gh auth setup-git;
+                    fi; true
                 # Required, and required for a reason that has nothing to do
                 # with this pod. credential_proxy.py's serve() raises
                 # `API_SERVER_EXTERNAL_KEY must be configured` before it binds
@@ -704,6 +751,21 @@ spec:
                   mountPath: /var/run/credential-proxy
                 - name: credential-proxy-ksa-token
                   mountPath: /var/run/secrets/kubeagents/serviceaccount
+                  readOnly: true
+                # The token, on this container and no other. The runner's
+                # volumeMounts below deliberately do not list it.
+                #
+                # That asymmetry is the security property the design used to get
+                # from the minter, and it is now the only thing carrying it.
+                # selfimprove_run.py strips the shim PATH and pops
+                # CREDENTIAL_PROXY_URL for every turn except the filing one, but
+                # it removes neither files nor environment variables -- so a
+                # token mounted on the runner would be readable by the
+                # investigation turn, which reads Cloud Logging, which contains
+                # text an attacker can influence. Mounted here it is reachable
+                # only through the proxy's argv rules.
+                - name: selfimprove-github-pat
+                  mountPath: {{ $patDir }}
                   readOnly: true
                 - name: workspace
                   mountPath: /home/selfimprove
@@ -865,6 +927,25 @@ spec:
               emptyDir:
                 medium: Memory
                 sizeLimit: 16Mi
+            # Not created by this chart. `optional: false` is the default and
+            # is left that way on purpose: a missing Secret holds the pod in
+            # CreateContainerConfigError, which is loud, rather than starting a
+            # run that investigates for an hour and then cannot file. The
+            # render-time check at the top of this file is the earlier version
+            # of the same answer, and catches the ordinary case.
+            - name: selfimprove-github-pat
+              secret:
+                secretName: {{ $si.github.patSecret }}
+                # 0440, not 0400. A Secret volume is owned by root and by the
+                # pod's fsGroup, and both containers run as uid 10000 -- so
+                # owner-only read is unreadable by the process that needs it.
+                # It fails silently, too: `[ -s ]` in the bootstrap command
+                # stats the file rather than reading it, so the guard passes,
+                # the redirect is refused, and `; true` swallows the refusal.
+                defaultMode: 0440
+                items:
+                  - key: {{ $patKey }}
+                    path: {{ $patKey }}
             - name: credential-proxy-ksa-token
               projected:
                 sources:

@@ -287,13 +287,12 @@ jobs:
               exit 1
             fi
           done
-          # The default mode has no GitHub identity at all, so the minter, the
-          # credential proxy and the App Secret must all be absent. This is the
-          # isolation claim the design makes, and the one a stray unguarded
-          # block would quietly retract.
+          # The default mode has no GitHub identity at all, so the credential
+          # proxy and the token Secret must both be absent. This is the isolation
+          # claim the design makes, and the one a stray unguarded block would
+          # quietly retract.
           for forbidden in \
-            "kube-agents-selfimprove-token-minter" \
-            "selfimprove-app-credentials" \
+            "selfimprove-github-pat" \
             "CREDENTIAL_PROXY_URL"; do
             if grep -qF "$forbidden" <<<"$si"; then
               echo "'$forbidden' rendered under the default report-only mode" >&2
@@ -302,23 +301,67 @@ jobs:
           done
           FORK_FLAGS=(
             --set selfImprovement.mode=fork
-            --set selfImprovement.github.appId=12345
+            --set selfImprovement.github.patSecret=test-pat
             --set selfImprovement.github.forkRepo=test-org/kube-agents
           )
           fork=$(helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
             "${SI_FLAGS[@]}" "${FORK_FLAGS[@]}")
+          # The whole credential path in one render: the Secret is mounted, the
+          # sidecar's bootstrap command seeds it into `gh`, and `git` is set up
+          # to use the same token. Each of the three is silently survivable on
+          # its own — the pod starts either way and the failure lands an hour
+          # later, inside the filing turn's `git push`.
           for expected in \
-            "kube-agents-selfimprove-token-minter" \
-            "CREDENTIAL_PROXY_URL"; do
+            "CREDENTIAL_PROXY_URL" \
+            "secretName: test-pat" \
+            "gh auth login --with-token" \
+            "gh auth setup-git"; do
             if ! grep -qF "$expected" <<<"$fork"; then
               echo "fork render is missing '$expected'" >&2
               exit 1
             fi
           done
+          # 0440, not 0400. A Secret volume is owned root:fsGroup and both
+          # containers run as uid 10000, so owner-only read is unreadable by the
+          # process that needs it — and it fails silently, because the `[ -s ]`
+          # guard in the bootstrap command stats the file rather than reading it.
+          if ! grep -qF "defaultMode: 0440" <<<"$fork"; then
+            echo "the PAT Secret volume is not mode 0440" >&2
+            exit 1
+          fi
+          # TOKEN_BROKER_URL is what would point this loop at the Platform
+          # Agent's minter. Leaving it unset is the isolation: the sidecar's
+          # refresh endpoint stays unusable here, so nothing this loop runs can
+          # mint an App token for a repository an operator never granted. Only
+          # the loop's own template, because the Platform Agent legitimately
+          # sets the variable and a whole-chart grep would never fail.
+          if helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
+            "${SI_FLAGS[@]}" "${FORK_FLAGS[@]}" \
+            --show-only templates/self-improvement.yaml \
+            | grep -qF "name: TOKEN_BROKER_URL"; then
+            echo "the self-improvement loop rendered TOKEN_BROKER_URL" >&2
+            exit 1
+          fi
+          # The runner container deliberately does not get the Secret. Stripping
+          # the shim PATH for non-filing turns removes env vars and nothing
+          # else, so a file mounted into the runner would be readable by the
+          # investigation turn, which has no business holding a write credential.
+          if [ "$(grep -cF "mountPath: /var/run/secrets/selfimprove-github" <<<"$fork")" != "1" ]; then
+            echo "the PAT is mounted into more than one container" >&2
+            exit 1
+          fi
+          # A filing mode with no Secret named has no way to authenticate, and
+          # the failure has to be at render rather than an hour into a run.
+          if helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
+            "${SI_FLAGS[@]}" --set selfImprovement.mode=fork \
+            --set selfImprovement.github.forkRepo=test-org/kube-agents \
+            > /dev/null 2>&1; then
+            echo "expected fork mode without github.patSecret to fail the render" >&2
+            exit 1
+          fi
           # Where the pull request is opened is the one value that differs
           # between the two filing modes, and getting it wrong sends the turn at
-          # a repository the minter issued no rule for — an hour into a run, on
-          # the loop's only write.
+          # the wrong repository an hour into a run, on the loop's only write.
           if ! grep -A1 SELFIMPROVE_UPSTREAM_REPO <<<"$fork" \
             | grep -qF "test-org/kube-agents"; then
             echo "fork mode did not target the fork" >&2
@@ -331,66 +374,11 @@ jobs:
             echo "upstream mode did not target the upstream" >&2
             exit 1
           fi
-          # The minty rules are the loop's only write grant, and in upstream
-          # mode the two repositories deliberately get different ones: the fork
-          # receives a pushed branch (`contents`), the upstream receives a
-          # cross-fork pull request opened from it (`pull_requests`). One
-          # permission set for both is the obvious shortcut and it hands an
-          # autonomous loop push access to gke-labs/kube-agents — the one thing
-          # repository policy says never to do. Neither rule may carry
-          # `issues`; §12 of the design turns on that scope not being taken.
-          # `rule` prints one config key's block, so a permission granted on
-          # the wrong repository cannot pass by appearing somewhere in the file.
-          rule() {
-            awk -v key="$1" '
-              $0 == "  " key ": |" { inblock = 1; next }
-              inblock && /^[^ ]/ { inblock = 0 }
-              inblock && /^  [^ ]/ { inblock = 0 }
-              inblock { print }
-            '
-          }
-          minter=$(helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
-            "${SI_FLAGS[@]}" "${FORK_FLAGS[@]}" --set selfImprovement.mode=upstream \
-            --show-only templates/self-improvement-minter.yaml)
-          up_rule=$(rule gke-labs-kube-agents.yaml <<<"$minter")
-          fork_rule=$(rule test-org-kube-agents.yaml <<<"$minter")
-          # `expected` is yes/no so the absences are asserted as loudly as the
-          # presences: the failure this guards against is a permission that
-          # appears, not one that goes missing.
-          for check in \
-            'up_rule:pull_requests: "write":yes' \
-            'up_rule:contents: "write":no' \
-            'fork_rule:contents: "write":yes' \
-            'fork_rule:pull_requests: "write":no'; do
-            var=${check%%:*}; rest=${check#*:}
-            needle=${rest%:*}; want=${rest##*:}
-            if grep -qF "$needle" <<<"${!var}"; then found=yes; else found=no; fi
-            if [ "$found" != "$want" ]; then
-              echo "upstream minty rule $var: '$needle' expected=$want got=$found" >&2
-              exit 1
-            fi
-          done
-          if grep -qF 'issues:' <<<"$minter"; then
-            echo "the self-improvement minter granted an issues scope" >&2
-            exit 1
-          fi
-          # Fork mode collapses the two roles into one repository, which is the
-          # only configuration where both permissions on one slug is correct.
-          fork_minter=$(helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
-            "${SI_FLAGS[@]}" "${FORK_FLAGS[@]}" \
-            --show-only templates/self-improvement-minter.yaml)
-          both=$(rule test-org-kube-agents.yaml <<<"$fork_minter")
-          for needle in 'contents: "write"' 'pull_requests: "write"'; do
-            if ! grep -qF "$needle" <<<"$both"; then
-              echo "fork mode's minty rule is missing '$needle'" >&2
-              exit 1
-            fi
-          done
           # gsaName reaches a Workload Identity annotation in every mode, so an
           # unusable id has to fail at render: GCP accepts the annotation, the
           # pod starts, and every telemetry read 403s with nothing naming it.
-          # 23 in the filing modes because the minter's account is this plus
-          # `-minter`; 30 otherwise, which is GCP's own cap.
+          # 30 is GCP's own cap and the only one now that no account derives
+          # from this name by suffix.
           for bad in \
             kubeagents-selfimprove-loop-service-account \
             Kubeagents-Selfimprove \
@@ -403,19 +391,13 @@ jobs:
               exit 1
             fi
           done
-          # Valid at 30 and rejected at 24 once a minter derives from it.
+          # Valid at 30, in the filing modes as well as report-only.
           helm template test-release charts/kube-agents "${SET_FLAGS[@]}" "${SI_FLAGS[@]}" \
+            "${FORK_FLAGS[@]}" \
             --set selfImprovement.github.gsaName=kubeagents-selfimprove-loop-ab > /dev/null
-          if helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
-            "${SI_FLAGS[@]}" "${FORK_FLAGS[@]}" \
-            --set selfImprovement.github.gsaName=kubeagents-selfimprove-x \
-            > /dev/null 2>&1; then
-            echo "expected the 23-character minter cap to fire in fork mode" >&2
-            exit 1
-          fi
           # An unknown mode, and upstream mode with one slug for both
-          # repositories — which collapses two minty rules into a push grant on
-          # gke-labs/kube-agents.
+          # repositories — which is what would push the loop's branches to
+          # gke-labs/kube-agents instead of to a fork.
           if helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
             "${SI_FLAGS[@]}" --set selfImprovement.mode=advisory > /dev/null 2>&1; then
             echo "expected an unknown selfImprovement.mode to fail the render" >&2

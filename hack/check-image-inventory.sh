@@ -191,15 +191,15 @@ default_images="$(chart_images)" || exit 1
 mirrored_images="$(chart_images --set "global.imageRegistry=$MIRROR")" || exit 1
 
 # The self-improvement loop is off in the default values, so the render above
-# sees neither its CronJob nor its token minter -- and the minter carries the
-# inventory's second copy of the github-token-minter-server pin, under
-# selfImprovement.github.image. Render it once more with the loop on, in the
-# mode that pulls the most, and fold the result into both lists so checks 3a,
-# 3b and 3c cover it without being written twice.
+# sees none of its containers. Render it once more with the loop on, in the mode
+# that pulls the most, and fold the result into both lists so checks 3a, 3b and
+# 3c cover it without being written twice. Today the loop reuses the agent image
+# the default render already carries; the render stays so that a container added
+# to it on a new pin does not reach the mirror unchecked.
 SELFIMPROVE_VALUES=(
   --set selfImprovement.enabled=true
   --set selfImprovement.mode=upstream
-  --set selfImprovement.github.appId=12345
+  --set selfImprovement.github.patSecret=ci-pat
   --set selfImprovement.github.forkRepo=ci-fork/kube-agents
 )
 #
@@ -221,7 +221,7 @@ selfimprove_image_fields() {
 selfimprove_images="$(selfimprove_image_fields)" || exit 1
 selfimprove_mirrored="$(selfimprove_image_fields --set "global.imageRegistry=$MIRROR")" || exit 1
 [ -n "$selfimprove_images" ] || {
-  echo "ERROR: the chart rendered no image references with the self-improvement loop enabled — the render or the extraction no longer works, so the loop's minter pin is unchecked." >&2
+  echo "ERROR: the chart rendered no image references with the self-improvement loop enabled — the render or the extraction no longer works, so the loop's own image pins are unchecked." >&2
   exit 1
 }
 default_images="$(printf '%s\n%s\n' "$default_images" "$selfimprove_images" | sort -u)"
