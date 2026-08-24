@@ -1246,6 +1246,38 @@ class ForgeCredentialTests(unittest.TestCase):
         self.assertIn("Could not resolve", message)
         self.assertIn("adamparco/kube-agents", message)
 
+    def test_an_unseeded_token_points_at_the_secret_not_at_gh_auth_login(self):
+        """The stderr here is verbatim from a live pod whose PAT was missing the
+        scopes `gh auth login` validates. Both remedies `gh` offers are for a
+        person at a terminal, and neither is reachable: the login happened in
+        the sidecar an hour earlier and its failure was swallowed by the `; true`
+        that keeps a bad token from stopping the pod. So the exit-4 case has to
+        name the Secret, or the only signal anyone ever sees points the wrong way.
+        """
+        self.answers["o/r"] = (
+            R.GH_AUTH_EXIT_CODE,
+            "",
+            "To get started with GitHub CLI, please run:  gh auth login\n"
+            "Alternatively, populate the GH_TOKEN environment variable with a "
+            "GitHub API authentication token.",
+        )
+        with self.assertRaises(RuntimeError) as caught:
+            R.verify_forge_credential("o/r", "o/r")
+        message = str(caught.exception)
+        self.assertIn("patSecret", message)
+        self.assertIn("read:org", message)
+        # gh's own text still survives -- the hint is added to it, not swapped in.
+        self.assertIn("gh auth login", message)
+
+    def test_other_failures_do_not_get_the_unseeded_hint(self):
+        """A token that is seeded and simply cannot see the repository exits 1.
+        Telling that operator to go and check the Secret's scopes sends them to
+        the one place the answer is not."""
+        self.answers["o/r"] = (1, "", "GraphQL: Could not resolve to a Repository")
+        with self.assertRaises(RuntimeError) as caught:
+            R.verify_forge_credential("o/r", "o/r")
+        self.assertNotIn("patSecret", str(caught.exception))
+
     def test_a_timeout_names_the_repository(self):
         self.raise_with = subprocess.TimeoutExpired(["gh"], 60)
         with self.assertRaises(RuntimeError) as caught:

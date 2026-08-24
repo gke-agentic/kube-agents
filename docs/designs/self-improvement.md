@@ -541,6 +541,17 @@ This is strictly stronger than minting was. A mint proved the minter would issue
 prove the token could write anything. Two reads now catch a mis-scoped token, a revoked token and a
 Secret that never mounted, in seconds rather than an hour.
 
+It is also the only place any of them surface, which is what `; true` costs. A token `gh auth login`
+rejects leaves a pod that boots 2/2 and logs nothing — the login's own diagnosis went to a pipe the
+bootstrap discards on exit zero, and the exit is zero by construction. So the preflight's message
+carries the diagnosis the sidecar threw away: on `gh`'s exit code 4 it says the Secret named by
+`selfimprove.github.patSecret` is empty, absent, or missing the `repo` and `read:org` scopes. Its
+own advice cannot be passed through unqualified. `gh` tells the reader to run `gh auth login` or set
+`GH_TOKEN`, and in this pod neither is reachable: the login already happened, in another container,
+an hour earlier. Cutting over the reference install is what found this — the first token mounted was
+missing both scopes, and the preflight refused the turn exactly as designed while naming a remedy
+that led away from the cause.
+
 **There is no expiry story.** A personal access token does not expire partway through a turn, so
 `fileTimeoutSeconds` is a share of the hourly schedule rather than a credential deadline, and the
 filing prompt no longer carries a refresher. It must not: the script it used to name reaches a
