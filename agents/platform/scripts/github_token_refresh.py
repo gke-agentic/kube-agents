@@ -117,6 +117,22 @@ def refresh_git_credentials(target_repo: str = None) -> str:
             token = response.read().decode("utf-8").strip()
     except urllib.error.HTTPError as e:
         error_body = e.read().decode("utf-8")
+        # Minty's "scope ... is not found for repository ..." 500 means the
+        # repository's own Minty configuration never defined this scope --
+        # a setup gap on Minty's side, not a transient broker failure. Left
+        # as a bare "Minty returned error (HTTP 500)", this is indistinguishable
+        # from a retryable fault, so every refresh against that repository
+        # fails the same opaque way on every polling tick instead of pointing
+        # at the one place ("failed to locate scope [...] for repository
+        # [...]") that would actually stop the recurrence.
+        if e.code == 500 and "is not found for repository" in error_body:
+            raise RuntimeError(
+                f"Minty has no '{body['scope']}' scope configured for "
+                f"repository {org_name}/{repo_name}; this is a Minty "
+                "configuration gap (the repository's scope config needs "
+                f"'{body['scope']}' added), not a transient failure, and "
+                f"retrying will not help. (HTTP {e.code}): {error_body}"
+            ) from e
         raise RuntimeError(f"Minty returned error (HTTP {e.code}): {error_body}") from e
     except Exception as e:
         raise RuntimeError(f"Failed to connect to Minty at {TOKEN_BROKER_URL}: {e}") from e
