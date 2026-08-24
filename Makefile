@@ -13,7 +13,16 @@ BAD_SKILLS := $(wildcard agents/*/defaults/skills/*)
 BASE_IMAGE_VARS := HERMES_AGENT_IMAGE ENVOY_IMAGE GOLANG_IMAGE
 BASE_IMAGE_ARGS := $(foreach v,$(BASE_IMAGE_VARS),$(if $($(v)),--build-arg $(v)=$($(v))))
 
-.PHONY: default help docker-build docker-build-agents docker-build-credential-proxy docker-push docker-push-agents docker-push-credential-proxy dev-rebuild-agent mirror-images images-check status prettier-check prettier-write test-python test-python-deps test-bench test-bench-deps validate prompt-check docs-generate docs-check docs-check-generated docs-check-links docs-check-terminology docs-check-map docs-check-context-budget chart-sync chart-check tf-apply tf-destroy coverage coverage-check test-integration
+# The repository the built image's source lives in, written to the OCI
+# org.opencontainers.image.source label. Unset by default and therefore empty in
+# the image: ghcr package linking and provenance scanners follow that label, and
+# a hardcoded upstream URL would point them at a repository that does not
+# contain a fork's code. Set it when you publish:
+#   make docker-push IMAGE_SOURCE=https://github.com/<owner>/<repo>
+IMAGE_SOURCE ?=
+IMAGE_SOURCE_ARG := $(if $(IMAGE_SOURCE),--build-arg IMAGE_SOURCE=$(IMAGE_SOURCE))
+
+.PHONY: default help docker-build docker-build-agents docker-build-credential-proxy docker-push docker-push-agents docker-push-credential-proxy dev-rebuild-agent selfimprove-ledger mirror-images images-check status prettier-check prettier-write test-python test-python-deps test-bench test-bench-deps validate prompt-check docs-generate docs-check docs-check-generated docs-check-links docs-check-terminology docs-check-map docs-check-context-budget chart-sync chart-check tf-apply tf-destroy coverage coverage-check test-integration
 
 # The agent images this repository builds -- one per `--target` stage in
 # deploy/docker/Dockerfile, which is not the same thing as one per directory
@@ -27,12 +36,11 @@ BASE_IMAGE_ARGS := $(foreach v,$(BASE_IMAGE_VARS),$(if $($(v)),--build-arg $(v)=
 AGENTS := platform
 
 # The revision baked into /opt/build-info.json, so a running pod can say which
-# commit it is. `--dirty` because a local build usually is, and the
-# self-improvement runner fetches the source at this revision to read the code
-# it is investigating: a clean SHA on a modified tree would point it at a commit
-# that does not contain the change. Empty outside a git checkout, which the
-# runner treats as unknown and refuses to investigate rather than guessing.
-GIT_SHA ?= $(shell git describe --always --dirty --exclude '*' 2>/dev/null)
+# commit it is. Computed by the shared helper rather than inline, because this
+# line and k8s-operator/scripts/dev/dev_rebuild_agent.sh had drifted to two
+# different answers and the drift was a silent bug -- the helper's header says
+# which answer is right and why an abbreviation or a `describe --dirty` is not.
+GIT_SHA ?= $(shell ./scripts/git_revision_stamp.sh)
 
 
 default: docker-build
@@ -50,7 +58,7 @@ docker-build-agents: $(foreach agent,$(AGENTS),docker-build-$(agent)) ## Build t
 # otherwise resolve to the build host — an arm64 machine would silently produce
 # an image that crashloops on the cluster (#560).
 $(foreach agent,$(AGENTS),docker-build-$(agent)): docker-build-%:
-	docker build --platform linux/amd64 $(BASE_IMAGE_ARGS) --build-arg HERMES_AGENT_TAG=$(HERMES_AGENT_TAG) --build-arg GIT_SHA=$(GIT_SHA) --build-arg IMAGE_TAG=latest --target $* -t $(REPO)/$*-agent:latest -f deploy/docker/Dockerfile .
+	docker build --platform linux/amd64 $(BASE_IMAGE_ARGS) $(IMAGE_SOURCE_ARG) --build-arg HERMES_AGENT_TAG=$(HERMES_AGENT_TAG) --build-arg GIT_SHA=$(GIT_SHA) --target $* -t $(REPO)/$*-agent:latest -f deploy/docker/Dockerfile .
 
 docker-build-credential-proxy: ## Build the credential-proxy sidecar image.
 	docker build --platform linux/amd64 $(BASE_IMAGE_ARGS) --build-arg HERMES_AGENT_TAG=$(HERMES_AGENT_TAG) --target credential-proxy -t $(REPO)/credential-proxy:latest -f deploy/docker/Dockerfile .

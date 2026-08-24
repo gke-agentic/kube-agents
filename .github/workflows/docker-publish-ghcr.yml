@@ -46,6 +46,16 @@ jobs:
       - name: Build and Push Platform Agent (GHCR)
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         id: build-platform
+        env:
+          # Pinned off, not merely left at its default. With BUILDX_GIT_LABELS
+          # set, buildx overwrites org.opencontainers.image.revision with the
+          # VCS sha of the build context after the Dockerfile has set it from
+          # GIT_SHA. Here the two coincide, so the check below would keep
+          # passing while proving nothing about whether the build arg reached
+          # the image -- which is exactly the sentence its error message claims.
+          # Anyone turning the variable on repository-wide for provenance would
+          # disarm the gate silently; this line keeps the claim true.
+          BUILDX_GIT_LABELS: "false"
         with:
           context: .
           file: deploy/docker/Dockerfile
@@ -57,25 +67,37 @@ jobs:
           tags: |
             ghcr.io/${{ env.IMAGE_REPOSITORY }}/platform-agent:latest
             ghcr.io/${{ env.IMAGE_REPOSITORY }}/platform-agent:${{ github.sha }}
-          # GIT_SHA/IMAGE_TAG are the revision stamp deploy/docker/Dockerfile
-          # writes into /opt/build-info.json. Without them a published image
-          # cannot say which commit it is, and the self-improvement runner
-          # refuses to investigate rather than guess at `main` -- so an unstamped
-          # publish makes the feature permanently inert on every install that
-          # pulls from here. Both ARGs sit at the end of the Dockerfile, so a
-          # changing SHA invalidates one ~100-byte layer and nothing above it.
+          # GIT_SHA is the revision stamp deploy/docker/Dockerfile writes into
+          # /opt/build-info.json and the OCI revision label. Without it a
+          # published image cannot say which commit it is, and the
+          # self-improvement runner refuses to investigate rather than guess at
+          # `main` -- so an unstamped publish makes the feature permanently inert
+          # on every install that pulls from here. IMAGE_SOURCE is the OCI source
+          # label ghcr follows to link the package to a repository; it comes from
+          # the workflow's own repository so a fork's images name the fork. Both
+          # ARGs sit at the end of the Dockerfile, so a changing SHA invalidates
+          # one ~100-byte layer and nothing above it.
           # Keep these lines free of `#`: the action parses the block verbatim.
           build-args: |
             HERMES_AGENT_TAG=${{ env.HERMES_AGENT_TAG }}
             GIT_SHA=${{ github.sha }}
-            IMAGE_TAG=${{ github.sha }}
+            IMAGE_SOURCE=${{ github.server_url }}/${{ github.repository }}
 
       - name: Verify the revision stamp
         # The build args above are the only thing standing between a published
         # image and one the self-improvement runner refuses to investigate, and
         # a dropped `build-args` line fails silently: the Dockerfile defaults
-        # both to empty and the build succeeds. Read the label back off what was
+        # both to empty and the build succeeds. Read the labels back off what was
         # actually pushed.
+        #
+        # Labels only, from the registry manifest -- no pull. The other half of
+        # the stamp, /opt/build-info.json, is what the runner actually reads, and
+        # it is verified in docker-publish-gcp.yml, which pulls the image anyway.
+        # Both workflows build the same Dockerfile from the same commit on the
+        # same push, so a deleted or misplaced `RUN printf` reddens that job on
+        # the same commit. Reading the file here as well would cost a ~1.2 GB
+        # pull per publish, on a runner already holding the buildx cache, to
+        # cover only the case where the two workflows have drifted apart.
         run: |
           REF="ghcr.io/${{ env.IMAGE_REPOSITORY }}/platform-agent:${{ github.sha }}"
           REVISION=$(docker buildx imagetools inspect "$REF" \
@@ -84,7 +106,13 @@ jobs:
             echo "::error::$REF carries revision '$REVISION', expected '${{ github.sha }}'. The GIT_SHA build arg did not reach the image." >&2
             exit 1
           fi
-          echo "revision stamp OK: $REVISION"
+          SOURCE=$(docker buildx imagetools inspect "$REF" \
+            --format '{{ index .Image.Config.Labels "org.opencontainers.image.source" }}')
+          if [ "$SOURCE" != "${{ github.server_url }}/${{ github.repository }}" ]; then
+            echo "::error::$REF carries source '$SOURCE', expected '${{ github.server_url }}/${{ github.repository }}'. The IMAGE_SOURCE build arg did not reach the image, and ghcr will not link the package to this repository." >&2
+            exit 1
+          fi
+          echo "revision stamp OK: $REVISION (source $SOURCE)"
 
       - name: Build and Push Replay Proxy (GHCR)
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0

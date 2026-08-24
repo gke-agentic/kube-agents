@@ -193,9 +193,17 @@ mirrored_images="$(chart_images --set "global.imageRegistry=$MIRROR")" || exit 1
 # The self-improvement loop is off in the default values, so the render above
 # sees none of its containers. Render it once more with the loop on, in the mode
 # that pulls the most, and fold the result into both lists so checks 3a, 3b and
-# 3c cover it without being written twice. Today the loop reuses the agent image
-# the default render already carries; the render stays so that a container added
-# to it on a new pin does not reach the mirror unchecked.
+# 3c cover it without being written twice.
+#
+# Not a no-op. The loop's runner does reuse the agent image the default render
+# already carries, but its fork and upstream modes also add the credential proxy
+# as a native sidecar, and templates/self-improvement.yaml is the only chart
+# template that emits that image at all -- the platform agent's own proxy
+# sidecar is rendered by the operator, not by the chart. Delete this render and
+# checks 3a, 3b and 3c stop seeing the credential-proxy reference entirely:
+# nothing would then notice it drifting off its images.json pin, rendering
+# outside the mirror prefix, or landing on a path `make mirror-images` never
+# pushed to.
 SELFIMPROVE_VALUES=(
   --set selfImprovement.enabled=true
   --set selfImprovement.mode=upstream

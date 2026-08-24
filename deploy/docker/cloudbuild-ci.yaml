@@ -79,7 +79,6 @@ steps:
           --target platform \
           --build-arg HERMES_AGENT_TAG="$_HERMES_AGENT_TAG" \
           --build-arg GIT_SHA="$_GIT_SHA" \
-          --build-arg IMAGE_TAG="$_IMAGE_TAG" \
           .
 
   # No --cache-from and no waitFor: this runs straight after platform on the
@@ -150,7 +149,8 @@ substitutions:
   _HERMES_AGENT_TAG: ""
   _REQUIRE_CACHE: "false"
   # The revision stamp for /opt/build-info.json. Empty is legal and means
-  # "unknown"; hack/ci-deploy.sh passes the PR head SHA under Prow and nothing
-  # when run locally, where there is no pushed commit to stamp against.
+  # "unknown". hack/ci-deploy.sh passes `git rev-parse HEAD` of the tree it
+  # uploads -- under Prow that is the PR merged into its base, a commit that
+  # exists on no remote, so the stamp names what was built but cannot be
+  # fetched. See the comment there for why that trade is the right way round.
   _GIT_SHA: ""
-  _IMAGE_TAG: ""

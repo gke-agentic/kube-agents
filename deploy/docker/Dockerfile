@@ -1421,13 +1421,24 @@ RUN set -eu; \
 # Both default to empty rather than to a placeholder like "unknown": the runner
 # treats an empty revision as a refusal to investigate, and a plausible-looking
 # default would turn that refusal into a confident wrong answer. A build that
-# wants the loop to work passes --build-arg GIT_SHA="$(git rev-parse HEAD)".
+# wants the loop to work passes the full 40-character sha,
+# --build-arg GIT_SHA="$(git rev-parse HEAD)"; scripts/git_revision_stamp.sh is
+# the shared implementation, and its header says why an abbreviation is not
+# enough. IMAGE_SOURCE defaults to empty for the same reason the revision does:
+# ghcr package linking and provenance scanners follow that label, so a hardcoded
+# upstream URL would point them at a repository that does not hold a fork's
+# code, and no label is better than a confidently wrong one.
 ARG GIT_SHA=""
-ARG IMAGE_TAG=""
+ARG IMAGE_SOURCE=""
 LABEL org.opencontainers.image.revision="${GIT_SHA}"
-LABEL org.opencontainers.image.source="https://github.com/gke-labs/kube-agents"
+LABEL org.opencontainers.image.source="${IMAGE_SOURCE}"
+# /opt/build-info.json is what the self-improvement runner actually reads; the
+# label above is what registries and scanners read. Keep them in step -- a
+# release gate that checks only the label would stay green if this instruction
+# were deleted, typo'd, or moved out from under the ARGs, and every deployed pod
+# would fall back to report-only.
 RUN set -eu; \
-    printf '{"revision":"%s","tag":"%s"}\n' "${GIT_SHA}" "${IMAGE_TAG}" > /opt/build-info.json; \
+    printf '{"revision":"%s"}\n' "${GIT_SHA}" > /opt/build-info.json; \
     chmod 644 /opt/build-info.json
 
 USER 10000:10000

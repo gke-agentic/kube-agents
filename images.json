@@ -68,7 +68,7 @@
       "repository": "us-docker.pkg.dev/abcxyz-artifacts/docker-images/github-token-minter-server",
       "tag": "v2.7.1-amd64",
       "override": "GITHUB_MINTER_IMAGE",
-      "pulledBy": "The optional GitHub integration, and the self-improvement loop's own minter under its fork and upstream modes.",
+      "pulledBy": "The optional GitHub integration.",
       "description": "Mints short-lived GitHub App tokens for the GitOps workflow."
     },
     {

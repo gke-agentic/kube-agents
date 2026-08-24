@@ -265,10 +265,13 @@ jobs:
           fi
 
           # The self-improvement loop: off by default, and its three modes
-          # differ in exactly one thing a render can see — whether the token
-          # minter is there. Every guard below fails the render rather than
+          # differ in whether a GitHub credential is rendered at all — the PAT
+          # Secret, its volume, the credential-proxy sidecar and that sidecar's
+          # deny policy, none of which report-only emits. Not the token minter;
+          # this loop never renders one, which the TOKEN_BROKER_URL check below
+          # is what enforces. Every guard here fails the render rather than
           # producing a broken install, which is the only reason they are
-          # testable here at all.
+          # testable at all.
           if helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
             | grep -qiF "selfimprove"; then
             echo "the self-improvement loop rendered while it is disabled" >&2
@@ -313,7 +316,7 @@ jobs:
           # later, inside the filing turn's `git push`.
           for expected in \
             "CREDENTIAL_PROXY_URL" \
-            "secretName: test-pat" \
+            'secretName: "test-pat"' \
             "gh auth login --with-token" \
             "gh auth setup-git"; do
             if ! grep -qF "$expected" <<<"$fork"; then
@@ -323,8 +326,9 @@ jobs:
           done
           # 0440, not 0400. A Secret volume is owned root:fsGroup and both
           # containers run as uid 10000, so owner-only read is unreadable by the
-          # process that needs it — and it fails silently, because the `[ -s ]`
-          # guard in the bootstrap command stats the file rather than reading it.
+          # process that needs it — and the failure lands in the bootstrap log
+          # inside the sidecar, an hour before the filing turn reports having no
+          # GitHub identity.
           if ! grep -qF "defaultMode: 0440" <<<"$fork"; then
             echo "the PAT Secret volume is not mode 0440" >&2
             exit 1
@@ -410,6 +414,122 @@ jobs:
             echo "expected upstream mode to reject fork == upstream" >&2
             exit 1
           fi
+          # Same guard in fork mode, which it used to skip, and against a slug
+          # that differs only in case — two strings to `eq` and one repository
+          # to GitHub, so a shift key was enough to get past it.
+          if helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
+            "${SI_FLAGS[@]}" "${FORK_FLAGS[@]}" \
+            --set selfImprovement.github.forkRepo=GKE-Labs/Kube-Agents \
+            > /dev/null 2>&1; then
+            echo "expected fork mode to reject a case-varied fork == upstream" >&2
+            exit 1
+          fi
+          # Where the source is fetched from is not where the pull request goes.
+          # Under fork mode the two diverge, and a fork that has not been synced
+          # holds no object for the revision the image is stamped at — codeload
+          # 404s and the run investigates nothing after paying for the fetch.
+          if ! grep -A1 SELFIMPROVE_SOURCE_REPO <<<"$fork" \
+            | grep -qF "gke-labs/kube-agents"; then
+            echo "fork mode reads its source from somewhere other than the upstream" >&2
+            exit 1
+          fi
+          # patSecretKey is the one operator-settable identifier that reaches a
+          # shell: it is interpolated into the sidecar's bootstrap command, which
+          # `credential_proxy.bootstrap()` hands to `bash -c` in the container
+          # that mounts the token. No argv policy rule covers that string.
+          if helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
+            "${SI_FLAGS[@]}" "${FORK_FLAGS[@]}" \
+            --set 'selfImprovement.github.patSecretKey=token;curl evil' \
+            > /dev/null 2>&1; then
+            echo "expected a shell-metacharacter patSecretKey to fail the render" >&2
+            exit 1
+          fi
+          # An empty signals list reads as "investigate nothing" and the runner
+          # reads it as unset, which expands to all seven. --set-json because
+          # neither --set '…=[]' nor '…={}' produces an empty list.
+          if helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
+            "${SI_FLAGS[@]}" --set-json 'selfImprovement.signals=[]' \
+            > /dev/null 2>&1; then
+            echo "expected an empty selfImprovement.signals to fail the render" >&2
+            exit 1
+          fi
+          # clusterName is the clause that keeps the loop's metric queries off
+          # the clusters under management — its GSA holds monitoring.viewer on
+          # the whole project, and an empty filter is no filter. Reached without
+          # the platform agent, because that is the install where nothing else
+          # required the value and it rendered as "".
+          if nocluster=$(helm template test-release charts/kube-agents \
+            --set platformAgent.harness.projectId=ci-project \
+            --set platformAgent.harness.location=us-central1 \
+            --set platformAgent.enabled=false "${SI_FLAGS[@]}" 2>&1); then
+            echo "expected a missing clusterName to fail the render with the loop on" >&2
+            exit 1
+          fi
+          if ! grep -qF "clusterName is required when selfImprovement.enabled" <<<"$nocluster"; then
+            echo "a missing clusterName failed, but not on the loop's own guard" >&2
+            exit 1
+          fi
+          # The credential proxy's deny policy is the only runtime constraint on
+          # what the filing turn does with the token; everything else in this
+          # block is a render-time check on configuration. A rule dropped from
+          # the array still renders valid YAML and still passes every test above.
+          for rule in \
+            selfimprove.gh-repo-reads-only \
+            selfimprove.gh-issue-reads-only \
+            selfimprove.git-push-fork-only \
+            selfimprove.no-git-remote-repoint \
+            selfimprove.no-git-exec-flags \
+            selfimprove.no-git-config-injection; do
+            if ! grep -qF "$rule" <<<"$fork"; then
+              echo "the credential proxy's deny policy is missing '$rule'" >&2
+              exit 1
+            fi
+          done
+          # The ledger outlives the feature flag. Switching the loop off, or
+          # uninstalling, must not take the occurrence counts and promotion
+          # records the gate reads with it.
+          if ! grep -qF "helm.sh/resource-policy: keep" <<<"$si"; then
+            echo "the ledger ConfigMap is not annotated to survive an uninstall" >&2
+            exit 1
+          fi
+          # The API-server token goes to the runner and not to the container
+          # holding the PAT. Pod-level automount off, one explicit projected
+          # mount — the shape the operator already uses for the agent pod.
+          if ! grep -qF "automountServiceAccountToken: false" <<<"$fork"; then
+            echo "the runner pod still automounts its ServiceAccount token" >&2
+            exit 1
+          fi
+          if [ "$(grep -cF "mountPath: /var/run/secrets/kubernetes.io/serviceaccount" <<<"$fork")" != "1" ]; then
+            echo "the API-server token is mounted into more than one container" >&2
+            exit 1
+          fi
+          # The SIGTERM handler writes the row that says why a run died, and it
+          # joins its writer thread for the budget before giving up. A budget at
+          # or above the grace period means the kubelet arrives first and there
+          # is no row and no log line about losing it.
+          # --show-only, because other workloads in the chart set a grace period
+          # of their own and a whole-chart grep would splice two numbers.
+          loop=$(helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
+            "${SI_FLAGS[@]}" --show-only templates/self-improvement.yaml)
+          grace=$(grep -F "terminationGracePeriodSeconds:" <<<"$loop" | tr -dc '0-9')
+          budget=$(grep -A1 SELFIMPROVE_KILL_WRITE_BUDGET <<<"$loop" \
+            | grep -F "value:" | tr -dc '0-9')
+          if [ -z "$grace" ] || [ -z "$budget" ] || [ "$budget" -ge "$grace" ]; then
+            echo "SELFIMPROVE_KILL_WRITE_BUDGET ($budget) must be below terminationGracePeriodSeconds ($grace)" >&2
+            exit 1
+          fi
+          # The credential proxy is a native sidecar, GA in 1.29. On 1.28 the
+          # API server drops restartPolicy rather than rejecting it, so the
+          # proxy exits before the runner starts and every GitHub call fails an
+          # hour into the run. The chart floor stays at 1.28 for installs that
+          # leave the loop off, so this is the only thing checking it.
+          if helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
+            "${SI_FLAGS[@]}" --kube-version 1.28.0 > /dev/null 2>&1; then
+            echo "expected the loop to refuse a 1.28 cluster" >&2
+            exit 1
+          fi
+          helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
+            "${SI_FLAGS[@]}" --kube-version 1.29.0 > /dev/null
           # The imagePullSecrets loop below only walks templates that render
           # under default values, so it never reaches this CronJob.
           if ! helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
