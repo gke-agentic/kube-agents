@@ -1648,7 +1648,7 @@ def _fenced(fields: Dict[str, str]) -> str:
     return "\n".join(lines)
 
 
-def _gh_repo_view(repository: str, fields: str) -> dict:
+def _gh_repo_view(repository: str, fields: str, cwd: str) -> dict:
     """`gh repo view <repository> --json <fields>`, parsed. Raises RuntimeError.
 
     Through the shim, so the sidecar's deny policy reads this argv like any
@@ -1656,11 +1656,21 @@ def _gh_repo_view(repository: str, fields: str) -> dict:
     `selfimprove.unlisted-gh-subcommand` allows, which is why the preflight is
     built out of `repo view` and not `gh auth status`: the latter is refused,
     and a preflight the policy blocks is a preflight that fails every run.
+
+    `cwd` is required rather than defaulted because the proxy refuses any
+    command whose working directory is outside `CREDENTIAL_PROXY_WORKSPACE_ROOT`
+    -- the chart points that at the runner's home -- and the runner process
+    itself does not start there. Inheriting the parent's directory made every
+    filing turn on the reference install refuse with "working directory is
+    outside the shared workspace", which reads as a broken credential and is
+    not one. There is no sensible default here: the answer is the caller's
+    `home`, so making it an argument is what stops the next caller guessing.
     """
     argv = ["gh", "repo", "view", repository, "--json", fields]
     try:
         done = subprocess.run(
             argv,
+            cwd=cwd,
             capture_output=True,
             text=True,
             timeout=FORGE_PREFLIGHT_TIMEOUT_SECONDS,
@@ -1709,7 +1719,7 @@ def _gh_repo_view(repository: str, fields: str) -> dict:
     return parsed
 
 
-def verify_forge_credential(push_target: str, pr_target: str) -> None:
+def verify_forge_credential(push_target: str, pr_target: str, cwd: str) -> None:
     """Prove the seeded token can do this turn's writes, before paying for one.
 
     Nothing is minted here and nothing needs to be. This pod's
@@ -1736,8 +1746,11 @@ def verify_forge_credential(push_target: str, pr_target: str) -> None:
       exists for.
 
     Raises RuntimeError so the caller can abort the turn before paying for it.
+
+    `cwd` is the runner's home, which is also the proxy's workspace root. Both
+    reads run from there for the reason `_gh_repo_view` gives.
     """
-    seen = _gh_repo_view(push_target, "viewerPermission").get("viewerPermission")
+    seen = _gh_repo_view(push_target, "viewerPermission", cwd).get("viewerPermission")
     if seen not in FORGE_PUSH_PERMISSIONS:
         raise RuntimeError(
             "the GitHub token has %s on %s, and pushing a branch needs one of %s. "
@@ -1746,7 +1759,7 @@ def verify_forge_credential(push_target: str, pr_target: str) -> None:
             % (seen or "no permission", push_target, "/".join(FORGE_PUSH_PERMISSIONS))
         )
     if pr_target != push_target:
-        _gh_repo_view(pr_target, "nameWithOwner")
+        _gh_repo_view(pr_target, "nameWithOwner", cwd)
     log(
         "GitHub token verified: %s on %s%s"
         % (
@@ -2000,7 +2013,7 @@ def file_pull_request(
     # opposite risk, and it is the operator's: a token nothing rotates stays
     # good until somebody revokes it.
     try:
-        verify_forge_credential(push_target, upstream)
+        verify_forge_credential(push_target, upstream, home)
     except RuntimeError as exc:
         log("not filing %s: %s" % (entry.get("fingerprint", "?"), exc))
         # SKIPPED, so nothing is charged. No pull request was opened and the
