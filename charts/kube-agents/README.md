@@ -213,17 +213,19 @@ nothing at all rather than something idle.
 `mode` decides how far its output travels. `report-only` (the default) writes
 findings to the ledger ConfigMap and stops — no GitHub credential, no
 credential-proxy sidecar, and no `git` or `gh` on the runner's `PATH`. `fork`
-and `upstream` additionally render `self-improvement-minter.yaml`: a **second**
-minty Deployment, separate from `githubMinter`'s, with its own KSA, Secret, rule
-ConfigMap, Service and NetworkPolicy, so the loop's token cannot reach the
-GitOps repositories and the agent's cannot reach this one. Both need
-`github.appId` and
-`github.forkRepo`; the render fails with a named message when either is missing.
+and `upstream` additionally give the CronJob a credential-proxy sidecar and
+mount a personal access token into it, held by a robot account that is not the
+agent's identity. `github.patSecret` names the Secret and `github.forkRepo` the
+repository branches are pushed to; the render fails with a named message when
+either is missing. The Secret itself is created out of band — the chart never
+sees the token — and nothing in the install mints, rotates or expires it. Sec. 6
+of the design says what that trades away against the GitHub App the loop used to
+use.
 
-The Google half — the investigator GSA, the minter GSA, and the import-only KMS
-signing key — comes from `terraform/modules/kube-agents-selfimprove`, which is
-not yet part of `terraform/examples/full-install`. The design of record, and the
-list of where the implementation diverged from it, is
+The Google half is one investigator GSA and its Workload Identity binding, from
+`terraform/modules/kube-agents-selfimprove`, which is not yet part of
+`terraform/examples/full-install`. The design of record, and the list of where
+the implementation diverged from it, is
 [`docs/designs/self-improvement.md`](../../docs/designs/self-improvement.md).
 
 ### Telemetry

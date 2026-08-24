@@ -92,27 +92,22 @@ fix(operator): stop the reconciler retrying a Secret it cannot read
 - No `Co-Authored-By` trailers and no "Generated with" attribution.
 - Push to the fork, which the checkout already has as a remote of that name:
   `git push -u fork HEAD`. Never push to `origin` — that is the upstream repository your brief
-  names. The token can open a pull request there but cannot write a branch there, so a push to
-  `origin` fails; the branch has to live on the fork for the pull request to have a head.
+  names, and a branch on it is a write to somebody else's repository that nobody asked for. The
+  branch belongs on the fork; the pull request opened from it is what the upstream sees.
 
 ### If GitHub will not authenticate you
 
-The token was minted for this turn and lives one hour, so a refusal late in a long turn is an
-expired credential rather than a missing grant. It looks like `Authentication failed`, or `git`
+Stop. The credential is a personal access token seeded into `gh` when this pod started, and the
+runner proved it could write to your push target moments before this turn began — so there is
+nothing to renew and no refresher to run. A refusal looks like `Authentication failed`, or `git`
 asking for a username on a terminal nothing is attached to, or `gh` returning `HTTP 401` or
-`Bad credentials`.
+`Bad credentials`, and it means one of two things: the token was revoked while this turn was
+running, or the command is reaching a repository the token does not cover.
 
-```bash
-/opt/defaults/scripts/github_token_refresh.py <the "Push branches to" from your brief>
-```
+Retry the command **once**, in case it is neither. A second refusal is not something you can fix
+from inside the turn. `SKIPPED: <the error>` at that point, per §6.
 
-That asks the same sidecar the runner used, and it mints a new token every time rather than
-returning a cached one, so it is safe to run at any point. Then retry the command **once**. A
-second refusal is a permission the token does not carry — `403` on the upstream, most often, which
-minting again will not fix. `SKIPPED: <the error>` at that point, per §6.
-
-The same applies to `gh pr create` and `gh pr edit` further down: the push may be twenty minutes
-behind them.
+The same applies to `gh pr create` and `gh pr edit` further down.
 
 ## 4. The body — five parts, in this order
 
@@ -214,10 +209,10 @@ and fails or offers to push. There is nothing interactive here to accept that of
 `Push branches to` line before the slash. Under `mode: fork` upstream and fork are the same
 repository and the flag is still correct.
 
-If `gh pr create` fails, read the error rather than retrying. `403` on the upstream means the token
-has `pull_requests: write` and you tried to write something else. "No commits between" means the
-push in §3 did not land. Neither is fixed by running the command again; print `SKIPPED: <the
-error>` and end the turn.
+If `gh pr create` fails, read the error rather than retrying. `403` on the upstream means the
+account behind the token does not have that permission there. "No commits between" means the push
+in §3 did not land. Neither is fixed by running the command again; print `SKIPPED: <the error>` and
+end the turn.
 
 ## 7. Label it
 
@@ -240,8 +235,9 @@ resolves every name before it applies any, so one label the repository is missin
 others as well. Not `gh pr create --label` either — that resolves before it creates anything and
 fails the whole command, trading the pull request for the tag.
 
-The token attaches an existing label and cannot create one — creating labels is an `issues: write`
-this loop is deliberately not granted. So on a repository that has never been sent a
+You can attach an existing label and not create one: `gh label` is outside the six subcommands the
+sidecar's deny policy allows, so the command is refused whatever the token could do. On a
+repository that has never been sent a
 self-improvement pull request the edit fails with `not found`. That is a note in your reply and not
 a reason to stop: the pull request stands, its body already states the finding's severity and says
 a self-improvement run found it, and a maintainer creates the labels once. Write the note above the

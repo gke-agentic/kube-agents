@@ -587,24 +587,22 @@ selfImprovement:
   # rather than the 120s a turn needs to reach the model at all: a filing turn
   # that runs out mid-push is charged a daily slot and a 24-hour cooldown for a
   # pull request that may not exist, so a budget it cannot finish in is worse
-  # than no attempt. The
-  # ceiling on this value is 3300, where a filing turn could outlive the GitHub
-  # token minted at its start and the runner starts warning it might.
+  # than no attempt. The ceiling on this value is 3300, which is now a bound on
+  # how much of an hourly schedule one filing turn may consume rather than a
+  # credential deadline: the App installation token it used to protect against
+  # expired after an hour, and a personal access token does not.
   fileTimeoutSeconds: 3000
 
   # report-only  ledger only, no GitHub credential, no write path out of the cluster
   # fork         branches and pull requests to a fork
   # upstream     cross-fork pull requests against github.upstreamRepo
   #
-  # report-only is not a degraded mode. It renders no credential proxy and no
-  # minter, so the runner has no GitHub identity at all — which is what makes it
-  # the right first thing to turn on.
+  # report-only is not a degraded mode. It renders no credential proxy and
+  # mounts no token, so the runner has no GitHub identity at all — which is what
+  # makes it the right first thing to turn on.
   #
-  # upstream mode is incomplete today: it pushes the branch and then fails to
-  # open the pull request. The fork and the base are different App
-  # installations, `gh` holds one token per host, and the runner can hold only
-  # the push target's. See §12 of docs/designs/self-improvement.md. Use fork
-  # mode unless you are working on that gap.
+  # fork and upstream both need github.patSecret. They differ only in where the
+  # pull request is opened; the branch is pushed to github.forkRepo either way.
   mode: report-only
 
   # Which of the seven signal classes to investigate. Narrowing this is the
@@ -694,8 +692,9 @@ selfImprovement:
     upstreamRepo: gke-labs/kube-agents
     # Required when mode is fork or upstream, where it is the repository
     # branches are pushed to; ignored under report-only. Must not equal
-    # upstreamRepo -- the chart refuses that, because it would mint
-    # `contents: write` on the upstream.
+    # upstreamRepo -- the chart refuses that, because one token carries the
+    # same permissions everywhere, so the two being equal is what would let the
+    # loop push a branch to the upstream.
     forkRepo: ""
     # The branch pull requests are opened against. The default is right when
     # the deployed revision is an ancestor of it — the ordinary case, an
@@ -727,11 +726,12 @@ selfImprovement:
     # to open them unlabelled.
     #
     # The label has to already exist in the repository pull requests are opened
-    # against: the loop's token carries `pull_requests: write`, which is enough
-    # to put an existing label on a pull request and not enough to create one.
-    # A missing label costs the label and not the pull request — the filing
-    # agent applies it with `gh pr edit` after opening, and is told to say so
-    # and carry on when that fails.
+    # against. Creating one needs write on that repository, which the robot
+    # account has on its own fork and generally not on the upstream — so under
+    # upstream mode this is a constraint and not an oversight. A missing label
+    # costs the label and not the pull request: the filing agent applies it
+    # with `gh pr edit` after opening, and is told to say so and carry on when
+    # that fails.
     prLabel: self-improvement
     # Prefix for a second label carrying the finding's severity, so a queue of
     # the loop's pull requests can be read worst-first without opening any of
@@ -749,38 +749,44 @@ selfImprovement:
     # severity labels created once. Each label is applied by its own `gh pr
     # edit`, so a missing one costs only itself.
     severityLabelPrefix: "severity:"
-    # GitHub App ID for the loop's OWN App — deliberately not the one
-    # githubMinter uses. Two Apps means the loop's token cannot reach the
-    # GitOps repositories and the agent's cannot reach this one, and either can
-    # be revoked without the other noticing.
-    appId: ""
+    # The Secret holding the loop's GitHub personal access token, required when
+    # mode is fork or upstream and ignored under report-only. The token belongs
+    # to a robot account that is deliberately NOT the identity githubMinter
+    # issues for: the loop's token cannot reach the GitOps repositories, the
+    # agent's cannot reach this one, and either can be revoked without the
+    # other noticing.
+    #
+    # This chart does not create it — the same reasoning as
+    # platformAgent.credentials.create: false. A token written here reaches
+    # version control and Helm's release state. Create it out of band:
+    #
+    #   kubectl -n <namespace> create secret generic kube-agents-selfimprove-pat \
+    #     --from-literal=token=<PAT>
+    #
+    # A classic token needs `repo` (or `public_repo` if both repositories are
+    # public). Under upstream mode one token covers the push to the fork and
+    # the pull request against the upstream, which is what a GitHub App could
+    # not do — see sec. 12 of docs/designs/self-improvement.md.
+    #
+    # Nothing rotates or expires it for you. Set an expiry at GitHub and put a
+    # reminder on it; an expired token surfaces as a SKIPPED filing turn in the
+    # ledger and nowhere else.
+    patSecret: ""
+    # The key within that Secret. The mount path is fixed by the chart.
+    patSecretKey: token
     ksaName: kubeagents-selfimprove
-    # The investigator's Google service account. Two render-time checks, because
-    # two different limits apply and they bite in different modes.
+    # The investigator's Google service account, checked at render time in
+    # every mode. It has to be a usable GCP service account id — 6 to 30
+    # characters matching `[a-z][a-z0-9-]{4,28}[a-z0-9]`. It reaches a Workload
+    # Identity annotation on the runner's KSA, and GCP does not reject an
+    # annotation naming an account that cannot exist: the pod starts and every
+    # telemetry read inside it 403s, an hour into a run, with no error anywhere
+    # naming the id.
     #
-    # In every mode including report-only, this has to be a usable GCP service
-    # account id — 6 to 30 characters matching `[a-z][a-z0-9-]{4,28}[a-z0-9]`.
-    # It reaches a Workload Identity annotation on the runner's KSA, and GCP
-    # does not reject an annotation naming an account that cannot exist: the
-    # pod starts and every telemetry read inside it 403s, an hour into a run,
-    # with no error anywhere naming the id.
-    #
-    # Under fork and upstream a tighter cap of 23 applies, because the minter's
-    # account is this plus `-minter` and `kubeagents-selfimprove-gsa-minter`
-    # would be 33. That one used to be the only check, which left the default
-    # mode unguarded.
+    # This account authenticates to Google, not to GitHub. Nothing here reaches
+    # GitHub — that is github.patSecret above, and the two identities have no
+    # relationship.
     gsaName: kubeagents-selfimprove
-    kms:
-      keyring: selfimprove-token-minter-keyring
-      key: selfimprove-token-minter-key
-      keyVersion: "1"
-      # Empty derives the region from platformAgent.harness.location.
-      location: ""
-    # Keep in step with images.json — the same minter build githubMinter runs.
-    image:
-      repository: us-docker.pkg.dev/abcxyz-artifacts/docker-images/github-token-minter-server
-      tag: v2.7.1-amd64
-      pullPolicy: IfNotPresent
 
   # No volumeSnapshot block. The design's §3.4 argues for snapshotting the
   # agent's volume to read its SQLite stores, and §12 records that the path is
@@ -814,15 +820,15 @@ selfImprovement:
   # agent and not the loop" from this key alone.
   runtimeClassName: ""
 
-  # Renders the loop's own NetworkPolicies -- one for the runner, one for the
-  # minter -- and nothing else; the agent's are unaffected either way. Off is
-  # for a cluster running a different policy engine, or one where the CIDRs
-  # below cannot be made to match. There is no partial setting: with this false
-  # the runner's egress is whatever the cluster's default is.
+  # Renders the loop's own NetworkPolicy for the runner, and nothing else; the
+  # agent's are unaffected either way. Off is for a cluster running a different
+  # policy engine, or one where the CIDRs below cannot be made to match. There
+  # is no partial setting: with this false the runner's egress is whatever the
+  # cluster's default is.
   networkPolicy: true
 
-  # The cluster DNS VIP, for the port 53 egress rule on both the runner and the
-  # token minter. A NetworkPolicy matches the address the pod dials, which is
+  # The cluster DNS VIP, for the runner's port 53 egress rule. A
+  # NetworkPolicy matches the address the pod dials, which is
   # the Service VIP rather than a kube-dns pod, so the selectors alone are not
   # enough on every cluster. Empty allows both service-CIDR conventions GKE
   # ships -- 34.118.224.10 and 10.96.0.10, the same pair as `apiServerCIDRs` one

@@ -605,7 +605,7 @@ class SelfExclusionTests(unittest.TestCase):
     def test_the_loops_own_names_are_recognised(self):
         for name in (
             "kube-agents-selfimprove-28912345-abcde",
-            "kube-agents-selfimprove-token-minter",
+            "kube-agents-selfimprove-investigator",
             "kube-agents-selfimprove-ledger",
         ):
             with self.subTest(name=name):

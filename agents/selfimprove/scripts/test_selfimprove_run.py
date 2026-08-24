@@ -1148,7 +1148,7 @@ class FindingRedactionTests(unittest.TestCase):
 
 
 class _Response:
-    """Just enough of `http.client.HTTPResponse` for the `with` in the mint."""
+    """Just enough of `http.client.HTTPResponse` for a `with urlopen(...)`."""
 
     def __init__(self, status):
         self.status = status
@@ -1161,105 +1161,121 @@ class _Response:
 
 
 class ForgeCredentialTests(unittest.TestCase):
-    """The mint that has to happen before the filing turn can push anything.
+    """The preflight that has to pass before the filing turn can push anything.
 
-    `TOKEN_BROKER_URL` tells the credential proxy which minter to call; it does
-    not call one, and this pod's `CREDENTIAL_PROXY_BOOTSTRAP_COMMAND` is
-    deliberately empty. Without an explicit refresh the filing turn spends its
-    whole budget writing a change and then meets an anonymous `git push`.
+    The token is a personal access token seeded into `gh` by the sidecar's
+    `CREDENTIAL_PROXY_BOOTSTRAP_COMMAND` at pod startup, so nothing is minted
+    per turn -- but nothing has proved it works, either. Without this check the
+    filing turn spends its whole budget writing a change and then meets a
+    `git push` the token cannot make.
     """
 
     def setUp(self):
-        self.prior_env = dict(os.environ)
-        self.requests = []
-        self.status = 200
+        self.calls = []
+        #: repository -> (returncode, stdout, stderr), consulted in order.
+        self.answers = {}
         self.raise_with = None
-        self.prior_open = R.urllib.request.urlopen
-        R.urllib.request.urlopen = self._urlopen
-        os.environ["CREDENTIAL_PROXY_URL"] = "http://127.0.0.1:8080"
+        self.prior_run = R.subprocess.run
+        R.subprocess.run = self._run
 
     def tearDown(self):
-        R.urllib.request.urlopen = self.prior_open
-        os.environ.clear()
-        os.environ.update(self.prior_env)
+        R.subprocess.run = self.prior_run
 
-    def _urlopen(self, request, timeout=None):
-        self.requests.append(request)
+    def _run(self, argv, **kwargs):
+        self.calls.append((argv, kwargs))
         if self.raise_with is not None:
             raise self.raise_with
-        return _Response(self.status)
+        code, out, err = self.answers.get(argv[3], (0, '{"viewerPermission":"WRITE"}', ""))
+        return subprocess.CompletedProcess(argv, code, out, err)
 
-    def test_it_posts_the_repository_to_the_sidecar(self):
-        R.mint_forge_credential("adamparco/kube-agents")
-        self.assertEqual(1, len(self.requests))
-        sent = self.requests[0]
+    def test_it_asks_gh_for_the_push_targets_permission(self):
+        R.verify_forge_credential("adamparco/kube-agents", "adamparco/kube-agents")
+        self.assertEqual(1, len(self.calls))
+        argv, kwargs = self.calls[0]
         self.assertEqual(
-            "http://127.0.0.1:8080/v1/github/refresh", sent.full_url
+            ["gh", "repo", "view", "adamparco/kube-agents", "--json", "viewerPermission"],
+            argv,
         )
-        self.assertEqual("POST", sent.get_method())
+        # Through the shim on PATH, so the sidecar's deny policy reads the argv.
+        # A timeout, because the alternative is a hung read charged to the turn.
+        self.assertEqual(R.FORGE_PREFLIGHT_TIMEOUT_SECONDS, kwargs["timeout"])
+
+    def test_upstream_mode_also_checks_the_base_is_reachable(self):
+        """Reachable, not writable. Opening a pull request from a fork asks
+        nothing of the base beyond read, so requiring write there would refuse
+        the exact configuration upstream mode exists for."""
+        self.answers["gke-labs/kube-agents"] = (0, '{"nameWithOwner":"gke-labs/kube-agents"}', "")
+        R.verify_forge_credential("adamparco/kube-agents", "gke-labs/kube-agents")
         self.assertEqual(
-            {"repository": "adamparco/kube-agents"}, json.loads(sent.data.decode("utf-8"))
+            ["adamparco/kube-agents", "gke-labs/kube-agents"],
+            [argv[3] for argv, _ in self.calls],
         )
+        self.assertEqual("nameWithOwner", self.calls[1][0][5])
 
-    def test_a_trailing_slash_on_the_proxy_url_does_not_double_up(self):
-        os.environ["CREDENTIAL_PROXY_URL"] = "http://127.0.0.1:8080/"
-        R.mint_forge_credential("o/r")
-        self.assertEqual(
-            "http://127.0.0.1:8080/v1/github/refresh", self.requests[0].full_url
-        )
-
-    def test_an_unset_proxy_url_is_an_error_not_a_silent_skip(self):
-        """The pod was rendered without the sidecar, which is not recoverable.
-
-        Returning quietly here would put the failure back where this whole
-        change moved it away from: an hour later, inside `git push`.
-        """
-        del os.environ["CREDENTIAL_PROXY_URL"]
+    def test_read_on_the_push_target_is_not_enough(self):
+        """READ is what a token with no `repo` scope sees on a public repository,
+        and it is indistinguishable from a working one until `git push`."""
+        self.answers["o/r"] = (0, '{"viewerPermission":"READ"}', "")
         with self.assertRaises(RuntimeError) as caught:
-            R.mint_forge_credential("o/r")
-        self.assertIn("CREDENTIAL_PROXY_URL", str(caught.exception))
-        self.assertEqual([], self.requests)
-
-    def test_the_minters_own_diagnosis_survives_into_the_message(self):
-        """A 404 from minty is an App not installed; a 403 is a rule mismatch.
-
-        Both arrive as an `HTTPError` whose code alone cannot tell them apart,
-        so the body is the diagnostic and dropping it costs an afternoon.
-        """
-        self.raise_with = R.urllib.error.HTTPError(
-            "http://127.0.0.1:8080/v1/github/refresh",
-            404,
-            "Not Found",
-            {},
-            io.BytesIO(b"no installation found for org adamparco"),
-        )
-        with self.assertRaises(RuntimeError) as caught:
-            R.mint_forge_credential("adamparco/kube-agents")
+            R.verify_forge_credential("o/r", "o/r")
         message = str(caught.exception)
-        self.assertIn("404", message)
-        self.assertIn("no installation found", message)
+        self.assertIn("READ", message)
+        self.assertIn("o/r", message)
+        self.assertIn("repo", message)
+
+    def test_a_null_permission_is_refused_rather_than_crashing(self):
+        """An unauthenticated `gh` can still read a public repository, and
+        `viewerPermission` comes back JSON null rather than absent."""
+        self.answers["o/r"] = (0, '{"viewerPermission":null}', "")
+        with self.assertRaises(RuntimeError) as caught:
+            R.verify_forge_credential("o/r", "o/r")
+        self.assertIn("no permission", str(caught.exception))
+
+    def test_ghs_own_diagnosis_survives_into_the_message(self):
+        """`Bad credentials` is a revoked token and `Could not resolve to a
+        Repository` is one that cannot see the repository, and the exit status
+        alone cannot tell them apart."""
+        self.answers["adamparco/kube-agents"] = (
+            1,
+            "",
+            "GraphQL: Could not resolve to a Repository with the name 'adamparco/kube-agents'.",
+        )
+        with self.assertRaises(RuntimeError) as caught:
+            R.verify_forge_credential("adamparco/kube-agents", "adamparco/kube-agents")
+        message = str(caught.exception)
+        self.assertIn("Could not resolve", message)
         self.assertIn("adamparco/kube-agents", message)
 
-    def test_a_non_200_is_a_failure(self):
-        self.status = 503
+    def test_a_timeout_names_the_repository(self):
+        self.raise_with = subprocess.TimeoutExpired(["gh"], 60)
         with self.assertRaises(RuntimeError) as caught:
-            R.mint_forge_credential("o/r")
-        self.assertIn("503", str(caught.exception))
-
-    def test_a_connection_failure_names_the_repository(self):
-        self.raise_with = OSError("connection refused")
-        with self.assertRaises(RuntimeError) as caught:
-            R.mint_forge_credential("o/r")
+            R.verify_forge_credential("o/r", "o/r")
         self.assertIn("o/r", str(caught.exception))
-        self.assertIn("connection refused", str(caught.exception))
+
+    def test_no_gh_on_path_is_an_error_not_a_silent_skip(self):
+        """There is no real `gh` in the runner container -- only the shim. Its
+        absence means the pod was rendered without the credential proxy, and
+        returning quietly would put the failure back inside `git push`."""
+        self.raise_with = FileNotFoundError("No such file or directory: 'gh'")
+        with self.assertRaises(RuntimeError) as caught:
+            R.verify_forge_credential("o/r", "o/r")
+        self.assertIn("gh", str(caught.exception))
+
+    def test_output_that_is_not_json_is_an_error(self):
+        """`gh` prints its interactive-auth notice on stdout and exits 0 in some
+        paths, which `json.loads` meets as a ValueError several frames away."""
+        self.answers["o/r"] = (0, "To get started with GitHub CLI, run gh auth login", "")
+        with self.assertRaises(RuntimeError) as caught:
+            R.verify_forge_credential("o/r", "o/r")
+        self.assertIn("did not return JSON", str(caught.exception))
 
 
 class FilingMintTests(unittest.TestCase):
-    """What `file_pull_request` does with the mint, on both outcomes."""
+    """What `file_pull_request` does with the preflight, on both outcomes."""
 
     def setUp(self):
         self.prior_run = R.run_agent
-        self.prior_mint = R.mint_forge_credential
+        self.prior_verify = R.verify_forge_credential
         self.ran = []
         R.run_agent = lambda *a, **k: (
             self.ran.append(a) or (0, "https://github.com/o/r/pull/1", None)
@@ -1267,7 +1283,7 @@ class FilingMintTests(unittest.TestCase):
 
     def tearDown(self):
         R.run_agent = self.prior_run
-        R.mint_forge_credential = self.prior_mint
+        R.verify_forge_credential = self.prior_verify
 
     def _file(self, mode, upstream, fork):
         return R.file_pull_request(
@@ -1281,40 +1297,42 @@ class FilingMintTests(unittest.TestCase):
             900,
         )
 
-    def test_fork_mode_mints_for_the_fork(self):
-        """Which is also the base under fork mode, so one token covers the turn."""
-        minted = []
-        R.mint_forge_credential = minted.append
+    def test_fork_mode_checks_the_fork_only(self):
+        """Which is also the base under fork mode, so one read covers the turn."""
+        checked = []
+        R.verify_forge_credential = lambda push, pr: checked.append((push, pr))
         self._file("fork", "adamparco/kube-agents", "adamparco/kube-agents")
-        self.assertEqual(["adamparco/kube-agents"], minted)
+        self.assertEqual([("adamparco/kube-agents", "adamparco/kube-agents")], checked)
 
-    def test_upstream_mode_mints_for_the_push_target_not_the_base(self):
-        """The push happens first, so a token for the base alone files nothing."""
-        minted = []
-        R.mint_forge_credential = minted.append
+    def test_upstream_mode_checks_the_push_target_and_the_base(self):
+        """The push happens first and the pull request second, and the token has
+        to carry both -- which is the thing one classic PAT buys over two App
+        installations."""
+        checked = []
+        R.verify_forge_credential = lambda push, pr: checked.append((push, pr))
         self._file("upstream", "gke-labs/kube-agents", "adamparco/kube-agents")
-        self.assertEqual(["adamparco/kube-agents"], minted)
+        self.assertEqual([("adamparco/kube-agents", "gke-labs/kube-agents")], checked)
 
-    def test_the_mint_happens_before_the_turn_is_paid_for(self):
-        def refuse(_repository):
-            raise RuntimeError("no installation")
+    def test_the_check_happens_before_the_turn_is_paid_for(self):
+        def refuse(_push, _pr):
+            raise RuntimeError("gh repo view o/r exited 1: Bad credentials")
 
-        R.mint_forge_credential = refuse
+        R.verify_forge_credential = refuse
         result, detail = self._file("fork", "o/r", "o/r")
         self.assertEqual(R.SKIPPED, result)
         self.assertIn("o/r", detail)
-        # The expensive part never ran, which is the whole reason the mint is
+        # The expensive part never ran, which is the whole reason the check is
         # here rather than left to `git push` inside the turn.
         self.assertEqual([], self.ran)
 
-    def test_a_minting_failure_is_skipped_so_the_finding_keeps_its_counts(self):
-        """A broken minter is the loop's fault. Charging the finding for it
-        starts a cooldown that hides the real fault for a day."""
+    def test_a_credential_failure_is_skipped_so_the_finding_keeps_its_counts(self):
+        """A token nobody renewed is the loop's fault. Charging the finding for
+        it starts a cooldown that hides the real fault for a day."""
 
-        def refuse(_repository):
-            raise RuntimeError("credential sidecar is not listening")
+        def refuse(_push, _pr):
+            raise RuntimeError("could not run `gh`")
 
-        R.mint_forge_credential = refuse
+        R.verify_forge_credential = refuse
         self.assertEqual(R.SKIPPED, self._file("fork", "o/r", "o/r")[0])
 
 
@@ -1336,13 +1354,13 @@ class FilingOutcomeTests(unittest.TestCase):
         # Stubbed, because every case below is about what the runner concludes
         # from the turn's output and none of them is about the credential. The
         # minting failure path has its own class.
-        self.prior_mint = R.mint_forge_credential
-        self.minted = []
-        R.mint_forge_credential = self.minted.append
+        self.prior_verify = R.verify_forge_credential
+        self.checked = []
+        R.verify_forge_credential = lambda push, pr: self.checked.append(push)
 
     def tearDown(self):
         R.run_agent = self.prior
-        R.mint_forge_credential = self.prior_mint
+        R.verify_forge_credential = self.prior_verify
 
     def _file(self):
         return R.file_pull_request(
@@ -1622,9 +1640,9 @@ class BaseBranchTests(unittest.TestCase):
         self.prior = R.run_agent
         R.run_agent = lambda prompt, *a, **k: (self.prompts.append(prompt), (0, "", None))[1]
         self.addCleanup(setattr, R, "run_agent", self.prior)
-        self.prior_mint = R.mint_forge_credential
-        R.mint_forge_credential = lambda repo: None
-        self.addCleanup(setattr, R, "mint_forge_credential", self.prior_mint)
+        self.prior_verify = R.verify_forge_credential
+        R.verify_forge_credential = lambda push, pr: None
+        self.addCleanup(setattr, R, "verify_forge_credential", self.prior_verify)
 
     def _prompt(self, *args):
         R.file_pull_request(
@@ -1724,9 +1742,9 @@ class PullRequestLabelTests(unittest.TestCase):
         self.prior = R.run_agent
         R.run_agent = lambda prompt, *a, **k: (self.prompts.append(prompt), (0, "", None))[1]
         self.addCleanup(setattr, R, "run_agent", self.prior)
-        self.prior_mint = R.mint_forge_credential
-        R.mint_forge_credential = lambda repo: None
-        self.addCleanup(setattr, R, "mint_forge_credential", self.prior_mint)
+        self.prior_verify = R.verify_forge_credential
+        R.verify_forge_credential = lambda push, pr: None
+        self.addCleanup(setattr, R, "verify_forge_credential", self.prior_verify)
 
     def _prompt(self, *args, **kwargs):
         entry = {"fingerprint": "abc123", "title": "t", "summary": "s"}
@@ -1907,13 +1925,12 @@ class PullRequestLabelTests(unittest.TestCase):
                 os.environ["SELFIMPROVE_PR_LABEL"] = prior
 
 
-class TokenExpiryTests(unittest.TestCase):
-    """A GitHub App installation token lives an hour, and GitHub does not
-    negotiate. The runner mints immediately before the filing turn, which covers
-    every turn shorter than that; what is left is a turn an operator configured
-    to be longer, and a token that goes stale between the push and the pull
-    request. Both are the turn's to recover from, so both have to be in its
-    prompt -- it cannot discover an endpoint it was never told about."""
+class TokenRefusalTests(unittest.TestCase):
+    """A personal access token seeded at pod startup does not expire mid-turn,
+    so the prompt no longer carries a refresher -- and must not, because the
+    thing it used to name mints App tokens this pod has no minter for. What is
+    left is a refusal the turn cannot fix, and the turn has to be told to stop
+    rather than to loop on a command that will 502."""
 
     def setUp(self):
         self.prompts = []
@@ -1921,9 +1938,9 @@ class TokenExpiryTests(unittest.TestCase):
         self.prior = R.run_agent
         R.run_agent = lambda prompt, *a, **k: (self.prompts.append(prompt), (0, "", None))[1]
         self.addCleanup(setattr, R, "run_agent", self.prior)
-        self.prior_mint = R.mint_forge_credential
-        R.mint_forge_credential = lambda repo: None
-        self.addCleanup(setattr, R, "mint_forge_credential", self.prior_mint)
+        self.prior_verify = R.verify_forge_credential
+        R.verify_forge_credential = lambda push, pr: None
+        self.addCleanup(setattr, R, "verify_forge_credential", self.prior_verify)
         self.prior_log = R.log
         R.log = self.logs.append
         self.addCleanup(setattr, R, "log", self.prior_log)
@@ -1943,38 +1960,37 @@ class TokenExpiryTests(unittest.TestCase):
         )
         return self.prompts[-1]
 
-    def test_the_turn_is_told_how_to_mint_another(self):
+    def test_the_turn_is_told_what_a_refusal_means(self):
         prompt = self._file()
-        self.assertIn("github_token_refresh.py gke-agentic/kube-agents", prompt)
         self.assertIn("Bad credentials", prompt)
+        self.assertIn("nothing to renew", prompt)
 
-    def test_it_refreshes_for_the_push_target_not_the_base(self):
+    def test_no_refresher_is_offered(self):
+        """`github_token_refresh.py` is the Platform Agent's, and it reaches a
+        minter this pod has no `TOKEN_BROKER_URL` for. A turn that runs it gets
+        an HTTP 502 it will read as the credential being broken."""
+        for prompt in (self._file(), self._file(mode="upstream"), self._file(fork="")):
+            self.assertNotIn("github_token_refresh", prompt)
+
+    def test_it_names_the_push_target_as_what_was_already_proved(self):
         """Under upstream mode the branch goes to the fork, so that is the
-        repository whose token expired. Refreshing for the base mints a token
-        for a repository the push does not use."""
-        self.assertIn(
-            "github_token_refresh.py gke-agentic/kube-agents", self._file(mode="upstream")
-        )
+        repository the preflight checked for write."""
+        self.assertIn("gke-agentic/kube-agents", self._file(mode="upstream"))
 
-    def test_with_no_fork_it_refreshes_for_the_upstream(self):
-        self.assertIn("github_token_refresh.py gke-labs/kube-agents", self._file(fork=""))
+    def test_retry_once_then_skip_rather_than_loop(self):
+        """A second refusal is not something the turn can fix from inside, and
+        the outcome marker is what stops the runner reading silence as success."""
+        prompt = self._file()
+        self.assertIn("Retry the command once", prompt)
+        self.assertIn("SKIPPED: GitHub refused the credential", prompt)
 
-    def test_retry_once_rather_than_in_a_loop(self):
-        """A second refusal is a missing grant, and minting again cannot add
-        one -- but a turn that has just been handed a recovery will use it."""
-        self.assertIn("Retry once and not in a loop", self._file())
-
-    def test_a_turn_that_can_outlast_the_token_says_so(self):
+    def test_a_long_budget_is_no_longer_remarked_on(self):
+        """The old warning fired on a `fileTimeoutSeconds` inside an App token's
+        last five minutes. A seeded PAT has no such edge, and re-emitting the
+        warning would send an operator looking for a rotation that never
+        happens."""
         self._file(timeout=3400)
-        self.assertTrue(
-            any("one-hour life" in line for line in self.logs),
-            "a filing budget inside the token's last five minutes went unremarked: %r"
-            % (self.logs,),
-        )
-
-    def test_the_default_budget_is_quiet(self):
-        self._file(timeout=1500)
-        self.assertFalse([line for line in self.logs if "one-hour life" in line])
+        self.assertFalse([line for line in self.logs if "one-hour" in line])
 
 
 class TailTests(unittest.TestCase):
@@ -2397,7 +2413,7 @@ class FilingWiringAndRefusalTests(unittest.TestCase):
             ("fetch_source", lambda *a, **k: "/src"),
             ("hermes_pin", lambda root: ""),
             ("scaffold_home", lambda home: None),
-            ("mint_forge_credential", lambda repo: None),
+            ("verify_forge_credential", lambda push, pr: None),
             ("run_agent", self._investigate),
             ("file_pull_request", self._file),
             # Reading it would be an API call, and `seconds_left` already
