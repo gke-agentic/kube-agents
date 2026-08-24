@@ -522,9 +522,11 @@ before the filing turn starts:
 
 - `gh repo view <push target> --json viewerPermission` must return `WRITE`, `MAINTAIN` or `ADMIN`.
   That is the same permission `git push` will be checked against.
-- Under `upstream` mode, `gh repo view <base>` must succeed. Reachability only — opening a pull
-  request from a fork asks nothing of the base beyond read, and requiring write there would refuse
-  the exact configuration the mode exists for.
+- Under `upstream` mode, `gh repo view <base> --json viewerPermission` must succeed. Reachability
+  only — opening a pull request from a fork asks nothing of the base beyond read, and requiring
+  write there would refuse the exact configuration the mode exists for. The permission it returns
+  is not discarded, though: it decides whether the filing turn is asked to label anything, for the
+  reason below.
 
 `gh repo view` rather than `gh auth status`, because `selfimprove.unlisted-gh-subcommand` in the
 sidecar's deny policy allows `pr`, `search`, `issue`, `repo`, `version` and `help` and refuses
@@ -538,6 +540,20 @@ that and every filing turn came back `exited 1: working directory is outside the
 — reported, correctly by its own logic, as a token that could not be verified. A healthy credential
 therefore looked like a broken one, and the run ended `outcome=ok promoted=2 filed=0`. The argument
 is required rather than defaulted so the next caller has to answer the question.
+
+The base repository's permission is read because opening a pull request and labelling one need
+different things. Read is enough to open one — that is what a fork-based contribution is — and a
+label is repository metadata, so attaching one needs `TRIAGE` or above. The two come apart in
+exactly the configuration `upstream` mode exists for: a robot with `ADMIN` on its own fork and
+`READ` on the repository it contributes to. The second cutover run filed its first pull request
+that way and reported `Both label attempts failed`, on a pull request that had in fact opened —
+the turn had been told to apply labels its token could never attach, and found out one refused
+`gh pr edit` at a time. So the preflight now answers that question too, and the filing prompt drops
+to its unlabelled branch when the answer is no. That also repairs a claim the prompt was making:
+it tells the turn its token can attach an existing label and cannot create one, which is true only
+on the installs that now reach it. In `upstream` mode against a repository the robot does not help
+maintain, the labels are unreachable by construction rather than by misconfiguration, and §8's
+account of them below should be read with that caveat.
 
 Before the turn rather than inside it, for the same two reasons the mint was. A credential that
 fails inside the turn fails at `git push`, an hour of model budget after the point where the cause
@@ -739,6 +755,13 @@ problem one step later, resolving every name before applying any, so a single mi
 cost both. The loop's token can attach an existing label and cannot create one, so a repository
 receiving its first self-improvement pull request gets it unlabelled and a line in the log until a
 maintainer creates the labels.
+
+Neither is asked for at all when the token cannot attach a label to the base repository, which
+§6.3 covers: the preflight reads that permission, and in `upstream` mode against a repository the
+robot only contributes to it will be `READ`. Those installs open their pull requests unlabelled and
+say so once in the run log, rather than per pull request. The paragraphs above therefore describe
+what happens where the robot has `TRIAGE` or better on the base — every `fork`-mode install, and an
+`upstream` one whose base repository is willing to grant it.
 
 **What the filing agent refuses to touch.** A fix that would change the loop's own gate, ledger, or
 grants is not filed, at any severity and however good the evidence. Everything else in
