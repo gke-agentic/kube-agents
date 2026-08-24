@@ -530,6 +530,15 @@ before the filing turn starts:
 sidecar's deny policy allows `pr`, `search`, `issue`, `repo`, `version` and `help` and refuses
 everything else. A preflight the policy blocks is a preflight that fails every run.
 
+Both reads run with `cwd` set to the runner's home, and that is not incidental. The proxy refuses
+any command whose working directory falls outside `CREDENTIAL_PROXY_WORKSPACE_ROOT`, which the
+chart points at `/home/selfimprove`; the runner process does not start there, so a `subprocess.run`
+that omits `cwd` hands the shim a directory the proxy rejects. The first cutover run did exactly
+that and every filing turn came back `exited 1: working directory is outside the shared workspace`
+— reported, correctly by its own logic, as a token that could not be verified. A healthy credential
+therefore looked like a broken one, and the run ended `outcome=ok promoted=2 filed=0`. The argument
+is required rather than defaulted so the next caller has to answer the question.
+
 Before the turn rather than inside it, for the same two reasons the mint was. A credential that
 fails inside the turn fails at `git push`, an hour of model budget after the point where the cause
 was knowable, and it fails as `git` prompting for a username on a terminal nothing is attached to.

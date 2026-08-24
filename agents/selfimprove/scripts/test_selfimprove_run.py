@@ -32,6 +32,11 @@ import selfimprove_run as R  # noqa: E402
 
 FINDING = {"signal": "errors", "severity": "high", "title": "t", "location": "l"}
 
+#: The runner's home, which the chart also makes the credential proxy's
+#: `CREDENTIAL_PROXY_WORKSPACE_ROOT`. Every `gh` the preflight runs has to start
+#: there or the proxy refuses it.
+HOME = "/home/selfimprove"
+
 
 class RecoverFindingsTests(unittest.TestCase):
     """`recover_findings` accepts every shape a turn actually hands back."""
@@ -1189,7 +1194,7 @@ class ForgeCredentialTests(unittest.TestCase):
         return subprocess.CompletedProcess(argv, code, out, err)
 
     def test_it_asks_gh_for_the_push_targets_permission(self):
-        R.verify_forge_credential("adamparco/kube-agents", "adamparco/kube-agents")
+        R.verify_forge_credential("adamparco/kube-agents", "adamparco/kube-agents", HOME)
         self.assertEqual(1, len(self.calls))
         argv, kwargs = self.calls[0]
         self.assertEqual(
@@ -1200,12 +1205,27 @@ class ForgeCredentialTests(unittest.TestCase):
         # A timeout, because the alternative is a hung read charged to the turn.
         self.assertEqual(R.FORGE_PREFLIGHT_TIMEOUT_SECONDS, kwargs["timeout"])
 
+    def test_every_read_runs_from_the_workspace_root(self):
+        """The proxy refuses any command whose working directory is outside
+        `CREDENTIAL_PROXY_WORKSPACE_ROOT`, and the runner process does not start
+        there. Without an explicit cwd both reads inherit the runner's and come
+        back `exited 1: working directory is outside the shared workspace` --
+        which the caller reports as an unverifiable token, so a healthy
+        credential grounds every filing turn on the install. That is what
+        happened on the reference install: outcome=ok, promoted=2, filed=0.
+        """
+        self.answers["gke-labs/kube-agents"] = (0, '{"nameWithOwner":"gke-labs/kube-agents"}', "")
+        R.verify_forge_credential("adamparco/kube-agents", "gke-labs/kube-agents", HOME)
+        self.assertEqual(2, len(self.calls))
+        for _argv, kwargs in self.calls:
+            self.assertEqual(HOME, kwargs["cwd"])
+
     def test_upstream_mode_also_checks_the_base_is_reachable(self):
         """Reachable, not writable. Opening a pull request from a fork asks
         nothing of the base beyond read, so requiring write there would refuse
         the exact configuration upstream mode exists for."""
         self.answers["gke-labs/kube-agents"] = (0, '{"nameWithOwner":"gke-labs/kube-agents"}', "")
-        R.verify_forge_credential("adamparco/kube-agents", "gke-labs/kube-agents")
+        R.verify_forge_credential("adamparco/kube-agents", "gke-labs/kube-agents", HOME)
         self.assertEqual(
             ["adamparco/kube-agents", "gke-labs/kube-agents"],
             [argv[3] for argv, _ in self.calls],
@@ -1217,7 +1237,7 @@ class ForgeCredentialTests(unittest.TestCase):
         and it is indistinguishable from a working one until `git push`."""
         self.answers["o/r"] = (0, '{"viewerPermission":"READ"}', "")
         with self.assertRaises(RuntimeError) as caught:
-            R.verify_forge_credential("o/r", "o/r")
+            R.verify_forge_credential("o/r", "o/r", HOME)
         message = str(caught.exception)
         self.assertIn("READ", message)
         self.assertIn("o/r", message)
@@ -1228,7 +1248,7 @@ class ForgeCredentialTests(unittest.TestCase):
         `viewerPermission` comes back JSON null rather than absent."""
         self.answers["o/r"] = (0, '{"viewerPermission":null}', "")
         with self.assertRaises(RuntimeError) as caught:
-            R.verify_forge_credential("o/r", "o/r")
+            R.verify_forge_credential("o/r", "o/r", HOME)
         self.assertIn("no permission", str(caught.exception))
 
     def test_ghs_own_diagnosis_survives_into_the_message(self):
@@ -1241,7 +1261,7 @@ class ForgeCredentialTests(unittest.TestCase):
             "GraphQL: Could not resolve to a Repository with the name 'adamparco/kube-agents'.",
         )
         with self.assertRaises(RuntimeError) as caught:
-            R.verify_forge_credential("adamparco/kube-agents", "adamparco/kube-agents")
+            R.verify_forge_credential("adamparco/kube-agents", "adamparco/kube-agents", HOME)
         message = str(caught.exception)
         self.assertIn("Could not resolve", message)
         self.assertIn("adamparco/kube-agents", message)
@@ -1262,7 +1282,7 @@ class ForgeCredentialTests(unittest.TestCase):
             "GitHub API authentication token.",
         )
         with self.assertRaises(RuntimeError) as caught:
-            R.verify_forge_credential("o/r", "o/r")
+            R.verify_forge_credential("o/r", "o/r", HOME)
         message = str(caught.exception)
         self.assertIn("patSecret", message)
         self.assertIn("read:org", message)
@@ -1275,13 +1295,13 @@ class ForgeCredentialTests(unittest.TestCase):
         the one place the answer is not."""
         self.answers["o/r"] = (1, "", "GraphQL: Could not resolve to a Repository")
         with self.assertRaises(RuntimeError) as caught:
-            R.verify_forge_credential("o/r", "o/r")
+            R.verify_forge_credential("o/r", "o/r", HOME)
         self.assertNotIn("patSecret", str(caught.exception))
 
     def test_a_timeout_names_the_repository(self):
         self.raise_with = subprocess.TimeoutExpired(["gh"], 60)
         with self.assertRaises(RuntimeError) as caught:
-            R.verify_forge_credential("o/r", "o/r")
+            R.verify_forge_credential("o/r", "o/r", HOME)
         self.assertIn("o/r", str(caught.exception))
 
     def test_no_gh_on_path_is_an_error_not_a_silent_skip(self):
@@ -1290,7 +1310,7 @@ class ForgeCredentialTests(unittest.TestCase):
         returning quietly would put the failure back inside `git push`."""
         self.raise_with = FileNotFoundError("No such file or directory: 'gh'")
         with self.assertRaises(RuntimeError) as caught:
-            R.verify_forge_credential("o/r", "o/r")
+            R.verify_forge_credential("o/r", "o/r", HOME)
         self.assertIn("gh", str(caught.exception))
 
     def test_output_that_is_not_json_is_an_error(self):
@@ -1298,7 +1318,7 @@ class ForgeCredentialTests(unittest.TestCase):
         paths, which `json.loads` meets as a ValueError several frames away."""
         self.answers["o/r"] = (0, "To get started with GitHub CLI, run gh auth login", "")
         with self.assertRaises(RuntimeError) as caught:
-            R.verify_forge_credential("o/r", "o/r")
+            R.verify_forge_credential("o/r", "o/r", HOME)
         self.assertIn("did not return JSON", str(caught.exception))
 
 
@@ -1332,7 +1352,7 @@ class FilingPreflightTests(unittest.TestCase):
     def test_fork_mode_checks_the_fork_only(self):
         """Which is also the base under fork mode, so one read covers the turn."""
         checked = []
-        R.verify_forge_credential = lambda push, pr: checked.append((push, pr))
+        R.verify_forge_credential = lambda push, pr, cwd: checked.append((push, pr))
         self._file("fork", "adamparco/kube-agents", "adamparco/kube-agents")
         self.assertEqual([("adamparco/kube-agents", "adamparco/kube-agents")], checked)
 
@@ -1341,12 +1361,12 @@ class FilingPreflightTests(unittest.TestCase):
         to carry both -- which is the thing one classic PAT buys over two App
         installations."""
         checked = []
-        R.verify_forge_credential = lambda push, pr: checked.append((push, pr))
+        R.verify_forge_credential = lambda push, pr, cwd: checked.append((push, pr))
         self._file("upstream", "gke-labs/kube-agents", "adamparco/kube-agents")
         self.assertEqual([("adamparco/kube-agents", "gke-labs/kube-agents")], checked)
 
     def test_the_check_happens_before_the_turn_is_paid_for(self):
-        def refuse(_push, _pr):
+        def refuse(_push, _pr, _cwd):
             raise RuntimeError("gh repo view o/r exited 1: Bad credentials")
 
         R.verify_forge_credential = refuse
@@ -1361,7 +1381,7 @@ class FilingPreflightTests(unittest.TestCase):
         """A token nobody renewed is the loop's fault. Charging the finding for
         it starts a cooldown that hides the real fault for a day."""
 
-        def refuse(_push, _pr):
+        def refuse(_push, _pr, _cwd):
             raise RuntimeError("could not run `gh`")
 
         R.verify_forge_credential = refuse
@@ -1388,7 +1408,7 @@ class FilingOutcomeTests(unittest.TestCase):
         # credential-failure path has its own class.
         self.prior_verify = R.verify_forge_credential
         self.checked = []
-        R.verify_forge_credential = lambda push, pr: self.checked.append(push)
+        R.verify_forge_credential = lambda push, pr, cwd: self.checked.append(push)
 
     def tearDown(self):
         R.run_agent = self.prior
@@ -1673,7 +1693,7 @@ class BaseBranchTests(unittest.TestCase):
         R.run_agent = lambda prompt, *a, **k: (self.prompts.append(prompt), (0, "", None))[1]
         self.addCleanup(setattr, R, "run_agent", self.prior)
         self.prior_verify = R.verify_forge_credential
-        R.verify_forge_credential = lambda push, pr: None
+        R.verify_forge_credential = lambda push, pr, cwd: None
         self.addCleanup(setattr, R, "verify_forge_credential", self.prior_verify)
 
     def _prompt(self, *args):
@@ -1775,7 +1795,7 @@ class PullRequestLabelTests(unittest.TestCase):
         R.run_agent = lambda prompt, *a, **k: (self.prompts.append(prompt), (0, "", None))[1]
         self.addCleanup(setattr, R, "run_agent", self.prior)
         self.prior_verify = R.verify_forge_credential
-        R.verify_forge_credential = lambda push, pr: None
+        R.verify_forge_credential = lambda push, pr, cwd: None
         self.addCleanup(setattr, R, "verify_forge_credential", self.prior_verify)
 
     def _prompt(self, *args, **kwargs):
@@ -1971,7 +1991,7 @@ class TokenRefusalTests(unittest.TestCase):
         R.run_agent = lambda prompt, *a, **k: (self.prompts.append(prompt), (0, "", None))[1]
         self.addCleanup(setattr, R, "run_agent", self.prior)
         self.prior_verify = R.verify_forge_credential
-        R.verify_forge_credential = lambda push, pr: None
+        R.verify_forge_credential = lambda push, pr, cwd: None
         self.addCleanup(setattr, R, "verify_forge_credential", self.prior_verify)
         self.prior_log = R.log
         R.log = self.logs.append
@@ -2445,7 +2465,7 @@ class FilingWiringAndRefusalTests(unittest.TestCase):
             ("fetch_source", lambda *a, **k: "/src"),
             ("hermes_pin", lambda root: ""),
             ("scaffold_home", lambda home: None),
-            ("verify_forge_credential", lambda push, pr: None),
+            ("verify_forge_credential", lambda push, pr, cwd: None),
             ("run_agent", self._investigate),
             ("file_pull_request", self._file),
             # Reading it would be an API call, and `seconds_left` already
