@@ -696,30 +696,33 @@ selfImprovement:
     # same permissions everywhere, so the two being equal is what would let the
     # loop push a branch to the upstream.
     forkRepo: ""
-    # The branch pull requests are opened against. The default is right when
-    # the deployed revision is an ancestor of it — the ordinary case, an
-    # install running a released commit and filing against the branch that
-    # commit came from.
+    # The branch pull requests are opened against, and the branch the filing
+    # turn writes its fix on. The runner checks it out fresh for each promoted
+    # finding and hands the turn that tree rather than the one the
+    # investigation read, so the pull request's merge base is this branch's tip
+    # and its diff is one commit — whatever revision the deployed image is
+    # stamped at, and however far this branch has moved since.
     #
-    # It is wrong, silently and expensively, when it is not. GitHub computes a
-    # pull request's diff against this branch, not against the commit the
-    # agent branched from, so basing a one-file fix on a revision that main
-    # does not contain produces a pull request carrying every commit of the
-    # difference. Live run `kube-agents-selfimprove-29791620` filed one: the
-    # agent's own commit changed a single file, and the pull request showed
-    # 40,346 additions across 261 files, because the install was running a test
-    # branch the fork's main had never seen.
+    # That is worth stating because it used to be the operator's problem.
+    # GitHub computes a pull request's diff from the merge base, so a fix based
+    # on a revision this branch does not contain carried every commit of the
+    # difference: live run `kube-agents-selfimprove-29791620` committed a single
+    # file and opened a pull request showing 40,346 additions across 261 files,
+    # because the install was running a test branch the fork's main had never
+    # seen. Setting this correctly no longer prevents that and setting it wrong
+    # no longer causes it.
     #
-    # Nothing in the runner checks this for you. The filing skill compares the
-    # base against its branch before opening and refuses — `SKIPPED`, nothing
-    # filed — when the file count does not match what it committed. It opens
-    # anyway, with a note in the body, only when the comparison call itself
-    # fails: a fork the anonymous API cannot see is not evidence either way.
-    # The check costs model calls and runs inside the filing turn rather than
-    # before it, so a turn that dies before reaching it files nothing at all.
+    # What this value still decides is where the work lands and what the fix is
+    # written against. An install pinned to a branch of its own — a live test, a
+    # private deployment tracking a release line — sets this to that branch, and
+    # gets fixes written against that branch's code.
     #
-    # An install pinned to a branch of its own — a live test, a private
-    # deployment tracking a release line — sets this to that branch.
+    # A consequence worth knowing: on an install whose image is well behind this
+    # branch, a finding that has since been fixed here is no longer filable. The
+    # filing skill re-reads the finding in the base checkout before it writes
+    # anything and opens nothing when the code no longer says what the finding
+    # says. That is the intended answer — the fix already exists and the image
+    # needs a rebuild — but it means an old image files less, not more.
     baseBranch: main
     # Label applied to every pull request the loop opens, so a maintainer can
     # tell one from a human's at a glance and filter a queue of them. Set to ""
@@ -807,8 +810,10 @@ selfImprovement:
   # so writing to one would roll the agent every hour.
   ledgerConfigMap: kube-agents-selfimprove-ledger
 
-  # emptyDir sizes for the run's private Hermes home (profile, logs, sessions)
-  # and the source checkout it fetches.
+  # emptyDir sizes for the run's private Hermes home (profile, logs, sessions),
+  # the source checkout it fetches, and one shallow checkout of `baseBranch` per
+  # promoted finding — so `maxPullRequestsPerDay` clones at worst, all of them
+  # depth 1 and all discarded with the pod.
   workspaceSizeLimit: 4Gi
 
   # RuntimeClass for the CronJob pod. Empty inherits

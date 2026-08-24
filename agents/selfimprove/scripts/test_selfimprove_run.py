@@ -37,6 +37,24 @@ FINDING = {"signal": "errors", "severity": "high", "title": "t", "location": "l"
 #: there or the proxy refuses it.
 HOME = "/home/selfimprove"
 
+#: Where `stub_base_checkout` says the base branch was checked out to.
+BASE_ROOT = "/home/selfimprove/base/abc123/repo"
+
+
+def stub_base_checkout(case, root=BASE_ROOT):
+    """Hand `file_pull_request` a base checkout without going to the network.
+
+    A third external dependency of that function, alongside `run_agent` and
+    `verify_forge_credential`, and stubbed for the same reason. It clones the
+    base branch before it builds the prompt, so a test that only wants to read
+    the prompt would otherwise `git fetch` github.com into a `/home` that does
+    not exist on the machine running the test.
+    """
+    prior = R.fetch_base_checkout
+    R.fetch_base_checkout = lambda *a, **k: root
+    case.addCleanup(setattr, R, "fetch_base_checkout", prior)
+    return root
+
 
 class RecoverFindingsTests(unittest.TestCase):
     """`recover_findings` accepts every shape a turn actually hands back."""
@@ -1367,6 +1385,7 @@ class FilingPreflightTests(unittest.TestCase):
         R.run_agent = lambda *a, **k: (
             self.ran.append(a) or (0, "https://github.com/o/r/pull/1", None)
         )
+        stub_base_checkout(self)
 
     def tearDown(self):
         R.run_agent = self.prior_run
@@ -1444,6 +1463,7 @@ class FilingOutcomeTests(unittest.TestCase):
         self.prior_verify = R.verify_forge_credential
         self.checked = []
         R.verify_forge_credential = lambda push, pr, cwd: (self.checked.append(push), True)[1]
+        stub_base_checkout(self)
 
     def tearDown(self):
         R.run_agent = self.prior
@@ -1713,13 +1733,19 @@ class KillRecordingTests(unittest.TestCase):
 
 
 class BaseBranchTests(unittest.TestCase):
-    """The branch the pull request is opened against.
+    """The branch the pull request is opened against, and now branched from.
 
     GitHub diffs a pull request against its base, not against the commit the
-    head branched from, so a base that does not contain the deployed revision
+    head branched from, so a head cut from a revision the base does not contain
     renders every commit of the difference as part of the change. Live run
     `kube-agents-selfimprove-29791620` filed a one-file fix that showed as
     40,346 additions across 261 files for exactly this reason.
+
+    The fix is structural rather than a warning: the filing turn is handed a
+    checkout at this branch's tip and writes there, so the head's merge base is
+    the base tip and the diff is one commit whatever the image is stamped at.
+    `BaseCheckoutTests` covers the checkout; this class covers the value
+    reaching the turn.
     """
 
     def setUp(self):
@@ -1730,6 +1756,7 @@ class BaseBranchTests(unittest.TestCase):
         self.prior_verify = R.verify_forge_credential
         R.verify_forge_credential = lambda push, pr, cwd: True
         self.addCleanup(setattr, R, "verify_forge_credential", self.prior_verify)
+        stub_base_checkout(self)
 
     def _prompt(self, *args):
         R.file_pull_request(
@@ -1751,9 +1778,14 @@ class BaseBranchTests(unittest.TestCase):
     def test_it_defaults_to_main(self):
         self.assertIn("Open the pull request against: main", self._prompt())
 
-    def test_the_prompt_says_why_getting_it_wrong_is_silent(self):
-        self.assertIn("getting it wrong does", self._prompt("main"))
-        self.assertIn("unreviewable and looks like your change", self._prompt("main"))
+    def test_the_base_is_also_what_the_turn_branches_from(self):
+        """The turn is told the diff is one commit, which is only true because
+        the tree it was handed starts at the base tip. Saying it in the prompt
+        is what makes an oversized diff something the turn notices in section 5
+        rather than a surprise for the reviewer."""
+        prompt = self._prompt("release-1.4")
+        self.assertIn("A checkout at the tip of release-1.4", prompt)
+        self.assertIn("the diff is the commit you wrote and nothing else", prompt)
 
     def test_the_chart_default_survives_an_empty_variable(self):
         """An unset or blank `SELFIMPROVE_BASE_BRANCH` must not reach `gh pr
@@ -1767,6 +1799,120 @@ class BaseBranchTests(unittest.TestCase):
                 os.environ.pop("SELFIMPROVE_BASE_BRANCH", None)
             else:
                 os.environ["SELFIMPROVE_BASE_BRANCH"] = prior
+
+
+class BaseCheckoutTests(unittest.TestCase):
+    """The second checkout: where the fix is written, and why not the first one.
+
+    The investigation reads the deployed revision, because a finding evidenced
+    against anything else describes code the observed pod is not running. The
+    filing turn writes at the base branch's tip, because a fix based on anything
+    else carries the distance between the two into the pull request. One
+    checkout cannot be both, and it used to be asked to be.
+    """
+
+    def setUp(self):
+        self.prompts = []
+        self.calls = []
+        self.root = "/home/selfimprove/base/abc123/repo"
+        self.prior = R.run_agent
+        R.run_agent = lambda prompt, *a, **k: (self.prompts.append(prompt), (0, "", None))[1]
+        self.addCleanup(setattr, R, "run_agent", self.prior)
+        self.prior_verify = R.verify_forge_credential
+        R.verify_forge_credential = lambda push, pr, cwd: True
+        self.addCleanup(setattr, R, "verify_forge_credential", self.prior_verify)
+        self.prior_fetch = R.fetch_base_checkout
+        R.fetch_base_checkout = lambda *a, **k: (self.calls.append((a, k)), self.root)[1]
+        self.addCleanup(setattr, R, "fetch_base_checkout", self.prior_fetch)
+
+    def _file(self, entry=None, base="main", timeout=900):
+        return R.file_pull_request(
+            entry or {"fingerprint": "abc123", "title": "t", "summary": "s"},
+            {"revision": "deadbeef"},
+            "/src/repo",
+            HOME,
+            "upstream",
+            "gke-labs/kube-agents",
+            "gke-agentic/kube-agents",
+            timeout,
+            base,
+        )
+
+    def test_it_checks_out_the_base_branch_of_the_upstream(self):
+        """Not the fork and not the deployed sha. The base is where the pull
+        request lands, so it is the only commit whose tree makes the diff one
+        commit long."""
+        self._file(base="release-1.4")
+        (upstream, base_branch, _dest), _kwargs = self.calls[0]
+        self.assertEqual("gke-labs/kube-agents", upstream)
+        self.assertEqual("release-1.4", base_branch)
+
+    def test_each_finding_gets_a_tree_of_its_own(self):
+        """Two promoted findings used to share the investigation's checkout, so
+        the second turn's `git switch -c` branched from the first turn's commit
+        and its pull request carried both fixes. Keying the directory by
+        fingerprint is what removes the ordering."""
+        self._file(entry={"fingerprint": "aaa", "title": "t", "summary": "s"})
+        self._file(entry={"fingerprint": "bbb", "title": "t", "summary": "s"})
+        dests = [args[2] for args, _ in self.calls]
+        self.assertEqual([os.path.join(HOME, "base", "aaa"), os.path.join(HOME, "base", "bbb")], dests)
+
+    def test_the_clone_does_not_get_the_whole_turn_budget(self):
+        """A shallow fetch that has not finished in three minutes is a network
+        fault. Spending the finding's entire slot proving it leaves nothing to
+        file with even if it recovers."""
+        self._file(timeout=3000)
+        self.assertEqual(180, self.calls[0][1]["timeout"])
+
+    def test_a_short_turn_budget_still_caps_the_clone(self):
+        """`budgeted` hands the last finding of a run whatever is left, which
+        can be under the cap. The fetch must not outlive the turn it is for."""
+        self._file(timeout=90)
+        self.assertEqual(90, self.calls[0][1]["timeout"])
+
+    def test_a_failed_checkout_files_nothing_and_charges_nothing(self):
+        """Not a fallback to the investigation's tree. That tree is exactly the
+        one that produced the 40,346-line pull request, so filing from it is
+        worse than not filing: SKIPPED keeps the finding's counts and the next
+        run tries again."""
+        R.fetch_base_checkout = lambda *a, **k: None
+        result, detail = self._file()
+        self.assertEqual(R.SKIPPED, result)
+        self.assertIn("main", detail)
+        self.assertIn("gke-labs/kube-agents", detail)
+        self.assertEqual([], self.prompts)
+
+    def test_the_turn_is_told_which_tree_to_edit(self):
+        self._file()
+        prompt = self.prompts[-1]
+        self.assertIn("- Write the fix in: %s" % self.root, prompt)
+        self.assertIn("- The evidence came from: /src/repo", prompt)
+        self.assertIn("change nothing in it", prompt)
+
+    def test_a_finding_no_longer_true_at_the_base_is_not_filed(self):
+        """The case a stale image hits: the fix landed upstream while this image
+        went on running the commit that predates it. Against the base tree the
+        turn can see that; against its own it cannot."""
+        self._file()
+        prompt = self.prompts[-1]
+        self.assertIn("has already been fixed, and the answer is", prompt)
+        self.assertIn("to open nothing", prompt)
+
+    def test_a_missing_fingerprint_still_gets_a_directory(self):
+        """`entry` comes from the ledger, where the fingerprint is the key, so
+        this should not happen -- but a `KeyError` here would lose a finding the
+        gate already promoted."""
+        self._file(entry={"title": "t", "summary": "s"})
+        self.assertEqual(os.path.join(HOME, "base", "finding"), self.calls[0][0][2])
+
+    def test_the_directory_name_cannot_walk_out_of_the_home(self):
+        """The fingerprint is a sha256 digest the ledger recomputes on every
+        write, so this is defence in depth rather than a live hole -- but it
+        arrives through a ConfigMap and lands in an `os.path.join`."""
+        self.assertEqual("etcpasswd", R.checkout_dirname("../../etc/passwd"))
+        self.assertEqual("finding", R.checkout_dirname("../.."))
+        self.assertEqual("finding", R.checkout_dirname(""))
+        self.assertEqual("a1b2c3d4e5f60718", R.checkout_dirname("a1b2c3d4e5f60718"))
 
 
 class PermanentRefusalMarkerTests(unittest.TestCase):
@@ -1832,6 +1978,7 @@ class PullRequestLabelTests(unittest.TestCase):
         self.prior_verify = R.verify_forge_credential
         R.verify_forge_credential = lambda push, pr, cwd: True
         self.addCleanup(setattr, R, "verify_forge_credential", self.prior_verify)
+        stub_base_checkout(self)
 
     def _prompt(self, *args, **kwargs):
         entry = {"fingerprint": "abc123", "title": "t", "summary": "s"}
@@ -2046,6 +2193,7 @@ class TokenRefusalTests(unittest.TestCase):
         self.prior_log = R.log
         R.log = self.logs.append
         self.addCleanup(setattr, R, "log", self.prior_log)
+        stub_base_checkout(self)
 
     def _file(self, mode="fork", fork="gke-agentic/kube-agents", timeout=900):
         R.file_pull_request(

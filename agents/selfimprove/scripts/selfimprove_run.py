@@ -24,8 +24,18 @@ The order is fixed and each step can refuse:
 4. **Grade and gate.** The agent's findings are merged into the ledger, which
    owns the occurrence counts; the gate (sec. 7.3) decides which are promoted.
 5. **File.** In fork/upstream mode, one further agent turn per promoted finding
-   opens the pull request. In report-only -- the default -- nothing leaves the
-   cluster and the ledger is the whole output.
+   opens the pull request, writing the fix in a second checkout taken at the tip
+   of the base branch rather than in the tree step 2 fetched. In report-only --
+   the default -- nothing leaves the cluster and the ledger is the whole output.
+
+Steps 2 and 5 read different commits on purpose, and that is the one piece of
+this file's shape worth knowing before the code. A finding has to be evidenced
+against the commit the observed pod is running, or it describes code nobody is
+executing -- so the investigation gets the deployed revision. A fix has to be
+written against the commit a maintainer will merge it into, or GitHub renders
+the distance between the two as part of the change -- so the filing turn gets
+the base branch's tip. Sharing one checkout between them, which is what this
+did until it was split, means choosing which of those two to be wrong about.
 
 See docs/designs/self-improvement.md for why each of those is shaped this way.
 """
@@ -799,6 +809,54 @@ def _fetch_source_git(repo: str, ref: str, dest: str, timeout: int, fork: str) -
             log("`%s` exited %d: %s" % (" ".join(step), done.returncode, (done.stderr or "").strip()[:500]))
             return None
     log("git checkout of %s at %s in %s" % (repo, ref, root))
+    return root
+
+
+def checkout_dirname(fingerprint: str) -> str:
+    """The per-finding directory name, with nothing in it that walks a path.
+
+    `record_finding` recomputes the fingerprint from a sha256 on every write and
+    documents that it is never read from the agent's own JSON, so what arrives
+    here is sixteen hex characters. But it arrives via a ConfigMap, and a reader
+    of `os.path.join(home, "base", ...)` should not have to go and confirm that
+    in another module to know the join is safe. Cheaper to make it true here.
+    """
+    safe = "".join(c for c in fingerprint if c.isalnum() or c in "-_")
+    return safe or "finding"
+
+
+def fetch_base_checkout(
+    upstream: str, base_branch: str, dest: str, timeout: int = 180, fork: str = ""
+) -> Optional[str]:
+    """A checkout at the tip of `base_branch`, for the filing turn to work in.
+
+    The tree the fix is written in, and deliberately not the tree the
+    investigation read. GitHub computes a pull request's diff from the merge
+    base, so a branch cut here carries the fix and nothing else, whatever commit
+    the image happens to be stamped at. Branching from the deployed revision
+    instead -- which is what this did until it was split -- carries every commit
+    between that revision and the base as well. Live run
+    `kube-agents-selfimprove-29791620` filed a one-file fix that GitHub rendered
+    as 40,346 additions across 261 files for exactly that reason.
+
+    Per finding, not per run, and that is the second thing the split fixes. Two
+    promoted findings used to file from one tree, so the second turn's
+    `git switch -c` branched from wherever the first had left HEAD -- on top of
+    the first fix, which then appeared in the second pull request. A tree of its
+    own costs one shallow fetch and removes the ordering entirely.
+
+    A branch name rather than a sha, so this is the one fetch in the file that
+    does not need `uploadpack.allowReachableSHA1InWant`. It is also a moving
+    target: main can advance between this call and the push, which changes
+    nothing, because the merge base moves with it.
+    """
+    root = _fetch_source_git(upstream, base_branch, dest, timeout, fork)
+    if not root:
+        log(
+            "could not check out %s of %s. Not falling back to the investigation's tree: a pull "
+            "request based there would carry the distance between the two commits as part of the "
+            "change." % (base_branch, upstream)
+        )
     return root
 
 
@@ -1916,6 +1974,32 @@ def file_pull_request(
         # finding's, and burning its gate eligibility over a token nobody
         # renewed would hide the real fault behind a cooldown.
         return SKIPPED, "could not verify the GitHub token for %s" % push_target
+    # The tree this turn writes in. After the credential check because that is
+    # two API reads and this is a clone: on an install whose token was revoked,
+    # paying for the clone first buys nothing. Before the prompt because the
+    # prompt has to name the path.
+    #
+    # Keyed by fingerprint so each finding in a run gets its own tree. `home` is
+    # a per-Job emptyDir, so this is discarded with the pod.
+    base_root = fetch_base_checkout(
+        upstream,
+        base_branch,
+        os.path.join(home, "base", checkout_dirname(str(entry.get("fingerprint") or ""))),
+        # Not `timeout`, which is the turn's whole model budget. A shallow fetch
+        # that has not finished in three minutes is a network fault, and
+        # spending the finding's entire slot discovering that leaves no time to
+        # file anything even if it recovers.
+        timeout=min(timeout, 180),
+        fork=fork,
+    )
+    if not base_root:
+        # SKIPPED, so nothing is charged, on the same reasoning as the
+        # credential failure above: the loop could not reach GitHub, which is
+        # the loop's problem and not the finding's.
+        return SKIPPED, "could not check out %s of %s to write the fix against" % (
+            base_branch,
+            upstream,
+        )
     # Empty when the token cannot attach one, which drops the prompt to its
     # "this install opens them unlabelled" branch. Not a degradation to apologise
     # for: in upstream mode the robot is an outside contributor to the base
@@ -1981,13 +2065,22 @@ def file_pull_request(
         %(untrusted)s
 
         WHERE
-        - Source checkout: %(source_root)s
+        Two checkouts, and using the wrong one is the mistake this section exists to stop.
+        - Write the fix in: %(base_root)s
+          A checkout at the tip of %(base_branch)s, fetched for this finding alone. Branch here,
+          edit here, commit here.
+        - The evidence came from: %(source_root)s
+          A checkout at %(revision)s, the commit the observed pod is running. Read it to see what
+          the finding saw -- its line numbers are this tree's -- and change nothing in it. It may
+          be behind %(base_branch)s, and where the two trees differ, the tree above is the one that
+          matters: a finding that is no longer true there has already been fixed, and the answer is
+          to open nothing.
         - Upstream: %(upstream)s
         - Push branches to: %(fork)s
         - Open the pull request against: %(base_branch)s
-          Pass this to `gh pr create --base`. It is not always `main`, and getting it wrong does
-          not fail -- it opens a pull request whose diff is every commit between that branch and
-          the revision you branched from, which is unreviewable and looks like your change.
+          Pass this to `gh pr create --base`. It is not always `main`. Your branch starts at this
+          branch's tip, so the diff is the commit you wrote and nothing else -- if it is bigger
+          than that, something is wrong and section 5 is where you catch it.
         - Label the pull request: %(pr_labels)s
         - If GitHub refuses to authenticate you, stop. The credential is a personal access
           token seeded into `gh` when this pod started, and the runner proved it could write
@@ -2016,7 +2109,8 @@ def file_pull_request(
         "revision": identity["revision"],
         "untrusted": untrusted,
         "fence": FENCE,
-        "source_root": source_root or "(unavailable)",
+        "base_root": base_root,
+        "source_root": source_root or "(unavailable: the fetch failed, so work from the base checkout alone)",
         "upstream": upstream,
         "fork": fork or "(none configured: upstream mode requires a fork)",
         "base_branch": base_branch,

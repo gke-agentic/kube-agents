@@ -11,10 +11,17 @@ fixes the finding you were handed, and to describe it so a reviewer can judge it
 
 ## 0. Before you write anything
 
-- Re-read the finding. Open the file it names, at the revision in the checkout you were given.
-- **If the code does not say what the finding says it says, stop and open nothing.** Print
+You have two checkouts and your brief names both. **Write the fix in** is at the tip of the base
+branch and is the only tree you change. **The evidence came from** is at the revision the observed
+pod is running, which may be behind, and is read-only.
+
+- Re-read the finding. Its file and line are the evidence tree's coordinates, so open it there
+  first to see what the investigation saw — then open the same file in the tree you will write in.
+- **If the base tree does not say what the finding says it says, stop and open nothing.** Print
   `SKIPPED: <why>` and end the turn. A stale finding filed as a pull request costs a human more
-  than a missed fix does. This happens: the finding may be hours old and `main` moves.
+  than a missed fix does. This is the ordinary case, not an edge one: the deployed image can be
+  weeks behind the branch you are filing against, and something someone else already fixed still
+  looks broken from inside the pod.
 - Check whether it is already fixed, already filed, or already rejected. Search pull requests and
   issues, in **any** state — not just open ones, and against the repository your brief names under
   `Upstream`, which is configurable and is not always `gke-labs/kube-agents`:
@@ -30,31 +37,34 @@ fixes the finding you were handed, and to describe it so a reviewer can judge it
   - `"state": "closed"` with `pull_request.merged_at` **null** is a **closed-unmerged** pull
     request: a human already said no. Stop, and print `SKIPPED: closed unmerged as #<n>`. The
     ledger's cooldown expires; that decision does not.
-  - `"state": "closed"` with a `merged_at` timestamp is **merged**. Compare it against the commit
-    your checkout is at — `git show -s --format=%cI HEAD`, which asks for the one commit a depth-1
-    clone actually has:
-    - Merged **after** your commit: the fix is in `main` and your checkout predates it, so the
-      finding is already answered. Stop, and print `SKIPPED: fixed in #<n>`.
-    - Merged **before** your commit: the deployed code already carries that fix and the finding
-      recurred anyway. Do not stop, and do not re-file the same change — it did not work. File what
-      you actually found, and say in the body that #`<n>` was supposed to fix this and did not.
+  - `"state": "closed"` with a `merged_at` timestamp is **merged**, which means the tree you write
+    in already contains it — that tree is at the base branch's tip, not at the deployed revision.
+    So the question is not when it merged. It is whether the finding is still true there, which
+    the bullet above already had you check:
+    - **No longer true in the base tree**: #`<n>` fixed it and this install is running a revision
+      that predates the fix. Stop, and print `SKIPPED: fixed in #<n>`. Nothing is wrong here except
+      the image's age.
+    - **Still true in the base tree**: #`<n>` was supposed to fix this and did not. Do not re-file
+      the same change. File what you actually found, and say in the body that #`<n>` did not hold.
       Treating merged as a permanent stop is how a regression gets silenced forever.
   - Keep the number of whatever you find: §4 needs it.
 
 ## 1. Branch
 
 ```bash
-cd <the source checkout>
+cd <the "Write the fix in" path from your brief>
 git switch -c selfimprove/<signal>-<short-slug>
 ```
 
-Branch from the deployed revision the checkout is already at, not from `main`. The finding is
-evidenced against that commit and a reviewer needs the diff to line up with it.
+That path and not the other one. It is a shallow clone at the tip of the base branch, fetched for
+this finding alone, with two remotes: `origin` is the upstream repository and `fork` is where you
+push. It is detached at the base tip, so `git switch -c` names a branch there — which is what makes
+the pull request's diff your one commit. Depth is 1: `git log`, `git blame` and `git merge-base`
+see a single commit and will mislead you, so do not reach for them.
 
-The checkout is a shallow `git` clone with two remotes: `origin` is the upstream repository and
-`fork` is where you push. It is detached at the deployed commit, so `git switch -c` here names a
-branch at that commit — which is what you want. Depth is 1: `git log`, `git blame` and
-`git merge-base` see one commit and will mislead you, so do not reach for them.
+Branching in the evidence checkout instead is the failure this arrangement exists to prevent, and
+it does not announce itself — the commit is correct, the push succeeds, and GitHub renders every
+commit between the deployed revision and the base as part of your change.
 
 ## 2. The change
 
@@ -151,10 +161,12 @@ pass you did not. Three things go in it:
   written by an agent that could not run the code it changed; `kube-agents-bot` reviews every pull
   request on open and that pass is where it comes from.
 
-## 5. Check the base contains your starting point
+## 5. Confirm the diff is only your commit
 
-One read, before you open anything. Through the public API, the way §0's search goes: `gh api` is
-refused by this pod's proxy, because a raw call is a write path its argv rules cannot read.
+Branching at the base tip in §1 is what makes this true; this step is where you find out it is,
+before a reviewer does. One read, before you open anything. Through the public API, the way §0's
+search goes: `gh api` is refused by this pod's proxy, because a raw call is a write path its argv
+rules cannot read.
 
 ```bash
 curl -sSf "https://api.github.com/repos/<the Upstream from your brief>/compare/<the base from your brief>...<the owner half of 'Push branches to'>:<your branch>" \
@@ -164,24 +176,24 @@ curl -sSf "https://api.github.com/repos/<the Upstream from your brief>/compare/<
 Spell the head `owner:branch`. Under `mode: upstream` your branch is on the fork and the base is on
 a different repository, and a bare branch name is looked up on the base, where it does not exist.
 
-`ahead` — or `identical` — and a file count matching what you committed means the base is right.
+`ahead` — or `identical` — and a file count matching what you committed is the answer you expect.
 `git show --stat HEAD` says how many files you actually changed, and the two numbers must agree.
-`diverged` means the base has never seen the commit you branched from, and the pull request you are
-about to open would carry every commit of the difference.
 
-If they disagree, open nothing. Print `SKIPPED: <base> does not contain the revision this install
-runs — the diff would be <n> files, not <m>` and end the turn. The finding keeps its counts and a
-later run can file it once the base is set correctly; a pull request nobody can review does not.
+If they disagree, you branched in the wrong tree or the base moved under you in a way worth a
+human's attention. Open nothing. Print `SKIPPED: the diff would be <n> files, not <m>` and end the
+turn. The finding keeps its counts and a later run files it; a pull request nobody can review does
+not.
 
 If the call itself fails — a fork the anonymous API cannot see, a refused connection — that is not
-evidence either way, so do not skip on it. Open the pull request and say in the body that the base
-could not be checked, so a reviewer looking at a diff bigger than the change knows where it came
-from.
+evidence either way, so do not skip on it. Open the pull request and say in the body that the diff
+could not be confirmed.
 
 This is not a hypothetical. Live run `kube-agents-selfimprove-29791620` opened a one-file fix that
-GitHub rendered as 40,346 additions across 261 files, because the install was running a branch the
-base had never seen. Nothing failed, and the agent's own reply said the diff was clean — it had
-checked its commit, which was correct, rather than the pull request, which was not.
+GitHub rendered as 40,346 additions across 261 files, because it branched from the deployed
+revision and the base had never seen that commit. Nothing failed, and the agent's own reply said
+the diff was clean — it had checked its commit, which was correct, rather than the pull request,
+which was not. §1 is why that cannot happen the same way again; this step is what catches it
+happening some other way.
 
 ## 6. Open it
 

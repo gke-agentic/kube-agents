@@ -267,8 +267,11 @@ rather than of filing, because in the default mode there is no filing turn to do
 credential in §6 is for writing.
 
 Local history is not available to it. `report-only` extracts a tarball, which has no `.git` at all,
-and the filing modes fetch at depth 1, so "what changed recently" has to come from the API too if a
-finding needs it.
+and the filing modes fetch at depth 1 — both checkouts, the investigation's and the base one §10
+describes — so "what changed recently" has to come from the API too if a finding needs it. That
+includes the difference between the two trees: they are two unrelated single-commit clones, so
+`git diff` across them is not available and the skill has the turn read the same file in each
+instead.
 
 ## 4. The signals
 
@@ -736,7 +739,9 @@ Five things, because that is what was asked for and because it is also what
    reason; it does not accept an empty section or an overstated one.
 5. **The code changes**, scoped to the finding. One finding, one pull request. Conventional Commit
    title, and the body says it was opened by the self-improvement loop, which install produced it,
-   and at which revision.
+   and at which revision. Written in a checkout of `baseBranch` taken for that finding, not in the
+   one the investigation read — the finding is evidenced at the deployed revision and the fix is
+   authored at the base tip, and §10 covers why those cannot be the same tree.
 
 Each one also carries two labels, applied by the filing agent rather than by hand. The first is
 `selfImprovement.github.prLabel`, `self-improvement` by default, so a maintainer can filter for the
@@ -870,9 +875,9 @@ selfImprovement:
     upstreamRepo: gke-labs/kube-agents
     # Required when mode is fork or upstream; ignored under report-only.
     forkRepo: ""
-    # The branch pull requests are based on. Not always `main`: it has to be a
-    # branch that contains the deployed revision, or GitHub renders the
-    # difference as part of the change (§10).
+    # The branch pull requests are based on, and the one the filing turn checks
+    # out and writes its fix in — so the diff is one commit whatever revision
+    # the image is stamped at (§10). Not always `main`.
     baseBranch: main
     # Both applied after the pull request is open, one `gh pr edit` each; ""
     # opts out of that label (§8). The prefix takes the finding's grade, so
@@ -902,7 +907,8 @@ selfImprovement:
   # template, so writing to one would roll the agent every hour.
   ledgerConfigMap: kube-agents-selfimprove-ledger
 
-  # emptyDir sizes for the run's private Hermes home and its source checkout.
+  # emptyDir sizes for the run's private Hermes home, its source checkout, and
+  # one shallow base-branch checkout per promoted finding (§10).
   workspaceSizeLimit: 4Gi
 
   networkPolicy: true
@@ -1161,24 +1167,58 @@ path now logs the partial response too. The general form is the same one the API
 has: diagnostics conditioned on the success path are absent exactly when they are needed.
 
 **The pull request is opened against a branch that does not contain the deployed revision.** The
-runner branches from the commit the pod is running, which is what makes the diff line up with the
-evidence. GitHub then computes the pull request's diff against its _base_, not against that commit —
-so when the base does not contain it, every commit of the difference is rendered as part of the
-change. Live run `kube-agents-selfimprove-29791620` filed one: the agent wrote a one-line fix to
-`credential_proxy.py`, committed exactly that file, and the pull request showed 40,346 additions
-across 261 files, because the install was running a test branch the fork's `main` had never seen.
+runner used to branch from the commit the pod is running, on the reasoning that the diff should line
+up with the evidence. GitHub computes a pull request's diff from the _merge base_, not from the
+commit the head branched from — so when the base does not contain that commit, every commit of the
+difference is rendered as part of the change. Live run `kube-agents-selfimprove-29791620` filed one:
+the agent wrote a one-line fix to `credential_proxy.py`, committed exactly that file, and the pull
+request showed 40,346 additions across 261 files, because the install was running a test branch the
+fork's `main` had never seen.
 
 Nothing failed, which is the whole problem. `gh pr create` returned a URL, the runner recorded a
 filing, and the turn's own closing reply said the diff was clean — it had checked its commit, which
-was correct, rather than the pull request, which was not. Two changes: the base is
-`selfImprovement.github.baseBranch` rather than a hardcoded `main` in the skill, because an install
-pinned to a branch of its own is a real configuration and not a mistake; and the filing skill now
-compares the base against its head before opening anything, and refuses with `SKIPPED` when the file
-count does not match what it committed. That comparison goes through the public compare endpoint
-rather than `gh api`, which the pod's own credential-proxy policy refuses as a write path its argv
-rules cannot read — worth noting because the first draft of the check used `gh api` and would have
-been blocked by the loop's own guard rail. A refusal keeps the finding's counts, so the loop files
-it on a later run once the base is right.
+was correct, rather than the pull request, which was not.
+
+The first fix was a check: the base became `selfImprovement.github.baseBranch` rather than a
+hardcoded `main`, because an install pinned to a branch of its own is a real configuration and not a
+mistake, and the filing skill compared the base against its head before opening anything, refusing
+with `SKIPPED` when the file count did not match what it committed. That bought a refusal instead of
+an unreviewable pull request, which is better, but it left the finding permanently unfilable on any
+install whose revision was not on the base — the loop would find the same thing every hour and
+refuse it every hour.
+
+What replaced it removes the condition rather than detecting it. The reason one checkout could not
+serve both purposes is that the two have different correctness criteria: a finding has to be
+evidenced against the commit the observed pod is running, or it describes code nobody is executing;
+a fix has to be written against the commit a maintainer will merge it into, or the distance between
+the two becomes part of the diff. So there are two checkouts. The investigation keeps the deployed
+revision. `fetch_base_checkout` takes a second shallow clone at the tip of `baseBranch`, one per
+promoted finding, and the filing turn writes there — which makes the head's merge base the base tip
+by construction, and the diff one commit, whatever the image is stamped at.
+
+Three things follow from it beyond the original bug:
+
+- **A deployed image ageing does not degrade the diff.** Its stamped revision only has to be
+  reachable for the source fetch, not to be an ancestor of the base. An install six weeks behind
+  `main` still opens a one-file pull request.
+- **An image built from a fork's unmerged work can file upstream.** Under the old arrangement its
+  pull requests carried the whole fork delta. Now a finding about code common to both is filed
+  cleanly, and a finding about the fork's own unmerged code fails the skill's §0 re-read against the
+  base tree and opens nothing — which is the right answer, not a regression.
+- **Two findings in one run stop contaminating each other.** They shared the investigation's
+  checkout, so the second turn's `git switch -c` branched from wherever the first had left `HEAD` —
+  on top of the first fix, which then appeared in the second pull request. A tree per fingerprint
+  removes the ordering.
+
+The skill's comparison survives as a confirmation rather than a gate, still through the public
+compare endpoint rather than `gh api`, which the pod's own credential-proxy policy refuses as a write
+path its argv rules cannot read — worth noting because the first draft of the check used `gh api` and
+would have been blocked by the loop's own guard rail. What it now catches is a turn that branched in
+the wrong tree, not a misconfigured base.
+
+The cost is a shallow clone per promoted finding, capped at 180 seconds so a network fault cannot
+eat the finding's model budget, and a failure to obtain it is `SKIPPED` rather than a fallback to the
+investigation's tree — falling back would reintroduce exactly the pull request this replaced.
 
 **The agent cannot write its own handoff file.** The upstream Hermes image sets
 `HERMES_WRITE_SAFE_ROOT=/opt/data`, which is correct for the Platform Agent, whose PVC that is, and
