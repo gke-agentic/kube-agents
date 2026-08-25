@@ -17,6 +17,8 @@ from tests.testing.common import (
 )
 from tests.testing.release import (
     INVALID_GA_RELEASE_TAGS,
+    MOCK_GH_TOKEN,
+    MOCK_NONEXISTENT_TAG,
     MOCK_TARGET_RELEASE_TAG,
     create_mock_gh_binary,
 )
@@ -190,13 +192,13 @@ class PublishGithubReleaseScriptTest(unittest.TestCase):
             create_mock_gh_binary(bin_dir)
 
             proc = self._run_script(
-                ["0.9.9"],
-                env={"CI": "true", "GH_TOKEN": "mock-token-123"},
+                [MOCK_NONEXISTENT_TAG],
+                env={"CI": "true", "GH_TOKEN": MOCK_GH_TOKEN},
                 bin_dir=str(bin_dir),
                 cwd=str(repo_dir),
             )
             self.assertEqual(proc.returncode, 1)
-            self.assertIn("Cannot resolve valid Git commit for release tag '0.9.9'", proc.stderr)
+            self.assertIn(f"Cannot resolve valid Git commit for release tag '{MOCK_NONEXISTENT_TAG}'", proc.stderr)
         finally:
             temp_dir.cleanup()
 

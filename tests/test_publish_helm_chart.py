@@ -20,6 +20,7 @@ from tests.testing.common import (
 from tests.testing.release import (
     MOCK_GH_TOKEN,
     MOCK_GH_USER,
+    MOCK_NONEXISTENT_TAG,
     MOCK_SAMPLE_COMMIT_SHA,
     MOCK_TARGET_RELEASE_TAG,
     create_mock_cosign_binary,
@@ -33,14 +34,14 @@ _PUBLISH_HELM_CHART_SH = _REPO_ROOT / "scripts" / "release" / "publish_helm_char
 
 
 class PublishHelmChartScriptTest(unittest.TestCase):
-    def _run_script(self, args, env=None, bin_dir=None):
+    def _run_script(self, args, env=None, bin_dir=None, cwd=None):
         full_env = get_isolated_test_env(overrides=env, bin_dir=bin_dir)
         return subprocess.run(
             ["bash", str(_PUBLISH_HELM_CHART_SH)] + args,
             capture_output=True,
             text=True,
             env=full_env,
-            cwd=str(_REPO_ROOT),
+            cwd=cwd or str(_REPO_ROOT),
         )
 
     def test_missing_arguments(self):
@@ -322,20 +323,26 @@ class PublishHelmChartScriptTest(unittest.TestCase):
         finally:
             temp_dir.cleanup()
 
-    def test_invalid_release_commit_fails_fast(self):
+    def test_publish_fails_if_tag_does_not_exist_and_no_head_commit(self):
+        """Verifies publish_helm_chart errors clearly if tag does not exist and no HEAD commit exists."""
         temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         try:
+            repo_dir = pathlib.Path(temp_dir.name) / "empty_repo"
+            repo_dir.mkdir()
+            subprocess.run(["git", "init"], cwd=str(repo_dir), check=True, capture_output=True)
             bin_dir = pathlib.Path(temp_dir.name) / "bin"
             create_mock_helm_binary(bin_dir)
             create_mock_cosign_binary(bin_dir)
             create_mock_docker_binary(bin_dir)
 
             proc = self._run_script(
-                [MOCK_TARGET_RELEASE_TAG],
-                env={"CI": "true", "RELEASE_VERSION": ""},
+                [MOCK_NONEXISTENT_TAG],
+                env={"CI": "true", "GH_TOKEN": MOCK_GH_TOKEN},
                 bin_dir=str(bin_dir),
+                cwd=str(repo_dir),
             )
-            self.assertEqual(proc.returncode, 0)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn(f"Cannot resolve valid Git commit for release tag '{MOCK_NONEXISTENT_TAG}'", proc.stderr)
         finally:
             temp_dir.cleanup()
 
