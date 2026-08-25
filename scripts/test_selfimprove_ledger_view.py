@@ -1202,6 +1202,37 @@ class TestBlobUrls(unittest.TestCase):
     def test_no_line_means_no_anchor(self):
         self.assertTrue(view.blob_url(REPO, "abc", "x.py").endswith("/x.py"))
 
+    def test_a_rendered_document_asks_for_the_source_view(self):
+        """GitHub's rendered Markdown has no gutter, so `#L12` lands nowhere."""
+        self.assertEqual(
+            view.blob_url(REPO, "abc123", "docs/designs/self-improvement.md", "12"),
+            "https://github.com/gke-agentic/kube-agents/blob/abc123"
+            "/docs/designs/self-improvement.md?plain=1#L12",
+        )
+        self.assertTrue(
+            view.blob_url(REPO, "abc", "a/b/SKILL.MD", "3").endswith("?plain=1#L3")
+        )
+        self.assertTrue(
+            view.blob_url(REPO, "abc", "notes.rst", "4-9").endswith("?plain=1#L4-L9")
+        )
+
+    def test_source_files_are_left_alone(self):
+        for path in ("x.py", "k8s-operator/cmd/main.go", "a.yaml", "Makefile"):
+            with self.subTest(path=path):
+                self.assertNotIn("plain=1", view.blob_url(REPO, "abc", path, "1"))
+
+    def test_a_document_with_no_line_keeps_the_rendered_preview(self):
+        """Nothing to anchor to, so the readable page is the better landing."""
+        self.assertEqual(
+            view.blob_url(REPO, "abc", "docs/README.md"),
+            "https://github.com/gke-agentic/kube-agents/blob/abc/docs/README.md",
+        )
+
+    def test_the_query_precedes_the_fragment(self):
+        """`#L12?plain=1` would make the anchor part of the fragment and die."""
+        url = view.blob_url(REPO, "abc", "x.md", "12")
+        self.assertLess(url.index("?plain=1"), url.index("#L12"))
+
     def test_a_missing_ingredient_yields_no_url(self):
         self.assertEqual(view.blob_url("", "abc", "x.py", "1"), "")
         self.assertEqual(view.blob_url(REPO, "", "x.py", "1"), "")

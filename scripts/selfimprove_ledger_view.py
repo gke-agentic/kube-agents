@@ -330,12 +330,48 @@ def _url_safe(value: str, segments: int = 0) -> bool:
     )
 
 
+#: Extensions GitHub renders as a document rather than showing as source. The
+#: rendered view has no line-number gutter, so a `#L12` anchor finds nothing to
+#: scroll to and drops the reader at the top of the file -- which for a long
+#: design document is no better than no link at all. `?plain=1` asks for the
+#: source view, which does have the gutter, and the anchor works there.
+#:
+#: Only the markup formats need it. A `.py` or `.go` blob is already source, and
+#: adding the parameter to those would be noise in a URL a human reads.
+_RENDERED_EXTENSIONS = frozenset(
+    (
+        ".adoc",
+        ".asc",
+        ".asciidoc",
+        ".creole",
+        ".csv",
+        ".ipynb",
+        ".markdown",
+        ".md",
+        ".mdown",
+        ".mediawiki",
+        ".mkd",
+        ".mkdn",
+        ".org",
+        ".pod",
+        ".rdoc",
+        ".rst",
+        ".textile",
+        ".tsv",
+        ".wiki",
+    )
+)
+
+
 def blob_url(repo: str, revision: str, path: str, line: Optional[str] = None) -> str:
     """GitHub's permalink for `path` at `revision`, anchored on `line`.
 
     Pinned to the revision the finding was made against rather than to a branch:
     the line number is only meaningful against the code the agent read, and a
     branch link drifts out from under it on the next commit.
+
+    A file GitHub renders as a document gets `?plain=1` alongside the anchor, so
+    that the line number has a gutter to land on; see `_RENDERED_EXTENSIONS`.
 
     None of the three pieces is trusted to be what it is called. The path is cut
     out of a location string the investigating agent wrote and the revision is a
@@ -359,6 +395,10 @@ def blob_url(repo: str, revision: str, path: str, line: Optional[str] = None) ->
         return url
     if not _LINE_ANCHOR.match(str(line)):
         return url
+    # Only once there is an anchor to honour: without a line the rendered
+    # preview is the better page to land on, and `?plain=1` would take it away.
+    if os.path.splitext(path)[1].lower() in _RENDERED_EXTENSIONS:
+        url += "?plain=1"
     # GitHub spells a range `#L10-L20`, with the `L` repeated; a location writes
     # it `10-20`.
     return url + "#L%s" % line.replace("-", "-L")
