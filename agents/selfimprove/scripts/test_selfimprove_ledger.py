@@ -460,7 +460,7 @@ class OccurrenceWindowTests(unittest.TestCase):
         threshold can ever count. Five sightings span four intervals and the
         window is 24 hours, so six-hourly is the slowest schedule on which a
         threshold of 5 is satisfiable -- an operator who sets `schedule` slower
-        disables that severity, and nothing tells them. Design sec. 12 states
+        disables that severity, and nothing tells them. Design sec. 7.2 states
         this boundary; this is the arithmetic behind it.
         """
         for interval, reachable in ((1, True), (6, True), (7, False), (24, False)):

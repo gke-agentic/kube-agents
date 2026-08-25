@@ -6,7 +6,8 @@
 > and the Google identity in
 > [`terraform/modules/kube-agents-selfimprove/`](../../terraform/modules/kube-agents-selfimprove/).
 > `selfImprovement.enabled` defaults to false and `mode` defaults to `report-only`, so an install
-> that does nothing gets nothing. §12 records where the built thing diverged from this document.
+> that does nothing gets nothing. This document describes what is built; where a part of the design
+> is deliberately not built, the section that owns it says so.
 
 **Scope:** A disabled-by-default hourly investigation of kube-agents itself — its source, its
 harness, and the installation it is running in — which grades what it finds and, above a
@@ -47,10 +48,8 @@ Three consequences follow immediately, and the rest of the design is mostly work
 runner, the ledger, the evidence CLI and the two skills this document specifies. The loop
 investigates the pod it is running in, and the code it finds there is its own as much as the
 operator's, so a defect in the investigator is a finding like any other and reaches a maintainer the
-same way. That is what "the observed is kube-agents" already meant, and run `selfimprove-fork-4`
-exercised it on a live install pointed at `gke-agentic/kube-agents`: it filed #159,
-`fix(selfimprove): route k8s evidence commands through the hermes venv python`, against the loop's
-own evidence CLI, graded `inefficiency`/`medium`, without noticing whose code it was.
+same way. Nothing marks the loop's files as the loop's: a finding against `agents/selfimprove/` is
+graded and filed on the same rules as one against the operator.
 
 One boundary bounds this, and §8 states it as a refusal rather than a preference: the filing agent
 will not open a pull request that changes the loop's own gate, ledger, or grants. A loop that files
@@ -84,37 +83,23 @@ The investigation begins by cloning the source the pod is actually running. Gett
 makes every downstream conclusion unfalsifiable — a finding written against `main` about a pod
 running a three-week-old image describes code that is not there.
 
-**Nothing inside the image named its own commit, so this feature stamps it.**
-[`deploy/docker/Dockerfile`](../../deploy/docker/Dockerfile) declared build arguments
-(`HERMES_AGENT_TAG`, `HERMES_AGENT_IMAGE`, `ENVOY_VERSION`, `GOLANG_VERSION`) and no `LABEL`; there
-was no version `ENV` and no build-info file, and `.dockerignore` excludes `.git`, so the build
-context never contained the metadata in the first place. The operator stated the consequence
-outright — `manifest_helpers.go:80` omits `app.kubernetes.io/version` because "there is no
-build-time version to report" — and `AgentStatus` still records phase, address, replicas and
-endpoints but no image, tag, digest or version.
+**The image carries its own commit, because this feature stamps it.**
+[`deploy/docker/Dockerfile`](../../deploy/docker/Dockerfile) takes an `ARG GIT_SHA` and writes an
+`org.opencontainers.image.revision` label and `/opt/build-info.json` holding the revision and the
+tag. Nothing else in the image names its commit — `.dockerignore` excludes `.git`, so the build
+context does not contain the metadata, the operator omits `app.kubernetes.io/version` for want of a
+build-time version to report (`manifest_helpers.go:80`), and `AgentStatus` records phase, address,
+replicas and endpoints but no image, tag, digest or version.
 
-The stamp is the only edit this feature makes to a _runtime_ path outside its own files: an
-`ARG GIT_SHA`, an `org.opencontainers.image.revision` label, and `/opt/build-info.json` holding the
-revision and the tag, plus the build plumbing that passes the argument. It sits at the end of the
-stage, so a changing sha rebuilds the one instruction that writes the file and nothing above it, and
-both publish workflows pass it — `GIT_SHA=${{ github.sha }}` in `docker-publish-ghcr.yml`, `_GIT_SHA`
-through Cloud Build in `docker-publish-gcp.yml`. It is worth doing on its own merits, and without it
-the loop cannot establish which commit is running.
+The stamp is the only edit this feature makes to a _runtime_ path outside its own files. It sits at
+the end of the stage, so a changing sha rebuilds the one instruction that writes the file and
+nothing above it, and both publish workflows pass the argument — `GIT_SHA=${{ github.sha }}` in
+`docker-publish-ghcr.yml`, `_GIT_SHA` through Cloud Build in `docker-publish-gcp.yml`.
 
-The rest of the diff outside `agents/selfimprove/`, `charts/kube-agents/templates/self-improvement*`
-and `terraform/modules/kube-agents-selfimprove/` is additive registration rather than behaviour: a
-profile entry in `scripts/check_prompt_assets.py`, render assertions inside the existing chart-render
-step of `.github/workflows/validate.yml`, a
-helper in the chart's `_helpers.tpl`, the repository-layout line in `AGENTS.md`, a row in
-`docs/README.md`, and the site pages that describe the new objects. One edit is neither the stamp
-nor registration and is not this feature at all: `deploy/docker/Dockerfile` installed the
-`hermes-otel` plugin from the repository root rather than its package directory. It blocked the
-build of this branch's own image, so the one-segment fix rides along here.
-
-**There is no registry-digest fallback.** An earlier draft resolved the commit by reading the
+**There is no registry-digest fallback.** The commit could instead be resolved by reading the
 runner's own image digest and taking the 40-hex tag that shares it, since release images are
 retagged rather than rebuilt (`docker buildx imagetools create` in `scripts/release/common.sh`).
-That is not built. It buys a registry read grant the runner needs for nothing else, and it still
+That is not built: it buys a registry read grant the runner needs for nothing else, and it still
 resolves to nothing on the dev-rebuild path, which tags from `IMAGE_TAG` in `vars.sh` and maps to
 no commit. Instead an unstamped image refuses to investigate. `selfImprovement.allowUnstampedImage`
 overrides that: the run then reads source at `main`, which may not be the code the pod is running,
@@ -148,11 +133,15 @@ therefore _not_ the harness that is executing; it is the harness before this rep
 The executing harness is `/opt/hermes` on the runner's own filesystem, patches already applied, and
 that is what the runner reads. Attribution — which behaviour is this repository's and which is
 upstream's, and therefore whether a finding belongs in `deploy/docker/patches/` or to Nous
-Research — is answered from the patch series itself, which the runner puts in front of the agent
-(§12). Cloning the upstream tag and diffing it against `/opt/hermes` would answer the same question
-more precisely and is not built. Several signals in §4 originate in the harness — an agentic loop taking a
-turn it did not need is usually the harness's scheduling, not a kube-agents skill — so getting this
-attribution right is most of the value of looking at the harness at all.
+Research — is answered from the patch series itself. The runner reads the pin from the fetched
+`tags.env` and hands the agent [`deploy/docker/patches/`](../../deploy/docker/patches/), this
+repository's own record of every deliberate divergence from stock Hermes. Cloning the upstream tag
+and diffing `/opt/hermes` against it is not built, and would answer a different question: a diff
+says what is different, most of which is intended, where the patch series says what this repository
+changed and why. The cost is that an _undocumented_ divergence — a Hermes behaviour no patch here
+explains — is invisible to the loop. Several signals in §4 originate in the harness — an agentic
+loop taking a turn it did not need is usually the harness's scheduling, not a kube-agents skill — so
+getting this attribution right is most of the value of looking at the harness at all.
 
 ## 3. What it is allowed to look at
 
@@ -260,9 +249,14 @@ metrics and spans. The rest of this section is the design of record for the foll
 
 It is also the one place the loop would create cluster objects, so when it is built it belongs
 behind its own flag, off even when the feature is on: an install that turns it on consents to two
-objects per run, in its own namespace, garbage collected at the end of the run. Until then there is
-no such flag, the loop's Role carries no `volumesnapshots` or `persistentvolumeclaims` verb, and the
-evidence tool has no subcommand that opens a database. What is deferred and why is §12.
+objects per run, in its own namespace, garbage collected at the end of the run. There is no such
+flag today, the loop's Role carries no `volumesnapshots` or `persistentvolumeclaims` verb, and the
+evidence tool has no subcommand that opens a database — a knob that silently does nothing is worse
+than an absent one, because an operator who sets it believes they have consented to something.
+Adding the path later is additive: a flag, two objects per run, and a mount, disturbing nothing that
+is here. The consequence of its absence is the one §11 names — findings about session history,
+kanban state and cron delivery are inferred from logs and spans rather than read from the stores,
+and the row-level questions in §4 that need those files stay unanswerable.
 
 ### 3.5 The repository
 
@@ -360,27 +354,56 @@ revision; investigate; file what clears the gate; write the ledger; exit. There 
 chat platform, no dashboard and no PVC. `hermes -z PROMPT --cli` is the invocation — a headless
 one-shot turn that takes the brief on the command line — and the investigation is one or more of
 those, because the harness caps a headless turn at 90 model calls and §10 explains what the runner
-does about it. (This document originally proposed `hermes cron tick`; §12
-records why that changed.)
+does about it. Not `hermes cron tick`, which is the other invocation that runs a turn to completion
+without a gateway: it requires a cron store on the profile holding one job contrived to be always
+due, which is state to scaffold and a second scheduler underneath the Kubernetes one deciding
+whether the run happens. With `hermes -z` the CronJob schedule is the only schedule and the brief
+the runner composed is provably the brief that ran.
+
+**How the source arrives depends on the mode.** Under `report-only` the runner fetches
+`codeload.github.com/<repo>/tar.gz/<sha>` and extracts it through a path-traversal loop of its own
+plus `filter="data"` — the filter argument falls back to a plain `extractall` on a Python that does
+not accept it, which is why the loop is there rather than being replaced by it. The mode needs one
+immutable tree at one commit, not history, and this way the fetch is a public anonymous HTTPS GET
+with no credential and no `git` binary, which is what lets the mode keep both off the pod. `fork`
+and `upstream` take a real checkout instead — `git init` plus a depth-1 fetch of the deployed
+commit, `origin` pointing at the upstream repository and `fork` at the push target — because
+evidence a finding cites is easier to trust from a tree whose provenance `git` can state, and the
+shims are on the `PATH` in exactly those two modes, so the clone costs no credential the mode does
+not already have. Depth 1 means `git log`, `git blame` and `git merge-base` see a single commit
+inside that checkout; the filing skill says so, because the alternative is an agent drawing
+conclusions from history that is not there. A checkout that fails at any step degrades to the same
+anonymous tarball rather than failing the run: filing is unaffected, because `fetch_base_checkout`
+(§10) fetches the filing tree independently at the base tip, so the fallback costs `git`-backed
+evidence in the investigation tree and nothing else. It is a line in the Job log, and the run's
+brief does not tell the investigation that `git log` and `git blame` will not work in its checkout.
 
 **The credential proxy, where a mode needs one, must be a native sidecar** — declared as an
 `initContainer` with `restartPolicy: Always`, not as a second `containers` entry. A long-running
 container in an ordinary `containers` list never exits, so the Job never completes and
 `concurrencyPolicy: Forbid` blocks every subsequent run forever. This is a one-word difference in
-the manifest with a failure mode that takes a day to diagnose. It renders only for `fork` and
-`upstream`; `report-only` has no GitHub identity and therefore no proxy at all.
+the manifest with a failure mode that takes a day to diagnose.
+
+It renders only for `fork` and `upstream`. `report-only`'s guarantee is that nothing the loop
+produces leaves the cluster, and the way to mean that is for the write path not to exist rather than
+to be present, permitted, and relied on not to be called. The same conditional governs the shim
+directory on `PATH`, so under `report-only` there is no `git` and no `gh` on it. Nothing else in the
+run needs the proxy: telemetry reads call the Logging, Trace and Monitoring REST APIs over `urllib`
+with a metadata-server token for the investigator's Workload Identity — no Google client library is
+involved, and the evidence CLI's one third-party import is `kubernetes`, deferred into the function
+that uses it. (The image does carry `google-cloud-pubsub`, for the chat plugin; the loop does not
+touch it.) Kubernetes reads use that in-cluster client against the pod's RBAC.
 
 `concurrencyPolicy: Forbid` is most of the mutual-exclusion story and not all of it. It serialises
 the CronJob's own Jobs, so two scheduled runs never overlap; it says nothing about a Job created by
-hand or a `kubectl edit` of the ledger, and a live test hit exactly that — three writers, two
-promotion records lost. There is still no lease. What covers the gap is that the ledger's own write
-is a compare-and-swap on the `resourceVersion` its read observed, folding the other writer's rows in
-on a conflict rather than overwriting them; §12 has the incident and the merge rules. A maintainer
-weighing a lease should weigh it against that, not against `Forbid`.
+hand or a `kubectl edit` of the ledger, and three concurrent writers is enough to lose a run's rows.
+There is no lease. What covers the gap is that the ledger's own write is a compare-and-swap on the
+`resourceVersion` its read observed, folding the other writer's rows in on a conflict rather than
+overwriting them; §10 has the merge rules. A maintainer weighing a lease should weigh it against
+that, not against `Forbid`.
 
-This is the repository's first `CronJob`. The only other `batch/v1` object the chart renders is a
-Helm pre-delete `Job`, so there was no house convention to follow for one and this feature set it.
-The convention it does follow is `githubMinter.enabled`: a chart-only standalone
+This is the repository's only `CronJob` — the one other `batch/v1` object the chart renders is a
+Helm pre-delete `Job`. The convention it follows is `githubMinter.enabled`: a chart-only standalone
 workload, guarded on a values key, that the operator knows nothing about and that renders nothing
 when the key is false.
 
@@ -480,23 +503,22 @@ needs a different GitHub App in any case: the existing App is installed on the c
 repository, and opening pull requests against `gke-labs/kube-agents` requires an App installed
 there, with a different app ID and a different private key.
 
-So the first implementation of this design rendered a second minty Deployment — Service, ConfigMap,
-KSA, GSA annotation, KMS key reference and NetworkPolicy — plus a second GSA and a second
-import-only KMS key in Terraform, and a second GitHub App an operator had to create, install on two
-repositories, and import the private key of. It worked under `fork` mode and never worked under
-`upstream`, for a reason no amount of care in the templates could fix: the fork and the base live
-under different owners, so they are different App installations issuing different tokens, and `gh`
-stores one token per host. Minting the second discarded the first. The branch landed and
-`gh pr create` against the base failed, every time.
+A second minter of the loop's own is out on a third count, and it is the decisive one:
+`upstream` mode cannot work through one. A second minty Deployment — Service, ConfigMap, KSA, GSA
+annotation, KMS key reference and NetworkPolicy — plus a second GSA, a second import-only KMS key,
+and a second GitHub App an operator creates, installs on two repositories and imports the private
+key of, buys a credential that still cannot open the pull request. Under `upstream` the fork and the
+base live under different owners, so they are different App installations issuing different tokens,
+and `gh` stores one token per host: minting the second discards the first, the branch lands, and
+`gh pr create` against the base fails. No amount of care in the templates fixes that.
 
 A personal access token has no such problem. One classic token carries the account's `repo` scope
-wherever the account has access, so the push and the pull request are the same credential, and
-`upstream` mode works. It also deletes the entire second minter: one Helm template, four Terraform
-resources, a KMS key ring nothing can ever delete, and the operator step of registering a GitHub App
-and importing a PEM.
+wherever the account has access, so the push and the pull request are the same credential. It also
+means there is no second minter at all: no Helm template, no Terraform resources, no KMS key ring
+that nothing can ever delete, and no operator step of registering a GitHub App and importing a PEM.
 
 What it costs is set out in §6.4. The short version is that the token is coarser than an App
-installation and nothing rotates it.
+installation would be and nothing rotates it.
 
 ### 6.2 Seeding it, without touching shared code
 
@@ -541,8 +563,7 @@ by the investigation turn, which has no business holding a write credential.
 [`github_token_refresh.py:17`](../../agents/platform/scripts/github_token_refresh.py) defaults it to
 `http://github-token-minter.kubeagents-system.svc.cluster.local:8080/token`, the platform minter's
 own Service. Two network facts are what actually stop the call. The runner's NetworkPolicy renders
-no egress rule to that Service — removing the loop's own minter is what removed the one it used to
-have — and the platform minter's ingress policy admits only pods labelled
+no egress rule to that Service, and the platform minter's ingress policy admits only pods labelled
 `kubeagents.x-k8s.io/has-credential-proxy: "true"`, which this pod deliberately does not carry
 (§5.3). So nothing the loop runs can obtain an App token for a repository an operator never granted,
 and leaving the variable unset is a signpost rather than the control.
@@ -553,10 +574,10 @@ its own chart template and its own runner.
 
 ### 6.3 Proving the token before the turn is paid for
 
-Seeding at startup removes the per-turn mint, and with it the side effect that used to catch a
-broken credential early. `verify_forge_credential` in
-[`selfimprove_run.py`](../../agents/selfimprove/scripts/selfimprove_run.py) replaces it, immediately
-before the filing turn starts:
+A credential seeded once at startup is never exercised again until the filing turn spends it, so the
+run proves it first. `verify_forge_credential` in
+[`selfimprove_run.py`](../../agents/selfimprove/scripts/selfimprove_run.py) runs immediately before
+the filing turn starts:
 
 - `gh repo view <push target> --json viewerPermission` must return `WRITE`, `MAINTAIN` or `ADMIN`.
   That is the same permission `git push` will be checked against.
@@ -573,51 +594,46 @@ everything else. A preflight the policy blocks is a preflight that fails every r
 Both reads run with `cwd` set to the runner's home, and that is not incidental. The proxy refuses
 any command whose working directory falls outside `CREDENTIAL_PROXY_WORKSPACE_ROOT`, which the
 chart points at `/home/selfimprove`; the runner process does not start there, so a `subprocess.run`
-that omits `cwd` hands the shim a directory the proxy rejects. The first cutover run did exactly
-that and every filing turn came back `exited 1: working directory is outside the shared workspace`
-— reported, correctly by its own logic, as a token that could not be verified. A healthy credential
-therefore looked like a broken one, and the run ended `outcome=ok promoted=2 filed=0`. The argument
-is required rather than defaulted so the next caller has to answer the question.
+that omits `cwd` hands the shim a directory the proxy rejects and the preflight reports a healthy
+credential as unverifiable — `exited 1: working directory is outside the shared workspace`, on a
+token with nothing wrong with it. The argument is required rather than defaulted so the next caller
+has to answer the question.
 
 The base repository's permission is read because opening a pull request and labelling one need
 different things. Read is enough to open one — that is what a fork-based contribution is — and a
 label is repository metadata, so attaching one needs `TRIAGE` or above. The two come apart in
 exactly the configuration `upstream` mode exists for: a robot with `ADMIN` on its own fork and
-`READ` on the repository it contributes to. The second cutover run filed its first pull request
-that way and reported `Both label attempts failed`, on a pull request that had in fact opened —
-the turn had been told to apply labels its token could never attach, and found out one refused
-`gh pr edit` at a time. So the preflight now answers that question too, and the filing prompt drops
-to its unlabelled branch when the answer is no. That also repairs a claim the prompt was making:
-it tells the turn its token can attach an existing label and cannot create one, which is true only
-on the installs that now reach it. In `upstream` mode against a repository the robot does not help
+`READ` on the repository it contributes to. A turn told to apply labels its token can never attach
+finds out one refused `gh pr edit` at a time, and reports failure on a pull request that opened
+successfully. So the preflight answers that question too, and the filing prompt drops to its
+unlabelled branch when the answer is no. It is also what keeps the prompt's claim about labels
+honest — that the token can attach an existing one and cannot create one is true only on the
+installs that reach that branch. In `upstream` mode against a repository the robot does not help
 maintain, the labels are unreachable by construction rather than by misconfiguration, and §8's
 account of them below should be read with that caveat.
 
-Before the turn rather than inside it, for the same two reasons the mint was. A credential that
-fails inside the turn fails at `git push`, an hour of model budget after the point where the cause
-was knowable, and it fails as `git` prompting for a username on a terminal nothing is attached to.
-And the runner can report a credential failure as the loop's own fault — `SKIPPED`, no charge
-against the day's ceiling and no cooldown — where a turn that dies mid-push is `UNCONFIRMED` and
-costs the finding a slot.
+Before the turn rather than inside it, for two reasons. A credential that fails inside the turn
+fails at `git push`, an hour of model budget after the point where the cause was knowable, and it
+fails as `git` prompting for a username on a terminal nothing is attached to. And the runner can
+report a credential failure as the loop's own fault — `SKIPPED`, no charge against the day's ceiling
+and no cooldown — where a turn that dies mid-push is `UNCONFIRMED` and costs the finding a slot. Two
+reads catch a mis-scoped token, a revoked token and a Secret that never mounted, in seconds rather
+than an hour.
 
-This is strictly stronger than minting was. A mint proved the minter would issue a token; it did not
-prove the token could write anything. Two reads now catch a mis-scoped token, a revoked token and a
-Secret that never mounted, in seconds rather than an hour.
-
-It is also the only place any of them surface, which is what `; true` costs. A token `gh auth login`
-rejects leaves a pod that boots 2/2 and logs nothing — the login's own diagnosis went to a pipe the
-bootstrap discards on exit zero, and the exit is zero by construction. So the preflight's message
-carries the diagnosis the sidecar threw away: on `gh`'s exit code 4 it says the Secret named by
-`selfImprovement.github.patSecret` is empty, absent, or missing the `repo` and `read:org` scopes. Its
-own advice cannot be passed through unqualified. `gh` tells the reader to run `gh auth login` or set
-`GH_TOKEN`, and in this pod neither is reachable: the login already happened, in another container,
-an hour earlier. Cutting over the reference install is what found this — the first token mounted was
-missing both scopes, and the preflight refused the turn exactly as designed while naming a remedy
-that led away from the cause.
+The preflight is also the only place any of those surface, which is what `; true` costs. A token
+`gh auth login` rejects leaves a pod that boots 2/2 and logs nothing — the login's own diagnosis
+went to a pipe the bootstrap discards on exit zero, and the exit is zero by construction. So the
+preflight's message carries the diagnosis the sidecar threw away: on `gh`'s exit code 4 it says the
+Secret named by `selfImprovement.github.patSecret` is empty, absent, or missing the `repo` and
+`read:org` scopes. `gh`'s own advice cannot be passed through unqualified — it tells the reader to
+run `gh auth login` or set `GH_TOKEN`, and in this pod neither is reachable, the login having
+happened in another container an hour earlier. A token missing its scopes is the common case here,
+and a refusal that names the right remedy is the difference between a five-minute fix and a hunt.
 
 **There is no expiry story.** A personal access token does not expire partway through a turn, so
 `fileTimeoutSeconds` is a share of the hourly schedule rather than a credential deadline, and the
-filing prompt no longer carries a refresher. It must not: the script it used to name dials a minter
+filing prompt carries no refresher. It must not:
+[`github_token_refresh.py`](../../agents/platform/scripts/github_token_refresh.py) dials a minter
 this pod's NetworkPolicy gives it no route to, and a turn that ran it would read the resulting
 failure as the credential being broken. The prompt says to retry once and then print
 `SKIPPED: GitHub refused the credential`.
@@ -629,9 +645,10 @@ authenticated last would own both flows — the failure being that the Platform 
 push runs as the loop's robot account, or the reverse. Separate proxies mean separate state
 directories and no interaction at all.
 
-### 6.4 What the token costs, against the App it replaced
+### 6.4 What the token costs
 
-Three things get worse, and they are the reason this section exists rather than a note in §12.
+Three things are worse than a per-repository App installation would be, and an operator weighing
+`fork` or `upstream` mode should weigh these.
 
 **It is coarser.** An App installation could be granted `contents: write` on the fork and
 `pull_requests: write` on the upstream and nothing else. A classic token carries `repo` — read and
@@ -649,18 +666,19 @@ spellings of that reach the network from this pod. The shipped rules are in
 are the current answer to what the loop can do with the token; §11 records that a check on argv is
 not a permission boundary.
 
-**Nothing rotates it.** An App installation token lived an hour by construction. This one lives
+**Nothing rotates it.** An App installation token would live an hour by construction. This one lives
 until somebody revokes it. Its lifetime is an operator's to manage, and an install that never
 revokes it is an install with a standing write credential in a Secret.
 
-**Its permissions are not visible in the install.** A minty rule file said, in the cluster, exactly
-what the loop could do. A token says nothing about itself; `verify_forge_credential` reads the
-permission back from GitHub at filing time, which is the closest thing to that and is a runtime
+**Its permissions are not visible in the install.** A minty rule file would say, in the cluster,
+exactly what the loop could do. A token says nothing about itself; `verify_forge_credential` reads
+the permission back from GitHub at filing time, which is the closest thing to that and is a runtime
 check rather than a reviewable declaration.
 
-Against those: `upstream` mode works, which it did not before; there is no GitHub App to register,
-install and keep installed; there is no KMS key that can never be deleted; and the loop's credential
-path shares no code with the Platform Agent's, so a change to one cannot break the other.
+Against those: `upstream` mode works, which it cannot through an App (§6.1); there is no GitHub App
+to register, install and keep installed; there is no KMS key that can never be deleted; and the
+loop's credential path shares no code with the Platform Agent's, so a change to one cannot break the
+other.
 
 ### 6.5 Fork topology and the three modes
 
@@ -668,8 +686,8 @@ Repository policy is that branches are pushed to a fork, never to `gke-labs/kube
 cross-fork pull request needs write on the fork, to push the branch, and the ability to open a pull
 request against the upstream — which any authenticated account has on a public repository. One
 token covers both. The chart refuses a configuration where `forkRepo` equals the upstream under
-`upstream` mode, and with one token carrying the same permissions everywhere that guard is now the
-only thing stopping the loop pushing a branch to the upstream directly.
+`upstream` mode, and with one token carrying the same permissions everywhere that guard is the only
+thing stopping the loop pushing a branch to the upstream directly.
 
 Because that is a real amount of GitHub administration, and because the operator running an install
 is usually not a kube-agents maintainer, the destination is a mode rather than an assumption:
@@ -693,7 +711,14 @@ is usually not a kube-agents maintainer, the destination is a mode rather than a
 Harness findings are the exception to all three. `nousresearch/hermes-agent` is a third-party
 repository; the loop never opens a pull request there. A harness finding becomes a section in the
 ledger and stops there, for a maintainer reading the ledger to decide whether to carry a patch in
-`deploy/docker/patches/` or raise it upstream themselves. §12 says why it is not an issue.
+`deploy/docker/patches/` or raise it upstream themselves.
+
+**There is no issue-filing path**, for a harness finding or for any other. Nothing in the credential
+or the sandbox is what stops it — a classic token's `repo` scope opens an issue, and `gh issue` is
+one of the subcommands the sidecar's argv rules admit. What is missing is a second output shape in
+the filing skill, which is written against pull requests throughout, and in the ledger's `filed`
+accounting and duplicate check, for an output a maintainer can get by reading the ledger. So every
+non-pull-request outcome is a `SKIPPED: <why>` line and a ledger row that keeps counting.
 
 ## 7. Grading, frequency, and the gate
 
@@ -726,8 +751,22 @@ _finding_ recurs, and how many _pull requests_ the loop is allowed to open — a
 so the design implements both under distinct names rather than picking one:
 
 - **`minOccurrencesPerDay`** is an evidence threshold. A finding seen once may be a fluke; a
-  finding seen twenty times a day is a pattern, and the count is itself the strongest sentence in
-  the pull request. Two sightings is the floor, below which the knob does not go:
+  finding seen several times a day is a pattern, and the count is itself the strongest sentence in
+  the pull request. It counts **runs that reported the finding, not sightings** — the count the
+  agent claims is recorded beside it and discarded by the gate, because a number the agent writes
+  and the gate reads is the one shape an injected instruction could use to promote itself. The
+  consequence is a ceiling nothing validates: on the default hourly schedule a finding cannot be
+  seen more than 24 times a day, and on a daily schedule not more than once, at which point the
+  shipped `medium` rule's threshold of 5 can never be met and that severity is silently disabled.
+  The boundary is six hours — five sightings span four intervals inside a 24-hour window, and
+  `4 × 6 = 24`; `high` clears at 3, so it tolerates twelve. `activeDeadlineSeconds` moves the same
+  ceiling from the other side, which is easier to miss because the schedule still reads hourly:
+  `concurrencyPolicy: Forbid` skips a firing while the previous run is going, so a run that uses its
+  whole four-hour deadline costs the three firings behind it, making the ceiling six runs a day
+  rather than 24. Both shipped thresholds are set under the pessimistic number. An operator who
+  lengthens `selfImprovement.schedule` or the deadline past either boundary has to lower the
+  thresholds to match, and nothing warns them.
+  Two sightings is the floor, below which the knob does not go:
   `MIN_CORROBORATING_RUNS` in `selfimprove_ledger.py` raises any threshold under it, so the
   `critical` rule's `1` promotes on the second run and not the first. The reason is that severity
   is the investigating agent's own grade of its own finding, read off log text the loop does not
@@ -745,18 +784,32 @@ commit above it. The ledger holds the fingerprint, first and last seen, one time
 run that reported it, the current grade, and any pull request already opened for it. The 24-hour
 count the gate reads is derived from those sightings at read time rather than stored (§9.1).
 [`fleet-audit-issue-ledger.md`](fleet-audit-issue-ledger.md) is the precedent for the dedup and
-lifecycle, and this feature should follow it rather than invent a second scheme.
+lifecycle, and this feature follows it rather than inventing a second scheme — with one deliberate
+departure, below.
 
 Neither the severity nor the signal class is part of that identity, and the two exclusions have the
 same justification: both are the agent's judgement about a finding rather than the finding, so a
-re-grade or a re-classification would reset the count and the finding would never promote. Signal
-was in the material at first and a live run took it out — the loop reported one `/command` PATH
-finding as `errors` and the byte-identical title as `inefficiency` an hour later. The location is
-reduced to its file reference for the same reason: the agent wrote that field as a 300-character
+re-grade or a re-classification resets the count and the finding never promotes. A single
+`/command` PATH defect reported as `errors` on one run and as `inefficiency` on the next is two
+rows, one bug, neither able to reach `minOccurrencesPerDay`. `signal` stays in `fingerprint`'s
+signature because every caller has one to hand; the function ignores it. The location is reduced to
+its one `path:line` reference for the same reason — the agent writes that field as a 300-character
 sentence naming two files on one run and as a bare `file.go:1820` on the next, and hashing the prose
-made those two findings. Three rows, one bug, each stuck at a count of one. Narrowing the identity
-trades a split for a possible collision, which is the right way round — a collision files one pull
-request carrying both sets of evidence, while a split silently files nothing.
+makes those two findings. Narrowing the identity trades a split for a possible collision, which is
+the right way round: a collision files one pull request carrying both sets of evidence, while a
+split silently files nothing.
+
+**The title is part of the identity, and the precedent bans it.** Two of
+[`fleet-audit-issue-ledger.md`](fleet-audit-issue-ledger.md)'s principles are inherited — identity
+is computed by the harness and not by the agent, and severity is excluded because it is re-judged
+every run. The third is not. That ledger's tuple is `(check, cluster, namespace, object)` and
+[`audit_report.py`](../../agents/platform/skills/fleet-audit/scripts/audit_report.py) says outright
+that no title may enter it, because prose re-derived each run made four unfixed criticals report as
+resolved. Here there is no `check` — a self-improvement finding is free-form — so location alone
+would collapse every finding in a file into one row. The title is what distinguishes them, and the
+cost is the precedent's failure turned around: a reworded title starts a fresh count, the
+occurrences never accumulate, and the finding is never promoted. That fails closed rather than open,
+and the runner's brief tells the agent in as many words to repeat the title verbatim.
 
 ### 7.3 The gate
 
@@ -780,7 +833,7 @@ Five things, because that is what was asked for and because it is also what
    the same finding rather than a new one.
 3. **The fix and why this fix.** Alternatives considered and why they lost. A finding whose fix is
    not obvious is not filed at all: the filing turn prints `SKIPPED: <why>` and the finding stays in
-   the ledger, counting. §12 says why that is a `SKIPPED` and not an issue.
+   the ledger, counting. There is no issue-filing path for it to fall back to; §6.5 says why.
 4. **Live validation, honestly scoped.** The runner is read-only, so it cannot exercise a fix
    against a running install, and claiming otherwise would be worse than claiming nothing. What it
    can do is narrower than it first looks. The agent image carries no Go toolchain, so `go build`
@@ -846,6 +899,23 @@ only notice is a line in one run's log. The refusal itself lives in
 [`agents/selfimprove/skills/file-pull-request/SKILL.md`](../../agents/selfimprove/skills/file-pull-request/SKILL.md),
 which is canonical for it.
 
+The same asymmetry decides what a marker is allowed to _say_. A finding whose file this tree does
+not contain is not thereby a finding this repository cannot act on: the defect may surface through a
+layer we do own, and a workaround there is a real pull request. A path we do not contain and a
+defect we cannot mitigate are different claims, and only the second is settled by anything a commit
+here could change — so only the second may retire a finding. The marker is worded to assert it:
+`no fix belongs in this repository`, printed after the turn names the layers between the defect and
+the user that it ruled out, so the ledger records the reasoning rather than the conclusion alone.
+
+Prior art reaches the filing turn from the ledger rather than from a search. The brief lists the
+pull requests this loop has already opened for the finding, taken from `promotions[].url` and
+filtered to the repositories the run configures. A keyword search cannot find a pull request whose
+title does not use the finding's words, which is the normal case when the fix landed at a different
+layer from the one the finding names, and a turn that finds no prior art is a turn one step from
+concluding that nothing here can help. The list sits outside the untrusted fence: a number and a
+repository name the run already knows carry nothing a directive could hide in, and fencing them
+would tell the turn to distrust the one piece of prior art more reliable than its own search.
+
 Two of the repository's rules apply awkwardly to a machine author and are worth settling here. The
 **Self-Review** section must not claim a review it did not perform: the runner is the context that
 wrote the change, and `AGENTS.md` is explicit that reviewing a diff in the context that produced it
@@ -882,9 +952,8 @@ selfImprovement:
   # that reports it was cut off, and stops as soon as one reports it finished.
   investigateMaxTurns: 6
   # Also the size of the filing reserve the investigation loop is held back by.
-  # Ceiling 3300, a bound on how much of an hourly schedule one filing turn may
-  # consume. It used to guard the one-hour life of an App installation token; a
-  # personal access token has no such deadline.
+  # Ceiling 3300, which bounds how much of an hourly schedule one filing turn
+  # may consume; the credential itself carries no deadline (§6.3).
   fileTimeoutSeconds: 3000
 
   # report-only  ledger only, no GitHub credential, no write path out of the cluster
@@ -993,9 +1062,9 @@ selfImprovement:
     limits: { cpu: "2", memory: 4Gi }
 ```
 
-There is no `volumeSnapshot` key. §3.4 argues for snapshotting the agent's volume and §12 records
-that the path is not built, so the chart ships no flag rather than one that would accept
-`enabled: true` and do nothing.
+There is no `volumeSnapshot` key. §3.4 argues for snapshotting the agent's volume and says why the
+path is not built, so the chart ships no flag rather than one that would accept `enabled: true` and
+do nothing.
 
 ### 9.1 Reading the ledger
 
@@ -1006,7 +1075,7 @@ and needs no cluster, and `--json` prints the document for piping into `jq`.
 
 Two of its columns are derived rather than stored, and both come from `selfimprove_ledger`'s own
 functions rather than a second implementation. `SEEN` is `occurrences_in_window` — runs, not claimed
-counts, per §12 — while `REPORTED` is the untrusted number beside it. The gate line under each
+counts, per §7.2 — while `REPORTED` is the untrusted number beside it. The gate line under each
 finding is `evaluate_gate` replayed over the whole ledger against the CronJob's current gate, which
 answers "what would the next run do with this" and is deliberately not a record of what any past run
 decided: a run only ever gates the findings it saw that hour.
@@ -1077,16 +1146,16 @@ error anywhere. `activeDeadlineSeconds` bounds it and a killed run is itself rec
 because it is the failure that produces confidently wrong pull requests rather than no pull
 requests. Every finding is stamped with the revision it was found at, so a maintainer can check.
 
-**The API server is unreachable, and the runner waits.** The first live fork-mode run printed one
-line and then sat seven minutes inside its first API read. Two things were wrong and each hid the
-other. The NetworkPolicy named the API server by its ClusterIP, but GKE Dataplane V2 matches egress
-against the destination after service translation — the control-plane endpoint, a private address
-the wide 443 rule excludes on purpose — so the packets were dropped rather than rejected. And the
-Kubernetes client waits forever by default, so the code's own degradation paths, which record the
-run as unverified and carry on, were unreachable: a hang is not an exception. The policy now
-allowlists the addresses in the `default/kubernetes` Endpoints the way the operator's own policy
-does, and every API call the loop makes carries a timeout. The second failure is the one worth
-generalising from — an error path that only runs when the dependency answers is not an error path.
+**The API server is unreachable, and the runner waits.** Two independent things have to be right
+here, and each hides the other when it is not. The NetworkPolicy allowlists the addresses in the
+`default/kubernetes` Endpoints, the way the operator's own policy does, rather than naming the API
+server by its ClusterIP: GKE Dataplane V2 matches egress against the destination after service
+translation — the control-plane endpoint, a private address the wide 443 rule excludes on purpose —
+so a ClusterIP rule drops the packets rather than rejecting them. And every API call the loop makes
+carries a timeout, because the Kubernetes client waits forever by default and the code's own
+degradation paths, which record the run as unverified and carry on, are unreachable from a hang: a
+hang is not an exception. The second is the one worth generalising from — an error path that only
+runs when the dependency answers is not an error path.
 
 **The gate is set too loose on a large fleet.** `maxPullRequestsPerDay` is per install, and fifty
 installs at three a day is a hundred and fifty pull requests against one repository. This is the strongest
@@ -1106,6 +1175,31 @@ the Platform Agent on every write — an hourly restart caused by the thing that
 observing it without touching it. The ledger is a chart-owned object the agent's Deployment does not
 reference, and it must stay that way.
 
+That set is closed by construction rather than by convention — the operator hashes four ConfigMaps it
+builds by name from the PlatformAgent, and there is no label selector, no `ConfigMapList`, and no CR
+field that names one — so the default ledger name cannot enter it. What that leaves is the collision:
+`selfImprovement.ledgerConfigMap` pointed at one of those four names would not churn the hash, it
+would put the runner and the operator's `ForceOwnership` apply in a fight over the agent's own
+configuration. The chart rejects those four names at render time.
+
+**Two writers race on the ledger.** `concurrencyPolicy: Forbid` serialises the CronJob's own Jobs
+and nothing else (§5.2), so a Job created by hand or a `kubectl edit` can overlap a scheduled run.
+An unconditional write loses that race silently, and what it loses is not only occurrence counts: a
+promotion record is the only thing holding a cooldown, so dropping one re-files the finding the next
+time it is seen and the maintainer gets a duplicate of a pull request already in their queue — the
+outcome the gate exists to prevent. `selfimprove_ledger.save` therefore writes against the
+`resourceVersion` `load` observed. The precondition alone would be worse than none, because the
+window between read and write is the whole of `activeDeadlineSeconds` — four hours by default — and
+a concurrent `helm upgrade` reapplying the chart's labels inside it would turn into a 409 that lost
+the run's findings entirely. So a 409 is not fatal: `save` re-reads, folds this run's rows into
+whatever is there now, and retries, four times before giving up with a message saying to go and find
+the second writer. The merge is well defined because the ledger is almost all append-only and
+timestamped. `runs`, `sightings` and `promotions` are unions keyed on their timestamps; `refused`
+and `first_seen` keep the earlier of the two, because both measure how long a human has had the
+finding; the agent's description of a finding comes from the newer writer. Neither writer loses
+rows. The merge runs only on a 409, so the uncontended path writes the run's document verbatim and a
+`prune` is not undone by the pre-prune copy still in the ConfigMap.
+
 **The ledger fills up.** A ConfigMap is capped at 1MiB, and the ledger only grows: fingerprints
 arrive and the write is where a run's findings become durable, so a ledger too large to write loses
 every later run's output and nothing recovers it without someone deleting the object. Three bounds
@@ -1113,60 +1207,52 @@ keep it away from the cap — the agent-supplied prose in an entry is truncated 
 history and each finding's promotion list are fixed-length, and `save` refuses at 768KiB with a
 message naming the likely cause rather than letting the API server return a 413. The one that took
 a second look is retention: a promoted finding has to outlive the sighting window, because its
-pull-request record is what stops the loop re-filing it, and the first implementation expressed that
-as never deleting it at all. At three pull requests a day that is a row added every eight hours and
-none ever removed, which reaches the cap inside a year. A promoted row is now held until its last
-promotion is older than both the retention period and the cooldown, whichever is longer, since the
-cooldown is the only thing that reads it.
+pull-request record is what stops the loop re-filing it. Never deleting it is not the answer — at
+three pull requests a day that is a row added every eight hours and none ever removed, which reaches
+the cap inside a year. A promoted row is held until its last promotion is older than both the
+retention period and the cooldown, whichever is longer, since the cooldown is the only thing that
+reads it.
 
-Because the cooldown now decides both of those, `cooldownHours` is read once, by
-`selfimprove_ledger.sanitise_cooldown_hours`, and the gate and the pruner take the answer. They used
-to parse it separately, which was fine until the value was malformed: the two disagreed on every bad
-input, and on a negative one they disagreed in the direction that opens pull requests. A negative
-timedelta is never greater than an elapsed one, so the gate's cooldown check stopped holding
-anything while the pruner, which had been given a corrected value, went on behaving — a loop
-re-filing the same finding every hour, against a ceiling that counts promotions and so never
-intervened. `.inf` and `nan` were the same mistake with a louder failure: `float()` takes both and
-`timedelta` then raises inside the gate. Unusable values fall back to the 24-hour window with a line
-in the run log; a value past ten years is clamped there, that being where subtracting it from the
-current date stops working rather than a policy about how long a cooldown may be.
+Because the cooldown decides both of those, `cooldownHours` is read once, by
+`selfimprove_ledger.sanitise_cooldown_hours`, and the gate and the pruner take the answer. Two
+readers of one key agree on every well-formed value and disagree on the malformed ones, and on a
+negative value they disagree in the direction that opens pull requests: a negative timedelta is
+never greater than an elapsed one, so the gate's cooldown check holds nothing while a pruner given a
+corrected value goes on behaving — a loop re-filing the same finding every hour, against a ceiling
+that counts promotions and so never intervenes. `.inf` and `nan` are the same input class with a
+louder failure: `float()` takes both and `timedelta` then raises inside the gate. Unusable values
+fall back to the 24-hour window with a line in the run log; a value past ten years is clamped there,
+that being where subtracting it from the current date stops working rather than a policy about how
+long a cooldown may be.
 
-The gate's two whole numbers were the same mistake a third time. `maxPullRequestsPerDay` and
-`minOccurrencesPerDay` were each read with an `int()` guarded against `TypeError` and `ValueError`,
-and `int(float("inf"))` raises neither — it raises `OverflowError`, which nothing upstream catches.
-`.inf` is how YAML spells infinity, and both keys have a meaning an operator might reach for it to
-express, so writing "no ceiling" or "never promote this severity" killed the run at the gate, after
-the investigation had already been paid for, and again on the hour after that. They now go through
-`sanitise_gate_count`, which clamps rather than rejects, because unlike a malformed cooldown a huge
-count is a coherent instruction and a million carries out either reading of it. A negative clamps to
-zero — which is what the arithmetic downstream already made of it — and a value that is not a number
-falls back to the default. `gate_notes` collects whatever the gate did not take at face value so the
-runner can log it, and it calls the same functions the gate does, so a line in the log cannot
-describe a number the gate then used differently.
-
-The set is closed by construction rather than by convention — the operator hashes four ConfigMaps it
-builds by name from the PlatformAgent, and there is no label selector, no `ConfigMapList`, and no CR
-field that names one — so the default ledger name cannot enter it. What that leaves is the collision:
-`selfImprovement.ledgerConfigMap` pointed at one of those four names would not churn the hash, it
-would put the runner and the operator's `ForceOwnership` apply in a fight over the agent's own
-configuration. The chart rejects those four names at render time.
+The gate's two whole numbers go through `sanitise_gate_count` for the same reason and with a
+different rule. `maxPullRequestsPerDay` and `minOccurrencesPerDay` read with a bare `int()` guarded
+against `TypeError` and `ValueError` would still die on `.inf`, which raises `OverflowError` —
+and `.inf` is how YAML spells infinity, which both keys have a meaning an operator might reach for
+it to express. "No ceiling" or "never promote this severity" would kill the run at the gate, after
+the investigation had already been paid for, and again on the hour after that. So the sanitiser
+clamps rather than rejects, because unlike a malformed cooldown a huge count is a coherent
+instruction and a million carries out either reading of it. A negative clamps to zero — which is
+what the arithmetic downstream makes of it anyway — and a value that is not a number falls back to
+the default. `gate_notes` collects whatever the gate did not take at face value so the runner can
+log it, and it calls the same functions the gate does, so a line in the log cannot describe a number
+the gate then used differently.
 
 **The turn ends early and the run reports success.** A `hermes -z` turn that exhausts its iteration
 budget exits 0 after printing a warning, so a truncated investigation and a clean run that found
-nothing are the same event from outside. That is what the first live run was: 34 minutes of real
-evidence-gathering recorded as `outcome=ok findings=0`. The runner passes `--usage-file` and logs
-`completed` and `api_calls` for every turn, and logs the turn's final response — between them the
-Job log now distinguishes the two cases and keeps the only surviving account of what the turn
-decided, the pod's emptyDir being gone by the time anyone reads it.
+nothing are the same event from outside — 34 minutes of real evidence-gathering recorded as
+`outcome=ok findings=0`. The runner passes `--usage-file` and logs `completed` and `api_calls` for
+every turn, and logs the turn's final response. Between them the Job log distinguishes the two cases
+and keeps the only surviving account of what the turn decided, the pod's emptyDir being gone by the
+time anyone reads it.
 
 Instrumenting it is not fixing it. The cap cannot be raised: `hermes -z` constructs its agent
 without passing `max_iterations`, so the constructor default of 90 applies and `agent.max_turns`,
-`--max-turns` and `HERMES_MAX_ITERATIONS` all miss it. Both live investigations stopped at exactly
-90 calls after about 1100 seconds of the 3000-second per-turn budget in force at the time, which
+`--max-turns` and `HERMES_MAX_ITERATIONS` all miss it. Measured investigations stop at exactly 90
+calls somewhere between 1100 and 1424 seconds, well short of a 3000-second per-turn budget, which
 says the binding limit is calls and not clock — so the run has time it cannot spend inside one turn.
-A later run, `selfimprove-fork-4`, took 1424 seconds to reach the same 90 calls, which is the figure
-§9 is sized against: a turn's duration varies with what the evidence tools return, and sizing to the
-fastest measurement is how a budget comes out too small twice.
+1424 is the figure §9 is sized against: a turn's duration varies with what the evidence tools
+return, and sizing to the fastest measurement is how a budget comes out too small.
 
 Two things follow from that. The first is to stop depending on the turn reaching a clean end: the
 skill has the agent write `findings.json` after its first confirmed finding and rewrite it as it
@@ -1182,15 +1268,14 @@ Chat message to the operator's voice.
 
 The runner merges each turn's findings itself rather than trusting the file to accumulate. The
 continuation prompt asks the agent to append, and an agent that reads its instructions will; the
-case this covers is the one where it does not, and the live evidence that it happens is
-`selfimprove-fork-2` in the paragraph below — which emptied the file mid-turn without any
-continuation involved. Reading the file after every turn, while it is still on disk, is what makes a
-later turn unable to destroy an earlier one's work.
+case this covers is the one where it does not. Agents do empty the file mid-turn without any
+continuation involved — the paragraph below is about one shape of that — so reading the file after
+every turn, while it is still on disk, is what makes a later turn unable to destroy an earlier one's
+work.
 
-A run can still end truncated, when it exhausts `investigateMaxTurns` or the deadline. What is
-different is that this now costs depth rather than the run: the cost is that one run does not cover
-every signal class, and successive runs plus the ledger's occurrence counts are what make that
-acceptable.
+A run can still end truncated, when it exhausts `investigateMaxTurns` or the deadline. That costs
+depth rather than the run: one run does not cover every signal class, and successive runs plus the
+ledger's occurrence counts are what make that acceptable.
 
 Filing must not be crowded out the same way, and adding turns is what made that a real risk rather
 than a theoretical one. Both stages clamping against the same remaining clock means the
@@ -1215,101 +1300,90 @@ never — provided the next investigation finds it again, since the gate only ev
 fingerprints the run in front of it reported.
 
 A run whose investigation was capped exits 0. The exit code answers whether the runner worked, and
-the ledger's `outcome` answers how the investigation went; conflating the two put the ordinary run
-in the Job history's failed bucket, and a CronJob whose every run shows `Error` is one nobody reads.
-`selfimprove-fork-3` promoted a finding and wrote its ledger, and reported itself
-failed. The counter-argument — that an operator wants Job status to surface a loop that never
-completes cleanly — is answered by `outcome` being in every ledger row, one `make selfimprove-ledger`
-away, rather than by a false alarm every hour. This is also what keeps `backoffLimit: 0` honest:
-non-zero now means nothing durable came out of the run, and those are exactly the failures a retry
-inside the same `activeDeadlineSeconds` could not have helped. That deadline bounds the Job across
-all attempts rather than each one, so a retry after a long first attempt inherits what is left of
-that deadline and the runner's turn floor refuses it — a pod spent to write a `refused` row.
+the ledger's `outcome` answers how the investigation went; conflating the two puts the ordinary run
+— one that promoted a finding and wrote its ledger — in the Job history's failed bucket, and a
+CronJob whose every run shows `Error` is one nobody reads. The counter-argument, that an operator
+wants Job status to surface a loop that never completes cleanly, is answered by `outcome` being in
+every ledger row, one `make selfimprove-ledger` away, rather than by a false alarm every hour. This
+is also what keeps `backoffLimit: 0` honest: non-zero means nothing durable came out of the run, and
+those are exactly the failures a retry inside the same `activeDeadlineSeconds` could not have
+helped. That deadline bounds the Job across all attempts rather than each one, so a retry after a
+long first attempt inherits what is left of that deadline and the runner's turn floor refuses it — a
+pod spent to write a `refused` row.
 
 Incremental writes are necessary and not sufficient, because the last write before the cap can be
-the empty one. Live run `selfimprove-fork-2` confirmed a finding, spelled it out in its response,
-and stopped holding a `findings.json` of `[]` — it had emptied the file on disproving an earlier
-candidate and never got back to writing the real one. The file was authoritative, so the run
-recorded `findings=0` and the ledger never saw it. `read_findings` therefore takes the turn's
-`completed` flag: an empty file from a turn that finished is the answer and the response must not
+the empty one: a turn empties `findings.json` on disproving a candidate, confirms a real finding,
+spells it out in its response, and hits the cap before writing it back. Taking the file as
+authoritative there records `findings=0` and the ledger never sees the finding. `read_findings`
+therefore takes the turn's `completed` flag: an empty file from a turn that finished is the answer
+and the response must not
 override it, while an empty file from a turn known to have been cut off is only where the agent
 stopped, and the response is read instead. An unknown completion state keeps the file. The
 asymmetry is the reason for that default — recovering wrongly opens a pull request for a hypothesis
 the agent disproved out loud, and declining to recover costs one sighting of a finding the gate was
 going to make the next run confirm again.
 
-**The filing turn runs out of clock, and leaves no account of how far it got.** Live run
-`selfimprove-fork-3` promoted a finding, started the filing turn and
-hit its 900-second budget with nothing pushed — `outcome=truncated findings=1 promoted=1 filed=0`.
-The run recorded that correctly: unconfirmed rather than filed, a slot spent from the day's budget,
-the cooldown started, and a log line naming the branch prefix to go and check. The budget itself was
-too small for the work, filing being a re-read of the finding against the tree plus a patch,
-a commit, a push and a pull request, so the default is now 3000 seconds. There is room for it: the
-measured investigations all ended at the 90-iteration cap well short of `investigateTimeoutSeconds`,
-and this many seconds is now reserved out of the investigation rather than left to whatever survives
-it. 3000 rather than 1500 because a run at the default `maxPullRequestsPerDay: 3` can file three
-times, and only the first is reserved for — the rest take the remainder and defer if it is under
-half of this value, which costs a run and not the finding. The ceiling is 3300, which bounds how
-much of an hourly schedule one filing turn may consume. It used to bound something harder — the
-one-hour life of the App installation token minted at the turn's start — and a personal access
-token has no such deadline, so what survives is the schedule argument alone.
+**The filing turn runs out of clock, and leaves no account of how far it got.** A filing turn that
+hits its budget with nothing pushed is recorded as `outcome=truncated findings=1 promoted=1
+filed=0`: unconfirmed rather than filed, a slot spent from the day's budget, the cooldown started,
+and a log line naming the branch prefix to go and check. That accounting is correct and expensive,
+so the budget has to be sized for the work — filing is a re-read of the finding against the tree
+plus a patch, a commit, a push and a pull request, and the default is 3000 seconds. There is room
+for it: measured investigations end at the 90-iteration cap well short of
+`investigateTimeoutSeconds`, and this many seconds is reserved out of the investigation rather than
+left to whatever survives it. 3000 rather than 1500 because a run at the default
+`maxPullRequestsPerDay: 3` can file three times, and only the first is reserved for — the rest take
+the remainder and defer if it is under half of this value, which costs a run and not the finding.
+The ceiling is 3300, which bounds how much of an hourly schedule one filing turn may consume.
 
-What made this expensive to diagnose was the second half. `run_agent` logged the turn's response on
-a clean exit and not on a timeout, so the one case where the pod's emptyDir is about to vanish
-without anyone reading it was the case that produced no record — there was no way to tell from the
-Job log whether the turn had pushed a branch, written a patch, or never reached `git`. The timeout
-path now logs the partial response too. The general form is the same one the API-server hang below
-has: diagnostics conditioned on the success path are absent exactly when they are needed.
+The second half of the failure mode is diagnostic. `run_agent` logs the turn's response on the
+timeout path as well as on a clean exit, because the one case where the pod's emptyDir is about to
+vanish without anyone reading it is the case that most needs a record: without it there is no way to
+tell from the Job log whether the turn pushed a branch, wrote a patch, or never reached `git`. The
+general form is the same one the API-server hang above has — diagnostics conditioned on the success
+path are absent exactly when they are needed.
 
-**The pull request is opened against a branch that does not contain the deployed revision.** The
-runner used to branch from the commit the pod is running, on the reasoning that the diff should line
-up with the evidence. GitHub computes a pull request's diff from the _merge base_, not from the
-commit the head branched from — so when the base does not contain that commit, every commit of the
-difference is rendered as part of the change. Live run `kube-agents-selfimprove-29791620` filed one:
-the agent wrote a one-line fix to `credential_proxy.py`, committed exactly that file, and the pull
-request showed 40,346 additions across 261 files, because the install was running a test branch the
-fork's `main` had never seen.
+**The pull request is opened against a branch that does not contain the deployed revision.** GitHub
+computes a pull request's diff from the _merge base_, not from the commit the head branched from —
+so a head branched from the deployed revision, against a base that does not contain it, renders
+every commit of the difference as part of the change. A one-line fix to `credential_proxy.py`,
+committed as exactly that one file, becomes a pull request of 40,346 additions across 261 files when
+the install is running a test branch the fork's `main` has never seen. Nothing fails on the way
+there, which is the whole problem: `gh pr create` returns a URL, the runner records a filing, and the
+turn's own closing reply says the diff is clean — it checked its commit, which was correct, rather
+than the pull request, which was not.
 
-Nothing failed, which is the whole problem. `gh pr create` returned a URL, the runner recorded a
-filing, and the turn's own closing reply said the diff was clean — it had checked its commit, which
-was correct, rather than the pull request, which was not.
+Detecting it is not enough. A skill that compares base against head and refuses with `SKIPPED` when
+the file count does not match what it committed buys a refusal instead of an unreviewable pull
+request, and leaves the finding permanently unfilable on any install whose revision is not on the
+base — the loop finds the same thing every hour and refuses it every hour.
 
-The first fix was a check: the base became `selfImprovement.github.baseBranch` rather than a
+So the design removes the condition. One checkout cannot serve both purposes, because the two have
+different correctness criteria: a finding has to be evidenced against the commit the observed pod is
+running, or it describes code nobody is executing; a fix has to be written against the commit a
+maintainer will merge it into, or the distance between the two becomes part of the diff. There are
+therefore two checkouts. The investigation keeps the deployed revision. `fetch_base_checkout` takes a
+second shallow clone at the tip of `baseBranch` — `selfImprovement.github.baseBranch` rather than a
 hardcoded `main`, because an install pinned to a branch of its own is a real configuration and not a
-mistake, and the filing skill compared the base against its head before opening anything, refusing
-with `SKIPPED` when the file count did not match what it committed. That bought a refusal instead of
-an unreviewable pull request, which is better, but it left the finding permanently unfilable on any
-install whose revision was not on the base — the loop would find the same thing every hour and
-refuse it every hour.
+mistake — one per promoted finding, and the filing turn writes there. That makes the head's merge
+base the base tip by construction, and the diff one commit, whatever the image is stamped at.
 
-What replaced it removes the condition rather than detecting it. The reason one checkout could not
-serve both purposes is that the two have different correctness criteria: a finding has to be
-evidenced against the commit the observed pod is running, or it describes code nobody is executing;
-a fix has to be written against the commit a maintainer will merge it into, or the distance between
-the two becomes part of the diff. So there are two checkouts. The investigation keeps the deployed
-revision. `fetch_base_checkout` takes a second shallow clone at the tip of `baseBranch`, one per
-promoted finding, and the filing turn writes there — which makes the head's merge base the base tip
-by construction, and the diff one commit, whatever the image is stamped at.
-
-Three things follow from it beyond the original bug:
+Three things follow from the two-checkout arrangement beyond the diff itself:
 
 - **A deployed image ageing does not degrade the diff.** Its stamped revision only has to be
   reachable for the source fetch, not to be an ancestor of the base. An install six weeks behind
   `main` still opens a one-file pull request.
-- **An image built from a fork's unmerged work can file upstream.** Under the old arrangement its
-  pull requests carried the whole fork delta. Now a finding about code common to both is filed
-  cleanly, and a finding about the fork's own unmerged code fails the skill's §0 re-read against the
-  base tree and opens nothing — which is the right answer, not a regression.
-- **Two findings in one run stop contaminating each other.** They shared the investigation's
-  checkout, so the second turn's `git switch -c` branched from wherever the first had left `HEAD` —
-  on top of the first fix, which then appeared in the second pull request. A tree per fingerprint
-  removes the ordering.
+- **An image built from a fork's unmerged work can file upstream.** A finding about code common to
+  both is filed cleanly, and a finding about the fork's own unmerged code fails the skill's §0
+  re-read against the base tree and opens nothing — which is the right answer.
+- **Two findings in one run do not contaminate each other.** Sharing one checkout, the second
+  turn's `git switch -c` would branch from wherever the first left `HEAD` — on top of the first fix,
+  which then appears in the second pull request. A tree per fingerprint removes the ordering.
 
-The skill's comparison survives as a confirmation rather than a gate, still through the public
-compare endpoint rather than `gh api`, which the pod's own credential-proxy policy refuses as a write
-path its argv rules cannot read — worth noting because the first draft of the check used `gh api` and
-would have been blocked by the loop's own guard rail. What it now catches is a turn that branched in
-the wrong tree, not a misconfigured base.
+The skill's base-against-head comparison survives as a confirmation rather than a gate, through the
+public compare endpoint rather than `gh api`, which the pod's own credential-proxy policy refuses as
+a write path its argv rules cannot read. What it catches is a turn that branched in the wrong tree,
+not a misconfigured base.
 
 The cost is a shallow clone per promoted finding, capped at 180 seconds so a network fault cannot
 eat the finding's model budget, and a failure to obtain it is `SKIPPED` rather than a fallback to the
@@ -1319,10 +1393,10 @@ investigation's tree — falling back would reintroduce exactly the pull request
 `HERMES_WRITE_SAFE_ROOT=/opt/data`, which is correct for the Platform Agent, whose PVC that is, and
 wrong for a run whose home is an emptyDir elsewhere: every `write_file` is denied and the run
 reports nothing found. The runner sets the variable to the run's own home, keeping the confinement
-the isolation ledger asks for while putting the one file that matters inside it. Worth stating as a
-failure mode rather than a fixed bug because it is a class — the runner inherits an image tuned for
-a different process, and anything else in that image keyed to `/opt/data` will fail the same way,
-silently, on a path nobody exercises interactively.
+the isolation ledger asks for while putting the one file that matters inside it. The variable is one
+instance of a class: the runner inherits an image tuned for a different process, and anything else
+in that image keyed to `/opt/data` fails the same way, silently, on a path nobody exercises
+interactively.
 
 **Evidence leaks.** Logs and spans contain customer cluster names, project IDs and user identifiers,
 and an `upstream`-mode pull request publishes whatever is quoted in it. Every evidence command
@@ -1424,157 +1498,3 @@ opt-in and why §7's gate is per-install configuration rather than a constant.
 - **The loop cannot validate a fix against a running install**, by construction. Everything it
   proposes is reviewed and exercised by a human or by CI. That is the correct division: it is a
   detector with a strong evidence habit, not an autonomous committer.
-
-## 12. Where the implementation diverged
-
-Eleven things are built differently from what the sections above proposed. Each is a decision made
-while implementing, recorded here so a reader of the design is not surprised by the code. Where an
-entry cites a section that no longer reads the way it describes, the section was reconciled to the
-code and the entry keeps the record of what changed.
-
-**`hermes -z PROMPT --cli`, not `hermes cron tick`.** §5.2 originally chose the cron path because it was the
-one invocation demonstrated to run a turn to completion without a gateway. It also requires a cron
-store on the profile holding one job contrived to be always due — state to scaffold, and a second
-scheduler underneath the Kubernetes one that decides whether the run happens. `hermes -z` takes the
-brief as an argument and returns when the turn ends, so the CronJob schedule is the only schedule
-and the brief the runner composed is provably the brief that ran. It was exercised headless in this
-image before the switch.
-
-**No credential proxy under `report-only`.** §5.2 originally drew the sidecar unconditionally. It renders only
-for `fork` and `upstream`. The mode's guarantee is that nothing the loop produces leaves the
-cluster, and the way to mean that is for the write path not to exist — rather than to be present,
-permitted, and relied on not to be called. The same conditional governs the shim directory on
-`PATH`, so under `report-only` there is no `git` and no `gh` on it. Telemetry reads call the
-Logging, Trace and Monitoring REST APIs over `urllib` with a metadata-server token for the
-investigator's Workload Identity — no Google client library is involved, and the evidence CLI's one
-third-party import is `kubernetes`, deferred into the function that uses it. (The image does carry
-`google-cloud-pubsub`, for the chat plugin; the loop does not touch it.) Kubernetes reads use that
-in-cluster client against the pod's RBAC. Neither path needs the proxy.
-
-**A tarball under `report-only`, a shallow clone otherwise.** §2 and §5.2 originally said clone
-throughout. Under `report-only` the runner fetches `codeload.github.com/<repo>/tar.gz/<sha>` and
-extracts it through a path-traversal loop of its own plus `filter="data"` — the filter argument
-falls back to a plain `extractall` on a Python that does not accept it, which is why the loop is
-there rather than being replaced by it: it needs one immutable tree at one commit, not history, and this way the fetch is a
-public anonymous HTTPS GET with no credential and no `git` binary — which is what lets that mode
-keep both off the pod. `fork` and `upstream` prefer a real checkout: evidence a finding cites is
-easier to trust from a tree whose provenance `git` can state, and the shims are on the `PATH` in
-exactly those two modes, so the clone costs no credential the mode does not already have. They get
-`git init` plus a depth-1 fetch of the deployed commit, with `origin` pointing at the upstream
-repository and `fork` at the push target. Depth 1 means `git log`, `git blame` and `git merge-base`
-see a single commit inside that checkout; the filing skill says so, because the alternative is an
-agent drawing conclusions from history that is not there.
-
-**Harness attribution reads the patch series, not an upstream checkout.** §2 and §5.2 originally proposed also
-fetching the pinned Hermes tag to diff `/opt/hermes` against. The runner does not. It reads the
-pin from the fetched `tags.env` and hands the agent
-[`deploy/docker/patches/`](../../deploy/docker/patches/) — this repository's own record of every
-deliberate divergence from stock Hermes. A diff against upstream answers "what is different", most
-of which is intended; the patch series answers "what did we change and why", which is the question
-attribution actually asks. The cost is that an _undocumented_ divergence — a Hermes behaviour no
-patch here explains — is invisible to the loop.
-
-**§3.4's snapshot path is not built.** The SQLite stores are unreachable in what ships. §3.4 argues
-for the `VolumeSnapshot` route and still does, but nothing renders a snapshot, a restore claim or
-the RBAC for `snapshot.storage.k8s.io`, so the `selfImprovement.volumeSnapshot` block the design
-sketched in §9 is not in `values.yaml` either — a knob that silently does nothing is worse than an
-absent one, because an operator who sets it believes they have consented to something. The
-consequence is the one §11 already names: findings about session history, kanban state and cron
-delivery are inferred from logs and spans rather than read from the stores, and the row-level
-questions in §4 that need those files stay unanswerable. Adding it later is additive — a flag, two
-objects per run, and a mount — and does not disturb what is here.
-
-**A failed clone degrades to a tarball, and the run can still file.** Under `fork` and `upstream`
-the runner tries `git init` plus a depth-1 fetch; if any step of that fails it falls back to the
-same anonymous tarball `report-only` uses and carries on. It used to be fatal to filing — a tarball
-has no `.git`, the filing turn's first act was `git switch -c` in that same tree, and every promoted
-finding died on "not a git repository" after the model budget had been spent. The two checkouts in
-§10 removed the condition rather than mitigating it: `fetch_base_checkout` fetches the filing tree
-independently at the base tip, so a fallback here costs `git`-backed evidence in the investigation
-tree and nothing else. This is the plainest thing the split bought beyond the diff it was written
-for. What remains is a disclosure gap: the fallback is a line in the Job log, and the run's brief
-does not tell the investigation that `git log` and `git blame` will not work in its checkout.
-
-**`upstream` mode could not open its pull request, and now can.** Recorded here because the fix
-changed the design rather than the code alone. The App path minted per repository, and under
-`upstream` mode the push target and the base are under different owners — a second App
-installation, a second token, and `gh` stores one token per host, so the second mint discarded the
-first. The branch landed, `gh pr create` got a 404, and the finding was charged `UNCONFIRMED`.
-§6 now specifies one classic personal access token instead, which carries the account's `repo`
-scope on both repositories at once, so both halves of the turn run under the same credential. What
-that costs is §6.4.
-
-**No issue-filing path.** §6.5 and §8 both proposed one: a harness finding, or a finding whose fix
-is not obvious, would become an issue rather than a pull request. Neither is built, and nothing in
-the credential or the sandbox is what stops it — a classic token's `repo` scope opens an issue, and
-`gh issue` is one of the subcommands the sidecar's argv rules admit. What is missing is the work:
-a second output shape in the filing skill, which is written against pull requests throughout, and
-in the ledger's `filed` accounting and duplicate check, for an output a maintainer can get by
-reading the ledger. Every non-pull-request outcome is therefore a `SKIPPED: <why>` line and a ledger
-row that keeps counting, which is also what the filing skill implements.
-
-**Identity is `(title, location)`, and the precedent bans the title.** §7.2 named
-[`fleet-audit-issue-ledger.md`](fleet-audit-issue-ledger.md) as the precedent to follow rather than
-invent around. Two of its principles are inherited: identity is computed by the harness and not by
-the agent, and severity is excluded because it is re-judged every run. The third is not. That
-ledger's tuple is `(check, cluster, namespace, object)` and
-[`audit_report.py`](../../agents/platform/skills/fleet-audit/scripts/audit_report.py) says outright
-that no title may enter it, because prose re-derived each run made four unfixed criticals report as
-resolved. Here there is no `check` — a self-improvement finding is free-form — so location alone
-collapses every finding in a file into one row. The title is what distinguishes them, and the cost
-is the failure the precedent warns about, turned around: a reworded title starts a fresh count, the
-occurrences never accumulate, and the finding is never promoted. That fails closed rather than open,
-which is the right direction, and the runner's brief tells the agent in as many words to repeat the
-title verbatim. It is still a divergence from what §7.2 asked for.
-
-`signal` is excluded on the same argument that excludes severity, and a live run is why:
-[`fingerprint`](../../agents/selfimprove/scripts/selfimprove_ledger.py) took it until the loop filed
-one finding as `errors` at 3:54 pm and the identical title as `inefficiency` at 5:07 pm, two rows for
-one bug, neither able to reach `minOccurrencesPerDay`. The classification is as much a judgement call
-as the grade. It stays in the function's signature because every caller has one to hand.
-
-**`minOccurrencesPerDay` counts runs, not sightings.** §7.2 describes it as how often the finding
-recurs — "a finding seen twenty times a day is a pattern". The ledger counts one occurrence per run
-that reported the finding, discarding the count the agent claims, because that count is a number the
-agent writes and the gate reads, which is the one shape an injected instruction could use to promote
-itself. The consequence is a ceiling nothing validates: on the default hourly schedule a finding
-cannot be seen more than 24 times a day, and on a daily schedule not more than once — at which point
-the shipped `medium` rule's threshold of 5 can never be met and that severity is silently disabled.
-The boundary is six hours. Five sightings span four intervals, the window they have to fit inside is
-24 hours, and `4 × 6 = 24`; a schedule any slower than that can never clear a threshold of 5,
-whatever the finding does. `high` clears at 3, so it tolerates twelve. An operator who lengthens
-`selfImprovement.schedule` past either has to lower the thresholds to match, and nothing warns them.
-
-`activeDeadlineSeconds` moves the same ceiling from the other side, which is easier to miss because
-the schedule still reads hourly. `concurrencyPolicy: Forbid` skips a firing while the previous run
-is still going, so a run that uses its whole four-hour deadline costs the three firings behind it:
-24 runs a day is the ceiling when runs are short, and six is the ceiling when they are not. Both
-shipped thresholds are set under the pessimistic number rather than the optimistic one, which is why
-widening the deadline in §9 came with lowering them.
-
-**The ledger write was last-writer-wins, and is not any more.** `selfimprove_ledger.save` used to
-send no `resourceVersion` precondition, so a second writer landing between this run's read and its
-write was overwritten without a word. The reasoning was that the read happens at the top of the run
-and the write at the bottom, making the window the whole of `activeDeadlineSeconds` — four hours by
-default — and a precondition across a window that wide would turn a concurrent `helm upgrade`
-reapplying the chart's labels into a 409 that lost the run's findings entirely.
-`concurrencyPolicy: Forbid` serialises the CronJob's own Jobs and nothing else, so what remained
-exposed was a Job created by hand, or a `kubectl edit`, overlapping a scheduled run.
-
-A live test hit it. A hand-created Job ran alongside two scheduled runs and its closing write took
-the ledger back to its own view of it, dropping the other two runs' rows and, with them, the
-promotion records for two pull requests that had already been opened. An occurrence count that goes
-backwards delays a promotion. A promotion record that disappears removes the only thing holding the
-cooldown, so the finding is re-filed the next time it is seen and the maintainer gets a duplicate of
-a pull request already in their queue — the outcome the gate exists to prevent.
-
-What was wrong in the original reasoning was not the precondition but treating a 409 as fatal.
-`save` now writes against the version `load` observed and, on a conflict, re-reads, folds this run's
-rows into whatever is there now, and retries — four times before giving up with a message saying to
-go and find the second writer. The merge is well defined because the ledger is almost all
-append-only and timestamped: `runs`, `sightings` and `promotions` are unions keyed on their
-timestamps, `refused` and `first_seen` keep the earlier of the two because both measure how long a
-human has had the finding, and the agent's description of a finding comes from the newer writer.
-Neither writer loses rows, which is what the unconditional write could not say. The merge runs only
-on a 409, so the uncontended path still writes the run's document verbatim and a `prune` is not
-undone by the pre-prune copy still in the ConfigMap.

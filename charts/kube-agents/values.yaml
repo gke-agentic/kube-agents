@@ -846,7 +846,7 @@ selfImprovement:
     #
     # Under upstream mode one token covers the push to the fork and the pull
     # request against the upstream, which is what a GitHub App could not do —
-    # see sec. 12 of docs/designs/self-improvement.md.
+    # see sec. 6.1 of docs/designs/self-improvement.md.
     #
     # Nothing rotates or expires it for you. Set an expiry at GitHub and put a
     # reminder on it; an expired token surfaces as a SKIPPED filing turn in the
@@ -869,8 +869,8 @@ selfImprovement:
     gsaName: kubeagents-selfimprove
 
   # No volumeSnapshot block. The design's §3.4 argues for snapshotting the
-  # agent's volume to read its SQLite stores, and §12 records that the path is
-  # not built -- so there is no flag here, rather than one that would accept
+  # agent's volume to read its SQLite stores and records that the path is not
+  # built -- so there is no flag here, rather than one that would accept
   # `enabled: true` and do nothing with it.
 
   # Empty uses the in-cluster LiteLLM Service the agent uses. Set to give the
