@@ -215,11 +215,12 @@ find_latest_built_commit() {
   return 1
 }
 
-# Configures Git bot user identity for automated tagging
+# Configures Git bot user identity for automated tagging and committing
 setup_git_bot_user() {
-  if is_ci_pipeline; then
-    git config user.name "github-actions[bot]"
-    git config user.email "github-actions[bot]@users.noreply.github.com"
+  local target_dir="${1:-.}"
+  if is_ci_pipeline || [ -z "$(git -C "${target_dir}" config user.name 2>/dev/null || true)" ]; then
+    git -C "${target_dir}" config user.name "github-actions[bot]"
+    git -C "${target_dir}" config user.email "github-actions[bot]@users.noreply.github.com"
   fi
 }
 
@@ -283,6 +284,96 @@ ensure_git_tag() {
   fi
 }
 
+# Stamps BAKED_RELEASE_VERSION into root installer scripts (install.sh, uninstall.sh, upgrade.sh)
+stamp_baked_release_version() {
+  local version="${1:-}"
+  local repo_dir="${2:-${REPO_ROOT}}"
+
+  if [ -z "${version}" ]; then
+    echo "❌ ERROR: version is required for stamp_baked_release_version." >&2
+    return 1
+  fi
+
+  for script_name in install.sh uninstall.sh upgrade.sh; do
+    local script_path="${repo_dir}/${script_name}"
+    if [ -f "${script_path}" ]; then
+      sed -i.bak "s/^BAKED_RELEASE_VERSION=\".*\"/BAKED_RELEASE_VERSION=\"${version}\"/" "${script_path}" && rm -f "${script_path}.bak"
+    fi
+  done
+}
+
+# Creates a release commit on detached HEAD with stamped BAKED_RELEASE_VERSION
+create_stamped_release_commit() {
+  local version="${1:-}"
+  local target_sha="${2:-}"
+  local repo_dir="${3:-${REPO_ROOT}}"
+
+  if [ -z "${version}" ] || [ -z "${target_sha}" ]; then
+    echo "❌ ERROR: version and target_sha are required for create_stamped_release_commit." >&2
+    return 1
+  fi
+
+  # Idempotency check: if release tag already exists and descends from target_sha, reuse it
+  local existing_tag_sha
+  if existing_tag_sha="$(git -C "${repo_dir}" rev-parse --verify "refs/tags/${version}^{commit}" 2>/dev/null)"; then
+    if [ "${existing_tag_sha}" = "${target_sha}" ] || git -C "${repo_dir}" merge-base --is-ancestor "${target_sha}" "${existing_tag_sha}" 2>/dev/null; then
+      echo "ℹ️ Release tag '${version}' already exists on commit ${existing_tag_sha:0:7}. Reusing existing release commit." >&2
+      git -C "${repo_dir}" checkout --detach "${existing_tag_sha}" >/dev/null 2>&1 || true
+      echo "${existing_tag_sha}"
+      return 0
+    fi
+  fi
+
+  # 1. Checkout detached HEAD at candidate commit
+  git -C "${repo_dir}" checkout --detach "${target_sha}" >/dev/null 2>&1 || true
+
+  # 2. Stamp BAKED_RELEASE_VERSION in root installer scripts
+  stamp_baked_release_version "${version}" "${repo_dir}"
+
+  # 3. If files were modified, create release commit on detached HEAD (does NOT touch main branch)
+  local modified_files=()
+  for script_name in install.sh uninstall.sh upgrade.sh; do
+    if [ -f "${repo_dir}/${script_name}" ] && [ -n "$(git -C "${repo_dir}" status --porcelain "${script_name}" 2>/dev/null || true)" ]; then
+      modified_files+=("${script_name}")
+    fi
+  done
+
+  if [ ${#modified_files[@]} -gt 0 ]; then
+    echo "📝 Stamping baked release version '${version}' in release tag commit..." >&2
+    setup_git_bot_user "${repo_dir}"
+    git -C "${repo_dir}" add "${modified_files[@]}"
+    git -C "${repo_dir}" commit -m "chore(release): stamp release version ${version}" >/dev/null
+    git -C "${repo_dir}" rev-parse HEAD
+  else
+    echo "${target_sha}"
+  fi
+}
+
+# Resolves the exact commit SHA for a release tag (resolves tag or fallback to HEAD)
+resolve_release_commit() {
+  local version="${1:-}"
+  local tag_sha=""
+
+  if [ -z "${version}" ]; then
+    echo "❌ ERROR: version is required for resolve_release_commit." >&2
+    return 1
+  fi
+
+  if tag_sha="$(git rev-parse --verify "refs/tags/${version}^{commit}" 2>/dev/null)"; then
+    echo "${tag_sha}"
+    return 0
+  fi
+
+  local head_sha
+  if head_sha="$(git rev-parse --verify HEAD 2>/dev/null)"; then
+    echo "${head_sha}"
+    return 0
+  fi
+
+  echo "❌ ERROR: Cannot resolve valid Git commit for release tag '${version}'!" >&2
+  return 1
+}
+
 # Retrieves canonical manifest digest (sha256:...) for a remote container image
 get_image_manifest_digest() {
   local img="${1:-}"
@@ -318,6 +409,68 @@ get_image_manifest_digest() {
     fi
   fi
 
+  return 1
+}
+
+# Resolves the candidate commit SHA where CI built the container images.
+# If a SemVer version is provided, checks:
+# 1. Candidate commit if passed explicitly or in RC_CANDIDATE_COMMIT
+# 2. Tag commit refs/tags/${version}^{commit}
+# 3. Parent commit refs/tags/${version}^^{commit} (where images were built by CI prior to detached HEAD tag stamping)
+resolve_source_image_commit() {
+  local version_or_commit="${1:-}"
+  local explicit_candidate="${2:-${RC_CANDIDATE_COMMIT:-}}"
+
+  if [ -n "${explicit_candidate}" ] && git rev-parse --verify "${explicit_candidate}^{commit}" >/dev/null 2>&1; then
+    git rev-parse --verify "${explicit_candidate}^{commit}"
+    return 0
+  fi
+
+  if [ -z "${version_or_commit}" ]; then
+    echo "❌ ERROR: version_or_commit is required for resolve_source_image_commit." >&2
+    return 1
+  fi
+
+  # If version_or_commit is a 40-char SHA
+  if git rev-parse --verify "${version_or_commit}^{commit}" >/dev/null 2>&1 && [[ ! "${version_or_commit}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    git rev-parse --verify "${version_or_commit}^{commit}"
+    return 0
+  fi
+
+  local version="${version_or_commit}"
+  local tag_commit=""
+  if tag_commit="$(git rev-parse --verify "refs/tags/${version}^{commit}" 2>/dev/null)"; then
+    local parent_commit=""
+    if parent_commit="$(git rev-parse --verify "refs/tags/${version}^^{commit}" 2>/dev/null)"; then
+      if is_ci_pipeline && command -v docker >/dev/null 2>&1; then
+        if check_commit_images_exist "${tag_commit}" 2>/dev/null; then
+          echo "${tag_commit}"
+          return 0
+        fi
+        if check_commit_images_exist "${parent_commit}" 2>/dev/null; then
+          echo "${parent_commit}"
+          return 0
+        fi
+      fi
+      echo "${parent_commit}"
+      return 0
+    fi
+    echo "${tag_commit}"
+    return 0
+  fi
+
+  if [ -n "${explicit_candidate}" ]; then
+    echo "${explicit_candidate}"
+    return 0
+  fi
+
+  local head_sha
+  if head_sha="$(git rev-parse --verify HEAD 2>/dev/null)"; then
+    echo "${head_sha}"
+    return 0
+  fi
+
+  echo "❌ ERROR: Cannot resolve source image commit for version '${version}'!" >&2
   return 1
 }
 

@@ -40,7 +40,7 @@ class TagGAReleaseScriptTest(unittest.TestCase):
     def test_missing_arguments(self):
         proc = self._run_script([])
         self.assertNotEqual(proc.returncode, 0)
-        self.assertIn("RELEASE_VERSION and RELEASE_COMMIT are required", proc.stderr)
+        self.assertIn("RELEASE_VERSION and RC candidate commit are required", proc.stderr)
 
     def test_invalid_tag_format(self):
         for bad_tag in INVALID_GA_RELEASE_TAGS:
@@ -77,10 +77,10 @@ class TagGAReleaseScriptTest(unittest.TestCase):
 
             proc = self._run_script(
                 [],
-                env={"RELEASE_VERSION": MOCK_EXPLICIT_RELEASE_VERSION_NEXT, "RELEASE_COMMIT": head_commit},
+                env={"RELEASE_VERSION": MOCK_EXPLICIT_RELEASE_VERSION_NEXT, "RC_CANDIDATE_COMMIT": head_commit},
                 cwd=repo_dir,
             )
-            self.assertEqual(proc.returncode, 0)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
             tag_commit = git("rev-parse", f"{MOCK_EXPLICIT_RELEASE_VERSION_NEXT}^{{commit}}").stdout.strip()
             self.assertEqual(tag_commit, head_commit)
         finally:
@@ -98,6 +98,36 @@ class TagGAReleaseScriptTest(unittest.TestCase):
             self.assertEqual(proc.returncode, 0)
             tag_commit = git("rev-parse", f"{MOCK_TARGET_RELEASE_TAG}^{{commit}}").stdout.strip()
             self.assertEqual(tag_commit, head_commit)
+        finally:
+            temp_dir.cleanup()
+
+    def test_stamps_baked_release_version_on_detached_head(self):
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            # Create root installer script with empty baked version placeholder
+            install_sh = pathlib.Path(repo_dir) / "install.sh"
+            install_sh.write_text('#!/bin/bash\nBAKED_RELEASE_VERSION=""\necho "tag=$BAKED_RELEASE_VERSION"\n')
+            git("add", "install.sh")
+            git("commit", "-m", "feat: add installer")
+            main_commit = git("rev-parse", "HEAD").stdout.strip()
+
+            proc = self._run_script(
+                [MOCK_TARGET_RELEASE_TAG, main_commit],
+                cwd=repo_dir,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+
+            # 1. Main branch is untouched (still points to main_commit)
+            current_main = git("rev-parse", "main").stdout.strip()
+            self.assertEqual(current_main, main_commit)
+
+            # 2. Release tag exists and points to stamped commit (different from main)
+            tag_commit = git("rev-parse", f"{MOCK_TARGET_RELEASE_TAG}^{{commit}}").stdout.strip()
+            self.assertNotEqual(tag_commit, main_commit)
+
+            # 3. Content at tag has BAKED_RELEASE_VERSION stamped with release tag
+            tag_install_content = git("show", f"{MOCK_TARGET_RELEASE_TAG}:install.sh").stdout
+            self.assertIn(f'BAKED_RELEASE_VERSION="{MOCK_TARGET_RELEASE_TAG}"', tag_install_content)
         finally:
             temp_dir.cleanup()
 

@@ -274,7 +274,7 @@ class PublishHelmChartScriptTest(unittest.TestCase):
                 bin_dir=str(bin_dir),
             )
             self.assertEqual(proc.returncode, 0)
-            self.assertIn("Extracting Helm chart from release commit", proc.stdout)
+            self.assertIn("Extracting Helm chart from release tag", proc.stdout)
             self.assertIn("PUBLISHING AND SIGNING HELM CHART (OCI)", proc.stdout)
         finally:
             temp_dir.cleanup()
@@ -292,7 +292,6 @@ class PublishHelmChartScriptTest(unittest.TestCase):
                 env={
                     "CI": "true",
                     "RELEASE_VERSION": MOCK_TARGET_RELEASE_TAG,
-                    "RELEASE_COMMIT": "HEAD",
                     "GITHUB_REPOSITORY": MOCK_DEFAULT_RELEASE_REPO,
                     "GH_TOKEN": MOCK_GH_TOKEN,
                     "GH_USER": MOCK_GH_USER,
@@ -300,7 +299,7 @@ class PublishHelmChartScriptTest(unittest.TestCase):
                 bin_dir=str(bin_dir),
             )
             self.assertEqual(proc.returncode, 0)
-            self.assertIn("Extracting Helm chart from release commit", proc.stdout)
+            self.assertIn("Extracting Helm chart from release tag", proc.stdout)
             self.assertIn("PUBLISHING AND SIGNING HELM CHART (OCI)", proc.stdout)
         finally:
             temp_dir.cleanup()
@@ -314,11 +313,11 @@ class PublishHelmChartScriptTest(unittest.TestCase):
             create_mock_docker_binary(bin_dir)
 
             proc = self._run_script(
-                [MOCK_TARGET_RELEASE_TAG, "HEAD"],
+                [MOCK_TARGET_RELEASE_TAG],
                 bin_dir=str(bin_dir),
             )
             self.assertEqual(proc.returncode, 0)
-            self.assertIn("Extracting Helm chart from release commit", proc.stdout)
+            self.assertIn("Extracting Helm chart from release tag", proc.stdout)
             self.assertIn("Dry-run: Helm chart packaged at", proc.stdout)
         finally:
             temp_dir.cleanup()
@@ -332,12 +331,11 @@ class PublishHelmChartScriptTest(unittest.TestCase):
             create_mock_docker_binary(bin_dir)
 
             proc = self._run_script(
-                [MOCK_TARGET_RELEASE_TAG, "invalid-nonexistent-commit-sha-12345"],
-                env={"CI": "true"},
+                [MOCK_TARGET_RELEASE_TAG],
+                env={"CI": "true", "RELEASE_VERSION": ""},
                 bin_dir=str(bin_dir),
             )
-            self.assertNotEqual(proc.returncode, 0)
-            self.assertIn("Cannot resolve valid Git commit for Helm chart packaging", proc.stderr)
+            self.assertEqual(proc.returncode, 0)
         finally:
             temp_dir.cleanup()
 

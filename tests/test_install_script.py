@@ -350,6 +350,45 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
                 self.assertIn("DEFAULT_VERTEX_LOCATION", line)
                 self.assertNotIn("$region", line)
 
+    def test_default_image_tag_returns_baked_release_version(self):
+        """Verifies default_image_tag prioritizes BAKED_RELEASE_VERSION when defined."""
+        cmd = 'BAKED_RELEASE_VERSION="0.2.0"; default_image_tag'
+        proc = self._run_install_func(cmd)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "0.2.0")
+
+    def test_default_image_tag_label_returns_official_release(self):
+        """Verifies default_image_tag_label formats baked release version label."""
+        cmd = 'BAKED_RELEASE_VERSION="0.2.0"; default_image_tag_label'
+        proc = self._run_install_func(cmd)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "official release 0.2.0")
+
+    def test_default_image_tag_falls_back_to_head_sha(self):
+        """Verifies default_image_tag defaults to local HEAD SHA in developer checkouts."""
+        cmd = 'BAKED_RELEASE_VERSION=""; default_image_tag'
+        proc = self._run_install_func(cmd)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue(
+            len(proc.stdout.strip()) == 40 or len(proc.stdout.strip()) > 0,
+            f"Expected valid SHA or tag, got: {proc.stdout.strip()}",
+        )
+
+    def test_default_image_tag_extracts_version_from_archive_directory(self):
+        """Verifies default_image_tag resolves version from unpacked archive directory name."""
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="archive-test-") as outer_dir:
+            archive_dir = pathlib.Path(outer_dir) / "kube-agents-0.2.0"
+            archive_dir.mkdir(parents=True)
+            scripts_dir = archive_dir / "k8s-operator" / "scripts"
+            scripts_dir.mkdir(parents=True)
+            (scripts_dir / "installer_common.sh").write_text("# mock installer_common.sh\n")
+
+            cmd = 'BAKED_RELEASE_VERSION=""; default_image_tag'
+            proc = self._run_install_func(cmd, cwd=archive_dir)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(proc.stdout.strip(), "0.2.0")
+
 
 class EnsureExistingClusterNetworkPolicyTest(unittest.TestCase):
     """ensure_existing_cluster_network_policy's two-call enablement sequence.

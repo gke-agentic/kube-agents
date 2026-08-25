@@ -63,12 +63,16 @@ on_error() {
 }
 trap 'on_error $? $LINENO "$BASH_COMMAND"' ERR
 
+# Sourced/baked release version. On developer checkouts (main), this is empty.
+# Release automation stamps this value (e.g. BAKED_RELEASE_VERSION="0.2.0") when publishing a GA release.
+BAKED_RELEASE_VERSION=""
+
 PARAM_NON_INTERACTIVE="false"
 PARAM_DRY_RUN="false"
 PARAM_PROJECT_ID=""
 PARAM_CLUSTER_NAME=""
 PARAM_REGION=""
-PARAM_SOURCE_REF=""
+PARAM_SOURCE_REF="${BAKED_RELEASE_VERSION:-}"
 TEMP_REPO_DIR=""
 
 cleanup() {
