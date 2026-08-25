@@ -806,7 +806,9 @@ HARDENED_GIT_CONFIG = (
 )
 
 
-def gh_credential_helpers(environment: dict[str, str]) -> tuple[tuple[str, str], ...]:
+def gh_credential_helpers(
+    environment: dict[str, str], git_executable: str | None = None
+) -> tuple[tuple[str, str], ...]:
     """The credential helpers `gh auth setup-git` left in the global config.
 
     Appended after `HARDENED_GIT_CONFIG` so they land after its empty
@@ -838,7 +840,19 @@ def gh_credential_helpers(environment: dict[str, str]) -> tuple[tuple[str, str],
     injection from whatever called us. A failure returns nothing and is not
     raised: git is then invoked with the reset and no helper, which fails the
     push with a message naming the credential, rather than failing every git
-    command including the ones that would diagnose it.
+    command including the ones that would diagnose it. `errors="replace"` keeps
+    that promise for a config holding a non-UTF-8 byte: decoding strictly
+    raises `UnicodeDecodeError`, which is a `ValueError` and so escaped both
+    clauses above, and `do_POST` renders a `ValueError` as HTTP 400 -- one
+    accented byte in `user.name` failed every git command in the run.
+    `ValueError` is caught alongside them for whatever else `subprocess` raises
+    under that name.
+
+    The subsection in the pattern is optional because `credential.helper`
+    without one is what `git config --global credential.helper <program>`
+    writes, and the reset this re-arms against empties the whole list rather
+    than the host-scoped share of it. Matching only the host-scoped form left a
+    config that had a working helper with none.
     """
     environment = {
         name: value
@@ -847,13 +861,21 @@ def gh_credential_helpers(environment: dict[str, str]) -> tuple[tuple[str, str],
     }
     try:
         completed = subprocess.run(
-            ["git", "config", "--global", "-z", "--get-regexp", r"^credential\..*\.helper$"],
+            [
+                git_executable or "git",
+                "config",
+                "--global",
+                "-z",
+                "--get-regexp",
+                r"^credential\.(.*\.)?helper$",
+            ],
             capture_output=True,
             text=True,
+            errors="replace",
             env=environment,
             timeout=10,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, ValueError):
         return ()
     if completed.returncode != 0:
         return ()
@@ -1118,15 +1140,33 @@ class CommandExecutor:
         return self._execute(argv, cwd=cwd)
 
     def credential_helper_rearm(self) -> tuple[tuple[str, str], ...]:
-        """`gh_credential_helpers`, read once and kept for the process's life.
+        """`gh_credential_helpers`, read once a helper exists and kept after.
 
         Cached because it runs a subprocess and every git command the filing
-        turn issues would otherwise pay for it. The global config is written
-        once, by the bootstrap command, before any of them arrive; an empty
-        answer is cached too, since a second read would find the same file.
+        turn issues would otherwise pay for it. An empty answer is *not* cached,
+        because "no helper yet" is not the same fact as "no helper": on this
+        sidecar the bootstrap command writes the global config before any git
+        command arrives, but a bootstrap that fails still exits zero -- the
+        chart's `|| echo ...; true` -- so caching its empty read would fail
+        every push for the rest of the run with no way back. It is also not
+        true on the Platform Agent's proxy, where `gh auth setup-git` runs at
+        request time from `/v1/github/refresh` rather than at startup, so the
+        first git command legitimately arrives before the helper exists.
+        Re-reading costs one subprocess per git command only while the answer
+        is empty, which is the case where something is already wrong.
         """
-        if self._credential_helper_rearm is None:
-            self._credential_helper_rearm = gh_credential_helpers(self.environment)
+        if not self._credential_helper_rearm:
+            self._credential_helper_rearm = gh_credential_helpers(
+                self.environment, self.executables.get("git")
+            )
+            if not self._credential_helper_rearm:
+                # The push will fail an hour later with `could not read
+                # Username`, and a missing file, a malformed one and a git that
+                # would not run are indistinguishable from that message alone.
+                LOGGER.warning(
+                    "no credential helper found in the global config; "
+                    "git commands needing a credential will fail"
+                )
         return self._credential_helper_rearm
 
     def _within_workspace(self, candidate: Path) -> bool:

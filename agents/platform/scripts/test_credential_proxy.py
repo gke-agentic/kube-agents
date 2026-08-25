@@ -824,6 +824,64 @@ class UntrustedWorkspaceTest(unittest.TestCase):
         # still has to run: the commands that would diagnose it are git commands.
         self.assertEqual((), self.executor().credential_helper_rearm())
 
+    def test_an_empty_read_is_not_cached(self):
+        """"No helper yet" and "no helper" are not the same fact.
+
+        The Platform Agent's proxy writes the global config from
+        `/v1/github/refresh` rather than at startup, so a git command can
+        legitimately arrive before `gh auth setup-git` has run. Caching that
+        first empty read would pin an empty helper list for the life of the
+        process and break every push after it, with no way back short of a
+        restart. Re-reading costs one subprocess per git command only while the
+        answer is empty, which is already the broken case.
+        """
+        executor = self.executor()
+        self.assertEqual((), executor.credential_helper_rearm())
+        self.seed_gh_global_config(executor)
+        self.assertEqual(
+            (("credential.https://github.com.helper", self.HOST_SCOPED_HELPER),),
+            executor.credential_helper_rearm(),
+        )
+
+    def test_a_non_utf8_global_config_does_not_fail_every_git_command(self):
+        """`UnicodeDecodeError` is a `ValueError`, and `do_POST` catches those.
+
+        Decoding git's output strictly meant one byte anywhere in the global
+        config -- a name with a latin-1 accent in it -- turned every proxied
+        git command into an HTTP 400, with a message naming neither git nor the
+        config. Decode with replacement and the helper on the next line is
+        still read.
+        """
+        executor = self.executor()
+        executor.home_dir.mkdir(parents=True, exist_ok=True)
+        (executor.home_dir / ".gitconfig").write_bytes(
+            b"[user]\n\tname = Ren\xe9 Descartes\n"
+            b'[credential "https://github.com"]\n\thelper = \n\thelper = %s\n'
+            % self.HOST_SCOPED_HELPER.encode()
+        )
+        self.assertEqual(
+            (("credential.https://github.com.helper", self.HOST_SCOPED_HELPER),),
+            executor.credential_helper_rearm(),
+        )
+
+    def test_an_unscoped_helper_is_re_armed_too(self):
+        """`git config --global credential.helper` writes no host subsection.
+
+        The re-arm exists to put back what the reset removes, and the reset
+        empties the whole list rather than the host-scoped share of it. A
+        pattern that required a subsection matched what `gh auth setup-git`
+        writes and nothing else, so a config set by hand -- or by any other
+        tool -- was emptied and not restored.
+        """
+        executor = self.executor()
+        self.seed_gh_global_config(
+            executor, "[credential]\n\thelper = %s\n" % self.HOST_SCOPED_HELPER
+        )
+        self.assertEqual(
+            (("credential.helper", self.HOST_SCOPED_HELPER),),
+            executor.credential_helper_rearm(),
+        )
+
     def test_the_re_arm_is_not_injected_into_a_trusted_workspace(self):
         executor = self.executor(untrusted=False)
         self.seed_gh_global_config(executor)
@@ -923,11 +981,22 @@ class UntrustedWorkspaceTest(unittest.TestCase):
         self.assertIn("/etc/passwd", body["message"])
 
     def git_environment(self, executor):
-        """The environment a proxied `git` actually receives."""
+        """The environment a proxied `git` actually receives.
+
+        The stub hands `config` to the real git rather than dumping the
+        environment for it, because the re-arm reads the global config through
+        this same entry in `executables`. A stub that answered everything with
+        `env` would have the re-arm parsing its own environment dump and
+        pinning the first line of it as a credential helper.
+        """
         stub_dir = Path(self.temp_dir.name) / "fake-bin"
         stub_dir.mkdir(parents=True, exist_ok=True)
         stub = stub_dir / "git"
-        stub.write_text("#!/bin/bash\nenv\n", encoding="utf-8")
+        stub.write_text(
+            '#!/bin/bash\nif [ "$1" = config ]; then exec "%s" "$@"; fi\nenv\n'
+            % (executor.executables.get("git") or shutil.which("git")),
+            encoding="utf-8",
+        )
         stub.chmod(0o755)
         executor.executables["git"] = str(stub)
         result = executor.execute(["git", "status"])
