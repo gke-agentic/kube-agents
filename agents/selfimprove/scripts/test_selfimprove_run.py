@@ -1597,6 +1597,57 @@ class FilingOutcomeTests(unittest.TestCase):
         self.assertEqual(result, R.SKIPPED)
         self.assertIn("#41", detail)
 
+    def test_a_credential_in_the_refusal_does_not_reach_the_ledger(self):
+        """`refused.reason` is durable, and nothing else redacts it.
+
+        Findings go through `redact_findings` before they are stored. This
+        string does not: it is composed by the filing turn -- which has just
+        been handed credential shims -- and `record_refusal` writes it into the
+        ConfigMap, where it stays for the life of the row.
+        """
+        self.stdout = "SKIPPED: ghp_0123456789abcdefghijklmnopqrstuvwxyzAB was rejected"
+        result, detail = self._file()
+        self.assertEqual(result, R.SKIPPED)
+        self.assertNotIn("ghp_", detail)
+        self.assertIn("[REDACTED]", detail)
+
+    def test_the_refusal_is_redacted_before_it_is_cut_to_length(self):
+        """Cutting first would leave a prefix too short to be recognised.
+
+        A credential straddling the 200-character boundary survives the cut as
+        its own first few characters, which `_CREDENTIAL_SHAPES` no longer
+        matches -- a pass that makes the leak shorter rather than stopping it.
+        Redacting the whole line first means the cut can only ever land inside
+        a placeholder.
+        """
+        token = "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB"
+        self.stdout = "SKIPPED: " + "x" * 180 + " " + token + " was rejected"
+        # The token starts at 190 and runs past 200, so the naive order keeps
+        # its first ten characters.
+        self.assertLess(self.stdout.index(token), 200)
+        self.assertGreater(self.stdout.index(token) + len(token), 200)
+        result, detail = self._file()
+        self.assertEqual(result, R.SKIPPED)
+        self.assertNotIn("ghp_", detail)
+        self.assertLessEqual(len(detail), 200)
+
+    def test_redaction_does_not_change_whether_a_refusal_is_permanent(self):
+        """`is_permanent_refusal` reads what this returns.
+
+        It matches the skill's refusal vocabulary at the front of the string,
+        not anything credential-shaped, so a placeholder further along must not
+        move its answer -- otherwise redacting here would quietly convert a
+        permanent policy refusal into a transient one and the loop would re-buy
+        it every hour.
+        """
+        self.stdout = (
+            "SKIPPED: out of bounds - ghp_0123456789abcdefghijklmnopqrstuvwxyzAB is not mine"
+        )
+        result, detail = self._file()
+        self.assertEqual(result, R.SKIPPED)
+        self.assertNotIn("ghp_", detail)
+        self.assertTrue(R.is_permanent_refusal(detail))
+
     def test_a_github_link_that_is_not_a_pull_request_is_not_a_filing(self):
         """Only `/pull/<n>` is something a turn can only have got by opening one.
 

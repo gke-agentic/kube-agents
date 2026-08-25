@@ -2836,7 +2836,25 @@ def file_pull_request(
         # file it, and a cooldown started here would break that promise
         # silently.
         if line.startswith("SKIPPED"):
-            return SKIPPED, line[:200]
+            # Redacted, and redacted before the cut. This is the one string the
+            # filing turn writes that reaches durable storage without passing
+            # `redact_findings`: it is logged, and `record_refusal` writes it
+            # into the ledger ConfigMap as `refused.reason`, where it stays for
+            # the life of the row. The turn composing it has just been handed
+            # credential shims and has read the repository, so "the token
+            # ghp_... was rejected" is a sentence it can plausibly write.
+            #
+            # Order matters. Cutting to 200 first can split a credential across
+            # the boundary, leaving a prefix too short for `_CREDENTIAL_SHAPES`
+            # to recognise -- a redaction pass that makes the leak survivable
+            # rather than stopping it. Redacting the whole line first means the
+            # cut only ever falls inside a placeholder.
+            #
+            # `is_permanent_refusal` reads what comes back. It matches on the
+            # skill's refusal vocabulary rather than on anything credential-
+            # shaped, so replacing a token with a placeholder does not change
+            # its answer.
+            return SKIPPED, evidence_mod.redact(line)[:200]
     # Anything else is unknown, and the likeliest unknown is the dangerous one.
     # A turn killed at its budget (exit 124) may well have opened the pull
     # request and died before printing the URL, and a turn that exits 0 without
