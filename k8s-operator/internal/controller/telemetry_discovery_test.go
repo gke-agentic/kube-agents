@@ -591,6 +591,59 @@ func TestUpdateStatusReadyReportsTelemetry(t *testing.T) {
 		t.Errorf("expected status to follow the endpoint, got (%q, %s)",
 			stored.Status.Telemetry.OTLPEndpoint, stored.Status.Telemetry.OTLPEndpointSource)
 	}
+
+	// Clearing back to None has to reach status too. This is the field the CRD
+	// description, the telemetry docs and the observability skill all tell an operator to
+	// read, and it is also what carries None across an operator restart — see
+	// resolveOTLPEndpoint. An empty endpoint is easy to mistake for "no change".
+	if _, err := r.updateStatusReady(context.Background(), stored, "", otlpSourceNone); err != nil {
+		t.Fatalf("updateStatusReady failed: %v", err)
+	}
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(agent), stored); err != nil {
+		t.Fatalf("failed to read the agent back: %v", err)
+	}
+	if stored.Status.Telemetry.OTLPEndpoint != "" || stored.Status.Telemetry.OTLPEndpointSource != otlpSourceNone {
+		t.Errorf("expected (\"\", %s), got (%q, %s)", otlpSourceNone,
+			stored.Status.Telemetry.OTLPEndpoint, stored.Status.Telemetry.OTLPEndpointSource)
+	}
+}
+
+// TestResolveOTLPEndpointNoneSurvivesRestart is the cross-restart half of the flap guard.
+// The in-memory cache dies with the operator process, so a recorded None is the only
+// thing that survives it — without the replay, one API error on the first probe after a
+// restart resolves every agent on a collector-less cluster to the managed default, puts
+// OTEL_EXPORTER_OTLP_ENDPOINT back on the pod, and rolls it.
+func TestResolveOTLPEndpointNoneSurvivesRestart(t *testing.T) {
+	scheme := setupScheme()
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			return errForbidden()
+		},
+	}).Build()
+
+	agent := &agentv1alpha1.PlatformAgent{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "ns"}}
+	agent.Status.Telemetry = agentv1alpha1.TelemetryStatus{
+		OTLPEndpoint:       "",
+		OTLPEndpointSource: otlpSourceNone,
+	}
+
+	// A brand-new reconciler is the restart: no cache, and the probe fails.
+	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
+	endpoint, source := r.resolveOTLPEndpoint(context.Background(), agent)
+	if endpoint != "" || source != otlpSourceNone {
+		t.Errorf("expected the recorded (\"\", %s) to survive a restart, got (%q, %s)",
+			otlpSourceNone, endpoint, source)
+	}
+
+	// An agent with no recorded telemetry still falls to the default on an inconclusive
+	// probe — None is replayed, not invented.
+	fresh := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
+	blank := &agentv1alpha1.PlatformAgent{ObjectMeta: metav1.ObjectMeta{Name: "b", Namespace: "ns"}}
+	endpoint, source = fresh.resolveOTLPEndpoint(context.Background(), blank)
+	if endpoint != managedOTelEndpoint || source != otlpSourceDefault {
+		t.Errorf("expected (%q, %s) for an agent with no recorded telemetry, got (%q, %s)",
+			managedOTelEndpoint, otlpSourceDefault, endpoint, source)
+	}
 }
 
 func TestResolveOTLPEndpointPrecedence(t *testing.T) {
@@ -622,9 +675,12 @@ func TestResolveOTLPEndpointPrecedence(t *testing.T) {
 		operatorEnv string
 		collector   bool
 		// noReads asserts the rung short-circuits discovery entirely.
-		noReads    bool
-		want       string
-		wantSource string
+		noReads bool
+		// discoveryOff sets OTEL_COLLECTOR_DISCOVERY=false, which is what separates
+		// "nobody looked" (Default) from "looked and found none" (None).
+		discoveryOff bool
+		want         string
+		wantSource   string
 	}{
 		{
 			name:        "deployment env beats everything",
@@ -661,24 +717,40 @@ func TestResolveOTLPEndpointPrecedence(t *testing.T) {
 			wantSource: otlpSourceDiscovered,
 		},
 		{
-			name:       "default when nothing is set or found",
+			// Nothing configured and the probe comes back empty. Not the managed
+			// default: discovery established there is no collector here.
+			name:       "none when nothing is set and no collector is found",
 			agent:      newAgent(),
-			want:       managedOTelEndpoint,
-			wantSource: otlpSourceDefault,
+			want:       "",
+			wantSource: otlpSourceNone,
+		},
+		{
+			// The managed default is what is left when nobody established anything.
+			// Discovery switched off is the reachable way to produce that.
+			name:         "default when discovery is switched off",
+			agent:        newAgent(),
+			discoveryOff: true,
+			collector:    true,
+			noReads:      true,
+			want:         managedOTelEndpoint,
+			wantSource:   otlpSourceDefault,
 		},
 		{
 			// An empty string is a set-but-unset field: it must fall through rather than
 			// pin the agent to "".
 			name:       "empty spec field falls through",
 			agent:      withSpec(newAgent(), "  "),
-			want:       managedOTelEndpoint,
-			wantSource: otlpSourceDefault,
+			want:       "",
+			wantSource: otlpSourceNone,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv(otelEndpointEnvVar, tt.operatorEnv)
+			if tt.discoveryOff {
+				t.Setenv(otelDiscoveryEnvVar, "false")
+			}
 
 			builder := fake.NewClientBuilder().WithScheme(scheme)
 			if tt.collector {

@@ -113,7 +113,7 @@ To determine which users have interacted with the system via Google Chat in the 
   kubectl get platformagent <name> -n kubeagents-system -o jsonpath='{.status.telemetry}'
   ```
 
-  A source of `None` means discovery ran and this cluster has no collector: the agent carries `OTEL_SDK_DISABLED=true`, no endpoint, and spans are going nowhere by design. Point it somewhere with `spec.telemetry.otlpEndpoint`, or install a collector — the operator re-probes every 15 minutes and picks it up without a restart.
+  A source of `None` means discovery ran and this cluster has no collector: the agent carries `OTEL_SDK_DISABLED=true`, no endpoint, and telemetry is off by design. **Stop here** — the remaining checks in this section and all of section 2 assume an endpoint is set, and on a `None` agent they report a permanent, expected mismatch as if it were a fault. Point it somewhere with `spec.telemetry.otlpEndpoint`, or install a collector; the operator re-probes every 15 minutes and picks it up without a restart.
 
   A source of `Default` on a cluster without GKE Managed OTel is the one to treat as a fault: it means nobody established what is there, so discovery is switched off (`OTEL_COLLECTOR_DISCOVERY=false`) or the probe cannot complete — most often the operator's cluster-wide RBAC on `services` has been narrowed. Spans are going nowhere and the endpoint on the pod does not resolve.
 

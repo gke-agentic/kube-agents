@@ -34,9 +34,11 @@ import (
 const (
 	// managedOTelEndpoint is the OTLP/HTTP endpoint of the GKE Managed OpenTelemetry
 	// collector. It is the last rung of the resolution ladder: the value used when
-	// nothing is configured and no collector is discovered. The same endpoint is used by
-	// the LiteLLM integration, so agent traces and LLM-call telemetry land in the same
-	// place (Cloud Trace/Logging).
+	// nothing is configured and discovery did not establish what the cluster has —
+	// switched off, or no probe completed. A probe that completes and finds nothing
+	// resolves to otlpSourceNone instead, and this value is not used. The same endpoint
+	// is used by the LiteLLM integration, so agent traces and LLM-call telemetry land in
+	// the same place (Cloud Trace/Logging).
 	managedOTelEndpoint = "http://opentelemetry-collector.gke-managed-otel.svc.cluster.local:4318"
 
 	// otelEndpointEnvVar is the operator-level override, set on the controller-manager
@@ -63,10 +65,10 @@ const (
 	// expired this window is long gone.
 	otelProbeRetryAfter = 30 * time.Second
 
-	// otelRediscoverAfter re-queues an agent that resolved to the bare default. That is
-	// the only outcome that can silently improve on its own, and reconciles are
-	// event-driven, so without a nudge a collector installed later might not be picked up
-	// for hours.
+	// otelRediscoverAfter re-queues an agent that resolved to the bare default or to
+	// otlpSourceNone. Those are the outcomes that can silently improve on their own, and
+	// reconciles are event-driven, so without a nudge a collector installed later might
+	// not be picked up for hours.
 	otelRediscoverAfter = 15 * time.Minute
 
 	// otlpHTTPPort is the conventional OTLP/HTTP receiver port.
@@ -404,12 +406,26 @@ func (r *PlatformAgentReconciler) resolveOTLPEndpoint(ctx context.Context, agent
 		return endpoint, otlpSourceOperatorEnv
 	}
 
-	// Only a previously *discovered* endpoint is offered back as the last known good one.
-	// Status also records endpoints that came from the rungs above, and replaying one of
-	// those here would launder a removed override into a discovery result.
+	// Only a previous answer that came from *discovery* is offered back. Status also
+	// records endpoints that came from the rungs above, and replaying one of those here
+	// would launder a removed override into a discovery result.
+	//
+	// Both discovery outcomes count, not just Discovered. A recorded None is exactly as
+	// authoritative as a recorded endpoint — the same probe produced it — and it is the
+	// only thing that carries "this cluster has no collector" across an operator restart,
+	// which the in-memory cache cannot. Without it, a restart plus one API error resolves
+	// every agent on a collector-less cluster to the managed default, puts
+	// OTEL_EXPORTER_OTLP_ENDPOINT back, rolls every pod, and rolls them all back 30
+	// seconds later when the next probe succeeds.
 	var lastKnown string
-	if agent != nil && agent.Status.Telemetry.OTLPEndpointSource == otlpSourceDiscovered {
-		lastKnown = agent.Status.Telemetry.OTLPEndpoint
+	lastKnownNone := false
+	if agent != nil {
+		switch agent.Status.Telemetry.OTLPEndpointSource {
+		case otlpSourceDiscovered:
+			lastKnown = agent.Status.Telemetry.OTLPEndpoint
+		case otlpSourceNone:
+			lastKnownNone = true
+		}
 	}
 
 	switch endpoint, outcome := r.discoveredOTLPEndpoint(ctx, lastKnown); outcome {
@@ -417,6 +433,12 @@ func (r *PlatformAgentReconciler) resolveOTLPEndpoint(ctx context.Context, agent
 		return endpoint, otlpSourceDiscovered
 	case otlpDiscoveryNone:
 		return "", otlpSourceNone
+	default:
+		// Nothing was established this time. A recorded None stands rather than
+		// flapping to the managed default.
+		if lastKnownNone {
+			return "", otlpSourceNone
+		}
 	}
 
 	return managedOTelEndpoint, otlpSourceDefault

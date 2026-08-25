@@ -267,8 +267,12 @@ platformAgent:
         value: "true"
 ```
 
-The same precedence is what lets you force the exporter back on — set that value
-to `"false"` — on a cluster where discovery found nothing.
+Setting that value to `"false"` re-enables the SDK on a cluster where discovery
+found nothing, but on its own it does not produce a working exporter: the
+operator emitted no endpoint, so the SDK falls back to `http://localhost:4318`,
+and the NetworkPolicy it renders for a `None` agent carries no collector egress
+rule. Pair it with `telemetry.otlpEndpoint` if you want the export to land
+somewhere.
 
 Use `telemetry.otlpEndpoint` instead when you do have a collector to point at.
 

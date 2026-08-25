@@ -151,14 +151,22 @@ func withCommonLabels(obj metav1.Object, agent *agentv1alpha1.PlatformAgent) {
 // has no collector, and nothing configured one. Then no endpoint is emitted at all and
 // the SDK is switched off instead.
 //
-// Omitting the endpoint on its own would not be enough, which is why this sets
-// OTEL_SDK_DISABLED rather than just skipping the variable. With no
-// OTEL_EXPORTER_OTLP_ENDPOINT the OpenTelemetry SDK falls back to its own default of
-// http://localhost:4318, and the exporter trades a name that never resolves for a
-// connection that is always refused — the same traceback every export interval, which is
-// the symptom being fixed. OTEL_SDK_DISABLED=true is also already the off switch
-// charts/kube-agents/README.md tells operators to set by hand for exactly this cluster
-// shape; this makes it the default there rather than something to discover.
+// What this silences is the stock OpenTelemetry SDK's *metric* exporter, which reads
+// OTEL_EXPORTER_OTLP_ENDPOINT directly and is what actually floods the log: on a
+// collector-less cluster it POSTs /v1/metrics to a name that never resolves, once per
+// export interval, for the life of the pod. Omitting the endpoint on its own would not
+// stop it — with the variable unset the SDK falls back to its own default of
+// http://localhost:4318 and trades the DNS failure for a refused connection at the same
+// rate — so the variable has to be set, not merely skipped. OTEL_SDK_DISABLED=true is
+// also already the off switch charts/kube-agents/README.md tells operators to set by hand
+// for exactly this cluster shape; this makes it the default there.
+//
+// It does NOT reach the hermes_otel plugin, which is where agent *spans* go. That
+// plugin does not read OTEL_EXPORTER_OTLP_ENDPOINT at all — its backend is baked into the
+// image and rewritten at start-up by deploy/shared/otel_config.py, which leaves the baked
+// value alone when the endpoint is empty. So on this path the plugin keeps pointing at
+// the managed collector. That is latent rather than noisy (the plugin exports only when
+// there are spans, and it logs no retry storm), but it is not fixed here.
 //
 // It stays overridable: mergeEnvVars applies spec.deployment.env last, so an operator who
 // wants the exporter pointed somewhere regardless can set either variable themselves.
@@ -208,12 +216,11 @@ func otelTelemetryEnvVars(agentType, name, namespace, endpoint string, disabled 
 // platform-agent manifest, so it falls back to a tag if present before the digest (e.g. :v1@sha256:...)
 // or :latest.
 // E.g.:
-//
-//	"ghcr.io/gke-labs/kube-agents/k8s-operator:0.2.0"                -> "ghcr.io/gke-labs/kube-agents/platform-agent:0.2.0"
-//	"ghcr.io/gke-labs/kube-agents/k8s-operator:rc_2608201147_1c06e1a" -> "ghcr.io/gke-labs/kube-agents/platform-agent:rc_2608201147_1c06e1a"
-//	"ghcr.io/gke-labs/kube-agents/k8s-operator@sha256:111111..."    -> "ghcr.io/gke-labs/kube-agents/platform-agent:latest"
-//	"mirror.corp.internal:5000/kube-agents/k8s-operator:0.2.0"       -> "mirror.corp.internal:5000/kube-agents/platform-agent:0.2.0"
-//	"k8s-operator:1c06e1ab71fdeea55e6100e61c0394206188a5ba"          -> "platform-agent:1c06e1ab71fdeea55e6100e61c0394206188a5ba"
+//   "ghcr.io/gke-labs/kube-agents/k8s-operator:0.2.0"                -> "ghcr.io/gke-labs/kube-agents/platform-agent:0.2.0"
+//   "ghcr.io/gke-labs/kube-agents/k8s-operator:rc_2608201147_1c06e1a" -> "ghcr.io/gke-labs/kube-agents/platform-agent:rc_2608201147_1c06e1a"
+//   "ghcr.io/gke-labs/kube-agents/k8s-operator@sha256:111111..."    -> "ghcr.io/gke-labs/kube-agents/platform-agent:latest"
+//   "mirror.corp.internal:5000/kube-agents/k8s-operator:0.2.0"       -> "mirror.corp.internal:5000/kube-agents/platform-agent:0.2.0"
+//   "k8s-operator:1c06e1ab71fdeea55e6100e61c0394206188a5ba"          -> "platform-agent:1c06e1ab71fdeea55e6100e61c0394206188a5ba"
 func deriveAgentImageFromOperator(operatorImage string) string {
 	lastSlash := strings.LastIndex(operatorImage, "/")
 	prefix := ""

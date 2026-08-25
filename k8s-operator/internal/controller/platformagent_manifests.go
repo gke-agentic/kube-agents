@@ -3949,9 +3949,12 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, p
 		})
 	}
 
-	// 8. GKE Managed OpenTelemetry Collector (Trace Export). Skipped entirely when
-	// telemetry is off: there is no collector in the cluster to reach, so the rule would
-	// open egress to a namespace that does not exist.
+	// 8. GKE Managed OpenTelemetry Collector (Trace Export). Skipped when the agent is
+	// exporting nothing: there is no endpoint to reach, so the rule would grant egress
+	// for traffic that is never sent. Usually the collector's namespace does not exist
+	// either, though not always — a collector Service exposing only gRPC 4317 is rejected
+	// by otlpHTTPEndpointForService and also resolves to None, and there the namespace is
+	// real. The rule is dropped in both cases, because neither one exports.
 	if ns := otlpCollectorNamespace(otlpEndpoint); ns != "" && !otlpDisabled {
 		egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{
 			Ports: []networkingv1.NetworkPolicyPort{
