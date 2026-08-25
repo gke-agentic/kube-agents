@@ -177,8 +177,13 @@ litellm:
     serviceAccountName: kubeagents-litellm
     #   iam.gke.io/gcp-service-account: <GSA>@<project>.iam.gserviceaccount.com
     serviceAccountAnnotations: {}
-    # Empty defaults to platformAgent.harness.projectId / .location; location
-    # must be a region (or "global"), so override it on a zonal cluster.
+    # projectId empty defaults to platformAgent.harness.projectId. location
+    # empty defaults to "global", not the harness location: a model is only
+    # callable from a location that serves it, and the cluster's is often not
+    # one — on a zonal cluster it is not even a valid Vertex location. The
+    # global endpoint gives no in-region ML processing guarantee, and a Model
+    # Garden partner model may be served only from specific regions; set a
+    # region here for either reason.
     projectId: ""
     location: ""
   # Keep in step with the kustomize base

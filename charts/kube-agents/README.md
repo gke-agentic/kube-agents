@@ -223,8 +223,11 @@ ladder and discovery rules: [Deploy → Telemetry](https://gke-labs.github.io/ku
 
 Vertex AI has no API key. The gateway calls
 `projects/<litellm.vertex.projectId>/locations/<litellm.vertex.location>`
-(both default to `platformAgent.harness.projectId`/`.location`) as a Google
-Service Account reached through Workload Identity. That GSA, its
+as a Google Service Account reached through Workload Identity. `projectId`
+defaults to `platformAgent.harness.projectId`; `location` defaults to `global`
+rather than the harness location, since a model is only callable from a
+location that serves it. Set a region for a data-residency requirement or a
+Model Garden partner model: [Concepts → Inference gateway](https://gke-labs.github.io/kube-agents/concepts/inference-gateway/#vertex-ai-and-model-garden). That GSA, its
 `roles/aiplatform.user` grant, and its binding to the gateway's KSA are not
 chart resources — see
 [Security & IAM](https://gke-labs.github.io/kube-agents/reference/security-and-iam/).

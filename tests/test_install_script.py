@@ -7,6 +7,7 @@ NetworkPolicy enablement sequence install.sh runs against adopted clusters.
 
 import os
 import pathlib
+import re
 import stat
 import subprocess
 import tempfile
@@ -95,6 +96,52 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
         proc = self._run_install_func(cmd)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("CHAT=true", proc.stdout)
+
+    def test_parse_args_vertex_location_overrides_the_default(self):
+        """An explicit --vertex-location still wins over DEFAULT_VERTEX_LOCATION."""
+        cmd = (
+            "parse_args --vertex-location=us-east4; "
+            'echo "LOC=$PARAM_VERTEX_LOCATION"'
+        )
+        proc = self._run_install_func(cmd)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("LOC=us-east4", proc.stdout)
+
+    def test_default_vertex_location_is_in_scope_for_install_sh(self):
+        """install.sh resolves $DEFAULT_VERTEX_LOCATION at its own runtime.
+
+        Both default sites live in run_menu_system/main, which a unit test
+        cannot call, so this covers the half that can silently break: whether
+        sourcing the helpers actually puts the constant in scope. Under
+        `set -u` an unsourced constant would abort rather than expand empty.
+        """
+        cmd = (
+            'source_provisioning_helpers "$PWD" >/dev/null; '
+            'echo "LOC=$DEFAULT_VERTEX_LOCATION"'
+        )
+        proc = self._run_install_func(cmd)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("LOC=global", proc.stdout)
+
+    def test_vertex_location_defaults_never_fall_back_to_the_region(self):
+        """Every vertex_location default in install.sh uses the shared constant.
+
+        Defaulting the Vertex location to the cluster region is the bug: the
+        vertex_ai default model is not served from DEFAULT_REGION, and on a
+        zonal cluster the region variable is not even a valid Vertex location.
+        There are two such sites -- the main install path and the --menu
+        reconfigure path -- and missing either leaves the broken value reachable.
+        """
+        defaults = [
+            line.strip()
+            for line in _INSTALL_SH.read_text().splitlines()
+            if re.match(r"^\s*local vertex_location=", line)
+        ]
+        self.assertEqual(len(defaults), 2, f"unexpected vertex_location sites: {defaults}")
+        for line in defaults:
+            with self.subTest(line=line):
+                self.assertIn("DEFAULT_VERTEX_LOCATION", line)
+                self.assertNotIn("$region", line)
 
 
 class EnsureExistingClusterNetworkPolicyTest(unittest.TestCase):
