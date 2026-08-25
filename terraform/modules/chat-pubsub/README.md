@@ -22,7 +22,9 @@ Creating them again then fails with a 409 on both names. The composition ships
 part of `apply`, because a same-named topic can belong to a second install rather
 than be a leftover. See
 [Teardown and re-apply](../../examples/full-install/README.md#teardown-and-re-apply).
-Two installs sharing a project want distinct names.
+Distinct names are what keep that adoption unambiguous; they are not on their own
+enough to run two full installs in one project, which the composition does not
+support today.
 
 ## Usage
 

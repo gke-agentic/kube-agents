@@ -322,8 +322,9 @@ Terraform-managed resources out of band (for instance removing the
 
 Five things in this stack are not symmetric — applying them is not the inverse
 of destroying them — and each one breaks a plain `terraform destroy`, or the
-`terraform apply` that follows it. [`lifecycle.sh`](lifecycle.sh) handles all
-five, so the cycle is repeatable:
+`terraform apply` that follows it. [`lifecycle.sh`](lifecycle.sh) handles four of
+them in the cycle below, so it is repeatable; the fifth is a deliberate step
+described at the end of this section:
 
 ```bash
 make tf-destroy     # or: ./terraform/examples/full-install/lifecycle.sh destroy
@@ -369,9 +370,16 @@ install's live topic is therefore indistinguishable from a leftover — adopt it
 and its agent starts receiving the other install's Chat messages (Pub/Sub
 delivers each message once), and your next `tf-destroy` deletes it. That is why
 the 409 is still what a bare `tf-apply` gives you: it is loud, it destroys
-nothing, and it is recoverable. Give concurrent installs distinct
-`chat_topic_name` and `chat_subscription_name` values, alongside the distinct
-state prefixes [Remote state](#remote-state) describes.
+nothing, and it is recoverable.
+
+Distinct `chat_topic_name` and `chat_subscription_name` values keep adoption from
+being ambiguous, but they do not on their own make two full installs share a
+project. Several other names in this composition are project-level and not
+exposed as variables — the agent service account is
+`kubeagents-platform-gsa` for every install, `namespace` is fixed, and the KMS
+keyrings are project-and-location constants — so the second apply fails on the
+service account instead. Two installs in one project is a larger piece of work
+than the distinct state prefixes [Remote state](#remote-state) describes.
 
 The subscription carries one guard the topic cannot: it is adopted only when it
 is attached to the topic being adopted, so a same-named subscription pointing

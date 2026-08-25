@@ -3,9 +3,11 @@
 # Makes `apply` and `destroy` repeatable for this composition.
 #
 # Five things in this stack are not symmetric — applying them is not the inverse
-# of destroying them — and every one of them turns the second `terraform apply`
-# of a project's life into a failure. Terraform cannot express any of them, so
-# they live here rather than in a README telling you to remember them:
+# of destroying them. The first four turn the second `terraform apply` of a
+# project's life into a failure, and Terraform cannot express any of them, so
+# they live here rather than in a README telling you to remember them. The fifth
+# only bites when a teardown did not run through this state, and its recovery is
+# a subcommand somebody has to decide to type:
 #
 #   1. Cloud KMS key rings and crypto keys CANNOT be deleted, ever. `terraform
 #      destroy` drops them from state and leaves them in the project, so the next
@@ -298,6 +300,22 @@ adopt_kms() {
 # a teardown this state never saw: a state file lost or replaced, a destroy that
 # failed part-way, an earlier hand-rolled install, or a topic created by hand.
 #
+# Reports a describe that failed for a reason other than the resource not being there.
+#
+# Every non-zero exit otherwise lands in the same place — no warning, and "0 imported".
+# That is the one answer that cannot be true for somebody who ran this subcommand
+# *because* an apply had just 409'd on these exact names, so a 403, an unauthenticated
+# gcloud, a project that does not resolve, or the API being disabled all have to say so.
+# A plain NOT_FOUND is the expected case and stays quiet.
+describe_failure() {
+  local what="$1" err="$2"
+  case "$err" in
+    *NOT_FOUND*|*"not found"*|"") return 0 ;;
+  esac
+  warn "could not read $what: ${err%%$'\n'*}"
+  warn "that is not the same as it being absent — nothing was adopted for it."
+}
+
 # This is NOT called from `apply`, and that is the whole design. adopt_kms can run
 # unattended because a KMS key ring is undeletable: adopting one takes nothing away
 # from anybody, and refusing to adopt leaves an install that cannot proceed. A
@@ -326,7 +344,12 @@ adopt_kms() {
 #     this install's, and importing it would hand this state a resource its next
 #     destroy would delete out from under whoever owns it.
 adopt_pubsub() {
-  [[ "$(tfvar enable_google_chat)" == "true" ]] || return 0
+  if [[ "$(tfvar enable_google_chat)" != "true" ]]; then
+    # Say so rather than exiting 0 in silence. Somebody running this subcommand has
+    # just watched an apply 409 on these names, and "no output" reads as "it worked".
+    log "Google Chat is not enabled (enable_google_chat = false); nothing to adopt"
+    return 0
+  fi
 
   local project topic subscription topic_addr sub_addr adopted=0
   load_state
@@ -338,16 +361,21 @@ adopt_pubsub() {
 
   # </dev/null on every describe: pubsub.googleapis.com is enabled by the apply this
   # recovers, so on a fresh project the API may still be off, and gcloud answers
-  # SERVICE_DISABLED with an interactive "enable and retry?" prompt. With output sent
-  # to /dev/null that prompt would be invisible while gcloud blocked on the terminal.
-  if ! in_state "$topic_addr" &&
-     gcloud pubsub topics describe "$topic" --project "$project" </dev/null >/dev/null 2>&1; then
+  # SERVICE_DISABLED with an interactive "enable and retry?" prompt. Without it that
+  # prompt would be invisible while gcloud blocked on the terminal.
+  #
+  # The state check belongs to import_if_absent, which owns it for every caller; these
+  # branches gate only on whether the resource exists in GCP.
+  local err
+  if err=$(gcloud pubsub topics describe "$topic" --project "$project" </dev/null 2>&1 >/dev/null); then
     if import_if_absent "$topic_addr" "projects/$project/topics/$topic" "Pub/Sub topic"; then
       adopted=$((adopted + 1))
     fi
+  else
+    describe_failure "topic $topic" "$err"
   fi
 
-  if ! in_state "$sub_addr"; then
+  {
     # One describe answers both questions: a non-zero exit means the subscription is
     # not there, and the topic it prints is the attachment. Asking twice opened a
     # window where the subscription was deleted in between, after which the second
@@ -379,12 +407,16 @@ adopt_pubsub() {
         esac
         warn "the apply will 409 until you rename chat_subscription_name or remove it."
       fi
+    else
+      describe_failure "subscription $subscription" \
+        "$(gcloud pubsub subscriptions describe "$subscription" --project "$project" \
+             </dev/null 2>&1 >/dev/null || true)"
     fi
-  fi
+  }
 
   drop_override
   trap - EXIT
-  log "Pub/Sub adoption complete: $adopted imported"
+  log "Pub/Sub adoption complete: $adopted imported (searched project $project)"
 }
 
 # create_cluster = false means "somebody else's cluster" — but if THIS state

@@ -20,9 +20,12 @@ silently truncated the help at the remote-state paragraph — the only place the
 script documents KUBE_AGENTS_STATE_BUCKET.
 """
 
+import os
 import pathlib
 import re
+import shutil
 import subprocess
+import tempfile
 import unittest
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -52,13 +55,97 @@ class AdoptPubsubIsNotAutomatic(unittest.TestCase):
     def test_adopt_pubsub_is_reachable_as_its_own_subcommand(self):
         self.assertIn("adopt_pubsub", _case_body("adopt-pubsub"))
 
-    def test_subscription_is_only_adopted_when_attached_to_the_adopted_topic(self):
-        source = _LIFECYCLE_SH.read_text()
+
+_TERRAFORM_STUB = """#!/usr/bin/env bash
+case "$1" in
+  init) exit 0 ;;
+  console)
+    read -r expr
+    case "$expr" in
+      var.enable_google_chat)      echo 'true' ;;
+      var.project_id)              echo '"test-project"' ;;
+      var.chat_topic_name)         echo '"platform-agent-chat-events"' ;;
+      var.chat_subscription_name)  echo '"platform-agent-chat-events-sub"' ;;
+      *)                           echo '""' ;;
+    esac
+    ;;
+  state)  : ;;                       # `state list` -> empty, nothing is adopted yet
+  import) printf '%s\\n' "$*" >>"$IMPORT_LOG" ;;
+esac
+exit 0
+"""
+
+# $ATTACHED_TOPIC is what `subscriptions describe --format=value(topic)` reports, which
+# is the only input the attachment guard reads.
+_GCLOUD_STUB = """#!/usr/bin/env bash
+case "$*" in
+  *"pubsub topics describe"*)        exit 0 ;;
+  *"pubsub subscriptions describe"*) printf '%s\\n' "$ATTACHED_TOPIC"; exit 0 ;;
+esac
+exit 0
+"""
+
+
+class AttachmentGuard(unittest.TestCase):
+    """Drive adopt_pubsub with gcloud and terraform stubbed, and watch what it imports.
+
+    The guard is the safety property of the whole subcommand: it is what stops a
+    same-named subscription that belongs to a different install being imported into
+    this state, where the next destroy would delete it. Asserting that the `[[ ... ]]`
+    test appears in the file does not constrain that — the string can be present and
+    gate nothing — so this runs the code and asserts on the imports it performs.
+    """
+
+    def _run(self, attached_topic):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        bindir = pathlib.Path(tmp) / "bin"
+        bindir.mkdir()
+        for name, body in (("terraform", _TERRAFORM_STUB), ("gcloud", _GCLOUD_STUB)):
+            p = bindir / name
+            p.write_text(body)
+            p.chmod(0o755)
+
+        # Copy the script out of the tree: it cd's to its own directory and writes a
+        # provider override there while importing.
+        script = pathlib.Path(tmp) / "lifecycle.sh"
+        script.write_text(_LIFECYCLE_SH.read_text())
+        script.chmod(0o755)
+
+        import_log = pathlib.Path(tmp) / "imports.txt"
+        import_log.touch()
+        env = {
+            **os.environ,
+            "PATH": f"{bindir}:{os.environ['PATH']}",
+            "IMPORT_LOG": str(import_log),
+            "ATTACHED_TOPIC": attached_topic,
+        }
+        env.pop("KUBE_AGENTS_STATE_BUCKET", None)
+        result = subprocess.run(
+            ["bash", str(script), "adopt-pubsub"],
+            capture_output=True, text=True, env=env, check=False,
+        )
+        return result, import_log.read_text()
+
+    def test_subscription_attached_to_a_foreign_topic_is_not_imported(self):
+        result, imports = self._run("projects/test-project/topics/someone-elses-topic")
+        combined = result.stdout + result.stderr
+
+        self.assertNotIn(
+            "google_pubsub_subscription", imports,
+            "a subscription attached to another topic must never be imported — it "
+            "belongs to something else, and this state's next destroy would delete it",
+        )
+        self.assertIn("leaving it alone", combined)
+        # The topic itself is a legitimate adoption, which also proves the run got far
+        # enough to have imported the subscription had the guard not stopped it.
+        self.assertIn("google_pubsub_topic", imports)
+
+    def test_subscription_attached_to_the_adopted_topic_is_imported(self):
+        _, imports = self._run("projects/test-project/topics/platform-agent-chat-events")
         self.assertIn(
-            '[[ "$attached" == "projects/$project/topics/$topic" ]]',
-            source,
-            "the attachment guard is what stops a same-named subscription belonging "
-            "to something else being imported into this state",
+            "google_pubsub_subscription", imports,
+            "the matching case must still adopt, or the guard is just a refusal",
         )
 
 
