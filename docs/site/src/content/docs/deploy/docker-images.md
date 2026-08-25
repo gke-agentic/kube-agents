@@ -160,18 +160,21 @@ The agent image takes two more build args, both defaulting to empty:
 ```bash
 docker build --platform linux/amd64 --target platform \
   --build-arg GIT_SHA="$(git rev-parse HEAD)" \
-  --build-arg IMAGE_TAG=dev-local \
+  --build-arg IMAGE_SOURCE=https://github.com/<owner>/kube-agents \
   -f deploy/docker/Dockerfile .
 ```
 
 `--target platform` is not optional. The Dockerfile's last stage is a test stage, so a build
 without it produces something other than the agent image.
 
-They are written to `/opt/build-info.json` inside the image
-(`{"revision":"<sha>","tag":"<tag>"}`) and set the OCI
-`org.opencontainers.image.revision` label. The
+`GIT_SHA` sets the OCI `org.opencontainers.image.revision` label and is written to
+`/opt/build-info.json` inside the image, whose whole content is `{"revision":"<sha>"}`.
+`IMAGE_SOURCE` sets `org.opencontainers.image.source` and is not written to the file; it is what
+ghcr package linking and provenance scanners follow, which is why it defaults to empty rather than
+to the upstream URL — a fork's image would otherwise point at a repository that does not hold its
+code. The
 [self-improvement loop](https://github.com/gke-labs/kube-agents/blob/main/docs/designs/self-improvement.md)
-reads that file to decide which source revision it is auditing. An empty
+reads `/opt/build-info.json` to decide which source revision it is auditing. An empty
 `revision` makes it refuse the run by default rather than guess, so a build whose
 image will run the loop should pass `GIT_SHA`; an install that cannot can set
 `selfImprovement.allowUnstampedImage: true` and get an investigation against

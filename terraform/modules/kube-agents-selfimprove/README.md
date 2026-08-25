@@ -41,9 +41,13 @@ product's.
 ConfigMap in the release namespace. `fork` and `upstream` need one Secret, created by hand once:
 
 ```bash
-kubectl -n kubeagents-system create secret generic kube-agents-selfimprove-pat \
-  --from-literal=token=<the robot account's personal access token>
+make selfimprove-enable ARGS="secret -n kubeagents-system --token-stdin"
 ```
+
+That reads the token from stdin and applies it over a pipe, and checks with GitHub that it works
+before storing it. `kubectl create secret --from-literal=token=<PAT>` produces the same object by a
+route that puts the token in argv, where the process table and the shell's history file both keep
+a copy.
 
 Name it in `selfImprovement.github.patSecret`. The token needs the `repo` **and** `read:org` scopes,
 held by an account with write access to `selfImprovement.github.forkRepo`. Both are mandatory:

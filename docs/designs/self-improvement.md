@@ -84,10 +84,12 @@ makes every downstream conclusion unfalsifiable — a finding written against `m
 running a three-week-old image describes code that is not there.
 
 **The image carries its own commit, because this feature stamps it.**
-[`deploy/docker/Dockerfile`](../../deploy/docker/Dockerfile) takes an `ARG GIT_SHA` and writes an
-`org.opencontainers.image.revision` label and `/opt/build-info.json` holding the revision and the
-tag. Nothing else in the image names its commit — `.dockerignore` excludes `.git`, so the build
-context does not contain the metadata, the operator omits `app.kubernetes.io/version` for want of a
+[`deploy/docker/Dockerfile`](../../deploy/docker/Dockerfile) takes an `ARG GIT_SHA` and writes it
+both to an `org.opencontainers.image.revision` label and to `/opt/build-info.json`, whose whole
+content is `{"revision":"<sha>"}`. The label is what registries and scanners read; the file is what
+the runner reads, and they are two instructions rather than one so that a gate checking only the
+label cannot stay green while the file is missing. Nothing else in the image names its commit —
+`.dockerignore` excludes `.git`, so the build context does not contain the metadata, the operator omits `app.kubernetes.io/version` for want of a
 build-time version to report (`manifest_helpers.go:80`), and `AgentStatus` records phase, address,
 replicas and endpoints but no image, tag, digest or version.
 
@@ -528,9 +530,11 @@ The credential proxy sidecar runs `CREDENTIAL_PROXY_BOOTSTRAP_COMMAND` before it
 later runs every shimmed command in. That is what makes one line enough:
 
 ```sh
-if [ -s /var/run/secrets/selfimprove-github/token ]; then
-gh auth login --with-token < /var/run/secrets/selfimprove-github/token && gh auth setup-git;
-fi; true
+{ gh auth login --with-token < /var/run/secrets/selfimprove-github/token && gh auth setup-git; }
+  > /home/selfimprove/.credential-bootstrap.log 2>&1
+  || echo "credential bootstrap failed with exit $?; the filing turn will have no GitHub identity" \
+     >> /home/selfimprove/.credential-bootstrap.log;
+true
 ```
 
 `gh` and `git` are authenticated from that moment, for the life of the pod, and the runner's own
@@ -538,17 +542,24 @@ fi; true
 chart builds it from the mount directory and `selfImprovement.github.patSecretKey`, which is
 `token` by default, so a Secret keyed on something else moves the filename.
 
-Three details in it are load-bearing:
+Four details in it are load-bearing:
 
-- **The redirect.** `bootstrap()` runs the command with `stdin=subprocess.DEVNULL`, so
+- **The stdin redirect.** `bootstrap()` runs the command with `stdin=subprocess.DEVNULL`, so
   `--with-token` has to read the token from a file rather than from a pipe.
 - **`; true`.** A non-zero exit from the bootstrap command raises and kills the sidecar, taking the
   whole run with it. A missing or unreadable Secret should cost the filing turn, not the
   investigation — §6.3 is what turns it into a clean `SKIPPED`.
+- **The log redirect.** `; true` throws the exit status away, and with it `gh auth login`'s account
+  of _why_ the token was refused — the one message that distinguishes a missing scope from a
+  revoked token. Sending both streams to a file on the shared workspace keeps it: the runner's
+  `read_bootstrap_log` quotes the tail of
+  `/home/selfimprove/.credential-bootstrap.log` under the preflight's own error, so the diagnosis
+  arrives with the failure it explains. The `|| echo` covers the case where `gh` never ran at all
+  and the file would otherwise be empty.
 - **`defaultMode: 0440` on the Secret volume.** A Secret volume is owned `root:fsGroup` and both
-  containers run as uid 10000, so `0400` is unreadable by the process that needs it — and it fails
-  _silently_, because `[ -s ]` stats the file rather than reading it, so the guard passes, the
-  redirect is refused, and `; true` swallows the refusal.
+  containers run as uid 10000, so `0400` is unreadable by the process that needs it. The pod still
+  reaches 2/2: bash cannot open the stdin redirect, the `|| echo` records that, and `; true` leaves
+  a healthy sidecar holding no credential.
 
 It is still not the agent's copy of that variable, which runs `gcloud container clusters
 get-credentials`. A kubeconfig for a managed cluster is precisely the credential this loop is
@@ -621,14 +632,19 @@ reads catch a mis-scoped token, a revoked token and a Secret that never mounted,
 than an hour.
 
 The preflight is also the only place any of those surface, which is what `; true` costs. A token
-`gh auth login` rejects leaves a pod that boots 2/2 and logs nothing — the login's own diagnosis
-went to a pipe the bootstrap discards on exit zero, and the exit is zero by construction. So the
-preflight's message carries the diagnosis the sidecar threw away: on `gh`'s exit code 4 it says the
-Secret named by `selfImprovement.github.patSecret` is empty, absent, or missing the `repo` and
-`read:org` scopes. `gh`'s own advice cannot be passed through unqualified — it tells the reader to
-run `gh auth login` or set `GH_TOKEN`, and in this pod neither is reachable, the login having
-happened in another container an hour earlier. A token missing its scopes is the common case here,
-and a refusal that names the right remedy is the difference between a five-minute fix and a hunt.
+`gh auth login` rejects leaves a pod that boots 2/2 and says nothing on either container's stdout,
+because the exit status the failure travelled in is zero by construction. What survives is the
+bootstrap log, and the preflight is what puts it in front of a reader: on `gh`'s exit code 4 — its
+dedicated "needed a credential and there is none", where every other failure is a 1 — the message
+says the Secret named by `selfImprovement.github.patSecret` is empty, absent, or missing the `repo`
+and `read:org` scopes, and `read_bootstrap_log` appends the tail of what `gh auth login` actually
+printed. That tail is quoted as a claim rather than trusted: `/home/selfimprove` is also the
+runner's `HERMES_WRITE_SAFE_ROOT`, so an investigation turn can write the file, and nothing
+branches on its contents. `gh`'s own advice cannot be passed through unqualified — it tells the
+reader to run `gh auth login` or set `GH_TOKEN`, and in this pod neither is reachable, the login
+having happened in another container an hour earlier. A token missing its scopes is the common case
+here, and a refusal that names the right remedy is the difference between a five-minute fix and a
+hunt.
 
 **There is no expiry story.** A personal access token does not expire partway through a turn, so
 `fileTimeoutSeconds` is a share of the hourly schedule rather than a credential deadline, and the
@@ -685,9 +701,11 @@ other.
 Repository policy is that branches are pushed to a fork, never to `gke-labs/kube-agents`. A
 cross-fork pull request needs write on the fork, to push the branch, and the ability to open a pull
 request against the upstream — which any authenticated account has on a public repository. One
-token covers both. The chart refuses a configuration where `forkRepo` equals the upstream under
-`upstream` mode, and with one token carrying the same permissions everywhere that guard is the only
-thing stopping the loop pushing a branch to the upstream directly.
+token covers both. The chart refuses a configuration where `forkRepo` equals `upstreamRepo` in fork
+and upstream mode alike — compared case-insensitively, because GitHub slugs are and `eq` is not.
+The deny policy constrains pushes to the remote named `fork`, but that name resolves to whatever
+`forkRepo` says, so with one token carrying the same permissions everywhere this render-time guard
+is what stops the loop pushing a branch to the upstream directly.
 
 Because that is a real amount of GitHub administration, and because the operator running an install
 is usually not a kube-agents maintainer, the destination is a mode rather than an assumption:
@@ -713,12 +731,15 @@ repository; the loop never opens a pull request there. A harness finding becomes
 ledger and stops there, for a maintainer reading the ledger to decide whether to carry a patch in
 `deploy/docker/patches/` or raise it upstream themselves.
 
-**There is no issue-filing path**, for a harness finding or for any other. Nothing in the credential
-or the sandbox is what stops it — a classic token's `repo` scope opens an issue, and `gh issue` is
-one of the subcommands the sidecar's argv rules admit. What is missing is a second output shape in
-the filing skill, which is written against pull requests throughout, and in the ledger's `filed`
-accounting and duplicate check, for an output a maintainer can get by reading the ledger. So every
-non-pull-request outcome is a `SKIPPED: <why>` line and a ledger row that keeps counting.
+**There is no issue-filing path**, for a harness finding or for any other. The credential is not
+what stops it — a classic token's `repo` scope opens an issue. Two other things do. The sidecar's
+`selfimprove.gh-issue-reads-only` rule admits `gh issue view`, `list` and `status` and refuses the
+writes among them — `close`, `edit`, `comment`, `transfer` and the rest — so the loop reads the
+tracker for §3.5's prior-art check and writes nothing to it. And there would be nothing to write
+even without that rule: the filing skill is written against pull requests throughout, as are the
+ledger's `filed` accounting and duplicate check, and an issue is an output a maintainer can get by
+reading the ledger instead. So every non-pull-request outcome is a `SKIPPED: <why>` line and a
+ledger row that keeps counting.
 
 ## 7. Grading, frequency, and the gate
 
@@ -952,9 +973,17 @@ selfImprovement:
   # that reports it was cut off, and stops as soon as one reports it finished.
   investigateMaxTurns: 6
   # Also the size of the filing reserve the investigation loop is held back by.
-  # Ceiling 3300, which bounds how much of an hourly schedule one filing turn
-  # may consume; the credential itself carries no deadline (§6.3).
+  # 3300 is a recommended ceiling on how much of an hourly schedule one filing
+  # turn may consume, not an enforced one; the credential carries no deadline
+  # (§6.3) and `budgeted` is what actually clamps a turn.
   fileTimeoutSeconds: 3000
+
+  # SIGTERM budget, and one setting in two places. The handler writes a `killed`
+  # row explaining why the run died, and a contended ledger write is four
+  # PATCHes and three re-reads at 20s per round trip. Kubernetes' default 30
+  # loses exactly that row. Keep the write budget under the grace period.
+  terminationGracePeriodSeconds: 150
+  killWriteBudgetSeconds: 140
 
   # report-only  ledger only, no GitHub credential, no write path out of the cluster
   # fork         branches and pull requests to a fork
@@ -1106,10 +1135,10 @@ the arguments; the five subcommands run in this order:
   schedule you are asking for.
 - **`secret`** and **`labels`** — the two out-of-band objects. `secret` reads the token from a file,
   from stdin, or from the environment, never from an argument, and applies it as `stringData` over
-  a pipe; `kubectl create secret --from-literal` would put it in argv, where any process on the
-  node can read it. `labels` creates `self-improvement` and the four severity labels on the
-  repository pull requests are opened against, because the filing turn can attach a label and
-  cannot create one.
+  a pipe; `kubectl create secret --from-literal` would put it in argv, where the process table and
+  the shell's history file on the operator's own machine both keep a copy. `labels` creates
+  `self-improvement` and the four severity labels on the repository pull requests are opened
+  against, because the filing turn can attach a label and cannot create one.
 - **`values`** — emits the `selfImprovement` block as a YAML values file for `helm`, or as HCL for
   `extra_helm_values` in `terraform/examples/full-install`, which is the supported route since the
   composition does not expose the block directly.
@@ -1202,16 +1231,26 @@ rows. The merge runs only on a 409, so the uncontended path writes the run's doc
 
 **The ledger fills up.** A ConfigMap is capped at 1MiB, and the ledger only grows: fingerprints
 arrive and the write is where a run's findings become durable, so a ledger too large to write loses
-every later run's output and nothing recovers it without someone deleting the object. Three bounds
-keep it away from the cap — the agent-supplied prose in an entry is truncated at 16KiB, the run
-history and each finding's promotion list are fixed-length, and `save` refuses at 768KiB with a
-message naming the likely cause rather than letting the API server return a 413. The one that took
-a second look is retention: a promoted finding has to outlive the sighting window, because its
-pull-request record is what stops the loop re-filing it. Never deleting it is not the answer — at
-three pull requests a day that is a row added every eight hours and none ever removed, which reaches
-the cap inside a year. A promoted row is held until its last promotion is older than both the
-retention period and the cooldown, whichever is longer, since the cooldown is the only thing that
-reads it.
+every later run's output and nothing recovers it without someone deleting the object. What keeps it
+away from the cap is a set of bounds on what one run can add. An entry's agent-written prose is
+truncated at 16KiB across `evidence`, `summary`, `proposed_fix` and `user_impact` together;
+`title` and `location` — the two agent-supplied fields that are not prose, and the two that reach
+the next run's brief and the filing prompt as well as the ledger — get their own much smaller caps;
+and the run history and each finding's promotion list are fixed-length. Past 768KiB, three quarters
+of the API server's limit, `save` sheds rather than refuses: the run history down to five rows,
+then the largest prose fields, each replaced by a marker so a reader can see that a summary once
+existed. It raises only if that still does not fit, with a message naming the likely cause rather
+than letting the API server return a 413. What it never sheds is what the gate reads — a finding
+that loses its sightings stops promoting, and one that loses a promotion record is filed again,
+which trades a loud failure for a quiet wrong answer. Refusing outright would be worse than both,
+because `save` is the last thing a run does: a ledger over the cap would stay over it, every later
+run reading it, pruning it, and raising before it could write the smaller document that would have
+fixed it. The bound that took a second look is retention: a promoted finding has to outlive the
+sighting window, because its pull-request record is what stops the loop re-filing it. Never
+deleting it is not the answer — at three pull requests a day that is a row added every eight hours
+and none ever removed, which reaches the cap inside a year. A promoted row is held until its last
+promotion is older than both the retention period and the cooldown, whichever is longer, since the
+cooldown is the only thing that reads it.
 
 Because the cooldown decides both of those, `cooldownHours` is read once, by
 `selfimprove_ledger.sanitise_cooldown_hours`, and the gate and the pruner take the answer. Two
@@ -1334,7 +1373,10 @@ for it: measured investigations end at the 90-iteration cap well short of
 left to whatever survives it. 3000 rather than 1500 because a run at the default
 `maxPullRequestsPerDay: 3` can file three times, and only the first is reserved for — the rest take
 the remainder and defer if it is under half of this value, which costs a run and not the finding.
-The ceiling is 3300, which bounds how much of an hourly schedule one filing turn may consume.
+3300 is the recommended ceiling — a bound on how much of an hourly schedule one filing turn may
+consume — but nothing enforces it: the chart renders whatever is configured and the runner logs no
+warning past it. What holds the number down in practice is `budgeted`, which clamps every turn to
+what remains of `activeDeadlineSeconds`.
 
 The second half of the failure mode is diagnostic. `run_agent` logs the turn's response on the
 timeout path as well as on a clean exit, because the one case where the pod's emptyDir is about to

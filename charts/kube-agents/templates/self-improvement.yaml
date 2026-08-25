@@ -324,7 +324,7 @@ nothing in the log naming the one that vanished.
 # viewer and no container.* role at all
 # (terraform/modules/kube-agents-selfimprove). On the Kubernetes side the
 # difference is narrower than it sounds: the agent's Role is namespaced too, and
-# what this one gives up is the write half of it, keeping `view` plus `update`
+# what this one gives up is the write half of it, keeping `view` plus `patch`
 # on one ConfigMap by name.
 apiVersion: v1
 kind: ServiceAccount
@@ -1329,9 +1329,10 @@ spec:
                 # 0440, not 0400. A Secret volume is owned by root and by the
                 # pod's fsGroup, and both containers run as uid 10000 -- so
                 # owner-only read is unreadable by the process that needs it.
-                # It fails silently, too: `[ -s ]` in the bootstrap command
-                # stats the file rather than reading it, so the guard passes,
-                # the redirect is refused, and `; true` swallows the refusal.
+                # The pod comes up either way: bash cannot open the redirect,
+                # the `|| echo` records that in the bootstrap log, and `; true`
+                # leaves the sidecar running with no GitHub identity until the
+                # runner's preflight reads the log back and says so.
                 defaultMode: 0440
                 items:
                   - key: {{ $patKey | quote }}

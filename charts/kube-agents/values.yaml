@@ -832,8 +832,12 @@ selfImprovement:
     # platformAgent.credentials.create: false. A token written here reaches
     # version control and Helm's release state. Create it out of band:
     #
-    #   kubectl -n <namespace> create secret generic kube-agents-selfimprove-pat \
-    #     --from-literal=token=<PAT>
+    #   make selfimprove-enable ARGS="secret -n <namespace> --token-stdin"
+    #
+    # That reads the token from stdin and applies it over a pipe.
+    # `kubectl create secret --from-literal=token=<PAT>` is the same object by
+    # a route that puts the token in argv, where the process table and the
+    # shell's history file both keep a copy.
     #
     # A classic token needs `repo` and `read:org`. Both, and not because the
     # loop reads organisation membership: `gh auth login --with-token` checks
