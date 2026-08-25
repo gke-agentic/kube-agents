@@ -1487,11 +1487,17 @@ opt-in and why §7's gate is per-install configuration rather than a constant.
   and has the same fix: the tree stops being writable by whatever asks for the commit only when
   filing moves to its own pod.
 - **Path containment reads argv conservatively, and can refuse a legitimate command.** With
-  `CREDENTIAL_PROXY_UNTRUSTED_WORKSPACE` on, the proxy resolves three token shapes — a leading `/`,
-  a flag carrying `=/`, and a relative path with a `..` component — and refuses the command if any
-  of them lands outside the workspace. It cannot tell those from prose, so a commit message or pull
-  request title beginning with an absolute path is refused with `workspace.path-containment`, and
-  the turn sees a blocked command rather than a validation error. The trade is deliberate: the
+  `CREDENTIAL_PROXY_UNTRUSTED_WORKSPACE` on, the proxy resolves _every_ argv token against the
+  working directory and refuses the command if any of them lands outside the workspace, splitting a
+  flag's value off first so that `--body-file=<path>` is tested as the path it opens. Resolving
+  everything rather than the tokens that look like paths is what catches a token with no `..` and
+  no leading `/` that reaches out through a symlink — and the runner can plant one, since both
+  containers mount the same checkout. It costs nothing in false refusals that a shape test avoided,
+  because prose resolves to a path under the checkout: `..` or `/` _inside_ a word is not a path
+  component, so `-m 'fix: the loader resolves ../x'` and a title naming `/etc/passwd` both survive.
+  What does get refused is a token that _begins_ with `/` — a commit message or pull request title
+  starting with an absolute path, which Conventional Commits already puts a type in front of. The
+  turn then sees a blocked command rather than a validation error. The trade is deliberate: the
   alternative is a denylist of the flags that take a path, and that list is the part that grows.
   The flag is off by default and the Platform Agent does not set it.
 - **Harness findings cannot be fixed by this loop.** A change to Hermes behaviour is either an
