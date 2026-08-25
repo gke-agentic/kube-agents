@@ -1186,6 +1186,16 @@ the arguments; the five subcommands run in this order:
 can drift after the install: a token expires, a fork gets renamed, the agent image moves and the
 divergence guard starts refusing.
 
+Nothing in the tool prompts. The token arrives by file, by stdin or from the environment, every
+other decision is a flag, and colour turns itself off when stdout is not a terminal — so an agent
+walking an operator through the setup can run the whole order unattended. `preflight`, `secret`,
+`labels` and `verify` take `--json`, which replaces the prose with one shape,
+`{"checks": [{"status", "check", "detail", "fix"}], "failed": bool}`, and writes nothing else to
+stdout. One reader parses all four, and it branches on `failed` rather than on which subcommand
+produced the document; each row's `fix` is the sentence to read back to the operator. `values` has
+no `--json` because its output is the artifact rather than a verdict — `--format json` is where
+that lives.
+
 ## 10. Failure modes it takes a position on
 
 **The loop investigates itself.** Its own runs produce logs and errors in the same namespace, and a

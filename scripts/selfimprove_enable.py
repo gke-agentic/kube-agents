@@ -181,6 +181,17 @@ class Report:
         ]
 
 
+def emit_json(rep: Report) -> None:
+    """Write a report as the whole of stdout.
+
+    Every subcommand that takes `--json` emits this one shape, so a caller can
+    parse any of them with the same reader and branch on `failed` rather than
+    on which command it ran. Nothing else goes to stdout in that mode: an agent
+    should not have to strip a banner before `json.loads`.
+    """
+    print(json.dumps({"checks": rep.to_json(), "failed": rep.failed}, indent=2))
+
+
 # --------------------------------------------------------------------------
 # kubectl
 # --------------------------------------------------------------------------
@@ -1190,7 +1201,7 @@ def cmd_preflight(args: argparse.Namespace) -> int:
             rep.warn("api server address", "could not read the kubernetes Endpoints object")
 
     if args.json:
-        print(json.dumps({"checks": rep.to_json(), "failed": rep.failed}, indent=2))
+        emit_json(rep)
     else:
         print("\npreflight -- %s mode, namespace %s\n" % (args.mode, args.namespace))
         for line in rep.render():
@@ -1200,54 +1211,111 @@ def cmd_preflight(args: argparse.Namespace) -> int:
 
 
 def cmd_secret(args: argparse.Namespace) -> int:
+    # Two audiences, one set of verdicts. Every branch records what it decided
+    # in `rep`; `--json` then emits that and suppresses the prose, so stdout is
+    # parseable whole. The refusals keep going to stderr in prose mode -- they
+    # are the reason a shell pipeline saw nothing on stdout, and moving them
+    # onto stdout would hide that from a script that only reads one stream.
+    rep = Report(colour=args.colour)
+    quiet = args.json
+
+    def say(*parts: object, **kw: object) -> None:
+        if not quiet:
+            print(*parts, **kw)
+
+    def done() -> int:
+        if quiet:
+            emit_json(rep)
+        return 1 if rep.failed else 0
+
     token = read_token(args, required=True)
     assert token
     if args.check_token:
         who = github("/user", token)
         if who.status != 200:
-            print("refusing to store it: GitHub returned %s for /user" % who.status, file=sys.stderr)
-            return 1
+            rep.fail(
+                "token",
+                "GitHub returned %s for /user" % who.status,
+                "The token is expired, revoked, or mistyped. Mint a new one and re-run.",
+            )
+            say("refusing to store it: GitHub returned %s for /user" % who.status, file=sys.stderr)
+            return done()
         gap = missing_scopes(parse_scopes(who.headers.get("x-oauth-scopes")))
         header_absent = who.headers.get("x-oauth-scopes") is None
         if gap and not header_absent:
-            print(
+            rep.fail(
+                "token scopes",
+                "missing %s" % ", ".join(gap),
+                "Re-mint the token with those scopes, or pass --no-check-token to store it anyway.",
+            )
+            say(
                 "refusing to store it: missing scope(s) %s. Pass --no-check-token to store anyway."
                 % ", ".join(gap),
                 file=sys.stderr,
             )
-            return 1
-        print("token authenticates as %s" % (who.body or {}).get("login", "?"))
+            return done()
+        rep.ok("token", "authenticates as %s" % (who.body or {}).get("login", "?"))
+        say("token authenticates as %s" % (who.body or {}).get("login", "?"))
+    else:
+        rep.skip("token", "--no-check-token, so it was stored without asking GitHub whether it works")
 
     manifest = secret_manifest(args.pat_secret, args.namespace, args.pat_secret_key, token)
     if args.dry_run:
-        print(
+        rep.ok(
+            "secret",
+            "would apply %s/%s with key %s (%d bytes of token, not shown)"
+            % (args.namespace, args.pat_secret, args.pat_secret_key, len(token)),
+        )
+        say(
             "would apply Secret %s/%s with key %s (%d bytes of token, not shown)"
             % (args.namespace, args.pat_secret, args.pat_secret_key, len(token))
         )
-        return 0
+        return done()
     kubectl(
         ["apply", "-f", "-"],
         namespace=args.namespace,
         context=args.context,
         stdin=manifest,
     )
-    print(
+    rep.ok(
+        "secret",
+        "applied %s/%s, key %s" % (args.namespace, args.pat_secret, args.pat_secret_key),
+    )
+    rep.ok(
+        "chart values",
+        "set selfImprovement.github.patSecret=%s and patSecretKey=%s"
+        % (args.pat_secret, args.pat_secret_key),
+    )
+    say(
         "applied Secret %s/%s, key %s"
         % (args.namespace, args.pat_secret, args.pat_secret_key)
     )
-    print(
+    say(
         "set selfImprovement.github.patSecret=%s and patSecretKey=%s"
         % (args.pat_secret, args.pat_secret_key)
     )
-    return 0
+    return done()
 
 
 def cmd_labels(args: argparse.Namespace) -> int:
+    rep = Report(colour=args.colour)
+    quiet = args.json
+
+    def say(*parts: object, **kw: object) -> None:
+        if not quiet:
+            print(*parts, **kw)
+
+    def done() -> int:
+        if quiet:
+            emit_json(rep)
+        return 1 if rep.failed else 0
+
     token = read_token(args, required=True)
     base_repo = pr_base_repo(args.mode, args.upstream_repo, args.fork_repo)
     if not base_repo:
-        print("report-only opens no pull request, so there is nothing to label")
-        return 0
+        rep.skip("labels", "report-only opens no pull request, so there is nothing to label")
+        say("report-only opens no pull request, so there is nothing to label")
+        return done()
     want: List[Tuple[str, str, str]] = []
     if args.pr_label:
         want.append((args.pr_label, "0e8a16", "Opened by the kube-agents self-improvement loop"))
@@ -1261,14 +1329,19 @@ def cmd_labels(args: argparse.Namespace) -> int:
             )
         )
 
-    rc = 0
     for name, colour, desc in want:
         existing = github("/repos/%s/labels/%s" % (base_repo, urllib.request.quote(name)), token)
         if existing.status == 200:
-            print("  exists  %s" % name)
+            rep.ok("label %s" % name, "exists on %s" % base_repo)
+            say("  exists  %s" % name)
             continue
         if args.dry_run:
-            print("  would create  %s (#%s)" % (name, colour))
+            rep.warn(
+                "label %s" % name,
+                "absent from %s; would create it (#%s)" % (base_repo, colour),
+                "Re-run without --dry-run.",
+            )
+            say("  would create  %s (#%s)" % (name, colour))
             continue
         resp = github(
             "/repos/%s/labels" % base_repo,
@@ -1277,31 +1350,45 @@ def cmd_labels(args: argparse.Namespace) -> int:
             payload={"name": name, "color": colour, "description": desc},
         )
         if resp.status in (200, 201):
-            print("  created %s" % name)
+            rep.ok("label %s" % name, "created on %s" % base_repo)
+            say("  created %s" % name)
         elif resp.status == 422:
-            print("  exists  %s" % name)
+            rep.ok("label %s" % name, "exists on %s" % base_repo)
+            say("  exists  %s" % name)
         elif resp.status in (403, 404):
             # TRIAGE can attach a label and cannot create one, and the API
             # answers a permission failure on a repository the token can read
             # with 403 -- or 404, when it cannot see the repository at all.
-            print(
+            rep.fail(
+                "label %s" % name,
+                "the token cannot create labels on %s" % base_repo,
+                "Ask someone with write access to create it; the loop attaches only "
+                "labels that already exist.",
+            )
+            say(
                 "  DENIED  %s -- the token cannot create labels on %s. Ask someone with "
                 "write access to create it; the loop attaches only labels that exist."
                 % (name, base_repo)
             )
-            rc = 1
         else:
-            print("  ERROR   %s -- %s %s" % (name, resp.status, (resp.body or {}).get("message", "")))
-            rc = 1
-    print("")
-    print(
+            rep.fail(
+                "label %s" % name,
+                "%s %s" % (resp.status, (resp.body or {}).get("message", "")),
+            )
+            say("  ERROR   %s -- %s %s" % (name, resp.status, (resp.body or {}).get("message", "")))
+    # Prose only. Which severities the gate can actually reach is a real check
+    # in its own right -- `check_gate_reachability`, which preflight and verify
+    # both run -- so a JSON reader gets it there rather than as an untyped note
+    # bolted onto this command's rows.
+    say("")
+    say(
         "A severity with no rule in selfImprovement.gate never reaches a pull request, so"
     )
-    print(
+    say(
         "its label sits unused until a rule is added. The chart's default gate rules"
     )
-    print("cover critical, high and medium.")
-    return rc
+    say("cover critical, high and medium.")
+    return done()
 
 
 def cmd_values(args: argparse.Namespace) -> int:
@@ -1533,7 +1620,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
     check_ksa(rep, args)
 
     if args.json:
-        print(json.dumps({"checks": rep.to_json(), "failed": rep.failed}, indent=2))
+        emit_json(rep)
     else:
         print("\nverify -- %s/%s\n" % (args.namespace, args.cronjob))
         for line in rep.render():
@@ -1628,6 +1715,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
         help="store it without asking GitHub whether it works",
     )
+    p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_secret)
 
     p = sub.add_parser("labels", help="create the labels the loop attaches")
@@ -1635,6 +1723,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_token(p)
     add_repos(p)
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_labels)
 
     p = sub.add_parser("values", help="emit the chart values, as YAML or HCL")

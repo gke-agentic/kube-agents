@@ -666,5 +666,115 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(json.loads(applied["stdin"])["stringData"], {"token": "ghp_x"})
 
 
+class TestJSONOutput(unittest.TestCase):
+    """`--json` is the agent-facing surface, so the shape is the contract.
+
+    Each case parses stdout whole rather than searching it: a banner or a
+    stray progress line would make `json.loads` raise, which is the failure
+    a caller would hit and the one worth asserting.
+    """
+
+    def run_json(self, argv, github_response, kubectl=None):
+        out = io.StringIO()
+        with mock.patch.dict(enable.os.environ, {"SELFIMPROVE_PAT": "ghp_supersecret"}):
+            with mock.patch.object(enable, "github", github_response):
+                with mock.patch.object(
+                    enable, "kubectl", kubectl or mock.Mock(return_value="")
+                ):
+                    with contextlib.redirect_stdout(out):
+                        with contextlib.redirect_stderr(io.StringIO()):
+                            rc = enable.main(argv)
+        return rc, json.loads(out.getvalue()), out.getvalue()
+
+    def test_secret_json_parses_whole_and_never_carries_the_token(self):
+        rc, doc, raw = self.run_json(
+            ["secret", "--dry-run", "--json"],
+            lambda *a, **k: resp(200, {"login": "bot"}, {"x-oauth-scopes": "repo, read:org"}),
+        )
+        self.assertEqual(rc, 0)
+        self.assertFalse(doc["failed"])
+        self.assertNotIn("ghp_supersecret", raw)
+        checks = {c["check"]: c for c in doc["checks"]}
+        self.assertEqual(checks["token"]["status"], "ok")
+        self.assertEqual(checks["secret"]["status"], "ok")
+        self.assertIn("not shown", checks["secret"]["detail"])
+
+    def test_secret_json_turns_a_scope_refusal_into_a_failed_check_with_a_fix(self):
+        rc, doc, _ = self.run_json(
+            ["secret", "--json"],
+            lambda *a, **k: resp(200, {"login": "bot"}, {"x-oauth-scopes": "public_repo"}),
+            kubectl=mock.Mock(side_effect=AssertionError("must not apply")),
+        )
+        self.assertEqual(rc, 1)
+        self.assertTrue(doc["failed"])
+        row = [c for c in doc["checks"] if c["status"] == "fail"][0]
+        self.assertEqual(row["check"], "token scopes")
+        self.assertIn("repo", row["detail"])
+        self.assertIn("--no-check-token", row["fix"])
+
+    def test_labels_json_carries_a_row_per_label(self):
+        rc, doc, _ = self.run_json(
+            [
+                "labels",
+                "--json",
+                "--dry-run",
+                "--mode",
+                "upstream",
+                "--upstream-repo",
+                "gke-labs/kube-agents",
+            ],
+            lambda *a, **k: resp(404, {"message": "Not Found"}),
+        )
+        self.assertEqual(rc, 0)
+        self.assertFalse(doc["failed"])
+        names = [c["check"] for c in doc["checks"]]
+        self.assertIn("label self-improvement", names)
+        for sev in enable.SEVERITIES:
+            self.assertIn("label severity:%s" % sev, names)
+        self.assertTrue(all(c["status"] == "warn" for c in doc["checks"]))
+
+    def test_labels_json_marks_a_denied_label_failed_and_sets_the_exit_code(self):
+        rc, doc, _ = self.run_json(
+            ["labels", "--json", "--mode", "upstream", "--upstream-repo", "gke-labs/kube-agents"],
+            lambda path, token, method="GET", payload=None, timeout=30: resp(
+                404 if method == "GET" else 403, {"message": "Resource not accessible"}
+            ),
+        )
+        self.assertEqual(rc, 1)
+        self.assertTrue(doc["failed"])
+        self.assertTrue(all(c["status"] == "fail" for c in doc["checks"]))
+        self.assertIn("cannot create labels", doc["checks"][0]["detail"])
+
+    def test_report_only_labels_is_a_skip_not_a_failure(self):
+        rc, doc, _ = self.run_json(
+            ["labels", "--json", "--mode", "report-only"],
+            mock.Mock(side_effect=AssertionError("must not call GitHub")),
+        )
+        self.assertEqual(rc, 0)
+        self.assertFalse(doc["failed"])
+        self.assertEqual(doc["checks"][0]["status"], "skip")
+
+    def test_every_json_capable_subcommand_emits_the_same_two_keys(self):
+        """One reader for all of them, or the flag is not worth having."""
+        parser = enable.build_parser()
+        with_json = []
+        for name, sub in parser._subparsers._group_actions[0].choices.items():
+            if any("--json" in a.option_strings for a in sub._actions):
+                with_json.append(name)
+        self.assertEqual(sorted(with_json), ["labels", "preflight", "secret", "verify"])
+
+    def test_emit_json_writes_nothing_but_the_document(self):
+        rep = enable.Report(colour=False)
+        rep.warn("a", "hmm", "do this")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            enable.emit_json(rep)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            {"checks": [{"status": "warn", "check": "a", "detail": "hmm", "fix": "do this"}],
+             "failed": False},
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
