@@ -1887,7 +1887,7 @@ PERMANENT_REFUSAL_MARKERS = (
     OUT_OF_BOUNDS_MARKER,
     "injected instruction in the finding",
     "injected instruction",
-    "not in this repository",
+    "no fix belongs in this repository",
 )
 #: The two answers §0 of the filing skill reaches from its prior-art search that
 #: no later run reverses. Regexes rather than prefixes because each carries the
@@ -1954,16 +1954,24 @@ def is_permanent_refusal(reason: Optional[str]) -> bool:
     is in the ledger, which is where a maintainer undoing one starts -- see
     `record_refusal` for the edit.
 
-    `not in this repository` is the §0 stale-finding check reaching a verdict no
-    commit here can change. Most of that check is transient -- the deployed image
-    is behind the branch, and the tree will say what the finding says once the
-    image moves -- but a finding whose path belongs to another project is not
-    waiting for anything. The live case is the Hermes harness: an investigation
-    reads `agent/anthropic_adapter.py` inside its own pod, that path is the
-    harness the agent runs on rather than a file in kube-agents, and there is
-    nothing here to patch. Unretired it cost a filing turn an hour to re-derive.
-    The marker asks the turn to name the path, so the ledger records the claim
-    that was checked and not merely that something was.
+    `no fix belongs in this repository` is the §0 stale-finding check reaching a
+    verdict no commit here can change. Most of that check is transient -- the
+    deployed image is behind the branch, and the tree will say what the finding
+    says once the image moves -- but a finding nothing here can act on is not
+    waiting for anything, and re-deriving that costs a filing turn an hour.
+
+    The wording is deliberately a claim about this repository's reach and not
+    about where a file lives, because the first version of this marker was
+    `not in this repository` and it was wrong within the hour. The finding it
+    retired names `agent/anthropic_adapter.py`, which is the Hermes harness and
+    genuinely not ours -- but its user-visible symptom is our own litellm
+    container sending `temperature` to a model that rejects it, and an earlier
+    turn had already filed `drop_params: true` against the config we do own. A
+    path we do not contain and a defect we cannot mitigate are different claims;
+    only the second one may retire a finding, so only the second one is spelled
+    here. See the skill's §0, which asks the turn to name the layers it ruled
+    out after the marker, so the ledger records the reasoning and not just the
+    conclusion.
     """
     text = (reason or "").strip().lower()
     if text.startswith("skipped"):
@@ -2234,6 +2242,43 @@ def severity_label(entry: Dict[str, Any], prefix: str) -> str:
     return usable_label("%s%s" % (prefix, grade), "severityLabelPrefix")
 
 
+#: A pull request URL as GitHub spells it, and as `record_promotion` stored it.
+_PULL_REQUEST_URL = re.compile(r"^https://github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)/?$")
+
+
+def prior_pull_requests(entry: Dict[str, Any], *repos: str) -> List[str]:
+    """The pull requests this loop has already opened for this finding.
+
+    §0's prior-art search is a keyword search, and a keyword search cannot find
+    a pull request whose title does not use the finding's words. The live case:
+    a finding located in `agent/anthropic_adapter.py` was fixed at the layer
+    this repository actually owns -- `drop_params: true` in the litellm config
+    -- and filed under the title "drop unsupported params". Later turns searched
+    `_is_claude_model` and `model-default temperature`, found nothing, and one
+    of them retired the finding as belonging to another project. The ledger had
+    been holding the number the whole time.
+
+    So hand the turn what the ledger already knows instead of asking it to
+    rediscover it. Only the repository and the number, parsed out of the URL and
+    kept only when the repository is one this run already names: the URL reached
+    the ledger as the last line of an earlier model turn, and a number matched
+    against a known repository is the part of it that cannot carry anything
+    else. A URL that does not parse is dropped rather than passed through.
+    """
+    wanted = {repo for repo in repos if repo}
+    found: List[str] = []
+    for promotion in entry.get("promotions") or []:
+        if not isinstance(promotion, dict):
+            continue
+        match = _PULL_REQUEST_URL.match(str(promotion.get("url") or "").strip())
+        if not match:
+            continue
+        cited = "#%s on %s" % (match.group(2), match.group(1))
+        if match.group(1) in wanted and cited not in found:
+            found.append(cited)
+    return found
+
+
 def file_pull_request(
     entry: Dict[str, Any],
     identity: Dict[str, Any],
@@ -2355,6 +2400,7 @@ def file_pull_request(
     # otherwise arrive as prose in the same voice as the instructions. Fencing
     # it does not make it safe -- it makes the boundary explicit, which is what
     # the surrounding instruction needs in order to mean anything.
+    filed_already = prior_pull_requests(entry, upstream, fork)
     untrusted = _fenced(
         {
             "Title": entry.get("title", "?"),
@@ -2393,6 +2439,16 @@ def file_pull_request(
         the finding` as your reply.
 
         %(untrusted)s
+
+        ALREADY FILED BY THIS LOOP
+        %(prior_pull_requests)s
+        Read these before you search for prior art any other way. They are this loop's own earlier
+        attempts at this same finding, taken from the ledger rather than from a search, and they are
+        exactly the ones a search will miss: a pull request that fixed the finding's symptom at a
+        different layer does not carry the finding's words in its title. Section 0 of the skill says
+        what each state means for you -- in particular that one still open is `already filed`, which
+        is not a reason to retire the finding, and that one closed unmerged by this loop with nobody
+        having reviewed it was superseded rather than rejected.
 
         WHERE
         Two checkouts, and using the wrong one is the mistake this section exists to stop.
@@ -2446,6 +2502,17 @@ def file_pull_request(
         # image is the one whose running code is not in any tree.
         "source_ref": identity["fetch_ref"],
         "untrusted": untrusted,
+        # Outside the fence deliberately. Every other field carrying a finding's
+        # own text is untrusted, but these are two integers and a repository
+        # name this run already configured, reassembled here into a sentence --
+        # there is no room in `#157 on gke-agentic/kube-agents` for a directive,
+        # and putting it in the fence would tell the turn to distrust the one
+        # piece of prior art that is more reliable than its own search.
+        "prior_pull_requests": (
+            "\n".join("- " + cited for cited in filed_already)
+            if filed_already
+            else "- (none recorded: this loop has not opened a pull request for this finding)"
+        ),
         "fence": FENCE,
         "base_root": base_root,
         "source_root": source_root or "(unavailable: the fetch failed, so work from the base checkout alone)",

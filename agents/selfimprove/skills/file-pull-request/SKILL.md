@@ -22,19 +22,36 @@ pod is running, which may be behind, and is read-only.
   than a missed fix does. This is the ordinary case, not an edge one: the deployed image can be
   weeks behind the branch you are filing against, and something someone else already fixed still
   looks broken from inside the pod.
-- **If the finding's file is not in this repository at all, say so in those words.** Print
-  `SKIPPED: not in this repository - <path> belongs to <where>`, with those four words first and
-  the path named after them. The Hermes harness is the case that keeps arising: an `agent/…` path
-  is the harness this agent runs on, a separate project, and no commit here will ever make it
-  exist. That is the difference from the bullet above — a tree that is merely behind catches up
-  when the image moves, so the runner keeps offering you those, while this one it retires. Name
-  the path, because the ledger keeps your sentence and a maintainer who thinks you were wrong
-  needs to see what you checked.
-  - Nothing may come before the four words, and a bracket may not come after them.
-    `SKIPPED: location is not in this repository (agent/foo.py is the Hermes harness)` is what
-    this turn reaches for unprompted, and it reads as an ordinary deferral: the finding comes
-    back next hour and buys another filing turn to reach the same answer. Use `-` before your
-    reason, not `(`.
+- **If the finding's file is not in this repository, that is where the question starts.** A path
+  this tree does not contain means you cannot patch it _there_. It does not mean there is nothing
+  here to do, and the two get confused because the location is the first field you read. Ask what
+  this repository owns that sits between the defect and the user — the litellm config, the chart,
+  the operator, the agent's own profile — and whether any of it can mitigate the finding. If
+  something can, fix that and file it. A workaround at a layer we control is a real pull request.
+  - **Only when nothing here can mitigate it may you retire the finding.** Print
+    `SKIPPED: no fix belongs in this repository - <path> belongs to <where>; <what you checked>`,
+    with those six words first, then the path, then the layers you considered and why none of them
+    reach it. The runner reads that sentence as permanent and will never offer the finding again,
+    so it must be the stronger claim rather than the easier one.
+  - Nothing may come before the six words and a bracket may not follow them; use `-`, not `(`. A
+    sentence shaped any other way reads as an ordinary deferral and you are asked again next hour.
+    That is the safe direction. An extra turn costs an hour; retiring a finding that had a fix here
+    costs every hour after it.
+  - This has already gone wrong once. A Hermes-harness defect in `agent/anthropic_adapter.py` —
+    genuinely not ours — surfaces as our litellm container sending `temperature` to a model that
+    rejects it. One turn saw that and filed `drop_params: true` against the config we own. Later
+    turns read the location, said the file was not in this repository, and stopped.
+- **Start with the pull requests your brief lists under `ALREADY FILED BY THIS LOOP`.** Those are
+  this loop's own earlier attempts at this finding, read out of the ledger, and they are the prior
+  art a keyword search is least likely to reach: a pull request that fixed the symptom at another
+  layer will not carry the finding's words in its title. Read each one before searching for
+  anything else, and apply the state rules below to it:
+
+  ```bash
+  gh pr view <n> --repo <the repo named beside it> \
+    --json state,mergedAt,closedAt,reviews,comments,headRefName,title,files
+  ```
+
 - Check whether it is already fixed, already filed, or already rejected. Search pull requests and
   issues, in **any** state — not just open ones, and against the repository your brief names under
   `Upstream`, which is configurable and is not always `gke-labs/kube-agents`:
@@ -63,10 +80,19 @@ pod is running, which may be behind, and is read-only.
     pull request will merge or be closed, and a later run's search reaches one of the two answers
     below — so the finding stays in the queue and a later run asks again.
   - `"state": "closed"` with `pull_request.merged_at` **null** is a **closed-unmerged** pull
-    request: a human already said no. Stop, and print `SKIPPED: closed unmerged as #<n>`, with
-    nothing after the number. The ledger's cooldown expires; that decision does not, so the runner
-    reads that line as permanent and stops offering you the finding. Anything after the number and
-    it reads as an ordinary skip instead, and you are asked again in an hour.
+    request. Two opposite things look identical here, so read `reviews`, `comments` and
+    `headRefName` before you decide which one you have:
+    - **Somebody reviewed or commented on it, and it closed** — a human said no. Stop, and print
+      `SKIPPED: closed unmerged as #<n>`, with nothing after the number. The ledger's cooldown
+      expires; that decision does not, so the runner reads that line as permanent and stops
+      offering you the finding. Anything after the number and it reads as an ordinary skip
+      instead, and you are asked again in an hour.
+    - **No review, no comment, and `headRefName` starts `selfimprove/`** — this loop filed it and
+      it was closed for a mechanical reason, most often a base branch that was abandoned. Nobody
+      judged the change, so there is no decision to respect. Treat it as superseded: file again
+      against the base branch your brief names, and say in the body that #`<n>` carried the same
+      fix and was closed unmerged without review. Printing `closed unmerged as #<n>` here would
+      retire a live finding on a rejection that never happened.
   - `"state": "closed"` with a `merged_at` timestamp is **merged**, which means the tree you write
     in already contains it — that tree is at the base branch's tip, not at the deployed revision.
     So the question is not when it merged. It is whether the finding is still true there, which
