@@ -93,6 +93,18 @@ class NormaliseTests(unittest.TestCase):
             L.normalise("github-issue-resolver retry 2 exhausted"),
         )
 
+    def test_a_trailing_full_stop_is_not_part_of_identity(self):
+        """Whether the agent punctuates the title is a coin flip, not a finding."""
+        self.assertEqual(
+            L.fingerprint("errors", "The runner drops the ledger.", "foo.go:1"),
+            L.fingerprint("errors", "The runner drops the ledger", "foo.go:1"),
+        )
+
+    def test_the_punctuation_inside_a_title_stays(self):
+        self.assertNotEqual(
+            L.normalise("it fails, then retries"), L.normalise("it fails then retries")
+        )
+
 
 class NormaliseLocationTests(unittest.TestCase):
     def test_line_numbers_collapse(self):
@@ -136,20 +148,83 @@ class NormaliseLocationTests(unittest.TestCase):
             "k8s-operator/foo.go#L412-L418",
             "k8s-operator/foo.go:412",
         ]
-        collapsed = {L.primary_location(form) for form in forms}
+        collapsed = {L.location_key(form) for form in forms}
         self.assertEqual(1, len(collapsed), collapsed)
 
     def test_a_file_with_no_line_number_reduces_to_the_file(self):
         self.assertEqual(
-            L.primary_location("selfimprove_run.py (the filing turn)"),
-            L.primary_location("selfimprove_run.py"),
+            L.location_key("selfimprove_run.py (the filing turn)"),
+            L.location_key("selfimprove_run.py"),
         )
 
     def test_prose_that_looks_like_a_filename_is_not_taken_for_one(self):
         """The fallback must not read a version number or an abbreviation as a path."""
         for text in ("kubernetes 1.21 nodes", "the gchat webhook, e.g. the retry"):
             with self.subTest(text=text):
-                self.assertEqual(L.primary_location(text), L.normalise_location(text))
+                self.assertEqual(L.location_key(text), L.normalise_location(text))
+
+    def test_the_directory_a_file_is_named_under_is_not_part_of_the_key(self):
+        """The same file arrives spelled three ways on three runs.
+
+        A repository-relative path, a bare name, and the abbreviated form the
+        agent writes when the path is long -- `k8s-operator/.../foo.go`, which
+        came out of the live ledger. Each was a row of its own, sitting at one
+        sighting and unable to reach `minOccurrencesPerDay`.
+        """
+        forms = [
+            "k8s-operator/internal/controller/platformagent_manifests.go:1820",
+            "k8s-operator/.../platformagent_manifests.go:1820",
+            "platformagent_manifests.go:1820",
+            "./k8s-operator/internal/controller/platformagent_manifests.go:1826",
+        ]
+        self.assertEqual(1, len({L.location_key(f) for f in forms}))
+
+    def test_naming_a_line_number_at_all_is_not_part_of_the_key(self):
+        """`<LINE>` already stands in for the digits; its presence still forked the row."""
+        self.assertEqual(
+            L.location_key("agents/selfimprove/scripts/selfimprove_run.py:412"),
+            L.location_key("agents/selfimprove/scripts/selfimprove_run.py"),
+        )
+
+    def test_the_order_two_files_are_named_in_is_not_part_of_the_key(self):
+        self.assertEqual(
+            L.location_key("stage2-hook.sh:480 and platformagent_manifests.go:1820"),
+            L.location_key("platformagent_manifests.go:1820 and stage2-hook.sh:480"),
+        )
+
+    def test_a_quoted_path_does_not_outrank_the_file_with_the_line_number(self):
+        """A location quoting a `PATH` names directories that read as files.
+
+        `/opt/hermes/.venv/bin` is a dot and three letters, so the fallback
+        pattern matches it, and `.venv` sorts before every real filename. The
+        line number is the agent saying which reference it means.
+        """
+        self.assertEqual(
+            "platformagent_manifests.go",
+            L.location_key(
+                'platformagent_manifests.go:1820 (PATH is "/opt/credential-proxy/bin:'
+                '/opt/hermes/.venv/bin:/usr/bin")'
+            ),
+        )
+
+    def test_a_dotfile_is_still_a_location_when_it_is_the_only_candidate(self):
+        """Dot-names are sorted last, not discarded."""
+        self.assertEqual(".env", L.location_key("deploy/docker/.env"))
+
+    def test_a_hex_looking_directory_is_not_eaten(self):
+        """`[0-9a-f]{7,}` matches English and path components as well as shas.
+
+        Substituting one takes the directory out of the location. It stopped
+        mattering to identity once the key became a bare file name, but the
+        substitution also runs over titles, where nothing else covers it.
+        """
+        self.assertEqual("charts/deadbeef/values.yaml", L.normalise("charts/deadbeef/values.yaml"))
+        self.assertEqual("the request was defaced", L.normalise("the request was defaced"))
+
+    def test_an_id_is_still_collapsed(self):
+        for text in ("commit cc437a23 broke it", "trace 1234567890abcdef", "sha 0f0299da"):
+            with self.subTest(text=text):
+                self.assertIn("<HEX>", L.normalise(text))
 
 
 class FingerprintTests(unittest.TestCase):
@@ -1370,6 +1445,111 @@ class CoerceTests(unittest.TestCase):
     def test_run_history_is_bounded(self):
         raw = {"findings": {}, "runs": [{"n": i} for i in range(L.RUN_HISTORY + 20)]}
         self.assertEqual(len(L.coerce(raw)["runs"]), L.RUN_HISTORY)
+
+
+class RekeyTests(unittest.TestCase):
+    """Changing the fingerprint material orphans every row in every live ledger.
+
+    The occurrence counts recover on their own within `minOccurrencesPerDay`.
+    The promotion records do not: they sit on a key the new function cannot
+    produce, so the cooldown they hold can never fire, and the live row that now
+    represents the finding carries none -- so the next run with budget re-files a
+    pull request already in a maintainer's queue.
+    """
+
+    def _row(self, key, **overrides):
+        entry = {
+            "fingerprint": key,
+            "title": "Reconciler retries a Secret it cannot read",
+            "location": "k8s-operator/internal/controller/platformagent_controller.go:412",
+            "signal": "errors",
+            "severity": "high",
+            "first_seen": "2026-08-01T00:00:00Z",
+            "last_seen": "2026-08-20T00:00:00Z",
+            "sightings": [{"at": "2026-08-20T00:00:00Z"}],
+            "promotions": [{"at": "2026-08-20T01:00:00Z", "url": "https://example.invalid/pr/1"}],
+        }
+        entry.update(overrides)
+        return {"version": L.LEDGER_VERSION, "findings": {key: entry}, "runs": []}
+
+    def test_an_orphaned_row_moves_to_the_key_its_own_fields_hash_to(self):
+        raw = self._row("stalekey00000000")
+        out = L.coerce(raw)
+        want = L.fingerprint(
+            "errors",
+            "Reconciler retries a Secret it cannot read",
+            "k8s-operator/internal/controller/platformagent_controller.go:412",
+        )
+        self.assertEqual([want], list(out["findings"]))
+        self.assertEqual(want, out["findings"][want]["fingerprint"])
+        self.assertEqual("stalekey00000000", out["findings"][want]["rekeyed_from"])
+
+    def test_the_promotion_record_travels_with_the_row(self):
+        """The whole point. A cooldown left on a dead key never fires again."""
+        out = L.coerce(self._row("stalekey00000000"))
+        entry = next(iter(out["findings"].values()))
+        self.assertEqual(
+            ["https://example.invalid/pr/1"], [p["url"] for p in entry["promotions"]]
+        )
+
+    def test_two_spellings_of_one_place_land_on_one_row_with_both_histories(self):
+        """Rows that the new material makes into one finding are merged, not clobbered."""
+        long_form = self._row("stale1")["findings"]["stale1"]
+        short_form = dict(
+            long_form,
+            fingerprint="stale2",
+            location="platformagent_controller.go",
+            last_seen="2026-08-21T00:00:00Z",
+            sightings=[{"at": "2026-08-21T00:00:00Z"}],
+            promotions=[{"at": "2026-08-21T01:00:00Z", "url": "https://example.invalid/pr/2"}],
+        )
+        raw = {
+            "version": L.LEDGER_VERSION,
+            "findings": {"stale1": long_form, "stale2": short_form},
+            "runs": [],
+        }
+        out = L.coerce(raw)
+        self.assertEqual(1, len(out["findings"]))
+        entry = next(iter(out["findings"].values()))
+        self.assertEqual(2, len(entry["sightings"]))
+        self.assertEqual(
+            ["https://example.invalid/pr/1", "https://example.invalid/pr/2"],
+            sorted(p["url"] for p in entry["promotions"]),
+        )
+
+    def test_a_ledger_already_at_its_own_keys_is_untouched(self):
+        """Runs on every read, so the steady state has to be a no-op."""
+        ledger = L.empty_ledger()
+        L.record_finding(ledger, finding(), "abc", NOW)
+        before = json.loads(json.dumps(ledger))
+        self.assertEqual(0, L._rekey(ledger))
+        self.assertEqual(before, ledger)
+
+    def test_re_keying_is_idempotent(self):
+        once = L.coerce(self._row("stalekey00000000"))
+        twice = L.coerce(json.loads(json.dumps(once)))
+        self.assertEqual(list(once["findings"]), list(twice["findings"]))
+        self.assertEqual("stalekey00000000", next(iter(twice["findings"].values()))["rekeyed_from"])
+
+    def test_a_row_with_nothing_to_hash_is_left_where_it_is(self):
+        """Every such row computes the same key and they would collapse onto each other."""
+        raw = {
+            "version": L.LEDGER_VERSION,
+            "findings": {"handwritten1": {"note": "a"}, "handwritten2": {"note": "b"}},
+            "runs": [],
+        }
+        out = L.coerce(raw)
+        self.assertEqual({"handwritten1", "handwritten2"}, set(out["findings"]))
+
+    def test_a_refusal_survives_the_move(self):
+        """A refused row is the one row `prune` keeps forever; losing it here
+        would hand the filing turn back a finding a human already said no to."""
+        raw = self._row(
+            "stalekey00000000",
+            refused={"at": "2026-08-05T00:00:00Z", "reason": "out of bounds", "revision": "abc"},
+        )
+        entry = next(iter(L.coerce(raw)["findings"].values()))
+        self.assertEqual("2026-08-05T00:00:00Z", entry["refused"]["at"])
 
 
 class SummaryTests(unittest.TestCase):

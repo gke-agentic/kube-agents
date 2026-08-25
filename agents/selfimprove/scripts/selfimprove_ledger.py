@@ -224,8 +224,14 @@ _NORMALISERS: Tuple[Tuple[re.Pattern, str], ...] = (
     # A Kubernetes pod name's generated suffix: <name>-<replicaset>-<pod>.
     (re.compile(r"-[0-9a-f]{8,10}-[0-9a-z]{5}\b", re.I), "-<POD>"),
     # Bare hex runs long enough to be an id rather than a number: git shas,
-    # session ids, trace ids.
-    (re.compile(r"\b[0-9a-f]{7,}\b", re.I), "<HEX>"),
+    # session ids, trace ids. A digit is required somewhere in the run because
+    # `[0-9a-f]{7,}` alone also matches English -- `defaced`, `effaced` -- and
+    # any path component spelled in those letters, which the substitution then
+    # takes out of the location along with the directory it named. Some ids are
+    # all letters (a 7-character sha prefix is, about once in fourteen hundred)
+    # and those now normalise to themselves, which is the under-normalising
+    # direction `normalise` errs in on purpose.
+    (re.compile(r"\b(?=[0-9a-f]{7,}\b)[0-9a-f]*\d[0-9a-f]*\b", re.I), "<HEX>"),
     (re.compile(r"\s+"), " "),
 )
 
@@ -270,7 +276,7 @@ _LOCATION_NORMALISERS: Tuple[Tuple[re.Pattern, str], ...] = (
 #: The first `path.ext:<LINE>` token in a normalised location, which is the part
 #: of the field the agent is not free to vary. Everything after it is prose it
 #: writes differently each run, and hashing that prose is what split one live
-#: finding across three rows -- see `primary_location`.
+#: finding across three rows -- see `location_key`.
 _PRIMARY_LOCATION = re.compile(r"[a-z0-9_.\-/]+\.[a-z0-9]+:<LINE>")
 
 #: The same thing for a location that names a file and no line at all --
@@ -297,11 +303,16 @@ def normalise(text: str) -> str:
     every hour, which it very much can. When in doubt this errs towards
     under-normalising -- a duplicate is visible in the ledger, a collision is
     not.
+
+    Trailing sentence punctuation goes because whether the agent ends a title
+    with a full stop is a writing-style coin flip and nothing else: the same
+    sentence written twice, once with the stop and once without, is one finding
+    and hashed to two rows sitting at one sighting each.
     """
     out = (text or "").strip().lower()
     for pattern, replacement in _NORMALISERS:
         out = pattern.sub(replacement, out)
-    return out.strip()
+    return out.strip(" \t.,;:!?")
 
 
 def normalise_location(text: str) -> str:
@@ -312,8 +323,8 @@ def normalise_location(text: str) -> str:
     return out.strip()
 
 
-def primary_location(text: str) -> str:
-    """The one file reference in a location, with the agent's prose discarded.
+def location_key(text: str) -> str:
+    """The one file name in a location, with everything the agent varies discarded.
 
     `location` is free text and the agent writes it at whatever length it feels
     like. Two sightings of one finding arrived as
@@ -327,21 +338,61 @@ def primary_location(text: str) -> str:
         k8s-operator/.../platformagent_manifests.go:1820
 
     -- the same place, described twice. Hashing the whole string made them two
-    findings. Reducing it to the leading `path:<LINE>` token keeps the part that
-    identifies the site and drops the part that is a writing-style coin flip.
+    findings. Four things vary between one spelling of a place and the next, and
+    all four are dropped here:
 
-    A location that names a file without a line number goes through the same
-    reduction, on the same argument -- `selfimprove_run.py (the filing turn)`
-    and `selfimprove_run.py` are one place -- and only the anchor differs.
+    - The prose after the path, which is the case above.
+    - The directory prefix. The same file arrives as a repository-relative path,
+      as a bare name, and as the abbreviated `k8s-operator/.../foo.go` -- that
+      last one straight out of the live ledger -- so only the name after the
+      final slash is kept.
+    - Whether a line number was given at all. `<LINE>` already stands in for the
+      digits, but its presence still forked `selfimprove_run.py:412` away from
+      `selfimprove_run.py`, so the anchor goes too.
+    - Which of several files the agent names first. A location naming two files
+      names them in whichever order the sentence came out, so the names are
+      sorted and the first taken. Sorting rather than taking the first mentioned
+      is the only part of this that is a choice: both are arbitrary, and this one
+      at least gives the same answer when the same two files are listed the other
+      way round. What neither survives is a later sighting that drops the file
+      this one picked and keeps another.
+
+    Names that came with a line number are considered alone, and the looser
+    pattern only gets a turn when none did. A location often quotes a path that
+    is not the site -- the live example above quotes a `PATH` env var, and
+    `/opt/hermes/.venv/bin` in it reads as a file reference -- and a line number
+    is the agent saying which reference it means.
 
     Falls back to the full normalised location when there is no file reference
     to find, which is the old behaviour: a location like "the gchat webhook" has
     nothing better to offer, and an empty fingerprint component would collide
     every such finding into one row.
+
+    Reducing to a bare file name is a deliberate widening. `main.go` and
+    `SKILL.md` are not unique in this tree, so two findings in two directories
+    can now land on one row -- but only if their titles match word for word as
+    well, and `fingerprint` argues why that direction is the safe one to err in.
     """
     out = normalise_location(text)
-    match = _PRIMARY_LOCATION.search(out) or _FILE_REFERENCE.search(out)
-    return match.group(0) if match else out
+    for pattern in (_PRIMARY_LOCATION, _FILE_REFERENCE):
+        names = {
+            match.group(0).split(":", 1)[0].rsplit("/", 1)[-1] for match in pattern.finditer(out)
+        }
+        names.discard("")
+        if names:
+            return min(names, key=_name_rank)
+    return out
+
+
+def _name_rank(name: str) -> Tuple[bool, str]:
+    """Sort key for the candidate file names in a location: dot-names last.
+
+    `/opt/hermes/.venv/bin` reads as a file reference -- `.venv` is a dot and
+    three letters -- and `.venv` sorts before every real filename, so a location
+    quoting a PATH picked the virtualenv directory as the site of the finding.
+    A dotfile can still be one, and is if it is the only candidate.
+    """
+    return (name.startswith("."), name)
 
 
 def fingerprint(signal: str, title: str, location: str = "") -> str:
@@ -391,7 +442,7 @@ def fingerprint(signal: str, title: str, location: str = "") -> str:
     the sightings and promotions, keep the live row's assessment, and do it in
     the same change that moves the material.
     """
-    material = "|".join([normalise(title), primary_location(location)])
+    material = "|".join([normalise(title), location_key(location)])
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
 
 
@@ -410,6 +461,9 @@ def coerce(raw: Any) -> Dict[str, Any]:
     A ledger that has been hand-edited into nonsense is recoverable -- the
     counts restart -- while a run that dies on it is not, because the run that
     would have rewritten the file is the one that crashed.
+
+    Also re-keys, because this is the one funnel every read goes through. See
+    `_rekey`.
     """
     if not isinstance(raw, dict):
         return empty_ledger()
@@ -422,7 +476,65 @@ def coerce(raw: Any) -> Dict[str, Any]:
     runs = raw.get("runs")
     if isinstance(runs, list):
         out["runs"] = [r for r in runs if isinstance(r, dict)][-RUN_HISTORY:]
+    _rekey(out)
     return out
+
+
+def _rekey(ledger: Dict[str, Any]) -> int:
+    """Move every row whose key no longer matches its own title and location.
+
+    `fingerprint` documents what changing its material costs: every row in every
+    live ledger orphans, the occurrence counts restart, and -- the part that does
+    not heal on its own -- the promotion records stay on keys the new function
+    can never produce again, so the cooldowns they hold can never fire and the
+    next run with budget re-files a pull request already sitting in a
+    maintainer's queue. Seven rows went that way on the live install the first
+    time the material moved, two of them holding pull requests.
+
+    That repair is mechanical, so it is done here rather than written down as a
+    runbook nobody runs. An orphaned row stores the title and the location it was
+    keyed on, so it can say what its key ought to be, and the row it ought to
+    merge with is whatever is already sitting at that key. Both sides keep their
+    sightings and their promotions -- `merge_entries` is the same arithmetic a
+    409 uses, for the same reason.
+
+    Runs on every read, and after the first save it finds nothing: a ledger
+    written by the current `fingerprint` is already at its own keys. The cost is
+    one hash per row per load.
+
+    A row with neither a title nor a location is left alone. Every one of them
+    would hash to the same key and collapse onto its neighbours, which is a
+    worse answer than leaving a hand-written row where its author put it.
+
+    Returns how many rows moved, which is for tests; nothing in this module
+    logs.
+    """
+    findings = ledger.get("findings")
+    if not isinstance(findings, dict):
+        return 0
+    moved = 0
+    for key in list(findings):
+        entry = findings.get(key)
+        if not isinstance(entry, dict):
+            continue
+        title = str(entry.get("title") or "")
+        location = str(entry.get("location") or "")
+        if not title and not location:
+            continue
+        want = fingerprint(str(entry.get("signal") or ""), title, location)
+        if want == key:
+            continue
+        entry["fingerprint"] = want
+        # Recorded so a human reading the ledger can see why a row's key moved,
+        # and see it on the row rather than having to infer it. Overwritten
+        # rather than appended to: a list would grow by one on every future
+        # change to the material, and the key before last answers nothing.
+        entry["rekeyed_from"] = key
+        existing = findings.get(want)
+        findings[want] = merge_entries(existing, entry) if isinstance(existing, dict) else entry
+        del findings[key]
+        moved += 1
+    return moved
 
 
 def occurrences_in_window(entry: Dict[str, Any], now: _dt.datetime, hours: int = COUNT_WINDOW_HOURS) -> int:
@@ -1580,48 +1692,60 @@ def merge(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
             out["findings"][fp] = old
             continue
 
-        # Whichever side saw the finding last describes it. A row with no
-        # `last_seen` sorts below one that has it, and a tie goes to `new` --
-        # the behaviour when the two are the same run, where either answer is
-        # the same answer.
-        if str(old.get("last_seen") or "") > str(new.get("last_seen") or ""):
-            entry = dict(new)
-            entry.update(old)
-        else:
-            entry = dict(old)
-            entry.update(new)
-        # `thinned` survives only if both writers agree. `record_finding` clears
-        # it by popping the key, and a pop does not travel through `update`, so
-        # a row one writer has just seen again would otherwise keep the other's
-        # mark -- and `_shed_to_fit` treats a marked row as the cheapest thing
-        # in the ledger to delete.
-        if not (old.get("thinned") is True and new.get("thinned") is True):
-            entry.pop("thinned", None)
-        entry["sightings"] = _union(
-            old.get("sightings"), new.get("sightings"), key=lambda s: str(s.get("at") or "")
-        )
-        entry["promotions"] = _union(
-            old.get("promotions"),
-            new.get("promotions"),
-            key=lambda p: (str(p.get("at") or ""), str(p.get("url") or "")),
-        )
-        seens = [s for s in (old.get("first_seen"), new.get("first_seen")) if s]
-        if seens:
-            entry["first_seen"] = min(seens)
-        refusals = [r for r in (old.get("refused"), new.get("refused")) if isinstance(r, dict)]
-        # Earliest wins, but only among refusals that carry a date. Sorting on
-        # `str(at or "")` put an undated refusal first every time, because the
-        # empty string precedes every timestamp -- so the one record that cannot
-        # say how long a finding has been waiting on a human was the one that
-        # always survived the merge.
-        dated = [r for r in refusals if from_iso(str(r.get("at") or "")) is not None]
-        if dated:
-            entry["refused"] = min(dated, key=lambda r: str(r.get("at")))
-        elif refusals:
-            entry["refused"] = refusals[0]
-        out["findings"][fp] = entry
+        out["findings"][fp] = merge_entries(old, new)
 
     return out
+
+
+def merge_entries(old: Dict[str, Any], new: Dict[str, Any]) -> Dict[str, Any]:
+    """One row from each of two ledgers, folded into one row.
+
+    Extracted from `merge` because `_rekey` needs the same arithmetic for a
+    different reason: there, `old` and `new` are two rows of the *same* ledger
+    that a change to the fingerprint material has just made into one finding.
+    Both callers want the same answer -- neither side's sightings or promotions
+    dropped, the newer description kept -- so there is one implementation of it.
+    """
+    # Whichever side saw the finding last describes it. A row with no
+    # `last_seen` sorts below one that has it, and a tie goes to `new` -- the
+    # behaviour when the two are the same run, where either answer is the same
+    # answer.
+    if str(old.get("last_seen") or "") > str(new.get("last_seen") or ""):
+        entry = dict(new)
+        entry.update(old)
+    else:
+        entry = dict(old)
+        entry.update(new)
+    # `thinned` survives only if both writers agree. `record_finding` clears it
+    # by popping the key, and a pop does not travel through `update`, so a row
+    # one writer has just seen again would otherwise keep the other's mark --
+    # and `_shed_to_fit` treats a marked row as the cheapest thing in the ledger
+    # to delete.
+    if not (old.get("thinned") is True and new.get("thinned") is True):
+        entry.pop("thinned", None)
+    entry["sightings"] = _union(
+        old.get("sightings"), new.get("sightings"), key=lambda s: str(s.get("at") or "")
+    )
+    entry["promotions"] = _union(
+        old.get("promotions"),
+        new.get("promotions"),
+        key=lambda p: (str(p.get("at") or ""), str(p.get("url") or "")),
+    )
+    seens = [s for s in (old.get("first_seen"), new.get("first_seen")) if s]
+    if seens:
+        entry["first_seen"] = min(seens)
+    refusals = [r for r in (old.get("refused"), new.get("refused")) if isinstance(r, dict)]
+    # Earliest wins, but only among refusals that carry a date. Sorting on
+    # `str(at or "")` put an undated refusal first every time, because the empty
+    # string precedes every timestamp -- so the one record that cannot say how
+    # long a finding has been waiting on a human was the one that always
+    # survived the merge.
+    dated = [r for r in refusals if from_iso(str(r.get("at") or "")) is not None]
+    if dated:
+        entry["refused"] = min(dated, key=lambda r: str(r.get("at")))
+    elif refusals:
+        entry["refused"] = refusals[0]
+    return entry
 
 
 class LedgerWriteError(RuntimeError):

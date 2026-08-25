@@ -804,9 +804,9 @@ so the design implements both under distinct names rather than picking one:
   regression makes every run produce a fresh critical finding.
 
 Counting requires identity across runs, which is the same problem the fleet audit solved. A finding
-is fingerprinted over the normalised title, with identifiers and timestamps stripped, plus the one
-`path:line` reference in its location, with the line number collapsed so the identity survives a
-commit above it. The ledger holds the fingerprint, first and last seen, one timestamped sighting per
+is fingerprinted over the normalised title, with identifiers, timestamps and trailing punctuation
+stripped, plus one bare file name taken from its location. The ledger holds the fingerprint, first
+and last seen, one timestamped sighting per
 run that reported it, the current grade, and any pull request already opened for it. The 24-hour
 count the gate reads is derived from those sightings at read time rather than stored (§9.1).
 [`fleet-audit-issue-ledger.md`](fleet-audit-issue-ledger.md) is the precedent for the dedup and
@@ -818,12 +818,25 @@ same justification: both are the agent's judgement about a finding rather than t
 re-grade or a re-classification resets the count and the finding never promotes. A single
 `/command` PATH defect reported as `errors` on one run and as `inefficiency` on the next is two
 rows, one bug, neither able to reach `minOccurrencesPerDay`. `signal` stays in `fingerprint`'s
-signature because every caller has one to hand; the function ignores it. The location is reduced to
-its one `path:line` reference for the same reason — the agent writes that field as a 300-character
-sentence naming two files on one run and as a bare `file.go:1820` on the next, and hashing the prose
-makes those two findings. Narrowing the identity trades a split for a possible collision, which is
-the right way round: a collision files one pull request carrying both sets of evidence, while a
-split silently files nothing.
+signature because every caller has one to hand; the function ignores it. The location is reduced for
+the same reason — the agent writes that field as a 300-character sentence naming two files on one
+run and as a bare `file.go:1820` on the next, and hashing the prose makes those two findings. What
+survives the reduction is one file name: no directory prefix, because the same file arrives as a
+repository-relative path, as a bare name, and as the abbreviated `k8s-operator/.../foo.go`; no line
+number, because giving one at all forked `run.py:412` away from `run.py` even with the digits
+already collapsed; and sorted rather than first-mentioned, because the order two files are named in
+is whichever way the sentence came out. Narrowing the identity trades a split for a possible
+collision, which is the right way round: a collision files one pull request carrying both sets of
+evidence, while a split silently files nothing.
+
+Every narrowing of that material orphans every row in every live ledger, and the part that does not
+heal on its own is the promotion records — stranded on a key the new function cannot produce, so the
+cooldown they hold can never fire and the next run with budget re-files a pull request already in a
+maintainer's queue. Seven rows went that way the first time, two of them holding pull requests. The
+repair is mechanical and now runs on every read: an orphaned row stores the title and location it
+was keyed on, so it can say what its key ought to be, and it is moved there and merged with whatever
+is already sitting at that key by the same code a write conflict uses. The steady state is a no-op —
+a ledger written by the current `fingerprint` is already at its own keys.
 
 **The title is part of the identity, and the precedent bans it.** Two of
 [`fleet-audit-issue-ledger.md`](fleet-audit-issue-ledger.md)'s principles are inherited — identity
