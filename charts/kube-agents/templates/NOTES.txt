@@ -37,6 +37,19 @@ away BEFORE `helm uninstall {{ .Release.Name }}`, otherwise the CR strands:
   kubectl delete platformagent {{ .Values.platformAgent.name }} -n {{ .Release.Namespace }} --wait
   helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}
 {{- end }}
+{{- if .Values.selfImprovement.enabled }}
+
+The self-improvement loop is ON in {{ .Values.selfImprovement.mode | default "report-only" }} mode, on
+{{ .Values.selfImprovement.schedule | default "0 * * * *" }}. It investigates this installation and
+writes to the ConfigMap "{{ .Values.selfImprovement.ledgerConfigMap | default "kube-agents-selfimprove-ledger" }}".
+{{- if ne (.Values.selfImprovement.mode | default "report-only") "report-only" }}
+It opens pull requests against {{ .Values.selfImprovement.github.forkRepo }}, so the Secret
+"{{ .Values.selfImprovement.github.patSecret }}" must exist in {{ .Release.Namespace }} with a
+"{{ .Values.selfImprovement.github.patSecretKey | default "token" }}" entry holding the robot account's personal access token. The
+chart cannot check that the Secret exists: without it the pod starts, the run
+investigates at full model spend, and the filing turn fails at the end.
+{{- end }}
+{{- end }}
 
 {{ if and .Values.operator.enabled .Values.operator.webhooks.enabled -}}
 Admission webhooks are ON. The API server calls {{ include "kube-agents.webhookServiceName" . }}

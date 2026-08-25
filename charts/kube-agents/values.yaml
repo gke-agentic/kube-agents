@@ -947,6 +947,18 @@ selfImprovement:
   # the address -- or the ledger write fails and each run's findings are lost.
   apiServerCIDRs: []
 
+  # Whether to do that Endpoints lookup at all. True reads
+  # `default/kubernetes`, which is the one object this chart reads outside its
+  # own namespace -- and Helm aborts the entire release render on a lookup it
+  # is refused, so on a cluster where the installer identity lacks that read,
+  # switching this loop on stops the agent installing too. Set false there:
+  # the policy falls back to the two static defaults plus `apiServerCIDRs`,
+  # which is what a `helm template` render gets in any case. Check
+  # `kubectl get endpoints kubernetes -n default` and name the address above
+  # if it is neither default, or the ledger write fails and each run's
+  # findings are lost at the last step.
+  discoverApiServerEndpoints: true
+
   resources:
     requests:
       cpu: 500m

@@ -1078,6 +1078,13 @@ selfImprovement:
   # half is what makes this work on Dataplane V2, which matches egress against
   # the post-translation destination -- see below.
   apiServerCIDRs: []
+  # Whether that Endpoints lookup happens. It reads `default/kubernetes`, the
+  # one object this chart reads outside its own namespace, and Helm aborts the
+  # whole release render on a lookup it is refused -- so on a cluster whose
+  # installer identity lacks that read, switching the loop on stops the agent
+  # installing too. False falls back to the static defaults plus whatever
+  # `apiServerCIDRs` names.
+  discoverApiServerEndpoints: true
 
   # Empty inherits the agent's sandbox
   # (platformAgent.deployment.availability.runtimeClassName): an install that

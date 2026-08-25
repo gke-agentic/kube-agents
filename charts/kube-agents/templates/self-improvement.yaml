@@ -211,6 +211,32 @@ Monitoring read inside it 403s for the rest of the install's life.
 */ -}}
 {{- $ksaName := $si.github.ksaName | default "kubeagents-selfimprove" }}
 {{- /*
+Checked here for the reason the ledger name below is, and it bites harder. The
+value reaches five places -- the ServiceAccount, the two RoleBinding subjects,
+the Pod's serviceAccountName, and the Workload Identity member Terraform binds
+on the GCP side -- and only the first is validated by the API server, which
+takes a ServiceAccount name as a DNS-1123 subdomain. So `Bad_Name` renders a
+document the server accepts for both RoleBindings and rejects for the account
+they refer to: the install fails part-applied, with two bindings granting the
+namespace to a subject that does not exist and no error naming the typo.
+
+An unquoted YAML boolean is the other half, and the two spellings behave
+differently. `no`, `off` and `false` reach here as boolean false, which sprig's
+`default` counts as empty, so they quietly get the default name -- surprising,
+but a working install. `yes`, `on` and `true` are non-empty and come straight
+through: before the `quote` below they rendered `name: true`, a YAML boolean the
+API server rejects for the ServiceAccount and accepts for the two RoleBinding
+subjects. A bare `123` did the same as an integer. Both are legal names once
+quoted, so they are quoted rather than refused, and the check reads `printf
+"%v"` rather than assuming a string reached it.
+*/ -}}
+{{- if not (regexMatch "\\A[a-z0-9]([-a-z0-9.]*[a-z0-9])?\\z" (printf "%v" $ksaName)) }}
+{{- fail (printf "selfImprovement.github.ksaName %q is not a valid ServiceAccount name. It must be a lowercase DNS subdomain: letters, digits, `-` and `.`, starting and ending alphanumeric. Note that an unquoted YAML `yes` or `on` reaches this template as the boolean true, and renders an account literally named \"true\"." $ksaName) }}
+{{- end }}
+{{- if gt (len (printf "%v" $ksaName)) 253 }}
+{{- fail (printf "selfImprovement.github.ksaName is %d characters; a ServiceAccount name is a DNS subdomain, capped at 253." (len (printf "%v" $ksaName))) }}
+{{- end }}
+{{- /*
 `registry`, not `root`: kube-agents.imageRepository takes {repository, registry}
 and ignores anything else, so passing `root` mirrored nothing and left the
 CronJob pulling ghcr.io on an install whose every other image came from the
@@ -253,7 +279,7 @@ when the chart is both not creating an agent and not being told where one is.
 {{- if and (not .Values.platformAgent.enabled) (not $si.observedDeployment) }}
 {{- fail "selfImprovement.enabled with platformAgent.enabled: false needs selfImprovement.observedDeployment. The loop cross-checks its own image against the agent Deployment it is investigating, and this release renders no agent, so the default name (<platformAgent.name>-gateway) resolves to nothing: every run would investigate at full model spend and record image_check: unverified. Name the Deployment to observe, or leave the loop off." }}
 {{- end }}
-{{- $ledgerName := $si.ledgerConfigMap | default "kube-agents-selfimprove-ledger" }}
+{{- $ledgerName := printf "%v" ($si.ledgerConfigMap | default "kube-agents-selfimprove-ledger") }}
 {{- /*
 The ledger name is a Kubernetes object name and reaches four places that must
 agree -- the ConfigMap, the Role's `resourceNames`, the RoleBinding behind it,
@@ -264,7 +290,10 @@ validates as names: a value it rejects for the ConfigMap is still accepted in
 on the other.
 */ -}}
 {{- if not (regexMatch "\\A[a-z0-9]([-a-z0-9.]*[a-z0-9])?\\z" $ledgerName) }}
-{{- fail (printf "selfImprovement.ledgerConfigMap %q is not a valid ConfigMap name. It must be a lowercase DNS subdomain: letters, digits, `-` and `.`, starting and ending alphanumeric. Note that an unquoted YAML `no` or `off` reaches this template as a boolean, not as a name." $ledgerName) }}
+{{- fail (printf "selfImprovement.ledgerConfigMap %q is not a valid ConfigMap name. It must be a lowercase DNS subdomain: letters, digits, `-` and `.`, starting and ending alphanumeric. Note that an unquoted YAML `yes` or `on` reaches this template as the boolean true, and renders a ConfigMap literally named \"true\"." $ledgerName) }}
+{{- end }}
+{{- if gt (len $ledgerName) 253 }}
+{{- fail (printf "selfImprovement.ledgerConfigMap is %d characters; a ConfigMap name is a DNS subdomain, capped at 253. The regex above accepts any length, and the two `resourceNames` entries that carry this value are not names to the API server, so an over-long value fails on the ConfigMap alone and grants nothing." (len $ledgerName)) }}
 {{- end }}
 {{- /*
 Two families of ConfigMap name are already spoken for, and pointing the ledger
@@ -314,6 +343,22 @@ nothing in the log naming the one that vanished.
 {{- fail (printf "selfImprovement.signals contains %q, which is not one of %s. The runner passes the list through verbatim, so an unknown class silently investigates nothing." . (join ", " $knownSignals)) }}
 {{- end }}
 {{- end }}
+{{- /*
+The default is the gateway this release renders, so it is only a default while
+the release renders one. `litellm.enabled: false` and no endpoint set points
+every run at a Service that does not exist -- and the shape of that failure is
+the reason it is refused here rather than left to fail at runtime. The CronJob
+starts on schedule, the runner does its Kubernetes and Cloud reads, and the
+first model call gets a connection refused an unknown distance into a run that
+has already spent its read budget. Hourly, with the loop's own health output
+reporting a run that started.
+
+Refused rather than defaulted for the same reason as `observedDeployment` above:
+an install running its own gateway knows where it is, and the chart does not.
+*/ -}}
+{{- if and (not .Values.litellm.enabled) (not $si.model.endpoint) }}
+{{- fail "selfImprovement.enabled with litellm.enabled: false needs selfImprovement.model.endpoint. The default endpoint is the litellm Service this release renders, and this release is not rendering one, so every run would fail its first model call part-way through -- after the read budget is spent, hourly. Name your own OpenAI-compatible endpoint, or leave the loop off." }}
+{{- end }}
 {{- $modelEndpoint := $si.model.endpoint | default (printf "http://litellm.%s.svc.cluster.local/v1" $ns) }}
 ---
 # The runner's own Kubernetes identity. Not the agent's, and the difference is
@@ -329,7 +374,7 @@ nothing in the log naming the one that vanished.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ $ksaName }}
+  name: {{ $ksaName | quote }}
   namespace: {{ $ns }}
   labels:
     {{- include "kube-agents.labels" . | nindent 4 }}
@@ -346,6 +391,12 @@ metadata:
 # switched on without a credential review. It also excludes pods/exec,
 # pods/attach and pods/portforward, so there is no route from a read grant to a
 # shell in the agent's pod.
+#
+# It does include pods/log, and that is the grant to weigh rather than the
+# absent ones: the agent's logs are the loop's main evidence source, and anything
+# the agent logged is readable here. Which is the same reach the loop already
+# has through Cloud Logging, so the boundary this stays inside is what the
+# agent writes down -- not the credentials it writes it with.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -360,7 +411,7 @@ roleRef:
   name: view
 subjects:
   - kind: ServiceAccount
-    name: {{ $ksaName }}
+    name: {{ $ksaName | quote }}
     namespace: {{ $ns }}
 ---
 # The two grants `view` does not cover.
@@ -427,7 +478,7 @@ roleRef:
   name: {{ $name }}
 subjects:
   - kind: ServiceAccount
-    name: {{ $ksaName }}
+    name: {{ $ksaName | quote }}
     namespace: {{ $ns }}
 ---
 # The ledger. Rendered with NO `data` key on purpose: Helm's three-way merge
@@ -589,6 +640,14 @@ spec:
     # An install that points selfImprovement.model.endpoint at a third
     # in-namespace service needs a rule of its own; out-of-namespace endpoints
     # are covered by the 443 rule below.
+    #
+    # Conditional on the gateway existing. With `litellm.enabled: false` the
+    # release renders no such pods, the guard above has already made the
+    # operator name their own endpoint, and this rule would be a standing
+    # permission to reach whatever else in the namespace happens to be labelled
+    # `app: litellm` -- opened by a release that neither created it nor talks
+    # to it.
+    {{- if .Values.litellm.enabled }}
     - to:
         - podSelector:
             matchLabels:
@@ -598,6 +657,7 @@ spec:
           port: 8080
         - protocol: TCP
           port: 80
+    {{- end }}
     # GKE metadata server: the Workload Identity token exchange, and the
     # instance identity the evidence CLI reads its project from.
     - to:
@@ -646,8 +706,21 @@ spec:
     # cluster where the operator's own mental model says they only widened the
     # policy. `uniq` at the render below absorbs the overlap when the address
     # they name is one the lookup found anyway.
+    #
+    # The lookup reads the `default` namespace, which is the one place this
+    # chart goes outside `.Release.Namespace`, and Helm aborts the *whole*
+    # render on a lookup it is refused -- not this template, the release. So an
+    # installer identity without cluster-scoped read on that object cannot
+    # install the agent either, from the moment this loop is switched on, and
+    # the error names Endpoints rather than the feature that asked for them.
+    # `discoverApiServerEndpoints: false` is the way out: it drops to the two
+    # static defaults plus whatever `apiServerCIDRs` names, which is exactly
+    # what a `helm template` render gets anyway.
     {{- $apiCIDRs := concat (list "34.118.224.1/32" "10.96.0.1/32") ($si.apiServerCIDRs | default list) }}
-    {{- $ep := lookup "v1" "Endpoints" "default" "kubernetes" }}
+    {{- $ep := dict }}
+    {{- if ne $si.discoverApiServerEndpoints false }}
+    {{- $ep = lookup "v1" "Endpoints" "default" "kubernetes" }}
+    {{- end }}
     {{- range $subset := ((($ep | default dict).subsets) | default list) }}
     {{- range $addr := (($subset.addresses) | default list) }}
     {{- if $addr.ip }}
@@ -769,7 +842,7 @@ spec:
             kubeagents.x-k8s.io/selfimprove: "true"
         spec:
           restartPolicy: Never
-          serviceAccountName: {{ $ksaName }}
+          serviceAccountName: {{ $ksaName | quote }}
           # False at the pod, and then handed back to the runner alone through
           # the projected volume at the bottom of this file. The runner does
           # need an API-server identity -- `_kube_client()`, `_api_client()` and
