@@ -36,10 +36,12 @@
 #                        exists. Put a `die` here rather than in a hook: the hooks above
 #                        first run once the run has already mutated both clusters.
 #
-# Each hook runs in a subshell, and scenario_manifest runs more than once per invocation,
-# so nothing a hook assigns reaches the next one. A hook that resolves something at run
-# time must wrap the resolver in scenario_memo (below) or it will resolve repeatedly, and
-# may not resolve the same way twice.
+# Each of the three output hooks runs in a subshell, and scenario_manifest runs more than
+# once per invocation, so nothing they assign reaches the next one. A hook that resolves
+# something at run time must wrap the resolver in scenario_memo (below) or it will resolve
+# repeatedly, and may not resolve the same way twice. scenario_preflight is the exception:
+# preflight() calls it directly, so what it assigns does persist -- which is why it is the
+# right place for a check whose answer the run depends on.
 
 set -euo pipefail
 
