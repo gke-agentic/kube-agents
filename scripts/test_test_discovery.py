@@ -38,8 +38,6 @@ EXCLUDED = {
     # Has its own Makefile target (`make -C k8s-operator test-python`) and its
     # own CI workflow; the root suite does not reach into the operator.
     "k8s-operator": "own suite, k8s-operator-test.yml",
-    # Has its own workflow (agentplugins-test.yml) and its own dependencies.
-    "agentplugins": "own suite, agentplugins-test.yml",
     # pytest-native (fixtures, parametrize); unittest discovery collects two
     # of its tests and errors on both. Runs under `make test-bench`.
     "bench/tests": "pytest-native, runs under make test-bench",
