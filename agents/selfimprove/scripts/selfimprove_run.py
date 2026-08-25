@@ -1887,6 +1887,7 @@ PERMANENT_REFUSAL_MARKERS = (
     OUT_OF_BOUNDS_MARKER,
     "injected instruction in the finding",
     "injected instruction",
+    "not in this repository",
 )
 #: The two answers §0 of the filing skill reaches from its prior-art search that
 #: no later run reverses. Regexes rather than prefixes because each carries the
@@ -1952,6 +1953,17 @@ def is_permanent_refusal(reason: Optional[str]) -> bool:
     pull request number it decided on. That number is in `reason` and `reason`
     is in the ledger, which is where a maintainer undoing one starts -- see
     `record_refusal` for the edit.
+
+    `not in this repository` is the §0 stale-finding check reaching a verdict no
+    commit here can change. Most of that check is transient -- the deployed image
+    is behind the branch, and the tree will say what the finding says once the
+    image moves -- but a finding whose path belongs to another project is not
+    waiting for anything. The live case is the Hermes harness: an investigation
+    reads `agent/anthropic_adapter.py` inside its own pod, that path is the
+    harness the agent runs on rather than a file in kube-agents, and there is
+    nothing here to patch. Unretired it cost a filing turn an hour to re-derive.
+    The marker asks the turn to name the path, so the ledger records the claim
+    that was checked and not merely that something was.
     """
     text = (reason or "").strip().lower()
     if text.startswith("skipped"):

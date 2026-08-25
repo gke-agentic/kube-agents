@@ -2032,6 +2032,69 @@ class PermanentRefusalMarkerTests(unittest.TestCase):
         fixing the thing."""
         self.assertFalse(R.is_permanent_refusal("SKIPPED: already filed as #12"))
 
+    def test_a_path_outside_this_repository_is_permanent(self):
+        """§0's other settled answer, and the one the live install kept paying.
+
+        `agent/anthropic_adapter.py` is the Hermes harness the agent runs on, so
+        the investigation can read it from inside the pod and this repository
+        still has nothing to patch. No commit here changes that, which is what
+        separates it from the rest of the stale-finding check.
+        """
+        for line in (
+            "SKIPPED: not in this repository - agent/anthropic_adapter.py belongs to Hermes",
+            "Skipped: Not In This Repository - agent/x.py belongs to the harness",
+            "not in this repository",
+        ):
+            with self.subTest(line=line):
+                self.assertTrue(R.is_permanent_refusal(line))
+
+    def test_a_tree_that_is_merely_behind_stays_retryable(self):
+        """The bullet above this one in §0 -- the deployed image is old, the
+        branch has moved, and the finding will read true again once the image
+        catches up. Retiring on those would stop the loop filing anything the
+        pod is behind on, which is the ordinary case rather than the exotic
+        one."""
+        for line in (
+            "SKIPPED: the base tree no longer says that",
+            "SKIPPED: main has moved on and the function is gone",
+            "SKIPPED: that line is not in this repository's copy of the vendored file yet",
+            "SKIPPED: the helper the finding names is not in this repository at HEAD",
+        ):
+            with self.subTest(line=line):
+                self.assertFalse(R.is_permanent_refusal(line))
+
+    def test_the_phrasing_the_turn_reaches_for_unprompted_does_not_match(self):
+        """Pinned because it is the live line, not because it is a good outcome.
+
+        Both observed runs printed `SKIPPED: location is not in this repository
+        (...)`, which fails twice over: the marker is not first, and a bracket
+        is not one of the separators. Loosening either is what would break the
+        predicate -- allow a lead-in and `the helper is not in this repository`
+        retires a finding the next image would have fixed; allow `(` and
+        `SKIPPED: out of bounds (read) in _match_bracket` becomes a policy
+        refusal. So the skill carries the wording and this direction of error
+        costs an hourly retry, which is the one the class docstring picks.
+        """
+        for line in (
+            "SKIPPED: location is not in this repository (agent/x.py is the Hermes harness)",
+            "SKIPPED: the location is not in this repository - agent/x.py is elsewhere",
+            "SKIPPED: not in this repository (agent/x.py is the Hermes harness)",
+        ):
+            with self.subTest(line=line):
+                self.assertFalse(R.is_permanent_refusal(line))
+
+    def test_the_skill_warns_against_that_phrasing(self):
+        skill = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(R.__file__))),
+            "skills",
+            "file-pull-request",
+            "SKILL.md",
+        )
+        with open(skill, "r", encoding="utf-8") as handle:
+            text = handle.read()
+        self.assertIn("Nothing may come before the four words", text)
+        self.assertIn("SKIPPED: location is not in this repository", text)
+
     def test_the_skill_prints_what_this_predicate_reads(self):
         """A vocabulary split across two files stops matching when one moves."""
         skill = os.path.join(
@@ -2047,6 +2110,7 @@ class PermanentRefusalMarkerTests(unittest.TestCase):
             "SKIPPED: fixed in #<n>",
             "SKIPPED: already filed as #<n>",
             "SKIPPED: out of bounds - <why>",
+            "SKIPPED: not in this repository - <path> belongs to <where>",
         ):
             with self.subTest(wording=wording):
                 self.assertIn(wording, text)

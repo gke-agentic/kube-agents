@@ -22,6 +22,19 @@ pod is running, which may be behind, and is read-only.
   than a missed fix does. This is the ordinary case, not an edge one: the deployed image can be
   weeks behind the branch you are filing against, and something someone else already fixed still
   looks broken from inside the pod.
+- **If the finding's file is not in this repository at all, say so in those words.** Print
+  `SKIPPED: not in this repository - <path> belongs to <where>`, with those four words first and
+  the path named after them. The Hermes harness is the case that keeps arising: an `agent/…` path
+  is the harness this agent runs on, a separate project, and no commit here will ever make it
+  exist. That is the difference from the bullet above — a tree that is merely behind catches up
+  when the image moves, so the runner keeps offering you those, while this one it retires. Name
+  the path, because the ledger keeps your sentence and a maintainer who thinks you were wrong
+  needs to see what you checked.
+  - Nothing may come before the four words, and a bracket may not come after them.
+    `SKIPPED: location is not in this repository (agent/foo.py is the Hermes harness)` is what
+    this turn reaches for unprompted, and it reads as an ordinary deferral: the finding comes
+    back next hour and buys another filing turn to reach the same answer. Use `-` before your
+    reason, not `(`.
 - Check whether it is already fixed, already filed, or already rejected. Search pull requests and
   issues, in **any** state — not just open ones, and against the repository your brief names under
   `Upstream`, which is configurable and is not always `gke-labs/kube-agents`:
@@ -44,6 +57,7 @@ pod is running, which may be behind, and is read-only.
   Read `state` and `pull_request.merged_at` on each hit. Those two fields, not `state` alone, are
   what separate the three cases below: a merged pull request and one a human closed unmerged are
   both `"state": "closed"`, and they mean opposite things.
+
   - An **open** pull request or issue on the same finding means stop. Print
     `SKIPPED: already filed as #<n>`, nothing after the number. This one is not permanent — that
     pull request will merge or be closed, and a later run's search reaches one of the two answers
