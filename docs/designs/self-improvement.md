@@ -448,8 +448,8 @@ minter's Service: either alone would do, and the label is the one an operator ca
   agent, and nothing in it reaches another namespace or another cluster.
 - **`command_policy.py`.** The runner's credential proxy runs with
   `CREDENTIAL_PROXY_ENFORCE_READ_ONLY` left at its default, which
-  [`credential_proxy.py:1373`](../../agents/platform/scripts/credential_proxy.py) reads as enforcing
-  unless the value is literally `false`. As shipped the loop goes further than that: a
+  [`credential_proxy.py:1803`](../../agents/platform/scripts/credential_proxy.py) (`read_only_enforced`)
+  reads as enforcing unless the value is literally `false`. As shipped the loop goes further than that: a
   `selfimprove.no-cluster-tools` rule refuses `kubectl` and `gcloud` outright rather than
   allow-listing them down to their read verbs, because the runner reaches Kubernetes through the
   in-cluster client and Google through its REST APIs over `urllib`, and needs neither binary. The
@@ -525,7 +525,8 @@ installation would be and nothing rotates it.
 ### 6.2 Seeding it, without touching shared code
 
 The credential proxy sidecar runs `CREDENTIAL_PROXY_BOOTSTRAP_COMMAND` before it binds its socket
-([`credential_proxy.py:1824`](../../agents/platform/scripts/credential_proxy.py)), inside
+([`credential_proxy.py:2275`](../../agents/platform/scripts/credential_proxy.py), the
+`executor.bootstrap` call in `main`), inside
 `self.environment` — the same dict, carrying the same `HOME` and `GH_CONFIG_DIR`, that `_execute`
 later runs every shimmed command in. That is what makes one line enough:
 
@@ -1284,10 +1285,14 @@ truncated at 16KiB across `evidence`, `summary`, `proposed_fix` and `user_impact
 `title` and `location` — the two agent-supplied fields that are not prose, and the two that reach
 the next run's brief and the filing prompt as well as the ledger — get their own much smaller caps;
 and the run history and each finding's promotion list are fixed-length. Past 768KiB, three quarters
-of the API server's limit, `save` sheds rather than refuses: the run history down to five rows,
-then the largest prose fields, each replaced by a marker so a reader can see that a summary once
-existed. It raises only if that still does not fit, with a message naming the likely cause rather
-than letting the API server return a 413. What it never sheds is what the gate reads — a finding
+of the API server's limit, `save` sheds rather than refuses, in three tiers ordered by what a lost
+field costs: the run history down to five rows; then the largest prose fields, each replaced by a
+marker so a reader can see that a summary once existed; then, last, the oldest already-thinned
+refused rows. That third tier exists because `prune` keeps refused rows indefinitely rather than
+deleting them at thirty days, so without it a ledger full of holds has nothing left to give. A row
+it drops is one nothing has seen for a month, and the cost is that finding being filed once more if
+it ever comes back. It raises only if all three still do not fit, with a message naming the likely
+cause rather than letting the API server return a 413. What it never sheds is what the gate reads — a finding
 that loses its sightings stops promoting, and one that loses a promotion record is filed again,
 which trades a loud failure for a quiet wrong answer. Refusing outright would be worse than both,
 because `save` is the last thing a run does: a ledger over the cap would stay over it, every later
@@ -1573,9 +1578,9 @@ opt-in and why §7's gate is per-install configuration rather than a constant.
   10000 and share the checkout on an `emptyDir`, so a turn in the agent container can write
   `.git/config` in the tree that the sidecar's next `git` command reads. Git has no switch that
   turns repo-local config off, so `credential_proxy.HARDENED_GIT_CONFIG` pins the settings that
-  matter through `GIT_CONFIG_COUNT`, which outranks the repository the way `-c` does: hooks, pager,
-  editor, sequence editor, external diff, `ext://` transport, credential helpers, `core.sshCommand`
-  and commit signing. The credential helper needs a second step. An empty value resets the
+  matter through `GIT_CONFIG_COUNT`, which outranks the repository the way `-c` does: hooks, the
+  filesystem monitor, pager, editor, sequence editor, external diff, `ext://` transport, credential
+  helpers, `core.sshCommand` and commit signing. The credential helper needs a second step. An empty value resets the
   accumulated list rather than setting a value, and there is one list however it was filled, so the
   reset drops a repo-local `credential.https://github.com.helper` and the entry `gh auth setup-git`
   wrote alike; `credential_proxy.gh_credential_helpers` reads the latter back out of the sidecar's
