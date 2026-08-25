@@ -177,13 +177,6 @@ _DEADLINE_EPOCH: Optional[float] = None
 #: otherwise make every caller retry two API reads that will not succeed.
 _DEADLINE_EPOCH_UNREADABLE = False
 
-#: Seconds held back from the deadline for the ledger write and the final log.
-#: The ledger is the run's entire output in report-only mode, so being killed
-#: while holding it is the one failure that makes the whole hour worthless --
-#: the findings were computed, the counts were incremented in memory, and none
-#: of it reached the ConfigMap.
-DEADLINE_RESERVE_SECONDS = 90
-
 #: What a SIGTERM handler needs in order to write one last ledger row, filled in
 #: by `main` as each piece becomes available. A module global rather than a
 #: closure because the handler is installed once, early, and the values it wants
@@ -237,15 +230,56 @@ def record_kill(signum: int = 15) -> bool:
     # describe the same run twice. `recorded` says which case this is: the write
     # still has to go out either way, and only the row differs.
     if not _KILL_CONTEXT.get("recorded"):
+        # A filing turn interrupted here is the same situation as one that ran
+        # out of budget, and it is charged the same way. The turn had a
+        # credential, a branch and a `gh pr create`, so the pull request may
+        # exist; nothing in this process will ever learn whether it does. Left
+        # uncharged, the finding keeps its counts and its gate eligibility, the
+        # next run promotes it again, and the loop opens a second pull request
+        # for the same finding every hour -- the daily ceiling does not stop it,
+        # because the ceiling counts promotions and no promotion was recorded.
+        # One held finding against an unbounded duplicate is the same trade the
+        # timeout branch in `main` already makes.
+        inflight = _KILL_CONTEXT.get("inflight")
+        if inflight:
+            ledger_mod.record_promotion(
+                ledger,
+                inflight,
+                "",
+                _KILL_CONTEXT.get("revision") or "unknown",
+                confirmed=False,
+            )
+        elapsed = int(time.time() - RUN_STARTED)
+        # Only name `activeDeadlineSeconds` when the arithmetic supports it. The
+        # deadline is counted from the Job's `.status.startTime`, so it is
+        # measured against that where the read succeeded and against this
+        # process's own start where it did not -- `_DEADLINE_EPOCH` rather than
+        # `job_started_at`, because a signal handler is no place to start an API
+        # call and `main` has already warmed the cache.
+        deadline = int(_KILL_CONTEXT.get("deadline") or 0)
+        epoch = _DEADLINE_EPOCH or RUN_STARTED
+        against_deadline = int(time.time() - min(epoch, RUN_STARTED))
+        if deadline and against_deadline >= deadline - DEADLINE_ATTRIBUTION_SLACK_SECONDS:
+            cause = (
+                "at activeDeadlineSeconds (%ds); raise it or lower "
+                "SELFIMPROVE_INVESTIGATE_TIMEOUT." % deadline
+            )
+        elif deadline:
+            cause = (
+                "%ds short of activeDeadlineSeconds (%ds), so the signal came from outside the "
+                "Job -- an eviction, a node drain, or a deleted Job."
+                % (deadline - against_deadline, deadline)
+            )
+        else:
+            cause = "no activeDeadlineSeconds is configured, so the signal came from outside the Job."
         ledger_mod.record_run(
             ledger,
             _KILL_CONTEXT.get("revision") or "unknown",
             "killed",
             int(_KILL_CONTEXT.get("found", 0)),
             int(_KILL_CONTEXT.get("promoted", 0)),
-            "signal %d after %ds, during %s. activeDeadlineSeconds is the usual cause; raise it or "
-            "lower SELFIMPROVE_INVESTIGATE_TIMEOUT."
-            % (signum, int(time.time() - RUN_STARTED), _KILL_CONTEXT.get("stage", "unknown")),
+            "signal %d after %ds, during %s. %s"
+            % (signum, elapsed, _KILL_CONTEXT.get("stage", "unknown"), cause),
             filed=int(_KILL_CONTEXT.get("filed", 0)),
         )
     failure: List[BaseException] = []
@@ -340,6 +374,34 @@ def env_int(name: str, default: int) -> int:
 #: fits Kubernetes' own default grace period of 30 seconds; an install that
 #: lengthens the grace period raises this with it.
 KILL_WRITE_BUDGET_SECONDS = max(1, env_int("SELFIMPROVE_KILL_WRITE_BUDGET", 25))
+
+#: Seconds held back from the deadline for the ledger write and the final log.
+#: The ledger is the run's entire output in report-only mode, so being killed
+#: while holding it is the one failure that makes the whole hour worthless --
+#: the findings were computed, the counts were incremented in memory, and none
+#: of it reached the ConfigMap.
+#:
+#: Derived from the line above rather than fixed at 90, because the two numbers
+#: are two answers to one question -- how long the last ledger write may take --
+#: and 90 was the smaller of them on every install that lengthens the grace
+#: period. The chart ships 140, so a run that spent its budget down to the
+#: reserve started the write it exists to protect with 50 seconds less than the
+#: handler would have allowed the same write on a signal. The margin on top
+#: covers `record_run`, the final log lines, and the fact that the deadline is
+#: measured from the Job's start while `seconds_left` may only know the
+#: container's.
+DEADLINE_RESERVE_SECONDS = max(90, KILL_WRITE_BUDGET_SECONDS + 30)
+
+#: How far past `activeDeadlineSeconds - this` a kill has to land before the
+#: ledger row blames the deadline for it. A SIGTERM arrives from a node drain,
+#: an eviction or a deleted Job as readily as from the kubelet's deadline, and
+#: the row that says otherwise sends whoever reads it to raise a limit nothing
+#: reached -- the case that prompted this was a kill at 1489s under a 5400s
+#: deadline, with the row naming `activeDeadlineSeconds`. The window is
+#: wide because the measurement can be: the kubelet counts from the Job's
+#: `.status.startTime` and this process may only know its own, and the gap
+#: between them is a node scale-up and a multi-gigabyte image pull.
+DEADLINE_ATTRIBUTION_SLACK_SECONDS = 300
 
 
 def cooldown_hours_from(gate: Dict[str, Any]) -> float:
@@ -2889,6 +2951,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             ledger_name=ledger_name,
             revision=identity["revision"],
             stage="fetching the source",
+            deadline=deadline,
         )
         signal.signal(signal.SIGTERM, _on_sigterm)
 
@@ -3121,6 +3184,18 @@ def main(argv: Optional[List[str]] = None) -> int:
                 )
                 continue
             entry = ledger["findings"][fp]
+            # Named, not just "filing". This is the one stage where a kill can
+            # leave something behind in another system -- a branch on the fork,
+            # a pull request nobody recorded -- and the fingerprint is what a
+            # human needs in order to go and look. It is also what tells the
+            # handler to charge the finding, on the same reasoning as the
+            # timeout branch below: the turn had the credential and the `gh pr
+            # create`, so assume the pull request exists rather than re-file it
+            # every hour. Cleared the moment the call returns, because from
+            # there the branches below do their own recording and a second
+            # `record_promotion` from the handler would append a second
+            # promotion and charge the day's budget twice.
+            note_progress(inflight=fp, stage="filing %s" % fp)
             result, url = file_pull_request(
                 entry,
                 identity,
@@ -3134,6 +3209,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 pr_label=pr_label,
                 severity_label_prefix=severity_label_prefix,
             )
+            note_progress(inflight=None, stage="filing")
             if result == SKIPPED:
                 # The turn looked and declined. Nothing was opened, so nothing is
                 # charged and the finding keeps its counts for a later run.

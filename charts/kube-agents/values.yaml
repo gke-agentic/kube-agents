@@ -539,7 +539,9 @@ selfImprovement:
   # Bounds a single agent turn inside that, so the runner still gets to write
   # its ledger when one overruns: the runner's own timeout ends the turn and
   # files what it found, while the Job's deadline kills the pod, which records
-  # only a `killed` row with whatever counts had accumulated.
+  # a `killed` row with whatever counts had accumulated — plus, if the kill
+  # landed inside a filing turn, an unconfirmed promotion for the finding that
+  # turn was filing, since it may have opened the pull request before it died.
   #
   # Per turn, not per run — `investigateMaxTurns` bounds the count. Turns
   # measured on the live install end at Hermes' call cap rather than here, the
@@ -619,7 +621,9 @@ selfImprovement:
   # How long that handler may spend on the write before it gives up and logs
   # instead. Must stay below terminationGracePeriodSeconds — the two are one
   # setting in two places, and raising this without raising that hands the
-  # kubelet a process still waiting on a join.
+  # kubelet a process still waiting on a join. The runner also derives its
+  # deadline reserve from this, so the last ledger write of a run that was not
+  # killed gets at least as long as the handler would have allowed it.
   killWriteBudgetSeconds: 140
 
   # report-only  ledger only, no GitHub credential, no write path out of the cluster

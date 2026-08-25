@@ -1709,11 +1709,15 @@ class KillRecordingTests(unittest.TestCase):
         self.prior_save = R.ledger_mod.save
         R.ledger_mod.save = lambda ns, name, led: self.saved.append((ns, name, led))
         self.prior_context = dict(R._KILL_CONTEXT)
+        self.prior_started = R.RUN_STARTED
+        self.prior_epoch = R._DEADLINE_EPOCH
 
     def tearDown(self):
         R.ledger_mod.save = self.prior_save
         R._KILL_CONTEXT.clear()
         R._KILL_CONTEXT.update(self.prior_context)
+        R.RUN_STARTED = self.prior_started
+        R._DEADLINE_EPOCH = self.prior_epoch
 
     def _arm(self, **extra):
         ledger = R.ledger_mod.empty_ledger()
@@ -1795,6 +1799,92 @@ class KillRecordingTests(unittest.TestCase):
         R.note_progress(armed=False)
         self.assertFalse(R.record_kill(15))
         self.assertEqual(self.saved, [])
+
+    def _armed_with_a_finding(self, **extra):
+        ledger = self._arm(**extra)
+        fp, _ = R.ledger_mod.record_finding(
+            ledger, {"title": "t", "severity": "high", "signal": "errors"}, "abc1234"
+        )
+        return ledger, fp
+
+    def test_a_kill_during_a_filing_turn_charges_the_finding(self):
+        """The duplicate-every-hour case.
+
+        The turn had the credential, the branch and the `gh pr create`, so the
+        pull request may be open; nothing in this process will ever find out.
+        Leaving the finding uncharged means the next run promotes it again, and
+        the daily ceiling does not stop that because the ceiling counts
+        promotions and none was recorded.
+        """
+        ledger, fp = self._armed_with_a_finding()
+        R.note_progress(inflight=fp, stage="filing %s" % fp)
+
+        self.assertTrue(R.record_kill(15))
+        rows = ledger["findings"][fp]["promotions"]
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["unconfirmed"])
+        self.assertEqual(rows[0]["url"], "")
+        self.assertEqual(R.ledger_mod.promotions_today(ledger, R.ledger_mod.utcnow()), 1)
+        self.assertIn(fp, ledger["runs"][-1]["note"])
+
+    def test_a_kill_outside_a_filing_turn_charges_nothing(self):
+        """`inflight` is cleared the moment `file_pull_request` returns, so a
+        kill in the investigation turn -- or between two filings -- must not
+        spend a slot on a finding no turn has touched."""
+        ledger, fp = self._armed_with_a_finding()
+        R.note_progress(inflight=fp)
+        R.note_progress(inflight=None, stage="filing")
+
+        self.assertTrue(R.record_kill(15))
+        self.assertEqual(ledger["findings"][fp]["promotions"], [])
+
+    def test_the_row_names_the_deadline_only_when_the_run_reached_it(self):
+        R._DEADLINE_EPOCH = None
+        R.RUN_STARTED = R.time.time() - 5350
+        ledger = self._arm(deadline=5400)
+
+        self.assertTrue(R.record_kill(15))
+        self.assertIn("at activeDeadlineSeconds (5400s)", ledger["runs"][-1]["note"])
+
+    def test_a_kill_nowhere_near_the_deadline_says_so(self):
+        """The row that sent a reader to raise a limit nothing reached.
+
+        A SIGTERM comes from an eviction, a node drain or a deleted Job as
+        readily as from the kubelet, and a live run was killed at 1489s under a
+        5400s deadline with the note blaming `activeDeadlineSeconds`.
+        """
+        R._DEADLINE_EPOCH = None
+        R.RUN_STARTED = R.time.time() - 1489
+        ledger = self._arm(deadline=5400)
+
+        self.assertTrue(R.record_kill(15))
+        note = ledger["runs"][-1]["note"]
+        self.assertIn("outside the Job", note)
+        self.assertNotIn("at activeDeadlineSeconds", note)
+
+    def test_the_deadline_is_measured_from_the_job_not_this_process(self):
+        """`activeDeadlineSeconds` runs from the Job's `.status.startTime`, so a
+        run whose pod spent twenty minutes being scheduled and pulling the image
+        hits it twenty minutes earlier than its own clock says."""
+        now = R.time.time()
+        R.RUN_STARTED = now - 4200
+        R._DEADLINE_EPOCH = now - 5350
+        ledger = self._arm(deadline=5400)
+
+        self.assertTrue(R.record_kill(15))
+        self.assertIn("at activeDeadlineSeconds (5400s)", ledger["runs"][-1]["note"])
+
+    def test_an_unconfigured_deadline_is_not_blamed(self):
+        ledger = self._arm()
+        self.assertTrue(R.record_kill(15))
+        self.assertIn("no activeDeadlineSeconds is configured", ledger["runs"][-1]["note"])
+
+    def test_the_reserve_covers_the_handler_it_exists_to_protect(self):
+        """Both numbers answer "how long may the last ledger write take", and
+        the reserve being the smaller of the two meant a run that spent its
+        budget down to the reserve started that write with less time than the
+        handler would have allowed the same write on a signal."""
+        self.assertGreaterEqual(R.DEADLINE_RESERVE_SECONDS, R.KILL_WRITE_BUDGET_SECONDS)
 
 
 class BaseBranchTests(unittest.TestCase):

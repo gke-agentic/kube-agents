@@ -1182,6 +1182,14 @@ records it then discards; `--service` narrows at the source instead.
 **A run outlives its schedule.** Hourly with `concurrencyPolicy: Forbid` means a run that takes
 seventy minutes silently halves the cadence, and a run that hangs stops the loop entirely with no
 error anywhere. `activeDeadlineSeconds` bounds it and a killed run is itself recorded in the ledger.
+The row names the stage the signal interrupted, and blames `activeDeadlineSeconds` only when the
+run was within five minutes of it — measured from the Job's `.status.startTime`, which is where the
+kubelet counts from and can be twenty minutes before the container's own start. A SIGTERM arriving
+earlier than that came from an eviction, a node drain or a deleted Job, and the row says so rather
+than sending a reader to raise a limit nothing reached. A kill inside a filing turn also charges
+that finding an unconfirmed promotion, on the same reasoning as the filing-turn timeout below: the
+held the credential and the `gh pr create`, so the pull request may exist, and a finding left
+uncharged is re-promoted every hour past a ceiling that counts promotions.
 
 **The image moves and the CronJob does not.** Covered by the abort in §2, and worth repeating
 because it is the failure that produces confidently wrong pull requests rather than no pull
