@@ -257,6 +257,27 @@ class PromoteReleaseImagesScriptTest(unittest.TestCase):
         finally:
             temp_dir.cleanup()
 
+    def test_promote_execution_direct_unstamped_tag_resolves_exact_commit(self):
+        """Verifies promote_release_images resolves exact tag commit when tag is placed directly on a commit."""
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_docker_binary(bin_dir)
+
+            direct_commit = git("rev-parse", "HEAD").stdout.strip()
+            git("tag", MOCK_TARGET_RELEASE_TAG, direct_commit)
+
+            proc = self._run_script(
+                [MOCK_TARGET_RELEASE_TAG],
+                bin_dir=str(bin_dir),
+                cwd=repo_dir,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("PROMOTING RELEASE CONTAINER IMAGES", proc.stdout)
+            self.assertIn(f"Release Commit:  {direct_commit}", proc.stdout)
+        finally:
+            temp_dir.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()

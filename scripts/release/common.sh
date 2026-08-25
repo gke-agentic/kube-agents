@@ -441,7 +441,7 @@ resolve_source_image_commit() {
   local tag_commit=""
   if tag_commit="$(git rev-parse --verify "refs/tags/${version}^{commit}" 2>/dev/null)"; then
     local parent_commit=""
-    if parent_commit="$(git rev-parse --verify "refs/tags/${version}^^{commit}" 2>/dev/null)"; then
+    if parent_commit="$(git rev-parse --verify "${tag_commit}^" 2>/dev/null)"; then
       if is_ci_pipeline && command -v docker >/dev/null 2>&1; then
         if check_commit_images_exist "${tag_commit}" 2>/dev/null; then
           echo "${tag_commit}"
@@ -452,8 +452,13 @@ resolve_source_image_commit() {
           return 0
         fi
       fi
-      echo "${parent_commit}"
-      return 0
+      # Fallback detection: if tag commit is a stamped release commit, return its parent
+      local commit_msg
+      commit_msg="$(git log -1 --format="%s" "${tag_commit}" 2>/dev/null || echo "")"
+      if [[ "${commit_msg}" =~ ^chore(\(release\))?:\ stamp ]]; then
+        echo "${parent_commit}"
+        return 0
+      fi
     fi
     echo "${tag_commit}"
     return 0
