@@ -320,6 +320,7 @@ model_list:
       model: {{ printf "%s/%s" .provider .model }}
 litellm_settings:
   callbacks: {{ .callbacks }}
+  drop_params: true
 {{- /*
   Prompt caching. Kept identical to the kustomize base
   (k8s-operator/config/integrations/litellm/base/config.yaml) — see that file
