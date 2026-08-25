@@ -860,6 +860,34 @@ spec:
                   value: /var/run/credential-proxy/backend.sock
                 - name: CREDENTIAL_PROXY_WORKSPACE_ROOT
                   value: /home/selfimprove
+                # Off by default in credential_proxy.py, because it changes what
+                # argv the proxy accepts and every other caller was written
+                # against the current rules. This pod is the one it was written
+                # for: an agent turn writes the tree and then asks the sidecar to
+                # run git in it, so the tree is attacker-controlled input to a
+                # process holding the credential. Two things follow from it.
+                #
+                # Argv containment: an absolute path outside
+                # CREDENTIAL_PROXY_WORKSPACE_ROOT is refused, whichever flag
+                # carries it. The policy ConfigMap below says which subcommands
+                # may run and cannot say which files they may open, and the flags
+                # that take a path are the part of that list that keeps growing.
+                # $HERMES_HOME is inside the workspace, so the filing skill's
+                # `--body-file "$HERMES_HOME/pr-body.md"` is unaffected; the PAT
+                # under /var/run/secrets and gh's state under
+                # /var/lib/credential-proxy are outside it, which is the point.
+                #
+                # Config containment: git is invoked with GIT_CONFIG_COUNT set,
+                # which outranks the repository's own .git/config the way `-c`
+                # does, pinning core.hooksPath to /dev/null and clearing the
+                # pager, the editors, diff.external and the unscoped credential
+                # helper. Those are the settings git reads out of a repository
+                # and then runs as a command -- no flag is involved, so no argv
+                # rule can reach them. The host-scoped helper `gh auth setup-git`
+                # wrote to the global config survives, which is what
+                # authenticates the push.
+                - name: CREDENTIAL_PROXY_UNTRUSTED_WORKSPACE
+                  value: "1"
                 - name: KSA_TOKEN_FILE
                   value: /var/run/secrets/kubeagents/serviceaccount/token
                 # No TOKEN_BROKER_URL. This loop mints nothing: its GitHub
@@ -1043,8 +1071,27 @@ spec:
                 # it removes neither files nor environment variables -- so a
                 # token mounted on the runner would be readable by the
                 # investigation turn, which reads Cloud Logging, which contains
-                # text an attacker can influence. Mounted here it is reachable
-                # only through the proxy's argv rules.
+                # text an attacker can influence.
+                #
+                # Mounted here it is reachable only by a command the proxy
+                # agrees to run -- which is a narrower claim than "the argv
+                # rules protect it", and the difference is worth stating because
+                # it was wrong for a while. The rules are a denylist of
+                # spellings; a denylist says what may not run and nothing about
+                # what a permitted command may open. `git hash-object -w
+                # {{ $patDir }}/token` was refused by none of them, and
+                # /v1/exec hands stdout back to the caller unredacted. Two
+                # things close it and neither is a rule about a flag:
+                # `selfimprove.unlisted-git-subcommand` bounds git to the
+                # subcommands the loop runs, and
+                # CREDENTIAL_PROXY_UNTRUSTED_WORKSPACE refuses any absolute path
+                # outside the workspace, which is where this mount is.
+                #
+                # Note also who can reach the proxy. Envoy binds 127.0.0.1 and
+                # /v1/exec takes no caller identity, so every turn sharing this
+                # pod's network namespace can call it -- the investigation turn
+                # as much as the filing one. Popping CREDENTIAL_PROXY_URL keeps
+                # the shims from using it; it does not make the port go away.
                 - name: selfimprove-github-pat
                   mountPath: {{ $patDir }}
                   readOnly: true
@@ -1451,6 +1498,26 @@ spec:
 #     is the same escape one token further along. The leading `'?` is for
 #     `shlex.join`: a value with a space in it arrives quoted, and the quote sits
 #     between the whitespace and the flag.
+#   - Everything above this line is a denylist, and `gh` was the only one of the
+#     two tools that also had an allow-list. So the rules said which `git`
+#     subcommands may not run and nothing about which may -- and git has around
+#     150 of them. `git hash-object -w <path>`, `git cat-file -p <sha>`,
+#     `git grep -f <path>` and `git archive -o <path>` each take a path or an
+#     object and print or store the contents, `/v1/exec` returns stdout to the
+#     caller unredacted, and this is the one container that mounts the PAT.
+#     `unlisted-git-subcommand` is the same shape as the gh rule: skip the global
+#     flags, then require the first word after them to be one the loop actually
+#     runs. It is last in the list so that a command a narrower rule already
+#     names -- `send-pack`, `clone`, `ls-remote` -- still reports that rule's id
+#     and its explanation rather than this one's.
+#     Two details it cannot be written without. The flag-skip has to consume
+#     `-C <path>` and its value together, because an engine free to treat `-C` as
+#     a valueless flag reads the path as the subcommand and refuses
+#     `git -C /src status`; the value-taking names are therefore listed once as
+#     the first alternative and excluded from the second by lookahead. And the
+#     allow-list terminates on `(?![\w-])` rather than `\b`, because `\b` sits
+#     happily between `show` and the `-` of `show-ref` -- which would admit
+#     `checkout-index --prefix=/tmp -a` on the strength of `checkout`.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -1483,7 +1550,8 @@ data:
         {"id":"selfimprove.no-git-config-injection","pattern":"\\Agit\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+config\\b|\\Agit\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+(?:-c|--config-env)(?:\\s+|=)'?(?![/~])[^'\"\\s=]*\\.[^'\"\\s=]*=","message":"Command blocked: git runs `alias.*`, `core.pager`, `core.hooksPath` and `credential.helper` as shell commands, so a config assignment is arbitrary execution wearing a flag. `git switch -c <branch>` is unaffected -- this reads only a dotted key with a value."},
         {"id":"selfimprove.git-push-fork-only","pattern":"\\Agit\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+push\\b(?!(?:\\s+-(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])*)*\\s+fork(?=\\s|$))|\\Agit\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+(?:send-pack|http-push)\\b","message":"Command blocked: the self-improvement loop pushes to the remote named `fork` and nowhere else. The runner creates that remote itself (selfimprove_run.py, _fetch_source_git) and the filing skill pushes `git push -u fork HEAD`; a push naming another remote, a URL, or no remote at all writes to a repository this loop does not own -- `origin` in upstream mode is the upstream repository."},
         {"id":"selfimprove.no-git-remote-repoint","pattern":"\\Agit\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+remote\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+(?:set-url|rename|remove|rm)\\b","message":"Command blocked: the rule above constrains pushes to the remote named `fork`, and re-pointing that name at another repository is how a name-based constraint gets spelled around. The runner only ever adds remotes to a tree it has just created; it never re-points or removes one."},
-        {"id":"selfimprove.no-git-exec-flags","pattern":"\\Agit\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+'?--(?:exec-path|upload-pack|receive-pack|exec)(?:=|\\s|$)|\\Agit\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+(?:ls-remote|clone|fetch|pull|archive)\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+-u(?:=|\\s|$)|\\Agit\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+'?ext::","message":"Command blocked: each of these flags hands git a program to run. `--exec-path` puts a directory of attacker-written binaries ahead of git's own subcommands, `--upload-pack`/`--receive-pack` and their `-u` short form are passed to a shell on a local transport, `--exec` runs a command per rebase step, and an `ext::` URL is a command by construction. The loop's four git calls need none of them."}
+        {"id":"selfimprove.no-git-exec-flags","pattern":"\\Agit\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+'?--(?:exec-path|upload-pack|receive-pack|exec)(?:=|\\s|$)|\\Agit\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+(?:ls-remote|clone|fetch|pull|archive)\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+-u(?:=|\\s|$)|\\Agit\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+'?ext::","message":"Command blocked: each of these flags hands git a program to run. `--exec-path` puts a directory of attacker-written binaries ahead of git's own subcommands, `--upload-pack`/`--receive-pack` and their `-u` short form are passed to a shell on a local transport, `--exec` runs a command per rebase step, and an `ext::` URL is a command by construction. The loop's four git calls need none of them."},
+        {"id":"selfimprove.unlisted-git-subcommand","pattern":"\\Agit\\b(?:\\s+(?:-C|--git-dir|--work-tree|--namespace|--exec-path|-c|--config-env|--super-prefix|--attr-source)(?:=|\\s+)?(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+|\\s+(?!(?:-C|--git-dir|--work-tree|--namespace|--exec-path|-c|--config-env|--super-prefix|--attr-source)(?:=|\\s|$))-[^'\"\\s]*)*\\s+(?!-)(?!'?(?:add|blame|branch|checkout|commit|describe|diff|fetch|help|init|log|ls-files|merge-base|push|remote|restore|rev-parse|show|status|switch|version)(?![\\w-]))","message":"Command blocked: the self-improvement loop builds a checkout, writes one commit and pushes it, and reads the tree to decide what to write. A git subcommand outside that set is one nothing in the loop runs. `hash-object`, `cat-file`, `grep` and `archive` in particular take a path or a hash and print the contents back, in the one container that mounts the credential."}
       ]
     }
 {{- end }}

@@ -1394,6 +1394,28 @@ opt-in and why §7's gate is per-install configuration rather than a constant.
   abuse a token, but the proxy is a sidecar on unauthenticated loopback and neither is a boundary.
   The structural fix is a second pod for filing, with the investigation's findings handed to it as
   data; it is not built here. `agents/selfimprove/SOUL.md` tells the agent the same thing directly.
+- **A repository can still name a program for the sidecar to run.** Both containers run as uid
+  10000 and share the checkout on an `emptyDir`, so a turn in the agent container can write
+  `.git/config` in the tree that the sidecar's next `git` command reads. Git has no switch that
+  turns repo-local config off, so `credential_proxy.HARDENED_GIT_CONFIG` pins the settings that
+  matter through `GIT_CONFIG_COUNT`, which outranks the repository the way `-c` does: hooks, pager,
+  editor, sequence editor, external diff, `ext://` transport, unscoped credential helpers,
+  `core.sshCommand` and commit signing. That is a list of what is worth pinning and not a proof
+  about the rest, and two gaps in it are known. A repo-local `credential.https://github.com.helper`
+  is a different config key from the unscoped `credential.helper` the pin resets, and resetting it
+  would also drop the one `gh auth setup-git` wrote — the one that authenticates the push. And a
+  `.gitattributes` in the tree can attach a `filter.*` or `diff.*.textconv` driver to a path, which
+  repo-local config then defines. Reaching either needs a turn that is already writing files in the
+  checkout, which is the same precondition as the bullet above and has the same fix: the tree stops
+  being writable by whatever asks for the commit only when filing moves to its own pod.
+- **Path containment reads argv conservatively, and can refuse a legitimate command.** With
+  `CREDENTIAL_PROXY_UNTRUSTED_WORKSPACE` on, the proxy resolves three token shapes — a leading `/`,
+  a flag carrying `=/`, and a relative path with a `..` component — and refuses the command if any
+  of them lands outside the workspace. It cannot tell those from prose, so a commit message or pull
+  request title beginning with an absolute path is refused with `workspace.path-containment`, and
+  the turn sees a blocked command rather than a validation error. The trade is deliberate: the
+  alternative is a denylist of the flags that take a path, and that list is the part that grows.
+  The flag is off by default and the Platform Agent does not set it.
 - **Harness findings cannot be fixed by this loop.** A change to Hermes behaviour is either an
   upstream request to Nous Research or a new anchored patch under `deploy/docker/patches/`, and the
   patch harness demands an applier with exact-count assertions, a verifier that proves the patched

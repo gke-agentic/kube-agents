@@ -765,6 +765,46 @@ GIT_MUTATING_SUBCOMMANDS = frozenset(
     }
 )
 
+# Config git reads out of the repository it is pointed at, and then runs as a
+# command. A denylist on argv cannot reach any of it: the agent does not pass
+# these as flags, it writes them into `.git/config` -- or drops an executable at
+# `.git/hooks/pre-commit` -- with the ordinary file access it has in the
+# workspace, and the next `git commit` the *sidecar* runs executes them there,
+# next to the credential.
+#
+# Injected per invocation the way `-c` is, which outranks repo-local config;
+# there is no environment variable that turns repo-local config off. The empty
+# `credential.helper` is a reset rather than a value: it clears helpers the
+# repository asked for while leaving the host-scoped one `gh auth setup-git`
+# wrote, which is what actually authenticates the push.
+#
+# This is a list of the settings that are worth pinning, not a proof that the
+# rest are safe. Git has no switch that turns repo-local config off, so what is
+# left is enumeration, and enumeration over a surface this size does not finish.
+# The residue is written up in the design's Limits section rather than implied
+# by this tuple's length: a repo-local `credential.<url>.helper` shares a key
+# with gh's own and cannot be reset without resetting that too, and
+# `.gitattributes` can name a `filter.*` or `diff.*.textconv` driver that
+# repo-local config then defines. Both need the tree to stop being writable by
+# the turn that asks for the commit, which is a second pod.
+HARDENED_GIT_CONFIG = (
+    ("core.hooksPath", "/dev/null"),
+    ("core.fsmonitor", ""),
+    ("core.pager", "cat"),
+    ("core.editor", "false"),
+    ("sequence.editor", "false"),
+    ("diff.external", ""),
+    ("protocol.ext.allow", "never"),
+    ("credential.helper", ""),
+    # The push is https through gh's credential helper and nothing here speaks
+    # ssh, so pinning these two costs nothing and closes two more programs the
+    # repository could otherwise name. `url.<x>.insteadOf` can rewrite an https
+    # remote to an ssh one, which is what puts `core.sshCommand` in reach at
+    # all; `commit.gpgsign` is what puts `gpg.program` in reach.
+    ("core.sshCommand", "false"),
+    ("commit.gpgsign", "false"),
+)
+
 # git's own global options, split by whether they consume the next argument.
 # Needed to find the subcommand in `git --literal-pathspecs add …` (which
 # audit_report issues) without mistaking a flag for a verb.
@@ -818,6 +858,15 @@ class CommandExecutor:
         self.require_git_lease = os.getenv(
             "CREDENTIAL_PROXY_REQUIRE_GIT_LEASE", "1"
         ).strip().lower() not in {"0", "false", "no", "off"}
+        # Off by default, and deliberately: it changes what argv the proxy will
+        # accept, and every existing caller was written against the current
+        # rules. The self-improvement loop turns it on because its threat model
+        # is the one this was written for -- an agent turn writes the tree, and
+        # then asks the sidecar to run git in it. See `argv_path_violation` and
+        # `HARDENED_GIT_CONFIG`.
+        self.untrusted_workspace = os.getenv(
+            "CREDENTIAL_PROXY_UNTRUSTED_WORKSPACE", "0"
+        ).strip().lower() in {"1", "true", "yes", "on"}
         self.tmp_dir = self.state_dir / "tmp"
         self.config_dir = self.home_dir / ".config"
         self.cache_dir = self.home_dir / ".cache"
@@ -1014,6 +1063,60 @@ class CommandExecutor:
                     return directory
             except OSError:
                 break
+        return None
+
+    def argv_path_violation(self, argv: list[str], cwd: str | None) -> str | None:
+        """Why a path in this argv may not be opened, or None.
+
+        The deny rules say which *subcommands* may run. They say nothing about
+        which *files* those subcommands touch, and several of the permitted ones
+        take a path and print it back: `git diff --no-index /dev/null <path>`
+        emits the file as added lines, `git hash-object -w <path>` stores it,
+        `gh pr comment --body-file <path>` publishes it. The sidecar is the one
+        container that mounts the credential, and `/v1/exec` returns stdout to
+        the caller unredacted, so a permitted read is a credential read.
+
+        Containment rather than a denylist of the flags that take a path,
+        because the flags are the part that keeps growing. A path outside the
+        workspace has no legitimate use here: the workspace is where the
+        checkout is, `HERMES_HOME` points into it, and everything else in this
+        container is the proxy's own state -- gh's `hosts.yml` and the mounted
+        credential included.
+
+        Three token shapes are paths, and the rest are left alone so that prose
+        arguments stay usable. A leading `/` is one. A flag carrying `=/` is
+        another, because `--body-file=/etc/passwd` opens the half after the `=`;
+        the flag shape is what keeps `-m 'x=/etc/passwd'` out of it, and a commit
+        message cannot begin with `/` either, since Conventional Commits puts a
+        type in front. The third is a relative token with a `..` component,
+        resolved against `cwd`: `_execute` contains `cwd` but not argv, so
+        `--no-index ../../../var/run/secrets/...` would otherwise walk out of a
+        contained directory. A `..` that is merely inside a word -- `'fix: see
+        ../x'` -- is not a component and does not count.
+        """
+        if not self.untrusted_workspace:
+            return None
+        base = Path(cwd) if cwd else self.workspace_dir
+        for token in argv[1:]:
+            if token.startswith("/"):
+                candidate_text = token
+            elif token.startswith("-") and "=/" in token:
+                candidate_text = token.split("=", 1)[1]
+            elif ".." in token.split("/"):
+                candidate_text = token
+            else:
+                continue
+            try:
+                candidate = (base / candidate_text).resolve()
+            except (OSError, ValueError):
+                return "the path %s could not be resolved" % candidate_text
+            if self._within_workspace(candidate):
+                continue
+            return (
+                "%s is outside the workspace %s. Commands run here may only "
+                "read and write the checkout; the rest of this container is "
+                "the credential proxy's own state." % (candidate_text, self.workspace_dir)
+            )
         return None
 
     def git_lease_violation(self, argv: list[str], cwd: str | None) -> str | None:
@@ -1294,6 +1397,16 @@ class CommandExecutor:
         command_environment = self.environment.copy()
         if argv and Path(argv[0]).name == "git":
             command_environment.update(self.git_identity)
+            if self.untrusted_workspace:
+                # `GIT_CONFIG_COUNT` and its numbered keys are read exactly as
+                # `-c` is, so these outrank the repository's own config rather
+                # than merging under it. Injected here instead of prepended to
+                # argv so the deny rules -- one of which refuses `-c key=value`
+                # outright -- still read the argv the caller actually sent.
+                command_environment["GIT_CONFIG_COUNT"] = str(len(HARDENED_GIT_CONFIG))
+                for position, (key, value) in enumerate(HARDENED_GIT_CONFIG):
+                    command_environment["GIT_CONFIG_KEY_%d" % position] = key
+                    command_environment["GIT_CONFIG_VALUE_%d" % position] = value
         if kubeconfig_path is not None:
             command_environment["KUBECONFIG"] = str(kubeconfig_path)
         process = subprocess.Popen(
@@ -1540,6 +1653,27 @@ class CredentialProxyHandler(BaseHTTPRequestHandler):
                     "code": "SECURITY_POLICY_BLOCKED",
                     "rule": rule.rule_id,
                     "message": rule.message,
+                },
+            )
+            return
+
+        # Not a policy rule either: the policy is a denylist of spellings, and
+        # the set of flags that take a path is the part of it that keeps
+        # growing. Containment is the invariant instead, and it is configuration
+        # rather than policy -- off unless the caller declared the workspace
+        # untrusted.
+        violation = self.executor.argv_path_violation(argv, cwd)
+        if violation is not None:
+            LOGGER.warning(
+                "path outside workspace refused request_id=%s", request_id
+            )
+            self._json(
+                HTTPStatus.FORBIDDEN,
+                {
+                    "status": "blocked",
+                    "code": "SECURITY_POLICY_BLOCKED",
+                    "rule": "workspace.path-containment",
+                    "message": violation,
                 },
             )
             return
