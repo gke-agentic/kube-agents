@@ -3846,26 +3846,23 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, p
 			To: dnsPeers,
 		},
 		// 2. GCP Metadata Server (pre-NAT link-local address). Workloads dial 169.254.169.254
-		//    on port 80 (HTTP metadata / OAuth2 token fetch) and port 8080 (gRPC ALTS handshaker).
-		//    On Dataplane V2 (eBPF), policy evaluates pre-NAT and this rule admits both directly.
+		//    on port 80 for HTTP metadata / OAuth2 token fetches. On Dataplane V2 (eBPF),
+		//    policy evaluates pre-NAT and this rule admits token fetches directly.
 		{
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(80))},
-				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(8080))},
 			},
 			To: linkLocalPeers,
 		},
 		// 3. GKE Workload Identity host-network daemon (port 988). On Dataplane V1 (iptables),
-		//    the node DNATs 169.254.169.254:80 to 169.254.169.252:988 and 169.254.169.254:8080 to
-		//    169.254.169.252:987 before NetworkPolicy is evaluated, so this rule admits the
-		//    post-DNAT token fetch.
+		//    the node DNATs 169.254.169.254:80 to 169.254.169.252:988 before NetworkPolicy is
+		//    evaluated, so this rule admits the post-DNAT token fetch.
 		//
-		//    Google network policy guidance recommends allowing ports 988 (metadata) and 987 (ALTS)
-		//    to prevent disruption during auto-upgrades. Port 987 is deliberately omitted here
+		//    Google network policy guidance recommends allowing ports 988/987 (iptables) and
+		//    80/8080 (eBPF). Ports 987 and 8080 (ALTS DirectPath) are deliberately omitted here
 		//    because kube-agents components use standard OAuth2/REST token fetches and no client
-		//    takes the gRPC DirectPath / ALTS route. Port 8080 in rule 2 therefore admits no completed
-		//    ALTS handshake on Dataplane V1 today; it is kept open for Dataplane V2 parity, where
-		//    policy evaluates pre-NAT. Keeping port 987 closed enforces least-privilege sandbox egress.
+		//    takes the gRPC DirectPath / ALTS route. Omitting both ports enforces least-privilege
+		//    sandbox egress symmetrically across Dataplane V1 and Dataplane V2.
 		{
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(988))},

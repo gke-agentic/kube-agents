@@ -1090,16 +1090,11 @@ func TestBuildNetworkPolicy_MetadataDaemonPeers(t *testing.T) {
 
 	netpol := buildNetworkPolicy(agent, nil, defaultTestNetpolProfile(), false, "")
 
-	// The pre-NAT targets belong on 80 and 8080.
+	// The pre-NAT target belongs on port 80.
 	got80 := egressCIDRsForPort(netpol, 80)
 	want80 := []string{"169.254.169.254/32"}
 	if !reflect.DeepEqual(got80, want80) {
 		t.Errorf("expected port 80 metadata peers %v, got %v", want80, got80)
-	}
-
-	got8080 := egressCIDRsForPort(netpol, 8080)
-	if !reflect.DeepEqual(got8080, want80) {
-		t.Errorf("expected port 8080 metadata peers %v, got %v", want80, got8080)
 	}
 
 	// Port 988 is the post-DNAT destination on Dataplane V1, carrying the metadata
