@@ -64,18 +64,18 @@ Exercises bidirectional communication through Google Chat:
 
 The stockout investigator test harness in `agentplugins/gke-stockout-investigator/scenarios/` covers 10 failure modes:
 
-| Scenario                           | Mode / Failure Condition                                 |      Scope in RC Gate       | Scope in Nightly / Manual Matrix |
-| :--------------------------------- | :------------------------------------------------------- | :-------------------------: | :------------------------------: |
-| `01-gpu-regional-scarcity`         | L4 GPUs exhausted in workload's permitted zone           | Skipped (requires GPU pool) |   ✅ (`STOCKOUT_SCENARIOS=01`)   |
-| `02-gpu-quota-exceeded`            | GPUs requested against smaller regional quota            | Skipped (requires GPU pool) |   ✅ (`STOCKOUT_SCENARIOS=02`)   |
-| `03-large-vm-shape-scarcity`       | Pinned to c3-standard-176 shape                          |  Skipped (heavy resource)   |   ✅ (`STOCKOUT_SCENARIOS=03`)   |
-| `04-missing-zone-fallback`         | Pod unschedulable due to single-zone compute constraints |    ✅ **Executed in RC**    |                ✅                |
-| `05-missing-ondemand-floor`        | ComputeClass priority is Spot with no on-demand floor    |           Skipped           |   ✅ (`STOCKOUT_SCENARIOS=05`)   |
-| `06-stateful-disk-generation-mix`  | Volume type attaches on some generations, not others     |           Skipped           |   ✅ (`STOCKOUT_SCENARIOS=06`)   |
-| `07-hyperdisk-incompatibility`     | Hyperdisk on class offering only pre-Hyperdisk families  |           Skipped           |   ✅ (`STOCKOUT_SCENARIOS=07`)   |
-| `08-ccc-priority-starvation`       | Over-granular priority list causing autoscaler loop      |           Skipped           |   ✅ (`STOCKOUT_SCENARIOS=08`)   |
-| `09-duplicate-signal`              | Same alert three times: dedup & duplicate-PR suppression |           Skipped           |   ✅ (`STOCKOUT_SCENARIOS=09`)   |
-| `10-false-signal`                  | Alert for healthy workload; agent stands down            |           Skipped           |   ✅ (`STOCKOUT_SCENARIOS=10`)   |
+| Scenario                          | Mode / Failure Condition                                 |      Scope in RC Gate       | Scope in Nightly / Manual Matrix |
+| :-------------------------------- | :------------------------------------------------------- | :-------------------------: | :------------------------------: |
+| `01-gpu-regional-scarcity`        | L4 GPUs exhausted in workload's permitted zone           | Skipped (requires GPU pool) |   ✅ (`STOCKOUT_SCENARIOS=01`)   |
+| `02-gpu-quota-exceeded`           | GPUs requested against smaller regional quota            | Skipped (requires GPU pool) |   ✅ (`STOCKOUT_SCENARIOS=02`)   |
+| `03-large-vm-shape-scarcity`      | Pinned to c3-standard-176 shape                          |  Skipped (heavy resource)   |   ✅ (`STOCKOUT_SCENARIOS=03`)   |
+| `04-missing-zone-fallback`        | Pod unschedulable due to single-zone compute constraints |    ✅ **Executed in RC**    |                ✅                |
+| `05-missing-ondemand-floor`       | ComputeClass priority is Spot with no on-demand floor    |           Skipped           |   ✅ (`STOCKOUT_SCENARIOS=05`)   |
+| `06-stateful-disk-generation-mix` | Volume type attaches on some generations, not others     |           Skipped           |   ✅ (`STOCKOUT_SCENARIOS=06`)   |
+| `07-hyperdisk-incompatibility`    | Hyperdisk on class offering only pre-Hyperdisk families  |           Skipped           |   ✅ (`STOCKOUT_SCENARIOS=07`)   |
+| `08-ccc-priority-starvation`      | Over-granular priority list causing autoscaler loop      |           Skipped           |   ✅ (`STOCKOUT_SCENARIOS=08`)   |
+| `09-duplicate-signal`             | Same alert three times: dedup & duplicate-PR suppression |           Skipped           |   ✅ (`STOCKOUT_SCENARIOS=09`)   |
+| `10-false-signal`                 | Alert for healthy workload; agent stands down            |           Skipped           |   ✅ (`STOCKOUT_SCENARIOS=10`)   |
 
 ---
 
@@ -83,14 +83,14 @@ The stockout investigator test harness in `agentplugins/gke-stockout-investigato
 
 The test runner `scripts/release/execute_e2e_tests.py` reads configuration from `tests/e2e/e2e_config.yaml` and environment variables:
 
-| Variable              | Description                               | Default                       |
-| :-------------------- | :---------------------------------------- | :---------------------------- |
-| `GCP_PROJECT_ID`      | Target Google Cloud Project ID            | None (required)               |
-| `GKE_CLUSTER_NAME`    | Target GKE cluster name                   | None (required)               |
-| `GCP_REGION`          | Target cluster region                     | `us-east4`                    |
-| `STOCKOUT_SCENARIOS`  | Comma-separated scenario numbers or `all` | `04`                          |
-| `FLEET_AUDIT_STREAMS` | Specific audit stream names or `all`      | `all`                         |
-| `E2E_ENV`             | Target environment selector               | `cluster-e2e`                 |
+| Variable              | Description                               | Default         |
+| :-------------------- | :---------------------------------------- | :-------------- |
+| `GCP_PROJECT_ID`      | Target Google Cloud Project ID            | None (required) |
+| `GKE_CLUSTER_NAME`    | Target GKE cluster name                   | None (required) |
+| `GCP_REGION`          | Target cluster region                     | `us-east4`      |
+| `STOCKOUT_SCENARIOS`  | Comma-separated scenario numbers or `all` | `04`            |
+| `FLEET_AUDIT_STREAMS` | Specific audit stream names or `all`      | `all`           |
+| `E2E_ENV`             | Target environment selector               | `cluster-e2e`   |
 
 ### Test Environments
 
