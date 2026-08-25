@@ -56,6 +56,11 @@ const (
 	defaultAgentHome            = "/opt/data"
 	defaultStorageSize          = "5Gi"
 	credentialProxyPort         = 8765
+	// dashboardPort is the port `hermes dashboard` listens on. It is loopback-only
+	// (see the readiness probe in buildBaseContainers), so the container port, the
+	// Service port, and the NetworkPolicy rule below all describe a listener that
+	// only kubelet's port-forward can reach.
+	dashboardPort = 9119
 )
 
 // Shared-state ownership. Step 1.5 of deploy/shared/docker-entrypoint.sh reads this
@@ -279,19 +284,52 @@ func buildConfigMapData(agent *agentv1alpha1.PlatformAgent, agentPlugins []*agen
 // here would break /sethome exactly the way the read-only mount did.
 //
 // Emitted even when empty: the volume projects this key by name, and a ConfigMap item
-// that names a missing key fails the mount and the pod never starts.
+// that names a missing key fails the mount and the pod never starts. Since API_SERVER_KEY
+// below is unconditional it is no longer ever empty in practice, but the projection still
+// depends on the key existing, not on it having content.
 func renderManagedEnv(agent *agentv1alpha1.PlatformAgent) string {
-	integration := agent.Spec.Integration
-	if integration == nil {
-		return ""
-	}
-
 	// Fixed order, not map iteration: this render feeds the config hash, and a hash that
 	// reshuffles on every reconcile would roll the pod for no reason.
 	var lines []string
 	add := func(key, value string) {
 		lines = append(lines, fmt.Sprintf("%s=%s", key, value))
 	}
+
+	// UNCONDITIONAL, and the only pin here that is not about chat. Every other key below
+	// exists because the agent could otherwise write a competing value into the PVC .env;
+	// this one exists because something already does, on every boot, without being asked.
+	//
+	// Hermes' Docker stage2 hook generates a strong random API_SERVER_KEY into
+	// $HERMES_HOME/.env whenever that file does not already carry one, and
+	// load_hermes_dotenv applies the PVC .env with override=True. So the container env
+	// this render is supposed to agree with was being overwritten before the gateway ever
+	// read it, and the API server ended up authenticating against a 64-character value
+	// that neither the operator, the Secret, the sidecar, nor the process environment had
+	// ever seen. Every authenticated route 401'd — the loopback callers directly, and the
+	// external path through the Service too, because the credential proxy re-signs
+	// upstream with AGENT_API_UPSTREAM_KEY, which is this same sentinel. Issue #786; the
+	// seven consecutive cron relay deliveries that recorded success while being rejected
+	// are the reason it went unnoticed for so long.
+	//
+	// The managed .env is applied LAST of all, after the PVC file, so pinning it here is
+	// what makes one value true everywhere without anyone having to know that .env exists.
+	// It also stops the agent rotating the key out from under its own callers, since
+	// save_env_value refuses to write a key this file holds.
+	//
+	// Deliberately not a per-boot generated secret. The value is worthless — see
+	// loopbackAgentAPIKey — and a generated one would have to be transported to the
+	// sidecar's AGENT_API_UPSTREAM_KEY and to the probe's bearer, reintroducing exactly
+	// the several-parties-must-agree problem this closes.
+	add("API_SERVER_KEY", loopbackAgentAPIKey)
+
+	integration := agent.Spec.Integration
+	if integration == nil {
+		return strings.Join(lines, "\n") + "\n"
+	}
+
+	// The gateway-wide pair below is pinned only when a platform is, so the chat block
+	// records where it started rather than testing `lines` for emptiness.
+	platformStart := len(lines)
 
 	if gchat := integration.GoogleChat; gchat != nil && gchat.Enabled != nil && *gchat.Enabled {
 		add("GOOGLE_CHAT_RELAY_URL", fmt.Sprintf("http://127.0.0.1:%d", credentialProxyPort))
@@ -307,8 +345,8 @@ func renderManagedEnv(agent *agentv1alpha1.PlatformAgent) string {
 		add("SLACK_ALLOW_ALL_USERS", strconv.FormatBool(allowAllUsers(slack.AllowedUsers)))
 	}
 
-	if len(lines) == 0 {
-		return ""
+	if len(lines) == platformStart {
+		return strings.Join(lines, "\n") + "\n"
 	}
 
 	// The gateway-wide pair, pinned empty/false whenever any platform is pinned above.
@@ -511,6 +549,32 @@ const (
 	// Hermes expects (config.yaml and .env).
 	managedVolumeName = "platform-agent-managed-vol"
 )
+
+// loopbackAgentAPIKey is the bearer the Hermes API server on 127.0.0.1:8642 accepts, and
+// it is a MARKER RATHER THAN A SECRET on purpose: the listener binds loopback only
+// (API_SERVER_HOST above), so everything that can reach it is already inside this pod.
+// The credential that actually guards the API from outside is API_SERVER_EXTERNAL_KEY,
+// held by the credential-proxy sidecar alone, which authenticates the caller and then
+// re-signs the request upstream with this value (AGENT_API_UPSTREAM_KEY).
+//
+// It is a named constant because its VALUE is worthless and its AGREEMENT is the whole
+// point. Four places have to say the same thing — the agent container's env, the
+// sidecar's AGENT_API_UPSTREAM_KEY, the sidecar's own copy for the event watcher, and
+// the managed .env pin in renderManagedEnv — and issue #786 is what a fifth party
+// disagreeing costs: Hermes' Docker stage2 hook generates a strong key into
+// $HERMES_HOME/.env when that file does not already carry one, load_hermes_dotenv
+// applies that file with override=True, and the gateway then authenticated against a
+// value invented at boot that no caller in the system knew. Every authenticated route
+// 401'd, in-pod and through the Service, and every caller degraded quietly.
+//
+// The renderManagedEnv pin is what settles it: the managed .env is applied last of all,
+// after the PVC file, so this value wins whatever stage2 wrote. Adding a fifth reader
+// means using this constant, not repeating the literal.
+//
+// Length is load-bearing, minimally: Hermes refuses to bind the API server at all for a
+// key under 16 characters (has_usable_secret(min_length=16), called from
+// gateway/platforms/api_server.py's startup guard). This is 24.
+const loopbackAgentAPIKey = "cluster-internal-trusted"
 
 // profileOverlayKey returns the ConfigMap key carrying the overlay for a profile.
 func profileOverlayKey(profile string) string {
@@ -1612,9 +1676,12 @@ func buildPodTemplateSpec(agent *agentv1alpha1.PlatformAgent, configHash, fluent
 		},
 		{
 			// The sidecar authenticates external callers and replaces their bearer
-			// key with this non-secret loopback sentinel.
+			// key with this non-secret loopback sentinel. Setting it here is NOT
+			// sufficient on its own — the PVC .env beats the container env inside
+			// Hermes — which is why renderManagedEnv pins the same value; see
+			// loopbackAgentAPIKey.
 			Name:  "API_SERVER_KEY",
-			Value: "cluster-internal-trusted",
+			Value: loopbackAgentAPIKey,
 		},
 		// API_SERVER_MODEL_NAME belongs here by topic but is appended after the
 		// env merge instead — see buildBaseContainers, and apiServerModelEnvVar
@@ -1630,7 +1697,8 @@ func buildPodTemplateSpec(agent *agentv1alpha1.PlatformAgent, configHash, fluent
 	//
 	//   SESSION_KV_API_KEY  authenticates callers of the Session KV server on
 	//                       127.0.0.1:8699. This container both serves it and
-	//                       calls it (platform_mcp_server, incident_context).
+	//                       calls it (platform_mcp_server, incident_context,
+	//                       and the gateway's kanban notifier).
 	//   SESSION_KV_SALT     the HMAC salt for pseudonymising chat identities.
 	//                       It has to be here because the hashing happens here,
 	//                       at the point the identity is first seen.
@@ -2262,7 +2330,7 @@ func buildCredentialProxyEnv(agent *agentv1alpha1.PlatformAgent) []corev1.EnvVar
 		{Name: "KSA_TOKEN_FILE", Value: "/var/run/secrets/kubeagents/serviceaccount/token"},
 		{Name: "TOKEN_BROKER_URL", Value: fmt.Sprintf("http://github-token-minter.%s.svc.cluster.local:8080/token", agent.Namespace)},
 		{Name: "AGENT_API_PROXY_PORT", Value: "8643"},
-		{Name: "AGENT_API_UPSTREAM_KEY", Value: "cluster-internal-trusted"},
+		{Name: "AGENT_API_UPSTREAM_KEY", Value: loopbackAgentAPIKey},
 		// Read by the k8s-event-watcher this container hosts, via --token-env.
 		// A non-secret loopback sentinel, not a credential; the real secret is
 		// API_SERVER_EXTERNAL_KEY below. Declared here rather than appended by
@@ -2270,7 +2338,7 @@ func buildCredentialProxyEnv(agent *agentv1alpha1.PlatformAgent) []corev1.EnvVar
 		// reserves the name — appending after that call would leave it
 		// protected only by its presence in SensitiveEnvVars, which is
 		// incidental and would not hold for a name not on that list.
-		{Name: "API_SERVER_KEY", Value: "cluster-internal-trusted"},
+		{Name: "API_SERVER_KEY", Value: loopbackAgentAPIKey},
 	}
 	apiServerSecretRef := defaultSecretRef(nil, defaultPlatformAgentSecrets, "API_SERVER_KEY")
 	if harness := agent.Spec.Harness; harness != nil && harness.Hermes != nil && harness.Hermes.ApiServerSecretRef != nil {
@@ -2350,6 +2418,20 @@ func mergeCredentialProxyEnv(managed, custom []corev1.EnvVar) []corev1.EnvVar {
 	}
 	for _, name := range []string{
 		"CREDENTIAL_PROXY_BOOTSTRAP_COMMAND",
+		// The read-only kill switch. Unreserved, a one-line
+		// `CREDENTIAL_PROXY_ENFORCE_READ_ONLY: "false"` under
+		// spec.deployment.env turns off every refusal the policy makes --
+		// for all commands, all agents and all clusters in the Pod, with no
+		// expiry and nothing in the CR that reads like a security change.
+		// A control that its own subject can switch off is not a control.
+		//
+		// Listed here as well as in SensitiveEnvVars, which this loop already
+		// folds in above, because the two do different jobs: the webhook's
+		// rejection is the explanation and this drop is the enforcement. The
+		// chart defaults failurePolicy to Ignore, so a webhook that cannot be
+		// reached admits the CR with validation skipped, and this line is
+		// what still holds when that happens.
+		"CREDENTIAL_PROXY_ENFORCE_READ_ONLY",
 		"CREDENTIAL_PROXY_MAX_OUTPUT_BYTES",
 		"CREDENTIAL_PROXY_MAX_REQUEST_BYTES",
 		"CREDENTIAL_PROXY_POLICY",
@@ -2391,10 +2473,35 @@ func safeSandboxEnvOverrides(custom []corev1.EnvVar) []corev1.EnvVar {
 	// destinations qualify, and so do the alert ceilings — they bound how many
 	// notifications the session server posts in a day and nothing else. A
 	// path, a credential or an image reference would not.
+	//
+	// EOD_EXCLUDE_NAMESPACES is the end-of-day recap's only tunable. It
+	// narrows what its listing prints and reaches nothing the notifier does: no
+	// event stops being forwarded, no alert stops being posted, and a ceiling
+	// drop or a failed delivery in an excluded namespace is still counted and
+	// still withholds the recap's all-clear — `eod_report_generator.py` flags
+	// an excluded row rather than skipping it, so the loop keeps tallying it.
+	// That is the property this allowlist entry rests on: no value of
+	// EOD_EXCLUDE_NAMESPACES can tune the recap into hiding a withheld alert
+	// or a refused post.
+	//
+	// It buys less than that in one respect, and the difference is worth
+	// stating rather than rounding off. What an exclusion does reach is the
+	// informational tally, which is the point of it, and the exclusion count
+	// is deliberately not a veto term — so a day whose only informational
+	// churn sat in an excluded namespace still grades green, over a window the
+	// recap did not fully read. The scope caveat rides a qualifier line in the
+	// report body instead. The bound is that the overclaim is confined to
+	// informational churn; the two alert tallies above are what an operator
+	// setting this variable cannot touch.
+	//
+	// Any value parses: `excluded_namespaces` comma-splits the string and
+	// matches the parts literally, so an arbitrary one names namespaces that do
+	// not exist and excludes nothing. There is no validation to fail.
 	allowed := map[string]struct{}{
 		"ALERT_DAILY_LIMIT_CRITICAL":  {},
 		"ALERT_DAILY_LIMIT_INFO":      {},
 		"ALERT_DAILY_LIMIT_WARNING":   {},
+		"EOD_EXCLUDE_NAMESPACES":      {},
 		"OTEL_EXPORTER_OTLP_ENDPOINT": {},
 		"OTEL_EXPORTER_OTLP_PROTOCOL": {},
 		"OTEL_RESOURCE_ATTRIBUTES":    {},
@@ -2602,7 +2709,7 @@ func buildBaseContainers(agent *agentv1alpha1.PlatformAgent, image string, envVa
 	// APPENDED LAST, and that position is the guard, not a style choice. It is not routed
 	// through mergeEnvVars because this is the operator's own declaration rather than a
 	// default a user may replace, and one caller can in fact try: `spec.deployment.env`
-	// cannot reach this container (safeSandboxEnvOverrides copies five OTEL_* names and
+	// cannot reach this container (safeSandboxEnvOverrides copies a fixed allowlist and
 	// drops the rest), but extractAgentPluginEnvVars copies an AgentPlugin's spec.env
 	// verbatim into envVars with no allowlist at all. A plugin naming this variable would
 	// otherwise turn the shared-state setup off for the whole agent, and the symptom —
@@ -2782,7 +2889,7 @@ func buildBaseContainers(agent *agentv1alpha1.PlatformAgent, image string, envVa
 			Ports: []corev1.ContainerPort{
 				{
 					Name:          "dashboard",
-					ContainerPort: 9119,
+					ContainerPort: dashboardPort,
 				},
 			},
 			Env: dashboardEnvVars,
@@ -2797,17 +2904,51 @@ func buildBaseContainers(agent *agentv1alpha1.PlatformAgent, image string, envVa
 				},
 			},
 			VolumeMounts: append(dashboardVolumeMounts, extraVolumeMounts...),
-			// The Service publishes :9119 whenever the dashboard is enabled, so
-			// without this the UI port is advertised before anything listens on it.
+			// What this buys is not what a probe on a serving container buys. The
+			// Service's :9119 endpoint is unreachable over the pod network either
+			// way (see dashboardPort), so nothing is being kept out of rotation.
+			// Pod readiness is the AND of every container, so this reports a
+			// broken dashboard through the pod's own Ready condition — and, the
+			// other side of the same coin, a dashboard that hangs or OOM-loops
+			// now withdraws the agent API on :8642 with it. That coupling is the
+			// price of reporting it at all; the alternative is no probe here,
+			// which leaves a dead dashboard silent.
 			//
-			// tcpSocket rather than httpGet: this one binds all interfaces, so kubelet
-			// can reach it on the pod IP, but `hermes dashboard` exposes no health
-			// path we have verified — and a probe against a guessed path that 404s
-			// would hold the whole pod unready, taking the API down with it.
+			// exec on loopback, not tcpSocket. `hermes dashboard` takes no --host
+			// argument here and the CLI's default is 127.0.0.1, so a tcpSocket probe
+			// — which kubelet dials against the pod IP — was refused on every
+			// attempt and this container never went Ready. That held the whole pod
+			// NotReady, drove the CR to Ready=False, and failed the install's
+			// rollout gate on any install that did not pin dashboardEnabled=false
+			// (#822). The comment this replaces asserted the opposite binding.
+			// Same shape, and the same reason, as agentAPIProbe above.
+			//
+			// Binding all interfaces instead is not the smaller fix, and not just
+			// because no auth provider is configured: the dashboard's auth gate
+			// keys on the bind host, so 0.0.0.0 switches authentication on and the
+			// server then exits at startup rather than serve unauthenticated. The
+			// loopback bind is what keeps it usable. scripts/hermes-dashboard-
+			// tunnel.py is canonical on that and on how a human reaches it.
+			//
+			// No --fail and no health path: `hermes dashboard` exposes no health
+			// endpoint we have verified, and demanding a 2xx from a guessed one
+			// would 404 and hold the pod unready for the wrong reason. Without
+			// --fail curl exits 0 on any HTTP status, so serving the SPA at / is
+			// enough and so would be a 401. Plain http:// is right — that tunnel
+			// script relays cleartext HTTP off this port.
+			//
+			// So the exit code passes straight through: 0 means it answered, 7
+			// means connection refused — the exact state that made this container
+			// never go Ready — and 28 means it accepted and then hung. --max-time
+			// sits under TimeoutSeconds so 28 is curl's to report rather than
+			// kubelet's to kill.
 			ReadinessProbe: &corev1.Probe{
 				ProbeHandler: corev1.ProbeHandler{
-					TCPSocket: &corev1.TCPSocketAction{
-						Port: intstr.FromString("dashboard"),
+					Exec: &corev1.ExecAction{
+						Command: []string{
+							"sh", "-c",
+							fmt.Sprintf("curl --silent --show-error --max-time 3 -o /dev/null http://127.0.0.1:%d/", dashboardPort),
+						},
 					},
 				},
 				InitialDelaySeconds: 5,
@@ -3204,9 +3345,14 @@ func buildPlatformService(agent *agentv1alpha1.PlatformAgent) *corev1.Service {
 	}
 
 	if dashboardEnabled {
+		// Connecting to this port from another pod gets connection refused: the
+		// dashboard listens on loopback only (see dashboardPort). It is published
+		// anyway because `kubectl port-forward svc/<agent> 9119:9119` needs the
+		// Service to name the port, and port-forward is how the dashboard is
+		// reached.
 		ports = append(ports, corev1.ServicePort{
 			Name:       "dashboard",
-			Port:       9119,
+			Port:       dashboardPort,
 			TargetPort: intstr.FromString("dashboard"),
 		})
 	}
@@ -3548,9 +3694,14 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, p
 	}
 
 	if isDashboardEnabled(agent) {
+		// Kept in step with the Service port rather than because pod-network
+		// traffic reaches the dashboard — it does not, the listener is loopback
+		// (see dashboardPort). Removing the rule would make the policy the reason
+		// a future non-loopback bind fails, which is not the failure to leave
+		// behind.
 		ingressRules[0].Ports = append(ingressRules[0].Ports, networkingv1.NetworkPolicyPort{
 			Protocol: &tcp,
-			Port:     ptr.To(intstr.FromInt32(9119)),
+			Port:     ptr.To(intstr.FromInt32(dashboardPort)),
 		})
 	}
 

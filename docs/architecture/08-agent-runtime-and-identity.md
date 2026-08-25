@@ -103,7 +103,7 @@ user-permission awareness).
    enforces the target agent's `AllowedUsers` before dispatch. Per-request user-scoped authorization
    (the SAR/IAM check + down-scoping) is deferred (§5).
 10. **Coordination is indirect** via the GitOps repo + OKF ([02](02-agent-personas.md) §2.3). No
-    co-located multiplexer and no direct agent-to-agent messaging.
+    co-located multiplexer and no synchronous agent-to-agent messaging.
 
 ## 3. Deliberately out of scope (this is where the simplicity comes from)
 
@@ -254,7 +254,8 @@ explored during design (kept out of v1 for simplicity):
   §1.2).
 - **co-located profiles** via a Hermes multiplexer (fewer pods), which then requires
 - a **scope broker** issuing **per-run ephemeral, downscoped tokens** — interactive runs down-scoped
-  to the requesting human; cron runs authorized by an **attested trigger + reviewed job manifest**;
+  to the requesting human ([09](09-capability-envelope.md) §1 supersedes this on mechanism: GCP-layer
+  credential attenuation was measured and does not reach Kubernetes object authorization); cron runs authorized by an **attested trigger + reviewed job manifest**;
 - **CLI credential shims** + metadata-egress lockdown so shell `kubectl`/`gcloud` also go through the
   broker; and
 - the **external authorization gateway** ([05](05-system-architecture.md) C14) as the enforcement
