@@ -1547,6 +1547,16 @@ opt-in and why §7's gate is per-install configuration rather than a constant.
   patch harness demands an applier with exact-count assertions, a verifier that proves the patched
   code behaves, and a unit suite. The loop files the finding and the attribution; the patch is a
   human decision.
+- **Two runs at once are serialised by re-reading, not by locking.** `concurrencyPolicy: Forbid`
+  keeps the CronJob's own Jobs apart and does not cover a `kubectl create job --from=cronjob/…`,
+  which is how an operator tests the loop. The gate runs on a ledger read before the investigation,
+  so a second run reaching the filing loop half an hour later holds the same promotions and would
+  open the same pull requests against a budget it thinks is untouched. `refresh_ledger` re-reads the
+  ConfigMap and re-asks the gate for that one fingerprint immediately before each filing turn, which
+  catches the other run once its promotion is written. What it cannot catch is two runs inside the
+  same filing turn: both read before either wrote, and both file. Closing that needs a claim on the
+  finding before the turn starts, and the ledger is a ConfigMap patched under a `resourceVersion`
+  precondition — it could carry one, but the loop does not take it today.
 - **The loop cannot validate a fix against a running install**, by construction. Everything it
   proposes is reviewed and exercised by a human or by CI. That is the correct division: it is a
   detector with a strong evidence habit, not an autonomous committer.

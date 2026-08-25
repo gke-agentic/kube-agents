@@ -2022,6 +2022,35 @@ def charge_ledger(namespace: str, ledger_name: str, ledger: Dict[str, Any], what
         return False
 
 
+def refresh_ledger(namespace: str, ledger_name: str, ledger: Dict[str, Any]) -> None:
+    """Fold what the ConfigMap says now into this run's copy.
+
+    The gate ran on a ledger read before the investigation, and the
+    investigation is the long part of a run -- half an hour, sometimes more. Any
+    other writer active in that window is invisible to the filing loop, which
+    then opens a pull request somebody else has already opened and spends a
+    daily slot it thinks is free.
+
+    `concurrencyPolicy: Forbid` is what usually keeps two runs apart, and it
+    does not cover this: it serialises the CronJob's own Jobs, not a
+    `kubectl create job --from=cronjob/...`, which is the ordinary way an
+    operator tests the loop and exactly how this install has been exercised.
+
+    A read is not a lock and this is not one. It closes the window that matters
+    -- the other run wrote its promotion before this line -- and leaves the one
+    it cannot: two runs inside the same filing turn still both file. Sec. 11 of
+    the design doc records that residual.
+    """
+    try:
+        remote = ledger_mod.load(namespace, ledger_name)
+    except Exception as exc:  # noqa: BLE001 -- a failed read is not a reason to stop filing
+        log("could not re-read the ledger before filing (%s); going on what this run has" % exc)
+        return
+    merged = ledger_mod.merge(remote, ledger)
+    ledger.clear()
+    ledger.update(merged)
+
+
 def _fenced(fields: Dict[str, str]) -> str:
     """Render untrusted fields inside the fence, with the fence made unforgeable.
 
@@ -3052,6 +3081,21 @@ def main(argv: Optional[List[str]] = None) -> int:
                 break
             if turn_budget < file_timeout:
                 log("filing %s on a reduced %ds budget; the deadline is closer than the timeout" % (fp, turn_budget))
+            # Ask the ConfigMap again, then ask the gate again. Both are cheap
+            # beside a filing turn, and both answer the question the batch
+            # evaluation above could not: has anything changed since it ran. The
+            # answers that matter are another writer's promotion inside the
+            # cooldown, a refusal it recorded, and a day's budget it has spent.
+            # One fingerprint, so this can hold a finding but never reorder or
+            # drop the ones behind it.
+            refresh_ledger(namespace, ledger_name, ledger)
+            still, why = ledger_mod.evaluate_gate(ledger, gate, [fp])
+            if fp not in still:
+                log(
+                    "not filing %s after all: %s"
+                    % (fp, why.get(fp, "the gate holds it now, having promoted it before"))
+                )
+                continue
             entry = ledger["findings"][fp]
             result, url = file_pull_request(
                 entry,

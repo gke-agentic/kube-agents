@@ -3294,6 +3294,37 @@ class FilingWiringAndRefusalTests(unittest.TestCase):
         self.assertIn("https://github.com/o/r/pull/1", log)
         self.assertIn("does not know it", log)
 
+    def test_a_promotion_another_run_made_meanwhile_holds_this_one(self):
+        """The gate ran before an investigation that takes half an hour.
+
+        `concurrencyPolicy: Forbid` serialises the CronJob's own Jobs and not a
+        `kubectl create job --from=cronjob/...`, which is how an operator tests
+        the loop -- so two runs reach the filing loop holding the same
+        promotions and open the same pull request twice. Re-reading the
+        ConfigMap immediately before the turn is what sees the other one.
+        """
+        scratch = ledger_mod.empty_ledger()
+        fp, _ = ledger_mod.record_finding(scratch, self.FINDING, "abc1234")
+
+        remote = ledger_mod.empty_ledger()
+        for at in (ledger_mod.utcnow() - datetime.timedelta(hours=1), ledger_mod.utcnow()):
+            ledger_mod.record_finding(remote, self.FINDING, "abc1234", at)
+        ledger_mod.record_promotion(remote, fp, "https://github.com/o/r/pull/9", "abc1234")
+
+        reads = []
+
+        def load(namespace, name):
+            reads.append(name)
+            # The first read is `main`'s own, before the investigation. The
+            # other run lands during it, so every read after that sees it.
+            return self.ledger if len(reads) == 1 else remote
+
+        R.ledger_mod.load = load
+        log = self._run()
+        self.assertEqual([], self.calls, "filed a pull request another run had already opened")
+        self.assertIn("not filing", log)
+        self.assertIn("cooldown", log)
+
 
 class ProfileRestoreTests(unittest.TestCase):
     """The turn boundary has to be a trust boundary.
