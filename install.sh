@@ -946,6 +946,24 @@ ensure_existing_cluster_network_policy() {
     print_success "Existing cluster '$cluster_name' already enforces NetworkPolicy (legacy Calico addon)."
     return 0
   fi
+  # Two calls, in this order. GKE rejects --enable-network-policy with "The
+  # network policy addon must be enabled before updating the nodes" (HTTP 400)
+  # until the Calico addon is on the control plane, and gcloud puts
+  # --update-addons and --enable-network-policy in the same "exactly one of
+  # these must be specified" argparse group, so they cannot be combined into a
+  # single invocation.
+  #
+  # Unconditional, matching Google's documented procedure. Gating it on
+  # addonsConfig.networkPolicyConfig.disabled looks tempting for the re-run
+  # case — the guard above reads networkPolicy.enabled, so a re-run after the
+  # enforcement call failed arrives here with the addon already on — but that
+  # field cannot express it: GKE omits false booleans from addonsConfig, so
+  # "off" prints True and "on" prints nothing, which is also what a failed
+  # describe prints. A gate that skips on empty reintroduces the 400 the
+  # moment describe fails. Re-enabling an already-enabled addon is a no-op.
+  print_info "Enabling the NetworkPolicy addon on existing cluster '$cluster_name'..."
+  gcloud container clusters update "$cluster_name" --location "$region" \
+    --update-addons=NetworkPolicy=ENABLED --project "$project_id" --quiet
   print_info "Enabling NetworkPolicy enforcement on existing cluster '$cluster_name' (node pools may be recreated; this can take several minutes)..."
   gcloud container clusters update "$cluster_name" --location "$region" \
     --enable-network-policy --project "$project_id" --quiet

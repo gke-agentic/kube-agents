@@ -1,12 +1,15 @@
 """Unit tests for install.sh validation and execution routines.
 
 Tests pure numeric SemVer (X.Y.Z) references, 40-character commit SHAs,
-piped stdin (curl | bash) execution, and local script path resolution in install.sh.
+piped stdin (curl | bash) execution, local script path resolution, and the
+NetworkPolicy enablement sequence install.sh runs against adopted clusters.
 """
 
 import os
 import pathlib
+import stat
 import subprocess
+import tempfile
 import unittest
 
 from tests.testing.common import (
@@ -92,6 +95,91 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
         proc = self._run_install_func(cmd)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("CHAT=true", proc.stdout)
+
+
+class EnsureExistingClusterNetworkPolicyTest(unittest.TestCase):
+    """ensure_existing_cluster_network_policy's two-call enablement sequence.
+
+    GKE rejects `--enable-network-policy` with HTTP 400 until the Calico addon
+    is on the control plane, and gcloud refuses `--update-addons` and
+    `--enable-network-policy` in one invocation, so the order of the two
+    `clusters update` calls is the behaviour under test.
+    """
+
+    def _run(self, datapath="", legacy_np=""):
+        """Run the function against a stub gcloud that records every call.
+
+        Returns (CompletedProcess, [argv-strings in call order]). The stub
+        answers `clusters describe` on the --format it is given: an empty
+        string stands for a field gcloud did not print.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = pathlib.Path(tmp) / "bin"
+            bin_dir.mkdir()
+            log = pathlib.Path(tmp) / "gcloud.log"
+            gcloud = bin_dir / "gcloud"
+            gcloud.write_text(
+                "#!/usr/bin/env bash\n"
+                f"printf '%s\\n' \"$*\" >> '{log}'\n"
+                'case "$*" in\n'
+                f"  *datapathProvider*) printf '{datapath}\\n' ;;\n"
+                f"  *networkPolicy.enabled*) printf '{legacy_np}\\n' ;;\n"
+                "esac\n"
+                "exit 0\n"
+            )
+            gcloud.chmod(gcloud.stat().st_mode | stat.S_IEXEC)
+            body = (
+                f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n'
+                "ensure_existing_cluster_network_policy proj cluster region\n"
+            )
+            proc = subprocess.run(
+                ["bash", "-c", body],
+                capture_output=True,
+                text=True,
+                env=get_isolated_test_env(bin_dir=str(bin_dir)),
+                cwd=str(_REPO_ROOT),
+            )
+            calls = log.read_text().splitlines() if log.exists() else []
+            return proc, calls
+
+    @staticmethod
+    def _updates(calls):
+        return [c for c in calls if "clusters update" in c]
+
+    def test_addon_is_enabled_before_enforcement(self):
+        # The bug: a lone --enable-network-policy against a cluster whose
+        # addon is off fails with "The network policy addon must be enabled
+        # before updating the nodes" (HTTP 400).
+        proc, calls = self._run()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        updates = self._updates(calls)
+        self.assertEqual(len(updates), 2, updates)
+        self.assertIn("--update-addons=NetworkPolicy=ENABLED", updates[0])
+        self.assertIn("--enable-network-policy", updates[1])
+        # Neither call may carry both flags: gcloud puts them in the same
+        # "exactly one of these must be specified" group.
+        self.assertNotIn("--enable-network-policy", updates[0])
+        self.assertNotIn("--update-addons", updates[1])
+
+    def test_addon_state_is_not_probed(self):
+        # Skipping the addon call when it is already on would be free, but
+        # addonsConfig.networkPolicyConfig.disabled cannot say so: GKE omits
+        # false booleans, so "on" and "describe failed" both print nothing.
+        # A gate on it either never fires or reintroduces the 400 — hence the
+        # unconditional call, and hence this test, which fails if someone
+        # reintroduces the probe.
+        _, calls = self._run()
+        self.assertEqual(
+            [c for c in calls if "networkPolicyConfig" in c], [], calls
+        )
+
+    def test_dataplane_v2_cluster_is_left_alone(self):
+        _, calls = self._run(datapath="ADVANCED_DATAPATH")
+        self.assertEqual(self._updates(calls), [])
+
+    def test_cluster_already_enforcing_is_left_alone(self):
+        _, calls = self._run(legacy_np="True")
+        self.assertEqual(self._updates(calls), [])
 
 
 if __name__ == "__main__":
