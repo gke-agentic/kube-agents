@@ -14,6 +14,8 @@ deliberate: they sit at the output boundary precisely so they can be tested
 without a metadata server, a Google token, or a cluster.
 """
 
+import contextlib
+import io
 import os
 import sys
 import time
@@ -111,6 +113,109 @@ class CredentialTests(unittest.TestCase):
         self.assertNotIn("T00000000000", out)
         self.assertIn("410 channel_not_found", out)
 
+    def test_a_key_body_whose_newlines_are_escaped_does_not_survive(self):
+        """The `\\n` spelling is the one the test above cannot reach.
+
+        `test_a_key_body_truncated_before_its_end_line_does_not_survive` uses a
+        real newline, and the second arm of the PEM rule matched it because
+        `\\s` is in the class. A backslash was not, so the same key written with
+        escaped line breaks matched zero characters after the header: the
+        armour was replaced and the base64 printed underneath it. Both spellings
+        are real -- `cmd_logs` used to produce one and a JSON-encoded key file
+        is the other.
+        """
+        body = "MIIEowIBAAKCAQEAx7Fq2Kj9vHnP0sTuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZ"
+        out = E.redact("dump: -----BEGIN PRIVATE KEY-----\\n%s" % body)
+        self.assertNotIn(body, out)
+        self.assertEqual("dump: [REDACTED]", out)
+
+    def test_a_service_account_key_file_does_not_survive(self):
+        """A GSA key is JSON, so its armour is escaped by construction.
+
+        No ordering upstream fixes this one: the line breaks in `private_key`
+        really are the two characters `\\` and `n`, and the pattern has to
+        accept them. A whole key file has an END marker and the first arm of
+        the PEM rule reaches it either way, so the fixture is cut short -- the
+        state a key file is in when it reaches a log by accident, and the state
+        in which only the second arm can help.
+        """
+        key = (
+            '{"type": "service_account", "project_id": "acme-prod-42", '
+            '"private_key": "-----BEGIN PRIVATE KEY-----\\n'
+            "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ"
+        )
+        out = E.redact(key)
+        self.assertNotIn("MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ", out)
+        self.assertNotIn("acme-prod-42", out)
+
+    def test_an_upper_cased_token_does_not_survive(self):
+        """The case a token arrives in is not the emitter's choice.
+
+        A logger that upper-cases a line, or a formatter that upper-cases an
+        environment dump, turns `ghp_` into `GHP_` -- and the token is just as
+        live. `_CREDENTIAL_SHAPES` is case-insensitive for that reason and for
+        no other; none of these prefixes is a word that could collide with log
+        text at these lengths.
+        """
+        for secret in (
+            "GHP_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345",
+            "XOXB-1234567890-ABCDEFGHIJ",
+            "YA29.A0ARRDAM_AVERYLONGACCESSTOKENVALUE",
+        ):
+            with self.subTest(secret=secret):
+                self.assertNotIn(secret, E.redact("header carried %s" % secret))
+
+    def test_the_model_providers_own_key_does_not_survive(self):
+        """The likeliest credential to be in these logs at all.
+
+        This loop runs on Claude and so does the agent it observes, so a 401
+        from the provider -- exactly what signal class 2 sends the
+        investigation looking for -- is where an `sk-ant-` value turns up.
+        """
+        secret = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789"
+        self.assertNotIn(secret, E.redact("provider returned 401 for %s" % secret))
+
+    def test_an_aws_access_key_id_does_not_survive(self):
+        for secret in ("AKIAIOSFODNN7EXAMPLE", "ASIAY34FZKBOKMUTVV7A"):
+            with self.subTest(secret=secret):
+                self.assertNotIn(secret, E.redact("signature failed for %s" % secret))
+
+    def test_an_authorization_header_keeps_its_scheme_and_loses_its_credential(self):
+        """A bearer token has whatever shape its issuer chose, and `Basic` is
+        base64 of a password. Neither is recognisable on its own; the header
+        name is what says the next word is a credential. The scheme survives
+        for the reason `_QUERY_SECRETS` keeps the parameter name."""
+        out = E.redact("Authorization: Bearer opaqueTokenValue123456 rejected")
+        self.assertNotIn("opaqueTokenValue123456", out)
+        self.assertIn("Authorization: Bearer [REDACTED]", out)
+        self.assertNotIn("dXNlcjpwYXNz", E.redact("authorization=Basic dXNlcjpwYXNz"))
+
+    def test_a_connection_string_loses_its_userinfo(self):
+        """A DSN is one string to every shape rule and one field to the tree
+        pass, and a database error quotes it back in full. The username goes
+        with the password: it is half the credential."""
+        out = E.redact("could not connect to postgres://svc:hunter2@db.internal:5432/agents")
+        self.assertNotIn("hunter2", out)
+        self.assertNotIn("svc", out)
+        self.assertIn("postgres://[REDACTED]@db.internal", out)
+
+    def test_a_token_split_by_a_zero_width_character_does_not_survive(self):
+        """A zero-width space breaks the token for the matcher and for nobody
+        reading the pull request. `_normalise` deletes them before any pattern
+        runs."""
+        secret = "ghp_abcdefghijklmnopqrstuvwxyz012345"
+        split = "gh\u200bp_abcdefghijklmnopqrstuvwxyz012345"
+        out = E.redact("token %s in the header" % split)
+        self.assertNotIn(secret, out)
+        self.assertIn("[REDACTED]", out)
+
+    def test_a_fullwidth_spelling_of_a_token_does_not_survive(self):
+        """NFKC is what folds the compatibility forms back to the ASCII they
+        render as. Cyrillic confusables are deliberately not folded -- see
+        `_normalise` for why the table is not worth carrying."""
+        out = E.redact("ｇｈｐ＿abcdefghijklmnopqrstuvwxyz012345")
+        self.assertIn("[REDACTED]", out)
+
     def test_an_ordinary_query_string_is_left_alone(self):
         # `filter=` and `pageSize=` are how the evidence tools themselves are
         # invoked; redacting those would blank the command a finding quotes.
@@ -145,6 +250,55 @@ class IdentifierTests(unittest.TestCase):
 
     def test_a_pod_ip_does_not_survive(self):
         self.assertEqual(E.redact("connect to 10.4.2.9:8080"), "connect to [IP]:8080")
+
+    def test_an_ipv6_address_does_not_survive(self):
+        """The IP rule was v4-only, and a dual-stack GKE cluster gives every pod
+        a v6 address -- so on those installs the address in a connection error
+        is the one form nothing matched."""
+        for address in (
+            "2001:db8:85a3:0:0:8a2e:370:7334",
+            "2001:db8:85a3::8a2e:370:7334",
+            "2001:db8::1",
+            "2600:1900:4000:1234::",
+        ):
+            with self.subTest(address=address):
+                out = E.redact("dial tcp [%s]:443 timed out" % address)
+                self.assertNotIn(address, out)
+                self.assertIn("[IP]", out)
+
+    def test_an_upper_cased_or_extended_keyed_value_does_not_survive(self):
+        """Every character the capture accepted and the gate rejected was a
+        one-character escape.
+
+        The capture ran `[A-Za-z0-9][-\\w.:]` and the gate `\\A[a-z]…\\Z`, and on
+        a gate failure `_keyed` returns the whole match -- correctly, because
+        that is how prose under an identifier key survives, but it means a
+        capture wider than the gate does not fall back to something narrower,
+        it falls back to printing the value. So an uppercase letter anywhere,
+        or one trailing character the gate did not like, published the name.
+        Both are now written from `_IDENTIFIER_CHARS` and cannot disagree.
+        """
+        for text, absent in (
+            ("project_id=ACME-PROD-42", "ACME-PROD-42"),
+            ("project_id=acme-prod-42X", "acme-prod-42X"),
+            ("gcloud clusters list --project ACME-PROD-1", "ACME-PROD-1"),
+            ('{"cluster_name": "West-1"}', "West-1"),
+            ("clusterName: Prod_USC1", "Prod_USC1"),
+        ):
+            with self.subTest(text=text):
+                self.assertNotIn(absent, E.redact(text))
+
+    def test_a_percent_encoded_resource_path_does_not_survive(self):
+        """These paths arrive inside URLs as often as in prose, and a URL built
+        with `urlencode` has the separator escaped. It is the failure path that
+        prints the request it failed on, which is how a Chat space -- and with
+        it a customer's workspace -- left the loop."""
+        out = E.redact("POST /v1/projects%2Facme-prod-42/spaces%2FAAQA1b2c3d4/messages 404")
+        self.assertNotIn("acme-prod-42", out)
+        self.assertNotIn("AAQA1b2c3d4", out)
+        # The encoding survives, so the evidence still shows the request as sent.
+        self.assertIn("projects%2F[PROJECT]", out)
+        self.assertIn("spaces%2F[SPACE]", out)
 
     def test_the_bare_key_value_form_does_not_survive(self):
         """The path form is not how these actually turn up. A Cloud Monitoring
@@ -341,6 +495,35 @@ class WhatMustSurviveTests(unittest.TestCase):
             with self.subTest(tree=tree):
                 self.assertEqual(E.redact_tree(tree), tree)
 
+    def test_ipv6_loopback_and_link_local_are_kept(self):
+        """Same argument as 127/8 and 169.254/16 on the v4 side: a reader
+        diagnosing the metadata server or the credential-proxy socket needs
+        these, and they name nobody."""
+        text = "proxy on ::1 port 8765, node link-local fe80::1ff:fe23:4567:890a"
+        self.assertEqual(E.redact(text), text)
+
+    def test_a_clock_is_not_an_ipv6_address(self):
+        """`10:00:00` is colon-separated hex, which is why the v6 rule is three
+        explicit arms rather than a general grammar: each needs either seven
+        groups or a literal `::`, and no timestamp or duration has either."""
+        for text in (
+            "2026-08-22T09:14:03Z reconcile failed after 00:01:30",
+            "backoff 10:00:00 then 1:2:3",
+            "listening on host:8080",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(E.redact(text), text)
+
+    def test_an_upper_cased_non_identifier_word_is_still_not_hidden(self):
+        """The gate stopped rejecting uppercase, so the word list has to be
+        matched case-folded or `PENDING` under `clusterName` becomes
+        `[CLUSTER]` -- and the evidence then argues the opposite of the finding
+        it belongs to, which is what `_NON_IDENTIFIER_VALUES` exists to
+        prevent."""
+        for text in ("clusterName: PENDING", "PROJECT_ID=MISSING", "cluster_name: Unset"):
+            with self.subTest(text=text):
+                self.assertEqual(E.redact(text), text)
+
     def test_the_region_and_the_pod_name_are_kept(self):
         """Both are resource labels sitting next to `project_id`, and neither
         names anyone. The pod name is also what the self-exclusion filter keys
@@ -437,6 +620,82 @@ class TreeTests(unittest.TestCase):
         point of the check, and carry no identifier to blank."""
         out = E.redact_tree([{"name": "PROJECT_ID", "from": "configMapKeyRef:agent-config/project"}])
         self.assertEqual(out, [{"name": "PROJECT_ID", "from": "configMapKeyRef:agent-config/project"}])
+
+    def test_a_credential_named_env_var_loses_its_value(self):
+        """`_env_summary` prints every literal env value a container carries,
+        on the argument that anything holding `view` can already read it. True,
+        and beside the point once the output is a public pull request. Nothing
+        about `hunter2` is a credential shape, so the name is the only thing
+        that says what it is -- the same argument `_IDENTIFIER_KEYS` makes about
+        a project id, which is why it belongs in the same pass."""
+        out = E.redact_tree(
+            [
+                {"name": "DB_PASSWORD", "value": "hunter2"},
+                {"name": "ANTHROPIC_API_KEY", "value": "sk-ant-not-a-real-key"},
+                {"name": "KUBEAGENTS_SLACK_BOT_TOKEN", "value": "xoxb-not-real"},
+                {"name": "GITHUB_APP_PRIVATE_KEY", "value": "MIIEowIBAAKCAQEA"},
+                {"name": "LOG_LEVEL", "value": "debug"},
+            ]
+        )
+        self.assertEqual(
+            out,
+            [
+                {"name": "DB_PASSWORD", "value": "[REDACTED]"},
+                {"name": "ANTHROPIC_API_KEY", "value": "[REDACTED]"},
+                {"name": "KUBEAGENTS_SLACK_BOT_TOKEN", "value": "[REDACTED]"},
+                {"name": "GITHUB_APP_PRIVATE_KEY", "value": "[REDACTED]"},
+                {"name": "LOG_LEVEL", "value": "debug"},
+            ],
+        )
+
+    def test_an_empty_credential_named_env_var_keeps_its_emptiness(self):
+        """Half of what the inefficiency signal looks for is a variable that
+        never got a value. Rewriting that to `[REDACTED]` says a secret was
+        there and was withheld, which is the finding backwards."""
+        out = E.redact_tree(
+            [
+                {"name": "DB_PASSWORD", "value": ""},
+                {"name": "SLACK_APP_TOKEN", "value": "(unset)"},
+                {"name": "GITHUB_TOKEN", "from": "secretKeyRef:kube-agents-github/token"},
+            ]
+        )
+        self.assertEqual(
+            out,
+            [
+                {"name": "DB_PASSWORD", "value": ""},
+                {"name": "SLACK_APP_TOKEN", "value": "(unset)"},
+                {"name": "GITHUB_TOKEN", "from": "secretKeyRef:kube-agents-github/token"},
+            ],
+        )
+
+    def test_a_credential_named_key_loses_its_value_outside_the_env_shape(self):
+        """The `{name, value}` pair is Kubernetes' spelling. `k8s --raw` and
+        `logs` on a structured payload both hand back ordinary objects, where
+        the credential sits under its own name and the pair rule never fires."""
+        out = E.redact_tree(
+            {
+                "password": "hunter2",
+                "client-secret": "not-a-shape",
+                "spec": {"github": {"appPrivateKey": "MIIEowIBAAKCAQEA"}},
+                "replicas": 3,
+            }
+        )
+        self.assertEqual(
+            out,
+            {
+                "password": "[REDACTED]",
+                "client-secret": "[REDACTED]",
+                "spec": {"github": {"appPrivateKey": "[REDACTED]"}},
+                "replicas": 3,
+            },
+        )
+
+    def test_a_secret_reference_is_not_mistaken_for_a_secret(self):
+        """`secret: {name, key}` is a secretKeyRef -- a pointer, holding the
+        answer to "is it wired up" and no credential. Only a scalar under one
+        of these keys is blanked."""
+        out = E.redact_tree({"secret": {"name": "kube-agents-github", "key": "token"}})
+        self.assertEqual(out, {"secret": {"name": "kube-agents-github", "key": "token"}})
 
     def test_a_container_named_cluster_does_not_blank_its_siblings(self):
         """The pair rule needs both `name` and a string `value`; a container
@@ -770,6 +1029,187 @@ class LogPayloadTests(unittest.TestCase):
 
     def test_an_entry_with_no_payload_at_all_does_not_crash(self):
         self.assertTrue(self._lines({"timestamp": "2026-08-23T10:00:00Z"}))
+
+
+class LogOutputRedactionTests(unittest.TestCase):
+    """`logs` is the subcommand the loop uses most, and it formatted before it
+    redacted.
+
+    Everything else here calls `redact` or `redact_tree` directly, which is
+    exactly why these defects lived: the functions were right and the caller
+    handed them text it had already cut to `--width` and whose newlines it had
+    already escaped. So these go through `cmd_logs` and read real stdout, with
+    nothing monkeypatched between the entry and the terminal.
+    """
+
+    KEY_BODY = "MIIEowIBAAKCAQEAx7Fq2Kj9vHnP0sTuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZ"
+
+    def _stdout(self, entry, width=400):
+        import argparse
+
+        args = argparse.Namespace(
+            hours=1, limit=10, severity="", filter="", raw=False, include_self=True,
+            resource="", text="", width=width,
+        )
+        prior_api, prior_project = E._google_api, E._project
+        E._google_api = lambda *a, **k: {"entries": [entry]}
+        E._project = lambda: "p"
+        buffer = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buffer):
+                E.cmd_logs(args)
+        finally:
+            E._google_api, E._project = prior_api, prior_project
+        return buffer.getvalue()
+
+    def test_a_private_key_in_a_payload_is_redacted_before_its_newlines_are_escaped(self):
+        """The ordering defect, end to end.
+
+        `cmd_logs` escaped the newlines and only then handed the line to
+        `emit`. A literal backslash was not in the PEM body's character class,
+        so the second arm matched nothing and the first could not help either:
+        `--width 400` had already cut the END marker off. The output was
+        `[REDACTED]` followed by the private key.
+        """
+        out = self._stdout(
+            {"timestamp": "T", "textPayload": "dump: -----BEGIN PRIVATE KEY-----\n" + self.KEY_BODY}
+        )
+        self.assertNotIn(self.KEY_BODY, out)
+        self.assertIn("[REDACTED]", out)
+
+    def test_a_token_straddling_the_width_is_not_published_as_a_fragment(self):
+        """Truncating first does the quiet version of the same thing.
+
+        The padding puts fifteen characters of the token inside `--width 400`,
+        which is under the `{20,}` bound `gh[pousr]_` requires -- so the
+        fragment matched nothing and went out as a prefix of a live secret
+        rather than as a placeholder. Redaction now sees the payload as the API
+        sent it, and the cut lands on the placeholder instead.
+        """
+        secret = "ghp_abcdefghijklmnopqrstuvwxyz012345"
+        fragment = "ghp_abcdefghijklmno"
+        out = self._stdout({"timestamp": "T", "textPayload": "x" * 381 + secret})
+        self.assertNotIn(fragment, out)
+        self.assertNotIn(secret, out)
+
+    def test_a_structured_payload_goes_through_the_key_pass(self):
+        """`json.dumps` before `emit` left `redact_tree` nothing to run its key
+        pass over, so the same entry printed `acme-prod-42` through `logs` and
+        `[PROJECT]` through `logs --raw`. A project id is a hyphenated
+        lowercase word; the key is the only thing that identifies it, and
+        flattening threw the key away."""
+        out = self._stdout(
+            {"timestamp": "T", "jsonPayload": {"args": ["--project", "acme-prod-42"]}}
+        )
+        self.assertNotIn("acme-prod-42", out)
+        self.assertIn("[PROJECT]", out)
+
+    def test_the_last_applied_configuration_annotation_does_not_pass_through(self):
+        """The annotation `redact_tree`'s docstring names as its motivating
+        case, on the path that never called it."""
+        out = self._stdout(
+            {
+                "timestamp": "T",
+                "protoPayload": {
+                    "metadata": {
+                        "kubectl.kubernetes.io/last-applied-configuration": (
+                            '{"project_id": "acme-prod-42", "user": "alice@example.com"}'
+                        )
+                    }
+                },
+            }
+        )
+        self.assertNotIn("acme-prod-42", out)
+        self.assertNotIn("alice@example.com", out)
+
+    def test_no_redact_still_prints_the_payload_whole(self):
+        """The other half. Redacting earlier must not make `--no-redact` a
+        partial switch."""
+        prior = E._REDACT
+        E._REDACT = False
+        try:
+            out = self._stdout({"timestamp": "T", "textPayload": "project_id=acme-prod-42"})
+        finally:
+            E._REDACT = prior
+        self.assertIn("acme-prod-42", out)
+
+
+class ErrorOutputTests(unittest.TestCase):
+    """stderr is evidence too.
+
+    A harness that merges the two streams -- most do -- makes everything here
+    quotable in a finding, and error messages are where the strange values are:
+    an error quotes the thing that failed.
+    """
+
+    SECRET = "ghp_abcdefghijklmnopqrstuvwxyz012345"
+
+    def _stderr(self, argv):
+        buffer = io.StringIO()
+        with contextlib.redirect_stderr(buffer):
+            with self.assertRaises(SystemExit):
+                E.main(argv)
+        return buffer.getvalue()
+
+    def test_an_invalid_argument_is_not_echoed_verbatim(self):
+        """argparse prints the offending value back, past `emit` entirely --
+        and `_check_query`'s own docstring says the agent composes `--query`
+        "from text it read in logs it does not control". A bad argument is also
+        where the value is most likely to be something that was never meant to
+        be a value."""
+        out = self._stderr(
+            ["logs", "--hours", "acme-prod-1 alice@example.com %s" % self.SECRET]
+        )
+        self.assertNotIn(self.SECRET, out)
+        self.assertNotIn("alice@example.com", out)
+        # Still an argument error a reader can act on.
+        self.assertIn("--hours", out)
+
+    def test_an_uncaught_exception_does_not_print_raw(self):
+        """`main` had no `try`, and the exception most likely to reach it is
+        the worst one to print: `ApiException.__str__` renders status, every
+        response header and the body, and a 403 body names the service account,
+        the namespace and the resource."""
+
+        def boom(*args, **kwargs):
+            raise RuntimeError(
+                '(403) body: {"message": "clusters/prod-usc1-fleet denied for '
+                'alice@example.com in projects/acme-prod-42"}'
+            )
+
+        prior_api, prior_project = E._google_api, E._project
+        E._google_api = boom
+        E._project = lambda: "p"
+        try:
+            out = self._stderr(["logs"])
+        finally:
+            E._google_api, E._project = prior_api, prior_project
+        self.assertNotIn("prod-usc1-fleet", out)
+        self.assertNotIn("alice@example.com", out)
+        self.assertNotIn("acme-prod-42", out)
+        # Still says what went wrong, and which exception it was.
+        self.assertIn("RuntimeError", out)
+
+    def test_fail_redacts_and_honours_no_redact(self):
+        """`_fail` called `redact` directly, so it ignored `--no-redact`: the
+        results printed raw and the errors about them printed redacted. Routing
+        it through `emit_err` gives the file one boundary and one switch."""
+        buffer = io.StringIO()
+        with contextlib.redirect_stderr(buffer):
+            with self.assertRaises(SystemExit):
+                E._fail("token %s" % self.SECRET)
+        self.assertNotIn(self.SECRET, buffer.getvalue())
+
+        prior = E._REDACT
+        E._REDACT = False
+        buffer = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(buffer):
+                with self.assertRaises(SystemExit):
+                    E._fail("token %s" % self.SECRET)
+        finally:
+            E._REDACT = prior
+        self.assertIn(self.SECRET, buffer.getvalue())
 
 
 if __name__ == "__main__":

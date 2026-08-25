@@ -36,6 +36,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -77,6 +78,14 @@ _TOKEN_CACHE: Dict[str, Any] = {}
 # `--no-redact` exists and says so in its help text.
 # --------------------------------------------------------------------------
 
+#: `re.IGNORECASE` on the whole credential set, because none of these prefixes
+#: is a word and the case they arrive in is not the emitter's choice. A logger
+#: that upper-cases a line, a shell that upper-cases an environment dump, a
+#: `.upper()` somewhere in a formatter -- each turned `ghp_…` into `GHP_…` and
+#: `xoxb-…` into `XOXB-…`, and a case-sensitive pattern published a live token.
+#: The cost is that `[A-Z ]*` in the PEM header now also matches lowercase and
+#: `AIza` also matches `aiza`, neither of which has a plausible false positive
+#: at these lengths.
 _CREDENTIAL_SHAPES = re.compile(
     r"gh[pousr]_[A-Za-z0-9]{20,}"
     r"|github_pat_[A-Za-z0-9_]{20,}"
@@ -90,8 +99,16 @@ _CREDENTIAL_SHAPES = re.compile(
     # the END line, which is the common case for a key that reached a log by
     # accident: bounded rather than open-ended so it cannot run to the end of a
     # 10MB log entry.
+    #
+    # The backslash in that second class is what a GCP service-account key file
+    # looks like. Its `private_key` field is JSON, so the line breaks in the
+    # armour are the two characters `\` and `n` rather than a newline, and a
+    # class of `[A-Za-z0-9+/=\s]` matched zero characters against it: the header
+    # was blanked and the key body printed in full underneath. That is a
+    # property of the data, not of any caller's formatting -- no amount of
+    # reordering upstream fixes it -- so the class has to accept the escape.
     r"|-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]{0,8192}?-----END [A-Z ]*PRIVATE KEY-----"
-    r"|[A-Za-z0-9+/=\s]{0,8192})"
+    r"|[A-Za-z0-9+/=\s\\]{0,8192})"
     # Slack bot, user, app-configuration and refresh tokens. `xapp-` is the
     # app-level token Socket Mode uses and is not an `xox` prefix at all, so
     # the character class above never reached it.
@@ -102,6 +119,37 @@ _CREDENTIAL_SHAPES = re.compile(
     # exactly the failed-delivery log line signal class 5 goes looking for.
     r"|https://hooks\.slack\.com/services/[A-Za-z0-9/_-]{16,256}"
     r"|AIza[A-Za-z0-9_\-]{35}"
+    # The model provider's own key. This loop runs on Claude and the agent it
+    # observes does too, so an `sk-ant-` value in a log line is the credential
+    # most likely to be here at all -- a 401 from the provider is exactly the
+    # kind of error signal class 2 tells the investigation to go and read.
+    r"|sk-ant-[A-Za-z0-9_-]{20,256}"
+    # An AWS access key id. Fixed length and a fixed prefix, so it needs no
+    # lower bound guesswork; the matching secret is 40 unmarked base64
+    # characters and is only reachable through the keyed rules below.
+    r"|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b",
+    re.IGNORECASE,
+)
+
+#: Credentials in a URL's userinfo. `postgres://svc:hunter2@db/agents` is one
+#: string to every pattern above and one field to `redact_tree`, and a
+#: connection string is what a database error quotes back at you. The scheme is
+#: kept and the whole `user:pass` blanked: the username is half the credential.
+_URL_CREDENTIALS = re.compile(
+    r"\b([a-z][a-z0-9+.-]{1,15}://)[^\s/:@]{1,64}:[^\s/@]{1,256}@",
+    re.IGNORECASE,
+)
+
+#: An `Authorization` header, which is how a credential reaches a log without
+#: any recognisable shape of its own: `Basic` is base64 and an opaque bearer
+#: token is whatever the issuer chose. The scheme survives, for the reason
+#: `_QUERY_SECRETS` keeps the parameter name -- `Bearer [REDACTED]` says a
+#: credential was withheld, where a bare `[REDACTED]` says only that something
+#: was.
+_AUTH_HEADER = re.compile(
+    r"\b(authorization\s{0,8}[:=]\s{0,8}[\"']?(?:bearer|basic|token)\s{1,8})"
+    r"[A-Za-z0-9+/=._~-]{8,4096}",
+    re.IGNORECASE,
 )
 
 #: A Google Chat incoming-webhook URL authenticates with `key=` and `token=` in
@@ -149,11 +197,31 @@ _NON_IDENTIFIER_VALUES = frozenset(
     }
 )
 
-#: What a GCP project id, project number or GKE cluster name can actually look
-#: like: no spaces, no uppercase, starting with a letter -- or, for a project
-#: number, all digits. A value that cannot be one of those is prose, and prose
-#: under an identifier key is the finding's own text rather than the customer's.
-_IDENTIFIER_VALUE = re.compile(r"\A(?:[a-z][a-z0-9.:_-]{2,62}|\d{4,20})\Z")
+#: The characters a keyed value is allowed to be made of, shared by the capture
+#: group in every keyed rule below and by the `_IDENTIFIER_VALUE` gate those
+#: captures are tested against.
+#:
+#: One constant because every character one of them accepts and the other
+#: rejects is a bypass. `_keyed` hands back the whole match unredacted when the
+#: gate says no -- correctly, since that is how prose under an identifier key
+#: survives -- so a capture that is wider than the gate does not fall back to
+#: something narrower, it falls back to printing the value. The gate was
+#: lowercase-ASCII and the captures were `[A-Za-z0-9][-\w.:]`, which made
+#: `project_id=ACME-PROD-42`, `project_id=acme-prod-42X` and
+#: `{"cluster_name": "West-1"}` one-character escapes, and `\w`'s Unicode
+#: letters an unbounded supply of more.
+_IDENTIFIER_CHARS = "A-Za-z0-9._:-"
+
+#: What a keyed value has to look like before blanking it hides an identifier
+#: rather than a sentence. The capture classes already exclude whitespace, so
+#: what is left to test is length and the known non-identifier words: a
+#: space-free token of three characters or more, under a key that names a
+#: project or a cluster, is a name. Case is deliberately not part of the test.
+#: GCP will not issue an uppercase project id, but the question here is not
+#: whether the value is a valid project id -- it is whether printing it
+#: discloses a customer, and `ACME-PROD-42` under `project_id=` discloses one
+#: whoever upper-cased it.
+_IDENTIFIER_VALUE = re.compile(r"\A[A-Za-z0-9][%s]{2,62}\Z" % _IDENTIFIER_CHARS)
 
 
 #: The two keys that are also ordinary English words. Every other spelling --
@@ -164,11 +232,17 @@ _BARE_IDENTIFIER_KEYS = frozenset({"project", "cluster"})
 
 
 def _is_identifier_value(value: str) -> bool:
-    """Whether blanking `value` hides an identifier rather than a sentence."""
+    """Whether blanking `value` hides an identifier rather than a sentence.
+
+    Case-folded against `_NON_IDENTIFIER_VALUES` because the shape test no
+    longer rejects uppercase: `PENDING` and `MISSING` are the same answer as
+    `pending` and `missing`, and a reader who cannot tell "absent" from
+    "hidden" is the failure that set is there to prevent.
+    """
     text = value.strip().strip("\"'")
     if not _IDENTIFIER_VALUE.match(text):
         return False
-    return text not in _NON_IDENTIFIER_VALUES
+    return text.lower() not in _NON_IDENTIFIER_VALUES
 
 
 def _is_confident_identifier_value(value: str) -> bool:
@@ -196,6 +270,14 @@ def _keyed(placeholder: str):
     `cluster: [CLUSTER]` and the finding argues the opposite of what it found.
     How much the value has to look like an identifier depends on how sure the
     key is: `--cluster` and `clusterName` are field names, the bare word is not.
+
+    Returning the whole match when the gate says no is deliberate, and it is
+    only safe because the captures and the gate are written from
+    `_IDENTIFIER_CHARS` and cannot disagree about shape. The remaining refusals
+    are the ones the reader is owed: a known non-identifier word, or a bare key
+    whose value is too slight to be a name. Narrowing the value and trying
+    again would defeat exactly those -- trimming a character off `missing`
+    leaves `missin`, which is in no list and passes every test.
     """
 
     def substitute(match: "re.Match[str]") -> str:
@@ -246,8 +328,16 @@ _IDENTIFIER_SHAPES = (
     # `projects/` takes a digit as well as a letter: Monitoring, Asset and
     # Pub/Sub all render the parent as `projects/<number>`, and a project number
     # identifies a customer exactly as well as a project id does.
-    (re.compile(r"\bprojects/[a-z0-9][-a-z0-9:.]{4,61}[a-z0-9]"), "projects/[PROJECT]"),
-    (re.compile(r"\bclusters/[a-z][-a-z0-9]{0,38}[a-z0-9]"), "clusters/[CLUSTER]"),
+    #
+    # `%2F` as well as `/`, because these paths arrive inside URLs as often as
+    # they arrive in prose, and a URL that was built with `urlencode` has the
+    # separator escaped. That is not a corner: the failure path prints the
+    # request it failed on, and `spaces%2F…` in a Chat delivery URL is how a
+    # space name -- and with it a customer's workspace -- left the loop. The
+    # separator is captured rather than rewritten so the evidence still shows
+    # the URL as it was sent.
+    (re.compile(r"\b(projects(?:/|%2[Ff]))[a-z0-9][-a-z0-9:.]{4,61}[a-z0-9]"), r"\1[PROJECT]"),
+    (re.compile(r"\b(clusters(?:/|%2[Ff]))[a-z][-a-z0-9]{0,38}[a-z0-9]"), r"\1[CLUSTER]"),
     # The two names embedded in a path rather than keyed. A kubeconfig context
     # for GKE is `gke_<project>_<location>_<cluster>`, and it is what `kubectl
     # config current-context` prints into every piece of debugging evidence. The
@@ -278,17 +368,23 @@ _IDENTIFIER_SHAPES = (
     # the key-driven pass below onto the same set of names, which they did not
     # previously agree on: `--project` and `cluster:` were caught in a JSON tree
     # and missed in the log line that is the commoner evidence form.
+    #
+    # The value class is `_IDENTIFIER_CHARS`, the same one `_IDENTIFIER_VALUE`
+    # gates on. It was `[-\w.:]`, which is wider on both counts that matter --
+    # `\w` is Unicode by default, and the gate was lowercase-only -- and every
+    # character of the difference was a value the capture grabbed and the gate
+    # then waved through unredacted.
     (
         re.compile(
             r"""(?i)\b((?:[\w-]{0,64}[_-])?project(?:[_-]?(?:id|number))?)"""
-            r"""(["']?\s{0,16}[:=]\s{0,16}["']?)([A-Za-z0-9][-\w.:]{2,61})"""
+            r"""(["']?\s{0,16}[:=]\s{0,16}["']?)([A-Za-z0-9][%s]{2,61})""" % _IDENTIFIER_CHARS
         ),
         _keyed("[PROJECT]"),
     ),
     (
         re.compile(
             r"""(?i)\b((?:[\w-]{0,64}[_-])?cluster(?:[_-]?name)?)"""
-            r"""(["']?\s{0,16}[:=]\s{0,16}["']?)([A-Za-z0-9][-\w.]{2,61})"""
+            r"""(["']?\s{0,16}[:=]\s{0,16}["']?)([A-Za-z0-9][%s]{2,61})""" % _IDENTIFIER_CHARS
         ),
         _keyed("[CLUSTER]"),
     ),
@@ -298,14 +394,14 @@ _IDENTIFIER_SHAPES = (
     (
         re.compile(
             r"""(?i)(?<![-\w])(--(?:[\w-]{1,32}-)?project(?:-(?:id|number))?)"""
-            r"""(\s{1,16}["']?)([A-Za-z0-9][-\w.:]{2,61})"""
+            r"""(\s{1,16}["']?)([A-Za-z0-9][%s]{2,61})""" % _IDENTIFIER_CHARS
         ),
         _keyed("[PROJECT]"),
     ),
     (
         re.compile(
             r"""(?i)(?<![-\w])(--(?:[\w-]{1,32}-)?cluster(?:-name)?)"""
-            r"""(\s{1,16}["']?)([A-Za-z0-9][-\w.]{2,61})"""
+            r"""(\s{1,16}["']?)([A-Za-z0-9][%s]{2,61})""" % _IDENTIFIER_CHARS
         ),
         _keyed("[CLUSTER]"),
     ),
@@ -313,12 +409,32 @@ _IDENTIFIER_SHAPES = (
     # information about anyone and which a reader diagnosing the metadata
     # server or the credential proxy socket genuinely needs.
     (re.compile(r"\b(?!127\.|169\.254\.|0\.0\.0\.0)(?:\d{1,3}\.){3}\d{1,3}\b"), "[IP]"),
+    # And IPv6, which the rule above cannot see at all. A dual-stack GKE cluster
+    # gives every pod one, so on those installs the address in a connection
+    # error is the form that was never matched.
+    #
+    # Written as three explicit arms rather than one general IPv6 grammar,
+    # because the thing this must not do is eat a timestamp. `10:00:00` is two
+    # colons, and each arm here needs either seven or a literal `::`, so no
+    # clock reaches them. Loopback and link-local are excluded for the reason
+    # the IPv4 rule excludes 127/8: a reader debugging the metadata server or
+    # the credential-proxy socket needs to see them, and they name nobody.
+    (
+        re.compile(
+            r"(?<![:.\w])(?!::1(?![0-9A-Fa-f:]))(?![Ff][Ee]80:)(?:"
+            r"(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}"
+            r"|(?:[0-9A-Fa-f]{1,4}:){1,7}:(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){0,6})?"
+            r"|::(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){1,6})"
+            r")(?![:.\w])"
+        ),
+        "[IP]",
+    ),
     # Google Chat spaces and Slack identifiers, all over the delivery signal
     # class, naming both a workspace and the people in it. The lookahead
     # requiring a digit is what keeps the Slack rule off ordinary uppercase log
     # text -- without it `CRASHLOOPBACKOFF` and `CONTAINERSTATUS` are Slack
     # channel ids, and the delivery evidence becomes unreadable.
-    (re.compile(r"\bspaces/[A-Za-z0-9_-]{5,128}"), "spaces/[SPACE]"),
+    (re.compile(r"\b(spaces(?:/|%2[Ff]))[A-Za-z0-9_-]{5,128}"), r"\1[SPACE]"),
     (re.compile(r"\b[CDGU](?=[A-Z0-9]{0,64}[0-9])[A-Z0-9]{8,64}\b"), "[SLACK-ID]"),
     # Workspace, enterprise grid, bot and enterprise-user ids -- `T`, `E`, `B`
     # and `W` -- name the installation rather than a channel, and the delivery
@@ -336,9 +452,47 @@ _IDENTIFIER_SHAPES = (
 )
 
 
+#: Characters that occupy no width and therefore split a token without a reader
+#: ever seeing the seam: a zero-width space inside `ghp_` is not `ghp_` to any
+#: pattern here and is `ghp_` to everyone reading the pull request. Written as
+#: escapes rather than as the characters themselves so the class can be read --
+#: soft hyphen, zero-width space/non-joiner/joiner, word joiner, BOM.
+_ZERO_WIDTH = re.compile("[\u00ad\u200b\u200c\u200d\u2060\ufeff]")
+
+
+def _normalise(text: str) -> str:
+    """Fold the spellings that defeat a pattern without changing what is read.
+
+    Two of them, and only two. Zero-width characters are deleted, because they
+    break a token in half for the matcher and are invisible to the reader.
+    Everything else goes through NFKC, which is what turns fullwidth
+    `ｇｈｐ＿…` and the other compatibility forms back into the ASCII they
+    render as.
+
+    Confusables are the case this deliberately does not cover: a Cyrillic `а`
+    in `аcme-prod-1` still survives. Folding those needs the Unicode
+    confusables table, which is thousands of mappings that have to be carried
+    and kept current, and the thing it would buy is small -- GCP will not issue
+    a project id or a cluster name containing a non-ASCII character, so a
+    homoglyphed one is not an identifier this CLI could have read out of any
+    Google API. It would have to have been typed into a log by someone who
+    wanted it published, which redaction is not the control for.
+
+    The ASCII fast path is not an optimisation detail: `redact` runs on every
+    line of every entry, and `test_redaction_stays_linear_in_the_length_of_the_line`
+    is the budget it has to stay inside.
+    """
+    if text.isascii():
+        return text
+    return unicodedata.normalize("NFKC", _ZERO_WIDTH.sub("", text))
+
+
 def redact(text: str) -> str:
     """Blank credential and identifier shapes out of one string."""
+    text = _normalise(text)
     text = _CREDENTIAL_SHAPES.sub("[REDACTED]", text)
+    text = _URL_CREDENTIALS.sub(r"\1[REDACTED]@", text)
+    text = _AUTH_HEADER.sub(r"\1[REDACTED]", text)
     text = _QUERY_SECRETS.sub(r"\1[REDACTED]", text)
     for pattern, replacement in _IDENTIFIER_SHAPES:
         text = pattern.sub(replacement, text)
@@ -472,6 +626,95 @@ def _names_the_identifier(key: Any) -> bool:
     )
 
 
+#: Names that say their value is a credential. `_env_summary` prints every
+#: literal env value a container carries, on the argument that `view` can
+#: already read it -- true, and beside the point once the output is a public
+#: pull request. Nothing about `hunter2` is a credential shape, so
+#: `{"name": "DB_PASSWORD", "value": "hunter2"}` went out whole. The name is the
+#: only thing that identifies it, which is the same argument `_IDENTIFIER_KEYS`
+#: makes about a project id, so it belongs in the same pass.
+#:
+#: Matched on the tail at an underscore boundary, for the reason
+#: `_identifier_placeholder` gives: there is no end to the prefixes. Over-broad
+#: on purpose -- `SORT_KEY` and `LICENSE_KEY` lose values they did not need to
+#: -- because the cost of blanking one uninteresting value is a `[REDACTED]` a
+#: reader can ask about, and the cost of the other mistake is a published
+#: secret.
+_SECRET_ENV_NAME = re.compile(
+    r"(?:\A|_)(?:"
+    r"password|passwd|pass|secret|token|key|apikey|credential|credentials|"
+    r"auth|authorization|salt|signature|dsn|conn|connection_string|"
+    r"private_key|access_key|secret_key|client_secret|webhook|webhook_url"
+    r")\Z",
+    re.IGNORECASE,
+)
+
+
+#: The same idea for an ordinary mapping key, and a shorter list than the one
+#: above. A container's env var is a shouty name whose last word is the whole
+#: description of the value, so `KEY` and `AUTH` on the end of one are safe to
+#: read literally. A JSON field is not: `key` is what half the structured
+#: loggers call the map key they are reporting on, and `auth` and `pass` are
+#: field names as often as they are values. Those four are dropped here and
+#: kept there, which is the difference between the two lists.
+#:
+#: This pass matters more since `cmd_logs` stopped flattening structures: a
+#: `jsonPayload` reaches `redact_tree` now, and `{"password": "hunter2"}` in a
+#: payload is the same disclosure as the env var.
+_SECRET_KEYS = re.compile(
+    r"(?:\A|_)(?:"
+    r"password|passwd|secret|token|apikey|api_key|credential|credentials|"
+    r"authorization|private_key|access_key|secret_key|client_secret|"
+    r"session_token|refresh_token|webhook_url"
+    r")\Z",
+    re.IGNORECASE,
+)
+
+
+#: A camelCase boundary, so `appPrivateKey` reaches `_SECRET_KEYS` as
+#: `app_private_key` and matches. `_identifier_placeholder` does not do this and
+#: does not need to: `_IDENTIFIER_KEYS` lists the run-together spellings
+#: (`projectid`, `clustername`) by hand, which works for a table of five names
+#: and would not for a tail match over a list of prefixes nobody enumerated.
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
+def _snake(key: str) -> str:
+    """A mapping key in one spelling, so one pattern can match all of them."""
+    return (
+        _CAMEL_BOUNDARY.sub("_", key.strip())
+        .lower()
+        .replace("-", "_")
+        .replace(".", "_")
+        .replace("/", "_")
+    )
+
+
+def _secret_value(value: Any) -> Any:
+    """What to print for a value whose key says it is a credential.
+
+    Only a scalar is blanked. A credential is a scalar; a structure under one
+    of these keys is a *reference* to one -- `secret: {name: kube-agents-github,
+    key: token}` is a Kubernetes secretKeyRef, and blanking it whole deletes
+    the "is it wired up" answer that `_env_summary` says is the point of
+    reading env at all. Kubernetes' EnvVar.value is a string, so the env case
+    loses nothing to this.
+
+    An empty or absent value survives, for the same reason
+    `_NON_IDENTIFIER_VALUES` exists: half of what the inefficiency signal looks
+    for is a variable that never got a value, and `[REDACTED]` says a secret
+    was there and was withheld -- the finding backwards. `(unset)` is spelled
+    with parentheses by `_env_summary` itself, so they are stripped first.
+    """
+    if isinstance(value, (dict, list)):
+        return redact_tree(value)
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, str) and value.strip().strip("\"'()").lower() in _NON_IDENTIFIER_VALUES:
+        return value
+    return "[REDACTED]"
+
+
 def redact_tree(value: Any) -> Any:
     """Redact every string in a nested structure, keys included.
 
@@ -491,6 +734,11 @@ def redact_tree(value: Any) -> Any:
         # evidence CLI prints an install's own configuration verbatim.
         named = value.get("name")
         if isinstance(named, str) and "value" in value:
+            if _SECRET_ENV_NAME.search(_snake(named)):
+                return {
+                    redact(str(k)): (_secret_value(v) if k == "value" else redact_tree(v))
+                    for k, v in value.items()
+                }
             placeholder = _identifier_placeholder(named)
             if placeholder is not None:
                 return {
@@ -501,7 +749,9 @@ def redact_tree(value: Any) -> Any:
         for k, v in value.items():
             key = str(k)
             placeholder = _identifier_placeholder(key)
-            if placeholder is not None:
+            if _SECRET_KEYS.search(_snake(key)):
+                result[redact(key)] = _secret_value(v)
+            elif placeholder is not None:
                 result[redact(key)] = _identifier_leaf(v, placeholder)
             else:
                 result[redact(key)] = redact_tree(v)
@@ -518,6 +768,13 @@ def redact_tree(value: Any) -> Any:
 _REDACT = True
 
 
+def _write(value: Any, stream: Any) -> None:
+    if isinstance(value, str):
+        print(redact(value) if _REDACT else value, file=stream)
+        return
+    print(json.dumps(redact_tree(value) if _REDACT else value, indent=1, default=str), file=stream)
+
+
 def emit(value: Any) -> None:
     """The CLI's one output boundary. Everything printed goes through here.
 
@@ -526,14 +783,29 @@ def emit(value: Any) -> None:
     visible in review. A string is printed as-is, anything else as indented
     JSON, and either way it is redacted first unless `--no-redact` said not to.
     """
-    if isinstance(value, str):
-        print(redact(value) if _REDACT else value)
-        return
-    print(json.dumps(redact_tree(value) if _REDACT else value, indent=1, default=str))
+    _write(value, sys.stdout)
+
+
+def emit_err(value: Any) -> None:
+    """`emit` for the diagnostic stream, which is not a lesser stream.
+
+    Whatever the agent's tool call captures is what can be quoted in a finding,
+    and a harness that merges the two -- most do -- makes stderr evidence
+    verbatim. The messages here are also the ones most likely to be carrying
+    something: an error quotes the thing that failed, which is why `_fail`
+    formats an HTTP body and a URL into its text.
+    """
+    _write(value, sys.stderr)
 
 
 def _fail(message: str) -> None:
-    print("error: %s" % redact(message), file=sys.stderr)
+    """Through `emit_err` so there is one redaction and one `--no-redact`.
+
+    It called `redact` directly, which meant `--no-redact` printed the results
+    redacted and the errors about them raw -- the wrong way round, and a
+    divergence nobody would have found by reading either half.
+    """
+    emit_err("error: %s" % message)
     raise SystemExit(2)
 
 
@@ -602,6 +874,55 @@ def _namespace() -> str:
 # --------------------------------------------------------------------------
 
 
+#: How much beyond `--width` the redactor is shown before the line is cut.
+#: Redaction has to see the payload as the API sent it, but the payload can be
+#: 256KB and `--width` defaults to 400, so scanning all of it to print 400
+#: characters is work the run's wall-clock budget pays for and nobody reads.
+#: Every pattern in this module carries an explicit upper bound and the largest
+#: is the PEM body's 8192, so a match that begins inside the first `width`
+#: characters cannot reach past `width + 8192`. Redacting that much and cutting
+#: afterwards is the same output as redacting the whole payload, at a fixed
+#: cost.
+_REDACT_MARGIN = 8192
+
+
+def _payload_line(payload: Any, width: int) -> str:
+    """One entry's payload, redacted before it is truncated and escaped.
+
+    The order is the defect this function exists to fix. `emit` is the output
+    boundary, but `cmd_logs` used to hand it a payload it had already cut to
+    `--width` and whose newlines it had already rewritten as `\\n`, and both of
+    those edits defeat the patterns `emit` then matches with. A literal
+    backslash was not in the PEM body's character class, so an escaped key body
+    matched zero characters: the BEGIN header was blanked and the private key
+    printed underneath it, beneath a `[REDACTED]` marker reading as though it
+    had been handled. `--width 400` guarantees the END marker is gone too, so
+    the arm that would have caught it never applied. Truncation does the
+    quieter version of the same thing -- it cuts a token below the `{20,}`
+    bound the credential shapes require, and splits `projects/<id>` mid-value,
+    so a partial secret and a partial customer name survive.
+
+    So redaction runs first, on the text as it arrived, and the formatting runs
+    on the result. Teaching every pattern to step over `\\n` instead would
+    widen each of them to accommodate one caller's formatting, and the next
+    caller that formats differently is a silent regression rather than a
+    failing test. (The PEM class does now accept a backslash, but for a
+    different reason and a case no ordering fixes: a GCP service-account key
+    file is JSON, so the armour's line breaks really are the two characters
+    `\\` and `n`.)
+
+    A structure is redacted as a structure, so `redact_tree`'s key pass runs.
+    `emit` redacts the composed line again; that second pass is what covers the
+    timestamp and the pod and container names, and it is a no-op over the
+    placeholders this one already wrote.
+    """
+    if isinstance(payload, str):
+        text = redact(payload[: width + _REDACT_MARGIN]) if _REDACT else payload
+    else:
+        text = json.dumps(redact_tree(payload) if _REDACT else payload, sort_keys=True)
+    return text[:width].replace("\n", "\\n")
+
+
 def cmd_logs(args: argparse.Namespace) -> int:
     """Cloud Logging entries for the install's namespace.
 
@@ -630,20 +951,26 @@ def cmd_logs(args: argparse.Namespace) -> int:
         emit(entries)
         return 0
     for entry in entries:
-        # Dump the first payload field that is actually populated. Chaining
+        # Take the first payload field that is actually populated. Chaining
         # `json.dumps(...) or json.dumps(...)` does not work: an absent
         # jsonPayload dumps to the string "{}", which is truthy, so the
         # protoPayload branch was unreachable and every audit-log entry --
         # audit logs carry protoPayload and nothing else -- printed as "{}".
-        payload_text = entry.get("textPayload")
-        if not payload_text:
+        #
+        # The field is carried as the object the API sent, not as a string.
+        # `json.dumps` here and `_payload_line` has nothing left to run the key
+        # pass over, which is the difference between `logs` printing
+        # `{"args": ["--project", "acme-prod-42"]}` and `logs --raw` printing
+        # `[PROJECT]` for the same entry -- on the subcommand the loop uses most.
+        payload: Any = entry.get("textPayload")
+        if not payload:
             for key in ("jsonPayload", "protoPayload"):
                 structured = entry.get(key)
                 if structured:
-                    payload_text = json.dumps(structured, sort_keys=True)
+                    payload = structured
                     break
-        if not payload_text:
-            payload_text = "{}"
+        if not payload:
+            payload = "{}"
         emit(
             "%s [%s] %s/%s %s"
             % (
@@ -651,7 +978,7 @@ def cmd_logs(args: argparse.Namespace) -> int:
                 entry.get("severity", "DEFAULT"),
                 entry.get("resource", {}).get("labels", {}).get("pod_name", "?"),
                 entry.get("resource", {}).get("labels", {}).get("container_name", "?"),
-                payload_text[: args.width].replace("\n", "\\n"),
+                _payload_line(payload, args.width),
             )
         )
     if not entries:
@@ -907,7 +1234,7 @@ def cmd_traces(args: argparse.Namespace) -> int:
     rows.sort(key=lambda r: (r.get("durationMs") is not None, r.get("durationMs") or 0), reverse=True)
     emit(rows)
     if not rows:
-        print("(no traces matched)", file=sys.stderr)
+        emit_err("(no traces matched)")
     return 0
 
 
@@ -1218,8 +1545,37 @@ def cmd_k8s(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------
 
 
+class RedactingArgumentParser(argparse.ArgumentParser):
+    """argparse's diagnostics, routed through the redactor like everything else.
+
+    argparse echoes the offending value back verbatim, and the values here are
+    not the agent's own: `_check_query` says outright that `--query` is composed
+    "from text it read in logs it does not control". So
+
+        logs --hours "acme-prod-1 alice@example.com ghp_..."
+
+    printed `invalid float value: 'acme-prod-1 alice@example.com ghp_...'` to
+    stderr, past `emit` entirely, with the tokens intact. A bad argument is also
+    the case where the value is most likely to be strange, which is to say most
+    likely to be something that was never meant to be a value at all.
+
+    Only what goes to stderr. `--help` is this file's own static text on stdout,
+    and running it through the identifier rules would blank words out of the
+    help for no gain. `_print_message` is the single funnel for both, so
+    overriding it covers the usage line argparse prints beside an error as well
+    as the error itself, and `add_subparsers` builds each subparser from
+    `type(self)` -- which matters, because the example above is a subparser's
+    error and not this parser's.
+    """
+
+    def _print_message(self, message: str, file: Any = None) -> None:
+        if message and file is sys.stderr and _REDACT:
+            message = redact(message)
+        super()._print_message(message, file)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = RedactingArgumentParser(
         prog="selfimprove-evidence",
         description=__doc__.split("\n\n")[0],
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1323,7 +1679,22 @@ def main(argv: Optional[List[str]] = None) -> int:
             "finding.",
             file=sys.stderr,
         )
-    return args.func(args)
+    try:
+        return args.func(args)
+    except SystemExit:
+        # `_fail` has already been through `emit_err`.
+        raise
+    except Exception as exc:
+        # An uncaught exception was the last output path with no redactor on
+        # it, and the exception most likely to be raised here is the worst one
+        # to print: `kubernetes.client.ApiException.__str__` renders status,
+        # reason, every response header and the whole body, and a 403 body
+        # names the service account, the namespace and the resource it was
+        # refused. The traceback is dropped rather than redacted -- it is this
+        # file's own frames, so it says nothing the exception does not, and
+        # `--no-redact` prints the message itself in full.
+        _fail("%s: %s" % (type(exc).__name__, exc))
+        return 2
 
 
 if __name__ == "__main__":
