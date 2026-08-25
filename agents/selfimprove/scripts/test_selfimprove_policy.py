@@ -17,6 +17,7 @@ handle'` matched a rule about `gh pr close` and the loop's one write was
 refused by its own guard rail.
 """
 
+import itertools
 import json
 import pathlib
 import re
@@ -74,18 +75,22 @@ def _skill_commands():
     nothing between the two to notice.
 
     Placeholders become one bare token, backslash continuations are joined, and
-    a pipeline contributes its head. That is enough shell for a skill whose
-    commands are all one invocation; anything cleverer written into the skill
-    would be worth failing on here.
+    a pipeline contributes its head. The split on `|` happens after tokenising
+    rather than before, because a `--jq` argument is full of pipes that are not
+    pipelines -- splitting the raw text on the first one cuts the command in
+    half mid-quote and the tokeniser then fails on a string nobody wrote. That
+    is enough shell for a skill whose commands are all one invocation; anything
+    cleverer written into the skill would be worth failing on here.
     """
     text = FILING_SKILL.read_text(encoding="utf-8")
     commands = []
     for block in re.findall(r"```bash\n(.*?)```", text, re.DOTALL):
         for line in block.replace("\\\n", " ").split("\n"):
-            head = line.split("|")[0].strip()
-            if not head.startswith(("gh ", "git ")):
+            tokens = shlex.split(re.sub(r"<[^>]*>", "PLACEHOLDER", line.strip()))
+            if not tokens or tokens[0] not in ("gh", "git"):
                 continue
-            commands.append(shlex.split(re.sub(r"<[^>]*>", "PLACEHOLDER", head)))
+            head = list(itertools.takewhile(lambda token: token != "|", tokens))
+            commands.append(head)
     return commands
 
 

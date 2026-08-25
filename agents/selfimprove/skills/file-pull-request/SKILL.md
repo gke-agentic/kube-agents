@@ -80,19 +80,31 @@ pod is running, which may be behind, and is read-only.
     pull request will merge or be closed, and a later run's search reaches one of the two answers
     below — so the finding stays in the queue and a later run asks again.
   - `"state": "closed"` with `pull_request.merged_at` **null** is a **closed-unmerged** pull
-    request. Two opposite things look identical here, so read `reviews`, `comments` and
-    `headRefName` before you decide which one you have:
-    - **Somebody reviewed or commented on it, and it closed** — a human said no. Stop, and print
-      `SKIPPED: closed unmerged as #<n>`, with nothing after the number. The ledger's cooldown
-      expires; that decision does not, so the runner reads that line as permanent and stops
-      offering you the finding. Anything after the number and it reads as an ordinary skip
+    request. Two opposite things look identical here, so read **who** reviewed and commented, not
+    how many did. On a number the ledger gave you, that is in the JSON the step above already
+    fetched; on a number the search turned up, ask for it:
+
+    ```bash
+    gh pr view <n> --repo <the upstream from your brief> --json reviews,comments,headRefName \
+      --jq '{head: .headRefName, judges: [(.reviews[], .comments[]) | select(.authorAssociation | IN("OWNER","MEMBER","COLLABORATOR")) | .author.login] | unique}'
+    ```
+
+    `judges` is everyone whose "no" counts. Counting comments instead retires every finding this
+    loop ever files: `kube-agents-bot` introduces itself on every pull request it picks up and
+    `google-oss-prow` adds its own, both as `authorAssociation: NONE`, so "somebody commented" is
+    true before a human has looked. A drive-by account with no standing is the same case.
+    - **`judges` is non-empty** — someone who can merge this looked and it closed anyway. Stop,
+      and print `SKIPPED: closed unmerged as #<n>`, with nothing after the number. The ledger's
+      cooldown expires; that decision does not, so the runner reads that line as permanent and
+      stops offering you the finding. Anything after the number and it reads as an ordinary skip
       instead, and you are asked again in an hour.
-    - **No review, no comment, and `headRefName` starts `selfimprove/`** — this loop filed it and
-      it was closed for a mechanical reason, most often a base branch that was abandoned. Nobody
-      judged the change, so there is no decision to respect. Treat it as superseded: file again
-      against the base branch your brief names, and say in the body that #`<n>` carried the same
-      fix and was closed unmerged without review. Printing `closed unmerged as #<n>` here would
-      retire a live finding on a rejection that never happened.
+    - **`judges` is empty and `headRefName` starts `selfimprove/`** — this loop filed it and it
+      was closed for a mechanical reason, most often a base branch that was abandoned. Nobody who
+      could merge it judged the change, so there is no decision to respect. Treat it as
+      superseded: file again against the base branch your brief names, and say in the body that #`<n>` carried the same fix and was closed unmerged without review. Printing
+      `closed unmerged as #<n>` here would retire a live finding on a rejection that never
+      happened.
+
   - `"state": "closed"` with a `merged_at` timestamp is **merged**, which means the tree you write
     in already contains it — that tree is at the base branch's tip, not at the deployed revision.
     So the question is not when it merged. It is whether the finding is still true there, which

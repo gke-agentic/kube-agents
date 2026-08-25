@@ -2135,6 +2135,31 @@ class PermanentRefusalMarkerTests(unittest.TestCase):
         self.assertIn("superseded", text)
         self.assertIn("selfimprove/", text)
 
+    def test_the_carve_out_reads_who_reviewed_not_whether_anyone_did(self):
+        """`kube-agents-bot` comments on every pull request it picks up.
+
+        The carve-out above used to turn on "no review, no comment", which is
+        false before a human has looked: the bot introduces itself, and
+        `google-oss-prow` adds its own comment, both as `authorAssociation:
+        NONE`. So the branch was unreachable on any repository the bot watches,
+        and every mechanically-closed pull request -- this loop's own abandoned
+        base branches included -- read as a human rejection and retired the
+        finding for good. `authorAssociation` is what separates them.
+        """
+        skill = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(R.__file__))),
+            "skills",
+            "file-pull-request",
+            "SKILL.md",
+        )
+        with open(skill, "r", encoding="utf-8") as handle:
+            text = handle.read()
+        self.assertIn("authorAssociation", text)
+        for standing in ("OWNER", "MEMBER", "COLLABORATOR"):
+            with self.subTest(standing=standing):
+                self.assertIn(standing, text)
+        self.assertNotIn("No review, no comment", text)
+
     def test_the_skill_prints_what_this_predicate_reads(self):
         """A vocabulary split across two files stops matching when one moves."""
         skill = os.path.join(
