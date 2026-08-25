@@ -1782,6 +1782,15 @@ def save(namespace: str, name: str, ledger: Dict[str, Any]) -> None:
     `patch` rather than `replace` also matters to the precondition working at
     all: a strategic-merge patch carrying `metadata.resourceVersion` is rejected
     with a 409 when it does not match, which is the whole mechanism.
+
+    Once a 409 has been seen, the precondition is never dropped again. A write
+    with no `resourceVersion` is the unconditional write above, and the 409 is
+    the object saying somebody else's document is there to be overwritten by it.
+    So every way the re-read can fail to produce a version -- deleted, a Role
+    with patch but not get, the API server not answering -- ends the run's write
+    rather than retrying without one. What that costs is this run's findings,
+    which recur within the hour; what it keeps is the other writer's promotion
+    records, which do not.
     """
     client, api = _api_client()
     key = (namespace, name)
@@ -1801,11 +1810,36 @@ def save(namespace: str, name: str, ledger: Dict[str, Any]) -> None:
             if exc.status == 409 and attempt < LEDGER_WRITE_ATTEMPTS - 1:
                 # Somebody wrote between `load` and here. Take their document,
                 # fold this run's rows into it, and write against the version
-                # they left behind. A read that now fails drops the precondition
-                # rather than the run: the next attempt is unconditional, which
-                # is exactly the old behaviour and still better than losing the
-                # findings.
-                remote, remote_version, parsed = _read(api, client, namespace, name)
+                # they left behind.
+                try:
+                    remote, remote_version, parsed = _read(api, client, namespace, name)
+                except Exception as read_exc:  # noqa: BLE001
+                    # Raised from inside an `except` clause, so without this it
+                    # leaves `save` as whatever the API client threw rather than
+                    # the LedgerWriteError every caller checks for.
+                    raise LedgerWriteError(
+                        f"another writer moved ConfigMap {namespace}/{name} and reading it "
+                        f"back to merge with them failed: {read_exc}. Nothing has been "
+                        "written, and this run's findings are lost; they recur, and the "
+                        "other writer's work is still there."
+                    ) from exc
+                if not remote_version:
+                    # `_read` maps 403 and 404 to an empty ledger, which is the
+                    # right answer for `load` -- a run that cannot read history
+                    # is still a run that can find things -- and the wrong one
+                    # here. A 409 says the object exists and somebody just wrote
+                    # it. Merging into that empty placeholder and retrying with
+                    # no precondition, which is what the missing version would
+                    # do, writes this run's rows over theirs: the same loss the
+                    # `parsed` branch below refuses, through a third door. A
+                    # deleted ConfigMap ends here too, where the message says so
+                    # rather than arriving as a second 404 from the patch.
+                    raise LedgerWriteError(
+                        f"another writer moved ConfigMap {namespace}/{name} and it could not "
+                        "be read back -- it was deleted, or the Role grants patch but not "
+                        "get. Refusing to write without a precondition, which would drop "
+                        "whatever they wrote. This run's findings are lost and will recur."
+                    ) from exc
                 if not parsed:
                     # Merging into the placeholder empty ledger would write this
                     # run's rows over the other writer's document -- the same
@@ -1823,10 +1857,7 @@ def save(namespace: str, name: str, ledger: Dict[str, Any]) -> None:
                 merged = merge(remote, ledger)
                 ledger.clear()
                 ledger.update(merged)
-                if remote_version:
-                    _OBSERVED_RESOURCE_VERSION[key] = remote_version
-                else:
-                    _OBSERVED_RESOURCE_VERSION.pop(key, None)
+                _OBSERVED_RESOURCE_VERSION[key] = remote_version
                 continue
             raise _write_error(namespace, name, exc) from exc
         except Exception as exc:  # noqa: BLE001 -- a timeout is not an ApiException

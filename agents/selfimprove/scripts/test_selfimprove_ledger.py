@@ -1891,6 +1891,83 @@ class ConcurrentWriteTests(unittest.TestCase):
             undo()
         self.assertEqual(["theirs", "mine"], [r["revision"] for r in cm.ledger()["runs"]])
 
+    def _conflict_then(self, read_result):
+        """A ConfigMap that 409s once and answers the re-read with `read_result`.
+
+        `read_result` is raised if it is an exception and returned otherwise,
+        which is how the API client itself behaves.
+        """
+        cm = _FakeConfigMap()
+        cm.write_ledger(L.empty_ledger())
+        theirs = L.empty_ledger()
+        theirs["runs"] = [{"at": "2026-08-23T16:40:00Z", "revision": "theirs", "outcome": "ok"}]
+        cm.before_patch = lambda c: c.write_ledger(theirs)
+        first = cm.read
+        reads = []
+
+        def read(**kwargs):
+            # The first read is `load`'s and has to succeed; the second is the
+            # 409 recovery's. `_install_stateful_kubernetes` binds `cm.read`
+            # once, so this counts rather than reassigning the attribute.
+            reads.append(1)
+            if len(reads) > 1:
+                raise read_result
+            return first(**kwargs)
+
+        cm.read = read
+        return cm, theirs
+
+    def test_a_conflict_whose_re_read_is_forbidden_does_not_overwrite(self):
+        """`_read` maps 403 and 404 to an empty ledger with no resourceVersion.
+
+        That is right for `load` -- a run that cannot read history is still a
+        run that can find things -- and wrong here. The 409 that got us here
+        says the object exists and somebody just wrote it, so merging into that
+        placeholder and retrying with no precondition writes this run's rows
+        over theirs. A Role granting patch but not get is the configuration that
+        reaches it, and it is silent: the write succeeds.
+        """
+        for status in (403, 404):
+            with self.subTest(status=status):
+                cm, theirs = self._conflict_then(_FakeApiException(status))
+                undo = _install_stateful_kubernetes(cm)
+                try:
+                    mine = L.load("kube-agents", "ledger")
+                    mine["runs"] = [{"at": "2026-08-23T17:24:00Z", "revision": "mine", "outcome": "ok"}]
+                    with self.assertRaises(L.LedgerWriteError) as caught:
+                        L.save("kube-agents", "ledger", mine)
+                finally:
+                    undo()
+                self.assertEqual(["theirs"], [r["revision"] for r in cm.ledger()["runs"]])
+                message = str(caught.exception)
+                self.assertIn("kube-agents/ledger", message)
+                self.assertIn("without a precondition", message)
+
+    def test_a_conflict_whose_re_read_raises_reports_as_a_write_error(self):
+        """Raised from inside an `except` clause, so an unwrapped error leaves
+        `save` as whatever the API client threw. Every caller checks for
+        `LedgerWriteError`, and the runner reports anything else as a crash."""
+        cm, _theirs = self._conflict_then(_FakeApiException(500))
+        undo = _install_stateful_kubernetes(cm)
+        try:
+            mine = L.load("kube-agents", "ledger")
+            with self.assertRaises(L.LedgerWriteError) as caught:
+                L.save("kube-agents", "ledger", mine)
+        finally:
+            undo()
+        self.assertIn("reading it back to merge", str(caught.exception))
+
+    def test_a_conflict_whose_re_read_times_out_reports_as_a_write_error(self):
+        cm, _theirs = self._conflict_then(RuntimeError("read timed out"))
+        undo = _install_stateful_kubernetes(cm)
+        try:
+            mine = L.load("kube-agents", "ledger")
+            with self.assertRaises(L.LedgerWriteError) as caught:
+                L.save("kube-agents", "ledger", mine)
+        finally:
+            undo()
+        self.assertIn("read timed out", str(caught.exception))
+
     def test_an_uncontended_write_still_applies_a_prune(self):
         """The merge must not resurrect rows when nothing actually conflicted.
 

@@ -1249,8 +1249,14 @@ outcome the gate exists to prevent. `selfimprove_ledger.save` therefore writes a
 window between read and write is the whole of `activeDeadlineSeconds` — four hours by default — and
 a concurrent `helm upgrade` reapplying the chart's labels inside it would turn into a 409 that lost
 the run's findings entirely. So a 409 is not fatal: `save` re-reads, folds this run's rows into
-whatever is there now, and retries, four times before giving up with a message saying to go and find
-the second writer. The merge is well defined because the ledger is almost all append-only and
+whatever is there now, and retries — four attempts in all, so three retries — before giving up with
+a message saying to go and find the second writer. What it will not do is drop the precondition. A
+409 says the object exists and somebody else's document is in it, so a re-read that comes back
+without a `resourceVersion` ends the write: the object was deleted, or the Role grants patch but not
+get, and `_read` reports both as an empty ledger because that is the right answer for `load` and the
+wrong one here. Writing anyway would be an unconditional write over the document the 409 just
+announced. Ending costs this run's findings, which recur within the hour; the other writer's
+promotion records do not. The merge is well defined because the ledger is almost all append-only and
 timestamped. `runs`, `sightings` and `promotions` are unions keyed on their timestamps; `refused`
 and `first_seen` keep the earlier of the two, because both measure how long a human has had the
 finding; the agent's description of a finding comes from the newer writer. Neither writer loses
