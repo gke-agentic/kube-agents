@@ -19,7 +19,7 @@ fi
 validate_pure_numeric_semver "${RELEASE_VERSION}" "Release version" || exit 1
 
 # Single Source of Truth: Resolve commit directly from the Git tag created by tag_ga_release.sh
-RELEASE_COMMIT="$(resolve_release_commit "${RELEASE_VERSION}" "" "true")"
+RELEASE_COMMIT="$(resolve_release_commit "${RELEASE_VERSION}")"
 
 echo "======================================================================"
 echo "🚀 PUBLISHING GITHUB RELEASE"
