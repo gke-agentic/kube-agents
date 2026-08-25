@@ -677,7 +677,12 @@ particular argv spellings inside them. It withholds what those rules enumerate a
 verb inside an admitted family that no rule names is permitted — which is why the policy is a
 narrowing rather than a boundary. It narrows nothing about the token itself: the credential still
 carries `repo` on every repository the account can reach, and the policy only decides which
-spellings of that reach the network from this pod. The shipped rules are in
+spellings of that reach the network from this pod. What the rules do constrain is the destination:
+`selfimprove.gh-target-allowlist` refuses a `-R`/`--repo` naming anything but the configured
+upstream and fork, and `selfimprove.git-push-fork-only` refuses a push to any remote but `fork`, so
+the two repositories an operator configured are the two a well-formed command can name. That is a
+statement about argv and not about the credential — an unflagged `gh` call still acts on whatever
+repository the checkout points at. The shipped rules are in
 [`templates/self-improvement.yaml`](../../charts/kube-agents/templates/self-improvement.yaml) and
 are the current answer to what the loop can do with the token; §11 records that a check on argv is
 not a permission boundary.

