@@ -424,18 +424,18 @@ See [`k8s-operator/api/v1alpha1/platformagent_types.go`](https://github.com/gke-
 
 The operator writes observed state to the `status` subresource:
 
-| Field                            | Type   | Purpose                                                                                                |
-| -------------------------------- | ------ | ------------------------------------------------------------------------------------------------------ |
-| `phase`                          | string | Overall state (`Pending`, `Provisioning`, `Ready`, `Failed`).                                          |
-| `address`                        | string | Fully qualified domain name (FQDN) of the agent service.                                               |
-| `lastReconcileTime`              | time   | Timestamp of the last status update.                                                                   |
-| `conditions`                     | list   | Standard `metav1.Condition` observations, keyed by `type`.                                             |
-| `deploymentStatus.name`          | string | Name of the underlying Deployment.                                                                     |
-| `deploymentStatus.readyReplicas` | int32  | Number of fully ready replicas.                                                                        |
-| `serviceStatus.endpoint`         | string | Primary URL/IP (with protocol and port) to reach the agent.                                            |
-| `storageStatus.bound`            | bool   | Whether the primary PVC has been provisioned.                                                          |
-| `telemetry.otlpEndpoint`         | string | The OTLP collector the agent was wired to.                                                             |
-| `telemetry.otlpEndpointSource`   | string | Which rung of the ladder answered: `DeploymentEnv`, `Spec`, `OperatorEnv`, `Discovered`, or `Default`. |
+| Field                            | Type   | Purpose                                                                                          |
+| -------------------------------- | ------ | ------------------------------------------------------------------------------------------------ |
+| `phase`                          | string | Overall state (`Pending`, `Provisioning`, `Ready`, `Failed`).                                    |
+| `address`                        | string | Fully qualified domain name (FQDN) of the agent service.                                         |
+| `lastReconcileTime`              | time   | Timestamp of the last status update.                                                             |
+| `conditions`                     | list   | Standard `metav1.Condition` observations, keyed by `type`.                                       |
+| `deploymentStatus.name`          | string | Name of the underlying Deployment.                                                               |
+| `deploymentStatus.readyReplicas` | int32  | Number of fully ready replicas.                                                                  |
+| `serviceStatus.endpoint`         | string | Primary URL/IP (with protocol and port) to reach the agent.                                      |
+| `storageStatus.bound`            | bool   | Whether the primary PVC has been provisioned.                                                    |
+| `telemetry.otlpEndpoint`         | string | The OTLP collector the agent was wired to.                                                       |
+| `telemetry.otlpEndpointSource`   | string | Which rung answered: `DeploymentEnv`, `Spec`, `OperatorEnv`, `Discovered`, `None`, or `Default`. |
 
 Three condition types appear in `conditions`, and only the first is always present:
 

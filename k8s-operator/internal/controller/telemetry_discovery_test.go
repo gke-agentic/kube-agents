@@ -293,13 +293,13 @@ func TestDiscoveredOTLPEndpointCaching(t *testing.T) {
 	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
 	const want = "http://otel-collector.otel-collector.svc.cluster.local:4318"
 
-	if got := r.discoveredOTLPEndpoint(context.Background(), ""); got != want {
-		t.Fatalf("expected %q, got %q", want, got)
+	if got, outcome := r.discoveredOTLPEndpoint(context.Background(), ""); got != want || outcome != otlpDiscoveryFound {
+		t.Fatalf("expected (%q, found), got (%q, %v)", want, got, outcome)
 	}
 	afterFirst := gets
 
-	if got := r.discoveredOTLPEndpoint(context.Background(), ""); got != want {
-		t.Fatalf("expected the cached %q, got %q", want, got)
+	if got, outcome := r.discoveredOTLPEndpoint(context.Background(), ""); got != want || outcome != otlpDiscoveryFound {
+		t.Fatalf("expected the cached (%q, found), got (%q, %v)", want, got, outcome)
 	}
 	if gets != afterFirst {
 		t.Errorf("expected the second call to be served from cache, saw %d extra reads", gets-afterFirst)
@@ -307,8 +307,8 @@ func TestDiscoveredOTLPEndpointCaching(t *testing.T) {
 
 	// Expire the cache: a collector can appear or move at any time, so the probe must run again.
 	expireOTelCache(r)
-	if got := r.discoveredOTLPEndpoint(context.Background(), ""); got != want {
-		t.Fatalf("expected %q after expiry, got %q", want, got)
+	if got, outcome := r.discoveredOTLPEndpoint(context.Background(), ""); got != want || outcome != otlpDiscoveryFound {
+		t.Fatalf("expected (%q, found) after expiry, got (%q, %v)", want, got, outcome)
 	}
 	if gets <= afterFirst {
 		t.Errorf("expected the probe to re-run once the TTL expired")
@@ -329,15 +329,45 @@ func TestDiscoveredOTLPEndpointCachesNegative(t *testing.T) {
 	}).Build()
 
 	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
-	if got := r.discoveredOTLPEndpoint(context.Background(), ""); got != "" {
-		t.Fatalf("expected no endpoint, got %q", got)
+	if got, outcome := r.discoveredOTLPEndpoint(context.Background(), ""); got != "" || outcome != otlpDiscoveryNone {
+		t.Fatalf("expected (\"\", none), got (%q, %v)", got, outcome)
 	}
 	afterFirst := gets
-	if got := r.discoveredOTLPEndpoint(context.Background(), ""); got != "" {
-		t.Fatalf("expected no endpoint, got %q", got)
+	if got, outcome := r.discoveredOTLPEndpoint(context.Background(), ""); got != "" || outcome != otlpDiscoveryNone {
+		t.Fatalf("expected the cached (\"\", none), got (%q, %v)", got, outcome)
 	}
 	if gets != afterFirst {
 		t.Errorf("expected the negative result to be cached, saw %d extra reads", gets-afterFirst)
+	}
+}
+
+// TestDiscoveredOTLPEndpointNoneOutlivesItsTTL is the flap guard for the negative answer,
+// and the reason staleOrLastKnown prefers an expired probe to the default. Once the TTL
+// lapses and the next probe cannot complete, reporting Unknown would resolve the agent to
+// the managed collector, put OTEL_EXPORTER_OTLP_ENDPOINT back on the pod, roll it, and roll
+// it back on the next successful probe — for a cluster that still has no collector.
+func TestDiscoveredOTLPEndpointNoneOutlivesItsTTL(t *testing.T) {
+	scheme := setupScheme()
+	fail := false
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if fail {
+				return errForbidden()
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	}).Build()
+
+	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
+	if _, outcome := r.discoveredOTLPEndpoint(context.Background(), ""); outcome != otlpDiscoveryNone {
+		t.Fatalf("expected none on a cluster with no collector, got %v", outcome)
+	}
+
+	fail = true
+	expireOTelCache(r)
+	r.otelProbedAt = time.Time{} // let the probe run rather than hit the retry floor
+	if got, outcome := r.discoveredOTLPEndpoint(context.Background(), ""); got != "" || outcome != otlpDiscoveryNone {
+		t.Errorf("expected the expired-but-authoritative none to survive an API error, got (%q, %v)", got, outcome)
 	}
 }
 
@@ -359,14 +389,14 @@ func TestDiscoveredOTLPEndpointKeepsLastKnownGood(t *testing.T) {
 
 	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
 	const want = "http://otel-collector.otel-collector.svc.cluster.local:4318"
-	if got := r.discoveredOTLPEndpoint(context.Background(), ""); got != want {
-		t.Fatalf("expected %q, got %q", want, got)
+	if got, outcome := r.discoveredOTLPEndpoint(context.Background(), ""); got != want || outcome != otlpDiscoveryFound {
+		t.Fatalf("expected (%q, found), got (%q, %v)", want, got, outcome)
 	}
 
 	fail = true
 	expireOTelCache(r)
-	if got := r.discoveredOTLPEndpoint(context.Background(), ""); got != want {
-		t.Errorf("expected the last known good %q to survive an API error, got %q", want, got)
+	if got, outcome := r.discoveredOTLPEndpoint(context.Background(), ""); got != want || outcome != otlpDiscoveryFound {
+		t.Errorf("expected the last known good (%q, found) to survive an API error, got (%q, %v)", want, got, outcome)
 	}
 }
 
@@ -385,16 +415,18 @@ func TestDiscoveredOTLPEndpointRateLimitsFailedProbes(t *testing.T) {
 	}).Build()
 
 	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
-	if got := r.discoveredOTLPEndpoint(context.Background(), ""); got != "" {
-		t.Fatalf("expected no endpoint, got %q", got)
+	// Unknown, not none: the probe never completed, so nothing was established. Reporting
+	// none here would switch telemetry off across the fleet on an API outage.
+	if got, outcome := r.discoveredOTLPEndpoint(context.Background(), ""); got != "" || outcome != otlpDiscoveryUnknown {
+		t.Fatalf("expected (\"\", unknown), got (%q, %v)", got, outcome)
 	}
 	afterFirst := gets
 	if afterFirst == 0 {
 		t.Fatal("expected the first probe to reach the API")
 	}
 
-	if got := r.discoveredOTLPEndpoint(context.Background(), ""); got != "" {
-		t.Fatalf("expected no endpoint, got %q", got)
+	if got, outcome := r.discoveredOTLPEndpoint(context.Background(), ""); got != "" || outcome != otlpDiscoveryUnknown {
+		t.Fatalf("expected (\"\", unknown), got (%q, %v)", got, outcome)
 	}
 	if gets != afterFirst {
 		t.Errorf("expected the retry floor to suppress an immediate re-probe, saw %d extra reads", gets-afterFirst)
@@ -403,8 +435,8 @@ func TestDiscoveredOTLPEndpointRateLimitsFailedProbes(t *testing.T) {
 	// The floor is a delay, not a cache: once it lapses the probe must run again, since
 	// a failed probe is never an answer.
 	r.otelProbedAt = time.Now().Add(-otelProbeRetryAfter - time.Second)
-	if got := r.discoveredOTLPEndpoint(context.Background(), ""); got != "" {
-		t.Fatalf("expected no endpoint, got %q", got)
+	if got, outcome := r.discoveredOTLPEndpoint(context.Background(), ""); got != "" || outcome != otlpDiscoveryUnknown {
+		t.Fatalf("expected (\"\", unknown), got (%q, %v)", got, outcome)
 	}
 	if gets <= afterFirst {
 		t.Error("expected the probe to re-run once the retry floor lapsed")
@@ -413,8 +445,8 @@ func TestDiscoveredOTLPEndpointRateLimitsFailedProbes(t *testing.T) {
 	// A rate-limited call must still serve the last known good endpoint rather than
 	// falling through to the default — the floor must not reintroduce the flap.
 	const known = "http://otel-collector.otel-collector.svc.cluster.local:4318"
-	if got := r.discoveredOTLPEndpoint(context.Background(), known); got != known {
-		t.Errorf("expected the rate-limited call to keep %q, got %q", known, got)
+	if got, outcome := r.discoveredOTLPEndpoint(context.Background(), known); got != known || outcome != otlpDiscoveryFound {
+		t.Errorf("expected the rate-limited call to keep (%q, found), got (%q, %v)", known, got, outcome)
 	}
 }
 
@@ -467,8 +499,54 @@ func TestDiscoveredOTLPEndpointCanBeDisabled(t *testing.T) {
 
 	t.Setenv(otelDiscoveryEnvVar, "false")
 	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
-	if got := r.discoveredOTLPEndpoint(context.Background(), ""); got != "" {
-		t.Errorf("expected discovery to be disabled, got %q", got)
+	// Unknown rather than none. Nobody probed, so nothing was established about the
+	// cluster, and the documented purpose of this switch is to fall straight through to
+	// the managed default — reporting none would silently disable telemetry instead.
+	if got, outcome := r.discoveredOTLPEndpoint(context.Background(), ""); got != "" || outcome != otlpDiscoveryUnknown {
+		t.Errorf("expected discovery to be disabled and report (\"\", unknown), got (%q, %v)", got, outcome)
+	}
+}
+
+// TestResolveOTLPEndpointNoCollector is #831 item 5: on a cluster with no collector the
+// ladder used to hand back the GKE managed endpoint anyway, and the agent's exporter then
+// retried a name that never resolves for the life of the pod.
+func TestResolveOTLPEndpointNoCollector(t *testing.T) {
+	scheme := setupScheme()
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
+	agent := &agentv1alpha1.PlatformAgent{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "ns"}}
+
+	endpoint, source := r.resolveOTLPEndpoint(context.Background(), agent)
+	if endpoint != "" || source != otlpSourceNone {
+		t.Errorf("expected (\"\", %s) when discovery finds no collector, got (%q, %s)", otlpSourceNone, endpoint, source)
+	}
+
+	// Switching discovery off is not the same statement, and must keep the old behaviour.
+	t.Setenv(otelDiscoveryEnvVar, "false")
+	off := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
+	endpoint, source = off.resolveOTLPEndpoint(context.Background(), agent)
+	if endpoint != managedOTelEndpoint || source != otlpSourceDefault {
+		t.Errorf("expected (%q, %s) with discovery off, got (%q, %s)",
+			managedOTelEndpoint, otlpSourceDefault, endpoint, source)
+	}
+}
+
+// TestResolveOTLPEndpointNoCollectorYieldsToConfiguration proves the None rung is only ever
+// reached when nothing above it answered. An operator who names an endpoint on a cluster
+// with no discoverable collector gets that endpoint, not a disabled SDK.
+func TestResolveOTLPEndpointNoCollectorYieldsToConfiguration(t *testing.T) {
+	scheme := setupScheme()
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	const pinned = "http://collector.example.svc.cluster.local:4318"
+	agent := &agentv1alpha1.PlatformAgent{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "ns"}}
+	agent.Spec.Telemetry = &agentv1alpha1.TelemetrySpec{OTLPEndpoint: pinned}
+
+	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
+	endpoint, source := r.resolveOTLPEndpoint(context.Background(), agent)
+	if endpoint != pinned || source != otlpSourceSpec {
+		t.Errorf("expected (%q, %s), got (%q, %s)", pinned, otlpSourceSpec, endpoint, source)
 	}
 }
 

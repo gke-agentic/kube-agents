@@ -548,10 +548,8 @@ spec:
                   optional: true
             - name: OTEL_SERVICE_NAME
               value: platformagent-gateway
-            - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: http://opentelemetry-collector.gke-managed-otel.svc.cluster.local:4318
-            - name: OTEL_EXPORTER_OTLP_PROTOCOL
-              value: http/protobuf
+            - name: OTEL_SDK_DISABLED
+              value: "true"
             - name: OTEL_RESOURCE_ATTRIBUTES
               value: service.namespace=kubeagents-system,k8s.namespace.name=kubeagents-system,kubeagents.agent_type=platform,kubeagents.agent_name=platformagent
             - name: GKE_PROJECT_ID
@@ -1157,15 +1155,6 @@ spec:
               - fc00::/7
               - fe80::/10
               - ff00::/8
-    - ports:
-        - port: 4317
-          protocol: TCP
-        - port: 4318
-          protocol: TCP
-      to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: gke-managed-otel
     - ports:
         - port: 8080
           protocol: TCP

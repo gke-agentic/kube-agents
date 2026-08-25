@@ -146,31 +146,60 @@ func withCommonLabels(obj metav1.Object, agent *agentv1alpha1.PlatformAgent) {
 // sites keeps this function total, so no caller can emit an empty
 // OTEL_EXPORTER_OTLP_ENDPOINT, and keeps the manifest builders pure — they take no client
 // and cannot discover anything themselves.
-func otelTelemetryEnvVars(agentType, name, namespace, endpoint string) []corev1.EnvVar {
-	if endpoint == "" {
-		endpoint = managedOTelEndpoint
-	}
-	return []corev1.EnvVar{
+//
+// disabled says the controller resolved otlpSourceNone: discovery probed, this cluster
+// has no collector, and nothing configured one. Then no endpoint is emitted at all and
+// the SDK is switched off instead.
+//
+// Omitting the endpoint on its own would not be enough, which is why this sets
+// OTEL_SDK_DISABLED rather than just skipping the variable. With no
+// OTEL_EXPORTER_OTLP_ENDPOINT the OpenTelemetry SDK falls back to its own default of
+// http://localhost:4318, and the exporter trades a name that never resolves for a
+// connection that is always refused — the same traceback every export interval, which is
+// the symptom being fixed. OTEL_SDK_DISABLED=true is also already the off switch
+// charts/kube-agents/README.md tells operators to set by hand for exactly this cluster
+// shape; this makes it the default there rather than something to discover.
+//
+// It stays overridable: mergeEnvVars applies spec.deployment.env last, so an operator who
+// wants the exporter pointed somewhere regardless can set either variable themselves.
+func otelTelemetryEnvVars(agentType, name, namespace, endpoint string, disabled bool) []corev1.EnvVar {
+	envs := []corev1.EnvVar{
 		{
 			Name:  "OTEL_SERVICE_NAME",
 			Value: name + "-gateway",
 		},
-		{
-			Name:  "OTEL_EXPORTER_OTLP_ENDPOINT",
-			Value: endpoint,
-		},
-		{
-			Name:  "OTEL_EXPORTER_OTLP_PROTOCOL",
-			Value: "http/protobuf",
-		},
-		{
-			Name: "OTEL_RESOURCE_ATTRIBUTES",
-			Value: fmt.Sprintf(
-				"service.namespace=%s,k8s.namespace.name=%s,kubeagents.agent_type=%s,kubeagents.agent_name=%s",
-				namespace, namespace, agentType, name,
-			),
-		},
 	}
+
+	if disabled {
+		envs = append(envs, corev1.EnvVar{
+			Name:  "OTEL_SDK_DISABLED",
+			Value: "true",
+		})
+	} else {
+		if endpoint == "" {
+			endpoint = managedOTelEndpoint
+		}
+		envs = append(envs,
+			corev1.EnvVar{
+				Name:  "OTEL_EXPORTER_OTLP_ENDPOINT",
+				Value: endpoint,
+			},
+			corev1.EnvVar{
+				Name:  "OTEL_EXPORTER_OTLP_PROTOCOL",
+				Value: "http/protobuf",
+			},
+		)
+	}
+
+	// Identity, not export configuration: kept in both cases. OTEL_SERVICE_NAME in
+	// particular is what docker-entrypoint passes to otel_config.py as --service-name.
+	return append(envs, corev1.EnvVar{
+		Name: "OTEL_RESOURCE_ATTRIBUTES",
+		Value: fmt.Sprintf(
+			"service.namespace=%s,k8s.namespace.name=%s,kubeagents.agent_type=%s,kubeagents.agent_name=%s",
+			namespace, namespace, agentType, name,
+		),
+	})
 }
 
 // deriveAgentImageFromOperator derives the platform-agent image from an operator image reference.
@@ -179,11 +208,12 @@ func otelTelemetryEnvVars(agentType, name, namespace, endpoint string) []corev1.
 // platform-agent manifest, so it falls back to a tag if present before the digest (e.g. :v1@sha256:...)
 // or :latest.
 // E.g.:
-//   "ghcr.io/gke-labs/kube-agents/k8s-operator:0.2.0"                -> "ghcr.io/gke-labs/kube-agents/platform-agent:0.2.0"
-//   "ghcr.io/gke-labs/kube-agents/k8s-operator:rc_2608201147_1c06e1a" -> "ghcr.io/gke-labs/kube-agents/platform-agent:rc_2608201147_1c06e1a"
-//   "ghcr.io/gke-labs/kube-agents/k8s-operator@sha256:111111..."    -> "ghcr.io/gke-labs/kube-agents/platform-agent:latest"
-//   "mirror.corp.internal:5000/kube-agents/k8s-operator:0.2.0"       -> "mirror.corp.internal:5000/kube-agents/platform-agent:0.2.0"
-//   "k8s-operator:1c06e1ab71fdeea55e6100e61c0394206188a5ba"          -> "platform-agent:1c06e1ab71fdeea55e6100e61c0394206188a5ba"
+//
+//	"ghcr.io/gke-labs/kube-agents/k8s-operator:0.2.0"                -> "ghcr.io/gke-labs/kube-agents/platform-agent:0.2.0"
+//	"ghcr.io/gke-labs/kube-agents/k8s-operator:rc_2608201147_1c06e1a" -> "ghcr.io/gke-labs/kube-agents/platform-agent:rc_2608201147_1c06e1a"
+//	"ghcr.io/gke-labs/kube-agents/k8s-operator@sha256:111111..."    -> "ghcr.io/gke-labs/kube-agents/platform-agent:latest"
+//	"mirror.corp.internal:5000/kube-agents/k8s-operator:0.2.0"       -> "mirror.corp.internal:5000/kube-agents/platform-agent:0.2.0"
+//	"k8s-operator:1c06e1ab71fdeea55e6100e61c0394206188a5ba"          -> "platform-agent:1c06e1ab71fdeea55e6100e61c0394206188a5ba"
 func deriveAgentImageFromOperator(operatorImage string) string {
 	lastSlash := strings.LastIndex(operatorImage, "/")
 	prefix := ""
