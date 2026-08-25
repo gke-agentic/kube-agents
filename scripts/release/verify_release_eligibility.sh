@@ -55,7 +55,14 @@ if [ -n "${TARGET_COMMIT_INPUT}" ] && [ "${TARGET_COMMIT_INPUT}" != "null" ]; th
 else
   # Auto-resolve commit:
   # Check if target version tag already exists in Git
-  if RC_CANDIDATE_COMMIT="$(git rev-parse --verify "refs/tags/${TARGET_VERSION}^{commit}" 2>/dev/null)"; then
+  if TARGET_COMMIT="$(git rev-parse --verify "refs/tags/${TARGET_VERSION}^{commit}" 2>/dev/null)"; then
+    # If the tag points to a detached HEAD stamped commit, resolve candidate from its parent
+    if PARENT_SHA="$(git rev-parse --verify "${TARGET_COMMIT}^" 2>/dev/null)" && \
+       [ -n "$(git tag --points-at "${PARENT_SHA}" | grep -E '^rc_.*_validated$' || true)" ]; then
+      RC_CANDIDATE_COMMIT="${PARENT_SHA}"
+    else
+      RC_CANDIDATE_COMMIT="${TARGET_COMMIT}"
+    fi
     echo "ℹ️ Resolved target commit from existing release tag '${TARGET_VERSION}': ${RC_CANDIDATE_COMMIT:0:7}"
   elif is_truthy "${SKIP_VALIDATION}"; then
     # In emergency mode without an explicit commit parameter, default to current HEAD
@@ -74,47 +81,62 @@ else
 fi
 
 # 3. Idempotent check and collision detection (always evaluated before validation checks)
-EXISTING_RELEASE_TAGS="$(git tag --points-at "${RC_CANDIDATE_COMMIT}" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' || true)"
-
 IS_RESUMING_RELEASE="false"
-for ex_tag in ${EXISTING_RELEASE_TAGS}; do
-  # Scenario A: Re-running the exact same release version -> Safe Idempotent Skip only if release is complete
-  if [ "${ex_tag}" = "${TARGET_VERSION}" ]; then
-    if is_ci_pipeline || [ -n "${GH_TOKEN:-}" ]; then
-      if command -v gh >/dev/null 2>&1 && gh release view "${TARGET_VERSION}" --repo "${TARGET_REPO}" >/dev/null 2>&1; then
-        echo "ℹ️ IDEMPOTENT SKIP: Release version ${TARGET_VERSION} and GitHub Release for commit ${RC_CANDIDATE_COMMIT} are already published."
-        echo "ℹ️ Skipping duplicate build and publish steps."
-        if [ -n "${GITHUB_OUTPUT:-}" ]; then
-          echo "eligible=false" >> "${GITHUB_OUTPUT}"
-          echo "already_released=true" >> "${GITHUB_OUTPUT}"
-          echo "skip_release=true" >> "${GITHUB_OUTPUT}"
-          echo "existing_tag=${ex_tag}" >> "${GITHUB_OUTPUT}"
-          echo "rc_candidate_commit=${RC_CANDIDATE_COMMIT}" >> "${GITHUB_OUTPUT}"
-          echo "release_commit=${RC_CANDIDATE_COMMIT}" >> "${GITHUB_OUTPUT}"
-        fi
-        exit 0
-      else
-        echo "⚠️ Git tag '${TARGET_VERSION}' already points to commit ${RC_CANDIDATE_COMMIT:0:7}, but GitHub Release does not exist yet. Resuming release workflow..."
-        IS_RESUMING_RELEASE="true"
-      fi
-    else
-      echo "ℹ️ IDEMPOTENT SKIP: Release version ${TARGET_VERSION} for commit ${RC_CANDIDATE_COMMIT} is already published (local dry-run)."
+
+# Scenario A: Target version tag already exists in Git
+if TARGET_COMMIT="$(git rev-parse --verify "refs/tags/${TARGET_VERSION}^{commit}" 2>/dev/null)"; then
+  # Verify that target tag commit is directly or ancestrally associated with RC_CANDIDATE_COMMIT
+  if [ "${TARGET_COMMIT}" != "${RC_CANDIDATE_COMMIT}" ] && \
+     ! git merge-base --is-ancestor "${RC_CANDIDATE_COMMIT}" "${TARGET_COMMIT}" 2>/dev/null; then
+    echo "❌ ERROR: Tag '${TARGET_VERSION}' already exists in git repository on a different commit (${TARGET_COMMIT:0:7})!" >&2
+    echo "   Cannot re-assign existing release tag to candidate commit ${RC_CANDIDATE_COMMIT:0:7}." >&2
+    exit 1
+  fi
+
+  if is_ci_pipeline || [ -n "${GH_TOKEN:-}" ]; then
+    if command -v gh >/dev/null 2>&1 && gh release view "${TARGET_VERSION}" --repo "${TARGET_REPO}" >/dev/null 2>&1; then
+      echo "ℹ️ IDEMPOTENT SKIP: Release version ${TARGET_VERSION} and GitHub Release for commit ${RC_CANDIDATE_COMMIT:0:7} are already published."
       echo "ℹ️ Skipping duplicate build and publish steps."
       if [ -n "${GITHUB_OUTPUT:-}" ]; then
         echo "eligible=false" >> "${GITHUB_OUTPUT}"
         echo "already_released=true" >> "${GITHUB_OUTPUT}"
         echo "skip_release=true" >> "${GITHUB_OUTPUT}"
-        echo "existing_tag=${ex_tag}" >> "${GITHUB_OUTPUT}"
+        echo "existing_tag=${TARGET_VERSION}" >> "${GITHUB_OUTPUT}"
         echo "rc_candidate_commit=${RC_CANDIDATE_COMMIT}" >> "${GITHUB_OUTPUT}"
-        echo "release_commit=${RC_CANDIDATE_COMMIT}" >> "${GITHUB_OUTPUT}"
+        echo "release_commit=${TARGET_COMMIT}" >> "${GITHUB_OUTPUT}"
       fi
       exit 0
+    else
+      echo "⚠️ Git tag '${TARGET_VERSION}' already points to commit ${TARGET_COMMIT:0:7}, but GitHub Release does not exist yet. Resuming release workflow..."
+      IS_RESUMING_RELEASE="true"
     fi
   else
-    # Scenario B: Collision (attempting to release the same commit under a DIFFERENT tag) -> Hard block
-    echo "❌ ERROR: Collision detected! Commit ${RC_CANDIDATE_COMMIT} is already published under release ${ex_tag}." >&2
-    echo "   Cannot re-tag and re-release the same commit as ${TARGET_VERSION}." >&2
-    exit 1
+    echo "ℹ️ IDEMPOTENT SKIP: Release version ${TARGET_VERSION} for commit ${RC_CANDIDATE_COMMIT:0:7} is already published (local dry-run)."
+    echo "ℹ️ Skipping duplicate build and publish steps."
+    if [ -n "${GITHUB_OUTPUT:-}" ]; then
+      echo "eligible=false" >> "${GITHUB_OUTPUT}"
+      echo "already_released=true" >> "${GITHUB_OUTPUT}"
+      echo "skip_release=true" >> "${GITHUB_OUTPUT}"
+      echo "existing_tag=${TARGET_VERSION}" >> "${GITHUB_OUTPUT}"
+      echo "rc_candidate_commit=${RC_CANDIDATE_COMMIT}" >> "${GITHUB_OUTPUT}"
+      echo "release_commit=${TARGET_COMMIT}" >> "${GITHUB_OUTPUT}"
+    fi
+    exit 0
+  fi
+fi
+
+# Scenario B: Collision check (has RC_CANDIDATE_COMMIT already been published under a DIFFERENT GA release tag?)
+for other_tag in $(git tag -l '[0-9]*' 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' || true); do
+  if [ "${other_tag}" != "${TARGET_VERSION}" ]; then
+    OTHER_COMMIT="$(git rev-parse --verify "refs/tags/${other_tag}^{commit}" 2>/dev/null || echo "")"
+    if [ -n "${OTHER_COMMIT}" ]; then
+      if [ "${OTHER_COMMIT}" = "${RC_CANDIDATE_COMMIT}" ] || \
+         [ "$(git rev-parse --verify "${OTHER_COMMIT}^" 2>/dev/null || echo "")" = "${RC_CANDIDATE_COMMIT}" ]; then
+        echo "❌ ERROR: Collision detected! Commit ${RC_CANDIDATE_COMMIT} is already published under release ${other_tag}." >&2
+        echo "   Cannot re-tag and re-release the same commit as ${TARGET_VERSION}." >&2
+        exit 1
+      fi
+    fi
   fi
 done
 
