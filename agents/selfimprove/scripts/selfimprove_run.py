@@ -1847,6 +1847,21 @@ def _match_bracket(text: str, start: int, opener: str, closer: str) -> int:
 FENCE = "-----BEGIN UNTRUSTED FINDING-----"
 FENCE_END = "-----END UNTRUSTED FINDING-----"
 
+#: Anything a reader might take for one of those two markers, not just the two
+#: exact byte strings. The escape used to be `str.replace` on `FENCE` and
+#: `FENCE_END`, which meant `----END UNTRUSTED FINDING----` (four dashes),
+#: `-----end untrusted finding-----`, and `----- END UNTRUSTED FINDING -----`
+#: all reached the model verbatim. A model told the block ends at a row of
+#: dashes around those words does not count the dashes, so a near miss closes
+#: the block just as well as the real thing and everything after it reads as
+#: instructions from the operator -- which is the whole of what the fence
+#: exists to stop. `\s` rather than `[ \t]` because the same trick works
+#: split across lines.
+FENCE_LOOKALIKE_RE = re.compile(
+    r"-{3,}\s*(?:BEGIN|END)\s+UNTRUSTED\s+FINDING\s*-{3,}",
+    re.IGNORECASE,
+)
+
 #: What a filing turn did, as far as the runner can tell from outside it.
 #: `UNCONFIRMED` is not a failure -- it is the absence of an answer, and it is
 #: charged against the gate exactly like `FILED` because the pull request may
@@ -2054,17 +2069,26 @@ def refresh_ledger(namespace: str, ledger_name: str, ledger: Dict[str, Any]) -> 
 def _fenced(fields: Dict[str, str]) -> str:
     """Render untrusted fields inside the fence, with the fence made unforgeable.
 
-    Any occurrence of either marker inside the content is defanged before the
-    block is assembled. Without that the fence is decorative: a finding whose
-    summary contains the end marker closes the block early and everything after
-    it is read as instructions from the operator, which is the exact attack the
-    fence exists to stop.
+    Anything that reads as either marker is defanged before the block is
+    assembled -- `FENCE_LOOKALIKE_RE`, not the two exact strings, because a
+    reader counts the words and not the dashes. Without that the fence is
+    decorative: a finding whose summary contains something the model takes for
+    the end marker closes the block early and everything after it is read as
+    instructions from the operator, which is the exact attack the fence exists
+    to stop.
+
+    The replacement keeps the words and drops the dash run, so a human reading
+    the prompt afterwards can see what was in the content rather than finding a
+    hole where it used to be.
     """
     lines = [FENCE]
     for label, value in fields.items():
         text = str(value if value is not None else "")
-        for marker in (FENCE, FENCE_END):
-            text = text.replace(marker, marker.replace("-----", "- - - "))
+        text = FENCE_LOOKALIKE_RE.sub(
+            lambda match: "(defanged marker: %s)"
+            % re.sub(r"[-\s]+", " ", match.group(0)).strip(),
+            text,
+        )
         lines.append("")
         lines.append("%s:" % label)
         lines.append(text)
