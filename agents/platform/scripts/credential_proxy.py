@@ -1162,39 +1162,48 @@ class CommandExecutor:
         container is the proxy's own state -- gh's `hosts.yml` and the mounted
         credential included.
 
-        Three token shapes are paths, and the rest are left alone so that prose
-        arguments stay usable. A leading `/` is one. A flag carrying `=/` is
-        another, because `--body-file=/etc/passwd` opens the half after the `=`;
-        the flag shape is what keeps `-m 'x=/etc/passwd'` out of it, and a commit
-        message cannot begin with `/` either, since Conventional Commits puts a
-        type in front. The third is a relative token with a `..` component,
-        resolved against `cwd`: `_execute` contains `cwd` but not argv, so
-        `--no-index ../../../var/run/secrets/...` would otherwise walk out of a
-        contained directory. A `..` that is merely inside a word -- `'fix: see
-        ../x'` -- is not a component and does not count.
+        A flag that carries its value in the same token -- `--body-file=<path>`
+        -- opens the half after the `=`, so that half is what gets tested. The
+        split happens *before* the shape tests rather than only for values
+        starting with `/`, because testing the whole token resolves the wrong
+        path: `--body-file=..` is a single literal component, which both absorbs
+        one `..` and adds a directory level, so the check lands two levels
+        shallower than the file the command opens. That gap made
+        `--body-file=../../../var/run/secrets/...` resolve to a path inside the
+        workspace while `gh` read the mounted credential.
+
+        Every token is then resolved against `cwd` and refused if it lands
+        outside, rather than only the tokens that look like paths. Resolving
+        settles the two relative spellings together: `_execute` contains `cwd`
+        but not argv, so `--no-index ../../../var/run/secrets/...` walks out of
+        a contained directory, and a token with no `..` at all walks out just as
+        far through a symlink. Both containers mount the workspace emptyDir, so
+        the runner can plant `escape -> /var/lib/credential-proxy` and read the
+        credential with `--no-index escape/token empty`.
+
+        Testing shape first is what left that second spelling open, and it was
+        never buying anything: a relative token can only resolve outside the
+        workspace by traversing a symlink, which prose does not do. `-m 'fix:
+        see ../x'` and `--title 'fix: /etc/passwd is read at startup'` stay
+        usable because they resolve to paths under the checkout -- a `..` or a
+        `/` inside a word is not a component. What a message may not do is
+        *begin* with `/`, and Conventional Commits puts a type in front.
         """
         if not self.untrusted_workspace:
             return None
         base = Path(cwd) if cwd else self.workspace_dir
         for token in argv[1:]:
-            if token.startswith("/"):
-                candidate_text = token
-            elif token.startswith("-") and "=/" in token:
-                candidate_text = token.split("=", 1)[1]
-            elif ".." in token.split("/"):
-                candidate_text = token
-            else:
-                continue
+            value = token.split("=", 1)[1] if token.startswith("-") and "=" in token else token
             try:
-                candidate = (base / candidate_text).resolve()
+                candidate = (base / value).resolve()
             except (OSError, ValueError):
-                return "the path %s could not be resolved" % candidate_text
+                return "the path %s could not be resolved" % value
             if self._within_workspace(candidate):
                 continue
             return (
                 "%s is outside the workspace %s. Commands run here may only "
                 "read and write the checkout; the rest of this container is "
-                "the credential proxy's own state." % (candidate_text, self.workspace_dir)
+                "the credential proxy's own state." % (value, self.workspace_dir)
             )
         return None
 
