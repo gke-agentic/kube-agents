@@ -2991,6 +2991,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     # long and drops them afterwards, which is the only thing stopping the
     # ledger from growing without bound on an install that files every day.
     log_gate_notes(gate)
+    unreadable = ledger_mod.unreadable_promotions(ledger)
+    if unreadable:
+        # These are charged against the day's budget and hold their findings
+        # inside the cooldown, because a promotion whose date will not parse
+        # still happened -- see `ledger_mod.promotion_at`. Said out loud so a
+        # loop that has gone quiet is explained by its log rather than by
+        # someone eventually reading the ConfigMap.
+        log(
+            "%d promotion record(s) carry a timestamp that will not parse. Each is read as having "
+            "happened now: it spends a slot in the day's budget and holds its finding inside the "
+            "cooldown, which is the safe direction but will keep the loop quieter than the gate "
+            "says until the record ages out." % unreadable
+        )
     cooldown_hours = cooldown_hours_from(gate)
     ledger_mod.prune(ledger, ledger_mod.utcnow(), cooldown_hours=cooldown_hours)
 

@@ -629,6 +629,58 @@ class GateTests(unittest.TestCase):
         promoted, _ = L.evaluate_gate(ledger, gate(), [fp], NOW)
         self.assertEqual(promoted, [fp])
 
+    def test_a_promotion_whose_date_will_not_parse_still_holds_the_cooldown(self):
+        """It happened; only *when* is missing, and "never" is the one reading
+        that fails open. Skipping the record left `last` unset, so the finding
+        was immediately re-promotable -- a duplicate pull request for something
+        the loop had already filed."""
+        ledger, fp = self._ledger_with(9)
+        L.record_promotion(ledger, fp, "https://example.invalid/pr/1", "abc", NOW)
+        for broken in ("", "not a date", "2026-13-45T99:99:99Z", None, 17):
+            with self.subTest(at=broken):
+                one = L.clone(ledger)
+                one["findings"][fp]["promotions"][0]["at"] = broken
+                promoted, reasons = L.evaluate_gate(one, gate(), [fp], NOW)
+                self.assertEqual(promoted, [])
+                self.assertIn("cooldown", reasons[fp])
+
+    def test_a_promotion_whose_date_will_not_parse_still_spends_its_slot(self):
+        """The other half of the same fail-open: `promotions_today` skipped it,
+        refunding a slot, so a ledger with two unreadable records let the run
+        open two more pull requests than `maxPullRequestsPerDay` allows."""
+        ledger = L.empty_ledger()
+        old = seen_by(ledger, finding(title="Earlier", location="a.py:1"))
+        L.record_promotion(ledger, old, "https://example.invalid/pr/1", "abc", NOW)
+        L.record_promotion(ledger, old, "https://example.invalid/pr/2", "abc", NOW)
+        for promotion in ledger["findings"][old]["promotions"]:
+            promotion["at"] = "corrupt"
+        self.assertEqual(2, L.promotions_today(ledger, NOW))
+        self.assertEqual(2, L.unreadable_promotions(ledger))
+
+        fresh = seen_by(ledger, finding(severity="critical", title="Now", location="b.py:1"))
+        promoted, reasons = L.evaluate_gate(ledger, gate(), [fresh], NOW)
+        self.assertEqual(promoted, [])
+        self.assertIn("budget", reasons[fresh])
+
+    def test_debris_in_the_promotions_list_is_not_a_promotion(self):
+        """`promotion_at` separates "a promotion with a bad date" from "not a
+        promotion at all". Only the first is charged; a stray string or None in
+        the list is neither, and counting it would let junk suppress the loop."""
+        ledger, fp = self._ledger_with(9)
+        ledger["findings"][fp]["promotions"] = ["a string", None, 42, []]
+        self.assertEqual(0, L.promotions_today(ledger, NOW))
+        self.assertEqual(0, L.unreadable_promotions(ledger))
+        promoted, _ = L.evaluate_gate(ledger, gate(), [fp], NOW)
+        self.assertEqual(promoted, [fp])
+
+    def test_unreadable_promotions_counts_only_the_unreadable_ones(self):
+        ledger, fp = self._ledger_with(9)
+        L.record_promotion(ledger, fp, "https://example.invalid/pr/1", "abc", NOW)
+        L.record_promotion(ledger, fp, "https://example.invalid/pr/2", "abc", NOW)
+        self.assertEqual(0, L.unreadable_promotions(ledger))
+        ledger["findings"][fp]["promotions"][1]["at"] = "nope"
+        self.assertEqual(1, L.unreadable_promotions(ledger))
+
     def test_the_daily_budget_caps_one_run(self):
         """Six criticals in one run must not become six pull requests.
 

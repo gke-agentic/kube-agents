@@ -1198,12 +1198,56 @@ def _rule_for(severity: str, rules: Iterable[Dict[str, Any]]) -> Optional[Dict[s
     return None
 
 
+def promotion_at(promotion: Any, now: _dt.datetime) -> Optional[_dt.datetime]:
+    """When a promotion record happened, reading an unreadable `at` as *now*.
+
+    `None` only when the record is not a mapping at all -- that is not a
+    promotion, it is debris, and `coerce` drops it.
+
+    A record whose `at` will not parse is a different thing: something did
+    promote this finding, and the only part that is missing is when. Both
+    readings of that were once "never", and both fail open. `promotions_today`
+    skipped it, refunding a slot against `maxPullRequestsPerDay`; the cooldown
+    scan skipped it too, leaving `last` unset, so the finding was immediately
+    re-promotable. Together they let a run open more pull requests than the gate
+    allows, and re-open one it had just filed.
+
+    So an unreadable timestamp reads as now: charged against the day, and inside
+    the cooldown. That errs towards filing less, which is the direction to err
+    -- the cost is a finding held back, against a duplicate reaching a
+    maintainer's queue. It is not free: a corrupt record holds its slot for as
+    long as it is in the ledger. `MAX_PROMOTIONS` rolls it off by position
+    rather than by date, so it does go, and `unreadable_promotions` exists so
+    the run log says it is there rather than leaving a quiet loop to be
+    explained later.
+    """
+    if not isinstance(promotion, dict):
+        return None
+    return from_iso(promotion.get("at", "")) or now
+
+
+def unreadable_promotions(ledger: Dict[str, Any]) -> int:
+    """How many promotion records carry an `at` that will not parse.
+
+    Non-zero means the day's budget is being charged for records whose date is
+    unknown, and that findings may be held inside a cooldown that has no end
+    the ledger can show. See `promotion_at` for why that is the safe reading,
+    and the run log for where it is reported.
+    """
+    total = 0
+    for entry in ledger.get("findings", {}).values():
+        for promotion in entry.get("promotions", []) or []:
+            if isinstance(promotion, dict) and from_iso(promotion.get("at", "")) is None:
+                total += 1
+    return total
+
+
 def promotions_today(ledger: Dict[str, Any], now: _dt.datetime) -> int:
     cutoff = now - _dt.timedelta(hours=COUNT_WINDOW_HOURS)
     total = 0
     for entry in ledger["findings"].values():
         for promotion in entry.get("promotions", []) or []:
-            at = from_iso(promotion.get("at", "")) if isinstance(promotion, dict) else None
+            at = promotion_at(promotion, now)
             if at is not None and at >= cutoff:
                 total += 1
     return total
@@ -1311,7 +1355,7 @@ def evaluate_gate(
             continue
         last = None
         for promotion in entry.get("promotions", []) or []:
-            at = from_iso(promotion.get("at", "")) if isinstance(promotion, dict) else None
+            at = promotion_at(promotion, now)
             if at is not None and (last is None or at > last):
                 last = at
         if last is not None and (now - last) < _dt.timedelta(hours=cooldown):
