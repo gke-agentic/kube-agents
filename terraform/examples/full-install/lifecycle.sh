@@ -2,7 +2,7 @@
 #
 # Makes `apply` and `destroy` repeatable for this composition.
 #
-# Four things in this stack are not symmetric — applying them is not the inverse
+# Five things in this stack are not symmetric — applying them is not the inverse
 # of destroying them — and every one of them turns the second `terraform apply`
 # of a project's life into a failure. Terraform cannot express any of them, so
 # they live here rather than in a README telling you to remember them:
@@ -22,11 +22,18 @@
 #   3. A GKE BackupPlan cannot be deleted while it still owns backups.
 #   4. The cluster is created with deletion_protection = true, which a destroy
 #      cannot override on its own — the attribute has to be applied as false first.
+#   5. The Google Chat Pub/Sub topic and subscription outlive any teardown that
+#      did not run through THIS state — a destroy with enable_google_chat off, a
+#      lost state file, a hand-rolled earlier install. Unlike KMS they delete
+#      cleanly when Terraform owns them, so `destroy` needs no special case; the
+#      asymmetry is that `apply` then 409s on names it is configured to create.
+#      `adopt-pubsub` imports them instead.
 #
 # Usage:
 #   ./lifecycle.sh apply    [extra terraform args...]
 #   ./lifecycle.sh destroy  [extra terraform args...]
 #   ./lifecycle.sh adopt-kms
+#   ./lifecycle.sh adopt-pubsub
 #
 # Remote state (opt-in): set KUBE_AGENTS_STATE_BUCKET to a GCS bucket name, or
 # to "auto" for <project_id>-kube-agents-tfstate. The bucket is created if
@@ -254,6 +261,82 @@ adopt_kms() {
   log "KMS adoption complete: $adopted imported"
 }
 
+# A Google Chat topic and subscription left over from a previous install make the
+# next apply fail with a 409 on both, because Terraform is asked to create names
+# that already exist and does not own them. They are perfectly deletable, so this
+# is not the KMS problem — `terraform destroy` removes them whenever this state
+# manages them, and nothing here interferes with that. What leaves them behind is
+# a teardown this state never saw: destroyed with enable_google_chat = false so
+# the module had count 0, a state file that was lost, or a topic some earlier
+# hand-rolled install created.
+#
+# The names are the only handle there is, so adopting one means claiming a topic
+# on the strength of its name matching this install's configuration. Two guards
+# make that defensible, and neither is optional:
+#
+#   - Nothing already in state is touched, so an install that owns its topic is
+#     never re-imported.
+#   - A subscription is adopted only if it is actually attached to the topic this
+#     install is adopting. A same-named subscription pointing somewhere else is
+#     somebody else's, and importing it would hand this state a resource its next
+#     destroy would delete out from under them.
+#
+# What neither guard can catch is a second install of THIS composition in the same
+# project that kept the default topic name, since its topic is indistinguishable
+# from a leftover. Give concurrent installs distinct chat_topic_name /
+# chat_subscription_name values; that is what the 409 was protecting, and it is
+# why every adoption here is logged rather than done quietly.
+adopt_pubsub() {
+  [[ "$(tfvar enable_google_chat)" == "true" ]] || return 0
+
+  local project topic subscription topic_addr sub_addr adopted=0
+  load_state
+  project=$(tfvar project_id)
+  topic=$(tfvar chat_topic_name)
+  subscription=$(tfvar chat_subscription_name)
+  topic_addr="module.chat_pubsub[0].google_pubsub_topic.chat_events"
+  sub_addr="module.chat_pubsub[0].google_pubsub_subscription.chat_events"
+
+  if ! in_state "$topic_addr" &&
+     gcloud pubsub topics describe "$topic" --project "$project" >/dev/null 2>&1; then
+    log "adopting pre-existing Pub/Sub topic: $topic"
+    [[ -f "$OVERRIDE_FILE" ]] || with_override
+    if terraform import -input=false "$topic_addr" \
+         "projects/$project/topics/$topic" >/dev/null 2>&1; then
+      adopted=$((adopted + 1))
+    else
+      warn "could not import $topic_addr; the apply will fail with a 409 on $topic"
+    fi
+  fi
+
+  if ! in_state "$sub_addr" &&
+     gcloud pubsub subscriptions describe "$subscription" --project "$project" >/dev/null 2>&1; then
+    # The attachment is fixed at creation — a subscription cannot be repointed —
+    # so a mismatch here is not a stale reading, it is a different subscription.
+    local attached
+    attached=$(gcloud pubsub subscriptions describe "$subscription" --project "$project" \
+      --format='value(topic)' 2>/dev/null || true)
+    if [[ "$attached" != "projects/$project/topics/$topic" ]]; then
+      warn "subscription $subscription is attached to ${attached:-an unreadable topic}, not"
+      warn "projects/$project/topics/$topic — leaving it alone. It belongs to something else;"
+      warn "the apply will 409 until you rename chat_subscription_name or remove that subscription."
+    else
+      log "adopting pre-existing Pub/Sub subscription: $subscription"
+      [[ -f "$OVERRIDE_FILE" ]] || with_override
+      if terraform import -input=false "$sub_addr" \
+           "projects/$project/subscriptions/$subscription" >/dev/null 2>&1; then
+        adopted=$((adopted + 1))
+      else
+        warn "could not import $sub_addr; the apply will fail with a 409 on $subscription"
+      fi
+    fi
+  fi
+
+  drop_override
+  trap - EXIT
+  log "Pub/Sub adoption complete: $adopted imported"
+}
+
 # create_cluster = false means "somebody else's cluster" — but if THIS state
 # already manages the cluster, flipping the variable off does not hand the
 # cluster back: it removes the resource from configuration, and the next apply
@@ -412,11 +495,17 @@ case "${1:-}" in
     ensure_init
     adopt_kms
     ;;
+  adopt-pubsub)
+    shift
+    ensure_init
+    adopt_pubsub
+    ;;
   apply)
     shift
     ensure_init
     guard_cluster_ownership
     adopt_kms
+    adopt_pubsub
     log "terraform apply"
     # No -input=false: this prompts like plain `terraform apply` does. Pass
     # -auto-approve through ARGS for unattended runs.

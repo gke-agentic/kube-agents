@@ -317,10 +317,10 @@ Use `lifecycle.sh destroy` for teardown; anything that mutates the
 Terraform-managed resources out of band (for instance removing the
 `kube-agents-host` label by hand) causes plan drift the next apply reverts.
 
-Four things in this stack are not symmetric — applying them is not the inverse
+Five things in this stack are not symmetric — applying them is not the inverse
 of destroying them — and each one breaks a plain `terraform destroy`, or the
 `terraform apply` that follows it. [`lifecycle.sh`](lifecycle.sh) handles all
-four, so the cycle is repeatable:
+five, so the cycle is repeatable:
 
 ```bash
 make tf-destroy     # or: ./terraform/examples/full-install/lifecycle.sh destroy
@@ -335,16 +335,29 @@ What each one does that raw Terraform cannot:
 | The `PlatformAgent` finalizer strands the CR and hangs the namespace | `tf-destroy` deletes the CR and waits, force-clearing the finalizer if wedged |
 | A `BackupPlan` cannot be deleted while it owns backups               | `tf-destroy` purges the plan's backups first                                  |
 | `deletion_protection = true` cannot be overridden by a destroy alone | `tf-destroy` applies it as `false`, then destroys                             |
+| A Chat topic/subscription outliving a teardown this state never saw  | `tf-apply` imports them before applying (`lifecycle.sh adopt-pubsub`)         |
 
 The chart also carries a `pre-delete` hook that removes the CR and waits for
 its finalizer, so a plain `helm uninstall` is safe on its own; `tf-destroy`
 does it up front anyway, which turns the hook into a no-op. Disable it with
 `platformAgent.cleanupHook.enabled=false`.
 
-Running `terraform destroy` directly still works, but you own the four steps
-above yourself — starting with `kubectl delete platformagent <name> -n
+Running `terraform destroy` directly still works, but you own the steps above
+yourself — starting with `kubectl delete platformagent <name> -n
 kubeagents-system --wait` while the operator is still running, and setting
 `deletion_protection = false` and applying before the cluster can be removed.
+
+The Chat row is the one that bites on a project rather than on a cycle: the
+topic and subscription delete cleanly whenever this state owns them, so a
+`tf-destroy`/`tf-apply` round trip never hits it. What leaves them behind is a
+teardown this state never saw — destroyed with `enable_google_chat = false` so
+the module had `count` 0, a lost state file, or an earlier hand-rolled install —
+and the next apply then 409s on both names. Adoption claims them by name, and
+the name is all there is to go on, so a subscription attached to a different
+topic is left alone and reported rather than imported. Two concurrent installs
+in one project need distinct `chat_topic_name` and `chat_subscription_name`
+values; with the defaults, each one's topic is indistinguishable from the
+other's leftover.
 
 > [!WARNING]
 > Destroying also uninstalls cert-manager when this composition installed it,
