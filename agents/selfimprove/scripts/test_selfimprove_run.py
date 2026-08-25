@@ -2488,6 +2488,42 @@ class PriorPullRequestTests(unittest.TestCase):
             with self.subTest(entry=entry):
                 self.assertEqual([], R.prior_pull_requests(entry, "gke-agentic/kube-agents"))
 
+    def test_a_differently_cased_url_is_still_the_same_repository(self):
+        """GitHub's repository names are case-insensitive and a model turn's
+        spelling of one is whatever it typed or copied out of a browser. An
+        exact comparison drops the match silently and tells the turn there is no
+        prior art, which is the one answer that makes it file a second pull
+        request for a finding already in a maintainer's queue."""
+        for url in (
+            "https://github.com/GKE-Agentic/kube-agents/pull/157",
+            "https://github.com/gke-agentic/Kube-Agents/pull/157",
+            "https://github.com/GKE-AGENTIC/KUBE-AGENTS/pull/157",
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(
+                    ["#157 on gke-agentic/kube-agents"],
+                    R.prior_pull_requests(self._entry(url), "gke-agentic/kube-agents", ""),
+                )
+
+    def test_two_spellings_of_one_repository_cite_it_once(self):
+        """Following from the above: the citation carries the run's spelling
+        rather than the URL's, so the de-duplication above it still sees two
+        records of the same pull request as one."""
+        self.assertEqual(
+            ["#157 on gke-labs/kube-agents"],
+            R.prior_pull_requests(
+                self._entry(
+                    "https://github.com/gke-labs/kube-agents/pull/157",
+                    "https://github.com/GKE-Labs/Kube-Agents/pull/157",
+                ),
+                "gke-labs/kube-agents",
+            ),
+        )
+
+    def test_case_folding_does_not_admit_a_repository_this_run_does_not_name(self):
+        entry = self._entry("https://github.com/Attacker/Evil/pull/1")
+        self.assertEqual([], R.prior_pull_requests(entry, "gke-agentic/kube-agents"))
+
 
 class PriorPullRequestPromptTests(unittest.TestCase):
     """...and the brief actually carrying it."""
@@ -3214,6 +3250,125 @@ class InvestigationLoopTests(unittest.TestCase):
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
+
+
+class ModeValidationTests(unittest.TestCase):
+    """`SELFIMPROVE_MODE` is checked before anything else happens.
+
+    Every other test of the mode in the runner is `mode != "report-only"`, so a
+    value that is merely *not* that string selects the filing path: credential
+    shims on the PATH, a reserve carved out of the budget for filing turns, and
+    pull requests opened against a real repository. The chart refuses the same
+    three-value set at render time, which covers the chart -- and nothing else.
+    A hand-edited CronJob, a `kubectl create job --from`, or an operator
+    patching env to debug all reach this variable with no check in front of them.
+    """
+
+    def _main_with(self, value):
+        """Run `main` with `SELFIMPROVE_MODE` set, and give back (code, stdout).
+
+        Nothing is stubbed. That is the assertion: if the check did not fire,
+        `main` would go on to load the ledger from a real API server and this
+        would raise rather than return a code. `log` prints to stdout, so that
+        is what is captured.
+        """
+        prior = os.environ.get("SELFIMPROVE_MODE")
+        if value is None:
+            os.environ.pop("SELFIMPROVE_MODE", None)
+        else:
+            os.environ["SELFIMPROVE_MODE"] = value
+        stdout, sys.stdout = sys.stdout, io.StringIO()
+        try:
+            return R.main([]), sys.stdout.getvalue()
+        finally:
+            sys.stdout = stdout
+            if prior is None:
+                os.environ.pop("SELFIMPROVE_MODE", None)
+            else:
+                os.environ["SELFIMPROVE_MODE"] = prior
+
+    def test_an_unrecognised_mode_refuses_to_start(self):
+        for value in (
+            "report_only",  # underscore for the hyphen
+            "Report-Only",  # the chart's value, title-cased
+            "reportonly",
+            "file",  # a plausible-sounding mode that does not exist
+            "fork upstream",
+            "fork; rm -rf /",
+        ):
+            with self.subTest(mode=value):
+                code, out = self._main_with(value)
+                self.assertEqual(1, code)
+                self.assertIn("SELFIMPROVE_MODE", out)
+                self.assertIn("report-only, fork, upstream", out)
+
+    def test_whitespace_and_empty_are_normalised_rather_than_refused(self):
+        """`env` strips its result and treats an empty one as unset, so a value
+        with a stray space in a manifest, and one set to the empty string, are
+        both already real modes by the time the check sees them. Asserted so
+        that a change to `env` that stopped doing either shows up here rather
+        than as an install refusing to start over a trailing space.
+        """
+
+        class GotPast(Exception):
+            pass
+
+        prior = R.resolve_revision
+        R.resolve_revision = lambda *a, **k: (_ for _ in ()).throw(GotPast())
+        self.addCleanup(setattr, R, "resolve_revision", prior)
+        for value in ("report-only ", " fork", "  upstream  ", ""):
+            with self.subTest(mode=value):
+                with self.assertRaises(GotPast):
+                    self._main_with(value)
+
+    def test_it_refuses_before_writing_anything(self):
+        """The ledger is not loaded yet, so the refusal leaves no row. A row
+        written under a mode the runner does not understand would be a worse
+        record than none -- and the operator's evidence is the log line, plus a
+        Job that visibly failed."""
+        saved = []
+        prior = R.ledger_mod.save
+        R.ledger_mod.save = lambda *a, **k: saved.append(a)
+        self.addCleanup(setattr, R.ledger_mod, "save", prior)
+        self.assertEqual(1, self._main_with("nonsense")[0])
+        self.assertEqual([], saved)
+
+    def test_the_three_real_modes_get_past_the_check(self):
+        """Teeth on the check itself. A validator that refused everything would
+        satisfy the test above and take the loop off the air, so each real mode
+        has to be shown reaching the other side.
+
+        `resolve_revision` is the first thing after the configuration block that
+        needs an API server. Making it raise a sentinel turns "did we get past
+        the check" into something observable without standing up a cluster.
+        """
+
+        class GotPast(Exception):
+            pass
+
+        def sentinel(*a, **k):
+            raise GotPast()
+
+        prior = R.resolve_revision
+        R.resolve_revision = sentinel
+        self.addCleanup(setattr, R, "resolve_revision", prior)
+        for value in ("report-only", "fork", "upstream"):
+            with self.subTest(mode=value):
+                with self.assertRaises(GotPast):
+                    self._main_with(value)
+
+    def test_the_default_when_the_variable_is_unset_is_a_real_mode(self):
+        """An install that never sets it gets report-only, not a refusal."""
+        self.assertIn("report-only", R.SELFIMPROVE_MODES)
+
+        class GotPast(Exception):
+            pass
+
+        prior = R.resolve_revision
+        R.resolve_revision = lambda *a, **k: (_ for _ in ()).throw(GotPast())
+        self.addCleanup(setattr, R, "resolve_revision", prior)
+        with self.assertRaises(GotPast):
+            self._main_with(None)
 
 
 class FilingWiringAndRefusalTests(unittest.TestCase):

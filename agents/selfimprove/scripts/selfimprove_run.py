@@ -97,6 +97,20 @@ HANDOFF_CHARS = 3000
 
 DEFAULT_UPSTREAM = "gke-labs/kube-agents"
 
+#: The three values `SELFIMPROVE_MODE` may hold, checked because every test of
+#: it downstream is `mode != "report-only"` -- which sends everything that is
+#: not exactly that string down the filing path: credential shims on the PATH,
+#: a budget reserved for filing turns, and pull requests opened against a real
+#: repository. `report_only`, `Report-Only` and an accidental trailing space all
+#: read as "file", and none of them looks wrong in a manifest.
+#:
+#: The chart rejects the same three-value set at render time, so a bad value
+#: here means the runner was started by something other than the chart: a
+#: hand-edited CronJob, a `kubectl create job --from`, an operator debugging by
+#: patching env. Those are exactly the paths with no render-time check in front
+#: of them, which is why the runner does not rely on the chart having run.
+SELFIMPROVE_MODES = ("report-only", "fork", "upstream")
+
 #: How long `verify_forge_credential` waits on one `gh repo view`. Two of them
 #: run before a filing turn starts, so this is time taken off the turn's own
 #: budget -- long enough that a slow GitHub does not read as a bad token, short
@@ -2419,8 +2433,18 @@ def prior_pull_requests(entry: Dict[str, Any], *repos: str) -> List[str]:
     the ledger as the last line of an earlier model turn, and a number matched
     against a known repository is the part of it that cannot carry anything
     else. A URL that does not parse is dropped rather than passed through.
+
+    The repository match is case-insensitive because GitHub's is: `gke-labs`
+    and `GKE-Labs` are one repository, and a URL a model turn typed or copied
+    out of a browser can be spelled either way. Comparing the two spellings
+    exactly makes the miss silent and expensive -- the turn is told there is no
+    prior art, and files a second pull request for a finding already sitting in
+    a maintainer's queue, which is the failure this function exists to prevent.
+    What is cited back is the run's own spelling of the repository rather than
+    the URL's, so two differently-cased URLs for the same repository read as one
+    thing in the brief.
     """
-    wanted = {repo for repo in repos if repo}
+    wanted = {repo.casefold(): repo for repo in repos if repo}
     found: List[str] = []
     for promotion in entry.get("promotions") or []:
         if not isinstance(promotion, dict):
@@ -2428,8 +2452,11 @@ def prior_pull_requests(entry: Dict[str, Any], *repos: str) -> List[str]:
         match = _PULL_REQUEST_URL.match(str(promotion.get("url") or "").strip())
         if not match:
             continue
-        cited = "#%s on %s" % (match.group(2), match.group(1))
-        if match.group(1) in wanted and cited not in found:
+        canonical = wanted.get(match.group(1).casefold())
+        if canonical is None:
+            continue
+        cited = "#%s on %s" % (match.group(2), canonical)
+        if cited not in found:
             found.append(cited)
     return found
 
@@ -2834,6 +2861,24 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     namespace = env("KUBE_DEFAULT_NAMESPACE") or env("POD_NAMESPACE") or "kubeagents-system"
     mode = env("SELFIMPROVE_MODE", "report-only")
+    if mode not in SELFIMPROVE_MODES:
+        # Refuse rather than fall back. Falling back to report-only would be the
+        # safe *behaviour*, but it is a second silent failure: the operator set
+        # a filing mode, the loop spends its read budget every hour and files
+        # nothing, and the ledger it leaves behind looks like a loop working
+        # correctly. Exiting names the variable, costs one visibly Failed job
+        # per hour, and is fixed by editing the value it printed.
+        log(
+            "SELFIMPROVE_MODE=%r is not one of %s. Refusing to start: every mode test in this "
+            "runner asks whether the mode is report-only, so an unrecognised value would be "
+            "treated as a filing mode and open pull requests." % (mode, ", ".join(SELFIMPROVE_MODES))
+        )
+        # Ahead of the ledger load on purpose, so this writes nothing. The other
+        # non-zero exits record a `refused` run because the loop was configured
+        # correctly and something else went wrong; here the configuration is the
+        # thing that is wrong, and a ledger entry written under a mode the runner
+        # does not understand is a worse record than none.
+        return 1
     deployment = env("SELFIMPROVE_AGENT_DEPLOYMENT", "platform-agent-gateway")
     ledger_name = env("SELFIMPROVE_LEDGER_CONFIGMAP", "kube-agents-selfimprove-ledger")
     upstream = env("SELFIMPROVE_UPSTREAM_REPO", DEFAULT_UPSTREAM)
