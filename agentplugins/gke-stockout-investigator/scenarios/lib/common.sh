@@ -421,18 +421,18 @@ publish_alert() {
 # in its allowed list, and that list lags creation by a few seconds.
 _manifest_part() {
     scenario_manifest | python3 -c '
-import re, sys
+import sys, yaml
 want = sys.argv[1]
-INFRA_PATTERN = re.compile(r"^kind:\s*(ComputeClass|StorageClass|PriorityClass|ResourceQuota)\b", re.MULTILINE)
+infra_kinds = {"ComputeClass", "StorageClass", "PriorityClass", "ResourceQuota"}
 raw = sys.stdin.read()
-docs = [d.strip() for d in re.split(r"^---\s*$", raw, flags=re.MULTILINE) if d.strip()]
+docs = [doc for doc in yaml.safe_load_all(raw) if isinstance(doc, dict)]
 sel = []
 for doc in docs:
-    is_infra = bool(INFRA_PATTERN.search(doc))
+    is_infra = doc.get("kind") in infra_kinds
     if is_infra == (want == "infra"):
         sel.append(doc)
 if sel:
-    print("\n---\n".join(sel))
+    print(yaml.safe_dump_all(sel, sort_keys=False))
 ' "$1"
 }
 
@@ -457,17 +457,16 @@ emit_manifest() {
         [ -n "$work" ] && {
             printf -- '---\n'
             printf '%s\n' "$work" | python3 -c '
-import re, sys
+import sys, yaml
 ns = sys.argv[1]
 raw = sys.stdin.read()
-docs = [d.strip() for d in re.split(r"^---\s*$", raw, flags=re.MULTILINE) if d.strip()]
-out = []
+docs = [doc for doc in yaml.safe_load_all(raw) if isinstance(doc, dict)]
 for doc in docs:
-    if "metadata:" in doc:
-        doc = re.sub(r"(metadata:\s*\n)", r"\1  namespace: " + ns + "\n", doc, count=1)
-    out.append(doc)
-if out:
-    print("\n---\n".join(out))
+    meta = doc.setdefault("metadata", {})
+    if isinstance(meta, dict):
+        meta["namespace"] = ns
+if docs:
+    print(yaml.safe_dump_all(docs, sort_keys=False))
 ' "$WORKLOAD_NAMESPACE"
         }
     } > >(if [ "$out" = "-" ]; then cat; else cat > "$out"; fi)

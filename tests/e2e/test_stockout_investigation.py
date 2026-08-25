@@ -74,6 +74,9 @@ def ensure_stockout_plugin_installed(
     agent_namespace: str,
 ) -> None:
     """Ensures that the Pub/Sub topic, logging sinks, and AgentPlugin are configured on the cluster."""
+    if os.environ.get("SKIP_STOCKOUT") == "1":
+        pytest.skip("SKIP_STOCKOUT=1 is set; skipping stockout investigator plugin setup.")
+
     if not gcp_project_id or not gke_cluster_name:
         pytest.fail("GCP_PROJECT_ID and GKE_CLUSTER_NAME are required for stockout E2E tests.")
 
@@ -96,7 +99,7 @@ def ensure_stockout_plugin_installed(
         text=True,
     )
     if check_crd.returncode != 0:
-        pytest.skip(
+        pytest.fail(
             "AgentPlugin CRD 'agentplugins.kubeagents.x-k8s.io' not found on cluster; "
             "it is managed and installed by the kube-agents Helm chart."
         )
@@ -125,7 +128,7 @@ def ensure_stockout_plugin_installed(
                 env=install_env,
             )
             if proc.returncode != 0:
-                pytest.skip(
+                pytest.fail(
                     f"Could not auto-install stockout investigator plugin:\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
                 )
             time.sleep(5)
@@ -138,9 +141,14 @@ def test_stockout_ingress_alert_smoke(
     gcp_region: str,
 ) -> None:
     """Verifies that synthetic autoscaler scale-up error alerts can be published to the PubSub topic."""
+    if os.environ.get("SKIP_STOCKOUT") == "1":
+        pytest.skip("SKIP_STOCKOUT=1 is set; skipping stockout ingress smoke test.")
+
     verify_script = _REPO_ROOT / "agentplugins" / "gke-stockout-investigator" / "verify.sh"
-    if not verify_script.is_file() or not gcp_project_id or not gke_cluster_name:
-        pytest.skip("Stockout verify script missing or cluster unset; skipping stockout smoke test.")
+    if not verify_script.is_file():
+        pytest.fail(f"Stockout verify script missing at '{verify_script}'.")
+    if not gcp_project_id or not gke_cluster_name:
+        pytest.fail("GCP_PROJECT_ID and GKE_CLUSTER_NAME are required for stockout smoke test.")
 
     # Check if the stockout plugin is active in the cluster
     res_plugin = subprocess.run(
@@ -150,7 +158,7 @@ def test_stockout_ingress_alert_smoke(
         timeout=5,
     )
     if res_plugin.returncode != 0:
-        pytest.skip("gkestockoutinvestigator AgentPlugin is not active in cluster; skipping ingress smoke test.")
+        pytest.fail("gkestockoutinvestigator AgentPlugin is not active in cluster; ingress smoke test failed.")
 
     env = {
         **os.environ,
@@ -160,8 +168,6 @@ def test_stockout_ingress_alert_smoke(
     }
 
     proc = subprocess.run([str(verify_script)], capture_output=True, text=True, env=env)
-    if proc.returncode != 0 and ("no sign the adapter saw the message" in proc.stdout or "filtered out by expression" in proc.stdout):
-        pytest.skip(f"Stockout PubSub adapter not actively receiving events for cluster '{gke_cluster_name}':\n{proc.stdout}")
     assert proc.returncode == 0, (
         f"Stockout ingress alert verify.sh failed with exit code {proc.returncode}:\n"
         f"STDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
@@ -183,6 +189,9 @@ def test_stockout_scenario(
     description: str,
 ) -> None:
     """Exercises an end-to-end stockout investigation scenario against the target GKE cluster."""
+    if os.environ.get("SKIP_STOCKOUT") == "1":
+        pytest.skip("SKIP_STOCKOUT=1 is set; skipping stockout scenarios.")
+
     # Filter by STOCKOUT_SCENARIOS if specified (default: "04" for fast promotion gating; "all" for nightly matrix)
     selected_scenarios = os.environ.get("STOCKOUT_SCENARIOS", "04").strip()
     if selected_scenarios and selected_scenarios.lower() != "all":
@@ -203,8 +212,10 @@ def test_stockout_scenario(
             pytest.skip(f"Cluster '{gke_cluster_name}' has no GPU nodes (nvidia.com/gpu); skipping GPU scenario '{scenario_slug}'.")
 
     scenario_script = _SCENARIOS_DIR / f"{scenario_slug}.sh"
-    if not scenario_script.is_file() or not gcp_project_id or not gke_cluster_name:
-        pytest.skip(f"Scenario script '{scenario_script}' missing or cluster unset; skipping.")
+    if not scenario_script.is_file():
+        pytest.fail(f"Scenario script '{scenario_script}' missing.")
+    if not gcp_project_id or not gke_cluster_name:
+        pytest.fail("GCP_PROJECT_ID and GKE_CLUSTER_NAME are required for stockout scenario.")
 
     env = {
         **os.environ,

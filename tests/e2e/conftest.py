@@ -229,17 +229,20 @@ def ensure_cluster_credentials(
     gcp_region: str,
 ) -> None:
     """Configures kubectl context for the target GKE cluster."""
-    # If kubectl already has working credentials (e.g. from get-gke-credentials or existing context), don't overwrite
-    check_res = subprocess.run(["kubectl", "cluster-info"], capture_output=True, text=True)
-    if check_res.returncode == 0:
-        return
-
     if gcp_project_id and gke_cluster_name and gcp_region:
+        expected_ctx = f"gke_{gcp_project_id}_{gcp_region}_{gke_cluster_name}"
+        ctx_res = subprocess.run(["kubectl", "config", "current-context"], capture_output=True, text=True)
+        current_ctx = ctx_res.stdout.strip() if ctx_res.returncode == 0 else ""
+
+        check_res = subprocess.run(["kubectl", "cluster-info"], capture_output=True, text=True)
+        if check_res.returncode == 0 and (current_ctx == expected_ctx or (gke_cluster_name in current_ctx and gcp_project_id in current_ctx)):
+            return
+
         subprocess.run(
             ["gcloud", "config", "set", "container/use_application_default_credentials", "false", "--quiet"],
             capture_output=True,
         )
-        subprocess.run(
+        res = subprocess.run(
             [
                 "gcloud", "container", "clusters", "get-credentials",
                 gke_cluster_name,
@@ -249,6 +252,8 @@ def ensure_cluster_credentials(
             capture_output=True,
             text=True,
         )
+        if res.returncode != 0:
+            pytest.fail(f"Failed to get-credentials for cluster '{gke_cluster_name}': {res.stderr}")
 
 
 

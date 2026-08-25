@@ -30,11 +30,11 @@ graph TD
 
 ### Stage 1: Autonomous SRE Fleet Audit (`test_agent_fleet_audit.py`)
 
-Validates cluster hardening, credential isolation, and audit watchdog capabilities:
+Validates credential isolation, GitHub authentication, and audit watchdog capabilities:
 
-- **Baseline Hardening**: Asserts that the target GKE cluster enforces Workload Identity, Datapath V2, and Shielded Nodes.
-- **GitHub Token Minter Credential Isolation**: Verifies that raw GitHub App private keys (`github-app-credentials`) remain exclusively in the `github-minter` namespace and are never mounted or accessible to agent execution pods.
-- **Fleet Audit Stream Dispatch**: Executes fleet audit stream ledger rendering and schema validation across all configured streams (`FLEET_AUDIT_STREAMS=all`).
+- **GitHub Token Minter Credential Isolation**: Verifies that raw GitHub App private keys (`github-app-credentials`, `github-app-private-key`) are never mounted or injected into container deployment specs in the agent namespace.
+- **In-Pod GitHub Authentication & Connectivity**: Executes read-only token refresh via the credential proxy broker inside the agent pod and verifies repository access (`gh api repos/<target_repo>`).
+- **Fleet Audit Stream Dispatch**: Exercises fleet audit stream ledger rendering, schema validation, and GitHub API lifecycle across configured streams (`FLEET_AUDIT_STREAMS=all`).
 
 ### Stage 2: In-Cluster Agent API & Operator Reconciliation (`test_agent_api_health.py`, `operator/agentplugins_e2e_test.py`)
 
@@ -48,8 +48,8 @@ Verifies core platform agent responsiveness and Kubernetes operator controller r
 Validates the full incident investigation loop from alert ingestion to GitOps PR creation:
 
 - **Pub/Sub Alert Ingress**: Emits synthetic autoscaler stockout alerts to Pub/Sub to confirm agent ingress and deduplication.
-- **Live CPU Stockout Investigation (Scenario 04)**: Deploys an unschedulable CPU workload, triggers root-cause investigation, and asserts the agent identifies the missing zone and proposes the correct GitOps remediation PR.
-- **False Alarm Standdown (Scenario 10)**: Injects transient alert noise and asserts the agent recognizes normal operating conditions without generating spurious remediation PRs.
+- **Live CPU Stockout Investigation (Scenario 04)**: Deploys an unschedulable CPU workload, triggers root-cause investigation, and asserts the agent identifies the missing zone and proposes the correct GitOps remediation PR (Executed in RC promotion gate).
+- **Comprehensive Failure Modes (Scenarios 01-10)**: Exercises multi-zone scarcity, quota limits, volume incompatibility, and false signals across the nightly and manual evaluation matrix.
 
 ### Stage 4: External ChatOps Integration (`gchat_agent_test.py`)
 
@@ -66,16 +66,16 @@ The stockout investigator test harness in `agentplugins/gke-stockout-investigato
 
 | Scenario                           | Mode / Failure Condition                                 |      Scope in RC Gate       | Scope in Nightly / Manual Matrix |
 | :--------------------------------- | :------------------------------------------------------- | :-------------------------: | :------------------------------: |
-| `01-gpu-regional-scarcity`         | Regional GPU quota exhaustion                            | Skipped (requires GPU pool) |   ✅ (`STOCKOUT_SCENARIOS=01`)   |
-| `02-tpu-slice-fragmentation`       | Multi-node TPU slice allocation failure                  | Skipped (requires TPU pool) |   ✅ (`STOCKOUT_SCENARIOS=02`)   |
-| `03-large-vm-shape-scarcity`       | High-memory/large compute shape unavailability           |  Skipped (heavy resource)   |   ✅ (`STOCKOUT_SCENARIOS=03`)   |
+| `01-gpu-regional-scarcity`         | L4 GPUs exhausted in workload's permitted zone           | Skipped (requires GPU pool) |   ✅ (`STOCKOUT_SCENARIOS=01`)   |
+| `02-gpu-quota-exceeded`            | GPUs requested against smaller regional quota            | Skipped (requires GPU pool) |   ✅ (`STOCKOUT_SCENARIOS=02`)   |
+| `03-large-vm-shape-scarcity`       | Pinned to c3-standard-176 shape                          |  Skipped (heavy resource)   |   ✅ (`STOCKOUT_SCENARIOS=03`)   |
 | `04-missing-zone-fallback`         | Pod unschedulable due to single-zone compute constraints |    ✅ **Executed in RC**    |                ✅                |
-| `05-spot-preemption-storm`         | Rapid spot instance eviction cascade                     |           Skipped           |   ✅ (`STOCKOUT_SCENARIOS=05`)   |
-| `06-ip-exhaustion-secondary-range` | Pod CIDR exhaustion blocking node scaling                |           Skipped           |   ✅ (`STOCKOUT_SCENARIOS=06`)   |
-| `07-hyperdisk-incompatibility`     | Storage volume type mismatch across zones                |           Skipped           |   ✅ (`STOCKOUT_SCENARIOS=07`)   |
-| `08-reservation-affinity-mismatch` | Specific reservation label mismatch                      |           Skipped           |   ✅ (`STOCKOUT_SCENARIOS=08`)   |
-| `09-quota-exhaustion-disk-ssd`     | Regional SSD quota depletion                             |           Skipped           |   ✅ (`STOCKOUT_SCENARIOS=09`)   |
-| `10-false-signal`                  | Transient pod pending without real stockout              |    ✅ **Executed in RC**    |                ✅                |
+| `05-missing-ondemand-floor`        | ComputeClass priority is Spot with no on-demand floor    |           Skipped           |   ✅ (`STOCKOUT_SCENARIOS=05`)   |
+| `06-stateful-disk-generation-mix`  | Volume type attaches on some generations, not others     |           Skipped           |   ✅ (`STOCKOUT_SCENARIOS=06`)   |
+| `07-hyperdisk-incompatibility`     | Hyperdisk on class offering only pre-Hyperdisk families  |           Skipped           |   ✅ (`STOCKOUT_SCENARIOS=07`)   |
+| `08-ccc-priority-starvation`       | Over-granular priority list causing autoscaler loop      |           Skipped           |   ✅ (`STOCKOUT_SCENARIOS=08`)   |
+| `09-duplicate-signal`              | Same alert three times: dedup & duplicate-PR suppression |           Skipped           |   ✅ (`STOCKOUT_SCENARIOS=09`)   |
+| `10-false-signal`                  | Alert for healthy workload; agent stands down            |           Skipped           |   ✅ (`STOCKOUT_SCENARIOS=10`)   |
 
 ---
 
@@ -87,11 +87,10 @@ The test runner `scripts/release/execute_e2e_tests.py` reads configuration from 
 | :-------------------- | :---------------------------------------- | :---------------------------- |
 | `GCP_PROJECT_ID`      | Target Google Cloud Project ID            | None (required)               |
 | `GKE_CLUSTER_NAME`    | Target GKE cluster name                   | None (required)               |
-| `GKE_LOCATION`        | Target cluster zone or region             | `us-central1-c`               |
-| `STOCKOUT_SCENARIOS`  | Comma-separated scenario numbers or `all` | `04,10`                       |
-| `FLEET_AUDIT_STREAMS` | Specific audit stream names or `all`      | `governance-audit`            |
-| `FLEET_AUDIT_LIVE`    | Enables live in-cluster audit execution   | `all` in nightly, smoke in RC |
-| `E2E_ENV`             | Target environment selector               | `all`                         |
+| `GCP_REGION`          | Target cluster region                     | `us-east4`                    |
+| `STOCKOUT_SCENARIOS`  | Comma-separated scenario numbers or `all` | `04`                          |
+| `FLEET_AUDIT_STREAMS` | Specific audit stream names or `all`      | `all`                         |
+| `E2E_ENV`             | Target environment selector               | `cluster-e2e`                 |
 
 ### Test Environments
 

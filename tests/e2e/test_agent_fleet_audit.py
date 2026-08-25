@@ -40,7 +40,7 @@ def test_github_token_minting_and_connectivity(
     Does NOT invoke `audit_report.py start`, preventing workspace reset, lease scrubbing, or label writes.
     """
     if not gke_cluster_name or not github_repo:
-        pytest.skip("GKE cluster or GITHUB_REPO not configured; skipping live GitHub connectivity probe.")
+        pytest.fail("GKE cluster name and GITHUB_REPO are required for live GitHub connectivity probe.")
 
     # Find running platform-agent pod
     proc_pod = subprocess.run(
@@ -101,7 +101,7 @@ def test_github_token_minting_and_connectivity(
                 proc_pod = type("Proc", (), {"returncode": 0, "stdout": candidate_pods[0]})()
 
     if proc_pod.returncode != 0 or not proc_pod.stdout.strip():
-        pytest.skip(f"No running platform-agent-gateway pod found in namespace '{agent_namespace}'.")
+        pytest.fail(f"No running platform-agent-gateway pod found in namespace '{agent_namespace}'.")
 
     pod_name = proc_pod.stdout.strip()
 
@@ -299,7 +299,7 @@ def test_audit_report_ledger_dryrun_all_streams(
         pytest.skip(f"Skipping audit stream '{audit_id}' (FLEET_AUDIT_STREAMS={fleet_audit_streams})")
 
     if not _AUDIT_REPORT_SCRIPT.is_file():
-        pytest.skip("audit_report.py not found; skipping audit stream validation.")
+        pytest.fail(f"audit_report.py not found at {_AUDIT_REPORT_SCRIPT}")
 
     cluster = gke_cluster_name or "test-cluster"
     project = gcp_project_id or "test-project"
@@ -391,7 +391,7 @@ def test_audit_report_github_api_lifecycle_mocked(
         pytest.skip(f"Skipping audit stream '{audit_id}' (FLEET_AUDIT_STREAMS={fleet_audit_streams})")
 
     if not _AUDIT_REPORT_SCRIPT.is_file():
-        pytest.skip("audit_report.py not found; skipping mock GitHub API lifecycle test.")
+        pytest.fail(f"audit_report.py not found at {_AUDIT_REPORT_SCRIPT}")
 
     import sys
     script_dir_str = str(_AUDIT_REPORT_SCRIPT.parent)

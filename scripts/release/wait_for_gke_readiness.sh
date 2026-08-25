@@ -34,11 +34,13 @@ if [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] && [ -f "${GOOGLE_APPLICATION_CR
   gcloud auth activate-service-account --key-file="${GOOGLE_APPLICATION_CREDENTIALS}" --quiet || true
 fi
 
-if ! kubectl cluster-info >/dev/null 2>&1; then
+CURRENT_CTX="$(kubectl config current-context 2>/dev/null || echo "")"
+if ! kubectl cluster-info >/dev/null 2>&1 || [[ "${CURRENT_CTX}" != *"${CLUSTER_NAME}"* || "${CURRENT_CTX}" != *"${PROJECT_ID}"* ]]; then
+  echo "Connecting kubectl to target cluster '${CLUSTER_NAME}' in project '${PROJECT_ID}'..."
   gke_dns_endpoint_flag "${CLUSTER_NAME}" "${REGION}" "${PROJECT_ID}"
   # Unquoted on purpose: empty must contribute no argument. See gke_dns_endpoint.sh.
   gcloud container clusters get-credentials "${CLUSTER_NAME}" --location "${REGION}" --project "${PROJECT_ID}" \
-    ${GKE_DNS_ENDPOINT_FLAG} || true
+    ${GKE_DNS_ENDPOINT_FLAG}
 fi
 
 echo "🔑 Configuring Docker authentication for Artifact Registry (${REGION}-docker.pkg.dev)..."

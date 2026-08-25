@@ -32,6 +32,15 @@ on:
         required: false
         default: "false"
         type: string
+      test_destructive_crd:
+        description: "Test destructive CRD deletion safeguard (true / false)"
+        required: false
+        default: "false"
+        type: string
+
+concurrency:
+  group: rc-environment
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -69,6 +78,12 @@ jobs:
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT || '' }}
           credentials_json: ${{ secrets.GCP_SA_KEY || '' }}
 
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          version: "579.0.0"
+          install_components: "beta,gke-gcloud-auth-plugin"
+
       - name: Authenticate to GKE
         uses: google-github-actions/get-gke-credentials@3da1e46a907576cefaa90c484278bb5b259dd395 # v3.0.0
         with:
@@ -99,6 +114,7 @@ jobs:
           STOCKOUT_SCENARIOS: ${{ inputs.stockout_scenarios }}
           FLEET_AUDIT_STREAMS: ${{ inputs.fleet_audit_streams || 'all' }}
           REBUILD_OPERATOR: ${{ inputs.rebuild_operator }}
+          TEST_DESTRUCTIVE_CRD: ${{ inputs.test_destructive_crd }}
           CHAT_TOPIC_NAME: ${{ vars.CHAT_TOPIC_NAME }}
           E2E_CHAT_CLIENT_ID: ${{ secrets.E2E_CHAT_CLIENT_ID }}
           E2E_CHAT_CLIENT_SECRET: ${{ secrets.E2E_CHAT_CLIENT_SECRET }}

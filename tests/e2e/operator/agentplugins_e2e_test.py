@@ -1043,7 +1043,11 @@ def step11_verify_image_pull_failure_status() -> None:
 
 
 def step12_verify_missing_crd_decoupled_dependency_safeguard() -> None:
-    """Step 12 (Opt-in Destructive): Verify operator reconciles PlatformAgent gracefully when AgentPlugin CRD is missing."""
+    """Step 12 (Opt-in Destructive): Verify operator reconciles PlatformAgent gracefully when AgentPlugin CRD is missing.
+
+    Ordering constraint: Deleting the AgentPlugin CRD kills the operator's watch for it until
+    the operator restarts, so every step that depends on that watch must run before this one.
+    """
     log("STEP 12 (Opt-in Destructive): Testing missing AgentPlugin CRD decoupled dependency safeguard...")
     crd_dir = REPO_ROOT / "k8s-operator" / "config" / "crd" / "bases"
 
@@ -1080,6 +1084,10 @@ def step12_verify_missing_crd_decoupled_dependency_safeguard() -> None:
             "annotate", "platformagent", "platform-agent", "-n", NAMESPACE,
             "e2e.test/crd-missing-trigger-"
         ], check=False)
+        # client-go reflector backoff: deleting a CRD stops the informer watch permanently.
+        # Re-creating the CRD is not enough to resume watching — client-go reflector enters
+        # exponential backoff / stops watching the missing resource until the controller process
+        # or deployment is restarted. Restarting the operator forces a fresh informer cache sync.
         log("Restarting operator to rebuild the AgentPlugin watch...")
         run_kubectl(["rollout", "restart", f"deployment/{OPERATOR_DEPLOYMENT}", "-n", NAMESPACE])
         run_kubectl(["rollout", "status", f"deployment/{OPERATOR_DEPLOYMENT}", "-n", NAMESPACE, "--timeout=180s"])
@@ -1418,7 +1426,7 @@ spec:
         # Withdrawing the plugin has to undo both halves. A stale link would leave a
         # dangling entry in the profile's plugins dir, and a stale plugins.enabled entry
         # would make Hermes try to import a plugin whose files are gone.
-        run_kubectl(["delete", "agentplugin", TARGETED_PLUGIN_CR_NAME, "-n", NAMESPACE, "--ignore-not-found=true"])
+        run_kubectl(["delete", "agentplugin", TARGETED_PLUGIN_CR_NAME, "-n", NAMESPACE])
         reconcile_and_wait()
 
         link = profile_plugin_link(TARGET_PROFILE, TARGETED_PLUGIN_CR_NAME)
@@ -1589,7 +1597,7 @@ spec:
         log("Verified both overlays merged into the cluster profile and the plugin is linked.")
 
         # Withdrawing the per-profile overlay must not take the class overlay with it.
-        run_kubectl(["delete", "agentplugin", CLUSTER_PLUGIN_CR_NAME, "-n", NAMESPACE, "--ignore-not-found=true"])
+        run_kubectl(["delete", "agentplugin", CLUSTER_PLUGIN_CR_NAME, "-n", NAMESPACE])
         reconcile_and_wait()
 
         withdrawn = agent_exec_until(
