@@ -211,6 +211,10 @@ REFUSED = [
     (["gh", "repo", "rename", "pwned"], "selfimprove.gh-repo-reads-only"),
     (["gh", "repo", "deploy-key", "add", "k.pub"], "selfimprove.gh-repo-reads-only"),
     (["gh", "--repo", "o/r", "repo", "delete"], "selfimprove.gh-repo-reads-only"),
+    # The noun with no verb after it at all. It does nothing on its own, but it
+    # is the end-of-string arm of the boundary that keeps `repo:` out of this
+    # rule, and a boundary written to admit one has to still refuse the other.
+    (["gh", "repo"], "selfimprove.gh-repo-reads-only"),
     (["gh", "issue", "close", "42"], "selfimprove.gh-issue-reads-only"),
     (["gh", "issue", "delete", "42"], "selfimprove.gh-issue-reads-only"),
     (["gh", "issue", "edit", "42", "--body", "x"], "selfimprove.gh-issue-reads-only"),
@@ -432,6 +436,14 @@ PERMITTED = [
     ["gh", "--repo", "gke-labs/kube-agents", "issue", "list"],
     ["gh", "--repo=gke-labs/kube-agents", "search", "issues", "selfimprove"],
     ["gh", "search", "issues", "--repo", "gke-labs/kube-agents", "reconciler retry"],
+    # `repo:` is a search qualifier and not the `repo` subcommand, and it is the
+    # spelling `gh search` documents. It reached `gh-repo-reads-only` because a
+    # colon ends a word, so `repo\b` matched the qualifier and the `view|list`
+    # lookahead that follows had nothing to find -- the allow-list advertised
+    # `search` while another rule refused every scoped form of it.
+    ["gh", "search", "issues", "repo:gke-labs/kube-agents", "ledger"],
+    ["gh", "search", "prs", "repo:gke-agentic/kube-agents", "--state", "open"],
+    ["gh", "search", "issues", "repo:gke-labs/kube-agents", "is:open", "in:title", "ledger"],
     ["gh", "issue", "view", "42", "--json", "state,closedAt"],
     ["gh", "repo", "view", "--json", "defaultBranchRef"],
     # The read verbs the allow-list exists for, including with the repository
