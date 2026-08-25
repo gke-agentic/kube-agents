@@ -1709,7 +1709,17 @@ def save(namespace: str, name: str, ledger: Dict[str, Any]) -> None:
                     # loss `load` refuses above, reached by the other door.
                     _UNPARSEABLE[key] = True
                     raise _corrupt_error(namespace, name) from exc
-                ledger = merge(remote, ledger)
+                # In place, not `ledger = merge(...)`. Rebinding the local left
+                # the caller holding the pre-merge document, which cost nothing
+                # while `save` ran once at the end of a run and everything the
+                # moment it ran twice: the second call would write the caller's
+                # copy -- still missing the rows this merge just folded in --
+                # against a resourceVersion that now matches, so it would
+                # succeed and drop the other writer's work. The filing loop
+                # saves after every promotion, so that is the normal path now.
+                merged = merge(remote, ledger)
+                ledger.clear()
+                ledger.update(merged)
                 if remote_version:
                     _OBSERVED_RESOURCE_VERSION[key] = remote_version
                 else:

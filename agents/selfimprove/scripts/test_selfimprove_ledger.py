@@ -1683,6 +1683,37 @@ class ConcurrentWriteTests(unittest.TestCase):
             ["theirs", "mine"], [r["revision"] for r in cm.ledger()["runs"]]
         )
 
+    def test_the_merge_reaches_the_caller_and_survives_a_second_write(self):
+        """`save` runs more than once a run now, so the merge has to propagate.
+
+        It used to rebind a local -- `ledger = merge(remote, ledger)` -- which
+        left the caller holding its pre-merge document. Harmless while `save`
+        was the last thing a run did; fatal once the filing loop began saving
+        after every promotion, because the second call would write that stale
+        copy against a resourceVersion the first call had just made current.
+        No 409, no merge, and the other writer's rows gone.
+        """
+        cm = _FakeConfigMap()
+        cm.write_ledger(L.empty_ledger())
+        undo = _install_stateful_kubernetes(cm)
+        try:
+            mine = L.load("kube-agents", "ledger")
+            mine["runs"] = [{"at": "2026-08-23T17:24:00Z", "revision": "mine", "outcome": "ok"}]
+
+            theirs = L.empty_ledger()
+            theirs["runs"] = [{"at": "2026-08-23T16:40:00Z", "revision": "theirs", "outcome": "ok"}]
+            cm.before_patch = lambda c: c.write_ledger(theirs)
+
+            L.save("kube-agents", "ledger", mine)
+            # The caller's own dict now carries what the merge folded in...
+            self.assertEqual(["theirs", "mine"], [r["revision"] for r in mine["runs"]])
+            # ...so writing it again -- the filing loop's next promotion --
+            # cannot drop the other writer.
+            L.save("kube-agents", "ledger", mine)
+        finally:
+            undo()
+        self.assertEqual(["theirs", "mine"], [r["revision"] for r in cm.ledger()["runs"]])
+
     def test_an_uncontended_write_still_applies_a_prune(self):
         """The merge must not resurrect rows when nothing actually conflicted.
 

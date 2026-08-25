@@ -1992,6 +1992,36 @@ def is_permanent_refusal(reason: Optional[str]) -> bool:
     return False
 
 
+def charge_ledger(namespace: str, ledger_name: str, ledger: Dict[str, Any], what: str) -> bool:
+    """Write the ledger mid-run, so an open pull request is a charged one.
+
+    The filing loop used to record promotions into the in-memory ledger and
+    write once, after the loop. Everything in between was uncommitted: a run
+    that opened three pull requests and then could not write charged zero of
+    them. That is not a rare shape, because the write failures that matter here
+    are properties of the ConfigMap rather than of the run -- a ledger over the
+    768KiB cap fails the same way every hour while `load` keeps succeeding on
+    the stale document. The next run then reads a ledger with no promotions,
+    finds no cooldown, and files the same findings again. At the default
+    `maxPullRequestsPerDay: 3` that is three duplicates an hour against a
+    ceiling of three a day, and nothing in the run's own log says so.
+
+    So each promotion and each refusal is written as it happens. The cost is at
+    most three extra PATCHes on a run that files the maximum, against a ledger
+    that is a few hundred kilobytes.
+
+    Returns whether the write landed. A caller that has just opened a pull
+    request it could not record should stop opening more: the next one would be
+    uncharged for the same reason, and the duplicates are what this is for.
+    """
+    try:
+        ledger_mod.save(namespace, ledger_name, ledger)
+        return True
+    except ledger_mod.LedgerWriteError as exc:
+        log("LEDGER WRITE FAILED after %s: %s" % (what, exc))
+        return False
+
+
 def _fenced(fields: Dict[str, str]) -> str:
     """Render untrusted fields inside the fence, with the fence made unforgeable.
 
@@ -3050,11 +3080,21 @@ def main(argv: Optional[List[str]] = None) -> int:
                         "again. It stays in the ledger and keeps counting for a human to read."
                         % fp
                     )
+                    if not charge_ledger(namespace, ledger_name, ledger, "refusing %s" % fp):
+                        break
             elif result == FILED:
                 ledger_mod.record_promotion(ledger, fp, url, identity["revision"])
                 filed += 1
                 note_progress(filed=filed)
                 log("filed %s for %s" % (url, fp))
+                if not charge_ledger(namespace, ledger_name, ledger, "filing %s" % url):
+                    log(
+                        "%s is open and the ledger does not know it. Not filing anything else "
+                        "this run: the next pull request would go uncharged the same way, and an "
+                        "uncharged pull request is re-filed every hour until somebody notices."
+                        % url
+                    )
+                    break
             else:
                 # Charged anyway. A turn that died at its budget may have opened
                 # the pull request before it died, and the cost of assuming it
@@ -3071,6 +3111,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                     "starts the cooldown. Check %s for a branch under selfimprove/ before the "
                     "cooldown expires." % (fp, fork or upstream)
                 )
+                if not charge_ledger(namespace, ledger_name, ledger, "an unconfirmed %s" % fp):
+                    break
 
     # Still armed through this. The final write sits nearest the deadline that
     # causes a kill in the first place, so it is the write most likely to be

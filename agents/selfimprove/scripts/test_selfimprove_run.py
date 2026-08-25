@@ -3197,6 +3197,78 @@ class FilingWiringAndRefusalTests(unittest.TestCase):
         self.assertTrue(self.calls, "deferred a filing turn that had time for one")
         self.assertEqual(1600, self.calls[0][0][7])
 
+    #: A second promotable finding, so the tests below have a next one to file.
+    OTHER = {
+        "title": "the runner retries a push the forge already refused",
+        "location": "agents/selfimprove/scripts/selfimprove_run.py",
+        "signal": "errors",
+        "severity": "critical",
+        "summary": "s",
+        "evidence": ["e"],
+        "proposed_fix": "f",
+    }
+
+    def _two_findings(self):
+        """Report `OTHER` alongside `FINDING`, both already promotable."""
+        ledger_mod.record_finding(
+            self.ledger,
+            self.OTHER,
+            "abc1234",
+            ledger_mod.utcnow() - datetime.timedelta(hours=1),
+        )
+
+        def investigate(prompt, home, timeout, label, allow_forge=False):
+            self.investigate_timeouts.append(timeout)
+            with open(self.findings_path, "w", encoding="utf-8") as handle:
+                json.dump([self.FINDING, self.OTHER], handle)
+            return 0, "", True
+
+        R.run_agent = investigate
+
+    def test_each_filing_is_written_before_the_next_one_starts(self):
+        """An open pull request the ledger does not know about is refiled hourly.
+
+        Promotions used to sit in memory until one `save` after the loop, so a
+        run that opened three pull requests and then could not write charged
+        none of them. The write failures that matter here are properties of the
+        ConfigMap rather than of the run -- a ledger over the size cap fails the
+        same way every hour while `load` keeps succeeding on the stale document
+        -- so the next run finds no cooldown and files the same findings again.
+        """
+        self._two_findings()
+        self.filing_result = (R.FILED, "https://github.com/o/r/pull/1")
+        self._run()
+        self.assertEqual(2, len(self.calls), "the second finding was never filed")
+        # Two mid-loop writes, then the run's own row.
+        self.assertEqual(3, len(self.saved))
+        first = self.saved[0]
+        self.assertEqual(
+            1,
+            sum(len(f.get("promotions", [])) for f in first["findings"].values()),
+            "the first pull request was not charged before the second turn started",
+        )
+        self.assertEqual([], first["runs"], "that write was the end-of-run one")
+
+    def test_a_write_it_cannot_land_stops_the_run_opening_more(self):
+        """One uncharged pull request is a duplicate an hour; three is three.
+
+        The next turn would go uncharged for the same reason, so the run stops
+        and says which URL the ledger does not know about -- that line is the
+        only thing standing between an operator and a silent hourly duplicate.
+        """
+        self._two_findings()
+        self.filing_result = (R.FILED, "https://github.com/o/r/pull/1")
+
+        def refuse(namespace, name, led):
+            self.saved.append(copy.deepcopy(led))
+            raise ledger_mod.LedgerWriteError("the ConfigMap is over the size cap")
+
+        R.ledger_mod.save = refuse
+        log = self._run()
+        self.assertEqual(1, len(self.calls), "kept filing after it could not charge one")
+        self.assertIn("https://github.com/o/r/pull/1", log)
+        self.assertIn("does not know it", log)
+
 
 class ProfileRestoreTests(unittest.TestCase):
     """The turn boundary has to be a trust boundary.
