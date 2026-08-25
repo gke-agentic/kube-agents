@@ -5,7 +5,7 @@ sidebar:
   order: 0
 ---
 
-Everything the [provisioner](/kube-agents/operator/provisioning-scripts/) applies is standard Kubernetes: containers built via Docker, layered with Kustomize, and wired into the cluster's telemetry stack.
+Everything the [installer](/kube-agents/install/quickstart-gke/) applies is standard Kubernetes: containers built via Docker, rendered by the Helm chart (with Kustomize copies for development), and wired into the cluster's telemetry stack.
 
 Pages in this section:
 

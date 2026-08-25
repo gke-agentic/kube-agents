@@ -301,7 +301,8 @@ data:
         enabled: false
         extra:
           rich_blocks: true
-  managed.env: ""
+  managed.env: |
+    API_SERVER_KEY=cluster-internal-trusted
   profile-platform.overlay.yaml: |
     memory:
       provider: ""
@@ -459,6 +460,7 @@ metadata:
       name: platformagent
       uid: ""
 spec:
+  progressDeadlineSeconds: 1200
   replicas: 1
   selector:
     matchLabels:
@@ -577,6 +579,7 @@ spec:
             capabilities:
               drop:
                 - ALL
+            readOnlyRootFilesystem: true
           startupProbe:
             exec:
               command:
@@ -609,6 +612,8 @@ spec:
             - mountPath: /var/lib/kube-agents/session
               name: system-metadata
               subPath: session
+            - mountPath: /tmp
+              name: tmp-scratch
         - args:
             - hermes
             - dashboard
@@ -632,11 +637,14 @@ spec:
             - containerPort: 9119
               name: dashboard
           readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - curl --silent --show-error --max-time 3 -o /dev/null http://127.0.0.1:9119/
             failureThreshold: 3
             initialDelaySeconds: 5
             periodSeconds: 15
-            tcpSocket:
-              port: dashboard
             timeoutSeconds: 5
           resources:
             limits:
@@ -650,6 +658,7 @@ spec:
             capabilities:
               drop:
                 - ALL
+            readOnlyRootFilesystem: true
           volumeMounts:
             - mountPath: /opt/data
               name: platform-agent-data-vol
@@ -659,6 +668,8 @@ spec:
             - mountPath: /var/lib/kube-agents/session
               name: system-metadata
               subPath: session
+            - mountPath: /tmp
+              name: tmp-scratch
         - args:
             - -c
             - /fluent-bit/etc/fluent-bit.conf
@@ -678,6 +689,7 @@ spec:
             capabilities:
               drop:
                 - ALL
+            readOnlyRootFilesystem: true
           volumeMounts:
             - mountPath: /opt/data
               name: platform-agent-data-vol
@@ -882,6 +894,9 @@ spec:
             defaultMode: 420
             name: platformagent-settings
           name: settings-volume
+        - emptyDir:
+            sizeLimit: 2Gi
+          name: tmp-scratch
         - configMap:
             name: platformagent-credential-proxy-policy
           name: credential-proxy-policy

@@ -4,13 +4,48 @@ variable "project_id" {
 }
 
 variable "cluster_name" {
-  description = "Name of the GKE Autopilot cluster to create"
+  description = "Name of the GKE cluster to create (or, with create_cluster = false, the existing cluster to install onto)"
   type        = string
 }
 
-variable "location" {
-  description = "GCP region for the cluster (and the KMS key ring when the GitHub minter is enabled). Autopilot clusters are regional, so a zone is rejected by the gke-cluster module."
+variable "cluster_mode" {
+  description = "Cluster shape: \"autopilot\" (default) or \"standard\". Standard builds an e2-standard-4 default pool with Dataplane V2, FQDN NetworkPolicy, and the Filestore CSI and BackupRestore addons, and is the only mode that can carry a gVisor node pool."
   type        = string
+  default     = "autopilot"
+
+  validation {
+    condition     = contains(["autopilot", "standard"], var.cluster_mode)
+    error_message = "cluster_mode must be \"autopilot\" or \"standard\"."
+  }
+}
+
+variable "create_cluster" {
+  description = "Whether to create the cluster. Set false to install onto an existing cluster: the gke-cluster module then only reads it, creates no KMS resources, and enabling CMEK on it stays a gcloud step outside Terraform. The existing cluster must already have Workload Identity enabled."
+  type        = bool
+  default     = true
+}
+
+variable "location" {
+  description = "GCP location for the cluster (and the KMS key ring when the GitHub minter is enabled): a region, or a zone for a zonal Standard or pre-existing cluster. Autopilot clusters are regional, so a zone is rejected by the gke-cluster module in autopilot mode."
+  type        = string
+}
+
+variable "enable_gvisor_node_pool" {
+  description = "Whether to add the dedicated GKE Sandbox (gVisor) node pool. Standard mode only; fails the plan on Autopilot, which provides the gvisor RuntimeClass natively."
+  type        = bool
+  default     = false
+}
+
+variable "gvisor_pool_name" {
+  description = "Name of the gVisor node pool."
+  type        = string
+  default     = "gvisor-pool"
+}
+
+variable "agent_runtime_class" {
+  description = "RuntimeClass for the agent pod, overriding what enable_gvisor_node_pool implies. Autopilot ships the gvisor RuntimeClass with no node pool to manage — and enable_gvisor_node_pool fails the plan there — so \"gvisor\" here is how an Autopilot install asks for the sandbox without reaching for extra_helm_values. Empty derives the value from enable_gvisor_node_pool."
+  type        = string
+  default     = ""
 }
 
 variable "deletion_protection" {
@@ -56,13 +91,13 @@ variable "namespace" {
 }
 
 variable "permission_set" {
-  description = "Which of provision_04_gcp_iam.sh's role bundles the agent's service account gets: read-only, gke-admin, or custom (custom requires project_roles). Ignored when project_roles is set explicitly."
+  description = "Which GCP IAM role bundle the agent's service account gets: read-only, gke-admin, or custom (custom requires project_roles). Ignored when project_roles is set explicitly."
   type        = string
   default     = "read-only"
 
   validation {
     condition     = contains(["read-only", "gke-admin", "custom"], var.permission_set)
-    error_message = "permission_set must be one of read-only, gke-admin, or custom (the same values the provisioning scripts accept)."
+    error_message = "permission_set must be one of read-only, gke-admin, or custom."
   }
 }
 
@@ -108,7 +143,7 @@ variable "third_party_image_registry" {
 }
 
 variable "model_provider" {
-  description = "Model provider the LiteLLM gateway routes model-default to (gemini, anthropic, openai, or vertex_ai — chatgpt needs the kustomize overlay and is rejected by the chart). Set the matching *_api_key variable; vertex_ai takes no key and authenticates with Workload Identity instead."
+  description = "Model provider the LiteLLM gateway routes model-default to (gemini, anthropic, openai, or vertex_ai). Set the matching *_api_key variable; vertex_ai takes no key and authenticates with Workload Identity instead."
   type        = string
   default     = "gemini"
 
@@ -219,6 +254,20 @@ variable "slack_app_token" {
   default     = ""
 }
 
+variable "session_kv_api_key" {
+  description = "Existing SESSION_KV_API_KEY to keep, for adopting a cluster whose Secret already holds one. Empty generates a fresh value (the right choice for a new install)."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "session_kv_salt" {
+  description = "Existing SESSION_KV_SALT to keep, for adopting a cluster whose Secret already holds one. Rotating the salt re-anonymises every chat user, so an adoption must pass the live value; empty generates a fresh one."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "slack_allowed_users" {
   description = "Slack users allowed to talk to the agent (empty list = all users allowed). Only used when enable_slack is true."
   type        = list(string)
@@ -237,6 +286,42 @@ variable "slack_home_channel_name" {
   default     = ""
 }
 
+variable "chat_topic_name" {
+  description = "Pub/Sub topic for Google Chat events. The default matches the chat-pubsub module and the chart."
+  type        = string
+  default     = "platform-agent-chat-events"
+}
+
+variable "chat_subscription_name" {
+  description = "Pub/Sub subscription for Google Chat events."
+  type        = string
+  default     = "platform-agent-chat-events-sub"
+}
+
+variable "hermes_dashboard_enabled" {
+  description = "Whether the Hermes Web UI dashboard is enabled on the agent. null leaves the field out of the CR so the CRD default (true) applies."
+  type        = bool
+  default     = null
+}
+
+variable "memory_enabled" {
+  description = "Whether agent memory persistence is enabled. null defers to the CRD default (false)."
+  type        = bool
+  default     = null
+}
+
+variable "memory_provider" {
+  description = "Agent memory provider (multiuser_memory, kube_agents_memory, hindsight, none, ...). Empty defers to the CRD default. Selecting a hindsight-backed provider makes the chart render the Hindsight store automatically."
+  type        = string
+  default     = ""
+}
+
+variable "user_profile_enabled" {
+  description = "Whether per-user profiles are enabled in agent memory. null defers to the CRD default (false)."
+  type        = bool
+  default     = null
+}
+
 variable "github_repo" {
   description = "Target GitOps repository for the agent's GitHub integration (owner/repo or URL). Empty leaves the GitHub integration unconfigured. Independent of enable_github_minter, which only provisions the minter's GCP identity."
   type        = string
@@ -244,19 +329,37 @@ variable "github_repo" {
 }
 
 variable "enable_github_minter" {
-  description = "Provision the GitHub token minter's GCP resources (service account, KMS key ring and signing key)"
+  description = "Provision the GitHub token minter: its GCP resources (service account, KMS key ring and signing key) and, through the chart, its Kubernetes workload. Requires github_repo in owner/repo (or github.com URL) form. The App private key must be imported into the KMS key before the minter goes Ready."
   type        = bool
   default     = false
 }
 
+variable "github_minter_kms_keyring" {
+  description = "Cloud KMS key ring holding the GitHub minter's signing key."
+  type        = string
+  default     = "github-token-minter-keyring"
+}
+
+variable "github_minter_kms_key" {
+  description = "Cloud KMS asymmetric signing key the minter signs GitHub App JWTs with. The App private key is imported into it outside Terraform."
+  type        = string
+  default     = "github-token-minter-key"
+}
+
+variable "github_app_id" {
+  description = "GitHub App ID the minter signs as. Set, the chart creates the github-app-credentials Secret; empty, that Secret must already exist in the release namespace before the minter pod can start."
+  type        = string
+  default     = ""
+}
+
 variable "enable_backup_agent" {
-  description = "Enable the Backup for GKE agent on the cluster (the BackupRestore addon). True matches the cluster provision_01_gcp_cluster.sh creates; it costs nothing until a BackupPlan targets the cluster, but it must be on before enable_gke_backup_plan can work."
+  description = "Enable the Backup for GKE agent on the cluster (the BackupRestore addon). It costs nothing until a BackupPlan targets the cluster, but it must be on before enable_gke_backup_plan can work."
   type        = bool
   default     = true
 }
 
 variable "enable_gke_backup_plan" {
-  description = "Create a scheduled BackupPlan for the release namespace (mirrors provision_12_gke_backup_plan.sh, which is likewise opt-in). Backups include Secrets and volume data and are billed per backed-up pod and per GB of snapshot storage."
+  description = "Create a scheduled BackupPlan for the release namespace (opt-in). Backups include Secrets and volume data and are billed per backed-up pod and per GB of snapshot storage."
   type        = bool
   default     = false
 }
@@ -280,13 +383,13 @@ variable "backup_encryption_key" {
 }
 
 variable "enable_cert_manager" {
-  description = "Install cert-manager, which issues the serving certificate for the operator's admission webhooks (mirrors provision_03_gcp_gke_operator.sh). Set to false when the target cluster already runs cert-manager: unlike the script, Terraform does not detect an existing install and the apply fails on the existing CRDs. Turning this off with enable_webhooks left on leaves the webhooks without a certificate."
+  description = "Install cert-manager, which issues the serving certificate for the operator's admission webhooks. Set to false when the target cluster already runs cert-manager: Terraform does not detect an existing install and the apply fails on the existing CRDs (install.sh probes for one on the existing-cluster path and sets this for you). Turning this off with enable_webhooks left on leaves the webhooks without a certificate."
   type        = bool
   default     = true
 }
 
 variable "cert_manager_version" {
-  description = "cert-manager chart version, pinned to the release provision_03_gcp_gke_operator.sh installs. Values below 1.15.x need the crds.enabled key in main.tf renamed back to installCRDs."
+  description = "cert-manager chart version. Values below 1.15.x need the crds.enabled key in main.tf renamed back to installCRDs."
   type        = string
   default     = "v1.21.1"
 }

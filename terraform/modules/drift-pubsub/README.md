@@ -31,10 +31,6 @@ Both principal clauses matter. Matching `^system:` alone leaves the GKE service 
 
 Set the variable to `false` to export the unfiltered stream while debugging.
 
-## Relationship to the provisioning scripts
-
-Unlike the other modules here, this one has **no `provision_NN_*.sh` counterpart** and therefore no mutually-exclusive-with-the-script caveat: Terraform is the only path. Its identifiers are correspondingly absent from `k8s-operator/scripts/common.sh`.
-
 ## Prerequisites
 
 The caller must have `pubsub.googleapis.com` and `logging.googleapis.com` enabled on the project. `logging.googleapis.com` is unconditional in [`full-install`](../../examples/full-install/), but **`pubsub.googleapis.com` is currently gated behind `enable_google_chat`** there — an install without Chat will not have it. Move Pub/Sub out of that conditional before wiring this module into the composition.

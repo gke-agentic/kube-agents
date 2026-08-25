@@ -19,6 +19,7 @@ package controller
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -424,17 +425,44 @@ func TestBuildDeployment(t *testing.T) {
 		if dashboardC.ImagePullPolicy != corev1.PullAlways {
 			t.Errorf("expected dashboard container image pull policy Always, got %s", dashboardC.ImagePullPolicy)
 		}
-		if len(dashboardC.VolumeMounts) != 4 {
-			t.Errorf("expected 4 volume mounts on dashboard container (3 base + 1 extra), got %d", len(dashboardC.VolumeMounts))
+		if len(dashboardC.VolumeMounts) != 5 {
+			t.Errorf("expected 5 volume mounts on dashboard container (4 base + 1 extra), got %d", len(dashboardC.VolumeMounts))
 		}
 		if dashboardC.SecurityContext == nil || dashboardC.SecurityContext.AllowPrivilegeEscalation == nil || *dashboardC.SecurityContext.AllowPrivilegeEscalation {
 			t.Errorf("expected SecurityContext.AllowPrivilegeEscalation false on dashboard container")
+		}
+		if dashboardC.SecurityContext == nil || dashboardC.SecurityContext.ReadOnlyRootFilesystem == nil || !*dashboardC.SecurityContext.ReadOnlyRootFilesystem {
+			t.Errorf("expected SecurityContext.ReadOnlyRootFilesystem true on dashboard container")
 		}
 		if dashboardC.Resources.Requests.Cpu().String() != "256m" || dashboardC.Resources.Requests.Memory().String() != "512Mi" {
 			t.Errorf("expected CPU 256m and Mem 512Mi requests on dashboard container, got %v", dashboardC.Resources.Requests)
 		}
 		if dashboardC.Resources.Limits.Cpu().String() != "1" || dashboardC.Resources.Limits.Memory().String() != "2Gi" {
 			t.Errorf("expected CPU 1 and Mem 2Gi limits on dashboard container, got %v", dashboardC.Resources.Limits)
+		}
+		// The probe has to reach the listener over loopback. `hermes dashboard`
+		// binds 127.0.0.1, so the tcpSocket probe this replaces was dialled by
+		// kubelet against the pod IP, refused every time, and left the container
+		// — and therefore the whole pod — permanently NotReady (#822). Asserting
+		// the shape is the only guard available here: nothing in this suite can
+		// open a socket against the real CLI.
+		switch probe := dashboardC.ReadinessProbe; {
+		case probe == nil:
+			t.Errorf("expected a readiness probe on the dashboard container")
+		case probe.TCPSocket != nil:
+			t.Errorf("dashboard readiness probe must not be tcpSocket: kubelet dials the pod IP and the listener is loopback-only")
+		case probe.Exec == nil || len(probe.Exec.Command) == 0:
+			t.Errorf("expected an exec readiness probe on the dashboard container, got %+v", probe.ProbeHandler)
+		default:
+			cmd := strings.Join(probe.Exec.Command, " ")
+			if !strings.Contains(cmd, "http://127.0.0.1:9119/") {
+				t.Errorf("expected the dashboard readiness probe to target http://127.0.0.1:9119/, got %q", cmd)
+			}
+			// --fail would turn an auth-gated or non-2xx root path into an
+			// unready pod; the probe only asserts that something answers.
+			if strings.Contains(cmd, "--fail") {
+				t.Errorf("dashboard readiness probe must not use curl --fail: any HTTP response proves the listener is up, got %q", cmd)
+			}
 		}
 		if len(dashboardC.Env) != 6 {
 			t.Errorf("expected 6 env vars on dashboard container, got %d", len(dashboardC.Env))
@@ -755,6 +783,19 @@ func TestBuildDeployment(t *testing.T) {
 		}
 	}
 
+	// The one writable path the read-only root filesystem leaves the agent. Without
+	// it the entrypoint's HOME=/tmp invocations fail before the gateway starts.
+	if _, ok := mountsMap["tmp-scratch"]; !ok {
+		t.Errorf("expected tmp-scratch mount on platform-agent, not found")
+	} else if mountsMap["tmp-scratch"].MountPath != "/tmp" {
+		t.Errorf("expected tmp-scratch mount path /tmp, got %s", mountsMap["tmp-scratch"].MountPath)
+	}
+
+	agentC := containerByName(t, dep.Spec.Template.Spec.Containers, "platform-agent")
+	if agentC.SecurityContext == nil || agentC.SecurityContext.ReadOnlyRootFilesystem == nil || !*agentC.SecurityContext.ReadOnlyRootFilesystem {
+		t.Errorf("expected SecurityContext.ReadOnlyRootFilesystem true on platform-agent container")
+	}
+
 	// Verify Fluent Bit container
 	fbContainer := containerByName(t, dep.Spec.Template.Spec.Containers, "fluent-bit")
 	if fbContainer.Name != "fluent-bit" {
@@ -763,11 +804,31 @@ func TestBuildDeployment(t *testing.T) {
 	if fbContainer.Image != "fluent/fluent-bit:5.1.0" {
 		t.Errorf("expected fluent-bit image fluent/fluent-bit:5.1.0, got %s", fbContainer.Image)
 	}
+	if fbContainer.SecurityContext == nil || fbContainer.SecurityContext.ReadOnlyRootFilesystem == nil || !*fbContainer.SecurityContext.ReadOnlyRootFilesystem {
+		t.Errorf("expected SecurityContext.ReadOnlyRootFilesystem true on fluent-bit container")
+	}
+	// Deliberately no /tmp here: the shipper buffers in memory and must not share
+	// the agent's scratch volume.
+	for _, m := range fbContainer.VolumeMounts {
+		if m.Name == "tmp-scratch" {
+			t.Errorf("fluent-bit must not mount the agent's tmp-scratch volume")
+		}
+	}
 
 	// Verify volumes
 	volumesMap := make(map[string]corev1.Volume)
 	for _, vol := range dep.Spec.Template.Spec.Volumes {
 		volumesMap[vol.Name] = vol
+	}
+	if v, ok := volumesMap["tmp-scratch"]; !ok {
+		t.Errorf("expected tmp-scratch volume, not found")
+	} else if v.EmptyDir == nil {
+		t.Errorf("expected tmp-scratch to be an emptyDir")
+	} else if v.EmptyDir.SizeLimit == nil || v.EmptyDir.SizeLimit.String() != "2Gi" {
+		// Unbounded, this is the only writable path outside the PVC for the two
+		// agent containers, so a runaway write becomes node-level disk pressure
+		// and the kubelet picks an eviction victim that need not be this pod.
+		t.Errorf("expected tmp-scratch sizeLimit 2Gi, got %v", v.EmptyDir.SizeLimit)
 	}
 	if _, ok := volumesMap["fluent-bit-config"]; !ok {
 		t.Errorf("expected fluent-bit-config volume, not found")
@@ -1025,6 +1086,44 @@ func TestSafeSandboxEnvOverridesPassesAlertLimits(t *testing.T) {
 	// Widening the allowlist must not have widened it to everything.
 	if _, ok := values["SESSION_KV_DB_PATH"]; ok {
 		t.Errorf("SESSION_KV_DB_PATH must stay operator-owned, got %#v", got)
+	}
+}
+
+func TestSafeSandboxEnvOverridesPassesEodRecapFilters(t *testing.T) {
+	// This is the end-of-day recap's whole configuration surface — the script
+	// reads it from the environment on every run and there is no config file
+	// behind it. Off the allowlist, the SOP's documented override renders,
+	// validates, and silently does nothing, and a fleet whose noisy namespace
+	// is not one of the three shipped exclusions has no supported way to quiet
+	// it.
+	custom := []corev1.EnvVar{
+		{Name: "EOD_EXCLUDE_NAMESPACES", Value: "kube-system,istio-system"},
+		{Name: "GKE_CLUSTER_NAME", Value: "impostor"},
+		{
+			Name: "EOD_EXCLUDE_NAMESPACES",
+			ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "s"},
+				Key:                  "k",
+			}},
+		},
+	}
+
+	got := safeSandboxEnvOverrides(custom)
+	values := map[string]string{}
+	for _, e := range got {
+		if e.ValueFrom != nil {
+			t.Errorf("ValueFrom must never survive the allowlist, got %#v", e)
+		}
+		values[e.Name] = e.Value
+	}
+
+	if values["EOD_EXCLUDE_NAMESPACES"] != "kube-system,istio-system" {
+		t.Errorf("expected the recap's namespace filter to be overridable, got %q", values["EOD_EXCLUDE_NAMESPACES"])
+	}
+	// The recap resolves its own cluster name; letting the CR relabel every
+	// row would make one cluster's noise read as another's.
+	if _, ok := values["GKE_CLUSTER_NAME"]; ok {
+		t.Errorf("GKE_CLUSTER_NAME must stay operator-owned, got %#v", got)
 	}
 }
 
@@ -2579,15 +2678,43 @@ func TestManagedEnvPinsPlatformKeysButNotHome(t *testing.T) {
 		}
 	}
 
-	// A deployment with no chat integration pins nothing, so the render is empty — but
-	// buildConfigMapData still writes the key, and must: the managed volume projects it
-	// by name, and a ConfigMap item naming a missing key fails the mount and the pod
-	// never starts (see renderManagedEnv's doc comment). What is asserted here is the
-	// CONTENT, not the key's presence: an agent with no chat integration has no platform
-	// credential worth freezing, and a pin invented for one would only be a key the agent
-	// is refused permission to set.
-	if got := renderManagedEnv(newTestPlatformAgent()); got != "" {
-		t.Errorf("renderManagedEnv with no integration = %q, want empty", got)
+	// A deployment with no chat integration pins no PLATFORM key — an agent with no chat
+	// integration has no platform credential worth freezing, and a pin invented for one
+	// would only be a key the agent is refused permission to set. What survives is the
+	// loopback bearer, which is not conditional on anything; see the next test.
+	bare := renderManagedEnv(newTestPlatformAgent())
+	if got, want := bare, "API_SERVER_KEY="+loopbackAgentAPIKey+"\n"; got != want {
+		t.Errorf("renderManagedEnv with no integration = %q, want %q", got, want)
+	}
+}
+
+// TestManagedEnvPinsTheLoopbackKeyUnconditionally is the regression for issue #786.
+//
+// Hermes' stage2 hook generates a strong random API_SERVER_KEY into $HERMES_HOME/.env on
+// any boot where that file does not already carry one, and load_hermes_dotenv applies the
+// PVC file over the container environment — so the operator setting the env var is not
+// enough, and was not: every authenticated call to the gateway API 401'd against a key
+// nothing else in the system had ever seen. The managed scope is applied LAST with
+// override=True, which is why the pin has to live here and not only in the container env.
+//
+// Unconditional matters as much as present. The failure was found through the Google Chat
+// relay, but it belongs to the API server, which every deployment runs — including the
+// probes on the platform-agent container, which curl that API and so would hold the pod
+// out of Ready forever on an agent with no integration at all.
+func TestManagedEnvPinsTheLoopbackKeyUnconditionally(t *testing.T) {
+	for name, agent := range map[string]*agentv1alpha1.PlatformAgent{
+		"no integration": newTestPlatformAgent(),
+		"chat":           chatAgent(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := renderManagedEnv(agent)
+			want := "API_SERVER_KEY=" + loopbackAgentAPIKey
+			if !slices.Contains(strings.Split(strings.TrimSpace(env), "\n"), want) {
+				t.Errorf("the managed .env does not pin %q, so Hermes' stage2 hook generates its own "+
+					"key into the PVC .env and every authenticated call to the gateway API 401s "+
+					"(issue #786):\n%s", want, env)
+			}
+		})
 	}
 }
 
@@ -4245,6 +4372,77 @@ func TestDeploymentEnvCannotOverrideTheEventWatcherSwitch(t *testing.T) {
 	}
 }
 
+// A CR that already mounts /tmp must not collide with the operator's tmp-scratch mount.
+// Two VolumeMounts on one mountPath make the Deployment unappliable, so the failure is not
+// a redundant mount but a reconcile that stops on an upgrade.
+func TestUserSuppliedTmpMountReplacesTmpScratch(t *testing.T) {
+	cases := []struct {
+		name      string
+		configure func(*agentv1alpha1.DeploymentSpec)
+		// Per container, because the two inputs do not reach the same set of them:
+		// extraVolumeMounts is appended to the gateway and the dashboard, storages
+		// only to the gateway.
+		wantTmpOwner map[string]string
+	}{
+		{
+			name: "extraVolumeMounts",
+			configure: func(d *agentv1alpha1.DeploymentSpec) {
+				d.ExtraVolumeMounts = []corev1.VolumeMount{{Name: "my-tmp", MountPath: "/tmp"}}
+			},
+			wantTmpOwner: map[string]string{"platform-agent": "my-tmp", "platform-agent-dashboard": "my-tmp"},
+		},
+		{
+			// Trailing slash included on purpose: it is the same path to the API
+			// server's uniqueness check, so a name comparison would miss it.
+			name: "extraVolumeMounts with a trailing slash",
+			configure: func(d *agentv1alpha1.DeploymentSpec) {
+				d.ExtraVolumeMounts = []corev1.VolumeMount{{Name: "my-tmp", MountPath: "/tmp/"}}
+			},
+			wantTmpOwner: map[string]string{"platform-agent": "my-tmp", "platform-agent-dashboard": "my-tmp"},
+		},
+		{
+			// The dashboard keeps tmp-scratch here, and that is correct rather than an
+			// oversight: storages never reach it, so there is nothing to collide with
+			// and no reason to take its scratch space away.
+			name: "storages",
+			configure: func(d *agentv1alpha1.DeploymentSpec) {
+				d.Storages = []agentv1alpha1.StorageSpec{{Name: "scratch", MountPath: "/tmp"}}
+			},
+			wantTmpOwner: map[string]string{"platform-agent": "scratch-vol", "platform-agent-dashboard": tmpScratchVolumeName},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			agent := newTestPlatformAgent()
+			agent.Spec.Deployment = &agentv1alpha1.DeploymentSpec{}
+			tc.configure(agent.Spec.Deployment)
+
+			pod := buildPodTemplateSpec(agent, "h", "h", "h", "h", nil, renderOptions{})
+
+			// Every container, not the one the guard was written for. The API server
+			// applies its uniqueness check per container, so checking a single one
+			// passes while the Deployment it describes is still rejected.
+			all := append(append([]corev1.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...)
+			for _, c := range all {
+				seen := make(map[string]string)
+				for _, m := range c.VolumeMounts {
+					clean := path.Clean(m.MountPath)
+					if prev, dup := seen[clean]; dup {
+						t.Errorf("container %s: duplicate mountPath %q, from volumes %q and %q", c.Name, clean, prev, m.Name)
+					}
+					seen[clean] = m.Name
+				}
+				if want, checked := tc.wantTmpOwner[c.Name]; checked {
+					if got := seen["/tmp"]; got != want {
+						t.Errorf("container %s: /tmp served by volume %q, want %q", c.Name, got, want)
+					}
+				}
+			}
+		})
+	}
+}
+
 // The same hole, on the variable next to it. EVENT_WATCHER_CLUSTER_NAME is
 // appended after the same merge and was unreserved for as long as it has
 // existed; it is pinned here so the two cannot drift apart again.
@@ -4807,4 +5005,166 @@ func TestImagePullSecretsReachThePodSpec(t *testing.T) {
 			t.Errorf("StatefulSet pod spec imagePullSecrets = %v, want %v", got, want)
 		}
 	})
+}
+
+// The read-only kill switch. Unlike the two above it is not appended by
+// buildCredentialProxySidecar afterwards, so an unreserved name here does not
+// duplicate or lose a race — it is simply accepted, and the proxy reads the
+// user's value. `CREDENTIAL_PROXY_ENFORCE_READ_ONLY: "false"` under
+// spec.deployment.env turned off every refusal in the policy: all commands,
+// all agents, all clusters in the Pod, no expiry, and nothing in the CR that
+// reads like a security change. Whoever can edit the PlatformAgent is often
+// exactly who the policy is meant to constrain, so the switch cannot be theirs.
+//
+// Asserting absence rather than a value is deliberate: the proxy defaults to
+// enforcing when the variable is unset, so dropping the entry is the fix, and
+// an operator-set "true" would be indistinguishable from the merge having
+// silently passed the user's own "true" through.
+func TestDeploymentEnvCannotDisableReadOnlyEnforcement(t *testing.T) {
+	for _, userValue := range []string{"false", "0", "no", "true"} {
+		t.Run(userValue, func(t *testing.T) {
+			agent := newTestPlatformAgent()
+			agent.Spec.Deployment = &agentv1alpha1.DeploymentSpec{
+				Env: []corev1.EnvVar{{Name: "CREDENTIAL_PROXY_ENFORCE_READ_ONLY", Value: userValue}},
+			}
+
+			for _, e := range buildCredentialProxySidecar(agent, "/opt/data").Env {
+				if e.Name == "CREDENTIAL_PROXY_ENFORCE_READ_ONLY" {
+					t.Fatalf("spec.deployment.env set the read-only kill switch to %q; it must be dropped as reserved", e.Value)
+				}
+			}
+		})
+	}
+}
+
+// The mount stays put when the CR mounts elsewhere -- the case above must not be paid for
+// by every other CR losing its writable /tmp under a read-only root filesystem.
+func TestUnrelatedExtraMountKeepsTmpScratch(t *testing.T) {
+	agent := newTestPlatformAgent()
+	agent.Spec.Deployment = &agentv1alpha1.DeploymentSpec{
+		ExtraVolumeMounts: []corev1.VolumeMount{{Name: "extra-vol", MountPath: "/tmpfoo"}},
+	}
+
+	pod := buildPodTemplateSpec(agent, "h", "h", "h", "h", nil, renderOptions{})
+	c := containerByName(t, pod.Spec.Containers, "platform-agent")
+
+	for _, m := range c.VolumeMounts {
+		if m.Name == tmpScratchVolumeName && m.MountPath == "/tmp" {
+			return
+		}
+	}
+	t.Errorf("expected the tmp-scratch mount at /tmp, got %v", c.VolumeMounts)
+}
+
+// operatorBuiltContainers is every container buildPodTemplateSpec constructs itself, as
+// opposed to the ones a CR hands it through spec.deployment.sidecars/initContainers. The
+// list is written out rather than derived so that adding a container to the Pod has to
+// touch this file: the test below fails on a name it does not know, and the fix is to add
+// it here and give it hardenedSecurityContext().
+var operatorBuiltContainers = []string{
+	"sandbox-credential-cleanup",
+	"envoy-credential-proxy",
+	"platform-agent",
+	"platform-agent-dashboard",
+	"fluent-bit",
+}
+
+// The invariant the read-only-root work exists to establish, asserted once over the whole
+// Pod instead of container by container.
+//
+// Three of the five containers went without a read-only root for as long as they existed
+// and every test stayed green, because the assertions named containers one at a time and
+// nobody wrote one for the containers that were missing it. The golden manifests did
+// capture the omission, but a golden is regenerated mechanically when a container is
+// added, so it records whatever was built rather than rejecting it.
+//
+// So this walks. The name check is the half that catches the next container: an addition
+// the author forgot to harden arrives as an unknown name, not as a silent pass.
+func TestEveryContainerHasAHardenedSecurityContext(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		agent *agentv1alpha1.PlatformAgent
+		// The dashboard is the one operator-built container a CR can switch off.
+		absent string
+	}{
+		{name: "default", agent: newTestPlatformAgent()},
+		{
+			name: "dashboard disabled",
+			agent: func() *agentv1alpha1.PlatformAgent {
+				a := newTestPlatformAgent()
+				a.Spec.Harness = &agentv1alpha1.HarnessSpec{
+					Hermes: &agentv1alpha1.HermesSpec{DashboardEnabled: ptr.To(false)},
+				}
+				return a
+			}(),
+			absent: "platform-agent-dashboard",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := buildPodTemplateSpec(tc.agent, "h", "h", "h", "h", nil, renderOptions{})
+
+			want := make(map[string]bool, len(operatorBuiltContainers))
+			for _, n := range operatorBuiltContainers {
+				if n != tc.absent {
+					want[n] = true
+				}
+			}
+
+			all := append(append([]corev1.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...)
+			for _, c := range all {
+				if !want[c.Name] {
+					t.Errorf("container %q is not in operatorBuiltContainers: if the operator "+
+						"grew a container, give it hardenedSecurityContext() and add it to that list",
+						c.Name)
+					continue
+				}
+				delete(want, c.Name)
+
+				sc := c.SecurityContext
+				if sc == nil {
+					t.Errorf("container %s: no SecurityContext; want hardenedSecurityContext()", c.Name)
+					continue
+				}
+				if sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
+					t.Errorf("container %s: ReadOnlyRootFilesystem is not true", c.Name)
+				}
+				if sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
+					t.Errorf("container %s: AllowPrivilegeEscalation is not false", c.Name)
+				}
+				if sc.Capabilities == nil || !slices.Contains(sc.Capabilities.Drop, corev1.Capability("ALL")) {
+					t.Errorf("container %s: capabilities do not drop ALL, got %v", c.Name, sc.Capabilities)
+				}
+			}
+			// Without this the walk passes vacuously the day a container stops being
+			// built at all -- which is a change worth noticing, whatever its reason.
+			for n := range want {
+				t.Errorf("expected container %q in the Pod, not found", n)
+			}
+		})
+	}
+}
+
+// The other side of the same invariant: it covers what the operator builds and stops
+// there. A CR can still add a writable container to this Pod, which
+// docs/credential-isolation-design.md states as the limit of the guarantee -- pinned here
+// so that the doc and the code cannot drift apart silently.
+func TestCRSuppliedSidecarsAreNotHardenedByTheOperator(t *testing.T) {
+	agent := newTestPlatformAgent()
+	agent.Spec.Deployment = &agentv1alpha1.DeploymentSpec{
+		Sidecars:       []corev1.Container{{Name: "user-sidecar", Image: "example.com/side:v1"}},
+		InitContainers: []corev1.Container{{Name: "user-init", Image: "example.com/init:v1"}},
+	}
+
+	pod := buildPodTemplateSpec(agent, "h", "h", "h", "h", nil, renderOptions{})
+
+	for _, c := range append(append([]corev1.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...) {
+		if c.Name != "user-sidecar" && c.Name != "user-init" {
+			continue
+		}
+		if c.SecurityContext != nil {
+			t.Errorf("container %s: the operator rewrote a CR-supplied SecurityContext (%+v); "+
+				"if that is now intended, docs/credential-isolation-design.md says otherwise",
+				c.Name, c.SecurityContext)
+		}
+	}
 }
