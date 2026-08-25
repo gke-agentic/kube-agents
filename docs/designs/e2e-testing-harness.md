@@ -49,7 +49,7 @@ Validates the full incident investigation loop from alert ingestion to GitOps PR
 
 - **Pub/Sub Alert Ingress**: Emits synthetic autoscaler stockout alerts to Pub/Sub to confirm agent ingress and deduplication.
 - **Live CPU Stockout Investigation (Scenario 04)**: Deploys an unschedulable CPU workload, triggers root-cause investigation, and asserts the agent identifies the missing zone and proposes the correct GitOps remediation PR (Executed in RC promotion gate).
-- **Comprehensive Failure Modes (Scenarios 01-10)**: Exercises multi-zone scarcity, quota limits, volume incompatibility, and false signals across the nightly and manual evaluation matrix.
+- **Remaining Failure Modes (Scenarios 01-03, 05-10)**: Exercises regional scarcity, quota limits, volume incompatibility, and false signals across the nightly and manual evaluation matrix.
 
 ### Stage 4: External ChatOps Integration (`gchat_agent_test.py`)
 

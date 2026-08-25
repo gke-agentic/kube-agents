@@ -25,6 +25,17 @@ AUDIT_STREAMS: List[Tuple[str, str]] = [
     ("stockout-prevention", "Fleet Stockout Prevention & Capacity Audit"),
 ]
 
+_ABSENT = object()
+
+
+def _restore(module: object, name: str, original: object) -> None:
+    """Puts a monkeypatched module attribute back, deleting it if it was never there."""
+    if original is _ABSENT:
+        if hasattr(module, name):
+            delattr(module, name)
+    else:
+        setattr(module, name, original)
+
 
 def test_github_token_minting_and_connectivity(
     gke_cluster_name: Optional[str],
@@ -407,8 +418,12 @@ def test_audit_report_github_api_lifecycle_mocked(
     workspace.mkdir(parents=True, exist_ok=True)
     (workspace / ".git").mkdir(parents=True, exist_ok=True)
 
-    original_workspace = getattr(audit_report, "GITOPS_WORKSPACE", None)
-    original_scratch = getattr(audit_report, "SCRATCH_DIR", None)
+    # _ABSENT rather than None: the restore below has to tell "the attribute was unset"
+    # from "the attribute was set to a falsy value", and this test is parametrised, so a
+    # restore that silently skips leaks the patch into the next parameter's run.
+    original_workspace = getattr(audit_report, "GITOPS_WORKSPACE", _ABSENT)
+    original_scratch = getattr(audit_report, "SCRATCH_DIR", _ABSENT)
+    original_repo_root = audit_report.repo_root
     original_run_cmd = audit_report.run_cmd
     original_refresh = audit_report.refresh_credentials
     original_resolve = audit_report.resolve_repo
@@ -518,8 +533,7 @@ def test_audit_report_github_api_lifecycle_mocked(
         audit_report.run_cmd = original_run_cmd
         audit_report.refresh_credentials = original_refresh
         audit_report.resolve_repo = original_resolve
-        if original_workspace:
-            audit_report.GITOPS_WORKSPACE = original_workspace
-        if original_scratch:
-            audit_report.SCRATCH_DIR = original_scratch
+        audit_report.repo_root = original_repo_root
+        _restore(audit_report, "GITOPS_WORKSPACE", original_workspace)
+        _restore(audit_report, "SCRATCH_DIR", original_scratch)
         audit_report.set_workspace(None)

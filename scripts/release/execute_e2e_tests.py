@@ -3,9 +3,9 @@
 
 Reads the test matrix from tests/e2e/e2e_config.yaml (or $E2E_CONFIG),
 resolves target GCP project, GKE cluster, region, and namespace for each
-environment (e.g. gchat-e2e, cluster-e2e), applies Terraform infrastructure
-at test start if configured (idempotently, preserving the cluster without teardown),
-and executes the specified pytest suites.
+environment (e.g. gchat-e2e, agent-plugin-e2e), and executes the specified
+pytest suites. The cluster is expected to exist already; nothing here
+provisions infrastructure.
 """
 
 import argparse
@@ -207,6 +207,10 @@ def run_environment_tests(
         "AGENT_NAMESPACE": namespace,
         "KUBE_CONTEXT": kube_ctx,
         "REGISTRY": reg,
+        # Name the environment we picked, so conftest's fixtures fall through to this
+        # environment's env_vars rather than e2e_config.yaml's default_environment.
+        # Without it, `--env audit-e2e` runs a child that reads investigations-e2e.
+        "E2E_ENV": env_name,
     }
     if "CLOUDSDK_PYTHON" in env_vars:
         del env_vars["CLOUDSDK_PYTHON"]
@@ -231,7 +235,7 @@ def main() -> None:
     parser.add_argument(
         "--env",
         type=str,
-        help="Filter execution to a specific environment name (e.g. gchat-e2e, cluster-e2e)",
+        help="Filter execution to a specific environment name (e.g. gchat-e2e, agent-plugin-e2e)",
     )
 
     args, extra_args = parser.parse_known_args()

@@ -36,10 +36,6 @@ SPOT_CANDIDATES=(h4d-standard-192 h4d-highmem-192)
 _spot_unsupported() {
     # True when the region offers no Spot for this shape at all, as opposed to offering it
     # and being short today. The advisor errors in the first case and scores in the second.
-    if ! gcloud beta --help >/dev/null 2>&1; then
-        echo "Error: gcloud beta component is required for scenario 05 but is not installed." >&2
-        return 1
-    fi
     ! gcloud beta compute advice capacity --project="$PROJECT_ID" --region="$CLUSTER_LOCATION" \
         --provisioning-model=SPOT --size=1 --instance-selection-machine-types="$1" \
         --target-distribution-shape=any-single-zone >/dev/null 2>&1
@@ -47,6 +43,14 @@ _spot_unsupported() {
 
 _resolve_spot_only_shapes() {
     [ -n "$SCENARIO_MACHINES" ] && return 0
+
+    # The probe below reads "the advisor rejected this shape" as "the region offers no Spot
+    # for it". A missing `beta` component is also a rejection, and an indistinguishable one:
+    # every candidate would be classified unobtainable on a check that never ran. Refuse
+    # rather than guess -- SCENARIO_MACHINES skips this whole function if you already know
+    # which shapes to use.
+    gcloud beta --help >/dev/null 2>&1 ||
+        die "scenario 05 probes Spot obtainability with 'gcloud beta compute advice capacity', and the beta component is not installed. Install it (gcloud components install beta) or set SCENARIO_MACHINES to pin the shapes directly."
 
     local found=() mt
     for mt in "${SPOT_CANDIDATES[@]}"; do

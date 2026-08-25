@@ -139,6 +139,7 @@ def test_stockout_ingress_alert_smoke(
     gcp_project_id: Optional[str],
     gke_cluster_name: Optional[str],
     gcp_region: str,
+    agent_namespace: str,
 ) -> None:
     """Verifies that synthetic autoscaler scale-up error alerts can be published to the PubSub topic."""
     if os.environ.get("SKIP_STOCKOUT") == "1":
@@ -152,7 +153,7 @@ def test_stockout_ingress_alert_smoke(
 
     # Check if the stockout plugin is active in the cluster
     res_plugin = subprocess.run(
-        ["kubectl", "get", "agentplugins", "gkestockoutinvestigator", "-n", "kubeagents-system"],
+        ["kubectl", "get", "agentplugins", "gkestockoutinvestigator", "-n", agent_namespace],
         capture_output=True,
         text=True,
         timeout=5,
