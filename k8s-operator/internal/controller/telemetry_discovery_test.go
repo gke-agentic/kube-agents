@@ -499,11 +499,33 @@ func TestDiscoveredOTLPEndpointCanBeDisabled(t *testing.T) {
 
 	t.Setenv(otelDiscoveryEnvVar, "false")
 	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
-	// Unknown rather than none. Nobody probed, so nothing was established about the
-	// cluster, and the documented purpose of this switch is to fall straight through to
-	// the managed default — reporting none would silently disable telemetry instead.
-	if got, outcome := r.discoveredOTLPEndpoint(context.Background(), ""); got != "" || outcome != otlpDiscoveryUnknown {
-		t.Errorf("expected discovery to be disabled and report (\"\", unknown), got (%q, %v)", got, outcome)
+	// Off rather than none. Nobody probed, so nothing was established about the cluster,
+	// and the documented purpose of this switch is to fall straight through to the
+	// managed default — reporting none would silently disable telemetry instead.
+	if got, outcome := r.discoveredOTLPEndpoint(context.Background(), ""); got != "" || outcome != otlpDiscoveryOff {
+		t.Errorf("expected discovery to be disabled and report (\"\", off), got (%q, %v)", got, outcome)
+	}
+}
+
+// TestResolveOTLPEndpointDiscoveryOffOverridesRecordedNone is the kill switch actually
+// working. An agent that has already resolved to None is the population most likely to be
+// setting OTEL_COLLECTOR_DISCOVERY=false, and replaying its recorded None over the switch
+// would make the switch a no-op for exactly those agents — permanently, since nothing
+// else ever clears the recorded value.
+func TestResolveOTLPEndpointDiscoveryOffOverridesRecordedNone(t *testing.T) {
+	scheme := setupScheme()
+	cl := fake.NewClientBuilder().WithScheme(scheme).
+		WithInterceptorFuncs(noReadsAllowed(t)).Build()
+
+	agent := &agentv1alpha1.PlatformAgent{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "ns"}}
+	agent.Status.Telemetry = agentv1alpha1.TelemetryStatus{OTLPEndpointSource: otlpSourceNone}
+
+	t.Setenv(otelDiscoveryEnvVar, "false")
+	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
+	endpoint, source := r.resolveOTLPEndpoint(context.Background(), agent)
+	if endpoint != managedOTelEndpoint || source != otlpSourceDefault {
+		t.Errorf("expected switching discovery off to return (%q, %s) even for an agent recorded as None, got (%q, %s)",
+			managedOTelEndpoint, otlpSourceDefault, endpoint, source)
 	}
 }
 

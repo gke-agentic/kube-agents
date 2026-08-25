@@ -99,15 +99,24 @@ const (
 type otlpDiscovery int
 
 const (
-	// otlpDiscoveryUnknown means no authoritative answer is available: discovery is
-	// switched off, or every probe so far was inconclusive and there is nothing cached.
-	// The caller falls through to the managed default, which is what this install did
-	// before discovery existed.
+	// otlpDiscoveryUnknown means a probe was due but established nothing — it could not
+	// complete, and there is no cached answer. The caller falls through to the managed
+	// default unless the agent's own status carries a previous discovery result.
 	otlpDiscoveryUnknown otlpDiscovery = iota
 	// otlpDiscoveryFound means a collector was found; the endpoint is non-empty.
 	otlpDiscoveryFound
 	// otlpDiscoveryNone means a probe completed and this cluster has no collector.
 	otlpDiscoveryNone
+	// otlpDiscoveryOff means nobody looked, because OTEL_COLLECTOR_DISCOVERY is false.
+	//
+	// Distinct from Unknown, which is otherwise the same "no answer", because the two
+	// want opposite treatment of a previously recorded result. An inconclusive probe is
+	// a reason to keep serving what was last established; switching discovery off is an
+	// instruction to stop consulting discovery at all, including its recorded verdict.
+	// Collapsing them makes OTEL_COLLECTOR_DISCOVERY=false a no-op for exactly the agents
+	// that have already resolved to None, which is the population most likely to be
+	// setting it.
+	otlpDiscoveryOff
 )
 
 // discoveryOutcome classifies an endpoint that came from an authoritative probe, where
@@ -314,8 +323,11 @@ func (r *PlatformAgentReconciler) discoveredOTLPEndpoint(ctx context.Context, la
 	if strings.EqualFold(strings.TrimSpace(os.Getenv(otelDiscoveryEnvVar)), "false") {
 		// Not "this cluster has no collector" — nobody looked. The documented purpose of
 		// switching discovery off is to fall straight through to the managed default, so
-		// this must stay Unknown or setting it would disable telemetry instead.
-		return "", otlpDiscoveryUnknown
+		// this reports Off rather than None; reporting None would disable telemetry on
+		// the strength of a probe that never ran. It is also not Unknown: the caller
+		// replays a recorded None over Unknown, which would leave an agent already at
+		// None stuck there and make this switch a no-op for it.
+		return "", otlpDiscoveryOff
 	}
 
 	r.otelMu.Lock()
@@ -433,9 +445,11 @@ func (r *PlatformAgentReconciler) resolveOTLPEndpoint(ctx context.Context, agent
 		return endpoint, otlpSourceDiscovered
 	case otlpDiscoveryNone:
 		return "", otlpSourceNone
-	default:
-		// Nothing was established this time. A recorded None stands rather than
-		// flapping to the managed default.
+	case otlpDiscoveryUnknown:
+		// A probe was due and established nothing. A recorded None stands rather than
+		// flapping to the managed default and rolling the pod. Deliberately not done for
+		// otlpDiscoveryOff: there, the operator has said to stop consulting discovery,
+		// and replaying its recorded verdict would make the switch do nothing.
 		if lastKnownNone {
 			return "", otlpSourceNone
 		}
