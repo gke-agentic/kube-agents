@@ -806,7 +806,7 @@ HARDENED_GIT_CONFIG = (
 )
 
 
-def gh_credential_helpers(home_dir: Path) -> tuple[tuple[str, str], ...]:
+def gh_credential_helpers(environment: dict[str, str]) -> tuple[tuple[str, str], ...]:
     """The credential helpers `gh auth setup-git` left in the global config.
 
     Appended after `HARDENED_GIT_CONFIG` so they land after its empty
@@ -823,9 +823,14 @@ def gh_credential_helpers(home_dir: Path) -> tuple[tuple[str, str], ...]:
     Read back rather than named, because the value holds gh's absolute path and
     the host it was pointed at, and a constant here would be a second place for
     those to be wrong. Reading it is safe for the same reason the reset is
-    needed: `home_dir` is under the sidecar-only state emptyDir, which the agent
-    container cannot write and `argv_path_violation` will not let it name, so
-    the only writer is the chart's bootstrap command.
+    needed: the global config is under the sidecar-only state emptyDir, which
+    the agent container cannot write and `argv_path_violation` will not let it
+    name, so the only writer is the chart's bootstrap command.
+
+    `environment` is the one commands run under, which is what makes "the global
+    config" the same file here as it was for `gh auth setup-git`: git resolves
+    that path from `HOME` and `XDG_CONFIG_HOME`, and both are set there and not
+    in the sidecar's own environment.
 
     `-z` because a helper is a shell fragment and holds spaces and newlines,
     which leaves NUL as the only separator its value cannot contain. The
@@ -837,10 +842,9 @@ def gh_credential_helpers(home_dir: Path) -> tuple[tuple[str, str], ...]:
     """
     environment = {
         name: value
-        for name, value in os.environ.items()
+        for name, value in environment.items()
         if not name.startswith("GIT_CONFIG_")
     }
-    environment["HOME"] = str(home_dir)
     try:
         completed = subprocess.run(
             ["git", "config", "--global", "-z", "--get-regexp", r"^credential\..*\.helper$"],
@@ -1122,7 +1126,7 @@ class CommandExecutor:
         answer is cached too, since a second read would find the same file.
         """
         if self._credential_helper_rearm is None:
-            self._credential_helper_rearm = gh_credential_helpers(self.home_dir)
+            self._credential_helper_rearm = gh_credential_helpers(self.environment)
         return self._credential_helper_rearm
 
     def _within_workspace(self, candidate: Path) -> bool:
