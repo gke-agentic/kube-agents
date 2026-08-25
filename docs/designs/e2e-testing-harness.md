@@ -83,14 +83,14 @@ The stockout investigator test harness in `agentplugins/gke-stockout-investigato
 
 The test runner `scripts/release/execute_e2e_tests.py` reads configuration from `tests/e2e/e2e_config.yaml` and environment variables:
 
-| Variable              | Description                               | Default         |
-| :-------------------- | :---------------------------------------- | :-------------- |
-| `GCP_PROJECT_ID`      | Target Google Cloud Project ID            | None (required) |
-| `GKE_CLUSTER_NAME`    | Target GKE cluster name                   | None (required) |
-| `GCP_REGION`          | Target cluster region                     | `us-east4`      |
-| `STOCKOUT_SCENARIOS`  | Comma-separated scenario numbers or `all` | `04`            |
-| `FLEET_AUDIT_STREAMS` | Specific audit stream names or `all`      | `all`           |
-| `E2E_ENV`             | Target environment selector               | `cluster-e2e`   |
+| Variable              | Description                               | Default              |
+| :-------------------- | :---------------------------------------- | :------------------- |
+| `GCP_PROJECT_ID`      | Target Google Cloud Project ID            | None (required)      |
+| `GKE_CLUSTER_NAME`    | Target GKE cluster name                   | None (required)      |
+| `GCP_REGION`          | Target cluster region                     | `us-east4`           |
+| `STOCKOUT_SCENARIOS`  | Comma-separated scenario numbers or `all` | `04`                 |
+| `FLEET_AUDIT_STREAMS` | Specific audit stream names or `all`      | `all`                |
+| `E2E_ENV`             | Target environment selector               | `investigations-e2e` |
 
 ### Test Environments
 

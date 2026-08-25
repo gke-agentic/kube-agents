@@ -250,7 +250,7 @@ def main() -> None:
             ).returncode
         )
 
-    selected_env = args.env or os.environ.get("E2E_ENV") or defaults.get("default_environment", "cluster-e2e")
+    selected_env = args.env or os.environ.get("E2E_ENV") or defaults.get("default_environment", "investigations-e2e")
     # Filter target environments
     if selected_env and selected_env.lower() != "all":
         target_envs = [e for e in environments if e.get("name") == selected_env]
