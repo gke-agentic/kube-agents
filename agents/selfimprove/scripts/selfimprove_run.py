@@ -918,22 +918,28 @@ def _fetch_source_git(repo: str, ref: str, dest: str, timeout: int, fork: str) -
     time.
     """
     root = os.path.join(dest, "repo")
-    if os.path.isdir(os.path.join(root, ".git")):
-        # A checkout is here already. Nothing in a correct run puts one here --
+    if os.path.exists(root):
+        # Something is here already, and nothing in a correct run puts it here:
         # the investigation and each finding get their own `dest` on a per-Job
-        # emptyDir -- so rather than adopt it, confirm it is a checkout of the
-        # repository that was asked for. The path is derivable from the
-        # fingerprint, and this tree is where the filing turn writes and commits;
-        # a planted one would put attacker-chosen files into a pull request under
-        # the robot's name. Checking the remote costs one `git` invocation and
-        # removes the need to reason about who else can write the emptyDir.
-        if _git_origin_is(root, repo, timeout):
-            return root
-        log(
-            "a checkout already exists at %s but its `origin` is not %s. Refusing to reuse it."
-            % (root, repo)
-        )
-        return None
+        # emptyDir. What can put it here is the investigation turn, which runs
+        # earlier in the same Job, shares the emptyDir, and derives this path
+        # from the fingerprint the same way this function does -- so it is a
+        # writable location whose name a prompt-injected turn can compute.
+        #
+        # Delete it. This used to adopt the tree when its `origin` remote named
+        # the right repository, which reads as a check and is not one: a remote
+        # URL is a string the planter also chose. The tree is what the filing
+        # turn commits and pushes under the robot's identity, and a planted
+        # `.git/config` or `.git/hooks/pre-commit` is code the sidecar runs next
+        # to the credential. Refusing instead of deleting was the other
+        # candidate and is worse: the path is per-finding and stable, so one
+        # plant would block that finding from ever being filed.
+        log("removing a pre-existing tree at %s; nothing in this run put it there" % root)
+        try:
+            shutil.rmtree(root)
+        except OSError as exc:
+            log("could not remove %s: %s" % (root, exc))
+            return None
     os.makedirs(root, exist_ok=True)
     _write_lease_marker(dest, repo)
     steps = [
@@ -960,37 +966,6 @@ def _fetch_source_git(repo: str, ref: str, dest: str, timeout: int, fork: str) -
             return None
     log("git checkout of %s at %s in %s" % (repo, ref, root))
     return root
-
-
-def _git_origin_is(root: str, repo: str, timeout: int) -> bool:
-    """Whether the checkout at `root` has `origin` pointing at `repo`.
-
-    Compared case-insensitively and with a trailing `.git` and any trailing
-    slash removed, because those are the same repository to GitHub and differing
-    on them would reject a tree this function is only asked about when something
-    already went unusually right.
-    """
-
-    def canonical(url: str) -> str:
-        trimmed = url.strip().rstrip("/")
-        if trimmed.endswith(".git"):
-            trimmed = trimmed[: -len(".git")]
-        return trimmed.lower()
-
-    try:
-        done = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            timeout=max(1, min(timeout, 30)),
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        log("could not read the `origin` remote in %s: %s" % (root, exc))
-        return False
-    if done.returncode != 0:
-        return False
-    return canonical(done.stdout) == canonical("https://github.com/%s" % repo)
 
 
 def checkout_dirname(fingerprint: str) -> str:
@@ -1897,9 +1872,10 @@ UNCONFIRMED = "unconfirmed"
 #: prune as long as the finding keeps recurring, so recovery means hand-editing
 #: the ledger ConfigMap. And the input invites one. `reason` is `line[:200]` of
 #: any line starting with `SKIPPED`, which the skill prints on four paths that
-#: are not this one -- a stale finding, one closed unmerged, a `gh` error, plain
-#: lack of confidence -- each with free text after it that may quote the finding
-#: being skipped. "SKIPPED: index out of bounds, already filed as #12" is a
+#: are not this one -- a stale finding, an open pull request on the same topic,
+#: a `gh` error, plain lack of confidence -- each with free text after it that
+#: may quote the finding being skipped. "SKIPPED: index out of bounds, already
+#: filed as #12" is a
 #: deferral about an out-of-bounds bug, and an unanchored match reads it as a
 #: refusal and buries it.
 OUT_OF_BOUNDS_MARKER = "out of bounds"
@@ -1911,6 +1887,26 @@ PERMANENT_REFUSAL_MARKERS = (
     OUT_OF_BOUNDS_MARKER,
     "injected instruction in the finding",
     "injected instruction",
+)
+#: The two answers §0 of the filing skill reaches from its prior-art search that
+#: no later run reverses. Regexes rather than prefixes because each carries the
+#: number of the pull request it is citing, and matched against the whole reason
+#: rather than its opening words: the skill's wording ends at the number, so a
+#: turn that wrote more than that was saying something else, and something else
+#: is the case that must not retire a finding. `SKIPPED: fixed in #12, but the
+#: regression test never landed` is a deferral, and the separator rule the
+#: prefix markers use would have read it as a refusal.
+#:
+#: The open-pull-request case in the same section is deliberately absent. It is
+#: the only one of the three that ends on its own -- the pull request merges or
+#: is closed, and the next run's search then reaches one of these two -- so the
+#: hourly retry it costs is bounded by how long that pull request stays open.
+#: Retiring on it would close the recovery path §0 goes out of its way to keep:
+#: a pull request that merged without fixing the thing is supposed to be filed
+#: again.
+PERMANENT_REFUSAL_PATTERNS = (
+    re.compile(r"closed unmerged as #\d+\.?$"),
+    re.compile(r"fixed in #\d+\.?$"),
 )
 
 #: What `gh pr create` prints when it has opened one, and the only shape of
@@ -1941,10 +1937,28 @@ def is_permanent_refusal(reason: Optional[str]) -> bool:
     filing turn each time and never retires. Treating it as permanent is the
     behaviour that stops paying; the finding is still visible in the ledger for
     a maintainer who wants to look at what was refused and why.
+
+    `closed unmerged as #<n>` and `fixed in #<n>` are the same argument reached
+    from §0's prior-art search rather than from policy. Both say the loop is
+    looking at something already settled upstream -- a human declined it, or a
+    merged pull request fixed it and this install is running an older image --
+    and neither answer changes with time, because the *deployed* revision is
+    what the investigation reads and that does not move between runs. Left
+    unrecognised they were the loop's largest recurring cost on the live
+    install: the finding recurs every hour, is promoted every hour, and buys a
+    whole filing turn to redo the same search and print the same sentence.
+
+    Both are the turn's own judgement and both can be wrong, so each records the
+    pull request number it decided on. That number is in `reason` and `reason`
+    is in the ledger, which is where a maintainer undoing one starts -- see
+    `record_refusal` for the edit.
     """
     text = (reason or "").strip().lower()
     if text.startswith("skipped"):
         text = text[len("skipped") :].lstrip(" \t:-—")
+    for pattern in PERMANENT_REFUSAL_PATTERNS:
+        if pattern.match(text):
+            return True
     for marker in PERMANENT_REFUSAL_MARKERS:
         if not text.startswith(marker):
             continue

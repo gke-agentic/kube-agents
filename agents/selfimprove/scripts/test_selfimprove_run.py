@@ -1994,6 +1994,63 @@ class PermanentRefusalMarkerTests(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertFalse(R.is_permanent_refusal(line))
 
+    def test_the_two_settled_upstream_answers_are_refusals(self):
+        """§0's prior-art search reaches two answers no later run reverses.
+
+        Both were costing a filing turn an hour on the live install: the
+        investigation reads the deployed revision, which does not move between
+        runs, so the finding recurs, is promoted, and buys a whole turn to redo
+        the same search and print the same sentence.
+        """
+        for line in (
+            "SKIPPED: closed unmerged as #12",
+            "SKIPPED: fixed in #4123",
+            "Skipped - Fixed In #7.",
+            "closed unmerged as #7",
+        ):
+            with self.subTest(line=line):
+                self.assertTrue(R.is_permanent_refusal(line))
+
+    def test_a_word_after_the_number_makes_it_an_ordinary_skip(self):
+        """The skill's wording ends at the number, so anything past it is the
+        turn saying something else -- and something else is a deferral. The
+        separator rule the prefix markers use would have read the first of these
+        as permanent, because a comma is one of the separators it allows."""
+        for line in (
+            "SKIPPED: fixed in #12, but the regression test never landed",
+            "SKIPPED: closed unmerged as #12 and I think that was a mistake",
+            "SKIPPED: the leak the tests call fixed in #12 is still there",
+        ):
+            with self.subTest(line=line):
+                self.assertFalse(R.is_permanent_refusal(line))
+
+    def test_an_open_pull_request_is_not_permanent(self):
+        """The one prior-art answer that ends on its own. That pull request
+        merges or is closed, and the next run's search then reaches one of the
+        two above -- so the hourly retry is bounded, and retiring on it would
+        close the recovery path §0 keeps for a pull request that merged without
+        fixing the thing."""
+        self.assertFalse(R.is_permanent_refusal("SKIPPED: already filed as #12"))
+
+    def test_the_skill_prints_what_this_predicate_reads(self):
+        """A vocabulary split across two files stops matching when one moves."""
+        skill = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(R.__file__))),
+            "skills",
+            "file-pull-request",
+            "SKILL.md",
+        )
+        with open(skill, "r", encoding="utf-8") as handle:
+            text = handle.read()
+        for wording in (
+            "SKIPPED: closed unmerged as #<n>",
+            "SKIPPED: fixed in #<n>",
+            "SKIPPED: already filed as #<n>",
+            "SKIPPED: out of bounds - <why>",
+        ):
+            with self.subTest(wording=wording):
+                self.assertIn(wording, text)
+
 
 class PullRequestLabelTests(unittest.TestCase):
     """The label that tells the loop's pull requests from a human's.
