@@ -22,7 +22,7 @@ BASE_IMAGE_ARGS := $(foreach v,$(BASE_IMAGE_VARS),$(if $($(v)),--build-arg $(v)=
 IMAGE_SOURCE ?=
 IMAGE_SOURCE_ARG := $(if $(IMAGE_SOURCE),--build-arg IMAGE_SOURCE=$(IMAGE_SOURCE))
 
-.PHONY: default help docker-build docker-build-agents docker-build-credential-proxy docker-push docker-push-agents docker-push-credential-proxy dev-rebuild-agent selfimprove-ledger mirror-images images-check status prettier-check prettier-write test-python test-python-deps test-bench test-bench-deps validate prompt-check docs-generate docs-check docs-check-generated docs-check-links docs-check-terminology docs-check-map docs-check-context-budget chart-sync chart-check tf-apply tf-destroy coverage coverage-check test-integration
+.PHONY: default help docker-build docker-build-agents docker-build-credential-proxy docker-push docker-push-agents docker-push-credential-proxy dev-rebuild-agent selfimprove-ledger selfimprove-enable mirror-images images-check status prettier-check prettier-write test-python test-python-deps test-bench test-bench-deps validate prompt-check docs-generate docs-check docs-check-generated docs-check-links docs-check-terminology docs-check-map docs-check-context-budget chart-sync chart-check tf-apply tf-destroy coverage coverage-check test-integration
 
 # The agent images this repository builds -- one per `--target` stage in
 # deploy/docker/Dockerfile, which is not the same thing as one per directory
