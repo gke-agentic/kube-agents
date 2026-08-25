@@ -2941,8 +2941,15 @@ func buildBaseContainers(agent *agentv1alpha1.PlatformAgent, image string, envVa
 				ReadOnly:  true,
 			},
 			{
+				// Backed by the system-metadata PVC (see buildDefaultVolumes below), not an
+				// emptyDir: an emptyDir is wiped on every pod replacement, so a new
+				// ReplicaSet's fluent-bit forgets what it already shipped and re-tails
+				// agent.log from Read_from_Head, re-emitting days-old lines with a fresh
+				// ingestion timestamp. SubPath keeps this out of the "session" subtree the
+				// session-kv container owns on the same claim.
 				Name:      "fluent-bit-state",
 				MountPath: "/fluent-bit/state",
+				SubPath:   "fluent-bit",
 			},
 		},
 		SecurityContext: &corev1.SecurityContext{
@@ -3019,9 +3026,16 @@ func buildDefaultVolumes(agent *agentv1alpha1.PlatformAgent) []corev1.Volume {
 			},
 		},
 		{
+			// Reuses the system-metadata PVC (already mounted by the sandbox for
+			// session_kv.db) rather than a dedicated claim, so fluent-bit's tail-offset
+			// SQLite DB survives pod replacement instead of resetting to an empty
+			// emptyDir on every new ReplicaSet. The mount's SubPath ("fluent-bit") keeps
+			// it out of the "session" subtree the sandbox owns on the same claim.
 			Name: "fluent-bit-state",
 			VolumeSource: corev1.VolumeSource{
-				EmptyDir: &corev1.EmptyDirVolumeSource{},
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: "system-metadata",
+				},
 			},
 		},
 		{

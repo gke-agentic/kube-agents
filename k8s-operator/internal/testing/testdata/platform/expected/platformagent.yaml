@@ -741,6 +741,7 @@ spec:
               subPath: parsers.conf
             - mountPath: /fluent-bit/state
               name: fluent-bit-state
+              subPath: fluent-bit
         - command:
             - /usr/local/bin/start-services
           env:
@@ -925,8 +926,9 @@ spec:
             defaultMode: 420
             name: platformagent-fluent-bit-config
           name: fluent-bit-config
-        - emptyDir: {}
-          name: fluent-bit-state
+        - name: fluent-bit-state
+          persistentVolumeClaim:
+            claimName: system-metadata
         - name: system-metadata
           persistentVolumeClaim:
             claimName: system-metadata

@@ -796,8 +796,10 @@ func TestBuildDeployment(t *testing.T) {
 	if _, ok := volumesMap["fluent-bit-config"]; !ok {
 		t.Errorf("expected fluent-bit-config volume, not found")
 	}
-	if _, ok := volumesMap["fluent-bit-state"]; !ok {
+	if v, ok := volumesMap["fluent-bit-state"]; !ok {
 		t.Errorf("expected fluent-bit-state volume, not found")
+	} else if v.PersistentVolumeClaim == nil || v.PersistentVolumeClaim.ClaimName != "system-metadata" {
+		t.Errorf("expected fluent-bit-state to reuse the system-metadata PVC so tail offsets survive pod restarts, got %#v", v)
 	}
 	if _, ok := volumesMap["system-metadata"]; !ok {
 		t.Errorf("expected system-metadata volume, not found")
