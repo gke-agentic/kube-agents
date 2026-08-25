@@ -6,8 +6,4 @@ type: application
 # overwrites both with the SemVer release tag at publish time, so the chart version tracks the app version.
 version: 0.1.0
 appVersion: "v0.1.0"
-# The floor for the chart as a whole. selfImprovement carries a higher one --
-# its credential proxy is a native sidecar, GA in 1.29 -- and templates/self-improvement.yaml
-# checks for it when the feature is enabled, so a 1.28 cluster can still run the
-# operator and the agent.
-kubeVersion: ">=1.28.0-0"
+kubeVersion: ">=1.29.0-0"

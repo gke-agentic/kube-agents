@@ -10,7 +10,7 @@ This repository contains the Kubernetes Agentic Harness (`kube-agents`). It is a
   - `chat/`: The Planning Agent front door — the `default` Hermes profile that receives chat ingress, plans the work, and delegates each piece to a specialist.
   - `platform/`: Configuration for the Platform Agent, scaffolded at pod startup into the `platform` profile.
   - `cluster/`: The Cluster Agent profile _template_ (persona, scoped config, and runtime-debugging skills). The Platform Agent scaffolds this into per-cluster Hermes profiles at runtime; it is not deployed directly.
-  - `selfimprove/`: The self-improvement loop's profile _template_ and the three Python modules its hourly CronJob runs ([`docs/designs/self-improvement.md`](docs/designs/self-improvement.md)). Looks inward at kube-agents itself, not at the fleet under management, and is disabled by default.
+  - `selfimprove/`: The self-improvement loop's profile _template_ and the modules its hourly CronJob runs ([design](docs/designs/self-improvement.md)). Looks inward at kube-agents itself, not the fleet under management; off by default.
 - `.agents/skills/`: Repository-level skills, not shipped in the agent images — review skills (adversarial change review, security audits, docs-drift, skill quality) run against pull requests and clusters, with `review-preflight` running the pre-PR set of them in a context that did not write the change, plus the `install-kube-agents`/`uninstall-kube-agents`/`upgrade-kube-agents` lifecycle skills that drive the repository's installer scripts.
 - `charts/`: Canonical Helm charts (`kube-agents`) for deploying the Kube-Agents operator and profiles.
 - `terraform/`: Companion reusable Terraform modules (`gke-cluster`, `kube-agents-iam`, `chat-pubsub`, `github-minter`, `gke-backup-plan`, `drift-pubsub`, `kube-agents-selfimprove`) for infrastructure provisioning, plus `examples/full-install/`, the single-apply composition that installs the Helm chart on top. `drift-pubsub` and `kube-agents-selfimprove` are not yet part of that composition.
@@ -18,7 +18,7 @@ This repository contains the Kubernetes Agentic Harness (`kube-agents`). It is a
 - `docs/`: Documentation.
   - `site/`: The published documentation site (Astro + Starlight) — the canonical home for
     user-facing docs.
-  - `architecture/`: The end-state architecture specification (`01`–`08`). Describes the target, not
+  - `architecture/`: The end-state architecture specification (`01`–`09`). Describes the target, not
     what ships today.
   - `designs/`: Per-feature design documents.
 - `k8s-operator/`: Go/Kubebuilder operator reconciling `PlatformAgent` Custom Resources, plus the shared installer helpers under `scripts/`.
@@ -28,6 +28,38 @@ This repository contains the Kubernetes Agentic Harness (`kube-agents`). It is a
   and pin. Read by `make mirror-images`, the kustomize deploy targets, and the docs generator.
 - `INSTALL.md`: Installation guide.
 - `README.md`: Project overview.
+
+## Where Tests Go
+
+Tests live in nine places here, with different runners and different answers to "does this catch a
+regression before merge". Choosing the wrong one rarely fails loudly — the test runs somewhere you
+did not expect, or nowhere at all, and the suite reports green around it.
+
+**Decide by asking whether a model call is in the loop.**
+
+- **No** — it is a test, and it runs on every pull request. Put it beside the module it covers; in
+  `tests/` when there is nothing to sit beside, as for a shell script or a rendered manifest; or in
+  `tests/integration/` when it spans two components.
+  See [`tests/integration/README.md`](tests/integration/README.md).
+- **Yes, and you plant the defect it has to find** — it is an eval, it belongs in
+  `bench/tasks/<name>/task.yaml`, and it runs in the Prow presubmit, so adding one changes what
+  every pull request reports. [`docs/designs/bench-case-format.md`](docs/designs/bench-case-format.md)
+  is the contract for what that file must carry; `make bench-case-check` checks it locally
+  and `scripts/test_task_registration.py` gates it.
+- **Yes, and it checks an install you already have** — it is a critical user journey, and it goes in
+  `bench/cuj/`. **This tier is manual by design**, not pending automation: it needs a real
+  deployment to point at and CI has none, so no job runs it and adding one changes nothing about
+  what CI reports. It plants nothing, so it grades the deployment rather than the agent.
+  See [`bench/cuj/README.md`](bench/cuj/README.md).
+- **Yes, and it is the release gate** — `tests/e2e/`, which the release-candidate pipeline runs on a
+  schedule. Adding to it holds up releases rather than pull requests.
+
+One rule holds wherever it lands: a new test directory only runs if a `PYTHON_TEST_DIRS` glob in the
+`Makefile` reaches it, and a directory the globs miss fails nothing — it sits unexecuted while the
+suite reports green around it. Add the glob in the same change.
+
+The nine homes, what runs each, and how far "runs on a pull request" is from "gates a merge" are in
+[`docs/testing-map.md`](docs/testing-map.md).
 
 ## Agent Setup & Integration
 
@@ -118,7 +150,7 @@ the assignee is the claim; do not apply `status:` labels to issues in this repos
 
 - Skills are located under `agents/platform/skills/` (Platform Agent: provisioning, governance, cost, manifest generation, GitOps) and `agents/cluster/skills/` (Cluster Agent: single-cluster runtime debugging and operations).
 - Each skill directory must contain a `SKILL.md` file providing instructions for that specific skill.
-- Place a skill according to its persona: fleet/provisioning/GitOps-write skills belong to the Platform Agent; read-only, single-cluster runtime-debugging skills belong to the Cluster Agent. `agents/selfimprove/skills/` is a third home and not a place to add to — those two skills belong to the self-improvement loop, which looks inward at kube-agents itself.
+- Place a skill according to its persona: fleet/provisioning/GitOps-write skills belong to the Platform Agent; read-only, single-cluster runtime-debugging skills belong to the Cluster Agent. `agents/selfimprove/skills/` is a third home, closed to new skills.
 - When adding new skills, ensure they follow the existing structure and are clearly documented to be understood by AI agents.
 
 ## Documentation Guidelines
@@ -278,6 +310,10 @@ map (`docs/README.md`), and this file plus `CLAUDE.md` stay inside the context b
     confirm it goes back.
   - **Say what you could not cover, and why**, rather than implying full coverage. Clean up test
     artifacts, restore prior state, and note anything left behind.
+  - **Screenshots of graphical surfaces go through `scripts/pr_evidence_screenshot.sh`**, which
+    publishes the image where a PR body can render it and prints Markdown stamped with the
+    commit and capture time. Command output stays as fenced text transcripts — a screenshot of a
+    terminal is evidence degraded, not evidence.
   - **If the install is shared with other agents, take the lease.**
     `scripts/live_test_lease.py` holds it as a ConfigMap in the install's own namespace. Copy
     `.claude/settings.json.example` to `.claude/settings.json` once per checkout and its

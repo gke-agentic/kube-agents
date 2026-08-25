@@ -16,6 +16,17 @@
 # one home here so the entry points cannot drift apart.
 DEFAULT_CLUSTER_NAME="platform-agent-host"
 DEFAULT_REGION="us-central1"
+# Vertex serves each model from its own subset of locations, and the cluster's
+# region is usually not one of them -- gemini-3.5-flash, the vertex_ai default,
+# is not served from us-central1 (DEFAULT_REGION), so a region-derived default
+# 404s on a stock install. The global endpoint serves the first-party Gemini
+# models from wherever has capacity, which is the only default that works
+# without knowing the cluster's region. Two reasons to override it: it gives no
+# in-region ML processing guarantee, and a Model Garden partner model (Claude,
+# Llama, Mistral) may be served only from specific regions. Which locations
+# serve which model:
+# https://docs.cloud.google.com/vertex-ai/generative-ai/docs/learn/locations
+DEFAULT_VERTEX_LOCATION="global"
 DEFAULT_MODEL_PROVIDER="gemini"
 
 # All kube-agents images (k8s-operator, platform-agent, credential-proxy,
@@ -73,6 +84,22 @@ is_valid_cmek_encryption_state() {
     fi
   done
   return 1
+}
+
+# ─── GKE Version Comparison ───────────────────────────────────────────────────
+# The first GKE version whose Autopilot clusters ship the gvisor RuntimeClass:
+# https://cloud.google.com/kubernetes-engine/docs/how-to/sandbox-pods
+GVISOR_AUTOPILOT_MIN_VERSION="1.27.4-gke.800"
+
+# True when GKE version $1 is at or above $2. `sort -V` reads both the dotted
+# fields and the -gke.N suffix numerically, so it puts gke.800 below gke.1500
+# where a lexical compare does the opposite. Callers check the version's shape
+# themselves: an unparseable string here is "unknown", not "too old", and the
+# two deserve different answers.
+gke_version_at_least() {
+  local have="${1:-}" want="${2:-}"
+  [ "$have" = "$want" ] ||
+    [ "$(printf '%s\n%s\n' "$have" "$want" | sort -V | head -n1)" = "$want" ]
 }
 
 retry() {
@@ -490,6 +517,49 @@ write_tfvars_from_state() {
     fi
   fi
 
+  # ENABLE_GVISOR is one intent — run the agent sandboxed — and the two things
+  # that satisfy it differ by cluster shape. Standard needs the sandbox node
+  # pool AND the RuntimeClass on the pod; Autopilot ships the gvisor
+  # RuntimeClass natively and has no pool to manage, so asking the gke-cluster
+  # module for one there fails the plan. Deriving both from the probed
+  # cluster_mode keeps --gvisor=true meaning the same thing on either shape.
+  local gvisor_node_pool="false" agent_runtime_class=""
+  if is_truthy "${ENABLE_GVISOR:-false}"; then
+    agent_runtime_class="gvisor"
+    if [ "$cluster_mode" = "standard" ]; then
+      gvisor_node_pool="true"
+    else
+      # Autopilot's gvisor RuntimeClass arrived in a specific GKE version, and
+      # asking an older cluster for it fails late and unrecognisably: the
+      # operator stops at its RuntimeClass check before writing the agent
+      # Deployment, the Helm release still reports success because that
+      # Deployment is operator-created rather than chart-rendered, and
+      # install.sh's post-apply gate exits 1 with "Expected deployment
+      # 'platform-agent-gateway' was not created" — after the cluster, IAM,
+      # KMS, cert-manager and the release have all been applied, naming
+      # nothing about a RuntimeClass. Refuse here instead, which is where the
+      # gke-cluster module's precondition refuses the equivalent Standard
+      # mistake. cluster_mode is only "autopilot" because the describe above
+      # succeeded, so there is always a live cluster to ask.
+      #
+      # `trap - ERR` as well as `|| true`, for the bash 3.2 reason the probe
+      # above gives: a gcloud failure here is a best-effort miss, not an abort.
+      local master_version
+      master_version="$(trap - ERR; gcloud container clusters describe "${CLUSTER_NAME}" \
+        --location "${REGION}" --project "${PROJECT_ID}" \
+        --format="value(currentMasterVersion)" 2>/dev/null || true)"
+      master_version="${master_version//[[:space:]]/}"
+      if [[ ! "$master_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-gke\.[0-9]+$ ]]; then
+        print_warning "Could not read the GKE version of Autopilot cluster '${CLUSTER_NAME}'; proceeding as though it supports GKE Sandbox. Below ${GVISOR_AUTOPILOT_MIN_VERSION} the agent Deployment is never created and this run fails at its final check."
+      elif ! gke_version_at_least "$master_version" "$GVISOR_AUTOPILOT_MIN_VERSION"; then
+        print_error "Autopilot cluster '${CLUSTER_NAME}' runs GKE ${master_version}, and its gvisor RuntimeClass needs ${GVISOR_AUTOPILOT_MIN_VERSION} or later."
+        print_info "Upgrade the cluster, or re-run with --gvisor=false. Continuing would apply every GCP and Helm resource and then fail on a missing agent Deployment."
+        return 1
+      fi
+      print_info "Cluster '${CLUSTER_NAME}' is Autopilot: using its built-in gvisor RuntimeClass, with no sandbox node pool to provision."
+    fi
+  fi
+
   local old_umask
   old_umask="$(umask)"
   umask 077
@@ -507,8 +577,9 @@ write_tfvars_from_state() {
     echo "create_cluster             = ${create_cluster}"
     echo "allow_external_dns_traffic = true"
     echo "deletion_protection        = false"
-    echo "enable_gvisor_node_pool    = $(hcl_bool "${ENABLE_GVISOR:-false}")"
+    echo "enable_gvisor_node_pool    = ${gvisor_node_pool}"
     echo "gvisor_pool_name           = $(hcl_str "${GVISOR_POOL_NAME:-gvisor-pool}")"
+    echo "agent_runtime_class        = $(hcl_str "${agent_runtime_class}")"
     echo "enable_cert_manager        = ${enable_cert_manager}"
     echo ""
     echo "image_tag                  = $(hcl_str "${image_tag}")"
