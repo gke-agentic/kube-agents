@@ -1473,15 +1473,19 @@ opt-in and why §7's gate is per-install configuration rather than a constant.
   `.git/config` in the tree that the sidecar's next `git` command reads. Git has no switch that
   turns repo-local config off, so `credential_proxy.HARDENED_GIT_CONFIG` pins the settings that
   matter through `GIT_CONFIG_COUNT`, which outranks the repository the way `-c` does: hooks, pager,
-  editor, sequence editor, external diff, `ext://` transport, unscoped credential helpers,
-  `core.sshCommand` and commit signing. That is a list of what is worth pinning and not a proof
-  about the rest, and two gaps in it are known. A repo-local `credential.https://github.com.helper`
-  is a different config key from the unscoped `credential.helper` the pin resets, and resetting it
-  would also drop the one `gh auth setup-git` wrote — the one that authenticates the push. And a
-  `.gitattributes` in the tree can attach a `filter.*` or `diff.*.textconv` driver to a path, which
-  repo-local config then defines. Reaching either needs a turn that is already writing files in the
-  checkout, which is the same precondition as the bullet above and has the same fix: the tree stops
-  being writable by whatever asks for the commit only when filing moves to its own pod.
+  editor, sequence editor, external diff, `ext://` transport, credential helpers, `core.sshCommand`
+  and commit signing. The credential helper needs a second step. An empty value resets the
+  accumulated list rather than setting a value, and there is one list however it was filled, so the
+  reset drops a repo-local `credential.https://github.com.helper` and the entry `gh auth setup-git`
+  wrote alike; `credential_proxy.gh_credential_helpers` reads the latter back out of the sidecar's
+  own global config and appends it after the reset. The pair is what stops the next
+  `git credential approve` handing the password to a helper the repository named, while leaving the
+  push authenticated. That is a list of what is worth pinning and not a proof about the rest, and
+  one gap in it is known: a `.gitattributes` in the tree can attach a `filter.*` or
+  `diff.*.textconv` driver to a path, which repo-local config then defines. Reaching it needs a turn
+  that is already writing files in the checkout, which is the same precondition as the bullet above
+  and has the same fix: the tree stops being writable by whatever asks for the commit only when
+  filing moves to its own pod.
 - **Path containment reads argv conservatively, and can refuse a legitimate command.** With
   `CREDENTIAL_PROXY_UNTRUSTED_WORKSPACE` on, the proxy resolves three token shapes — a leading `/`,
   a flag carrying `=/`, and a relative path with a `..` component — and refuses the command if any

@@ -883,9 +883,10 @@ spec:
                 # pager, the editors, diff.external and the unscoped credential
                 # helper. Those are the settings git reads out of a repository
                 # and then runs as a command -- no flag is involved, so no argv
-                # rule can reach them. The host-scoped helper `gh auth setup-git`
-                # wrote to the global config survives, which is what
-                # authenticates the push.
+                # rule can reach them. Clearing the helper clears gh's too, so
+                # the proxy reads the host-scoped one `gh auth setup-git` wrote
+                # to the global config and appends it after the reset; that is
+                # what authenticates the push. See `gh_credential_helpers`.
                 - name: CREDENTIAL_PROXY_UNTRUSTED_WORKSPACE
                   value: "1"
                 - name: KSA_TOKEN_FILE

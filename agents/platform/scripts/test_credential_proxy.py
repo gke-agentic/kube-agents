@@ -2,6 +2,7 @@ import io
 import json
 import os
 import queue
+import shutil
 import socket
 import subprocess
 import sys
@@ -623,7 +624,12 @@ class UntrustedWorkspaceTest(unittest.TestCase):
         cannot see any of it. `GIT_CONFIG_COUNT` is read exactly where `-c` is,
         which is above repo-local config rather than under it.
         """
-        environment = self.git_environment(self.executor())
+        executor = self.executor()
+        # No gh config in the test's state dir, so the re-arm is empty and the
+        # injected list is `HARDENED_GIT_CONFIG` alone. The re-arm has its own
+        # tests below; this one is about what gets pinned.
+        self.assertEqual((), executor.credential_helper_rearm())
+        environment = self.git_environment(executor)
         count = int(environment["GIT_CONFIG_COUNT"])
         self.assertEqual(len(credential_proxy.HARDENED_GIT_CONFIG), count)
         pinned = {
@@ -635,12 +641,13 @@ class UntrustedWorkspaceTest(unittest.TestCase):
         self.assertEqual("false", pinned["core.editor"])
         self.assertEqual("", pinned["diff.external"])
         self.assertEqual("never", pinned["protocol.ext.allow"])
-        # An empty `credential.helper` resets the unscoped list. It must stay
-        # empty rather than being dropped: a repository that sets one of its own
-        # would otherwise have it honoured. And it must not become
-        # GIT_CONFIG_GLOBAL=/dev/null, which is the neighbouring idea and breaks
-        # the push -- `gh auth setup-git` writes the host-scoped helper that
-        # authenticates it into the global config.
+        # An empty `credential.helper` resets the list. It must stay empty
+        # rather than being dropped: a repository that sets one of its own would
+        # otherwise have it honoured. What it resets is the whole accumulated
+        # list, gh's host-scoped entry included, which is why
+        # `credential_helper_rearm` appends that entry back after this one. And
+        # it must not become GIT_CONFIG_GLOBAL=/dev/null, the neighbouring idea,
+        # which takes away the file the re-arm reads.
         self.assertEqual("", pinned["credential.helper"])
         self.assertNotIn("GIT_CONFIG_GLOBAL", environment)
         # `url.<x>.insteadOf` can turn the https remote into an ssh one, which is
@@ -664,6 +671,148 @@ class UntrustedWorkspaceTest(unittest.TestCase):
         environment = self.git_environment(self.executor(untrusted=False))
         self.assertNotIn("GIT_CONFIG_COUNT", environment)
         self.assertNotIn("GIT_CONFIG_KEY_0", environment)
+
+    HOST_SCOPED_HELPER = "!/usr/bin/gh auth git-credential"
+
+    def seed_gh_global_config(self, executor, body=None):
+        """The global config `gh auth setup-git` leaves behind.
+
+        Its own empty reset is included, because dropping that line is what the
+        re-arm has to do and a fixture without it cannot show that it does.
+        """
+        executor.home_dir.mkdir(parents=True, exist_ok=True)
+        (executor.home_dir / ".gitconfig").write_text(
+            body
+            if body is not None
+            else (
+                '[credential "https://github.com"]\n'
+                "\thelper = \n"
+                "\thelper = %s\n" % self.HOST_SCOPED_HELPER
+            ),
+            encoding="utf-8",
+        )
+
+    def test_the_reset_would_take_ghs_helper_with_it(self):
+        """The regression this pair of settings exists to prevent.
+
+        `credential.helper = ""` empties the whole accumulated helper list, not
+        the repository's share of it. Config is read system-global-local-env and
+        `GIT_CONFIG_COUNT` lands last, so gh's host-scoped entry is already on
+        the list when the reset arrives. Left there alone, every push fails with
+        `could not read Username for 'https://github.com'` -- git asking a
+        terminal that is not attached for a password it was handed at boot.
+
+        Asserted against real git rather than reasoned about, because this is a
+        claim about git's precedence rules and the previous version of this file
+        asserted the opposite in a comment for weeks.
+        """
+        executor = self.executor()
+        self.seed_gh_global_config(
+            executor,
+            '[credential "https://example.invalid"]\n'
+            "\thelper = \n"
+            "\thelper = !printf 'username=decoy\\npassword=decoy\\n'\n",
+        )
+        filled = self.fill_credential(executor, pinned=(("credential.helper", ""),))
+        self.assertNotIn("username=decoy", filled)
+
+    def test_the_re_arm_puts_ghs_helper_back(self):
+        executor = self.executor()
+        self.seed_gh_global_config(
+            executor,
+            '[credential "https://example.invalid"]\n'
+            "\thelper = \n"
+            "\thelper = !printf 'username=decoy\\npassword=decoy\\n'\n",
+        )
+        filled = self.fill_credential(
+            executor,
+            pinned=(("credential.helper", ""),) + executor.credential_helper_rearm(),
+        )
+        self.assertIn("username=decoy", filled)
+
+    def test_the_re_arm_reads_back_what_gh_wrote(self):
+        executor = self.executor()
+        self.seed_gh_global_config(executor)
+        self.assertEqual(
+            (("credential.https://github.com.helper", self.HOST_SCOPED_HELPER),),
+            executor.credential_helper_rearm(),
+        )
+
+    def test_ghs_own_reset_is_not_re_armed(self):
+        """Copying the empty line back would empty the list after the re-arm.
+
+        gh writes `helper =` before its own helper for the same reason this file
+        does, and the two entries come back from `--get-regexp` in file order. A
+        re-arm that kept the empty one would reset the list a second time, this
+        time after the entry it was restoring.
+        """
+        executor = self.executor()
+        self.seed_gh_global_config(executor)
+        self.assertNotIn("", [value for _, value in executor.credential_helper_rearm()])
+
+    def test_the_re_arm_lands_after_the_reset(self):
+        executor = self.executor()
+        self.seed_gh_global_config(executor)
+        environment = self.git_environment(executor)
+        count = int(environment["GIT_CONFIG_COUNT"])
+        keys = [environment["GIT_CONFIG_KEY_%d" % i] for i in range(count)]
+        self.assertLess(
+            keys.index("credential.helper"),
+            keys.index("credential.https://github.com.helper"),
+            "the reset must precede the re-arm or it undoes it",
+        )
+        self.assertEqual(len(credential_proxy.HARDENED_GIT_CONFIG) + 1, count)
+
+    def test_the_re_arm_is_read_once(self):
+        """Cached: every git command the filing turn issues would pay for it."""
+        executor = self.executor()
+        self.seed_gh_global_config(executor)
+        first = executor.credential_helper_rearm()
+        (executor.home_dir / ".gitconfig").unlink()
+        self.assertEqual(first, executor.credential_helper_rearm())
+
+    def test_a_missing_global_config_re_arms_nothing(self):
+        # The bootstrap failed, or this is the Platform Agent's own proxy. Git
+        # still has to run: the commands that would diagnose it are git commands.
+        self.assertEqual((), self.executor().credential_helper_rearm())
+
+    def test_the_re_arm_is_not_injected_into_a_trusted_workspace(self):
+        executor = self.executor(untrusted=False)
+        self.seed_gh_global_config(executor)
+        self.assertNotIn("GIT_CONFIG_COUNT", self.git_environment(executor))
+
+    def fill_credential(self, executor, pinned):
+        """What `git credential fill` resolves under `pinned`, via real git.
+
+        The repository is empty and the host is `example.invalid`, so nothing
+        here can reach a real credential store or the network.
+        """
+        git = shutil.which("git")
+        if git is None:
+            self.skipTest("git is not on PATH")
+        repo = Path(self.temp_dir.name) / "fill-repo"
+        repo.mkdir(parents=True, exist_ok=True)
+        subprocess.run([git, "init", "-q", str(repo)], check=True)
+        environment = {
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": str(executor.home_dir),
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_CONFIG_SYSTEM": os.devnull,
+            "GIT_CONFIG_COUNT": str(len(pinned)),
+        }
+        for position, (key, value) in enumerate(pinned):
+            environment["GIT_CONFIG_KEY_%d" % position] = key
+            environment["GIT_CONFIG_VALUE_%d" % position] = value
+        completed = subprocess.run(
+            [git, "credential", "fill"],
+            input="protocol=https\nhost=example.invalid\n\n",
+            capture_output=True,
+            text=True,
+            cwd=repo,
+            env=environment,
+            timeout=30,
+        )
+        return completed.stdout
 
     def test_the_pinned_config_reaches_no_other_executable(self):
         # Scoped to git for the same reason the commit identity is: gh has its

@@ -774,9 +774,9 @@ GIT_MUTATING_SUBCOMMANDS = frozenset(
 #
 # Injected per invocation the way `-c` is, which outranks repo-local config;
 # there is no environment variable that turns repo-local config off. The empty
-# `credential.helper` is a reset rather than a value: it clears helpers the
-# repository asked for while leaving the host-scoped one `gh auth setup-git`
-# wrote, which is what actually authenticates the push.
+# `credential.helper` is a reset rather than a value: it clears the helpers the
+# repository asked for. It clears gh's too -- see `gh_credential_helpers`, which
+# puts those back.
 #
 # This is a list of the settings that are worth pinning, not a proof that the
 # rest are safe. Git has no switch that turns repo-local config off, so what is
@@ -804,6 +804,65 @@ HARDENED_GIT_CONFIG = (
     ("core.sshCommand", "false"),
     ("commit.gpgsign", "false"),
 )
+
+
+def gh_credential_helpers(home_dir: Path) -> tuple[tuple[str, str], ...]:
+    """The credential helpers `gh auth setup-git` left in the global config.
+
+    Appended after `HARDENED_GIT_CONFIG` so they land after its empty
+    `credential.helper`, because that reset clears the whole accumulated helper
+    list and not only the repository's share of it. Config is read
+    system-global-local-env, so gh's host-scoped `credential.https://github.com
+    .helper` is already on the list when the injected reset arrives and empties
+    it; the push then fails with `could not read Username for
+    'https://github.com'`, on a terminal that does not exist. Order is what
+    makes the pair work: reset first, so a repository's own helper goes with
+    everything else, then re-add, so the one that authenticates the push is the
+    only one left.
+
+    Read back rather than named, because the value holds gh's absolute path and
+    the host it was pointed at, and a constant here would be a second place for
+    those to be wrong. Reading it is safe for the same reason the reset is
+    needed: `home_dir` is under the sidecar-only state emptyDir, which the agent
+    container cannot write and `argv_path_violation` will not let it name, so
+    the only writer is the chart's bootstrap command.
+
+    `-z` because a helper is a shell fragment and holds spaces and newlines,
+    which leaves NUL as the only separator its value cannot contain. The
+    `GIT_CONFIG_*` variables are dropped so this reads the file rather than an
+    injection from whatever called us. A failure returns nothing and is not
+    raised: git is then invoked with the reset and no helper, which fails the
+    push with a message naming the credential, rather than failing every git
+    command including the ones that would diagnose it.
+    """
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith("GIT_CONFIG_")
+    }
+    environment["HOME"] = str(home_dir)
+    try:
+        completed = subprocess.run(
+            ["git", "config", "--global", "-z", "--get-regexp", r"^credential\..*\.helper$"],
+            capture_output=True,
+            text=True,
+            env=environment,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ()
+    if completed.returncode != 0:
+        return ()
+    helpers: list[tuple[str, str]] = []
+    for record in completed.stdout.split("\0"):
+        if not record:
+            continue
+        key, _, value = record.partition("\n")
+        # gh writes its own reset ahead of its helper, and re-adding that would
+        # empty the list a second time -- after the entry we are restoring.
+        if value:
+            helpers.append((key, value))
+    return tuple(helpers)
 
 # git's own global options, split by whether they consume the next argument.
 # Needed to find the subcommand in `git --literal-pathspecs add …` (which
@@ -867,6 +926,10 @@ class CommandExecutor:
         self.untrusted_workspace = os.getenv(
             "CREDENTIAL_PROXY_UNTRUSTED_WORKSPACE", "0"
         ).strip().lower() in {"1", "true", "yes", "on"}
+        # Resolved on the first git command rather than here: the bootstrap
+        # command that runs `gh auth setup-git` has not run yet at construction,
+        # so reading now would cache an empty answer for the process's life.
+        self._credential_helper_rearm: tuple[tuple[str, str], ...] | None = None
         self.tmp_dir = self.state_dir / "tmp"
         self.config_dir = self.home_dir / ".config"
         self.cache_dir = self.home_dir / ".cache"
@@ -1049,6 +1112,18 @@ class CommandExecutor:
     ) -> ExecutionResult:
         """Run a trusted, operator-defined helper that is not agent selectable."""
         return self._execute(argv, cwd=cwd)
+
+    def credential_helper_rearm(self) -> tuple[tuple[str, str], ...]:
+        """`gh_credential_helpers`, read once and kept for the process's life.
+
+        Cached because it runs a subprocess and every git command the filing
+        turn issues would otherwise pay for it. The global config is written
+        once, by the bootstrap command, before any of them arrive; an empty
+        answer is cached too, since a second read would find the same file.
+        """
+        if self._credential_helper_rearm is None:
+            self._credential_helper_rearm = gh_credential_helpers(self.home_dir)
+        return self._credential_helper_rearm
 
     def _within_workspace(self, candidate: Path) -> bool:
         return candidate == self.workspace_dir or self.workspace_dir in candidate.parents
@@ -1403,8 +1478,9 @@ class CommandExecutor:
                 # than merging under it. Injected here instead of prepended to
                 # argv so the deny rules -- one of which refuses `-c key=value`
                 # outright -- still read the argv the caller actually sent.
-                command_environment["GIT_CONFIG_COUNT"] = str(len(HARDENED_GIT_CONFIG))
-                for position, (key, value) in enumerate(HARDENED_GIT_CONFIG):
+                pinned = HARDENED_GIT_CONFIG + self.credential_helper_rearm()
+                command_environment["GIT_CONFIG_COUNT"] = str(len(pinned))
+                for position, (key, value) in enumerate(pinned):
                     command_environment["GIT_CONFIG_KEY_%d" % position] = key
                     command_environment["GIT_CONFIG_VALUE_%d" % position] = value
         if kubeconfig_path is not None:
