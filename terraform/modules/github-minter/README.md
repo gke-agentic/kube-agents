@@ -16,9 +16,9 @@ cd /tmp/minty && go run ./cmd/minty tools import-pk \
 
 `install.sh` runs this import for you when it collects a PEM path. The minter's Kubernetes half (Deployment, Service, NetworkPolicy, KSA, minty rule ConfigMap) is the chart's `githubMinter.*` values; the minter pod fails its readiness probe until the key version imported here is ENABLED.
 
-The clone-and-run needs a Go toolchain that can build and execute a binary, which is not a given on a locked-down workstation. `gcloud` and `openssl` do the same wrapping in four commands — [Importing Without the Minty CLI](../../../k8s-operator/config/integrations/github/README.md#importing-without-the-minty-cli) is canonical for that path, including the wait for the import job to reach `ACTIVE` and the `CLOUDSDK_PYTHON_SITEPACKAGES=1` that the wrapping step needs. `<region>` there is the KMS location, which is this module's `location` with any zone suffix stripped: `us-central1-a` becomes `us-central1`.
+The clone-and-run needs a Go toolchain that can build and execute a binary, which is not a given on a locked-down workstation. `gcloud` and `openssl` do the same wrapping in four commands — [Importing Without the Minty CLI](../../../k8s-operator/config/integrations/github/README.md#importing-without-the-minty-cli) is canonical for that path, including the wait for the import job to reach `ACTIVE` and the `CLOUDSDK_PYTHON_SITEPACKAGES=1` that the wrapping step needs. It is parameterised on `${KMS_LOCATION}`, which is the same value as `<region>` in the clone-and-run above: this module's `location` with any zone suffix stripped, so `us-central1-a` becomes `us-central1`.
 
-### Moving the install to another region re-imports the App key
+## Moving the install to another region re-imports the App key
 
 The keyring follows `var.location`, which the full-install composition passes straight from the cluster's location — so changing `location` on an install that has the minter enabled creates a **new, empty** keyring in the new region. Nothing is copied across: the key is `import_only` and KMS never releases private key material, so the version in the old keyring stays where it is.
 

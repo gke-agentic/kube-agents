@@ -111,7 +111,8 @@ installs in one project keep separate state. Versioning is the recovery story:
 a corrupted or mistakenly-overwritten state file can be rolled back to a prior
 generation by copying it over the live object (`gcloud storage ls -a` lists the
 generations; `gcloud storage restore` is for soft-deleted objects, which is a
-different feature and not one this bucket has on):
+different feature — with versioning on, a previous generation is a noncurrent
+version rather than a soft-deleted object):
 
 ```bash
 gcloud storage ls -a gs://<bucket>/<prefix>/default.tfstate
@@ -141,6 +142,18 @@ Lock Info:
 ```bash
 terraform force-unlock 1787242876096737
 ```
+
+Run it from a directory whose backend is already configured, or it will not
+reach the lock at all. `force-unlock` acts on whatever backend the working
+directory has, this composition ships no backend block, and `backend_override.tf`
+is gitignored and written only by `lifecycle.sh` — so in a checkout that has
+never been through `lifecycle.sh`, Terraform is on local state and refuses with a
+local-state error that never mentions GCS. That matters here more than it looks:
+`install.sh`, `uninstall.sh` and `upgrade.sh` all drive the apply from a
+disposable clone, so the directory that took the lock is routinely gone by the
+time anyone goes looking for it. The fix is the same one the `BackupPlan` import
+below needs — `KUBE_AGENTS_STATE_BUCKET=<same value> KUBE_AGENTS_STATE_PREFIX=<same value> ./lifecycle.sh adopt-kms`
+first, or work in a directory `lifecycle.sh` has already initialised.
 
 Pass a UUID from anywhere else — the `"ID"` field inside the lock object's own
 JSON, for instance — and it refuses with `Lock ID should be numerical value`,
@@ -176,9 +189,11 @@ neither means what it looks like:
 
   Import into the same state the apply used, which on a remote-state install
   means the backend has to be configured first. `backend_override.tf` is
-  gitignored and written only by `lifecycle.sh`, so in a fresh clone a bare
-  `terraform import` silently writes a **local** `terraform.tfstate`, reports
-  success, and leaves the next apply still trying to create the plan. Run
+  gitignored and written only by `lifecycle.sh`, so in a checkout that has
+  `terraform.tfvars` but no override — one `install.sh` wrote into and something
+  later cleaned, say — a bare `terraform import` silently writes a **local**
+  `terraform.tfstate`, reports success, and leaves the next apply still trying to
+  create the plan. Run
   `KUBE_AGENTS_STATE_BUCKET=<same value> ./lifecycle.sh adopt-kms` first — it is
   the cheapest subcommand that initialises the backend — or work in a directory
   `lifecycle.sh` has already initialised. Carry `KUBE_AGENTS_STATE_PREFIX` across
@@ -187,6 +202,12 @@ neither means what it looks like:
   override points the backend at the default `kube-agents/<cluster_name>` object,
   and the import lands in an empty state that reports success while the real one
   still has no plan.
+
+  `terraform.tfvars` is gitignored too, so a literally fresh clone has neither
+  file and fails earlier and more loudly: `ensure_backend` evaluates
+  `var.project_id` before it can write the override, and `lifecycle.sh` exits
+  with "could not evaluate var.project_id". Restore the tfvars the install used
+  before either recipe.
 
   The import itself needs the placeholder Helm provider `adopt-kms` writes for
   its own imports, and `lifecycle.sh` exposes no generic import subcommand to
