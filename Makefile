@@ -60,8 +60,12 @@ docker-build-agents: $(foreach agent,$(AGENTS),docker-build-$(agent)) ## Build t
 $(foreach agent,$(AGENTS),docker-build-$(agent)): docker-build-%:
 	docker build --platform linux/amd64 $(BASE_IMAGE_ARGS) $(IMAGE_SOURCE_ARG) --build-arg HERMES_AGENT_TAG=$(HERMES_AGENT_TAG) --build-arg GIT_SHA=$(GIT_SHA) --target $* -t $(REPO)/$*-agent:latest -f deploy/docker/Dockerfile .
 
+# Same GIT_SHA and IMAGE_SOURCE as the agent rule above. `docker-push` builds
+# both from one command, and without these the pair went to the registry
+# minutes apart with one image stamped and the other carrying the revision
+# label it inherited from the Hermes base -- a sha from another repository.
 docker-build-credential-proxy: ## Build the credential-proxy sidecar image.
-	docker build --platform linux/amd64 $(BASE_IMAGE_ARGS) --build-arg HERMES_AGENT_TAG=$(HERMES_AGENT_TAG) --target credential-proxy -t $(REPO)/credential-proxy:latest -f deploy/docker/Dockerfile .
+	docker build --platform linux/amd64 $(BASE_IMAGE_ARGS) $(IMAGE_SOURCE_ARG) --build-arg HERMES_AGENT_TAG=$(HERMES_AGENT_TAG) --build-arg GIT_SHA=$(GIT_SHA) --target credential-proxy -t $(REPO)/credential-proxy:latest -f deploy/docker/Dockerfile .
 
 # Docker pushes
 docker-push: docker-push-agents docker-push-credential-proxy ## Build and push every image to $$REPO.

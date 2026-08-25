@@ -61,6 +61,13 @@ jobs:
           # GIT_SHA to empty and the build succeeds -- so read the stamp back
           # off what was pushed rather than trusting the line above.
           #
+          # Detection, not prevention: cloudbuild.yaml publishes through
+          # `images:`, so `:latest` has already moved by the time this runs and
+          # a failure here means revert and republish. Holding the tag back
+          # would mean dropping `_IMAGE_URI_LATEST` from that config, which
+          # k8s-operator/scripts/dev/dev_rebuild_agent.sh also drives -- more
+          # blast radius than this branch should take on.
+          #
           # Both places it lands, because they are two separate Dockerfile
           # instructions. The label is what registries and provenance scanners
           # read; /opt/build-info.json is what the self-improvement runner reads,
@@ -83,7 +90,17 @@ jobs:
             echo "::error::$REF carries /opt/build-info.json revision '$FILE_REVISION', expected '$GITHUB_SHA'. The self-improvement runner reads that file, not the label, and would treat this image as unstamped." >&2
             exit 1
           fi
-          echo "revision stamp OK in both the label and /opt/build-info.json: $GITHUB_SHA"
+          # _IMAGE_SOURCE travels in the same substitution string as _GIT_SHA and
+          # is just as silently droppable, so check it here rather than leave one
+          # of the pair unguarded.
+          SOURCE=$(docker inspect \
+            --format '{{ index .Config.Labels "org.opencontainers.image.source" }}' \
+            "$REF")
+          if [ "$SOURCE" != "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" ]; then
+            echo "::error::$REF carries source label '$SOURCE', expected '$GITHUB_SERVER_URL/$GITHUB_REPOSITORY'. The _IMAGE_SOURCE substitution did not reach the image, and a provenance scanner will not find this repository from it." >&2
+            exit 1
+          fi
+          echo "revision stamp OK in both the label and /opt/build-info.json: $GITHUB_SHA (source $SOURCE)"
 
       - name: Build and Push Replay Proxy (GCP Cloud Build)
         id: gcp-replay-proxy
@@ -101,10 +118,28 @@ jobs:
         run: |
           gcloud builds submit \
             --config=deploy/docker/cloudbuild.yaml \
-            --substitutions="_IMAGE_URI=$GCP_REGISTRY/credential-proxy:$GITHUB_SHA,_IMAGE_URI_LATEST=$GCP_REGISTRY/credential-proxy:latest,_TARGET=credential-proxy,_HERMES_AGENT_TAG=$HERMES_AGENT_TAG" \
+            --substitutions="_IMAGE_URI=$GCP_REGISTRY/credential-proxy:$GITHUB_SHA,_IMAGE_URI_LATEST=$GCP_REGISTRY/credential-proxy:latest,_TARGET=credential-proxy,_HERMES_AGENT_TAG=$HERMES_AGENT_TAG,_GIT_SHA=$GITHUB_SHA,_IMAGE_SOURCE=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             .
           DIGEST=$(gcloud artifacts docker images describe "$GCP_REGISTRY/credential-proxy:$GITHUB_SHA" --format="value(image_summary.digest)")
           echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          # The same read-back the platform build does, for a reason that build
+          # does not have: this stage descends from the Hermes base image, which
+          # carries an org.opencontainers.image.revision of its own. A dropped
+          # substitution here does not leave the label empty -- it leaves an
+          # upstream commit sha in place, which reads as this repository's
+          # provenance and resolves to nothing in it. Label only: the sidecar
+          # writes no /opt/build-info.json, because the file exists for the
+          # self-improvement runner, which reads the agent image.
+          REF="$GCP_REGISTRY/credential-proxy@$DIGEST"
+          docker pull --quiet "$REF" >/dev/null
+          REVISION=$(docker inspect \
+            --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+            "$REF")
+          if [ "$REVISION" != "$GITHUB_SHA" ]; then
+            echo "::error::$REF carries revision label '$REVISION', expected '$GITHUB_SHA'. The _GIT_SHA substitution did not reach the sidecar, and an inherited label from the base image is what a scanner will read instead." >&2
+            exit 1
+          fi
+          echo "sidecar revision stamp OK: $GITHUB_SHA"
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2

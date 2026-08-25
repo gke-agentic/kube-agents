@@ -272,8 +272,13 @@ jobs:
           # is what enforces. Every guard here fails the render rather than
           # producing a broken install, which is the only reason they are
           # testable at all.
-          if helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
-            | grep -qiF "selfimprove"; then
+          # Rendered into a variable rather than piped into grep, like every
+          # other assertion below it. The step runs under `bash -e` without
+          # pipefail, so a pipeline reports grep's status and a helm that failed
+          # outright would be indistinguishable from a chart that rendered
+          # nothing matching. Assigning first makes a broken render exit here.
+          off_render=$(helm template test-release charts/kube-agents "${SET_FLAGS[@]}")
+          if grep -qiF "selfimprove" <<<"$off_render"; then
             echo "the self-improvement loop rendered while it is disabled" >&2
             exit 1
           fi
@@ -511,9 +516,18 @@ jobs:
           # of their own and a whole-chart grep would splice two numbers.
           loop=$(helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
             "${SI_FLAGS[@]}" --show-only templates/self-improvement.yaml)
-          grace=$(grep -F "terminationGracePeriodSeconds:" <<<"$loop" | tr -dc '0-9')
-          budget=$(grep -A1 SELFIMPROVE_KILL_WRITE_BUDGET <<<"$loop" \
-            | grep -F "value:" | tr -dc '0-9')
+          # awk on the key position, not grep plus `tr -dc '0-9'`. The template's
+          # own comments render into the output and both keys are named in them,
+          # one of them next to the digits 140 -- so a substring match that
+          # strips everything but digits is one reworded comment away from
+          # concatenating two numbers and failing on a chart that is correct.
+          # Anything unparseable prints nothing and trips the -z guard below.
+          grace=$(awk '$1 == "terminationGracePeriodSeconds:" { print $2; exit }' <<<"$loop")
+          budget=$(awk '$2 == "name:" && $3 == "SELFIMPROVE_KILL_WRITE_BUDGET" {
+              getline
+              if ($1 == "value:") { gsub(/"/, "", $2); print $2 }
+              exit
+            }' <<<"$loop")
           if [ -z "$grace" ] || [ -z "$budget" ] || [ "$budget" -ge "$grace" ]; then
             echo "SELFIMPROVE_KILL_WRITE_BUDGET ($budget) must be below terminationGracePeriodSeconds ($grace)" >&2
             exit 1

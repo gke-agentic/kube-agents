@@ -1530,6 +1530,23 @@ COPY --chown=hermes:hermes --chmod=0755 \
      deploy/shared/otel_config.py \
      /opt/defaults/scripts/
 
+# The same stamp the `platform` stage takes, for a reason that is specific to
+# this stage rather than symmetry. Labels are inherited, and the Hermes base
+# image carries an
+# `org.opencontainers.image.revision` of its own: without these two lines this
+# image ships a commit sha that does not exist in this repository, so a
+# provenance scanner or an incident responder resolving the revision of a
+# security-sensitive credential sidecar reads somebody else's history. The
+# empty default is what the block in the `platform` stage argues for -- no
+# label beats a confidently wrong one -- and here it also *displaces* one.
+#
+# No /opt/build-info.json: that file exists for the self-improvement runner,
+# which reads the agent image and never runs here.
+ARG GIT_SHA=""
+ARG IMAGE_SOURCE=""
+LABEL org.opencontainers.image.revision="${GIT_SHA}"
+LABEL org.opencontainers.image.source="${IMAGE_SOURCE}"
+
 USER 10000:10000
 
 
