@@ -146,13 +146,19 @@ Pass a UUID from anywhere else — the `"ID"` field inside the lock object's own
 JSON, for instance — and it refuses with `Lock ID should be numerical value`,
 which reads like the backend not supporting `force-unlock` at all. It does.
 
-Prefer it to deleting the object, because it fails if the generation has moved,
-which is exactly the case where something else has taken the lock and you should
-not be breaking it. `gcloud storage rm gs://<bucket>/<prefix>/default.tflock` is
-the fallback for a lock whose ID you no longer have; it removes the lock
-unconditionally, so only do it once nothing is still applying. `<bucket>` and
-`<prefix>` are the ones from [Remote state](#remote-state) —
-`<project_id>-kube-agents-tfstate` and `kube-agents/<cluster_name>` by default.
+Establish that nothing is still applying before you run it. The ID in the error
+is the generation of the lock as it exists at that moment, so `force-unlock`
+matches it and releases it whether the holder is a dead process or a colleague's
+apply still running — the interactive confirmation is the only thing in the way,
+and `-force` removes that too. What the generation check does catch is a
+**stale** ID: one carried over from an earlier error, after which the lock was
+released and re-taken. Pass that and the command refuses rather than breaking a
+lock you were not looking at. That is the reason to prefer it to
+`gcloud storage rm gs://<bucket>/<prefix>/default.tflock`, which deletes the
+object whatever its generation and is the fallback for a lock whose ID you no
+longer have. `<bucket>` and `<prefix>` are the ones from
+[Remote state](#remote-state) — `<project_id>-kube-agents-tfstate` and
+`kube-agents/<cluster_name>` unless `KUBE_AGENTS_STATE_PREFIX` overrode it.
 
 A connectivity drop mid-apply produces two failures worth recognising, because
 neither means what it looks like:
@@ -175,7 +181,12 @@ neither means what it looks like:
   success, and leaves the next apply still trying to create the plan. Run
   `KUBE_AGENTS_STATE_BUCKET=<same value> ./lifecycle.sh adopt-kms` first — it is
   the cheapest subcommand that initialises the backend — or work in a directory
-  `lifecycle.sh` has already initialised.
+  `lifecycle.sh` has already initialised. Carry `KUBE_AGENTS_STATE_PREFIX` across
+  as well if the install set one. `ensure_backend` derives the prefix
+  independently of the bucket and inits with `-reconfigure`, so an omitted
+  override points the backend at the default `kube-agents/<cluster_name>` object,
+  and the import lands in an empty state that reports success while the real one
+  still has no plan.
 
   The import itself needs the placeholder Helm provider `adopt-kms` writes for
   its own imports, and `lifecycle.sh` exposes no generic import subcommand to
