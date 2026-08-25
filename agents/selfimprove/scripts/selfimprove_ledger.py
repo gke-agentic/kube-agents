@@ -156,6 +156,13 @@ MAX_FIELD_TEXT_BYTES = MAX_ENTRY_TEXT_BYTES // 4
 MAX_TITLE_CHARS = 300
 MAX_LOCATION_CHARS = 500
 
+#: A refusal's `reason`, which is the one free-text field `prune` cannot age
+#: out: the row survives for as long as the refusal does, and the refusal does
+#: not expire. The filing skill's refusals are one sentence, so this is well
+#: clear of anything a turn writes on purpose and short enough that a ledger
+#: full of nothing but refusals still fits under `LEDGER_MAX_BYTES`.
+MAX_REFUSAL_REASON_CHARS = 1000
+
 
 def utcnow() -> _dt.datetime:
     return _dt.datetime.now(_dt.timezone.utc)
@@ -472,6 +479,14 @@ def reported_occurrences_in_window(
     return total
 
 
+#: What replaces a description field on a refused row that has gone stale. Its
+#: own wording matters: a reader finding one of these has to know the row was
+#: kept on purpose and that the missing text is not a bug in the run that wrote
+#: it. Distinct from `SHED_MARKER`, which says the opposite thing -- that the
+#: ledger was up against its cap.
+TOMBSTONE_MARKER = "[dropped: kept for the refusal below, unseen since]"
+
+
 def prune(
     ledger: Dict[str, Any],
     now: _dt.datetime,
@@ -497,6 +512,11 @@ def prune(
     keeping promotions for whichever of that and `retain_days` is the longer
     period, rather than trusting `retain_days` to be it. An install with a
     90-day cooldown keeps 90 days of promotion records.
+
+    A refused finding is the one row that does not age out at all, because the
+    refusal it carries does not either. It is thinned instead of deleted --
+    `_tombstone` has the argument, and the bound that makes keeping it
+    affordable is `MAX_REFUSAL_REASON_CHARS`.
     """
     sighting_cutoff = now - _dt.timedelta(hours=COUNT_WINDOW_HOURS)
     finding_cutoff = now - _dt.timedelta(days=retain_days)
@@ -536,8 +556,45 @@ def prune(
             entry["promotions"] = chargeable + kept
         last_seen = from_iso(entry.get("last_seen", ""))
         stale = last_seen is None or last_seen < finding_cutoff
-        if stale and not _promoted_since(entry, promotion_cutoff):
+        if not stale:
+            continue
+        if isinstance(entry.get("refused"), dict):
+            _tombstone(entry)
+            continue
+        if not _promoted_since(entry, promotion_cutoff):
             del ledger["findings"][key]
+
+
+def _tombstone(entry: Dict[str, Any]) -> None:
+    """Cut a stale refused row down to the refusal, in place.
+
+    A refusal does not expire -- `record_refusal` says so at length -- and
+    deleting the row is how it expired anyway. The window that took is not
+    small: a finding has to go 30 days unseen, but plenty do. A signal that
+    comes in bursts, a defect on a code path an install exercises monthly, and
+    above all an injected instruction, which is the refusal an attacker can
+    time. Go quiet for a month, plant the same text again, and the row is gone
+    with the hold on it; the loop pays the filing turn the marker exists to
+    stop paying, and pays it again every month for as long as the attacker
+    keeps that rhythm.
+
+    So the row stays and loses its prose instead, in the same order and for the
+    same reason `_shed_to_fit` sheds: the agent-written fields are the bytes,
+    and nothing but a human reads them. What is left is what a maintainer needs
+    to find the row and undo it by hand -- the fingerprint, the title, the
+    location, and the refusal itself. A marker rather than a deletion so that a
+    reader can tell a thinned row from one that never carried a summary.
+
+    Self-healing if the finding comes back: `record_finding` writes the fresh
+    text over these fields on the next sighting and clears `thinned`. That flag
+    is the row saying what it is, rather than `_shed_to_fit` inferring it from
+    an absent summary -- which would have read a refused finding that simply
+    never carried one as a thinned row, and dropped a live hold to save bytes.
+    """
+    entry["thinned"] = True
+    for field in ("evidence",) + DESCRIPTION_FIELDS:
+        if entry.get(field) not in (None, "", [], TOMBSTONE_MARKER):
+            entry[field] = TOMBSTONE_MARKER
 
 
 def _promoted_since(entry: Dict[str, Any], cutoff: _dt.datetime) -> bool:
@@ -854,6 +911,10 @@ def record_finding(
     _describe(entry, "user_impact", str(finding.get("user_impact", "")))
     entry["revision"] = revision
     entry["last_seen"] = to_iso(now)
+    # The row is live again, so `_tombstone`'s mark comes off: the prose above
+    # is this run's, not a marker, and `_shed_to_fit` must stop treating the row
+    # as the cheapest thing in the ledger to drop.
+    entry.pop("thinned", None)
 
     # One sighting per run, even when the run reports the same finding several
     # times over. The caller passes a single `now` for the whole run precisely
@@ -1207,8 +1268,11 @@ def record_refusal(
     reversible from: nothing clears a refusal, so an entry written in error
     stays until a maintainer deletes the key by hand.
 
-    That the hold does not expire is deliberate, not an omission. The refusal is
-    about what a fix would have to touch -- the loop's own gate, ledger or
+    That the hold does not expire is deliberate, not an omission -- and for a
+    while it expired anyway, because `prune` deletes a finding nothing has seen
+    for 30 days and took the refusal with the row. It now keeps a refused row
+    and thins it; see `_tombstone`. The refusal is about what a fix would have
+    to touch -- the loop's own gate, ledger or
     grants -- and no amount of elapsed time changes that answer, so an expiry
     would only put the finding back in front of the filing turn to be refused
     again, which is the hourly retry this exists to stop. What is missing is a
@@ -1229,7 +1293,12 @@ def record_refusal(
         return
     entry["refused"] = {
         "at": to_iso(now or utcnow()),
-        "reason": reason or "",
+        # Collapsed and clipped because this outlives everything else on the
+        # row: `prune` thins a stale refused finding down to the title, the
+        # location and this, and then keeps it indefinitely. The filing skill's
+        # refusals are one sentence, so a turn writing more than
+        # MAX_REFUSAL_REASON_CHARS was pasting something.
+        "reason": _clipped(_one_line(reason or ""), MAX_REFUSAL_REASON_CHARS),
         "revision": revision,
     }
 
@@ -1521,6 +1590,13 @@ def merge(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
         else:
             entry = dict(old)
             entry.update(new)
+        # `thinned` survives only if both writers agree. `record_finding` clears
+        # it by popping the key, and a pop does not travel through `update`, so
+        # a row one writer has just seen again would otherwise keep the other's
+        # mark -- and `_shed_to_fit` treats a marked row as the cheapest thing
+        # in the ledger to delete.
+        if not (old.get("thinned") is True and new.get("thinned") is True):
+            entry.pop("thinned", None)
         entry["sightings"] = _union(
             old.get("sightings"), new.get("sightings"), key=lambda s: str(s.get("at") or "")
         )
@@ -1571,11 +1647,22 @@ def _shed_to_fit(ledger: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     those are the bytes, and the field is replaced by a marker rather than
     removed so a reader sees that the finding once carried a summary.
 
-    What is never shed is what the gate reads: fingerprints, sightings,
-    promotions, refusals. A row that loses its sightings loses its occurrence
-    count, so the finding stops promoting; one that loses a promotion record
-    stops holding its cooldown and is filed again. Shedding those to save bytes
-    would trade a loud failure for a quiet wrong answer.
+    What is never shed while a finding is live is what the gate reads:
+    fingerprints, sightings, promotions, refusals. A row that loses its
+    sightings loses its occurrence count, so the finding stops promoting; one
+    that loses a promotion record stops holding its cooldown and is filed again.
+    Shedding those to save bytes would trade a loud failure for a quiet wrong
+    answer.
+
+    The last tier is the exception, and it exists because `prune` now keeps
+    refused rows indefinitely rather than deleting them at 30 days. A row
+    `_tombstone` has already thinned is a finding nothing has seen for a month:
+    no sightings inside the window, no promotion the cooldown still consults,
+    nothing left but the hold. Dropping the oldest of those costs one finding
+    being filed once if it ever comes back -- which is exactly what the ledger
+    did before, unconditionally and on every refusal -- and it buys a write.
+    Raising instead loses every finding of every later run until a human
+    intervenes, so this is the cheaper failure by a wide margin.
     """
     out = copy.deepcopy(ledger)
     runs = out.get("runs")
@@ -1594,6 +1681,22 @@ def _shed_to_fit(ledger: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 prose.append((size, fp, field))
     for _, fp, field in sorted(prose, reverse=True):
         out["findings"][fp][field] = SHED_MARKER
+        if len(json.dumps(out, indent=1, sort_keys=True).encode("utf-8")) <= LEDGER_MAX_BYTES:
+            return out
+
+    tombstones = []
+    for fp, entry in (out.get("findings") or {}).items():
+        if not isinstance(entry, dict) or entry.get("thinned") is not True:
+            continue
+        refused = entry.get("refused")
+        if not isinstance(refused, dict):
+            continue
+        # Oldest refusal first, and an unreadable date sorts oldest: a row whose
+        # `at` will not parse is one nothing has maintained.
+        at = from_iso(refused.get("at", ""))
+        tombstones.append((at is not None, at or _dt.datetime.min.replace(tzinfo=_dt.timezone.utc), fp))
+    for _, _, fp in sorted(tombstones):
+        del out["findings"][fp]
         if len(json.dumps(out, indent=1, sort_keys=True).encode("utf-8")) <= LEDGER_MAX_BYTES:
             return out
     return None

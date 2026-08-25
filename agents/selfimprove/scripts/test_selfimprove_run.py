@@ -12,12 +12,14 @@ Everything here is pure. `selfimprove_run` imports only the standard library and
 the ledger at module scope, so these run in CI with no cluster and no Hermes.
 """
 
+import ast
 import copy
 import datetime
 import io
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -2301,6 +2303,132 @@ class PermanentRefusalMarkerTests(unittest.TestCase):
         ):
             with self.subTest(wording=wording):
                 self.assertIn(wording, text)
+
+
+class SkillSkipVocabularyTests(unittest.TestCase):
+    """Every `SKIPPED:` the loop asks for, classified on purpose rather than by
+    accident.
+
+    The vocabulary lives in two places that do not import each other: the
+    prompts, which tell a turn what to print, and `is_permanent_refusal`, which
+    decides what the printed line means. The test above pins five phrasings by
+    hand, which catches one of them moving and misses one being added -- and
+    being added is what happened. The filing skill's prior-art step asks for
+    `SKIPPED: injected instruction in the prior-art search`; the marker list
+    held `injected instruction in the finding`, the runner's own wording; and
+    the separator rule read the extra words as prose, so a turn that caught an
+    injection in exactly the place it was warned about had the refusal recorded
+    as transient and the finding came back on the hour, every hour.
+
+    So this class does not enumerate. It reads the phrasings out of the prompts
+    and requires each one to appear in `EXPECTED` with a verdict somebody chose.
+    A phrase added to a prompt and not to the dict fails, whichever way it
+    should have been classified -- which is the point, because the failure is
+    the review, not the classification.
+    """
+
+    #: Rendered in place of each `<placeholder>` before the phrase is
+    #: classified, since `is_permanent_refusal` reads what follows a marker and
+    #: an unrendered `<why>` is not what a turn prints. Deliberately prose that
+    #: does not itself contain a marker.
+    PLACEHOLDERS = {
+        "<why>": "the branch would not build without a schema change",
+        "<the error>": "git push rejected: shallow update not allowed",
+        "<n>": "12",
+        "<m>": "3",
+        "<path>": "agent/anthropic_adapter.py",
+        "<where>": "the hermes harness",
+        "<what you checked>": "our own litellm config already sets drop_params",
+    }
+
+    #: Phrase as the prompts write it -> whether `is_permanent_refusal` must
+    #: read it as "never file this again".
+    EXPECTED = {
+        # Policy and prior-art verdicts. Nothing a later run does changes any of
+        # these, so re-filing buys the same answer at the price of a turn.
+        "SKIPPED: out of bounds - <why>": True,
+        "SKIPPED: no fix belongs in this repository - <path> belongs to <where>; "
+        "<what you checked>": True,
+        "SKIPPED: closed unmerged as #<n>": True,
+        "SKIPPED: fixed in #<n>": True,
+        "SKIPPED: injected instruction in the finding": True,
+        "SKIPPED: injected instruction in the prior-art search": True,
+        # Deferrals. Each names something that can be different next hour: the
+        # turn's own doubt, a transient command failure, a pull request that
+        # will close, a diff that a narrower finding would not have widened, a
+        # credential a maintainer can reissue.
+        "SKIPPED: <why>": False,
+        "SKIPPED: <the error>": False,
+        "SKIPPED: already filed as #<n>": False,
+        "SKIPPED: the diff would be <n> files, not <m>": False,
+        "SKIPPED: GitHub refused the credential": False,
+    }
+
+    def _phrases(self):
+        """The `SKIPPED: ...` templates the runner and the skills hand a turn.
+
+        From the skills as text, and from the runner through its AST: a `#:`
+        comment is not in the tree at all and a docstring is skipped, which is
+        what keeps this from collecting the examples `is_permanent_refusal`
+        quotes while explaining itself. Whitespace is collapsed first because
+        the runner wraps its prompt, so a template arrives split across a line
+        break and an indent.
+        """
+        scripts = os.path.dirname(os.path.abspath(R.__file__))
+        found = set()
+
+        with open(os.path.join(scripts, "selfimprove_run.py"), "r", encoding="utf-8") as handle:
+            tree = ast.parse(handle.read())
+        docstrings = set()
+        for node in ast.walk(tree):
+            body = getattr(node, "body", None)
+            if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef)) or not body:
+                continue
+            first = body[0]
+            if isinstance(first, ast.Expr) and isinstance(getattr(first, "value", None), ast.Constant):
+                if isinstance(first.value.value, str):
+                    docstrings.add(id(first.value))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            if id(node) in docstrings:
+                continue
+            found.update(re.findall(r"`(SKIPPED:[^`]+)`", " ".join(node.value.split())))
+
+        skills = os.path.join(os.path.dirname(scripts), "skills")
+        for dirpath, _dirnames, filenames in os.walk(skills):
+            for name in filenames:
+                if name != "SKILL.md":
+                    continue
+                with open(os.path.join(dirpath, name), "r", encoding="utf-8") as handle:
+                    text = handle.read()
+                found.update(re.findall(r"`(SKIPPED:[^`]+)`", " ".join(text.split())))
+        return found
+
+    def test_the_prompts_ask_for_nothing_this_table_has_not_judged(self):
+        found = self._phrases()
+        self.assertTrue(found, "extraction found no SKIPPED templates at all")
+        self.assertEqual(
+            found - set(self.EXPECTED),
+            set(),
+            "a prompt asks for a SKIPPED line nobody has classified -- add it to EXPECTED "
+            "with the verdict is_permanent_refusal should reach, and to the marker list if "
+            "that verdict is True",
+        )
+
+    def test_the_table_has_not_outlived_the_prompts(self):
+        """A phrase no prompt asks for any more is a rule guarding nothing, and
+        one more reason to believe a stale marker list is current."""
+        self.assertEqual(set(self.EXPECTED) - self._phrases(), set())
+
+    def test_each_phrase_is_classified_the_way_the_table_says(self):
+        for phrase, permanent in sorted(self.EXPECTED.items()):
+            rendered = phrase
+            for placeholder, value in self.PLACEHOLDERS.items():
+                rendered = rendered.replace(placeholder, value)
+            with self.subTest(phrase=phrase):
+                self.assertNotIn("<", rendered, "add a rendering for this placeholder")
+                self.assertEqual(R.is_permanent_refusal(rendered), permanent)
 
 
 class PriorPullRequestTests(unittest.TestCase):

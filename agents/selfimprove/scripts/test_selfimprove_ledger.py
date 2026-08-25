@@ -977,6 +977,183 @@ class PruneTests(unittest.TestCase):
         L.prune(ledger, NOW)
         self.assertIn(fp, ledger["findings"])
 
+    def _stale_refused(self, **extra):
+        ledger = L.empty_ledger()
+        fp, _ = L.record_finding(
+            ledger,
+            finding(title="Refused", location="a.py:1", **extra),
+            "abc",
+            NOW - dt.timedelta(days=45),
+        )
+        L.record_refusal(
+            ledger, fp, "SKIPPED: out of bounds - it changes the gate", "abc", NOW - dt.timedelta(days=44)
+        )
+        return ledger, fp
+
+    def test_a_refused_finding_outlives_the_retention_window(self):
+        """`record_refusal` promises the hold never expires. This is where it
+        expired: no promotion is charged for a refusal, so `refused` rows were
+        held open by nothing but `last_seen`, and 30 days of quiet deleted the
+        row and the hold with it.
+
+        The window is not hard to reach on purpose. An injected instruction is
+        the refusal an attacker times: go quiet for a month, plant the same text
+        again, and the loop buys the filing turn the marker exists to stop
+        buying -- once a month, indefinitely.
+        """
+        ledger, fp = self._stale_refused()
+        L.prune(ledger, NOW)
+        self.assertIn(fp, ledger["findings"])
+        self.assertIn("refused", ledger["findings"][fp])
+        self.assertIn("it changes the gate", ledger["findings"][fp]["refused"]["reason"])
+
+    def test_the_kept_row_loses_its_prose_and_keeps_what_identifies_it(self):
+        ledger, fp = self._stale_refused(
+            summary="s" * 4000, proposed_fix="f" * 4000, user_impact="u" * 4000, evidence=["e" * 4000]
+        )
+        L.prune(ledger, NOW)
+        entry = ledger["findings"][fp]
+        for field in ("summary", "proposed_fix", "user_impact", "evidence"):
+            with self.subTest(field=field):
+                self.assertEqual(L.TOMBSTONE_MARKER, entry[field])
+        # What a maintainer needs to find the row and undo the hold by hand.
+        self.assertEqual("Refused", entry["title"])
+        self.assertEqual("a.py:1", entry["location"])
+
+    def test_a_refused_row_the_loop_still_sees_keeps_its_prose(self):
+        """Thinning is for rows nothing has seen in a month. A refused finding
+        that still recurs is what the next run's brief describes."""
+        ledger = L.empty_ledger()
+        fp, _ = L.record_finding(ledger, finding(title="Refused", summary="s" * 4000), "abc", NOW)
+        L.record_refusal(ledger, fp, "SKIPPED: out of bounds - it changes the gate", "abc", NOW)
+        L.prune(ledger, NOW)
+        self.assertEqual("s" * 4000, ledger["findings"][fp]["summary"])
+
+    def test_thinning_twice_does_not_stack_markers(self):
+        ledger, fp = self._stale_refused(summary="s" * 4000)
+        L.prune(ledger, NOW)
+        L.prune(ledger, NOW + dt.timedelta(days=1))
+        self.assertEqual(L.TOMBSTONE_MARKER, ledger["findings"][fp]["summary"])
+
+    def test_a_hand_written_refused_that_is_not_a_record_does_not_hold_the_row(self):
+        """`evaluate_gate` already refuses to read a non-dict `refused`, so a
+        ConfigMap edited to `refused: true` must not buy the row immortality
+        either -- it would be a row held open by something nothing honours."""
+        ledger = L.empty_ledger()
+        fp, _ = L.record_finding(ledger, finding(title="Bogus"), "abc", NOW - dt.timedelta(days=45))
+        ledger["findings"][fp]["refused"] = True
+        L.prune(ledger, NOW)
+        self.assertNotIn(fp, ledger["findings"])
+
+    def test_a_refusal_reason_is_clipped_before_it_is_kept_forever(self):
+        ledger = L.empty_ledger()
+        fp, _ = L.record_finding(ledger, finding(), "abc", NOW)
+        L.record_refusal(ledger, fp, "SKIPPED: out of bounds - " + "x" * 9000, "abc", NOW)
+        self.assertEqual(L.MAX_REFUSAL_REASON_CHARS, len(ledger["findings"][fp]["refused"]["reason"]))
+        # Still classifiable: the marker the runner reads is at the front.
+        self.assertTrue(ledger["findings"][fp]["refused"]["reason"].startswith("SKIPPED: out of bounds"))
+
+    def test_a_multi_line_refusal_is_stored_as_one_line(self):
+        """The reason is rendered into the next run's brief the way `title` and
+        `location` are, so an unbounded number of lines is unbounded prompt."""
+        ledger = L.empty_ledger()
+        fp, _ = L.record_finding(ledger, finding(), "abc", NOW)
+        L.record_refusal(ledger, fp, "SKIPPED: out of bounds\n\n  - it changes the gate\n", "abc", NOW)
+        self.assertEqual(
+            "SKIPPED: out of bounds - it changes the gate",
+            ledger["findings"][fp]["refused"]["reason"],
+        )
+
+    def test_kept_refusals_cannot_wedge_the_ledger(self):
+        """A row kept forever is a growth path, and an unwritable ledger is the
+        worst failure this module has -- it loses every finding of every later
+        run. So the shed ladder ends by dropping thinned rows, oldest refusal
+        first, rather than raising. Here are 400 of them at the worst size every
+        field allows, which is comfortably more than fits.
+        """
+        COUNT = 400
+        ledger = L.empty_ledger()
+        for index in range(COUNT):
+            fp, _ = L.record_finding(
+                ledger,
+                finding(
+                    # The index leads, because a title is clipped to
+                    # MAX_TITLE_CHARS before it is fingerprinted, and rows
+                    # differing only past the cut are one row.
+                    title=str(index) + "t" * L.MAX_TITLE_CHARS,
+                    location="l" * L.MAX_LOCATION_CHARS,
+                    summary="s" * 4000,
+                ),
+                "abc",
+                NOW - dt.timedelta(days=45),
+            )
+            L.record_refusal(
+                ledger,
+                fp,
+                "r" * L.MAX_REFUSAL_REASON_CHARS,
+                "abc",
+                # Oldest refusal first, so index 0 is the first to go.
+                NOW - dt.timedelta(days=44, minutes=COUNT - index),
+            )
+        L.prune(ledger, NOW)
+        self.assertEqual(COUNT, len(ledger["findings"]))
+        written = json.loads(L._ledger_json(ledger))
+        self.assertLessEqual(len(json.dumps(written, indent=1, sort_keys=True)), L.LEDGER_MAX_BYTES)
+        # Some were dropped, and the ones dropped are the ones refused longest
+        # ago. The in-memory ledger is untouched -- shedding happens on the way
+        # out, so the next run re-reads whatever the write kept.
+        kept = len(written["findings"])
+        self.assertLess(kept, COUNT)
+        self.assertGreater(kept, 0)
+        surviving = {entry["refused"]["at"] for entry in written["findings"].values()}
+        self.assertEqual(sorted(surviving)[0], sorted(surviving)[-1 * kept])
+        for index in range(COUNT - kept):
+            with self.subTest(index=index):
+                at = L.to_iso(NOW - dt.timedelta(days=44, minutes=COUNT - index))
+                self.assertNotIn(at, surviving)
+
+    def test_shedding_prefers_prose_to_a_thinned_row(self):
+        """The ladder's order: a live finding's summary is worth less than a
+        refusal's hold, so the marker goes on before any row is deleted."""
+        ledger = L.empty_ledger()
+        stale, _ = L.record_finding(
+            ledger, finding(title="Refused"), "abc", NOW - dt.timedelta(days=45)
+        )
+        L.record_refusal(ledger, stale, "SKIPPED: out of bounds - the gate", "abc", NOW - dt.timedelta(days=44))
+        # Each summary is clipped to MAX_FIELD_TEXT_BYTES on the way in, so
+        # going over the cap takes a crowd of live findings rather than one
+        # enormous one.
+        live = [
+            L.record_finding(ledger, finding(title="Live %d" % index, summary="s" * 4000), "abc", NOW)[0]
+            for index in range(300)
+        ]
+        L.prune(ledger, NOW)
+        written = json.loads(L._ledger_json(ledger))
+        self.assertIn(stale, written["findings"])
+        self.assertIn(L.SHED_MARKER, [written["findings"][fp]["summary"] for fp in live])
+
+    def test_a_thinned_row_seen_again_stops_being_the_first_thing_dropped(self):
+        ledger, fp = self._stale_refused()
+        L.prune(ledger, NOW)
+        self.assertIs(True, ledger["findings"][fp]["thinned"])
+        L.record_finding(ledger, finding(title="Refused", location="a.py:1"), "abc", NOW)
+        self.assertNotIn("thinned", ledger["findings"][fp])
+
+    def test_a_merge_with_a_writer_that_has_seen_the_row_clears_the_mark(self):
+        """`record_finding` clears `thinned` by popping the key, and a pop does
+        not survive `dict.update`. Without the rule in `merge`, a finding one
+        writer had just re-sighted came back marked and became the cheapest row
+        in the ledger to delete."""
+        ledger, fp = self._stale_refused()
+        L.prune(ledger, NOW)
+        live = L.clone(ledger)
+        L.record_finding(live, finding(title="Refused", location="a.py:1"), "abc", NOW)
+        for merged in (L.merge(ledger, live), L.merge(live, ledger)):
+            with self.subTest():
+                self.assertNotIn("thinned", merged["findings"][fp])
+        # Both sides still thinned, and the mark stays.
+        self.assertIs(True, L.merge(ledger, L.clone(ledger))["findings"][fp]["thinned"])
+
     def test_drops_sightings_outside_the_window(self):
         ledger = L.empty_ledger()
         fp, _ = L.record_finding(ledger, finding(occurrences=5), "abc", NOW - dt.timedelta(hours=48))

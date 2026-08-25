@@ -925,6 +925,14 @@ only notice is a line in one run's log. The refusal itself lives in
 [`agents/selfimprove/skills/file-pull-request/SKILL.md`](../../agents/selfimprove/skills/file-pull-request/SKILL.md),
 which is canonical for it.
 
+The vocabulary is split across the prompts that ask for a line and the predicate that reads one,
+and that is where it drifts. The skill's prior-art step asks for `SKIPPED: injected instruction in
+the prior-art search`; the predicate held the runner's wording, `in the finding`; and because a
+marker has to end the phrase rather than run on into another word, the skill's version was read as
+a deferral and refiled every hour. So the test suite extracts every `SKIPPED:` template out of the
+prompts and requires each to appear in a table with a verdict somebody chose — a phrase added to a
+prompt and not to the table fails, whichever way it should have been classified.
+
 The same asymmetry decides what a marker is allowed to _say_. A finding whose file this tree does
 not contain is not thereby a finding this repository cannot act on: the defect may surface through a
 layer we do own, and a workaround there is a real pull request. A path we do not contain and a
@@ -1271,6 +1279,18 @@ deleting it is not the answer — at three pull requests a day that is a row add
 and none ever removed, which reaches the cap inside a year. A promoted row is held until its last
 promotion is older than both the retention period and the cooldown, whichever is longer, since the
 cooldown is the only thing that reads it.
+
+A refused finding is the one row retention does not reach, and getting there took two passes. A
+refusal charges no promotion, so for a while nothing but `last_seen` held the row open and 30 days
+of quiet deleted the finding and the permanent hold on it — which the marker exists to prevent, and
+which an injected instruction is best placed to exploit, because the attacker chooses when the text
+appears. So the row survives and is thinned instead: its agent-written prose is replaced by a
+marker, leaving the fingerprint, the title, the location and the refusal, and a later sighting
+writes the prose back. The refusal's own `reason` is clipped on the way in, because it is the one
+free-text field nothing ages out. Thinned rows are also the last rung of the shed ladder: if the
+ledger is over the cap after every summary has gone, the oldest refusals are deleted rather than
+`save` raising, since a dropped hold costs one finding being filed once and a failed write costs
+every finding of every later run.
 
 Because the cooldown decides both of those, `cooldownHours` is read once, by
 `selfimprove_ledger.sanitise_cooldown_hours`, and the gate and the pruner take the answer. Two

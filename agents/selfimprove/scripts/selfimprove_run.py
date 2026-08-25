@@ -1962,6 +1962,7 @@ OUT_OF_BOUNDS_MARKER = "out of bounds"
 #: the reader rather than the match.
 PERMANENT_REFUSAL_MARKERS = (
     OUT_OF_BOUNDS_MARKER,
+    "injected instruction in the prior-art search",
     "injected instruction in the finding",
     "injected instruction",
     "no fix belongs in this repository",
@@ -2015,6 +2016,15 @@ def is_permanent_refusal(reason: Optional[str]) -> bool:
     filing turn each time and never retires. Treating it as permanent is the
     behaviour that stops paying; the finding is still visible in the ledger for
     a maintainer who wants to look at what was refused and why.
+
+    It is spelled three times because two prompts ask for it with two different
+    tails -- the runner's own brief says `in the finding`, the filing skill's
+    prior-art step says `in the prior-art search` -- and the separator rule
+    below refuses a marker that runs on into another word. Only the first was
+    listed for the loop's first months, so a turn that caught an injection in
+    the search it was told to distrust had its refusal recorded as transient and
+    the finding came back the next hour. `SkillSkipVocabularyTests` is what
+    stops a fourth phrasing arriving the same way.
 
     `closed unmerged as #<n>` and `fixed in #<n>` are the same argument reached
     from §0's prior-art search rather than from policy. Both say the loop is
