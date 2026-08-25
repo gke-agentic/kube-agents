@@ -1255,6 +1255,36 @@ class TestRepoToplevel(unittest.TestCase):
 
 
 class TestTargetRepo(unittest.TestCase):
+    def test_the_source_repository_wins_over_the_push_target(self):
+        """A blob URL has to resolve, which is what `SELFIMPROVE_SOURCE_REPO`
+        names: the repository the runner fetched the stamped revision from."""
+        env = {
+            "SELFIMPROVE_MODE": "upstream",
+            "SELFIMPROVE_SOURCE_REPO": "src/repo",
+            "SELFIMPROVE_FORK_REPO": "fork/repo",
+            "SELFIMPROVE_UPSTREAM_REPO": "up/repo",
+        }
+        self.assertEqual(view.target_repo(env), "src/repo")
+
+    def test_the_source_repository_wins_under_report_only_too(self):
+        env = {
+            "SELFIMPROVE_MODE": "report-only",
+            "SELFIMPROVE_SOURCE_REPO": "src/repo",
+            "SELFIMPROVE_UPSTREAM_REPO": "up/repo",
+        }
+        self.assertEqual(view.target_repo(env), "src/repo")
+
+    def test_a_blank_source_repository_falls_back(self):
+        """An install whose CronJob predates the variable renders it empty
+        rather than omitting it, and "" is not an answer."""
+        env = {
+            "SELFIMPROVE_MODE": "fork",
+            "SELFIMPROVE_SOURCE_REPO": "",
+            "SELFIMPROVE_FORK_REPO": "fork/repo",
+            "SELFIMPROVE_UPSTREAM_REPO": "up/repo",
+        }
+        self.assertEqual(view.target_repo(env), "fork/repo")
+
     def test_fork_mode_resolves_against_the_fork(self):
         env = {
             "SELFIMPROVE_MODE": "fork",

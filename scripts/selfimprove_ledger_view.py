@@ -380,11 +380,22 @@ def location_links(
 def target_repo(env: Dict[str, str]) -> str:
     """The `owner/name` a finding's revision can be resolved against.
 
-    The fork in fork mode, because that is where the revision the runner checked
-    out is guaranteed to exist -- upstream may not have the branch yet. Under
-    report-only nothing is pushed anywhere, so the upstream repository is the
-    only honest answer.
+    `SELFIMPROVE_SOURCE_REPO` when the CronJob sets it, because answering this
+    exact question is that variable's whole job: it names the repository the
+    runner fetched its own source from, so it is the one repository the stamped
+    revision is known to exist in. The fork is a push target, which is a
+    different question -- a link is not resolved by the ability to push to it.
+
+    The older pair is the fallback, for an install whose CronJob predates the
+    variable. It reaches the right answer often enough to have hidden this:
+    every repository in a GitHub fork network serves every commit in that
+    network, so a fork of the source resolves a blob URL at a commit it has
+    never held. A push target that is not a fork of the source -- a mirror, or
+    a fork of something else -- does not, and links every file to a 404.
     """
+    source = env.get("SELFIMPROVE_SOURCE_REPO")
+    if source:
+        return source
     if env.get("SELFIMPROVE_MODE") == "report-only":
         return env.get("SELFIMPROVE_UPSTREAM_REPO", "") or ""
     return env.get("SELFIMPROVE_FORK_REPO") or env.get("SELFIMPROVE_UPSTREAM_REPO") or ""
