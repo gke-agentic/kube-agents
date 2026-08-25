@@ -44,6 +44,15 @@ _spot_unsupported() {
 _resolve_spot_only_shapes() {
     [ -n "$SCENARIO_MACHINES" ] && return 0
 
+    # Teardown renders this manifest only to name what to delete, and every object in it
+    # has a static name -- the probe's answer changes nothing. Skip it, so a --cleanup on
+    # a machine without the beta component still removes the workload instead of dying
+    # with a 6-replica Deployment left running.
+    if [ "${DO_CLEANUP:-0}" -eq 1 ]; then
+        SCENARIO_MACHINES="c3-standard-88"
+        return 0
+    fi
+
     # The probe below reads "the advisor rejected this shape" as "the region offers no Spot
     # for it". A missing `beta` component is also a rejection, and an indistinguishable one:
     # every candidate would be classified unobtainable on a check that never ran. Refuse

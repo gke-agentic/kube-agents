@@ -209,7 +209,11 @@ def run_environment_tests(
         "REGISTRY": reg,
         # Name the environment we picked, so conftest's fixtures fall through to this
         # environment's env_vars rather than e2e_config.yaml's default_environment.
-        # Without it, `--env audit-e2e` runs a child that reads investigations-e2e.
+        # No fixture changes value today -- every key a config lookup would reach is
+        # either exported above or already in os.environ from **custom_env_vars -- with
+        # one exception: `--env all` used to hand each child E2E_ENV=all, a name no
+        # environment has, so the lookup found nothing. It also stops being cosmetic the
+        # moment an environment block declares its own project_id or cluster_name.
         "E2E_ENV": env_name,
     }
     if "CLOUDSDK_PYTHON" in env_vars:
