@@ -23,11 +23,14 @@
 #   4. The cluster is created with deletion_protection = true, which a destroy
 #      cannot override on its own — the attribute has to be applied as false first.
 #   5. The Google Chat Pub/Sub topic and subscription outlive any teardown that
-#      did not run through THIS state — a destroy with enable_google_chat off, a
-#      lost state file, a hand-rolled earlier install. Unlike KMS they delete
-#      cleanly when Terraform owns them, so `destroy` needs no special case; the
-#      asymmetry is that `apply` then 409s on names it is configured to create.
-#      `adopt-pubsub` imports them instead.
+#      did not run through THIS state — a state file that was lost or replaced, a
+#      destroy that failed part-way, an earlier hand-rolled install, or a topic
+#      somebody created by hand. Unlike KMS they delete cleanly whenever Terraform
+#      owns them, so `destroy` needs no special case; the asymmetry is that
+#      `apply` then 409s on names it is configured to create. `adopt-pubsub`
+#      imports them, and unlike `adopt-kms` it is NOT run by `apply` — see the
+#      comment on adopt_pubsub for why claiming a topic by name has to be a
+#      decision somebody makes rather than a default.
 #
 # Usage:
 #   ./lifecycle.sh apply    [extra terraform args...]
@@ -42,6 +45,11 @@
 # kube-agents/<cluster_name>>. Unset, state stays local as before.
 #
 set -euo pipefail
+
+# Captured before the cd, because BASH_SOURCE[0] is whatever path the caller
+# used: after changing directory a relative one no longer resolves, and the
+# usage block at the bottom reads this file back.
+SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
@@ -166,6 +174,27 @@ EOF
   trap drop_override EXIT
 }
 
+# Imports id at address unless the address is already in state, arming the override
+# file first. Returns 0 when something was imported so callers can count, 1 when
+# there was nothing to do or the import failed — a failure warns rather than exits,
+# because the apply that follows reports it far better than this can.
+#
+# adopt_kms predates this and still writes the same sequence inline through its
+# targets array; it is left alone rather than refactored underneath a change that
+# is not about KMS.
+import_if_absent() {
+  local address="$1" id="$2" what="$3"
+  in_state "$address" && return 1
+
+  log "adopting pre-existing $what: $id"
+  [[ -f "$OVERRIDE_FILE" ]] || with_override
+  if terraform import -input=false "$address" "$id" >/dev/null 2>&1; then
+    return 0
+  fi
+  warn "could not import $address; the apply will fail with a 409 on $id"
+  return 1
+}
+
 # Destroying a google_kms_crypto_key does not delete the key — GCP will not — but
 # it DOES schedule every one of its versions for destruction, which leaves the key
 # present and unusable. A cluster then fails to come back with
@@ -266,26 +295,36 @@ adopt_kms() {
 # that already exist and does not own them. They are perfectly deletable, so this
 # is not the KMS problem — `terraform destroy` removes them whenever this state
 # manages them, and nothing here interferes with that. What leaves them behind is
-# a teardown this state never saw: destroyed with enable_google_chat = false so
-# the module had count 0, a state file that was lost, or a topic some earlier
-# hand-rolled install created.
+# a teardown this state never saw: a state file lost or replaced, a destroy that
+# failed part-way, an earlier hand-rolled install, or a topic created by hand.
 #
-# The names are the only handle there is, so adopting one means claiming a topic
-# on the strength of its name matching this install's configuration. Two guards
-# make that defensible, and neither is optional:
+# This is NOT called from `apply`, and that is the whole design. adopt_kms can run
+# unattended because a KMS key ring is undeletable: adopting one takes nothing away
+# from anybody, and refusing to adopt leaves an install that cannot proceed. A
+# Pub/Sub topic is the opposite on both counts.
+#
+# The names are the only handle there is, so adopting means claiming a topic on the
+# strength of its name matching this install's configuration — and chat_topic_name
+# defaults to a project-wide constant while this composition explicitly supports two
+# installs in one project (see the state-prefix note above). So install B, applying
+# with the defaults, cannot distinguish install A's live topic from a leftover: both
+# names match, and A's subscription really is attached to A's topic, so the guard
+# below passes. Adopting it would put B's agent service account on A's subscription
+# — Pub/Sub delivers each message once, so A's Chat would go intermittently dead and
+# B would receive A's traffic — and B's next destroy would delete both.
+#
+# A 409 is a much better outcome than that: loud, non-destructive, recoverable. So
+# the 409 stays the default and adoption is a subcommand somebody runs deliberately,
+# having read the names and decided they are theirs to claim.
+#
+# Two guards still apply, because a deliberate run can also be a mistaken one:
 #
 #   - Nothing already in state is touched, so an install that owns its topic is
 #     never re-imported.
 #   - A subscription is adopted only if it is actually attached to the topic this
-#     install is adopting. A same-named subscription pointing somewhere else is
-#     somebody else's, and importing it would hand this state a resource its next
-#     destroy would delete out from under them.
-#
-# What neither guard can catch is a second install of THIS composition in the same
-# project that kept the default topic name, since its topic is indistinguishable
-# from a leftover. Give concurrent installs distinct chat_topic_name /
-# chat_subscription_name values; that is what the 409 was protecting, and it is
-# why every adoption here is logged rather than done quietly.
+#     install is adopting. A same-named subscription pointing somewhere else is not
+#     this install's, and importing it would hand this state a resource its next
+#     destroy would delete out from under whoever owns it.
 adopt_pubsub() {
   [[ "$(tfvar enable_google_chat)" == "true" ]] || return 0
 
@@ -297,37 +336,48 @@ adopt_pubsub() {
   topic_addr="module.chat_pubsub[0].google_pubsub_topic.chat_events"
   sub_addr="module.chat_pubsub[0].google_pubsub_subscription.chat_events"
 
+  # </dev/null on every describe: pubsub.googleapis.com is enabled by the apply this
+  # recovers, so on a fresh project the API may still be off, and gcloud answers
+  # SERVICE_DISABLED with an interactive "enable and retry?" prompt. With output sent
+  # to /dev/null that prompt would be invisible while gcloud blocked on the terminal.
   if ! in_state "$topic_addr" &&
-     gcloud pubsub topics describe "$topic" --project "$project" >/dev/null 2>&1; then
-    log "adopting pre-existing Pub/Sub topic: $topic"
-    [[ -f "$OVERRIDE_FILE" ]] || with_override
-    if terraform import -input=false "$topic_addr" \
-         "projects/$project/topics/$topic" >/dev/null 2>&1; then
+     gcloud pubsub topics describe "$topic" --project "$project" </dev/null >/dev/null 2>&1; then
+    if import_if_absent "$topic_addr" "projects/$project/topics/$topic" "Pub/Sub topic"; then
       adopted=$((adopted + 1))
-    else
-      warn "could not import $topic_addr; the apply will fail with a 409 on $topic"
     fi
   fi
 
-  if ! in_state "$sub_addr" &&
-     gcloud pubsub subscriptions describe "$subscription" --project "$project" >/dev/null 2>&1; then
-    # The attachment is fixed at creation — a subscription cannot be repointed —
-    # so a mismatch here is not a stale reading, it is a different subscription.
+  if ! in_state "$sub_addr"; then
+    # One describe answers both questions: a non-zero exit means the subscription is
+    # not there, and the topic it prints is the attachment. Asking twice opened a
+    # window where the subscription was deleted in between, after which the second
+    # read failed and the operator was told "unreadable topic" rather than "nothing
+    # to adopt".
     local attached
-    attached=$(gcloud pubsub subscriptions describe "$subscription" --project "$project" \
-      --format='value(topic)' 2>/dev/null || true)
-    if [[ "$attached" != "projects/$project/topics/$topic" ]]; then
-      warn "subscription $subscription is attached to ${attached:-an unreadable topic}, not"
-      warn "projects/$project/topics/$topic — leaving it alone. It belongs to something else;"
-      warn "the apply will 409 until you rename chat_subscription_name or remove that subscription."
-    else
-      log "adopting pre-existing Pub/Sub subscription: $subscription"
-      [[ -f "$OVERRIDE_FILE" ]] || with_override
-      if terraform import -input=false "$sub_addr" \
-           "projects/$project/subscriptions/$subscription" >/dev/null 2>&1; then
-        adopted=$((adopted + 1))
+    if attached=$(gcloud pubsub subscriptions describe "$subscription" --project "$project" \
+                    --format='value(topic)' </dev/null 2>/dev/null); then
+      if [[ "$attached" == "projects/$project/topics/$topic" ]]; then
+        if import_if_absent "$sub_addr" "projects/$project/subscriptions/$subscription" \
+             "Pub/Sub subscription"; then
+          adopted=$((adopted + 1))
+        fi
       else
-        warn "could not import $sub_addr; the apply will fail with a 409 on $subscription"
+        # The attachment is fixed at creation — a subscription cannot be repointed —
+        # so this is never a stale reading. It is still not always somebody else's,
+        # which is why the cause is not asserted.
+        warn "subscription $subscription is attached to ${attached:-no readable topic}, not"
+        warn "projects/$project/topics/$topic — leaving it alone."
+        case "$attached" in
+          _deleted-topic_)
+            warn "its topic has been deleted, so this is most likely an orphan of a"
+            warn "previous install; delete the subscription if it is yours." ;;
+          "")
+            warn "the describe returned no topic at all; check it by hand." ;;
+          *)
+            warn "it may belong to another install, or project_id may be set to a project"
+            warn "number here while Pub/Sub reports the project ID." ;;
+        esac
+        warn "the apply will 409 until you rename chat_subscription_name or remove it."
       fi
     fi
   fi
@@ -505,7 +555,6 @@ case "${1:-}" in
     ensure_init
     guard_cluster_ownership
     adopt_kms
-    adopt_pubsub
     log "terraform apply"
     # No -input=false: this prompts like plain `terraform apply` does. Pass
     # -auto-approve through ARGS for unattended runs.
@@ -548,7 +597,11 @@ case "${1:-}" in
     log "delete them. The next 'lifecycle.sh apply' adopts them automatically."
     ;;
   *)
-    sed -n '2,36p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    # Print the header block: every comment line after the shebang, stopping at
+    # the first line that is not one. Deliberately not a line range — the range
+    # this replaced was sized to the header as it stood, and adding a subcommand
+    # above it silently truncated the help at whatever line the count reached.
+    awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$SCRIPT_PATH"
     exit 1
     ;;
 esac

@@ -111,7 +111,10 @@ installs in one project keep separate state. Versioning is the recovery story:
 a corrupted or mistakenly-overwritten state file can be restored from a prior
 generation with `gcloud storage restore`. If the state is gone entirely,
 re-run `lifecycle.sh apply` against the same tfvars — KMS adoption is
-automatic, and `terraform import` covers the rest.
+automatic, and `terraform import` covers the rest. On a Chat-enabled install
+that also means `lifecycle.sh adopt-pubsub` before the apply, which is the one
+adoption that is deliberate rather than automatic; see
+[Teardown and re-apply](#teardown-and-re-apply) for why.
 
 ### The `image_tag` rule
 
@@ -335,7 +338,7 @@ What each one does that raw Terraform cannot:
 | The `PlatformAgent` finalizer strands the CR and hangs the namespace | `tf-destroy` deletes the CR and waits, force-clearing the finalizer if wedged |
 | A `BackupPlan` cannot be deleted while it owns backups               | `tf-destroy` purges the plan's backups first                                  |
 | `deletion_protection = true` cannot be overridden by a destroy alone | `tf-destroy` applies it as `false`, then destroys                             |
-| A Chat topic/subscription outliving a teardown this state never saw  | `tf-apply` imports them before applying (`lifecycle.sh adopt-pubsub`)         |
+| A Chat topic/subscription outliving a teardown this state never saw  | `lifecycle.sh adopt-pubsub`, run deliberately — not by `tf-apply`             |
 
 The chart also carries a `pre-delete` hook that removes the CR and waits for
 its finalizer, so a plain `helm uninstall` is safe on its own; `tf-destroy`
@@ -347,17 +350,32 @@ yourself — starting with `kubectl delete platformagent <name> -n
 kubeagents-system --wait` while the operator is still running, and setting
 `deletion_protection = false` and applying before the cluster can be removed.
 
-The Chat row is the one that bites on a project rather than on a cycle: the
-topic and subscription delete cleanly whenever this state owns them, so a
-`tf-destroy`/`tf-apply` round trip never hits it. What leaves them behind is a
-teardown this state never saw — destroyed with `enable_google_chat = false` so
-the module had `count` 0, a lost state file, or an earlier hand-rolled install —
-and the next apply then 409s on both names. Adoption claims them by name, and
-the name is all there is to go on, so a subscription attached to a different
-topic is left alone and reported rather than imported. Two concurrent installs
-in one project need distinct `chat_topic_name` and `chat_subscription_name`
-values; with the defaults, each one's topic is indistinguishable from the
-other's leftover.
+The Chat row is the one that bites on a project rather than on a cycle, and the
+only one `tf-apply` does not handle for you. The topic and subscription delete
+cleanly whenever this state owns them, so a `tf-destroy`/`tf-apply` round trip
+never hits it. What leaves them behind is a teardown this state never saw — a
+state file lost or replaced, a destroy that failed part-way, an earlier
+hand-rolled install, or a topic created by hand — and the next apply then 409s on
+both names:
+
+```bash
+./lifecycle.sh adopt-pubsub    # then: make tf-apply
+```
+
+**Read the names before you run it.** Adoption claims a topic on the strength of
+its name matching your `chat_topic_name`, and that default is a project-wide
+constant while this composition supports two installs in one project. A second
+install's live topic is therefore indistinguishable from a leftover — adopt it
+and its agent starts receiving the other install's Chat messages (Pub/Sub
+delivers each message once), and your next `tf-destroy` deletes it. That is why
+the 409 is still what a bare `tf-apply` gives you: it is loud, it destroys
+nothing, and it is recoverable. Give concurrent installs distinct
+`chat_topic_name` and `chat_subscription_name` values, alongside the distinct
+state prefixes [Remote state](#remote-state) describes.
+
+The subscription carries one guard the topic cannot: it is adopted only when it
+is attached to the topic being adopted, so a same-named subscription pointing
+elsewhere is reported and left alone.
 
 > [!WARNING]
 > Destroying also uninstalls cert-manager when this composition installed it,

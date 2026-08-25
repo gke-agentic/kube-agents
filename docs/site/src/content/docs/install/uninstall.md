@@ -53,7 +53,7 @@ Once the CR is gone, the operator's finalizer first removes the cluster-scoped R
 
 `uninstall.sh` runs the install engine in reverse: it finds the install's Terraform state in GCS (bucket `<project>-kube-agents-tfstate`, prefix `kube-agents/<cluster>` — derived from the install coordinates, so a fresh clone works), regenerates `terraform.tfvars`, and drives `terraform destroy` through the composition's [`lifecycle.sh destroy`](https://github.com/gke-labs/kube-agents/blob/main/terraform/examples/full-install/lifecycle.sh). Pass `--project-id`, `--cluster-name`, and `--region` to name the target explicitly; otherwise they come from the saved `vars.sh`.
 
-Four things in the stack are not symmetric — destroying them is not the inverse of applying them — and `lifecycle.sh destroy` handles each one before `terraform destroy` runs:
+Several things in the stack are not symmetric — destroying them is not the inverse of applying them. Four of them bite on teardown, and `lifecycle.sh destroy` handles each one before `terraform destroy` runs:
 
 | Asymmetry                                                                                                              | What `lifecycle.sh destroy` does                                                                                           |
 | ---------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |

@@ -14,6 +14,16 @@ and the module's defaults mirror them.
 
 The module outputs are the values the PlatformAgent CR's `googleChat` integration needs.
 
+Those default names are project-wide constants, and the topic and subscription
+survive any teardown that did not run through the state managing them — a lost
+state file, a destroy that failed part-way, an earlier hand-rolled install.
+Creating them again then fails with a 409 on both names. The composition ships
+`lifecycle.sh adopt-pubsub` to import them instead; it is deliberate rather than
+part of `apply`, because a same-named topic can belong to a second install rather
+than be a leftover. See
+[Teardown and re-apply](../../examples/full-install/README.md#teardown-and-re-apply).
+Two installs sharing a project want distinct names.
+
 ## Usage
 
 ```hcl
