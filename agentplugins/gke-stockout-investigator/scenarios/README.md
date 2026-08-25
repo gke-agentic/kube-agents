@@ -117,9 +117,11 @@ agent ignored it. `MGMT_CONTEXT` defaults to the active kubectl context. Also
 discovery it would otherwise do. Only `05-missing-ondemand-floor.sh` reads it today, and
 that scenario is the one prerequisite worth calling out: it locates a shape the region
 offers on demand but not on Spot using `gcloud beta compute advice capacity`, so it
-refuses to run without the `beta` component (`gcloud components install beta`). Setting
-`SCENARIO_MACHINES` skips the probe and the requirement with it. The E2E workflows
-install `beta` already; this bites a hand-run.
+refuses to start without the `beta` component (`gcloud components install beta`) — in
+preflight, before anything is deployed. Setting `SCENARIO_MACHINES` skips the probe and
+the requirement with it, and `--cleanup` is exempt either way, so a workload left behind
+can still be torn down on a machine without the component. The E2E workflows install
+`beta` already; this bites a hand-run.
 
 ## Adding a scenario
 
