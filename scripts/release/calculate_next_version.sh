@@ -76,7 +76,8 @@ if [ -n "${EXPLICIT_RELEASE_VERSION}" ]; then
   # 3.3 Protect against tag collisions on different commits
   if TAG_COMMIT="$(git rev-parse --verify "refs/tags/${EXPLICIT_RELEASE_VERSION}^{commit}" 2>/dev/null)"; then
     REQ_COMMIT="$(git rev-parse --verify "${RC_CANDIDATE_COMMIT}^{commit}" 2>/dev/null || echo "")"
-    if [ -n "${REQ_COMMIT}" ] && [ "${TAG_COMMIT}" != "${REQ_COMMIT}" ]; then
+    if [ -n "${REQ_COMMIT}" ] && [ "${TAG_COMMIT}" != "${REQ_COMMIT}" ] && \
+       ! git merge-base --is-ancestor "${REQ_COMMIT}" "${TAG_COMMIT}" 2>/dev/null; then
       echo "❌ ERROR: Tag '${EXPLICIT_RELEASE_VERSION}' already exists in git repository on a different commit (${TAG_COMMIT:0:7}). Cannot re-assign existing release tag." >&2
       exit 1
     fi
