@@ -1019,6 +1019,41 @@ which is derived from the checkout the script ships in rather than listed. That 
 finding in `agent/anthropic_adapter.py` — the Hermes harness, a different repository — from getting
 a kube-agents URL that 404s, and a 404 reads as a stale finding rather than as a bad link.
 
+### 9.2 Turning it on
+
+The chart renders every Kubernetes object the loop needs. It cannot render the half that lives
+outside the cluster — the fork, the personal access token, the two labels §7 attaches — and it
+cannot check that the four names in §9 agree with what is actually there. Those failures all look
+the same from outside: the CronJob fires on schedule, the investigation succeeds, and an hour later
+the filing turn writes `SKIPPED` for a reason nobody is reading the ledger closely enough to see.
+
+`make selfimprove-enable` is the tool for that half. `./scripts/selfimprove_enable.py --help` has
+the arguments; the five subcommands run in this order:
+
+- **`preflight`** — before anything is applied. Checks the token's scopes and its role on all three
+  repositories, that the fork is a fork of the upstream, that the base branch exists, that the
+  cluster is at 1.29 or above (below it the credential-proxy sidecar never terminates and
+  `concurrencyPolicy: Forbid` blocks every later run), and that the gate is reachable at the
+  schedule you are asking for.
+- **`secret`** and **`labels`** — the two out-of-band objects. `secret` reads the token from a file,
+  from stdin, or from the environment, never from an argument, and applies it as `stringData` over
+  a pipe; `kubectl create secret --from-literal` would put it in argv, where any process on the
+  node can read it. `labels` creates `self-improvement` and the four severity labels on the
+  repository pull requests are opened against, because the filing turn can attach a label and
+  cannot create one.
+- **`values`** — emits the `selfImprovement` block as a YAML values file for `helm`, or as HCL for
+  `extra_helm_values` in `terraform/examples/full-install`, which is the supported route since the
+  composition does not expose the block directly.
+- **`verify`** — after the apply, against the live install. Reads what the CronJob is actually
+  running rather than what you meant to apply: the env the chart rendered, the KSA's Workload
+  Identity annotation, the NetworkPolicy's egress against the endpoints the loop needs, the Secret's
+  key name, the build stamp inside the agent pod against the revision the runner would compare it
+  to, and the ledger's run history.
+
+`verify` is the one to run on a schedule rather than once. Every check it makes is of a thing that
+can drift after the install: a token expires, a fork gets renamed, the agent image moves and the
+divergence guard starts refusing.
+
 ## 10. Failure modes it takes a position on
 
 **The loop investigates itself.** Its own runs produce logs and errors in the same namespace, and a

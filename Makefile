@@ -82,6 +82,12 @@ dev-rebuild-agent: ## Fast local iteration: rebuild and redeploy an agent image 
 selfimprove-ledger: ## Show the self-improvement ledger from the current cluster (e.g. make selfimprove-ledger ARGS="--severity high").
 	@./scripts/selfimprove_ledger_view.py $(ARGS)
 
+# Five subcommands: preflight, secret, labels, values, verify. Run
+# `./scripts/selfimprove_enable.py --help` for the arguments each one takes, and
+# pass them through here as ARGS (e.g. ARGS="verify").
+selfimprove-enable: ## Set up and check the outside half of the self-improvement loop (e.g. make selfimprove-enable ARGS="preflight --mode upstream ...").
+	@./scripts/selfimprove_enable.py $(ARGS)
+
 # Copy every image in images.json into a registry of your own, for installs
 # that may only pull from an approved one. Run `./scripts/mirror_images.sh
 # --help` for the full set of knobs.
