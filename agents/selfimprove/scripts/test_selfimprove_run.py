@@ -287,6 +287,24 @@ class LocationSearchKeyTests(unittest.TestCase):
         # feeds are permanent, so the caller must be told to skip the search.
         self.assertEqual("", R.location_search_key("the gchat webhook"))
 
+    def test_an_extensionless_file_name_is_the_trade(self):
+        # Named, because an accepted cost that nothing asserts is a cost nobody
+        # knows was accepted. `Makefile` and `Dockerfile` are real files this
+        # loop files findings against, and they get no cross-install dedup.
+        # The dot is what keeps the fallback in the test above from turning a
+        # one-word location that names no file into a search for that word
+        # across every install -- and a wrong dedup is permanent where a
+        # missed one is not.
+        for name in ("Makefile", "Dockerfile", "k8s-operator/Makefile:160"):
+            with self.subTest(location=name):
+                self.assertEqual("", R.location_search_key(name))
+        # `location_key` requires the dot too, so an extensionless path is not
+        # even reduced to its final segment -- the identity keeps the prefix
+        # and the line anchor that a dotted name would have shed.
+        self.assertEqual(
+            "k8s-operator/makefile:<LINE>", ledger_mod.location_key("k8s-operator/Makefile:160")
+        )
+
     def test_the_key_matches_the_identity_the_ledger_hashes(self):
         # If these two ever drift apart, the search stops finding the filings
         # whose findings share an identity, which is the whole mechanism.
@@ -1622,6 +1640,17 @@ class SearchKeyInFilingBriefTests(unittest.TestCase):
         prompt = self._file("the gchat webhook")
         self.assertIn("skip the location search", prompt)
 
+    def test_the_skip_line_does_not_tell_the_turn_its_location_names_no_file(self):
+        # The turn reads this sentence as a statement about its own finding,
+        # and for `Makefile:160` the statement is false -- the location names a
+        # file, it just has no extension for `_SEARCH_KEY_SAFE` to accept. A
+        # turn told otherwise about the finding in front of it has been given
+        # a reason to distrust the rest of the brief.
+        prompt = self._file("Makefile:160 (the PYTHON_TEST_DIRS glob)")
+        self.assertIn("skip the location search", prompt)
+        self.assertIn("may still name a file", prompt)
+        self.assertIn("extensionless", prompt)
+
     def test_a_hostile_prefix_is_stripped_rather_than_carried(self):
         # Two defences in series, and this exercises the first: `location_key`
         # keeps only the segment after the final slash, so the substitution
@@ -1831,6 +1860,26 @@ class FilingOutcomeTests(unittest.TestCase):
             "https://github.com/some-other-org/other-repo/pull/5"
         )
         self.assertEqual(self._file(), (R.UNCONFIRMED, None))
+
+    def test_an_off_repo_url_does_not_hide_a_skip_written_above_it(self):
+        """Barring the URL is right; ending the scan on it was not.
+
+        The two outcomes cost opposite things. UNCONFIRMED spends a daily slot
+        and starts a 24-hour cooldown; `SKIPPED:` is the skill promising the
+        finding keeps its counts so a later run can still file it. Stopping at
+        a wrong-repo URL charged a finding that had said, one line up, that it
+        had decided not to open anything -- and the finding it names as
+        already fixed is exactly the sort of turn that goes on to cite a link.
+        """
+        self.stdout = (
+            "SKIPPED: already fixed in gke-labs/kube-agents#874\n"
+            "For reference the upstream discussion is at:\n"
+            "https://github.com/some-other-org/other-repo/pull/5"
+        )
+        self.assertEqual(
+            self._file(),
+            (R.SKIPPED, "SKIPPED: already fixed in gke-labs/kube-agents#874"),
+        )
 
     def test_a_turn_killed_at_its_budget_is_unconfirmed_not_skipped(self):
         """Exit 124 with no URL is the case that produced six pull requests.

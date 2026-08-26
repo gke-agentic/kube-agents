@@ -394,13 +394,22 @@ def location_search_key(location: str) -> str:
     so the search term and the identity are derived the same way rather than by
     two rules that can drift apart.
 
-    Returns `""` when the result is not a plain file name, which covers both
-    ways that happens: a location with no file reference at all (`the gchat
-    webhook`), where `location_key` falls back to the whole normalised string,
-    and anything carrying a shell metacharacter. The caller turns `""` into an
-    instruction to skip the location search rather than into an empty query --
-    searching for nothing matches everything, and the states this feeds are
-    permanent.
+    Returns `""` when the result is not a plain dotted file name, which happens
+    three ways. Two are the point: a location with no file reference at all
+    (`the gchat webhook`), where `location_key` falls back to the whole
+    normalised string, and anything carrying a shell metacharacter. The third
+    is a cost -- `Makefile`, `Dockerfile` and every other extensionless name
+    are skipped too, so findings against them get no cross-install dedup.
+
+    Requiring the dot is what buys that. Dropping it would admit any single
+    bare word, and the fallback above turns a one-word location naming no file
+    into exactly that: a search for `networking` across every install's pull
+    requests, matching whatever it likes. The states this feeds are permanent,
+    so a missed dedup is recoverable and a wrong one is not.
+
+    The caller turns `""` into an instruction to skip the location search
+    rather than into an empty query -- searching for nothing matches
+    everything.
     """
     key = ledger_mod.location_key(location or "")
     return key if _SEARCH_KEY_SAFE.match(key) else ""
@@ -2753,8 +2762,10 @@ def file_pull_request(
         "location_search_key": (
             _location_key_line
             if _location_key_line
-            else "- (none: this finding's location names no file, so skip the location search in\n"
-            "  section 0 and rely on the keyword search alone. Do not substitute the raw\n"
+            else "- (none: no safely searchable file name could be derived from this finding's\n"
+            "  location, so skip the location search in section 0 and rely on the keyword\n"
+            "  search alone. The location may still name a file -- an extensionless one\n"
+            "  like `Makefile` lands here too. Do not substitute the raw\n"
             "  location text -- it is free prose and searching it matches nothing or everything.)"
         ),
         "fence": FENCE,
@@ -2875,9 +2886,12 @@ def file_pull_request(
     # "the pull request this finding opened". `group(0)` is the URL and stops at
     # the last digit, so `.../pull/12 <anything>` records `.../pull/12`. The
     # sibling SKIPPED path below already truncated for the same reason.
+    # Set once a wrong-repo URL has been seen, which bars every URL further up
+    # without ending the scan; see the block that sets it.
+    url_barred = False
     for line in reversed(lines):
         match = PULL_REQUEST_URL_RE.match(line)
-        if match:
+        if match and not url_barred:
             url = match.group(0)
             # And it has to be a pull request on the repository this turn was
             # told to open one against. A URL under any other repository is
@@ -2888,18 +2902,25 @@ def file_pull_request(
             # that types the owner with different capitalisation opened the same
             # pull request and should not be read as having opened none.
             if not url.lower().startswith(("https://github.com/%s/pull/" % upstream).lower()):
-                # Stop rather than keep reading upward. This URL is the
-                # turn's closing statement by the same reasoning that reads
-                # any other trailing line as one -- it is simply not a valid
-                # FILED, so it falls through to UNCONFIRMED below rather than
-                # to a search for whatever pull request happens to be
-                # mentioned earlier. Continuing here once matched an earlier,
-                # unrelated same-repo link the turn cited while explaining
-                # itself -- prior art, a search result -- and recorded that
-                # as this run's FILED, charging its budget and cooldown
-                # against a pull request the run never opened.
+                # Bar every URL above this one rather than ending the scan.
+                # This URL is the turn's closing statement by the same
+                # reasoning that reads any other trailing line as one -- it is
+                # simply not a valid FILED. Accepting an earlier one instead
+                # once matched an unrelated same-repo link the turn cited
+                # while explaining itself -- prior art, a search result -- and
+                # recorded that as this run's FILED, charging its budget and
+                # cooldown against a pull request the run never opened.
+                #
+                # `break`ing was too much, though: it also hid a `SKIPPED:`
+                # written above the URL, and the two carry opposite costs. A
+                # barred URL falls through to UNCONFIRMED, which spends a
+                # daily slot and starts a cooldown; a `SKIPPED:` is the skill
+                # promising the finding keeps its counts. Losing the marker
+                # charges a finding the loop undertook not to charge, so the
+                # scan reads on for it and only the URLs are barred.
                 log("the turn's last pull request URL is not on %s: %s" % (upstream, url))
-                break
+                url_barred = True
+                continue
             return FILED, url
         # `SKIPPED:` is the skill's word for "I looked and decided not to open
         # one" -- the finding was stale, already filed, closed unmerged, or the
