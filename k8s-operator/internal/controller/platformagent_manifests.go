@@ -3922,7 +3922,8 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, p
 		},
 		// 2. GCP Metadata Server (pre-NAT link-local address). Workloads dial 169.254.169.254
 		//    on port 80 for HTTP metadata / OAuth2 token fetches. On Dataplane V2 (eBPF),
-		//    policy evaluates pre-NAT and this rule admits token fetches directly.
+		//    policy evaluates pre-NAT and this rule admits token fetches directly. Port 8080,
+		//    the pre-NAT ALTS handshaker port, is deliberately absent — rule 3 says why.
 		{
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(80))},
@@ -3931,13 +3932,20 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, p
 		},
 		// 3. GKE Workload Identity host-network daemon (port 988). On Dataplane V1 (iptables),
 		//    the node DNATs 169.254.169.254:80 to 169.254.169.252:988 before NetworkPolicy is
-		//    evaluated, so this rule admits the post-DNAT token fetch.
+		//    evaluated, so this rule admits the post-DNAT token fetch. On Dataplane V2 (eBPF),
+		//    policy is evaluated pre-NAT at the socket layer and matched by rule 2.
 		//
 		//    Google network policy guidance recommends allowing ports 988/987 (iptables) and
 		//    80/8080 (eBPF). Ports 987 and 8080 (ALTS DirectPath) are deliberately omitted here
 		//    because kube-agents components use standard OAuth2/REST token fetches and no client
 		//    takes the gRPC DirectPath / ALTS route. Omitting both ports enforces least-privilege
 		//    sandbox egress symmetrically across Dataplane V1 and Dataplane V2.
+		//
+		//    That is a deviation from the guidance, which warns that workloads omitting these
+		//    ports "might experience disruptions during auto-upgrades". If a token fetch starts
+		//    failing during a node auto-upgrade, this narrowed allowlist is the first thing to
+		//    check: capture the drop's destination port and reopen 987/8080 here if it is one
+		//    of them.
 		{
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(988))},

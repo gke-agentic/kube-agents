@@ -54,7 +54,8 @@ spec:
               - 169.254.0.0/16
     # 2. GCP Metadata Server (pre-NAT link-local address). Workloads dial 169.254.169.254
     #    on port 80 for HTTP metadata / OAuth2 token fetches. On Dataplane V2 (eBPF),
-    #    policy evaluates pre-NAT and this rule admits token fetches directly.
+    #    policy evaluates pre-NAT and this rule admits token fetches directly. Port 8080,
+    #    the pre-NAT ALTS handshaker port, is deliberately absent; rule 3 says why.
     - ports:
         - port: 80
           protocol: TCP
@@ -71,6 +72,12 @@ spec:
     #    because kube-agents components use standard OAuth2/REST token fetches and no client
     #    takes the gRPC DirectPath / ALTS route. Omitting both ports enforces least-privilege
     #    sandbox egress symmetrically across Dataplane V1 and Dataplane V2.
+    #
+    #    That is a deviation from the guidance, which warns that workloads omitting these
+    #    ports "might experience disruptions during auto-upgrades". If a token fetch starts
+    #    failing during a node auto-upgrade, this narrowed allowlist is the first thing to
+    #    check: capture the drop's destination port and reopen 987/8080 here if it is one
+    #    of them.
     - ports:
         - port: 988
           protocol: TCP
