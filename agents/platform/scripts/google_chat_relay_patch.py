@@ -104,10 +104,28 @@ def install() -> None:
             except Exception:
                 LOGGER.warning("Google Chat relay receive failed", exc_info=True)
                 if message is not None:
+                    # A message had already been pulled off the relay when the
+                    # failure hit, so nacking it is a real delivery outcome: the
+                    # proxy will redeliver it rather than lose it, but a reviewer
+                    # reading the ERROR above cannot tell that without this line.
                     try:
                         await asyncio.to_thread(message.nack)
+                        LOGGER.warning(
+                            "Google Chat relay delivery-outcome=nacked-for-redelivery"
+                        )
                     except Exception:
-                        pass
+                        LOGGER.warning(
+                            "Google Chat relay delivery-outcome=nack-failed-message-fate-unknown",
+                            exc_info=True,
+                        )
+                else:
+                    # The failure was on the poll itself, before any message was
+                    # pulled: nothing was in flight to lose. This is the common
+                    # shape of the traceback seen at pod boot/termination, and
+                    # without this line it reads identically to a dropped message.
+                    LOGGER.warning(
+                        "Google Chat relay delivery-outcome=no-message-in-flight"
+                    )
                 await asyncio.sleep(2)
 
     def patch_adapter_class(adapter_class: type[Any]) -> None:

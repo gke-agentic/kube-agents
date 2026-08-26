@@ -177,14 +177,33 @@ def install() -> None:
             except Exception:
                 LOGGER.warning("Slack relay receive failed", exc_info=True)
                 if receipt:
+                    # An event had already been pulled and given an envelope id
+                    # when the failure hit, so nacking it is a real delivery
+                    # outcome: the proxy will redeliver it rather than lose it,
+                    # but a reviewer reading the ERROR above cannot tell that
+                    # without this line.
                     try:
                         await asyncio.to_thread(
                             request,
                             "/v1/chat/slack/events/nack",
                             {"receipt": receipt},
                         )
+                        LOGGER.warning(
+                            "Slack relay delivery-outcome=nacked-for-redelivery"
+                        )
                     except Exception:
-                        pass
+                        LOGGER.warning(
+                            "Slack relay delivery-outcome=nack-failed-message-fate-unknown",
+                            exc_info=True,
+                        )
+                else:
+                    # The failure was on the poll itself, before any event was
+                    # pulled: nothing was in flight to lose. This is the common
+                    # shape of the traceback seen at pod boot/termination, and
+                    # without this line it reads identically to a dropped message.
+                    LOGGER.warning(
+                        "Slack relay delivery-outcome=no-message-in-flight"
+                    )
                 await asyncio.sleep(2)
 
     def patch_adapter_class(adapter_class: type[Any]) -> None:
