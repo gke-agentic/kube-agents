@@ -24,11 +24,13 @@ is the canonical description of the gate.
 
 1. **RC Testing**: Pre-release builds are validated by the automated RC pipeline —
    [`scripts/release/README.md`](https://github.com/gke-labs/kube-agents/tree/main/scripts/release) is the canonical reference for how `rc_YYMMDDHHMM_<short_sha>` builds are created, tested end-to-end, and tagged `*_validated` on success.
-2. **SemVer Publication**: The release workflow (`release-publish.yml`) runs weekly against the
-   latest validated commit, and on demand — optionally naming a specific commit or version.
-   Either way it promotes and publishes immutable artifacts (example for `1.2.0`); the same
+2. **SemVer Publication**: The release workflow (`release-publish.yml`) is attempted nightly and
+   publishes at most once a week, from a commit that has passed the staging gate above. A release
+   whose commit range contains a breaking change stops and waits to be published by hand, as does
+   anything naming a specific commit or version. Either way it promotes and publishes immutable
+   artifacts (example for `1.2.0`); the same
    [`scripts/release/README.md`](https://github.com/gke-labs/kube-agents/tree/main/scripts/release)
-   is canonical for the release cadence and what a run with nothing new does:
+   is canonical for the cadence and for what an attempt with nothing to ship does:
    - **GHCR Images**: Clean promotion retags verified commit images to `ghcr.io/gke-labs/kube-agents/platform-agent:1.2.0` (and all required images) without rebuilding.
    - **OCI Helm Charts**: `oci://ghcr.io/gke-labs/kube-agents/charts/kube-agents:1.2.0` (packaged and signed by digest via `release-publish.yml`).
    - **Terraform Modules**: Sourced via Git tag reference `?ref=1.2.0`

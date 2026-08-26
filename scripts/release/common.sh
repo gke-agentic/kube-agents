@@ -180,6 +180,14 @@ get_existing_staging_tag() {
   git tag --points-at "${sha}" "${STAGING_TAG_PREFIX}/*" 2>/dev/null | head -n 1 || echo ""
 }
 
+# Finds the newest staging promotion tag in the repository. Sorting is by
+# refname rather than by date for the same reason get_latest_validated_rc_tag
+# does it: a staging tag embeds its candidate's rc_YYMMDDHHMM timestamp, so the
+# name orders the tags even when they were all pushed in one catch-up run.
+get_latest_staging_tag() {
+  git tag -l --sort=-v:refname "${STAGING_TAG_PREFIX}/*" 2>/dev/null | head -n 1 || echo ""
+}
+
 # Finds the latest commit on main whose required container images are already built in the registry
 find_latest_built_commit() {
   local target_repo
