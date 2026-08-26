@@ -418,15 +418,18 @@ Configures the operator-generated egress `NetworkPolicy`.
 - `enabled` (bool, optional) — toggle operator-managed NetworkPolicy generation. Default `true` (unset
   means on). Setting `false` stops generation and deletes only the operator-owned policy.
 - `dnsClusterIPs` ([]string, optional, max 8 items) — pins the cluster DNS Service ClusterIPs in
-  rule 1, suppressing dynamic discovery from `kube-system/kube-dns`. Each entry must be a bare IPv4
-  or IPv6 address; admission rejects anything else.
+  rule 1, suppressing dynamic discovery from `kube-system/kube-dns`. Each entry is a bare IPv4 or
+  IPv6 address with no prefix; admission rejects anything else, rather than letting a typo drop the
+  pin and silently revert to discovery.
 - `metadataDaemon.endpoint` (string, optional) — pins the node-local cloud metadata daemon IP in
   rule 3. An explicit `""` suppresses rule 3 entirely for datapaths without a post-NAT daemon.
 - `additionalEgress` ([]EgressRule, optional, max 32 items) — appends custom CIDR and port egress
-  rules to the generated policy. Peer CIDRs narrower than `/12` (IPv4) or `/48` (IPv6) are rejected,
-  as are `except` blocks outside their peer's CIDR; a rule left with no usable peer is dropped whole
-  and the reason logged by the controller, so `kubectl logs -n kubeagents-system deploy/kube-agents-controller-manager`
-  is where a rule that did not take effect explains itself.
+  rules to the generated policy. A peer CIDR broader than `/12` (IPv4) or `/48` (IPv6) is rejected at
+  admission, because a rule with ports and no surviving peer would permit egress to every
+  destination. An `except` block outside its peer's CIDR is dropped, and a rule left with no usable
+  peer is dropped whole; both are logged, so
+  `kubectl logs -n kubeagents-system deploy/kube-agents-controller-manager` is where a rule that did
+  not take effect explains itself.
 
 Annotations (`kubeagents.x-k8s.io/dns-cluster-ip` and `kubeagents.x-k8s.io/metadata-daemon-ip`) remain
 available as escape hatches and take precedence over `spec.networkPolicy`.
