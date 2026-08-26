@@ -8,6 +8,13 @@
 {{- if not (hasKey $defaultModels $provider) }}
 {{- fail (printf "litellm.modelProvider %q is not one of gemini, anthropic, openai, vertex_ai — a typo here would otherwise fail only at runtime" $provider) }}
 {{- end }}
+{{- /* Both fenceposts at 0 is rejected by the API server ("may not be 0 when
+       maxSurge is 0"), which would otherwise surface as a failed apply rather
+       than a failed render. See values.yaml's litellm.rollingUpdate. */}}
+{{- $ru := .Values.litellm.rollingUpdate }}
+{{- if and (eq (int $ru.maxSurge) 0) (eq (int $ru.maxUnavailable) 0) }}
+{{- fail "litellm.rollingUpdate: maxSurge and maxUnavailable may not both be 0 — the Deployment would have no way to make progress, and the API server rejects it." }}
+{{- end }}
 {{- $model := .Values.litellm.modelDefaultName | default (get $defaultModels $provider) }}
 {{- $vertex := .Values.litellm.vertex | default dict }}
 {{- $vertexSA := $vertex.serviceAccountName | default "kubeagents-litellm" }}
@@ -77,26 +84,10 @@ spec:
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      # maxUnavailable defaults to 1, not 0. At 0 the surge Pod is mandatory:
-      # under a namespace ResourceQuota with no room for one more LiteLLM Pod
-      # the old ReplicaSet may not shrink, the surge Pod is refused with
-      # FailedCreate, and the rollout stalls rather than replacing in place
-      # (#749).
-      #
-      # That default is not free, and the trade is taken on every install rather
-      # than only quota-constrained ones. At 0 this Deployment rolled with no
-      # loss of serving capacity at all; at 1 the old ReplicaSet gives up a slot
-      # as soon as the rollout starts. With the default replicaCount of 2 one
-      # replica keeps serving throughout. At replicaCount 1 there is no replica
-      # to keep, so a rollout becomes a real gap for as long as the new Pod takes
-      # to pass its startupProbe below — which sanctions up to 3 minutes of cold
-      # start. Set maxUnavailable back to 0 on an install with quota headroom
-      # that would rather a rollout stall than drop a request.
-      #
-      # The agent gateway reaches the same trap by a different route: it is
-      # Recreate at a single replica, but spec.deployment.availability.replicas
-      # above 1 puts it on RollingUpdate, where a maxUnavailable percentage
-      # rounds down. resolveDeploymentReplicasAndStrategy owns that side.
+      # Why maxUnavailable defaults to 1 rather than 0, and when to change it:
+      # values.yaml's litellm.rollingUpdate block owns that argument. The short
+      # form is that 0 makes the surge Pod mandatory, which a full namespace
+      # ResourceQuota turns into a stalled rollout (#749).
       maxSurge: {{ .Values.litellm.rollingUpdate.maxSurge }}
       maxUnavailable: {{ .Values.litellm.rollingUpdate.maxUnavailable }}
   selector:

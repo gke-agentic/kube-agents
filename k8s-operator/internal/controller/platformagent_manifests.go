@@ -2425,20 +2425,28 @@ func buildCredentialProxySidecar(agent *agentv1alpha1.PlatformAgent, homeDir str
 			// taking the max — whatever is set here, the harness reserves on every
 			// install whether or not it is used (#749).
 			//
-			// The CPU limit is 1, down from 2. The idle draw this was measured
-			// against is a floor, for the same reason the memory paragraph gives:
-			// it was taken with an empty spec.clusters, and informer work is CPU as
-			// well as memory. What makes the cut a different trade from the memory
-			// one is the failure mode, not better evidence — CFS throttling
-			// degrades and recovers, an OOMKill terminates. Watch the readiness
-			// probe above if this is ever wrong: it is an exec of curl on default
-			// timings, so a throttled container fails it before it fails anything
-			// else, and this sidecar's readiness gates the whole Pod.
+			// The CPU limit is 1, down from 2. Measured at 22m on an install
+			// watching 19 Cluster Agent profiles, so a core is roughly 45x the
+			// draw at a fleet size the watcher actually sees. The watch set is the
+			// count of profiles under --profiles-dir, one per onboarded cluster,
+			// plus the management cluster it watches in-cluster — there is no
+			// cluster list on the CR to read it from.
 			//
-			// Memory stays at 2Gi. #475 proposed 512Mi on the reading that this was
-			// an Envoy fronting a handful of credential calls; that stopped being
-			// true when the watcher moved in. Raising a quota is the cheaper
-			// mistake. Measure a real fleet before cutting this.
+			// If that headroom is ever wrong, the readiness probe above is what
+			// fails first: it is an exec of curl, and while the probe sets
+			// initialDelaySeconds and periodSeconds it leaves timeoutSeconds at
+			// the default 1s, which a throttled container misses before anything
+			// else goes wrong. This is a native sidecar, so its readiness gates
+			// the whole Pod.
+			//
+			// Memory stays at 2Gi against 309Mi measured on that same fleet. The
+			// headroom is deliberate and the asymmetry with CPU is the failure
+			// mode, not the evidence: throttling degrades and recovers, an OOMKill
+			// terminates, and informer memory tracks the object count in the
+			// watched clusters rather than their number, which a profile count
+			// does not bound. #475 proposed 512Mi on the reading that this was an
+			// Envoy fronting a handful of credential calls; that stopped being
+			// true when the watcher moved in.
 			Limits: corev1.ResourceList{
 				corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("2Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("2Gi"),
 			},

@@ -35,7 +35,6 @@ down; that side is the operator's and is covered by the Go table test in
 """
 
 import pathlib
-import re
 import unittest
 
 import yaml
@@ -49,11 +48,53 @@ _KUSTOMIZE_BASE = (
 _EXAMPLE = _ROOT / "examples" / "litellm-gemini" / "deployment.yaml"
 
 
-def _rolling_update(path):
-    """Return the rollingUpdate block of the Deployment in a plain YAML file."""
+def _is_litellm_deployment(path):
+    """True for a complete, standalone LiteLLM Deployment manifest.
+
+    Two things this deliberately excludes. A kustomize strategic-merge patch
+    declares `kind: Deployment` but carries no `spec.selector`, which a real
+    Deployment must have — it inherits the base's strategy and is not a copy of
+    it. And a workload that merely talks to LiteLLM (examples/inference-replay)
+    mentions the name without being one, so identity is taken from the
+    Deployment's own name or its container's, not from the file's text.
+    """
     for doc in yaml.safe_load_all(path.read_text()):
-        if doc and doc.get("kind") == "Deployment":
-            return doc["spec"]["strategy"]["rollingUpdate"]
+        if not doc or doc.get("kind") != "Deployment":
+            continue
+        spec = doc.get("spec") or {}
+        if "selector" not in spec:
+            continue
+        containers = (spec.get("template", {}).get("spec", {}) or {}).get("containers") or []
+        names = {doc.get("metadata", {}).get("name")} | {c.get("name") for c in containers}
+        if "litellm" in names or "litellm-container" in names:
+            return True
+    return False
+
+
+def _max_unavailable(path):
+    """Return the resolved maxUnavailable of the Deployment in a plain YAML file.
+
+    An absent `strategy` block is not a pass. Kubernetes defaults it to
+    RollingUpdate at 25%/25%, and a maxUnavailable percentage rounds DOWN — so
+    an omitted strategy resolves to 0 at 1 to 3 replicas, which is the very
+    shape this suite exists to keep out. Report it as 0 rather than raising.
+    """
+    for doc in yaml.safe_load_all(path.read_text()):
+        if not doc or doc.get("kind") != "Deployment":
+            continue
+        strategy = doc["spec"].get("strategy") or {}
+        if strategy.get("type") == "Recreate":
+            # Recreate takes no surge Pod at all, so it cannot hit #749.
+            return None
+        rolling = strategy.get("rollingUpdate")
+        if not rolling or "maxUnavailable" not in rolling:
+            return 0
+        value = rolling["maxUnavailable"]
+        if isinstance(value, str) and value.endswith("%"):
+            # floor(pct * replicas), Kubernetes' rounding for this fencepost.
+            replicas = doc["spec"].get("replicas", 1)
+            return int(int(value[:-1]) * replicas / 100)
+        return int(value)
     raise AssertionError(f"no Deployment in {path}")
 
 
@@ -68,24 +109,29 @@ class LiteLLMRolloutSurvivesAFullQuota(unittest.TestCase):
         )
 
     def test_chart_template_reads_the_value_rather_than_hardcoding_it(self):
-        # The default above is only load-bearing if the template actually wires
-        # it through. A literal here would silently pin every install.
+        # The default above is only load-bearing if the template wires it
+        # through. Rendering with helm would test the property directly, but
+        # nothing else in tests/ shells out to helm and the python-tests job
+        # does not install it, so this matches the template text instead —
+        # loosely enough that a pipeline (`| int`, `| default 1`) or extra
+        # whitespace, neither of which changes what renders, does not fail it.
         template = _CHART_TEMPLATE.read_text()
         self.assertRegex(
             template,
-            r"maxUnavailable:\s*\{\{\s*\.Values\.litellm\.rollingUpdate\.maxUnavailable\s*\}\}",
+            r"maxUnavailable:\s*\{\{[^}]*\.Values\.litellm\.rollingUpdate\.maxUnavailable[^}]*\}\}",
             "charts/kube-agents/templates/litellm.yaml must render maxUnavailable from "
-            "values, so an install with quota headroom can choose 0",
+            "litellm.rollingUpdate, so an install can choose its own value",
         )
         self.assertNotRegex(
             template,
-            r"maxUnavailable:\s*0\b",
-            "charts/kube-agents/templates/litellm.yaml must not hardcode maxUnavailable: 0",
+            r"maxUnavailable:\s*\d",
+            "charts/kube-agents/templates/litellm.yaml must not hardcode maxUnavailable; "
+            "a literal would pin every install regardless of its quota",
         )
 
     def test_kustomize_base_replaces_in_place(self):
         self.assertGreaterEqual(
-            _rolling_update(_KUSTOMIZE_BASE)["maxUnavailable"],
+            _max_unavailable(_KUSTOMIZE_BASE),
             1,
             f"{_KUSTOMIZE_BASE.relative_to(_ROOT)} is kept in step with the chart "
             "template per AGENTS.md; maxUnavailable must be at least 1 (#749)",
@@ -93,7 +139,7 @@ class LiteLLMRolloutSurvivesAFullQuota(unittest.TestCase):
 
     def test_starting_template_replaces_in_place(self):
         self.assertGreaterEqual(
-            _rolling_update(_EXAMPLE)["maxUnavailable"],
+            _max_unavailable(_EXAMPLE),
             1,
             f"{_EXAMPLE.relative_to(_ROOT)} is linked from the docs site as a starting "
             "template, so it carries the same requirement (#749)",
@@ -101,27 +147,33 @@ class LiteLLMRolloutSurvivesAFullQuota(unittest.TestCase):
 
     def test_no_other_litellm_deployment_reintroduces_the_shape(self):
         # A fourth copy added later would not be caught by the three cases
-        # above. Sweep the directories LiteLLM manifests live in.
+        # above. Sweep every plain LiteLLM Deployment manifest in the tree.
+        #
+        # Omitting `strategy` is a way to reintroduce this, not a way to avoid
+        # it: Kubernetes defaults to RollingUpdate at 25%/25% and rounds the
+        # maxUnavailable percentage down, so an absent block resolves to 0 at
+        # 1 to 3 replicas. _max_unavailable reports that as 0 rather than
+        # treating a missing block as unset, which is why this sweeps resolved
+        # values instead of grepping for a literal.
         offenders = []
         roots = [
-            _ROOT / "charts" / "kube-agents" / "templates",
             _ROOT / "k8s-operator" / "config" / "integrations" / "litellm",
             _ROOT / "examples",
         ]
         for root in roots:
-            for path in root.rglob("*.yaml"):
-                text = path.read_text()
-                if "litellm" not in text.lower():
+            for path in sorted(root.rglob("*.yaml")):
+                if not _is_litellm_deployment(path):
                     continue
-                # Recreate takes no rollingUpdate block and is immune by
-                # construction, so only flag a RollingUpdate that pins 0.
-                if re.search(r"maxUnavailable:\s*0\b", text):
-                    offenders.append(str(path.relative_to(_ROOT)))
+                resolved = _max_unavailable(path)
+                # None is Recreate: no surge Pod at all, immune by construction.
+                if resolved is not None and resolved < 1:
+                    offenders.append(f"{path.relative_to(_ROOT)} (resolves to {resolved})")
         self.assertEqual(
             [],
             offenders,
-            "these LiteLLM manifests pin maxUnavailable: 0, which cannot roll under a "
-            "full namespace quota (#749)",
+            "these LiteLLM Deployments resolve maxUnavailable to 0, so they cannot roll "
+            "under a full namespace quota (#749). An absent strategy block counts: it "
+            "defaults to 25%, which rounds down to 0 at these replica counts.",
         )
 
 
