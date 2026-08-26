@@ -584,13 +584,17 @@ class UntrustedWorkspaceTest(unittest.TestCase):
         # literal path, so a commit message or PR title describing the exact
         # vulnerability class this loop exists to report -- a path traversal
         # -- resolves outside the workspace the same way a real argument
-        # would, and was refused reporting it. Free-text flags are exempted
-        # from this test entirely, the same way `policy_match_text` exempts
-        # their values from the rule engine.
+        # would, and was refused reporting it. A free-text value is exempted
+        # when it names nothing on disk, which is every sentence; see
+        # `test_a_free_text_flag_does_not_hide_a_file_that_is_there` for the
+        # other half.
         executor = self.executor()
         cwd = executor.workspace_dir / "repo"
         cwd.mkdir(parents=True)
-        message = "fix: path traversal via ../../../etc/passwd in the upload handler"
+        # Eight, not three: a `../` following a word glues that word to the
+        # first component, so `via ../../../x` climbs two levels and from a
+        # cwd one below the workspace root it never leaves.
+        message = "fix: path traversal via " + "../" * 8 + "etc/passwd in the upload handler"
         for argv in (
             ["git", "commit", "-m", message],
             ["git", "commit", "--message", message],
@@ -607,6 +611,56 @@ class UntrustedWorkspaceTest(unittest.TestCase):
             executor.argv_path_violation(
                 ["gh", "pr", "comment", "--body-file", "../../../var/run/secrets/token"],
                 str(cwd),
+            )
+        )
+
+    def test_a_free_text_flag_does_not_hide_a_file_that_is_there(self):
+        # `_FREE_TEXT_FLAGS` is matched without knowing the subcommand, and one
+        # short flag carries prose for one command and nothing at all for
+        # another: `-b` is `gh pr create`'s body, and `git diff`'s
+        # `--ignore-space-change`, which takes no value. Skipping the token
+        # after it walked the mounted credential past the whole check and
+        # printed it as a diff.
+        executor = self.executor()
+        outside = Path(self.temp_dir.name) / "sidecar-state"
+        outside.mkdir(parents=True)
+        (outside / "token").write_text("DECOY-NOT-A-REAL-TOKEN\n")
+        cwd = executor.workspace_dir / "src"
+        cwd.mkdir(parents=True)
+        (cwd / "empty").write_text("")
+        (executor.workspace_dir / "escape").symlink_to(outside)
+        secret = str(outside / "token")
+        for argv in (
+            ["git", "diff", "--no-index", "-b", secret, "empty"],
+            ["git", "diff", "--no-index", "-m", secret, "empty"],
+            ["git", "diff", "--no-index", "-b", "../escape/token", "empty"],
+            ["git", "diff", "--no-index", "--message=" + secret, "empty"],
+            ["gh", "pr", "create", "--title", secret],
+            ["gh", "release", "create", "v1", "--notes", secret],
+        ):
+            with self.subTest(argv=argv):
+                self.assertIsNotNone(executor.argv_path_violation(argv, str(cwd)))
+
+    def test_attached_shorthand_carries_prose_the_way_the_spaced_form_does(self):
+        # `git commit -mfix: ...` is the same message written without the
+        # space. Reading the whole token as a path refused the filing turn a
+        # spelling `policy_match_text` already understood.
+        executor = self.executor()
+        cwd = executor.workspace_dir / "src"
+        cwd.mkdir(parents=True)
+        # The climb has to clear the workspace to be worth asserting on. A
+        # `../` directly after a word joins that word into one component, so
+        # `via ../../../x` is two `..` and not three, and from a cwd one level
+        # down it lands back inside and passes whatever the code does.
+        message = "fix: path traversal via " + "../" * 8 + "etc/passwd in the loader"
+        self.assertIsNone(executor.argv_path_violation(["git", "commit", "-m" + message], str(cwd)))
+        # Not a licence to glue a real path on either.
+        outside = Path(self.temp_dir.name) / "sidecar-state"
+        outside.mkdir(parents=True)
+        (outside / "token").write_text("DECOY-NOT-A-REAL-TOKEN\n")
+        self.assertIsNotNone(
+            executor.argv_path_violation(
+                ["git", "diff", "--no-index", "-b" + str(outside / "token"), "empty"], str(cwd)
             )
         )
 

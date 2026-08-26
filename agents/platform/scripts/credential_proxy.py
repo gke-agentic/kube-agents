@@ -1437,33 +1437,69 @@ class CommandExecutor:
         would, and a finding describing that exact vulnerability -- the class
         this loop exists to report -- is refused reporting it.
 
-        Free-text flags are exempted from this test entirely, the same way
-        `policy_match_text` exempts their values from the rule engine, rather
-        than only relative-looking prose. Nothing in `_FREE_TEXT_FLAGS` opens
-        its value as a file -- a commit message, a PR title, a `gh` comment
-        body are never paths a CLI reads from -- so there is no read-the-
-        credential risk this test exists to close for them, including a
-        value that happens to start with `/`.
+        Free-text flags -- a commit message, a PR title, a `gh` comment body --
+        are exempted, but only for a value that does not name a file that is
+        there. `_FREE_TEXT_FLAGS` is matched without knowing the subcommand,
+        and one short flag means different things to different ones: `-b` is
+        `gh pr create`'s body, and `git diff`'s `--ignore-space-change`, which
+        takes no value at all. Skipping the token after it therefore walked
+        `git diff --no-index -b /var/run/secrets/... ./empty` straight past
+        this check and printed the credential.
+
+        Testing existence separates the two without a table of which flag
+        carries prose for which subcommand. Reading a mounted credential needs
+        a file that exists, and prose does not name one: `-m 'fix: traversal
+        via ../../../etc/passwd'` joins to a first component `fix: traversal
+        via` that is not there, so the stat fails on it and the sentence is
+        allowed -- even though resolving the same string lands on
+        `/etc/passwd`. A value that resolves outside the workspace *and*
+        exists is refused whatever flag introduced it. Attached shorthand
+        (`-mfix: ...`) is read the way `policy_match_text` reads it, so a
+        message written without the separating space is prose here too.
+
+        What existence does not close is the gap between checking and running,
+        and nothing here ever did: a token naming nothing yet is allowed, the
+        same way an ordinary token resolving inside the workspace is, so a
+        symlink planted between the two escapes both.
         """
         if not self.untrusted_workspace:
             return None
         base = Path(cwd) if cwd else self.workspace_dir
-        skip_next = False
-        for token in argv[1:]:
-            if skip_next:
-                skip_next = False
-                continue
-            name = token.split("=", 1)[0]
-            if name in _FREE_TEXT_FLAGS:
-                skip_next = "=" not in token
-                continue
-            value = token.split("=", 1)[1] if token.startswith("-") and "=" in token else token
+        prose_next = False
+        for index, token in enumerate(argv[1:], start=1):
+            value, prose = token, prose_next
+            prose_next = False
+            if not prose:
+                name, separator, attached = token.partition("=")
+                if name in _FREE_TEXT_FLAGS:
+                    if separator:
+                        value, prose = attached, True
+                    else:
+                        following = argv[index + 1] if index + 1 < len(argv) else ""
+                        prose_next = not following.startswith("-")
+                        continue
+                elif (
+                    len(token) > 2
+                    and token.startswith("-")
+                    and not token.startswith("--")
+                    and token[:2] in _FREE_TEXT_FLAGS
+                ):
+                    value, prose = token[2:], True
+                elif token.startswith("-") and separator:
+                    value = attached
             try:
                 candidate = (base / value).resolve()
             except (OSError, ValueError):
                 return "the path %s could not be resolved" % value
             if self._within_workspace(candidate):
                 continue
+            if prose:
+                try:
+                    names_a_file = (base / value).exists()
+                except (OSError, ValueError):
+                    names_a_file = False
+                if not names_a_file:
+                    continue
             return (
                 "%s is outside the workspace %s. Commands run here may only "
                 "read and write the checkout; the rest of this container is "
