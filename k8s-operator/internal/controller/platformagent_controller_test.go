@@ -711,7 +711,7 @@ func TestBuildNetworkPolicy(t *testing.T) {
 		t.Errorf("expected 3 ports in agent namespace ingress rule when dashboard enabled, got %d", len(netpol.Spec.Ingress[0].Ports))
 	}
 	if len(netpol.Spec.Egress) != 9 {
-		t.Errorf("expected 9 Egress rules (DNS, GCP Metadata port 80/8080, GCP Metadata port 988, LiteLLM Gateway, vLLM Gemma, K8s Control Plane, External HTTPS, GKE OTel Collector, GitHub Token Minter), got %d", len(netpol.Spec.Egress))
+		t.Errorf("expected 9 Egress rules (DNS, GCP Metadata port 80, GCP Metadata port 988, LiteLLM Gateway, vLLM Gemma, K8s Control Plane, External HTTPS, GKE OTel Collector, GitHub Token Minter), got %d", len(netpol.Spec.Egress))
 	}
 
 	findEgressRule := func(port int32, peerCheck func(networkingv1.NetworkPolicyPeer) bool) *networkingv1.NetworkPolicyEgressRule {
@@ -739,7 +739,7 @@ func TestBuildNetworkPolicy(t *testing.T) {
 		return p.IPBlock != nil && p.IPBlock.CIDR == "169.254.169.254/32"
 	})
 	if ruleMeta80 == nil || len(ruleMeta80.To) != 1 {
-		t.Errorf("expected 1 peer in GCP Workload Identity egress rule (port 80/8080)")
+		t.Errorf("expected 1 peer in GCP Workload Identity egress rule (port 80)")
 	}
 	// Port 988 is the post-DNAT destination, so it carries the metadata daemon's own
 	// address as well as the link-local one even when the cluster has no nodes.
@@ -821,7 +821,7 @@ func TestBuildNetworkPolicy_FQDNEnabled(t *testing.T) {
 	netpol := buildNetworkPolicy(agent, nil, defaultTestNetpolProfile(), true, "", false)
 	// Expected 8 Egress rules when FQDN is enabled (external HTTPS 0.0.0.0/0:443 is omitted):
 	// 1. Cluster DNS (53)
-	// 2. GCP WI / Metadata server (80, 8080)
+	// 2. GCP WI / Metadata server (80)
 	// 3. GKE WI Host Network Daemon (988)
 	// 4. LiteLLM Gateway (80, 4000, 8080)
 	// 5. vLLM Gemma Server (80, 8000)
