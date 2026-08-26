@@ -458,6 +458,77 @@ class TestTableRendering(unittest.TestCase):
         self.assertIn("some", "".join(view.plain(l) for l in lines))
 
 
+class TestRowSeparation(unittest.TestCase):
+    """`--rows`. A findings row is a four- or five-line stack with only its
+    first line filled in outside the FINDING column, so without a separator
+    there is nothing to say where one record stops and the next starts."""
+
+    COLUMNS = [view.Column("A"), view.Column("B", wrap=True, min_width=12)]
+    ROWS = [
+        [("1", None), ("a cell long enough to wrap over several lines", None)],
+        [("2", None), ("another one that also wraps", None)],
+    ]
+
+    def render(self, separator, colour=False, width=32):
+        return view.render_table(
+            self.COLUMNS, self.ROWS, view.Palette(colour), width, view.BOX_UNICODE, separator
+        )
+
+    def test_a_separator_costs_exactly_one_line_per_extra_row(self):
+        """The whole point of the flag is that it does not make the table
+        bigger than it has to be: two rows buy one separator, not two."""
+        compact = len(self.render("none"))
+        self.assertEqual(len(self.render("blank")), compact + 1)
+        self.assertEqual(len(self.render("rule")), compact + 1)
+
+    def test_no_separator_is_added_above_the_first_row_or_below_the_last(self):
+        for separator in ("blank", "rule"):
+            lines = [view.plain(l) for l in self.render(separator)]
+            body = lines[3:-1]
+            self.assertTrue(body[0].strip("│ ").startswith("1"), separator)
+            self.assertIn("another", " ".join(body[-1:] + body[-2:]), separator)
+
+    def test_every_line_still_has_the_same_visible_width(self):
+        """A separator built by hand rather than from the resolved widths is
+        the way this breaks: the table stays readable and stops lining up."""
+        for separator in ("none", "blank", "rule"):
+            widths = {len(view.plain(line)) for line in self.render(separator)}
+            self.assertEqual(len(widths), 1, "%s: %s" % (separator, sorted(widths)))
+
+    def test_a_blank_separator_keeps_the_borders_and_empties_the_cells(self):
+        added = [
+            view.plain(l) for l in self.render("blank") if l not in self.render("none")
+        ]
+        spacer = [l for l in added if not l.strip("│ ")]
+        self.assertEqual(len(spacer), 1)
+        self.assertTrue(spacer[0].startswith("│") and spacer[0].endswith("│"))
+
+    def test_a_rule_separator_reuses_the_header_rule(self):
+        lines = [view.plain(l) for l in self.render("rule")]
+        self.assertEqual(lines.count(lines[2]), 2, "the mid rule should appear twice")
+
+    def test_a_coloured_run_keeps_the_dim_borders_on_the_spacer(self):
+        """Blanking a rendered rule would have taken its escapes with it, so
+        the spacer is built from the resolved widths instead."""
+        added = [l for l in self.render("blank", colour=True) if not view.plain(l).strip("│ ")]
+        self.assertEqual(len(added), 1)
+        self.assertIn(view.STYLES["dim"], added[0])
+
+    def test_one_line_tall_rows_default_to_no_separator(self):
+        """`render_runs` and the header tables pass no separator at all."""
+        lines = view.render_table(
+            [view.Column("A")], [[("x", None)], [("y", None)]],
+            view.Palette(False), 20, view.BOX_UNICODE,
+        )
+        self.assertEqual(len(lines), 6)
+
+    def test_the_flag_names_map_to_what_render_table_takes(self):
+        self.assertEqual(view.row_separator("spaced"), "blank")
+        self.assertEqual(view.row_separator("ruled"), "rule")
+        self.assertEqual(view.row_separator("compact"), "none")
+        self.assertEqual(view.row_separator("nonsense"), "none")
+
+
 class TestColourSelection(unittest.TestCase):
     def test_explicit_flags_win(self):
         with mock.patch.dict(os.environ, {"NO_COLOR": "1"}, clear=False):
@@ -1897,6 +1968,31 @@ class TestEndToEnd(unittest.TestCase):
             )
         self.assertIn("gke-agentic/kube-agents#160", text)
 
+    def test_rows_reaches_both_tables_and_not_just_the_findings_one(self):
+        """The pull-request table wraps its finding titles too, so a `--rows`
+        that only threads as far as FINDINGS leaves the second table exactly as
+        hard to read as it was."""
+        document = ledger()
+        document["findings"]["aaaa000000000000"]["promotions"] = [
+            {"at": iso(1), "url": "https://github.com/o/r/pull/1"}
+        ]
+
+        def sections(style):
+            with ledger_file(document) as path:
+                _, text = run_main(
+                    ["--file", path, "--color", "never", "--width", "150", "--rows", style]
+                )
+            head, _, tail = text.partition("PULL REQUESTS OPENED")
+            return len(head.splitlines()), len(tail.splitlines())
+
+        compact_findings, compact_prs = sections("compact")
+        spaced_findings, spaced_prs = sections("spaced")
+        self.assertGreater(spaced_findings, compact_findings)
+        self.assertGreater(spaced_prs, compact_prs)
+        # Two promotions, so one separator: the second table pays the same
+        # one-line-per-extra-row price the first one does.
+        self.assertEqual(spaced_prs - compact_prs, 1)
+
     def test_an_empty_pull_request_list_explains_itself(self):
         document = ledger()
         for entry in document["findings"].values():
@@ -2114,6 +2210,9 @@ class TestArgumentSurface(unittest.TestCase):
         if view.ledger_mod is None:
             self.skipTest("selfimprove_ledger is not importable from this checkout")
         self.assertEqual(view.LEDGER_KEY, view.ledger_mod.LEDGER_KEY)
+
+    def test_rows_defaults_to_spaced(self):
+        self.assertEqual(view.build_parser().parse_args([]).rows, "spaced")
 
     def test_the_script_is_executable(self):
         path = pathlib.Path(view.__file__)

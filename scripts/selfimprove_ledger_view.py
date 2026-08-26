@@ -780,12 +780,18 @@ def _resolve_widths(columns: Sequence[Column], rows: Sequence[Sequence[Sequence[
     return widths
 
 
+def row_separator(row_style: str) -> str:
+    """`render_table`'s `separator` for a `--rows` choice."""
+    return {"spaced": "blank", "ruled": "rule"}.get(row_style, "none")
+
+
 def render_table(
     columns: Sequence[Column],
     rows: Sequence[Sequence[Sequence[Any]]],
     palette: Palette,
     width: int,
     box: Dict[str, str],
+    separator: str = "none",
 ) -> List[str]:
     """Render `rows` into a bordered table.
 
@@ -798,6 +804,12 @@ def render_table(
     drawn -- the whole cell for the plain one, only the paragraph itself for the
     per-paragraph one. A cell stacking a title over a location has no single-line
     form to reach, so a whole-cell URL on it would never render at all.
+
+    `separator` puts a `blank` line or a `rule` between rows, for a table whose
+    rows are several lines tall: the row number is on the first of them and
+    every other line of the cell is blank in the narrow columns, so without one
+    there is nothing to say where one record stops and the next starts. A table
+    of one-line rows wants `none`, which is the default.
     """
     columns, rows, dropped = _fit_columns(columns, rows, width)
     widths = _resolve_widths(columns, rows, width)
@@ -861,10 +873,18 @@ def render_table(
             lines.append(vertical + " " + (" " + vertical + " ").join(pieces) + " " + vertical)
         return lines
 
+    # Built from the resolved widths rather than by blanking a rule, so that a
+    # `--color` run's dim escapes around the borders survive into it.
+    spacer = vertical + " " + (" " + vertical + " ").join(" " * w for w in widths) + " " + vertical
+
     out = [rule(box["tl"], box["tm"], box["tr"])]
     out.extend(emit([(c.title, "head") for c in columns]))
     out.append(rule(box["ml"], box["mm"], box["mr"]))
-    for row in rows:
+    for index, row in enumerate(rows):
+        if index and separator == "rule":
+            out.append(rule(box["ml"], box["mm"], box["mr"]))
+        elif index and separator == "blank":
+            out.append(spacer)
         out.extend(emit(row))
     out.append(rule(box["bl"], box["bm"], box["br"]))
     if dropped:
@@ -1452,6 +1472,7 @@ def render_findings(
     repo: str = "",
     roots: frozenset = frozenset(),
     refs: Refs = NO_REFS,
+    row_style: str = "spaced",
 ) -> Tuple[List[str], List[Dict[str, Any]]]:
     entries = select_findings(ledger, now, sort, min_severity, signal)
 
@@ -1554,7 +1575,11 @@ def render_findings(
                 ),
             ]
         )
-    return render_table(columns, rows, palette, width, box), entries
+    # Every finding is a stack of title, location and verdict, so a row here is
+    # four or five lines tall with only its first line filled in outside the
+    # FINDING column. `--rows` is what says where one stops.
+    separator = row_separator(row_style)
+    return render_table(columns, rows, palette, width, box, separator), entries
 
 
 def render_promotions(
@@ -1564,6 +1589,7 @@ def render_promotions(
     width: int,
     box: Dict[str, str],
     utc: bool,
+    row_style: str = "spaced",
 ) -> List[str]:
     # The pull-request reference is the point of this table, so it and the
     # finding it answers are the last things to go; the severity is already in
@@ -1596,7 +1622,9 @@ def render_promotions(
                 (str(entry.get("title") or "(untitled)"), "dim"),
             ]
         )
-    return render_table(columns, rows, palette, width, box)
+    # A wrapped finding title makes these rows several lines tall too, and the
+    # date that starts one is no more visible than the number in the table above.
+    return render_table(columns, rows, palette, width, box, row_separator(row_style))
 
 
 def render_detail(
@@ -1801,6 +1829,12 @@ def _add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         "--ascii", action="store_true", help="ASCII borders instead of box-drawing characters"
     )
     parser.add_argument("--utc", action="store_true", help="timestamps in UTC instead of local time")
+    parser.add_argument(
+        "--rows",
+        choices=("spaced", "ruled", "compact"),
+        default="spaced",
+        help="separate table rows with a blank line, a rule, or nothing (default spaced)",
+    )
     parser.add_argument("--width", type=int, default=0, help="output width; 0 detects the terminal")
     return parser
 
@@ -1896,7 +1930,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     out.append("")
     out.append(palette("FINDINGS", "head"))
     table, entries = render_findings(
-        ledger, verdicts, now, palette, width, box, args.sort, args.severity, args.signal, repo, roots, refs
+        ledger, verdicts, now, palette, width, box, args.sort, args.severity, args.signal, repo,
+        roots, refs, args.rows,
     )
     out.extend(table)
 
@@ -1907,7 +1942,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     out.append("")
     out.append(palette("PULL REQUESTS OPENED", "head"))
     if promotions:
-        out.extend(render_promotions(promotions, now, palette, width, box, args.utc))
+        out.extend(render_promotions(promotions, now, palette, width, box, args.utc, args.rows))
     else:
         out.append(
             palette(

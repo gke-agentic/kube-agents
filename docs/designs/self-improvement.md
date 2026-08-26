@@ -1170,7 +1170,9 @@ do nothing.
 `make selfimprove-ledger` renders the ConfigMap as a report: the last run and the run count first,
 then the run history, then the findings worst-first, then every pull request the loop has opened.
 `scripts/selfimprove_ledger_view.py --help` has the filters; `--file` reads a ledger already on disk
-and needs no cluster, and `--json` prints the document for piping into `jq`.
+and needs no cluster, and `--json` prints the document for piping into `jq`. Rows in both tables run
+several lines tall, so a blank line separates them; `--rows ruled` draws a rule there instead and
+`--rows compact` gives the line back.
 
 Two of its columns are derived rather than stored, and both come from `selfimprove_ledger`'s own
 functions rather than a second implementation. `SEEN` is `occurrences_in_window` — runs, not claimed
