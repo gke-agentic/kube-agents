@@ -198,6 +198,19 @@ litellm:
     tag: v1.96.2
     pullPolicy: IfNotPresent
   replicaCount: 2
+  # Rollout strategy. Unlike podDisruptionBudget below, this one is configurable,
+  # because the right answer depends on something the chart cannot see: whether a
+  # namespace ResourceQuota has room for a surge Pod.
+  #
+  # maxUnavailable: 0 is the zero-downtime shape, and it makes the surge Pod
+  # mandatory — under a full quota the rollout stalls on FailedCreate instead of
+  # completing (#749). The default of 1 lets the Deployment replace in place, at
+  # the cost of a slot's worth of serving capacity while the rollout runs. Set it
+  # to 0 on an install with quota headroom that would rather stall than drop a
+  # request; keep 1 anywhere a baseline quota is applied as policy.
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 1
   podDisruptionBudget:
     # Renders maxUnavailable: 1 at any replicaCount. The budget is deliberately
     # not configurable: minAvailable is the shape that deadlocks node drains,

@@ -8,8 +8,15 @@ spec:
   strategy:
     type: RollingUpdate
     rollingUpdate:
+      # maxUnavailable is 1, not 0, for the reason
+      # charts/kube-agents/templates/litellm.yaml states at length: at 0 the
+      # surge Pod is mandatory, so a namespace ResourceQuota with no room for
+      # one more Pod stalls the rollout on FailedCreate instead of replacing in
+      # place (#749). This file is a starting template rather than a copy the
+      # chart owns, so change it to suit — 0 buys a zero-downtime rollout on a
+      # cluster with quota headroom.
       maxSurge: 1
-      maxUnavailable: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       app: litellm
