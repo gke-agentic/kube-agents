@@ -28,6 +28,14 @@ MOCK_EXPLICIT_RELEASE_VERSION_NEXT = "0.3.0"
 MOCK_DOWNGRADE_RELEASE_VERSION = "0.1.0"
 MOCK_COLLIDING_RELEASE_TAG = "0.1.9"
 
+# Staging promotion fixtures. The candidate tags are spelled the way
+# resolve_rc_tag.sh generates them (rc_YYMMDDHHMM_<short_sha>) so that
+# --sort=-v:refname orders them the way the pipeline relies on.
+MOCK_OLDER_VALIDATED_RC_TAG = "rc_2608181000_1111111_validated"
+MOCK_LATEST_VALIDATED_RC_TAG = "rc_2608241820_b35543c_validated"
+MOCK_LATEST_STAGING_TAG = "staging/rc_2608241820_b35543c"
+MOCK_UNVALIDATED_RC_TAG = "rc_2608251930_2222222"
+
 MOCK_EMERGENCY_OVERRIDE_REASON = "INCIDENT_NUMBER critical security hotfix"
 
 MOCK_COMMIT_MSG_FEAT = "feat(agent): add multi-cluster discovery"

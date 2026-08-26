@@ -4,13 +4,15 @@ This directory contains executable scripts supporting the Release Candidate (RC)
 
 ## Overview of Scripts
 
-- `common.sh`: Centralized registry/repository helpers (`DEFAULT_REGISTRY_PREFIX`, `DEFAULT_RELEASE_REPO`, `REQUIRED_RELEASE_IMAGES`), commit discovery (`find_latest_built_commit`), validation check (`is_commit_already_validated`), container image promotion (`promote_release_images`), and automated bot tagging (`ensure_git_tag`).
+- `common.sh`: Centralized registry/repository helpers (`DEFAULT_REGISTRY_PREFIX`, `DEFAULT_RELEASE_REPO`, `REQUIRED_RELEASE_IMAGES`), commit discovery (`find_latest_built_commit`), validation check (`is_commit_already_validated`), staging promotion tags (`STAGING_TAG_PREFIX`, `staging_tag_for_rc`, `get_existing_staging_tag`), container image promotion (`promote_release_images`), and automated bot tagging (`ensure_git_tag`).
 - `resolve_rc_tag.sh`: Validates candidate commit SHAs, resolves input tags/commit inputs, discovers the latest built commit on `main` during scheduled runs, checks for existing `*_validated` tags to skip redundant runs, and sets workflow step outputs.
 - `verify_candidate_images.sh`: Verifies that prebuilt container images (`k8s-operator`, `platform-agent`, `credential-proxy`, `replay-proxy`) exist in GHCR/registry for the target candidate SHA.
 - `create_release_tag.sh`: Creates and pushes candidate release tags (`rc_YYMMDDHHMM_<short_sha>`, derived from commit timestamp) safely and idempotently. When executed locally outside CI, runs in dry-run mode (creates tag locally and skips remote push).
 - `validate_and_log_deploy_summary.sh`: Validates required environment variables and secrets, then logs a formatted deployment matrix and GCP cluster target overview for auditing before provisioning.
 - `provision_rc_environment.sh`: Orchestrates cluster teardown and fresh provisioning against the dedicated RC GCP project.
 - `tag_validated_release.sh`: Attaches the `*_validated` tag to a candidate commit upon 100% test pass.
+- `resolve_promotion_candidate.sh`: Selects the validated candidate the nightly staging promotion should test — latest `rc_*_validated` by default, or an explicit tag — rejects a commit carrying no `*_validated` tag, derives the promotion tag by moving the candidate under `staging/` without its `_validated` suffix (`rc_2608241820_b35543c_validated` → `staging/rc_2608241820_b35543c`), and reports `skip_promotion=true` when a `staging/**` tag already points at that commit.
+- `tag_staging_promotion.sh`: Pushes the `staging/**` tag that deploys a validated candidate to the staging environment. The push is the deploy trigger, so the calling job must check out with `RELEASE_BOT_TOKEN`: a tag pushed with the default `GITHUB_TOKEN` starts no workflow.
 - `calculate_next_version.sh`: Automatically calculates the next SemVer 2.0 version from Conventional Commits since the latest numeric GA release tag.
 - `verify_release_eligibility.sh`: Release gatekeeper that verifies commit eligibility, checks for live RC validation tags (`rc_*_validated`), performs tag collision detection, and verifies all 4 required container images exist in registry.
 - `tag_ga_release.sh`: Creates and pushes official GA SemVer Git tags (`X.Y.Z`) directly on the validated commit SHA.
@@ -30,30 +32,11 @@ The end-to-end pipeline (`.github/workflows/rc-release-pipeline.yml`) runs on a 
 - **Manual Trigger (`workflow_dispatch`)**:
   - Requires an explicit `commit_sha` input to rigorously test a specific target commit.
 
-GA publication (`.github/workflows/release-publish.yml`) runs weekly on top of that:
-
-- **Scheduled Cadence (Fridays, `17 2 * * 5`, best-effort)**: publishes the latest commit
-  carrying an `rc_*_validated` tag, at a version derived from Conventional Commits since the
-  last GA tag. 02:17 UTC is Thursday evening in Waterloo and early Friday in Warsaw, so the
-  release lands between the two teams' working days; the workflow comment records how the hour
-  moves across daylight saving.
-- **Redundant Run Skipping**: when the validated commit already carries its GA tag _and_ the
-  GitHub Release exists, `verify_release_eligibility.sh` sets `skip_release=true` and the
-  promote, sign, tag and publish steps no-op, so an ordinary quiet week costs one short run.
-  A GA tag with no GitHub Release behind it resumes the publish rather than skipping it.
-- **Where the quiet week stops being quiet**: that skip needs the newest GA tag and the newest
-  `rc_*_validated` tag to name the same commit. An emergency release (`skip_rc_validation`)
-  tags a commit the RC pipeline never validated, so until a newer candidate is validated the
-  scheduled run resolves an older commit and calculates the version already in use. Where that
-  older commit is itself GA-tagged, it stops at the collision guard in
-  `verify_release_eligibility.sh`; where it is not, eligibility passes and it stops instead at
-  the digest-mismatch guard in `promote_release_images.sh`, which refuses to move an `X.Y.Z`
-  image tag that already points at another commit. Either way nothing is published — both
-  gates fail safe — but Friday goes red until the RC pipeline catches up.
-- **Manual Trigger (`workflow_dispatch`)**: the only way to pass an explicit version, target a
-  specific commit, or take the `skip_rc_validation` emergency path. A dispatch that names none
-  of them resolves exactly as the scheduled run does. The scheduled run cannot pass them at
-  all, so it cannot bypass RC validation.
+The staging promotion pipeline (`.github/workflows/staging-promote.yml`) runs on top of that output,
+nightly at 02:00 UTC: it resolves the newest `rc_*_validated` candidate, redeploys that exact commit
+to the RC environment, runs the full `nightly-e2e` matrix against it, and pushes the candidate's
+`staging/` tag only if the matrix passes. `docs/designs/e2e-testing-harness.md` is the canonical
+description of the gate and of why the candidate is redeployed rather than tested where it sits.
 
 ## Workflow Mapping
 
@@ -65,4 +48,5 @@ These modular scripts back the corresponding child workflows in `.github/workflo
 | `rc-deploy-environment.yml`                      | Step 2 - Deploy Environment             | `resolve_rc_tag.sh`, `validate_and_log_deploy_summary.sh`, `provision_rc_environment.sh`                                                                                                       |
 | `e2e-gchat-test.yml` / `rc-release-pipeline.yml` | Step 3 - GKE Readiness & E2E Validation | `install_e2e_deps.sh`, `wait_for_gke_readiness.sh`, `execute_e2e_tests.sh`                                                                                                                     |
 | `rc-tag-validated.yml`                           | Step 4 - Validate Candidate Commit      | `resolve_rc_tag.sh`, `tag_validated_release.sh`                                                                                                                                                |
+| `staging-promote.yml`                            | Nightly Staging Promotion               | `resolve_promotion_candidate.sh`, `verify_candidate_images.sh`, `tag_staging_promotion.sh`                                                                                                     |
 | `release-publish.yml`                            | GA Release Orchestration                | `calculate_next_version.sh`, `verify_release_eligibility.sh`, `promote_release_images.sh`, `sign_release_images.sh`, `tag_ga_release.sh`, `publish_helm_chart.sh`, `publish_github_release.sh` |

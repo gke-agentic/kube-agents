@@ -265,7 +265,11 @@ On a host without a Docker daemon, add `IMAGE_BUILDER=crane`.
 
 ## 🤖 Running in GitHub Actions (CI)
 
-Two workflows run this suite. [`.github/workflows/e2e-gchat-test.yml`](../../.github/workflows/e2e-gchat-test.yml) is triggered manually via `workflow_dispatch` (or via GitHub CLI / Web UI). [`.github/workflows/rc-release-pipeline.yml`](../../.github/workflows/rc-release-pipeline.yml) also runs it, unattended, on a three-hourly schedule — its `step-3-run-e2e-tests` job calls the same `scripts/release/execute_e2e_tests.sh`, and `step-4-tag-validated` depends on the result. So a break here stops the release-candidate tag within three hours, whether or not anyone dispatches the manual workflow.
+Two schedules run this suite unattended, and two more workflows run it by hand.
+
+[`.github/workflows/rc-release-pipeline.yml`](../../.github/workflows/rc-release-pipeline.yml) runs the `rc-e2e` subset three-hourly — its `step-3-run-e2e-tests` job calls `scripts/release/execute_e2e_tests.sh`, and `step-4-tag-validated` depends on the result, so a break here stops the release-candidate tag within three hours. [`.github/workflows/staging-promote.yml`](../../.github/workflows/staging-promote.yml) then runs the full `nightly-e2e` matrix at 02:00 UTC through [`.github/workflows/e2e-nightly-matrix.yml`](../../.github/workflows/e2e-nightly-matrix.yml), and a break only that matrix reaches costs the night's promotion to staging.
+
+[`.github/workflows/e2e-gchat-test.yml`](../../.github/workflows/e2e-gchat-test.yml) and [`.github/workflows/e2e-manual-runner.yml`](../../.github/workflows/e2e-manual-runner.yml) are `workflow_dispatch`-only (via GitHub CLI or the web UI), as is the nightly matrix when started directly.
 
 ### Triggering Workflow via GitHub CLI (`gh`):
 

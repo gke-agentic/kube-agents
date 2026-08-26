@@ -1,10 +1,19 @@
 name: E2E Nightly Full Matrix
 
+# The nightly cron lives on staging-promote.yml, which calls this workflow as its
+# test gate. Keeping a cron here too would have put two 02:00 schedules on the
+# `rc-environment` lock below, and GitHub drops the pending loser rather than
+# queueing it, so one of the two would have silently vanished most nights.
+#
+# That trade is not free, and the comment should say so: the nightly path now
+# takes `rc-environment` twice -- once for staging-promote.yml's deploy, once
+# here -- and releases it in between, where before it took the lock once. An RC
+# run arriving in that gap can take it, and a third arrival then cancels
+# whichever of the two is pending. See the concurrency paragraph in
+# docs/designs/e2e-testing-harness.md for which side loses and why neither
+# ordering is clearly the one to prefer.
 on:
-  schedule:
-    # Run nightly at 02:00 UTC
-    - cron: "0 2 * * *"
-  #checkov:skip=CKV_GHA_7:Nightly manual test dispatch requires scenario and target environment filter parameters
+  #checkov:skip=CKV_GHA_7:Manual test dispatch requires scenario and target environment filter parameters
   workflow_dispatch:
     inputs:
       stockout_scenarios:
@@ -30,10 +39,33 @@ on:
           - "agent-plugin-e2e"
           - "gchat-e2e"
           - "all"
-
-concurrency:
-  group: rc-environment
-  cancel-in-progress: false
+      commit_sha:
+        description: "Commit SHA to check out and to assert the cluster is running (Optional, Default: whatever is deployed)"
+        required: false
+        default: ""
+        type: string
+  workflow_call:
+    inputs:
+      stockout_scenarios:
+        description: "Stockout scenario filter ('all' or comma-separated numbers, e.g. '01,02,04')"
+        required: false
+        default: "all"
+        type: string
+      fleet_audit_streams:
+        description: "Fleet audit stream filter ('all' or specific streams, e.g. 'stockout-prevention')"
+        required: false
+        default: "all"
+        type: string
+      test_environment:
+        description: "Target test environment name from tests/e2e/e2e_config.yaml"
+        required: false
+        default: "nightly-e2e"
+        type: string
+      commit_sha:
+        description: "Immutable commit SHA to check out and to assert the cluster is running. Empty runs the caller's ref against whatever is deployed."
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -44,6 +76,20 @@ jobs:
     name: Execute Full E2E Test Matrix
     if: github.repository == 'gke-labs/kube-agents' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    # The RC cluster is a singleton. Job level, not workflow level, which is
+    # where rc-deploy-environment.yml puts the same group for the same reason:
+    # a job-level group is unambiguously the caller's job when this workflow is
+    # reached through `workflow_call`, so it serializes against
+    # rc-deploy-environment.yml and rc-release-pipeline.yml's test step either
+    # way this workflow is started.
+    concurrency:
+      group: rc-environment
+      cancel-in-progress: false
+    # vars.GCP_* are environment variables, not repository ones. Without this the
+    # workload_identity_provider input resolves empty and google-github-actions/auth
+    # fails before a single test runs -- which is what happened to the only
+    # scheduled run this workflow ever had.
+    environment: rc
     timeout-minutes: 90
     env:
       CLOUDSDK_PYTHON: "/usr/bin/python3"
@@ -51,6 +97,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.commit_sha }}
           persist-credentials: false
 
       - name: Set up Python Environment
@@ -82,8 +129,13 @@ jobs:
           location: ${{ vars.GCP_REGION || 'us-east4' }}
           project_id: ${{ vars.GCP_PROJECT_ID }}
 
+      # COMMIT_SHA makes the script assert that platform-agent-gateway is running
+      # the image built from that commit before any test executes. A promotion gate
+      # that tests whatever the cluster happens to hold proves nothing about the
+      # artifact it then promotes.
       - name: Connect to GKE & Verify Readiness
         env:
+          COMMIT_SHA: ${{ inputs.commit_sha }}
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           GCP_REGION: ${{ vars.GCP_REGION }}
           GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}

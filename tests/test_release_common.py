@@ -137,6 +137,40 @@ source "{_COMMON_SH}"
         finally:
             temp_dir.cleanup()
 
+    def test_staging_tag_for_rc(self):
+        proc = self._run_common_func('staging_tag_for_rc "rc_2608241820_b35543c_validated"')
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout.strip(), "staging/rc_2608241820_b35543c")
+
+        # An unvalidated candidate tag keeps its name; only the suffix is stripped.
+        proc = self._run_common_func('staging_tag_for_rc "rc_2608241820_b35543c"')
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout.strip(), "staging/rc_2608241820_b35543c")
+
+        proc = self._run_common_func('staging_tag_for_rc ""')
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("rc_tag is required", proc.stderr)
+
+    def test_staging_promotion_tag_lookup(self):
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            proc = self._run_common_func('get_existing_staging_tag "HEAD"', cwd=repo_dir)
+            self.assertEqual(proc.returncode, 0)
+            self.assertEqual(proc.stdout.strip(), "")
+
+            # A same-commit RC tag must not read as a promotion.
+            git("tag", "-a", "rc_2608241820_b35543c_validated", "-m", "Validated RC")
+            proc = self._run_common_func('get_existing_staging_tag "HEAD"', cwd=repo_dir)
+            self.assertEqual(proc.returncode, 0)
+            self.assertEqual(proc.stdout.strip(), "")
+
+            git("tag", "-a", "staging/rc_2608241820_b35543c", "-m", "Promoted")
+            proc = self._run_common_func('get_existing_staging_tag "HEAD"', cwd=repo_dir)
+            self.assertEqual(proc.returncode, 0)
+            self.assertEqual(proc.stdout.strip(), "staging/rc_2608241820_b35543c")
+        finally:
+            temp_dir.cleanup()
+
     def test_get_target_repo(self):
         # Default
         proc = self._run_common_func('get_target_repo', env={"GH_ORG": "", "GH_REPO": "", "GITHUB_REPOSITORY": ""})

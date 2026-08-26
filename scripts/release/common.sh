@@ -14,6 +14,10 @@ export DEFAULT_REGISTRY_PREFIX="ghcr.io/gke-labs/kube-agents"
 export DEFAULT_RELEASE_REPO="gke-labs/kube-agents"
 export DEFAULT_INITIAL_VERSION="0.1.0"
 
+# Tag namespace that promotes a validated candidate to the staging environment.
+# Pushing a tag under it is what the staging-redeploy-*.yml workflows trigger on.
+export STAGING_TAG_PREFIX="staging"
+
 # Declarative registry of all 4 required container images
 export REQUIRED_RELEASE_IMAGES=(
   "k8s-operator"
@@ -154,6 +158,26 @@ is_commit_already_validated() {
   local validated_tags
   validated_tags=$(git tag --points-at "${sha}" "*_validated" 2>/dev/null || echo "")
   [ -n "${validated_tags}" ]
+}
+
+# Derives the staging promotion tag name for a validated RC tag
+# (rc_2608241820_b35543c_validated -> staging/rc_2608241820_b35543c).
+# The name is derived rather than dated so a promotion is traceable back to the
+# exact candidate that passed the gate, and so re-running the nightly pipeline
+# on the same candidate is an idempotent no-op instead of a second tag.
+staging_tag_for_rc() {
+  local rc_tag="${1:-}"
+  if [ -z "${rc_tag}" ]; then
+    echo "❌ ERROR: rc_tag is required for staging_tag_for_rc." >&2
+    return 1
+  fi
+  echo "${STAGING_TAG_PREFIX}/${rc_tag%_validated}"
+}
+
+# Finds the staging promotion tag already pointing at a commit SHA, if any
+get_existing_staging_tag() {
+  local sha="$1"
+  git tag --points-at "${sha}" "${STAGING_TAG_PREFIX}/*" 2>/dev/null | head -n 1 || echo ""
 }
 
 # Finds the latest commit on main whose required container images are already built in the registry
