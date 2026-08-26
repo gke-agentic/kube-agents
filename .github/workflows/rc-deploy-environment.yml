@@ -121,4 +121,10 @@ jobs:
           PLATFORM_AGENT_PERMISSION_SET: ${{ vars.PLATFORM_AGENT_PERMISSION_SET }}
           MEMORY_PROVIDER: ${{ vars.MEMORY_PROVIDER }}
           USER_PROFILE_ENABLED: ${{ vars.USER_PROFILE_ENABLED }}
+          # Unset (the default) reports a failed teardown as an annotation and
+          # a job-summary entry and provisions on top of whatever survived;
+          # "true" makes it a hard stop. Flipping it commits the pipeline to a
+          # full cluster rebuild per run, so it is a repository variable rather
+          # than a constant here.
+          RC_TEARDOWN_STRICT: ${{ vars.RC_TEARDOWN_STRICT }}
         run: ./scripts/release/provision_rc_environment.sh
