@@ -59,8 +59,8 @@ jobs:
   # Everything that decides *whether* to release lives here, and nothing that
   # decides *what* to publish does. Keeping it in its own job rather than as a
   # first step of publish-release means the decision is one `if:` on the job
-  # below instead of a condition repeated on every publishing step, and it keeps
-  # this change clear of the step bodies that #914 is rewriting.
+  # below instead of a condition repeated on every publishing step, which would
+  # otherwise have to be re-added to each new step somebody appends.
   evaluate-schedule:
     name: Decide Whether To Release
     runs-on: ubuntu-latest

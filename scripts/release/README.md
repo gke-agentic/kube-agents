@@ -13,7 +13,7 @@ This directory contains executable scripts supporting the Release Candidate (RC)
 - `tag_validated_release.sh`: Attaches the `*_validated` tag to a candidate commit upon 100% test pass.
 - `resolve_promotion_candidate.sh`: Selects the validated candidate the nightly staging promotion should test — latest `rc_*_validated` by default, or an explicit tag — rejects a commit carrying no `*_validated` tag, derives the promotion tag by moving the candidate under `staging/` without its `_validated` suffix (`rc_2608241820_b35543c_validated` → `staging/rc_2608241820_b35543c`), and reports `skip_promotion=true` when a `staging/**` tag already points at that commit.
 - `tag_staging_promotion.sh`: Pushes the `staging/**` tag that deploys a validated candidate to the staging environment. The push is the deploy trigger, so the calling job must check out with `RELEASE_BOT_TOKEN`: a tag pushed with the default `GITHUB_TOKEN` starts no workflow.
-- `resolve_scheduled_release.sh`: Decides whether an unattended nightly run should publish a GA release — requires a commit carrying a `staging/**` tag (the staging gate's evidence), something new since the last GA tag, and a cycle that has not released yet; halts for a human when the range contains a breaking change. Every "no" is a skip with exit 0, never a failure.
+- `resolve_scheduled_release.sh`: Decides whether an unattended nightly run should publish a GA release — requires a commit carrying a promotion-shaped `staging/rc_*` tag and an `rc_*_validated` tag, something new since the last GA tag, and a cycle that has not released yet; halts for a human when the range contains a breaking change. Every gate condition that fails is a skip with exit 0, so a blocked night is green rather than red.
 - `calculate_next_version.sh`: Automatically calculates the next SemVer 2.0 version from Conventional Commits since the latest numeric GA release tag.
 - `verify_release_eligibility.sh`: Release gatekeeper that verifies commit eligibility, checks for live RC validation tags (`rc_*_validated`), performs tag collision detection, and verifies all 4 required container images exist in registry.
 - `tag_ga_release.sh`: Creates and pushes official GA SemVer Git tags (`X.Y.Z`) directly on the validated commit SHA.
@@ -40,32 +40,41 @@ to the RC environment, runs the full `nightly-e2e` matrix against it, and pushes
 description of the gate and of why the candidate is redeployed rather than tested where it sits.
 
 GA publication (`.github/workflows/release-publish.yml`) sits on top of the staging gate and is
-attempted nightly at 01:17 UTC — before the promotion at 02:00, so each attempt reads a completed
-gate result rather than racing a matrix that is still running.
+attempted nightly at 01:17 UTC. Each attempt reads the result of the promotion that ran the
+previous night — 01:17 is ahead of the 02:00 promotion starting, so an attempt never reads a
+matrix that is still running.
 
 - **Nightly attempt, weekly outcome.** `resolve_scheduled_release.sh` decides, and it releases at
   most once per cycle, where a cycle begins on Friday 00:00 UTC. The other six nights exist so a
   cycle blocked by a red gate can ship as soon as the gate goes green instead of waiting a week.
   The cadence is anchored to the weekday rather than to the age of the last release, so a cycle
   that releases late on a Sunday does not drag every later release to Sunday.
-- **What has to be true to release.** A `staging/**` tag must exist — that tag is only pushed when
-  the full nightly E2E matrix passed against that exact commit, so it is the evidence the candidate
-  works. There must be commits between the last GA tag and that commit. And the cycle must not have
-  released already.
+- **What has to be true to release.** A commit must carry a tag that `staging-promote.yml` itself
+  pushed — one shaped `staging/rc_<timestamp>_<sha>`, which that pipeline pushes only when the full
+  nightly E2E matrix passed against that exact commit. The wider `staging/**` namespace is the
+  general staging deploy trigger and anyone can push into it by hand, so a name outside that shape
+  is not evidence of anything and is ignored. The commit must also carry an `rc_*_validated` tag,
+  there must be commits between the last GA tag and it, and the cycle must not have released
+  already. Where no GA tag exists at all, the first two of those are skipped and the whole history
+  is the range.
 - **Breaking changes stop and wait for a human.** If anything in the range is `feat!:`, `fix(x)!:`
-  or carries a `BREAKING CHANGE:` footer, the attempt halts and says so in the run's step summary.
-  The check is spelled "breaking" rather than "MAJOR" on purpose: `calculate_next_version.sh`
-  implements SemVer clause 4, so on `0.y.z` a breaking change bumps MINOR and a guard written
-  against the MAJOR digit would pass every breaking release straight through until `1.0.0`.
-  Publishing one is a `workflow_dispatch` away.
-- **A blocked night is green, not red.** Every condition above fails as a skip: nothing is
-  published, the run succeeds, and the next night asks again. This includes the shape that used to
-  error — an emergency release having put the GA tag ahead of the newest staging-gated commit,
-  which now reads as "nothing new to ship" rather than a collision.
+  or carries a `BREAKING CHANGE:` (or `BREAKING-CHANGE:`) footer, the attempt halts, raises a
+  workflow annotation, and says so in the run's step summary. The check is spelled "breaking"
+  rather than "MAJOR" on purpose: `calculate_next_version.sh` implements SemVer clause 4, so on
+  `0.y.z` a breaking change bumps MINOR and a guard written against the MAJOR digit would pass
+  every breaking release straight through until `1.0.0`. Publishing one is a `workflow_dispatch`
+  away. **A halt persists**: it is the one skip that does not clear itself on a later night, and
+  because a scheduled run that skips is green, nothing notifies anyone — GA releases stop until
+  somebody looks. Wiring an out-of-band signal for scheduled work is open.
+- **A blocked night is green, not red.** Every gate condition that fails is a skip: nothing is
+  published, the run succeeds, and the next night asks again. That covers the awkward case where
+  an emergency release has put the GA tag ahead of the newest staging-gated commit, which reads as
+  "nothing new to ship". Only a genuine error — a tag that does not resolve to a commit, or a
+  `git log` that fails — exits non-zero.
 - **Manual Trigger (`workflow_dispatch`)**: the only way to pass an explicit version, target a
-  specific commit, or take the `skip_rc_validation` emergency path, and it bypasses the gate above
-  entirely — a human dispatching the workflow _is_ the decision the gate exists to make. The
-  scheduled run cannot pass any of those inputs, so it cannot bypass RC validation.
+  specific commit, or take the `skip_rc_validation` emergency path. It bypasses every condition
+  above — a human dispatching the workflow _is_ the decision the gate exists to make. None of
+  those inputs exist on a `schedule` event, so the scheduled run cannot reach the emergency path.
 
 ## Workflow Mapping
 

@@ -21,7 +21,9 @@ from tests.testing.release import (
     MOCK_COMMIT_MSG_BREAKING_BODY,
     MOCK_COMMIT_MSG_BREAKING_PRE_1_0,
     MOCK_COMMIT_MSG_FEAT,
+    MOCK_HAND_PUSHED_STAGING_TAG,
     MOCK_LATEST_STAGING_TAG,
+    MOCK_LATEST_VALIDATED_RC_TAG,
 )
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -91,6 +93,7 @@ class ResolveScheduledReleaseTest(unittest.TestCase):
         head = git("rev-parse", "HEAD").stdout.strip()
 
         if staging:
+            git("tag", "-a", MOCK_LATEST_VALIDATED_RC_TAG, "-m", "validated candidate")
             git("tag", "-a", MOCK_LATEST_STAGING_TAG, "-m", "staging promotion")
         return temp_dir, repo_dir, git, head
 
@@ -133,6 +136,7 @@ class ResolveScheduledReleaseTest(unittest.TestCase):
         temp_dir, repo_dir, git = create_mock_git_repo()
         try:
             self._tag_at(repo_dir, _GA_TAG, _PREV_WEDNESDAY)
+            git("tag", "-a", MOCK_LATEST_VALIDATED_RC_TAG, "-m", "validated candidate")
             git("tag", "-a", MOCK_LATEST_STAGING_TAG, "-m", "staging promotion")
             proc, outputs, _ = self._run(repo_dir)
             self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -145,6 +149,7 @@ class ResolveScheduledReleaseTest(unittest.TestCase):
         """The emergency-release shape: GA tagged on a commit newer than the gate's."""
         temp_dir, repo_dir, git = create_mock_git_repo()
         try:
+            git("tag", "-a", MOCK_LATEST_VALIDATED_RC_TAG, "-m", "validated candidate")
             git("tag", "-a", MOCK_LATEST_STAGING_TAG, "-m", "staging promotion")
             (pathlib.Path(repo_dir) / "hotfix.txt").write_text("hotfix\n")
             git("add", "hotfix.txt")
@@ -181,6 +186,49 @@ class ResolveScheduledReleaseTest(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertEqual(outputs["should_release"], "true")
             self.assertEqual(outputs["release_commit"], head)
+        finally:
+            temp_dir.cleanup()
+
+    def test_a_hand_pushed_staging_tag_does_not_become_the_release_target(self):
+        """`staging/**` is the general deploy trigger, not the gate's namespace.
+
+        A letter-initial hand tag sorts above every `staging/rc_*`, so without a
+        shape filter it makes itself the newest "gated" candidate — and points
+        the release at a commit the E2E matrix never saw.
+        """
+        temp_dir, repo_dir, git, gated_head = self._repo()
+        try:
+            # A side commit nobody validated, tagged the way a human deploys.
+            git("checkout", "-q", "-b", "side", "HEAD~1")
+            (pathlib.Path(repo_dir) / "side.txt").write_text("side\n")
+            git("add", "side.txt")
+            git("commit", "-m", "chore: something never gated")
+            git("tag", "-a", MOCK_HAND_PUSHED_STAGING_TAG, "-m", "hand deploy")
+            git("checkout", "-q", "main")
+
+            proc, outputs, _ = self._run(repo_dir)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(outputs["staging_tag"], MOCK_LATEST_STAGING_TAG)
+            self.assertEqual(outputs["release_commit"], gated_head)
+            self.assertEqual(outputs["should_release"], "true")
+        finally:
+            temp_dir.cleanup()
+
+    def test_a_promotion_shaped_tag_on_an_unvalidated_commit_is_a_skip(self):
+        """Not a red run: verify_release_eligibility.sh would exit 1 on this."""
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            self._tag_at(repo_dir, _GA_TAG, _PREV_WEDNESDAY)
+            (pathlib.Path(repo_dir) / "second.txt").write_text("second\n")
+            git("add", "second.txt")
+            git("commit", "-m", MOCK_COMMIT_MSG_FEAT)
+            # Promotion-shaped, but no *_validated tag on the commit.
+            git("tag", "-a", MOCK_LATEST_STAGING_TAG, "-m", "staging promotion")
+
+            proc, outputs, _ = self._run(repo_dir)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(outputs["should_release"], "false")
+            self.assertIn("no *_validated tag", outputs["skip_reason"])
         finally:
             temp_dir.cleanup()
 

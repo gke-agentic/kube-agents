@@ -34,6 +34,11 @@ MOCK_COLLIDING_RELEASE_TAG = "0.1.9"
 MOCK_OLDER_VALIDATED_RC_TAG = "rc_2608181000_1111111_validated"
 MOCK_LATEST_VALIDATED_RC_TAG = "rc_2608241820_b35543c_validated"
 MOCK_LATEST_STAGING_TAG = "staging/rc_2608241820_b35543c"
+# `staging/**` is the general staging deploy trigger, so a hand-pushed tag can
+# be named anything. This one is letter-initial on purpose: a version sort puts
+# it above every staging/rc_* tag, which is how it once made itself the newest
+# "gated" candidate. See get_latest_staging_tag in scripts/release/common.sh.
+MOCK_HAND_PUSHED_STAGING_TAG = "staging/test-4"
 MOCK_UNVALIDATED_RC_TAG = "rc_2608251930_2222222"
 
 MOCK_EMERGENCY_OVERRIDE_REASON = "INCIDENT_NUMBER critical security hotfix"

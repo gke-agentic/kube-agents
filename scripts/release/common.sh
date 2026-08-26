@@ -180,12 +180,25 @@ get_existing_staging_tag() {
   git tag --points-at "${sha}" "${STAGING_TAG_PREFIX}/*" 2>/dev/null | head -n 1 || echo ""
 }
 
-# Finds the newest staging promotion tag in the repository. Sorting is by
-# refname rather than by date for the same reason get_latest_validated_rc_tag
-# does it: a staging tag embeds its candidate's rc_YYMMDDHHMM timestamp, so the
-# name orders the tags even when they were all pushed in one catch-up run.
+# Finds the newest tag pushed by the staging promotion gate.
+#
+# Matching the shape rather than the namespace is load-bearing. `staging/**` is
+# the general staging deploy trigger -- staging-redeploy-{agent,controller,
+# integrations}.yml each fire on any `staging/**` push -- so deploying to
+# staging by hand means pushing a name of one's choosing, and the repository
+# already carries `staging/2026-07-23` from exactly that. Only the tags
+# staging_tag_for_rc derives are evidence that the E2E matrix passed. A version
+# sort puts every letter-initial hand tag above every `staging/rc_*`, so
+# without this filter one such tag makes itself the newest "gated" candidate
+# for good.
+#
+# Sorting is by refname rather than by date for the same reason
+# get_latest_validated_rc_tag does it: the name embeds the candidate's
+# rc_YYMMDDHHMM timestamp, so it orders the tags even when they were all pushed
+# in one catch-up run.
 get_latest_staging_tag() {
-  git tag -l --sort=-v:refname "${STAGING_TAG_PREFIX}/*" 2>/dev/null | head -n 1 || echo ""
+  git tag -l --sort=-v:refname "${STAGING_TAG_PREFIX}/rc_*" 2>/dev/null |
+    grep -E "^${STAGING_TAG_PREFIX}/rc_[0-9]+_[0-9a-f]+$" | head -n 1 || echo ""
 }
 
 # Finds the latest commit on main whose required container images are already built in the registry

@@ -25,10 +25,10 @@ is the canonical description of the gate.
 1. **RC Testing**: Pre-release builds are validated by the automated RC pipeline —
    [`scripts/release/README.md`](https://github.com/gke-labs/kube-agents/tree/main/scripts/release) is the canonical reference for how `rc_YYMMDDHHMM_<short_sha>` builds are created, tested end-to-end, and tagged `*_validated` on success.
 2. **SemVer Publication**: The release workflow (`release-publish.yml`) is attempted nightly and
-   publishes at most once a week, from a commit that has passed the staging gate above. A release
-   whose commit range contains a breaking change stops and waits to be published by hand, as does
-   anything naming a specific commit or version. Either way it promotes and publishes immutable
-   artifacts (example for `1.2.0`); the same
+   publishes at most once a week, from a commit that the staging gate above has passed. An
+   unattended release carrying a breaking change is not published: the attempt halts and waits for
+   someone to run the workflow by hand, which is also the only way to name a specific commit or
+   version. What it publishes is immutable artifacts (example for `1.2.0`);
    [`scripts/release/README.md`](https://github.com/gke-labs/kube-agents/tree/main/scripts/release)
    is canonical for the cadence and for what an attempt with nothing to ship does:
    - **GHCR Images**: Clean promotion retags verified commit images to `ghcr.io/gke-labs/kube-agents/platform-agent:1.2.0` (and all required images) without rebuilding.

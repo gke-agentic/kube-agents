@@ -28,7 +28,9 @@ documentation and governance playbooks around them.
 3. **RC pipeline feeds SemVer promotion.** Pre-release validation keeps using RC tags
    (`rc_YYMMDDHHMM_<short_sha>`, `*_validated` on success — see `scripts/release/README.md`).
    The validated commit is then promoted and tagged `MAJOR.MINOR.PATCH` via `release-publish.yml`,
-   which orchestrates clean image promotion and chart publication.
+   which orchestrates clean image promotion and chart publication. Which validated commit, and
+   when, is decided by the staging gate and release cadence rather than by hand;
+   `scripts/release/README.md` is canonical for both.
 4. **The operator defaults to its own release version.** When a `PlatformAgent` CR omits
    `spec.deployment.image`, the operator dynamically derives the matching versioned agent image
    from its own container image at runtime (or via `OPERATOR_IMAGE` env var). Precedence:

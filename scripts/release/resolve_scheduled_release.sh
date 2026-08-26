@@ -37,6 +37,9 @@ SKIP_REASON=""
 RELEASE_COMMIT=""
 STAGING_TAG=""
 LATEST_GA_TAG=""
+# Set only by the breaking-change branch, which is the one skip that does not
+# clear itself on a later night. See emit_and_exit.
+HALTED_FOR_HUMAN=""
 
 emit_and_exit() {
   if [ -n "${GITHUB_OUTPUT:-}" ]; then
@@ -62,10 +65,19 @@ emit_and_exit() {
   fi
   echo "======================================================================"
 
-  # The step summary is the only place an unattended skip is visible without
-  # opening the run, and one skip reason matters more than the rest: a halt on
-  # a breaking change stops every subsequent night too, so it has to read as an
-  # action for somebody rather than as routine quiet.
+  # A halt is not like the other skips: it persists until somebody acts, so
+  # every following night takes the same branch and GA releases stop. Raise it
+  # as a workflow annotation rather than only a summary line — an annotation
+  # surfaces on the run and in the Actions list without opening the job.
+  #
+  # This is still weaker than the situation deserves. A green scheduled run
+  # notifies nobody at all, so noticing means looking. Closing that needs an
+  # out-of-band signal this repository does not have yet for scheduled work;
+  # `scripts/release/README.md` records it as the open gap it is.
+  if [ "${SHOULD_RELEASE}" != "true" ] && [ -n "${HALTED_FOR_HUMAN:-}" ]; then
+    echo "::warning title=GA release halted::${SKIP_REASON}"
+  fi
+
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     {
       if [ "${SHOULD_RELEASE}" = "true" ]; then
@@ -102,6 +114,17 @@ fi
 if ! RELEASE_COMMIT="$(git rev-parse --verify "${STAGING_TAG}^{commit}" 2>/dev/null)"; then
   echo "❌ ERROR: Staging tag '${STAGING_TAG}' does not resolve to a commit." >&2
   exit 1
+fi
+
+# Belt and braces over get_latest_staging_tag's shape filter. verify_release_
+# eligibility.sh refuses a commit carrying no rc_*_validated tag by exiting 1,
+# which on an unattended run is a red night rather than the clean skip
+# everything else here produces. Checking the same condition first keeps that
+# exit unreachable from the schedule: anything that got a promotion-shaped tag
+# without going through the pipeline stops here quietly instead.
+if ! is_commit_already_validated "${RELEASE_COMMIT}"; then
+  SKIP_REASON="Commit ${RELEASE_COMMIT:0:7} carries '${STAGING_TAG}' but no *_validated tag, so it did not reach staging through the promotion pipeline."
+  emit_and_exit
 fi
 
 # 2. Is there anything new in it?
@@ -157,6 +180,7 @@ fi
 # step 6, so the two agree on what "breaking" means.
 if echo "${COMMITS_SUBJECTS}" | grep -qE "^[a-z]+(\([^)]+\))?!:" ||
   echo "${COMMITS_BODIES}" | grep -qE "^[[:space:]]*BREAKING[ -]CHANGE:[[:space:]]+"; then
+  HALTED_FOR_HUMAN="true"
   SKIP_REASON="A breaking change is waiting to ship. Releases carrying one are published by a human: run release-publish.yml manually against ${RELEASE_COMMIT:0:7}."
   emit_and_exit
 fi
