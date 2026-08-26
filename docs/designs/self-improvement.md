@@ -964,6 +964,15 @@ concluding that nothing here can help. The list sits outside the untrusted fence
 repository name the run already knows carry nothing a directive could hide in, and fencing them
 would tell the turn to distrust the one piece of prior art more reliable than its own search.
 
+Neither of those nets reaches another installation's filings. More than one install can run this
+loop against the same upstream, each with its own ledger — fingerprints hash the agent-written
+title, so independent copies of one finding do not share an identity. What they do share is the
+location's file path, so the skill's §0 runs a search on that path, quoted, before the keyword
+search, and §4 requires every body to carry the path verbatim on a fixed `Location:` line for
+that search to hit. Branch names carry the install's cluster name for the adjacent reason:
+several loops pushing to one fork must not collide on a branch name two of them would otherwise
+both derive from the same bug.
+
 Two of the repository's rules apply awkwardly to a machine author and are worth settling here. The
 **Self-Review** section must not claim a review it did not perform: the runner is the context that
 wrote the change, and `AGENTS.md` is explicit that reviewing a diff in the context that produced it
