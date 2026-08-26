@@ -78,6 +78,11 @@ pod is running, which may be behind, and is read-only.
   shell runs. The runner checks its key for exactly that and hands you nothing when it cannot
   vouch for it, in which case skip this search and rely on the keyword search alone.
 
+  **If a search fails, carry on and open the pull request.** `curl -sSf` exits nonzero on any HTTP
+  error, and an error is not evidence of a duplicate. Treating it as one retires a real finding
+  against a pull request that does not exist; the cost the other way is a duplicate a maintainer
+  closes.
+
   **A hit here is prior art on the same file, not the same finding**, and the difference decides
   whether a finding survives. This search is deliberately wide: a file like `selfimprove_run.py`
   carries many unrelated defects, and every human pull request that ever touched it can match.
@@ -334,7 +339,12 @@ filed this while you were working:
 curl -sSf "https://api.github.com/search/issues?q=repo:<the upstream from your brief>+is:pr+is:open+<the PRIOR ART SEARCH KEY from your brief>"
 ```
 
-Same key as §0 and the same rule for reading a hit — the same file is not the same defect, and you
+Same key as §0, and the same escape: if your brief gave you no `PRIOR ART SEARCH KEY`, skip this
+search and open the pull request. Do not run it with the key left empty — the query then reads
+`+is:pr+is:open+` and matches every open pull request on the repository, and a hit here stops a fix
+you have already written and pushed.
+
+The same rule applies for reading a hit — the same file is not the same defect, and you
 have just spent a turn on the fix, so hold this one to the standard §0 sets rather than looking for
 a reason to stop. What is different is only how much time has passed. §0's search ran before you
 read any code; since then you have written a change, committed, and pushed, which on the runs
@@ -415,9 +425,10 @@ the other, and a maintainer reading "the label failed" cannot tell which is miss
 - The URL is what the runner records in the ledger. Without it the finding is filed but looks
   unfiled, and the next run files it again.
 - The marker is what tells the runner you decided rather than failed. Print it even when the
-  paragraph above already explains itself in prose — the runner reads only the last line, cannot
-  tell an explanation from a crash, and so assumes the pull request may exist: one of the day's
-  slots spent and a 24-hour cooldown started on a finding you deliberately left alone. Take the
+  paragraph above already explains itself in prose — the runner scans up from the end for a URL or
+  a `SKIPPED:` marker and reads prose as neither, so it cannot tell an explanation from a crash and
+  assumes the pull request may exist: one of the day's slots spent and a 24-hour cooldown started
+  on a finding you deliberately left alone. Take the
   wording from wherever you stopped — `SKIPPED: already filed as #<n>` from §0 or §6,
   `SKIPPED: fixed in #<n>` or `SKIPPED: closed unmerged as #<n>` from §0,
   `SKIPPED: out of bounds - <why>` from the refusal list below.

@@ -591,10 +591,12 @@ def fork_parent(repo: str, timeout: int = 10) -> str:
     is neither -- so it is one `gh` call, made once per invocation and only
     when there is a base repository to ask about.
 
-    Every failure is "" and no link: `gh` absent, unauthenticated, offline, a
-    repository that has been deleted. That degrades to sending bare references
-    to the base repository, which is where they belonged before any of this
-    existed, so nothing that worked stops working when the call does not land.
+    Every failure is "": `gh` absent, unauthenticated, offline, a repository
+    that has been deleted. The reference still links -- `Refs.url` falls back
+    to the base repository, which is where bare references belonged before any
+    of this existed -- so nothing that worked stops working when the call does
+    not land. A repository that is not a fork takes the same path, and there
+    the base is not a degradation but the right answer.
     """
     if not repo or not _url_safe(repo, segments=2):
         return ""

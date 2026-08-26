@@ -1194,7 +1194,9 @@ it can be. The ledger's promotions name every number the loop assigned itself, a
 against the pull request's base — `SELFIMPROVE_UPSTREAM_REPO`, which is the fork under `mode: fork`.
 Every other number came out of the project's history, where a squash-merge subject line ends
 `(#874)`, so it resolves against the base repository's fork parent: one `gh api` call per
-invocation, empty and unlinked whenever `gh` is missing or the base is not a fork. Only those two
+invocation, falling back to the base itself whenever `gh` is missing or the base is not a fork. The
+reference is linked either way — for a base that is not a fork the base is the right repository, and
+for a call that did not land it is where a bare number pointed before any of this existed. Only those two
 fields are scanned, because the filing skill dictates their wording; a `#12` in an agent-written
 title is as likely to be a hostname suffix.
 

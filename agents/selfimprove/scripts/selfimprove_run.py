@@ -2711,10 +2711,10 @@ def file_pull_request(
         it. If you opened a pull request: its URL. If you did not: `SKIPPED: <why>`, in the
         vocabulary the skill gives you -- `SKIPPED: already filed as #<n>` when an open pull
         request already covers this, and the other forms sections 0 and 6 spell out. Say it in
-        that form even though you have just explained yourself in prose above; the runner reads
-        only this last line, cannot tell an explanation from an omission, and a decline it cannot
-        read is recorded as a pull request that may exist -- which spends a slot in the day's
-        budget and starts a 24-hour cooldown on a finding you deliberately did not file.
+        that form even though you have just explained yourself in prose above; the runner scans up
+        from the end for a URL or a `SKIPPED:` marker and reads prose as neither, so a decline it
+        cannot find is recorded as a pull request that may exist -- which spends a slot in the
+        day's budget and starts a 24-hour cooldown on a finding you deliberately did not file.
         """
     ) % {
         "fingerprint": entry.get("fingerprint", "?"),
