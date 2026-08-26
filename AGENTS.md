@@ -28,6 +28,38 @@ This repository contains the Kubernetes Agentic Harness (`kube-agents`). It is a
 - `INSTALL.md`: Installation guide.
 - `README.md`: Project overview.
 
+## Where Tests Go
+
+Tests live in nine places here, with different runners and different answers to "does this catch a
+regression before merge". Choosing the wrong one rarely fails loudly — the test runs somewhere you
+did not expect, or nowhere at all, and the suite reports green around it.
+
+**Decide by asking whether a model call is in the loop.**
+
+- **No** — it is a test, and it runs on every pull request. Put it beside the module it covers; in
+  `tests/` when there is nothing to sit beside, as for a shell script or a rendered manifest; or in
+  `tests/integration/` when it spans two components.
+  See [`tests/integration/README.md`](tests/integration/README.md).
+- **Yes, and you plant the defect it has to find** — it is an eval, it belongs in
+  `bench/tasks/<name>/task.yaml`, and it runs in the Prow presubmit, so adding one changes what
+  every pull request reports. [`docs/designs/bench-case-format.md`](docs/designs/bench-case-format.md)
+  is the contract for what that file must carry; `make bench-case-check` checks it locally
+  and `scripts/test_task_registration.py` gates it.
+- **Yes, and it checks an install you already have** — it is a critical user journey, and it goes in
+  `bench/cuj/`. **This tier is manual by design**, not pending automation: it needs a real
+  deployment to point at and CI has none, so no job runs it and adding one changes nothing about
+  what CI reports. It plants nothing, so it grades the deployment rather than the agent.
+  See [`bench/cuj/README.md`](bench/cuj/README.md).
+- **Yes, and it is the release gate** — `tests/e2e/`, which the release-candidate pipeline runs on a
+  schedule. Adding to it holds up releases rather than pull requests.
+
+One rule holds wherever it lands: a new test directory only runs if a `PYTHON_TEST_DIRS` glob in the
+`Makefile` reaches it, and a directory the globs miss fails nothing — it sits unexecuted while the
+suite reports green around it. Add the glob in the same change.
+
+The nine homes, what runs each, and how far "runs on a pull request" is from "gates a merge" are in
+[`docs/testing-map.md`](docs/testing-map.md).
+
 ## Agent Setup & Integration
 
 This repository is primarily a configuration and documentation repository for AI agents. The main exception is the Go-based Kubernetes operator in `k8s-operator/`, which requires compilation (see Local Validation Checks below).
@@ -277,6 +309,10 @@ map (`docs/README.md`), and this file plus `CLAUDE.md` stay inside the context b
     confirm it goes back.
   - **Say what you could not cover, and why**, rather than implying full coverage. Clean up test
     artifacts, restore prior state, and note anything left behind.
+  - **Screenshots of graphical surfaces go through `scripts/pr_evidence_screenshot.sh`**, which
+    publishes the image where a PR body can render it and prints Markdown stamped with the
+    commit and capture time. Command output stays as fenced text transcripts — a screenshot of a
+    terminal is evidence degraded, not evidence.
   - **If the install is shared with other agents, take the lease.**
     `scripts/live_test_lease.py` holds it as a ConfigMap in the install's own namespace. Copy
     `.claude/settings.json.example` to `.claude/settings.json` once per checkout and its

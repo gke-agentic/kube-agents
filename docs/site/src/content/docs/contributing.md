@@ -29,7 +29,8 @@ This project follows [Google's Open Source Community Guidelines](https://opensou
 
 ## Local validation
 
-Before pushing, run the checks CI enforces:
+Before pushing, run the checks CI enforces. This section is about running the tests; for deciding
+where a new one belongs, `docs/testing-map.md` maps the nine test homes to their runners.
 
 - **Prettier** on changed Markdown and YAML (what the `Prettier Check` CI job enforces — it checks changed `.md`/`.yaml`/`.yml` files):
 
@@ -93,6 +94,7 @@ What that section should say:
 - **What you observed at each layer the change touches** — the CR `.status`, the Deployment env, the file or process inside the pod. A change that claims to reach the pod is verified by reading it in the pod.
 - **Evidence the mechanism worked, not a coincidence.** If your new value happens to equal the previous default, observing it proves nothing. Set something distinctly different, confirm it lands, then revert and confirm it goes back.
 - **What you could not cover, and why.** An honest gap is more useful than an implied one.
+- **Screenshots for graphical surfaces** (admin console, docs site, chat) come from `scripts/pr_evidence_screenshot.sh`, which publishes the image and prints Markdown stamped with the commit and capture time. Command output stays as fenced text transcripts, not screenshots.
 - **Cleanup.** Remove test artifacts, restore prior state, and note anything left behind.
 
 Some changes can't reach a running installation — docs-only edits, CI workflow changes, code paths that need infrastructure you don't have. Write "Not live-tested" and say why. An empty section is not an answer.
