@@ -520,14 +520,14 @@ func parseManagedRepos(raw string) []string {
 
 // reconcileGithubStateConfigMap ensures the <agent-name>-github-state ConfigMap exists to track
 // managed repositories. If spec.integration.github.gitRepo is defined on the CR, it is seeded
-// into managed_repos and kept present on subsequent reconciles without removing any dynamically
-// registered repositories added by the register-github-repo skill.
+// into managed_repos and kept present on subsequent reconciles without removing any additional
+// repositories added to the ConfigMap by cluster administrators.
 //
 // Repository lifecycle and removal:
 // The operator treats spec.integration.github.gitRepo as declared desired state. If that repo
 // is absent from managed_repos in the existing ConfigMap, the reconciler re-appends it.
 // Therefore:
-//   - Dynamically registered repositories (added at runtime via register-github-repo) can be
+//   - Additional repositories (added by cluster administrators) can be
 //     unregistered by removing them from the ConfigMap's managed_repos string.
 //   - CR-declared repositories must be removed or changed in the PlatformAgent CR itself
 //     (spec.integration.github.gitRepo); removing a CR-declared repo from the ConfigMap alone
@@ -920,7 +920,7 @@ func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, ag
 
 // cleanupAgentRBAC dynamically purges un-wanted or all RBAC resources for a PlatformAgent.
 // When deleteAll is true (called during finalization), all RBAC resources are deleted.
-// When deleteAll is false (called during reconcile), active canonical bindings (minimal, local, leader, configmap-editor) are preserved.
+// When deleteAll is false (called during reconcile), active canonical bindings (minimal, local, leader) are preserved.
 func (r *PlatformAgentReconciler) cleanupAgentRBAC(ctx context.Context, agent *agentv1alpha1.PlatformAgent, deleteAll bool) error {
 	saName := agent.Name
 	if agent.Spec.Security != nil && agent.Spec.Security.ServiceAccountName != "" {
@@ -998,8 +998,8 @@ func (r *PlatformAgentReconciler) cleanupAgentRBAC(ctx context.Context, agent *a
 	}
 	for i := range existingRoleBindings.Items {
 		rb := &existingRoleBindings.Items[i]
-		// Preserve configmapEditorBindingName during reconciliation alongside local and leader bindings
-		if !deleteAll && (rb.Name == localBindingName || rb.Name == leaderBindingName || rb.Name == configmapEditorBindingName) {
+		// Preserve local and leader bindings during reconciliation
+		if !deleteAll && (rb.Name == localBindingName || rb.Name == leaderBindingName) {
 			continue
 		}
 		isTargetSA := false
@@ -1104,22 +1104,6 @@ func (r *PlatformAgentReconciler) reconcileRBAC(ctx context.Context, agent *agen
 		return fmt.Errorf("failed to reconcile leader RoleBinding: %w", err)
 	}
 
-	configmapEditorRole := buildPlatformConfigMapEditorRole(agent)
-	if err := ctrl.SetControllerReference(agent, configmapEditorRole, r.Scheme); err != nil {
-		return fmt.Errorf("failed to set controller reference on configmap-editor Role: %w", err)
-	}
-	if err := r.applyManaged(ctx, agent, configmapEditorRole); err != nil {
-		return fmt.Errorf("failed to reconcile configmap-editor Role: %w", err)
-	}
-
-	configmapEditorRBACName := fmt.Sprintf("kubeagents:configmap-editor:%s:%s", agent.Namespace, agent.Name)
-	rbConfigmapEditor := buildPlatformConfigMapEditorRoleBinding(agent, configmapEditorRBACName, configmapEditorRole.Name)
-	if err := ctrl.SetControllerReference(agent, rbConfigmapEditor, r.Scheme); err != nil {
-		return fmt.Errorf("failed to set controller reference on configmap-editor RoleBinding: %w", err)
-	}
-	if err := r.applyManaged(ctx, agent, rbConfigmapEditor); err != nil {
-		return fmt.Errorf("failed to reconcile configmap-editor RoleBinding: %w", err)
-	}
 	// Clean up legacy or un-canonical RBAC definitions after new roles are applied (Zero-Downtime Upgrade)
 	if err := r.cleanupAgentRBAC(ctx, agent, false); err != nil {
 		return err

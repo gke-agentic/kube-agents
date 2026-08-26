@@ -293,8 +293,7 @@ Use `telemetry.otlpEndpoint` instead when you do have a collector to point at.
 - **GitHub** — `platformAgent.integration.github.org` sets the GitHub
   Organization where the GitHub App is installed, and optional
   `platformAgent.integration.github.gitRepo` sets the initial GitOps repository.
-  GitOps repositories can also be dynamically managed by the agent at runtime via
-  the `register-github-repo` skill.
+  GitOps repositories can also be registered in the ConfigMap by cluster administrators.
 
 Chat and Slack each need a one-time manual registration that no install
 automation can perform (the Chat app on the Chat API console page pointed at

@@ -471,7 +471,7 @@ platformAgent:
       org: ""
       # Primary GitOps repository URL or owner/repo shorthand (optional).
       # If omitted or empty, the agent starts with no registered repos, and
-      # repositories can be registered dynamically via the register-github-repo skill.
+      # repositories can be registered in the github-state ConfigMap by a cluster administrator.
       gitRepo: ""
     googleChat:
       # Requires the Chat Pub/Sub backend (terraform/modules/chat-pubsub).

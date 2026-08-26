@@ -2520,7 +2520,6 @@ func TestCleanupAgentRBAC_ReconcilePreservesActiveRBACAndDeletesLegacy(t *testin
 	minimalBindingName := "kubeagents:minimal:test-ns:test-agent"
 	localBindingName := "kubeagents:local:test-ns:test-agent"
 	leaderBindingName := "kubeagents:leader:test-ns:test-agent"
-	configmapEditorBindingName := "kubeagents:configmap-editor:test-ns:test-agent"
 	legacyRoleName := "kubeagents:explorer:test-ns:test-agent"
 	legacyBindingName := "kubeagents-legacy-binding"
 
@@ -2568,19 +2567,6 @@ func TestCleanupAgentRBAC_ReconcilePreservesActiveRBACAndDeletesLegacy(t *testin
 			{Kind: "ServiceAccount", Name: "test-agent", Namespace: "test-ns"},
 		},
 	}
-	activeConfigmapEditorBinding := &rbacv1.RoleBinding{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      configmapEditorBindingName,
-			Namespace: "test-ns",
-			Labels: map[string]string{
-				"kubeagents.x-k8s.io/agent-name":      "test-agent",
-				"kubeagents.x-k8s.io/agent-namespace": "test-ns",
-			},
-		},
-		Subjects: []rbacv1.Subject{
-			{Kind: "ServiceAccount", Name: "test-agent", Namespace: "test-ns"},
-		},
-	}
 	legacyClusterRole := &rbacv1.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: legacyRoleName,
@@ -2604,7 +2590,7 @@ func TestCleanupAgentRBAC_ReconcilePreservesActiveRBACAndDeletesLegacy(t *testin
 	}
 
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
-		activeMinimalRole, activeMinimalBinding, activeLocalBinding, activeLeaderBinding, activeConfigmapEditorBinding,
+		activeMinimalRole, activeMinimalBinding, activeLocalBinding, activeLeaderBinding,
 		legacyClusterRole, legacyBinding,
 	).Build()
 	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
@@ -2626,9 +2612,6 @@ func TestCleanupAgentRBAC_ReconcilePreservesActiveRBACAndDeletesLegacy(t *testin
 	}
 	if err := cl.Get(ctx, types.NamespacedName{Namespace: "test-ns", Name: leaderBindingName}, &rbacv1.RoleBinding{}); err != nil {
 		t.Errorf("expected active leader RoleBinding to be preserved, got %v", err)
-	}
-	if err := cl.Get(ctx, types.NamespacedName{Namespace: "test-ns", Name: configmapEditorBindingName}, &rbacv1.RoleBinding{}); err != nil {
-		t.Errorf("expected active configmap-editor RoleBinding to be preserved, got %v", err)
 	}
 
 	// Verify legacy RBAC resources are DELETED
@@ -2652,8 +2635,6 @@ func TestCleanupAgentRBAC_DeletionPurgesAllRBAC(t *testing.T) {
 	localBindingName := "kubeagents:local:test-ns:test-agent"
 	leaderRoleName := "kubeagents:leader:test-ns:test-agent"
 	leaderBindingName := "kubeagents:leader:test-ns:test-agent"
-	configmapEditorRoleName := "kubeagents:configmap-editor:test-ns:test-agent"
-	configmapEditorBindingName := "kubeagents:configmap-editor:test-ns:test-agent"
 
 	activeMinimalRole := &rbacv1.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{
@@ -2708,28 +2689,9 @@ func TestCleanupAgentRBAC_DeletionPurgesAllRBAC(t *testing.T) {
 			{Kind: "ServiceAccount", Name: "test-agent", Namespace: "test-ns"},
 		},
 	}
-	activeConfigmapEditorRole := &rbacv1.Role{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      configmapEditorRoleName,
-			Namespace: "test-ns",
-		},
-	}
-	activeConfigmapEditorBinding := &rbacv1.RoleBinding{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      configmapEditorBindingName,
-			Namespace: "test-ns",
-			Labels: map[string]string{
-				"kubeagents.x-k8s.io/agent-name":      "test-agent",
-				"kubeagents.x-k8s.io/agent-namespace": "test-ns",
-			},
-		},
-		Subjects: []rbacv1.Subject{
-			{Kind: "ServiceAccount", Name: "test-agent", Namespace: "test-ns"},
-		},
-	}
 
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
-		activeMinimalRole, activeMinimalBinding, activeLocalBinding, activeLeaderRole, activeLeaderBinding, activeConfigmapEditorRole, activeConfigmapEditorBinding,
+		activeMinimalRole, activeMinimalBinding, activeLocalBinding, activeLeaderRole, activeLeaderBinding,
 	).Build()
 	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
 
@@ -2753,12 +2715,6 @@ func TestCleanupAgentRBAC_DeletionPurgesAllRBAC(t *testing.T) {
 	}
 	if err := cl.Get(ctx, types.NamespacedName{Namespace: "test-ns", Name: leaderBindingName}, &rbacv1.RoleBinding{}); !errors.IsNotFound(err) {
 		t.Errorf("expected leader RoleBinding to be deleted during finalization, got err=%v", err)
-	}
-	if err := cl.Get(ctx, types.NamespacedName{Namespace: "test-ns", Name: configmapEditorRoleName}, &rbacv1.Role{}); !errors.IsNotFound(err) {
-		t.Errorf("expected configmap-editor Role to be deleted during finalization, got err=%v", err)
-	}
-	if err := cl.Get(ctx, types.NamespacedName{Namespace: "test-ns", Name: configmapEditorBindingName}, &rbacv1.RoleBinding{}); !errors.IsNotFound(err) {
-		t.Errorf("expected configmap-editor RoleBinding to be deleted during finalization, got err=%v", err)
 	}
 }
 

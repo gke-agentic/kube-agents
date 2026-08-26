@@ -132,7 +132,6 @@ SKILL_GROUPS: dict[str, list[str]] = {
     ],
     "Manifests and remediation": [
         "gke-manifest-generation",
-        "register-github-repo",
         "submit-suggestion",
     ],
     "Meta": [

@@ -104,7 +104,7 @@ Before inspecting anything, claim the workspace:
 
 This resolves the target repository (using `--repo` if specified, falling back to the single configured repo in `$GITHUB_STATE_CONFIGMAP`, or failing if ambiguous across multiple repos), mints a repo-scoped GitHub token, clones or refreshes the
 GitOps workspace and leaves it on a clean `main`, ensures the audit's labels exist, locates the
-stream's open ledger issue, and clears any findings document a crashed run left behind. If the user asked for a specific repository that is not yet registered, register it first using `register-github-repo`. It creates
+stream's open ledger issue, and clears any findings document a crashed run left behind. If the user asked for a specific repository that is not yet registered, instruct the user or cluster administrator to add it to `$GITHUB_STATE_CONFIGMAP`. It creates
 **no branch** — there is no report branch. It prints exactly one JSON line:
 
 ```json

@@ -513,7 +513,7 @@ type GitHubSpec struct {
 
 	// GitRepo is the optional target GitOps repository URL or owner/repo shorthand for the agent environment.
 	// When omitted or empty, no repository is initially configured, and repositories can be registered
-	// dynamically at runtime via the register-github-repo skill.
+	// in the github-state ConfigMap by a cluster administrator.
 	// +kubebuilder:validation:MaxLength=2048
 	// +optional
 	GitRepo string `json:"gitRepo,omitempty"`

@@ -4273,29 +4273,6 @@ func TestBuildGithubStateConfigMapInvalidGitRepo(t *testing.T) {
 	}
 }
 
-func TestBuildPlatformConfigMapEditorRole(t *testing.T) {
-	agent := &agentv1alpha1.PlatformAgent{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-agent",
-			Namespace: "test-ns",
-		},
-	}
-	role := buildPlatformConfigMapEditorRole(agent)
-
-	if role.Name != "kubeagents:configmap-editor:"+agent.Namespace+":"+agent.Name {
-		t.Errorf("Expected role name to be correct, got %s", role.Name)
-	}
-	if len(role.Rules) != 1 {
-		t.Fatalf("Expected 1 rule, got %d", len(role.Rules))
-	}
-	rule := role.Rules[0]
-	if len(rule.ResourceNames) != 1 || rule.ResourceNames[0] != agent.Name+"-github-state" {
-		t.Errorf("Expected ResourceNames to be %s-github-state, got %v", agent.Name, rule.ResourceNames)
-	}
-	if len(rule.Verbs) != 3 {
-		t.Errorf("Expected 3 verbs (get, update, patch), got %d", len(rule.Verbs))
-	}
-}
 
 // agentWithEventWatcher builds a PlatformAgent whose harness names the emergency
 // stop explicitly. A nil `enabled` stands for the CR that writes the object but

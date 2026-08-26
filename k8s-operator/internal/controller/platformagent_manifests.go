@@ -4217,58 +4217,6 @@ func appendWorkloadIdentityUser(agent *agentv1alpha1.PlatformAgent, subjects []r
 	return subjects
 }
 
-// buildPlatformConfigMapEditorRole generates the Role manifest for editing the global agent configmap
-func buildPlatformConfigMapEditorRole(agent *agentv1alpha1.PlatformAgent) *rbacv1.Role {
-	return &rbacv1.Role{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "rbac.authorization.k8s.io/v1",
-			Kind:       "Role",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("kubeagents:configmap-editor:%s:%s", agent.Namespace, agent.Name),
-			Namespace: agent.Namespace,
-		},
-		Rules: []rbacv1.PolicyRule{
-			{
-				APIGroups:     []string{""},
-				Resources:     []string{"configmaps"},
-				ResourceNames: []string{agent.Name + "-github-state"},
-				Verbs:         []string{"get", "update", "patch"},
-			},
-		},
-	}
-}
-
-// buildPlatformConfigMapEditorRoleBinding generates the RoleBinding manifest for editing the global agent configmap
-func buildPlatformConfigMapEditorRoleBinding(agent *agentv1alpha1.PlatformAgent, bindingName, roleName string) *rbacv1.RoleBinding {
-	saName := agent.Name
-	if agent.Spec.Security != nil && agent.Spec.Security.ServiceAccountName != "" {
-		saName = agent.Spec.Security.ServiceAccountName
-	}
-
-	return &rbacv1.RoleBinding{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "rbac.authorization.k8s.io/v1",
-			Kind:       "RoleBinding",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      bindingName,
-			Namespace: agent.Namespace,
-		},
-		Subjects: appendWorkloadIdentityUser(agent, []rbacv1.Subject{
-			{
-				Kind:      "ServiceAccount",
-				Name:      saName,
-				Namespace: agent.Namespace,
-			},
-		}),
-		RoleRef: rbacv1.RoleRef{
-			APIGroup: "rbac.authorization.k8s.io",
-			Kind:     "Role",
-			Name:     roleName,
-		},
-	}
-}
 
 //go:embed leader_elect.py
 var leaderElectScript string
