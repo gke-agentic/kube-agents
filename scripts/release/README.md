@@ -4,7 +4,7 @@ This directory contains executable scripts supporting the Release Candidate (RC)
 
 ## Overview of Scripts
 
-- `common.sh`: Centralized registry/repository helpers (`DEFAULT_REGISTRY_PREFIX`, `DEFAULT_RELEASE_REPO`, `REQUIRED_RELEASE_IMAGES`), commit discovery (`find_latest_built_commit`), validation check (`is_commit_already_validated`), container image promotion (`promote_release_images`), and automated bot tagging (`ensure_git_tag`).
+- `common.sh`: Centralized registry/repository helpers (`DEFAULT_REGISTRY_PREFIX`, `DEFAULT_RELEASE_REPO`, `REQUIRED_RELEASE_IMAGES`), commit discovery (`find_latest_built_commit`), validation check (`is_commit_already_validated`), staging promotion tags (`STAGING_TAG_PREFIX`, `staging_tag_for_rc`, `get_existing_staging_tag`), container image promotion (`promote_release_images`), and automated bot tagging (`ensure_git_tag`).
 - `resolve_rc_tag.sh`: Validates candidate commit SHAs, resolves input tags/commit inputs, discovers the latest built commit on `main` during scheduled runs, checks for existing `*_validated` tags to skip redundant runs, and sets workflow step outputs.
 - `verify_candidate_images.sh`: Verifies that prebuilt container images (`k8s-operator`, `platform-agent`, `credential-proxy`, `replay-proxy`) exist in GHCR/registry for the target candidate SHA.
 - `create_release_tag.sh`: Creates and pushes candidate release tags (`rc_YYMMDDHHMM_<short_sha>`, derived from commit timestamp) safely and idempotently. When executed locally outside CI, runs in dry-run mode (creates tag locally and skips remote push).
@@ -32,16 +32,11 @@ The end-to-end pipeline (`.github/workflows/rc-release-pipeline.yml`) runs on a 
 - **Manual Trigger (`workflow_dispatch`)**:
   - Requires an explicit `commit_sha` input to rigorously test a specific target commit.
 
-The staging promotion pipeline (`.github/workflows/staging-promote.yml`) runs on top of that
-output, nightly at 02:00 UTC:
-
-- Resolves the newest `rc_*_validated` candidate and stops if a `staging/**` tag already points at it.
-- Redeploys that exact commit to the RC environment before testing it. The three-hourly pipeline
-  deploys a candidate before it tests one, so between runs the RC cluster can be holding a commit
-  that failed its gate; testing that and promoting the last known-good tag would validate one
-  artifact and ship another.
-- Runs the full `nightly-e2e` matrix against it, and pushes `staging/<rc_tag>` only if that passes.
-  A red matrix pushes nothing and staging keeps running what it was already running.
+The staging promotion pipeline (`.github/workflows/staging-promote.yml`) runs on top of that output,
+nightly at 02:00 UTC: it resolves the newest `rc_*_validated` candidate, redeploys that exact commit
+to the RC environment, runs the full `nightly-e2e` matrix against it, and pushes `staging/<rc_tag>`
+only if the matrix passes. `docs/designs/e2e-testing-harness.md` is the canonical description of the
+gate and of why the candidate is redeployed rather than tested where it sits.
 
 ## Workflow Mapping
 

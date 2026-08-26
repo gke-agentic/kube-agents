@@ -180,12 +180,6 @@ get_existing_staging_tag() {
   git tag --points-at "${sha}" "${STAGING_TAG_PREFIX}/*" 2>/dev/null | head -n 1 || echo ""
 }
 
-# Checks if a commit SHA has already been promoted to staging (staging/** tag exists)
-is_commit_already_promoted() {
-  local sha="$1"
-  [ -n "$(get_existing_staging_tag "${sha}")" ]
-}
-
 # Finds the latest commit on main whose required container images are already built in the registry
 find_latest_built_commit() {
   local target_repo

@@ -36,10 +36,25 @@ validate one artifact and ship another. And the matrix run **asserts the deploye
 commit under test** (`wait_for_gke_readiness.sh` with `COMMIT_SHA`), so an RC deploy that lands
 between the two steps fails the run rather than quietly redirecting it.
 
-Both workflows take the singleton `rc-environment` concurrency group, which serializes them against
-`rc-deploy-environment.yml` and the RC pipeline's own test step. GitHub holds only one run pending
-per group, so a long promotion run can cost a three-hourly RC run its slot; that run is idempotent
-and the next one three hours later picks the candidate back up.
+Only the tag push is conditional. When the newest validated candidate already carries a `staging/**`
+tag the deploy and the matrix still run — this pipeline owns the only schedule the `nightly-e2e`
+matrix has, and `operator/agentplugins_e2e_test.py` and `gchat_agent_test.py` belong to no other
+environment, so skipping the matrix on nights with nothing new to promote would leave them
+unexercised on exactly the nights the RC pipeline validated nothing.
+
+`staging-promote.yml` itself takes only its own `staging-promotion` group. The singleton
+`rc-environment` group is taken by the two jobs it calls — `rc-deploy-environment.yml`'s deploy and
+the matrix job — which is what serializes them against the RC pipeline, and which means the lock is
+released between the deploy and the test. That gap is why the `COMMIT_SHA` assertion above is
+load-bearing rather than belt-and-braces.
+
+The gap has a second consequence. GitHub holds only one run pending per group and cancels the
+waiting one when a third arrives, so a promotion overlapping the `17 */3 * * *` RC schedule can cost
+either side its slot. An evicted RC run is not retried: `rc-release-pipeline.yml` pushes the `rc_*`
+tag in step 1, before the jobs that take the lock, so `is_commit_already_attempted` sees that tag and
+the next scheduled run skips the candidate as already evaluated — it is picked up again only when a
+newer commit lands on `main`. That is the same forgotten-candidate gap
+[#740](https://github.com/gke-labs/kube-agents/issues/740) describes, reached by a second route.
 
 ---
 

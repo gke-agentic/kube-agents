@@ -158,21 +158,16 @@ source "{_COMMON_SH}"
             self.assertEqual(proc.returncode, 0)
             self.assertEqual(proc.stdout.strip(), "")
 
-            proc = self._run_common_func('is_commit_already_promoted "HEAD"', cwd=repo_dir)
-            self.assertNotEqual(proc.returncode, 0)
-
             # A same-commit RC tag must not read as a promotion.
             git("tag", "-a", "rc_2608241820_b35543c_validated", "-m", "Validated RC")
-            proc = self._run_common_func('is_commit_already_promoted "HEAD"', cwd=repo_dir)
-            self.assertNotEqual(proc.returncode, 0)
+            proc = self._run_common_func('get_existing_staging_tag "HEAD"', cwd=repo_dir)
+            self.assertEqual(proc.returncode, 0)
+            self.assertEqual(proc.stdout.strip(), "")
 
             git("tag", "-a", "staging/rc_2608241820_b35543c", "-m", "Promoted")
             proc = self._run_common_func('get_existing_staging_tag "HEAD"', cwd=repo_dir)
             self.assertEqual(proc.returncode, 0)
             self.assertEqual(proc.stdout.strip(), "staging/rc_2608241820_b35543c")
-
-            proc = self._run_common_func('is_commit_already_promoted "HEAD"', cwd=repo_dir)
-            self.assertEqual(proc.returncode, 0)
         finally:
             temp_dir.cleanup()
 
