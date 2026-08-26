@@ -154,7 +154,7 @@ graph TD
     C --> D["provision NIGHTLY environment at that commit"]
     D --> E["wait for readiness, assert deployed image == commit"]
     E --> F["run nightly-e2e matrix"]
-    F -->|pass| G["tag the commit for staging"]
+    F -->|pass| G["tag staging_2608241820_b35543c"]
     F -->|fail| H["leave environment standing for diagnosis"]
     G --> I["tear down the nightly environment"]
     I --> J["staging-redeploy-* deploy from the tag"]
@@ -201,6 +201,7 @@ Split the work by cost. Cheap and safe:
   inserted. Put the ordering in the pipeline file, where it is real.
 - **Give step 3 a file** (`e2e-run.yml` or similar) so every step of the RC pipeline is a reusable
   workflow and the nightly pipeline can call the same one.
+- **Move the staging tag into the `rc_*` family**, below.
 
 Expensive, and **recommended against for now**:
 
@@ -208,10 +209,48 @@ Expensive, and **recommended against for now**:
   and `get_latest_validated_rc_tag` all parse it, 113 tags already exist, and the sort order
   (`--sort=-v:refname`) depends on the timestamp position. The inconsistency is cosmetic; the
   breakage would not be. Document the convention instead.
-- **Do not rename the `staging/**` namespace.** Three workflows trigger on it.
 
-For the staging tag itself, derive it from the candidate so a promotion is traceable and re-running
-is a no-op: `rc_2608241820_b35543c_validated` → `staging/rc_2608241820_b35543c`.
+#### The staging tag
+
+Derive it from the candidate, so a promotion is traceable back to what passed and re-running the
+pipeline on the same candidate is a no-op rather than a second tag. Swap the prefix, drop the
+suffix:
+
+```
+rc_2608241820_b35543c_validated   →   staging_2608241820_b35543c
+```
+
+Flat and underscore-separated, matching `rc_*` rather than the current nested `staging/**`. Three
+reasons beyond consistency:
+
+- It **sorts**. `git tag -l --sort=-v:refname 'staging_*'` orders by timestamp because the timestamp
+  comes first after the prefix — the same property the `rc_*` lookups depend on. A nested
+  `staging/rc_...` sorts on the literal `rc` instead.
+- The transform is mechanical **in both directions**, so a staging tag can be read back to its
+  candidate without a lookup.
+- One separator style across `rc_*`, `staging_*` and bare `X.Y.Z`.
+
+**Do not carry the `_validated` suffix into it.** `is_commit_already_validated` in `common.sh` globs
+`"*_validated"` **unanchored**, so `staging_..._validated` would match and be read as an RC
+validation marker. That gates `resolve_rc_tag.sh`'s skip decision: a staging tag pushed by hand at a
+commit the RC pipeline never validated would make the next scheduled run skip that commit as already
+validated. The other two consumers are anchored to `^rc_` and unaffected
+(`verify_release_eligibility.sh:145`, `get_latest_validated_rc_tag`). The suffix also labels the
+wrong event — it records that the RC gate passed, not that the promotion did.
+
+Renaming the namespace costs four edits and no migration. The one tag that exists,
+`staging/2026-07-23`, is historical and never re-triggers; it simply stops matching.
+
+| Where                                                  | Change                                                                              |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------- |
+| `staging-redeploy-{agent,controller,integrations}.yml` | `tags: - "staging/**"` → `- "staging_*"`                                            |
+| `common.sh`                                            | `STAGING_TAG_PREFIX`, and `staging_tag_for_rc` strips `rc_` as well as `_validated` |
+| `tag_staging_promotion.sh`                             | the namespace guard that currently rejects anything outside `staging/`              |
+| `tests/testing/release.py`                             | the promotion fixtures                                                              |
+
+One consequence to accept deliberately: `staging_*` is a looser trigger than `staging/**`, so any tag
+beginning `staging_` deploys staging. Nothing else in the repository uses that prefix and the trigger
+is still explicit, but it is marginally easier to fire by accident than a namespaced one.
 
 ## 4. Plan
 
@@ -317,10 +356,11 @@ superseded by §3, but three parts are directly reusable and already have tests:
 
 - `scripts/release/resolve_promotion_candidate.sh` — candidate resolution and the already-promoted
   check, 8 unit tests.
-- `scripts/release/tag_staging_promotion.sh` — the tag push and its `staging/` namespace guard,
-  7 unit tests.
+- `scripts/release/tag_staging_promotion.sh` — the tag push, 7 unit tests. Its namespace guard and
+  the tests asserting it currently enforce `staging/`, so both move to `staging_` with §3.3.
 - The `staging_tag_for_rc` / `get_existing_staging_tag` helpers in `common.sh`, plus the
-  `environment: rc` fixes that become Phase 1.
+  `environment: rc` fixes that become Phase 1. Both helpers were written for the `staging/` shape
+  and need the §3.3 transform instead.
 
 What to drop from it: `staging-promote.yml` in its current form, which deploys to the RC environment
 and never tears it down, and the documentation that describes that shape. Close it or retarget it as
