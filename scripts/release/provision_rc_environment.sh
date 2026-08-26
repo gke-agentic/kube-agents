@@ -47,7 +47,7 @@ case "${TEARDOWN_STATUS}" in
     # trade different things. Stopping keeps a candidate from being validated
     # against stale state; continuing keeps a teardown problem from blocking
     # every release. RC_TEARDOWN_STRICT picks, and the pipeline sets it from a
-    # repository variable so the choice is a setting rather than a commit.
+    # variable on the `rc` environment so the choice is a setting, not a commit.
     if rc_teardown_is_strict; then
       echo "RC_TEARDOWN_STRICT is set: refusing to provision on top of a failed teardown." >&2
       rm -f "${TEARDOWN_LOG}"

@@ -140,8 +140,16 @@ jobs:
           USER_PROFILE_ENABLED: ${{ vars.USER_PROFILE_ENABLED }}
           # Unset (the default) reports a failed teardown as an annotation and
           # a job-summary entry and provisions on top of whatever survived;
-          # "true" makes it a hard stop. Flipping it commits the pipeline to a
-          # full cluster rebuild per run, so it is a repository variable rather
+          # truthy makes it a hard stop. Which of those is right depends on
+          # whether a candidate validated against stale state or a blocked
+          # release is the worse outcome that week, so it is a variable rather
           # than a constant here.
+          #
+          # Set it on the `rc` environment, alongside GCP_PROJECT_ID and the
+          # rest — this job's `environment: rc` is where every other value it
+          # reads comes from, and the repository level holds none of them.
+          # `vars` resolves environment over repository over organization, so a
+          # repository-level one works too and is the easier of the two to set
+          # by accident and then not find again.
           RC_TEARDOWN_STRICT: ${{ vars.RC_TEARDOWN_STRICT }}
         run: ./scripts/release/provision_rc_environment.sh
