@@ -48,8 +48,16 @@ default, set something distinctly different, then revert and confirm it goes bac
 Say plainly what you could NOT cover and why, and confirm any test artifacts were
 cleaned up.
 
+For a genuinely graphical surface (admin console, docs site, chat), capture and link a
+screenshot with `scripts/pr_evidence_screenshot.sh` — it publishes the image and prints
+Markdown stamped with the commit and capture time. Command output stays as fenced text
+transcripts, not screenshots.
+
 If the change cannot reach a running installation — docs-only, a CI workflow, a path
 that needs infrastructure you do not have — write "Not live-tested" and say why.
+
+If the install is shared with other agents, take the lease first: see
+docs/designs/live-test-lease.md.
 
 Re-testing after new commits folds into this section rather than stacking a round
 beneath it: keep what still holds, and re-run or flag what the new commits invalidated.

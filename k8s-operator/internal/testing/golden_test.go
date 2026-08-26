@@ -21,6 +21,34 @@ import (
 
 var update = flag.Bool("update", false, "update golden files")
 
+// newTestScheme builds a Scheme for one subtest. Per-subtest and not a shared
+// package-level var, because a Scheme is not safe to hand to concurrent fake
+// clients: controller-runtime's fake client lazily registers types it has not
+// seen (fake.(*fakeClient).addToSchemeIfUnknownAndUnstructuredOrPartial calls
+// Scheme.AddKnownTypeWithName). That function does take c.schemeLock, which is
+// why this looks safe at a glance -- but schemeLock is a field on the client,
+// so it orders writes within one fake client and nothing at all across the
+// three siblings here that were handed the same Scheme.
+//
+// The readers are wider than the writers. Every SSA Create rebuilds a
+// RESTMapper over the Scheme (testrestmapper.TestOnlyStaticRESTMapper ->
+// Scheme.PrioritizedVersionsForGroup), so a single lazy write races the whole
+// of every sibling's reconcile, not just their own lazy writes. Measured on the
+// parent commit: 23 of 25 race-detector runs report it, and 7 of 40 plain runs
+// die outright with `fatal error: concurrent map writes`.
+//
+// A fatal error is not a recoverable panic: it killed the whole binary and
+// printed whichever goroutine happened to be mid-reconcile, so it read as a
+// defect in whatever the reader had just touched rather than as test-harness
+// contention (#918).
+//
+// Registering more types up front is the tempting narrower fix, and for today's
+// code it does work -- FQDNNetworkPolicy is the only type the golden path
+// reaches lazily, and pre-registering it takes the race to 0 of 25. It is not
+// the fix taken, because it holds only until the next unregistered type, and
+// the lazy path fires precisely on the types nobody thought to register.
+// Isolation does not depend on that guess: a Scheme reachable from one
+// goroutine cannot be raced on.
 func newTestScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = agentv1alpha1.AddToScheme(s)

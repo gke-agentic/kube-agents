@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"net"
@@ -28,7 +29,9 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -203,6 +206,26 @@ func main() {
 	if err != nil {
 		setupLog.Error(err, "Failed to start manager")
 		os.Exit(1)
+	}
+
+	// Auto-discover the operator's container image from its own pod spec if not explicitly set
+	if os.Getenv("OPERATOR_IMAGE") == "" && os.Getenv("PLATFORM_AGENT_IMAGE") == "" {
+		podName := os.Getenv("HOSTNAME")
+		if nsBytes, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace"); err == nil && podName != "" {
+			podNamespace := strings.TrimSpace(string(nsBytes))
+			var pod corev1.Pod
+			if err := mgr.GetAPIReader().Get(context.Background(), types.NamespacedName{Namespace: podNamespace, Name: podName}, &pod); err == nil {
+				for _, c := range pod.Spec.Containers {
+					if c.Name == "manager" || len(pod.Spec.Containers) == 1 {
+						if c.Image != "" {
+							setupLog.Info("Auto-discovered operator container image from pod spec", "image", c.Image)
+							_ = os.Setenv("OPERATOR_IMAGE", c.Image)
+							break
+						}
+					}
+				}
+			}
+		}
 	}
 
 	apiHost := os.Getenv("KUBERNETES_SERVICE_HOST")

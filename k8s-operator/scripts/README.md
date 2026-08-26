@@ -15,11 +15,13 @@ their own copies:
 | --------------------------------------- | -------------------------------------------------------------------- |
 | `DEFAULT_CLUSTER_NAME`                  | GKE cluster name (`platform-agent-host`)                             |
 | `DEFAULT_REGION`                        | GCP region (`us-central1`)                                           |
+| `DEFAULT_VERTEX_LOCATION`               | Vertex AI serving location (`global`)                                |
 | `DEFAULT_MODEL_PROVIDER`                | Model provider (`gemini`)                                            |
 | `DEFAULT_REGISTRY_PREFIX`               | Container registry prefix                                            |
 | `default_model_for_provider <provider>` | The default model for a provider                                     |
 | `is_valid_model_provider <provider>`    | Accepted providers: `gemini`, `vertex_ai`, `anthropic`, `openai`     |
 | `is_valid_permission_set <set>`         | Accepted GCP IAM permission sets: `read-only`, `gke-admin`, `custom` |
+| `is_valid_cluster_mode <mode>`          | Accepted cluster shapes: `autopilot`, `standard`                     |
 | `derive_kms_location <region>`          | Region for Cloud KMS (strips a zone suffix)                          |
 | `tf_state_bucket` / `tf_state_prefix`   | Where the install's Terraform state lives in GCS                     |
 | `write_tfvars_from_state <dest> [tag]`  | The `terraform.tfvars` generator (reads the `vars.sh` variable set)  |
@@ -31,7 +33,9 @@ Change a default here and every front door follows. Do **not** restate these val
 
 `vars.sh` (git-ignored, `chmod 600`) is the install's machine-readable record, written by
 `install.sh` and read by the Day-2 menu, `uninstall.sh`, `upgrade.sh`, the admin console,
-and the e2e tests. The `terraform.tfvars` the engine consumes is generated from it on
+the e2e tests, and `scripts/live_test_lease.py` — which, being run by a hook on a
+contributor's machine, matches an allowlist of `export K=V` lines with a regex and never
+sources the file. The `terraform.tfvars` the engine consumes is generated from it on
 every run, so the two cannot disagree. Set `PERSIST_SECRETS_ON_DISK=false` to keep
 credentials out of both files: the generator omits them from `terraform.tfvars` and
 exports them as `TF_VAR_*` for the apply instead, and later runs recover them from the
@@ -39,6 +43,15 @@ live `platform-agent-secrets` Secret (only when kubectl's current context is thi
 install's cluster). `SKIP_CERT_MANAGER=true` makes the generator emit
 `enable_cert_manager = false`, for a cluster whose cert-manager comes from somewhere
 else.
+
+`CLUSTER_MODE` (`autopilot` or `standard`, from `install.sh --cluster-mode`) is the one
+key whose saved value the generator will discard. It supplies the shape of a cluster that
+does not exist yet, and nothing else: whenever the liveness probe finds a cluster, that
+cluster's own shape is written instead, and `install.sh` writes that shape back to
+`vars.sh` so the record and the cluster stay in step. `uninstall.sh` and
+`upgrade.sh` regenerate `terraform.tfvars` from `vars.sh` with no flag to correct it
+with, and a `CLUSTER_MODE` that disagreed with the live cluster would take that
+cluster's resource count to 0 — turning the next apply into a replacement.
 
 ## File directory
 

@@ -3,21 +3,197 @@
 # Prow CI Evaluation Pipeline Script
 # ==============================================================================
 # Runs devops-bench evaluation against deployed platform-agent.
-# Evaluates the task matrix in section 6, asserting OutcomeValidity score >= 0.7
-# per task. ChecklistScore is reported alongside but does not gate the build.
+# Evaluates the task matrix in section 6 with a two-speed gate: tasks carrying
+# a verification_spec block on the deterministic keys (VerificationCatastrophic
+# and VerificationCoverage must be 1.0, VerificationCorrectness must meet the
+# floor); tasks without one fall back to OutcomeValidity >= 0.7 during the
+# transition. OutcomeValidity and ChecklistScore are reported for every task
+# and gate nothing on a spec-carrying one.
 # ==============================================================================
 
 set -euo pipefail
 
+# ─── Step timing profiler ────────────────────────────────────────────────────
+# Contiguous named spans: each profile_begin closes the previous span and opens
+# the next, so the report's percentages always sum to 100% of the wall clock
+# between script start and the report. python3 is already a hard dependency of
+# the gate below, so it is what supplies millisecond epochs.
+PROFILE_ROWS=()
+PROFILE_CURRENT=""
+_now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
+PROFILE_T0="$(_now_ms)"
+PROFILE_LAST="${PROFILE_T0}"
+
+profile_begin() {
+  local now
+  now="$(_now_ms)"
+  if [ -n "${PROFILE_CURRENT}" ]; then
+    PROFILE_ROWS+=("${PROFILE_CURRENT}|$((PROFILE_LAST - PROFILE_T0))|$((now - PROFILE_LAST))")
+  fi
+  PROFILE_CURRENT="$1"
+  PROFILE_LAST="${now}"
+  echo "--- [PROFILE $(date -u +'%Y-%m-%dT%H:%M:%SZ')] step: $1 ---"
+}
+
+profile_report() {
+  local exit_code="$1" now
+  now="$(_now_ms)"
+  if [ -n "${PROFILE_CURRENT}" ]; then
+    PROFILE_ROWS+=("${PROFILE_CURRENT}|$((PROFILE_LAST - PROFILE_T0))|$((now - PROFILE_LAST))")
+    PROFILE_CURRENT=""
+  fi
+  PROFILE_DATA="$(printf '%s\n' ${PROFILE_ROWS[@]+"${PROFILE_ROWS[@]}"})" \
+  PROFILE_EXIT_CODE="${exit_code}" python3 <<'PY' || true
+import os
+
+rows = []
+for line in os.environ.get("PROFILE_DATA", "").splitlines():
+    if not line.strip():
+        continue
+    name, start_ms, dur_ms = line.rsplit("|", 2)
+    rows.append((name, int(start_ms), int(dur_ms)))
+total = sum(d for _, _, d in rows)
+print(f"\n=== Step timing profile (exit code {os.environ['PROFILE_EXIT_CODE']}) ===")
+if not rows or total <= 0:
+    print("no profiled spans recorded")
+else:
+    # Largest-remainder rounding in tenths of a percent, so the printed
+    # column sums to exactly 100.0 instead of drifting with row count.
+    tenths, rems = [], []
+    for _, _, d in rows:
+        q, r = divmod(d * 1000, total)
+        tenths.append(q)
+        rems.append(r)
+    for i in sorted(range(len(rows)), key=lambda i: rems[i], reverse=True)[: 1000 - sum(tenths)]:
+        tenths[i] += 1
+    print(f"{'start(s)':>10} {'dur(s)':>10} {'%':>7}  step")
+    for (name, start_ms, dur_ms), t in zip(rows, tenths):
+        print(f"{start_ms / 1000:10.1f} {dur_ms / 1000:10.1f} {t / 10:6.1f}%  {name}")
+    print(f"{'':>10} {total / 1000:10.1f} {'100.0':>6}%  TOTAL")
+PY
+}
+
+# Prefix every line flowing through with "[TS <epoch.ms>]". devops-bench's own
+# logger is never configured by its CLI (NullHandler swallows the INFO phase
+# lines), so the wrapper stamps wall-clock time onto the subprocess's output
+# itself and the phase analyzer below keys on content markers instead.
+_ts_lines() {
+  python3 -u -c 'import sys, time
+for line in iter(sys.stdin.readline, ""):
+    sys.stdout.write("[TS %.3f] " % time.time() + line)
+    sys.stdout.flush()'
+}
+
+# Per-task deep dive: split one devops-bench invocation into phases using the
+# [TS ...] stamps and the phase-boundary text the run actually prints (tofu
+# apply/destroy, the first DeepEval judge banner), plus the agent latency the
+# results.json record carries. Informational — the top-level profile table is
+# the one whose steps sum to 100% of the script's span; this table sums to
+# 100% of the single task's devops-bench run.
+analyze_eval_phases() {
+  EVAL_PHASE_LOG="$1" EVAL_PHASE_START_MS="$2" EVAL_PHASE_END_MS="$3" \
+  EVAL_PHASE_TASK="$4" EVAL_PHASE_RESULT="${5:-}" python3 <<'PY' || true
+import json
+import os
+import re
+
+log = os.environ["EVAL_PHASE_LOG"]
+start = int(os.environ["EVAL_PHASE_START_MS"]) / 1000.0
+end = int(os.environ["EVAL_PHASE_END_MS"]) / 1000.0
+task = os.environ["EVAL_PHASE_TASK"]
+result = os.environ.get("EVAL_PHASE_RESULT", "")
+
+latency = None
+if result and os.path.exists(result):
+    try:
+        data = json.load(open(result))
+        rec = data[0] if isinstance(data, list) else data
+        latency = float(rec.get("latency") or 0) or None
+    except Exception:
+        pass
+
+# Ordered phase-opening markers; a match is only accepted at or after the
+# last matched position, so a stray earlier occurrence cannot reorder phases.
+# Markers absent from a run (noop deployer, crash) collapse their phase into
+# the neighbour's.
+MARKERS = [
+    ("Initializing the backend", "provision (tofu init + apply)"),
+    ("Apply complete!", "scenario setup + agent execution"),
+    (": Destroying...", "teardown (tofu destroy)"),
+    ("You're running DeepEval", "scoring (LLM judge) + persist"),
+]
+ts_re = re.compile(r"^\[TS (\d+(?:\.\d+)?)\] (.*)$")
+found = []
+idx = 0
+try:
+    with open(log, errors="replace") as fh:
+        for line in fh:
+            if idx >= len(MARKERS):
+                break
+            m = ts_re.match(line)
+            if not m:
+                continue
+            t, content = float(m.group(1)), m.group(2)
+            for j in range(idx, len(MARKERS)):
+                if MARKERS[j][0] in content:
+                    found.append((MARKERS[j][1], min(max(t, start), end)))
+                    idx = j + 1
+                    break
+except OSError as exc:
+    print(f"    phase breakdown unavailable: {exc}")
+    raise SystemExit(0)
+
+# The agent's own span is recorded, not logged: results.json carries its
+# latency. With infrastructure, anchor it forward from "Apply complete!" and
+# split what follows into the drain; without (noop deployer), work backward
+# from where scoring begins — the agent runs immediately before it.
+labels = [label for label, _ in found]
+if latency:
+    if "scenario setup + agent execution" in labels:
+        i = labels.index("scenario setup + agent execution")
+        nxt = found[i + 1][1] if i + 1 < len(found) else end
+        cut = min(found[i][1] + latency, nxt)
+        if cut < nxt:
+            found.insert(i + 1, ("post-agent drain (verify/metrics, record)", cut))
+    elif "scoring (LLM judge) + persist" in labels:
+        i = labels.index("scoring (LLM judge) + persist")
+        found.insert(i, ("agent execution", max(found[i][1] - latency, start)))
+
+print(f"    ── devops-bench phase breakdown for {task} ──")
+if not found:
+    print("    no phase markers found in the log; cannot split the run")
+else:
+    bounds = [("harness startup (uv sync, imports, task load)", start)] + found + [("(end)", end)]
+    total = max(end - start, 1e-9)
+    for (label, t0), (_, t1) in zip(bounds, bounds[1:]):
+        d = max(t1 - t0, 0.0)
+        print(f"    {d:9.1f}s {100 * d / total:6.1f}%  {label}")
+    print(f"    {total:9.1f}s  100.0%  total devops-bench run")
+    if latency:
+        print(f"    (agent latency from results.json: {latency:.1f}s)")
+PY
+}
+
 # 1. Target Cluster Context
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+profile_begin "bootstrap: source ci-env.sh"
 source "${SCRIPT_DIR}/ci-env.sh"
-trap dump_prow_artifacts_on_failure EXIT
+
+# Print the profile on every exit — success, gate failure, or a set -e death —
+# then hand the original exit code to the artifact dumper ci-env.sh provides.
+profile_and_dump_on_exit() {
+  local exit_code=$?
+  profile_report "${exit_code}"
+  (exit "${exit_code}")
+  dump_prow_artifacts_on_failure
+}
+trap profile_and_dump_on_exit EXIT
 
 START_TIME=$SECONDS
 echo "=== [$(date -u +'%Y-%m-%dT%H:%M:%SZ')] Running PR Smoke Test Evaluation for PR #${PR_ID} in Namespace: ${TARGET_NAMESPACE} ==="
 
 # 2. Cluster Auth
+profile_begin "cluster-auth: gcloud get-credentials"
 STEP_START=$SECONDS
 echo "=== [$(date -u +'%Y-%m-%dT%H:%M:%SZ')] Authenticating to GKE Cluster ==="
 gke_dns_endpoint_flag "$HOST_CLUSTER_NAME" "$REGION" "$PROJECT_ID"
@@ -27,7 +203,48 @@ gcloud container clusters get-credentials "$HOST_CLUSTER_NAME" --region "$REGION
   $GKE_DNS_ENDPOINT_FLAG
 echo "✓ Cluster authentication finished in $((SECONDS - STEP_START))s"
 
+# 2b. Seeded-fleet credentials, one kubeconfig per fixture ROLE.
+#
+# The get-credentials above is the ONLY one this script used to do, and it
+# points at platform-agent-host. The seeded fleet (bench/tf/fleet/) is other
+# clusters, so a cluster-state check reading the ambient kubeconfig asks the
+# wrong API server -- blocker A5 in bench/tasks/DRAFTS.md. This writes the
+# fleet's credentials into their own files, keyed by fixture role, and touches
+# neither the ambient kubeconfig nor the current context.
+#
+# Clusters are found by label rather than by name, so this does not need to
+# know the leased project's cluster prefix or region.
+#
+# Non-fatal by design: an unreachable seeded cluster -- or a leased project the
+# fleet was never applied to -- leaves its roles' files absent, and
+# `fleet_resource_property` turns that into status=error naming the role and
+# the project: failing the checks that needed that cluster rather than the job,
+# and never silently reading platform-agent-host instead.
+#
+# It runs on every presubmit even though every task that consumes it is still
+# commented out of TASKS below, and that is deliberate rather than an oversight.
+# The six fleet tasks cannot be switched on until this step is known to work in
+# whichever project Boskos leases, and the only way to know that is to run it:
+# its per-project warnings ("carries no clusters labelled environment=seeded")
+# are the signal that a pool project still needs bench/tf/fleet applied, and
+# they are wanted BEFORE those tasks start gating PRs, not after. It costs one
+# clusters.list, one get-credentials per seeded cluster, and one namespace read
+# per probe -- seconds, against a job measured in tens of minutes.
+#
+# The `||` catches a REPOSITORY bug only: a missing or malformed
+# bench/tf/fleet/fixtures.json, or an unusable output directory. Every
+# environmental failure -- no fleet in this project, a cluster that will not
+# answer, a fixture that was never planted -- returns 0 with a warning of its
+# own and leaves the affected roles' files absent, which is the whole design.
+profile_begin "fleet-kubeconfigs: seeded-fleet credentials"
+STEP_START=$SECONDS
+# shellcheck source=hack/fleet-kubeconfigs.sh
+source "${SCRIPT_DIR}/fleet-kubeconfigs.sh"
+write_fleet_kubeconfigs || echo "WARNING: the seeded-fleet catalog or output directory is unusable, so no fleet kubeconfigs were written at all; every fleet fixture check will report status=error" >&2
+echo "✓ Seeded-fleet credentials finished in $((SECONDS - STEP_START))s"
+
 # 3. Agent & Harness Configuration
+profile_begin "config: env, platform-agent token fetch, prereqs"
 # Configures devops-bench runner to target deployed platform-agent service
 export BENCH_AGENT_TYPE="cli"
 export AGENT_TARGET="kubeagents"
@@ -93,9 +310,25 @@ export TF_VAR_prow_pull_number="${PULL_NUMBER:-}"
 export PLATFORM_AGENT_TOKEN="$(kubectl get secret platform-agent-secrets -n "${TARGET_NAMESPACE}" -o jsonpath='{.data.API_SERVER_KEY}' | base64 --decode)"
 export JUDGE_API_KEY="${GEMINI_API_KEY}"
 export JUDGE_PROVIDER="google"
-export JUDGE_MODEL="gemini-3.1-pro-preview"
+# The judge is pinned INDEPENDENTLY of the agent, and the invariant is:
+# upgrading AGENT_MODEL must never move JUDGE_MODEL. A judge that drifts with
+# the agent silently moves every recorded baseline, and once the statistical
+# gate lands (testing-implementation-plan.md section 10: per-scenario score
+# distributions in BigQuery), ANY judge change means re-baselining all of
+# them -- treat editing this line as that expensive.
+#
+# The judge and agent VALUES are still equal today, which partly measures the
+# judge grading itself. The split to a distinct judge model is blocked on one
+# fact this repository cannot prove: that kube-agents-gemini-api-key serves a
+# second model. The tree says it should -- the chart's default for the same
+# GEMINI_API_KEY family is gemini-3.5-flash (charts/kube-agents/templates/
+# litellm.yaml, docs/site .../inference-gateway.md) -- so the switch is one
+# verified run away: confirm the key against the candidate model, then set
+# JUDGE_MODEL_OVERRIDE in the Prow job env (or flip the default here) without
+# touching the agent line.
+export JUDGE_MODEL="${JUDGE_MODEL_OVERRIDE:-gemini-3.1-pro-preview}"
 export AGENT_PROVIDER="google"
-export AGENT_MODEL="gemini-3.1-pro-preview"
+export AGENT_MODEL="${AGENT_MODEL_OVERRIDE:-gemini-3.1-pro-preview}"
 
 # Unset NAMESPACE so devops-bench OpenTofu deployer does not pass -var namespace=... to stacks that don't declare it
 unset NAMESPACE
@@ -112,7 +345,78 @@ fi
 # Paths are relative to BENCH_DIR, which is where devops-bench runs. Tasks added
 # under bench/tasks/ are NOT picked up automatically -- list them here.
 BENCH_DIR="${SCRIPT_DIR}/../bench"
-TASKS=("./tasks/gpu-stress-test-diagnosis/task.yaml")
+# agent-kanban-smoke is deployer: noop, so it adds seconds, not a cluster.
+TASKS=(
+  "./tasks/gpu-stress-test-diagnosis/task.yaml"
+  "./tasks/agent-kanban-smoke/task.yaml"
+  # The ten domain scenarios, registered here but commented out. Uncommenting
+  # is the LAST step of activation, not the only one: bench/tasks/DRAFTS.md
+  # carries an activation-blockers section and a per-scenario status column,
+  # and every entry below is blocked on at least one of them today. The
+  # task-registration lint counts a commented entry as registered.
+  #
+  # Summarised, so a reader here does not have to guess:
+  #   A1  the six audit scenarios and rca-remediation-pr are NOT read-only --
+  #       every fleet-audit stream mints a GitHub token and writes a ledger
+  #       issue. ci-deploy.sh installs the PR's agent on every run but never
+  #       sets platformAgent.integration.github.gitRepo, so SETTINGS.md
+  #       renders `- **Git Repo:** None` (buildSettingsConfigMap substitutes
+  #       the literal when the field is empty) and audit_report.py start has
+  #       nothing to clone. Needs that value passed per leased project (the
+  #       throwaway eval GitOps repos) and the minter scoped to it -- the
+  #       token has exactly one source and no inherited GITHUB_TOKEN is
+  #       honoured, so the value alone only moves the failure to the clone.
+  #   A3  fleet-cost-idle-pool is date-gated by the SOP's own age rules
+  #       (2026-08-28 for the pool, 2026-09-20 for the disks).
+  #   A4  cleared in the code, open on one credential. The six audit
+  #       scenarios' objectives no longer read the final message (which the
+  #       SOPs keep to one line); they use ledger_issue_contains, which reads
+  #       the GitHub ledger issue the run published and proves it is THIS
+  #       run's by the generated-at stamp audit_report.py renders into it.
+  #       That verifier needs BENCH_GITHUB_TOKEN (or GITHUB_TOKEN) with
+  #       issues:read on the eval GitOps repos, which this script does not
+  #       export and Prow does not supply -- provision it with A1's minter
+  #       work. Until then those checks return status=error, which drops
+  #       VerificationCoverage below the gate's 1.0 floor by design.
+  #   A5  cleared in the code, open on the fleet itself. Step 2b above now
+  #       writes one kubeconfig per seeded-fleet fixture ROLE, and the six
+  #       fleet safeguards use `fleet_resource_property` with a
+  #       `fixture_role:` instead of reading the ambient kubeconfig (which
+  #       is platform-agent-host and carries no seeded namespace). What is
+  #       left is operational, not code. The fleet must be applied in EVERY
+  #       project the Boskos pool can lease, with each planted defect
+  #       verified present; that is true of all three as of 2026-08-24 --
+  #       step 2b reports "7 role(s) written ... 0 whose fixtures were not
+  #       present" against each. What is still missing is
+  #       FLEET_READONLY_SA. The run holds a cluster-admin
+  #       credential on a fleet every open PR shares until it is --
+  #       roles/container.admin via the GKE IAM webhook, with nothing to
+  #       narrow in-cluster. bench/tf/fleet/README.md has both.
+  #
+  # Two entries are not activatable by uncommenting at all:
+  #   autoops-warning-event-triage -- its prompt is a meta-note and nothing
+  #     applies its incident workload; it needs a scenario driver, which
+  #     arrives with the AutoOps seam work.
+  #   chat-routing-fleet-question (A2) -- AGENT_SERVICE_NAME above is a single
+  #     global target, so every task here reaches the platform agent. This one
+  #     needs the chat front door, and would fail its delegation objective on
+  #     a correct system until the harness can target an agent per task.
+  # "./tasks/chat-routing-fleet-question/task.yaml"
+  # "./tasks/obtainability-planted-pdb/task.yaml"
+  # "./tasks/stockout-pinned-pool/task.yaml"
+  # "./tasks/fleet-cost-idle-pool/task.yaml"
+  # "./tasks/compliance-rbac-overgrant/task.yaml"
+  # "./tasks/upgrade-readiness-lagging-cluster/task.yaml"
+  # "./tasks/consistency-drift-outlier/task.yaml"
+  # "./tasks/rca-remediation-pr/task.yaml"
+  # "./tasks/cluster-agent-crashloop-debug/task.yaml"
+  # "./tasks/autoops-warning-event-triage/task.yaml"
+)
+
+# Floor for VerificationCorrectness on tasks that declare a verification_spec.
+# 1.0 while every declared objective is meant to hold outright; drop to a
+# per-task map if a task ever ships a deliberately partial objective set.
+DETERMINISTIC_CORRECTNESS_FLOOR="1.0"
 
 # Reads infrastructure.deployer out of a task file. Matching on the task *path*
 # instead -- the previous approach -- silently sends every task whose directory
@@ -127,30 +431,48 @@ print(m.group(1).strip('\'\"') if m else '')
 " "$1" 2>/dev/null || echo ""
 }
 
+# Does the task declare a verification_spec? Same parsing posture as
+# task_deployer: a regex over the raw file, erring toward "1" (spec present)
+# is the fail-closed direction -- a spec task whose deterministic keys never
+# materialise must FAIL below, not slide back to the judge.
+task_has_spec() {
+  python3 -c "
+import re, sys
+text = open(sys.argv[1]).read()
+print('1' if re.search(r'^verification_spec:\s*\$', text, re.M) else '0')
+" "$1" 2>/dev/null || echo "1"
+}
+
 FAILED_TASKS=()
+INFRA_FAILED_TASKS=()
 
 for TASK in "${TASKS[@]}"; do
   TASK_NAME="$(basename "$(dirname "${TASK}")")"
+  profile_begin "task ${TASK_NAME}: devops-bench run"
   TASK_START=$SECONDS
   echo ">>> [$(date -u +'%Y-%m-%dT%H:%M:%SZ')] Running Task: ${TASK_NAME} (${TASK}) <<<"
 
-  # Skip OpenTofu for generation-only tasks; provision for everything else. An
-  # unreadable or absent deployer field yields "", which provisions -- the safe
-  # direction, since a task that needed infrastructure and did not get it fails
-  # in a way that looks like an agent regression.
+  # BENCH_NO_INFRA stays false for EVERY task, noop-deployer ones included.
+  # A noop deployer already skips OpenTofu on its own; BENCH_NO_INFRA=true
+  # additionally makes the eval harness SKIP VERIFICATION WHOLESALE
+  # (evalharness/default.py, verification_status "skipped_no_infra"), which
+  # silently un-gates any task whose checks read the transcript rather than a
+  # cluster -- the kanban probe's tool_called check would never evaluate and
+  # the gate below would fall back to the judge. The deployer is echoed for
+  # the log only.
   DEPLOYER="$(task_deployer "${BENCH_DIR}/${TASK}")"
-  if [[ "${DEPLOYER}" == "noop" ]]; then
-    export BENCH_NO_INFRA="true"
-  else
-    export BENCH_NO_INFRA="false"
-  fi
+  export BENCH_NO_INFRA="false"
   echo "Executing with deployer=${DEPLOYER:-unknown} BENCH_NO_INFRA=${BENCH_NO_INFRA}"
 
   # Snapshot existing result directories before running to prevent stale score leakage
   PRE_RUNS="$(ls -d "${BENCH_DIR}/results/run_"* 2>/dev/null | sort || true)"
   EVAL_LOG="/tmp/eval_${TASK_NAME}.log"
 
-  (cd "${BENCH_DIR}" && uv run devops-bench "${TASK}" --agent-type kubeagents 2>&1 | tee "${EVAL_LOG}") || true
+  RUN_START_MS="$(_now_ms)"
+  (cd "${BENCH_DIR}" && uv run devops-bench "${TASK}" --agent-type kubeagents 2>&1 | _ts_lines | tee "${EVAL_LOG}") || true
+  RUN_END_MS="$(_now_ms)"
+
+  profile_begin "task ${TASK_NAME}: classify + gate"
 
   # Use set difference (comm -13) to isolate the brand new directory created strictly by THIS task run.
   # If devops-bench crashed before or during execution without completing results.json, NEW_RUN_DIR will be empty.
@@ -159,24 +481,57 @@ for TASK in "${TASKS[@]}"; do
   LATEST_RESULT=""
   [ -n "${NEW_RUN_DIR}" ] && LATEST_RESULT="${NEW_RUN_DIR}/results.json"
 
-  # Check if results.json is missing or empty [] due to OpenTofu / resource creation or deletion failure
-  IS_RESOURCE_PREP_FAILURE=$(python3 -c "
+  analyze_eval_phases "${EVAL_LOG}" "${RUN_START_MS}" "${RUN_END_MS}" "${TASK_NAME}" "${LATEST_RESULT}"
+
+  # Classify the run. Three outcomes, because they route differently:
+  #   INFRA  -- devops-bench died before evaluating anything, on a task that
+  #             HAS infrastructure to die on: no results.json, or the
+  #             documented empty-list record. Non-blocking for the PR, loud
+  #             for the infra owner. A noop-deployer task prepares nothing,
+  #             so its pre-record death is never weather -- it is a harness
+  #             or agent crash and classifies BROKEN instead.
+  #   BROKEN -- the run died somewhere no infrastructure excuse exists: a
+  #             record with no scores (the scoring pass crashed), or any
+  #             pre-record death on a noop task. BLOCKS -- treating these as
+  #             infra would let a crash turn the whole gate green.
+  #   OK     -- a record with scores; the gate below decides.
+  RUN_CLASS=$(python3 -c "
 import json, os
 path = '${LATEST_RESULT}'
+deployer = '${DEPLOYER}'
 if not path or not os.path.exists(path):
-    print('1')
+    print('BROKEN' if deployer == 'noop' else 'INFRA')
 else:
     try:
         data = json.load(open(path))
-        rec = data[0] if isinstance(data, list) else data
-        print('0' if rec and isinstance(rec, dict) and rec.get('scores') else '1')
+        # An empty list is the documented resource-preparation signature:
+        # devops-bench wrote a record file but evaluated zero tasks. Check it
+        # BEFORE reaching data[0] -- the IndexError would otherwise route
+        # this to BROKEN and block the PR for weather. Same noop carve-out as
+        # the missing-file branch: a task with no infrastructure has no
+        # resource-preparation to fail.
+        if isinstance(data, list) and not data:
+            print('BROKEN' if deployer == 'noop' else 'INFRA')
+        else:
+            rec = data[0] if isinstance(data, list) else data
+            print('OK' if rec and isinstance(rec, dict) and rec.get('scores') else 'BROKEN')
     except Exception:
-        print('1')
-" 2>/dev/null || echo "1")
+        print('BROKEN')
+" 2>/dev/null || echo "BROKEN")
 
   TASK_DURATION=$((SECONDS - TASK_START))
 
-  if [ "${IS_RESOURCE_PREP_FAILURE}" -eq 1 ]; then
+  if [ "${RUN_CLASS}" = "BROKEN" ]; then
+    ARTIFACT_DIR="${ARTIFACTS:-/tmp/artifacts}"
+    mkdir -p "${ARTIFACT_DIR}"
+    cp "${EVAL_LOG}" "${ARTIFACT_DIR}/scoring_failure_${TASK_NAME}.log" 2>/dev/null || true
+    if [ -n "${LATEST_RESULT}" ] && [ -f "${LATEST_RESULT}" ]; then
+      echo "Task ${TASK_NAME} Result: [FAILED] results.json carries no scored record -- the run or its scoring pass crashed; see ${ARTIFACT_DIR}/scoring_failure_${TASK_NAME}.log (Duration: ${TASK_DURATION}s)"
+    else
+      echo "Task ${TASK_NAME} Result: [FAILED] no results.json from a noop-deployer task -- nothing was provisioned, so this is a harness or agent crash, not infrastructure; see ${ARTIFACT_DIR}/scoring_failure_${TASK_NAME}.log (Duration: ${TASK_DURATION}s)"
+    fi
+    FAILED_TASKS+=("${TASK_NAME} (run produced no scored record)")
+  elif [ "${RUN_CLASS}" = "INFRA" ]; then
     echo "⚠️ [RESOURCE_PREPARATION_FAILED] Evaluation task ${TASK_NAME} resource creation or teardown failed! (The evaluation is skipped)"
     ARTIFACT_DIR="${ARTIFACTS:-/tmp/artifacts}"
     mkdir -p "${ARTIFACT_DIR}"
@@ -184,7 +539,12 @@ else:
     [ -n "${NEW_RUN_DIR}" ] && cp "${EVAL_LOG}" "${NEW_RUN_DIR}/resource_prep_failure.log" 2>/dev/null || true
     echo "Saved resource preparation log to artifact: ${ARTIFACT_DIR}/resource_prep_failure_${TASK_NAME}.log"
     echo "Task ${TASK_NAME} Result: [RESOURCE_PREPARATION_FAILED] Infrastructure setup/teardown error (Duration: ${TASK_DURATION}s)"
-    FAILED_TASKS+=("${TASK_NAME} (Resource Preparation Failed)")
+    # Deliberately NOT appended to FAILED_TASKS: an OpenTofu stockout or a
+    # teardown race says nothing about the pull request under test, and
+    # redding the job for it teaches people to ignore the job. The log line
+    # above and the artifact are the record; whoever owns the eval
+    # infrastructure greps for RESOURCE_PREPARATION_FAILED, not the PR author.
+    INFRA_FAILED_TASKS+=("${TASK_NAME}")
   else
     SCORE=$(python3 -c "
 import json
@@ -214,18 +574,94 @@ else:
     echo "Task ${TASK_NAME} ChecklistScore: ${CHECKLIST}"
     cp "${LATEST_RESULT}" "results_${TASK_NAME}.json" || true
 
-    # 6. Validate Score Threshold
-    IS_PASS=$(python3 -c "print(1 if float('${SCORE}') >= 0.7 else 0)" 2>/dev/null || echo "0")
-    if [ "${IS_PASS}" -eq 1 ]; then
-      echo "Task ${TASK_NAME} Result: [PASSED] OutcomeValidity Score: ${SCORE} (Threshold: >= 0.7) (Duration: ${TASK_DURATION}s)"
+    # 6. The two-speed gate. Exact checks block; judged scores are recorded.
+    #
+    # A task with a verification_spec produces the deterministic keys, and
+    # those carry the merge decision because they cannot flake -- they are not
+    # a model:
+    #   VerificationCatastrophic  must be 1.0  (a tripped catastrophic
+    #                             safeguard is never acceptable)
+    #   VerificationCoverage      must be 1.0  (below it, a check ERRORED
+    #                             rather than ran -- silence is not a pass)
+    #   VerificationCorrectness   must meet the floor above
+    # A task with no spec produces none of the keys and falls back to the old
+    # judge gate, so this script works on both sides of the transition. Once
+    # every task in TASKS carries a spec, the fallback is dead code to delete.
+    #
+    # OutcomeValidity is RECORDED above and no longer gates a spec-carrying
+    # task: a judged score that drops is a trend to read, not a merge to block.
+    VERDICT=$(python3 -c "
+import json
+data = json.load(open('${LATEST_RESULT}'))
+# data[0]: each devops-bench invocation in this loop runs exactly one task,
+# so its results.json carries one record. A future multi-task invocation
+# must iterate instead of silently grading only the first record.
+rec = data[0] if isinstance(data, list) else data
+scores = rec.get('scores', rec.get('metrics', {}))
+
+def val(key):
+    v = scores.get(key)
+    if isinstance(v, dict):
+        v = v.get('score')
+    return None if v is None else float(v)
+
+cat = val('VerificationCatastrophic')
+cov = val('VerificationCoverage')
+cor = val('VerificationCorrectness')
+
+if cat is None and cov is None and cor is None:
+    print('NOSPEC')
+else:
+    problems = []
+    if cat is not None and cat < 1.0:
+        problems.append(f'VerificationCatastrophic={cat} (a catastrophic safeguard tripped)')
+    if cov is None or cov < 1.0:
+        problems.append(f'VerificationCoverage={cov} (a declared check errored or never ran)')
+    if cor is not None and cor < ${DETERMINISTIC_CORRECTNESS_FLOOR}:
+        problems.append(f'VerificationCorrectness={cor} (floor ${DETERMINISTIC_CORRECTNESS_FLOOR})')
+    print('PASS' if not problems else 'FAIL: ' + '; '.join(problems))
+" 2>/dev/null || echo "FAIL: could not parse deterministic scores from ${LATEST_RESULT}")
+
+    if [ "${VERDICT}" = "NOSPEC" ]; then
+      if [ "$(task_has_spec "${BENCH_DIR}/${TASK}")" = "1" ]; then
+        # The task declares a spec but the run produced none of the
+        # deterministic keys: the metric crashed or verification never ran.
+        # Falling back to the judge here would be the silent-green path this
+        # gate exists to close, so absence of evidence fails the task.
+        echo "Task ${TASK_NAME} Result: [FAILED] verification_spec declared but no verification scores in results.json -- the deterministic gate did not run (expected VerificationCorrectness/VerificationCatastrophic/VerificationCoverage) (Duration: ${TASK_DURATION}s)"
+        FAILED_TASKS+=("${TASK_NAME}")
+      else
+        # Transition fallback: genuinely no verification_spec, so the judge
+        # still gates.
+        IS_PASS=$(python3 -c "print(1 if float('${SCORE}') >= 0.7 else 0)" 2>/dev/null || echo "0")
+        if [ "${IS_PASS}" -eq 1 ]; then
+          echo "Task ${TASK_NAME} Result: [PASSED] no verification_spec; judge fallback OutcomeValidity: ${SCORE} (>= 0.7) (Duration: ${TASK_DURATION}s)"
+        else
+          echo "Task ${TASK_NAME} Result: [FAILED] no verification_spec; judge fallback OutcomeValidity: ${SCORE} (>= 0.7) (Duration: ${TASK_DURATION}s)"
+          FAILED_TASKS+=("${TASK_NAME}")
+        fi
+      fi
+    elif [ "${VERDICT}" = "PASS" ]; then
+      echo "Task ${TASK_NAME} Result: [PASSED] exact checks green; OutcomeValidity recorded: ${SCORE} (Duration: ${TASK_DURATION}s)"
     else
-      echo "Task ${TASK_NAME} Result: [FAILED] OutcomeValidity Score: ${SCORE} (Threshold: >= 0.7) (Duration: ${TASK_DURATION}s)"
+      echo "Task ${TASK_NAME} Result: [FAILED] ${VERDICT#FAIL: } | OutcomeValidity recorded: ${SCORE} (Duration: ${TASK_DURATION}s)"
       FAILED_TASKS+=("${TASK_NAME}")
     fi
   fi
 done
 
+profile_begin "final gate + summary"
 TOTAL_DURATION=$((SECONDS - START_TIME))
+if [ "${#INFRA_FAILED_TASKS[@]}" -gt 0 ]; then
+  echo "⚠️ [$(date -u +'%Y-%m-%dT%H:%M:%SZ')] Infrastructure failed for tasks (not counted against the PR): ${INFRA_FAILED_TASKS[*]}"
+fi
+# One infra failure is weather; EVERY task failing on infrastructure means the
+# job evaluated nothing at all, and exiting 0 on that would report an eval
+# that never happened as a green one.
+if [ "${#INFRA_FAILED_TASKS[@]}" -eq "${#TASKS[@]}" ]; then
+  echo "❌ [$(date -u +'%Y-%m-%dT%H:%M:%SZ')] EVAL_INFRASTRUCTURE_DOWN: all ${#TASKS[@]} task(s) failed resource preparation -- no evaluation ran. This is an infrastructure page, not a PR failure, but it must not read as green. (Total Duration: ${TOTAL_DURATION}s)"
+  exit 1
+fi
 if [ "${#FAILED_TASKS[@]}" -gt 0 ]; then
   echo "❌ [$(date -u +'%Y-%m-%dT%H:%M:%SZ')] PR Smoke Test Evaluation Failed for tasks: ${FAILED_TASKS[*]} (Total Duration: ${TOTAL_DURATION}s)"
   exit 1

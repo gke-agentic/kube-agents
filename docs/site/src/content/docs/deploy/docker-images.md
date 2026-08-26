@@ -69,7 +69,7 @@ Needed only to rebuild the images above from source, not to run an install. Each
 
 ## Published images
 
-Published via GitHub Actions workflows on push to `main` (tagged `:latest`) and on SemVer git tag pushes (`*.*.*`, tagged `X.Y.Z`); every publish also adds a commit-SHA tag.
+Built and published via GitHub Actions workflows on push to `main` (tagged with commit SHA and `:latest`). Production SemVer release tags (`X.Y.Z`) are promoted from validated commit images by the release publishing workflow without rebuilding.
 
 ### `platform-agent`
 
@@ -134,6 +134,8 @@ kubectl exec -i deploy/platform-agent-gateway -c platform-agent -- \
 ```
 
 Confining it takes more than a scratch `$PLATFORM_AGENT_HOME`, because two of the setup's effects are not derived from it. Step 4 points `$HOME/.hermes/plugins/hermes_otel/config.yaml` at the config it generates — `hermes-otel` resolves its config below `~/.hermes` whatever `HERMES_HOME` says — and `$HOME` in the gateway is `/opt/data/home`, on the data PVC. Step 5 starts the Session KV server on port 8699, which is pod-wide and scoped by nothing. So each case also gets a scratch `$HOME`, and the server it spawns is killed by its scratch path as the case returns. The run ends by asserting both: that the pod's real compat symlink is byte-for-byte what it was, and that no process from the run is still alive.
+
+CI then runs the same script a second time, as a container under `docker run --read-only --tmpfs /tmp`. The build stage above cannot cover that: a build layer is writable by definition, so it proves the entrypoint works and not that it works without writing to the root filesystem. The operator sets `readOnlyRootFilesystem` on every container it builds, which turns any such write into `EROFS`, and the entrypoint's first step runs a script this repository does not own — so the second run is what keeps an upstream change to `stage2-hook.sh` from reaching a cluster as a pod that will not start.
 
 ## Base image pin
 
@@ -307,4 +309,4 @@ For development iteration, `make dev-rebuild-agent` (from `k8s-operator/`) is th
 
 ## CI
 
-Docker builds are validated on every PR via [`.github/workflows/docker-build.yml`](https://github.com/gke-labs/kube-agents/blob/main/.github/workflows/docker-build.yml) — the image builds but doesn't publish. Publication happens on push to `main` and on numeric SemVer `*.*.*` tag pushes (the `k8s-operator` workflow can also be dispatched manually; a non-main dispatch publishes only a commit-SHA tag).
+Docker builds are validated on every PR via [`.github/workflows/docker-build.yml`](https://github.com/gke-labs/kube-agents/blob/main/.github/workflows/docker-build.yml) — the image builds but doesn't publish. Publication happens on push to `main` (tagged with commit SHA and `:latest`). Production SemVer tags (`X.Y.Z`) are promoted from validated commit images via the release publishing workflow ([`.github/workflows/release-publish.yml`](https://github.com/gke-labs/kube-agents/blob/main/.github/workflows/release-publish.yml)) without rebuilding.

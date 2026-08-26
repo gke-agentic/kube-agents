@@ -30,9 +30,24 @@ import (
 
 // SensitiveEnvVars defines environment variables that are sensitive and cannot be
 // overridden by user Deployment specs or injected into the credential proxy.
+//
+// Membership does two things, and both are needed: the validating webhook
+// rejects a spec.deployment.env entry with one of these names, and
+// mergeCredentialProxyEnv drops it. The webhook alone is not enough because
+// the chart's default failurePolicy is Ignore, so an unreachable webhook
+// admits the object with validation skipped; the drop is what actually holds,
+// and the rejection is what tells the operator why.
 var SensitiveEnvVars = map[string]struct{}{
 	"API_SERVER_KEY": {},
-	"HERMES_HOME":    {},
+	// Not a secret, unlike its neighbours: this is the read-only gate, and
+	// setting it to "false" disables every refusal the credential proxy makes
+	// for every command, agent and cluster in the Pod. It was already dropped
+	// silently on the way to the sidecar, which left an operator patching the
+	// CR, seeing it accepted, and getting no behaviour change and no
+	// explanation. Naming it here turns that into a field.Forbidden on
+	// spec.deployment.env[i].name.
+	"CREDENTIAL_PROXY_ENFORCE_READ_ONLY": {},
+	"HERMES_HOME":                        {},
 }
 
 type HermesSpec struct {
@@ -51,14 +66,18 @@ type HermesSpec struct {
 	// +optional
 	AgentHome string `json:"agentHome,omitempty"`
 
-	// ApiServerSecretRef securely references a Secret containing the API_SERVER_KEY.
+	// ApiServerSecretRef references the Secret key holding API_SERVER_EXTERNAL_KEY,
+	// the credential outside callers present to the credential-proxy sidecar. It
+	// does not set API_SERVER_KEY: the value the Hermes API server itself validates
+	// is the non-secret loopback sentinel `cluster-internal-trusted`, a compile-time
+	// constant the sidecar swaps in once it has authenticated the caller.
 	// +optional
 	ApiServerSecretRef *corev1.SecretKeySelector `json:"apiServerSecretRef,omitempty"`
 
 	// SessionKVApiKeySecretRef references the Secret key holding the bearer
 	// token for the pod-local Session KV server on port 8699. Distinct from
-	// ApiServerSecretRef: that path uses the non-secret loopback sentinel
-	// `cluster-internal-trusted`, which would authenticate nothing here.
+	// API_SERVER_KEY, which is that loopback sentinel and would authenticate
+	// nothing here.
 	// +optional
 	SessionKVApiKeySecretRef *corev1.SecretKeySelector `json:"sessionKVApiKeySecretRef,omitempty"`
 
@@ -300,7 +319,7 @@ type DeploymentSpec struct {
 
 	// Tag specifies the container image tag. It applies only when Image is set
 	// without a tag or digest, and falls back to "latest" there. When Image is
-	// omitted entirely, the operator's build-injected default version applies
+	// omitted entirely, the operator's default platform-agent version applies
 	// instead, so no "latest" default is persisted on the CR.
 	// +optional
 	Tag *string `json:"tag,omitempty"`
@@ -625,12 +644,16 @@ type StorageStatus struct {
 // found nothing and fell back to it", so the source is reported alongside it — that
 // distinction is the whole diagnostic question when spans do not arrive.
 type TelemetryStatus struct {
-	// OTLPEndpoint is the collector endpoint written into the agent pod.
+	// OTLPEndpoint is the collector endpoint written into the agent pod. Empty when the
+	// source is None, which is the one case where the pod is given no endpoint at all.
 	// +optional
 	OTLPEndpoint string `json:"otlpEndpoint,omitempty"`
 
 	// OTLPEndpointSource is how the endpoint was chosen: DeploymentEnv, Spec,
-	// OperatorEnv, Discovered, or Default.
+	// OperatorEnv, Discovered, Default, or None. None means discovery completed and
+	// this cluster has no collector, so the agent runs with OTEL_SDK_DISABLED=true and
+	// exports nothing; Default still means the GKE managed collector, and is what an
+	// install gets when discovery is switched off or could not complete.
 	// +optional
 	OTLPEndpointSource string `json:"otlpEndpointSource,omitempty"`
 }

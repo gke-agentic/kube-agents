@@ -30,6 +30,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+import command_policy
 
 LOGGER = logging.getLogger("credential-proxy")
 SLACK_EVENT_QUEUE_MAXSIZE = 1000
@@ -605,8 +606,196 @@ class Policy:
         return cls(rules=rules, blocked_message=blocked_message)
 
     def blocked_by(self, argv: list[str]) -> Rule | None:
-        command = shlex.join(argv)
-        return next((rule for rule in self.rules if rule.pattern.search(command)), None)
+        # Normalised once, not once per rule. This was inside the generator, so
+        # a thirteen-rule policy rebuilt the match text thirteen times for every
+        # brokered command -- pre-existing rather than anything the cluster fix
+        # introduced, but it multiplied that fix's worst case by thirteen, which
+        # is how it was noticed.
+        match_text = policy_match_text(argv)
+        return next(
+            (rule for rule in self.rules if rule.pattern.search(match_text)),
+            None,
+        )
+
+
+# Flags whose value is prose the agent wrote, not part of the command. Their
+# values are dropped before the rules see the argv.
+#
+# Every rule in the shipped policy is a word search across the whole joined
+# command -- `\bgh\b(?:\s+\S+)*?\s+pr\b(?:\s+\S+)*?\s+merge\b` and its
+# siblings -- and shlex.join leaves the spaces inside a quoted argument as real
+# spaces. A body is therefore searched exactly like a subcommand path. The
+# submit-suggestion skill instructs the agent to close every pull request body
+# with "Please review the code diffs and merge this PR to trigger the GitOps
+# CI/CD rollout!", so `gh pr create --body "<that>"` contained a `pr` token and
+# a later `merge` token and was refused by github.merge: the product's own
+# GitOps suggestion, blocked at the broker. The same shape reaches the older
+# rules -- a body mentioning `gh auth token` trips github.token-disclosure --
+# so this is a defect in how matching works rather than in the new rules.
+#
+# Values only. The flag names stay, because a rule may legitimately key on the
+# presence of one.
+_FREE_TEXT_FLAGS = frozenset(
+    {
+        "--body", "-b", "--title", "-t", "--notes", "--message", "-m",
+        "--description", "--comment",
+    }
+)
+
+
+# The single-dash shorthands a shipped rule keys on, split by whether the rule
+# needs a value beside the flag. Only these need a dash kept when they are
+# buried in a cluster, so this is the whole table rather than pflag's arity for
+# four upstream CLIs.
+#
+# `github.api-mutation` is the only rule that reads a value: `-X PUT` has to be
+# adjacent. Everything else keys on the flag being present at all, which is why
+# the split is worth making -- see `_cluster_readings`, where it is the
+# difference between one remainder and one per letter.
+#
+# It is a copy of something that lives in the operator, so it is pinned:
+# `test_every_shorthand_a_rule_keys_on_is_covered` reads the shipped policy and
+# fails if a rule keys on a shorthand missing here. Add the rule, run the
+# tests, and that test tells you to come back.
+_VALUE_TAKING_SHORTHANDS = frozenset({"-X", "-f", "-F"})
+_KEYED_SHORTHANDS = _VALUE_TAKING_SHORTHANDS | frozenset({"-t", "-a"})
+
+
+def _cluster_readings(token: str) -> list[str]:
+    """The keyed shorthands buried inside a single-dash cluster, re-dashed.
+
+    pflag accepts a boolean shorthand and a value-taking one in the same token:
+    `gh api -iX PUT` is `--include --method PUT`, because `parseSingleShortArg`
+    consumes `-i`, sets the remainder as the shorts still to read, and re-enters
+    the loop. The splitter above only ever takes the *first* shorthand off, so
+    that argv reaches the rules as `-i X ...` -- with the `-X` that
+    `github.api-mutation` matches on reduced to a bare letter. The merge went
+    through. `gh auth status -at` is the same shape against
+    `github.token-disclosure`, and that one returns the installation token to
+    the agent.
+
+    So each subsequent letter that a rule keys on is re-emitted with its dash,
+    followed by whatever is left of the token, which is where pflag would take
+    that shorthand's value from.
+
+    The walk stops at the first non-letter, because a cluster of shorthands is
+    letters by definition and everything from a non-letter on is somebody's
+    value: without that, `-nkube-system` would emit a `-t` off `system` and a
+    `gh auth status` somewhere in the same command would be refused for it.
+
+    Two bounds, because the argv is chosen by the sandbox and the sidecar holds
+    every agent's credentials. A keyed flag is emitted **once**, since the rules
+    ask whether it is present and a millionth `-a` answers nothing a first one
+    did not. And a remainder is emitted **once at most**, at the first
+    value-taking shorthand, which is also where pflag stops reading the cluster.
+    Emitting a fresh copy of the suffix per keyed letter made this quadratic:
+    `["gh", "-" + "a" * 1000000]` fits inside `max_request_bytes`, reaches here
+    because `gh` is an allowed executable, and exhausted the container's 2Gi on
+    a single request. This walk allocates one slice, at the break.
+    """
+    readings: list[str] = []
+    seen: set[str] = set()
+    # From 2: `token[0]` is the dash and `token[1]` is the shorthand the caller
+    # has already split off. Indexed rather than sliced -- a slice per letter is
+    # the quadratic this function was rewritten to lose.
+    for position in range(2, len(token)):
+        letter = token[position]
+        if not letter.isalpha():
+            break
+        flag = f"-{letter}"
+        if flag in _FREE_TEXT_FLAGS:
+            # Prose from here on, dropped as the detached spelling drops it.
+            if flag not in seen:
+                readings.append(flag)
+            break
+        if flag not in _KEYED_SHORTHANDS:
+            continue
+        if flag not in seen:
+            seen.add(flag)
+            readings.append(flag)
+        if flag in _VALUE_TAKING_SHORTHANDS:
+            remainder = token[position + 1 :].lstrip("=")
+            if remainder:
+                readings.append(remainder)
+            break
+    return readings
+
+
+def policy_match_text(argv: list[str]) -> str:
+    """The command as the policy rules should read it.
+
+    Two normalisations, both of which the rules would otherwise get wrong in
+    opposite directions.
+
+    Free-text flag values are dropped, so prose the agent wrote is not searched
+    for command tokens. Without this the denylist refuses the agent's own pull
+    requests -- a false positive that takes the product down rather than an
+    attacker.
+
+    Attached shorthand values are split apart. gh, kubectl and gcloud are all
+    Cobra/pflag, which accepts a shorthand's value with no separator, so
+    `gh api -XPUT repos/o/r/pulls/1/merge` is `-X PUT` and performs the merge
+    that `github.api-mutation` exists to refuse -- while matching neither
+    branch of it, because there is no whitespace or `=` after `-X`. Splitting
+    `-XPUT` into `-X PUT` closes that without the rule having to enumerate
+    spellings. `-fmerge_method=squash` becomes `-f merge_method=squash` for the
+    same reason.
+
+    Splitting the first shorthand off is deliberately unconditional rather than
+    gated on a table of value-taking shorthands: emitting `-A w` for the
+    boolean cluster `-Aw` costs nothing, since no rule keys on a bare letter,
+    and a table would be one more thing to keep in step with four upstream
+    CLIs.
+
+    That reasoning holds for a cluster of booleans and fails for a cluster
+    whose *later* member is the one a rule keys on, which is why
+    `_KEYED_SHORTHANDS` exists -- see `_cluster_readings`.
+    """
+    tokens: list[str] = []
+    skip_next = False
+    for index, token in enumerate(argv):
+        if skip_next:
+            skip_next = False
+            continue
+        name, separator, _ = token.partition("=")
+        if name in _FREE_TEXT_FLAGS:
+            # `--body=<prose>` carries its value in the same token; `--body
+            # <prose>` in the next one.
+            #
+            # Never swallow a token that looks like a flag. This set is applied
+            # without knowing which subcommand is running, and a name in it is
+            # not always value-taking: `--comment` takes prose on `gh issue
+            # close` and is a boolean on `gh pr review`, where the next token is
+            # the next flag. Swallowing it there would drop `--approve` out of
+            # `gh pr review --comment --approve 1` and hide it from
+            # github.assent. gh happens to refuse that particular argv itself
+            # ("need exactly one of --approve, --request-changes, or
+            # --comment"), so it is not an escape today -- but it is one flag's
+            # arity away from being one, and the guard costs nothing. The only
+            # thing it gives up is prose beginning with a dash, which stays in
+            # the match text and can at worst cause a visible refusal.
+            following = argv[index + 1] if index + 1 < len(argv) else ""
+            skip_next = not separator and not following.startswith("-")
+            tokens.append(name)
+            continue
+        if (
+            len(token) > 2
+            and token.startswith("-")
+            and not token.startswith("--")
+        ):
+            # An attached free-text shorthand carries prose in the same token:
+            # `-bPlease merge this PR` would otherwise be re-emitted as match
+            # text by the splitter below and trip github.merge, which is the
+            # false refusal this whole function exists to stop. Drop the value
+            # and keep the flag, as the detached spelling does.
+            if token[:2] in _FREE_TEXT_FLAGS:
+                tokens.append(token[:2])
+                continue
+            tokens.extend([token[:2], token[2:].lstrip("=")])
+            tokens.extend(_cluster_readings(token))
+            continue
+        tokens.append(token)
+    return shlex.join(tokens)
 
 
 @dataclass(frozen=True)
@@ -861,6 +1050,16 @@ class CommandExecutor:
             "GH_CONFIG_DIR": str(self.config_dir / "gh"),
             "KUBECONFIG": str(self.home_dir / ".kube" / "config"),
             "CLOUDSDK_CORE_DISABLE_PROMPTS": "1",
+            # kuberc carries per-command default options, including `as`, and it
+            # is on by default in kubectl v1.36.3. command_policy refuses the
+            # `--kuberc` flag, but kubectl also reads `$HOME/.kube/kuberc` with
+            # no flag at all -- verified to set Impersonate-User on an argv that
+            # contains nothing to refuse. That path is out of the agent's reach
+            # only because HOME points at the sidecar-only state dir rather than
+            # the shared PVC, which is deployment geometry and not a control.
+            # This turns the feature off outright so the property survives
+            # someone rearranging the mounts. Nothing here needs kuberc.
+            "KUBECTL_KUBERC": "false",
         }
         # Forward only variables required by supported credential clients. Chat
         # tokens and proxy control variables must never enter an agent-selected
@@ -1325,11 +1524,99 @@ class CommandExecutor:
         return value[: self.max_output_bytes], True
 
 
+def read_only_enforced() -> bool:
+    """Is the read-only gate armed?
+
+    Defaults to on, and anything that is not exactly "false" leaves it on. A
+    typo in a ConfigMap should not quietly hand an agent write access.
+
+    This switch is deliberately not documented in the customer-facing reference.
+    It is global, unscoped and has no expiry: setting it disables the read-only
+    posture for every command, every agent and every cluster in the Pod, and
+    today there is no impersonation layer underneath to catch what gets through
+    (see command_policy's module docstring).
+
+    **On an operator-managed install there is no supported way to set it, by
+    design.** The operator reserves the name: a `spec.deployment.env` entry is
+    rejected by the validating webhook and dropped by mergeCredentialProxyEnv,
+    no ConfigMap carries it, and a hand edit to the generated Deployment is
+    reverted on the next reconcile. Whoever can edit the PlatformAgent is
+    frequently who the policy is meant to constrain, so the switch is not
+    theirs. An earlier version of this docstring offered it as the way to
+    "recover from a bad allowlist without waiting on an image build"; that
+    route did not exist -- the ConfigMap it named has only ever carried
+    policy.json -- and following it during an outage costs an operator a CR
+    patch that changes nothing and explains nothing.
+
+    The remedy for a command the allowlist should have permitted is to add it
+    to command_policy.KUBECTL_READ_VERBS or GCLOUD_READ_COMMANDS and ship the
+    image, which is what the customer-facing reference already tells the
+    reader to do (docs/site/.../reference/credential-isolation.md).
+
+    What remains is the process environment, which is how the tests arm and
+    disarm the gate and how the proxy behaves when run outside the operator --
+    a standalone or local invocation, where the person setting it is the
+    person running the process.
+    """
+    return os.getenv("CREDENTIAL_PROXY_ENFORCE_READ_ONLY", "true").strip().lower() != "false"
+
+
+def _sanitize_for_logging(s: str) -> str:
+    """Strip control characters to prevent log forgery, with 64-char length cap.
+
+    Removes C0/C1 control characters, line/paragraph separators (Unicode), and
+    all characters that could be interpreted as line boundaries by consumers
+    (Python splitlines, JS /m, JSON parsers, etc). Also caps length to prevent
+    unbounded agent-controlled hint expansion.
+    """
+    import unicodedata
+
+    # Characters in Cc (control), Cf (format), Zl (line sep), Zp (para sep)
+    # will forge log lines in text-mode consumers.
+    filtered = ''.join(c for c in s if unicodedata.category(c) not in ('Cc', 'Cf', 'Zl', 'Zp'))
+    # Cap at 64 chars (no real flag name exceeds this)
+    return filtered[:64]
+
+
+def read_only_refusal(argv: list[str]) -> tuple[dict[str, str], str | None] | None:
+    """The blocked-response body for `argv`, or None if it may run.
+
+    Returns (response_dict, log_hint) for logging, or None if allowed.
+    log_hint is either verb_tuple or offending_flag, safe to log.
+    Split out from the handler so the decision is testable without standing up
+    a socket, and so the gate reads the class attribute rather than the
+    environment on every request.
+    """
+    if not CredentialProxyHandler.enforce_read_only:
+        return None
+    decision = command_policy.evaluate(argv)
+    if decision.allowed:
+        return None
+
+    # Choose what to log: resolved verb/command path, or the offending flag
+    log_hint = None
+    if decision.verb_tuple:
+        log_hint = ".".join(decision.verb_tuple)
+    elif decision.offending_flag:
+        log_hint = decision.offending_flag
+
+    return (
+        {
+            "status": "blocked",
+            "code": "SECURITY_POLICY_BLOCKED",
+            "rule": decision.rule_id,
+            "message": decision.message,
+        },
+        log_hint,
+    )
+
+
 class CredentialProxyHandler(BaseHTTPRequestHandler):
     policy: Policy
     executor: CommandExecutor
     max_request_bytes: int
     slack_max_request_bytes: int
+    enforce_read_only: bool = True
     chat_relay: GoogleChatRelay | None = None
     slack_relay: SlackRelay | None = None
 
@@ -1461,6 +1748,22 @@ class CredentialProxyHandler(BaseHTTPRequestHandler):
                     "message": violation,
                 },
             )
+            return
+
+        # Runs after the credential denylist above, so rules like
+        # `kubernetes.token-disclosure` keep their own ids and messages rather
+        # than being reported as read-only refusals. For example, `kubectl create
+        # token sa` is on the denylist as `kubernetes.token-disclosure` and will
+        # be refused by the denylist with that rule id. If the gate ran first, it
+        # would refuse as `kubernetes.read-only`, losing the specific rule.
+        refusal_result = read_only_refusal(argv)
+        if refusal_result is not None:
+            refusal, log_hint = refusal_result
+            safe_hint = _sanitize_for_logging(log_hint) if log_hint else "unknown"
+            LOGGER.warning(
+                "command refused request_id=%s rule=%s hint=%s", request_id, refusal["rule"], safe_hint
+            )
+            self._json(HTTPStatus.FORBIDDEN, refusal)
             return
 
         try:
@@ -1709,6 +2012,8 @@ def serve(args: argparse.Namespace) -> None:
     executor.bootstrap(os.getenv("CREDENTIAL_PROXY_BOOTSTRAP_COMMAND", ""))
     CredentialProxyHandler.executor = executor
     CredentialProxyHandler.max_request_bytes = args.max_request_bytes
+    CredentialProxyHandler.enforce_read_only = read_only_enforced()
+    LOGGER.info("read-only enforcement enabled=%s", CredentialProxyHandler.enforce_read_only)
     CredentialProxyHandler.slack_max_request_bytes = int(
         os.getenv("SLACK_RELAY_MAX_REQUEST_BYTES", str(28 * 1024 * 1024))
     )
