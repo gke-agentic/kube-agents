@@ -476,6 +476,24 @@ class WhatMustSurviveTests(unittest.TestCase):
             {"args": ["--project", "", "[PROJECT]"]},
         )
 
+    def test_the_carry_over_does_not_swallow_the_flag_that_follows_it(self):
+        """The other half of the carry-over, and the direction that leaks.
+
+        Reaching one element further for a value is right until the element is
+        itself a flag. Consuming `--project` as the empty `--cluster`'s value
+        both spent the carry and skipped the match that would have armed it
+        again, so the project id in the position after met only shape-based
+        redaction -- which the carry-over exists precisely because it cannot
+        recognise a bare id -- and went into the ledger and the pull request."""
+        self.assertEqual(
+            E.redact_tree({"args": ["describe", "--cluster", "", "--project", "acme-prod-42"]}),
+            {"args": ["describe", "--cluster", "", "--project", "[PROJECT]"]},
+        )
+        self.assertEqual(
+            E.redact_tree({"args": ["--project", "", "--cluster-name", "prod-usc1-fleet"]}),
+            {"args": ["--project", "", "--cluster-name", "[CLUSTER]"]},
+        )
+
     def test_a_short_unhyphenated_cluster_name_is_the_trade(self):
         """Named, because an accepted cost that nothing asserts is a cost
         nobody knows was accepted. A cluster called `prod`, in a log line that

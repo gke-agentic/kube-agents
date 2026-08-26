@@ -559,7 +559,16 @@ def _redact_argv(items: list) -> list:
     result = []
     pending: Optional[str] = None
     for item in items:
-        if pending is not None and isinstance(item, str):
+        # A token that opens with `-` is the next flag, never the previous
+        # flag's value: no project ID or cluster name may start with one. It
+        # matters because of the empty-value carry below -- consuming
+        # `--project` as the value of a `--cluster ""` that came before it
+        # both cleared the carry and skipped the match on `--project`, so the
+        # ID after it met only shape-based redaction and reached the ledger.
+        # `.strip()` to agree with the match below, which strips before it
+        # tests -- otherwise ` --project` is a value here and a flag there.
+        value_shaped = isinstance(item, str) and not item.strip().startswith("-")
+        if pending is not None and value_shaped:
             result.append(_identifier_leaf(item, pending))
             # An empty string is not a value -- it is what a flag renders as
             # when the shell that built this argv had nothing to put there
