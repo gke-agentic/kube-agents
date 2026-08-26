@@ -77,8 +77,18 @@ spec:
   strategy:
     type: RollingUpdate
     rollingUpdate:
+      # maxSurge first, so an unconstrained cluster still rolls with no gap in
+      # serving. maxUnavailable is 1 rather than 0 because 0 makes the surge Pod
+      # mandatory: under a namespace ResourceQuota with no room for one more
+      # LiteLLM Pod, the ReplicaSet gets FailedCreate and the rollout stops
+      # instead of falling back to replacing in place (#749). The gateway is
+      # immune to this — it is Recreate, forced by its ReadWriteOnce PVC — which
+      # is why this Deployment, not that one, is where a quota-refused restart
+      # actually shows up. At the default replicaCount of 2 one replica keeps
+      # serving either way; at 1 this trades a brief gap for a rollout that
+      # completes, which is the only outcome available when the quota is full.
       maxSurge: 1
-      maxUnavailable: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       app: litellm
