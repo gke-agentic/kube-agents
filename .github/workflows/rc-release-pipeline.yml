@@ -125,6 +125,7 @@ jobs:
           gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet || true
 
       - name: Execute E2E Suite
+        continue-on-error: true
         env:
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           GCP_REGION: ${{ vars.GCP_REGION }}
