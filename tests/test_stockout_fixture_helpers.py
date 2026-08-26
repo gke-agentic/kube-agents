@@ -329,7 +329,7 @@ class SkillPathTest(unittest.TestCase):
         with mock.patch.object(sof, "_kubectl", side_effect=fake_kubectl):
             with mock.patch.object(sof, "_current_revision_selector", return_value=None):
                 sof._verify_skill_mounted("platform-agent", "ns", target_profile,
-                                          "deployment", "gw", time.time() + 60, frozenset())
+                                          "deployment", "gw", time.time() + 60)
         return calls[0]
 
     def test_targeted_profile_path_follows_the_cr_agent_home(self):
@@ -348,11 +348,11 @@ class SkillPathTest(unittest.TestCase):
         self.assertNotIn("HERMES_HOME", self._probe_path("/opt/data", "platform"))
 
 
-class ForbiddenPodTest(unittest.TestCase):
-    """A pod that predates the install cannot answer for a plugin the install changed —
-    but only where its name proves that, and only where a revision was actually pinned."""
+class SkillMountTest(unittest.TestCase):
+    """The verdict on the mount has to distinguish "the file is absent" from "nobody
+    looked", because only the first is a statement about the plugin."""
 
-    def _verify(self, kind, revision, forbidden, on_exec="PRESENT\n", window=60):
+    def _verify(self, kind, revision, on_exec="PRESENT\n", window=60):
         execs = []
 
         def fake_kubectl(*args, **kwargs):
@@ -369,29 +369,25 @@ class ForbiddenPodTest(unittest.TestCase):
                 mock.patch.object(sof, "_current_revision_selector", return_value=revision), \
                 mock.patch.object(sof.time, "sleep"):
             result = sof._verify_skill_mounted("platform-agent", "ns", "platform", kind,
-                                               "gw", time.time() + window, forbidden)
+                                               "gw", time.time() + window)
         return result, execs
 
-    def test_pre_install_pod_under_a_pinned_revision_fails_without_probing(self):
-        with self.assertRaises(BaseException) as caught:
-            self._verify("deployment", "pod-template-hash=aaa", frozenset({"gw-old"}))
-        self.assertIn("already running before the install", str(caught.exception))
-
-    def test_no_revision_pinned_means_the_guard_does_not_apply(self):
-        # _current_revision_selector returns None on a timeout, a missing revision
-        # annotation or unparseable JSON. _gateway_pod then lists unfiltered and may
-        # legitimately return a pre-install pod while the roll settles, which is what the
-        # retry loop absorbs — failing there would be a false failure on a healthy cluster.
-        pod, execs = self._verify("deployment", None, frozenset({"gw-old"}))
+    def test_a_present_skill_returns_the_pod_it_was_found_in(self):
+        pod, execs = self._verify("deployment", "pod-template-hash=aaa")
         self.assertEqual(pod, "gw-old")
         self.assertEqual(len(execs), 1)
 
-    def test_statefulset_names_do_not_prove_anything_so_the_guard_is_skipped(self):
-        # A StatefulSet's pods keep their ordinal names across every revision, so
-        # membership would fire on a roll that worked. controller-revision-hash, which the
-        # selector already applies there, is what identifies the current pod.
-        pod, execs = self._verify("statefulset", "controller-revision-hash=gw-7c9",
-                                  frozenset({"gw-old"}))
+    def test_an_unpinned_revision_still_probes(self):
+        # _current_revision_selector returns None on a timeout, a missing revision
+        # annotation or unparseable JSON. _gateway_pod then lists unfiltered, which is
+        # weaker but still the best answer available — refusing to probe would turn a slow
+        # API server into a verdict about the plugin.
+        pod, execs = self._verify("deployment", None)
+        self.assertEqual(pod, "gw-old")
+        self.assertEqual(len(execs), 1)
+
+    def test_statefulset_is_pinned_by_controller_revision_hash(self):
+        pod, execs = self._verify("statefulset", "controller-revision-hash=gw-7c9")
         self.assertEqual(pod, "gw-old")
         self.assertEqual(len(execs), 1)
 
@@ -399,8 +395,7 @@ class ForbiddenPodTest(unittest.TestCase):
         # Under leader election a Ready pod may not have reached `exec` yet, so ABSENT is
         # transient; the window has to be spent before the verdict.
         with self.assertRaises(BaseException) as caught:
-            self._verify("deployment", "pod-template-hash=aaa", frozenset(),
-                         on_exec="ABSENT\n", window=0)
+            self._verify("deployment", "pod-template-hash=aaa", on_exec="ABSENT\n", window=0)
         self.assertIn("is not mounted in gw-old", str(caught.exception))
 
     def test_an_exec_that_never_ran_is_reported_as_inconclusive(self):
@@ -417,7 +412,7 @@ class ForbiddenPodTest(unittest.TestCase):
                 mock.patch.object(sof.time, "sleep"):
             with self.assertRaises(BaseException) as caught:
                 sof._verify_skill_mounted("platform-agent", "ns", "platform", "deployment",
-                                          "gw", time.time(), frozenset())
+                                          "gw", time.time())
         message = str(caught.exception)
         self.assertIn("Could not establish", message)
         self.assertNotIn("is not mounted", message)
@@ -426,14 +421,18 @@ class ForbiddenPodTest(unittest.TestCase):
 class BudgetTest(unittest.TestCase):
     """The fixture's ceiling has to stay under what the job that runs it allows."""
 
-    def test_rollout_gate_matches_the_deploy_workflow(self):
-        # The helper is imported rather than the regex rewritten: two expressions over one
-        # line in one workflow drift, and test_gateway_rollout_budgets.py owns this one.
-        self.assertEqual(
+    def test_rollout_gate_stays_under_the_deploy_workflow_cold_boot_budget(self):
+        # Deliberately not equal to it. The deploy workflow's gate covers a gateway being
+        # started from nothing; this fixture runs after step 2 has already provisioned the
+        # environment and waited for the pod, so what is left is a re-template on a warm
+        # node. Asserting the relation rather than the number keeps this honest if the
+        # deploy workflow's own budget moves. The helper is imported rather than the regex
+        # rewritten: test_gateway_rollout_budgets.py owns that expression.
+        self.assertLess(
             sof._ROLLOUT_TIMEOUT_SECONDS,
             _rollout_gate_seconds(_AGENT_WORKFLOW, "platform-agent-gateway"),
-            "the fixture's rollout wait must match the deploy workflow's gate; a lower one "
-            "fails a cold boot the rest of the repo sanctions",
+            "the fixture waits on a warm re-template, so its ceiling should sit below the "
+            "cold-boot budget the deploy workflow sanctions",
         )
 
     def test_fixture_budget_fits_inside_the_pipeline_step(self):
@@ -455,7 +454,7 @@ class BudgetTest(unittest.TestCase):
     def test_every_wait_is_capped_by_the_budget(self):
         for name in ("_INSTALL_TIMEOUT_SECONDS", "_ROLLOUT_TIMEOUT_SECONDS",
                      "_PLUGIN_READY_TIMEOUT_SECONDS", "_SKILL_MOUNT_TIMEOUT_SECONDS",
-                     "_RETEMPLATE_WINDOW_SECONDS", "_GENERATION_STABLE_SECONDS"):
+                     "_GENERATION_STABLE_SECONDS"):
             with self.subTest(constant=name):
                 self.assertLessEqual(getattr(sof, name), sof._FIXTURE_BUDGET_SECONDS)
 

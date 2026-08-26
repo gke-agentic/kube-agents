@@ -67,21 +67,7 @@ jobs:
     concurrency:
       group: rc-environment
       cancel-in-progress: false
-    # 45, from what the step has to fit rather than from a round number. Runner setup
-    # (checkout, Python, deps, WIF, gcloud, GKE readiness) runs ~5m; test_agent_api_health
-    # and test_agent_fleet_audit ~7m; scenario 04 up to 8m including its 360s watch. The
-    # stockout fixture reinstalls the plugin and waits for the gateway to roll, on a 20m
-    # budget (_FIXTURE_BUDGET_SECONDS in tests/e2e/test_stockout_investigation.py) that in
-    # the worst case overruns to ~24m: every wait checks the deadline after a call that can
-    # spend its own 30s timeout, and the rollout subprocess gets a 30s grace on top. That
-    # ceiling is reached only by a cold rollout, for which reusable-deploy-agent.yml
-    # sanctions 900s on its own. ~40m in total, leaving ~5m of headroom.
-    #
-    # 30 was under the total before the fixture existed only because the fixture was a
-    # no-op; the failure mode to avoid is GitHub cancelling the runner mid-wait, which
-    # discards the message the fixture exists to print. Raising this and capping the
-    # fixture are two halves of one fix — neither works alone.
-    timeout-minutes: 45
+    timeout-minutes: 30
     permissions:
       contents: read
       id-token: write

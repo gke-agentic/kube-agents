@@ -81,27 +81,6 @@ _What this script provisions:_
 - IAM Roles: `roles/pubsub.publisher` on topic `platform-agent-chat-events` + `roles/chat.admin`
 - WIF Pool & Provider: `github-actions-pool` / `github-provider` bound to your GitHub repository.
 
-That is not the whole set the suite needs. `test_stockout_investigation.py` runs
-[`agentplugins/gke-stockout-investigator/install.sh`](../../agentplugins/gke-stockout-investigator/install.sh)
-once per session. On GCP that identity additionally needs
-`serviceusage.services.enable`; `pubsub.topics` and `pubsub.subscriptions` `get`, `create`
-and `setIamPolicy`; `logging.sinks` `get`, `create` and `update`;
-`resourcemanager.projects.getIamPolicy` and `setIamPolicy`, to grant the agent's own
-service account `roles/compute.viewer`; and read plus write on the Artifact Registry
-repository the agent image is pulled from. The permissions are named rather than the roles
-that contain them: `roles/resourcemanager.projectIamAdmin` covers the project-policy pair
-but also allows binding any other role project-wide.
-
-In the cluster it needs `get` on `customresourcedefinitions`, `agentplugins`,
-`platformagents`, `serviceaccounts`, `deployments`, `statefulsets`, `replicasets` and
-`pods`; `patch` on `platformagents` for the tuning patch; `create` and `update` on
-`agentplugins` and on the Secrets Helm keeps its release state in; and `create` on
-`pods/exec`.
-
-`SKIP_INSTALL=true` reuses the deployed plugin, which drops the GCP set and the cluster
-write verbs. Every read above and `pods/exec` are still required — the fixture verifies the
-plugin whether or not it installed it.
-
 _(To teardown CI IAM resources when no longer needed, run `./tests/e2e/scripts/teardown_ci_iam.sh --gcp_project <GCP_PROJECT_ID> --git_project <GITHUB_OWNER/REPO>`)._
 
 ### 3. Setup Owned Test Account (OTA) & Google Chat Space

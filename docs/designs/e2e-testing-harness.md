@@ -114,7 +114,10 @@ export GKE_CLUSTER_NAME="my-cluster"
 make test-e2e
 ```
 
-The stockout suite reinstalls its AgentPlugin before it runs, so it needs the project
-permissions and the local tooling that
-[`agentplugins/README.md`](../../agentplugins/README.md#installing) lists for a plugin
-install. `SKIP_INSTALL=true` reuses whatever is already deployed.
+The stockout suite waits for its AgentPlugin to reach Ready, for the gateway to finish
+rolling, and for the plugin's `SKILL.md` to be readable inside the surviving pod before
+the first scenario runs. A failure in any of those ends the module naming what was wrong
+rather than letting each scenario spend its watch timeout. The plugin is installed only
+when its custom resource is absent, so the suite needs the permissions that
+[`agentplugins/README.md`](../../agentplugins/README.md#installing) lists only on a
+cluster that has never had it.

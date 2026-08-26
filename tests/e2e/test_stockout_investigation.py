@@ -5,7 +5,6 @@ import os
 import pathlib
 import subprocess
 import time
-import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
 import pytest
@@ -33,36 +32,36 @@ _DEFAULT_AGENT_REF = "platform-agent"
 # written for. Each wait below is clamped to whatever is left of this budget, so the
 # fixture always fails inside the job rather than being killed alongside it.
 #
-# Sum of the individual caps exceeds it deliberately — each is the honest ceiling for its
-# own step, and the budget is what binds when several of them go long at once.
-_FIXTURE_BUDGET_SECONDS = 1200
-# install.sh builds and pushes the plugin image when the source has changed, so it is
-# minutes rather than seconds on the run that matters. Bounded anyway: a hung gcloud or
-# docker would otherwise burn the whole job timeout with no output.
-_INSTALL_TIMEOUT_SECONDS = 900
-# The gap between the operator writing the AgentPlugin's status and writing the workload.
-# Both happen in one reconcile — updatePluginStatuses at platformagent_controller.go:485,
-# the workload apply at :514 — and this wait is entered only after the status write has
-# been observed, so it covers microseconds of work, not a reconcile that has yet to start.
-_RETEMPLATE_WINDOW_SECONDS = 60
+# 600s leaves the 30-minute step its existing margin: the suite ran 544s end to end in
+# run 32866087154, so a fixture that spends its whole budget still lands inside 20
+# minutes. Sum of the individual caps exceeds it deliberately — each is the honest
+# ceiling for its own step, and the budget is what binds when several go long at once.
+_FIXTURE_BUDGET_SECONDS = 600
+# Only reachable when the AgentPlugin is absent, which on the RC means the environment was
+# never provisioned rather than that the plugin drifted. Bounded because install.sh builds
+# and pushes an image on that path: before this, a hung gcloud or docker burned the whole
+# job timeout with no output. The fixture budget above binds first, and that is the
+# intended ceiling — a plugin missing outright is a finding, not something to wait out.
+_INSTALL_TIMEOUT_SECONDS = 600
 # How long the gateway's generation has to hold still before its spec counts as settled.
 #
-# One install produces more than one revision. `helm upgrade --install` reconciles the
-# AgentPlugin into the workload (install.sh:294), and the tuning patch that follows
-# (install.sh:328) changes the agent's config, whose hash rides on the pod template as
-# kubeagents.x-k8s.io/config-hash (platformagent_manifests.go:1987). Waiting for the first
-# bump and calling `rollout status` can therefore succeed against the intermediate
-# revision moments before the second arrives.
+# Step 2 provisions the environment immediately before this suite runs, and a `helm
+# upgrade` there reaches the gateway by two routes — the chart's own render and the
+# config hash that rides on the pod template as kubeagents.x-k8s.io/config-hash
+# (platformagent_manifests.go:1987). Observing the first bump and calling `rollout
+# status` can therefore succeed against an intermediate revision moments before the
+# second arrives.
 #
-# 20s and the reasoning are taken from the sibling suite that hit this first and named
-# this installer's tuning patch as the cause:
+# 20s and the reasoning are taken from the sibling suite that hit this first:
 # agentplugins/pubsub-platform/tests/dedup_e2e_test.py:125-131.
 _GENERATION_STABLE_SECONDS = 20
-# 900s, matching .github/workflows/reusable-deploy-agent.yml:150-157, which derives it
-# from the gateway's agentAPIProbe(10, 60) sanctioning a 605s cold boot plus a 240s image
-# pull allowance. The 600s figures elsewhere in the repo are progressDeadlineSeconds for
-# litellm and the token minter, not a rollout budget for this workload.
-_ROLLOUT_TIMEOUT_SECONDS = 900
+# Not the 900s cold-boot budget that .github/workflows/reusable-deploy-agent.yml:150-157
+# derives from agentAPIProbe(10, 60) plus an image-pull allowance. That figure is for a
+# gateway being started; by the time this suite runs, step 2 has already provisioned the
+# environment and `scripts/release/wait_for_gke_readiness.sh` has waited for the pod. What
+# is left for this wait is a re-template still in flight, so the ceiling is sized for a
+# roll on a warm node rather than a boot from nothing.
+_ROLLOUT_TIMEOUT_SECONDS = 300
 _PLUGIN_READY_TIMEOUT_SECONDS = 300
 # Polled rather than read once, because rollout-complete does not always mean the entrypoint
 # has finished linking plugins.
@@ -193,113 +192,39 @@ def _generation(
         return None
 
 
-class StockoutFixtureWarning(UserWarning):
-    """Something the fixture could not establish, on a path that still passed.
-
-    Its own category so the pytest warnings summary names it, and so `-W
-    error::...StockoutFixtureWarning` can promote it in a run that wants to be strict.
-    """
-
-
 def _wait_for_gateway_rollout(
-    agent_ref: str,
-    namespace: str,
-    before_kind: Optional[str],
-    before_gen: Optional[int],
-    plugin_changed: bool,
-    agent_changed: bool,
-    deadline: float,
+    agent_ref: str, namespace: str, deadline: float
 ) -> Tuple[str, str]:
-    """Blocks until the gateway is serving the templating that the install produced.
+    """Blocks until the gateway has finished rolling and is serving its current spec.
 
-    Reconciling the plugin re-templates the gateway workload, so a test that probes the
-    pod straight after install.sh returns races a terminating one — which is how a smoke
-    test and a scenario in the same run end up talking to two different ReplicaSets.
+    Step 2 of the RC pipeline provisions the environment immediately before this suite
+    runs, and the gateway it leaves behind may still be rolling: `helm upgrade` moves the
+    pod template, and the operator re-templates the workload again when it reconciles the
+    AgentPlugin. A test that probes the pod while that is in flight talks to a terminating
+    one, which is how a smoke test and a scenario in the same run end up inspecting two
+    different ReplicaSets — and how run 32866087154 came to report a plugin skill missing
+    that the next run found present.
 
-    Called after the AgentPlugin's status has caught up, which is what makes the window
-    below short enough to be meaningful *when the plugin is what changed*: the operator
-    writes that status at platformagent_controller.go:485 and the workload at :514 inside
-    one reconcile, so a current status means the workload write has happened or is
-    microseconds away. That guarantee does not extend to the tuning patch — when only the
-    PlatformAgent's generation moved, `_wait_for_plugin_ready` returns on a status the
-    previous reconcile already wrote, and nothing establishes that the reconcile carrying
-    the tuning has started. Hence two caller-supplied flags and not one.
+    The generation is required to hold still before the rollout is watched, because the
+    first bump is not always the last; see _GENERATION_STABLE_SECONDS.
 
-    One install produces two revisions, so the generation is also required to hold still;
-    see _GENERATION_STABLE_SECONDS.
-
-    Returns (kind/name, one line saying which outcome happened).
+    Returns (kind/name, one line recording where the generation settled).
     """
     kind, name = _gateway_workload(agent_ref, namespace)
     if kind is None:
         pytest.fail(
-            f"No Deployment or StatefulSet '{name}' in namespace '{namespace}' after installing "
-            f"the stockout plugin; the PlatformAgent '{agent_ref}' the plugin attaches to has no "
-            "gateway workload."
+            f"No Deployment or StatefulSet '{name}' in namespace '{namespace}'; the "
+            f"PlatformAgent '{agent_ref}' the stockout plugin attaches to has no gateway "
+            "workload."
         )
     target = f"{kind}/{name}"
 
-    if not (plugin_changed or agent_changed):
-        outcome = (
-            f"{target} left at generation {before_gen}: the install changed nothing the "
-            "operator templates from, so no rollout was expected"
-        )
-    elif before_gen is None or kind != before_kind:
-        # A gateway this install created, or one that switched between Deployment and
-        # StatefulSet: there is no earlier generation to compare against, so the watch below
-        # cannot run. The settle wait still can, and this is the case most likely to produce
-        # the two revisions it exists for — a brand-new workload takes both the plugin
-        # reconcile and the tuning patch.
-        current = _generation(kind, name, namespace)
-        if current is not None:
-            current = _wait_for_generation_to_settle(kind, name, namespace, current, deadline)
-        outcome = (
-            f"{target} did not exist before the install, or changed kind; not comparing "
-            f"generations (now at {current})"
-        )
+    current = _generation(kind, name, namespace)
+    if current is None:
+        outcome = f"{target}: generation unreadable, waiting on the rollout alone"
     else:
-        window, window_bound = _remaining(deadline, _RETEMPLATE_WINDOW_SECONDS)
-        window_end = time.time() + window
-        gen = before_gen
-        while True:
-            gen = _generation(kind, name, namespace)
-            if gen is not None and gen > before_gen:
-                break
-            if time.time() >= window_end:
-                gen = None
-                break
-            time.sleep(3)
-
-        if gen is None:
-            # The AgentPlugin or the PlatformAgent moved and the gateway did not, which
-            # the reconcile above should not produce. Reachable when applyManaged fails
-            # after the status patch succeeded — status errors are logged and swallowed
-            # at platformagent_controller.go:1499-1501 — or when the tuning reconcile has
-            # not started.
-            detail = (
-                f"{target} is still at generation {before_gen} {window}s ({window_bound}) after "
-                "the AgentPlugin reached Ready, although a spec the operator templates from "
-                "changed."
-            )
-            if plugin_changed:
-                # Fatal here, and only here. The plugin's own spec moved, so the pod that
-                # follows carries the PREVIOUS plugin — probing it grades the previous
-                # candidate and reports the suite green for it. Passing with a printed
-                # warning is how that goes unnoticed.
-                pytest.fail(
-                    f"{detail}\nThe AgentPlugin's spec is what changed, so the gateway is still "
-                    "running the previous plugin and anything verified against its pod describes "
-                    "the previous candidate. Check the operator's logs for a failed workload "
-                    "apply."
-                )
-            # Only the PlatformAgent moved — the tuning patch, or an unrelated writer. The
-            # plugin content is unchanged, so the existing pod is still the right thing to
-            # probe; the uncertainty is worth surfacing but not worth failing on.
-            outcome = f"WARNING: {detail} Only the PlatformAgent changed, so the plugin content is unaffected."
-            warnings.warn(outcome, StockoutFixtureWarning, stacklevel=2)
-        else:
-            settled = _wait_for_generation_to_settle(kind, name, namespace, gen, deadline)
-            outcome = f"{target} re-templated: generation {before_gen} -> {settled}"
+        settled = _wait_for_generation_to_settle(kind, name, namespace, current, deadline)
+        outcome = f"{target}: generation settled at {settled}"
 
     rollout_budget, rollout_bound = _remaining(deadline, _ROLLOUT_TIMEOUT_SECONDS)
     if rollout_budget <= 0:
@@ -314,7 +239,7 @@ def _wait_for_gateway_rollout(
     if res.returncode != 0:
         pytest.fail(
             f"The gateway {target} did not finish rolling out within {rollout_budget}s "
-            f"({rollout_bound}) after the stockout plugin install. {outcome}\n"
+            f"({rollout_bound}). {outcome}\n"
             f"STDOUT:\n{res.stdout}\nSTDERR:\n{res.stderr}"
         )
     return target, outcome
@@ -343,13 +268,16 @@ def _wait_for_generation_to_settle(
 
 
 def _wait_for_plugin_ready(namespace: str, budget_deadline: float) -> Dict[str, Any]:
-    """Blocks until the AgentPlugin's status reflects the spec install.sh just applied.
+    """Blocks until the AgentPlugin's status reflects its current spec.
 
     Phase alone is not enough. A Ready left over from a previous reconcile is exactly what
-    a stale plugin looks like, so observedGeneration has to have caught up to the
-    generation the reinstall produced before the phase means anything.
+    a stale plugin looks like, so observedGeneration has to have caught up to the object's
+    generation before the phase means anything.
 
-    This runs before the rollout wait, not after; see _wait_for_gateway_rollout.
+    Runs before the rollout wait rather than after. The operator writes this status at
+    platformagent_controller.go:485 and the workload at :514 inside one reconcile, so
+    waiting here first means the rollout wait that follows is looking at a workload the
+    operator has already written, not one it is about to.
     """
     window, bound = _remaining(budget_deadline, _PLUGIN_READY_TIMEOUT_SECONDS)
     deadline = time.time() + window
@@ -378,8 +306,8 @@ def _wait_for_plugin_ready(namespace: str, budget_deadline: float) -> Dict[str, 
             break
         time.sleep(5)
     pytest.fail(
-        f"AgentPlugin '{_PLUGIN_NAME}' in '{namespace}' did not become Ready for the spec "
-        f"install.sh applied within {window}s ({bound}): {detail}"
+        f"AgentPlugin '{_PLUGIN_NAME}' in '{namespace}' did not become Ready for its current "
+        f"spec within {window}s ({bound}): {detail}"
     )
 
 
@@ -508,33 +436,6 @@ def _agent_home(agent_ref: str, namespace: str) -> str:
     return home or "/opt/data"
 
 
-def _gateway_pod_names(agent_ref: str, namespace: str) -> frozenset:
-    """Every gateway pod name right now, for the before/after comparison in the fixture.
-
-    An empty result disables the stale-pod guard in _verify_skill_mounted, and "there were
-    no gateway pods" and "the list was refused" produce the same empty set. fail_on_timeout
-    covers only a kubectl that never answered; an RBAC denial, a wrong namespace or a bad
-    jsonpath exits non-zero with a message, and silently losing the guard to one of those is
-    the failure mode the guard exists to prevent, one level up.
-    """
-    res = _kubectl(
-        "get", "pods", "-n", namespace,
-        "-l", f"app={agent_ref}-gateway",
-        "-o", "jsonpath={range .items[*]}{.metadata.name}{'\\n'}{end}",
-        fail_on_timeout=True,
-    )
-    if res.returncode != 0:
-        warnings.warn(
-            f"Could not list the gateway pods that predate this install "
-            f"(kubectl exited {res.returncode}: {res.stderr.strip()}). The check that the skill "
-            "probe does not run against a pod the install replaced is disabled for this run.",
-            StockoutFixtureWarning,
-            stacklevel=2,
-        )
-        return frozenset()
-    return frozenset(line.strip() for line in res.stdout.splitlines() if line.strip())
-
-
 def _verify_skill_mounted(
     agent_ref: str,
     namespace: str,
@@ -542,31 +443,17 @@ def _verify_skill_mounted(
     kind: str,
     workload_name: str,
     budget_deadline: float,
-    forbidden_pods: frozenset,
 ) -> str:
     """Fails unless the plugin's SKILL.md is readable inside the current gateway pod.
 
     A Ready AgentPlugin says the operator reconciled something, not that the skill reached
     the profile that runs the investigation. When it has not, every alert still publishes,
     the adapter logs nothing, and each scenario spends its full 360s watch before failing —
-    so the mount is checked here, once, where the message can name the path.
+    which is what run 32866087154 reported as "Platform Agent never started investigation".
+    The mount is checked here, once, where the message can name the path.
 
-    `forbidden_pods` are the gateway pods that existed before the install. When the plugin's
-    own spec changed, a pod from that set cannot answer the question being asked — it
-    carries the previous plugin — so PRESENT from it would grade the previous candidate.
-
-    That check applies to a Deployment only. Its pod names embed the ReplicaSet's
-    pod-template-hash, so a new revision always produces a name not in the set, and
-    membership is a sound test with no clock involved. A StatefulSet's pods keep their
-    ordinal names (`<name>-0`) across every revision, so the same test would fire on a roll
-    that worked perfectly — the guard is skipped there, and `controller-revision-hash` off
-    `.status.updateRevision` already identifies the current pod exactly.
-
-    It also applies only when a revision selector was in force. Without one `_gateway_pod`
-    lists unfiltered and may legitimately return a pre-install pod while the roll is still
-    settling, which is what the retry loop is for.
-
-    Returns the pod it verified, so the caller can record which one the tests inherit.
+    Called after the rollout wait, so the pod it resolves is the one the tests below will
+    use. Returns that pod, so the caller can record which one they inherit.
     """
     home = _agent_home(agent_ref, namespace)
     # A targeted profile is staged outside the PVC at /opt/agent-plugins/<profile>/<plugin>
@@ -583,9 +470,6 @@ def _verify_skill_mounted(
     # "the exec did not run" stay distinguishable; only the first is conclusive.
     probe = f'test -f "{skill_path}" && echo PRESENT || echo ABSENT'
 
-    # A StatefulSet's names do not move between revisions, so the set says nothing there.
-    stale_pods = frozenset() if kind == "statefulset" else forbidden_pods
-
     window, bound = _remaining(budget_deadline, _SKILL_MOUNT_TIMEOUT_SECONDS)
     deadline = time.time() + window
     detail = "the gateway pod was never resolved"
@@ -593,17 +477,6 @@ def _verify_skill_mounted(
     while True:
         revision = _current_revision_selector(kind, workload_name, namespace)
         pod, why = _gateway_pod(agent_ref, namespace, revision)
-        if pod and revision is not None and pod in stale_pods:
-            # Not retried into. A selector WAS applied and still resolved a pod the install
-            # replaced, so the revision the cluster reports as current is one this fixture
-            # already saw — waiting will not change that, and failing here keeps the message
-            # about the selection rather than about a timeout.
-            pytest.fail(
-                f"The skill probe resolved {pod}, which was already running before the install, "
-                f"while {revision} was in force and the plugin's own spec changed. The revision "
-                f"{kind}/{workload_name} reports as current therefore predates this install, and "
-                "probing that pod would report on the plugin the previous candidate installed."
-            )
         if pod:
             res = _kubectl(
                 "exec", "-i=false", "-n", namespace, pod, "-c", "platform-agent",
@@ -713,43 +586,34 @@ def ensure_stockout_plugin_installed(
     gcp_region: str,
     agent_namespace: str,
 ) -> None:
-    """Reinstalls the stockout plugin, then refuses to run the suite on a broken install.
+    """Waits for the deployed stockout plugin to settle, then refuses to run on a broken one.
 
-    The install repairs an AgentPlugin whose rendered spec differs from what this candidate
-    installs — a change to the plugin's source tree, which moves its content tag, or to the
-    chart, or to `clusterName`. `install.sh` ran only when the CR was absent, so none of
-    those reached a cluster that already had one.
+    Installs the plugin only when the AgentPlugin CR is absent, which is what this fixture
+    has always done. What it adds is the waiting: step 2 of the RC pipeline provisions the
+    environment immediately before this module runs, so the gateway may still be rolling
+    when the first scenario starts, and the plugin's skill is linked by the entrypoint of
+    whichever pod wins. Probing before that settles reads the outgoing pod.
 
-    It repairs nothing when the plugin source is unchanged, which is the common case: the
-    content tag is identical, `plugin_image_publish` skips the build, `helm upgrade
-    --install` renders a byte-identical AgentPlugin, no generation moves, and no pod
-    restarts. A SKILL.md missing before this fixture runs is still missing after it. The
-    checks below are what earn their place there — they end the run in about two minutes
-    naming the path, where each selected scenario used to burn its full watch timeout and
-    the pipeline reported "Platform Agent never started investigation" (run 32866087154).
+    That is not a hypothetical. Run 32866087154 reported `SKILL.md not found under the
+    platform profile's plugins directory` and every selected scenario then burned its full
+    360s watch to report "Platform Agent never started investigation"; run 32953137904, on
+    the same cluster, found the skill present. The difference between them is which pod the
+    preflight caught, and this fixture is what removes that from the result.
 
-    A CR survives for the next run because
-    `scripts/release/provision_rc_environment.sh:7-12` warns on a non-zero `uninstall.sh`
-    and provisions anyway, so a teardown that does not remove the cluster leaves the
-    AgentPlugin in place. Nothing downstream distinguishes that from a fresh install.
+    Three waits, in this order: the AgentPlugin's status catches up to its spec, the gateway
+    finishes rolling, and the plugin's SKILL.md is readable inside the pod that survived.
+    Any of them failing ends the module naming what was wrong, in place of ten minutes of
+    watch timeouts that name nothing.
 
-    Running install.sh every session is tolerable rather than free. It is idempotent in
-    the sense that matters — re-running it converges on the same state — but three steps
-    are unconditional writes rather than create-if-absent: `gcloud services enable`
-    (install.sh:95), `gcloud logging sinks update` (166-168), and four
-    `add-iam-policy-binding` calls (213, 252, 257, 271), the last of which read-modify-
-    writes the *project* IAM policy to grant roles/compute.viewer. A concurrent policy
-    change makes that return ABORTED, and `set -euo pipefail` then fails the install — so
-    an IAM race unrelated to the candidate can block the RC. Only the topic, subscription
-    and log-sink creation are genuinely create-if-absent; the image build is skipped by
-    content tag, and the Helm release and tuning patch are applied rather than created.
+    Deliberately not a reinstall. Running `install.sh` every session would repair an
+    AgentPlugin whose rendered spec has drifted from this candidate's, but it repairs
+    nothing in the common case — an unchanged plugin source tree renders a byte-identical
+    CR — while adding unconditional writes to the RC's critical path, including four
+    `add-iam-policy-binding` calls that read-modify-write the *project* IAM policy. An IAM
+    race unrelated to the candidate would then block the release. Drift is worth detecting;
+    the checks below do that and say so, rather than papering over it with a write.
 
-    `SKIP_INSTALL=true` reuses the deployed plugin and runs only the verification below,
-    matching the escape hatch `agentplugins/README.md` documents for live-deployment plugin
-    tests — same name, same true/false-only validation as
-    `agentplugins/pubsub-platform/tests/dedup_e2e_test.py:132-135`, because `SKIP_INSTALL=1`
-    reads as an opt-out to a human and silently reinstalling would replace the deployment
-    somebody meant to inspect. `SKIP_STOCKOUT=1` skips the whole thing, tests included.
+    `SKIP_STOCKOUT=1` skips the whole thing, tests included.
     """
     if os.environ.get("SKIP_STOCKOUT") == "1":
         pytest.skip("SKIP_STOCKOUT=1 is set; skipping stockout investigator plugin setup.")
@@ -759,11 +623,20 @@ def ensure_stockout_plugin_installed(
 
     budget_deadline = time.time() + _FIXTURE_BUDGET_SECONDS
 
-    # The Pub/Sub topic is not created here. install.sh step 2 creates it and then verifies
-    # that the subscription is attached to it, which a bare `topics create` cannot.
+    # 1. Ensure the Pub/Sub topic exists.
+    topic = os.environ.get("STOCKOUT_TOPIC", "gke-stockout-alerts-topic")
+    check_topic = subprocess.run(
+        ["gcloud", "pubsub", "topics", "describe", topic, f"--project={gcp_project_id}"],
+        capture_output=True,
+    )
+    if check_topic.returncode != 0:
+        subprocess.run(
+            ["gcloud", "pubsub", "topics", "create", topic, f"--project={gcp_project_id}"],
+            capture_output=True,
+        )
 
-    # The CRD is the one prerequisite install.sh does not own: the kube-agents Helm chart
-    # installs it, and helm would otherwise fail on a message about an unknown kind.
+    # 2. The CRD is the one prerequisite install.sh does not own: the kube-agents Helm
+    # chart installs it, and helm would otherwise fail on an unknown kind.
     check_crd = _kubectl("get", "crd", "agentplugins.kubeagents.x-k8s.io", fail_on_timeout=True)
     if check_crd.returncode != 0:
         pytest.fail(
@@ -771,10 +644,10 @@ def ensure_stockout_plugin_installed(
             "it is managed and installed by the kube-agents Helm chart."
         )
 
-    # AGENT_REF and KUBECTL_CONTEXT are pinned, not left to be inherited, so the
-    # agent and cluster this fixture inspects cannot be different ones from those
-    # install.sh writes to. install.sh falls back to `kubectl config current-context`,
-    # which is whatever the last `get-credentials` in this process left behind.
+    # AGENT_REF and KUBECTL_CONTEXT are pinned rather than inherited, so the agent and
+    # cluster this fixture inspects cannot be different ones from those install.sh would
+    # write to. install.sh falls back to `kubectl config current-context`, which is
+    # whatever the last `get-credentials` in this process left behind.
     agent_ref = os.environ.get("AGENT_REF") or _DEFAULT_AGENT_REF
     kube_context = os.environ.get("KUBECTL_CONTEXT") or ""
     if not kube_context:
@@ -782,40 +655,15 @@ def ensure_stockout_plugin_installed(
         kube_context = ctx_res.stdout.strip() if ctx_res.returncode == 0 else ""
         if not kube_context:
             pytest.fail(
-                "No kubectl context is set and KUBECTL_CONTEXT is unset, so install.sh has no "
-                "cluster to write to."
+                "No kubectl context is set and KUBECTL_CONTEXT is unset, so there is no cluster "
+                "to verify the stockout plugin against."
             )
 
-    # Snapshotted before the install, so the waits afterwards can tell an install that
-    # changed something from one that did not. install.sh reaches the gateway by two
-    # routes — the AgentPlugin it applies, and the tuning patch it merges into the
-    # PlatformAgent — and a bump in either is what makes a re-template expected.
-    before_kind, before_name = _gateway_workload(agent_ref, agent_namespace)
-    before_gen = (
-        _generation(before_kind, before_name, agent_namespace, fail_on_timeout=True)
-        if before_kind else None
+    # 3. Install only when the plugin is genuinely absent.
+    check_plugin = _kubectl(
+        "get", "agentplugins", _PLUGIN_NAME, "-n", agent_namespace, fail_on_timeout=True
     )
-    before_plugin_gen = _generation(
-        "agentplugin", _PLUGIN_NAME, agent_namespace, fail_on_timeout=True
-    )
-    before_agent_gen = _generation(
-        "platformagent", agent_ref, agent_namespace, fail_on_timeout=True
-    )
-    before_pods = _gateway_pod_names(agent_ref, agent_namespace)
-
-    # true/false only, matching the sibling suite named in the docstring. Treating every
-    # other value as false means SKIP_INSTALL=1 silently runs install.sh — which, by the
-    # paragraph above, read-modify-writes the project IAM policy.
-    skip_install = os.environ.get("SKIP_INSTALL", "false").strip().lower()
-    if skip_install not in ("true", "false"):
-        pytest.fail(f"SKIP_INSTALL must be 'true' or 'false', got '{skip_install}'")
-
-    if skip_install == "true":
-        print(
-            "SKIP_INSTALL=true: reusing the deployed stockout plugin. The checks below still "
-            "run, so a stale or unmounted plugin is still reported."
-        )
-    else:
+    if check_plugin.returncode != 0:
         if not _INSTALL_SCRIPT.is_file():
             pytest.fail(f"Stockout investigator install script missing at '{_INSTALL_SCRIPT}'.")
         install_env = {
@@ -851,21 +699,10 @@ def ensure_stockout_plugin_installed(
         # skipped, which is the only record of what the tests below ran against.
         print(proc.stdout)
 
-    # Plugin status first, rollout second. See _wait_for_gateway_rollout for why the other
+    # 4. Plugin status first, rollout second. See _wait_for_plugin_ready for why the other
     # order lets a slow reconcile pass a check against the outgoing pod.
     plugin = _wait_for_plugin_ready(agent_namespace, budget_deadline)
-    # Kept apart rather than or-ed together: only the plugin's own spec moving makes the
-    # pre-install pods the wrong thing to probe, and only it makes a gateway that never
-    # re-templates fatal. The two are graded differently downstream.
-    plugin_changed = plugin.get("metadata", {}).get("generation") != before_plugin_gen
-    agent_changed = (
-        _generation("platformagent", agent_ref, agent_namespace, fail_on_timeout=True)
-        != before_agent_gen
-    )
-    target, outcome = _wait_for_gateway_rollout(
-        agent_ref, agent_namespace, before_kind, before_gen,
-        plugin_changed, agent_changed, budget_deadline,
-    )
+    target, outcome = _wait_for_gateway_rollout(agent_ref, agent_namespace, budget_deadline)
     print(outcome)
 
     kind, workload_name = target.split("/", 1)
@@ -876,7 +713,6 @@ def ensure_stockout_plugin_installed(
         kind,
         workload_name,
         budget_deadline,
-        before_pods if plugin_changed else frozenset(),
     )
     print(f"stockout plugin verified in {pod}; the tests below run against it")
 
