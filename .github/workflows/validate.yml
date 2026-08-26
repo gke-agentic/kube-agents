@@ -121,6 +121,30 @@ jobs:
             exit 1
           fi
 
+          # litellm.rollingUpdate: the both-zero guard has to reject a
+          # Deployment that cannot make progress, and only that. maxSurge and
+          # maxUnavailable are IntOrString, so a percentage is legal on both
+          # and must still render — a guard using Helm's `int` reads "25%" as 0
+          # and refuses a valid install (#749).
+          for pair in "0 0" "0% 0%"; do
+            set -- $pair
+            if helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
+              --set-string litellm.rollingUpdate.maxSurge="$1" \
+              --set-string litellm.rollingUpdate.maxUnavailable="$2" > /dev/null 2>&1; then
+              echo "litellm.rollingUpdate $1/$2 rendered; it cannot make progress" >&2
+              exit 1
+            fi
+          done
+          for pair in "25% 25%" "1 0" "0 1"; do
+            set -- $pair
+            if ! helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
+              --set-string litellm.rollingUpdate.maxSurge="$1" \
+              --set-string litellm.rollingUpdate.maxUnavailable="$2" > /dev/null 2>&1; then
+              echo "litellm.rollingUpdate $1/$2 is valid but was refused" >&2
+              exit 1
+            fi
+          done
+
           # Webhooks: off by default, fully wired when on.
           if helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
             | grep -qE "WebhookConfiguration|kind: Certificate"; then

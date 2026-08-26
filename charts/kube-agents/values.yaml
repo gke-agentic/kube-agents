@@ -198,8 +198,9 @@ litellm:
     tag: v1.96.2
     pullPolicy: IfNotPresent
   replicaCount: 2
-  # Rollout strategy — the canonical home for this argument; the chart template,
-  # the kustomize base and examples/litellm-gemini all defer here. Unlike
+  # Rollout strategy — the canonical home for this argument. The chart template
+  # and examples/litellm-gemini defer here directly; the kustomize base defers
+  # to the template, which defers on to this. Unlike
   # podDisruptionBudget below this one is configurable, because the right answer
   # depends on something the chart cannot see: whether a namespace ResourceQuota
   # has room for a surge Pod.

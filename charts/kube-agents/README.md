@@ -181,7 +181,11 @@ failure.
 replace a Pod in place. Set it to `0` for a zero-downtime rollout, but only
 where the namespace has quota headroom for one more LiteLLM Pod: at `0` the
 surge Pod is mandatory, and a `ResourceQuota` with no room for it stalls the
-rollout instead of completing it. `values.yaml` states the trade in full.
+rollout instead of completing it. At the default `litellm.replicaCount` of 2 one
+replica keeps serving either way; at `replicaCount: 1` the default of `1` means
+a rollout drops the only Pod before its replacement is ready, so LiteLLM is
+unreachable for up to the three minutes its `startupProbe` allows. `values.yaml`
+states the trade in full.
 
 ### Hindsight memory store
 

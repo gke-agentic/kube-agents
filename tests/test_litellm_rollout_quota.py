@@ -16,24 +16,35 @@ nothing in this repository creates or sizes that quota, so the harness cannot
 assume headroom exists. `maxUnavailable` of at least 1 is what lets the rollout
 fall back to replacing in place.
 
-LiteLLM's Deployment exists in three files, and the value has to hold in all of
-them. Only two are the pair `AGENTS.md` keeps in step on purpose; the third is a
-starting template users copy, reached from four pages of the docs site:
+LiteLLM's Deployment exists in four files, and the value has to hold in the
+three that roll. Only two are the pair `AGENTS.md` keeps in step on purpose:
 
     charts/kube-agents/templates/litellm.yaml   (via values.yaml, configurable)
     k8s-operator/config/integrations/litellm/base/deployment.yaml  (dev path)
-    examples/litellm-gemini/deployment.yaml     (starting template)
+    examples/litellm-gemini/deployment.yaml     (starting template, reached
+                                                 from four docs-site pages)
+    examples/litellm-chatgpt-subscription/deployment.yaml  (Recreate, so it
+                                                 takes no surge Pod and cannot
+                                                 hit this at all — exempt by
+                                                 construction, not by omission)
 
 Nothing else asserts this. `make chart-check` compares only the CRD and RBAC
 copies, and `test_gateway_rollout_budgets.py` reads the CI rollout gate rather
 than the Deployment's strategy — so before this suite the fix could be reverted
-in any one of the three with every gate still green.
+in any one of them with every gate still green.
 
 The gateway Deployment reaches the same trap through a percentage that rounds
 down; that side is the operator's and is covered by the Go table test in
 `k8s-operator/internal/controller/manifest_helpers_test.go`.
+
+Scope this suite does NOT cover, deliberately: every other Deployment the
+install ships omits `strategy` entirely and runs at one replica, which resolves
+to the same maxUnavailable 0 and stalls the same way — the operator's own
+controller-manager among them. That is a wider change than this one and is
+tracked in #975; do not read a green run here as the install being clear of it.
 """
 
+import math
 import pathlib
 import unittest
 
@@ -48,54 +59,79 @@ _KUSTOMIZE_BASE = (
 _EXAMPLE = _ROOT / "examples" / "litellm-gemini" / "deployment.yaml"
 
 
-def _is_litellm_deployment(path):
-    """True for a complete, standalone LiteLLM Deployment manifest.
+def _litellm_deployment(path):
+    """The LiteLLM Deployment document in a plain YAML file, or None.
 
-    Two things this deliberately excludes. A kustomize strategic-merge patch
-    declares `kind: Deployment` but carries no `spec.selector`, which a real
-    Deployment must have — it inherits the base's strategy and is not a copy of
-    it. And a workload that merely talks to LiteLLM (examples/inference-replay)
-    mentions the name without being one, so identity is taken from the
-    Deployment's own name or its container's, not from the file's text.
+    Identity, not text: a workload that merely talks to LiteLLM
+    (examples/inference-replay) names it without being one, so this matches on
+    the Deployment's own name or its container's. A kustomize strategic-merge
+    patch is excluded too — it declares `kind: Deployment` but carries no
+    `spec.selector`, which a real Deployment must have, and it inherits the
+    base's strategy rather than restating it.
+
+    Returning the document rather than a bool matters: resolving the strategy
+    from a *separately* located document would let a multi-document file report
+    one Deployment's identity and another's strategy.
     """
     for doc in yaml.safe_load_all(path.read_text()):
-        if not doc or doc.get("kind") != "Deployment":
+        if not isinstance(doc, dict) or doc.get("kind") != "Deployment":
             continue
-        spec = doc.get("spec") or {}
-        if "selector" not in spec:
+        spec = doc.get("spec")
+        if not isinstance(spec, dict) or "selector" not in spec:
             continue
-        containers = (spec.get("template", {}).get("spec", {}) or {}).get("containers") or []
-        names = {doc.get("metadata", {}).get("name")} | {c.get("name") for c in containers}
-        if "litellm" in names or "litellm-container" in names:
-            return True
-    return False
+        template_spec = (spec.get("template") or {}).get("spec") or {}
+        containers = template_spec.get("containers") or []
+        names = {(doc.get("metadata") or {}).get("name")}
+        names |= {c.get("name") for c in containers if isinstance(c, dict)}
+        if names & {"litellm", "litellm-container"}:
+            return doc
+    return None
 
 
-def _max_unavailable(path):
-    """Return the resolved maxUnavailable of the Deployment in a plain YAML file.
+def _resolve_max_unavailable(doc):
+    """Resolve a Deployment's maxUnavailable the way Kubernetes does.
+
+    None means Recreate: no surge Pod at all, so it cannot hit #749.
 
     An absent `strategy` block is not a pass. Kubernetes defaults it to
     RollingUpdate at 25%/25%, and a maxUnavailable percentage rounds DOWN — so
     an omitted strategy resolves to 0 at 1 to 3 replicas, which is the very
-    shape this suite exists to keep out. Report it as 0 rather than raising.
+    shape this suite exists to keep out.
+
+    ResolveFenceposts' both-zero rescue is modelled too: when maxSurge and
+    maxUnavailable both resolve to 0, Kubernetes forces maxUnavailable to 1
+    "on the theory that surge might not work due to quota". Without that, a
+    manifest with maxSurge 0 and maxUnavailable 25% is reported as an offender
+    when Kubernetes would in fact roll it.
     """
-    for doc in yaml.safe_load_all(path.read_text()):
-        if not doc or doc.get("kind") != "Deployment":
-            continue
-        strategy = doc["spec"].get("strategy") or {}
-        if strategy.get("type") == "Recreate":
-            # Recreate takes no surge Pod at all, so it cannot hit #749.
-            return None
-        rolling = strategy.get("rollingUpdate")
-        if not rolling or "maxUnavailable" not in rolling:
-            return 0
-        value = rolling["maxUnavailable"]
+    spec = doc["spec"]
+    replicas = spec.get("replicas", 1)
+    strategy = spec.get("strategy") or {}
+    if strategy.get("type") == "Recreate":
+        return None
+    rolling = strategy.get("rollingUpdate") or {}
+
+    def scaled(value, default, round_up):
+        if value is None:
+            value = default
         if isinstance(value, str) and value.endswith("%"):
-            # floor(pct * replicas), Kubernetes' rounding for this fencepost.
-            replicas = doc["spec"].get("replicas", 1)
-            return int(int(value[:-1]) * replicas / 100)
+            exact = int(value[:-1]) * replicas / 100
+            return math.ceil(exact) if round_up else math.floor(exact)
         return int(value)
-    raise AssertionError(f"no Deployment in {path}")
+
+    surge = scaled(rolling.get("maxSurge"), "25%", True)
+    unavailable = scaled(rolling.get("maxUnavailable"), "25%", False)
+    if surge == 0 and unavailable == 0:
+        return 1
+    return unavailable
+
+
+def _max_unavailable(path):
+    """Resolved maxUnavailable of the LiteLLM Deployment in a plain YAML file."""
+    doc = _litellm_deployment(path)
+    if doc is None:
+        raise AssertionError(f"no LiteLLM Deployment in {path}")
+    return _resolve_max_unavailable(doc)
 
 
 class LiteLLMRolloutSurvivesAFullQuota(unittest.TestCase):
@@ -129,6 +165,11 @@ class LiteLLMRolloutSurvivesAFullQuota(unittest.TestCase):
             "a literal would pin every install regardless of its quota",
         )
 
+    # The next two overlap the sweep below, which visits both files. They are
+    # kept because a failure that names the file and why it matters reads
+    # better than one entry in a list, and because the sweep's roots could be
+    # narrowed later without anyone noticing these two stopped being covered.
+
     def test_kustomize_base_replaces_in_place(self):
         self.assertGreaterEqual(
             _max_unavailable(_KUSTOMIZE_BASE),
@@ -146,15 +187,18 @@ class LiteLLMRolloutSurvivesAFullQuota(unittest.TestCase):
         )
 
     def test_no_other_litellm_deployment_reintroduces_the_shape(self):
-        # A fourth copy added later would not be caught by the three cases
-        # above. Sweep every plain LiteLLM Deployment manifest in the tree.
+        # Another copy added later would not be caught by the cases above.
         #
         # Omitting `strategy` is a way to reintroduce this, not a way to avoid
         # it: Kubernetes defaults to RollingUpdate at 25%/25% and rounds the
         # maxUnavailable percentage down, so an absent block resolves to 0 at
-        # 1 to 3 replicas. _max_unavailable reports that as 0 rather than
-        # treating a missing block as unset, which is why this sweeps resolved
-        # values instead of grepping for a literal.
+        # 1 to 3 replicas. _resolve_max_unavailable models that, which is why
+        # this sweeps resolved values instead of grepping for a literal.
+        #
+        # Two roots rather than the whole tree: these are where every plain
+        # LiteLLM manifest lives today, and charts/**/templates holds Go
+        # templates that are not parseable as YAML. A copy added under deploy/
+        # or terraform/ would be missed.
         offenders = []
         roots = [
             _ROOT / "k8s-operator" / "config" / "integrations" / "litellm",
@@ -162,9 +206,10 @@ class LiteLLMRolloutSurvivesAFullQuota(unittest.TestCase):
         ]
         for root in roots:
             for path in sorted(root.rglob("*.yaml")):
-                if not _is_litellm_deployment(path):
+                doc = _litellm_deployment(path)
+                if doc is None:
                     continue
-                resolved = _max_unavailable(path)
+                resolved = _resolve_max_unavailable(doc)
                 # None is Recreate: no surge Pod at all, immune by construction.
                 if resolved is not None and resolved < 1:
                     offenders.append(f"{path.relative_to(_ROOT)} (resolves to {resolved})")

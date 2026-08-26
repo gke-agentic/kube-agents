@@ -232,8 +232,10 @@ func TestResolveDeploymentReplicasAndStrategy(t *testing.T) {
 // maxSurge 1 / maxUnavailable 0 at 2 and 3 replicas and rolled at no replica
 // count a user is likely to pick first.
 func TestRollingUpdateAlwaysAllowsProgressUnderAQuota(t *testing.T) {
-	// 4 and 8 check that the floor did not flatten the 25% intent where the
-	// replica count is large enough to express it.
+	// 8 is the row that checks the floor did not flatten the 25% intent: it is
+	// the only one whose expectation (2) differs from what a hard-coded floor
+	// of 1 would give. 4 is kept as the boundary where the percentage first
+	// resolves on its own, but it cannot tell the two implementations apart.
 	for _, tc := range []struct {
 		replicas               int32
 		expectedMaxUnavailable int32

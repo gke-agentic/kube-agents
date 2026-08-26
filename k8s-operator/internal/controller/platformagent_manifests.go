@@ -2414,30 +2414,40 @@ func buildCredentialProxySidecar(agent *agentv1alpha1.PlatformAgent, homeDir str
 			}}},
 			InitialDelaySeconds: 5,
 			PeriodSeconds:       15,
+			// Stated rather than defaulted, and 3s rather than the 1s default, to
+			// match the LiteLLM probes. Forking curl and completing a loopback
+			// round trip inside one second is what a CPU-throttled container
+			// misses first, and this is a native sidecar, so its readiness takes
+			// the whole Pod out of the Service. One second of headroom is not
+			// worth that: the resource comment below halves the CPU ceiling, and
+			// this is the failure mode it would otherwise have made likelier.
+			TimeoutSeconds:   3,
+			FailureThreshold: 3,
 		},
 		Resources: corev1.ResourceRequirements{
 			// Envoy is not all this container runs: the event watcher lives here
-			// too, and its informer and dedup caches scale with the number of
-			// watched clusters. Both numbers below turn on that fact.
+			// too, and its informer and dedup caches grow with the objects being
+			// watched across every cluster in the watch set. Both numbers below
+			// turn on that fact.
 			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("150m"), corev1.ResourceMemory: resource.MustParse("384Mi")},
 			// This container is a native sidecar, so a ResourceQuota that tracks
 			// limits.* adds these to the sum of the regular containers rather than
 			// taking the max — whatever is set here, the harness reserves on every
 			// install whether or not it is used (#749).
 			//
-			// The CPU limit is 1, down from 2. Measured at 22m on an install
-			// watching 19 Cluster Agent profiles, so a core is roughly 45x the
-			// draw at a fleet size the watcher actually sees. The watch set is the
-			// count of profiles under --profiles-dir, one per onboarded cluster,
-			// plus the management cluster it watches in-cluster — there is no
-			// cluster list on the CR to read it from.
+			// The CPU limit is 1, down from 2. The whole container — Envoy, the
+			// credential runtime and the watcher together — measured 22m steady
+			// state on an install watching 19 Cluster Agent profiles, so a core is
+			// roughly 45x the draw at a fleet size the watcher actually sees. The
+			// watch set is the count of profiles under --profiles-dir, one per
+			// onboarded cluster, plus the management cluster it watches
+			// in-cluster; there is no cluster list on the CR to read it from.
 			//
-			// If that headroom is ever wrong, the readiness probe above is what
-			// fails first: it is an exec of curl, and while the probe sets
-			// initialDelaySeconds and periodSeconds it leaves timeoutSeconds at
-			// the default 1s, which a throttled container misses before anything
-			// else goes wrong. This is a native sidecar, so its readiness gates
-			// the whole Pod.
+			// Steady state is the caveat: nothing here measures the startup burst,
+			// when Envoy, the credential runtime and the watcher's initial LIST
+			// across every profile all land at once. That is why the readiness
+			// probe above states timeoutSeconds rather than inheriting 1s — under
+			// throttling that probe is what fails first, and it gates the Pod.
 			//
 			// Memory stays at 2Gi against 309Mi measured on that same fleet. The
 			// headroom is deliberate and the asymmetry with CPU is the failure
