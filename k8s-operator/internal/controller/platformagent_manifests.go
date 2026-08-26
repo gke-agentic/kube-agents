@@ -3753,12 +3753,16 @@ func otlpCollectorNamespace(endpoint string) string {
 }
 
 // formatCIDRPeers normalises a mix of bare IPs and CIDRs into sorted, deduplicated
-// NetworkPolicyPeers. A bare IP becomes a single-host /32 or /128; a CIDR is kept as
-// written. Anything unparseable is dropped.
+// NetworkPolicyPeers. A bare IP becomes a single-host /32 or /128. Anything unparseable
+// is dropped.
 //
 // enforceMinPrefix rejects CIDRs broader than /12 (IPv4) or /48 (IPv6), which stops a
 // caller-supplied range from being weaponised into an unrestricted egress bypass. Pass
 // false only where the input cannot come from outside the operator.
+//
+// normalizeCIDRTarget does the per-entry work, shared with toEgressRules -- including
+// the address-family rule that keeps an IPv4-mapped IPv6 block from clearing the IPv6
+// floor and then printing as 0.0.0.0/0.
 func formatCIDRPeers(raw []string, enforceMinPrefix bool) []networkingv1.NetworkPolicyPeer {
 	seen := make(map[string]bool, len(raw))
 	var cidrs []string
@@ -3770,33 +3774,8 @@ func formatCIDRPeers(raw []string, enforceMinPrefix bool) []networkingv1.Network
 	}
 
 	for _, entry := range raw {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
-		if strings.Contains(entry, "/") {
-			_, ipNet, err := net.ParseCIDR(entry)
-			if err != nil {
-				continue
-			}
-			if enforceMinPrefix {
-				ones, bits := ipNet.Mask.Size()
-				if (bits == 32 && ones < minIPv4CIDRPrefix) || (bits == 128 && ones < minIPv6CIDRPrefix) {
-					continue
-				}
-			}
+		if ipNet, ok := normalizeCIDRTarget(entry, enforceMinPrefix); ok {
 			add(ipNet.String())
-			continue
-		}
-		bare := strings.Trim(entry, "[]")
-		ip := net.ParseIP(bare)
-		if ip == nil {
-			continue
-		}
-		if ip.To4() != nil {
-			add(bare + "/32")
-		} else {
-			add(bare + "/128")
 		}
 	}
 

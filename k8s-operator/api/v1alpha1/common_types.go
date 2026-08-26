@@ -537,8 +537,16 @@ type NetworkPolicySpec struct {
 	Enabled *bool `json:"enabled,omitempty"`
 
 	// DNSClusterIPs pins the cluster DNS Service ClusterIPs. Setting it disables
-	// discovery, like spec.telemetry.otlpEndpoint.
+	// discovery, like spec.telemetry.otlpEndpoint. Each entry is a bare IP with no
+	// prefix; the operator writes it into rule 1 as a /32 or /128.
+	//
+	// The per-item pattern is here rather than left to the resolver because an entry
+	// the resolver cannot parse is dropped and the pin silently reverts to discovery.
+	// EgressPeer.CIDR and MetadataDaemonSpec.Endpoint below validate at admission for
+	// the same reason.
 	// +kubebuilder:validation:MaxItems=8
+	// +kubebuilder:validation:items:MaxLength=45
+	// +kubebuilder:validation:items:Pattern=`^((([0-9]{1,3}\.){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))$`
 	// +optional
 	DNSClusterIPs []string `json:"dnsClusterIPs,omitempty"`
 
@@ -579,11 +587,31 @@ type EgressRule struct {
 // EgressPeer defines a CIDR block and optional exclusions.
 type EgressPeer struct {
 	// CIDR is an IPv4/IPv6 block or host IP, e.g. 10.0.0.0/24 or 10.0.0.1.
+	//
+	// The prefix length is bounded by the pattern rather than left to the resolver:
+	// 12-32 for IPv4 and 48-128 for IPv6, the same floors toEgressRules enforces.
+	// Stating them at admission turns "the rule silently never took effect" into an
+	// apply-time error.
+	//
+	// One case the pattern cannot express and the resolver handles instead: an
+	// IPv4-mapped IPv6 block such as ::ffff:0:0/96 is a 128-bit prefix by every
+	// textual measure, so it clears the IPv6 floor here, and is then collapsed to its
+	// IPv4 equivalent and re-measured against the IPv4 floor by normalizeCIDRTarget --
+	// which is what stops it emitting as 0.0.0.0/0. Excluding the mapped form by
+	// regex would mean enumerating every zero-compression spelling of the first five
+	// hextets; the resolver decides it in one comparison.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=49
-	// +kubebuilder:validation:Pattern=`^((([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?)|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}(/[0-9]{1,3})?))$`
+	// +kubebuilder:validation:Pattern=`^((([0-9]{1,3}\.){3}[0-9]{1,3}(/(1[2-9]|2[0-9]|3[0-2]))?)|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}(/(4[89]|[5-9][0-9]|1[01][0-9]|12[0-8]))?))$`
 	CIDR string `json:"cidr"`
+
+	// Except carves ranges out of CIDR. Each entry must be a CIDR inside CIDR: the
+	// API server rejects the whole NetworkPolicy otherwise, which would freeze every
+	// other egress rule at its previous revision, so the resolver drops an except it
+	// cannot place inside its peer rather than forwarding it.
 	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:items:MaxLength=49
+	// +kubebuilder:validation:items:Pattern=`^((([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}/[0-9]{1,3}))$`
 	// +optional
 	Except []string `json:"except,omitempty"`
 }
@@ -662,9 +690,15 @@ type TelemetryStatus struct {
 // the same diagnostic split as TelemetryStatus: the value alone cannot say whether a DNS
 // IP was discovered or pinned.
 type NetworkPolicyStatus struct {
-	// Generated is false when spec.networkPolicy.enabled is false.
+	// Generated reports whether the operator is managing a NetworkPolicy for this
+	// agent. False when spec.networkPolicy.enabled is false.
+	//
+	// No omitempty, deliberately: encoding/json omits a false bool under omitempty,
+	// so the one state this field exists to report is the one it could not express --
+	// a disabled agent serialised as `networkPolicy: {}`, indistinguishable from a CR
+	// that has not reconciled yet.
 	// +optional
-	Generated bool `json:"generated,omitempty"`
+	Generated bool `json:"generated"`
 
 	// DNSClusterIPs are the ClusterIPs written into rule 1.
 	// +optional

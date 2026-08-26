@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -198,7 +199,7 @@ func (r *PlatformAgentReconciler) resolveNetpolProfile(ctx context.Context, agen
 
 	// --- Additional egress rules ---
 	if agent != nil && agent.Spec.NetworkPolicy != nil && len(agent.Spec.NetworkPolicy.AdditionalEgress) > 0 {
-		p.AdditionalEgress = toEgressRules(agent.Spec.NetworkPolicy.AdditionalEgress)
+		p.AdditionalEgress = toEgressRules(log, agent.Spec.NetworkPolicy.AdditionalEgress)
 	}
 
 	return p
@@ -218,53 +219,115 @@ func deduplicateAndSortIPs(raw []string) []string {
 	return out
 }
 
-func toEgressRules(rules []agentv1alpha1.EgressRule) []networkingv1.NetworkPolicyEgressRule {
+// normalizeCIDRTarget canonicalises one CIDR or bare-IP string into the *net.IPNet a
+// NetworkPolicy ipBlock is built from, and reports whether it is usable at all. Three
+// callers share it -- toEgressRules, formatCIDRPeers, and the API-server annotation
+// parser in reconcileNetworkPolicy -- so the address-family rule below is stated once
+// instead of three times.
+//
+// enforceMinPrefix applies the /12 (IPv4) and /48 (IPv6) floors that stop a
+// caller-supplied range from being widened into an unrestricted egress bypass. Pass
+// false only where the input cannot come from outside the operator.
+//
+// The address family is taken from the ADDRESS, never from the parsed mask width. For
+// an IPv4-mapped IPv6 block the two disagree, and the disagreement is exploitable:
+// net.ParseCIDR("::ffff:0:0/96") returns a 16-byte address with a 128-bit mask, so
+// Mask.Size() reports ones=96/bits=128 and the value clears the IPv6 floor -- but
+// net.IPNet.String() re-reads the address, finds To4() != nil, truncates the mask to its
+// low four bytes (all zero at /96) and prints "0.0.0.0/0". A spec.networkPolicy
+// .additionalEgress peer of "::ffff:0:0/96" therefore passed every guard this package
+// has and emitted allow-all IPv4 egress from a pod holding the agent's Workload Identity
+// credentials. Collapsing to the 4-byte form here measures the floor against the same
+// value String() will print.
+func normalizeCIDRTarget(entry string, enforceMinPrefix bool) (*net.IPNet, bool) {
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return nil, false
+	}
+
+	var ipNet *net.IPNet
+	if strings.Contains(entry, "/") {
+		_, parsed, err := net.ParseCIDR(entry)
+		if err != nil {
+			return nil, false
+		}
+		ipNet = parsed
+	} else {
+		ip := net.ParseIP(strings.Trim(entry, "[]"))
+		if ip == nil {
+			return nil, false
+		}
+		if v4 := ip.To4(); v4 != nil {
+			ipNet = &net.IPNet{IP: v4, Mask: net.CIDRMask(32, 32)}
+		} else {
+			ipNet = &net.IPNet{IP: ip, Mask: net.CIDRMask(128, 128)}
+		}
+	}
+
+	if v4 := ipNet.IP.To4(); v4 != nil && len(ipNet.Mask) == net.IPv6len {
+		ipNet = &net.IPNet{IP: v4, Mask: ipNet.Mask[12:]}
+	}
+
+	ones, bits := ipNet.Mask.Size()
+	if bits == 0 {
+		// A non-contiguous mask. net.IPNet.String() cannot render one either, so
+		// there is no string to put in an ipBlock.
+		return nil, false
+	}
+	if enforceMinPrefix && ((bits == 32 && ones < minIPv4CIDRPrefix) || (bits == 128 && ones < minIPv6CIDRPrefix)) {
+		return nil, false
+	}
+	return ipNet, true
+}
+
+// toEgressRules projects spec.networkPolicy.additionalEgress onto the NetworkPolicy API.
+//
+// Everything it drops is logged. The CRD admits a rule that this function then discards
+// -- a peer past the prefix floor, an except outside its peer -- and without a log line
+// the CR reads exactly as it did when the rule was working, so the first symptom is a
+// connection timeout inside the agent with no thread leading back to the spec.
+func toEgressRules(log logr.Logger, rules []agentv1alpha1.EgressRule) []networkingv1.NetworkPolicyEgressRule {
 	if len(rules) == 0 {
 		return nil
 	}
 	out := make([]networkingv1.NetworkPolicyEgressRule, 0, len(rules))
-	for _, r := range rules {
+	for i, r := range rules {
 		var peers []networkingv1.NetworkPolicyPeer
 		for _, p := range r.To {
-			rawCIDR := strings.TrimSpace(p.CIDR)
-			if rawCIDR == "" {
+			ipNet, ok := normalizeCIDRTarget(p.CIDR, true)
+			if !ok {
+				log.Info("Dropping peer in spec.networkPolicy.additionalEgress: not a usable CIDR, or broader than the /12 (IPv4) or /48 (IPv6) floor",
+					"rule", i, "cidr", p.CIDR)
 				continue
 			}
-			var cidrStr string
-			if strings.Contains(rawCIDR, "/") {
-				_, ipNet, err := net.ParseCIDR(rawCIDR)
-				if err != nil {
-					continue
-				}
-				ones, bits := ipNet.Mask.Size()
-				if (bits == 32 && ones < minIPv4CIDRPrefix) || (bits == 128 && ones < minIPv6CIDRPrefix) {
-					continue
-				}
-				cidrStr = ipNet.String()
-			} else {
-				bare := strings.Trim(rawCIDR, "[]")
-				ip := net.ParseIP(bare)
-				if ip == nil {
-					continue
-				}
-				if ip.To4() != nil {
-					cidrStr = bare + "/32"
-				} else {
-					cidrStr = bare + "/128"
-				}
-			}
+			peerOnes, peerBits := ipNet.Mask.Size()
 
 			var validExcept []string
 			for _, ex := range p.Except {
-				exTrimmed := strings.TrimSpace(ex)
-				if _, _, err := net.ParseCIDR(exTrimmed); err == nil {
-					validExcept = append(validExcept, exTrimmed)
+				// The API server rejects the whole NetworkPolicy when an except
+				// falls outside its peer's CIDR (k8s.io/api/networking/v1: "Except
+				// values will be rejected if they are outside the cidr range"), and
+				// that rejection freezes every other egress rule at its previous
+				// revision -- including the DNS ClusterIP rediscovery. Contain it
+				// here so one bad except costs its own peer and nothing else.
+				exNet, exOK := normalizeCIDRTarget(ex, false)
+				if !exOK {
+					log.Info("Dropping unparseable except block in spec.networkPolicy.additionalEgress",
+						"rule", i, "cidr", ipNet.String(), "except", ex)
+					continue
 				}
+				exOnes, exBits := exNet.Mask.Size()
+				if exBits != peerBits || exOnes < peerOnes || !ipNet.Contains(exNet.IP) {
+					log.Info("Dropping except block outside its peer CIDR in spec.networkPolicy.additionalEgress",
+						"rule", i, "cidr", ipNet.String(), "except", ex)
+					continue
+				}
+				validExcept = append(validExcept, exNet.String())
 			}
 
 			peers = append(peers, networkingv1.NetworkPolicyPeer{
 				IPBlock: &networkingv1.IPBlock{
-					CIDR:   cidrStr,
+					CIDR:   ipNet.String(),
 					Except: validExcept,
 				},
 			})
@@ -273,6 +336,7 @@ func toEgressRules(rules []agentv1alpha1.EgressRule) []networkingv1.NetworkPolic
 		var ports []networkingv1.NetworkPolicyPort
 		for _, port := range r.Ports {
 			if port.Port < 1 || port.Port > 65535 {
+				log.Info("Dropping out-of-range port in spec.networkPolicy.additionalEgress", "rule", i, "port", port.Port)
 				continue
 			}
 			protocol := corev1.ProtocolTCP
@@ -284,6 +348,7 @@ func toEgressRules(rules []agentv1alpha1.EgressRule) []networkingv1.NetworkPolic
 			case "TCP":
 				protocol = corev1.ProtocolTCP
 			default:
+				log.Info("Dropping unknown protocol in spec.networkPolicy.additionalEgress", "rule", i, "protocol", port.Protocol)
 				continue
 			}
 			portVal := intstr.FromInt32(port.Port)
@@ -296,12 +361,15 @@ func toEgressRules(rules []agentv1alpha1.EgressRule) []networkingv1.NetworkPolic
 		// In NetworkPolicy semantics, an egress rule with Ports but To: nil allows egress
 		// to ALL destinations (0.0.0.0/0). To prevent unintentional egress widening,
 		// require at least one valid peer before emitting an additional egress rule.
-		if len(peers) > 0 {
-			out = append(out, networkingv1.NetworkPolicyEgressRule{
-				Ports: ports,
-				To:    peers,
-			})
+		if len(peers) == 0 {
+			log.Info("Dropping egress rule in spec.networkPolicy.additionalEgress: no peer survived validation, and a rule with ports but no peer would permit egress to every destination",
+				"rule", i)
+			continue
 		}
+		out = append(out, networkingv1.NetworkPolicyEgressRule{
+			Ports: ports,
+			To:    peers,
+		})
 	}
 	return out
 }

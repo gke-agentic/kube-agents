@@ -625,16 +625,26 @@ func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, ag
 			return fmt.Errorf("failed to get NetworkPolicy %s/%s: %w", agent.Namespace, agent.Name+"-gateway-netpol", err)
 		}
 
+		// Read before deleting, and check ownership, exactly as the NetworkPolicy
+		// above does. The name is agent-prefixed and namespaced, so a collision is
+		// unlikely -- but "enabled: false" is a request to stop managing policy, not
+		// a licence to delete a policy somebody else created under that name.
 		fqdnNetpol := &unstructured.Unstructured{}
 		fqdnNetpol.SetGroupVersionKind(schema.GroupVersionKind{
 			Group:   "networking.gke.io",
 			Version: "v1alpha1",
 			Kind:    "FQDNNetworkPolicy",
 		})
-		fqdnNetpol.SetName(agent.Name + "-fqdn-netpol")
-		fqdnNetpol.SetNamespace(agent.Namespace)
-		if err := r.Delete(ctx, fqdnNetpol); err != nil && !isCRDNotInstalledError(err) {
-			return fmt.Errorf("failed to clean up disabled FQDNNetworkPolicy %s/%s: %w", fqdnNetpol.GetNamespace(), fqdnNetpol.GetName(), err)
+		fqdnName := agent.Name + "-fqdn-netpol"
+		if err := r.Get(ctx, types.NamespacedName{Namespace: agent.Namespace, Name: fqdnName}, fqdnNetpol); err == nil {
+			if metav1.IsControlledBy(fqdnNetpol, agent) {
+				if err := r.Delete(ctx, fqdnNetpol); err != nil && !isCRDNotInstalledError(err) {
+					return fmt.Errorf("failed to clean up disabled FQDNNetworkPolicy %s/%s: %w", agent.Namespace, fqdnName, err)
+				}
+				logf.FromContext(ctx).Info("Deleted owner-referenced FQDNNetworkPolicy because spec.networkPolicy.enabled is false", "namespace", agent.Namespace, "name", fqdnName)
+			}
+		} else if !isCRDNotInstalledError(err) {
+			return fmt.Errorf("failed to get FQDNNetworkPolicy %s/%s: %w", agent.Namespace, fqdnName, err)
 		}
 		return nil
 	}
@@ -678,26 +688,16 @@ func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, ag
 		if raw == "" {
 			return
 		}
-		if strings.Contains(raw, "/") {
-			_, ipNet, err := net.ParseCIDR(raw)
-			if err != nil {
-				logf.FromContext(ctx).Info("Ignoring malformed CIDR in annotation", "annotation", annotationName, "cidr", raw, "error", err)
-				return
-			}
-			ones, bits := ipNet.Mask.Size()
-			if (bits == 32 && ones < minIPv4CIDRPrefix) || (bits == 128 && ones < minIPv6CIDRPrefix) {
-				logf.FromContext(ctx).Info("Rejecting overly broad CIDR in annotation (must be >= /12 for IPv4, >= /48 for IPv6)", "annotation", annotationName, "cidr", raw)
-				return
-			}
-			apiTargets = append(apiTargets, ipNet.String())
+		// normalizeCIDRTarget, not a local parse: it takes the address family from
+		// the address rather than the mask width, which is what keeps an
+		// IPv4-mapped IPv6 block such as ::ffff:0a00:0/108 out of this list as the
+		// 10.0.0.0/12 it would otherwise print as.
+		ipNet, ok := normalizeCIDRTarget(raw, true)
+		if !ok {
+			logf.FromContext(ctx).Info("Ignoring CIDR in annotation: unparseable, or broader than the /12 (IPv4) or /48 (IPv6) floor", "annotation", annotationName, "cidr", raw)
 			return
 		}
-		trimmed := strings.Trim(raw, "[]")
-		if ip := net.ParseIP(trimmed); ip == nil {
-			logf.FromContext(ctx).Info("Ignoring invalid IP address in annotation", "annotation", annotationName, "ip", raw)
-			return
-		}
-		apiTargets = append(apiTargets, trimmed)
+		apiTargets = append(apiTargets, ipNet.String())
 	}
 
 	appendCIDRs := func(sourceName, rawList string) {

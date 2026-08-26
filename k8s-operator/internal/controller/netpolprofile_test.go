@@ -334,6 +334,105 @@ func TestResolveNetpolProfile(t *testing.T) {
 		}
 	})
 
+	// The regression for the IPv4-mapped IPv6 collapse. Before normalizeCIDRTarget
+	// took the address family from the address, net.ParseCIDR reported these as
+	// 128-bit prefixes -- clearing the /48 IPv6 floor -- and net.IPNet.String() then
+	// re-read the address, found To4() != nil, truncated the mask to its low four
+	// bytes and printed an IPv4 CIDR far broader than the /12 floor. "::ffff:0:0/96"
+	// emitted the literal string "0.0.0.0/0": allow-all egress on every port from a
+	// pod holding the agent's Workload Identity credentials.
+	t.Run("AdditionalEgress_IPv4MappedIPv6_NeverWidens", func(t *testing.T) {
+		t.Parallel()
+		scheme := setupScheme()
+		client := fake.NewClientBuilder().WithScheme(scheme).Build()
+		r := &PlatformAgentReconciler{Client: client, Scheme: scheme}
+
+		for _, tc := range []struct {
+			name string
+			cidr string
+			want string // "" means the peer must be dropped entirely
+		}{
+			{name: "AllZeroMappedPrefix", cidr: "::ffff:0:0/96", want: ""},
+			{name: "MappedTenSlashEight", cidr: "::ffff:a00:0/104", want: ""},
+			// 108 - 96 = an IPv4 /12, exactly the floor, so this one is
+			// legitimate -- and it must emit as the IPv4 block it means.
+			{name: "MappedAtTheIPv4Floor", cidr: "::ffff:a00:0/108", want: "10.0.0.0/12"},
+			{name: "MappedNarrowEnough", cidr: "::ffff:a00:0/120", want: "10.0.0.0/24"},
+			{name: "MappedBareHost", cidr: "::ffff:102:304", want: "1.2.3.4/32"},
+		} {
+			agent := &agentv1alpha1.PlatformAgent{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
+				Spec: agentv1alpha1.PlatformAgentSpec{
+					AgentSpec: agentv1alpha1.AgentSpec{
+						NetworkPolicy: &agentv1alpha1.NetworkPolicySpec{
+							AdditionalEgress: []agentv1alpha1.EgressRule{{
+								To:    []agentv1alpha1.EgressPeer{{CIDR: tc.cidr}},
+								Ports: []agentv1alpha1.EgressPort{{Protocol: "TCP", Port: 443}},
+							}},
+						},
+					},
+				},
+			}
+
+			profile := r.resolveNetpolProfile(context.Background(), agent)
+			if tc.want == "" {
+				if len(profile.AdditionalEgress) != 0 {
+					t.Errorf("%s: %q produced %d rules, want 0 (emitted %q)",
+						tc.name, tc.cidr, len(profile.AdditionalEgress),
+						profile.AdditionalEgress[0].To[0].IPBlock.CIDR)
+				}
+				continue
+			}
+			if len(profile.AdditionalEgress) != 1 || len(profile.AdditionalEgress[0].To) != 1 {
+				t.Fatalf("%s: %q produced %d rules, want 1", tc.name, tc.cidr, len(profile.AdditionalEgress))
+			}
+			if got := profile.AdditionalEgress[0].To[0].IPBlock.CIDR; got != tc.want {
+				t.Errorf("%s: %q emitted %q, want %q", tc.name, tc.cidr, got, tc.want)
+			}
+		}
+	})
+
+	// An except outside its peer's CIDR is rejected by the API server for the WHOLE
+	// NetworkPolicy, which would freeze every other egress rule -- including the DNS
+	// rediscovery -- at its previous revision. Contain it to its own peer instead.
+	t.Run("AdditionalEgress_ExceptOutsidePeerIsDropped", func(t *testing.T) {
+		t.Parallel()
+		scheme := setupScheme()
+		client := fake.NewClientBuilder().WithScheme(scheme).Build()
+		r := &PlatformAgentReconciler{Client: client, Scheme: scheme}
+		agent := &agentv1alpha1.PlatformAgent{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
+			Spec: agentv1alpha1.PlatformAgentSpec{
+				AgentSpec: agentv1alpha1.AgentSpec{
+					NetworkPolicy: &agentv1alpha1.NetworkPolicySpec{
+						AdditionalEgress: []agentv1alpha1.EgressRule{{
+							To: []agentv1alpha1.EgressPeer{{
+								CIDR: "10.0.0.0/12",
+								Except: []string{
+									"192.168.0.0/16", // outside the peer
+									"fd00::/64",      // wrong family
+									"10.1.0.0/16",    // inside, kept
+									"10.0.0.0/8",     // broader than the peer
+									"not-a-cidr",
+								},
+							}},
+							Ports: []agentv1alpha1.EgressPort{{Protocol: "TCP", Port: 5432}},
+						}},
+					},
+				},
+			},
+		}
+
+		profile := r.resolveNetpolProfile(context.Background(), agent)
+		if len(profile.AdditionalEgress) != 1 {
+			t.Fatalf("got %d rules, want 1", len(profile.AdditionalEgress))
+		}
+		got := profile.AdditionalEgress[0].To[0].IPBlock.Except
+		if !reflect.DeepEqual(got, []string{"10.1.0.0/16"}) {
+			t.Errorf("got Except %v, want [10.1.0.0/16]", got)
+		}
+	})
+
 	t.Run("AdditionalEgress_NoPeers_NeverEmitsAllowAll", func(t *testing.T) {
 		t.Parallel()
 		scheme := setupScheme()
