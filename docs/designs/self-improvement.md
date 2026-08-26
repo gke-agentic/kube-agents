@@ -965,13 +965,30 @@ repository name the run already knows carry nothing a directive could hide in, a
 would tell the turn to distrust the one piece of prior art more reliable than its own search.
 
 Neither of those nets reaches another installation's filings. More than one install can run this
-loop against the same upstream, each with its own ledger — fingerprints hash the agent-written
-title, so independent copies of one finding do not share an identity. What they do share is the
-location's file path, so the skill's §0 runs a search on that path, quoted, before the keyword
-search, and §4 requires every body to carry the path verbatim on a fixed `Location:` line for
-that search to hit. Branch names carry the install's cluster name for the adjacent reason:
-several loops pushing to one fork must not collide on a branch name two of them would otherwise
-both derive from the same bug.
+loop against the same upstream, and the ledger is no help across them: it is a ConfigMap in each
+install's own namespace, so two ledgers never compare fingerprints and identical ones would dedup
+nothing. The search is the only cross-install net there is, and the keyword half of it fails at
+exactly the wrong moment — two loops that found one bug independently write two different titles.
+
+What they do share is the file. So the runner derives a search key from the finding's location
+with the same `location_key` the fingerprint is hashed from, and the skill's §0 searches that
+before it searches keywords. Deriving it in the runner rather than asking the filing turn to read
+a path out of the location is what makes it work, for two reasons the live ledger shows plainly.
+The location is free text — of eighteen rows, only two were a bare `path:line` and the rest were
+prose naming two files — and `location_key` is the thing that already reduces all of those to one
+name. It is also hostile text: sixteen of those eighteen carried a shell metacharacter and five
+carried backticks, and the turn pastes this key into a double-quoted `curl` URL, so the runner
+matches its own output against a strict file-name pattern and hands the turn an explicit
+"skip this search" when it cannot vouch for the result.
+
+The widened net has a cost that shapes the rest of the rule. A bare file name matches every pull
+request that ever touched that file, while two of §0's outcomes (`closed unmerged as #n`,
+`fixed in #n`) are permanent and cleared by nothing — so §0 requires a hit to be the same defect,
+not merely the same file, before any state rule applies to it, and says to file when unsure: a
+duplicate is visible and closable, a wrongly permanent skip is neither. §4 requires every body to
+carry its location verbatim on a `Location:` line so the file name is there to be found. Branch
+names carry the install's cluster name for the adjacent reason: several loops pushing to one fork
+must not collide on a branch name two of them would otherwise both derive from the same bug.
 
 Two of the repository's rules apply awkwardly to a machine author and are worth settling here. The
 **Self-Review** section must not claim a review it did not perform: the runner is the context that
