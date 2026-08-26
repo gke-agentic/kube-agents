@@ -25,8 +25,7 @@ disagree, the strategy wins and this file should be corrected.
 
 The rung above this one — promoting a staging-gated commit to a GA release on a weekly cadence — is
 [`weekly-release-promotion.md`](weekly-release-promotion.md). It depends on the staging tag this
-document produces, and it owns everything about the release stage, including
-[PR #970](https://github.com/gke-labs/kube-agents/pull/970).
+document produces, and it owns everything about the release stage.
 
 ## 2. Current state
 
@@ -353,20 +352,30 @@ Each of these has already cost time once.
   the file is on the default branch. Neither can be tested from a PR branch. Plan for the first real
   run to be after merge.
 
-## 7. Existing work to reconcile
+## 7. New components
 
-[PR #976](https://github.com/gke-labs/kube-agents/pull/976) implements an earlier version of this:
-promotion built on the **shared RC environment** rather than its own. It is a draft and its shape is
-superseded by §3, but three parts are directly reusable and already have tests:
+Four things do not exist yet. Everything else in the plan is a rename, an input, or a GCP resource.
 
-- `scripts/release/resolve_promotion_candidate.sh` — candidate resolution and the already-promoted
-  check, 8 unit tests.
-- `scripts/release/tag_staging_promotion.sh` — the tag push, 7 unit tests. Its namespace guard and
-  the tests asserting it currently enforce `staging/`, so both move to `staging_` with §3.3.
-- The `staging_tag_for_rc` / `get_existing_staging_tag` helpers in `common.sh`, plus the
-  `environment: rc` fixes that become Phase 1. Both helpers were written for the `staging/` shape
-  and need the §3.3 transform instead.
+**`scripts/release/resolve_promotion_candidate.sh`** — picks the candidate and decides whether to
+tag. Reads the newest `rc_*_validated` tag, resolves its commit, and refuses a commit carrying no
+`*_validated` tag even when a tag is passed in by hand, so the gate cannot be talked into promoting
+something the RC pipeline never validated. Emits `commit_sha`, `rc_tag`, `staging_tag` and
+`skip_promotion`, the last set when a `staging_*` tag already points at that commit. Every skip is
+exit 0; the only exit 1 is a tag that does not resolve.
 
-What to drop from it: `staging-promote.yml` in its current form, which deploys to the RC environment
-and never tears it down, and the documentation that describes that shape. Close it or retarget it as
-Phase 1 alone.
+**`scripts/release/tag_staging_promotion.sh`** — creates and pushes the tag, idempotently, refusing
+any name outside the `staging_` prefix so the deploy trigger cannot be fired by a typo. Reuses
+`ensure_git_tag`, which already no-ops when the tag exists on the same commit and fails when it
+exists on a different one.
+
+**Two helpers in `common.sh`** — `staging_tag_for_rc` (the §3.3 transform) and
+`get_existing_staging_tag` (`git tag --points-at <sha> 'staging_*'`).
+
+**The pipeline workflow itself** — §3.1, four jobs, calling the now-generic deploy, the extracted E2E
+runner, and the generic teardown with `target_environment: nightly`.
+
+All four want unit tests in the style of `tests/test_release_common.py`: bash driven from Python
+against a throwaway git repository, one case per branch. The branches worth covering are candidate
+selection with several validated tags present, the validated-only refusal, the already-promoted skip,
+a `staging_` tag on a _different_ commit not blocking the current one, the namespace guard, and
+re-tagging the same commit versus a different one.
