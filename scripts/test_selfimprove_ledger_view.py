@@ -1415,6 +1415,344 @@ class TestLocationLinksInTheReport(unittest.TestCase):
         self.assertIn("anthropic_adapter", view.plain(text))
 
 
+#: The pull request's base on an install whose base is itself a fork, which is
+#: the configuration that makes bare references ambiguous. `ledger()` records
+#: one promotion against it, #160, so that number is the vouched one throughout
+#: and every other number is one the prose read somewhere.
+PR_REPO = "gke-agentic/kube-agents"
+
+#: What PR_REPO was forked from -- where the project's numbers are assigned.
+PARENT_REPO = "gke-labs/kube-agents"
+
+
+def refs(document=None, parent=PARENT_REPO):
+    return view.Refs(PR_REPO, view.filed_pull_requests(document or ledger()), parent)
+
+
+class TestPullRequestRepo(unittest.TestCase):
+    """Where a `#123` is resolved, which is the pull request's base and not the
+    repository the source was read from. The two differ under `mode: fork`."""
+
+    def test_upstream_mode_uses_the_upstream(self):
+        env = {
+            "SELFIMPROVE_MODE": "upstream",
+            "SELFIMPROVE_UPSTREAM_REPO": "up/repo",
+            "SELFIMPROVE_SOURCE_REPO": "up/repo",
+            "SELFIMPROVE_FORK_REPO": "fork/repo",
+        }
+        self.assertEqual(view.pull_request_repo(env), "up/repo")
+
+    def test_fork_mode_uses_the_fork(self):
+        """The chart sets SELFIMPROVE_UPSTREAM_REPO to the pull request's base,
+        and under `mode: fork` that base is the fork -- while SOURCE_REPO stays
+        on the upstream, because the revision under investigation is upstream's.
+        Reading the source repository here would send `#12` to a number that
+        belongs to somebody else."""
+        env = {
+            "SELFIMPROVE_MODE": "fork",
+            "SELFIMPROVE_UPSTREAM_REPO": "fork/repo",
+            "SELFIMPROVE_SOURCE_REPO": "up/repo",
+            "SELFIMPROVE_FORK_REPO": "fork/repo",
+        }
+        self.assertEqual(view.pull_request_repo(env), "fork/repo")
+        self.assertEqual(view.target_repo(env), "up/repo")
+
+    def test_no_cronjob_means_no_repo(self):
+        self.assertEqual(view.pull_request_repo({}), "")
+
+
+class TestIssueUrls(unittest.TestCase):
+    def test_builds_a_pull_url(self):
+        self.assertEqual(
+            view.issue_url("o/r", "874"), "https://github.com/o/r/pull/874"
+        )
+
+    def test_pull_is_the_right_form_for_an_issue_too(self):
+        """GitHub 302s /pull/N to /issues/N when N is an issue, so one form
+        covers both and the view needs no way to tell them apart."""
+        self.assertTrue(view.issue_url("o/r", "1").endswith("/pull/1"))
+
+    def test_refuses_a_repo_that_is_not_two_plain_segments(self):
+        for repo in ("", "o", "o/r/x", "o/../r", "o/r?x=1", "o/r#f"):
+            self.assertEqual(view.issue_url(repo, "1"), "", repo)
+
+    def test_finds_the_first_reference(self):
+        self.assertEqual(
+            view.Refs("o/r").first("fixed in #874, see also #875"),
+            "https://github.com/o/r/pull/874",
+        )
+
+    def test_no_reference_and_no_repo_give_no_url(self):
+        self.assertEqual(view.Refs("o/r").first("nothing here"), "")
+        self.assertEqual(view.Refs().first("fixed in #874"), "")
+
+    def test_what_is_not_a_reference(self):
+        """`#` is common in prose the agent writes. A number glued to a word
+        before it, or letters after it, is something else."""
+        for text in ("colour ##874", "issue# 874", "#874x", "abc#874"):
+            self.assertEqual(view.Refs("o/r").first(text), "", text)
+
+
+class TestFiledPullRequests(unittest.TestCase):
+    """Which numbers the ledger can vouch for as the loop's own."""
+
+    def test_reads_the_promotion_urls(self):
+        self.assertEqual(view.filed_pull_requests(ledger()), frozenset({(PR_REPO, "160")}))
+
+    def test_a_ledger_with_no_promotions_vouches_for_nothing(self):
+        document = ledger()
+        for entry in document["findings"].values():
+            entry["promotions"] = []
+        self.assertEqual(view.filed_pull_requests(document), frozenset())
+
+    def test_junk_does_not_raise(self):
+        for document in (
+            {},
+            {"findings": None},
+            {"findings": [finding("aaaa", "high", "t")]},
+            {"findings": {"a": "not a dict"}},
+            {"findings": {"a": {"promotions": ["not a dict", {}, {"url": None}]}}},
+            {"findings": {"a": {"promotions": [{"url": "https://example.com/x"}]}}},
+        ):
+            self.assertEqual(view.filed_pull_requests(document), frozenset(), document)
+
+    def test_a_list_shaped_findings_block_is_read_too(self):
+        promoted = finding(
+            "aaaa", "high", "t",
+            promotions=[{"url": "https://github.com/o/r/pull/7", "at": iso(1)}],
+        )
+        self.assertEqual(
+            view.filed_pull_requests({"findings": [promoted]}), frozenset({("o/r", "7")})
+        )
+
+
+class TestForkParent(unittest.TestCase):
+    """The one network call, and every way it is allowed to come back empty."""
+
+    def gh(self, **kwargs):
+        return mock.patch.object(view.subprocess, "run", **kwargs)
+
+    def test_returns_what_gh_reports(self):
+        with self.gh(return_value=mock.Mock(returncode=0, stdout=PARENT_REPO + "\n")) as run:
+            self.assertEqual(view.fork_parent(PR_REPO), PARENT_REPO)
+        self.assertEqual(run.call_args[0][0][:2], ["gh", "api"])
+        self.assertIn("repos/" + PR_REPO, run.call_args[0][0])
+
+    def test_a_repo_that_is_not_a_fork_has_no_parent(self):
+        with self.gh(return_value=mock.Mock(returncode=0, stdout="\n")):
+            self.assertEqual(view.fork_parent(PARENT_REPO), "")
+
+    def test_gh_failing_is_not_an_error(self):
+        """Unauthenticated, offline, deleted repository -- all the same answer,
+        which is the behaviour the view had before any of this existed."""
+        with self.gh(return_value=mock.Mock(returncode=1, stdout="")):
+            self.assertEqual(view.fork_parent(PR_REPO), "")
+
+    def test_gh_missing_or_hanging_is_not_an_error(self):
+        for exc in (FileNotFoundError(), OSError(), view.subprocess.TimeoutExpired("gh", 10)):
+            with self.gh(side_effect=exc):
+                self.assertEqual(view.fork_parent(PR_REPO), "", exc)
+
+    def test_an_answer_naming_the_repo_itself_is_dropped(self):
+        with self.gh(return_value=mock.Mock(returncode=0, stdout=PR_REPO)):
+            self.assertEqual(view.fork_parent(PR_REPO), "")
+
+    def test_an_unsafe_answer_is_dropped(self):
+        """`gh --jq` prints whatever the field holds, and the result goes into a
+        URL path."""
+        for answer in ("o/../r", "o", "o/r/x", "o/r?x=1"):
+            with self.gh(return_value=mock.Mock(returncode=0, stdout=answer)):
+                self.assertEqual(view.fork_parent(PR_REPO), "", answer)
+
+    def test_no_repo_means_no_call(self):
+        for repo in ("", "not-a-repo", "o/../r"):
+            with self.gh(side_effect=AssertionError("should not shell out")):
+                self.assertEqual(view.fork_parent(repo), "", repo)
+
+
+class TestWhichRepoABareReferenceGoesTo(unittest.TestCase):
+    """The resolution order, on the install where the three answers differ.
+
+    `#160` is in `ledger()`'s promotions, so the loop opened it against the base.
+    `#874` is not, so it came out of the project's history -- a squash-merge
+    subject or a warning in the source -- and belongs to the fork parent.
+    """
+
+    def test_a_number_the_loop_filed_goes_to_the_base(self):
+        self.assertEqual(
+            refs().first("already filed as #160"),
+            "https://github.com/gke-agentic/kube-agents/pull/160",
+        )
+
+    def test_a_number_read_out_of_the_history_goes_to_the_fork_parent(self):
+        self.assertEqual(
+            refs().first("SKIPPED: fixed in #874"),
+            "https://github.com/gke-labs/kube-agents/pull/874",
+        )
+
+    def test_a_qualified_reference_goes_where_it_says(self):
+        for text, want in (
+            ("see gke-labs/kube-agents#12", "https://github.com/gke-labs/kube-agents/pull/12"),
+            ("see o/r#160", "https://github.com/o/r/pull/160"),
+        ):
+            self.assertEqual(refs().first(text), want, text)
+
+    def test_a_qualified_reference_cannot_walk_out_of_its_repository(self):
+        self.assertEqual(refs().first("see o/../r#1"), "")
+
+    def test_with_no_parent_known_everything_goes_to_the_base(self):
+        """`gh` absent or unauthenticated, and an install that files against the
+        project itself. Both land here, and both are right for it."""
+        without = refs(parent="")
+        self.assertEqual(
+            without.first("SKIPPED: fixed in #874"),
+            "https://github.com/gke-agentic/kube-agents/pull/874",
+        )
+        self.assertEqual(
+            without.first("already filed as #160"),
+            "https://github.com/gke-agentic/kube-agents/pull/160",
+        )
+
+    def test_no_refs_resolves_nothing_bare(self):
+        """`--file` on a ledger with no install behind it. A bare number has no
+        repository to go to, but a qualified one brought its own and does not
+        need the resolver to have been told anything."""
+        for text in ("fixed in #874", "already filed as #160"):
+            self.assertEqual(view.NO_REFS.first(text), "", text)
+        self.assertEqual(view.NO_REFS.first("see o/r#1"), "https://github.com/o/r/pull/1")
+
+
+class TestPullRequestReferencesAreLinked(unittest.TestCase):
+    REFUSAL = "SKIPPED: already filed as #160"
+
+    def refused_ledger(self):
+        document = ledger()
+        document["findings"]["aaaa000000000000"]["refused"] = {
+            "reason": self.REFUSAL,
+            "at": iso(3),
+            "revision": "aa3b7aa",
+        }
+        return document
+
+    def test_the_findings_table_links_the_verdict(self):
+        document = self.refused_ledger()
+        table, _ = view.render_findings(
+            document, {}, NOW, view.Palette(True), 200, view.BOX_UNICODE,
+            "severity", None, None, REPO, ROOTS, refs(document),
+        )
+        text = "\n".join(table)
+        self.assertIn("https://github.com/gke-agentic/kube-agents/pull/160", text)
+        self.assertIn("already filed as #160", view.plain(text))
+
+    def test_a_wrapped_verdict_is_one_link_and_not_several(self):
+        """The verdict is far wider than the FINDING column, so it wraps. Each
+        row re-opens the hyperlink, and OSC 8's `id=` is what tells the terminal
+        they are one link rather than one per line."""
+        document = self.refused_ledger()
+        table, _ = view.render_findings(
+            document, {}, NOW, view.Palette(True), 100, view.BOX_UNICODE,
+            "severity", None, None, REPO, ROOTS, refs(document),
+        )
+        text = "\n".join(table)
+        opens = [line for line in table if "/pull/160" in line]
+        self.assertGreater(len(opens), 1, "expected the verdict to wrap")
+        self.assertIn("\x1b]8;id=", text)
+
+    def test_no_resolver_leaves_the_text_alone(self):
+        document = self.refused_ledger()
+        args = (
+            document, {}, NOW, view.Palette(True), 200, view.BOX_UNICODE,
+            "severity", None, None, REPO, ROOTS,
+        )
+        linked, _ = view.render_findings(*args, refs(document))
+        bare, _ = view.render_findings(*args)
+        self.assertNotIn("/pull/160", "\n".join(bare))
+        self.assertEqual([view.plain(l) for l in linked], [view.plain(l) for l in bare])
+
+    def test_a_verdict_naming_no_pull_request_is_not_linked(self):
+        table, _ = view.render_findings(
+            ledger(), {"aaaa000000000000": "held: 1 occurrence(s) in 24h, rule wants 2"},
+            NOW, view.Palette(True), 200, view.BOX_UNICODE,
+            "severity", None, None, "", ROOTS, refs(),
+        )
+        self.assertNotIn("/pull/", "\n".join(table))
+
+    def test_the_title_is_never_scanned_for_references(self):
+        """A `#12` in a title is as likely to be a hostname suffix or a shell
+        comment as a pull request, and the filing skill dictates no vocabulary
+        there. Only the verdict, whose wording it does dictate, is linked."""
+        document = ledger()
+        document["findings"]["aaaa000000000000"]["title"] = "worker#12 restarts"
+        table, _ = view.render_findings(
+            document, {}, NOW, view.Palette(True), 200, view.BOX_UNICODE,
+            "severity", None, None, "", ROOTS, refs(document),
+        )
+        self.assertNotIn("/pull/12", "\n".join(table))
+
+    def test_detail_links_every_reference_in_the_gate_line(self):
+        """Not in a table, so each reference carries its own link rather than
+        the paragraph carrying the first one's."""
+        entry = finding("aaaa", "high", "t", location="")
+        text = "\n".join(
+            view.render_detail(
+                entry, "held: fixed in #874, superseded by #875", NOW,
+                view.Palette(True), 100, True, REPO, ROOTS, refs(),
+            )
+        )
+        self.assertIn("/pull/874", text)
+        self.assertIn("/pull/875", text)
+
+    def test_detail_links_the_refusal_reason(self):
+        entry = finding(
+            "aaaa", "high", "t", location="",
+            refused={"reason": self.REFUSAL, "at": iso(3), "revision": "aa3b7aa"},
+        )
+        text = "\n".join(
+            view.render_detail(
+                entry, "", NOW, view.Palette(True), 100, True, REPO, ROOTS, refs()
+            )
+        )
+        self.assertIn("/pull/160", text)
+        self.assertIn("already filed as #160", view.plain(text))
+
+    def test_detail_sends_a_history_number_to_the_fork_parent(self):
+        """The case that started this: the number in the refusal is real, and
+        the repository holding it is the one the base was forked from."""
+        entry = finding(
+            "aaaa", "high", "t", location="",
+            refused={"reason": "SKIPPED: fixed in #874", "at": iso(3), "revision": "aa3b7aa"},
+        )
+        text = "\n".join(
+            view.render_detail(
+                entry, "", NOW, view.Palette(True), 100, True, REPO, ROOTS, refs()
+            )
+        )
+        self.assertIn("https://github.com/gke-labs/kube-agents/pull/874", text)
+        self.assertNotIn("gke-agentic/kube-agents/pull/874", text)
+
+    def test_detail_links_do_not_change_where_lines_wrap(self):
+        """Linking runs after `textwrap`, so the escape sequences cannot be
+        counted towards the width and push text onto another line."""
+        entry = finding("aaaa", "high", "t", location="")
+        verdict = "held: the filing turn refused this permanently (SKIPPED: fixed in #874)"
+        args = (entry, verdict, NOW, view.Palette(True), 100, True, REPO, ROOTS)
+        linked = view.render_detail(*args, refs())
+        bare = view.render_detail(*args)
+        self.assertIn("/pull/874", "\n".join(linked))
+        self.assertEqual([view.plain(l) for l in linked], [view.plain(l) for l in bare])
+
+    def test_colour_off_means_no_escape_sequences_at_all(self):
+        entry = finding("aaaa", "high", "t", location="")
+        text = "\n".join(
+            view.render_detail(
+                entry, "held: fixed in #874", NOW, view.Palette(False), 100, True,
+                REPO, ROOTS, refs(),
+            )
+        )
+        self.assertNotIn("\x1b", text)
+        self.assertIn("fixed in #874", text)
+
+
 class TestAMalformedLedgerStillRenders(unittest.TestCase):
     """A read-only report is never worth a traceback.
 

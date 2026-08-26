@@ -35,7 +35,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -233,6 +233,106 @@ def hyperlink(text: str, url: str, palette: Palette, link_id: str = "") -> str:
     if not palette.enabled or not url or not _LINKABLE_URL.match(url):
         return text
     return "\x1b]8;%s;%s\x1b\\%s\x1b]8;;\x1b\\" % ("id=%s" % link_id if link_id else "", url, text)
+
+
+#: A pull-request reference in text, as the filing turn's refusal vocabulary
+#: writes one: `already filed as #161`, `SKIPPED: fixed in #874`. The
+#: `owner/repo#123` form is accepted alongside the bare one because a reference
+#: to another repository has no other way to say so. Neither may be preceded by
+#: a word character, which leaves a `foo#2` fragment alone, and both are bounded
+#: on the right so `#874x` is not read as 874.
+_ISSUE_REF = re.compile(r"(?<![\w#/-])(?:(?P<repo>[\w.-]+/[\w.-]+)#|#)(?P<number>\d+)\b")
+
+
+def issue_url(repo: str, number: str) -> str:
+    """GitHub's URL for a `#123` reference, or "" if it cannot be built safely.
+
+    `/pull/` rather than `/issues/`, and that one form is right for both: GitHub
+    answers `/pull/123` with a 302 to `/issues/123` when 123 turns out to be an
+    issue. The refusal vocabulary only ever names pull requests, but it names
+    them out of a repository that has issues too.
+
+    Unlike `blob_url` there is nothing agent-written in the path unless the
+    reference was qualified, and `_url_safe` is what makes that case safe: a
+    `../..#1` would otherwise walk the link into another repository while the
+    label beside it went on naming this one.
+    """
+    if not repo or not _url_safe(repo, segments=2) or not number.isdigit():
+        return ""
+    return "https://github.com/%s/pull/%s" % (repo, number)
+
+
+class Refs:
+    """What a `#123` in a gate verdict or a refusal resolves to, if anything.
+
+    A bare `#123` does not say which repository it belongs to, and on this loop
+    there can be two answers. The vocabulary the filing skill dictates --
+    `already filed as #161` -- means a pull request the loop itself opened,
+    against the base repository. But a refusal reason is prose, and the other
+    thing it reaches for is a number it read in the checkout: git squash-merges
+    append `(#874)` to the subject line, and a warning in the source can cite an
+    issue by number. Those numbers were assigned wherever the project's pull
+    requests are numbered, which for a fork is not the fork.
+
+    So the base repository answers only for the numbers the ledger can vouch
+    for -- it recorded opening that number there -- and everything else goes to
+    `parent`, the root of the base repository's fork network. On an install that
+    files against the project itself the two are the same repository and the
+    distinction costs nothing; on one whose base is a fork it is the difference
+    between `#874` reaching the pull request that carries the fix and reaching a
+    404. A qualified `owner/repo#123` skips both, because it has said which
+    repository it means.
+    """
+
+    def __init__(
+        self,
+        repo: str = "",
+        filed: Iterable[Tuple[str, str]] = (),
+        parent: str = "",
+    ):
+        self.repo = repo or ""
+        self.filed = frozenset(filed)
+        self.parent = parent or ""
+
+    def url(self, match) -> str:
+        """The URL for one `_ISSUE_REF` match, or "" to leave it as text."""
+        number = match.group("number")
+        qualified = match.group("repo")
+        if qualified:
+            return issue_url(qualified, number)
+        if self.repo and (self.repo, number) in self.filed:
+            return issue_url(self.repo, number)
+        return issue_url(self.parent or self.repo, number)
+
+    def first(self, text: str) -> str:
+        """The URL for the first linkable reference in `text`, else ""."""
+        for match in _ISSUE_REF.finditer(text or ""):
+            url = self.url(match)
+            if url:
+                return url
+        return ""
+
+    def linkify(self, text: str, palette: Palette) -> str:
+        """Every linkable reference in `text`, made clickable where it stands.
+
+        For output that is not in a table. `render_table` measures the width of
+        every cell it lays out, so an escape sequence inserted mid-string would
+        be counted as visible characters and throw the column widths out; there
+        a paragraph is linked as a whole instead, and only its first reference
+        is reachable. `--detail` prints plain lines and is wrapped before this
+        runs, so each reference on them can carry its own link.
+        """
+
+        def one(match):
+            url = self.url(match)
+            return hyperlink(match.group(0), url, palette) if url else match.group(0)
+
+        return _ISSUE_REF.sub(one, text or "")
+
+
+#: The resolver for a view that has no ledger or no CronJob to build one from.
+#: Links nothing, which is what `--file` on a bare ledger should do.
+NO_REFS = Refs()
 
 
 #: A URL anywhere in a string, stripped before locations are parsed so that the
@@ -439,6 +539,78 @@ def target_repo(env: Dict[str, str]) -> str:
     if env.get("SELFIMPROVE_MODE") == "report-only":
         return env.get("SELFIMPROVE_UPSTREAM_REPO", "") or ""
     return env.get("SELFIMPROVE_FORK_REPO") or env.get("SELFIMPROVE_UPSTREAM_REPO") or ""
+
+
+def pull_request_repo(env: Dict[str, str]) -> str:
+    """The `owner/name` a `#123` in a gate verdict or a refusal belongs to.
+
+    `SELFIMPROVE_UPSTREAM_REPO`, which is the pull request's base in every mode
+    -- the upstream under `upstream` and `report-only`, the fork under `fork`.
+
+    A different question from `target_repo`, which answers where a finding's
+    *revision* resolves and so follows the source repository. The two hold the
+    same value on an install that files against the repository it reads itself
+    from, which is why they are easy to conflate; telling them apart matters on
+    one that does not, where sending `#161` to the source repository points it
+    at whatever pull request happens to carry that number there.
+    """
+    return env.get("SELFIMPROVE_UPSTREAM_REPO") or ""
+
+
+def filed_pull_requests(ledger: Dict[str, Any]) -> frozenset:
+    """`(repo, number)` for every pull request this ledger records opening.
+
+    The set `Refs` checks a bare `#123` against before assuming it came out of
+    the project's history. A promotion's `url` is the only record of a number
+    the loop assigned itself rather than read somewhere, so a pruned or
+    truncated ledger shrinks this set and sends those numbers to the fork
+    parent -- wrong on an install whose base is a fork, and invisible on one
+    where base and parent are the same repository.
+    """
+    filed = set()
+    findings = ledger.get("findings")
+    for entry in (findings.values() if isinstance(findings, dict) else findings or []):
+        if not isinstance(entry, dict):
+            continue
+        for promotion in entry.get("promotions") or []:
+            if not isinstance(promotion, dict):
+                continue
+            match = _PR_URL.match(str(promotion.get("url") or "").strip())
+            if match:
+                owner, name, number = match.groups()
+                filed.add(("%s/%s" % (owner, name), number))
+    return frozenset(filed)
+
+
+def fork_parent(repo: str, timeout: int = 10) -> str:
+    """The root of `repo`'s fork network, or "" when it is not a fork.
+
+    Which repository numbers the pull requests a finding's prose cites. The
+    runner's environment cannot answer this -- every variable it carries names
+    a repository the loop reads or writes, and the project a fork descends from
+    is neither -- so it is one `gh` call, made once per invocation and only
+    when there is a base repository to ask about.
+
+    Every failure is "" and no link: `gh` absent, unauthenticated, offline, a
+    repository that has been deleted. That degrades to sending bare references
+    to the base repository, which is where they belonged before any of this
+    existed, so nothing that worked stops working when the call does not land.
+    """
+    if not repo or not _url_safe(repo, segments=2):
+        return ""
+    try:
+        proc = subprocess.run(
+            ["gh", "api", "repos/%s" % repo, "--jq", ".source.full_name // empty"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    parent = proc.stdout.strip()
+    return parent if parent and parent != repo and _url_safe(parent, segments=2) else ""
 
 
 # --------------------------------------------------------------------------
@@ -1279,6 +1451,7 @@ def render_findings(
     signal: Optional[str],
     repo: str = "",
     roots: frozenset = frozenset(),
+    refs: Refs = NO_REFS,
 ) -> Tuple[List[str], List[Dict[str, Any]]]:
     entries = select_findings(ledger, now, sort, min_severity, signal)
 
@@ -1350,6 +1523,18 @@ def render_findings(
             )
         if verdict:
             parts.append((verdict, verdict_style(verdict)))
+            # A verdict that names a pull request -- `already filed as #161`,
+            # `fixed in #874` -- links the paragraph to it. Whole-paragraph
+            # rather than on the `#161` itself because the cell is measured for
+            # wrapping; `Refs.linkify` says why, and `--detail` is where a
+            # verdict naming two numbers gets a link to each. Only the verdict
+            # is scanned, never the title: the vocabulary here is one the
+            # filing skill dictates, whereas a `#12` in a title the agent wrote
+            # about a log line is as likely to be a hostname suffix as a pull
+            # request, and a wrong link is worse than none.
+            url = refs.first(verdict)
+            if url:
+                para_urls[len(parts) - 1] = url
         rows.append(
             [
                 (str(index), "dim"),
@@ -1423,16 +1608,26 @@ def render_detail(
     utc: bool,
     repo: str = "",
     roots: frozenset = frozenset(),
+    refs: Refs = NO_REFS,
 ) -> List[str]:
     severity = str(entry.get("severity", "?")).lower()
     wrap = max(40, width - 4)
 
-    def block(label: str, text: str, style: Optional[str] = None) -> List[str]:
+    def block(
+        label: str, text: str, style: Optional[str] = None, link_refs: bool = False
+    ) -> List[str]:
+        # `link_refs` linkifies `#123` in the block's text, and is set only on
+        # the blocks whose wording the filing skill dictates. Linking happens
+        # after the wrap, so the escape sequences cannot affect where lines
+        # break.
         if not text:
             return []
         lines = [palette("  " + label, "dim")]
         for para in str(text).split("\n"):
-            lines.extend("    " + palette(line, style) for line in (textwrap.wrap(para, wrap - 4) or [""]))
+            for line in textwrap.wrap(para, wrap - 4) or [""]:
+                lines.append(
+                    "    " + palette(refs.linkify(line, palette) if link_refs else line, style)
+                )
         return lines + [""]
 
     head = "%s  %s  %s" % (
@@ -1480,7 +1675,7 @@ def render_detail(
         )
     )
     if verdict:
-        out.extend(block("gate", verdict, verdict_style(verdict)))
+        out.extend(block("gate", verdict, verdict_style(verdict), link_refs=True))
     out.extend(block("summary", str(entry.get("summary") or "")))
     out.extend(block("user impact", str(entry.get("user_impact") or "")))
     out.extend(block("evidence", str(entry.get("evidence") or ""), "dim"))
@@ -1516,6 +1711,7 @@ def render_detail(
                     short_rev(refusal.get("revision")),
                 ),
                 "magenta",
+                link_refs=True,
             )
         )
     return out
@@ -1659,6 +1855,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     gate = parse_gate(env)
     verdicts = gate_verdicts(ledger, gate, now)
     repo, roots = target_repo(env), repo_toplevel()
+    # One `gh` call, and only for a view that has an install behind it -- under
+    # `--file` there is no CronJob, so no base repository, so nothing to ask
+    # about and no reference is resolved.
+    pr_repo = pull_request_repo(env)
+    refs = Refs(pr_repo, filed_pull_requests(ledger), fork_parent(pr_repo))
 
     if args.detail:
         # The same list the table would have printed, under the same `--sort`
@@ -1680,6 +1881,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.utc,
             repo,
             roots,
+            refs,
         ):
             print(line)
         return 0
@@ -1694,7 +1896,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     out.append("")
     out.append(palette("FINDINGS", "head"))
     table, entries = render_findings(
-        ledger, verdicts, now, palette, width, box, args.sort, args.severity, args.signal, repo, roots
+        ledger, verdicts, now, palette, width, box, args.sort, args.severity, args.signal, repo, roots, refs
     )
     out.extend(table)
 
