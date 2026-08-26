@@ -23,6 +23,11 @@ unrelated things (§2.5), and the workflow, script, and tag names have drifted a
 document is the implementation design for that sentence, not a competing proposal. Where the two
 disagree, the strategy wins and this file should be corrected.
 
+The rung above this one — promoting a staging-gated commit to a GA release on a weekly cadence — is
+[`weekly-release-promotion.md`](weekly-release-promotion.md). It depends on the staging tag this
+document produces, and it owns everything about the release stage, including
+[PR #970](https://github.com/gke-labs/kube-agents/pull/970).
+
 ## 2. Current state
 
 ### 2.1 The release-candidate pipeline
