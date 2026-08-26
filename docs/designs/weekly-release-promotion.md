@@ -36,8 +36,12 @@ has been through the full matrix.
 
 ## 3. Goal state
 
-**A weekly cron, positioned after the nightly run, that releases the newest staging-gated commit and
-skips if that commit is already released.**
+**A cron every Thursday, positioned after the nightly run, that releases the newest staging-gated
+commit and skips if that commit is already released.**
+
+Thursday because it leaves a working day to react to a bad release, which Friday does not. Weekly
+with no rate limiter inside the resolver: the cron is the cadence, so there is no wall-clock
+arithmetic anywhere in the decision.
 
 ```mermaid
 graph TD
@@ -59,23 +63,43 @@ choosing when to click the button. **Every condition that fails is a skip with e
 published, the run stays green, and the next run asks again. A red run must mean the machinery is
 broken, not that this week had nothing to ship, or nobody will look at a red one.
 
-1. **A candidate has passed the staging gate.** The newest `staging_*` tag, and its commit must also
-   carry an `rc_*_validated` tag. The second half looks redundant and is not: it keeps
-   `verify_release_eligibility.sh`'s hard exit 1 unreachable from a scheduled run, so a tag created
-   outside the pipeline stops here quietly instead of going red.
+1. **A candidate has passed the staging gate.** The newest tag matching the `staging_<ts>_<sha>`
+   **shape** — not merely the `staging_` prefix, so a hand-made `staging_hotfix` cannot be mistaken
+   for a gate result. This is the sole evidence the release requires; see §3.2.
 2. **There is something to release.** Commits exist between the newest GA tag and that commit.
-3. **Nothing in the range is a breaking change** — `feat!:`, `fix(x)!:`, `BREAKING CHANGE:`. This one
-   **halts** rather than skips: it will recur every run until somebody publishes by hand, so it
-   raises a workflow annotation rather than only a summary line.
+3. **Nothing in the range is a breaking change** — `feat!:`, `fix(x)!:`, `BREAKING CHANGE:`. Those
+   are a human's call.
 
 Note what is _not_ on the list. "Has this tag already been released?" needs no condition of its own:
 if the newest GA tag points at the staging-gated commit, `git log <GA>..<commit>` is empty and
-condition 2 already skips. The state lives in the tags, not in a clock or a bookkeeping file.
+condition 2 already skips. The state lives in the tags, not in a clock or a bookkeeping file. Nor is
+there a weekday or elapsed-time check inside the resolver — the cron is the cadence.
 
-Nor is there a weekday or an elapsed-time check. The cron is the rate limit — see §4 for the one case
-where that choice costs something.
+**A skip is green; a halt is red.** Conditions 1 and 2 failing mean there is nothing to do this
+week, which is ordinary and must not colour the badge. Condition 3 is different: it will recur every
+week until somebody publishes by hand, so it **fails the job**. A breaking change waiting to ship is
+a thing somebody has to act on, and the red badge in `README.md` is how they find out.
 
-### 3.2 "After the nightly finishes"
+### 3.2 The staging tag is the only evidence
+
+Today `verify_release_eligibility.sh` refuses any commit without an `rc_*_validated` tag. That check
+**moves to the staging tag** rather than gaining a second condition beside it: the release depends on
+the staging gate and on nothing else.
+
+Nothing is lost by dropping the `rc_*_validated` requirement, because it is implied. A `staging_*`
+tag is only ever created by the nightly pipeline, which only ever promotes a candidate that already
+carries `rc_*_validated`. Requiring both would re-check a property the first check guarantees, and
+would leave two gates to keep in step when one of them changes.
+
+What replaces it as the defence against a fabricated tag is the **shape** match in condition 1. A
+`staging_` prefix alone is a trigger anyone can type; `staging_<ts>_<sha>` with the timestamp and
+short SHA in the right places is what the pipeline produces.
+
+The emergency path is unchanged and now carries more weight: `workflow_dispatch` with
+`skip_rc_validation` is the only way to publish a commit that never reached staging. Rename it with
+the gate it now bypasses.
+
+### 3.3 "After the nightly finishes"
 
 The cron is a **poll, not a handoff**. It does not need to know whether the nightly run has finished;
 it reads the newest `staging_*` tag, and if that tag is from last week it either releases it (if
@@ -86,78 +110,50 @@ correctness.
 The alternative, `workflow_run` on the nightly pipeline filtered to one weekday, couples the two
 workflows to get a property the poll already has. Not worth it.
 
-## 4. The cadence decision
+### 3.4 What a weekly cadence costs, and why it is still right
 
-Settle this before writing the resolver; it decides whether §3.1 has three conditions or four.
+**A Thursday that produces nothing costs a full week.** Worth knowing rather than discovering: a
+release needs a `staging_*` tag that is newer than the last GA tag, and a staging tag needs a new
+`rc_*_validated` candidate and a green matrix on the same night. Validated candidates appeared on 4
+of the 7 nights to 2026-08-26, and the matrix pass rate is not yet known. So the interval between
+releases will sometimes be a fortnight rather than a week.
 
-Two knobs, and they are independent:
+The alternative — attempt daily, and cap releases to one per week inside the resolver — buys back
+that week at the price of a weekday anchor, epoch arithmetic, and an injectable clock so the anchor
+can be tested without waiting for a Thursday. That is the only wall-clock reasoning that would exist
+anywhere in the design, and it exists purely to undo the cron's own cadence.
 
-- **How often we attempt** — the cron.
-- **How often we are allowed to release** — a rate limiter inside the resolver, or nothing.
+Weekly-with-no-limiter is the choice because the artifact decides, not the calendar. Latency is the
+cheap failure here: a release that lands a week later is a release that landed. Revisit only if a
+fortnightly floor turns out to hurt in practice.
 
-|                            | attempt | allowed        | When the target night produces nothing                              |
-| -------------------------- | ------- | -------------- | ------------------------------------------------------------------- |
-| Weekly cron, no limiter    | weekly  | unrestricted   | Waits a full week                                                   |
-| Daily cron, weekly limiter | daily   | once per cycle | Releases as soon as a staging tag lands, still at most once a cycle |
+## 4. Plan
 
-**Weekly-only can slip to a fortnight, and that is worth choosing deliberately rather than
-discovering.** A staging tag needs two things to coincide on the same night: a new `rc_*_validated`
-candidate, and a green full matrix. Validated candidates appeared on 4 of the 7 nights to
-2026-08-26, and the matrix pass rate is **unknown** because it has never run successfully. If a given
-night is even money, the expected interval between releases is nearer two weeks than one.
-
-Three answers, in ascending complexity:
-
-1. **Accept it.** One cron line, three conditions, nothing to test but the conditions. A fortnightly
-   release is not obviously wrong for this project.
-2. **Attempt daily, cap on a weekday anchor.** Self-heals within the week: any night that produces a
-   staging tag releases it, and the anchor stops a second release before the next cycle. Costs epoch
-   arithmetic and an injectable clock so it can be tested without waiting for a Thursday.
-3. **Attempt daily, cap on days since the last GA tag.** Simpler arithmetic than the anchor, but a
-   release that lands late drags every later one later, and the drift never corrects.
-
-Recommendation: **(1)**, unless a fortnightly floor is unacceptable. It is the only one of the three
-with no clock in it, and the whole point of keying off the staging tag is that the artifact decides,
-not the calendar. Take (2) if the cadence has to be dependable, and prefer the anchor to (3) because
-an anchored week self-corrects after a blocked one.
-
-## 5. Plan
-
-Depends on the nightly document's Phase 5 — there must be `staging_*` tags before any of this means
+Depends on the nightly document's Phase 4 — there must be `staging_*` tags before any of this means
 anything.
 
-**Phase R1 — retarget the gate.** `verify_release_eligibility.sh` currently requires `rc_*_validated`
-on the release commit. Once the staging gate exists, the stronger evidence is the `staging_*` tag,
-and the resolver should require both. No schedule yet; `workflow_dispatch` only.
+**Phase R1 — retarget the gate.** Move `verify_release_eligibility.sh` from `rc_*_validated` to the
+`staging_<ts>_<sha>` shape, per §3.2, and rename `skip_rc_validation` to name the gate it now
+bypasses. No schedule yet; `workflow_dispatch` only, so this is provable by hand before anything runs
+unattended.
 
-**Phase R2 — land the resolver.** `resolve_scheduled_release.sh` with §3.1's three conditions, plus a
-rate limiter only if §4 says so. It needs a `get_latest_staging_tag` in `common.sh` that matches the
-`staging_<ts>_<sha>` **shape** rather than merely the prefix, so that a hand-made `staging_hotfix`
-cannot be mistaken for a gate result.
+**Phase R2 — land the resolver.** `resolve_scheduled_release.sh` with §3.1's three conditions, and a
+`get_latest_staging_tag` in `common.sh` that matches the shape rather than the prefix. Conditions 1
+and 2 skip green; condition 3 fails red.
 
-**Phase R3 — turn on the schedule.** Add the cron and the `evaluate-schedule` job gating publish.
-`workflow_dispatch` continues to short-circuit the gate so the emergency path is unchanged.
+**Phase R3 — turn on the schedule.** The Thursday cron and an `evaluate-schedule` job gating publish.
+Keep the verdict in its own job so it is one condition rather than one per publishing step, and so a
+step appended later cannot bypass it. `workflow_dispatch` short-circuits the gate, leaving the
+emergency path as it is today.
 
-**Phase R4 — notification.** Covered under open questions; do not skip it silently.
+**Phase R4 — the badge.** The `README.md` release badge, alongside the nightly one from the other
+document's §3.4.
 
-## 6. Open decisions
+## 5. Traps
 
-1. **The cadence**, per §4. Everything else is mechanical.
-2. **Which weekday.** Thursday, unless there is a reason otherwise: it leaves a working day to react
-   to a bad release, which Friday does not.
-3. **Does the release gate still accept `rc_*_validated` alone?** If the staging tag becomes
-   mandatory, an emergency release from a commit that never reached staging needs the existing
-   `skip_rc_validation` bypass to cover it too, and that should be deliberate rather than discovered.
-4. **Nobody is told.** A skipped scheduled run is green and silent, and the breaking-change halt
-   repeats on every run with only a workflow annotation to show for it. A release cadence nobody is
-   notified about is one that stops and is not noticed — the same gap the nightly pipeline has
-   (nightly document §5.5), and worth solving once for both.
-
-## 7. Traps
-
-- **`verify_release_eligibility.sh` exits 1**, not 0, on a commit with no `rc_*_validated` tag. On an
-  unattended run that is a red night rather than a skip, which is why the resolver checks the same
-  condition first. Any new condition added to the publish path needs the same treatment.
+- **`verify_release_eligibility.sh` exits 1**, not 0, when its gate is not satisfied. On an unattended
+  run that is a red week rather than a skip, which is why the resolver checks the same condition
+  first and skips green. Any new condition added to the publish path needs the same treatment.
 - **"Breaking" is not "MAJOR".** `calculate_next_version.sh` implements SemVer clause 4, so on `0.y.z`
   a breaking change bumps MINOR and the MAJOR digit never moves. A human gate written against MAJOR
   would pass every breaking release through until `1.0.0`.

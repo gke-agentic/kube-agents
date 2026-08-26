@@ -166,15 +166,18 @@ graph TD
 
 Properties it must have:
 
-- **Its own GCP project and its own concurrency group.** No `rc-environment` lock anywhere in it.
+- **A new GCP project of its own, and its own concurrency group.** No `rc-environment` lock anywhere
+  in it. The project is created for this; it does not share `kube-agents-rc`.
 - **Teardown on success, standing environment on failure** — the same contract as RC step 5, for the
   same reason, and it must be as loud when teardown itself fails.
 - **Deterministic input**: the newest `rc_*_validated` tag, resolved once and passed to every job by
   commit SHA.
-- **Idempotent**: a night whose candidate is already promoted does not re-promote. Whether it still
-  runs the matrix is a decision, see §5.
-- **The tag push is the only thing gated on promotion eligibility**; the tests are coverage and
-  should run whenever there is a candidate.
+- **It runs every night**, whether or not the candidate is new. The matrix is the only scheduled
+  coverage `operator/agentplugins_e2e_test.py` and `gchat_agent_test.py` have, and skipping it on
+  quiet nights would silence both on exactly the nights the RC pipeline validated nothing.
+- **Idempotent**: the tag push is the only step gated on promotion eligibility, so a night whose
+  candidate is already promoted still deploys and tests, and simply pushes nothing.
+- **It promotes on the first green run.** There is no soak period: a passing matrix tags immediately.
 
 ### 3.2 What "generic" means concretely
 
@@ -190,7 +193,8 @@ Three changes, none of them to the bodies of the scripts:
    `reusable-deploy-agent.yml` already uses.
 3. **Create a `nightly` GitHub environment** holding its own `GCP_PROJECT_ID`, `GKE_CLUSTER_NAME`,
    `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_SERVICE_ACCOUNT`, plus copies of the model and chat
-   values the install needs.
+   values the install needs. Mirror `rc`'s 20 variables rather than trimming them: a missing one
+   surfaces as an install failure deep in Terraform, not as a clear error.
 
 ### 3.3 Naming scheme
 
@@ -256,6 +260,20 @@ One consequence to accept deliberately: `staging_*` is a looser trigger than `st
 beginning `staging_` deploys staging. Nothing else in the repository uses that prefix and the trigger
 is still explicit, but it is marginally easier to fire by accident than a namespaced one.
 
+### 3.4 Making a failure visible
+
+A scheduled pipeline nobody is told about is one that stops and is not noticed. Two mechanisms, both
+cheap, and neither needs infrastructure this repository does not have:
+
+- **Status badges in `README.md`**, which is what renders on the repository's landing page:
+  `![Nightly](https://github.com/gke-labs/kube-agents/actions/workflows/<file>/badge.svg)`. The badge
+  tracks the default branch's most recent run, so a failed night shows red on the front page until a
+  later one passes. There are no badges there today; add one for this pipeline and one for the
+  release pipeline together.
+- **Failures fail, skips do not.** Keep that distinction sharp or the badge stops meaning anything.
+  A night with no new candidate is a **green** run that pushed no tag. An infrastructure failure, a
+  red matrix, or a teardown that leaves a cluster running is a **red** run.
+
 ## 4. Plan
 
 Each phase is independently shippable and leaves the tree working.
@@ -276,15 +294,14 @@ from §3.2. `rc-release-pipeline.yml` keeps passing `rc` and its behaviour must 
 with the existing tests in `tests/test_provision_rc_environment.py` and
 `tests/test_teardown_rc_environment.py`, renamed alongside.
 
-**Phase 4 — build the nightly pipeline.** A new workflow calling the now-generic deploy, the extracted
-E2E runner, and the generic teardown, all with `target_environment: nightly`. It resolves the
-candidate and runs the matrix. **It does not tag anything yet.** Let it run for a week and see
-whether it is green, per `testing-strategy.md` §4.4's "gates nothing until it has been green for
-weeks".
+**Phase 4 — build the nightly pipeline, promotion included.** A new workflow calling the now-generic
+deploy, the extracted E2E runner, and the generic teardown, all with `target_environment: nightly`,
+plus the tag-push job gated on the matrix passing and the candidate not already being promoted.
+Checkout with `RELEASE_BOT_TOKEN`, or the tag will push and deploy nothing. There is no soak period:
+the first green run promotes.
 
-**Phase 5 — turn on promotion.** Add the tag-push job, gated on the matrix passing and on the
-candidate not already being promoted. Checkout with `RELEASE_BOT_TOKEN`. This is the smallest phase
-and the only one that can move staging.
+**Phase 5 — make it visible.** The two `README.md` badges from §3.4, and a pass over the pipeline
+confirming that every genuine failure is red and every "nothing to do" is green.
 
 **Phase 6 — the naming sweep.** The `E2E_SUITE` rename and the workflow-name convention, once
 nothing is in flight. Doing this earlier means rebasing every other phase through it.
@@ -293,8 +310,8 @@ nothing is in flight. Doing this earlier means rebasing every other phase throug
 
 That document currently records Nightly as **deferred** in four places, and building it makes all
 four untrue. They are not optional follow-ups: the strategy is the design of record, and a reader who
-believes it will conclude this pipeline does not exist. Update them in the phase that makes each one
-false — §4.4's banner and the §4 tier diagram at Phase 4, the rest at Phase 5.
+believes it will conclude this pipeline does not exist. Update all four in Phase 4, which is the
+phase that makes them false.
 
 | Location                | What it says now                                                                             |
 | ----------------------- | -------------------------------------------------------------------------------------------- |
@@ -308,31 +325,7 @@ Correctness and Drift, and every cell must say **blocks**, **records**, or nothi
 nightly matrix runs merged code on a schedule, which per §4.5 is the precondition for feeding Drift —
 so there is a real answer to work out with whoever owns the strategy, not a box to tick.
 
-## 5. Decisions still open
-
-Each of these changes the work; none has an obvious default.
-
-1. **New GCP project, or a second cluster in `kube-agents-rc`?** A separate project gives clean quota
-   and IAM isolation and matches `testing-strategy.md` §4.4's "its own project". A second cluster is
-   much faster to set up and still removes the collision, since the concurrency group is per-cluster.
-   Recommendation: separate project, because shared regional quota is exactly what would make two
-   pipelines collide again in a way no lock can fix.
-2. **Does the matrix run on nights with nothing new to promote?** Running it costs a full cluster
-   build for a candidate already promoted; not running it means `agentplugins_e2e_test.py` and
-   `gchat_agent_test.py` — which are in no other scheduled suite — go unexercised on those nights.
-   Recommendation: run it. The point of the tier is coverage, and skipping it silences the only
-   coverage those two suites have.
-3. **Should nightly gate promotion at all, given §4.4 says nightly gates nothing until it has been
-   green for weeks?** Promotion to staging is a deployment decision rather than a release gate, so
-   this is arguably outside that rule — but it is the same tier being asked to block something.
-   Resolve it with whoever owns the strategy doc rather than assuming.
-4. **What is the nightly's cost ceiling?** A build-test-destroy cycle is roughly 40 min + up to
-   90 min + 45 min of cluster time. If that is too much, the lever is the suite, not the shape.
-5. **What happens when the nightly fails?** Nothing notifies anyone today.
-   `main-broken-notify.yml` watches push-triggered workflows and is not a fit. A silently red nightly
-   is a nightly that stops being believed.
-
-## 6. Traps
+## 5. Traps
 
 Each of these has already cost time once.
 
@@ -352,7 +345,7 @@ Each of these has already cost time once.
   the file is on the default branch. Neither can be tested from a PR branch. Plan for the first real
   run to be after merge.
 
-## 7. New components
+## 6. New components
 
 Four things do not exist yet. Everything else in the plan is a rename, an input, or a GCP resource.
 
