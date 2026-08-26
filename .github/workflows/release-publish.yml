@@ -1,9 +1,9 @@
 name: Release & Publish (GA)
 
 on:
-  # Weekly GA release, unattended. 01:17 UTC on Friday falls in the gap between
-  # the two teams that work on this repository: Thursday 21:17 in Waterloo
-  # (20:17 in winter), Friday 03:17 in Warsaw (02:17 in winter). A release that
+  # Weekly GA release, unattended. 02:17 UTC on Friday falls in the gap between
+  # the two teams that work on this repository: Thursday 22:17 in Waterloo
+  # (21:17 in winter), Friday 04:17 in Warsaw (03:17 in winter). A release that
   # lands there has nobody mid-change when it cuts the tag, and Warsaw picks up
   # the result at the start of their Friday rather than hours after the fact.
   #
@@ -18,7 +18,7 @@ on:
   # carries its GA tag, `verify_release_eligibility.sh` reports `skip_release`
   # and the publish steps no-op.
   schedule:
-    - cron: "17 1 * * 5"
+    - cron: "17 2 * * 5"
   #checkov:skip=CKV_GHA_7:GA release publish workflow requires explicit version override, target commit, and emergency bypass parameters
   workflow_dispatch:
     inputs:

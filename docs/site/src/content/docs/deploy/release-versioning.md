@@ -12,7 +12,7 @@ sidebar:
 1. **RC Testing**: Pre-release builds are validated by the automated RC pipeline —
    [`scripts/release/README.md`](https://github.com/gke-labs/kube-agents/tree/main/scripts/release) is the canonical reference for how `rc_YYMMDDHHMM_<short_sha>` builds are created, tested end-to-end, and tagged `*_validated` on success.
 2. **SemVer Publication**: The release workflow (`release-publish.yml`) runs weekly on Friday at
-   01:17 UTC, and on demand, promoting the latest validated commit and publishing immutable
+   02:17 UTC, and on demand, promoting the latest validated commit and publishing immutable
    artifacts (example for `1.2.0`):
    - **GHCR Images**: Clean promotion retags verified commit images to `ghcr.io/gke-labs/kube-agents/platform-agent:1.2.0` (and all required images) without rebuilding.
    - **OCI Helm Charts**: `oci://ghcr.io/gke-labs/kube-agents/charts/kube-agents:1.2.0` (packaged and signed by digest via `release-publish.yml`).

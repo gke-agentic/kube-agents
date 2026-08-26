@@ -32,9 +32,9 @@ The end-to-end pipeline (`.github/workflows/rc-release-pipeline.yml`) runs on a 
 
 GA publication (`.github/workflows/release-publish.yml`) runs weekly on top of that:
 
-- **Scheduled Cadence (Fridays, `17 1 * * 5`, best-effort)**: publishes the latest commit
+- **Scheduled Cadence (Fridays, `17 2 * * 5`, best-effort)**: publishes the latest commit
   carrying an `rc_*_validated` tag, at a version derived from Conventional Commits since the
-  last GA tag. 01:17 UTC is Thursday evening in Waterloo and early Friday in Warsaw, so the
+  last GA tag. 02:17 UTC is Thursday evening in Waterloo and early Friday in Warsaw, so the
   release lands between the two teams' working days; the workflow comment records how the hour
   moves across daylight saving.
 - **Redundant Run Skipping**: when the validated commit already carries its GA tag and the
