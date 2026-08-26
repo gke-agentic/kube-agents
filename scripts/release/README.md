@@ -37,9 +37,16 @@ GA publication (`.github/workflows/release-publish.yml`) runs weekly on top of t
   last GA tag. 02:17 UTC is Thursday evening in Waterloo and early Friday in Warsaw, so the
   release lands between the two teams' working days; the workflow comment records how the hour
   moves across daylight saving.
-- **Redundant Run Skipping**: when the validated commit already carries its GA tag and the
+- **Redundant Run Skipping**: when the validated commit already carries its GA tag _and_ the
   GitHub Release exists, `verify_release_eligibility.sh` sets `skip_release=true` and the
-  promote, sign, tag and publish steps no-op — a quiet week costs one short run, not a failure.
+  promote, sign, tag and publish steps no-op, so an ordinary quiet week costs one short run.
+  A GA tag with no GitHub Release behind it resumes the publish rather than skipping it.
+- **Where the quiet week stops being quiet**: that skip needs the newest GA tag and the newest
+  `rc_*_validated` tag to name the same commit. An emergency release (`skip_rc_validation`)
+  tags a commit the RC pipeline never validated, so until a newer candidate is validated the
+  scheduled run resolves an older commit, calculates the version already in use, and stops at
+  the collision guard in `verify_release_eligibility.sh` with a non-zero exit. Nothing is
+  published — the gate fails safe — but Friday goes red until the RC pipeline catches up.
 - **Manual Trigger (`workflow_dispatch`)**: unchanged, and still the only way to pass an
   explicit version, target a specific commit, or take the `skip_rc_validation` emergency path.
   The scheduled run passes none of those inputs, so it cannot bypass RC validation.

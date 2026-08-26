@@ -2,21 +2,23 @@ name: Release & Publish (GA)
 
 on:
   # Weekly GA release, unattended. 02:17 UTC on Friday falls in the gap between
-  # the two teams that work on this repository: Thursday 22:17 in Waterloo
-  # (21:17 in winter), Friday 04:17 in Warsaw (03:17 in winter). A release that
-  # lands there has nobody mid-change when it cuts the tag, and Warsaw picks up
-  # the result at the start of their Friday rather than hours after the fact.
+  # the two teams that work on this repository: Thursday evening in Waterloo,
+  # pre-dawn Friday in Warsaw. A release landing there has nobody mid-change
+  # when it cuts the tag, and Warsaw picks the result up at the start of their
+  # Friday rather than hours after the fact.
   #
-  # GitHub crons are UTC and do not follow daylight saving, so the local times
-  # above shift by an hour twice a year; both ends of that shift stay inside the
-  # window. Minute 17 rather than 00 for the reason `scripts/release/README.md`
-  # gives for the RC pipeline: top-of-the-hour is when the Actions scheduler is
-  # most congested, and a scheduled run is best-effort either way.
+  # GitHub crons are UTC and do not follow daylight saving, and the two cities
+  # do not switch on the same date as each other either -- for a few Fridays
+  # each spring and autumn Waterloo has gone to EDT while Warsaw is still on
+  # CET. So the local pair drifts over the year between 21:17/03:17 and
+  # 22:17/04:17, and every combination stays inside the window. Minute 17
+  # rather than 00 for the reason `scripts/release/README.md` gives for the RC
+  # pipeline: top-of-the-hour is when the Actions scheduler is most congested,
+  # and a scheduled run is best-effort either way.
   #
-  # A run with nothing to release is not a failure. `calculate_next_version.sh`
-  # resolves the latest `rc_*_validated` commit and, when that commit already
-  # carries its GA tag, `verify_release_eligibility.sh` reports `skip_release`
-  # and the publish steps no-op.
+  # `scripts/release/README.md` owns what an unattended run does when there is
+  # nothing new to release -- and the one case where that quiet path does not
+  # hold.
   schedule:
     - cron: "17 2 * * 5"
   #checkov:skip=CKV_GHA_7:GA release publish workflow requires explicit version override, target commit, and emergency bypass parameters
