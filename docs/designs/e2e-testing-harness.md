@@ -40,7 +40,7 @@ Validates credential isolation, GitHub authentication, and audit watchdog capabi
 
 Verifies core platform agent responsiveness and Kubernetes operator controller reconciliation:
 
-- **Direct Agent API Health**: Sends a REST probe to `/v1/responses` via port-forwarding to verify agent process readiness and JSON schema response handling.
+- **Direct Agent API Health**: Sends a REST probe to `/v1/responses` to verify agent process readiness and JSON schema response handling. The probe reaches the credential-proxy sidecar through a `kubectl exec` relay (`scripts/exec_tunnel.py`), not `kubectl port-forward`: on a GKE Sandbox (gVisor) node pool the kubelet sets a forward up in the host-side netns and cannot see a listener inside the sandbox, so every port on the pod refuses the connection. [`platformagent-crd.md`](../site/src/content/docs/operator/platformagent-crd.md) is canonical on that constraint.
 - **Operator Plugin Reconciliation**: Deploys `AgentPlugin` Custom Resources to verify the Kubebuilder operator controller mounts plugin volumes into `platform-agent` pods and cleanly cleans up on CR deletion.
 
 ### Stage 3: Stockout Ingress & Incident Scenarios (`test_stockout_investigation.py`)
