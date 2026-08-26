@@ -1650,11 +1650,21 @@ def render_detail(
         # the blocks whose wording the filing skill dictates. Linking happens
         # after the wrap, so the escape sequences cannot affect where lines
         # break.
+        #
+        # `break_on_hyphens=False` because a reference is only recognised on
+        # the line it survives on whole, and every owner here has a hyphen in
+        # it. Breaking after one left `labs/kube-agents#874` starting a line,
+        # which matches as a qualified reference and links to a repository
+        # called `labs/kube-agents` that does not exist -- 13 of the 64
+        # terminal widths between 36 and 99 columns did that, and another 17
+        # split the slug somewhere that matched nothing and dropped the link.
+        # Hyphens are not the only place `textwrap` can break, but they are
+        # the only one a repository slug offers it.
         if not text:
             return []
         lines = [palette("  " + label, "dim")]
         for para in str(text).split("\n"):
-            for line in textwrap.wrap(para, wrap - 4) or [""]:
+            for line in textwrap.wrap(para, wrap - 4, break_on_hyphens=False) or [""]:
                 lines.append(
                     "    " + palette(refs.linkify(line, palette) if link_refs else line, style)
                 )

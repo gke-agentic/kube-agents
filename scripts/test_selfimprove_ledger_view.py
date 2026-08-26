@@ -1812,6 +1812,32 @@ class TestPullRequestReferencesAreLinked(unittest.TestCase):
         self.assertIn("/pull/874", "\n".join(linked))
         self.assertEqual([view.plain(l) for l in linked], [view.plain(l) for l in bare])
 
+    def test_a_qualified_reference_survives_the_wrap_at_every_width(self):
+        """A reference is recognised only on a line it lands on whole.
+
+        `textwrap` breaks after a hyphen by default and every owner here has
+        one, so `gke-labs/kube-agents#874` could arrive as `gke-` plus
+        `labs/kube-agents#874` -- which still matches, as a qualified
+        reference to a repository called `labs/kube-agents`. That is a live
+        link to a 404 rather than a missing one, and the widths it happens at
+        are ordinary terminal sizes.
+        """
+        entry = finding("aaaa", "high", "t", location="")
+        verdict = (
+            "held: the filing turn refused this permanently "
+            "(SKIPPED: already fixed in gke-labs/kube-agents#874)"
+        )
+        for width in range(40, 104):
+            with self.subTest(width=width):
+                text = "\n".join(
+                    view.render_detail(
+                        entry, verdict, NOW, view.Palette(True), width, True,
+                        REPO, ROOTS, refs(),
+                    )
+                )
+                self.assertIn("https://github.com/gke-labs/kube-agents/pull/874", text)
+                self.assertNotIn("github.com/labs/kube-agents", text)
+
     def test_colour_off_means_no_escape_sequences_at_all(self):
         entry = finding("aaaa", "high", "t", location="")
         text = "\n".join(
