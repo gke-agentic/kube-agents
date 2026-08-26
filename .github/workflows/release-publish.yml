@@ -1,6 +1,24 @@
 name: Release & Publish (GA)
 
 on:
+  # Weekly GA release, unattended. 01:17 UTC on Friday falls in the gap between
+  # the two teams that work on this repository: Thursday 21:17 in Waterloo
+  # (20:17 in winter), Friday 03:17 in Warsaw (02:17 in winter). A release that
+  # lands there has nobody mid-change when it cuts the tag, and Warsaw picks up
+  # the result at the start of their Friday rather than hours after the fact.
+  #
+  # GitHub crons are UTC and do not follow daylight saving, so the local times
+  # above shift by an hour twice a year; both ends of that shift stay inside the
+  # window. Minute 17 rather than 00 for the reason `scripts/release/README.md`
+  # gives for the RC pipeline: top-of-the-hour is when the Actions scheduler is
+  # most congested, and a scheduled run is best-effort either way.
+  #
+  # A run with nothing to release is not a failure. `calculate_next_version.sh`
+  # resolves the latest `rc_*_validated` commit and, when that commit already
+  # carries its GA tag, `verify_release_eligibility.sh` reports `skip_release`
+  # and the publish steps no-op.
+  schedule:
+    - cron: "17 1 * * 5"
   #checkov:skip=CKV_GHA_7:GA release publish workflow requires explicit version override, target commit, and emergency bypass parameters
   workflow_dispatch:
     inputs:
@@ -34,6 +52,11 @@ jobs:
   publish-release:
     name: Publish GA Release
     runs-on: ubuntu-latest
+    # The repository guard is load-bearing now that a cron triggers this
+    # workflow: a fork inherits the schedule but none of the release
+    # credentials, so an unguarded weekly run would fail there and mail the fork
+    # owner. On a `schedule` event `github.ref` is the default branch, so the
+    # second clause holds for the cron and pins a manual dispatch to `main`.
     if: github.repository == 'gke-labs/kube-agents' && github.ref == 'refs/heads/main'
     permissions:
       contents: write

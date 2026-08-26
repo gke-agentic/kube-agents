@@ -30,6 +30,20 @@ The end-to-end pipeline (`.github/workflows/rc-release-pipeline.yml`) runs on a 
 - **Manual Trigger (`workflow_dispatch`)**:
   - Requires an explicit `commit_sha` input to rigorously test a specific target commit.
 
+GA publication (`.github/workflows/release-publish.yml`) runs weekly on top of that:
+
+- **Scheduled Cadence (Fridays, `17 1 * * 5`, best-effort)**: publishes the latest commit
+  carrying an `rc_*_validated` tag, at a version derived from Conventional Commits since the
+  last GA tag. 01:17 UTC is Thursday evening in Waterloo and early Friday in Warsaw, so the
+  release lands between the two teams' working days; the workflow comment records how the hour
+  moves across daylight saving.
+- **Redundant Run Skipping**: when the validated commit already carries its GA tag and the
+  GitHub Release exists, `verify_release_eligibility.sh` sets `skip_release=true` and the
+  promote, sign, tag and publish steps no-op — a quiet week costs one short run, not a failure.
+- **Manual Trigger (`workflow_dispatch`)**: unchanged, and still the only way to pass an
+  explicit version, target a specific commit, or take the `skip_rc_validation` emergency path.
+  The scheduled run passes none of those inputs, so it cannot bypass RC validation.
+
 ## Workflow Mapping
 
 These modular scripts back the corresponding child workflows in `.github/workflows/`:
