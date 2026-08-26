@@ -1,6 +1,6 @@
-# Release Candidate Automation Scripts
+# Release Automation Scripts
 
-This directory contains executable scripts supporting the Release Candidate (RC) end-to-end automation pipeline.
+This directory contains executable scripts supporting the Release Candidate (RC) end-to-end automation pipeline and the GA publication that promotes a validated candidate.
 
 ## Overview of Scripts
 
@@ -44,12 +44,16 @@ GA publication (`.github/workflows/release-publish.yml`) runs weekly on top of t
 - **Where the quiet week stops being quiet**: that skip needs the newest GA tag and the newest
   `rc_*_validated` tag to name the same commit. An emergency release (`skip_rc_validation`)
   tags a commit the RC pipeline never validated, so until a newer candidate is validated the
-  scheduled run resolves an older commit, calculates the version already in use, and stops at
-  the collision guard in `verify_release_eligibility.sh` with a non-zero exit. Nothing is
-  published — the gate fails safe — but Friday goes red until the RC pipeline catches up.
-- **Manual Trigger (`workflow_dispatch`)**: unchanged, and still the only way to pass an
-  explicit version, target a specific commit, or take the `skip_rc_validation` emergency path.
-  The scheduled run passes none of those inputs, so it cannot bypass RC validation.
+  scheduled run resolves an older commit and calculates the version already in use. Where that
+  older commit is itself GA-tagged, it stops at the collision guard in
+  `verify_release_eligibility.sh`; where it is not, eligibility passes and it stops instead at
+  the digest-mismatch guard in `promote_release_images.sh`, which refuses to move an `X.Y.Z`
+  image tag that already points at another commit. Either way nothing is published — both
+  gates fail safe — but Friday goes red until the RC pipeline catches up.
+- **Manual Trigger (`workflow_dispatch`)**: the only way to pass an explicit version, target a
+  specific commit, or take the `skip_rc_validation` emergency path. A dispatch that names none
+  of them resolves exactly as the scheduled run does. The scheduled run cannot pass them at
+  all, so it cannot bypass RC validation.
 
 ## Workflow Mapping
 

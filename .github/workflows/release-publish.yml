@@ -8,10 +8,11 @@ on:
   # Friday rather than hours after the fact.
   #
   # GitHub crons are UTC and do not follow daylight saving, and the two cities
-  # do not switch on the same date as each other either -- for a few Fridays
-  # each spring and autumn Waterloo has gone to EDT while Warsaw is still on
-  # CET. So the local pair drifts over the year between 21:17/03:17 and
-  # 22:17/04:17, and every combination stays inside the window. Minute 17
+  # do not switch on the same date as each other either: North America springs
+  # forward first and falls back last, so for a few Fridays each spring and
+  # autumn Waterloo is on EDT while Warsaw is on CET. The local pair therefore
+  # drifts over the year across 21:17/03:17, 22:17/03:17 and 22:17/04:17, and
+  # every one of those stays inside the window. Minute 17
   # rather than 00 for the reason `scripts/release/README.md` gives for the RC
   # pipeline: top-of-the-hour is when the Actions scheduler is most congested,
   # and a scheduled run is best-effort either way.
