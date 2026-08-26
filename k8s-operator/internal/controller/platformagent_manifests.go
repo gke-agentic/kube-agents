@@ -21,7 +21,6 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
-	"net"
 	"os"
 	"path"
 	"reflect"
@@ -3876,21 +3875,17 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, p
 		},
 	}
 
-	for _, rawIP := range dnsIPs {
-		dnsClusterIP := strings.Trim(rawIP, "[]")
-		if dnsClusterIP == "" || net.ParseIP(dnsClusterIP) == nil {
-			dnsClusterIP = defaultDNSClusterIP
-		}
-		dnsCidr := dnsClusterIP + "/32"
-		if strings.Contains(dnsClusterIP, ":") {
-			dnsCidr = dnsClusterIP + "/128"
-		}
-		dnsPeers = append(dnsPeers, networkingv1.NetworkPolicyPeer{
-			IPBlock: &networkingv1.IPBlock{
-				CIDR: dnsCidr,
-			},
-		})
+	// Through formatCIDRPeers rather than a third spelling of /32-or-/128 in this
+	// file: it shares normalizeCIDRTarget with toEgressRules, and it sorts and
+	// dedupes. enforceMinPrefix is false because these are bare IPs resolved by the
+	// operator, which always widen to a single host. The default is the fallback for
+	// nothing surviving, not for each entry that does not parse -- two bad entries
+	// used to emit the default twice.
+	dnsIPPeers := formatCIDRPeers(dnsIPs, false)
+	if len(dnsIPPeers) == 0 {
+		dnsIPPeers = formatCIDRPeers([]string{defaultDNSClusterIP}, false)
 	}
+	dnsPeers = append(dnsPeers, dnsIPPeers...)
 
 	egressRules := []networkingv1.NetworkPolicyEgressRule{
 		// 1. Cluster DNS

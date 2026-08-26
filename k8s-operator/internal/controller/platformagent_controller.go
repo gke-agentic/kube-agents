@@ -629,6 +629,13 @@ func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, ag
 		// above does. The name is agent-prefixed and namespaced, so a collision is
 		// unlikely -- but "enabled: false" is a request to stop managing policy, not
 		// a licence to delete a policy somebody else created under that name.
+		//
+		// The FQDN cleanup on the ENABLED path below (fqdnEnabled == false) deletes
+		// the same name unguarded, and deliberately still does: an operator old
+		// enough to have created that policy without an owner reference would leave
+		// it behind here, and FQDN filtering the user just switched off would keep
+		// applying. That risk is not worth taking on this path, where the whole
+		// point is to stop managing policy at all.
 		fqdnNetpol := &unstructured.Unstructured{}
 		fqdnNetpol.SetGroupVersionKind(schema.GroupVersionKind{
 			Group:   "networking.gke.io",
@@ -689,9 +696,11 @@ func (r *PlatformAgentReconciler) reconcileNetworkPolicy(ctx context.Context, ag
 			return
 		}
 		// normalizeCIDRTarget, not a local parse: it takes the address family from
-		// the address rather than the mask width, which is what keeps an
-		// IPv4-mapped IPv6 block such as ::ffff:0a00:0/108 out of this list as the
-		// 10.0.0.0/12 it would otherwise print as.
+		// the address rather than the mask width, so an IPv4-mapped IPv6 block is
+		// measured against the IPv4 floor it will actually print as.
+		// ::ffff:a00:0/104 used to clear the /48 IPv6 floor here and land in the
+		// list as 10.0.0.0/8; it is now rejected, while ::ffff:a00:0/108 still
+		// passes because /108 is the IPv4 /12 that is exactly the floor.
 		ipNet, ok := normalizeCIDRTarget(raw, true)
 		if !ok {
 			logf.FromContext(ctx).Info("Ignoring CIDR in annotation: unparseable, or broader than the /12 (IPv4) or /48 (IPv6) floor", "annotation", annotationName, "cidr", raw)

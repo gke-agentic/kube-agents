@@ -434,8 +434,9 @@ Configures the operator-generated egress `NetworkPolicy`.
   One shape gets past that check and is dropped by the operator instead: an IPv4-mapped IPv6 block
   such as `::ffff:0:0/96` is a 128-bit prefix by every textual measure, so it clears the IPv6 floor,
   and the operator re-measures it against the IPv4 floor once it has collapsed it to the IPv4 block
-  it means. An `except` block outside its peer's CIDR is dropped too, and a rule left with no usable
-  peer is dropped whole — a rule carrying ports and no peer would otherwise permit egress to every
+  it means. An `except` block that is not a strict subset of its peer's CIDR is dropped too — the API
+  server rejects the whole policy for one that is not — and a rule left with no usable peer is
+  dropped whole — a rule carrying ports and no peer would otherwise permit egress to every
   destination. All three are logged, so the operator's log is where a rule that did not take effect
   explains itself.
 

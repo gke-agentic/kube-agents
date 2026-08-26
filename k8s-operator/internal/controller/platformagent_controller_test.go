@@ -1091,6 +1091,83 @@ func TestBuildNetworkPolicy_ClusterDNS(t *testing.T) {
 	}
 }
 
+// The two branches buildNetworkPolicy grew for spec.networkPolicy, tested where
+// they are implemented. TestResolveNetpolProfile covers the profile they read;
+// nothing covered the policy they build, so deleting either append would have
+// shipped green.
+func TestBuildNetworkPolicy_ProfileDrivenRules(t *testing.T) {
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+		},
+	}
+
+	t.Run("AdditionalEgressIsAppended", func(t *testing.T) {
+		profile := defaultTestNetpolProfile()
+		tcp := corev1.ProtocolTCP
+		port := intstr.FromInt32(5432)
+		profile.AdditionalEgress = []networkingv1.NetworkPolicyEgressRule{{
+			Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &port}},
+			To: []networkingv1.NetworkPolicyPeer{{
+				IPBlock: &networkingv1.IPBlock{CIDR: "10.200.0.0/16"},
+			}},
+		}}
+
+		netpol := buildNetworkPolicy(agent, nil, profile, false, "", false)
+		found := false
+		for _, rule := range netpol.Spec.Egress {
+			for _, peer := range rule.To {
+				if peer.IPBlock != nil && peer.IPBlock.CIDR == "10.200.0.0/16" {
+					found = true
+					if len(rule.Ports) != 1 || rule.Ports[0].Port.IntValue() != 5432 {
+						t.Errorf("additional egress rule lost its ports: %+v", rule.Ports)
+					}
+				}
+			}
+		}
+		if !found {
+			t.Errorf("profile.AdditionalEgress was not appended to the generated policy")
+		}
+	})
+
+	t.Run("EmptyMetadataDaemonIPSuppressesRule3", func(t *testing.T) {
+		profile := defaultTestNetpolProfile()
+		profile.MetadataDaemonIP = ""
+		profile.MetadataDaemonSource = netpolSourceSuppressed
+
+		netpol := buildNetworkPolicy(agent, nil, profile, false, "", false)
+		for _, rule := range netpol.Spec.Egress {
+			for _, p := range rule.Ports {
+				if p.Port != nil && p.Port.IntValue() == 988 {
+					t.Fatalf("rule 3 (port 988) survived metadataDaemon.endpoint suppression")
+				}
+			}
+		}
+
+		// The pre-DNAT rule 2 is a separate rule and must NOT go with it.
+		withDaemon := buildNetworkPolicy(agent, nil, defaultTestNetpolProfile(), false, "", false)
+		if len(netpol.Spec.Egress) != len(withDaemon.Spec.Egress)-1 {
+			t.Errorf("suppression removed %d rules, want exactly 1", len(withDaemon.Spec.Egress)-len(netpol.Spec.Egress))
+		}
+		found80 := false
+		for _, rule := range netpol.Spec.Egress {
+			for _, p := range rule.Ports {
+				if p.Port != nil && p.Port.IntValue() == 80 {
+					for _, peer := range rule.To {
+						if peer.IPBlock != nil && peer.IPBlock.CIDR == metadataLinkLocalIP+"/32" {
+							found80 = true
+						}
+					}
+				}
+			}
+		}
+		if !found80 {
+			t.Errorf("rule 2 (link-local metadata on port 80) was removed along with rule 3")
+		}
+	})
+}
+
 func TestBuildNetworkPolicy_MetadataDaemonPeers(t *testing.T) {
 	agent := &agentv1alpha1.PlatformAgent{
 		ObjectMeta: metav1.ObjectMeta{

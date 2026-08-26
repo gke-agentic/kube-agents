@@ -608,10 +608,11 @@ type EgressPeer struct {
 	// +kubebuilder:validation:Pattern=`^((((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(/(1[2-9]|2[0-9]|3[0-2]))?)|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}(/(4[89]|[5-9][0-9]|1[01][0-9]|12[0-8]))?))$`
 	CIDR string `json:"cidr"`
 
-	// Except carves ranges out of CIDR. Each entry must be a CIDR inside CIDR: the
-	// API server rejects the whole NetworkPolicy otherwise, which would freeze every
-	// other egress rule at its previous revision, so the resolver drops an except it
-	// cannot place inside its peer rather than forwarding it.
+	// Except carves ranges out of CIDR. Each entry must be a strict subset of CIDR --
+	// contained by it and narrower than it -- because ValidateIPBlock rejects the
+	// whole NetworkPolicy otherwise, which would freeze every other egress rule at
+	// its previous revision. The resolver applies the same test and drops an except
+	// that fails it rather than forwarding it.
 	// +kubebuilder:validation:MaxItems=16
 	// +kubebuilder:validation:items:MaxLength=49
 	// +kubebuilder:validation:items:Pattern=`^((((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)/([0-9]|[12][0-9]|3[0-2]))|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])))$`

@@ -305,11 +305,14 @@ func toEgressRules(log logr.Logger, rules []agentv1alpha1.EgressRule) []networki
 			var validExcept []string
 			for _, ex := range p.Except {
 				// The API server rejects the whole NetworkPolicy when an except
-				// falls outside its peer's CIDR (k8s.io/api/networking/v1: "Except
-				// values will be rejected if they are outside the cidr range"), and
-				// that rejection freezes every other egress rule at its previous
-				// revision -- including the DNS ClusterIP rediscovery. Contain it
-				// here so one bad except costs its own peer and nothing else.
+				// is not a STRICT subset of its peer's CIDR -- ValidateIPBlock in
+				// pkg/apis/networking/validation fails on
+				// `cidrMaskLen >= exceptMaskLen` as well as on non-containment, so
+				// an except equal to its peer is rejected too. That rejection
+				// freezes every other egress rule at its previous revision,
+				// including the DNS ClusterIP rediscovery, so the same condition is
+				// applied here and one bad except costs its own peer and nothing
+				// else.
 				exNet, exOK := normalizeCIDRTarget(ex, false)
 				if !exOK {
 					log.Info("Dropping unparseable except block in spec.networkPolicy.additionalEgress",
@@ -317,7 +320,7 @@ func toEgressRules(log logr.Logger, rules []agentv1alpha1.EgressRule) []networki
 					continue
 				}
 				exOnes, exBits := exNet.Mask.Size()
-				if exBits != peerBits || exOnes < peerOnes || !ipNet.Contains(exNet.IP) {
+				if exBits != peerBits || exOnes <= peerOnes || !ipNet.Contains(exNet.IP) {
 					log.Info("Dropping except block outside its peer CIDR in spec.networkPolicy.additionalEgress",
 						"rule", i, "cidr", ipNet.String(), "except", ex)
 					continue

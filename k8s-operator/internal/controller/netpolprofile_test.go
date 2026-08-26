@@ -411,8 +411,10 @@ func TestResolveNetpolProfile(t *testing.T) {
 								Except: []string{
 									"192.168.0.0/16", // outside the peer
 									"fd00::/64",      // wrong family
-									"10.1.0.0/16",    // inside, kept
+									"10.1.0.0/16",    // strictly inside, kept
 									"10.0.0.0/8",     // broader than the peer
+									"10.0.0.0/12",    // equal to the peer: ValidateIPBlock
+									//                   requires a STRICT subset
 									"not-a-cidr",
 								},
 							}},
