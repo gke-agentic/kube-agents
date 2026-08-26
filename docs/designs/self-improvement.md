@@ -990,6 +990,16 @@ carry its location verbatim on a `Location:` line so the file name is there to b
 names carry the install's cluster name for the adjacent reason: several loops pushing to one fork
 must not collide on a branch name two of them would otherwise both derive from the same bug.
 
+The search runs twice, and the second time is the one that does the work. §0's pass happens before
+the turn has read any code; the turn then writes the change, commits and pushes, which on the runs
+watched so far takes eight to eighteen minutes. Installs share an hourly schedule, so that window
+is precisely when another one files the pull request this turn is about to duplicate — a check that
+only ran at the start would miss every collision it exists to catch. So §6 repeats it immediately
+before `gh pr create`, narrowed to `is:open` because by then the question is no longer whether the
+finding is live but whether someone got there first. Both passes fail open: a search that errors
+does not stop a filing, since a finding dropped on a network error is a finding lost and a
+duplicate is merely closable.
+
 Two of the repository's rules apply awkwardly to a machine author and are worth settling here. The
 **Self-Review** section must not claim a review it did not perform: the runner is the context that
 wrote the change, and `AGENTS.md` is explicit that reviewing a diff in the context that produced it

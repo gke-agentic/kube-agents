@@ -327,7 +327,32 @@ happening some other way.
 Write the body to `$HERMES_HOME/pr-body.md` first — it is long, and a `--body` argument that size
 is a quoting accident waiting to happen. Use that path and not `/tmp`: `HERMES_WRITE_SAFE_ROOT` is
 this run's home, so a write anywhere else is denied and you spend calls discovering it. Live run
-`selfimprove-fork-4` spent them on `/tmp/pr_body.md`. Then:
+`selfimprove-fork-4` spent them on `/tmp/pr_body.md`. Then check one last time that nobody has
+filed this while you were working:
+
+```bash
+curl -sSf "https://api.github.com/search/issues?q=repo:<the upstream from your brief>+is:pr+is:open+<the PRIOR ART SEARCH KEY from your brief>"
+```
+
+Same key as §0 and the same rule for reading a hit — the same file is not the same defect, and you
+have just spent a turn on the fix, so hold this one to the standard §0 sets rather than looking for
+a reason to stop. What is different is only how much time has passed. §0's search ran before you
+read any code; since then you have written a change, committed, and pushed, which on the runs
+watched so far is eight to eighteen minutes. Several installations of this loop run against one
+upstream on the same hourly schedule, so that window is exactly when another one of them opens the
+pull request you are about to duplicate.
+
+If an open pull request for the same defect appeared in that window, stop and print
+`SKIPPED: already filed as #<n>`, nothing after the number. Your branch stays pushed and costs
+nothing; the finding keeps its counts, and if that pull request closes unmerged a later run picks
+it up. `is:open` is deliberate here where §0 searched every state: §0 was deciding whether the
+finding is still live at all, which needs the closed and merged history, while this is the narrower
+question of whether someone beat you to it in the last quarter of an hour.
+
+If the search fails, open the pull request. A failed call is not evidence of a duplicate, and a
+finding dropped on a network error is a finding lost.
+
+Then:
 
 ```bash
 gh pr create \
