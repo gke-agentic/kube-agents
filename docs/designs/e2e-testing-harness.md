@@ -8,11 +8,38 @@
 
 The `kube-agents` test execution model partitions tests across three distinct automation tiers:
 
-| Tier                            | Trigger                                                                             | Purpose                                                                                               | Execution Target                                                         |
-| :------------------------------ | :---------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------- | :----------------------------------------------------------------------- |
-| **Tier 1: PR CI**               | Pull Request (`pull_request`)                                                       | Fast, offline unit and structural validation on every change                                          | `make test-python`, `make validate`, `make docs-check`                   |
-| **Tier 2: RC Promotion Gate**   | Release Candidate build (`rc-release-pipeline.yml`)                                 | Validates candidate container images on a freshly provisioned GKE cluster before tagging `_validated` | `make test-e2e` (`scripts/release/execute_e2e_tests.py`)                 |
-| **Tier 3: Nightly & On-Demand** | Nightly cron or manual dispatch (`e2e-nightly-matrix.yml`, `e2e-manual-runner.yml`) | Full matrix across multi-cluster environments, audit streams, and GPU/scarcity stockout scenarios     | `make test-e2e` with `FLEET_AUDIT_STREAMS=all`, `STOCKOUT_SCENARIOS=all` |
+| Tier                            | Trigger                                                                                                                  | Purpose                                                                                               | Execution Target                                                         |
+| :------------------------------ | :----------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------- | :----------------------------------------------------------------------- |
+| **Tier 1: PR CI**               | Pull Request (`pull_request`)                                                                                            | Fast, offline unit and structural validation on every change                                          | `make test-python`, `make validate`, `make docs-check`                   |
+| **Tier 2: RC Promotion Gate**   | Release Candidate build (`rc-release-pipeline.yml`)                                                                      | Validates candidate container images on a freshly provisioned GKE cluster before tagging `_validated` | `make test-e2e` (`scripts/release/execute_e2e_tests.py`)                 |
+| **Tier 3: Nightly & On-Demand** | Nightly staging promotion (`staging-promote.yml`) or manual dispatch (`e2e-nightly-matrix.yml`, `e2e-manual-runner.yml`) | Full matrix across multi-cluster environments, audit streams, and GPU/scarcity stockout scenarios     | `make test-e2e` with `FLEET_AUDIT_STREAMS=all`, `STOCKOUT_SCENARIOS=all` |
+
+### Tier 3 as the staging promotion gate
+
+`e2e-nightly-matrix.yml` holds no schedule of its own. The nightly cron lives on
+`staging-promote.yml`, which calls it as a reusable workflow and treats the result as the gate on
+promoting a validated candidate to the staging environment:
+
+```mermaid
+graph LR
+    A["resolve latest rc_*_validated"] --> B["deploy that commit to the RC cluster"]
+    B --> C["e2e-nightly-matrix.yml @ that commit"]
+    C -->|pass| D["push staging/&lt;rc_tag&gt;"]
+    C -->|fail| E["push nothing; staging unchanged"]
+    D --> F["staging-redeploy-{agent,controller,integrations}"]
+```
+
+Two properties make the gate mean something. The candidate is **deployed before it is tested**,
+because the three-hourly RC pipeline deploys a candidate before it tests one and so leaves a failed
+candidate installed until the next run — testing that and promoting the last known-good tag would
+validate one artifact and ship another. And the matrix run **asserts the deployed image matches the
+commit under test** (`wait_for_gke_readiness.sh` with `COMMIT_SHA`), so an RC deploy that lands
+between the two steps fails the run rather than quietly redirecting it.
+
+Both workflows take the singleton `rc-environment` concurrency group, which serializes them against
+`rc-deploy-environment.yml` and the RC pipeline's own test step. GitHub holds only one run pending
+per group, so a long promotion run can cost a three-hourly RC run its slot; that run is idempotent
+and the next one three hours later picks the candidate back up.
 
 ---
 

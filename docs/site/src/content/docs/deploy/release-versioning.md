@@ -7,6 +7,17 @@ sidebar:
 
 `kube-agents` follows strict [Semantic Versioning 2.0.0](https://semver.org/) (`MAJOR.MINOR.PATCH`) for production releases across Docker images, OCI Helm charts, and Terraform modules.
 
+## Promotion from Release Candidate (RC) to staging
+
+Staging tracks the newest release candidate that has passed the full nightly E2E matrix. The
+promotion is automatic: `staging-promote.yml` runs at 02:00 UTC, deploys the newest
+`rc_*_validated` candidate to the RC cluster, runs the matrix against that exact commit, and
+pushes a `staging/<rc_tag>` Git tag only if it passes. The three `staging-redeploy-*.yml`
+workflows deploy from that tag. A failed matrix pushes nothing, so staging stays on the last
+candidate that passed. Pushing a `staging/**` tag by hand still works and still deploys —
+[`docs/designs/e2e-testing-harness.md`](https://github.com/gke-labs/kube-agents/blob/main/docs/designs/e2e-testing-harness.md)
+is the canonical description of the gate.
+
 ## Promotion from Release Candidate (RC) to SemVer
 
 1. **RC Testing**: Pre-release builds are validated by the automated RC pipeline —

@@ -1,0 +1,182 @@
+name: Nightly Staging Promotion
+
+# Promotes the newest validated release candidate to the staging environment,
+# once a night, without anyone pushing a tag by hand.
+#
+# The gate is deploy-then-test, not test-then-hope: the candidate is installed on
+# the RC cluster first, the full E2E matrix runs against that exact commit, and
+# only a green matrix pushes the `staging/**` tag that the three
+# staging-redeploy-*.yml workflows deploy from. A red matrix pushes nothing, so
+# staging keeps running whatever it was already running.
+#
+# Why the candidate is redeployed rather than tested where it sits: the 3-hourly
+# rc-release-pipeline.yml deploys a candidate *before* it tests one, so between
+# runs the RC cluster can be holding a commit that failed its gate. Testing that
+# and then promoting the last known-good tag would validate one artifact and ship
+# a different one.
+#
+# The promotion tag is derived from the candidate (staging/rc_YYMMDDHHMM_<sha>),
+# so re-running this pipeline against an already-promoted candidate resolves to
+# skip_promotion=true and does nothing.
+
+on:
+  schedule:
+    # 02:00 UTC -- the slot vacated by e2e-nightly-matrix.yml, whose cron this
+    # pipeline absorbed so the two stop contending for the `rc-environment` lock.
+    - cron: "0 2 * * *"
+  #checkov:skip=CKV_GHA_7:Manual promotion runs require an explicit validated candidate tag override
+  workflow_dispatch:
+    inputs:
+      rc_tag:
+        description: "Validated RC tag to promote (Optional, Default: latest rc_*_validated)"
+        required: false
+        type: string
+
+concurrency:
+  group: staging-promotion
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  resolve-candidate:
+    name: Resolve Validated Candidate
+    # A fork inherits the cron but none of the release credentials, so every
+    # scheduled run there would fail and mail the fork owner. The guard repeats
+    # on each job rather than relying on the skip cascading through `needs`.
+    if: github.repository == 'gke-labs/kube-agents'
+    runs-on: ubuntu-latest
+    environment: rc
+    permissions:
+      contents: read
+    outputs:
+      commit_sha: ${{ steps.resolve_candidate.outputs.commit_sha }}
+      rc_tag: ${{ steps.resolve_candidate.outputs.rc_tag }}
+      staging_tag: ${{ steps.resolve_candidate.outputs.staging_tag }}
+      skip_promotion: ${{ steps.resolve_candidate.outputs.skip_promotion }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve Validated Release Candidate
+        id: resolve_candidate
+        env:
+          RC_TAG: ${{ inputs.rc_tag }}
+          GH_ORG: ${{ vars.GH_ORG }}
+          GH_REPO: ${{ vars.GH_REPO }}
+        run: ./scripts/release/resolve_promotion_candidate.sh
+
+      # An RC tag says the images existed when the candidate was validated. GHCR
+      # retention, not the tag, decides whether they still do -- and a staging
+      # deploy that discovers this reaches the cluster before it fails.
+      - name: Verify Prebuilt Container Images Exist in Registry
+        if: steps.resolve_candidate.outputs.skip_promotion != 'true'
+        env:
+          COMMIT_SHA: ${{ steps.resolve_candidate.outputs.commit_sha }}
+          REGISTRY_PREFIX: ${{ vars.REGISTRY_PREFIX }}
+        run: ./scripts/release/verify_candidate_images.sh
+
+      - name: Summarise Candidate
+        env:
+          RC_TAG: ${{ steps.resolve_candidate.outputs.rc_tag }}
+          COMMIT_SHA: ${{ steps.resolve_candidate.outputs.commit_sha }}
+          STAGING_TAG: ${{ steps.resolve_candidate.outputs.staging_tag }}
+          SKIP_PROMOTION: ${{ steps.resolve_candidate.outputs.skip_promotion }}
+        run: |
+          {
+            echo "### Staging promotion candidate"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Validated RC tag | \`${RC_TAG}\` |"
+            echo "| Commit | \`${COMMIT_SHA}\` |"
+            echo "| Staging tag | \`${STAGING_TAG}\` |"
+            echo "| Already promoted | ${SKIP_PROMOTION} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-candidate:
+    name: Deploy Candidate to RC Environment
+    needs: resolve-candidate
+    if: |
+      github.repository == 'gke-labs/kube-agents' &&
+      needs.resolve-candidate.outputs.skip_promotion != 'true'
+    uses: ./.github/workflows/rc-deploy-environment.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      rc_tag: ${{ needs.resolve-candidate.outputs.rc_tag }}
+    secrets:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+
+  run-e2e-matrix:
+    name: Run Full E2E Matrix
+    needs: [resolve-candidate, deploy-candidate]
+    if: |
+      github.repository == 'gke-labs/kube-agents' &&
+      needs.resolve-candidate.outputs.skip_promotion != 'true'
+    permissions:
+      contents: read
+      id-token: write
+    # inherit, not an explicit mapping: the called workflow's job reads
+    # E2E_CHAT_* and GCP_SA_KEY under `environment: rc`. A `uses:` job cannot
+    # declare an environment, so mapping them here would evaluate them in this
+    # job and pass empty strings through to the tests.
+    secrets: inherit
+    uses: ./.github/workflows/e2e-nightly-matrix.yml # zizmor: ignore[secrets-inherit]
+    with:
+      commit_sha: ${{ needs.resolve-candidate.outputs.commit_sha }}
+      test_environment: "nightly-e2e"
+      stockout_scenarios: "all"
+      fleet_audit_streams: "all"
+
+  promote-to-staging:
+    name: Promote to Staging
+    needs: [resolve-candidate, run-e2e-matrix]
+    if: |
+      github.repository == 'gke-labs/kube-agents' &&
+      needs.resolve-candidate.outputs.skip_promotion != 'true'
+    runs-on: ubuntu-latest
+    # `rc`, not `staging`: this job pushes a Git tag and touches no cluster, and
+    # RELEASE_BOT_TOKEN lives on the rc environment alongside the other tagging
+    # steps. Deploying to staging is the staging-redeploy-*.yml runs the tag starts.
+    environment: rc
+    permissions:
+      contents: write
+
+    steps:
+      # RELEASE_BOT_TOKEN, not the default GITHUB_TOKEN: a tag pushed with the
+      # workflow's own token starts no workflow, so the staging-redeploy-*.yml
+      # runs this whole pipeline exists to trigger would never fire.
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_BOT_TOKEN }}
+
+      - name: Push Staging Promotion Tag
+        env:
+          COMMIT_SHA: ${{ needs.resolve-candidate.outputs.commit_sha }}
+          STAGING_TAG: ${{ needs.resolve-candidate.outputs.staging_tag }}
+          RC_TAG: ${{ needs.resolve-candidate.outputs.rc_tag }}
+          GH_ORG: ${{ vars.GH_ORG }}
+          GH_REPO: ${{ vars.GH_REPO }}
+        run: ./scripts/release/tag_staging_promotion.sh
+
+      - name: Summarise Promotion
+        env:
+          STAGING_TAG: ${{ needs.resolve-candidate.outputs.staging_tag }}
+          COMMIT_SHA: ${{ needs.resolve-candidate.outputs.commit_sha }}
+        run: |
+          {
+            echo "### Promoted to staging"
+            echo ""
+            echo "Pushed \`${STAGING_TAG}\` at \`${COMMIT_SHA}\`."
+            echo "The staging-redeploy-{agent,controller,integrations} workflows deploy from here."
+          } >> "$GITHUB_STEP_SUMMARY"
