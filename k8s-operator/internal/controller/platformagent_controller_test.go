@@ -3618,8 +3618,8 @@ func TestSyncGithubTokenMinterConfigMap(t *testing.T) {
 			Namespace: "test-ns",
 		},
 		Data: map[string]string{
-			"default.yaml":    "version: 'minty.abcxyz.dev/v2'\n",
-			"stale-repo.yaml": "version: 'minty.abcxyz.dev/v2'\n",
+			"default.yaml":            "version: 'minty.abcxyz.dev/v2'\n",
+			"unmanaged-static.yaml":   "version: 'minty.abcxyz.dev/v2'\n",
 		},
 	}
 
@@ -3628,13 +3628,26 @@ func TestSyncGithubTokenMinterConfigMap(t *testing.T) {
 
 	ctx := context.Background()
 
+	// 0. Sync with empty managed_repos on fresh ConfigMap — should be a no-op and preserve unmanaged-static.yaml
+	err := r.syncGithubTokenMinterConfigMap(ctx, agent, "")
+	if err != nil {
+		t.Fatalf("syncGithubTokenMinterConfigMap with empty repos failed: %v", err)
+	}
+
+	updatedCM := &corev1.ConfigMap{}
+	if err := cl.Get(ctx, client.ObjectKey{Name: "github-token-minter-config", Namespace: "test-ns"}, updatedCM); err != nil {
+		t.Fatalf("failed to get updated ConfigMap: %v", err)
+	}
+	if _, exists := updatedCM.Data["unmanaged-static.yaml"]; !exists {
+		t.Errorf("expected unmanaged-static.yaml to be preserved when managed_repos is empty")
+	}
+
 	// 1. Sync with managed_repos: "test-org/repo-1, test-org/repo-2"
-	err := r.syncGithubTokenMinterConfigMap(ctx, agent, "test-org/repo-1, test-org/repo-2")
+	err = r.syncGithubTokenMinterConfigMap(ctx, agent, "test-org/repo-1, test-org/repo-2")
 	if err != nil {
 		t.Fatalf("syncGithubTokenMinterConfigMap failed: %v", err)
 	}
 
-	updatedCM := &corev1.ConfigMap{}
 	if err := cl.Get(ctx, client.ObjectKey{Name: "github-token-minter-config", Namespace: "test-ns"}, updatedCM); err != nil {
 		t.Fatalf("failed to get updated ConfigMap: %v", err)
 	}
@@ -3647,14 +3660,20 @@ func TestSyncGithubTokenMinterConfigMap(t *testing.T) {
 		t.Errorf("expected repo-2.yaml to be created with base template, got %q", updatedCM.Data["repo-2.yaml"])
 	}
 
-	// Verify stale-repo.yaml was pruned
-	if _, exists := updatedCM.Data["stale-repo.yaml"]; exists {
-		t.Errorf("expected stale-repo.yaml to be pruned from ConfigMap")
+	// Verify unmanaged-static.yaml was NOT pruned
+	if _, exists := updatedCM.Data["unmanaged-static.yaml"]; !exists {
+		t.Errorf("expected unmanaged-static.yaml to be preserved as it is not operator-managed")
 	}
 
 	// Verify default.yaml was preserved
 	if updatedCM.Data["default.yaml"] != "version: 'minty.abcxyz.dev/v2'\n" {
 		t.Errorf("expected default.yaml to be preserved")
+	}
+
+	// Verify annotation tracks operator-managed keys
+	expectedAnn := "repo-1.yaml,repo-2.yaml"
+	if ann := updatedCM.Annotations[AnnotationManagedMinterKeys]; ann != expectedAnn {
+		t.Errorf("expected annotation %q, got %q", expectedAnn, ann)
 	}
 
 	// 2. Remove repo-2 from managed_repos: "test-org/repo-1"
@@ -3667,11 +3686,20 @@ func TestSyncGithubTokenMinterConfigMap(t *testing.T) {
 		t.Fatalf("failed to get updated ConfigMap: %v", err)
 	}
 
-	// Verify repo-1.yaml exists and repo-2.yaml was pruned
+	// Verify repo-1.yaml exists and repo-2.yaml was pruned because it was operator-managed
 	if _, exists := updatedCM.Data["repo-1.yaml"]; !exists {
 		t.Errorf("expected repo-1.yaml to remain present")
 	}
 	if _, exists := updatedCM.Data["repo-2.yaml"]; exists {
 		t.Errorf("expected repo-2.yaml to be pruned after removal from managed_repos")
+	}
+	// Verify unmanaged-static.yaml is STILL present
+	if _, exists := updatedCM.Data["unmanaged-static.yaml"]; !exists {
+		t.Errorf("expected unmanaged-static.yaml to remain untouched")
+	}
+
+	expectedAnnAfter := "repo-1.yaml"
+	if ann := updatedCM.Annotations[AnnotationManagedMinterKeys]; ann != expectedAnnAfter {
+		t.Errorf("expected annotation %q, got %q", expectedAnnAfter, ann)
 	}
 }

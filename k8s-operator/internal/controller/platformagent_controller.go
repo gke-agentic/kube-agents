@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -78,6 +79,7 @@ const (
 	AnnotationAPIServerCIDR           = "kubeagents.x-k8s.io/apiserver-cidr"
 	AnnotationCustomEgressCIDRs       = "kubeagents.x-k8s.io/custom-egress-cidrs"
 	AnnotationEnableFQDNNetworkPolicy = "kubeagents.x-k8s.io/enable-fqdn-network-policy"
+	AnnotationManagedMinterKeys       = "kubeagents.x-k8s.io/managed-minter-keys"
 
 	// The condition reporting that cluster event ingestion has been switched off
 	// on the spec. It is written only in that state — see updateStatusReady.
@@ -586,9 +588,32 @@ func (r *PlatformAgentReconciler) reconcileGithubStateConfigMap(ctx context.Cont
 	return r.syncGithubTokenMinterConfigMap(ctx, agent, found.Data["managed_repos"])
 }
 
+func parseManagedKeysAnnotation(ann string) map[string]struct{} {
+	keys := make(map[string]struct{})
+	if strings.TrimSpace(ann) == "" {
+		return keys
+	}
+	for _, k := range strings.Split(ann, ",") {
+		k = strings.TrimSpace(k)
+		if k != "" {
+			keys[k] = struct{}{}
+		}
+	}
+	return keys
+}
+
+func serializeManagedKeysAnnotation(keys map[string]struct{}) string {
+	var list []string
+	for k := range keys {
+		list = append(list, k)
+	}
+	sort.Strings(list)
+	return strings.Join(list, ",")
+}
+
 // syncGithubTokenMinterConfigMap ensures that for every repository in managed_repos,
 // a corresponding <repo>.yaml entry exists in github-token-minter-config ConfigMap,
-// and removes any <repo>.yaml entry for repositories that are no longer managed.
+// and removes any operator-managed <repo>.yaml entry for repositories that are no longer managed.
 func (r *PlatformAgentReconciler) syncGithubTokenMinterConfigMap(ctx context.Context, agent *agentv1alpha1.PlatformAgent, managedReposStr string) error {
 	minterCM := &corev1.ConfigMap{}
 	err := r.Get(ctx, client.ObjectKey{Name: "github-token-minter-config", Namespace: agent.Namespace}, minterCM)
@@ -605,6 +630,20 @@ func (r *PlatformAgentReconciler) syncGithubTokenMinterConfigMap(ctx context.Con
 
 	baseTemplate, ok := minterCM.Data["default.yaml"]
 	if !ok || strings.TrimSpace(baseTemplate) == "" {
+		return nil
+	}
+
+	managedReposStr = strings.TrimSpace(managedReposStr)
+
+	// Read operator-managed keys from annotation
+	existingAnn := ""
+	if minterCM.Annotations != nil {
+		existingAnn = minterCM.Annotations[AnnotationManagedMinterKeys]
+	}
+	operatorManagedKeys := parseManagedKeysAnnotation(existingAnn)
+
+	// An empty managed_repos with no previously operator-managed keys is a no-op to avoid wiping unmanaged keys.
+	if managedReposStr == "" && len(operatorManagedKeys) == 0 {
 		return nil
 	}
 
@@ -630,23 +669,29 @@ func (r *PlatformAgentReconciler) syncGithubTokenMinterConfigMap(ctx context.Con
 			minterCM.Data[key] = baseTemplate
 			updated = true
 		}
+		if _, managed := operatorManagedKeys[key]; !managed {
+			operatorManagedKeys[key] = struct{}{}
+			updated = true
+		}
 	}
 
-	// Prune policy entries for repositories that were removed / unmanaged (preserving default.yaml)
-	for key := range minterCM.Data {
+	// Prune policy entries ONLY for repositories that were previously managed by the operator but are no longer active
+	for key := range operatorManagedKeys {
 		if key == "default.yaml" {
-			continue
-		}
-		if !strings.HasSuffix(key, ".yaml") {
 			continue
 		}
 		if _, active := activeKeys[key]; !active {
 			delete(minterCM.Data, key)
+			delete(operatorManagedKeys, key)
 			updated = true
 		}
 	}
 
 	if updated {
+		if minterCM.Annotations == nil {
+			minterCM.Annotations = make(map[string]string)
+		}
+		minterCM.Annotations[AnnotationManagedMinterKeys] = serializeManagedKeysAnnotation(operatorManagedKeys)
 		return r.Update(ctx, minterCM)
 	}
 	return nil
