@@ -471,7 +471,8 @@ platformAgent:
   #
   #   networkPolicy:
   #     enabled: true              # false stops generation and deletes the
-  #                                # operator-owned <name>-gateway-netpol
+  #                                # operator-owned <name>-gateway-netpol and
+  #                                # <name>-fqdn-netpol
   #     dnsClusterIPs: ["10.96.0.10"]
   #     metadataDaemon:
   #       endpoint: "169.254.169.252"  # "" suppresses the post-NAT rule

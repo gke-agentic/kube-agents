@@ -416,20 +416,28 @@ Optional, and omitting it is the point: with the field absent the operator disco
 Configures the operator-generated egress `NetworkPolicy`.
 
 - `enabled` (bool, optional) — toggle operator-managed NetworkPolicy generation. Default `true` (unset
-  means on). Setting `false` stops generation and deletes only the operator-owned policy.
+  means on). Setting `false` stops generation and deletes the two policies the operator owns for this
+  agent, `<name>-gateway-netpol` and the `<name>-fqdn-netpol` `FQDNNetworkPolicy`. Both deletions
+  check the owner reference first, so a policy of the same name that the operator did not create
+  survives.
 - `dnsClusterIPs` ([]string, optional, max 8 items) — pins the cluster DNS Service ClusterIPs in
   rule 1, suppressing dynamic discovery from `kube-system/kube-dns`. Each entry is a bare IPv4 or
-  IPv6 address with no prefix; admission rejects anything else, rather than letting a typo drop the
-  pin and silently revert to discovery.
-- `metadataDaemon.endpoint` (string, optional) — pins the node-local cloud metadata daemon IP in
-  rule 3. An explicit `""` suppresses rule 3 entirely for datapaths without a post-NAT daemon.
+  IPv6 address with no prefix. Admission bounds the IPv4 octets, so the usual transposed-digit typo
+  is an apply-time error; a malformed IPv6 literal can still get past it, in which case the operator
+  drops the entry and falls back to discovery, and says so in its log.
+- `metadataDaemon` (object, optional) — pins the node-local cloud metadata daemon IP in rule 3. Its
+  one field, `endpoint`, is required within it, so `metadataDaemon: {}` is rejected; an explicit
+  `endpoint: ""` suppresses rule 3 entirely, for datapaths without a post-NAT daemon.
 - `additionalEgress` ([]EgressRule, optional, max 32 items) — appends custom CIDR and port egress
   rules to the generated policy. A peer CIDR broader than `/12` (IPv4) or `/48` (IPv6) is rejected at
-  admission, because a rule with ports and no surviving peer would permit egress to every
-  destination. An `except` block outside its peer's CIDR is dropped, and a rule left with no usable
-  peer is dropped whole; both are logged, so
-  `kubectl logs -n kubeagents-system deploy/kube-agents-controller-manager` is where a rule that did
-  not take effect explains itself.
+  admission, so that a caller-supplied range cannot be widened into an unrestricted egress bypass.
+  One shape gets past that check and is dropped by the operator instead: an IPv4-mapped IPv6 block
+  such as `::ffff:0:0/96` is a 128-bit prefix by every textual measure, so it clears the IPv6 floor,
+  and the operator re-measures it against the IPv4 floor once it has collapsed it to the IPv4 block
+  it means. An `except` block outside its peer's CIDR is dropped too, and a rule left with no usable
+  peer is dropped whole — a rule carrying ports and no peer would otherwise permit egress to every
+  destination. All three are logged, so the operator's log is where a rule that did not take effect
+  explains itself.
 
 Annotations (`kubeagents.x-k8s.io/dns-cluster-ip` and `kubeagents.x-k8s.io/metadata-daemon-ip`) remain
 available as escape hatches and take precedence over `spec.networkPolicy`.

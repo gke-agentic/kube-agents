@@ -147,6 +147,7 @@ identifier appears, add its source here.
 | Shared agent defaults (`approvals.*`, `security.*`) | `deploy/shared/defaults/config.yaml` and `renderConfigYAML()` in `k8s-operator/internal/controller/platformagent_manifests.go` |
 | Image defaults and override env vars (`PLATFORM_AGENT_IMAGE` et al.) | `k8s-operator/internal/controller/manifest_helpers.go` |
 | OTLP endpoint default, discovery candidates, and `otlpEndpointSource` values | `k8s-operator/internal/controller/telemetry.go` |
+| DNS/metadata-daemon defaults, the `dnsClusterIPsSource` / `metadataDaemonIPSource` values, and the egress prefix floors | `k8s-operator/internal/controller/netpolprofile.go` and `platformagent_controller.go` |
 | Image inventory: every image an install pulls, and its upstream pin | `images.json` |
 | Registry prefix defaults (`REGISTRY_PREFIX`, `THIRD_PARTY_REGISTRY_PREFIX`) | `k8s-operator/scripts/common.sh` |
 | Provisioning image-tag attachment (`qualify_image_ref`) | `k8s-operator/scripts/common.sh` |
