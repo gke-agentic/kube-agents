@@ -410,10 +410,19 @@ the other, and a maintainer reading "the label failed" cannot tell which is miss
 
 ## 8. Finish
 
-- Print the pull request URL on the last line of your reply, alone, with nothing after it. The
-  runner reads that line and records it in the ledger; without it the finding is filed but looks
-  unfiled, and the next run files it again. Anything you still have to say — the label note from
-  §7, a caveat about the fix — goes above it.
+- End with one of exactly two things on the last line, alone, with nothing after it: the pull
+  request URL if you opened one, `SKIPPED: <why>` if you did not.
+- The URL is what the runner records in the ledger. Without it the finding is filed but looks
+  unfiled, and the next run files it again.
+- The marker is what tells the runner you decided rather than failed. Print it even when the
+  paragraph above already explains itself in prose — the runner reads only the last line, cannot
+  tell an explanation from a crash, and so assumes the pull request may exist: one of the day's
+  slots spent and a 24-hour cooldown started on a finding you deliberately left alone. Take the
+  wording from wherever you stopped — `SKIPPED: already filed as #<n>` from §0 or §6,
+  `SKIPPED: fixed in #<n>` or `SKIPPED: closed unmerged as #<n>` from §0,
+  `SKIPPED: out of bounds - <why>` from the refusal list below.
+- Anything you still have to say — the label note from §7, a caveat about the fix — goes above
+  that line.
 - Do not wait for review, do not merge, do not comment further.
 
 ## Refuse to file when

