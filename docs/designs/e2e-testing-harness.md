@@ -113,3 +113,8 @@ export GCP_PROJECT_ID="my-gcp-project"
 export GKE_CLUSTER_NAME="my-cluster"
 make test-e2e
 ```
+
+The stockout suite reinstalls its AgentPlugin before it runs, so it needs the project
+permissions and the local tooling that
+[`agentplugins/README.md`](../../agentplugins/README.md#installing) lists for a plugin
+install. `SKIP_INSTALL=true` reuses whatever is already deployed.
