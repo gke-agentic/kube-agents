@@ -223,8 +223,8 @@ none of these stores, and the shipped loop infers session and board behaviour fr
 metrics and spans. The rest of this section is the design of record for the follow-up.
 
 - **Mount the volume read-only from the runner.** Not available. At the default single replica the
-  operator creates the claim `ReadWriteOnce` (`platformagent_manifests.go:125`, and
-  `defaultAccessModes` at `:141`), so a second pod on a second node cannot attach it at all. Above
+  operator creates the claim `ReadWriteOnce` (`platformagent_manifests.go:126`, and
+  `defaultAccessModes` at `:142`), so a second pod on a second node cannot attach it at all. Above
   one replica `getDefaultStorageConfig` switches it to `ReadWriteMany` (`:134-136`) and that
   obstacle goes away, which changes nothing here: a second pod attaching a live SQLite database
   with an active WAL is how these files get corrupted rather than read, and that holds on either
@@ -434,7 +434,7 @@ to one from a chart that never had the feature.
 **One label must not be copied.** The platform minter's ingress policy admits pods carrying
 `kubeagents.x-k8s.io/has-credential-proxy: "true"`
 ([`github-minter.yaml:199-206`](../../charts/kube-agents/templates/github-minter.yaml)), and the
-operator stamps that label on agent pods (`platformagent_manifests.go:1930`). The runner pod runs a
+operator stamps that label on agent pods (`platformagent_manifests.go:2045,2109`). The runner pod runs a
 credential proxy and so invites the label by analogy — and carrying it would let the runner reach
 the platform minter and mint tokens for the customer's GitOps repository, silently undoing §6.
 The runner is labelled `kubeagents.x-k8s.io/selfimprove: "true"` instead, which that policy does not
@@ -448,7 +448,7 @@ minter's Service: either alone would do, and the label is the one an operator ca
   agent, and nothing in it reaches another namespace or another cluster.
 - **`command_policy.py`.** The runner's credential proxy runs with
   `CREDENTIAL_PROXY_ENFORCE_READ_ONLY` left at its default, which
-  [`credential_proxy.py:1803`](../../agents/platform/scripts/credential_proxy.py) (`read_only_enforced`)
+  [`credential_proxy.py:1787`](../../agents/platform/scripts/credential_proxy.py) (`read_only_enforced`)
   reads as enforcing unless the value is literally `false`. As shipped the loop goes further than that: a
   `selfimprove.no-cluster-tools` rule refuses `kubectl` and `gcloud` outright rather than
   allow-listing them down to their read verbs, because the runner reaches Kubernetes through the
@@ -461,7 +461,7 @@ minter's Service: either alone would do, and the label is the one an operator ca
   in the operator's `SensitiveEnvVars`
   ([`common_types.go:49`](../../k8s-operator/api/v1alpha1/common_types.go)), so the webhook rejects
   it, and it is separately dropped at reconcile
-  ([`platformagent_manifests.go:2372`](../../k8s-operator/internal/controller/platformagent_manifests.go))
+  ([`platformagent_manifests.go:2548-2575`](../../k8s-operator/internal/controller/platformagent_manifests.go))
   because the chart defaults `failurePolicy` to `Ignore`. Both act on `PlatformAgent` CR env, and
   the CronJob is a chart template that never reaches the operator or its webhook. What keeps the
   variable unset here is the proxy's own default plus the chart's silence: `selfImprovement` has no
@@ -525,7 +525,7 @@ installation would be and nothing rotates it.
 ### 6.2 Seeding it, without touching shared code
 
 The credential proxy sidecar runs `CREDENTIAL_PROXY_BOOTSTRAP_COMMAND` before it binds its socket
-([`credential_proxy.py:2275`](../../agents/platform/scripts/credential_proxy.py), the
+([`credential_proxy.py:2293`](../../agents/platform/scripts/credential_proxy.py), the
 `executor.bootstrap` call in `main`), inside
 `self.environment` — the same dict, carrying the same `HOME` and `GH_CONFIG_DIR`, that `_execute`
 later runs every shimmed command in. That is what makes one line enough:
@@ -572,7 +572,7 @@ removes environment variables and nothing else — a file mounted into the runne
 by the investigation turn, which has no business holding a write credential.
 
 `TOKEN_BROKER_URL` is left unset on this pod, and unset is not the same as pointing nowhere:
-[`github_token_refresh.py:17`](../../agents/platform/scripts/github_token_refresh.py) defaults it to
+[`github_token_refresh.py:26`](../../agents/platform/scripts/github_token_refresh.py) defaults it to
 `http://github-token-minter.kubeagents-system.svc.cluster.local:8080/token`, the platform minter's
 own Service. Two network facts are what actually stop the call. The runner's NetworkPolicy renders
 no egress rule to that Service, and the platform minter's ingress policy admits only pods labelled

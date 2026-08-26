@@ -227,8 +227,8 @@ agent's identity. `github.patSecret` names the Secret and `github.forkRepo` the
 repository branches are pushed to; the render fails with a named message when
 either is missing. The Secret itself is created out of band — the chart never
 sees the token — and nothing in the install mints, rotates or expires it. Sec. 6
-of the design says what that trades away against the GitHub App the loop used to
-use.
+of the design says what that trades away against the GitHub App this design
+considered and rejected.
 
 The Google half is one investigator GSA and its Workload Identity binding, from
 `terraform/modules/kube-agents-selfimprove`, which is not yet part of
