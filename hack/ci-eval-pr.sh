@@ -460,15 +460,19 @@ TASKS=(
   #       throwaway eval GitOps repos) and the minter scoped to it -- the
   #       token has exactly one source and no inherited GITHUB_TOKEN is
   #       honoured, so the value alone only moves the failure to the clone.
-  #       Both repository halves are on main; what is left is the Prow job
-  #       exporting EVAL_GITHUB_APP_ID, which is
-  #       GoogleCloudPlatform/oss-test-infra#2661 -- approved, not merged.
+  #       Both repository halves are on main, and the Prow job has exported
+  #       EVAL_GITHUB_APP_ID pool-wide since 2026-08-25
+  #       (GoogleCloudPlatform/oss-test-infra#2661, merged).
   #   A3  fleet-cost-idle-pool is date-gated by the SOP's own age rules.
   #       Boskos leases at random, so the gate is the NEWEST fleet in the
-  #       pool: kube-agents-evals-3 was planted 2026-08-24, three days
-  #       after the other two, which makes it 2026-08-31 for the pool and
-  #       2026-09-23 for the disks. A replant in any pool project moves
-  #       them.
+  #       pool, and onboarding a project plants one -- so REGISTERING a
+  #       freshly-provisioned project moves the gate out. Today the newest
+  #       leasable fleet is kube-agents-evals-3's, planted 2026-08-24:
+  #       2026-08-31 for the pool and 2026-09-23 for the disks.
+  #       kube-agents-evals-4, -5 and -6 were provisioned 2026-08-25/26 and
+  #       are not registered yet; registering them moves the gate to
+  #       2026-09-02 and 2026-09-25. A replant in any pool project moves
+  #       them again.
   #   A4  cleared in the code, open on one credential. The six audit
   #       scenarios' objectives no longer read the final message (which the
   #       SOPs keep to one line); they use ledger_issue_contains, which reads
@@ -477,9 +481,11 @@ TASKS=(
   #       That verifier needs BENCH_GITHUB_TOKEN (or GITHUB_TOKEN) with
   #       issues:read on the eval GitOps repos. The secret now exists
   #       (kube-agents-bench-github-token, namespace test-pods); mounting it
-  #       is the same oss-test-infra#2661, approved and not merged. Until it
-  #       lands those checks return status=error, which drops
-  #       VerificationCoverage below the gate's 1.0 floor by design.
+  #       was the same oss-test-infra#2661, now merged. What is unconfirmed
+  #       is the token's scope -- these checks need issues:read on the eval
+  #       GitOps repos, and until that is verified they may still return
+  #       status=error, which drops VerificationCoverage below the gate's
+  #       1.0 floor by design.
   #   A5  CLEARED, and that is what the active entry above rests on. Step 2b
   #       writes one kubeconfig per seeded-fleet fixture ROLE, and the six
   #       fleet safeguards use `fleet_resource_property` with a
@@ -487,8 +493,8 @@ TASKS=(
   #       is platform-agent-host and carries no seeded namespace). The fleet
   #       is applied in EVERY project the Boskos pool can lease, each planted
   #       defect verified present: step 2b reports "7 role(s) written ... 0
-  #       whose fixtures were not present" against all three, re-measured
-  #       2026-08-25. The five other fleet scenarios were never held by A5
+  #       whose fixtures were not present" against every leasable project,
+  #       re-measured 2026-08-25. The five other fleet scenarios were never held by A5
   #       alone -- each also carries A1, A3 or A4 -- so they stay commented
   #       out on those, and DRAFTS.md's status column no longer names A5 at
   #       all. One residual, which is hardening rather than a gate: with
@@ -633,11 +639,27 @@ for TASK in "${TASKS[@]}"; do
   #             for the infra owner. A noop-deployer task prepares nothing,
   #             so its pre-record death is never weather -- it is a harness
   #             or agent crash and classifies BROKEN instead.
+  #             Also: a scored record the harness marked with
+  #             KUBE_AGENTS_INFRA_FAILURE -- see below.
   #   BROKEN -- the run died somewhere no infrastructure excuse exists: a
   #             record with no scores (the scoring pass crashed), or any
   #             pre-record death on a noop task. BLOCKS -- treating these as
   #             infra would let a crash turn the whole gate green.
   #   OK     -- a record with scores; the gate below decides.
+  #
+  # KUBE_AGENTS_INFRA_FAILURE is the marker kube_agents_bench.harness puts on
+  # errors[0] when the agent endpoint failed in transport on every attempt, so
+  # no turn ever reached the agent. The record IS scored -- the judge grades
+  # the empty output and returns 0.0 -- but there is no answer in it to grade,
+  # and gating on that score reds the PR for a pod restart. The harness raises
+  # this only after exhausting its retries on a gateway status or a dropped
+  # connection; a 4xx, a 500, or any answer the agent actually returned stays
+  # OK and is graded normally.
+  #
+  # No noop carve-out here, unlike the two branches above: those infer infra
+  # from an absent record, which a noop task cannot honestly claim, whereas
+  # this marker is the harness stating what happened. An unreachable agent
+  # endpoint is infrastructure whatever the task's deployer provisions.
   RUN_CLASS=$(python3 -c "
 import json, os
 path = '${LATEST_RESULT}'
@@ -657,7 +679,13 @@ else:
             print('BROKEN' if deployer == 'noop' else 'INFRA')
         else:
             rec = data[0] if isinstance(data, list) else data
-            print('OK' if rec and isinstance(rec, dict) and rec.get('scores') else 'BROKEN')
+            rec = rec if isinstance(rec, dict) else {}
+            errors = rec.get('errors') or []
+            # Before the scores test: the record carries both.
+            if any('KUBE_AGENTS_INFRA_FAILURE' in str(e) for e in errors):
+                print('INFRA')
+            else:
+                print('OK' if rec.get('scores') else 'BROKEN')
     except Exception:
         print('BROKEN')
 " 2>/dev/null || echo "BROKEN")
@@ -675,15 +703,19 @@ else:
     fi
     FAILED_TASKS+=("${TASK_NAME} (run produced no scored record)")
   elif [ "${RUN_CLASS}" = "INFRA" ]; then
-    echo "⚠️ [RESOURCE_PREPARATION_FAILED] Evaluation task ${TASK_NAME} resource creation or teardown failed! (The evaluation is skipped)"
+    # RESOURCE_PREPARATION_FAILED is kept verbatim as the grep token even
+    # though the class now also covers an unreachable agent endpoint; the
+    # artifact below says which of the two it was.
+    echo "⚠️ [RESOURCE_PREPARATION_FAILED] Evaluation task ${TASK_NAME} resource creation, teardown, or agent transport failed! (The evaluation is skipped)"
     ARTIFACT_DIR="${ARTIFACTS:-/tmp/artifacts}"
     mkdir -p "${ARTIFACT_DIR}"
     cp "${EVAL_LOG}" "${ARTIFACT_DIR}/resource_prep_failure_${TASK_NAME}.log" 2>/dev/null || true
     [ -n "${NEW_RUN_DIR}" ] && cp "${EVAL_LOG}" "${NEW_RUN_DIR}/resource_prep_failure.log" 2>/dev/null || true
     echo "Saved resource preparation log to artifact: ${ARTIFACT_DIR}/resource_prep_failure_${TASK_NAME}.log"
-    echo "Task ${TASK_NAME} Result: [RESOURCE_PREPARATION_FAILED] Infrastructure setup/teardown error (Duration: ${TASK_DURATION}s)"
-    # Deliberately NOT appended to FAILED_TASKS: an OpenTofu stockout or a
-    # teardown race says nothing about the pull request under test, and
+    echo "Task ${TASK_NAME} Result: [RESOURCE_PREPARATION_FAILED] Infrastructure setup/teardown or agent transport error (Duration: ${TASK_DURATION}s)"
+    # Deliberately NOT appended to FAILED_TASKS: an OpenTofu stockout, a
+    # teardown race, or an agent pod that went away mid-task says nothing
+    # about the pull request under test, and
     # redding the job for it teaches people to ignore the job. The log line
     # above and the artifact are the record; whoever owns the eval
     # infrastructure greps for RESOURCE_PREPARATION_FAILED, not the PR author.
