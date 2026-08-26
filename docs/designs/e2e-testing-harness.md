@@ -24,7 +24,7 @@ promoting a validated candidate to the staging environment:
 graph LR
     A["resolve latest rc_*_validated"] --> B["deploy that commit to the RC cluster"]
     B --> C["e2e-nightly-matrix.yml @ that commit"]
-    C -->|pass| D["push staging/&lt;rc_tag&gt;"]
+    C -->|pass| D["push staging/rc_YYMMDDHHMM_&lt;short_sha&gt;"]
     C -->|fail| E["push nothing; staging unchanged"]
     D --> F["staging-redeploy-{agent,controller,integrations}"]
 ```
@@ -36,11 +36,18 @@ validate one artifact and ship another. And the matrix run **asserts the deploye
 commit under test** (`wait_for_gke_readiness.sh` with `COMMIT_SHA`), so an RC deploy that lands
 between the two steps fails the run rather than quietly redirecting it.
 
-Only the tag push is conditional. When the newest validated candidate already carries a `staging/**`
-tag the deploy and the matrix still run — this pipeline owns the only schedule the `nightly-e2e`
-matrix has, and `operator/agentplugins_e2e_test.py` and `gchat_agent_test.py` belong to no other
-environment, so skipping the matrix on nights with nothing new to promote would leave them
-unexercised on exactly the nights the RC pipeline validated nothing.
+The promotion tag drops the `_validated` suffix: `rc_2608241820_b35543c_validated` promotes as
+`staging/rc_2608241820_b35543c`.
+
+Only the tag push is conditional. When the newest validated candidate already carries its
+`staging/**` tag the deploy and the matrix still run, for two reasons. This pipeline owns the only
+_scheduled_ run the `nightly-e2e` matrix has, and `operator/agentplugins_e2e_test.py` and
+`gchat_agent_test.py` have no other scheduled caller — they sit in the `agent-plugin-e2e` and
+`gchat-e2e` environments too, but nothing but a hand-started dispatch reaches those, so skipping the
+matrix on nights with nothing new to promote would leave both unexercised on exactly the nights the
+RC pipeline validated nothing. And the deploy cannot be skipped separately: the RC cluster is
+redeployed every three hours, so on such a night it is almost certainly running a newer candidate,
+and the `COMMIT_SHA` assertion would fail rather than test the intended commit.
 
 `staging-promote.yml` itself takes only its own `staging-promotion` group. The singleton
 `rc-environment` group is taken by the two jobs it calls — `rc-deploy-environment.yml`'s deploy and
@@ -48,13 +55,22 @@ the matrix job — which is what serializes them against the RC pipeline, and wh
 released between the deploy and the test. That gap is why the `COMMIT_SHA` assertion above is
 load-bearing rather than belt-and-braces.
 
-The gap has a second consequence. GitHub holds only one run pending per group and cancels the
-waiting one when a third arrives, so a promotion overlapping the `17 */3 * * *` RC schedule can cost
-either side its slot. An evicted RC run is not retried: `rc-release-pipeline.yml` pushes the `rc_*`
-tag in step 1, before the jobs that take the lock, so `is_commit_already_attempted` sees that tag and
-the next scheduled run skips the candidate as already evaluated — it is picked up again only when a
-newer commit lands on `main`. That is the same forgotten-candidate gap
-[#740](https://github.com/gke-labs/kube-agents/issues/740) describes, reached by a second route.
+The gap has a second consequence, and it is a known cost rather than an oversight. Taking the group
+twice with a release in between is one more acquisition than the matrix needed when it ran on its own
+schedule, and GitHub cancels the pending entry in a group when a second one arrives. So a promotion
+overlapping the `17 */3 * * *` RC schedule can cost either side its slot, and which side loses
+depends on whether the reprovision finishes before the RC run arrives.
+
+Neither ordering is clearly the one to prefer, which is why this is documented rather than designed
+around. Losing the promotion costs a night: the next run picks the same candidate up. Losing the RC
+run costs the candidate permanently — `rc-release-pipeline.yml` pushes the `rc_*` tag in step 1,
+before the jobs that take the lock, so `is_commit_already_attempted` sees that tag and every later
+scheduled run skips the commit as already evaluated, until a newer one lands on `main`. That is the
+forgotten-candidate gap [#740](https://github.com/gke-labs/kube-agents/issues/740) describes, reached
+by a second route. Holding `rc-environment` across the whole promotion — an input-driven group on the
+two called workflows, so the caller can take it at workflow level without deadlocking against its own
+jobs — would close the gap at the cost of making the permanent-loss side more likely, so it waits on
+#740 being fixed first.
 
 ---
 

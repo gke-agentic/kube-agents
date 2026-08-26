@@ -15,18 +15,24 @@ name: Nightly Staging Promotion
 # and then promoting the last known-good tag would validate one artifact and ship
 # a different one.
 #
-# The promotion tag is derived from the candidate (staging/rc_YYMMDDHHMM_<sha>),
-# so a night whose newest candidate is already promoted resolves to
+# The promotion tag drops the candidate's `_validated` suffix, so the newest
+# rc_2608241820_b35543c_validated is promoted as staging/rc_2608241820_b35543c.
+# A night whose newest candidate already carries that tag resolves to
 # skip_promotion=true and pushes nothing.
 #
-# Only the final tag push is skipped, though. The deploy and the matrix run every
-# night regardless, because this pipeline now owns the only schedule the full
-# nightly-e2e matrix has, and `tests/e2e/operator/agentplugins_e2e_test.py` and
-# `tests/e2e/gchat_agent_test.py` are in no other environment -- no pull request
-# and no three-hourly RC run reaches them. Gating the matrix on there being
-# something new to promote would silence those two suites on every night the RC
-# pipeline failed to validate anything, which over the last week was three
-# nights in seven.
+# Only the tag push is skipped. Deploy and matrix run every night regardless:
+#
+#   - This pipeline owns the only *scheduled* run the full nightly-e2e matrix
+#     has, and `operator/agentplugins_e2e_test.py` and `gchat_agent_test.py`
+#     have no other scheduled caller -- no pull request and no three-hourly RC
+#     run reaches them, only a hand-started dispatch. Gating the matrix on
+#     there being something new to promote would silence those two suites on
+#     exactly the nights the RC pipeline validated nothing.
+#   - The deploy is not separable from that. rc-release-pipeline.yml redeploys
+#     the RC cluster every three hours, so on a skip night it is almost
+#     certainly running some newer candidate; without the redeploy the matrix's
+#     COMMIT_SHA assertion would simply fail. Reprovisioning also exercises
+#     uninstall-then-install nightly, which nothing else does.
 
 on:
   schedule:
@@ -152,9 +158,11 @@ jobs:
       github.repository == 'gke-labs/kube-agents' &&
       needs.resolve-candidate.outputs.skip_promotion != 'true'
     runs-on: ubuntu-latest
-    # `rc`, not `staging`: this job pushes a Git tag and touches no cluster, and
-    # RELEASE_BOT_TOKEN lives on the rc environment alongside the other tagging
-    # steps. Deploying to staging is the staging-redeploy-*.yml runs the tag starts.
+    # `rc`, not `staging`: this job pushes a Git tag and touches no cluster.
+    # (RELEASE_BOT_TOKEN is a repository secret, so it resolves either way --
+    # what `rc` adds is its deployment branch policy, which permits only `main`
+    # and so pins a workflow_dispatch promotion to a commit on main.) Deploying
+    # to staging is the staging-redeploy-*.yml runs the tag starts.
     environment: rc
     permissions:
       contents: write

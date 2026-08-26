@@ -10,14 +10,13 @@ RC_TAG="${1:-${RC_TAG:-}}"
 SKIP_PROMOTION="false"
 
 # Tags are the whole input to this script, and a checkout that fetched none
-# answers "no validated candidate exists" for a repository full of them.
+# answers "no validated candidate exists" for a repository full of them. The
+# sibling copies of this in ensure_git_tag and resolve_rc_tag.sh guard
+# get_target_repo against being empty; it ends in `echo "$DEFAULT_RELEASE_REPO"`
+# and cannot be.
 if is_ci_pipeline; then
-  target_repo="$(get_target_repo)"
-  if [ -n "${target_repo}" ]; then
-    git fetch "https://github.com/${target_repo}.git" --tags >/dev/null 2>&1 || git fetch origin --tags >/dev/null 2>&1 || true
-  else
+  git fetch "https://github.com/$(get_target_repo).git" --tags >/dev/null 2>&1 ||
     git fetch origin --tags >/dev/null 2>&1 || true
-  fi
 fi
 
 if [ -z "${RC_TAG}" ]; then

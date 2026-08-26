@@ -1,10 +1,17 @@
 name: E2E Nightly Full Matrix
 
 # The nightly cron lives on staging-promote.yml, which calls this workflow as its
-# test gate. Two schedules would have contended for the `rc-environment` lock
-# below, and GitHub holds only one run pending per group -- the loser is dropped,
-# not queued, so a nightly matrix and a nightly promotion racing at 02:00 would
-# have silently lost one of them on most nights.
+# test gate. Keeping a cron here too would have put two 02:00 schedules on the
+# `rc-environment` lock below, and GitHub drops the pending loser rather than
+# queueing it, so one of the two would have silently vanished most nights.
+#
+# That trade is not free, and the comment should say so: the nightly path now
+# takes `rc-environment` twice -- once for staging-promote.yml's deploy, once
+# here -- and releases it in between, where before it took the lock once. An RC
+# run arriving in that gap can take it, and a third arrival then cancels
+# whichever of the two is pending. See the concurrency paragraph in
+# docs/designs/e2e-testing-harness.md for which side loses and why neither
+# ordering is clearly the one to prefer.
 on:
   #checkov:skip=CKV_GHA_7:Manual test dispatch requires scenario and target environment filter parameters
   workflow_dispatch:
@@ -69,10 +76,12 @@ jobs:
     name: Execute Full E2E Test Matrix
     if: github.repository == 'gke-labs/kube-agents' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    # The RC cluster is a singleton. Keep the group at job level rather than
-    # workflow level: a called workflow's top-level `concurrency` does not apply
-    # to the caller's run, so only this form still serializes against
-    # rc-deploy-environment.yml and rc-release-pipeline.yml's test step.
+    # The RC cluster is a singleton. Job level, not workflow level, which is
+    # where rc-deploy-environment.yml puts the same group for the same reason:
+    # a job-level group is unambiguously the caller's job when this workflow is
+    # reached through `workflow_call`, so it serializes against
+    # rc-deploy-environment.yml and rc-release-pipeline.yml's test step either
+    # way this workflow is started.
     concurrency:
       group: rc-environment
       cancel-in-progress: false

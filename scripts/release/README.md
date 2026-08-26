@@ -11,7 +11,7 @@ This directory contains executable scripts supporting the Release Candidate (RC)
 - `validate_and_log_deploy_summary.sh`: Validates required environment variables and secrets, then logs a formatted deployment matrix and GCP cluster target overview for auditing before provisioning.
 - `provision_rc_environment.sh`: Orchestrates cluster teardown and fresh provisioning against the dedicated RC GCP project.
 - `tag_validated_release.sh`: Attaches the `*_validated` tag to a candidate commit upon 100% test pass.
-- `resolve_promotion_candidate.sh`: Selects the validated candidate the nightly staging promotion should test — latest `rc_*_validated` by default, or an explicit tag — rejects a commit carrying no `*_validated` tag, derives the `staging/<rc_tag>` promotion tag, and reports `skip_promotion=true` when a `staging/**` tag already points at that commit.
+- `resolve_promotion_candidate.sh`: Selects the validated candidate the nightly staging promotion should test — latest `rc_*_validated` by default, or an explicit tag — rejects a commit carrying no `*_validated` tag, derives the promotion tag by moving the candidate under `staging/` without its `_validated` suffix (`rc_2608241820_b35543c_validated` → `staging/rc_2608241820_b35543c`), and reports `skip_promotion=true` when a `staging/**` tag already points at that commit.
 - `tag_staging_promotion.sh`: Pushes the `staging/**` tag that deploys a validated candidate to the staging environment. The push is the deploy trigger, so the calling job must check out with `RELEASE_BOT_TOKEN`: a tag pushed with the default `GITHUB_TOKEN` starts no workflow.
 - `calculate_next_version.sh`: Automatically calculates the next SemVer 2.0 version from Conventional Commits since the latest numeric GA release tag.
 - `verify_release_eligibility.sh`: Release gatekeeper that verifies commit eligibility, checks for live RC validation tags (`rc_*_validated`), performs tag collision detection, and verifies all 4 required container images exist in registry.
@@ -34,9 +34,9 @@ The end-to-end pipeline (`.github/workflows/rc-release-pipeline.yml`) runs on a 
 
 The staging promotion pipeline (`.github/workflows/staging-promote.yml`) runs on top of that output,
 nightly at 02:00 UTC: it resolves the newest `rc_*_validated` candidate, redeploys that exact commit
-to the RC environment, runs the full `nightly-e2e` matrix against it, and pushes `staging/<rc_tag>`
-only if the matrix passes. `docs/designs/e2e-testing-harness.md` is the canonical description of the
-gate and of why the candidate is redeployed rather than tested where it sits.
+to the RC environment, runs the full `nightly-e2e` matrix against it, and pushes the candidate's
+`staging/` tag only if the matrix passes. `docs/designs/e2e-testing-harness.md` is the canonical
+description of the gate and of why the candidate is redeployed rather than tested where it sits.
 
 ## Workflow Mapping
 

@@ -50,6 +50,12 @@ jobs:
   run-e2e:
     name: Run E2E (${{ inputs.test_environment || 'rc-e2e' }})
     runs-on: ubuntu-latest
+    # Every GCP_* var this job reads lives on the `rc` environment; the
+    # repository has none. Without this, workload_identity_provider resolves
+    # empty and google-github-actions/auth fails before any test runs, the way
+    # e2e-nightly-matrix.yml's only scheduled run did. This workflow has never
+    # been run, so nothing had hit it yet.
+    environment: rc
     timeout-minutes: 45
 
     env:
