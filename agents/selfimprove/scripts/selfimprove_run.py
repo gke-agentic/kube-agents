@@ -2826,8 +2826,18 @@ def file_pull_request(
             # that types the owner with different capitalisation opened the same
             # pull request and should not be read as having opened none.
             if not url.lower().startswith(("https://github.com/%s/pull/" % upstream).lower()):
-                log("ignoring a pull request URL that is not on %s: %s" % (upstream, url))
-                continue
+                # Stop rather than keep reading upward. This URL is the
+                # turn's closing statement by the same reasoning that reads
+                # any other trailing line as one -- it is simply not a valid
+                # FILED, so it falls through to UNCONFIRMED below rather than
+                # to a search for whatever pull request happens to be
+                # mentioned earlier. Continuing here once matched an earlier,
+                # unrelated same-repo link the turn cited while explaining
+                # itself -- prior art, a search result -- and recorded that
+                # as this run's FILED, charging its budget and cooldown
+                # against a pull request the run never opened.
+                log("the turn's last pull request URL is not on %s: %s" % (upstream, url))
+                break
             return FILED, url
         # `SKIPPED:` is the skill's word for "I looked and decided not to open
         # one" -- the finding was stale, already filed, closed unmerged, or the

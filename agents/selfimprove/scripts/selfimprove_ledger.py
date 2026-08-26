@@ -1631,10 +1631,20 @@ def load(namespace: str, name: str) -> Dict[str, Any]:
     ledger rather than an exception, because a run that cannot read history is
     still a run that can find things.
 
-    Also records the resourceVersion for `save` to write against. An unreadable
-    ConfigMap records nothing, so the write that follows is unconditional --
-    there is no version to be stale relative to, and refusing to write because
-    the read failed would turn a permissions problem into a lost run.
+    Also records the resourceVersion for `save` to write against. The first
+    read in a process has nothing to compare a failure to, so an unreadable
+    ConfigMap there records nothing and the write that follows is unconditional
+    -- refusing to write because the read failed would turn a permissions
+    problem into a lost run. A *later* read in the same process is different:
+    `refresh_ledger` calls this again, deliberately, to catch a writer that
+    moved the ConfigMap while the investigation ran, and a transient 403/404
+    on that second call -- a blip, not a real absence -- must not erase the
+    version the first call already recorded. Erasing it made `save` write
+    unconditionally in exactly the case `refresh_ledger` exists to guard:
+    a concurrent writer's entries discarded with no error, because the guard
+    that would have caught the conflict was the thing the blip took out.
+    So a version already on file survives a versionless read; only a key that
+    was never recorded stays that way.
 
     A third case is not either of those, and used to be treated as both: a
     `ledger.json` that exists and will not parse. It came back as an empty
@@ -1649,8 +1659,6 @@ def load(namespace: str, name: str) -> Dict[str, Any]:
     ledger, version, parsed = _read(api, client, namespace, name)
     if version:
         _OBSERVED_RESOURCE_VERSION[(namespace, name)] = version
-    else:
-        _OBSERVED_RESOURCE_VERSION.pop((namespace, name), None)
     if parsed:
         _UNPARSEABLE.pop((namespace, name), None)
     else:

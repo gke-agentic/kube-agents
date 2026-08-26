@@ -1429,16 +1429,34 @@ class CommandExecutor:
 
         Testing shape first is what left that second spelling open, and it was
         never buying anything: a relative token can only resolve outside the
-        workspace by traversing a symlink, which prose does not do. `-m 'fix:
-        see ../x'` and `--title 'fix: /etc/passwd is read at startup'` stay
-        usable because they resolve to paths under the checkout -- a `..` or a
-        `/` inside a word is not a component. What a message may not do is
-        *begin* with `/`, and Conventional Commits puts a type in front.
+        workspace by traversing a symlink, which prose does not do. What it
+        does do is contain `/`: `pathlib` parses a joined-on string for the
+        separator exactly as it would a literal path, so `-m 'fix: path
+        traversal via ../../../etc/passwd'` resolves to a candidate outside
+        the workspace the same way an actual `../../../etc/passwd` argument
+        would, and a finding describing that exact vulnerability -- the class
+        this loop exists to report -- is refused reporting it.
+
+        Free-text flags are exempted from this test entirely, the same way
+        `policy_match_text` exempts their values from the rule engine, rather
+        than only relative-looking prose. Nothing in `_FREE_TEXT_FLAGS` opens
+        its value as a file -- a commit message, a PR title, a `gh` comment
+        body are never paths a CLI reads from -- so there is no read-the-
+        credential risk this test exists to close for them, including a
+        value that happens to start with `/`.
         """
         if not self.untrusted_workspace:
             return None
         base = Path(cwd) if cwd else self.workspace_dir
+        skip_next = False
         for token in argv[1:]:
+            if skip_next:
+                skip_next = False
+                continue
+            name = token.split("=", 1)[0]
+            if name in _FREE_TEXT_FLAGS:
+                skip_next = "=" not in token
+                continue
             value = token.split("=", 1)[1] if token.startswith("-") and "=" in token else token
             try:
                 candidate = (base / value).resolve()

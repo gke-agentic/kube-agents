@@ -289,7 +289,7 @@ jobs:
             "kind: NetworkPolicy" \
             "kind: ServiceAccount" \
             "kind: Role" \
-            "name: kubeagents-selfimprove"; do
+            'name: "kubeagents-selfimprove"'; do
             if ! grep -qF "$expected" <<<"$si"; then
               echo "report-only render is missing '$expected'" >&2
               exit 1

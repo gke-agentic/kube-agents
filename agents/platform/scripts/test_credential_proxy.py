@@ -579,6 +579,37 @@ class UntrustedWorkspaceTest(unittest.TestCase):
             with self.subTest(argv=argv):
                 self.assertIsNotNone(executor.argv_path_violation(argv, str(deep)))
 
+    def test_a_free_text_value_describing_traversal_is_not_a_path(self):
+        # `pathlib` parses a joined-on string for `/` exactly as it would a
+        # literal path, so a commit message or PR title describing the exact
+        # vulnerability class this loop exists to report -- a path traversal
+        # -- resolves outside the workspace the same way a real argument
+        # would, and was refused reporting it. Free-text flags are exempted
+        # from this test entirely, the same way `policy_match_text` exempts
+        # their values from the rule engine.
+        executor = self.executor()
+        cwd = executor.workspace_dir / "repo"
+        cwd.mkdir(parents=True)
+        message = "fix: path traversal via ../../../etc/passwd in the upload handler"
+        for argv in (
+            ["git", "commit", "-m", message],
+            ["git", "commit", "--message", message],
+            ["git", "commit", "--message=" + message],
+            ["gh", "pr", "create", "--title", message],
+            ["gh", "pr", "create", "--title=" + message],
+            ["gh", "pr", "create", "--body", "/" + message],
+        ):
+            with self.subTest(argv=argv):
+                self.assertIsNone(executor.argv_path_violation(argv, str(cwd)))
+        # A flag that genuinely does take a path is unaffected: this is an
+        # exemption for free-text flags, not a hole in the check itself.
+        self.assertIsNotNone(
+            executor.argv_path_violation(
+                ["gh", "pr", "comment", "--body-file", "../../../var/run/secrets/token"],
+                str(cwd),
+            )
+        )
+
     def test_a_glued_flag_value_is_split_before_it_is_resolved(self):
         # `--body-file=..` is a single literal component, so resolving the whole
         # token both absorbs one `..` and adds a directory level: the check
@@ -941,8 +972,14 @@ class UntrustedWorkspaceTest(unittest.TestCase):
         policy_path.write_text(
             json.dumps({"blockedMessage": "blocked", "rules": []}), encoding="utf-8"
         )
-        original_policy = CredentialProxyHandler.policy
-        original_executor = CredentialProxyHandler.executor
+        # getattr with a default, not a bare read: this class is the only
+        # thing setting these two class attributes at all, and running it in
+        # isolation (rather than after whichever suite member sets them first)
+        # raised AttributeError before the test body ran -- passing only
+        # because unittest discover's alphabetical ordering happened to run
+        # a class that sets them earlier in the same suite.
+        original_policy = getattr(CredentialProxyHandler, "policy", None)
+        original_executor = getattr(CredentialProxyHandler, "executor", None)
         original_max = getattr(CredentialProxyHandler, "max_request_bytes", None)
         CredentialProxyHandler.policy = Policy.load(str(policy_path))
         CredentialProxyHandler.executor = self.executor()

@@ -458,6 +458,24 @@ class WhatMustSurviveTests(unittest.TestCase):
         text = "the project: this loop improves itself, and the cluster: it inspects"
         self.assertEqual(E.redact(text), text)
 
+    def test_an_empty_flag_value_does_not_release_the_next_element(self):
+        """`--cluster ""` from an unset shell variable is not the flag's value.
+
+        `_redact_argv` carries a flag's meaning to the element right after it,
+        so it can blank a name it has no other way to recognise. An empty
+        string there used to end that carry-over unconditionally, so a real
+        identifier one position further -- the shape a shell produces when the
+        flag itself was unset but the caller still passed something -- reached
+        generic, shape-based redaction and survived."""
+        self.assertEqual(
+            E.redact_tree({"args": ["--cluster", "", "prod-usc1-fleet"]}),
+            {"args": ["--cluster", "", "[CLUSTER]"]},
+        )
+        self.assertEqual(
+            E.redact_tree({"args": ["--project", "", "acme-prod-42"]}),
+            {"args": ["--project", "", "[PROJECT]"]},
+        )
+
     def test_a_short_unhyphenated_cluster_name_is_the_trade(self):
         """Named, because an accepted cost that nothing asserts is a cost
         nobody knows was accepted. A cluster called `prod`, in a log line that

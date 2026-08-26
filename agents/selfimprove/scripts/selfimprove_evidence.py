@@ -561,7 +561,17 @@ def _redact_argv(items: list) -> list:
     for item in items:
         if pending is not None and isinstance(item, str):
             result.append(_identifier_leaf(item, pending))
-            pending = None
+            # An empty string is not a value -- it is what a flag renders as
+            # when the shell that built this argv had nothing to put there
+            # (`--cluster ""` from an unset variable). The real value, if any,
+            # is the next element, so the flag's meaning carries one more
+            # step rather than falling through to generic, shape-based
+            # redaction that cannot recognise a bare project ID or cluster
+            # name. Anything else that reaches here -- a word `redact_tree`
+            # decided was not identifier-shaped -- is treated as the value it
+            # looks like, not as another gap to look past.
+            if item != "":
+                pending = None
             continue
         pending = None
         if isinstance(item, str):

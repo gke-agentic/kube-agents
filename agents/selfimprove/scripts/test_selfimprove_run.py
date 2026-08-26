@@ -1658,6 +1658,25 @@ class FilingOutcomeTests(unittest.TestCase):
         self.stdout = "I looked at\nhttps://github.com/gke-labs/kube-agents"
         self.assertEqual(self._file(), (R.UNCONFIRMED, None))
 
+    def test_an_off_repo_url_after_a_cited_one_is_not_the_cited_one(self):
+        """A wrong-repo pull request URL must stop the scan, not skip past it.
+
+        The turn's closing statement is not a valid FILED here -- it names a
+        pull request on a repository this run was not told to open one
+        against -- so it falls through to UNCONFIRMED rather than to whatever
+        pull request happens to be mentioned earlier. Continuing the scan
+        upward past it once turned an earlier, unrelated same-repo link the
+        turn cited while explaining itself into this run's FILED, charging
+        its budget and cooldown against a pull request the run never opened.
+        """
+        self.stdout = (
+            "This is similar to the fix already discussed in:\n"
+            "https://github.com/gke-labs/kube-agents/pull/157\n"
+            "Oops, wrong window -- I opened this in the fork instead:\n"
+            "https://github.com/some-other-org/other-repo/pull/5"
+        )
+        self.assertEqual(self._file(), (R.UNCONFIRMED, None))
+
     def test_a_turn_killed_at_its_budget_is_unconfirmed_not_skipped(self):
         """Exit 124 with no URL is the case that produced six pull requests.
 

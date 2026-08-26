@@ -2175,6 +2175,41 @@ class ConcurrentWriteTests(unittest.TestCase):
                 self.assertIn("kube-agents/ledger", message)
                 self.assertIn("without a precondition", message)
 
+    def test_a_later_transient_read_failure_does_not_erase_an_earlier_version(self):
+        """`refresh_ledger` calls `load` a second time, deliberately, to catch a
+        writer that moved the ConfigMap during the investigation. A transient
+        403/404 on that second call is a blip, not a real absence, and must
+        not erase the version the first call already recorded -- doing so
+        made the next `save` write unconditionally, discarding exactly the
+        concurrent writer this second read exists to notice."""
+        cm = _FakeConfigMap()
+        cm.write_ledger(L.empty_ledger())
+        reads = []
+        first_read = cm.read
+
+        def read(**kwargs):
+            # `_install_stateful_kubernetes` binds `cm.read` once at install
+            # time, so the second call has to be scripted before that happens
+            # rather than by reassigning the attribute afterward.
+            reads.append(1)
+            if len(reads) > 1:
+                raise _FakeApiException(403)
+            return first_read(**kwargs)
+
+        cm.read = read
+        undo = _install_stateful_kubernetes(cm)
+        try:
+            L.load("kube-agents", "ledger")
+            first_version = L._OBSERVED_RESOURCE_VERSION[("kube-agents", "ledger")]
+            self.assertIsNotNone(first_version)
+
+            L.load("kube-agents", "ledger")
+            self.assertEqual(
+                first_version, L._OBSERVED_RESOURCE_VERSION[("kube-agents", "ledger")]
+            )
+        finally:
+            undo()
+
     def test_a_conflict_whose_re_read_raises_reports_as_a_write_error(self):
         """Raised from inside an `except` clause, so an unwrapped error leaves
         `save` as whatever the API client threw. Every caller checks for

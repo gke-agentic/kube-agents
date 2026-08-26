@@ -1453,7 +1453,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
     pod_spec = spec["jobTemplate"]["spec"]["template"]["spec"]
     containers = pod_spec.get("containers", [])
-    runner = next((c for c in containers if c.get("name") == "selfimprove-runner"), None)
+    runner = next((c for c in containers if c.get("name") == "runner"), None)
     if runner is None and containers:
         runner = containers[0]
     env = {
