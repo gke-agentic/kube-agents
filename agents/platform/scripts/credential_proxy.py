@@ -661,7 +661,7 @@ _VALUE_TAKING_SHORTHANDS = frozenset({"-X", "-f", "-F"})
 _KEYED_SHORTHANDS = _VALUE_TAKING_SHORTHANDS | frozenset({"-t", "-a"})
 
 
-def _cluster_readings(token: str) -> list[str]:
+def _cluster_readings(token: str) -> tuple[list[str], bool]:
     """The keyed shorthands buried inside a single-dash cluster, re-dashed.
 
     pflag accepts a boolean shorthand and a value-taking one in the same token:
@@ -692,6 +692,15 @@ def _cluster_readings(token: str) -> list[str]:
     `["gh", "-" + "a" * 1000000]` fits inside `max_request_bytes`, reaches here
     because `gh` is an allowed executable, and exhausted the container's 2Gi on
     a single request. This walk allocates one slice, at the break.
+
+    Returns the re-dashed readings and whether the walk broke on a free-text
+    flag. A cluster's free-text member never carries its value in the same
+    token -- unlike `-X`/`-f`/`-F`, which pflag lets share a token with their
+    value, `git commit -am` and `gh auth status -at` both put the value in the
+    next argv element -- so the caller still has to skip it there, the same
+    way it already does for the detached spelling. Returning it separately
+    rather than folding it into `readings` keeps that element out of match
+    text instead of re-adding it as a bare word.
     """
     readings: list[str] = []
     seen: set[str] = set()
@@ -704,10 +713,11 @@ def _cluster_readings(token: str) -> list[str]:
             break
         flag = f"-{letter}"
         if flag in _FREE_TEXT_FLAGS:
-            # Prose from here on, dropped as the detached spelling drops it.
+            # Prose from here on lives in the next argv element -- the caller
+            # skips it once told to, the same as the detached spelling.
             if flag not in seen:
                 readings.append(flag)
-            break
+            return readings, True
         if flag not in _KEYED_SHORTHANDS:
             continue
         if flag not in seen:
@@ -718,7 +728,7 @@ def _cluster_readings(token: str) -> list[str]:
             if remainder:
                 readings.append(remainder)
             break
-    return readings
+    return readings, False
 
 
 def policy_match_text(argv: list[str]) -> str:
@@ -792,7 +802,15 @@ def policy_match_text(argv: list[str]) -> str:
                 tokens.append(token[:2])
                 continue
             tokens.extend([token[:2], token[2:].lstrip("=")])
-            tokens.extend(_cluster_readings(token))
+            readings, free_text_pending = _cluster_readings(token)
+            tokens.extend(readings)
+            if free_text_pending:
+                # The cluster's free-text member -- e.g. the `-m` in
+                # `git commit -am` -- carries its value in the next argv
+                # element, never in this token. Same guard as the detached
+                # spelling: don't swallow something that looks like a flag.
+                following = argv[index + 1] if index + 1 < len(argv) else ""
+                skip_next = not following.startswith("-")
             continue
         tokens.append(token)
     return shlex.join(tokens)
