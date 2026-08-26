@@ -79,11 +79,31 @@ exit 0
 # is the only input the attachment guard reads.
 _GCLOUD_STUB = """#!/usr/bin/env bash
 case "$*" in
+  *"pubsub topics describe"*|*"pubsub subscriptions describe"*)
+    if [ -n "${GCLOUD_DESCRIBE_ERR:-}" ]; then
+      printf '%s\\n' "$GCLOUD_DESCRIBE_ERR" >&2
+      exit 1
+    fi
+    ;;
+esac
+case "$*" in
   *"pubsub topics describe"*)        exit 0 ;;
   *"pubsub subscriptions describe"*) printf '%s\\n' "$ATTACHED_TOPIC"; exit 0 ;;
 esac
 exit 0
 """
+
+# The two shapes Pub/Sub actually returns, both carrying NOT_FOUND. Keying the quiet
+# path on NOT_FOUND therefore silences a wrong or inaccessible project as well as a
+# genuine absence, which is the failure these two tests exist to keep fixed.
+_ERR_NO_PROJECT = (
+    "ERROR: (gcloud.pubsub.topics.describe) NOT_FOUND: Requested project not found "
+    "or user does not have access to it (project=nope-zz123)."
+)
+_ERR_NO_RESOURCE = (
+    "ERROR: (gcloud.pubsub.topics.describe) NOT_FOUND: Resource not found "
+    "(resource=platform-agent-chat-events)."
+)
 
 
 class AttachmentGuard(unittest.TestCase):
@@ -96,7 +116,7 @@ class AttachmentGuard(unittest.TestCase):
     gate nothing — so this runs the code and asserts on the imports it performs.
     """
 
-    def _run(self, attached_topic):
+    def _run(self, attached_topic, describe_err=""):
         tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, tmp, True)
         bindir = pathlib.Path(tmp) / "bin"
@@ -119,6 +139,7 @@ class AttachmentGuard(unittest.TestCase):
             "PATH": f"{bindir}:{os.environ['PATH']}",
             "IMPORT_LOG": str(import_log),
             "ATTACHED_TOPIC": attached_topic,
+            "GCLOUD_DESCRIBE_ERR": describe_err,
         }
         env.pop("KUBE_AGENTS_STATE_BUCKET", None)
         result = subprocess.run(
@@ -146,6 +167,24 @@ class AttachmentGuard(unittest.TestCase):
         self.assertIn(
             "google_pubsub_subscription", imports,
             "the matching case must still adopt, or the guard is just a refusal",
+        )
+
+    def test_an_inaccessible_project_warns_rather_than_reporting_nothing_to_adopt(self):
+        result, _ = self._run("", describe_err=_ERR_NO_PROJECT)
+        combined = result.stdout + result.stderr
+        self.assertIn(
+            "could not read", combined,
+            "a wrong or inaccessible project carries NOT_FOUND just like a genuine "
+            "absence does, so keying the quiet path on NOT_FOUND reports an auth or "
+            "project problem as '0 imported' — the one answer that cannot be true here",
+        )
+
+    def test_a_genuinely_absent_resource_stays_quiet(self):
+        result, _ = self._run("", describe_err=_ERR_NO_RESOURCE)
+        combined = result.stdout + result.stderr
+        self.assertNotIn(
+            "could not read", combined,
+            "nothing to adopt is the expected case and must not warn",
         )
 
 

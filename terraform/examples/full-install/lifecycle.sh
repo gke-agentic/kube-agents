@@ -306,11 +306,17 @@ adopt_kms() {
 # That is the one answer that cannot be true for somebody who ran this subcommand
 # *because* an apply had just 409'd on these exact names, so a 403, an unauthenticated
 # gcloud, a project that does not resolve, or the API being disabled all have to say so.
-# A plain NOT_FOUND is the expected case and stays quiet.
+#
+# Matching on NOT_FOUND is what does not work, and it fails towards silence. Pub/Sub
+# answers a wrong or inaccessible project with
+# "NOT_FOUND: Requested project not found or user does not have access to it", so two of
+# the cases named above carry the same status as a genuine absence. Only the resource
+# being missing says "Resource not found", for both topics and subscriptions, so that is
+# the phrase the quiet path keys on.
 describe_failure() {
   local what="$1" err="$2"
   case "$err" in
-    *NOT_FOUND*|*"not found"*|"") return 0 ;;
+    *"Resource not found"*|"") return 0 ;;
   esac
   warn "could not read $what: ${err%%$'\n'*}"
   warn "that is not the same as it being absent — nothing was adopted for it."
