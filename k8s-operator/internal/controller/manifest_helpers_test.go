@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -25,6 +26,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
 
@@ -213,6 +215,58 @@ func TestResolveDeploymentReplicasAndStrategy(t *testing.T) {
 			}
 			if strategy.Type != tt.expectedStrategy {
 				t.Errorf("expected strategy %s, got %s", tt.expectedStrategy, strategy.Type)
+			}
+		})
+	}
+}
+
+// TestRollingUpdateAlwaysAllowsProgressUnderAQuota pins the invariant #749 is
+// about: a RollingUpdate whose maxUnavailable resolves to 0 makes the surge Pod
+// mandatory, so under a namespace ResourceQuota with no room for one more
+// gateway Pod the old ReplicaSet cannot shrink, the surge Pod is refused with
+// FailedCreate, and the rollout stalls until progressDeadlineSeconds.
+//
+// The regression this stops is subtle enough to be worth a test of its own: a
+// maxUnavailable expressed as a percentage is rounded DOWN by Kubernetes while
+// maxSurge is rounded up, so the obvious-looking "25%" on both sides resolved to
+// maxSurge 1 / maxUnavailable 0 at 2 and 3 replicas and rolled at no replica
+// count a user is likely to pick first.
+func TestRollingUpdateAlwaysAllowsProgressUnderAQuota(t *testing.T) {
+	// 4 and 8 check that the floor did not flatten the 25% intent where the
+	// replica count is large enough to express it.
+	for _, tc := range []struct {
+		replicas               int32
+		expectedMaxUnavailable int32
+	}{
+		{replicas: 2, expectedMaxUnavailable: 1},
+		{replicas: 3, expectedMaxUnavailable: 1},
+		{replicas: 4, expectedMaxUnavailable: 1},
+		{replicas: 8, expectedMaxUnavailable: 2},
+	} {
+		t.Run(fmt.Sprintf("replicas=%d", tc.replicas), func(t *testing.T) {
+			_, strategy := resolveDeploymentReplicasAndStrategy(&agentv1alpha1.DeploymentSpec{
+				Availability: &agentv1alpha1.AvailabilitySpec{Replicas: ptr.To(tc.replicas)},
+			})
+
+			if strategy.Type != appsv1.RollingUpdateDeploymentStrategyType {
+				t.Fatalf("expected RollingUpdate at %d replicas, got %s", tc.replicas, strategy.Type)
+			}
+			maxUnavailable := strategy.RollingUpdate.MaxUnavailable
+
+			// An absolute count, not a percentage. A percentage here is the bug:
+			// it reintroduces the rounding this test exists to prevent.
+			if maxUnavailable.Type != intstr.Int {
+				t.Fatalf("maxUnavailable must be an absolute count, not %q — a percentage "+
+					"rounds down and can resolve to 0 (#749)", maxUnavailable.StrVal)
+			}
+			if maxUnavailable.IntVal < 1 {
+				t.Errorf("maxUnavailable resolved to %d at %d replicas; a rollout cannot "+
+					"make progress under a full namespace quota (#749)",
+					maxUnavailable.IntVal, tc.replicas)
+			}
+			if maxUnavailable.IntVal != tc.expectedMaxUnavailable {
+				t.Errorf("expected maxUnavailable %d at %d replicas, got %d",
+					tc.expectedMaxUnavailable, tc.replicas, maxUnavailable.IntVal)
 			}
 		})
 	}

@@ -2416,27 +2416,28 @@ func buildCredentialProxySidecar(agent *agentv1alpha1.PlatformAgent, homeDir str
 			PeriodSeconds:       15,
 		},
 		Resources: corev1.ResourceRequirements{
-			// Memory request covers the watcher's informer and dedup caches, which
-			// scale with the number of watched clusters.
+			// Envoy is not all this container runs: the event watcher lives here
+			// too, and its informer and dedup caches scale with the number of
+			// watched clusters. Both numbers below turn on that fact.
 			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("150m"), corev1.ResourceMemory: resource.MustParse("384Mi")},
 			// This container is a native sidecar, so a ResourceQuota that tracks
 			// limits.* adds these to the sum of the regular containers rather than
 			// taking the max — whatever is set here, the harness reserves on every
 			// install whether or not it is used (#749).
 			//
-			// The CPU limit is 1, down from 2: the container measures 17m serving
-			// the credential proxy and the event watcher together, so 1 core is
-			// still ~58x the observed draw, and the failure mode if that is ever
-			// wrong is throttling.
+			// The CPU limit is 1, down from 2. The idle draw this was measured
+			// against is a floor, for the same reason the memory paragraph gives:
+			// it was taken with an empty spec.clusters, and informer work is CPU as
+			// well as memory. What makes the cut a different trade from the memory
+			// one is the failure mode, not better evidence — CFS throttling
+			// degrades and recovers, an OOMKill terminates. Watch the readiness
+			// probe above if this is ever wrong: it is an exec of curl on default
+			// timings, so a throttled container fails it before it fails anything
+			// else, and this sidecar's readiness gates the whole Pod.
 			//
-			// Memory stays at 2Gi and is not the same trade. Envoy is no longer all
-			// this container runs — the event watcher's informer and dedup caches
-			// live here too and scale with the number of watched clusters, so the
-			// 309Mi measured against an empty `spec.clusters` is a floor and not a
-			// fleet figure. #475 proposed 512Mi on the reading that this was an
-			// Envoy fronting a handful of credential calls; that stopped being true
-			// when the watcher moved in, and a memory limit that is too low
-			// OOMKills rather than throttles. Raising the quota is the cheaper
+			// Memory stays at 2Gi. #475 proposed 512Mi on the reading that this was
+			// an Envoy fronting a handful of credential calls; that stopped being
+			// true when the watcher moved in. Raising a quota is the cheaper
 			// mistake. Measure a real fleet before cutting this.
 			Limits: corev1.ResourceList{
 				corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("2Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("2Gi"),

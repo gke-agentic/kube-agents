@@ -216,11 +216,12 @@ func otelTelemetryEnvVars(agentType, name, namespace, endpoint string, disabled 
 // platform-agent manifest, so it falls back to a tag if present before the digest (e.g. :v1@sha256:...)
 // or :latest.
 // E.g.:
-//   "ghcr.io/gke-labs/kube-agents/k8s-operator:0.2.0"                -> "ghcr.io/gke-labs/kube-agents/platform-agent:0.2.0"
-//   "ghcr.io/gke-labs/kube-agents/k8s-operator:rc_2608201147_1c06e1a" -> "ghcr.io/gke-labs/kube-agents/platform-agent:rc_2608201147_1c06e1a"
-//   "ghcr.io/gke-labs/kube-agents/k8s-operator@sha256:111111..."    -> "ghcr.io/gke-labs/kube-agents/platform-agent:latest"
-//   "mirror.corp.internal:5000/kube-agents/k8s-operator:0.2.0"       -> "mirror.corp.internal:5000/kube-agents/platform-agent:0.2.0"
-//   "k8s-operator:1c06e1ab71fdeea55e6100e61c0394206188a5ba"          -> "platform-agent:1c06e1ab71fdeea55e6100e61c0394206188a5ba"
+//
+//	"ghcr.io/gke-labs/kube-agents/k8s-operator:0.2.0"                -> "ghcr.io/gke-labs/kube-agents/platform-agent:0.2.0"
+//	"ghcr.io/gke-labs/kube-agents/k8s-operator:rc_2608201147_1c06e1a" -> "ghcr.io/gke-labs/kube-agents/platform-agent:rc_2608201147_1c06e1a"
+//	"ghcr.io/gke-labs/kube-agents/k8s-operator@sha256:111111..."    -> "ghcr.io/gke-labs/kube-agents/platform-agent:latest"
+//	"mirror.corp.internal:5000/kube-agents/k8s-operator:0.2.0"       -> "mirror.corp.internal:5000/kube-agents/platform-agent:0.2.0"
+//	"k8s-operator:1c06e1ab71fdeea55e6100e61c0394206188a5ba"          -> "platform-agent:1c06e1ab71fdeea55e6100e61c0394206188a5ba"
 func deriveAgentImageFromOperator(operatorImage string) string {
 	lastSlash := strings.LastIndex(operatorImage, "/")
 	prefix := ""
@@ -441,11 +442,29 @@ func resolveDeploymentReplicasAndStrategy(deployment *agentv1alpha1.DeploymentSp
 		}
 
 		if intendedReplicas > 1 {
+			// maxUnavailable is an absolute count, not defaultSurgePercent, and it
+			// never resolves below 1. Kubernetes rounds a maxSurge percentage up and
+			// a maxUnavailable percentage down, so "25%" on both sides rendered
+			// maxSurge 1 / maxUnavailable 0 at 2 and 3 replicas — the shape that
+			// cannot roll at all under a namespace ResourceQuota with no room for
+			// one more gateway Pod. The old ReplicaSet may not shrink, the surge Pod
+			// is refused with FailedCreate, and the rollout stalls until
+			// progressDeadlineSeconds, including the rollout carrying the fix for
+			// whatever prompted it (#749).
+			//
+			// Dividing by 4 keeps the 25% intent where the replica count is large
+			// enough to express it, so rollouts of a big HA fleet are no slower than
+			// before; the floor of 1 only binds at 2 and 3, where the percentage had
+			// no representable answer other than "make no progress".
+			maxUnavailable := intendedReplicas / 4
+			if maxUnavailable < 1 {
+				maxUnavailable = 1
+			}
 			strategy = appsv1.DeploymentStrategy{
 				Type: appsv1.RollingUpdateDeploymentStrategyType,
 				RollingUpdate: &appsv1.RollingUpdateDeployment{
 					MaxSurge:       &intstr.IntOrString{Type: intstr.String, StrVal: defaultSurgePercent},
-					MaxUnavailable: &intstr.IntOrString{Type: intstr.String, StrVal: defaultSurgePercent},
+					MaxUnavailable: &intstr.IntOrString{Type: intstr.Int, IntVal: maxUnavailable},
 				},
 			}
 		}
