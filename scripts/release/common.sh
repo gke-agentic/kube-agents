@@ -217,11 +217,10 @@ find_latest_built_commit() {
 
 # Configures Git bot user identity for automated tagging and committing
 setup_git_bot_user() {
-  local target_dir="${1:-.}"
-  if is_ci_pipeline || [ -z "$(git -C "${target_dir}" config user.name 2>/dev/null || true)" ]; then
-    git -C "${target_dir}" config user.name "github-actions[bot]"
-    git -C "${target_dir}" config user.email "github-actions[bot]@users.noreply.github.com"
-  fi
+  export GIT_AUTHOR_NAME="github-actions[bot]"
+  export GIT_AUTHOR_EMAIL="github-actions[bot]@users.noreply.github.com"
+  export GIT_COMMITTER_NAME="github-actions[bot]"
+  export GIT_COMMITTER_EMAIL="github-actions[bot]@users.noreply.github.com"
 }
 
 # Ensures a Git tag exists for a given commit SHA idempotently and pushes to origin.
@@ -403,7 +402,7 @@ create_stamped_release_commit() {
 
   if [ ${#modified_files[@]} -gt 0 ]; then
     echo "📝 Stamping baked release version '${version}' in release tag commit..." >&2
-    setup_git_bot_user "${repo_dir}"
+    setup_git_bot_user
     git -C "${repo_dir}" add "${modified_files[@]}"
     git -C "${repo_dir}" commit -m "chore(release): stamp release version ${version}" >/dev/null
     git -C "${repo_dir}" rev-parse HEAD
