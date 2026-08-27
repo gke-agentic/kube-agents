@@ -11,13 +11,17 @@ Evaluation harness that runs [kubernetes-sigs/devops-bench](https://github.com/k
   producing assertions.
 - `kube_agents_bench/verifiers.py` — the leaf verifiers this repository adds to devops-bench's own, published through the `devops_bench.verifiers` entry-point group.
 - `kube_agents_bench/fleet.py` — resolves a seeded-fleet fixture ROLE to the kubeconfig that reaches it. Fails loudly rather than falling back to the ambient config; see [tf/fleet/README.md](tf/fleet/README.md).
-- `tasks/` — task definitions. `agent-kanban-smoke` is a no-infrastructure smoke task that exercises the whole pipeline using only toolsets the deployed agent actually ships with.
+- `tasks/` — task definitions. `agent-kanban-smoke` is a no-infrastructure smoke task that exercises the whole pipeline using only toolsets the deployed agent actually ships with. The rest are the Phase 2 domain scenarios; [`tasks/DRAFTS.md`](tasks/DRAFTS.md) is their status page.
 - `scenarios/` — evaluation matrices using `Agent + Persona + Scenario + Goals
 -> Run -> Assertions` terminology.
 - `tests/` — offline tests against a local HTTP stub.
 
 To add a task or plug in a different agent, see
 [CUSTOM-TASKS.md](CUSTOM-TASKS.md).
+
+**Domain coverage.** `docs/designs/domains.yaml` lists eleven domains and an `allowlist` of the ones known to be uncovered; `scripts/test_domain_coverage.py` fails the build both for an uncovered domain missing from that list and for a listed domain that is in fact covered, so the list cannot rot in either direction. A domain counts as covered only when a task carries its `domain:` slug **and** a non-empty `verification_spec` **and** is an **uncommented** entry in `hack/ci-eval-pr.sh`'s `TASKS` array — covered means running.
+
+Nine of the eleven are covered: `chat-and-routing` by the two kanban probes, `cluster-debugging` by `cluster-agent-crashloop-debug` (#939), `reliability`, `capacity`, `security`, `upgrades`, `consistency` and `cost` by the six domain probes, and `fleet-audits` by the `compliance-rbac-overgrant` canary — the probe-plus-canary recast the 2026-08-26 smoke run forced, after it priced a full audit at 600–1300s ([`tasks/DRAFTS.md`](tasks/DRAFTS.md) has the run and the reasoning). Two remain allowlisted — `remediation` (`rca-remediation-pr` is registered but parked until it gets one clean measured run; the 2026-08-26 job deadline expired before reaching it) and `incident-triage` (its scenario has no driver to apply the incident workload; #954). Phase 2's exit criterion is an empty allowlist.
 
 ## Running evals
 
@@ -93,7 +97,7 @@ AGENT_CLUSTER_CONTEXT=gke_<project>_<location>_<agent-cluster> \
   BENCH_TF_ROOT=./tf uv run devops-bench ./tasks --agent-type kubeagents
 ```
 
-`PROJECT_ID` and `CLUSTER_NAME` are required once infrastructure is on; without them the run exits before provisioning. Set `AGENT_CLUSTER_CONTEXT` for these too. Provisioning a task cluster runs `gcloud container clusters get-credentials`, which repoints kubectl's current context at it; without the pin, the harness port-forwards into the task cluster, where the agent does not run.
+`PROJECT_ID` and `CLUSTER_NAME` are required once infrastructure is on; without them the run exits before provisioning. Set `AGENT_CLUSTER_CONTEXT` for these too. Bringing up a task cluster — provisioned per run, or an existing one reused via a stack's `reuse_existing_cluster` — runs `gcloud container clusters get-credentials`, which repoints kubectl's current context at it; without the pin, the harness port-forwards into the task cluster, where the agent does not run.
 
 A stack under `tf/` does not have to vendor the upstream OpenTofu modules — reference them over git, pinned to a SHA:
 

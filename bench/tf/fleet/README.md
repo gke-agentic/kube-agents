@@ -1,8 +1,9 @@
 # The seeded dirty fleet
 
-Three small standing GKE clusters, one trio per eval project — and the pool has three
-projects, so the stack must be applied three times (see State below) — whose defects are
-planted on purpose: they are the fixtures the Phase 2 presubmit scenarios assert on.
+Three small standing GKE clusters, one trio per eval project — the stack is applied once
+per project `gitops_repo_for_project()` in `hack/ci-deploy.sh` maps (see State below) —
+whose defects are planted on purpose: they are the fixtures the Phase 2 presubmit
+scenarios assert on.
 Boskos leases a project at random, so **a project without this stack applied is a
 project where every fleet check reports `status: "error"`**. The fleet is
 read-only for evaluations — every open pull request shares it, and no scenario may
@@ -19,13 +20,11 @@ State is remote (`backend "gcs"`, partial config), because the operating model i
 re-apply from any checkout — against local state a fresh checkout would plan full
 creates and 409 against the live fleet. The stack applies **once per eval project**,
 and each project keeps its own state: bucket `<project>-tf-state`, prefix
-`seeded-fleet`, always. All three pool projects are live as of 2026-08-24 —
-`gs://kube-agents-evals-tf-state`, `gs://kube-agents-evals-2-tf-state` and
-`gs://kube-agents-evals-3-tf-state` — and `hack/fleet-kubeconfigs.sh` confirms all seven
-fixture roles in each of them; project N+1 follows the same convention. The fleet owner
-creates the bucket once per
-project; switching projects means re-initializing against that project's bucket and
-naming the project on the apply:
+`seeded-fleet`, always. Whether a given project's apply is complete is not recorded here,
+because a list of project names goes stale silently: `scripts/verify_ci_pool_project.py`
+runs `hack/fleet-kubeconfigs.sh` against the project and requires all seven fixture roles.
+Project N+1 follows the same convention. The fleet owner creates the bucket once per project; switching projects means
+re-initializing against that project's bucket and naming the project on the apply:
 
     tofu init -reconfigure \
               -backend-config="bucket=<project>-tf-state" \
@@ -197,6 +196,24 @@ fixture; that fallback was activation blocker A5 in `bench/tasks/DRAFTS.md`. See
 [Addressing a seeded-fleet fixture by role](../../CUSTOM-TASKS.md#addressing-a-seeded-fleet-fixture-by-role)
 for the spec side, including how the verifier keeps "the fixture is gone" (a fail)
 apart from "the cluster was unreachable" (an error).
+
+## The second consumer: the presubmit's log-fixture subject
+
+`hack/ci-eval-pr.sh` §3b is the one consumer of this fleet outside the role catalog's
+chain, and `fixtures.json`'s description names it as the exception. On every presubmit
+in a fleet-carrying project it discovers **slot c** by the same two labels, verifies
+its `default` namespace is empty, runs `get-credentials` against it, and hands its
+name to the gpu-stress-test stack, which then creates no per-run cluster: the task's
+synthetic `hypercomputer-agent`/`hpa-controller` Cloud Logging entries name the slot-c
+cluster in their resource labels, on every run. The cluster itself is not mutated —
+the entries are project-level and the stack's teardown removes only its fixture
+resource — but two consequences are standing state this README must own: the agent
+under test is pointed at slot c by name for the length of the eval, and any future
+scenario that reads slot c's Cloud Logging history (a `consistency-drift-outlier`
+investigation, say) will find those fixture entries attributed to it. Slot c carries
+the fleet's only defect that is invisible to a log-analysis task, which is why it is
+the only slot the presubmit may reuse; when it is absent or mid-maintenance, the
+presubmit provisions its own cluster rather than borrowing slot a or b.
 
 ## A read-only credential for evaluations
 
