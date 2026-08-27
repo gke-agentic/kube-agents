@@ -232,18 +232,20 @@ func TestResolveDeploymentReplicasAndStrategy(t *testing.T) {
 // maxSurge 1 / maxUnavailable 0 at 2 and 3 replicas and rolled at no replica
 // count a user is likely to pick first.
 func TestRollingUpdateAlwaysAllowsProgressUnderAQuota(t *testing.T) {
-	// 8 is the row that checks the floor did not flatten the 25% intent: it is
-	// the only one whose expectation (2) differs from what a hard-coded floor
-	// of 1 would give. 4 is kept as the boundary where the percentage first
-	// resolves on its own, but it cannot tell the two implementations apart.
+	// 8 is the row that checks neither fencepost was flattened to a constant:
+	// it is the only one where both expectations (2 and 2) differ from what a
+	// hard-coded 1 would give. 4 is kept as the boundary where the percentage
+	// first resolves on its own, but it cannot tell the two implementations
+	// apart.
 	for _, tc := range []struct {
 		replicas               int32
 		expectedMaxUnavailable int32
+		expectedMaxSurge       int32
 	}{
-		{replicas: 2, expectedMaxUnavailable: 1},
-		{replicas: 3, expectedMaxUnavailable: 1},
-		{replicas: 4, expectedMaxUnavailable: 1},
-		{replicas: 8, expectedMaxUnavailable: 2},
+		{replicas: 2, expectedMaxUnavailable: 1, expectedMaxSurge: 1},
+		{replicas: 3, expectedMaxUnavailable: 1, expectedMaxSurge: 1},
+		{replicas: 4, expectedMaxUnavailable: 1, expectedMaxSurge: 1},
+		{replicas: 8, expectedMaxUnavailable: 2, expectedMaxSurge: 2},
 	} {
 		t.Run(fmt.Sprintf("replicas=%d", tc.replicas), func(t *testing.T) {
 			_, strategy := resolveDeploymentReplicasAndStrategy(&agentv1alpha1.DeploymentSpec{
@@ -271,6 +273,15 @@ func TestRollingUpdateAlwaysAllowsProgressUnderAQuota(t *testing.T) {
 			if maxSurge == nil {
 				t.Fatalf("maxSurge is unset at %d replicas", tc.replicas)
 			}
+			// The percentage itself, not just what it resolves to. Swapping
+			// maxSurge to an absolute count still satisfies the arithmetic
+			// below at every row in this table while silently flattening the
+			// surge at replica counts the table does not reach.
+			if maxSurge.Type != intstr.String {
+				t.Errorf("maxSurge must stay a percentage, got the absolute count %d — "+
+					"rounding up is what keeps it off 0, so it needs no floor and "+
+					"should not be pinned (#749)", maxSurge.IntVal)
+			}
 			scaledSurge, err := intstr.GetScaledValueFromIntOrPercent(maxSurge, int(tc.replicas), true)
 			if err != nil {
 				t.Fatalf("maxSurge %q at %d replicas does not scale: %v", maxSurge.String(), tc.replicas, err)
@@ -279,6 +290,10 @@ func TestRollingUpdateAlwaysAllowsProgressUnderAQuota(t *testing.T) {
 				t.Errorf("maxSurge %q resolved to %d at %d replicas; with maxUnavailable floored at 1 "+
 					"this is still progress, but the surge Pod the quota argument assumes is gone (#749)",
 					maxSurge.String(), scaledSurge, tc.replicas)
+			}
+			if int32(scaledSurge) != tc.expectedMaxSurge { // #nosec G115 -- bounded by replicas
+				t.Errorf("expected maxSurge to resolve to %d at %d replicas, got %d",
+					tc.expectedMaxSurge, tc.replicas, scaledSurge)
 			}
 
 			// An absolute count, not a percentage. A percentage here is the bug:

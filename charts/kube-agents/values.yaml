@@ -220,8 +220,15 @@ litellm:
   #
   # Set maxUnavailable to 0 on an install with quota headroom that would rather a
   # rollout stall than drop a request; keep 1 anywhere a baseline quota is applied
-  # as policy. Both at 0 is rejected by the API server, and the template fails the
-  # render rather than letting it reach the cluster.
+  # as policy. Both at 0 is rejected in any spelling — 0, "0", 0%, 0.0 — and the
+  # template fails the render rather than letting it reach the cluster, where the
+  # API server would reject it anyway.
+  #
+  # Emptying a fencepost rather than setting it (`--set …maxUnavailable=`, or
+  # `maxUnavailable: ""`, or removing the key) resolves to the 1 below, not to
+  # nothing. Rendering it empty would hand Kubernetes its own 25% default, which
+  # rounds down to 0 at replicaCount 2 — the stall above, reached silently. Keep
+  # these two literals in step with that fallback in templates/litellm.yaml.
   rollingUpdate:
     maxSurge: 1
     maxUnavailable: 1
