@@ -89,6 +89,45 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn(f"DIR={_REPO_ROOT}", proc.stdout)
 
+    def test_acquire_source_repo_refuses_to_mutate_dirty_existing_repo(self):
+        """Verifies acquire_source_repo errors if HOME/kube-agents exists with uncommitted changes."""
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        try:
+            home_dir = pathlib.Path(temp_dir.name) / "home"
+            repo_dir = home_dir / "kube-agents"
+            repo_dir.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["git", "init"], cwd=str(repo_dir), check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=str(repo_dir), check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(repo_dir), check=True)
+            (repo_dir / "file.txt").write_text("initial\n")
+            subprocess.run(["git", "add", "file.txt"], cwd=str(repo_dir), check=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=str(repo_dir), check=True)
+
+            # Make working tree dirty
+            (repo_dir / "file.txt").write_text("dirty changes\n")
+
+            outside_dir = pathlib.Path(temp_dir.name) / "outside"
+            outside_dir.mkdir()
+            isolated_install_sh = outside_dir / "install.sh"
+            isolated_install_sh.write_text(_INSTALL_SH.read_text())
+
+            cmd = 'out_dir=""; acquire_source_repo out_dir "0.2.0"'
+            setup = f"""
+KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
+{cmd}
+"""
+            proc = subprocess.run(
+                ["bash", "-c", setup],
+                capture_output=True,
+                text=True,
+                env={"HOME": str(home_dir), "PATH": os.environ["PATH"]},
+                cwd=str(outside_dir),
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("has uncommitted changes", proc.stdout)
+        finally:
+            temp_dir.cleanup()
+
     def test_parse_args_google_chat_mode(self):
         """Verifies parse_args captures --google-chat-mode."""
         cmd = f'parse_args --google-chat-mode={MOCK_GOOGLE_CHAT_MODE}; echo "MODE=$PARAM_GOOGLE_CHAT_MODE"'
@@ -388,6 +427,17 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
             proc = self._run_install_func(cmd, cwd=archive_dir)
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertEqual(proc.stdout.strip(), "0.2.0")
+
+    def test_verify_local_source_ref_accepts_baked_release_in_non_git_dir(self):
+        """Verifies verify_local_source_ref succeeds for unpacked release archive without Git repository."""
+        with tempfile.TemporaryDirectory(prefix="unpacked-release-") as outer_dir:
+            archive_dir = pathlib.Path(outer_dir) / "kube-agents-0.2.0"
+            archive_dir.mkdir(parents=True)
+
+            cmd = f'BAKED_RELEASE_VERSION="0.2.0"; verify_local_source_ref "{archive_dir}" "0.2.0"'
+            proc = self._run_install_func(cmd, cwd=archive_dir)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("Verified install sources match baked official release 0.2.0", proc.stdout)
 
 
 class EnsureExistingClusterNetworkPolicyTest(unittest.TestCase):

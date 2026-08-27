@@ -494,6 +494,14 @@ verify_local_source_ref() {
     return 0
   fi
 
+  # In official stamped release archives (unpacked tarball/zip outside Git),
+  # BAKED_RELEASE_VERSION is stamped during release automation.
+  if [ -n "${BAKED_RELEASE_VERSION:-}" ] && [ "${BAKED_RELEASE_VERSION}" = "${expected_ref}" ]; then
+    SOURCE_REF_VERIFIED="${repo_dir}@${expected_ref}"
+    print_success "Verified install sources match baked official release ${BAKED_RELEASE_VERSION}."
+    return 0
+  fi
+
   if ! git -C "$repo_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     if [ "$lenient" = "true" ]; then
       print_warning "Cannot verify source/image alignment because '$repo_dir' is not a Git worktree."
@@ -567,15 +575,20 @@ acquire_source_repo() {
   else
     resolved_dir="$HOME/kube-agents"
     if [ -d "$resolved_dir/.git" ]; then
+      if [ -n "$(git -C "$resolved_dir" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+        print_error "Existing repository at $resolved_dir has uncommitted changes. Refusing to overwrite or switch branches."
+        print_info "Please commit or stash your changes before running the installer, or run the installer directly from within your repository clone."
+        return 1
+      fi
       print_info "Updating repository at $resolved_dir to ref '$expected_ref'..."
-      git -C "$resolved_dir" fetch --depth=1 origin "$expected_ref"
+      git -C "$resolved_dir" fetch --depth=1 https://github.com/gke-labs/kube-agents.git "$expected_ref"
       git -C "$resolved_dir" checkout --detach FETCH_HEAD
     elif [ -d "$resolved_dir" ]; then
       print_info "Using existing repository at $resolved_dir."
     else
       print_info "Cloning kube-agents install sources at '$expected_ref' into $resolved_dir..."
       git clone --filter=blob:none --no-checkout https://github.com/gke-labs/kube-agents.git "$resolved_dir"
-      git -C "$resolved_dir" fetch --depth=1 origin "$expected_ref"
+      git -C "$resolved_dir" fetch --depth=1 https://github.com/gke-labs/kube-agents.git "$expected_ref"
       git -C "$resolved_dir" checkout --detach FETCH_HEAD
     fi
     cd "$resolved_dir"
