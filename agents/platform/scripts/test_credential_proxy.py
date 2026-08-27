@@ -1618,7 +1618,7 @@ class UntrustedWorkspaceTest(unittest.TestCase):
     def test_git_config_is_pinned_over_the_repositorys_own(self):
         """`.git/config` is a file the agent writes and git runs.
 
-        `core.hooksPath`, `core.pager`, `diff.external` and `credential.helper`
+        `core.hooksPath`, `core.pager`, `core.sshCommand` and `credential.helper`
         are all read out of the repository and executed, with no flag involved --
         so `selfimprove.no-git-config-injection`, which reads `-c key=value`,
         cannot see any of it. `GIT_CONFIG_COUNT` is read exactly where `-c` is,
@@ -1645,7 +1645,10 @@ class UntrustedWorkspaceTest(unittest.TestCase):
         pinned = self.resolved(environment)
         self.assertEqual("cat", pinned["core.pager"])
         self.assertEqual("false", pinned["core.editor"])
-        self.assertEqual("", pinned["diff.external"])
+        # Not pinned, deliberately: see the comment above `diff.external`'s
+        # removal from `HARDENED_GIT_CONFIG`. Asserted absent so a future
+        # re-add of the broken `""` value fails a test instead of a `git diff`.
+        self.assertNotIn("diff.external", pinned)
         self.assertEqual("never", pinned["protocol.ext.allow"])
         # An empty `credential.helper` resets the list. It must stay empty
         # rather than being dropped: a repository that sets one of its own would
@@ -1690,6 +1693,42 @@ class UntrustedWorkspaceTest(unittest.TestCase):
             ["commit.gpgsign", "core.fsmonitor", "core.hooksPath"],
             sorted({key for key in keys if keys.count(key) > 1}),
         )
+
+    def test_ordinary_git_still_works_when_the_workspace_is_untrusted(self):
+        # The test above asserts the pinned *environment*; this one runs real
+        # git under it, which is what actually would have caught the bug the
+        # environment-only assertion missed. `diff.external` was pinned to ""
+        # here until this fix, and git reads an empty value as a program to
+        # execute rather than as "off", so every `git diff` under the
+        # untrusted path died with `fatal: external diff died` (exit 128)
+        # while `test_git_config_is_pinned_over_the_repositorys_own` stayed
+        # green -- it only checks what was sent to git, not what git did
+        # with it.
+        executor = self.executor()
+        repository = executor.workspace_dir / "repo"
+        repository.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "init", "--quiet"], cwd=repository, check=True, capture_output=True
+        )
+        tracked = repository / "manifest.yaml"
+        tracked.write_text("replicas: 1\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "manifest.yaml"],
+            cwd=repository, check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t.invalid",
+             "commit", "--quiet", "-m", "seed"],
+            cwd=repository, check=True, capture_output=True,
+        )
+        tracked.write_text("replicas: 2\n", encoding="utf-8")
+        for argv in (
+            ["git", "diff"],
+            ["git", "diff", "--cached", "--quiet"],
+            ["git", "status", "--porcelain"],
+        ):
+            result = executor.execute(argv, cwd=str(repository))
+            self.assertEqual(0, result.exit_code, f"{argv}: {result.stderr}")
 
     def test_only_the_base_layer_is_pinned_when_the_workspace_is_trusted(self):
         """The hardening is opt-in. The base layer is not.
