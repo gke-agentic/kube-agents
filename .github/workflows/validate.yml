@@ -126,7 +126,9 @@ jobs:
           # maxUnavailable are IntOrString, so a percentage is legal on both
           # and must still render — a guard using Helm's `int` reads "25%" as 0
           # and refuses a valid install (#749).
-          for pair in "0 0" "0% 0%"; do
+          # "0.0" is here because it is the spelling a list of literal zeroes
+          # misses: `--set x=0.0` reaches the template as the string "0.0".
+          for pair in "0 0" "0% 0%" "0.0 0.0" "0 0%"; do
             set -- $pair
             if helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
               --set-string litellm.rollingUpdate.maxSurge="$1" \
@@ -141,6 +143,18 @@ jobs:
               --set-string litellm.rollingUpdate.maxSurge="$1" \
               --set-string litellm.rollingUpdate.maxUnavailable="$2" > /dev/null 2>&1; then
               echo "litellm.rollingUpdate $1/$2 is valid but was refused" >&2
+              exit 1
+            fi
+          done
+          # An unset fencepost must render the chart default explicitly, not an
+          # empty value: empty means Kubernetes applies its own 25% default,
+          # which rounds down to 0 at replicaCount 2 and reinstates the stall
+          # with nothing to see in the diff.
+          for unset_flag in "litellm.rollingUpdate=null" "litellm.rollingUpdate.maxUnavailable=null"; do
+            rendered=$(helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
+              --set "$unset_flag" | grep -cE '^      maxUnavailable: 1$')
+            if [ "$rendered" -ne 1 ]; then
+              echo "$unset_flag did not render an explicit maxUnavailable: 1" >&2
               exit 1
             fi
           done

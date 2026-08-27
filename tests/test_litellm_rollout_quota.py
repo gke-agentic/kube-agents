@@ -46,6 +46,7 @@ tracked in #975; do not read a green run here as the install being clear of it.
 
 import math
 import pathlib
+import re
 import unittest
 
 import yaml
@@ -134,6 +135,40 @@ def _max_unavailable(path):
     return _resolve_max_unavailable(doc)
 
 
+def _template_expression_for(template, field):
+    """The Go-template expression a `<field>: {{ ... }}` line renders, or None.
+
+    None means the field is absent or rendered as a literal; either way the
+    caller's assertion is what should report it, not an exception here.
+    """
+    match = re.search(rf"{re.escape(field)}:\s*\{{\{{(.+?)\}}\}}", template)
+    return match.group(1).strip() if match else None
+
+
+def _resolve_template_variable(template, expression, hops=4):
+    """Expand `$var` in `expression` through its assignments in `template`.
+
+    One-hop indirection is what the template actually uses ($unavail from $ru);
+    the hop limit is only there so a self-referential assignment cannot spin.
+    Returns the expanded text, which the caller greps for a values path.
+    """
+    if expression is None:
+        return ""
+    seen = expression
+    for _ in range(hops):
+        expanded = seen
+        for var in set(re.findall(r"\$[A-Za-z_][A-Za-z0-9_]*", seen)):
+            # `:=` declares, `=` reassigns; both decide what the variable holds.
+            for rhs in re.findall(
+                rf"{re.escape(var)}\s*:?=\s*(.+?)\s*\}}\}}", template
+            ):
+                expanded += " " + rhs
+        if expanded == seen:
+            break
+        seen = expanded
+    return seen
+
+
 class LiteLLMRolloutSurvivesAFullQuota(unittest.TestCase):
     def test_chart_default_replaces_in_place(self):
         values = yaml.safe_load(_VALUES.read_text())
@@ -151,12 +186,26 @@ class LiteLLMRolloutSurvivesAFullQuota(unittest.TestCase):
         # does not install it, so this matches the template text instead —
         # loosely enough that a pipeline (`| int`, `| default 1`) or extra
         # whitespace, neither of which changes what renders, does not fail it.
+        #
+        # The strategy block renders through a variable rather than naming the
+        # values path inline, because an unset fencepost has to pick up the
+        # chart default before the both-zero guard reads it. So follow one hop
+        # of assignment: matching only the inline form would fail on a template
+        # that is correct, and matching any `{{ ... }}` at all would pass one
+        # that renders a hard-coded variable.
         template = _CHART_TEMPLATE.read_text()
-        self.assertRegex(
-            template,
-            r"maxUnavailable:\s*\{\{[^}]*\.Values\.litellm\.rollingUpdate\.maxUnavailable[^}]*\}\}",
+        source = _template_expression_for(template, "maxUnavailable")
+        self.assertIsNotNone(
+            source,
+            "charts/kube-agents/templates/litellm.yaml must render maxUnavailable from a "
+            "template expression, not a literal",
+        )
+        self.assertIn(
+            ".Values.litellm.rollingUpdate",
+            _resolve_template_variable(template, source),
             "charts/kube-agents/templates/litellm.yaml must render maxUnavailable from "
-            "litellm.rollingUpdate, so an install can choose its own value",
+            "litellm.rollingUpdate, so an install can choose its own value; it renders "
+            f"{source!r}, which does not trace back to that value",
         )
         self.assertNotRegex(
             template,

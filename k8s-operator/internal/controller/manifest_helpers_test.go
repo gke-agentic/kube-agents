@@ -253,7 +253,33 @@ func TestRollingUpdateAlwaysAllowsProgressUnderAQuota(t *testing.T) {
 			if strategy.Type != appsv1.RollingUpdateDeploymentStrategyType {
 				t.Fatalf("expected RollingUpdate at %d replicas, got %s", tc.replicas, strategy.Type)
 			}
+			// Checked rather than assumed: a RollingUpdate strategy with a nil
+			// RollingUpdate block would otherwise panic the whole package here
+			// instead of failing this one subtest.
+			if strategy.RollingUpdate == nil {
+				t.Fatalf("RollingUpdate strategy at %d replicas carries no RollingUpdate block", tc.replicas)
+			}
 			maxUnavailable := strategy.RollingUpdate.MaxUnavailable
+
+			// The other half of the invariant, and the half the rounding
+			// asymmetry rests on: maxSurge stays a percentage because
+			// Kubernetes rounds it UP, so it is never 0 and never needs a
+			// floor. Asserting only maxUnavailable would leave the claim in
+			// this test's own doc comment unverified on the side that makes it
+			// safe to leave alone.
+			maxSurge := strategy.RollingUpdate.MaxSurge
+			if maxSurge == nil {
+				t.Fatalf("maxSurge is unset at %d replicas", tc.replicas)
+			}
+			scaledSurge, err := intstr.GetScaledValueFromIntOrPercent(maxSurge, int(tc.replicas), true)
+			if err != nil {
+				t.Fatalf("maxSurge %q at %d replicas does not scale: %v", maxSurge.String(), tc.replicas, err)
+			}
+			if scaledSurge < 1 {
+				t.Errorf("maxSurge %q resolved to %d at %d replicas; with maxUnavailable floored at 1 "+
+					"this is still progress, but the surge Pod the quota argument assumes is gone (#749)",
+					maxSurge.String(), scaledSurge, tc.replicas)
+			}
 
 			// An absolute count, not a percentage. A percentage here is the bug:
 			// it reintroduces the rounding this test exists to prevent.

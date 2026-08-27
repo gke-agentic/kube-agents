@@ -8,20 +8,28 @@
 {{- if not (hasKey $defaultModels $provider) }}
 {{- fail (printf "litellm.modelProvider %q is not one of gemini, anthropic, openai, vertex_ai — a typo here would otherwise fail only at runtime" $provider) }}
 {{- end }}
-{{- /* Both fenceposts at 0 is rejected by the API server ("may not be 0 when
-       maxSurge is 0"), which would otherwise surface as a failed apply rather
-       than a failed render. See values.yaml's litellm.rollingUpdate.
+{{- /* Both fenceposts at zero leaves the Deployment no way to make progress and
+       the API server rejects it ("may not be 0 when maxSurge is 0"), so fail
+       the render rather than the apply. See values.yaml's litellm.rollingUpdate.
 
-       Compared as strings rather than through `int`, which is cast.ToInt and
-       returns 0 for any non-numeric input: these fields are IntOrString, so
-       "25%" is legal on both, and `int` would read a pair of perfectly good
-       percentages as a pair of zeroes and refuse the install. "0%" has to be
-       caught on the other side of the same coin — Kubernetes resolves it to 0,
-       so 0%/0% is the same misconfiguration spelled differently. */}}
-{{- $ru := .Values.litellm.rollingUpdate }}
-{{- $zeroes := list "0" "0%" }}
-{{- if and (has (toString $ru.maxSurge) $zeroes) (has (toString $ru.maxUnavailable) $zeroes) }}
-{{- fail (printf "litellm.rollingUpdate: maxSurge (%v) and maxUnavailable (%v) may not both be zero — the Deployment would have no way to make progress, and the API server rejects it." $ru.maxSurge $ru.maxUnavailable) }}
+       Both fields are IntOrString, which is what makes the comparison awkward:
+       `int` is cast.ToInt and reads "25%" as 0, so it would refuse a pair of
+       perfectly good percentages, while comparing against a list of literal
+       spellings misses "0.0". Strip the percent sign and compare numerically —
+       "0%" resolves to 0 on the cluster, so it is the same misconfiguration
+       spelled differently.
+
+       An unset fencepost takes the values.yaml default before that check, and
+       renders explicitly below. Passing it through empty would hand Kubernetes
+       its own 25% default, which rounds down to 0 at two replicas — the stall
+       this guard exists to catch, arrived at silently. */}}
+{{- $ru := .Values.litellm.rollingUpdate | default dict }}
+{{- $surge := $ru.maxSurge }}
+{{- $unavail := $ru.maxUnavailable }}
+{{- if kindIs "invalid" $surge }}{{- $surge = 1 }}{{- end }}
+{{- if kindIs "invalid" $unavail }}{{- $unavail = 1 }}{{- end }}
+{{- if and (eq (float64 (trimSuffix "%" (toString $surge))) 0.0) (eq (float64 (trimSuffix "%" (toString $unavail))) 0.0) }}
+{{- fail (printf "litellm.rollingUpdate: maxSurge (%v) and maxUnavailable (%v) may not both be zero — the Deployment would have no way to make progress, and the API server rejects it." $surge $unavail) }}
 {{- end }}
 {{- $model := .Values.litellm.modelDefaultName | default (get $defaultModels $provider) }}
 {{- $vertex := .Values.litellm.vertex | default dict }}
@@ -96,8 +104,8 @@ spec:
       # values.yaml's litellm.rollingUpdate block owns that argument. The short
       # form is that 0 makes the surge Pod mandatory, which a full namespace
       # ResourceQuota turns into a stalled rollout (#749).
-      maxSurge: {{ .Values.litellm.rollingUpdate.maxSurge }}
-      maxUnavailable: {{ .Values.litellm.rollingUpdate.maxUnavailable }}
+      maxSurge: {{ $surge }}
+      maxUnavailable: {{ $unavail }}
   selector:
     matchLabels:
       app: litellm

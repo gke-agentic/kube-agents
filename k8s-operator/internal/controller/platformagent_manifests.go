@@ -2414,51 +2414,13 @@ func buildCredentialProxySidecar(agent *agentv1alpha1.PlatformAgent, homeDir str
 			}}},
 			InitialDelaySeconds: 5,
 			PeriodSeconds:       15,
-			// Stated rather than defaulted, and 3s rather than the 1s default, to
-			// match the LiteLLM probes. Forking curl and completing a loopback
-			// round trip inside one second is what a CPU-throttled container
-			// misses first, and this is a native sidecar, so its readiness takes
-			// the whole Pod out of the Service. One second of headroom is not
-			// worth that: the resource comment below halves the CPU ceiling, and
-			// this is the failure mode it would otherwise have made likelier.
-			TimeoutSeconds:   3,
-			FailureThreshold: 3,
 		},
 		Resources: corev1.ResourceRequirements{
-			// Envoy is not all this container runs: the event watcher lives here
-			// too, and its informer and dedup caches grow with the objects being
-			// watched across every cluster in the watch set. Both numbers below
-			// turn on that fact.
+			// Memory request covers the watcher's informer and dedup caches, which
+			// scale with the number of watched clusters.
 			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("150m"), corev1.ResourceMemory: resource.MustParse("384Mi")},
-			// This container is a native sidecar, so a ResourceQuota that tracks
-			// limits.* adds these to the sum of the regular containers rather than
-			// taking the max — whatever is set here, the harness reserves on every
-			// install whether or not it is used (#749).
-			//
-			// The CPU limit is 1, down from 2. The whole container — Envoy, the
-			// credential runtime and the watcher together — measured 22m steady
-			// state on an install watching 19 Cluster Agent profiles, so a core is
-			// roughly 45x the draw at a fleet size the watcher actually sees. The
-			// watch set is the count of profiles under --profiles-dir, one per
-			// onboarded cluster, plus the management cluster it watches
-			// in-cluster; there is no cluster list on the CR to read it from.
-			//
-			// Steady state is the caveat: nothing here measures the startup burst,
-			// when Envoy, the credential runtime and the watcher's initial LIST
-			// across every profile all land at once. That is why the readiness
-			// probe above states timeoutSeconds rather than inheriting 1s — under
-			// throttling that probe is what fails first, and it gates the Pod.
-			//
-			// Memory stays at 2Gi against 309Mi measured on that same fleet. The
-			// headroom is deliberate and the asymmetry with CPU is the failure
-			// mode, not the evidence: throttling degrades and recovers, an OOMKill
-			// terminates, and informer memory tracks the object count in the
-			// watched clusters rather than their number, which a profile count
-			// does not bound. #475 proposed 512Mi on the reading that this was an
-			// Envoy fronting a handful of credential calls; that stopped being
-			// true when the watcher moved in.
 			Limits: corev1.ResourceList{
-				corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("2Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("2Gi"),
+				corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("2Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("2Gi"),
 			},
 		},
 		VolumeMounts: []corev1.VolumeMount{
