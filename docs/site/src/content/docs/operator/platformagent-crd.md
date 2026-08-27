@@ -430,7 +430,10 @@ Configures the operator-generated egress `NetworkPolicy`.
   discovery, and says so in its log.
 - `metadataDaemon` (object, optional) — pins the node-local cloud metadata daemon IP in rule 3. Its
   one field, `endpoint`, is required within it, so `metadataDaemon: {}` is rejected; an explicit
-  `endpoint: ""` suppresses rule 3 entirely, for datapaths without a post-NAT daemon.
+  `endpoint: ""` suppresses rule 3 entirely, for datapaths without a post-NAT daemon. Unlike
+  `dnsClusterIPs` there is no discovery behind this one — leave it out and the operator falls
+  through the annotation and its own environment variable to `169.254.169.252`, which is why
+  `metadataDaemonIPSource` has no `Discovered` value.
 - `additionalEgress` ([]EgressRule, optional, max 32 items) — appends custom CIDR and port egress
   rules to the generated policy. A peer CIDR broader than `/12` (IPv4) or `/48` (IPv6) is rejected at
   admission, so that a caller-supplied range cannot be widened into an unrestricted egress bypass.
@@ -442,6 +445,11 @@ Configures the operator-generated egress `NetworkPolicy`.
   dropped whole — a rule carrying ports and no peer would otherwise permit egress to every
   destination. All three are logged, so the operator's log is where a rule that did not take effect
   explains itself.
+
+  A rule's `ports` list is optional, and omitting it is not one of those drops: a rule with peers
+  and no ports permits **every** port to those peers, which is what a NetworkPolicy egress rule with
+  an empty port list means. Nothing is logged, because nothing was dropped. List the ports unless
+  that is what you want.
 
   A peer's `except` entries may be written bare (`10.0.1.5`, meaning a `/32`) as well as with a
   prefix, the same as `cidr`. Unlike `cidr` there is no prefix floor on them, because an `except`

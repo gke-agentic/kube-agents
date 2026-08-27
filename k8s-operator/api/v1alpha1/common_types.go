@@ -607,9 +607,12 @@ type NetworkPolicySpec struct {
 	// +optional
 	DNSClusterIPs []string `json:"dnsClusterIPs,omitempty"`
 
-	// MetadataDaemon describes the node-local cloud metadata daemon. Leave nil to
-	// let the operator detect it. Present with Endpoint "" emits no post-NAT rule at
-	// all, for datapaths that evaluate pre-NAT or clouds without one.
+	// MetadataDaemon describes the node-local cloud metadata daemon. There is no
+	// discovery for this one, unlike the DNS ClusterIP above: leave nil and the
+	// operator takes the kubeagents.x-k8s.io/metadata-daemon-ip annotation, then its
+	// own --kubernetes-metadata-daemon-ip flag, then the documented default
+	// 169.254.169.252. Present with Endpoint "" emits no post-NAT rule at all, for
+	// datapaths that evaluate pre-NAT or clouds without one.
 	// +optional
 	MetadataDaemon *MetadataDaemonSpec `json:"metadataDaemon,omitempty"`
 
@@ -621,7 +624,9 @@ type NetworkPolicySpec struct {
 	// is not a strict subset of its peer, which the API server would reject the
 	// whole policy for; and a rule left with no usable peer, which would otherwise
 	// permit egress to every destination. Each drop is logged and costs only the
-	// entry it names. Everything else is rejected at admission.
+	// entry it names. Everything else is rejected at admission -- except an entry
+	// with no ports, which is admitted and opens every port to its peers. See
+	// EgressRule.ports.
 	// +kubebuilder:validation:MaxItems=32
 	// +optional
 	AdditionalEgress []EgressRule `json:"additionalEgress,omitempty"`
@@ -644,6 +649,13 @@ type EgressRule struct {
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=16
 	To []EgressPeer `json:"to"`
+
+	// Ports restricts the rule to these destination ports. Omitting it emits a rule
+	// with peers and no ports, which in NetworkPolicy semantics permits EVERY port
+	// to those peers -- the mirror of the case the operator refuses to emit, a rule
+	// with ports and no surviving peer. That is standard NetworkPolicy behaviour and
+	// a legitimate thing to ask for, so it is admitted rather than blocked and
+	// nothing is logged; list the ports if you did not mean it.
 	// +kubebuilder:validation:MaxItems=16
 	// +optional
 	Ports []EgressPort `json:"ports,omitempty"`
