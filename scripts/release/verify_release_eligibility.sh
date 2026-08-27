@@ -56,13 +56,7 @@ else
   # Auto-resolve commit:
   # Check if target version tag already exists in Git
   if TARGET_COMMIT="$(git rev-parse --verify "refs/tags/${TARGET_VERSION}^{commit}" 2>/dev/null)"; then
-    # If the tag points to a detached HEAD stamped commit, resolve candidate from its parent
-    if PARENT_SHA="$(git rev-parse --verify "${TARGET_COMMIT}^" 2>/dev/null)" && \
-       [ -n "$(git tag --points-at "${PARENT_SHA}" | grep -E '^rc_.*_validated$' || true)" ]; then
-      RC_CANDIDATE_COMMIT="${PARENT_SHA}"
-    else
-      RC_CANDIDATE_COMMIT="${TARGET_COMMIT}"
-    fi
+    RC_CANDIDATE_COMMIT="$(resolve_source_image_commit "${TARGET_VERSION}")"
     echo "ℹ️ Resolved target commit from existing release tag '${TARGET_VERSION}': ${RC_CANDIDATE_COMMIT:0:7}"
   elif is_truthy "${SKIP_VALIDATION}"; then
     # In emergency mode without an explicit commit parameter, default to current HEAD
