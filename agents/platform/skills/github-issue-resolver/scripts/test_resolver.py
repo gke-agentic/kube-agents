@@ -82,30 +82,30 @@ class GetManagedReposTest(unittest.TestCase):
     def test_extracts_managed_repos_list(self):
         cm_json = json.dumps({"data": {"managed_repos": "gke-labs/kube-agents, acme/toolkit"}})
         with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, cm_json, "")):
-            self.assertEqual(resolver.get_managed_repos(), ["gke-labs/kube-agents", "acme/toolkit"])
+            self.assertEqual(resolver.get_managed_github_repos(), ["gke-labs/kube-agents", "acme/toolkit"])
 
     def test_empty_when_no_managed_repos(self):
         cm_json = json.dumps({"data": {"managed_repos": ""}})
         with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, cm_json, "")):
-            self.assertEqual(resolver.get_managed_repos(), [])
+            self.assertEqual(resolver.get_managed_github_repos(), [])
 
     def test_raises_when_kubectl_fails(self):
         with mock.patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, ["kubectl"], stderr="Forbidden")):
             with self.assertRaises(RuntimeError) as ctx:
-                resolver.get_managed_repos()
+                resolver.get_managed_github_repos()
             self.assertIn("Failed to read ConfigMap", str(ctx.exception))
             self.assertIn("Forbidden", str(ctx.exception))
 
     def test_raises_when_kubectl_not_found(self):
         with mock.patch("subprocess.run", side_effect=FileNotFoundError("kubectl")):
             with self.assertRaises(RuntimeError) as ctx:
-                resolver.get_managed_repos()
+                resolver.get_managed_github_repos()
             self.assertIn("kubectl binary not found", str(ctx.exception))
 
     def test_raises_when_json_invalid(self):
         with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "not-json", "")):
             with self.assertRaises(RuntimeError) as ctx:
-                resolver.get_managed_repos()
+                resolver.get_managed_github_repos()
             self.assertIn("Failed to parse ConfigMap", str(ctx.exception))
 
 
@@ -129,7 +129,7 @@ class HandlePollRoutingTest(unittest.TestCase):
         with contextlib.ExitStack() as stack:
             stack.enter_context(contextlib.redirect_stdout(buf))
             stack.enter_context(contextlib.redirect_stderr(err))
-            stack.enter_context(mock.patch.object(resolver, "get_managed_repos", return_value=repos))
+            stack.enter_context(mock.patch.object(resolver, "get_managed_github_repos", return_value=repos))
             stack.enter_context(mock.patch.object(subprocess, "run", _gh_stub(**stub)))
             stack.enter_context(mock.patch.object(resolver, "refresh_credentials", _refresh))
             stack.enter_context(_fresh_refresh_state())
@@ -140,7 +140,7 @@ class HandlePollRoutingTest(unittest.TestCase):
     def test_configmap_read_failure_is_a_loud_error(self):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            with mock.patch.object(resolver, "get_managed_repos", side_effect=RuntimeError("kubectl failed: Forbidden")):
+            with mock.patch.object(resolver, "get_managed_github_repos", side_effect=RuntimeError("kubectl failed: Forbidden")):
                 resolver.handle_poll(argparse.Namespace())
         payload = json.loads(buf.getvalue())
         self.assertEqual(payload["status"], "ERROR")
@@ -251,7 +251,7 @@ class HandlePollRoutingTest(unittest.TestCase):
 
 class ValidateRepoOrExitTest(unittest.TestCase):
     def test_valid_repo_in_managed_passes(self):
-        with mock.patch.object(resolver, "get_managed_repos", return_value=["acme/toolkit"]):
+        with mock.patch.object(resolver, "get_managed_github_repos", return_value=["acme/toolkit"]):
             resolver._validate_repo_or_exit("acme/toolkit")
 
     def test_invalid_format_exits(self):
@@ -267,7 +267,7 @@ class ValidateRepoOrExitTest(unittest.TestCase):
     def test_configmap_read_failed_exits(self):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            with mock.patch.object(resolver, "get_managed_repos", side_effect=RuntimeError("kubectl failed: Forbidden")):
+            with mock.patch.object(resolver, "get_managed_github_repos", side_effect=RuntimeError("kubectl failed: Forbidden")):
                 with self.assertRaises(SystemExit) as ctx:
                     resolver._validate_repo_or_exit("acme/toolkit")
         self.assertEqual(ctx.exception.code, 1)
@@ -279,7 +279,7 @@ class ValidateRepoOrExitTest(unittest.TestCase):
     def test_unmanaged_repo_exits(self):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            with mock.patch.object(resolver, "get_managed_repos", return_value=["acme/toolkit"]):
+            with mock.patch.object(resolver, "get_managed_github_repos", return_value=["acme/toolkit"]):
                 with self.assertRaises(SystemExit) as ctx:
                     resolver._validate_repo_or_exit("other-org/other-repo")
         self.assertEqual(ctx.exception.code, 1)
@@ -295,7 +295,7 @@ class HandleClaimTest(unittest.TestCase):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             with mock.patch.object(subprocess, "run", _gh_stub(record=calls)):
-                with mock.patch.object(resolver, "get_managed_repos", return_value=["acme/toolkit"]):
+                with mock.patch.object(resolver, "get_managed_github_repos", return_value=["acme/toolkit"]):
                     resolver.handle_claim(args)
         payload = json.loads(buf.getvalue())
         self.assertEqual(payload["status"], "CLAIMED")
@@ -306,7 +306,7 @@ class HandleClaimTest(unittest.TestCase):
         args = argparse.Namespace(issue=42, repo="acme/toolkit")
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            with mock.patch.object(resolver, "get_managed_repos", side_effect=RuntimeError("kubectl failed: Forbidden")):
+            with mock.patch.object(resolver, "get_managed_github_repos", side_effect=RuntimeError("kubectl failed: Forbidden")):
                 with self.assertRaises(SystemExit) as ctx:
                     resolver.handle_claim(args)
         self.assertEqual(ctx.exception.code, 1)
@@ -345,7 +345,7 @@ class ReportFilePathGuardTest(unittest.TestCase):
             stack.enter_context(mock.patch.object(subprocess, "run", _gh_stub(record=calls, **stub)))
             stack.enter_context(mock.patch.object(resolver, "refresh_credentials", lambda repo: self.refresh_calls.append(repo)))
             if mock_repos is not None:
-                stack.enter_context(mock.patch.object(resolver, "get_managed_repos", return_value=mock_repos))
+                stack.enter_context(mock.patch.object(resolver, "get_managed_github_repos", return_value=mock_repos))
             stack.enter_context(_fresh_refresh_state())
             try:
                 resolver.handle_transition(args)
@@ -417,7 +417,7 @@ class ReportFilePathGuardTest(unittest.TestCase):
         report = os.path.join(self.scratch, "report_1.md")
         with open(report, "w", encoding="utf-8") as handle:
             handle.write("# findings")
-        with mock.patch.object(resolver, "get_managed_repos", side_effect=RuntimeError("kubectl failed: Forbidden")):
+        with mock.patch.object(resolver, "get_managed_github_repos", side_effect=RuntimeError("kubectl failed: Forbidden")):
             code, calls = self._transition(report, mock_repos=None)
         self.assertEqual(code, 1)
         self.assertEqual(calls, [])
@@ -431,7 +431,7 @@ class RunGhRetryTest(unittest.TestCase):
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(subprocess, "run", _gh_stub(**stub)))
             stack.enter_context(mock.patch.object(resolver, "refresh_credentials", lambda repo: self.refresh_calls.append(repo)))
-            stack.enter_context(mock.patch.object(resolver, "get_managed_repos", return_value=["acme/toolkit"]))
+            stack.enter_context(mock.patch.object(resolver, "get_managed_github_repos", return_value=["acme/toolkit"]))
             stack.enter_context(_fresh_refresh_state())
             return resolver.run_gh(argv, check=check)
 
@@ -488,7 +488,7 @@ class RunGhRetryTest(unittest.TestCase):
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(subprocess, "run", _gh_stub(list_rc=1)))
             stack.enter_context(mock.patch.object(resolver, "refresh_credentials", lambda repo: self.refresh_calls.append(repo)))
-            stack.enter_context(mock.patch.object(resolver, "get_managed_repos", return_value=[]))
+            stack.enter_context(mock.patch.object(resolver, "get_managed_github_repos", return_value=[]))
             stack.enter_context(_fresh_refresh_state())
             result = resolver.run_gh(["issue", "list"], check=False)
         self.assertEqual(result.returncode, 1)
@@ -517,7 +517,7 @@ class RunGhTest(unittest.TestCase):
             stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
             stack.enter_context(mock.patch.object(subprocess, "run", side_effect=FileNotFoundError))
             stack.enter_context(mock.patch.object(resolver, "refresh_credentials", lambda repo: refreshed.append(repo)))
-            stack.enter_context(mock.patch.object(resolver, "get_managed_repos", return_value=["acme/toolkit"]))
+            stack.enter_context(mock.patch.object(resolver, "get_managed_github_repos", return_value=["acme/toolkit"]))
             stack.enter_context(_fresh_refresh_state())
             resolver.handle_poll(argparse.Namespace())
         payload = json.loads(buf.getvalue())

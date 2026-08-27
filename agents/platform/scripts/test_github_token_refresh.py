@@ -70,7 +70,7 @@ class GitHubTokenRefreshTest(unittest.TestCase):
 
     @patch("github_token_refresh.subprocess.run")
     @patch("github_token_refresh.urllib.request.urlopen")
-    @patch("gitops_workspace.get_managed_repos")
+    @patch("gitops_workspace.get_managed_github_repos")
     def test_scopes_token_to_all_managed_repos_in_org(
         self, get_managed_repos, urlopen, run
     ):
@@ -191,7 +191,7 @@ class GitHubTokenRefreshTest(unittest.TestCase):
         )
 
     @patch("github_token_refresh.subprocess.run")
-    @patch("gitops_workspace.get_managed_repos", return_value=[])
+    @patch("gitops_workspace.get_managed_github_repos", return_value=[])
     def test_direct_minty_gcloud_auth_audiences_fallback(self, mock_get_managed, run):
         # First call with --audiences raises, second call without flags succeeds
         res_fail = Exception("gcloud auth print-identity-token --audiences rejected")
@@ -232,7 +232,7 @@ class GitHubTokenRefreshTest(unittest.TestCase):
             )
 
     @patch("github_token_refresh.subprocess.run")
-    @patch("gitops_workspace.get_managed_repos", return_value=[])
+    @patch("gitops_workspace.get_managed_github_repos", return_value=[])
     @patch("github_token_refresh.time.sleep")
     @patch("github_token_refresh.urllib.request.urlopen")
     def test_direct_minty_retries_on_5xx_and_succeeds(self, urlopen, sleep, mock_get_managed, run):
@@ -262,7 +262,7 @@ class GitHubTokenRefreshTest(unittest.TestCase):
         sleep.assert_called_once_with(0.01)
 
     @patch("github_token_refresh.subprocess.run")
-    @patch("gitops_workspace.get_managed_repos", return_value=[])
+    @patch("gitops_workspace.get_managed_github_repos", return_value=[])
     @patch("github_token_refresh.time.sleep")
     @patch("github_token_refresh.urllib.request.urlopen")
     def test_direct_minty_retries_on_connection_error_and_succeeds(

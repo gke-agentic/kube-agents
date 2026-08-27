@@ -413,7 +413,7 @@ metadata:
     app.kubernetes.io/managed-by: platformagent-controller
     app.kubernetes.io/name: platform-agent
     app.kubernetes.io/part-of: kube-agents
-  name: platformagent-github-state
+  name: platformagent-gitops-state
   namespace: kubeagents-system
   ownerReferences:
     - apiVersion: kubeagents.x-k8s.io/v1alpha1
@@ -521,8 +521,8 @@ spec:
               value: cluster-internal-trusted
             - name: SESSION_KV_DB_PATH
               value: /var/lib/kube-agents/session/session_kv.db
-            - name: GITHUB_STATE_CONFIGMAP
-              value: platformagent-github-state
+            - name: GITOPS_STATE_CONFIGMAP
+              value: platformagent-gitops-state
             - name: SESSION_KV_API_KEY
               valueFrom:
                 secretKeyRef:

@@ -24,7 +24,7 @@ sys.path.append("/opt/defaults/scripts")
 sys.path.append("/opt/data/scripts")
 sys.path.append(str(Path(__file__).resolve().parents[3] / "scripts"))
 
-from gitops_workspace import get_managed_repos
+from gitops_workspace import get_managed_github_repos
 
 SCRATCH_DIR = "/opt/data/scratch"
 
@@ -145,7 +145,7 @@ def _refresh_credentials_once(args: list = None) -> bool:
 
     if not repo:
         try:
-            managed = get_managed_repos()
+            managed = get_managed_github_repos()
             repo = managed[0] if managed else None
         except Exception:
             repo = None
@@ -350,7 +350,7 @@ def sweep_stale_issues(repo: str):
 
 def handle_poll(args):
     try:
-        repos = get_managed_repos()
+        repos = get_managed_github_repos()
     except Exception as e:
         print(
             json.dumps(
@@ -504,7 +504,7 @@ def _validate_repo_or_exit(repo: str) -> None:
         )
         sys.exit(1)
     try:
-        managed = get_managed_repos()
+        managed = get_managed_github_repos()
     except Exception as e:
         print(
             json.dumps(

@@ -513,7 +513,7 @@ type GitHubSpec struct {
 
 	// GitRepo is the optional target GitOps repository URL or owner/repo shorthand for the agent environment.
 	// When omitted or empty, no repository is initially configured, and repositories can be registered
-	// in the github-state ConfigMap by a cluster administrator.
+	// in the gitops-state ConfigMap by a cluster administrator.
 	// +kubebuilder:validation:MaxLength=2048
 	// +optional
 	GitRepo string `json:"gitRepo,omitempty"`
@@ -695,6 +695,24 @@ func CleanRepoSlugWithOrg(rawURL, org string) (string, error) {
 		return "", fmt.Errorf("invalid repository format")
 	}
 	return cleaned, nil
+}
+
+// CleanRepoURLWithOrg cleans up git URLs, SSH endpoints, or shorthands into a full HTTPS URL format (e.g. "https://github.com/owner/repo").
+func CleanRepoURLWithOrg(rawURL, org string) (string, error) {
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" || trimmed == "None" {
+		return "", fmt.Errorf("empty repository")
+	}
+	if strings.HasPrefix(trimmed, "https://") || strings.HasPrefix(trimmed, "http://") {
+		u := strings.TrimSuffix(trimmed, ".git")
+		u = strings.TrimSuffix(u, "/")
+		return u, nil
+	}
+	cleanedSlug, err := CleanRepoSlugWithOrg(rawURL, org)
+	if err != nil {
+		return "", err
+	}
+	return "https://github.com/" + cleanedSlug, nil
 }
 
 // ValidateGitRepoURL verifies that a Git repository URL or shorthand is structurally valid

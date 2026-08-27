@@ -148,9 +148,9 @@ def refresh_git_credentials(
     # repositories within this organization to avoid pod-wide token slot churn.
     repositories_to_scope = [repo_name]
     try:
-        from gitops_workspace import get_managed_repos
+        from gitops_workspace import get_managed_github_repos
 
-        for m in get_managed_repos():
+        for m in get_managed_github_repos():
             if "/" in m:
                 m_org, m_repo = m.split("/", 1)
                 if (

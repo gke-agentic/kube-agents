@@ -595,10 +595,20 @@ class TestResolveRepo(WorkspaceTestCase):
         with patch("subprocess.run", return_value=fake_cm):
             self.assertEqual(gitops_workspace.resolve_repo(), "acme/from-configmap")
 
+    def test_configmap_full_url_resolution_succeeds(self):
+        fake_cm = CompletedProcess(
+            args=["kubectl"],
+            returncode=0,
+            stdout='{"data": {"managed_repos": "https://github.com/acme/from-url"}}',
+            stderr="",
+        )
+        with patch("subprocess.run", return_value=fake_cm):
+            self.assertEqual(gitops_workspace.resolve_repo(), "acme/from-url")
+
     def test_it_falls_back_to_the_git_remote(self):
         module = type(sys)("github_token_refresh")
         module.get_current_git_repo = lambda: "acme/from-remote"
-        with patch("gitops_workspace.get_managed_repos", return_value=[]), patch.dict(sys.modules, {"github_token_refresh": module}):
+        with patch("gitops_workspace.get_managed_github_repos", return_value=[]), patch.dict(sys.modules, {"github_token_refresh": module}):
             self.assertEqual(
                 gitops_workspace.resolve_repo(),
                 "acme/from-remote",
@@ -607,26 +617,52 @@ class TestResolveRepo(WorkspaceTestCase):
     def test_it_falls_back_to_the_git_remote_when_configmap_read_fails(self):
         module = type(sys)("github_token_refresh")
         module.get_current_git_repo = lambda: "acme/from-remote"
-        with patch("gitops_workspace.get_managed_repos", side_effect=RuntimeError("kubectl failed: Forbidden")), patch.dict(sys.modules, {"github_token_refresh": module}):
+        with patch("gitops_workspace.get_managed_github_repos", side_effect=RuntimeError("kubectl failed: Forbidden")), patch.dict(sys.modules, {"github_token_refresh": module}):
             self.assertEqual(
                 gitops_workspace.resolve_repo(),
                 "acme/from-remote",
             )
 
-    def test_get_managed_repos_raises_on_kubectl_error(self):
+    def test_get_managed_repo_urls_extracts_urls(self):
+        fake_cm = CompletedProcess(
+            args=["kubectl"],
+            returncode=0,
+            stdout='{"data": {"managed_repos": "https://github.com/acme/repo1, https://gitlab.com/acme/repo2"}}',
+            stderr="",
+        )
+        with patch("subprocess.run", return_value=fake_cm):
+            self.assertEqual(
+                gitops_workspace.get_managed_repo_urls(),
+                ["https://github.com/acme/repo1", "https://gitlab.com/acme/repo2"],
+            )
+
+    def test_get_managed_github_repos_filters_github_urls(self):
+        fake_cm = CompletedProcess(
+            args=["kubectl"],
+            returncode=0,
+            stdout='{"data": {"managed_repos": "https://github.com/acme/repo1, https://gitlab.com/acme/repo2"}}',
+            stderr="",
+        )
+        with patch("subprocess.run", return_value=fake_cm):
+            self.assertEqual(
+                gitops_workspace.get_managed_github_repos(),
+                ["acme/repo1"],
+            )
+
+    def test_get_managed_github_repos_raises_on_kubectl_error(self):
         with patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, ["kubectl"], stderr="Forbidden")):
             with self.assertRaises(RuntimeError) as caught:
-                gitops_workspace.get_managed_repos()
+                gitops_workspace.get_managed_github_repos()
             self.assertIn("Failed to read ConfigMap", str(caught.exception))
             self.assertIn("Forbidden", str(caught.exception))
 
-    def test_get_managed_repos_raises_on_kubectl_missing(self):
+    def test_get_managed_github_repos_raises_on_kubectl_missing(self):
         with patch("subprocess.run", side_effect=FileNotFoundError("kubectl")):
             with self.assertRaises(RuntimeError) as caught:
-                gitops_workspace.get_managed_repos()
+                gitops_workspace.get_managed_github_repos()
             self.assertIn("kubectl binary not found", str(caught.exception))
 
-    def test_get_managed_repos_raises_on_invalid_json(self):
+    def test_get_managed_github_repos_raises_on_invalid_json(self):
         fake_cm = CompletedProcess(
             args=["kubectl"],
             returncode=0,
@@ -635,7 +671,7 @@ class TestResolveRepo(WorkspaceTestCase):
         )
         with patch("subprocess.run", return_value=fake_cm):
             with self.assertRaises(RuntimeError) as caught:
-                gitops_workspace.get_managed_repos()
+                gitops_workspace.get_managed_github_repos()
             self.assertIn("Failed to parse ConfigMap", str(caught.exception))
 
     def test_workspace_lease_marker_resolution_succeeds(self):
@@ -676,11 +712,11 @@ class TestResolveRepo(WorkspaceTestCase):
         )
 
     def test_single_repo_in_configmap_succeeds(self):
-        with patch("gitops_workspace.get_managed_repos", return_value=["acme/single"]):
+        with patch("gitops_workspace.get_managed_github_repos", return_value=["acme/single"]):
             self.assertEqual(gitops_workspace.resolve_repo(), "acme/single")
 
     def test_multiple_repos_in_configmap_raises_error(self):
-        with patch("gitops_workspace.get_managed_repos", return_value=["acme/first", "acme/second"]):
+        with patch("gitops_workspace.get_managed_github_repos", return_value=["acme/first", "acme/second"]):
             with self.assertRaises(RuntimeError) as caught:
                 gitops_workspace.resolve_repo()
             self.assertIn("Multiple repositories configured", str(caught.exception))
@@ -688,7 +724,7 @@ class TestResolveRepo(WorkspaceTestCase):
     def test_all_sources_failing_raises_runtime_error(self):
         module = type(sys)("github_token_refresh")
         module.get_current_git_repo = lambda: None
-        with patch("gitops_workspace.get_managed_repos", return_value=[]), patch.dict(sys.modules, {"github_token_refresh": module}):
+        with patch("gitops_workspace.get_managed_github_repos", return_value=[]), patch.dict(sys.modules, {"github_token_refresh": module}):
             with self.assertRaises(RuntimeError) as caught:
                 gitops_workspace.resolve_repo()
         self.assertIn("ConfigMap", str(caught.exception))

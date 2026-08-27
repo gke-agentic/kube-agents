@@ -1132,8 +1132,8 @@ func filterValidAgentPlugins(agentPlugins []*agentv1alpha1.AgentPlugin) []*agent
 	return valid
 }
 
-// buildGithubStateConfigMap generates the ConfigMap manifest containing runtime state (e.g. repos)
-func buildGithubStateConfigMap(agent *agentv1alpha1.PlatformAgent) *corev1.ConfigMap {
+// buildGitopsStateConfigMap generates the ConfigMap manifest containing runtime state (e.g. repos)
+func buildGitopsStateConfigMap(agent *agentv1alpha1.PlatformAgent) *corev1.ConfigMap {
 	data := map[string]string{}
 
 	// Extract primary repository from CR Spec if provided
@@ -1142,8 +1142,8 @@ func buildGithubStateConfigMap(agent *agentv1alpha1.PlatformAgent) *corev1.Confi
 		org := strings.TrimSpace(agent.Spec.Integration.GitHub.Org)
 		if gitRepo != "" && gitRepo != "None" {
 			if err := agentv1alpha1.ValidateGitRepoURLWithOrg(gitRepo, org); err == nil {
-				if cleaned, err := agentv1alpha1.CleanRepoSlugWithOrg(gitRepo, org); err == nil {
-					data["managed_repos"] = cleaned
+				if cleanedURL, err := agentv1alpha1.CleanRepoURLWithOrg(gitRepo, org); err == nil {
+					data["managed_repos"] = cleanedURL
 				}
 			} else {
 				manifestsLog.Info("Skipping initial configmap seed due to unparseable or invalid GitRepo", "raw", gitRepo, "error", err)
@@ -1157,7 +1157,7 @@ func buildGithubStateConfigMap(agent *agentv1alpha1.PlatformAgent) *corev1.Confi
 			Kind:       "ConfigMap",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      agent.Name + "-github-state",
+			Name:      agent.Name + "-gitops-state",
 			Namespace: agent.Namespace,
 		},
 		Data: data,
@@ -1723,8 +1723,8 @@ func buildPodTemplateSpec(agent *agentv1alpha1.PlatformAgent, configHash, fluent
 			Value: sessionKVDBPath,
 		},
 		{
-			Name:  "GITHUB_STATE_CONFIGMAP",
-			Value: agent.Name + "-github-state",
+			Name:  "GITOPS_STATE_CONFIGMAP",
+			Value: agent.Name + "-gitops-state",
 		},
 	}
 

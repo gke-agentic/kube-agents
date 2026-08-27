@@ -383,7 +383,7 @@ layout.
 
 That also fixes an ordering problem worth recording: the GitHub App token is repo-scoped, so it
 cannot be minted before the repo is known, and the repo used to be derived from the clone the token
-was needed to create. The repo now comes from the managed repositories ConfigMap (`$GITHUB_STATE_CONFIGMAP`),
+was needed to create. The repo now comes from the managed repositories ConfigMap (`$GITOPS_STATE_CONFIGMAP`),
 with workspace lease markers and the git remote kept as fallbacks. This resolves §13 Q1 in passing:
 `github-issue-resolver` and `fleet-audit` read from the same ConfigMap, so the two skills now agree
 by construction rather than by coincidence.

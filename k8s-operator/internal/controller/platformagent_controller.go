@@ -247,8 +247,8 @@ func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
-	// Reconcile Github State ConfigMap (create-only to avoid overwriting agent updates)
-	if err := r.reconcileGithubStateConfigMap(ctx, instance); err != nil {
+	// Reconcile Gitops State ConfigMap (create-only to avoid overwriting agent updates)
+	if err := r.reconcileGitopsStateConfigMap(ctx, instance); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -520,7 +520,7 @@ func parseManagedRepos(raw string) []string {
 	return res
 }
 
-// reconcileGithubStateConfigMap ensures the <agent-name>-github-state ConfigMap exists to track
+// reconcileGitopsStateConfigMap ensures the <agent-name>-gitops-state ConfigMap exists to track
 // managed repositories. If spec.integration.github.gitRepo is defined on the CR, it is seeded
 // into managed_repos and kept present on subsequent reconciles without removing any additional
 // repositories added to the ConfigMap by cluster administrators.
@@ -534,8 +534,8 @@ func parseManagedRepos(raw string) []string {
 //   - CR-declared repositories must be removed or changed in the PlatformAgent CR itself
 //     (spec.integration.github.gitRepo); removing a CR-declared repo from the ConfigMap alone
 //     will cause the reconciler to re-add it on the next pass.
-func (r *PlatformAgentReconciler) reconcileGithubStateConfigMap(ctx context.Context, agent *agentv1alpha1.PlatformAgent) error {
-	cm := buildGithubStateConfigMap(agent)
+func (r *PlatformAgentReconciler) reconcileGitopsStateConfigMap(ctx context.Context, agent *agentv1alpha1.PlatformAgent) error {
+	cm := buildGitopsStateConfigMap(agent)
 	if err := ctrl.SetControllerReference(agent, cm, r.Scheme); err != nil {
 		return err
 	}

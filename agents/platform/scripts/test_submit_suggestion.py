@@ -90,7 +90,7 @@ class SubmitSuggestionTestCase(unittest.TestCase):
         self.patch_attr(gitops_workspace, "resolve_repo", local_resolve)
         self.patch_attr(
             gitops_workspace,
-            "get_managed_repos",
+            "get_managed_github_repos",
             lambda: ["acme/fleet", "acme/secondary-repo"],
         )
         real_ensure = gitops_workspace.ensure_workspace
@@ -242,23 +242,23 @@ class TestValidateRepo(unittest.TestCase):
                 self.assertIn("Invalid repository format", str(caught.exception))
 
     def test_unmanaged_repo_raises_when_managed_repos_configured(self):
-        with patch.object(gitops_workspace, "get_managed_repos", return_value=["acme/managed"]):
+        with patch.object(gitops_workspace, "get_managed_github_repos", return_value=["acme/managed"]):
             with self.assertRaises(ValueError) as caught:
                 submit_suggestion.validate_repo("acme/unmanaged")
             self.assertIn("not in the managed repositories list", str(caught.exception))
 
     def test_managed_repo_passes(self):
-        with patch.object(gitops_workspace, "get_managed_repos", return_value=["acme/managed"]):
+        with patch.object(gitops_workspace, "get_managed_github_repos", return_value=["acme/managed"]):
             self.assertEqual(submit_suggestion.validate_repo("acme/managed"), "acme/managed")
 
     def test_passes_when_no_managed_repos_configured(self):
-        with patch.object(gitops_workspace, "get_managed_repos", return_value=[]):
+        with patch.object(gitops_workspace, "get_managed_github_repos", return_value=[]):
             self.assertEqual(submit_suggestion.validate_repo("acme/any"), "acme/any")
 
     def test_raises_when_get_managed_repos_fails(self):
         with patch.object(
             gitops_workspace,
-            "get_managed_repos",
+            "get_managed_github_repos",
             side_effect=RuntimeError("kubectl failed: Forbidden"),
         ):
             with self.assertRaises(RuntimeError) as caught:
@@ -332,7 +332,7 @@ class TestPrepare(SubmitSuggestionTestCase):
     def test_prepare_refused_when_managed_repos_read_fails(self):
         with patch.object(
             gitops_workspace,
-            "get_managed_repos",
+            "get_managed_github_repos",
             side_effect=RuntimeError("ConfigMap missing"),
         ):
             with self.assertRaises(RuntimeError):
@@ -587,7 +587,7 @@ class TestSubmit(SubmitSuggestionTestCase):
         self.commit(payload["workspace"])
         with patch.object(
             gitops_workspace,
-            "get_managed_repos",
+            "get_managed_github_repos",
             side_effect=RuntimeError("ConfigMap missing"),
         ):
             with self.assertRaises(RuntimeError):

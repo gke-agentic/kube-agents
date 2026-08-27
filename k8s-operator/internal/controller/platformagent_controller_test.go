@@ -2374,7 +2374,7 @@ func TestDetectPluginImageFailures_DoesNotBlameSiblingTag(t *testing.T) {
 	}
 }
 
-func TestReconcileGithubStateConfigMap(t *testing.T) {
+func TestReconcileGitopsStateConfigMap(t *testing.T) {
 	scheme := setupScheme()
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
@@ -2393,14 +2393,14 @@ func TestReconcileGithubStateConfigMap(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Initial reconcile should create the configmap
-	err := r.reconcileGithubStateConfigMap(ctx, agent)
+	err := r.reconcileGitopsStateConfigMap(ctx, agent)
 	if err != nil {
 		t.Fatalf("unexpected error during reconcile: %v", err)
 	}
 
 	// Verify creation
 	var cm corev1.ConfigMap
-	cmKey := client.ObjectKey{Name: "test-agent-github-state", Namespace: "test-ns"}
+	cmKey := client.ObjectKey{Name: "test-agent-gitops-state", Namespace: "test-ns"}
 	if err := fakeClient.Get(ctx, cmKey, &cm); err != nil {
 		t.Fatalf("failed to get created ConfigMap: %v", err)
 	}
@@ -2415,7 +2415,7 @@ func TestReconcileGithubStateConfigMap(t *testing.T) {
 	}
 
 	// 3. Second reconcile should retain existing data
-	err = r.reconcileGithubStateConfigMap(ctx, agent)
+	err = r.reconcileGitopsStateConfigMap(ctx, agent)
 	if err != nil {
 		t.Fatalf("unexpected error during second reconcile: %v", err)
 	}
@@ -2437,14 +2437,14 @@ func TestReconcileGithubStateConfigMap(t *testing.T) {
 			},
 		},
 	}
-	err = r.reconcileGithubStateConfigMap(ctx, agent)
+	err = r.reconcileGitopsStateConfigMap(ctx, agent)
 	if err != nil {
 		t.Fatalf("unexpected error during third reconcile: %v", err)
 	}
 	if err := fakeClient.Get(ctx, cmKey, &verifyCM); err != nil {
 		t.Fatalf("failed to get ConfigMap after third reconcile: %v", err)
 	}
-	if verifyCM.Data["managed_repos"] != "some-repo, test-org/new-repo" {
+	if verifyCM.Data["managed_repos"] != "some-repo, https://github.com/test-org/new-repo" {
 		t.Errorf("expected ConfigMap to contain merged repos, but got %v", verifyCM.Data["managed_repos"])
 	}
 }

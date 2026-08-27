@@ -4102,7 +4102,7 @@ def resolve_repo(
         r = str(repo).strip()
         if not BARE_REPO_RE.match(r):
             raise ValueError(f"Invalid repository format: {r!r}. Expected 'owner/name'.")
-        managed = gitops_workspace.get_managed_repos()
+        managed = gitops_workspace.get_managed_github_repos()
         if managed and r not in managed:
             raise ValueError(
                 f"Repository {r!r} is not in the managed repositories list: {managed}"

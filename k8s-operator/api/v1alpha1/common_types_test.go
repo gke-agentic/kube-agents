@@ -182,3 +182,30 @@ func TestValidateGitRepoURLWithOrg(t *testing.T) {
 		t.Errorf("expected bare repo without org to fail validation")
 	}
 }
+
+func TestCleanRepoURLWithOrg(t *testing.T) {
+	cases := []struct {
+		input    string
+		org      string
+		expected string
+		err      bool
+	}{
+		{"kube-agents", "gke-labs", "https://github.com/gke-labs/kube-agents", false},
+		{"gke-labs/kube-agents", "", "https://github.com/gke-labs/kube-agents", false},
+		{"https://github.com/gke-labs/kube-agents", "", "https://github.com/gke-labs/kube-agents", false},
+		{"https://gitlab.com/gke-labs/kube-agents.git", "", "https://gitlab.com/gke-labs/kube-agents", false},
+		{"invalid", "", "", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			out, err := CleanRepoURLWithOrg(tc.input, tc.org)
+			if (err != nil) != tc.err {
+				t.Errorf("CleanRepoURLWithOrg(%q, %q) err = %v, expected err = %v", tc.input, tc.org, err, tc.err)
+			}
+			if out != tc.expected {
+				t.Errorf("CleanRepoURLWithOrg(%q, %q) = %q, expected %q", tc.input, tc.org, out, tc.expected)
+			}
+		})
+	}
+}

@@ -4197,7 +4197,7 @@ func TestOtlpCollectorNamespace(t *testing.T) {
 		})
 	}
 }
-func TestBuildGithubStateConfigMap(t *testing.T) {
+func TestBuildGitopsStateConfigMap(t *testing.T) {
 	agent := &agentv1alpha1.PlatformAgent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-agent",
@@ -4214,9 +4214,9 @@ func TestBuildGithubStateConfigMap(t *testing.T) {
 			},
 		},
 	}
-	cm := buildGithubStateConfigMap(agent)
+	cm := buildGitopsStateConfigMap(agent)
 
-	expectedName := agent.Name + "-github-state"
+	expectedName := agent.Name + "-gitops-state"
 	if cm.Name != expectedName {
 		t.Errorf("Expected ConfigMap name %s, got %s", expectedName, cm.Name)
 	}
@@ -4226,12 +4226,12 @@ func TestBuildGithubStateConfigMap(t *testing.T) {
 	if cm.Data == nil {
 		t.Errorf("Expected ConfigMap Data to be initialized")
 	}
-	if cm.Data["managed_repos"] != "gke-labs/kube-agents" {
-		t.Errorf("Expected managed_repos to be seeded as 'gke-labs/kube-agents', got %q", cm.Data["managed_repos"])
+	if cm.Data["managed_repos"] != "https://github.com/gke-labs/kube-agents" {
+		t.Errorf("Expected managed_repos to be seeded as 'https://github.com/gke-labs/kube-agents', got %q", cm.Data["managed_repos"])
 	}
 }
 
-func TestBuildGithubStateConfigMapInvalidGitRepo(t *testing.T) {
+func TestBuildGitopsStateConfigMapInvalidGitRepo(t *testing.T) {
 	cases := []struct {
 		name    string
 		gitRepo string
@@ -4265,7 +4265,7 @@ func TestBuildGithubStateConfigMapInvalidGitRepo(t *testing.T) {
 					},
 				},
 			}
-			cm := buildGithubStateConfigMap(agent)
+			cm := buildGitopsStateConfigMap(agent)
 			if repos, ok := cm.Data["managed_repos"]; ok && repos != "" {
 				t.Errorf("expected managed_repos to be empty/omitted for invalid gitRepo %q, got %q", tc.gitRepo, repos)
 			}

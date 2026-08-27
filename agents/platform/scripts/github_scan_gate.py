@@ -505,8 +505,8 @@ def sweep_pr_comments(dry_run: bool = False) -> SweepResult:
     warnings: list[str] = []
 
     try:
-        from gitops_workspace import get_managed_repos
-        repos = get_managed_repos()
+        from gitops_workspace import get_managed_github_repos
+        repos = get_managed_github_repos()
     except Exception as error:
         return SweepResult(warnings=[_forge_warning(error if isinstance(error, forge.ForgeError) else forge.ForgeError("DISCOVERY_FAILED", str(error)))])
     if not repos:

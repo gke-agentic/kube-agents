@@ -90,7 +90,7 @@ audit crons start in the profile directory; the harness clones the GitOps reposi
 inside it. The clone is keyed by audit id because the audit streams share the volume with each other
 and with every kanban worker: each one gets a tree nobody else writes in, so a colliding schedule
 can no longer reset another stream's working copy out from under it. The repository comes from the
-`$GITHUB_STATE_CONFIGMAP` ConfigMap, which the operator manages and which is readable before any clone exists.
+`$GITOPS_STATE_CONFIGMAP` ConfigMap, which the operator manages and which is readable before any clone exists.
 
 ### Step 1 — `start`
 
@@ -102,9 +102,9 @@ Before inspecting anything, claim the workspace:
   [--repo "<owner>/<repo>"]
 ```
 
-This resolves the target repository (using `--repo` if specified, falling back to the single configured repo in `$GITHUB_STATE_CONFIGMAP`, or failing if ambiguous across multiple repos), mints a repo-scoped GitHub token, clones or refreshes the
+This resolves the target repository (using `--repo` if specified, falling back to the single configured repo in `$GITOPS_STATE_CONFIGMAP`, or failing if ambiguous across multiple repos), mints a repo-scoped GitHub token, clones or refreshes the
 GitOps workspace and leaves it on a clean `main`, ensures the audit's labels exist, locates the
-stream's open ledger issue, and clears any findings document a crashed run left behind. If the user asked for a specific repository that is not yet registered, instruct the user or cluster administrator to add it to `$GITHUB_STATE_CONFIGMAP`. It creates
+stream's open ledger issue, and clears any findings document a crashed run left behind. If the user asked for a specific repository that is not yet registered, instruct the user or cluster administrator to add it to `$GITOPS_STATE_CONFIGMAP`. It creates
 **no branch** — there is no report branch. It prints exactly one JSON line:
 
 ```json

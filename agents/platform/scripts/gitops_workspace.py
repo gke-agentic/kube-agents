@@ -577,9 +577,32 @@ def configure_identity(
     runner(["git", "config", "user.email", email], cwd=str(target))
 
 
-def get_managed_repos() -> list[str]:
-    """Extracts managed repositories from the state ConfigMap."""
-    cfg_name = os.environ.get("GITHUB_STATE_CONFIGMAP", "platform-agent-github-state")
+def extract_github_slug(entry: str) -> str | None:
+    """Extracts 'owner/repo' slug from a raw URL or shorthand if it refers to GitHub."""
+    s = entry.strip()
+    if not s:
+        return None
+    if s.endswith(".git"):
+        s = s[:-4]
+    s = s.rstrip("/")
+
+    for prefix in ("https://github.com/", "http://github.com/", "git@github.com:", "github.com/"):
+        if s.startswith(prefix):
+            s = s[len(prefix):]
+            break
+    else:
+        if "://" in s or (":" in s and "@" in s):
+            return None
+
+    s = s.lstrip("/")
+    if BARE_REPO_RE.match(s):
+        return s
+    return None
+
+
+def get_managed_repo_urls() -> list[str]:
+    """Reads the GitOps state ConfigMap and returns raw repository URLs/strings stored under `managed_repos`."""
+    cfg_name = os.environ.get("GITOPS_STATE_CONFIGMAP", os.environ.get("GITHUB_STATE_CONFIGMAP", "platform-agent-gitops-state"))
     ns = os.environ.get("KUBE_DEFAULT_NAMESPACE", "kubeagents-system")
     try:
         cm_res = subprocess.run(
@@ -619,7 +642,19 @@ def get_managed_repos() -> list[str]:
             pass
     if not raw_list:
         raw_list = [r.strip() for r in repos_str.split(",") if r.strip()]
-    return [r for r in raw_list if BARE_REPO_RE.match(r)]
+
+    return raw_list
+
+
+def get_managed_github_repos() -> list[str]:
+    """Extracts managed GitHub repositories ('owner/name' slugs) from the state ConfigMap."""
+    raw_list = get_managed_repo_urls()
+    res: list[str] = []
+    for r in raw_list:
+        slug = extract_github_slug(r)
+        if slug and slug not in res:
+            res.append(slug)
+    return res
 
 
 def resolve_repo(workspace: str | Path | None = None) -> str:
@@ -663,7 +698,7 @@ def resolve_repo(workspace: str | Path | None = None) -> str:
             pass
 
     try:
-        managed = get_managed_repos()
+        managed = get_managed_github_repos()
         if len(managed) == 1:
             return managed[0]
         elif len(managed) > 1:
@@ -683,7 +718,7 @@ def resolve_repo(workspace: str | Path | None = None) -> str:
     if not repo or "/" not in repo:
         raise RuntimeError(
             f"Could not resolve the target repository as owner/name: "
-            f"no repos in ConfigMap ($GITHUB_STATE_CONFIGMAP), "
+            f"no repos in ConfigMap ($GITOPS_STATE_CONFIGMAP), "
             f"and no origin remote in {Path.cwd()}"
         )
     return repo

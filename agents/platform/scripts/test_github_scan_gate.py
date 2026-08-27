@@ -621,7 +621,7 @@ def make_comment(
 class PrCommentsSweepTest(unittest.TestCase):
     def _sweep(self, provider, repo=REPO, env=None, repo_error=None, dry_run=False):
         managed_mock = mock.Mock(side_effect=repo_error) if repo_error else mock.Mock(return_value=[repo] if repo else [])
-        with mock.patch("gitops_workspace.get_managed_repos", managed_mock), \
+        with mock.patch("gitops_workspace.get_managed_github_repos", managed_mock), \
              mock.patch.object(forge, "provider_for", return_value=provider), \
              mock.patch.dict("os.environ", env or {}, clear=False):
             import os
@@ -748,7 +748,7 @@ class PrCommentsSweepTest(unittest.TestCase):
 
         provider = MultiRepoFakeProvider()
         managed_mock = mock.Mock(return_value=["acme/repo1", "acme/repo2"])
-        with mock.patch("gitops_workspace.get_managed_repos", managed_mock), \
+        with mock.patch("gitops_workspace.get_managed_github_repos", managed_mock), \
              mock.patch.object(forge, "provider_for", return_value=provider):
             res = gate.sweep_pr_comments()
             self.assertEqual(len(res.cards), 2)
