@@ -412,7 +412,7 @@ create_stamped_release_commit() {
   fi
 }
 
-# Resolves the exact commit SHA for a release tag (resolves tag or fallback to HEAD)
+# Resolves the exact commit SHA for a release tag
 resolve_release_commit() {
   local version="${1:-}"
   local tag_sha=""
@@ -427,13 +427,7 @@ resolve_release_commit() {
     return 0
   fi
 
-  local head_sha
-  if head_sha="$(git rev-parse --verify HEAD 2>/dev/null)"; then
-    echo "${head_sha}"
-    return 0
-  fi
-
-  echo "❌ ERROR: Cannot resolve valid Git commit for release tag '${version}'!" >&2
+  echo "❌ ERROR: Cannot resolve valid Git commit for release tag '${version}' (tag does not exist in repository)!" >&2
   return 1
 }
 

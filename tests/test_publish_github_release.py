@@ -202,6 +202,24 @@ class PublishGithubReleaseScriptTest(unittest.TestCase):
         finally:
             temp_dir.cleanup()
 
+    def test_publish_fails_if_tag_does_not_exist_even_when_head_commit_present(self):
+        """Verifies publish_github_release fails and does NOT fall back to HEAD commit when tag is absent."""
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_gh_binary(bin_dir)
+
+            proc = self._run_script(
+                [MOCK_NONEXISTENT_TAG],
+                env={"CI": "true", "GH_TOKEN": MOCK_GH_TOKEN},
+                bin_dir=str(bin_dir),
+                cwd=repo_dir,
+            )
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn(f"Cannot resolve valid Git commit for release tag '{MOCK_NONEXISTENT_TAG}'", proc.stderr)
+        finally:
+            temp_dir.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()
