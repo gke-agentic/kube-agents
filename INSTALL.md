@@ -55,7 +55,7 @@ _(Alternatively via GitHub raw URL: `curl -fsSL https://raw.githubusercontent.co
 - **`gcloud` Authentication**: Checks login state and launches auth flows if needed.
 - **GCP Project & Region Selection**: Auto-detects the active project and prompts for confirmation; you can type a project ID that the discovered list does not show.
 - **Install Sources**: Puts the Terraform configuration and chart on disk (this checkout, or a clone at the requested revision) and verifies they match the image ref _before_ the interview starts.
-- **GKE Cluster Setup**: Provisions the supported GKE Standard topology or connects to an existing cluster.
+- **GKE Cluster Setup**: Provisions a Standard or Autopilot cluster (`--cluster-mode`, Standard by default) or connects to an existing one.
 - **Chat Integrations**: Configures Google Chat and/or Slack when selected.
 - **AI Model Credentials**: Prompts for Gemini, OpenAI, or Anthropic credentials, or selects Vertex AI (no key — Workload Identity).
 - **Long-Term Memory**: Asks whether the agents should remember anything between conversations, and if so which store (`--memory=file|hindsight|off`, default `file`). The default is **on**, and it is the store this repository shipped before the searchable one existed, so an upgrade that says nothing about memory keeps what it already has: per-user Markdown inside the pod (`multiuser_memory`), no extra services, suited to **small or personal** deployments — but the whole store is loaded into the model's context every turn, so it stops scaling past a few pages. Pick `hindsight` for **enterprise** deployments — ranked recall that stays affordable as the store grows, at the cost of an API server and a Postgres database in the cluster; it selects the `kube_agents_memory` provider. Pick `off` to retain nothing and run no database. The measurements behind that split, and how to change it later, are in [`docs/designs/memory.md`](docs/designs/memory.md).
@@ -421,6 +421,22 @@ make install
 make deploy IMG=$IMG
 ```
 
+Then apply the agent-RBAC admission policies. `make deploy` does **not** include them — they are
+deliberately outside the kustomize overlay, because its `namePrefix` would rewrite each policy's
+name without rewriting the `spec.policyName` its binding refers to, leaving both bindings pointing
+at nothing and the policies silently inert:
+
+```bash
+# Kubernetes 1.30+ only (ValidatingAdmissionPolicy v1). Skip on older clusters -- unlike
+# the chart, which checks the version itself, this apply will fail there.
+kubectl apply -f config/admission/agent-rbac-policy.yaml
+```
+
+[Method 1](#method-1-the-install-engine--terraform--helm) gets these from the chart and needs no
+such step. Skipping it here leaves agent RBAC without its admission backstop. Read that file's
+header for what the policies do and do not enforce — notably, they cannot check the rules of a role
+that a binding merely _references_.
+
 If the agent images are mirrored into a private registry, tell the operator where to find them.
 These two are the images it resolves at reconcile time rather than reading from a manifest — the
 agent image for a `PlatformAgent` that omits `spec.deployment.image`, and the logging sidecar it
@@ -540,8 +556,9 @@ still owns, clears the cluster's deletion protection, and forgets the undeletabl
 resources from state so their key versions are never scheduled for destruction — the next
 `lifecycle.sh apply` adopts them back automatically.
 
-An install with **no Terraform state** (none in the GCS bucket, none locally) was made by a
-release that predates this engine; `uninstall.sh` says so and stops. Re-run it with
+With **no Terraform state** (none in the GCS bucket, none locally), `uninstall.sh` says so and
+stops with exit **3**, touching nothing. Either nothing is installed against those coordinates,
+or the install was made by a release that predates this engine — re-run it with
 `--source-ref=<that release>` so the matching teardown runs.
 
 ### Manual Local Uninstall

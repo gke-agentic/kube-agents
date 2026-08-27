@@ -221,21 +221,44 @@ echo "✓ Cluster authentication finished in $((SECONDS - STEP_START))s"
 # the project: failing the checks that needed that cluster rather than the job,
 # and never silently reading platform-agent-host instead.
 #
-# It runs on every presubmit even though every task that consumes it is still
-# commented out of TASKS below, and that is deliberate rather than an oversight.
-# The six fleet tasks cannot be switched on until this step is known to work in
-# whichever project Boskos leases, and the only way to know that is to run it:
-# its per-project warnings ("carries no clusters labelled environment=seeded")
-# are the signal that a pool project still needs bench/tf/fleet applied, and
-# they are wanted BEFORE those tasks start gating PRs, not after. It costs one
-# clusters.list, one get-credentials per seeded cluster, and one namespace read
-# per probe -- seconds, against a job measured in tens of minutes.
+# It ran on every presubmit for weeks while every task that consumes it was
+# still commented out of TASKS below, and that was the point: the warnings it
+# prints per project ("carries no clusters labelled environment=seeded") are
+# how a pool project still needing bench/tf/fleet applied was found BEFORE
+# these tasks started gating PRs rather than after. Eight of the active
+# tasks below read the seeded fleet (six domain probes, the fleet-audits
+# canary and cluster-agent-crashloop-debug), so those warnings have
+# consumers. It costs one clusters.list, one
+# get-credentials per seeded cluster, and one namespace read per probe --
+# seconds, against a job measured in tens of minutes.
 #
 # The `||` catches a REPOSITORY bug only: a missing or malformed
 # bench/tf/fleet/fixtures.json, or an unusable output directory. Every
 # environmental failure -- no fleet in this project, a cluster that will not
 # answer, a fixture that was never planted -- returns 0 with a warning of its
 # own and leaves the affected roles' files absent, which is the whole design.
+
+# The read-only identity the role kubeconfigs should carry. It cannot be a
+# static export in the Prow job the way EVAL_GITHUB_APP_ID is: the account is
+# per project (`seeded-fleet-reader@<project>.iam.gserviceaccount.com`,
+# bench/tf/fleet/main.tf:123) and Boskos picks the project at lease time, so
+# this is the first point in the run that knows which one to name. An
+# explicitly-set value still wins, for a laptop pointing at a fleet it does not
+# own.
+#
+# Only half of this is in the repository. The other half is the token-creator
+# grant -- `fleet_reader_token_creators` in bench/tf/fleet/variables.tf, empty
+# by default -- which is a per-project `tofu apply` a human has to do, naming
+# that project's Prow runner identity. Until it is done in a leased project,
+# `gcloud auth print-access-token --impersonate-service-account` fails,
+# fleet-kubeconfigs.sh warns per cluster, and the role kubeconfigs keep the
+# runner's own read-write credential. That is a privilege gap on a fleet every
+# open PR shares, not a functional one: the files are still written, still
+# point at the right seeded cluster, and every check still grades the right
+# object. See bench/tf/fleet/README.md, "A read-only credential for
+# evaluations".
+export FLEET_READONLY_SA="${FLEET_READONLY_SA:-seeded-fleet-reader@${PROJECT_ID}.iam.gserviceaccount.com}"
+
 profile_begin "fleet-kubeconfigs: seeded-fleet credentials"
 STEP_START=$SECONDS
 # shellcheck source=hack/fleet-kubeconfigs.sh
@@ -295,8 +318,88 @@ fi
 export GKE_CLUSTER_NAME="${EVAL_CLUSTER_NAME}"
 export CLUSTER_NAME="${EVAL_CLUSTER_NAME}"
 export TF_VAR_cluster_name="${EVAL_CLUSTER_NAME}"
-echo "Task cluster for this run: ${EVAL_CLUSTER_NAME}"
+echo "Per-run task cluster name (used unless a task reuses the seeded fleet, section 3b): ${EVAL_CLUSTER_NAME}"
 export GCP_LOCATION="us-west4-a" # set to different zone due to resource availability stockouts in us-central1
+# The per-run defaults above are what every task gets unless its stack opts
+# into seeded-cluster reuse below; the loop re-exports one set or the other
+# per task, and this is the value it restores.
+EVAL_DEFAULT_LOCATION="${GCP_LOCATION}"
+
+# 3b. Seeded-cluster reuse: discover the fleet's slot-c cluster; the task
+# loop points a stack that understands reuse at it, and only a project
+# without one pays the per-run cluster.
+#
+# The gpu-stress-test stack's cluster hosts no workloads at all (its main.tf
+# says why it exists: TFDeployer.get_cluster_info() needs a real cluster to
+# hand get-credentials). The incident it plants is two Cloud Logging entries
+# that merely NAME a cluster -- so when the leased project carries the seeded
+# fleet (bench/tf/fleet), an existing fleet cluster serves as that name and
+# the run pays neither the ~6-minute provision nor the ~8-minute teardown.
+# The discovery filter is the fleet's documented address (both labels from
+# `local.cluster_labels` in bench/tf/fleet/main.tf), the same one
+# hack/fleet-kubeconfigs.sh uses. This block is the one sanctioned addresser
+# of a seeded cluster outside that catalog chain, and the catalog's own
+# description (bench/tf/fleet/fixtures.json) names it as the exception.
+#
+# ONLY slot c, never another slot. Slot a carries the planted namespace
+# defects -- including a real, live HPA at max replicas (fixture
+# hpa-saturated) that an agent investigating this task's *synthetic* HPA
+# incident could stumble into and report instead, turning a correct fixture
+# into a wrong answer. Slot b's held-back control plane is upgrade bait of
+# the same kind. Slot c's only defect (no master authorized networks) is
+# invisible to a log-analysis task. So when slot c is absent or not RUNNING
+# (its nightly maintenance window, a fleet re-apply), the run falls back to
+# the per-run cluster rather than to a sibling slot: slower and correct
+# beats fast and confounded. Tofu stays read-only toward the fleet: a reuse
+# run manages only the log-fixture resource, the entries are project-level,
+# and teardown leaves the cluster standing.
+SEEDED_TASK_CLUSTER=""
+SEEDED_TASK_LOCATION=""
+SEEDED_C_LINES="$(gcloud container clusters list --project "${PROJECT_ID}" \
+  --filter="resourceLabels.managed-by=kube-agents-seeded-fleet AND resourceLabels.environment=seeded AND status=RUNNING" \
+  --format="value(name,location)" 2>/dev/null | sort | awk '$1 ~ /-c$/' || true)"
+if [ "$(printf '%s\n' "${SEEDED_C_LINES}" | grep -c .)" -gt 1 ]; then
+  # Same rule as hack/fleet-kubeconfigs.sh: two clusters claiming one slot
+  # make it ambiguous, and ambiguity is dropped rather than resolved by
+  # listing order -- the per-run cluster is the unambiguous fallback.
+  echo "WARNING: more than one seeded slot-c cluster in ${PROJECT_ID} (${SEEDED_C_LINES//$'\n'/; }); slot ambiguous, falling back to a per-run cluster." >&2
+elif [ -n "${SEEDED_C_LINES}" ]; then
+  SEEDED_TASK_CLUSTER="$(printf '%s' "${SEEDED_C_LINES}" | awk '{ print $1 }')"
+  SEEDED_TASK_LOCATION="$(printf '%s' "${SEEDED_C_LINES}" | awk '{ print $2 }')"
+fi
+
+# Fail-safe before trusting the shared cluster: the agent under test holds a
+# write-capable credential, and one misbehaving run that deploys into the
+# seeded cluster's default namespace would otherwise trip the gpu task's
+# catastrophic safeguard ("no Deployments in default") on every LATER pull
+# request, persistently and misattributed -- a per-run cluster took that
+# damage to the grave, a standing one keeps it. Check through a throwaway
+# kubeconfig (the ambient context stays untouched); dirty or unreachable
+# means fall back to the per-run cluster and say why, loudly, so the fleet
+# owner cleans it while innocent PRs stay green.
+if [ -n "${SEEDED_TASK_CLUSTER}" ]; then
+  SEEDED_KUBECONFIG="$(mktemp)"
+  SEEDED_LEFTOVER=""
+  if KUBECONFIG="${SEEDED_KUBECONFIG}" gcloud container clusters get-credentials \
+    "${SEEDED_TASK_CLUSTER}" --location "${SEEDED_TASK_LOCATION}" --project "${PROJECT_ID}" --quiet >/dev/null 2>&1 \
+    && SEEDED_LEFTOVER="$(KUBECONFIG="${SEEDED_KUBECONFIG}" kubectl get deployments -n default -o name --request-timeout=30s 2>/dev/null)"; then
+    if [ -n "${SEEDED_LEFTOVER}" ]; then
+      echo "WARNING: seeded cluster ${SEEDED_TASK_CLUSTER} default namespace holds ${SEEDED_LEFTOVER//$'\n'/, } -- a previous run's agent left it dirty. Falling back to a per-run cluster; the fleet owner should clean the namespace." >&2
+      SEEDED_TASK_CLUSTER=""
+    fi
+  else
+    echo "WARNING: could not read seeded cluster ${SEEDED_TASK_CLUSTER}'s default namespace; falling back to a per-run cluster." >&2
+    SEEDED_TASK_CLUSTER=""
+  fi
+  rm -f "${SEEDED_KUBECONFIG}"
+fi
+
+if [ -n "${SEEDED_TASK_CLUSTER}" ] && [ -n "${SEEDED_TASK_LOCATION}" ]; then
+  echo "Seeded fleet found: tasks whose stack declares reuse_existing_cluster will target ${SEEDED_TASK_CLUSTER} (${SEEDED_TASK_LOCATION}) instead of a per-run cluster"
+else
+  SEEDED_TASK_CLUSTER=""
+  echo "No reusable seeded slot-c cluster in ${PROJECT_ID}; infra tasks provision per-run cluster ${EVAL_CLUSTER_NAME}"
+fi
 
 # Stamp the run onto every labelable GCP resource the stacks create, alongside
 # the fixed managed-by label the cluster module applies. These say *which* run
@@ -345,71 +448,134 @@ fi
 # Paths are relative to BENCH_DIR, which is where devops-bench runs. Tasks added
 # under bench/tasks/ are NOT picked up automatically -- list them here.
 BENCH_DIR="${SCRIPT_DIR}/../bench"
-# agent-kanban-smoke is deployer: noop, so it adds seconds, not a cluster.
+# agent-kanban-smoke is deployer: noop, so it adds a delegation round trip
+# (~100-300s), not a cluster.
 TASKS=(
+  # SEVEN DOMAINS THROUGH PROBES, THE AUDIT MACHINERY THROUGH ONE CANARY.
+  # The 2026-08-26 smoke run (build 2092638061140643840, kube-agents-evals-3)
+  # measured what six full audits cost: obtainability-planted-pdb PASSED in
+  # 962s and compliance-rbac-overgrant in 606s, the three that failed did so
+  # on agent-endpoint HTTP 502s (transport, not scenario bugs), and the job's
+  # 85-minute deadline expired before rca-remediation-pr ever ran. Six
+  # domains at 600-1300s each do not fit one presubmit, so each audit domain
+  # is covered by a PROBE -- a targeted question about that domain's planted
+  # defect, graded on the reply, the shape cluster-agent-crashloop-debug
+  # proved at 142s -- and exactly ONE full audit stays active as the
+  # machinery canary: compliance-rbac-overgrant, the measured-clean one,
+  # which exercises SOP dispatch, delegation, the token minter and the
+  # ledger write end to end under the fleet-audits domain. Budget: canary
+  # 606s + six probes at ~150-350s + crashloop 142s + the two incumbents,
+  # against the deadline the 2026-08-26 run blew with full audits.
+  #
+  # The six probes sit ahead of the rest on purpose. The loop below is
+  # sequential (one task at a time, no BENCH_PARALLEL), so the Prow deadline
+  # truncates the TAIL of this list; none of the probes has ever executed, so
+  # their cost is unmeasured and their signal is what this change exists to
+  # produce. Ordering the unmeasured work first means a timeout loses a
+  # measured repeat, not the new signal.
+  "./tasks/reliability-pdb-probe/task.yaml"
+  "./tasks/capacity-pinned-pool-probe/task.yaml"
+  "./tasks/security-overgrant-probe/task.yaml"
+  "./tasks/upgrades-lagging-master-probe/task.yaml"
+  "./tasks/consistency-authorized-networks-probe/task.yaml"
+  "./tasks/cost-idle-pool-probe/task.yaml"
+  # The audit-machinery canary: measured 606s clean on 2026-08-26, every
+  # exact check green -- the only task that has proven the A1/A4 path
+  # (minted token, cloned *-infra workspace, published ledger issue) in a
+  # real presubmit.
+  "./tasks/compliance-rbac-overgrant/task.yaml"
+  # Activated by #939, the first Phase 2 domain scenario to run. It was blocked
+  # on A5 and nothing else -- no GitHub write, so no A1 and no A4 -- and it
+  # exercises the whole of step 2b end to end: label discovery, slot-to-role
+  # resolution, the .confirmed probe, and fleet_resource_property binding the
+  # role to a kubeconfig. It is the cheapest task in this array (142s on the
+  # 2026-08-25 run) and it proves the chain the probes above stand on.
+  "./tasks/cluster-agent-crashloop-debug/task.yaml"
   "./tasks/gpu-stress-test-diagnosis/task.yaml"
   "./tasks/agent-kanban-smoke/task.yaml"
-  # The ten domain scenarios, registered here but commented out. Uncommenting
-  # is the LAST step of activation, not the only one: bench/tasks/DRAFTS.md
-  # carries an activation-blockers section and a per-scenario status column,
-  # and every entry below is blocked on at least one of them today. The
-  # task-registration lint counts a commented entry as registered.
+  # Eight registered scenarios stay commented out. The task-registration lint
+  # counts a commented entry as registered, so a line here is a promise the
+  # scenario exists, not that it runs; the domain-coverage lint counts only
+  # an UNCOMMENTED one, so activating a scenario also deletes its domain from
+  # the allowlist in docs/designs/domains.yaml. bench/tasks/DRAFTS.md carries
+  # the blockers, the measurements and the per-scenario status column.
   #
-  # Summarised, so a reader here does not have to guess:
-  #   A1  the six audit scenarios and rca-remediation-pr are NOT read-only --
-  #       every fleet-audit stream mints a GitHub token and writes a ledger
-  #       issue. ci-deploy.sh installs the PR's agent on every run but never
-  #       sets platformAgent.integration.github.gitRepo, so SETTINGS.md
-  #       renders `- **Git Repo:** None` (buildSettingsConfigMap substitutes
-  #       the literal when the field is empty) and audit_report.py start has
-  #       nothing to clone. Needs that value passed per leased project (the
-  #       throwaway eval GitOps repos) and the minter scoped to it -- the
-  #       token has exactly one source and no inherited GITHUB_TOKEN is
-  #       honoured, so the value alone only moves the failure to the clone.
-  #   A3  fleet-cost-idle-pool is date-gated by the SOP's own age rules
-  #       (2026-08-28 for the pool, 2026-09-20 for the disks).
-  #   A4  cleared in the code, open on one credential. The six audit
-  #       scenarios' objectives no longer read the final message (which the
-  #       SOPs keep to one line); they use ledger_issue_contains, which reads
-  #       the GitHub ledger issue the run published and proves it is THIS
-  #       run's by the generated-at stamp audit_report.py renders into it.
-  #       That verifier needs BENCH_GITHUB_TOKEN (or GITHUB_TOKEN) with
-  #       issues:read on the eval GitOps repos, which this script does not
-  #       export and Prow does not supply -- provision it with A1's minter
-  #       work. Until then those checks return status=error, which drops
-  #       VerificationCoverage below the gate's 1.0 floor by design.
-  #   A5  cleared in the code, open on the fleet itself. Step 2b above now
-  #       writes one kubeconfig per seeded-fleet fixture ROLE, and the six
-  #       fleet safeguards use `fleet_resource_property` with a
-  #       `fixture_role:` instead of reading the ambient kubeconfig (which
-  #       is platform-agent-host and carries no seeded namespace). What is
-  #       left is operational, not code. The fleet must be applied in EVERY
-  #       project the Boskos pool can lease, with each planted defect
-  #       verified present; that is true of all three as of 2026-08-24 --
-  #       step 2b reports "7 role(s) written ... 0 whose fixtures were not
-  #       present" against each. What is still missing is
-  #       FLEET_READONLY_SA. The run holds a cluster-admin
-  #       credential on a fleet every open PR shares until it is --
-  #       roles/container.admin via the GKE IAM webhook, with nothing to
-  #       narrow in-cluster. bench/tf/fleet/README.md has both.
-  #
-  # Two entries are not activatable by uncommenting at all:
-  #   autoops-warning-event-triage -- its prompt is a meta-note and nothing
-  #     applies its incident workload; it needs a scenario driver, which
-  #     arrives with the AutoOps seam work.
-  #   chat-routing-fleet-question (A2) -- AGENT_SERVICE_NAME above is a single
-  #     global target, so every task here reaches the platform agent. This one
-  #     needs the chat front door, and would fail its delegation objective on
-  #     a correct system until the harness can target an agent per task.
-  # "./tasks/chat-routing-fleet-question/task.yaml"
-  # "./tasks/obtainability-planted-pdb/task.yaml"
+  # Five moved DOWN here on 2026-08-26, each with its one-line reason:
+  #   -- obtainability-planted-pdb, stockout-pinned-pool,
+  #      upgrade-readiness-lagging-cluster, consistency-drift-outlier:
+  #      full-audit shape recast to the nightly tier (600-1300s each, measured
+  #      or transport-failed on 2026-08-26); each domain is now covered by a
+  #      probe above. They remain spec-ready and activation is uncommenting.
+  #   -- rca-remediation-pr: parked until it gets one clean measured run; the
+  #      2026-08-26 run hit the job deadline before reaching it, so its cost
+  #      and signal are still unknown.  # "./tasks/obtainability-planted-pdb/task.yaml"
   # "./tasks/stockout-pinned-pool/task.yaml"
-  # "./tasks/fleet-cost-idle-pool/task.yaml"
-  # "./tasks/compliance-rbac-overgrant/task.yaml"
   # "./tasks/upgrade-readiness-lagging-cluster/task.yaml"
   # "./tasks/consistency-drift-outlier/task.yaml"
   # "./tasks/rca-remediation-pr/task.yaml"
-  # "./tasks/cluster-agent-crashloop-debug/task.yaml"
+  #
+  # A1 and A4 are CLOSED, and the canary above is what has EXERCISED them.
+  # Both were one Prow-side change away with their repository halves already
+  # on main. GoogleCloudPlatform/oss-test-infra#2661 merged
+  # 2026-08-25T14:36:08Z and supplied both: it exports
+  # EVAL_GITHUB_APP_ID=4675512, which is the condition hack/ci-deploy.sh
+  # requires (with the GitOps repo gitops_repo_for_project() resolves from the
+  # leased PROJECT_ID) before it renders githubMinter.enabled=true and passes
+  # platformAgent.integration.github.gitRepo -- so `Git Repo:` in the rendered
+  # SETTINGS.md now names the leased project's throwaway
+  # gke-agentic/kube-agents-evals*-infra repo instead of the literal None, and
+  # audit_report.py start has a workspace to clone and a minter to clone it
+  # with (A1). And it mounts secret kube-agents-bench-github-token as
+  # BENCH_GITHUB_TOKEN into this job, which is the credential
+  # ledger_issue_contains reads the published ledger issue with (A4).
+  # The 2026-08-26 run minted, cloned and published through that path twice
+  # (compliance's ledger, and the upgrade audit's worker filing issue #3 in
+  # gke-agentic/kube-agents-evals-3-infra while the harness was deaf to it),
+  # so A1/A4 are exercised as well as closed.
+  #
+  # A5 is CLEARED, and that is what every fleet entry above rests on. Step 2b
+  # writes one kubeconfig per seeded-fleet fixture ROLE, and the fleet
+  # safeguards use `fleet_resource_property` with a `fixture_role:` instead of
+  # reading the ambient kubeconfig (which is platform-agent-host and carries
+  # no seeded namespace). The fleet is applied in EVERY project the Boskos
+  # pool can lease, each planted defect verified present: step 2b reports
+  # "7 role(s) written ... 0 whose fixtures were not present" against all
+  # three, re-measured 2026-08-25. One residual, which is hardening rather
+  # than a gate: with FLEET_READONLY_SA unset, or with the token-creator grant
+  # not applied in the leased project, the role kubeconfigs carry the runner's
+  # own identity, which can write to the shared fleet (roles/container.admin
+  # via the GKE IAM webhook, nothing to narrow in-cluster). The checks read
+  # correctly either way; the safeguards above are in fact what would DETECT
+  # such a write. bench/tf/fleet/README.md, "A read-only credential for
+  # evaluations", has the closing steps.
+  #
+  # Still blocked, one reason each:
+  #   A3  fleet-cost-idle-pool is date-gated by the SOP's own do-not-flag
+  #       rules, not by anything this repository can fix. Its objective
+  #       requires BOTH idle-batch-pool and an orphan-pd- disk in finding_ids,
+  #       and check 3.4's disk filter is the literal creationTimestamp<-P30D.
+  #       Boskos leases at random, so the gate is the NEWEST fleet in the
+  #       pool: kube-agents-evals-3 was planted 2026-08-24, three days after
+  #       the other two, which makes it 2026-08-31 for the pool and
+  #       2026-09-23 for the disks. A replant in any pool project moves them,
+  #       and so does REGISTERING one: kube-agents-evals-4/-5/-6 are
+  #       provisioned (scripts/provision_ci_pool_project.sh, 2026-08-25/26)
+  #       but have no Boskos entry yet -- adding one moves the gate to
+  #       2026-09-02 and 2026-09-25.
+  #       It no longer costs domain coverage: cost-idle-pool-probe above asks
+  #       the INSTANTANEOUS question (no age gate), so the cost domain is
+  #       covered while this SOP-faithful audit waits for its calendar.
+  #   A2  chat-routing-fleet-question. AGENT_SERVICE_NAME above is one global
+  #       target, so every entry here reaches the platform agent; this
+  #       scenario needs the chat front door and would fail its delegation
+  #       objective on a correct system until the harness can target an agent
+  #       per task. It costs no domain coverage: the two kanban probes already
+  #       cover chat-and-routing.
+  #   --  autoops-warning-event-triage is not activatable by uncommenting at
+  #       all. Its prompt is a meta-note and nothing applies its incident
+  #       workload; it needs a scenario driver, tracked as #954.
+  # "./tasks/chat-routing-fleet-question/task.yaml"
+  # "./tasks/fleet-cost-idle-pool/task.yaml"
   # "./tasks/autoops-warning-event-triage/task.yaml"
 )
 
@@ -427,6 +593,18 @@ task_deployer() {
 import re, sys
 text = open(sys.argv[1]).read()
 m = re.search(r'^\s*deployer:\s*(.+?)\s*\$', text, re.M)
+print(m.group(1).strip('\'\"') if m else '')
+" "$1" 2>/dev/null || echo ""
+}
+
+# Reads infrastructure.stack out of a task file, same parsing posture as
+# task_deployer. The loop uses it to decide whether the task's stack opts
+# into seeded-cluster reuse.
+task_stack() {
+  python3 -c "
+import re, sys
+text = open(sys.argv[1]).read()
+m = re.search(r'^\s*stack:\s*(.+?)\s*\$', text, re.M)
 print(m.group(1).strip('\'\"') if m else '')
 " "$1" 2>/dev/null || echo ""
 }
@@ -464,6 +642,31 @@ for TASK in "${TASKS[@]}"; do
   export BENCH_NO_INFRA="false"
   echo "Executing with deployer=${DEPLOYER:-unknown} BENCH_NO_INFRA=${BENCH_NO_INFRA}"
 
+  # Seeded-cluster reuse is per task, opted into by the task's own stack:
+  # only a stack that declares `variable "reuse_existing_cluster"` knows to
+  # plan nothing when handed an existing cluster's name. Handing that name
+  # to any other tofu stack would make it try to CREATE the seeded cluster
+  # and 409 on every run in every fleet-carrying project -- so a task whose
+  # stack has not opted in gets the per-run name and location restored, and
+  # so do the {{GKE_CLUSTER_NAME}}/{{CLUSTER_NAME}} placeholders its prompt
+  # and checks resolve against.
+  TASK_STACK="$(task_stack "${BENCH_DIR}/${TASK}")"
+  if [ -n "${SEEDED_TASK_CLUSTER}" ] && [ -n "${TASK_STACK}" ] \
+    && grep -qs 'variable "reuse_existing_cluster"' "${BENCH_DIR}/tf/${TASK_STACK}"/*.tf; then
+    export GKE_CLUSTER_NAME="${SEEDED_TASK_CLUSTER}"
+    export CLUSTER_NAME="${SEEDED_TASK_CLUSTER}"
+    export TF_VAR_cluster_name="${SEEDED_TASK_CLUSTER}"
+    export GCP_LOCATION="${SEEDED_TASK_LOCATION}"
+    export TF_VAR_reuse_existing_cluster="true"
+    echo "Task ${TASK_NAME}: reusing seeded cluster ${SEEDED_TASK_CLUSTER} (${SEEDED_TASK_LOCATION}); no per-run task cluster will be created"
+  else
+    export GKE_CLUSTER_NAME="${EVAL_CLUSTER_NAME}"
+    export CLUSTER_NAME="${EVAL_CLUSTER_NAME}"
+    export TF_VAR_cluster_name="${EVAL_CLUSTER_NAME}"
+    export GCP_LOCATION="${EVAL_DEFAULT_LOCATION}"
+    unset TF_VAR_reuse_existing_cluster
+  fi
+
   # Snapshot existing result directories before running to prevent stale score leakage
   PRE_RUNS="$(ls -d "${BENCH_DIR}/results/run_"* 2>/dev/null | sort || true)"
   EVAL_LOG="/tmp/eval_${TASK_NAME}.log"
@@ -490,11 +693,27 @@ for TASK in "${TASKS[@]}"; do
   #             for the infra owner. A noop-deployer task prepares nothing,
   #             so its pre-record death is never weather -- it is a harness
   #             or agent crash and classifies BROKEN instead.
+  #             Also: a scored record the harness marked with
+  #             KUBE_AGENTS_INFRA_FAILURE -- see below.
   #   BROKEN -- the run died somewhere no infrastructure excuse exists: a
   #             record with no scores (the scoring pass crashed), or any
   #             pre-record death on a noop task. BLOCKS -- treating these as
   #             infra would let a crash turn the whole gate green.
   #   OK     -- a record with scores; the gate below decides.
+  #
+  # KUBE_AGENTS_INFRA_FAILURE is the marker kube_agents_bench.harness puts on
+  # errors[0] when the agent endpoint failed in transport on every attempt, so
+  # no turn ever reached the agent. The record IS scored -- the judge grades
+  # the empty output and returns 0.0 -- but there is no answer in it to grade,
+  # and gating on that score reds the PR for a pod restart. The harness raises
+  # this only after exhausting its retries on a gateway status or a dropped
+  # connection; a 4xx, a 500, or any answer the agent actually returned stays
+  # OK and is graded normally.
+  #
+  # No noop carve-out here, unlike the two branches above: those infer infra
+  # from an absent record, which a noop task cannot honestly claim, whereas
+  # this marker is the harness stating what happened. An unreachable agent
+  # endpoint is infrastructure whatever the task's deployer provisions.
   RUN_CLASS=$(python3 -c "
 import json, os
 path = '${LATEST_RESULT}'
@@ -514,7 +733,13 @@ else:
             print('BROKEN' if deployer == 'noop' else 'INFRA')
         else:
             rec = data[0] if isinstance(data, list) else data
-            print('OK' if rec and isinstance(rec, dict) and rec.get('scores') else 'BROKEN')
+            rec = rec if isinstance(rec, dict) else {}
+            errors = rec.get('errors') or []
+            # Before the scores test: the record carries both.
+            if any('KUBE_AGENTS_INFRA_FAILURE' in str(e) for e in errors):
+                print('INFRA')
+            else:
+                print('OK' if rec.get('scores') else 'BROKEN')
     except Exception:
         print('BROKEN')
 " 2>/dev/null || echo "BROKEN")
@@ -532,15 +757,19 @@ else:
     fi
     FAILED_TASKS+=("${TASK_NAME} (run produced no scored record)")
   elif [ "${RUN_CLASS}" = "INFRA" ]; then
-    echo "⚠️ [RESOURCE_PREPARATION_FAILED] Evaluation task ${TASK_NAME} resource creation or teardown failed! (The evaluation is skipped)"
+    # RESOURCE_PREPARATION_FAILED is kept verbatim as the grep token even
+    # though the class now also covers an unreachable agent endpoint; the
+    # artifact below says which of the two it was.
+    echo "⚠️ [RESOURCE_PREPARATION_FAILED] Evaluation task ${TASK_NAME} resource creation, teardown, or agent transport failed! (The evaluation is skipped)"
     ARTIFACT_DIR="${ARTIFACTS:-/tmp/artifacts}"
     mkdir -p "${ARTIFACT_DIR}"
     cp "${EVAL_LOG}" "${ARTIFACT_DIR}/resource_prep_failure_${TASK_NAME}.log" 2>/dev/null || true
     [ -n "${NEW_RUN_DIR}" ] && cp "${EVAL_LOG}" "${NEW_RUN_DIR}/resource_prep_failure.log" 2>/dev/null || true
     echo "Saved resource preparation log to artifact: ${ARTIFACT_DIR}/resource_prep_failure_${TASK_NAME}.log"
-    echo "Task ${TASK_NAME} Result: [RESOURCE_PREPARATION_FAILED] Infrastructure setup/teardown error (Duration: ${TASK_DURATION}s)"
-    # Deliberately NOT appended to FAILED_TASKS: an OpenTofu stockout or a
-    # teardown race says nothing about the pull request under test, and
+    echo "Task ${TASK_NAME} Result: [RESOURCE_PREPARATION_FAILED] Infrastructure setup/teardown or agent transport error (Duration: ${TASK_DURATION}s)"
+    # Deliberately NOT appended to FAILED_TASKS: an OpenTofu stockout, a
+    # teardown race, or an agent pod that went away mid-task says nothing
+    # about the pull request under test, and
     # redding the job for it teaches people to ignore the job. The log line
     # above and the artifact are the record; whoever owns the eval
     # infrastructure greps for RESOURCE_PREPARATION_FAILED, not the PR author.
