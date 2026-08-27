@@ -420,29 +420,20 @@ default_image_tag() {
 # it the way git does and say where it came from. Empty outside a Git worktree.
 default_image_tag_label() {
   local repo_dir="${1:-.}"
-  if [ -n "${BAKED_RELEASE_VERSION:-}" ]; then
-    printf 'official release %s' "$BAKED_RELEASE_VERSION"
+  local tag
+  tag="$(default_image_tag "$repo_dir")"
+  if [ -z "$tag" ]; then
     return 0
   fi
-  if [ ! -f "${repo_dir}/k8s-operator/scripts/installer_common.sh" ]; then
-    return 0
-  fi
-  local exact_tag=""
-  exact_tag="$(git -C "$repo_dir" describe --tags --exact-match 2>/dev/null || echo "")"
-  if [[ "$exact_tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-    printf 'release tag %s' "$exact_tag"
-    return 0
-  fi
-  local base_dir=""
-  base_dir="$(basename "$(cd "$repo_dir" 2>/dev/null && pwd || echo "$repo_dir")")"
-  if [[ "$base_dir" =~ ^kube-agents-([0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?)$ ]]; then
-    printf 'release archive %s' "${BASH_REMATCH[1]}"
-    return 0
-  fi
-  local short=""
-  short="$(git -C "$repo_dir" rev-parse --short HEAD 2>/dev/null || echo "")"
-  if [ -n "$short" ]; then
-    printf 'local HEAD checkout %s' "$short"
+
+  if [ -n "${BAKED_RELEASE_VERSION:-}" ] && [ "$tag" = "$BAKED_RELEASE_VERSION" ]; then
+    printf 'official release %s' "$tag"
+  elif [ "$tag" = "$(git -C "$repo_dir" describe --tags --exact-match 2>/dev/null || echo "")" ]; then
+    printf 'release tag %s' "$tag"
+  elif [[ "$(basename "$(cd "$repo_dir" 2>/dev/null && pwd || echo "$repo_dir")")" =~ ^kube-agents-${tag}$ ]]; then
+    printf 'release archive %s' "$tag"
+  else
+    printf 'local HEAD checkout %s' "${tag:0:7}"
   fi
 }
 
