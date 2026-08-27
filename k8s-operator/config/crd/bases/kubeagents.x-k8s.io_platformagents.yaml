@@ -9240,7 +9240,7 @@ spec:
                                     hextets; the resolver decides it in one comparison.
                                   maxLength: 49
                                   minLength: 1
-                                  pattern: ^((((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(/(1[2-9]|2[0-9]|3[0-2]))?)|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}(/(4[89]|[5-9][0-9]|1[01][0-9]|12[0-8]))?))$
+                                  pattern: ^((((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(/(1[2-9]|2[0-9]|3[0-2]))?)|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}(/(4[89]|[5-9][0-9]|1[01][0-9]|12[0-8]))?))$
                                   type: string
                                 except:
                                   description: |-
@@ -9251,7 +9251,7 @@ spec:
                                     that fails it rather than forwarding it.
                                   items:
                                     maxLength: 49
-                                    pattern: ^((((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)/([0-9]|[12][0-9]|3[0-2]))|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])))$
+                                    pattern: ^((((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])/([0-9]|[12][0-9]|3[0-2]))|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])))$
                                     type: string
                                   maxItems: 16
                                   type: array
@@ -9274,14 +9274,15 @@ spec:
 
                         The per-item pattern is here rather than left to the resolver because an entry
                         the resolver cannot parse is dropped and the pin silently reverts to discovery.
-                        It bounds the IPv4 octets, so the usual transposed-digit typo is an apply-time
-                        error -- but it is a shape check, not net.ParseIP: a malformed IPv6 literal the
-                        hextet alternation admits still reaches the resolver, which logs it and falls
-                        back to discovery. EgressPeer.CIDR and MetadataDaemonSpec.Endpoint below carry
-                        the same bound for the same reason.
+                        It bounds the IPv4 octets and rejects the leading-zero form net.ParseIP refuses
+                        (010.96.0.10), so the usual typos are apply-time errors -- but it is a shape
+                        check, not net.ParseIP: a malformed IPv6 literal the hextet alternation admits
+                        still reaches the resolver, which logs it and falls back to discovery.
+                        EgressPeer.CIDR and MetadataDaemonSpec.Endpoint below carry the same bound for
+                        the same reason.
                       items:
                         maxLength: 45
-                        pattern: ^((((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?))|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))$
+                        pattern: ^((((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9]))|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))$
                         type: string
                       maxItems: 8
                       type: array
@@ -9302,7 +9303,7 @@ spec:
                             the empty alternative in the pattern is required because the API server
                             validates an explicitly-set "", which omitempty does not suppress.
                           maxLength: 45
-                          pattern: ^($|(((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?))|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))$
+                          pattern: ^($|(((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9]))|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))$
                           type: string
                       required:
                         - endpoint

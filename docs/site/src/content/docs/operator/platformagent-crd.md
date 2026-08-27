@@ -424,9 +424,10 @@ Configures the operator-generated egress `NetworkPolicy`.
   survives.
 - `dnsClusterIPs` ([]string, optional, max 8 items) — pins the cluster DNS Service ClusterIPs in
   rule 1, suppressing dynamic discovery from `kube-system/kube-dns`. Each entry is a bare IPv4 or
-  IPv6 address with no prefix. Admission bounds the IPv4 octets, so the usual transposed-digit typo
-  is an apply-time error; a malformed IPv6 literal can still get past it, in which case the operator
-  drops the entry and falls back to discovery, and says so in its log.
+  IPv6 address with no prefix. Admission bounds the IPv4 octets and rejects the leading-zero form
+  (`010.96.0.10`) that Go's resolver refuses, so the usual typos are apply-time errors; a malformed
+  IPv6 literal can still get past it, in which case the operator drops the entry and falls back to
+  discovery, and says so in its log.
 - `metadataDaemon` (object, optional) — pins the node-local cloud metadata daemon IP in rule 3. Its
   one field, `endpoint`, is required within it, so `metadataDaemon: {}` is rejected; an explicit
   `endpoint: ""` suppresses rule 3 entirely, for datapaths without a post-NAT daemon.

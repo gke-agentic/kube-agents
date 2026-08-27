@@ -595,14 +595,15 @@ type NetworkPolicySpec struct {
 	//
 	// The per-item pattern is here rather than left to the resolver because an entry
 	// the resolver cannot parse is dropped and the pin silently reverts to discovery.
-	// It bounds the IPv4 octets, so the usual transposed-digit typo is an apply-time
-	// error -- but it is a shape check, not net.ParseIP: a malformed IPv6 literal the
-	// hextet alternation admits still reaches the resolver, which logs it and falls
-	// back to discovery. EgressPeer.CIDR and MetadataDaemonSpec.Endpoint below carry
-	// the same bound for the same reason.
+	// It bounds the IPv4 octets and rejects the leading-zero form net.ParseIP refuses
+	// (010.96.0.10), so the usual typos are apply-time errors -- but it is a shape
+	// check, not net.ParseIP: a malformed IPv6 literal the hextet alternation admits
+	// still reaches the resolver, which logs it and falls back to discovery.
+	// EgressPeer.CIDR and MetadataDaemonSpec.Endpoint below carry the same bound for
+	// the same reason.
 	// +kubebuilder:validation:MaxItems=8
 	// +kubebuilder:validation:items:MaxLength=45
-	// +kubebuilder:validation:items:Pattern=`^((((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?))|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))$`
+	// +kubebuilder:validation:items:Pattern=`^((((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9]))|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))$`
 	// +optional
 	DNSClusterIPs []string `json:"dnsClusterIPs,omitempty"`
 
@@ -623,7 +624,7 @@ type MetadataDaemonSpec struct {
 	// Endpoint is the daemon IP. "" (explicitly set) suppresses rule 3 entirely;
 	// the empty alternative in the pattern is required because the API server
 	// validates an explicitly-set "", which omitempty does not suppress.
-	// +kubebuilder:validation:Pattern=`^($|(((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?))|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))$`
+	// +kubebuilder:validation:Pattern=`^($|(((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9]))|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))$`
 	// +kubebuilder:validation:MaxLength=45
 	Endpoint string `json:"endpoint"`
 }
@@ -658,7 +659,7 @@ type EgressPeer struct {
 	// hextets; the resolver decides it in one comparison.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=49
-	// +kubebuilder:validation:Pattern=`^((((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(/(1[2-9]|2[0-9]|3[0-2]))?)|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}(/(4[89]|[5-9][0-9]|1[01][0-9]|12[0-8]))?))$`
+	// +kubebuilder:validation:Pattern=`^((((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(/(1[2-9]|2[0-9]|3[0-2]))?)|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}(/(4[89]|[5-9][0-9]|1[01][0-9]|12[0-8]))?))$`
 	CIDR string `json:"cidr"`
 
 	// Except carves ranges out of CIDR. Each entry must be a strict subset of CIDR --
@@ -668,7 +669,7 @@ type EgressPeer struct {
 	// that fails it rather than forwarding it.
 	// +kubebuilder:validation:MaxItems=16
 	// +kubebuilder:validation:items:MaxLength=49
-	// +kubebuilder:validation:items:Pattern=`^((((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)/([0-9]|[12][0-9]|3[0-2]))|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])))$`
+	// +kubebuilder:validation:items:Pattern=`^((((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])/([0-9]|[12][0-9]|3[0-2]))|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])))$`
 	// +optional
 	Except []string `json:"except,omitempty"`
 }
