@@ -21,6 +21,7 @@ from tests.testing.release import (
     MOCK_NONEXISTENT_TAG,
     MOCK_TARGET_RELEASE_TAG,
     create_mock_gh_binary,
+    create_mock_git_binary,
 )
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -54,6 +55,7 @@ class PublishGithubReleaseScriptTest(unittest.TestCase):
         temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         try:
             bin_dir = create_minimal_tools_bin(temp_dir.name, exclude=("gh",))
+            create_mock_git_binary(bin_dir)
             proc = self._run_script(
                 [MOCK_TARGET_RELEASE_TAG, "HEAD"],
                 env={"CI": "true", "PATH": str(bin_dir)},
@@ -67,6 +69,7 @@ class PublishGithubReleaseScriptTest(unittest.TestCase):
         temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         try:
             bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_git_binary(bin_dir)
             create_mock_gh_binary(bin_dir, existing_releases=[MOCK_TARGET_RELEASE_TAG])
 
             proc = self._run_script(
@@ -83,6 +86,7 @@ class PublishGithubReleaseScriptTest(unittest.TestCase):
         temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         try:
             bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_git_binary(bin_dir)
             create_mock_gh_binary(bin_dir)
 
             proc = self._run_script(
@@ -99,6 +103,7 @@ class PublishGithubReleaseScriptTest(unittest.TestCase):
         temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         try:
             bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_git_binary(bin_dir)
             create_mock_gh_binary(bin_dir)
 
             proc = self._run_script(
@@ -118,6 +123,7 @@ class PublishGithubReleaseScriptTest(unittest.TestCase):
         temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         try:
             bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_git_binary(bin_dir)
             create_mock_gh_binary(bin_dir)
 
             proc = self._run_script(
@@ -135,6 +141,7 @@ class PublishGithubReleaseScriptTest(unittest.TestCase):
         temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         try:
             bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_git_binary(bin_dir)
             create_mock_gh_binary(bin_dir)
 
             proc = self._run_script(

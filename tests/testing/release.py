@@ -243,11 +243,22 @@ def create_mock_git_binary(
     bin_path = pathlib.Path(bin_dir)
     bin_path.mkdir(parents=True, exist_ok=True)
     git_path = bin_path / "git"
+    if git_path.is_symlink() or git_path.exists():
+        git_path.unlink()
     log_path = log_file if log_file else (bin_path / "git.log")
 
     commit_sha = resolved_commit if resolved_commit else MOCK_SAMPLE_COMMIT_SHA
     rev_parse_action = "exit 1" if fail_rev_parse else f'echo "{commit_sha}"\n  exit 0'
-    archive_exit = "exit 1" if fail_archive else "exit 0"
+    repo_root = str(pathlib.Path(__file__).resolve().parents[2])
+    if fail_archive:
+        archive_body = "exit 1"
+    else:
+        archive_body = f"""if [ -d "{repo_root}/charts" ]; then
+    tar -cf - -C "{repo_root}" charts/kube-agents 2>/dev/null || tar -cf - -T /dev/null
+  else
+    tar -cf - -T /dev/null
+  fi
+  exit 0"""
 
     content = f"""#!/bin/sh
 echo "mock git: $@" >> "{log_path}"
@@ -255,7 +266,7 @@ if [ "$1" = "rev-parse" ]; then
   {rev_parse_action}
 fi
 if [ "$1" = "archive" ]; then
-  {archive_exit}
+  {archive_body}
 fi
 exit 0
 """

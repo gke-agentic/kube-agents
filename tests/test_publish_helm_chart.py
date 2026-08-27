@@ -61,6 +61,7 @@ class PublishHelmChartScriptTest(unittest.TestCase):
         temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         try:
             bin_dir = create_minimal_tools_bin(temp_dir.name, exclude=("helm",))
+            create_mock_git_binary(bin_dir)
             proc = self._run_script(
                 [MOCK_TARGET_RELEASE_TAG],
                 env={"CI": "true", "PATH": str(bin_dir)},
@@ -74,6 +75,7 @@ class PublishHelmChartScriptTest(unittest.TestCase):
         temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         try:
             bin_dir = create_minimal_tools_bin(temp_dir.name, exclude=("helm",))
+            create_mock_git_binary(bin_dir)
             proc = self._run_script(
                 [MOCK_TARGET_RELEASE_TAG],
                 env={"PATH": str(bin_dir)},
@@ -87,6 +89,7 @@ class PublishHelmChartScriptTest(unittest.TestCase):
         temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         try:
             bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_git_binary(bin_dir)
             create_mock_helm_binary(bin_dir)
             create_mock_cosign_binary(bin_dir)
             create_mock_docker_binary(bin_dir)
@@ -105,6 +108,7 @@ class PublishHelmChartScriptTest(unittest.TestCase):
         temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         try:
             bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_git_binary(bin_dir)
             create_mock_helm_binary(bin_dir)
             create_mock_cosign_binary(bin_dir)
             create_mock_docker_binary(bin_dir)
@@ -132,6 +136,7 @@ class PublishHelmChartScriptTest(unittest.TestCase):
         temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         try:
             bin_dir = create_minimal_tools_bin(temp_dir.name, exclude=("cosign",))
+            create_mock_git_binary(bin_dir)
             create_mock_helm_binary(bin_dir)
             create_mock_docker_binary(bin_dir)
             proc = self._run_script(
@@ -147,6 +152,7 @@ class PublishHelmChartScriptTest(unittest.TestCase):
         temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         try:
             bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_git_binary(bin_dir)
             create_mock_helm_binary(bin_dir, fail_package=True)
             create_mock_cosign_binary(bin_dir)
             create_mock_docker_binary(bin_dir)
@@ -164,6 +170,7 @@ class PublishHelmChartScriptTest(unittest.TestCase):
         temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         try:
             bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_git_binary(bin_dir)
             create_mock_helm_binary(bin_dir, fail_push=True)
             create_mock_cosign_binary(bin_dir)
             create_mock_docker_binary(bin_dir)
@@ -187,6 +194,7 @@ class PublishHelmChartScriptTest(unittest.TestCase):
         temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         try:
             bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_git_binary(bin_dir)
             create_mock_helm_binary(bin_dir)
             create_mock_cosign_binary(bin_dir)
             create_mock_docker_binary(bin_dir)
@@ -205,6 +213,7 @@ class PublishHelmChartScriptTest(unittest.TestCase):
         temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         try:
             bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_git_binary(bin_dir)
             create_mock_helm_binary(bin_dir)
             create_mock_cosign_binary(bin_dir)
             existing_chart_oci = f"{MOCK_DEFAULT_REGISTRY_PREFIX}/charts/kube-agents:{MOCK_TARGET_RELEASE_TAG}"
@@ -235,6 +244,7 @@ class PublishHelmChartScriptTest(unittest.TestCase):
         temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         try:
             bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_git_binary(bin_dir)
             create_mock_helm_binary(bin_dir)
             create_mock_cosign_binary(bin_dir, fail_sign=True)
             existing_chart_oci = f"{MOCK_DEFAULT_REGISTRY_PREFIX}/charts/kube-agents:{MOCK_TARGET_RELEASE_TAG}"
@@ -261,6 +271,7 @@ class PublishHelmChartScriptTest(unittest.TestCase):
         temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         try:
             bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_git_binary(bin_dir)
             create_mock_helm_binary(bin_dir)
             create_mock_cosign_binary(bin_dir)
             create_mock_docker_binary(bin_dir)
@@ -285,6 +296,7 @@ class PublishHelmChartScriptTest(unittest.TestCase):
         temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         try:
             bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_git_binary(bin_dir)
             create_mock_helm_binary(bin_dir)
             create_mock_cosign_binary(bin_dir)
             create_mock_docker_binary(bin_dir)
@@ -310,6 +322,7 @@ class PublishHelmChartScriptTest(unittest.TestCase):
         temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         try:
             bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_git_binary(bin_dir)
             create_mock_helm_binary(bin_dir)
             create_mock_cosign_binary(bin_dir)
             create_mock_docker_binary(bin_dir)
