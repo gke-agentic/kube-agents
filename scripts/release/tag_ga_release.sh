@@ -10,15 +10,6 @@ source "${SCRIPT_DIR}/common.sh"
 RELEASE_VERSION="${1:-${RELEASE_VERSION:-${TARGET_VERSION:-${TARGET_TAG:-}}}}"
 RC_CANDIDATE_COMMIT="${2:-${RC_CANDIDATE_COMMIT:-${TARGET_COMMIT:-}}}"
 
-# Sibling symmetry: support swapped arguments
-if [ -n "${1:-}" ] && [ -n "${2:-}" ]; then
-  if [[ ! "${1}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ "${2}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    local_tmp="${RELEASE_VERSION}"
-    RELEASE_VERSION="${RC_CANDIDATE_COMMIT}"
-    RC_CANDIDATE_COMMIT="${local_tmp}"
-  fi
-fi
-
 if [ -z "${RELEASE_VERSION}" ] || [ -z "${RC_CANDIDATE_COMMIT}" ]; then
   echo "❌ ERROR: RELEASE_VERSION and RC candidate commit are required as arguments or environment variables." >&2
   echo "Usage: $0 (with RELEASE_VERSION and RC candidate commit in env) or $0 <RELEASE_VERSION> <RC_CANDIDATE_COMMIT>" >&2

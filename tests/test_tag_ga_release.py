@@ -86,7 +86,8 @@ class TagGAReleaseScriptTest(unittest.TestCase):
         finally:
             temp_dir.cleanup()
 
-    def test_swapped_args_symmetry(self):
+    def test_strict_argument_order_rejects_swapped_args(self):
+        """Verifies tag_ga_release.sh strictly requires SemVer as first argument."""
         temp_dir, repo_dir, git = create_mock_git_repo()
         try:
             head_commit = git("rev-parse", "HEAD").stdout.strip()
@@ -95,9 +96,8 @@ class TagGAReleaseScriptTest(unittest.TestCase):
                 [head_commit, MOCK_TARGET_RELEASE_TAG],
                 cwd=repo_dir,
             )
-            self.assertEqual(proc.returncode, 0)
-            tag_commit = git("rev-parse", f"{MOCK_TARGET_RELEASE_TAG}^{{commit}}").stdout.strip()
-            self.assertEqual(tag_commit, head_commit)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("not a valid pure numeric SemVer", proc.stderr)
         finally:
             temp_dir.cleanup()
 
