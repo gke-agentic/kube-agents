@@ -614,12 +614,14 @@ type NetworkPolicySpec struct {
 	MetadataDaemon *MetadataDaemonSpec `json:"metadataDaemon,omitempty"`
 
 	// AdditionalEgress appends CIDR-and-port egress rules to the generated policy.
-	// Entries are not passed through untouched: every surviving peer CIDR is
-	// canonicalised, and the operator drops what would either widen egress or make
-	// the API server reject the whole policy -- a peer past the /12 (IPv4) or /48
-	// (IPv6) floor, an except block that is not a strict subset of its peer, an
-	// out-of-range port, an unknown protocol, and any rule left with no usable peer.
-	// Each drop is logged, and costs only the entry it names.
+	// Entries are not passed through untouched: every peer CIDR is canonicalised,
+	// and three things the schema below cannot express are dropped by the operator
+	// instead -- an IPv4-mapped IPv6 peer, which clears the IPv6 prefix floor and
+	// then fails the IPv4 one once collapsed to the block it means; an except that
+	// is not a strict subset of its peer, which the API server would reject the
+	// whole policy for; and a rule left with no usable peer, which would otherwise
+	// permit egress to every destination. Each drop is logged and costs only the
+	// entry it names. Everything else is rejected at admission.
 	// +kubebuilder:validation:MaxItems=32
 	// +optional
 	AdditionalEgress []EgressRule `json:"additionalEgress,omitempty"`
