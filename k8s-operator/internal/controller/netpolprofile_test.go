@@ -387,8 +387,14 @@ func TestResolveNetpolProfile(t *testing.T) {
 									{CIDR: "10.0.0.0/16", Except: []string{"10.0.1.0/24"}},
 									{CIDR: "192.168.1.5"}, // bare IP -> /32
 								},
+								// One entry per arm of toEgressRules' protocol switch. The
+								// lower-case "sctp" also holds the ToUpper: losing it sends
+								// the entry to the default arm, which drops the port rather
+								// than mistyping it.
 								Ports: []agentv1alpha1.EgressPort{
 									{Protocol: "TCP", Port: 5432},
+									{Protocol: "UDP", Port: 8125},
+									{Protocol: "sctp", Port: 9899},
 								},
 							},
 						},
@@ -413,6 +419,39 @@ func TestResolveNetpolProfile(t *testing.T) {
 		}
 		if rule.To[1].IPBlock.CIDR != "192.168.1.5/32" {
 			t.Errorf("got CIDR %q, want 192.168.1.5/32", rule.To[1].IPBlock.CIDR)
+		}
+
+		// Ports are the half of toEgressRules that widens egress by doing nothing:
+		// a rule that keeps its peers and loses its ports permits EVERY port to
+		// them, the mirror of the len(peers) == 0 guard. Assert the emitted list
+		// exactly -- length, order, protocol, value -- so dropping the append,
+		// reordering the switch or losing the ToUpper fails here instead of
+		// shipping an all-ports rule with a green suite.
+		wantPorts := []struct {
+			protocol corev1.Protocol
+			port     int
+		}{
+			{corev1.ProtocolTCP, 5432},
+			{corev1.ProtocolUDP, 8125},
+			{corev1.ProtocolSCTP, 9899},
+		}
+		if len(rule.Ports) != len(wantPorts) {
+			t.Fatalf("got %d ports (%+v), want %d", len(rule.Ports), rule.Ports, len(wantPorts))
+		}
+		for i, want := range wantPorts {
+			got := rule.Ports[i]
+			switch {
+			case got.Protocol == nil:
+				t.Errorf("port %d: got nil Protocol, want %s", i, want.protocol)
+			case *got.Protocol != want.protocol:
+				t.Errorf("port %d: got protocol %s, want %s", i, *got.Protocol, want.protocol)
+			}
+			switch {
+			case got.Port == nil:
+				t.Errorf("port %d: got nil Port, want %d", i, want.port)
+			case got.Port.IntValue() != want.port:
+				t.Errorf("port %d: got port %s, want %d", i, got.Port.String(), want.port)
+			}
 		}
 	})
 

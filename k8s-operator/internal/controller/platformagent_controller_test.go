@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sort"
@@ -3753,6 +3754,104 @@ func TestReconcileNetworkPolicy_StatusReporting(t *testing.T) {
 	}
 	if agent.Status.NetworkPolicy.MetadataDaemonIPSource != "Spec" {
 		t.Errorf("got MetadataDaemonIPSource %q, want Spec", agent.Status.NetworkPolicy.MetadataDaemonIPSource)
+	}
+}
+
+// TestReconcileNetworkPolicy_StatusReporting_Disabled covers the one state
+// status.networkPolicy.generated exists to express.
+//
+// Generated deliberately carries no omitempty: encoding/json drops a false bool
+// under omitempty, so a disabled agent would serialise as `networkPolicy: {}` and
+// an operator asking "is the operator managing my policy?" would get silence.
+// That choice is defended by a comment in common_types.go and by nothing else --
+// re-adding omitempty during a cleanup looks like tidying up next to the field's
+// five omitempty neighbours, and every existing assertion is on Generated == true,
+// which omitempty does not touch. The JSON check below is the tripwire.
+//
+// The DNS and metadata assertions cover the same reconcile's early return:
+// resolveNetpolProfile bails before either ladder runs when enabled is false, so a
+// Spec pin that is set here must still report nothing.
+func TestReconcileNetworkPolicy_StatusReporting_Disabled(t *testing.T) {
+	scheme := setupScheme()
+	ctx := context.Background()
+
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+		},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			AgentSpec: agentv1alpha1.AgentSpec{
+				NetworkPolicy: &agentv1alpha1.NetworkPolicySpec{
+					Enabled: ptr.To(false),
+					// Set, and must still not be reported: the early return
+					// precedes the DNS ladder.
+					DNSClusterIPs: []string{"10.200.0.10"},
+					MetadataDaemon: &agentv1alpha1.MetadataDaemonSpec{
+						Endpoint: "169.254.169.245",
+					},
+				},
+			},
+		},
+	}
+
+	dep := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent-gateway",
+			Namespace: "test-ns",
+		},
+		Status: appsv1.DeploymentStatus{
+			ReadyReplicas: 1,
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(agent, dep).
+		WithStatusSubresource(agent).
+		WithInterceptorFuncs(fakeServerSideApplyInterceptors()).
+		Build()
+
+	r := &PlatformAgentReconciler{
+		Client:    cl,
+		APIReader: cl,
+		Scheme:    scheme,
+	}
+
+	profile := r.resolveNetpolProfile(ctx, agent)
+	if _, err := r.updateStatusReady(ctx, agent, "http://otel:4318", "Spec", profile); err != nil {
+		t.Fatalf("updateStatusReady failed: %v", err)
+	}
+
+	stored := &agentv1alpha1.PlatformAgent{}
+	if err := cl.Get(ctx, types.NamespacedName{Name: agent.Name, Namespace: agent.Namespace}, stored); err != nil {
+		t.Fatalf("failed to read the agent back: %v", err)
+	}
+
+	netpol := stored.Status.NetworkPolicy
+	if netpol.Generated {
+		t.Errorf("got Status.NetworkPolicy.Generated=true, want false for enabled=false")
+	}
+	if len(netpol.DNSClusterIPs) != 0 {
+		t.Errorf("got DNSClusterIPs %v, want none: the DNS ladder never runs when generation is off", netpol.DNSClusterIPs)
+	}
+	if netpol.DNSClusterIPsSource != "" {
+		t.Errorf("got DNSClusterIPsSource %q, want empty", netpol.DNSClusterIPsSource)
+	}
+	if netpol.MetadataDaemonIP != "" {
+		t.Errorf("got MetadataDaemonIP %q, want empty", netpol.MetadataDaemonIP)
+	}
+	if netpol.MetadataDaemonIPSource != "" {
+		t.Errorf("got MetadataDaemonIPSource %q, want empty", netpol.MetadataDaemonIPSource)
+	}
+
+	// The whole point of the missing omitempty: the key has to survive encoding.
+	encoded, err := json.Marshal(netpol)
+	if err != nil {
+		t.Fatalf("failed to marshal NetworkPolicyStatus: %v", err)
+	}
+	if got := string(encoded); !strings.Contains(got, `"generated":false`) {
+		t.Errorf("encoded status is %s, want it to carry \"generated\":false -- omitempty on Generated would erase the one state this field reports", got)
 	}
 }
 
