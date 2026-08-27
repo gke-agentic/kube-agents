@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -1114,6 +1115,47 @@ func TestBuildNetworkPolicy_MetadataDaemonPeers(t *testing.T) {
 	if !reflect.DeepEqual(got988, want988) {
 		t.Errorf("expected metadata daemon peers %v, got %v", want988, got988)
 	}
+
+	// Every port the metadata server is reachable on, across all egress rules. 8080 —
+	// the pre-NAT ALTS handshaker port — must not be among them: Dataplane V2 evaluates
+	// policy pre-NAT at the socket layer, so pairing 8080 with the link-local address
+	// reopens the DirectPath route the sandbox refuses. Asserted here rather than left
+	// to the platform goldens, which are snapshots that `go test -update` re-blesses
+	// from whatever the code emits.
+	gotPorts := egressPortsForCIDR(netpol, metadataLinkLocalIP+"/32")
+	wantPorts := []int32{80, 988}
+	if !reflect.DeepEqual(gotPorts, wantPorts) {
+		t.Errorf("expected the metadata server reachable on ports %v, got %v", wantPorts, gotPorts)
+	}
+}
+
+// egressPortsForCIDR returns the sorted, deduplicated ports every egress rule naming
+// cidr as an ipBlock peer opens towards it.
+func egressPortsForCIDR(netpol *networkingv1.NetworkPolicy, cidr string) []int32 {
+	seen := map[int32]bool{}
+	for i := range netpol.Spec.Egress {
+		matched := false
+		for _, peer := range netpol.Spec.Egress[i].To {
+			if peer.IPBlock != nil && peer.IPBlock.CIDR == cidr {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		for _, p := range netpol.Spec.Egress[i].Ports {
+			if p.Port != nil {
+				seen[p.Port.IntVal] = true
+			}
+		}
+	}
+	ports := make([]int32, 0, len(seen))
+	for p := range seen {
+		ports = append(ports, p)
+	}
+	sort.Slice(ports, func(i, j int) bool { return ports[i] < ports[j] })
+	return ports
 }
 
 // egressCIDRsForPort returns the ipBlock CIDRs of the first egress rule naming port.
