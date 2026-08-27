@@ -460,23 +460,23 @@ See [`k8s-operator/api/v1alpha1/platformagent_types.go`](https://github.com/gke-
 
 The operator writes observed state to the `status` subresource:
 
-| Field                                  | Type     | Purpose                                                                                                 |
-| -------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------- |
-| `phase`                                | string   | Overall state (`Pending`, `Provisioning`, `Ready`, `Failed`).                                           |
-| `address`                              | string   | Fully qualified domain name (FQDN) of the agent service.                                                |
-| `lastReconcileTime`                    | time     | Timestamp of the last status update.                                                                    |
-| `conditions`                           | list     | Standard `metav1.Condition` observations, keyed by `type`.                                              |
-| `deploymentStatus.name`                | string   | Name of the underlying Deployment.                                                                      |
-| `deploymentStatus.readyReplicas`       | int32    | Number of fully ready replicas.                                                                         |
-| `serviceStatus.endpoint`               | string   | Primary URL/IP (with protocol and port) to reach the agent.                                             |
-| `storageStatus.bound`                  | bool     | Whether the primary PVC has been provisioned.                                                           |
-| `telemetry.otlpEndpoint`               | string   | The OTLP collector the agent was wired to.                                                              |
-| `telemetry.otlpEndpointSource`         | string   | Which rung answered: `DeploymentEnv`, `Spec`, `OperatorEnv`, `Discovered`, `None`, or `Default`.        |
-| `networkPolicy.generated`              | bool     | Whether the operator-managed NetworkPolicy is active. `false` when `spec.networkPolicy.enabled: false`. |
-| `networkPolicy.dnsClusterIPs`          | []string | The DNS ClusterIPs written into rule 1.                                                                 |
-| `networkPolicy.dnsClusterIPsSource`    | string   | Which rung answered: `Annotation`, `Spec`, `OperatorEnv`, `Discovered`, or `Default`.                   |
-| `networkPolicy.metadataDaemonIP`       | string   | The post-NAT daemon IP in rule 3, empty when suppressed.                                                |
-| `networkPolicy.metadataDaemonIPSource` | string   | Which rung answered: `Annotation`, `Spec`, `OperatorEnv`, `Default`, or `Suppressed`.                   |
+| Field                                  | Type     | Purpose                                                                                             |
+| -------------------------------------- | -------- | --------------------------------------------------------------------------------------------------- |
+| `phase`                                | string   | Overall state (`Pending`, `Provisioning`, `Ready`, `Failed`).                                       |
+| `address`                              | string   | Fully qualified domain name (FQDN) of the agent service.                                            |
+| `lastReconcileTime`                    | time     | Timestamp of the last status update.                                                                |
+| `conditions`                           | list     | Standard `metav1.Condition` observations, keyed by `type`.                                          |
+| `deploymentStatus.name`                | string   | Name of the underlying Deployment.                                                                  |
+| `deploymentStatus.readyReplicas`       | int32    | Number of fully ready replicas.                                                                     |
+| `serviceStatus.endpoint`               | string   | Primary URL/IP (with protocol and port) to reach the agent.                                         |
+| `storageStatus.bound`                  | bool     | Whether the primary PVC has been provisioned.                                                       |
+| `telemetry.otlpEndpoint`               | string   | The OTLP collector the agent was wired to.                                                          |
+| `telemetry.otlpEndpointSource`         | string   | Which rung answered: `DeploymentEnv`, `Spec`, `OperatorEnv`, `Discovered`, `None`, or `Default`.    |
+| `networkPolicy.generated`              | bool     | Whether the operator-managed NetworkPolicy is active. `false` when disabled, or not yet reconciled. |
+| `networkPolicy.dnsClusterIPs`          | []string | The DNS ClusterIPs written into rule 1.                                                             |
+| `networkPolicy.dnsClusterIPsSource`    | string   | Which rung answered: `Annotation`, `Spec`, `OperatorEnv`, `Discovered`, or `Default`.               |
+| `networkPolicy.metadataDaemonIP`       | string   | The post-NAT daemon IP in rule 3, empty when suppressed.                                            |
+| `networkPolicy.metadataDaemonIPSource` | string   | Which rung answered: `Annotation`, `Spec`, `OperatorEnv`, `Default`, or `Suppressed`.               |
 
 Three condition types appear in `conditions`, and only the first is always present:
 

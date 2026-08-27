@@ -9186,9 +9186,14 @@ spec:
                     NetworkPolicy.
                   properties:
                     additionalEgress:
-                      description:
-                        AdditionalEgress is appended verbatim to the generated
-                        policy.
+                      description: |-
+                        AdditionalEgress appends CIDR-and-port egress rules to the generated policy.
+                        Entries are not passed through untouched: every surviving peer CIDR is
+                        canonicalised, and the operator drops what would either widen egress or make
+                        the API server reject the whole policy -- a peer past the /12 (IPv4) or /48
+                        (IPv6) floor, an except block that is not a strict subset of its peer, an
+                        out-of-range port, an unknown protocol, and any rule left with no usable peer.
+                        Each drop is logged, and costs only the entry it names.
                       items:
                         description: |-
                           EgressRule is a deliberately narrow projection of networkingv1.NetworkPolicyEgressRule:
@@ -9513,12 +9518,11 @@ spec:
                     generated:
                       description: |-
                         Generated reports whether the operator is managing a NetworkPolicy for this
-                        agent. False when spec.networkPolicy.enabled is false.
-
-                        No omitempty, deliberately: encoding/json omits a false bool under omitempty,
-                        so the one state this field exists to report is the one it could not express --
-                        a disabled agent serialised as `networkPolicy: {}`, indistinguishable from a CR
-                        that has not reconciled yet.
+                        agent: true once a reconcile has generated one, false when
+                        spec.networkPolicy.enabled is false. It is written only by the Ready status
+                        update, so read it alongside the Ready condition — a CR that went Degraded
+                        before its first successful reconcile reports false because nothing has
+                        resolved the field yet, not because generation is off.
                       type: boolean
                     metadataDaemonIP:
                       description:

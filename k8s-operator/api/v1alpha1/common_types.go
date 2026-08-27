@@ -613,7 +613,13 @@ type NetworkPolicySpec struct {
 	// +optional
 	MetadataDaemon *MetadataDaemonSpec `json:"metadataDaemon,omitempty"`
 
-	// AdditionalEgress is appended verbatim to the generated policy.
+	// AdditionalEgress appends CIDR-and-port egress rules to the generated policy.
+	// Entries are not passed through untouched: every surviving peer CIDR is
+	// canonicalised, and the operator drops what would either widen egress or make
+	// the API server reject the whole policy -- a peer past the /12 (IPv4) or /48
+	// (IPv6) floor, an except block that is not a strict subset of its peer, an
+	// out-of-range port, an unknown protocol, and any rule left with no usable peer.
+	// Each drop is logged, and costs only the entry it names.
 	// +kubebuilder:validation:MaxItems=32
 	// +optional
 	AdditionalEgress []EgressRule `json:"additionalEgress,omitempty"`
@@ -748,13 +754,21 @@ type TelemetryStatus struct {
 // the same diagnostic split as TelemetryStatus: the value alone cannot say whether a DNS
 // IP was discovered or pinned.
 type NetworkPolicyStatus struct {
+	// Note, deliberately not a doc comment — the blank line below keeps it out of the
+	// CRD description that `kubectl explain` prints. No omitempty, deliberately:
+	// encoding/json omits a false bool under omitempty, so a disabled agent would
+	// serialise as `networkPolicy: {}` and the one state this field exists to report
+	// would be the one it could not express. The key is therefore always present,
+	// including before anything has resolved it — which is what the doc comment below
+	// has to scope, and why this field is not a *bool: a pointer would put the key
+	// back to absent for exactly the CR an operator is most likely to be inspecting.
+
 	// Generated reports whether the operator is managing a NetworkPolicy for this
-	// agent. False when spec.networkPolicy.enabled is false.
-	//
-	// No omitempty, deliberately: encoding/json omits a false bool under omitempty,
-	// so the one state this field exists to report is the one it could not express --
-	// a disabled agent serialised as `networkPolicy: {}`, indistinguishable from a CR
-	// that has not reconciled yet.
+	// agent: true once a reconcile has generated one, false when
+	// spec.networkPolicy.enabled is false. It is written only by the Ready status
+	// update, so read it alongside the Ready condition — a CR that went Degraded
+	// before its first successful reconcile reports false because nothing has
+	// resolved the field yet, not because generation is off.
 	// +optional
 	Generated bool `json:"generated"`
 
