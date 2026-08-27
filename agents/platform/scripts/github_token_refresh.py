@@ -23,6 +23,8 @@ sys.path.append("/opt/defaults/scripts")
 sys.path.append("/opt/data/scripts")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from credential_proxy_client import authorization_headers
+
 
 TOKEN_BROKER_URL = os.getenv(
     "TOKEN_BROKER_URL",
@@ -85,7 +87,9 @@ def refresh_git_credentials(
         request = urllib.request.Request(
             url,
             data=json.dumps({"repository": repository}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            # Empty in the sidecar deployment; carries the caller's projected
+            # ServiceAccount token when the broker runs in its own Pod.
+            headers={"Content-Type": "application/json", **authorization_headers()},
             method="POST",
         )
         try:
