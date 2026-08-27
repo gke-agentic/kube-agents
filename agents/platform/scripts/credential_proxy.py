@@ -1318,7 +1318,11 @@ HARDENED_GIT_CONFIG = (
     ("core.pager", "cat"),
     ("core.editor", "false"),
     ("sequence.editor", "false"),
-    ("diff.external", ""),
+    # Not `diff.external`: pinning it to "" was tried and reverted (see the
+    # comment above `GIT_FORCED_CONFIG`) -- git executes the empty string as
+    # the external diff program rather than reading it as "off", so every
+    # `git diff` died with `fatal: external diff died`. There is no value
+    # that turns it off, so it stays open the same way `alias.*` does.
     ("protocol.ext.allow", "never"),
     ("credential.helper", ""),
     # The push is https through gh's credential helper and nothing here speaks
