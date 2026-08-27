@@ -38,7 +38,7 @@ This comprehensive, step-by-step guide explains how to install, configure, deplo
 Run the interactive one-liner installer directly in **Google Cloud Shell** or any authenticated bash terminal:
 
 ```bash
-curl -fsSL https://gke-labs.github.io/kube-agents/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSION>/install.sh | bash
 ```
 
 When prompted for the image/source revision, enter a SemVer release tag or the full 40-character

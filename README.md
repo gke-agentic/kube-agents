@@ -25,7 +25,7 @@ _An SRE asks for a fleet self-health check; the agent answers in the thread. An 
 The fastest, zero-friction way to install `kube-agents` in **Google Cloud Shell** or your terminal:
 
 ```bash
-curl -fsSL https://gke-labs.github.io/kube-agents/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSION>/install.sh | bash
 ```
 
 _(Or via GitHub raw URL: `curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/main/install.sh | bash`)_
