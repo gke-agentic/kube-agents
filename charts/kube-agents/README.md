@@ -177,6 +177,16 @@ opt-in (`litellm.otel=true`) — enable it only on clusters that run a reachable
 collector, since without one the otel callback aborts every LLM request on DNS
 failure.
 
+`litellm.rollingUpdate.maxUnavailable` defaults to `1` so that a rollout can
+replace a Pod in place. Set it to `0` for a zero-downtime rollout, but only
+where the namespace has quota headroom for one more LiteLLM Pod: at `0` the
+surge Pod is mandatory, and a `ResourceQuota` with no room for it stalls the
+rollout instead of completing it. At the default `litellm.replicaCount` of 2 one
+replica keeps serving either way; at `replicaCount: 1` the default of `1` means
+a rollout drops the only Pod before its replacement is ready, so LiteLLM is
+unreachable for up to the three minutes its `startupProbe` allows. `values.yaml`
+states the trade in full.
+
 ### Hindsight memory store
 
 `hindsight.*` renders the agents' long-term memory store — the Hindsight API
