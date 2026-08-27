@@ -95,10 +95,23 @@ func TestNetworkPolicyIPv4Patterns(t *testing.T) {
 			continue
 		}
 
+		// All four admit a bare host address, and that symmetry is deliberate: a
+		// user writing 10.0.1.5 in `except` next to a `cidr` that takes 10.0.1.5
+		// should not get an apply-time rejection from one field and not its
+		// neighbour, quoting a 200-character regex to explain the difference. The
+		// two prefix-bearing patterns therefore make the prefix optional; the two
+		// bare-IP-only ones have no prefix alternative at all. Re-tightening either
+		// prefix-bearing pattern fails here.
+		if !re.MatchString("10.96.0.10") {
+			t.Errorf("pattern rejects the bare host 10.96.0.10; every spec.networkPolicy IPv4 pattern accepts one: %s", pattern)
+		}
+
 		// Each pattern accepts a bare IP, a bare IP with a prefix, or only the
 		// latter. Find the suffix this one wants before asserting anything, so the
 		// test does not silently pass by feeding every pattern a string it rejects
-		// for the wrong reason.
+		// for the wrong reason. The check above makes "" the answer for all four
+		// today; the helper stays so a pattern added later that does require a
+		// prefix still gets the octet coverage below rather than one error line.
 		suffix, ok := acceptedSuffix(re)
 		if !ok {
 			t.Errorf("pattern rejects 10.96.0.10 both bare and with a /24: %s", pattern)

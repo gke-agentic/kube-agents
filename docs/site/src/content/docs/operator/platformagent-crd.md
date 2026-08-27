@@ -443,6 +443,10 @@ Configures the operator-generated egress `NetworkPolicy`.
   destination. All three are logged, so the operator's log is where a rule that did not take effect
   explains itself.
 
+  A peer's `except` entries may be written bare (`10.0.1.5`, meaning a `/32`) as well as with a
+  prefix, the same as `cidr`. Unlike `cidr` there is no prefix floor on them, because an `except`
+  has to be a strict subset of its peer to be kept at all.
+
 Annotations (`kubeagents.x-k8s.io/dns-cluster-ip` and `kubeagents.x-k8s.io/metadata-daemon-ip`) remain
 available as escape hatches and take precedence over `spec.networkPolicy`.
 

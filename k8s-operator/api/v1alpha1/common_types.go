@@ -675,9 +675,16 @@ type EgressPeer struct {
 	// whole NetworkPolicy otherwise, which would freeze every other egress rule at
 	// its previous revision. The resolver applies the same test and drops an except
 	// that fails it rather than forwarding it.
+	//
+	// An entry may be a bare host address as well as a block, the same as CIDR above
+	// -- a bare address means a /32 or /128. The prefix is optional here for that
+	// symmetry alone: writing 10.0.1.5 next to a cidr that accepts 10.0.1.5 should
+	// not be an apply-time rejection quoting a 200-character regex. Unlike CIDR
+	// there is no prefix floor, because an except is bounded by having to be a
+	// strict subset of its peer.
 	// +kubebuilder:validation:MaxItems=16
 	// +kubebuilder:validation:items:MaxLength=49
-	// +kubebuilder:validation:items:Pattern=`^((((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])/([0-9]|[12][0-9]|3[0-2]))|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])))$`
+	// +kubebuilder:validation:items:Pattern=`^((((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(/([0-9]|[12][0-9]|3[0-2]))?)|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}(/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8]))?))$`
 	// +optional
 	Except []string `json:"except,omitempty"`
 }
