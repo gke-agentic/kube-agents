@@ -117,9 +117,11 @@ class TagGAReleaseScriptTest(unittest.TestCase):
             )
             self.assertEqual(proc.returncode, 0, proc.stderr)
 
-            # 1. Main branch is untouched (still points to main_commit)
+            # 1. Main branch is untouched (still points to main_commit and HEAD remains on main)
             current_main = git("rev-parse", "main").stdout.strip()
             self.assertEqual(current_main, main_commit)
+            current_branch = git("symbolic-ref", "--short", "HEAD").stdout.strip()
+            self.assertEqual(current_branch, "main")
 
             # 2. Release tag exists and points to stamped commit (different from main)
             tag_commit = git("rev-parse", f"{MOCK_TARGET_RELEASE_TAG}^{{commit}}").stdout.strip()

@@ -313,12 +313,19 @@ create_stamped_release_commit() {
     return 1
   fi
 
+  # Preserve caller's current branch / ref and restore on function return
+  local orig_ref
+  orig_ref="$(git -C "${repo_dir}" symbolic-ref --short -q HEAD 2>/dev/null || git -C "${repo_dir}" rev-parse HEAD 2>/dev/null || echo "")"
+  if [ -n "${orig_ref}" ]; then
+    # shellcheck disable=SC2064
+    trap "git -C '${repo_dir}' checkout '${orig_ref}' >/dev/null 2>&1 || true" RETURN
+  fi
+
   # Idempotency check: if release tag already exists and descends from target_sha, reuse it
   local existing_tag_sha
   if existing_tag_sha="$(git -C "${repo_dir}" rev-parse --verify "refs/tags/${version}^{commit}" 2>/dev/null)"; then
     if [ "${existing_tag_sha}" = "${target_sha}" ] || git -C "${repo_dir}" merge-base --is-ancestor "${target_sha}" "${existing_tag_sha}" 2>/dev/null; then
       echo "ℹ️ Release tag '${version}' already exists on commit ${existing_tag_sha:0:7}. Reusing existing release commit." >&2
-      git -C "${repo_dir}" checkout --detach "${existing_tag_sha}" >/dev/null 2>&1 || true
       echo "${existing_tag_sha}"
       return 0
     fi
