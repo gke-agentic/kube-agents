@@ -85,9 +85,8 @@ IS_RESUMING_RELEASE="false"
 
 # Scenario A: Target version tag already exists in Git
 if TARGET_COMMIT="$(git rev-parse --verify "refs/tags/${TARGET_VERSION}^{commit}" 2>/dev/null)"; then
-  # Verify that target tag commit is directly or ancestrally associated with RC_CANDIDATE_COMMIT
-  if [ "${TARGET_COMMIT}" != "${RC_CANDIDATE_COMMIT}" ] && \
-     ! git merge-base --is-ancestor "${RC_CANDIDATE_COMMIT}" "${TARGET_COMMIT}" 2>/dev/null; then
+  # Verify that target tag commit is directly or strictly derived (single-parent stamp) from RC_CANDIDATE_COMMIT
+  if ! is_valid_stamped_or_direct_release_commit "${RC_CANDIDATE_COMMIT}" "${TARGET_COMMIT}" "${TARGET_VERSION}"; then
     echo "❌ ERROR: Tag '${TARGET_VERSION}' already exists in git repository on a different commit (${TARGET_COMMIT:0:7})!" >&2
     echo "   Cannot re-assign existing release tag to candidate commit ${RC_CANDIDATE_COMMIT:0:7}." >&2
     exit 1

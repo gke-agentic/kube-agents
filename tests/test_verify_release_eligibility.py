@@ -600,6 +600,29 @@ exit {docker_exit}
         finally:
             temp_dir.cleanup()
 
+    def test_tag_collision_on_arbitrary_descendant_commit_fails(self):
+        """Verifies error when target tag exists on a descendant commit that is not a valid single-parent stamp."""
+        temp_dir, repo_dir, git, candidate_sha, bin_dir = self._create_mock_repo()
+        try:
+            # Create 3 subsequent commits on main past candidate_sha
+            for i in range(3):
+                (pathlib.Path(repo_dir) / f"file_{i}.txt").write_text(f"content {i}\n")
+                git("add", f"file_{i}.txt")
+                git("commit", "-m", f"feat: downstream change {i}")
+
+            descendant_sha = git("rev-parse", "HEAD").stdout.strip()
+            git("tag", "-a", MOCK_TARGET_RELEASE_TAG, descendant_sha, "-m", f"Release {MOCK_TARGET_RELEASE_TAG}")
+
+            proc = self._run_verify_script(
+                repo_dir,
+                args=[MOCK_TARGET_RELEASE_TAG, candidate_sha],
+                bin_dir=bin_dir,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn(f"Tag '{MOCK_TARGET_RELEASE_TAG}' already exists in git repository on a different commit", proc.stderr)
+        finally:
+            temp_dir.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()

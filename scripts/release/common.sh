@@ -302,6 +302,52 @@ stamp_baked_release_version() {
   done
 }
 
+# Validates if a release tag commit is either directly the candidate commit
+# or a single-parent stamped child commit derived from the candidate.
+is_valid_stamped_or_direct_release_commit() {
+  local candidate_sha="${1:-}"
+  local tag_commit="${2:-}"
+  local version="${3:-}"
+
+  if [ -z "${candidate_sha}" ] || [ -z "${tag_commit}" ] || [ -z "${version}" ]; then
+    echo "❌ ERROR: candidate_sha, tag_commit, and version are all required for is_valid_stamped_or_direct_release_commit." >&2
+    return 1
+  fi
+
+  # Case 1: Exact match (tag placed directly on candidate)
+  if [ "${candidate_sha}" = "${tag_commit}" ]; then
+    return 0
+  fi
+
+  # Case 2: Direct single-parent stamped child
+  local parent_sha
+  if ! parent_sha="$(git rev-parse --verify "${tag_commit}^1" 2>/dev/null)"; then
+    echo "⚠️ Tag commit ${tag_commit:0:7} has no resolvable parent commit in repository." >&2
+    return 1
+  fi
+
+  # Reject merge commits (must have no second parent)
+  if git rev-parse --verify "${tag_commit}^2" >/dev/null 2>&1; then
+    echo "⚠️ Tag commit ${tag_commit:0:7} is a merge commit; expected single-parent stamped release commit." >&2
+    return 1
+  fi
+
+  if [ "${parent_sha}" != "${candidate_sha}" ]; then
+    echo "⚠️ Tag commit ${tag_commit:0:7} parent (${parent_sha:0:7}) does not match candidate commit (${candidate_sha:0:7})." >&2
+    return 1
+  fi
+
+  local commit_subject
+  commit_subject="$(git log -1 --format=%s "${tag_commit}" 2>/dev/null || echo "")"
+  local expected_subject="chore(release): stamp release version ${version}"
+  if [ "${commit_subject}" != "${expected_subject}" ]; then
+    echo "⚠️ Tag commit ${tag_commit:0:7} subject '${commit_subject}' does not match expected stamped subject '${expected_subject}'." >&2
+    return 1
+  fi
+
+  return 0
+}
+
 # Creates a release commit on detached HEAD with stamped BAKED_RELEASE_VERSION
 create_stamped_release_commit() {
   local version="${1:-}"
@@ -321,11 +367,11 @@ create_stamped_release_commit() {
     trap "git -C '${repo_dir}' checkout '${orig_ref}' >/dev/null 2>&1 || true" RETURN
   fi
 
-  # Idempotency check: if release tag already exists and descends from target_sha, reuse it
+  # Idempotency check: if release tag already exists and is a valid release commit for target_sha, reuse it
   local existing_tag_sha
   if existing_tag_sha="$(git -C "${repo_dir}" rev-parse --verify "refs/tags/${version}^{commit}" 2>/dev/null)"; then
-    if [ "${existing_tag_sha}" = "${target_sha}" ] || git -C "${repo_dir}" merge-base --is-ancestor "${target_sha}" "${existing_tag_sha}" 2>/dev/null; then
-      echo "ℹ️ Release tag '${version}' already exists on commit ${existing_tag_sha:0:7}. Reusing existing release commit." >&2
+    if is_valid_stamped_or_direct_release_commit "${target_sha}" "${existing_tag_sha}" "${version}"; then
+      echo "ℹ️ Release tag '${version}' already exists on valid release commit ${existing_tag_sha:0:7}. Reusing existing release commit." >&2
       echo "${existing_tag_sha}"
       return 0
     fi
