@@ -22,9 +22,12 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	agentv1alpha1 "github.com/gke-labs/kube-agents/k8s-operator/api/v1alpha1"
 )
@@ -111,6 +114,85 @@ func TestResolveNetpolProfile(t *testing.T) {
 		}
 		if profile.DNSSource != netpolSourceDiscovered {
 			t.Errorf("got DNSSource %q, want %q", profile.DNSSource, netpolSourceDiscovered)
+		}
+	})
+
+	// The three subtests below hold the anti-flap arm of the discovery rung: a Get that
+	// fails with anything other than NotFound must not drop the agent back to
+	// defaultDNSClusterIP. On a cluster whose kube-dns sits outside the classic Service
+	// CIDR -- 34.118.224.10 on GKE -- that fallback rewrites rule 1 with the wrong peer
+	// and takes DNS out from under the agent until the next successful reconcile, which
+	// is the outage the branch exists to prevent.
+	t.Run("DiscoveryTransientError_PreservesDiscoveredStatus", func(t *testing.T) {
+		t.Parallel()
+		scheme := setupScheme()
+		client := fake.NewClientBuilder().WithScheme(scheme).
+			WithInterceptorFuncs(kubeDNSGetFails()).Build()
+		r := &PlatformAgentReconciler{Client: client, Scheme: scheme}
+		agent := &agentv1alpha1.PlatformAgent{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
+			Status: agentv1alpha1.AgentStatus{
+				NetworkPolicy: agentv1alpha1.NetworkPolicyStatus{
+					DNSClusterIPs:       []string{"34.118.224.10", "2001:db8::10"},
+					DNSClusterIPsSource: netpolSourceDiscovered,
+				},
+			},
+		}
+
+		profile := r.resolveNetpolProfile(context.Background(), agent)
+		wantIPs := []string{"2001:db8::10", "34.118.224.10"} // deduplicateAndSortIPs sorts
+		if !reflect.DeepEqual(profile.DNSClusterIPs, wantIPs) {
+			t.Errorf("got DNSClusterIPs %v, want the previously discovered %v", profile.DNSClusterIPs, wantIPs)
+		}
+		if profile.DNSSource != netpolSourceDiscovered {
+			t.Errorf("got DNSSource %q, want %q", profile.DNSSource, netpolSourceDiscovered)
+		}
+	})
+
+	t.Run("DiscoveryTransientError_NoPriorStatusFallsBackToDefault", func(t *testing.T) {
+		t.Parallel()
+		scheme := setupScheme()
+		client := fake.NewClientBuilder().WithScheme(scheme).
+			WithInterceptorFuncs(kubeDNSGetFails()).Build()
+		r := &PlatformAgentReconciler{Client: client, Scheme: scheme}
+		agent := &agentv1alpha1.PlatformAgent{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
+		}
+
+		profile := r.resolveNetpolProfile(context.Background(), agent)
+		if !reflect.DeepEqual(profile.DNSClusterIPs, []string{defaultDNSClusterIP}) {
+			t.Errorf("got DNSClusterIPs %v, want [%s]", profile.DNSClusterIPs, defaultDNSClusterIP)
+		}
+		if profile.DNSSource != netpolSourceDefault {
+			t.Errorf("got DNSSource %q, want %q", profile.DNSSource, netpolSourceDefault)
+		}
+	})
+
+	// The preserved status has to have come from discovery. A status left over from a
+	// Spec pin that has since been removed says nothing about what kube-dns is, and
+	// carrying it forward would report Discovered for an IP nothing discovered.
+	t.Run("DiscoveryTransientError_IgnoresNonDiscoveredStatus", func(t *testing.T) {
+		t.Parallel()
+		scheme := setupScheme()
+		client := fake.NewClientBuilder().WithScheme(scheme).
+			WithInterceptorFuncs(kubeDNSGetFails()).Build()
+		r := &PlatformAgentReconciler{Client: client, Scheme: scheme}
+		agent := &agentv1alpha1.PlatformAgent{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
+			Status: agentv1alpha1.AgentStatus{
+				NetworkPolicy: agentv1alpha1.NetworkPolicyStatus{
+					DNSClusterIPs:       []string{"10.100.0.10"},
+					DNSClusterIPsSource: netpolSourceSpec,
+				},
+			},
+		}
+
+		profile := r.resolveNetpolProfile(context.Background(), agent)
+		if !reflect.DeepEqual(profile.DNSClusterIPs, []string{defaultDNSClusterIP}) {
+			t.Errorf("got DNSClusterIPs %v, want [%s]", profile.DNSClusterIPs, defaultDNSClusterIP)
+		}
+		if profile.DNSSource != netpolSourceDefault {
+			t.Errorf("got DNSSource %q, want %q", profile.DNSSource, netpolSourceDefault)
 		}
 	})
 
@@ -502,4 +584,19 @@ func TestResolveNetpolProfile(t *testing.T) {
 			t.Errorf("got MetadataDaemonIP %q, want fallback to default %q", profile.MetadataDaemonIP, metadataDaemonIP)
 		}
 	})
+}
+
+// kubeDNSGetFails makes the kube-system/kube-dns read return ServiceUnavailable -- a
+// transient API error rather than a NotFound, which is the distinction the discovery
+// rung branches on. Every other Get is passed through so the helper stays usable if
+// resolveNetpolProfile grows a second read.
+func kubeDNSGetFails() interceptor.Funcs {
+	return interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if key.Namespace == "kube-system" && key.Name == "kube-dns" {
+				return apierrors.NewServiceUnavailable("apiserver is shutting down")
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	}
 }

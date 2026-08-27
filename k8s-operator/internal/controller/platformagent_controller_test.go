@@ -1091,6 +1091,31 @@ func TestBuildNetworkPolicy_ClusterDNS(t *testing.T) {
 	if !foundFallback {
 		t.Errorf("expected fallback 10.96.0.10/32 for invalid DNS clusterIP")
 	}
+
+	// 4. Dual-stack: both ClusterIPs reach the port-53 rule.
+	// TestResolveNetpolProfile/DiscoveryKubeDNS_DualStack proves the resolver returns
+	// two addresses; without this case nothing checked that both survive into the
+	// policy, so a read of dnsIPs[0] would leave a dual-stack cluster with IPv4-only
+	// DNS egress and a green suite.
+	netpolDualStack := buildNetworkPolicy(agent, nil, netpolProfile{DNSClusterIPs: []string{"10.96.0.10", "2001:db8::10"}, MetadataDaemonIP: metadataDaemonIP}, false, "", false)
+	dnsRuleDualStack := findDNSEgressRule(netpolDualStack)
+	if dnsRuleDualStack == nil {
+		t.Fatalf("DNS egress rule (port 53) not found in netpolDualStack")
+	}
+	wantDualStack := map[string]bool{"10.96.0.10/32": false, "2001:db8::10/128": false}
+	for _, peer := range dnsRuleDualStack.To {
+		if peer.IPBlock == nil {
+			continue
+		}
+		if _, ok := wantDualStack[peer.IPBlock.CIDR]; ok {
+			wantDualStack[peer.IPBlock.CIDR] = true
+		}
+	}
+	for cidr, found := range wantDualStack {
+		if !found {
+			t.Errorf("expected %s in DNS egress peers for a dual-stack kube-dns", cidr)
+		}
+	}
 }
 
 // The two branches buildNetworkPolicy grew for spec.networkPolicy, tested where
@@ -3477,6 +3502,31 @@ func TestClearForeignPDBBudgetField_LeavesAgreeingBudgetAlone(t *testing.T) {
 	}
 }
 
+// fqdnNetworkPolicyObject builds the unstructured FQDNNetworkPolicy the operator owns
+// for an agent. The GVK is not in the scheme -- the CRD is GKE Dataplane V2's -- which is
+// the reason the disabled path reads it as unstructured and why it is worth covering
+// separately from the typed NetworkPolicy beside it.
+func fqdnNetworkPolicyObject(namespace, name string, owner *agentv1alpha1.PlatformAgent) *unstructured.Unstructured {
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "networking.gke.io",
+		Version: "v1alpha1",
+		Kind:    "FQDNNetworkPolicy",
+	})
+	u.SetNamespace(namespace)
+	u.SetName(name)
+	if owner != nil {
+		u.SetOwnerReferences([]metav1.OwnerReference{{
+			APIVersion: "kubeagents.x-k8s.io/v1alpha1",
+			Kind:       "PlatformAgent",
+			Name:       owner.Name,
+			UID:        owner.UID,
+			Controller: ptr.To(true),
+		}})
+	}
+	return u
+}
+
 func TestReconcileNetworkPolicy_Disabled_DeletesOwnedOnly(t *testing.T) {
 	scheme := setupScheme()
 	ctx := context.Background()
@@ -3519,6 +3569,14 @@ func TestReconcileNetworkPolicy_Disabled_DeletesOwnedOnly(t *testing.T) {
 		WithInterceptorFuncs(fakeServerSideApplyInterceptors()).
 		Build()
 
+	// Created through the client rather than seeded with WithObjects: the
+	// FQDNNetworkPolicy GVK is not in the scheme, and Create is the path that
+	// registers it, the same one the reconciler takes on the enabled path.
+	ownedFQDN := fqdnNetworkPolicyObject("test-ns", "test-agent-fqdn-netpol", agent)
+	if err := cl.Create(ctx, ownedFQDN); err != nil {
+		t.Fatalf("failed to seed owned FQDNNetworkPolicy: %v", err)
+	}
+
 	r := &PlatformAgentReconciler{
 		Client:    cl,
 		APIReader: cl,
@@ -3540,7 +3598,17 @@ func TestReconcileNetworkPolicy_Disabled_DeletesOwnedOnly(t *testing.T) {
 		t.Errorf("expected owned NetworkPolicy to be deleted, got err=%v", err)
 	}
 
-	// 2. Non-owned NetworkPolicy with same name (should NOT be deleted)
+	// 2. Owned FQDNNetworkPolicy (should be deleted). The docs promise enabled:false
+	// removes both policies the operator owns; without this the FQDN half could stop
+	// matching its owner reference and keep domain filtering on for an agent whose
+	// policy management was switched off, with the suite green.
+	checkFQDN := fqdnNetworkPolicyObject("test-ns", "test-agent-fqdn-netpol", nil)
+	err = cl.Get(ctx, types.NamespacedName{Name: ownedFQDN.GetName(), Namespace: ownedFQDN.GetNamespace()}, checkFQDN)
+	if !errors.IsNotFound(err) {
+		t.Errorf("expected owned FQDNNetworkPolicy to be deleted, got err=%v", err)
+	}
+
+	// 3. Non-owned NetworkPolicy with same name (should NOT be deleted)
 	foreignNetpol := &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-agent-gateway-netpol",
@@ -3552,6 +3620,11 @@ func TestReconcileNetworkPolicy_Disabled_DeletesOwnedOnly(t *testing.T) {
 		WithObjects(agent, foreignNetpol).
 		WithInterceptorFuncs(fakeServerSideApplyInterceptors()).
 		Build()
+
+	foreignFQDN := fqdnNetworkPolicyObject("test-ns", "test-agent-fqdn-netpol", nil)
+	if err := clForeign.Create(ctx, foreignFQDN); err != nil {
+		t.Fatalf("failed to seed foreign FQDNNetworkPolicy: %v", err)
+	}
 
 	rForeign := &PlatformAgentReconciler{
 		Client:    clForeign,
@@ -3566,6 +3639,13 @@ func TestReconcileNetworkPolicy_Disabled_DeletesOwnedOnly(t *testing.T) {
 	err = clForeign.Get(ctx, types.NamespacedName{Name: foreignNetpol.Name, Namespace: foreignNetpol.Namespace}, checkNetpol)
 	if err != nil {
 		t.Errorf("expected unowned/foreign NetworkPolicy to be preserved, got err=%v", err)
+	}
+
+	// 4. Non-owned FQDNNetworkPolicy with the same name (should NOT be deleted).
+	checkForeignFQDN := fqdnNetworkPolicyObject("test-ns", "test-agent-fqdn-netpol", nil)
+	err = clForeign.Get(ctx, types.NamespacedName{Name: foreignFQDN.GetName(), Namespace: foreignFQDN.GetNamespace()}, checkForeignFQDN)
+	if err != nil {
+		t.Errorf("expected unowned/foreign FQDNNetworkPolicy to be preserved, got err=%v", err)
 	}
 }
 
