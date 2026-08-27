@@ -3941,8 +3941,9 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, p
 		apiPeers = formatCIDRPeers([]string{"10.96.0.1"}, true)
 	}
 
-	// The link-local address a workload actually connects to. Every datapath rewrites
-	// it before the policy is evaluated, so it only ever matches on the pre-DNAT ports.
+	// The link-local address a workload actually connects to. Dataplane V2 (eBPF)
+	// evaluates policy pre-NAT, so this peer matches there on the pre-DNAT ports;
+	// Dataplane V1 DNATs first, so its token fetches are matched by rule 3 instead.
 	linkLocalPeers := formatCIDRPeers([]string{metadataLinkLocalIP}, true)
 
 	// Everything the rewritten packet can be addressed to, all of it on port 988:

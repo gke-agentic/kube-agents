@@ -62,7 +62,7 @@ const (
 	// Identity tokens. It is only ever the pre-DNAT destination.
 	metadataLinkLocalIP = "169.254.169.254"
 	// metadataDaemonIP is where GKE's node-local metadata daemon actually listens, on
-	// TCP 988. On the iptables datapath (Dataplane V1) the node rewrites
+	// TCP 988. On the iptables datapath (Dataplane V1) the node DNATs
 	// 169.254.169.254:80 to 169.254.169.252:988 in nat PREROUTING — before NetworkPolicy
 	// is evaluated — so a policy that permits only the link-local address drops every
 	// token fetch. Dataplane V2 (eBPF) evaluates policy pre-NAT at the socket layer,
