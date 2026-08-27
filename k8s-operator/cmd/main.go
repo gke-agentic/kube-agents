@@ -105,8 +105,16 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	// Development: false selects the production encoder (structured JSON on stdout,
+	// real per-record levels) rather than the development console encoder (plain
+	// text on stderr). GKE's logging agent infers Cloud Logging severity from which
+	// stream a container writes to when the payload isn't structured JSON, so every
+	// console-format line this logger wrote to stderr -- INFO reconcile progress
+	// included -- was being stamped ERROR, regardless of its real level. --zap-devel
+	// still overrides this via opts.BindFlags for anyone running the manager
+	// interactively who wants the human-readable console format back.
 	opts := zap.Options{
-		Development: true,
+		Development: false,
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
