@@ -221,21 +221,44 @@ echo "✓ Cluster authentication finished in $((SECONDS - STEP_START))s"
 # the project: failing the checks that needed that cluster rather than the job,
 # and never silently reading platform-agent-host instead.
 #
-# It runs on every presubmit even though every task that consumes it is still
-# commented out of TASKS below, and that is deliberate rather than an oversight.
-# The six fleet tasks cannot be switched on until this step is known to work in
-# whichever project Boskos leases, and the only way to know that is to run it:
-# its per-project warnings ("carries no clusters labelled environment=seeded")
-# are the signal that a pool project still needs bench/tf/fleet applied, and
-# they are wanted BEFORE those tasks start gating PRs, not after. It costs one
-# clusters.list, one get-credentials per seeded cluster, and one namespace read
-# per probe -- seconds, against a job measured in tens of minutes.
+# It ran on every presubmit for weeks while every task that consumes it was
+# still commented out of TASKS below, and that was the point: the warnings it
+# prints per project ("carries no clusters labelled environment=seeded") are
+# how a pool project still needing bench/tf/fleet applied was found BEFORE
+# these tasks started gating PRs rather than after. Eight of the active
+# tasks below read the seeded fleet (six domain probes, the fleet-audits
+# canary and cluster-agent-crashloop-debug), so those warnings have
+# consumers. It costs one clusters.list, one
+# get-credentials per seeded cluster, and one namespace read per probe --
+# seconds, against a job measured in tens of minutes.
 #
 # The `||` catches a REPOSITORY bug only: a missing or malformed
 # bench/tf/fleet/fixtures.json, or an unusable output directory. Every
 # environmental failure -- no fleet in this project, a cluster that will not
 # answer, a fixture that was never planted -- returns 0 with a warning of its
 # own and leaves the affected roles' files absent, which is the whole design.
+
+# The read-only identity the role kubeconfigs should carry. It cannot be a
+# static export in the Prow job the way EVAL_GITHUB_APP_ID is: the account is
+# per project (`seeded-fleet-reader@<project>.iam.gserviceaccount.com`,
+# bench/tf/fleet/main.tf:123) and Boskos picks the project at lease time, so
+# this is the first point in the run that knows which one to name. An
+# explicitly-set value still wins, for a laptop pointing at a fleet it does not
+# own.
+#
+# Only half of this is in the repository. The other half is the token-creator
+# grant -- `fleet_reader_token_creators` in bench/tf/fleet/variables.tf, empty
+# by default -- which is a per-project `tofu apply` a human has to do, naming
+# that project's Prow runner identity. Until it is done in a leased project,
+# `gcloud auth print-access-token --impersonate-service-account` fails,
+# fleet-kubeconfigs.sh warns per cluster, and the role kubeconfigs keep the
+# runner's own read-write credential. That is a privilege gap on a fleet every
+# open PR shares, not a functional one: the files are still written, still
+# point at the right seeded cluster, and every check still grades the right
+# object. See bench/tf/fleet/README.md, "A read-only credential for
+# evaluations".
+export FLEET_READONLY_SA="${FLEET_READONLY_SA:-seeded-fleet-reader@${PROJECT_ID}.iam.gserviceaccount.com}"
+
 profile_begin "fleet-kubeconfigs: seeded-fleet credentials"
 STEP_START=$SECONDS
 # shellcheck source=hack/fleet-kubeconfigs.sh
@@ -425,103 +448,134 @@ fi
 # Paths are relative to BENCH_DIR, which is where devops-bench runs. Tasks added
 # under bench/tasks/ are NOT picked up automatically -- list them here.
 BENCH_DIR="${SCRIPT_DIR}/../bench"
-# agent-kanban-smoke is deployer: noop, so it adds seconds, not a cluster.
+# agent-kanban-smoke is deployer: noop, so it adds a delegation round trip
+# (~100-300s), not a cluster.
 TASKS=(
-  "./tasks/gpu-stress-test-diagnosis/task.yaml"
-  "./tasks/agent-kanban-smoke/task.yaml"
-  # The ten domain scenarios. ONE is active -- cluster-agent-crashloop-debug,
-  # immediately below -- and nine are registered here commented out.
-  # Uncommenting is the LAST step of activation, not the only one:
-  # bench/tasks/DRAFTS.md carries an activation-blockers section and a
-  # per-scenario status column, and every commented entry is blocked on at
-  # least one of them today. The task-registration lint counts a commented
-  # entry as registered; the domain-coverage lint counts only an uncommented
-  # one, so activating a scenario also deletes its domain from the allowlist
-  # in docs/designs/domains.yaml.
+  # SEVEN DOMAINS THROUGH PROBES, THE AUDIT MACHINERY THROUGH ONE CANARY.
+  # The 2026-08-26 smoke run (build 2092638061140643840, kube-agents-evals-3)
+  # measured what six full audits cost: obtainability-planted-pdb PASSED in
+  # 962s and compliance-rbac-overgrant in 606s, the three that failed did so
+  # on agent-endpoint HTTP 502s (transport, not scenario bugs), and the job's
+  # 85-minute deadline expired before rca-remediation-pr ever ran. Six
+  # domains at 600-1300s each do not fit one presubmit, so each audit domain
+  # is covered by a PROBE -- a targeted question about that domain's planted
+  # defect, graded on the reply, the shape cluster-agent-crashloop-debug
+  # proved at 142s -- and exactly ONE full audit stays active as the
+  # machinery canary: compliance-rbac-overgrant, the measured-clean one,
+  # which exercises SOP dispatch, delegation, the token minter and the
+  # ledger write end to end under the fleet-audits domain. Budget: canary
+  # 606s + six probes at ~150-350s + crashloop 142s + the two incumbents,
+  # against the deadline the 2026-08-26 run blew with full audits.
   #
-  # cluster-agent-crashloop-debug went first because it was blocked on A5 and
-  # nothing else -- no GitHub write, so no A1 and no A4 -- and because it
+  # The six probes sit ahead of the rest on purpose. The loop below is
+  # sequential (one task at a time, no BENCH_PARALLEL), so the Prow deadline
+  # truncates the TAIL of this list; none of the probes has ever executed, so
+  # their cost is unmeasured and their signal is what this change exists to
+  # produce. Ordering the unmeasured work first means a timeout loses a
+  # measured repeat, not the new signal.
+  "./tasks/reliability-pdb-probe/task.yaml"
+  "./tasks/capacity-pinned-pool-probe/task.yaml"
+  "./tasks/security-overgrant-probe/task.yaml"
+  "./tasks/upgrades-lagging-master-probe/task.yaml"
+  "./tasks/consistency-authorized-networks-probe/task.yaml"
+  "./tasks/cost-idle-pool-probe/task.yaml"
+  # The audit-machinery canary: measured 606s clean on 2026-08-26, every
+  # exact check green -- the only task that has proven the A1/A4 path
+  # (minted token, cloned *-infra workspace, published ledger issue) in a
+  # real presubmit.
+  "./tasks/compliance-rbac-overgrant/task.yaml"
+  # Activated by #939, the first Phase 2 domain scenario to run. It was blocked
+  # on A5 and nothing else -- no GitHub write, so no A1 and no A4 -- and it
   # exercises the whole of step 2b end to end: label discovery, slot-to-role
   # resolution, the .confirmed probe, and fleet_resource_property binding the
-  # role to a kubeconfig. Proving that chain in a real Prow run against a
-  # randomly leased project, before six ledger-writing scenarios are stacked
-  # on it, is worth one round trip.
+  # role to a kubeconfig. It is the cheapest task in this array (142s on the
+  # 2026-08-25 run) and it proves the chain the probes above stand on.
   "./tasks/cluster-agent-crashloop-debug/task.yaml"
+  "./tasks/gpu-stress-test-diagnosis/task.yaml"
+  "./tasks/agent-kanban-smoke/task.yaml"
+  # Eight registered scenarios stay commented out. The task-registration lint
+  # counts a commented entry as registered, so a line here is a promise the
+  # scenario exists, not that it runs; the domain-coverage lint counts only
+  # an UNCOMMENTED one, so activating a scenario also deletes its domain from
+  # the allowlist in docs/designs/domains.yaml. bench/tasks/DRAFTS.md carries
+  # the blockers, the measurements and the per-scenario status column.
   #
-  # The nine still off, and the blockers holding them, summarised so a reader
-  # here does not have to guess:
-  #   A1  the six audit scenarios and rca-remediation-pr are NOT read-only --
-  #       every fleet-audit stream mints a GitHub token and writes a ledger
-  #       issue. ci-deploy.sh installs the PR's agent on every run but never
-  #       sets platformAgent.integration.github.gitRepo, so SETTINGS.md
-  #       renders `- **Git Repo:** None` (buildSettingsConfigMap substitutes
-  #       the literal when the field is empty) and audit_report.py start has
-  #       nothing to clone. Needs that value passed per leased project (the
-  #       throwaway eval GitOps repos) and the minter scoped to it -- the
-  #       token has exactly one source and no inherited GITHUB_TOKEN is
-  #       honoured, so the value alone only moves the failure to the clone.
-  #       Both repository halves are on main, and the Prow job has exported
-  #       EVAL_GITHUB_APP_ID pool-wide since 2026-08-25
-  #       (GoogleCloudPlatform/oss-test-infra#2661, merged).
-  #   A3  fleet-cost-idle-pool is date-gated by the SOP's own age rules.
-  #       Boskos leases at random, so the gate is the NEWEST fleet in the
-  #       pool, and onboarding a project plants one -- so REGISTERING a
-  #       freshly-provisioned project moves the gate out. Today the newest
-  #       leasable fleet is kube-agents-evals-3's, planted 2026-08-24:
-  #       2026-08-31 for the pool and 2026-09-23 for the disks.
-  #       kube-agents-evals-4, -5 and -6 were provisioned 2026-08-25/26 and
-  #       are not registered yet; registering them moves the gate to
-  #       2026-09-02 and 2026-09-25. A replant in any pool project moves
-  #       them again.
-  #   A4  cleared in the code, open on one credential. The six audit
-  #       scenarios' objectives no longer read the final message (which the
-  #       SOPs keep to one line); they use ledger_issue_contains, which reads
-  #       the GitHub ledger issue the run published and proves it is THIS
-  #       run's by the generated-at stamp audit_report.py renders into it.
-  #       That verifier needs BENCH_GITHUB_TOKEN (or GITHUB_TOKEN) with
-  #       issues:read on the eval GitOps repos. The secret now exists
-  #       (kube-agents-bench-github-token, namespace test-pods); mounting it
-  #       was the same oss-test-infra#2661, now merged. What is unconfirmed
-  #       is the token's scope -- these checks need issues:read on the eval
-  #       GitOps repos, and until that is verified they may still return
-  #       status=error, which drops VerificationCoverage below the gate's
-  #       1.0 floor by design.
-  #   A5  CLEARED, and that is what the active entry above rests on. Step 2b
-  #       writes one kubeconfig per seeded-fleet fixture ROLE, and the six
-  #       fleet safeguards use `fleet_resource_property` with a
-  #       `fixture_role:` instead of reading the ambient kubeconfig (which
-  #       is platform-agent-host and carries no seeded namespace). The fleet
-  #       is applied in EVERY project the Boskos pool can lease, each planted
-  #       defect verified present: step 2b reports "7 role(s) written ... 0
-  #       whose fixtures were not present" against every leasable project,
-  #       re-measured 2026-08-25. The five other fleet scenarios were never held by A5
-  #       alone -- each also carries A1, A3 or A4 -- so they stay commented
-  #       out on those, and DRAFTS.md's status column no longer names A5 at
-  #       all. One residual, which is hardening rather than a gate: with
-  #       FLEET_READONLY_SA unset the role kubeconfigs carry the runner's own
-  #       identity, which can write to the shared fleet
-  #       (roles/container.admin via the GKE IAM webhook, nothing to narrow
-  #       in-cluster). The checks read correctly either way; the safeguard
-  #       above is in fact what would DETECT such a write.
-  #       bench/tf/fleet/README.md, "A read-only credential for
-  #       evaluations", has the closing steps.
-  #
-  # Two entries are not activatable by uncommenting at all:
-  #   autoops-warning-event-triage -- its prompt is a meta-note and nothing
-  #     applies its incident workload; it needs a scenario driver, which
-  #     arrives with the AutoOps seam work.
-  #   chat-routing-fleet-question (A2) -- AGENT_SERVICE_NAME above is a single
-  #     global target, so every task here reaches the platform agent. This one
-  #     needs the chat front door, and would fail its delegation objective on
-  #     a correct system until the harness can target an agent per task.
-  # "./tasks/chat-routing-fleet-question/task.yaml"
-  # "./tasks/obtainability-planted-pdb/task.yaml"
+  # Five moved DOWN here on 2026-08-26, each with its one-line reason:
+  #   -- obtainability-planted-pdb, stockout-pinned-pool,
+  #      upgrade-readiness-lagging-cluster, consistency-drift-outlier:
+  #      full-audit shape recast to the nightly tier (600-1300s each, measured
+  #      or transport-failed on 2026-08-26); each domain is now covered by a
+  #      probe above. They remain spec-ready and activation is uncommenting.
+  #   -- rca-remediation-pr: parked until it gets one clean measured run; the
+  #      2026-08-26 run hit the job deadline before reaching it, so its cost
+  #      and signal are still unknown.  # "./tasks/obtainability-planted-pdb/task.yaml"
   # "./tasks/stockout-pinned-pool/task.yaml"
-  # "./tasks/fleet-cost-idle-pool/task.yaml"
-  # "./tasks/compliance-rbac-overgrant/task.yaml"
   # "./tasks/upgrade-readiness-lagging-cluster/task.yaml"
   # "./tasks/consistency-drift-outlier/task.yaml"
   # "./tasks/rca-remediation-pr/task.yaml"
+  #
+  # A1 and A4 are CLOSED, and the canary above is what has EXERCISED them.
+  # Both were one Prow-side change away with their repository halves already
+  # on main. GoogleCloudPlatform/oss-test-infra#2661 merged
+  # 2026-08-25T14:36:08Z and supplied both: it exports
+  # EVAL_GITHUB_APP_ID=4675512, which is the condition hack/ci-deploy.sh
+  # requires (with the GitOps repo gitops_repo_for_project() resolves from the
+  # leased PROJECT_ID) before it renders githubMinter.enabled=true and passes
+  # platformAgent.integration.github.gitRepo -- so `Git Repo:` in the rendered
+  # SETTINGS.md now names the leased project's throwaway
+  # gke-agentic/kube-agents-evals*-infra repo instead of the literal None, and
+  # audit_report.py start has a workspace to clone and a minter to clone it
+  # with (A1). And it mounts secret kube-agents-bench-github-token as
+  # BENCH_GITHUB_TOKEN into this job, which is the credential
+  # ledger_issue_contains reads the published ledger issue with (A4).
+  # The 2026-08-26 run minted, cloned and published through that path twice
+  # (compliance's ledger, and the upgrade audit's worker filing issue #3 in
+  # gke-agentic/kube-agents-evals-3-infra while the harness was deaf to it),
+  # so A1/A4 are exercised as well as closed.
+  #
+  # A5 is CLEARED, and that is what every fleet entry above rests on. Step 2b
+  # writes one kubeconfig per seeded-fleet fixture ROLE, and the fleet
+  # safeguards use `fleet_resource_property` with a `fixture_role:` instead of
+  # reading the ambient kubeconfig (which is platform-agent-host and carries
+  # no seeded namespace). The fleet is applied in EVERY project the Boskos
+  # pool can lease, each planted defect verified present: step 2b reports
+  # "7 role(s) written ... 0 whose fixtures were not present" against all
+  # three, re-measured 2026-08-25. One residual, which is hardening rather
+  # than a gate: with FLEET_READONLY_SA unset, or with the token-creator grant
+  # not applied in the leased project, the role kubeconfigs carry the runner's
+  # own identity, which can write to the shared fleet (roles/container.admin
+  # via the GKE IAM webhook, nothing to narrow in-cluster). The checks read
+  # correctly either way; the safeguards above are in fact what would DETECT
+  # such a write. bench/tf/fleet/README.md, "A read-only credential for
+  # evaluations", has the closing steps.
+  #
+  # Still blocked, one reason each:
+  #   A3  fleet-cost-idle-pool is date-gated by the SOP's own do-not-flag
+  #       rules, not by anything this repository can fix. Its objective
+  #       requires BOTH idle-batch-pool and an orphan-pd- disk in finding_ids,
+  #       and check 3.4's disk filter is the literal creationTimestamp<-P30D.
+  #       Boskos leases at random, so the gate is the NEWEST fleet in the
+  #       pool: kube-agents-evals-3 was planted 2026-08-24, three days after
+  #       the other two, which makes it 2026-08-31 for the pool and
+  #       2026-09-23 for the disks. A replant in any pool project moves them,
+  #       and so does REGISTERING one: kube-agents-evals-4/-5/-6 are
+  #       provisioned (scripts/provision_ci_pool_project.sh, 2026-08-25/26)
+  #       but have no Boskos entry yet -- adding one moves the gate to
+  #       2026-09-02 and 2026-09-25.
+  #       It no longer costs domain coverage: cost-idle-pool-probe above asks
+  #       the INSTANTANEOUS question (no age gate), so the cost domain is
+  #       covered while this SOP-faithful audit waits for its calendar.
+  #   A2  chat-routing-fleet-question. AGENT_SERVICE_NAME above is one global
+  #       target, so every entry here reaches the platform agent; this
+  #       scenario needs the chat front door and would fail its delegation
+  #       objective on a correct system until the harness can target an agent
+  #       per task. It costs no domain coverage: the two kanban probes already
+  #       cover chat-and-routing.
+  #   --  autoops-warning-event-triage is not activatable by uncommenting at
+  #       all. Its prompt is a meta-note and nothing applies its incident
+  #       workload; it needs a scenario driver, tracked as #954.
+  # "./tasks/chat-routing-fleet-question/task.yaml"
+  # "./tasks/fleet-cost-idle-pool/task.yaml"
   # "./tasks/autoops-warning-event-triage/task.yaml"
 )
 

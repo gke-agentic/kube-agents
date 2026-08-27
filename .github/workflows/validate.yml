@@ -141,6 +141,59 @@ jobs:
             exit 1
           fi
 
+          # litellm.rollingUpdate: the both-zero guard has to reject a
+          # Deployment that cannot make progress, and only that. maxSurge and
+          # maxUnavailable are IntOrString, so a percentage is legal on both
+          # and must still render — a guard using Helm's `int` reads "25%" as 0
+          # and refuses a valid install (#749).
+          # "0.0" is here because it is the spelling a list of literal zeroes
+          # misses: `--set x=0.0` reaches the template as the string "0.0".
+          # "abc" is the other side: it must NOT be refused as a zero, because
+          # `float64` reports anything unparseable as 0 and the message would
+          # then name the wrong problem.
+          for pair in "0 0" "0% 0%" "0.0 0.0" "0 0%"; do
+            set -- $pair
+            if helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
+              --set-string litellm.rollingUpdate.maxSurge="$1" \
+              --set-string litellm.rollingUpdate.maxUnavailable="$2" > /dev/null 2>&1; then
+              echo "litellm.rollingUpdate $1/$2 rendered; it cannot make progress" >&2
+              exit 1
+            fi
+          done
+          for pair in "25% 25%" "1 0" "0 1" "abc abc"; do
+            set -- $pair
+            if ! helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
+              --set-string litellm.rollingUpdate.maxSurge="$1" \
+              --set-string litellm.rollingUpdate.maxUnavailable="$2" > /dev/null 2>&1; then
+              echo "litellm.rollingUpdate $1/$2 is valid but was refused" >&2
+              exit 1
+            fi
+          done
+          # A fencepost with no usable value must render the chart default
+          # explicitly, never empty: empty means Kubernetes applies its own 25%
+          # default, which rounds down to 0 at replicaCount 2 and reinstates the
+          # stall with nothing to see in the diff. `--set x=` and `--set x=null`
+          # are different inputs — the first is the empty string, which is a
+          # perfectly good kind and survives a nil test.
+          #
+          # --show-only isolates the LiteLLM Deployment: github-minter.yaml
+          # renders a maxUnavailable at the same indent, so an unanchored count
+          # both false-passes and false-fails depending on what else is on.
+          # `|| true` keeps grep's exit 1 on zero matches from aborting the step
+          # under `bash -e` before the message below can print.
+          for empty_flag in "litellm.rollingUpdate=null" \
+                            "litellm.rollingUpdate.maxUnavailable=null" \
+                            "litellm.rollingUpdate.maxUnavailable=" \
+                            "litellm.rollingUpdate.maxSurge="; do
+            rendered=$(helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
+              --set "$empty_flag" --show-only templates/litellm.yaml \
+              | grep -cE '^      maxUnavailable: 1$' || true)
+            if [ "$rendered" -ne 1 ]; then
+              echo "--set $empty_flag did not render an explicit maxUnavailable: 1" >&2
+              exit 1
+            fi
+          done
+
           # Webhooks: off by default, fully wired when on.
           if helm template test-release charts/kube-agents "${SET_FLAGS[@]}" \
             | grep -qE "WebhookConfiguration|kind: Certificate"; then

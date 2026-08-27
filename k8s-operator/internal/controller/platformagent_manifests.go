@@ -3987,8 +3987,9 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, p
 		apiPeers = formatCIDRPeers([]string{"10.96.0.1"}, true)
 	}
 
-	// The link-local address a workload actually connects to. Every datapath rewrites
-	// it before the policy is evaluated, so it only ever matches on the pre-DNAT ports.
+	// The link-local address a workload actually connects to. Dataplane V2 (eBPF)
+	// evaluates policy pre-NAT, so this peer matches there on the pre-DNAT ports;
+	// Dataplane V1 DNATs first, so its token fetches are matched by rule 3 instead.
 	linkLocalPeers := formatCIDRPeers([]string{metadataLinkLocalIP}, true)
 
 	// Everything the rewritten packet can be addressed to, all of it on port 988:
@@ -4074,19 +4075,32 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, p
 			},
 			To: dnsPeers,
 		},
-		// 2. GCP Metadata Server, link-local address only. Nothing rewrites a request to
-		//    these ports onto another address, so widening this rule would grant the
-		//    sandbox reach it never uses.
+		// 2. GCP Metadata Server (pre-NAT link-local address). Workloads dial 169.254.169.254
+		//    on port 80 for HTTP metadata / OAuth2 token fetches. On Dataplane V2 (eBPF),
+		//    policy evaluates pre-NAT and this rule admits token fetches directly. Port 8080,
+		//    the pre-NAT ALTS handshaker port, is deliberately absent — rule 3 says why.
 		{
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(80))},
-				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(8080))},
 			},
 			To: linkLocalPeers,
 		},
-		// 3. GKE Workload Identity host-network daemon (port 988). This is where a
-		//    metadata request lands after the node DNATs it, so it has to permit every
-		//    rewrite target the datapath can pick.
+		// 3. GKE Workload Identity host-network daemon (port 988). On Dataplane V1 (iptables),
+		//    the node DNATs 169.254.169.254:80 to 169.254.169.252:988 before NetworkPolicy is
+		//    evaluated, so this rule admits the post-DNAT token fetch. On Dataplane V2 (eBPF),
+		//    policy is evaluated pre-NAT at the socket layer and matched by rule 2.
+		//
+		//    Google network policy guidance recommends allowing ports 988/987 (iptables) and
+		//    80/8080 (eBPF). Ports 987 and 8080 (ALTS DirectPath) are deliberately omitted here
+		//    because kube-agents components use standard OAuth2/REST token fetches and no client
+		//    takes the gRPC DirectPath / ALTS route. Omitting both ports enforces least-privilege
+		//    sandbox egress symmetrically across Dataplane V1 and Dataplane V2.
+		//
+		//    That is a deviation from the guidance, which warns that workloads omitting these
+		//    ports "might experience disruptions during auto-upgrades". If a token fetch starts
+		//    failing during a node auto-upgrade, this narrowed allowlist is the first thing to
+		//    check: capture the drop's destination port and reopen 987/8080 here if it is one
+		//    of them.
 		{
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(988))},
