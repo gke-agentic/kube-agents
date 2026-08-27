@@ -400,7 +400,7 @@ default_image_tag() {
   fi
   # 2. Check if local git repo is checked out at an exact SemVer release tag
   local exact_tag=""
-  exact_tag="$(git -C "$repo_dir" describe --tags --exact-match 2>/dev/null || echo "")"
+  exact_tag="$(git -C "$repo_dir" describe --tags --exact-match --match="[0-9]*" 2>/dev/null || echo "")"
   if [[ "$exact_tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
     echo "$exact_tag"
     return 0
@@ -428,7 +428,7 @@ default_image_tag_label() {
 
   if [ -n "${BAKED_RELEASE_VERSION:-}" ] && [ "$tag" = "$BAKED_RELEASE_VERSION" ]; then
     printf 'official release %s' "$tag"
-  elif [ "$tag" = "$(git -C "$repo_dir" describe --tags --exact-match 2>/dev/null || echo "")" ]; then
+  elif [ "$tag" = "$(git -C "$repo_dir" describe --tags --exact-match --match="[0-9]*" 2>/dev/null || echo "")" ]; then
     printf 'release tag %s' "$tag"
   elif [[ "$(basename "$(cd "$repo_dir" 2>/dev/null && pwd || echo "$repo_dir")")" =~ ^kube-agents-${tag}$ ]]; then
     printf 'release archive %s' "$tag"

@@ -18,6 +18,7 @@ from tests.testing.common import (
     INVALID_IMMUTABLE_REFS,
     MOCK_GOOGLE_CHAT_MODE,
     VALID_IMMUTABLE_REFS,
+    create_mock_git_repo,
     get_isolated_test_env,
 )
 
@@ -412,6 +413,28 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
             len(proc.stdout.strip()) == 40 or len(proc.stdout.strip()) > 0,
             f"Expected valid SHA or tag, got: {proc.stdout.strip()}",
         )
+
+    def test_default_image_tag_resolves_semver_when_multiple_tags_present(self):
+        """Verifies default_image_tag prefers numeric SemVer tag over rc_*_validated tags on the same commit."""
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            # Add installer_common.sh so repo is recognized as kube-agents
+            scripts_dir = pathlib.Path(repo_dir) / "k8s-operator" / "scripts"
+            scripts_dir.mkdir(parents=True, exist_ok=True)
+            (scripts_dir / "installer_common.sh").write_text("# mock installer_common.sh\n")
+            git("add", "k8s-operator/scripts/installer_common.sh")
+            git("commit", "-m", "chore: add installer_common.sh")
+
+            # Apply both an rc_* tag and a 0.2.0 GA tag on the same commit
+            git("tag", "rc_20260827_validated")
+            git("tag", "0.2.0")
+
+            cmd = 'BAKED_RELEASE_VERSION=""; default_image_tag'
+            proc = self._run_install_func(cmd, cwd=repo_dir)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(proc.stdout.strip(), "0.2.0")
+        finally:
+            temp_dir.cleanup()
 
     def test_default_image_tag_extracts_version_from_archive_directory(self):
         """Verifies default_image_tag resolves version from unpacked archive directory name."""
