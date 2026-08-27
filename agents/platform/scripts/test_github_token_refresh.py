@@ -72,11 +72,11 @@ class GitHubTokenRefreshTest(unittest.TestCase):
     @patch("github_token_refresh.urllib.request.urlopen")
     @patch("gitops_workspace.get_managed_github_repos")
     def test_scopes_token_to_all_managed_repos_in_org(
-        self, get_managed_repos, urlopen, run
+        self, get_managed_github_repos, urlopen, run
     ):
         import json
 
-        get_managed_repos.return_value = [
+        get_managed_github_repos.return_value = [
             "owner/repo1",
             "owner/repo2",
             "other-org/repo3",

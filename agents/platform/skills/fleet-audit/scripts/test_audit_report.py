@@ -7605,7 +7605,7 @@ class TestRepoResolution(BaseTestCase):
                 audit_report.resolve_repo(repo="acme/unregistered")
             self.assertIn("not in the managed repositories list", str(caught.exception))
 
-    def test_explicit_repo_raises_when_get_managed_repos_fails(self):
+    def test_explicit_repo_raises_when_get_managed_github_repos_fails(self):
         with patch(
             "gitops_workspace.get_managed_github_repos",
             side_effect=RuntimeError("kubectl failed: Forbidden"),

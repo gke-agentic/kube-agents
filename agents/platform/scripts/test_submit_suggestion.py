@@ -255,7 +255,7 @@ class TestValidateRepo(unittest.TestCase):
         with patch.object(gitops_workspace, "get_managed_github_repos", return_value=[]):
             self.assertEqual(submit_suggestion.validate_repo("acme/any"), "acme/any")
 
-    def test_raises_when_get_managed_repos_fails(self):
+    def test_raises_when_get_managed_github_repos_fails(self):
         with patch.object(
             gitops_workspace,
             "get_managed_github_repos",

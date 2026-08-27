@@ -168,7 +168,7 @@ class _Harness(unittest.TestCase):
             else mock.Mock(return_value=[repo] if repo else [])
         )
         buf = StringIO()
-        with mock.patch("gitops_workspace.get_managed_repos", managed_mock), \
+        with mock.patch("gitops_workspace.get_managed_github_repos", managed_mock), \
              mock.patch.object(forge, "provider_for", return_value=provider), \
              redirect_stdout(buf):
             rc = helper.main(argv)
@@ -223,7 +223,7 @@ class PollTest(_Harness):
 
         provider = MultiRepoFakeProvider()
         managed_mock = mock.Mock(return_value=["acme/repo1", "acme/repo2"])
-        with mock.patch("gitops_workspace.get_managed_repos", managed_mock), \
+        with mock.patch("gitops_workspace.get_managed_github_repos", managed_mock), \
              mock.patch.object(forge, "provider_for", return_value=provider), \
              redirect_stdout(StringIO()) as buf:
             helper.main(["poll"])

@@ -265,11 +265,11 @@ def handle_poll(args) -> int:
     operator-facing glossary covers both halves of the watcher.
     """
     try:
-        from gitops_workspace import get_managed_repos
+        from gitops_workspace import get_managed_github_repos
         if getattr(args, "repo", None):
             repos = [args.repo]
         else:
-            repos = get_managed_repos()
+            repos = get_managed_github_repos()
     except forge.ForgeError as error:
         print(json.dumps({"status": "ERROR", "reason": error.reason, "value": error.value}))
         return 0
