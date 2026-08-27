@@ -83,10 +83,9 @@ def write_settings(tmpdir: str, value: str) -> str:
     return path
 
 
-class TargetRepoTest(unittest.TestCase):
+class ParseRepoTest(unittest.TestCase):
     def _resolve(self, value):
-        with tempfile.TemporaryDirectory() as tmp:
-            return forge.target_repo(write_settings(tmp, value))
+        return forge._parse_repo(value)
 
     def test_bare_shorthand(self):
         self.assertEqual(self._resolve("acme/toolkit"), "acme/toolkit")
@@ -108,18 +107,6 @@ class TargetRepoTest(unittest.TestCase):
 
     def test_git_suffix_is_stripped(self):
         self.assertEqual(self._resolve("acme/toolkit.git"), "acme/toolkit")
-
-    def test_unset_literal_is_absent_not_a_fault(self):
-        self.assertIsNone(self._resolve("none"))
-
-    def test_missing_file_is_absent(self):
-        self.assertIsNone(forge.target_repo("/nonexistent/SETTINGS.md"))
-
-    def test_file_without_a_git_repo_line_is_absent(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, "SETTINGS.md")
-            Path(path).write_text("# Settings\n\nnothing here\n", encoding="utf-8")
-            self.assertIsNone(forge.target_repo(path))
 
     def test_github_com_as_a_path_segment_on_another_host_is_rejected(self):
         """The confused-deputy shape the anchored regex exists for."""
@@ -143,14 +130,6 @@ class TargetRepoTest(unittest.TestCase):
     def test_leading_dash_would_be_parsed_as_a_flag(self):
         with self.assertRaises(forge.RepoUnparseable):
             self._resolve("-oops/repo")
-
-    def test_bold_delimiters_around_the_value_are_stripped(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, "SETTINGS.md")
-            Path(path).write_text(
-                "- **Git Repo:** **acme/toolkit**\n", encoding="utf-8"
-            )
-            self.assertEqual(forge.target_repo(path), "acme/toolkit")
 
 
 
@@ -1072,26 +1051,18 @@ class PermissionUnknownTest(unittest.TestCase):
 
 class ProviderForTest(unittest.TestCase):
     def test_github_host_selects_the_github_provider(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = write_settings(tmp, "https://github.com/acme/toolkit")
-            self.assertIsInstance(forge.provider_for(path), forge.GitHubProvider)
+        self.assertIsInstance(forge.provider_for(repo="https://github.com/acme/toolkit"), forge.GitHubProvider)
 
     def test_bare_shorthand_means_github(self):
         """The operator writes `owner/repo` through verbatim; it is `gh -R`'s own form."""
-        with tempfile.TemporaryDirectory() as tmp:
-            path = write_settings(tmp, "acme/toolkit")
-            self.assertIsInstance(forge.provider_for(path), forge.GitHubProvider)
+        self.assertIsInstance(forge.provider_for(repo="acme/toolkit"), forge.GitHubProvider)
 
-    def test_a_missing_settings_file_still_yields_a_provider(self):
-        self.assertIsInstance(
-            forge.provider_for("/nonexistent/SETTINGS.md"), forge.GitHubProvider
-        )
+    def test_omitted_repo_defaults_to_github_provider(self):
+        self.assertIsInstance(forge.provider_for(), forge.GitHubProvider)
 
     def test_the_run_seam_is_forwarded_to_the_provider(self):
         fake = FakeGh()
-        with tempfile.TemporaryDirectory() as tmp:
-            path = write_settings(tmp, "acme/toolkit")
-            provider = forge.provider_for(path, run=fake)
+        provider = forge.provider_for(repo="acme/toolkit", run=fake)
         self.assertIs(provider._run, fake)
 
 
