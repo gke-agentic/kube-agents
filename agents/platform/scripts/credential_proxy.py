@@ -21,6 +21,7 @@ import shutil
 import socketserver
 import ssl
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -3523,5 +3524,6 @@ if __name__ == "__main__":
     logging.basicConfig(
         level=os.getenv("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        stream=sys.stdout,
     )
     serve(parse_args())
