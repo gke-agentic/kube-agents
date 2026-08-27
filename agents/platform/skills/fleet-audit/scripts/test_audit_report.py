@@ -7562,7 +7562,7 @@ class TestRepoResolution(BaseTestCase):
         fake_cm = CompletedProcess(
             args=["kubectl"],
             returncode=0,
-            stdout='{"data": {"managed_repos": "acme/from-configmap"}}',
+            stdout='{"data": {"managed_repos": "[{\\"type\\": \\"github\\", \\"url\\": \\"https://github.com/acme/from-configmap\\"}]"}}',
             stderr="",
         )
         with patch("subprocess.run", return_value=fake_cm):
@@ -7572,7 +7572,7 @@ class TestRepoResolution(BaseTestCase):
         fake_cm = CompletedProcess(
             args=["kubectl"],
             returncode=0,
-            stdout='{"data": {"managed_repos": "acme/first, acme/second"}}',
+            stdout='{"data": {"managed_repos": "[{\\"type\\": \\"github\\", \\"url\\": \\"https://github.com/acme/first\\"}, {\\"type\\": \\"github\\", \\"url\\": \\"https://github.com/acme/second\\"}]"}}',
             stderr="",
         )
         with patch("subprocess.run", return_value=fake_cm):

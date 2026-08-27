@@ -2411,7 +2411,7 @@ func TestReconcileGitopsStateConfigMap(t *testing.T) {
 	if cm.Data == nil {
 		cm.Data = make(map[string]string)
 	}
-	cm.Data["managed_repos"] = "some-repo"
+	cm.Data["managed_repos"] = `[{"type":"github","url":"some-repo"}]`
 	if err := fakeClient.Update(ctx, &cm); err != nil {
 		t.Fatalf("failed to update ConfigMap: %v", err)
 	}
@@ -2426,7 +2426,7 @@ func TestReconcileGitopsStateConfigMap(t *testing.T) {
 	if err := fakeClient.Get(ctx, cmKey, &verifyCM); err != nil {
 		t.Fatalf("failed to get ConfigMap after second reconcile: %v", err)
 	}
-	if verifyCM.Data["managed_repos"] != "some-repo" {
+	if verifyCM.Data["managed_repos"] != `[{"type":"github","url":"some-repo"}]` {
 		t.Errorf("expected ConfigMap to retain its data, but got %v", verifyCM.Data)
 	}
 
@@ -2446,7 +2446,8 @@ func TestReconcileGitopsStateConfigMap(t *testing.T) {
 	if err := fakeClient.Get(ctx, cmKey, &verifyCM); err != nil {
 		t.Fatalf("failed to get ConfigMap after third reconcile: %v", err)
 	}
-	if verifyCM.Data["managed_repos"] != "some-repo, https://github.com/test-org/new-repo" {
+	expectedMergedJSON := `[{"type":"github","url":"some-repo"},{"type":"github","url":"https://github.com/test-org/new-repo"}]`
+	if verifyCM.Data["managed_repos"] != expectedMergedJSON {
 		t.Errorf("expected ConfigMap to contain merged repos, but got %v", verifyCM.Data["managed_repos"])
 	}
 }
@@ -3644,8 +3645,8 @@ func TestSyncGithubTokenMinterConfigMap(t *testing.T) {
 		t.Errorf("expected unmanaged-static.yaml to be preserved when managed_repos is empty")
 	}
 
-	// 1. Sync with managed_repos: "test-org/repo-1, test-org/repo-2"
-	err = r.syncGithubTokenMinterConfigMap(ctx, agent, "test-org/repo-1, test-org/repo-2")
+	// 1. Sync with managed_repos JSON: repo-1 and repo-2
+	err = r.syncGithubTokenMinterConfigMap(ctx, agent, `[{"type":"github","url":"https://github.com/test-org/repo-1"},{"type":"github","url":"https://github.com/test-org/repo-2"}]`)
 	if err != nil {
 		t.Fatalf("syncGithubTokenMinterConfigMap failed: %v", err)
 	}
@@ -3678,8 +3679,8 @@ func TestSyncGithubTokenMinterConfigMap(t *testing.T) {
 		t.Errorf("expected annotation %q, got %q", expectedAnn, ann)
 	}
 
-	// 2. Remove repo-2 from managed_repos: "test-org/repo-1"
-	err = r.syncGithubTokenMinterConfigMap(ctx, agent, "test-org/repo-1")
+	// 2. Remove repo-2 from managed_repos
+	err = r.syncGithubTokenMinterConfigMap(ctx, agent, `[{"type":"github","url":"https://github.com/test-org/repo-1"}]`)
 	if err != nil {
 		t.Fatalf("syncGithubTokenMinterConfigMap failed: %v", err)
 	}

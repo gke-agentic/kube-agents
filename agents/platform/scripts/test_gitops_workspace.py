@@ -589,7 +589,7 @@ class TestResolveRepo(WorkspaceTestCase):
         fake_cm = CompletedProcess(
             args=["kubectl"],
             returncode=0,
-            stdout='{"data": {"managed_repos": "acme/from-configmap"}}',
+            stdout='{"data": {"managed_repos": "[{\\"type\\": \\"github\\", \\"url\\": \\"https://github.com/acme/from-configmap\\"}]"}}',
             stderr="",
         )
         with patch("subprocess.run", return_value=fake_cm):
@@ -599,7 +599,7 @@ class TestResolveRepo(WorkspaceTestCase):
         fake_cm = CompletedProcess(
             args=["kubectl"],
             returncode=0,
-            stdout='{"data": {"managed_repos": "https://github.com/acme/from-url"}}',
+            stdout='{"data": {"managed_repos": "[{\\"type\\": \\"github\\", \\"url\\": \\"https://github.com/acme/from-url\\"}]"}}',
             stderr="",
         )
         with patch("subprocess.run", return_value=fake_cm):
@@ -623,24 +623,31 @@ class TestResolveRepo(WorkspaceTestCase):
                 "acme/from-remote",
             )
 
-    def test_get_managed_repo_urls_extracts_urls(self):
+    def test_get_managed_repo_entries_parses_structured_json(self):
         fake_cm = CompletedProcess(
             args=["kubectl"],
             returncode=0,
-            stdout='{"data": {"managed_repos": "https://github.com/acme/repo1, https://gitlab.com/acme/repo2"}}',
+            stdout='{"data": {"managed_repos": "[{\\"type\\": \\"github\\", \\"url\\": \\"https://github.com/acme/repo1\\"}, {\\"type\\": \\"gitlab\\", \\"url\\": \\"https://gitlab.com/acme/repo2\\"}]"}}',
             stderr="",
         )
         with patch("subprocess.run", return_value=fake_cm):
             self.assertEqual(
-                gitops_workspace.get_managed_repo_urls(),
-                ["https://github.com/acme/repo1", "https://gitlab.com/acme/repo2"],
+                gitops_workspace.get_managed_repo_entries(),
+                [
+                    {"type": "github", "url": "https://github.com/acme/repo1"},
+                    {"type": "gitlab", "url": "https://gitlab.com/acme/repo2"},
+                ],
+            )
+            self.assertEqual(
+                gitops_workspace.get_managed_github_repos(),
+                ["acme/repo1"],
             )
 
     def test_get_managed_github_repos_filters_github_urls(self):
         fake_cm = CompletedProcess(
             args=["kubectl"],
             returncode=0,
-            stdout='{"data": {"managed_repos": "https://github.com/acme/repo1, https://gitlab.com/acme/repo2"}}',
+            stdout='{"data": {"managed_repos": "[{\\"type\\": \\"github\\", \\"url\\": \\"https://github.com/acme/repo1\\"}, {\\"type\\": \\"gitlab\\", \\"url\\": \\"https://gitlab.com/acme/repo2\\"}]"}}',
             stderr="",
         )
         with patch("subprocess.run", return_value=fake_cm):

@@ -1162,7 +1162,12 @@ func buildGitopsStateConfigMap(agent *agentv1alpha1.PlatformAgent) *corev1.Confi
 		if gitRepo != "" && gitRepo != "None" {
 			if err := agentv1alpha1.ValidateGitRepoURLWithOrg(gitRepo, org); err == nil {
 				if cleanedURL, err := agentv1alpha1.CleanRepoURLWithOrg(gitRepo, org); err == nil {
-					data["managed_repos"] = cleanedURL
+					entries := []agentv1alpha1.ManagedRepoEntry{
+						{Type: "github", URL: cleanedURL},
+					}
+					if jsonBytes, err := json.Marshal(entries); err == nil {
+						data["managed_repos"] = string(jsonBytes)
+					}
 				}
 			} else {
 				manifestsLog.Info("Skipping initial configmap seed due to unparseable or invalid GitRepo", "raw", gitRepo, "error", err)

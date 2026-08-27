@@ -4340,8 +4340,9 @@ func TestBuildGitopsStateConfigMap(t *testing.T) {
 	if cm.Data == nil {
 		t.Errorf("Expected ConfigMap Data to be initialized")
 	}
-	if cm.Data["managed_repos"] != "https://github.com/gke-labs/kube-agents" {
-		t.Errorf("Expected managed_repos to be seeded as 'https://github.com/gke-labs/kube-agents', got %q", cm.Data["managed_repos"])
+	expectedJSON := `[{"type":"github","url":"https://github.com/gke-labs/kube-agents"}]`
+	if cm.Data["managed_repos"] != expectedJSON {
+		t.Errorf("Expected managed_repos to be seeded as %q, got %q", expectedJSON, cm.Data["managed_repos"])
 	}
 }
 

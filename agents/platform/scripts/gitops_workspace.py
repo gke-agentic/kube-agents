@@ -600,8 +600,8 @@ def extract_github_slug(entry: str) -> str | None:
     return None
 
 
-def get_managed_repo_urls() -> list[str]:
-    """Reads the GitOps state ConfigMap and returns raw repository URLs/strings stored under `managed_repos`."""
+def get_managed_repo_entries() -> list[dict[str, str]]:
+    """Reads the GitOps state ConfigMap and returns managed repo objects with 'type' and 'url'."""
     cfg_name = os.environ.get("GITOPS_STATE_CONFIGMAP", os.environ.get("GITHUB_STATE_CONFIGMAP", "platform-agent-gitops-state"))
     ns = os.environ.get("KUBE_DEFAULT_NAMESPACE", "kubeagents-system")
     try:
@@ -632,28 +632,33 @@ def get_managed_repo_urls() -> list[str]:
     if not repos_str:
         return []
     repos_str = repos_str.strip()
-    raw_list: list[str] = []
+    entries: list[dict[str, str]] = []
+
     if repos_str.startswith("["):
         try:
             parsed = json.loads(repos_str)
             if isinstance(parsed, list):
-                raw_list = [str(r).strip() for r in parsed if str(r).strip()]
+                for item in parsed:
+                    if isinstance(item, dict):
+                        url = str(item.get("url", "")).strip()
+                        repo_type = str(item.get("type", "")).strip()
+                        if url and repo_type:
+                            entries.append({"type": repo_type, "url": url})
         except json.JSONDecodeError:
             pass
-    if not raw_list:
-        raw_list = [r.strip() for r in repos_str.split(",") if r.strip()]
 
-    return raw_list
+    return entries
 
 
 def get_managed_github_repos() -> list[str]:
     """Extracts managed GitHub repositories ('owner/name' slugs) from the state ConfigMap."""
-    raw_list = get_managed_repo_urls()
+    entries = get_managed_repo_entries()
     res: list[str] = []
-    for r in raw_list:
-        slug = extract_github_slug(r)
-        if slug and slug not in res:
-            res.append(slug)
+    for e in entries:
+        if e.get("type") == "github":
+            slug = extract_github_slug(e["url"])
+            if slug and slug not in res:
+                res.append(slug)
     return res
 
 

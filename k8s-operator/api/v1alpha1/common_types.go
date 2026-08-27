@@ -824,3 +824,10 @@ func ValidateGitHubOrg(org string) error {
 
 	return nil
 }
+
+// ManagedRepoEntry represents a single managed repository in the gitops-state ConfigMap.
+type ManagedRepoEntry struct {
+	Type string `json:"type"`
+	URL  string `json:"url"`
+}
+

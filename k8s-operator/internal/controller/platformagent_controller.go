@@ -534,31 +534,33 @@ func (r *PlatformAgentReconciler) reconcileSettingsConfigMap(ctx context.Context
 	return hash, nil
 }
 
-func parseManagedRepos(raw string) []string {
+func parseManagedRepoEntries(raw string) []agentv1alpha1.ManagedRepoEntry {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil
 	}
 	if strings.HasPrefix(raw, "[") {
-		var list []string
-		if err := json.Unmarshal([]byte(raw), &list); err == nil {
-			var res []string
-			for _, r := range list {
-				trimmed := strings.TrimSpace(r)
-				if trimmed != "" {
-					res = append(res, trimmed)
+		var entries []agentv1alpha1.ManagedRepoEntry
+		if err := json.Unmarshal([]byte(raw), &entries); err == nil {
+			var res []agentv1alpha1.ManagedRepoEntry
+			for _, e := range entries {
+				u := strings.TrimSpace(e.URL)
+				t := strings.TrimSpace(e.Type)
+				if u != "" && t != "" {
+					res = append(res, agentv1alpha1.ManagedRepoEntry{Type: t, URL: u})
 				}
 			}
 			return res
 		}
 	}
-	parts := strings.Split(raw, ",")
+	return nil
+}
+
+func parseManagedRepos(raw string) []string {
+	entries := parseManagedRepoEntries(raw)
 	var res []string
-	for _, p := range parts {
-		trimmed := strings.TrimSpace(p)
-		if trimmed != "" {
-			res = append(res, trimmed)
-		}
+	for _, e := range entries {
+		res = append(res, e.URL)
 	}
 	return res
 }
@@ -610,17 +612,26 @@ func (r *PlatformAgentReconciler) reconcileGitopsStateConfigMap(ctx context.Cont
 			}
 			return r.syncGithubTokenMinterConfigMap(ctx, agent, cmRepo)
 		}
-		repos := parseManagedRepos(existing)
-		present := false
-		for _, r := range repos {
-			if r == cmRepo {
-				present = true
-				break
+		specEntries := parseManagedRepoEntries(cmRepo)
+		existingEntries := parseManagedRepoEntries(existing)
+		updated := false
+		for _, se := range specEntries {
+			present := false
+			for _, ee := range existingEntries {
+				if ee.URL == se.URL {
+					present = true
+					break
+				}
+			}
+			if !present {
+				existingEntries = append(existingEntries, se)
+				updated = true
 			}
 		}
-		if !present {
-			repos = append(repos, cmRepo)
-			found.Data["managed_repos"] = strings.Join(repos, ", ")
+		if updated {
+			if jsonBytes, err := json.Marshal(existingEntries); err == nil {
+				found.Data["managed_repos"] = string(jsonBytes)
+			}
 			if err := r.Update(ctx, found); err != nil {
 				return err
 			}

@@ -80,7 +80,7 @@ def _fresh_refresh_state():
 
 class GetManagedReposTest(unittest.TestCase):
     def test_extracts_managed_repos_list(self):
-        cm_json = json.dumps({"data": {"managed_repos": "gke-labs/kube-agents, acme/toolkit"}})
+        cm_json = json.dumps({"data": {"managed_repos": '[{"type": "github", "url": "https://github.com/gke-labs/kube-agents"}, {"type": "github", "url": "https://github.com/acme/toolkit"}]'}})
         with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, cm_json, "")):
             self.assertEqual(resolver.get_managed_github_repos(), ["gke-labs/kube-agents", "acme/toolkit"])
 
