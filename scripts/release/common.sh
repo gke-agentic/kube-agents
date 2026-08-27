@@ -297,7 +297,11 @@ stamp_baked_release_version() {
   for script_name in install.sh uninstall.sh upgrade.sh; do
     local script_path="${repo_dir}/${script_name}"
     if [ -f "${script_path}" ]; then
-      sed -i.bak "s/^BAKED_RELEASE_VERSION=\".*\"/BAKED_RELEASE_VERSION=\"${version}\"/" "${script_path}" && rm -f "${script_path}.bak"
+      sed -i.bak -E "s/^BAKED_RELEASE_VERSION=[\"'].*[\"']/BAKED_RELEASE_VERSION=\"${version}\"/" "${script_path}" && rm -f "${script_path}.bak"
+      if ! grep -q "^BAKED_RELEASE_VERSION=\"${version}\"" "${script_path}"; then
+        echo "❌ ERROR: Failed to stamp BAKED_RELEASE_VERSION in ${script_name} (placeholder line '^BAKED_RELEASE_VERSION=...' not found)." >&2
+        return 1
+      fi
     fi
   done
 }
@@ -384,7 +388,10 @@ create_stamped_release_commit() {
   fi
 
   # 2. Stamp BAKED_RELEASE_VERSION in root installer scripts
-  stamp_baked_release_version "${version}" "${repo_dir}"
+  if ! stamp_baked_release_version "${version}" "${repo_dir}"; then
+    echo "❌ ERROR: Failed to stamp baked release version into installer scripts." >&2
+    return 1
+  fi
 
   # 3. If files were modified, create release commit on detached HEAD (does NOT touch main branch)
   local modified_files=()

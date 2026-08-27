@@ -151,6 +151,26 @@ class TagGAReleaseScriptTest(unittest.TestCase):
         finally:
             temp_dir.cleanup()
 
+    def test_fails_loudly_when_installer_lacks_baked_version_placeholder(self):
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            # Create installer script WITHOUT BAKED_RELEASE_VERSION placeholder
+            install_sh = pathlib.Path(repo_dir) / "install.sh"
+            install_sh.write_text('#!/bin/bash\necho "no baked placeholder here"\n')
+            git("add", "install.sh")
+            git("commit", "-m", "feat: legacy installer without placeholder")
+            main_commit = git("rev-parse", "HEAD").stdout.strip()
+
+            proc = self._run_script([MOCK_TARGET_RELEASE_TAG, main_commit], cwd=repo_dir)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Failed to stamp BAKED_RELEASE_VERSION in install.sh", proc.stderr)
+
+            # Ensure no tag was created
+            tag_check = git("tag", "-l", MOCK_TARGET_RELEASE_TAG).stdout.strip()
+            self.assertEqual(tag_check, "")
+        finally:
+            temp_dir.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()
