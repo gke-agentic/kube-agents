@@ -409,9 +409,10 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
         cmd = 'BAKED_RELEASE_VERSION=""; default_image_tag'
         proc = self._run_install_func(cmd)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertTrue(
-            len(proc.stdout.strip()) == 40 or len(proc.stdout.strip()) > 0,
-            f"Expected valid SHA or tag, got: {proc.stdout.strip()}",
+        self.assertRegex(
+            proc.stdout.strip(),
+            r"^([0-9a-f]{40}|[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?)$",
+            f"Expected valid 40-character SHA or SemVer tag, got: {proc.stdout.strip()}",
         )
 
     def test_default_image_tag_resolves_semver_when_multiple_tags_present(self):
