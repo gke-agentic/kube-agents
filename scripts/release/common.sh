@@ -332,7 +332,10 @@ create_stamped_release_commit() {
   fi
 
   # 1. Checkout detached HEAD at candidate commit
-  git -C "${repo_dir}" checkout --detach "${target_sha}" >/dev/null 2>&1 || true
+  if ! git -C "${repo_dir}" checkout --detach "${target_sha}"; then
+    echo "❌ ERROR: Failed to checkout candidate commit '${target_sha}' on detached HEAD." >&2
+    return 1
+  fi
 
   # 2. Stamp BAKED_RELEASE_VERSION in root installer scripts
   stamp_baked_release_version "${version}" "${repo_dir}"

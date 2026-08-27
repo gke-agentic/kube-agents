@@ -133,6 +133,24 @@ class TagGAReleaseScriptTest(unittest.TestCase):
         finally:
             temp_dir.cleanup()
 
+    def test_fails_loudly_if_candidate_commit_unresolvable(self):
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            main_commit = git("rev-parse", "HEAD").stdout.strip()
+            # Pass a nonexistent SHA as candidate commit
+            bad_sha = "0123456789abcdef0123456789abcdef01234567"
+            proc = self._run_script([MOCK_TARGET_RELEASE_TAG, bad_sha], cwd=repo_dir)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Failed to checkout candidate commit", proc.stderr)
+
+            # Ensure main branch is untouched and no tag was created
+            current_main = git("rev-parse", "main").stdout.strip()
+            self.assertEqual(current_main, main_commit)
+            tag_check = git("tag", "-l", MOCK_TARGET_RELEASE_TAG).stdout.strip()
+            self.assertEqual(tag_check, "")
+        finally:
+            temp_dir.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()
