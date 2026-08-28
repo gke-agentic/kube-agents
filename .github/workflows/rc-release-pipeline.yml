@@ -66,7 +66,17 @@ jobs:
     concurrency:
       group: rc-environment
       cancel-in-progress: false
-    timeout-minutes: 30
+    # Roughly 40 of these 60 minutes can be spent before the first test runs,
+    # which is what a fresh Autopilot cluster costs when it has to scale nodes
+    # from zero and pull every image. wait_for_gke_readiness.sh gates litellm at
+    # 420s and the gateway at 900s, and pays each of those twice — once for
+    # `rollout status`, once for the paired `wait --for=condition=Available` —
+    # on top of a 300s image-tag verification loop. The adapter step ahead of it
+    # adds an image build and push plus up to 300s plugin-ready and 180s settle.
+    # At 30 the job timeout would fire first and report a broken deploy rather
+    # than a slow one. Re-derive this sum before lowering it; the readiness
+    # constants are in wait_for_gke_readiness.sh, not here.
+    timeout-minutes: 60
     permissions:
       contents: read
       id-token: write
@@ -107,8 +117,25 @@ jobs:
           location: ${{ vars.GCP_REGION }}
           project_id: ${{ vars.GCP_PROJECT_ID }}
 
+      # continue-on-error, deliberately: alert ingress is a dependency of the
+      # optional cluster/audit suite below and of nothing else, so a stockout-only
+      # problem must not sink the Google Chat gate that was made the blocking one.
+      # The script itself exits non-zero on failure; the decision to tolerate that
+      # is this workflow's, and lives here rather than inside the script.
+      # Runs before readiness so the gateway re-template the adapter triggers is
+      # already in flight when the rollout waits start.
+      - name: Install Pub/Sub Alert Ingress
+        continue-on-error: true
+        env:
+          AGENT_NAMESPACE: ${{ vars.AGENT_NAMESPACE }}
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ vars.GCP_REGION }}
+          GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
+        run: ./scripts/release/install_pubsub_platform.sh
+
       - name: Connect to GKE & Wait for Pod Readiness
         env:
+          AGENT_NAMESPACE: ${{ vars.AGENT_NAMESPACE }}
           COMMIT_SHA: ${{ needs.step-1-create-tag.outputs.commit_sha }}
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           GCP_REGION: ${{ vars.GCP_REGION }}
@@ -137,6 +164,14 @@ jobs:
           E2E_ENV: "rc-e2e"
           STOCKOUT_SCENARIOS: "04"
           FLEET_AUDIT_STREAMS: "all"
+          # The same pair rc-deploy-environment.yml gives the installer, so the
+          # repository the suite probes is the one the minter was scoped to. Read from
+          # the environment rather than pinned in e2e_config.yaml because a value
+          # written in both places drifts, and a token minted for one repository does
+          # not authenticate against another. Bare: the conftest github_repo fixture
+          # composes owner/repo from GITHUB_ORG when GITHUB_REPO carries no slash.
+          GITHUB_ORG: ${{ vars.GITOPS_ORG }}
+          GITHUB_REPO: ${{ vars.GITOPS_REPO }}
         run: make test-e2e
 
   step-4-tag-validated:

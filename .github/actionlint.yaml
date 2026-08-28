@@ -1,0 +1,30 @@
+# actionlint configuration.
+#
+# actionlint types the `secrets` context of a reusable workflow from its
+# `on.workflow_call.secrets` block alone. It has no model of ENVIRONMENT
+# secrets, which GitHub resolves at job level for any job declaring
+# `environment:` — including a job inside a called workflow, and without the
+# caller passing anything.
+#
+# rc-deploy-environment.yml's `deploy-rc` job declares `environment: rc` and
+# reads GH_APP_ID and GH_APP_PRIVATE_KEY from that environment. Both resolve
+# correctly at runtime; actionlint cannot see that and reports them undefined.
+#
+# Declaring them under `on.workflow_call.secrets` is NOT the fix. The caller
+# (rc-release-pipeline.yml) does not have these secrets to pass and does not use
+# `secrets: inherit`, so declaring them risks binding the name to an unpassed —
+# therefore empty — caller secret instead of the environment one. An empty
+# GITHUB_APP_ID silently disables the token minter, which is the precise failure
+# this wiring exists to eliminate, and it would fail invisibly rather than loudly.
+# The patterns are matched unanchored against the whole message, so each one
+# names the secrets object's shape as well as the property. Without that tail a
+# pattern would also swallow the same property name raised against a different
+# object -- a future `inputs.gh_app_id` or `steps.x.outputs.gh_app_id` typo in
+# this file -- and silence a real error. `gemini_api_key` is the discriminator:
+# it is the only secret the workflow_call block declares, so it appears in the
+# rendered type of the secrets context and nowhere else.
+paths:
+  .github/workflows/rc-deploy-environment.yml:
+    ignore:
+      - 'property "gh_app_id" is not defined in object type \{.*gemini_api_key:'
+      - 'property "gh_app_private_key" is not defined in object type \{.*gemini_api_key:'

@@ -4207,7 +4207,30 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, p
 		},
 	})
 
-	// Additional Egress rules from spec
+	// 10. Hindsight memory API in the agent namespace (Service and container port 8888).
+	//     Unconditional, like rules 4, 5 and 9: the selector matches nothing on an
+	//     install without --memory=hindsight. Without it every memory_retain and
+	//     memory_recall from the gateway times out. A cluster that does not enforce
+	//     NetworkPolicy at all connects anyway, which is why the missing rule went
+	//     unnoticed: the install it breaks is the one that enforces the policy.
+	egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{
+		Ports: []networkingv1.NetworkPolicyPort{
+			{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(8888))},
+		},
+		To: []networkingv1.NetworkPolicyPeer{
+			{
+				PodSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						"app.kubernetes.io/name":      "hindsight",
+						"app.kubernetes.io/component": "api",
+					},
+				},
+			},
+		},
+	})
+
+	// Additional Egress rules from spec. Last, so a spec-supplied rule reads as an
+	// addition to the operator's own set rather than being interleaved with it.
 	if len(profile.AdditionalEgress) > 0 {
 		egressRules = append(egressRules, profile.AdditionalEgress...)
 	}

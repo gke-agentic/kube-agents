@@ -23,6 +23,8 @@ and each project keeps its own state: bucket `<project>-tf-state`, prefix
 `seeded-fleet`, always. Whether a given project's apply is complete is not recorded here,
 because a list of project names goes stale silently: `scripts/verify_ci_pool_project.py`
 runs `hack/fleet-kubeconfigs.sh` against the project and requires all seven fixture roles.
+A role on a cluster it could not reach usually reports as unchecked rather than absent; the
+warnings that override that default are in the site's `deploy/ci-pool-projects` §6.
 Project N+1 follows the same convention. The fleet owner creates the bucket once per project; switching projects means
 re-initializing against that project's bucket and naming the project on the apply:
 
@@ -225,7 +227,8 @@ them could also have caused what it is checking for.
 assumed: `prowjob-default-sa@kube-agents-prow.iam.gserviceaccount.com` — the identity
 every presubmit runs as — holds `roles/container.admin`, `roles/container.developer`,
 `roles/storage.admin`, `roles/resourcemanager.projectIamAdmin` and
-`roles/iam.serviceAccountAdmin` in all three eval projects, and
+`roles/iam.serviceAccountAdmin` in every eval project — `scripts/provision_ci_pool_project.sh`
+grants that set at onboarding, so onboarding another one does not dilute it — and
 `kubectl auth can-i delete deployments -n seeded-debug` answers yes. There are zero
 ClusterRoleBindings or RoleBindings on these clusters naming any `*.gserviceaccount.com`
 subject; authorization comes entirely from the GKE IAM webhook, so there is nothing to

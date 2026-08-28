@@ -388,6 +388,29 @@ class SourceRefDispatchTest(unittest.TestCase):
         self.assertIn("carries no uninstall.sh", proc.stdout)
         self.assertIsNone(log)
 
+    def test_baked_release_version_does_not_trigger_recursive_source_ref_dispatch(self):
+        """Verifies a stamped uninstall.sh (BAKED_RELEASE_VERSION set) does not trigger handover dispatch."""
+        with tempfile.TemporaryDirectory() as tmp:
+            script_path = pathlib.Path(tmp) / "uninstall.sh"
+            content = _UNINSTALL_SH.read_text().replace(
+                'BAKED_RELEASE_VERSION=""',
+                'BAKED_RELEASE_VERSION="0.2.0"',
+            )
+            script_path.write_text(content)
+            script_path.chmod(0o755)
+
+            # Sourcing the script should leave PARAM_SOURCE_REF empty
+            check_cmd = f'KUBE_AGENTS_SOURCE_ONLY=true source "{script_path}"; echo "REF=$PARAM_SOURCE_REF"'
+            proc = subprocess.run(
+                ["bash", "-c", check_cmd],
+                capture_output=True,
+                text=True,
+                env=get_isolated_test_env(),
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("REF=", proc.stdout)
+            self.assertNotIn("REF=0.2.0", proc.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

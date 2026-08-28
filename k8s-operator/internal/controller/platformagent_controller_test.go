@@ -864,8 +864,8 @@ func TestBuildNetworkPolicy(t *testing.T) {
 	if len(netpol.Spec.Ingress[0].Ports) != 3 {
 		t.Errorf("expected 3 ports in agent namespace ingress rule when dashboard enabled, got %d", len(netpol.Spec.Ingress[0].Ports))
 	}
-	if len(netpol.Spec.Egress) != 9 {
-		t.Errorf("expected 9 Egress rules (DNS, GCP Metadata port 80, GCP Metadata port 988, LiteLLM Gateway, vLLM Gemma, K8s Control Plane, External HTTPS, GKE OTel Collector, GitHub Token Minter), got %d", len(netpol.Spec.Egress))
+	if len(netpol.Spec.Egress) != 10 {
+		t.Errorf("expected 10 Egress rules (DNS, GCP Metadata port 80, GCP Metadata port 988, LiteLLM Gateway, vLLM Gemma, K8s Control Plane, External HTTPS, GKE OTel Collector, GitHub Token Minter, Hindsight API), got %d", len(netpol.Spec.Egress))
 	}
 
 	findEgressRule := func(port int32, peerCheck func(networkingv1.NetworkPolicyPeer) bool) *networkingv1.NetworkPolicyEgressRule {
@@ -935,6 +935,15 @@ func TestBuildNetworkPolicy(t *testing.T) {
 	if ruleMinter == nil || ruleMinter.To[0].PodSelector == nil || ruleMinter.To[0].PodSelector.MatchLabels["app"] != "github-token-minter" {
 		t.Errorf("expected GitHub Token Minter egress rule to match app 'github-token-minter'")
 	}
+	// Both labels, not just the name: the postgresql pod carries
+	// app.kubernetes.io/name=hindsight too, and the database is meant to be
+	// reachable from the API pod alone (hindsight/networkpolicy.yaml).
+	ruleHindsight := findEgressRule(8888, func(p networkingv1.NetworkPolicyPeer) bool {
+		return p.PodSelector != nil && p.PodSelector.MatchLabels["app.kubernetes.io/name"] == "hindsight"
+	})
+	if ruleHindsight == nil || ruleHindsight.To[0].PodSelector.MatchLabels["app.kubernetes.io/component"] != "api" {
+		t.Errorf("expected Hindsight egress rule on 8888 to match the api component, not every hindsight pod")
+	}
 }
 
 func TestBuildNetworkPolicy_DashboardDisabled(t *testing.T) {
@@ -973,7 +982,7 @@ func TestBuildNetworkPolicy_FQDNEnabled(t *testing.T) {
 	}
 
 	netpol := buildNetworkPolicy(agent, nil, defaultTestNetpolProfile(), true, "", false)
-	// Expected 8 Egress rules when FQDN is enabled (external HTTPS 0.0.0.0/0:443 is omitted):
+	// Expected 9 Egress rules when FQDN is enabled (external HTTPS 0.0.0.0/0:443 is omitted):
 	// 1. Cluster DNS (53)
 	// 2. GCP WI / Metadata server (80)
 	// 3. GKE WI Host Network Daemon (988)
@@ -982,8 +991,9 @@ func TestBuildNetworkPolicy_FQDNEnabled(t *testing.T) {
 	// 6. Kubernetes API Server (443, 6443, 8443)
 	// 7. GKE Managed OpenTelemetry Collector (4317, 4318)
 	// 8. GitHub Token Minter (8080)
-	if len(netpol.Spec.Egress) != 8 {
-		t.Errorf("expected 8 Egress rules when FQDN is enabled (external HTTPS omitted), got %d", len(netpol.Spec.Egress))
+	// 9. Hindsight memory API (8888)
+	if len(netpol.Spec.Egress) != 9 {
+		t.Errorf("expected 9 Egress rules when FQDN is enabled (external HTTPS omitted), got %d", len(netpol.Spec.Egress))
 	}
 	for _, egress := range netpol.Spec.Egress {
 		for _, peer := range egress.To {
@@ -3323,8 +3333,8 @@ func TestReconcileNetworkPolicy_FQDNCRDNotPresentFallback(t *testing.T) {
 		t.Fatalf("failed to get reconciled NetworkPolicy: %v", err)
 	}
 
-	if len(netpol.Spec.Egress) != 9 {
-		t.Errorf("expected 9 Egress rules when FQDN CRD is not present (fallback to blanket external HTTPS), got %d", len(netpol.Spec.Egress))
+	if len(netpol.Spec.Egress) != 10 {
+		t.Errorf("expected 10 Egress rules when FQDN CRD is not present (fallback to blanket external HTTPS), got %d", len(netpol.Spec.Egress))
 	}
 	foundBlanketHTTPS := false
 	for _, egress := range netpol.Spec.Egress {
@@ -3386,8 +3396,8 @@ func TestReconcileNetworkPolicy_FQDNCRDWrappedErrorFallback(t *testing.T) {
 		t.Fatalf("failed to get reconciled NetworkPolicy: %v", err)
 	}
 
-	if len(netpol.Spec.Egress) != 9 {
-		t.Errorf("expected 9 Egress rules when FQDN CRD returns wrapped restmapping error (fallback to blanket external HTTPS), got %d", len(netpol.Spec.Egress))
+	if len(netpol.Spec.Egress) != 10 {
+		t.Errorf("expected 10 Egress rules when FQDN CRD returns wrapped restmapping error (fallback to blanket external HTTPS), got %d", len(netpol.Spec.Egress))
 	}
 }
 

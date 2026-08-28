@@ -8,7 +8,7 @@
 version: "1.0"
 
 defaults:
-  region: "us-east4"
+  region: "us-central1"
   namespace: "kubeagents-system"
   timeout_seconds: 600
   default_environment: "investigations-e2e"
@@ -27,7 +27,7 @@ environments:
   # ----------------------------------------------------------------------------
   - name: "investigations-e2e"
     description: "In-cluster Agent API health and Stockout alert investigation scenarios"
-    region: "us-east4"
+    region: "us-central1"
     namespace: "kubeagents-system"
     env_vars:
       STOCKOUT_SCENARIOS: "04"
@@ -40,7 +40,7 @@ environments:
   # ----------------------------------------------------------------------------
   - name: "audit-e2e"
     description: "Fleet SRE Audit, Token isolation, and Dry-run ledger suites across all streams"
-    region: "us-east4"
+    region: "us-central1"
     namespace: "kubeagents-system"
     env_vars:
       GITHUB_ORG: "test-org-kube-agent"
@@ -55,7 +55,7 @@ environments:
   # ----------------------------------------------------------------------------
   - name: "agent-plugin-e2e"
     description: "Operator AgentPlugin CR reconciliation and Hermes overlay lifecycle suite"
-    region: "us-east4"
+    region: "us-central1"
     namespace: "kubeagents-system"
     tests:
       - "tests/e2e/operator/agentplugins_e2e_test.py"
@@ -65,11 +65,21 @@ environments:
   # ----------------------------------------------------------------------------
   - name: "rc-e2e"
     description: "Release Candidate promotion gate: Agent API health, Fleet SRE Audit ledger validation, and fast stockout RCA (Scenario 04)"
-    region: "us-east4"
+    region: "us-central1"
     namespace: "kubeagents-system"
+    # No GITHUB_ORG/GITHUB_REPO here, deliberately. They used to name
+    # test-org-kube-agent/agents-repo, a placeholder no GitHub App is installed on, so
+    # test_github_token_minting_and_connectivity asked the minter for a token scoped to
+    # a repository the RC does not own. Pinning the real one here would only move the
+    # problem: the same pair configures the minter at install time, and a value written
+    # in two places drifts. rc-release-pipeline.yml passes the rc environment's
+    # GITOPS_ORG and GITOPS_REPO to both, so there is one source of truth —
+    # scripts/release/README.md says how to set them.
+    #
+    # os.environ wins over these defaults (execute_e2e_tests.py), and with the variables
+    # unset the conftest github_repo fixture reads the repository the cluster was
+    # actually installed with out of platform-agent-settings.
     env_vars:
-      GITHUB_ORG: "test-org-kube-agent"
-      GITHUB_REPO: "test-org-kube-agent/agents-repo"
       FLEET_AUDIT_STREAMS: "all"
       STOCKOUT_SCENARIOS: "04"
     tests:
@@ -82,7 +92,7 @@ environments:
   # ----------------------------------------------------------------------------
   - name: "nightly-e2e"
     description: "Full Nightly E2E Matrix: all audit streams, all stockout scenarios, operator plugin lifecycle, and chat integration"
-    region: "us-east4"
+    region: "us-central1"
     namespace: "kubeagents-system"
     env_vars:
       GITHUB_ORG: "test-org-kube-agent"

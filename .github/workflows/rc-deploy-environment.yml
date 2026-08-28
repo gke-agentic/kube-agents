@@ -134,6 +134,36 @@ jobs:
           PLATFORM_AGENT_PERMISSION_SET: ${{ vars.PLATFORM_AGENT_PERMISSION_SET }}
           MEMORY_PROVIDER: ${{ vars.MEMORY_PROVIDER }}
           USER_PROFILE_ENABLED: ${{ vars.USER_PROFILE_ENABLED }}
+          # The GitOps repository the agent targets, and the one the GitHub token
+          # minter scopes its tokens to. Deliberately NOT vars.GH_ORG/vars.GH_REPO,
+          # which every other workflow does use for this: on the `rc` environment
+          # that pair names the RELEASE repository (gke-labs/kube-agents) and is
+          # what common.sh's get_target_repo resolves for tag and release
+          # operations. Reusing it here would scope a live GitHub App token to this
+          # repository. GITOPS_REPO is bare — installer_common.sh composes
+          # github_repo as "${GITHUB_ORG}/${GITHUB_REPO}".
+          #
+          # All three must be set before the minter is provisioned at all
+          # (the three-way guard in installer_common.sh's write_tfvars_from_state);
+          # with any of them empty the install is
+          # byte-identical to today's. The pair must also match the repository the
+          # E2E suite probes — a token minted for one repository does not
+          # authenticate against another. `rc-e2e` deliberately pins neither in
+          # tests/e2e/e2e_config.yaml, precisely so the value lives in one place:
+          # rc-release-pipeline.yml passes this same GITOPS_ORG/GITOPS_REPO pair
+          # to the suite, and conftest.py's _qualify_repo composes the bare
+          # repository name against the org.
+          GITHUB_ORG: ${{ vars.GITOPS_ORG }}
+          GITHUB_REPO: ${{ vars.GITOPS_REPO }}
+          GITHUB_APP_ID: ${{ secrets.GH_APP_ID }}
+          # Optional, and the lesser of the two routes. Importing the App's private
+          # key into the minter's KMS key by hand is the better one: the key ring
+          # survives every teardown, so the import is a one-off and the signing
+          # material never enters Actions. This is the bootstrap path — set it and
+          # provision_rc_environment.sh writes it to a private temporary file,
+          # because install.sh takes a path (GITHUB_PEM_PATH) and never a value.
+          # Either way the import is skipped once the key has an enabled version.
+          GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
           # Unset (the default) reports a failed teardown as an annotation and
           # a job-summary entry and provisions on top of whatever survived;
           # truthy makes it a hard stop. Which of those is right depends on

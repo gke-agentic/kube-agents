@@ -90,12 +90,20 @@ The test runner `scripts/release/execute_e2e_tests.py` reads configuration from 
 | :-------------------- | :---------------------------------------- | :------------------- |
 | `GCP_PROJECT_ID`      | Target Google Cloud Project ID            | None (required)      |
 | `GKE_CLUSTER_NAME`    | Target GKE cluster name                   | None (required)      |
-| `GCP_REGION`          | Target cluster region                     | `us-east4`           |
+| `GCP_REGION`          | Target cluster region                     | `us-central1`        |
 | `STOCKOUT_SCENARIOS`  | Comma-separated scenario numbers or `all` | `04`                 |
 | `FLEET_AUDIT_STREAMS` | Specific audit stream names or `all`      | `all`                |
 | `E2E_ENV`             | Target environment selector               | `investigations-e2e` |
-| `GITHUB_ORG`          | Owner used to qualify `GITHUB_REPO`       | Config `env_vars`    |
-| `GITHUB_REPO`         | Repository the GitHub probes target       | Config `env_vars`    |
+| `GITHUB_ORG`          | Owner used to qualify `GITHUB_REPO`       | Config `env_vars`\*  |
+| `GITHUB_REPO`         | Repository the GitHub probes target       | Config `env_vars`\*  |
+
+\* Except on `rc-e2e`, which sets neither in `e2e_config.yaml`. There the pair comes
+from the `rc` environment's `GITOPS_ORG` and `GITOPS_REPO`, which
+`rc-release-pipeline.yml` passes to the suite and `rc-deploy-environment.yml` passes to
+the installer — one source of truth for the repository the minter is scoped to and the
+repository the probe reads back, because a token minted for one does not authenticate
+against another. With those unset, the `github_repo` fixture falls through to the
+repository the cluster was installed with, read from `platform-agent-settings`.
 
 The last two are read by the fixtures in `tests/e2e/conftest.py` rather than by the
 runner, which forwards the environment to pytest unchanged. `GITHUB_REPO` is required —
@@ -106,8 +114,9 @@ it is unset, the fixture takes it from that owner.
 The suites' `GITHUB_REPO` resolves to `owner/repo`: `test_agent_fleet_audit.py` asserts
 that shape and `agents/platform/scripts/github_token_refresh.py` refuses anything else.
 A bare repository name is accepted and qualified with `GITHUB_ORG`, because the CI
-variable behind it is bare — `vars.GH_REPO`, which the deploy workflows pass to the
-GitHub Token Minter alongside `vars.GH_ORG` rather than combined with it. That is the
+variable behind it is bare — `vars.GH_REPO` for the deploy workflows, which pass it to
+the GitHub Token Minter alongside `vars.GH_ORG` rather than combined with it, and
+`vars.GITOPS_REPO` with `vars.GITOPS_ORG` on the RC path, per the footnote above. That is the
 same spelling with a different meaning: the Token Minter's `GITHUB_REPO`
 ([install variables](../site/src/content/docs/deploy/token-minter.md)) is the bare name,
 and only the E2E suites' one is the qualified form.

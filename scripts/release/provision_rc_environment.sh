@@ -103,6 +103,40 @@ if [ -n "${USER_PROFILE_ENABLED:-}" ]; then
   INSTALL_ARGS+=(--user-profile-enabled="${USER_PROFILE_ENABLED}")
 fi
 
+# No --gitops-org/--gitops-repo flags here: install.sh already seeds PARAM_GITOPS_ORG
+# and PARAM_GITOPS_REPO from the GITHUB_ORG and GITHUB_REPO this step exports
+# (the PARAM_GITOPS_* assignments near the top of install.sh), so passing them again
+# would be the same values by a second route. GITHUB_APP_ID is read from the
+# environment the same way. All three unset leaves enable_github_minter false and the
+# install byte-identical to one that never had them (the three-way guard on
+# GITHUB_ORG/GITHUB_REPO/GITHUB_APP_ID in installer_common.sh's write_tfvars_from_state).
+#
+# Partially set is the case worth shouting about. installer_common.sh prints its own
+# "GitHub minter deferred" warning only once all three are non-empty, so a single
+# missing value skips the minter in total silence — and the pipeline then fails much
+# later, in test_github_token_minting_and_connectivity, with the undiagnosable HTTP
+# 502 this wiring exists to remove.
+#
+# The way it goes missing is specific. `vars.X` and `secrets.X` interpolate to the
+# empty string when unset OR set at a scope this job cannot see, and `secrets.GH_APP_ID`
+# resolves here only because the deploy-rc job declares `environment: rc` — the
+# workflow_call block declares just GEMINI_API_KEY and no `secrets: inherit`. So a
+# GH_APP_ID created as a repository secret rather than an rc-environment one arrives
+# empty and looks exactly like not having configured the minter at all.
+GITHUB_MINTER_SET=""
+GITHUB_MINTER_MISSING=""
+for _v in GITHUB_ORG GITHUB_REPO GITHUB_APP_ID; do
+  if [ -n "${!_v:-}" ]; then
+    GITHUB_MINTER_SET="${GITHUB_MINTER_SET} ${_v}"
+  else
+    GITHUB_MINTER_MISSING="${GITHUB_MINTER_MISSING} ${_v}"
+  fi
+done
+if [ -n "${GITHUB_MINTER_SET}" ] && [ -n "${GITHUB_MINTER_MISSING}" ]; then
+  echo "::warning title=GitHub token minter not provisioned::Set:${GITHUB_MINTER_SET}; empty:${GITHUB_MINTER_MISSING}. All three are required, so the minter is being skipped and any test that mints a live GitHub token will fail with HTTP 502. An empty value here usually means the variable or secret exists at the repository scope rather than on the 'rc' environment."
+  echo "==> GitHub token minter NOT provisioned — set:${GITHUB_MINTER_SET}; empty:${GITHUB_MINTER_MISSING}." >&2
+fi
+
 # Memory mode mapping: kube_agents_memory/hindsight -> hindsight, none/off -> off, else -> file
 if [ "${MEMORY_PROVIDER:-}" = "kube_agents_memory" ] || [ "${MEMORY_PROVIDER:-}" = "hindsight" ]; then
   INSTALL_ARGS+=(--memory=hindsight)
@@ -112,5 +146,36 @@ else
   INSTALL_ARGS+=(--memory=file)
 fi
 
+# install.sh imports the GitHub App private key into the minter's KMS signing key
+# (import_github_pem), and it takes a path rather than a value — GITHUB_PEM_PATH.
+# A secret only exists here as a variable, so it has to be materialised.
+#
+# The import is skipped when the key already has an ENABLED version, so on the RC
+# this only does work on the first install after the key is created: lifecycle.sh's
+# adopt-kms re-adopts the key ring on every subsequent apply, and uninstall.sh's
+# "Kept by design" summary records that GCP cannot delete key rings at all. The
+# teardown does not disable the version either -- lifecycle.sh's forget_kms runs
+# `terraform state rm` on the crypto key before the destroy, so the destroy never
+# reaches it; adopt-kms's restore_key_versions is the backstop for a bare
+# `terraform destroy` that skipped forget_kms.
+#
+# Written with a restrictive umask rather than chmod after the fact, so the key is
+# never briefly world-readable, and removed after install.sh rather than in an EXIT
+# trap — see the note at the top of this file for why this script has none.
+RC_PEM_TMP=""
+if [ -n "${GH_APP_PRIVATE_KEY:-}" ] && [ -z "${GITHUB_PEM_PATH:-}" ]; then
+  RC_PEM_TMP="$(umask 077 && mktemp)"
+  printf '%s\n' "${GH_APP_PRIVATE_KEY}" >"${RC_PEM_TMP}"
+  export GITHUB_PEM_PATH="${RC_PEM_TMP}"
+  echo "==> GitHub App private key staged for KMS import (imported only if the minter's key has no enabled version)."
+fi
+
 echo "==> Provisioning RC environment at the candidate commit via canonical install.sh..."
-./install.sh "${INSTALL_ARGS[@]}"
+INSTALL_STATUS=0
+./install.sh "${INSTALL_ARGS[@]}" || INSTALL_STATUS=$?
+
+if [ -n "${RC_PEM_TMP}" ]; then
+  rm -f "${RC_PEM_TMP}"
+fi
+
+exit "${INSTALL_STATUS}"

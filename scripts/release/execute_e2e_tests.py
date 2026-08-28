@@ -164,7 +164,7 @@ def run_environment_tests(
     """Executes pytest for a single environment definition."""
     project_id = os.environ.get("GCP_PROJECT_ID") or os.environ.get("PROJECT_ID") or env.get("project_id", "")
     cluster_name = os.environ.get("GKE_CLUSTER_NAME") or os.environ.get("CLUSTER_NAME") or env.get("cluster_name", "")
-    region = os.environ.get("GCP_REGION") or os.environ.get("REGION") or env.get("region") or defaults.get("region", "us-east4")
+    region = os.environ.get("GCP_REGION") or os.environ.get("REGION") or env.get("region") or defaults.get("region", "us-central1")
     namespace = os.environ.get("AGENT_NAMESPACE") or env.get("namespace") or defaults.get("namespace", "kubeagents-system")
     tests = env.get("tests") or ["tests/e2e/"]
 
