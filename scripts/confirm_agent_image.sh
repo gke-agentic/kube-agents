@@ -89,10 +89,17 @@ trap 'rm -f "$stderr_file"' EXIT
 # Is this image one the release tags itself? Compares the repository's trailing
 # path segment, which both the chart's repository rewrite and mirror_images.sh
 # preserve.
+#
+# Take the segment before stripping the tag, not after. A registry with a port
+# -- registry.local:5000/kube-agents/platform-agent -- puts a colon in the
+# first path segment, so stripping the last `:...` off the whole reference
+# eats the repository path and leaves the registry host. A digest-pinned image
+# on such a registry then stops looking like a release image at all, and the
+# failure below reports finding none rather than the pin it exists to name.
 is_release_image() {
-  local repository="${1%@*}"
-  repository="${repository%:*}"
-  local segment="${repository##*/}"
+  local segment="${1%@*}"
+  segment="${segment##*/}"
+  segment="${segment%%:*}"
   grep -qxF "$segment" <<<"$release_names"
 }
 
@@ -132,28 +139,44 @@ while true; do
       echo "::error::Found no first-party release image in ${deployment} after ${timeout}s. Read back:"
       echo "${listing:-  <nothing>}"
     else
-      echo "::error::${deployment} is not running the tag ${tag} this deploy set, so this deploy changed nothing for:"
+      echo "::error::${deployment} is not running the tag ${tag} this deploy set. Still on:"
       printf '%s' "$mismatched"
     fi
     if [ -s "$stderr_file" ]; then
       echo "kubectl also reported:"
       sed 's/^/  /' "$stderr_file"
     fi
-    # Two causes worth separating, and the CR tells them apart. A tag or digest
+    # Two causes worth separating, and the CR tells them apart: a tag or digest
     # baked into spec.deployment.image makes the operator ignore
-    # spec.deployment.tag, the only field the deploy sets; a status that is not
-    # Ready means it never got as far as re-rendering the pod template. Only
-    # the two image fields are printed: DeploymentSpec also carries env with
-    # literal values, and these logs are public.
-    echo "spec.deployment.image / .tag on the CR:"
-    kubectl get platformagent -n "$namespace" \
-      -o jsonpath='{range .items[*]}  {.metadata.name}: {.spec.deployment.image} tag={.spec.deployment.tag}{"\n"}{end}' || true
-    echo "status:"
+    # spec.deployment.tag, while an operator that is absent, crash-looping, or
+    # returning early never re-renders the pod template at all. Which one it is
+    # decides the remedy printed below, because a pin is not the only way to
+    # get here and naming it unconditionally sends the reader after a CR that
+    # is fine. Only the image and tag are read: DeploymentSpec also carries env
+    # with literal values, and these logs are public.
+    cr_listing="$(kubectl get platformagent -n "$namespace" \
+      -o jsonpath='{range .items[*]}{.metadata.name}={.spec.deployment.image}={.spec.deployment.tag}{"\n"}{end}' 2>/dev/null || true)"
+    pinned=""
+    if [ -n "$cr_listing" ]; then
+      echo "spec.deployment on the CR:"
+      while IFS='=' read -r cr_name cr_image cr_tag; do
+        [ -n "$cr_name" ] || continue
+        echo "  ${cr_name}: image=${cr_image} tag=${cr_tag}"
+        case "${cr_image##*/}" in
+          *:* | *@*) pinned="yes" ;;
+        esac
+      done <<<"$cr_listing"
+    fi
+    echo "operator status:"
     kubectl get platformagent -n "$namespace" \
       -o jsonpath='{range .items[*]}  {.metadata.name}: {.status.phase}{"\n"}{range .status.conditions[*]}    {.type}={.status} {.reason}{"\n"}{end}{end}' || true
-    echo "If an image above carries a tag or digest, that pin outranks the deploy. Clear it with:"
-    echo "  kubectl patch platformagent <name> -n ${namespace} --type=merge \\"
-    echo "    -p '{\"spec\":{\"deployment\":{\"image\":\"<repository, no tag>\"}}}'"
+    if [ -n "$pinned" ]; then
+      echo "An image above carries a tag or digest. That pin outranks spec.deployment.tag, the only field this deploy sets. Clear it with:"
+      echo "  kubectl patch platformagent <name> -n ${namespace} --type=merge \\"
+      echo "    -p '{\"spec\":{\"deployment\":{\"image\":\"<repository, no tag>\"}}}'"
+    else
+      echo "No CR above pins spec.deployment.image, so a pin is not the cause here. Read the status: an operator that is absent, crash-looping, or returning early leaves the pod template as it was."
+    fi
     exit 1
   fi
 

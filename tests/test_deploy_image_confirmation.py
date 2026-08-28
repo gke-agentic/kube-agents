@@ -83,13 +83,23 @@ class ConfirmAgentImageScriptTest(unittest.TestCase):
     control flow rather than a transcription of it.
     """
 
-    def _run(self, *templates, tag=_TAG, timeout="0", interval="0"):
+    def _run(
+        self,
+        *templates,
+        tag=_TAG,
+        timeout="0",
+        interval="0",
+        cr_image=f"{_GHCR}/platform-agent",
+        cr_phase="Ready",
+        cr_reason="Reconciled",
+    ):
         """Run the script against one or more stubbed reads of the template.
 
         Each `name=image` listing answers one `kubectl get deployment` call, the
         last repeating once they run out, so a sequence exercises the poll. The
-        CR reads on the failure path are answered separately and do not consume
-        one.
+        two CR reads on the failure path are answered separately, from
+        `cr_image` and `cr_phase`, and do not consume one — they are what the
+        script uses to tell a pinned CR from an operator that never reconciled.
 
         A zero timeout makes the failure paths immediate: the loop checks for
         success before it checks the deadline, so the passing cases are
@@ -107,8 +117,13 @@ class ConfirmAgentImageScriptTest(unittest.TestCase):
             textwrap.dedent(
                 f"""\
                 #!/usr/bin/env bash
+                if [[ "$*" == *status.phase* ]]; then
+                  echo '  platform-agent: {cr_phase}'
+                  echo '    Ready=False {cr_reason}'
+                  exit 0
+                fi
                 if [[ "$*" == *platformagent* ]]; then
-                  echo '  platform-agent: {_GHCR}/platform-agent:{_OLD} tag={_TAG}'
+                  echo 'platform-agent={cr_image}={tag}'
                   exit 0
                 fi
                 count_file="{stub_dir}/calls"
@@ -186,19 +201,49 @@ class ConfirmAgentImageScriptTest(unittest.TestCase):
             envoy-credential-proxy={_GHCR}/credential-proxy:{_OLD}
             platform-agent={_GHCR}/platform-agent:{_OLD}
             fluent-bit=docker.io/fluent/fluent-bit:5.1.0
-            """
+            """,
+            cr_image=f"{_GHCR}/platform-agent:{_OLD}",
         )
         self.assertEqual(result.returncode, 1)
         self.assertIn(_OLD, result.stdout)
         self.assertIn("kubectl patch platformagent", result.stdout)
 
-    def test_it_reports_the_operator_status_on_failure(self):
-        # A pinned image is not the only way to get here: the operator returns
-        # early on some conditions without re-rendering the pod template, and
-        # the message must not assert the one cause it cannot distinguish.
-        result = self._run(f"platform-agent={_GHCR}/platform-agent:{_OLD}")
+    def test_it_recognises_a_digest_pin_on_a_registry_with_a_port(self):
+        # Stripping the tag before taking the trailing path segment ate the
+        # registry's port and left the host, so this shape stopped looking like
+        # a release image at all -- the script reported finding none instead of
+        # the pin, and printed a remedy for a template it never inspected.
+        result = self._run(
+            "platform-agent=registry.local:5000/kube-agents/platform-agent@sha256:" + "0" * 64,
+            cr_image="registry.local:5000/kube-agents/platform-agent@sha256:" + "0" * 64,
+        )
         self.assertEqual(result.returncode, 1)
-        self.assertIn("status:", result.stdout)
+        self.assertNotIn("Found no first-party release image", result.stdout)
+        self.assertIn("kubectl patch platformagent", result.stdout)
+
+    def test_it_reports_the_operator_status_on_failure(self):
+        result = self._run(
+            f"platform-agent={_GHCR}/platform-agent:{_OLD}",
+            cr_phase="Degraded",
+            cr_reason="RuntimeClassNotFound",
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Degraded", result.stdout)
+        self.assertIn("RuntimeClassNotFound", result.stdout)
+
+    def test_it_does_not_blame_a_pin_when_the_cr_is_not_pinned(self):
+        # A pinned image is not the only way to get here -- an operator that is
+        # absent, crash-looping, or returning early never re-renders the pod
+        # template. Printing the clear-the-pin remedy regardless sends the
+        # reader after a CR that is fine.
+        result = self._run(
+            f"platform-agent={_GHCR}/platform-agent:{_OLD}",
+            cr_image=f"{_GHCR}/platform-agent",
+            cr_phase="Degraded",
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn("kubectl patch platformagent", result.stdout)
+        self.assertIn("a pin is not the cause", result.stdout)
 
     def test_it_fails_on_a_sidecar_that_moved_without_the_agent(self):
         # The digest-pin path: the agent freezes at its digest while the
