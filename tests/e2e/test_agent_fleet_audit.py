@@ -42,6 +42,47 @@ def test_github_token_minting_and_connectivity(
     if not gke_cluster_name or not github_repo:
         pytest.fail("GKE cluster name and GITHUB_REPO are required for live GitHub connectivity probe.")
 
+    # Minting is only a promise the install made when the minter was provisioned.
+    # charts/kube-agents/templates/github-minter.yaml renders the Deployment under
+    # `if .Values.githubMinter.enabled`, which is false by default and stays false
+    # unless GITHUB_ORG, GITHUB_REPO and GITHUB_APP_ID are all set and the App key
+    # is in KMS (installer_common.sh:612-627). The RC environment sets none of them,
+    # so the sidecar's internal refresh cannot reach the broker, and
+    # _handle_github_refresh answers 502 with the reason logged only inside the
+    # sidecar (credential_proxy.py:3043-3051) — an opaque failure of an assertion
+    # the environment never undertook to satisfy.
+    #
+    # Absence is the only thing skipped. A minter that IS deployed and still fails
+    # to mint is the defect this test exists to catch, so that case still fails.
+    #
+    # --ignore-not-found is what keeps those two apart. Reading a non-zero exit as
+    # "absent" would let an unreachable API server, an expired credential or a
+    # mistyped namespace all resolve to a green skip — the same defect issue #971
+    # records against the GPU-node check in the stockout suite, where a kubectl
+    # failure silently reads as "no GPU nodes". Here the exit code stays a question
+    # about kubectl and the empty stdout is the answer about the minter.
+    minter = subprocess.run(
+        [
+            "kubectl", "get", "deployment", "github-token-minter",
+            "-n", agent_namespace, "--ignore-not-found", "-o", "name",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert minter.returncode == 0, (
+        f"Could not determine whether a GitHub token minter is deployed in '{agent_namespace}': "
+        f"kubectl exited {minter.returncode}.\nSTDERR:\n{minter.stderr}"
+    )
+    if not minter.stdout.strip():
+        pytest.skip(
+            f"No 'github-token-minter' Deployment in namespace '{agent_namespace}', so this "
+            "install has no token broker to mint through and live minting is not something it "
+            "claims to do. Provision it to cover this path: set githubMinter.enabled (Terraform "
+            "enable_github_minter) with github_repo in owner/repo form and github_app_id, and "
+            "import the GitHub App private key into the minter's KMS signing key — see "
+            "k8s-operator/config/integrations/github/README.md."
+        )
+
     # Find running platform-agent pod
     proc_pod = subprocess.run(
         [
