@@ -299,6 +299,7 @@ stamp_baked_release_version() {
       sed -i.bak -E "s/^BAKED_RELEASE_VERSION=[\"'].*[\"']/BAKED_RELEASE_VERSION=\"${version}\"/" "${script_path}" && rm -f "${script_path}.bak"
       if ! grep -q "^BAKED_RELEASE_VERSION=\"${version}\"" "${script_path}"; then
         echo "❌ ERROR: Failed to stamp BAKED_RELEASE_VERSION in ${script_name} (placeholder line '^BAKED_RELEASE_VERSION=...' not found)." >&2
+        git -C "${repo_dir}" checkout -- install.sh uninstall.sh upgrade.sh >/dev/null 2>&1 || true
         return 1
       fi
     fi
@@ -367,7 +368,7 @@ create_stamped_release_commit() {
   orig_ref="$(git -C "${repo_dir}" symbolic-ref --short -q HEAD 2>/dev/null || git -C "${repo_dir}" rev-parse HEAD 2>/dev/null || echo "")"
   if [ -n "${orig_ref}" ]; then
     # shellcheck disable=SC2064
-    trap "git -C '${repo_dir}' checkout '${orig_ref}' >/dev/null 2>&1 || true" RETURN
+    trap "git -C '${repo_dir}' checkout -- install.sh uninstall.sh upgrade.sh >/dev/null 2>&1 || true; git -C '${repo_dir}' checkout '${orig_ref}' >/dev/null 2>&1 || true" RETURN
   fi
 
   # Idempotency check: if release tag already exists and is a valid release commit for target_sha, reuse it
