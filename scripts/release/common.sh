@@ -54,10 +54,47 @@ is_ci_pipeline() {
 # Assigns to globals rather than echoing: a caller reading an echo would need
 # command substitution, and a `set -u` abort inside a subshell would leave the
 # variable empty and the script running against an unnamed target.
+#
+# The three targeting variables get no defaults in CI. A pipeline that reaches
+# here with GCP_PROJECT_ID unset has a misconfigured `env:` block or a variable
+# missing from its GitHub environment; defaulting PROJECT_ID to kube-agents-rc
+# there does not rescue the run, it points a real teardown-and-reinstall at a
+# real project nobody named. Failing names the variable instead, at the first
+# script that needs it rather than several steps later against a cluster that
+# does not exist. The defaults stay for the developer path, which is what the
+# CLUSTER_NAME/REGION/PROJECT_ID half of the contract above is for.
+#
+# AGENT_NAMESPACE is deliberately not in that list yet. It is not a targeting
+# variable — guessing it wrong fails a kubectl call rather than acting on the
+# wrong project — and the `rc` environment does not define it today, so
+# promoting it would turn the next RC run red for a value that has exactly one
+# correct setting. Define AGENT_NAMESPACE in the rc and nightly environments,
+# then move it up: gke-labs/kube-agents#1013's follow-up.
 release_resolve_target() {
-  CLUSTER_NAME="${GKE_CLUSTER_NAME:-${CLUSTER_NAME:-platform-agent-host}}"
-  REGION="${GCP_REGION:-${REGION:-us-central1}}"
-  PROJECT_ID="${GCP_PROJECT_ID:-${PROJECT_ID:-kube-agents-rc}}"
+  CLUSTER_NAME="${GKE_CLUSTER_NAME:-${CLUSTER_NAME:-}}"
+  REGION="${GCP_REGION:-${REGION:-}}"
+  PROJECT_ID="${GCP_PROJECT_ID:-${PROJECT_ID:-}}"
+
+  if is_ci_pipeline; then
+    # A string rather than an array: `${#arr[@]}` on an empty array aborts under
+    # `set -u` on bash 3.2, which is what a developer on macOS runs these with.
+    local missing=""
+    [ -n "${CLUSTER_NAME}" ] || missing="${missing} GKE_CLUSTER_NAME"
+    [ -n "${REGION}" ] || missing="${missing} GCP_REGION"
+    [ -n "${PROJECT_ID}" ] || missing="${missing} GCP_PROJECT_ID"
+    if [ -n "${missing}" ]; then
+      echo "❌ Unset in CI:${missing}" >&2
+      echo "   These come from the job's \`env:\` block, which reads them from the" >&2
+      echo "   workflow's GitHub environment. Set them there rather than relying on" >&2
+      echo "   a default — a release script must not guess which project it targets." >&2
+      return 1
+    fi
+  else
+    CLUSTER_NAME="${CLUSTER_NAME:-platform-agent-host}"
+    REGION="${REGION:-us-central1}"
+    PROJECT_ID="${PROJECT_ID:-kube-agents-rc}"
+  fi
+
   AGENT_NAMESPACE="${AGENT_NAMESPACE:-kubeagents-system}"
   export CLUSTER_NAME REGION PROJECT_ID AGENT_NAMESPACE
 }

@@ -24,8 +24,7 @@
 # is the stopgap that makes the RC gate honest until that lands, and it is meant
 # to be deleted wholesale when it does — which is why it is its own file rather
 # than a block inside wait_for_gke_readiness.sh. Removing it is `git rm` plus the
-# three workflow steps that call it, `e2e-manual-runner.yml`'s
-# `skip_pubsub_platform` input, and `tests/test_install_pubsub_platform.py`.
+# workflow step that calls it and `tests/test_install_pubsub_platform.py`.
 #
 # FAILURE POLICY LIVES IN THE WORKFLOW, NOT HERE
 #
@@ -76,10 +75,10 @@ release_resolve_target
 
 echo "======================================================================"
 echo "📡 INSTALLING PUB/SUB ALERT INGRESS"
-echo "Project ID:   ${PROJECT_ID}"
-echo "Region:       ${REGION}"
-echo "Cluster Name: ${CLUSTER_NAME}"
-echo "Namespace:    ${AGENT_NAMESPACE}"
+echo "Project ID:      ${PROJECT_ID}"
+echo "Region:          ${REGION}"
+echo "Cluster Name:    ${CLUSTER_NAME}"
+echo "Agent Namespace: ${AGENT_NAMESPACE}"
 echo "======================================================================"
 
 if is_truthy "${SKIP_PUBSUB_PLATFORM:-false}"; then

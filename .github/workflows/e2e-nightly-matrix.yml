@@ -79,33 +79,11 @@ jobs:
         uses: google-github-actions/get-gke-credentials@3da1e46a907576cefaa90c484278bb5b259dd395 # v3.0.0
         with:
           cluster_name: ${{ vars.GKE_CLUSTER_NAME }}
-          location: ${{ vars.GCP_REGION || 'us-central1' }}
+          location: ${{ vars.GCP_REGION || 'us-east4' }}
           project_id: ${{ vars.GCP_PROJECT_ID }}
-
-      # Not continue-on-error, unlike the RC pipeline: on its nightly schedule
-      # this workflow runs the alert-driven matrix, so ingress that will not
-      # install is a reason to stop rather than a reason to run every scenario
-      # to its 360s timeout and report that the agent never saw its alert.
-      #
-      # SKIP_PUBSUB_PLATFORM keeps that from punishing the dispatch runs that
-      # read no alert. test_environment offers gchat-e2e, audit-e2e and
-      # agent-plugin-e2e, none of which touch alert ingress, and failing those
-      # for an adapter they never use would be a regression against the warning
-      # this step replaced. A schedule trigger applies no workflow_dispatch
-      # default at all, so inputs.test_environment is empty there, contains()
-      # is false, and ingress stays mandatory where it matters.
-      - name: Install Pub/Sub Alert Ingress
-        env:
-          AGENT_NAMESPACE: ${{ vars.AGENT_NAMESPACE }}
-          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-          GCP_REGION: ${{ vars.GCP_REGION }}
-          GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
-          SKIP_PUBSUB_PLATFORM: ${{ contains(fromJSON('["gchat-e2e","audit-e2e","agent-plugin-e2e"]'), inputs.test_environment) }}
-        run: ./scripts/release/install_pubsub_platform.sh
 
       - name: Connect to GKE & Verify Readiness
         env:
-          AGENT_NAMESPACE: ${{ vars.AGENT_NAMESPACE }}
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           GCP_REGION: ${{ vars.GCP_REGION }}
           GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
@@ -115,7 +93,7 @@ jobs:
         env:
           GCP_REGION: ${{ vars.GCP_REGION }}
         run: |
-          REGION="${GCP_REGION:-us-central1}"
+          REGION="${GCP_REGION:-us-east4}"
           gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet || true
 
       - name: Execute Full E2E Matrix (All Scenarios & Fleet Audit Streams)
@@ -123,7 +101,7 @@ jobs:
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           GCP_REGION: ${{ vars.GCP_REGION }}
           GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
-          REGISTRY: ${{ vars.REGISTRY || vars.REGISTRY_PREFIX || (vars.GCP_PROJECT_ID && format('{0}-docker.pkg.dev/{1}/kube-agents', vars.GCP_REGION || 'us-central1', vars.GCP_PROJECT_ID)) || '' }}
+          REGISTRY: ${{ vars.REGISTRY || vars.REGISTRY_PREFIX || (vars.GCP_PROJECT_ID && format('{0}-docker.pkg.dev/{1}/kube-agents', vars.GCP_REGION || 'us-east4', vars.GCP_PROJECT_ID)) || '' }}
           GITHUB_ORG: ${{ vars.GH_ORG || 'test-org-kube-agent' }}
           GITHUB_REPO: ${{ vars.GH_REPO || 'test-org-kube-agent/agents-repo' }}
           STOCKOUT_SCENARIOS: ${{ inputs.stockout_scenarios || 'all' }}

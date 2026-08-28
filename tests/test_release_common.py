@@ -350,6 +350,69 @@ source "{_COMMON_SH}"
         finally:
             temp_dir.cleanup()
 
+    # ─── release_resolve_target ───────────────────────────────────────────────
+    # The targeting trio must never be guessed in CI: a defaulted PROJECT_ID
+    # points provision/teardown at a real project nobody named.
+
+    _RESOLVE = (
+        "unset GKE_CLUSTER_NAME GCP_REGION GCP_PROJECT_ID CLUSTER_NAME REGION "
+        "PROJECT_ID AGENT_NAMESPACE || true\n"
+    )
+    _ECHO = 'echo "${CLUSTER_NAME}|${REGION}|${PROJECT_ID}|${AGENT_NAMESPACE}"'
+
+    def test_release_resolve_target_fails_in_ci_when_targeting_vars_unset(self):
+        proc = self._run_common_func(
+            f"{self._RESOLVE}release_resolve_target",
+            env={"CI": "true"},
+        )
+        self.assertNotEqual(proc.returncode, 0, "CI must not fall back to a default project")
+        for var in ("GKE_CLUSTER_NAME", "GCP_REGION", "GCP_PROJECT_ID"):
+            self.assertIn(var, proc.stderr)
+
+    def test_release_resolve_target_names_only_the_missing_variable(self):
+        """The error is a pointer to the misconfigured `env:` entry, so it must be precise."""
+        proc = self._run_common_func(
+            f"{self._RESOLVE}"
+            "export GKE_CLUSTER_NAME=c GCP_REGION=r\n"
+            "release_resolve_target",
+            env={"CI": "true"},
+        )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("GCP_PROJECT_ID", proc.stderr)
+        self.assertNotIn("GKE_CLUSTER_NAME", proc.stderr)
+        self.assertNotIn("GCP_REGION", proc.stderr)
+
+    def test_release_resolve_target_passes_in_ci_when_set(self):
+        proc = self._run_common_func(
+            f"{self._RESOLVE}"
+            "export GKE_CLUSTER_NAME=rc-cluster GCP_REGION=us-central1 GCP_PROJECT_ID=proj\n"
+            f"release_resolve_target\n{self._ECHO}",
+            env={"CI": "true"},
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("rc-cluster|us-central1|proj|kubeagents-system", proc.stdout)
+
+    def test_release_resolve_target_defaults_off_ci(self):
+        """The developer path keeps its defaults; that is what the trio is for."""
+        proc = self._run_common_func(f"{self._RESOLVE}release_resolve_target\n{self._ECHO}")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("platform-agent-host|us-central1|kube-agents-rc|kubeagents-system", proc.stdout)
+
+    def test_release_resolve_target_defaults_agent_namespace_even_in_ci(self):
+        """Deliberate carve-out: the rc environment does not define it yet.
+
+        Promoting AGENT_NAMESPACE into the required set before the variable exists
+        would turn the next RC run red for a value with one correct setting.
+        """
+        proc = self._run_common_func(
+            f"{self._RESOLVE}"
+            "export GKE_CLUSTER_NAME=c GCP_REGION=r GCP_PROJECT_ID=p\n"
+            f"release_resolve_target\n{self._ECHO}",
+            env={"CI": "true"},
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("c|r|p|kubeagents-system", proc.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
