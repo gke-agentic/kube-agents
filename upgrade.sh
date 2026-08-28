@@ -212,6 +212,12 @@ verify_local_source_ref() {
   local expected_ref="$2"
 
   if ! git -C "$repo_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    # In official stamped release archives (unpacked tarball/zip outside Git),
+    # BAKED_RELEASE_VERSION is stamped during release automation.
+    if [ -n "${BAKED_RELEASE_VERSION:-}" ] && [ "${BAKED_RELEASE_VERSION}" = "${expected_ref}" ]; then
+      print_success "Verified upgrade sources match baked official release ${BAKED_RELEASE_VERSION}."
+      return 0
+    fi
     if [ "$PARAM_DRY_RUN" = "true" ]; then
       print_warning "Dry-run cannot verify source/image alignment because '$repo_dir' is not a Git worktree."
       return 0
