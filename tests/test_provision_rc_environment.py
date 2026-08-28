@@ -361,5 +361,133 @@ exit 0
         self.assertIn("\nlast line, no newline\n```\n", summary)
 
 
+class GithubMinterInputsTest(unittest.TestCase):
+    """The minter half of provisioning: exit-code propagation, the PEM, and the warning.
+
+    The exit-code case is the one that would ship silently. The script stopped ending on
+    `./install.sh "${INSTALL_ARGS[@]}"` — it captures the status so the staged PEM can be
+    removed first — and a `|| INSTALL_STATUS=$?` that is not re-raised turns every failed
+    install into a green provisioning step.
+    """
+
+    def _run(self, overrides, install_exit=0, install_body=""):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        tmp_dir = pathlib.Path(tmp.name)
+
+        recorded_calls = tmp_dir / MOCK_CALLS_LOG
+        mock_uninstall = tmp_dir / MOCK_UNINSTALL_SCRIPT
+        mock_uninstall.write_text("#!/usr/bin/env bash\nexit 3\n")
+        mock_uninstall.chmod(0o755)
+
+        mock_install = tmp_dir / MOCK_INSTALL_SCRIPT
+        mock_install.write_text(
+            f"""#!/usr/bin/env bash
+echo "{MOCK_INSTALL_SUCCESS_SIGNAL}" >> "{recorded_calls}"
+{install_body}
+exit {install_exit}
+"""
+        )
+        mock_install.chmod(0o755)
+
+        base = {
+            "GCP_PROJECT_ID": MOCK_GCP_PROJECT_ID,
+            "GCP_REGION": MOCK_GCP_REGION,
+            "GKE_CLUSTER_NAME": MOCK_GKE_CLUSTER_NAME,
+            "IMAGE_TAG": MOCK_IMAGE_TAG_SEMVER,
+        }
+        base.update(overrides)
+
+        proc = subprocess.run(
+            ["bash", str(_PROVISION_RC_SCRIPT)],
+            capture_output=True,
+            text=True,
+            env=get_isolated_test_env(overrides=base),
+            cwd=str(tmp_dir),
+        )
+        return proc, tmp_dir
+
+    def test_a_failed_install_still_fails_the_step(self):
+        proc, _ = self._run({}, install_exit=7)
+        self.assertEqual(
+            proc.returncode,
+            7,
+            "install.sh's exit code must survive the PEM-cleanup restructure; a green "
+            f"step for a failed install is invisible. stdout:\n{proc.stdout}",
+        )
+
+    def test_a_successful_install_still_succeeds(self):
+        proc, _ = self._run({}, install_exit=0)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_private_key_is_staged_readable_only_by_its_owner_and_then_removed(self):
+        # The mock records the path and mode install.sh was handed, because the file is
+        # gone by the time the script returns — which is the other half of the contract.
+        proc, tmp_dir = self._run(
+            {"GH_APP_PRIVATE_KEY": "-----BEGIN RSA PRIVATE KEY-----\nabc\n"},
+            install_body=(
+                'printf "%s\\n" "${GITHUB_PEM_PATH}" > pem_path.txt\n'
+                'stat -f "%Lp" "${GITHUB_PEM_PATH}" > pem_mode.txt '
+                '2>/dev/null || stat -c "%a" "${GITHUB_PEM_PATH}" > pem_mode.txt\n'
+                'cp "${GITHUB_PEM_PATH}" pem_contents.txt\n'
+            ),
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+        pem_path = (tmp_dir / "pem_path.txt").read_text().strip()
+        self.assertTrue(pem_path, "install.sh was not handed a GITHUB_PEM_PATH")
+        self.assertEqual((tmp_dir / "pem_mode.txt").read_text().strip(), "600")
+        self.assertIn("BEGIN RSA PRIVATE KEY", (tmp_dir / "pem_contents.txt").read_text())
+        self.assertFalse(
+            pathlib.Path(pem_path).exists(),
+            "the staged private key must not outlive the install",
+        )
+
+    def test_the_staged_key_is_removed_even_when_the_install_fails(self):
+        proc, tmp_dir = self._run(
+            {"GH_APP_PRIVATE_KEY": "-----BEGIN RSA PRIVATE KEY-----\nabc\n"},
+            install_exit=1,
+            install_body='printf "%s\\n" "${GITHUB_PEM_PATH}" > pem_path.txt\n',
+        )
+        self.assertEqual(proc.returncode, 1)
+        pem_path = (tmp_dir / "pem_path.txt").read_text().strip()
+        self.assertFalse(
+            pathlib.Path(pem_path).exists(),
+            "a failed install must not leave raw key material behind",
+        )
+
+    def test_no_pem_path_is_set_when_no_key_is_supplied(self):
+        proc, tmp_dir = self._run(
+            {},
+            install_body='printf "[%s]\\n" "${GITHUB_PEM_PATH:-}" > pem_path.txt\n',
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual((tmp_dir / "pem_path.txt").read_text().strip(), "[]")
+
+    def test_partial_minter_config_is_warned_about(self):
+        # The repository-scope-secret trap: org and repo resolve, the App ID arrives
+        # empty, and installer_common.sh's own warning never fires because it requires
+        # all three. Without this the minter is skipped in silence.
+        proc, _ = self._run({"GITHUB_ORG": "acme", "GITHUB_REPO": "infra"})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        combined = proc.stdout + proc.stderr
+        self.assertIn("GITHUB_APP_ID", combined)
+        self.assertIn("::warning", combined)
+
+    def test_a_complete_minter_config_is_not_warned_about(self):
+        proc, _ = self._run(
+            {"GITHUB_ORG": "acme", "GITHUB_REPO": "infra", "GITHUB_APP_ID": "4143620"}
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("GitHub token minter not provisioned", proc.stdout + proc.stderr)
+
+    def test_no_minter_config_at_all_is_not_warned_about(self):
+        # Every environment that deliberately runs without a minter would otherwise get
+        # a warning on every provision.
+        proc, _ = self._run({})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("GitHub token minter not provisioned", proc.stdout + proc.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

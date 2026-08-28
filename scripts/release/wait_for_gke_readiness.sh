@@ -6,9 +6,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
 readonly READINESS_TIMEOUT="300s" # 5 minutes timeout for GKE pod readiness
-# Seconds, not a kubectl duration: the adapter wait below is a shell loop, because
-# the AgentPlugin CRD carries no condition for `kubectl wait --for=condition` to read.
+# Seconds, not a kubectl duration: the adapter wait below is a shell loop rather than
+# `kubectl wait --for=condition=Ready`. The CRD does carry status.conditions and the
+# operator does write a Ready one, so that command would work — what it cannot express
+# is the observedGeneration == generation comparison, which is the half that tells a
+# fresh reconcile from a Ready left over from the previous one.
 readonly PLUGIN_READY_TIMEOUT=300
+# How long the gateway's generation must hold still before its spec counts as settled.
+# Taken, with its reasoning, from _GENERATION_STABLE_SECONDS in
+# tests/e2e/test_stockout_investigation.py: the first bump is not always the last, so
+# observing one and calling `rollout status` can succeed against an intermediate
+# revision moments before the next arrives.
+readonly GENERATION_STABLE_SECONDS=20
 
 CLUSTER_NAME="${GKE_CLUSTER_NAME:-${CLUSTER_NAME:-platform-agent-host}}"
 REGION="${GCP_REGION:-${REGION:-us-central1}}"
@@ -48,29 +57,14 @@ fi
 
 AGENT_NAMESPACE="${AGENT_NAMESPACE:-kubeagents-system}"
 
-# The agent's registry is not always the cluster's region. The RC ran a us-east4
-# cluster off us-central1-docker.pkg.dev until the two were aligned, and nothing
-# requires them to agree — REGISTRY_PREFIX is set independently of the cluster.
-# Anything the plugin installers build goes to the agent's registry, not this one:
-# plugin_image_discover_registry (agentplugins/lib/plugin_image.sh) copies the
-# running agent's host, location, project and repository precisely so a plugin
-# lands somewhere the kubelet is already known to pull from. Authenticating only
-# ${REGION}-docker.pkg.dev therefore leaves the adapter push below unauthenticated
-# on any install where the two differ.
-AR_HOSTS="${REGION}-docker.pkg.dev"
-AGENT_IMAGE="$(kubectl get deployment platform-agent-gateway -n "${AGENT_NAMESPACE}" \
-  -o jsonpath='{.spec.template.spec.containers[?(@.name=="platform-agent")].image}' 2>/dev/null || true)"
-AGENT_AR_HOST="${AGENT_IMAGE%%/*}"
-case "${AGENT_AR_HOST}" in
-  *-docker.pkg.dev)
-    if [ "${AGENT_AR_HOST}" != "${REGION}-docker.pkg.dev" ]; then
-      AR_HOSTS="${AR_HOSTS},${AGENT_AR_HOST}"
-    fi
-    ;;
-esac
-
-echo "🔑 Configuring Docker authentication for Artifact Registry (${AR_HOSTS})..."
-gcloud auth configure-docker "${AR_HOSTS}" --quiet || true
+# Only this region's host. The plugin installer below pushes to whichever registry the
+# running agent's image is in, which need not be this one — but it authenticates that
+# host itself: plugin_image_resolve calls plugin_image_check_credential, which calls
+# plugin_image_login, which runs `gcloud auth configure-docker` for the exact push host
+# and aborts if it fails (agentplugins/lib/plugin_image.sh). Adding the agent's host
+# here as well was covering a gap that does not exist.
+echo "🔑 Configuring Docker authentication for Artifact Registry (${REGION}-docker.pkg.dev)..."
+gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet || true
 
 # ─── Pub/Sub alert ingress ────────────────────────────────────────────────────
 # The Pub/Sub adapter is a separate AgentPlugin and is not in the agent image.
@@ -96,13 +90,18 @@ gcloud auth configure-docker "${AR_HOSTS}" --quiet || true
 # idempotent (`helm upgrade --install`, and plugin_image_resolve skips the build
 # when the content tag is already published), so a re-run costs a no-op.
 #
-# Warned about rather than fatal, in both halves below. This script runs once, before
-# BOTH suites in step 3 of rc-release-pipeline.yml: the mandatory Google Chat gate and
-# then the optional cluster/audit one that #980 marked `continue-on-error`. Alert
-# ingress is a dependency of the optional suite alone, so exiting non-zero here would
-# let a stockout-only problem block the release gate that was deliberately made the
-# blocking one — and would do it before the Chat gate had run at all. A warning leaves
-# that structure intact and puts the reason directly above the failure it explains.
+# Three workflows run this script, not one: rc-release-pipeline.yml, e2e-nightly-matrix.yml
+# and e2e-manual-runner.yml. All three carry alert-driven suites, so all three want the
+# adapter — but it means an install and a Helm release now happen on every one of them.
+# SKIP_PUBSUB_PLATFORM opts a run out.
+#
+# Warned about rather than fatal, in both halves below. In the RC pipeline this script
+# runs once, ahead of BOTH suites: the mandatory Google Chat gate, and the optional
+# cluster/audit one its step carries `continue-on-error` for. Alert ingress is a
+# dependency of the optional suite alone, so exiting non-zero here would let a
+# stockout-only problem fail the gate that was deliberately made the blocking one — and
+# would do it before the Chat gate had run at all. A warning leaves that structure
+# intact and puts the reason directly above the failure it explains.
 if is_truthy "${SKIP_PUBSUB_PLATFORM:-false}"; then
   echo "⏭️  SKIP_PUBSUB_PLATFORM is set: leaving Pub/Sub alert ingress uninstalled."
 else
@@ -118,16 +117,23 @@ if [ "${pubsub_installed:-skipped}" = "false" ]; then
   echo "⚠️  WARNING: the Pub/Sub platform adapter failed to install. Alert ingress is dead," \
     "so any alert-driven test below will report that the agent never saw its alert." >&2
 elif [ "${pubsub_installed:-skipped}" = "true" ]; then
-  # The rollout waits further down are what absorb the re-template this install
-  # provokes, but only if the operator has written the workload before they run.
-  # Waiting for the plugin's status to catch up to its spec is what orders the two:
-  # the operator writes the AgentPlugin status and the gateway workload inside one
-  # reconcile (platformagent_controller.go), so a plugin whose observedGeneration
-  # has caught up is one whose gateway has already been re-templated. Phase alone
-  # would not do it — a Ready left from an earlier reconcile is what a stale plugin
-  # looks like.
+  # A caught-up observedGeneration is necessary but NOT sufficient, so this waits on the
+  # gateway's own generation settling rather than on the plugin's status alone.
+  # updatePluginStatuses is the FIRST statement of reconcileWorkload
+  # (platformagent_controller.go:527-529) — the status is written before the workload is
+  # rendered or applied, and it returns no error, so `phase=Ready` with
+  # observedGeneration caught up is consistent with the Deployment patch not having
+  # landed, or having failed. Breaking there and falling straight into `rollout status`
+  # would let it succeed against the pre-plugin ReplicaSet and the gateway would then
+  # restart mid-suite — during the mandatory Chat gate, in the RC pipeline.
+  #
+  # So: wait for the plugin to catch up, then require the gateway's .metadata.generation
+  # to hold still for a stability window before the rollout waits below run. This is the
+  # same reasoning, and the same 20s, as _GENERATION_STABLE_SECONDS in
+  # tests/e2e/test_stockout_investigation.py, which was written for this exact race.
   echo "Waiting for the pubsubplatform AgentPlugin to reconcile..."
   plugin_deadline=$(($(date +%s) + PLUGIN_READY_TIMEOUT))
+  plugin_ready="false"
   while :; do
     plugin_phase=""
     plugin_observed=""
@@ -139,6 +145,7 @@ elif [ "${pubsub_installed:-skipped}" = "true" ]; then
     if [ "${plugin_phase}" = "Ready" ] && [ -n "${plugin_observed}" ] &&
       [ "${plugin_observed}" = "${plugin_generation}" ]; then
       echo "✅ pubsubplatform AgentPlugin is Ready at generation ${plugin_generation}."
+      plugin_ready="true"
       break
     fi
     if [ "$(date +%s)" -ge "${plugin_deadline}" ]; then
@@ -150,12 +157,28 @@ elif [ "${pubsub_installed:-skipped}" = "true" ]; then
     fi
     sleep 5
   done
+
+  if [ "${plugin_ready}" = "true" ]; then
+    echo "Waiting for the gateway's generation to settle (${GENERATION_STABLE_SECONDS}s)..."
+    gateway_generation=""
+    settle_deadline=$(($(date +%s) + GENERATION_STABLE_SECONDS))
+    while [ "$(date +%s)" -lt "${settle_deadline}" ]; do
+      sleep 3
+      current_generation="$(kubectl get deployment platform-agent-gateway -n "${AGENT_NAMESPACE}" \
+        -o jsonpath='{.metadata.generation}' 2>/dev/null || true)"
+      if [ -n "${current_generation}" ] && [ "${current_generation}" != "${gateway_generation}" ]; then
+        gateway_generation="${current_generation}"
+        settle_deadline=$(($(date +%s) + GENERATION_STABLE_SECONDS))
+      fi
+    done
+    echo "✅ gateway generation settled at ${gateway_generation:-<unreadable>}."
+  fi
 fi
 
 if [ -n "${COMMIT_SHA}" ]; then
   echo "🔍 Verifying platform-agent-gateway deployment container image matches commit ${COMMIT_SHA}..."
   start_time=$(date +%s)
-  until kubectl get deploy/platform-agent-gateway -n kubeagents-system -o jsonpath='{.spec.template.spec.containers[*].image}' 2>/dev/null | grep -q ":${COMMIT_SHA}"; do
+  until kubectl get deploy/platform-agent-gateway -n "${AGENT_NAMESPACE}" -o jsonpath='{.spec.template.spec.containers[*].image}' 2>/dev/null | grep -q ":${COMMIT_SHA}"; do
     if [ $(($(date +%s) - start_time)) -gt 300 ]; then
       echo "❌ ERROR: Deployment platform-agent-gateway did not update to image tag :${COMMIT_SHA} within timeout!" >&2
       exit 1
@@ -167,9 +190,9 @@ if [ -n "${COMMIT_SHA}" ]; then
 fi
 
 echo "Waiting for litellm deployment readiness..."
-kubectl rollout status deployment/litellm -n kubeagents-system --timeout="${READINESS_TIMEOUT}"
-kubectl wait --for=condition=Available deployment/litellm -n kubeagents-system --timeout="${READINESS_TIMEOUT}"
+kubectl rollout status deployment/litellm -n "${AGENT_NAMESPACE}" --timeout="${READINESS_TIMEOUT}"
+kubectl wait --for=condition=Available deployment/litellm -n "${AGENT_NAMESPACE}" --timeout="${READINESS_TIMEOUT}"
 
 echo "Waiting for platform-agent-gateway deployment readiness..."
-kubectl rollout status deployment/platform-agent-gateway -n kubeagents-system --timeout="${READINESS_TIMEOUT}"
-kubectl wait --for=condition=Available deployment/platform-agent-gateway -n kubeagents-system --timeout="${READINESS_TIMEOUT}"
+kubectl rollout status deployment/platform-agent-gateway -n "${AGENT_NAMESPACE}" --timeout="${READINESS_TIMEOUT}"
+kubectl wait --for=condition=Available deployment/platform-agent-gateway -n "${AGENT_NAMESPACE}" --timeout="${READINESS_TIMEOUT}"

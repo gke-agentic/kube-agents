@@ -36,7 +36,7 @@ page under "Why there is no `gke-admin` set".
 - `rc_teardown_common.sh`: Sourced by the two scripts below, which both call `uninstall.sh` and read the same three outcomes out of its exit code (`./uninstall.sh --help` lists them). Holds the invocation, the `RC_TEARDOWN_STRICT` parsing, and the job-summary rendering; each caller decides for itself what a failure means.
 - `provision_rc_environment.sh`: Tears the RC environment down with `uninstall.sh`, then reinstalls it at the candidate commit with `install.sh`, against the dedicated RC GCP project. A failed teardown raises an `::error` annotation and a job-summary entry carrying the teardown output, and provisions anyway unless `RC_TEARDOWN_STRICT` is truthy — the choice between validating a candidate against stale state and letting a teardown problem block every release. It also forwards the GitOps repository and, with it, the GitHub token minter, and stages an optional `GH_APP_PRIVATE_KEY` to a private temporary file because `install.sh` takes a path; see "Enabling the GitHub token minter on the RC" below for what to set.
 - `teardown_rc_environment.sh`: Destroys the RC environment after a run that passed end to end, so the cluster exists only for the length of a run rather than idling between the 3-hourly ones. A failure here is always fatal and `RC_TEARDOWN_STRICT` does not apply: nothing runs afterwards, so the alternative to a red job is a GKE cluster billing under a green pipeline. It runs only when steps 1–4 all succeeded, which is what leaves a failed run's environment standing to be examined live.
-- `wait_for_gke_readiness.sh`: Connects `kubectl` to the RC cluster, configures Artifact Registry credentials, installs the Pub/Sub platform adapter, and waits for `litellm` and `platform-agent-gateway` to report ready. The adapter is installed here because it is a gateway singleton the agent image does not carry and the install engine does not deploy: the stockout investigator and any other alert producer contribute only route config, so without `agentplugins/pubsub-platform` the gateway opens no listener and every alert-driven test fails on silence. `SKIP_PUBSUB_PLATFORM` skips that install for a suite that does not exercise alert ingress.
+- `wait_for_gke_readiness.sh`: Connects `kubectl` to the target cluster, configures Artifact Registry credentials, installs the Pub/Sub platform adapter, waits for the resulting gateway re-template to settle, and waits for `litellm` and `platform-agent-gateway` to report ready. Called by `rc-release-pipeline.yml`, `e2e-nightly-matrix.yml` and `e2e-manual-runner.yml`, so all three get the adapter — and all three pay for an image build and a Helm release. The adapter is installed here because it is a gateway singleton the agent image does not carry and the install engine does not deploy: the stockout investigator and any other alert producer contribute only route config, so without `agentplugins/pubsub-platform` the gateway opens no listener and every alert-driven test fails on silence. That is a gap in the install rather than in the harness — tracked separately; this makes the gate honest in the meantime. `SKIP_PUBSUB_PLATFORM` skips the install for a run that does not exercise alert ingress.
 - `tag_validated_release.sh`: Attaches the `*_validated` tag to a candidate commit upon 100% test pass.
 - `calculate_next_version.sh`: Automatically calculates the next SemVer 2.0 version from Conventional Commits since the latest numeric GA release tag.
 - `verify_release_eligibility.sh`: Release gatekeeper that verifies commit eligibility, checks for live RC validation tags (`rc_*_validated`), performs tag collision detection, and verifies all 4 required container images exist in registry.
@@ -82,25 +82,11 @@ Three settings on the `rc` GitHub environment turn it on, and all three must be 
 
 `GITOPS_ORG` and `GITOPS_REPO` are deliberately separate from `GH_ORG` and `GH_REPO`, which every other workflow does use for this. On the `rc` environment that pair names the _release_ repository (`gke-labs/kube-agents`) and is what `common.sh`'s `get_target_repo` resolves for tag and release operations; pointing the minter at it would scope a live App token to this repository.
 
-The App's private key is separate, because it is signing material rather than configuration and never enters Terraform state. Import it into the minter's KMS key once, by hand — the same commands `install.sh` would run, against the RC project and region:
+The App's private key is separate, because it is signing material rather than configuration and never enters Terraform state. Import it into the minter's KMS key once, by hand. [`terraform/modules/github-minter/README.md`](../../terraform/modules/github-minter/README.md) is canonical for that import and carries both routes — the Minty CLI, and the `gcloud`/`openssl` path for a host whose Go toolchain cannot build it. For the RC, the parameters it asks for are project `kube-agents-rc` and location `us-central1` (the KMS location is `GCP_REGION` with any zone suffix stripped, so it moves if the region does), with the default `github-token-minter-keyring` and `github-token-minter-key` names.
 
-```bash
-gcloud services enable cloudkms.googleapis.com --project=kube-agents-rc
-gcloud kms keyrings create github-token-minter-keyring \
-  --location=us-central1 --project=kube-agents-rc
-gcloud kms keys create github-token-minter-key \
-  --keyring=github-token-minter-keyring --location=us-central1 \
-  --purpose=asymmetric-signing --default-algorithm=rsa-sign-pkcs1-2048-sha256 \
-  --import-only --protection-level=software --project=kube-agents-rc
+Do not hand-create the key from the `gcloud kms keys create` in that module's Terraform without `--skip-initial-version-creation`: KMS rejects an import-only key that does not skip it, which is why `skip_initial_version_creation = true` is set on the resource and why `install.sh`'s own pre-create passes the flag.
 
-git clone --depth 1 --branch v2.7.1 https://github.com/abcxyz/github-token-minter.git /tmp/minty
-cd /tmp/minty && go run ./cmd/minty tools import-pk \
-  -project-id=kube-agents-rc -location=us-central1 \
-  -key-ring=github-token-minter-keyring -key=github-token-minter-key \
-  -private-key=@/path/to/app.pem
-```
-
-That is a one-off. The key ring survives the teardown/reinstall cycle — `terraform destroy` cannot delete a Cloud KMS key ring, so `lifecycle.sh adopt-kms` re-adopts it on every apply and restores the key version the destroy disabled — and both the enable decision and `install.sh`'s own import step are satisfied by an existing enabled version. Confirm with:
+That import is a one-off. The key ring survives the teardown/reinstall cycle — `terraform destroy` cannot delete a Cloud KMS key ring, so `lifecycle.sh adopt-kms` re-adopts it on every apply — and both the enable decision and `install.sh`'s own import step short-circuit on an existing enabled version. Confirm with:
 
 ```bash
 gcloud kms keys versions list --key=github-token-minter-key \
@@ -108,7 +94,7 @@ gcloud kms keys versions list --key=github-token-minter-key \
   --project=kube-agents-rc --filter=state=ENABLED
 ```
 
-Setting an optional `GH_APP_PRIVATE_KEY` secret to the `.pem` contents is the alternative: `provision_rc_environment.sh` writes it to a private temporary file and hands `install.sh` the path, which imports it on the first install that finds no enabled version. It exists to bootstrap an environment without a manual step, and costs an App private key living in GitHub Actions — which is why the manual import above is the better of the two. A gcloud-only import recipe, for when the Go toolchain is the problem, is in [`k8s-operator/config/integrations/github/README.md`](../../k8s-operator/config/integrations/github/README.md).
+Setting an optional `GH_APP_PRIVATE_KEY` secret to the `.pem` contents is the alternative: `provision_rc_environment.sh` writes it to a private temporary file and hands `install.sh` the path, which imports it on the first install that finds no enabled version. It exists to bootstrap an environment without a manual step, and costs an App private key living in GitHub Actions — which is why the manual import is the better of the two.
 
 ## Workflow Mapping
 

@@ -103,19 +103,37 @@ if [ -n "${USER_PROFILE_ENABLED:-}" ]; then
   INSTALL_ARGS+=(--user-profile-enabled="${USER_PROFILE_ENABLED}")
 fi
 
-# GitOps repository, and with it the GitHub token minter.
+# No --gitops-org/--gitops-repo flags here: install.sh already seeds PARAM_GITOPS_ORG
+# and PARAM_GITOPS_REPO from the GITHUB_ORG and GITHUB_REPO this step exports
+# (install.sh:76-77), so passing them again would be the same values by a second
+# route. GITHUB_APP_ID is read from the environment the same way. All three unset
+# leaves enable_github_minter false and the install byte-identical to one that never
+# had them (installer_common.sh, the three-way guard in resolve_github_minter).
 #
-# Passed only when set, because --gitops-repo with an empty value is not the same
-# as omitting it: install.sh defaults PARAM_GITOPS_REPO to 'gke-fleet-iac', so an
-# empty flag would name a repository this project does not own. Omitted, the
-# install is byte-identical to one that never had these inputs — GITHUB_ORG stays
-# empty and installer_common.sh leaves enable_github_minter false.
-if [ -n "${GITHUB_ORG:-}" ]; then
-  INSTALL_ARGS+=(--gitops-org="${GITHUB_ORG}")
-fi
-
-if [ -n "${GITHUB_REPO:-}" ]; then
-  INSTALL_ARGS+=(--gitops-repo="${GITHUB_REPO}")
+# Partially set is the case worth shouting about. installer_common.sh prints its own
+# "GitHub minter deferred" warning only once all three are non-empty, so a single
+# missing value skips the minter in total silence — and the pipeline then fails much
+# later, in test_github_token_minting_and_connectivity, with the undiagnosable HTTP
+# 502 this wiring exists to remove.
+#
+# The way it goes missing is specific. `vars.X` and `secrets.X` interpolate to the
+# empty string when unset OR set at a scope this job cannot see, and `secrets.GH_APP_ID`
+# resolves here only because the deploy-rc job declares `environment: rc` — the
+# workflow_call block declares just GEMINI_API_KEY and no `secrets: inherit`. So a
+# GH_APP_ID created as a repository secret rather than an rc-environment one arrives
+# empty and looks exactly like not having configured the minter at all.
+GITHUB_MINTER_SET=""
+GITHUB_MINTER_MISSING=""
+for _v in GITHUB_ORG GITHUB_REPO GITHUB_APP_ID; do
+  if [ -n "${!_v:-}" ]; then
+    GITHUB_MINTER_SET="${GITHUB_MINTER_SET} ${_v}"
+  else
+    GITHUB_MINTER_MISSING="${GITHUB_MINTER_MISSING} ${_v}"
+  fi
+done
+if [ -n "${GITHUB_MINTER_SET}" ] && [ -n "${GITHUB_MINTER_MISSING}" ]; then
+  echo "::warning title=GitHub token minter not provisioned::Set:${GITHUB_MINTER_SET}; empty:${GITHUB_MINTER_MISSING}. All three are required, so the minter is being skipped and any test that mints a live GitHub token will fail with HTTP 502. An empty value here usually means the variable or secret exists at the repository scope rather than on the 'rc' environment."
+  echo "==> GitHub token minter NOT provisioned — set:${GITHUB_MINTER_SET}; empty:${GITHUB_MINTER_MISSING}." >&2
 fi
 
 # Memory mode mapping: kube_agents_memory/hindsight -> hindsight, none/off -> off, else -> file

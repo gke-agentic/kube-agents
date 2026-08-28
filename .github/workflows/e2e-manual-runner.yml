@@ -88,7 +88,7 @@ jobs:
         uses: google-github-actions/get-gke-credentials@3da1e46a907576cefaa90c484278bb5b259dd395 # v3.0.0
         with:
           cluster_name: ${{ vars.GKE_CLUSTER_NAME }}
-          location: ${{ vars.GCP_REGION || 'us-east4' }}
+          location: ${{ vars.GCP_REGION || 'us-central1' }}
           project_id: ${{ vars.GCP_PROJECT_ID }}
 
       - name: Connect to GKE & Configure Docker
@@ -98,7 +98,7 @@ jobs:
           GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
         run: |
           ./scripts/release/wait_for_gke_readiness.sh
-          REGION="${GCP_REGION:-us-east4}"
+          REGION="${GCP_REGION:-us-central1}"
           gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet || true
 
       - name: Execute E2E Tests
@@ -107,7 +107,7 @@ jobs:
           GCP_REGION: ${{ vars.GCP_REGION }}
           GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
           AGENT_NAMESPACE: ${{ vars.AGENT_NAMESPACE || 'kubeagents-system' }}
-          REGISTRY: ${{ vars.REGISTRY || vars.REGISTRY_PREFIX || (vars.GCP_PROJECT_ID && format('{0}-docker.pkg.dev/{1}/kube-agents', vars.GCP_REGION || 'us-east4', vars.GCP_PROJECT_ID)) || '' }}
+          REGISTRY: ${{ vars.REGISTRY || vars.REGISTRY_PREFIX || (vars.GCP_PROJECT_ID && format('{0}-docker.pkg.dev/{1}/kube-agents', vars.GCP_REGION || 'us-central1', vars.GCP_PROJECT_ID)) || '' }}
           GITHUB_ORG: ${{ vars.GH_ORG || 'test-org-kube-agent' }}
           GITHUB_REPO: ${{ vars.GH_REPO || 'test-org-kube-agent/agents-repo' }}
           TEST_ENVIRONMENT: ${{ inputs.test_environment }}
