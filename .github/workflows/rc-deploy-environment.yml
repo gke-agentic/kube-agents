@@ -144,7 +144,8 @@ jobs:
           # github_repo as "${GITHUB_ORG}/${GITHUB_REPO}".
           #
           # All three must be set before the minter is provisioned at all
-          # (installer_common.sh:612-627); with any of them empty the install is
+          # (the three-way guard in installer_common.sh's write_tfvars_from_state);
+          # with any of them empty the install is
           # byte-identical to today's. The pair must also match the repository the
           # E2E suite probes — a token minted for one repository does not
           # authenticate against another. `rc-e2e` deliberately pins neither in

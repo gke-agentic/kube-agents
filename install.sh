@@ -1195,15 +1195,21 @@ import_github_pem() {
   # hid the bug below; tolerating one specific error would still have hidden a
   # permission denial, a disabled API or a quota refusal, all of which end the
   # same way: no key, and an import that fails against something that is not there.
+  #
+  # `trap - ERR` inside each substitution, for the reason spelled out at the
+  # Workload Identity probe above: bash 3.2 runs the inherited ERR trap in the
+  # subshell even though `|| true` handles the failure, so a re-run — where
+  # "already exists" is the expected answer — would print two fatal-looking
+  # abort banners and leave a FAILED install report behind mid-run.
   local kms_ring_err="" kms_key_err=""
-  kms_ring_err="$(gcloud kms keyrings create "$keyring" --location="$kms_location" \
+  kms_ring_err="$(trap - ERR; gcloud kms keyrings create "$keyring" --location="$kms_location" \
     --project="$project_id" 2>&1)" || true
 
   # --skip-initial-version-creation is required, not optional: KMS answers
   # `INVALID_ARGUMENT: Import-only keys must skip initial version creation` without
   # it. It matches skip_initial_version_creation in terraform/modules/github-minter,
   # which is where the key normally comes from.
-  kms_key_err="$(gcloud kms keys create "$key" --keyring="$keyring" --location="$kms_location" \
+  kms_key_err="$(trap - ERR; gcloud kms keys create "$key" --keyring="$keyring" --location="$kms_location" \
     --purpose=asymmetric-signing --default-algorithm=rsa-sign-pkcs1-2048-sha256 \
     --import-only --skip-initial-version-creation \
     --protection-level=software --project="$project_id" 2>&1)" || true

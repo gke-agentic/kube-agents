@@ -621,13 +621,18 @@ class ImportGithubPemKmsKeyTest(unittest.TestCase):
     invocation, so dropping it again would look like nothing in a diff.
     """
 
-    def _run(self):
+    def _run(self, creates_fail=False):
         """import_github_pem against a stub gcloud that records every call.
 
         The stub reports no ENABLED key version, so the import is not
         short-circuited, and fails `keys describe`, which takes the
         could-not-be-confirmed branch. That branch returns before the Minty
         CLI clone, which is what keeps this a unit test.
+
+        creates_fail makes both `kms … create` calls exit non-zero on stderr,
+        the way KMS answers a re-run once the keyring exists. That is the only
+        path that exercises the error capture at all, so the default of 0
+        leaves it untested -- see the ERR-trap test below.
         """
         with tempfile.TemporaryDirectory() as tmp:
             bin_dir = pathlib.Path(tmp) / "bin"
@@ -635,6 +640,12 @@ class ImportGithubPemKmsKeyTest(unittest.TestCase):
             log = pathlib.Path(tmp) / "gcloud.log"
             pem = pathlib.Path(tmp) / "app.pem"
             pem.write_text("-----BEGIN RSA PRIVATE KEY-----\n")
+            create_case = (
+                "  *'kms keyrings create'* | *'kms keys create'*)\n"
+                "    echo 'ALREADY_EXISTS: it already exists' >&2; exit 1 ;;\n"
+                if creates_fail
+                else ""
+            )
             gcloud = bin_dir / "gcloud"
             gcloud.write_text(
                 "#!/usr/bin/env bash\n"
@@ -642,6 +653,7 @@ class ImportGithubPemKmsKeyTest(unittest.TestCase):
                 'case "$*" in\n'
                 "  *'kms keys versions list'*) exit 0 ;;\n"
                 "  *'kms keys describe'*) exit 1 ;;\n"
+                f"{create_case}"
                 "esac\n"
                 "exit 0\n"
             )
@@ -705,6 +717,29 @@ class ImportGithubPemKmsKeyTest(unittest.TestCase):
             [],
             "the PEM must not be imported into a key that could not be confirmed",
         )
+
+    def test_a_failing_create_is_reported_without_a_spurious_abort_banner(self):
+        """"Already exists" is the expected answer on a re-run, not an abort.
+
+        install.sh:54 installs an ERR trap, and bash 3.2 -- macOS's /bin/bash,
+        the curl|bash audience -- runs an inherited ERR trap inside a command
+        substitution even when `|| true` handles the failure outside it. Without
+        `trap - ERR` in the substitution the ordinary re-run prints on_error's
+        fatal banner twice and leaves a FAILED install report behind, while the
+        install carries on regardless.
+        """
+        proc, _ = self._run(creates_fail=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        combined = proc.stdout + proc.stderr
+        self.assertNotIn(
+            "Error encountered",
+            combined,
+            "a handled `gcloud kms ... create` failure must not fire the ERR trap; "
+            "add `trap - ERR` inside the command substitution",
+        )
+        # The other half of the hunk's purpose: the captured stderr is surfaced
+        # rather than discarded, which is what 2>/dev/null used to hide.
+        self.assertIn("ALREADY_EXISTS: it already exists", proc.stdout)
 
 
 if __name__ == "__main__":

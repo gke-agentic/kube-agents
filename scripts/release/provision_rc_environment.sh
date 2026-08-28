@@ -105,10 +105,11 @@ fi
 
 # No --gitops-org/--gitops-repo flags here: install.sh already seeds PARAM_GITOPS_ORG
 # and PARAM_GITOPS_REPO from the GITHUB_ORG and GITHUB_REPO this step exports
-# (install.sh:76-77), so passing them again would be the same values by a second
-# route. GITHUB_APP_ID is read from the environment the same way. All three unset
-# leaves enable_github_minter false and the install byte-identical to one that never
-# had them (installer_common.sh, the three-way guard in resolve_github_minter).
+# (the PARAM_GITOPS_* assignments near the top of install.sh), so passing them again
+# would be the same values by a second route. GITHUB_APP_ID is read from the
+# environment the same way. All three unset leaves enable_github_minter false and the
+# install byte-identical to one that never had them (the three-way guard on
+# GITHUB_ORG/GITHUB_REPO/GITHUB_APP_ID in installer_common.sh's write_tfvars_from_state).
 #
 # Partially set is the case worth shouting about. installer_common.sh prints its own
 # "GitHub minter deferred" warning only once all three are non-empty, so a single
@@ -151,9 +152,12 @@ fi
 #
 # The import is skipped when the key already has an ENABLED version, so on the RC
 # this only does work on the first install after the key is created: lifecycle.sh's
-# adopt-kms re-adopts the key ring on every subsequent apply and restores the key
-# version that terraform destroy left disabled, and uninstall.sh:452 records that
-# GCP cannot delete key rings at all.
+# adopt-kms re-adopts the key ring on every subsequent apply, and uninstall.sh's
+# "Kept by design" summary records that GCP cannot delete key rings at all. The
+# teardown does not disable the version either -- lifecycle.sh's forget_kms runs
+# `terraform state rm` on the crypto key before the destroy, so the destroy never
+# reaches it; adopt-kms's restore_key_versions is the backstop for a bare
+# `terraform destroy` that skipped forget_kms.
 #
 # Written with a restrictive umask rather than chmod after the fact, so the key is
 # never briefly world-readable, and removed after install.sh rather than in an EXIT

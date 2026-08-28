@@ -82,8 +82,22 @@ class TestInstallPubSubPlatformScript(unittest.TestCase):
         the cause.
         """
         body = _INSTALL_SCRIPT.read_text()
-        self.assertIn("GENERATION_SETTLE_TIMEOUT", body)
-        self.assertIn("settle_hard_deadline", body)
+        # The identifiers existing is not the invariant -- the guard that reads
+        # them is. Asserting the names alone stays green when the `-ge` test is
+        # deleted from the loop and the declarations are left behind, which is
+        # exactly the regression this pins.
+        self.assertRegex(
+            body,
+            r"settle_hard_deadline=\$\(\(\$\(date \+%s\) \+ GENERATION_SETTLE_TIMEOUT\)\)",
+            "the settle ceiling must be seeded from GENERATION_SETTLE_TIMEOUT",
+        )
+        self.assertRegex(
+            body,
+            r'if \[ "\$\(date \+%s\)" -ge "\$\{settle_hard_deadline\}" \]',
+            "the settle loop must break on the absolute ceiling; without this "
+            "test the stability window resets forever and the loop spends the "
+            "job's whole timeout-minutes budget",
+        )
 
 
 class TestCallerWiring(unittest.TestCase):

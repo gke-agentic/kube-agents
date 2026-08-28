@@ -126,9 +126,16 @@ while :; do
   plugin_phase=""
   plugin_observed=""
   plugin_generation=""
-  read -r plugin_phase plugin_observed plugin_generation <<<"$(
+  # Pipe-separated, not space-separated. kubectl renders a missing key as the
+  # empty string, so a plugin the operator has not reconciled yet emits "  3"
+  # for the space form, and word splitting then lands the generation in
+  # plugin_phase — the timeout below would report phase='3' and the generation
+  # absent, sending the reader after a phase that does not exist instead of the
+  # real answer, which is that nothing reconciled it. An explicit IFS keeps the
+  # empty fields.
+  IFS='|' read -r plugin_phase plugin_observed plugin_generation <<<"$(
     kubectl get agentplugin pubsubplatform -n "${AGENT_NAMESPACE}" \
-      -o jsonpath='{.status.phase} {.status.observedGeneration} {.metadata.generation}' 2>/dev/null || true
+      -o jsonpath='{.status.phase}|{.status.observedGeneration}|{.metadata.generation}' 2>/dev/null || true
   )" || true
   if [ "${plugin_phase}" = "Ready" ] && [ -n "${plugin_observed}" ] &&
     [ "${plugin_observed}" = "${plugin_generation}" ]; then

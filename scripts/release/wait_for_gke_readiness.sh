@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Connects to GKE cluster and verifies that required deployments reach Ready state.
 #
-# Waits; it does not install. Anything this script needs on the cluster is put
-# there by an earlier step — alert ingress by install_pubsub_platform.sh, which
-# runs before it so that the gateway re-template the adapter causes is already
-# in flight by the time the rollout waits below start.
+# Waits; it does not install. Where a caller needs alert ingress it installs it
+# in an earlier step — rc-release-pipeline.yml runs install_pubsub_platform.sh
+# before this, so the gateway re-template the adapter causes is already in
+# flight by the time the rollout waits below start. That ordering is the
+# caller's to get right, not an invariant this script can assume: the nightly
+# matrix and the manual runner call this script with no such step today.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

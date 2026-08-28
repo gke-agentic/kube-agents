@@ -66,11 +66,16 @@ jobs:
     concurrency:
       group: rc-environment
       cancel-in-progress: false
-    # The readiness waits alone can now spend ~22 minutes before the suite
-    # starts: wait_for_gke_readiness.sh gates litellm at 420s and the gateway
-    # at 900s, which is what a fresh Autopilot cluster costs when it has to
-    # scale nodes from zero and pull both images. At 30 the job timeout would
-    # fire first and report a broken deploy rather than a slow one.
+    # Roughly 40 of these 60 minutes can be spent before the first test runs,
+    # which is what a fresh Autopilot cluster costs when it has to scale nodes
+    # from zero and pull every image. wait_for_gke_readiness.sh gates litellm at
+    # 420s and the gateway at 900s, and pays each of those twice — once for
+    # `rollout status`, once for the paired `wait --for=condition=Available` —
+    # on top of a 300s image-tag verification loop. The adapter step ahead of it
+    # adds an image build and push plus up to 300s plugin-ready and 180s settle.
+    # At 30 the job timeout would fire first and report a broken deploy rather
+    # than a slow one. Re-derive this sum before lowering it; the readiness
+    # constants are in wait_for_gke_readiness.sh, not here.
     timeout-minutes: 60
     permissions:
       contents: read
