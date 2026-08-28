@@ -91,7 +91,7 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
         self.assertIn(f"DIR={_REPO_ROOT}", proc.stdout)
 
     def test_acquire_source_repo_refuses_to_mutate_dirty_existing_repo(self):
-        """Verifies acquire_source_repo errors if HOME/kube-agents exists with uncommitted changes."""
+        """Verifies acquire_source_repo uses existing HOME/kube-agents and verify_local_source_ref rejects dirty checkout."""
         temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         try:
             home_dir = pathlib.Path(temp_dir.name) / "home"
@@ -103,6 +103,7 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
             (repo_dir / "file.txt").write_text("initial\n")
             subprocess.run(["git", "add", "file.txt"], cwd=str(repo_dir), check=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=str(repo_dir), check=True)
+            subprocess.run(["git", "tag", "0.2.0"], cwd=str(repo_dir), check=True)
 
             # Make working tree dirty
             (repo_dir / "file.txt").write_text("dirty changes\n")
@@ -125,7 +126,48 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
                 cwd=str(outside_dir),
             )
             self.assertNotEqual(proc.returncode, 0)
-            self.assertIn("has uncommitted changes", proc.stdout)
+            self.assertIn("Using existing repository", proc.stdout)
+            self.assertIn("without modifying local changes", proc.stdout)
+            self.assertIn("dirty checkout", proc.stdout)
+        finally:
+            temp_dir.cleanup()
+
+    def test_acquire_source_repo_uses_clean_existing_repo_without_modifying_changes(self):
+        """Verifies acquire_source_repo uses clean existing HOME/kube-agents without mutating branch/checkout."""
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        try:
+            home_dir = pathlib.Path(temp_dir.name) / "home"
+            repo_dir = home_dir / "kube-agents"
+            repo_dir.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["git", "init"], cwd=str(repo_dir), check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=str(repo_dir), check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(repo_dir), check=True)
+            (repo_dir / "file.txt").write_text("initial\n")
+            subprocess.run(["git", "add", "file.txt"], cwd=str(repo_dir), check=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=str(repo_dir), check=True)
+            subprocess.run(["git", "tag", "0.2.0"], cwd=str(repo_dir), check=True)
+
+            outside_dir = pathlib.Path(temp_dir.name) / "outside"
+            outside_dir.mkdir()
+            isolated_install_sh = outside_dir / "install.sh"
+            isolated_install_sh.write_text(_INSTALL_SH.read_text())
+
+            cmd = 'out_dir=""; acquire_source_repo out_dir "0.2.0"; echo "RESOLVED=$out_dir"'
+            setup = f"""
+KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
+{cmd}
+"""
+            proc = subprocess.run(
+                ["bash", "-c", setup],
+                capture_output=True,
+                text=True,
+                env={"HOME": str(home_dir), "PATH": os.environ["PATH"]},
+                cwd=str(outside_dir),
+            )
+            self.assertEqual(proc.returncode, 0, f"Failed: {proc.stderr}")
+            self.assertIn("Using existing repository", proc.stdout)
+            self.assertIn("without modifying local changes", proc.stdout)
+            self.assertIn(f"RESOLVED={repo_dir}", proc.stdout)
         finally:
             temp_dir.cleanup()
 

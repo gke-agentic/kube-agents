@@ -564,21 +564,16 @@ acquire_source_repo() {
     print_success "Using current repository directory: $resolved_dir"
   else
     resolved_dir="$HOME/kube-agents"
-    if [ -d "$resolved_dir/.git" ]; then
-      if [ -n "$(git -C "$resolved_dir" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
-        print_error "Existing repository at $resolved_dir has uncommitted changes. Refusing to overwrite or switch branches."
-        print_info "Please commit or stash your changes before running the installer, or run the installer directly from within your repository clone."
-        return 1
-      fi
-      print_info "Updating repository at $resolved_dir to ref '$expected_ref'..."
-      git -C "$resolved_dir" fetch --depth=1 https://github.com/gke-labs/kube-agents.git "$expected_ref"
-      git -C "$resolved_dir" checkout --detach FETCH_HEAD
-    elif [ -d "$resolved_dir" ]; then
-      print_info "Using existing repository at $resolved_dir."
+    if [ -d "$resolved_dir" ]; then
+      print_info "Using existing repository at $resolved_dir without modifying local changes."
     else
       print_info "Cloning kube-agents install sources at '$expected_ref' into $resolved_dir..."
       git clone --filter=blob:none --no-checkout https://github.com/gke-labs/kube-agents.git "$resolved_dir"
-      git -C "$resolved_dir" fetch --depth=1 https://github.com/gke-labs/kube-agents.git "$expected_ref"
+      if [[ "$expected_ref" =~ ^[0-9a-fA-F]{40}$ ]]; then
+        git -C "$resolved_dir" fetch --depth=1 https://github.com/gke-labs/kube-agents.git "$expected_ref"
+      else
+        git -C "$resolved_dir" fetch --depth=1 https://github.com/gke-labs/kube-agents.git "+refs/tags/${expected_ref}:refs/tags/${expected_ref}"
+      fi
       git -C "$resolved_dir" checkout --detach FETCH_HEAD
     fi
     cd "$resolved_dir"
