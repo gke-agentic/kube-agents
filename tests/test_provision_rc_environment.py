@@ -478,8 +478,14 @@ exit {install_exit}
         self.assertIn("GITHUB_APP_ID", combined)
         self.assertIn("::error", combined)
 
-    def test_a_partial_minter_config_does_not_reach_the_installer(self):
-        """Failing after install.sh has run would already have torn the RC down."""
+    def test_a_partial_minter_config_refuses_before_the_teardown(self):
+        """The guard has to sit above `rc_teardown_run`, not merely above install.sh.
+
+        This script is uninstall.sh followed by install.sh. A guard placed after the
+        teardown refuses an environment it has already destroyed and leaves the RC
+        down until someone re-runs the pipeline — the same trap the `gke-admin`
+        release note in scripts/release/README.md describes.
+        """
         proc, tmp_dir = self._run(
             {"GITHUB_ORG": "acme", "GITHUB_REPO": "infra"},
             install_body='printf "ran\\n" > installer_ran.txt\n',
@@ -489,20 +495,26 @@ exit {install_exit}
             (tmp_dir / "installer_ran.txt").exists(),
             "the guard must fire before install.sh is invoked",
         )
+        combined = proc.stdout + proc.stderr
+        self.assertNotIn(
+            "Tearing down existing RC environment",
+            combined,
+            "the guard must fire before uninstall.sh destroys the environment",
+        )
 
-    def test_a_complete_minter_config_is_not_warned_about(self):
+    def test_a_complete_minter_config_provisions_without_complaint(self):
         proc, _ = self._run(
             {"GITHUB_ORG": "acme", "GITHUB_REPO": "infra", "GITHUB_APP_ID": "4143620"}
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertNotIn("GitHub token minter not provisioned", proc.stdout + proc.stderr)
+        self.assertNotIn("half-configured", proc.stdout + proc.stderr)
 
-    def test_no_minter_config_at_all_is_not_warned_about(self):
-        # Every environment that deliberately runs without a minter would otherwise get
-        # a warning on every provision.
+    def test_no_minter_config_at_all_provisions_without_complaint(self):
+        # Every environment that deliberately runs without a minter — which is all of
+        # them outside the RC — would otherwise be refused on every provision.
         proc, _ = self._run({})
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertNotIn("GitHub token minter not provisioned", proc.stdout + proc.stderr)
+        self.assertNotIn("half-configured", proc.stdout + proc.stderr)
 
 
 if __name__ == "__main__":

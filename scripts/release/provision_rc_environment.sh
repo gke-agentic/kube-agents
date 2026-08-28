@@ -15,6 +15,47 @@ export CLOUDSDK_CORE_DISABLE_PROMPTS="${CLOUDSDK_CORE_DISABLE_PROMPTS:-1}"
 # that ends on a successful command hands ITS status to the shell, which would
 # turn a `set -u` abort on a missing input into a green step.
 rc_teardown_require_inputs
+
+# Half-configured minter: refuse before anything is destroyed.
+#
+# All three of GITHUB_ORG/GITHUB_REPO/GITHUB_APP_ID must be non-empty before
+# installer_common.sh provisions the minter at all, and its own "GitHub minter
+# deferred" warning only fires once they are, so one missing value skips the
+# minter in silence.
+#
+# This is a deliberate tightening, not the restoration of an existing failure.
+# Nothing downstream currently notices: the test that exercises minting,
+# test_github_token_minting_and_connectivity, runs under the `rc-e2e` step of
+# rc-release-pipeline.yml, which is `continue-on-error: true`. So a broken
+# minter has been costing an HTTP 502 in a tolerated step and validating the
+# candidate anyway — which is exactly how it went unnoticed. Refusing here
+# trades a silently degraded RC for a loud one.
+#
+# Above the teardown deliberately. `rc_teardown_run` below is `uninstall.sh`,
+# so a check placed after it would refuse an environment it had already
+# destroyed and leave the RC down until someone re-ran the pipeline — the same
+# trap the `gke-admin` release note in this directory's README describes.
+#
+# All three empty is a different case and stays allowed: an install deliberately
+# without a minter, which is the default everywhere outside the RC.
+#
+# Why a value goes missing, and what has to be true for it not to, is in
+# scripts/release/README.md under "Enabling the GitHub token minter on the RC".
+GITHUB_MINTER_SET=""
+GITHUB_MINTER_MISSING=""
+for _v in GITHUB_ORG GITHUB_REPO GITHUB_APP_ID; do
+  if [ -n "${!_v:-}" ]; then
+    GITHUB_MINTER_SET="${GITHUB_MINTER_SET} ${_v}"
+  else
+    GITHUB_MINTER_MISSING="${GITHUB_MINTER_MISSING} ${_v}"
+  fi
+done
+if [ -n "${GITHUB_MINTER_SET}" ] && [ -n "${GITHUB_MINTER_MISSING}" ]; then
+  echo "::error title=GitHub token minter is half-configured::Set:${GITHUB_MINTER_SET}; empty:${GITHUB_MINTER_MISSING}. All three are required. Refusing to tear down and reprovision an RC whose token-minting test would then fail with an HTTP 502. Check that each one is set on the 'rc' environment, and that rc-release-pipeline.yml still calls this workflow with \`secrets: inherit\` — without it an environment secret such as GH_APP_ID reaches this job empty."
+  echo "==> GitHub token minter half-configured — set:${GITHUB_MINTER_SET}; empty:${GITHUB_MINTER_MISSING}." >&2
+  exit 1
+fi
+
 TEARDOWN_LOG="$(mktemp)"
 
 echo "==> Tearing down existing RC environment (${RC_TEARDOWN_TARGET}) via canonical uninstall.sh..."
@@ -111,41 +152,8 @@ fi
 # install byte-identical to one that never had them (the three-way guard on
 # GITHUB_ORG/GITHUB_REPO/GITHUB_APP_ID in installer_common.sh's write_tfvars_from_state).
 #
-# Partially set is fatal, and this is where it stops. installer_common.sh prints its
-# own "GitHub minter deferred" warning only once all three are non-empty, so a single
-# missing value skips the minter in silence — and the run then dies much later, in
-# test_github_token_minting_and_connectivity, with the undiagnosable HTTP 502 this
-# wiring exists to remove. A `::warning` here is not enough: the deploy still goes
-# ahead, the gate still fails, and the cause is still forty minutes upstream of the
-# symptom. Failing now costs one RC environment; warning past it costs the whole run
-# and leaves someone reading a 502.
-#
-# All three empty is a different case and stays allowed: that is an install
-# deliberately configured without the minter, which is the default everywhere
-# outside the RC.
-#
-# The way a value goes missing is specific. `vars.X` and `secrets.X` interpolate to
-# the empty string when unset OR set at a scope the job cannot see. For the RC that
-# scope is the `rc` environment, and reaching it takes BOTH halves: the deploy-rc job
-# declares `environment: rc`, and rc-release-pipeline.yml passes `secrets: inherit`.
-# An explicit `secrets:` mapping in the caller cannot work — a `uses:` job has no
-# environment, so it resolves the names against nothing and forwards empties. That
-# was the bug: GH_APP_ID existed on the rc environment the whole time and arrived
-# here empty anyway.
-GITHUB_MINTER_SET=""
-GITHUB_MINTER_MISSING=""
-for _v in GITHUB_ORG GITHUB_REPO GITHUB_APP_ID; do
-  if [ -n "${!_v:-}" ]; then
-    GITHUB_MINTER_SET="${GITHUB_MINTER_SET} ${_v}"
-  else
-    GITHUB_MINTER_MISSING="${GITHUB_MINTER_MISSING} ${_v}"
-  fi
-done
-if [ -n "${GITHUB_MINTER_SET}" ] && [ -n "${GITHUB_MINTER_MISSING}" ]; then
-  echo "::error title=GitHub token minter is half-configured::Set:${GITHUB_MINTER_SET}; empty:${GITHUB_MINTER_MISSING}. All three are required. Refusing to provision an RC that would fail test_github_token_minting_and_connectivity with an HTTP 502. An empty value here means the variable or secret is missing, or is set at the repository scope rather than on the 'rc' environment — note that an environment SECRET also needs \`secrets: inherit\` on the calling job in rc-release-pipeline.yml."
-  echo "==> GitHub token minter half-configured — set:${GITHUB_MINTER_SET}; empty:${GITHUB_MINTER_MISSING}." >&2
-  exit 1
-fi
+# The half-configured case is refused at the top of this script, above the
+# teardown, so it never reaches here.
 
 # Memory mode mapping: kube_agents_memory/hindsight -> hindsight, none/off -> off, else -> file
 if [ "${MEMORY_PROVIDER:-}" = "kube_agents_memory" ] || [ "${MEMORY_PROVIDER:-}" = "hindsight" ]; then

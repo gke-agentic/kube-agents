@@ -14,6 +14,10 @@ strings. The install then sees an empty GITHUB_APP_ID, skips the minter, and
 the run dies later in test_github_token_minting_and_connectivity with an HTTP
 502 that names nothing. That shipped once; these tests are so it cannot ship
 again without a red build.
+
+Only the workflow wiring is pinned here. The guard in provision_rc_environment.sh
+is covered by tests/test_provision_rc_environment.py, which executes the script
+rather than reading it.
 """
 
 import pathlib
@@ -25,7 +29,6 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _WORKFLOWS = _REPO_ROOT / ".github" / "workflows"
 _PIPELINE = _WORKFLOWS / "rc-release-pipeline.yml"
 _DEPLOY = _WORKFLOWS / "rc-deploy-environment.yml"
-_PROVISION = _REPO_ROOT / "scripts" / "release" / "provision_rc_environment.sh"
 
 
 def _jobs(path: pathlib.Path) -> dict:
@@ -52,39 +55,6 @@ class RcMinterSecretWiringTest(unittest.TestCase):
         body = _DEPLOY.read_text()
         for secret in ("secrets.GH_APP_ID", "secrets.GH_APP_PRIVATE_KEY"):
             self.assertIn(secret, body)
-
-    def test_a_half_configured_minter_stops_the_deploy(self):
-        """Warning past this is what turned a missing secret into a 502 downstream."""
-        body = _PROVISION.read_text()
-        self.assertIn(
-            "::error title=GitHub token minter is half-configured",
-            body,
-            "the partial-config branch must raise an ::error, not a ::warning",
-        )
-        self.assertNotIn(
-            "::warning title=GitHub token minter not provisioned",
-            body,
-            "the old warning-and-continue behaviour is what this replaces",
-        )
-        # The `exit 1` has to be inside that branch, not merely somewhere in the file.
-        branch = body.split('if [ -n "${GITHUB_MINTER_SET}" ] && [ -n "${GITHUB_MINTER_MISSING}" ]; then', 1)
-        self.assertEqual(len(branch), 2, "the partial-config guard has moved or been renamed")
-        self.assertIn(
-            "exit 1",
-            branch[1].split("\nfi\n", 1)[0],
-            "the partial-config branch must exit non-zero",
-        )
-
-    def test_all_three_unset_is_still_allowed(self):
-        """An install deliberately without the minter is the default everywhere else.
-
-        The guard fires only when the set and missing lists are both non-empty, so
-        it must not be rewritten as a bare "any of them missing" check.
-        """
-        self.assertIn(
-            'if [ -n "${GITHUB_MINTER_SET}" ] && [ -n "${GITHUB_MINTER_MISSING}" ]; then',
-            _PROVISION.read_text(),
-        )
 
 
 if __name__ == "__main__":
