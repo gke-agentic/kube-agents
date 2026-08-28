@@ -137,6 +137,14 @@ jobs:
           E2E_ENV: "rc-e2e"
           STOCKOUT_SCENARIOS: "04"
           FLEET_AUDIT_STREAMS: "all"
+          # The same pair rc-deploy-environment.yml gives the installer, so the
+          # repository the suite probes is the one the minter was scoped to. Read from
+          # the environment rather than pinned in e2e_config.yaml because a value
+          # written in both places drifts, and a token minted for one repository does
+          # not authenticate against another. Bare: the conftest github_repo fixture
+          # composes owner/repo from GITHUB_ORG when GITHUB_REPO carries no slash.
+          GITHUB_ORG: ${{ vars.GITOPS_ORG }}
+          GITHUB_REPO: ${{ vars.GITOPS_REPO }}
         run: make test-e2e
 
   step-4-tag-validated:

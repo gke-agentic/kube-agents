@@ -46,8 +46,30 @@ if ! kubectl cluster-info >/dev/null 2>&1 || [[ "${CURRENT_CTX}" != *"${CLUSTER_
     ${GKE_DNS_ENDPOINT_FLAG}
 fi
 
-echo "🔑 Configuring Docker authentication for Artifact Registry (${REGION}-docker.pkg.dev)..."
-gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet || true
+AGENT_NAMESPACE="${AGENT_NAMESPACE:-kubeagents-system}"
+
+# The agent's registry is not always the cluster's region. The RC runs a us-east4
+# cluster whose images come from us-central1-docker.pkg.dev, and anything the
+# plugin installers build goes to the agent's registry rather than this one:
+# plugin_image_discover_registry (agentplugins/lib/plugin_image.sh) copies the
+# running agent's host, location, project and repository precisely so a plugin
+# lands somewhere the kubelet is already known to pull from. Authenticating only
+# ${REGION}-docker.pkg.dev therefore leaves the adapter push below unauthenticated
+# on any install where the two differ.
+AR_HOSTS="${REGION}-docker.pkg.dev"
+AGENT_IMAGE="$(kubectl get deployment platform-agent-gateway -n "${AGENT_NAMESPACE}" \
+  -o jsonpath='{.spec.template.spec.containers[?(@.name=="platform-agent")].image}' 2>/dev/null || true)"
+AGENT_AR_HOST="${AGENT_IMAGE%%/*}"
+case "${AGENT_AR_HOST}" in
+  *-docker.pkg.dev)
+    if [ "${AGENT_AR_HOST}" != "${REGION}-docker.pkg.dev" ]; then
+      AR_HOSTS="${AR_HOSTS},${AGENT_AR_HOST}"
+    fi
+    ;;
+esac
+
+echo "🔑 Configuring Docker authentication for Artifact Registry (${AR_HOSTS})..."
+gcloud auth configure-docker "${AR_HOSTS}" --quiet || true
 
 # ─── Pub/Sub alert ingress ────────────────────────────────────────────────────
 # The Pub/Sub adapter is a separate AgentPlugin and is not in the agent image.
@@ -80,7 +102,6 @@ gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet || true
 # let a stockout-only problem block the release gate that was deliberately made the
 # blocking one — and would do it before the Chat gate had run at all. A warning leaves
 # that structure intact and puts the reason directly above the failure it explains.
-AGENT_NAMESPACE="${AGENT_NAMESPACE:-kubeagents-system}"
 if is_truthy "${SKIP_PUBSUB_PLATFORM:-false}"; then
   echo "⏭️  SKIP_PUBSUB_PLATFORM is set: leaving Pub/Sub alert ingress uninstalled."
 else

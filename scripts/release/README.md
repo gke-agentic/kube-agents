@@ -70,15 +70,15 @@ A run that fails anywhere does leave its environment standing, deliberately — 
 
 `test_github_token_minting_and_connectivity` mints a real GitHub App token inside the agent pod and reads a repository back through it. It fails on an install where the minter was never provisioned: the chart renders the `github-token-minter` Deployment only under `githubMinter.enabled`, so the credential sidecar's refresh reaches no broker and answers `HTTP 502`, with the reason logged inside the sidecar where CI never sees it.
 
-The repository it probes is `test-org-kube-agent/agents-repo`, pinned for the `rc-e2e` environment in [`tests/e2e/e2e_config.yaml`](../../tests/e2e/e2e_config.yaml). The GitHub App has to be installed on that repository, and the minter has to be scoped to the same one — a token minted for one repository does not authenticate against another.
+The repository it probes comes from the same two variables that scope the minter, so the two cannot drift: `rc-deploy-environment.yml` gives them to the installer and `rc-release-pipeline.yml` gives them to the suite. The GitHub App has to be installed on that repository — a token minted for one repository does not authenticate against another.
 
 Three settings on the `rc` GitHub environment turn it on, and all three must be present before the minter is provisioned at all ([`installer_common.sh`](../../k8s-operator/scripts/installer_common.sh)). With any of them empty the install is byte-identical to one that never had them.
 
-| Setting                | Value                 | Notes                                                                                                 |
-| ---------------------- | --------------------- | ----------------------------------------------------------------------------------------------------- |
-| Variable `GITOPS_ORG`  | `test-org-kube-agent` | Repository owner.                                                                                     |
-| Variable `GITOPS_REPO` | `agents-repo`         | Bare name, not `owner/repo`. Terraform's `github_repo` is composed as `${GITHUB_ORG}/${GITHUB_REPO}`. |
-| Secret `GH_APP_ID`     | the App ID            | Same App that is installed on the repository above.                                                   |
+| Setting                | Value                  | Notes                                                                                                 |
+| ---------------------- | ---------------------- | ----------------------------------------------------------------------------------------------------- |
+| Variable `GITOPS_ORG`  | `gke-agentic`          | Repository owner.                                                                                     |
+| Variable `GITOPS_REPO` | `kube-agents-rc-infra` | Bare name, not `owner/repo`. Terraform's `github_repo` is composed as `${GITHUB_ORG}/${GITHUB_REPO}`. |
+| Secret `GH_APP_ID`     | the App ID             | Same App that is installed on the repository above.                                                   |
 
 `GITOPS_ORG` and `GITOPS_REPO` are deliberately separate from `GH_ORG` and `GH_REPO`, which every other workflow does use for this. On the `rc` environment that pair names the _release_ repository (`gke-labs/kube-agents`) and is what `common.sh`'s `get_target_repo` resolves for tag and release operations; pointing the minter at it would scope a live App token to this repository.
 
