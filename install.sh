@@ -1187,18 +1187,39 @@ import_github_pem() {
   # after a destroy.
   print_info "Ensuring the minter's KMS keyring and import-only signing key exist..."
   gcloud services enable cloudkms.googleapis.com --project="$project_id"
-  gcloud kms keyrings create "$keyring" --location="$kms_location" --project="$project_id" 2>/dev/null || true
+
+  # Both creates keep their errors instead of discarding them. Re-running the
+  # installer is the common case and "already exists" is the expected answer to
+  # it, so the output is only surfaced when the resource is missing afterwards —
+  # which is the check that actually matters. Discarding stderr outright is what
+  # hid the bug below; tolerating one specific error would still have hidden a
+  # permission denial, a disabled API or a quota refusal, all of which end the
+  # same way: no key, and an import that fails against something that is not there.
+  local kms_ring_err="" kms_key_err=""
+  kms_ring_err="$(gcloud kms keyrings create "$keyring" --location="$kms_location" \
+    --project="$project_id" 2>&1)" || true
+
   # --skip-initial-version-creation is required, not optional: KMS answers
   # `INVALID_ARGUMENT: Import-only keys must skip initial version creation` without
-  # it, and because this call is silenced and `|| true`'d, the failure was invisible
-  # — the key was never created, the Minty import below then failed against a key
-  # that did not exist, and the minter deployed and never passed readiness. It
-  # matches skip_initial_version_creation in terraform/modules/github-minter, which
-  # is where the key normally comes from.
-  gcloud kms keys create "$key" --keyring="$keyring" --location="$kms_location" \
+  # it. It matches skip_initial_version_creation in terraform/modules/github-minter,
+  # which is where the key normally comes from.
+  kms_key_err="$(gcloud kms keys create "$key" --keyring="$keyring" --location="$kms_location" \
     --purpose=asymmetric-signing --default-algorithm=rsa-sign-pkcs1-2048-sha256 \
     --import-only --skip-initial-version-creation \
-    --protection-level=software --project="$project_id" 2>/dev/null || true
+    --protection-level=software --project="$project_id" 2>&1)" || true
+
+  # The assertion, not the create, is what makes a failure visible. Whatever went
+  # wrong above, the import cannot work without this key, and saying so here names
+  # the cause instead of leaving a confusing failure two steps later.
+  if ! gcloud kms keys describe "$key" --keyring="$keyring" --location="$kms_location" \
+    --project="$project_id" >/dev/null 2>&1; then
+    print_warning "The minter's KMS signing key ${kms_location}/${keyring}/${key} does not exist and could not be created."
+    [ -n "$kms_ring_err" ] && print_info "Keyring create said: ${kms_ring_err}"
+    [ -n "$kms_key_err" ] && print_info "Key create said: ${kms_key_err}"
+    print_info "The PEM import needs that key, so it is being skipped; the minter deployment stays unready until both exist."
+    print_info "The gcloud-only recovery recipe is in k8s-operator/config/integrations/github/README.md."
+    return 0
+  fi
 
   print_info "Importing the GitHub App private key into KMS via the Minty CLI..."
   local minty_dir pem_abs
