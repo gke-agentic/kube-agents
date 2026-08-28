@@ -37,6 +37,11 @@ on:
         required: false
         default: "false"
         type: string
+      skip_pubsub_platform:
+        description: "Skip installing the Pub/Sub alert-ingress adapter (true / false). Only safe for a run that exercises no alert-driven suite."
+        required: false
+        default: "false"
+        type: string
 
 concurrency:
   group: rc-environment
@@ -91,8 +96,21 @@ jobs:
           location: ${{ vars.GCP_REGION || 'us-central1' }}
           project_id: ${{ vars.GCP_PROJECT_ID }}
 
+      # Fails the run rather than warning: a manual run that wanted no alert
+      # ingress says so with skip_pubsub_platform, so reaching here and failing
+      # means someone asked for ingress and did not get it.
+      - name: Install Pub/Sub Alert Ingress
+        env:
+          AGENT_NAMESPACE: ${{ vars.AGENT_NAMESPACE || 'kubeagents-system' }}
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ vars.GCP_REGION }}
+          GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
+          SKIP_PUBSUB_PLATFORM: ${{ inputs.skip_pubsub_platform }}
+        run: ./scripts/release/install_pubsub_platform.sh
+
       - name: Connect to GKE & Configure Docker
         env:
+          AGENT_NAMESPACE: ${{ vars.AGENT_NAMESPACE || 'kubeagents-system' }}
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           GCP_REGION: ${{ vars.GCP_REGION }}
           GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}

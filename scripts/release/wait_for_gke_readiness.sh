@@ -1,27 +1,19 @@
 #!/usr/bin/env bash
 # Connects to GKE cluster and verifies that required deployments reach Ready state.
+#
+# Waits; it does not install. Anything this script needs on the cluster is put
+# there by an earlier step — alert ingress by install_pubsub_platform.sh, which
+# runs before it so that the gateway re-template the adapter causes is already
+# in flight by the time the rollout waits below start.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/release/common.sh
 source "${SCRIPT_DIR}/common.sh"
 
 readonly READINESS_TIMEOUT="300s" # 5 minutes timeout for GKE pod readiness
-# Seconds, not a kubectl duration: the adapter wait below is a shell loop rather than
-# `kubectl wait --for=condition=Ready`. The CRD does carry status.conditions and the
-# operator does write a Ready one, so that command would work — what it cannot express
-# is the observedGeneration == generation comparison, which is the half that tells a
-# fresh reconcile from a Ready left over from the previous one.
-readonly PLUGIN_READY_TIMEOUT=300
-# How long the gateway's generation must hold still before its spec counts as settled.
-# Taken, with its reasoning, from _GENERATION_STABLE_SECONDS in
-# tests/e2e/test_stockout_investigation.py: the first bump is not always the last, so
-# observing one and calling `rollout status` can succeed against an intermediate
-# revision moments before the next arrives.
-readonly GENERATION_STABLE_SECONDS=20
 
-CLUSTER_NAME="${GKE_CLUSTER_NAME:-${CLUSTER_NAME:-platform-agent-host}}"
-REGION="${GCP_REGION:-${REGION:-us-central1}}"
-PROJECT_ID="${GCP_PROJECT_ID:-${PROJECT_ID:-kube-agents-rc}}"
+release_resolve_target
 
 COMMIT_SHA="${1:-${COMMIT_SHA:-}}"
 
@@ -30,150 +22,15 @@ echo "⏳ CONNECTING TO GKE & WAITING FOR POD READINESS"
 echo "Project ID:        ${PROJECT_ID}"
 echo "Region:            ${REGION}"
 echo "Cluster Name:      ${CLUSTER_NAME}"
+echo "Namespace:         ${AGENT_NAMESPACE}"
 echo "Target Commit SHA: ${COMMIT_SHA:-(not specified)}"
 echo "Readiness Timeout: ${READINESS_TIMEOUT} (5 minutes)"
 echo "======================================================================"
 
-unset CLOUDSDK_PYTHON || true
-unset CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE || true
-export CLOUDSDK_PYTHON_SITEPACKAGES="0"
-export PYTHONNOUSERSITE="1"
-export USE_GKE_GCLOUD_AUTH_PLUGIN="True"
-export CLOUDSDK_CONTAINER_USE_APPLICATION_DEFAULT_CREDENTIALS="false"
-gcloud config set container/use_application_default_credentials false --quiet || true
+release_connect_kubectl
 
-if [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] && [ -f "${GOOGLE_APPLICATION_CREDENTIALS}" ]; then
-  gcloud auth activate-service-account --key-file="${GOOGLE_APPLICATION_CREDENTIALS}" --quiet || true
-fi
-
-CURRENT_CTX="$(kubectl config current-context 2>/dev/null || echo "")"
-if ! kubectl cluster-info >/dev/null 2>&1 || [[ "${CURRENT_CTX}" != *"${CLUSTER_NAME}"* || "${CURRENT_CTX}" != *"${PROJECT_ID}"* ]]; then
-  echo "Connecting kubectl to target cluster '${CLUSTER_NAME}' in project '${PROJECT_ID}'..."
-  gke_dns_endpoint_flag "${CLUSTER_NAME}" "${REGION}" "${PROJECT_ID}"
-  # Unquoted on purpose: empty must contribute no argument. See gke_dns_endpoint.sh.
-  gcloud container clusters get-credentials "${CLUSTER_NAME}" --location "${REGION}" --project "${PROJECT_ID}" \
-    ${GKE_DNS_ENDPOINT_FLAG}
-fi
-
-AGENT_NAMESPACE="${AGENT_NAMESPACE:-kubeagents-system}"
-
-# Only this region's host. The plugin installer below pushes to whichever registry the
-# running agent's image is in, which need not be this one — but it authenticates that
-# host itself: plugin_image_resolve calls plugin_image_check_credential, which calls
-# plugin_image_login, which runs `gcloud auth configure-docker` for the exact push host
-# and aborts if it fails (agentplugins/lib/plugin_image.sh). Adding the agent's host
-# here as well was covering a gap that does not exist.
 echo "🔑 Configuring Docker authentication for Artifact Registry (${REGION}-docker.pkg.dev)..."
 gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet || true
-
-# ─── Pub/Sub alert ingress ────────────────────────────────────────────────────
-# The Pub/Sub adapter is a separate AgentPlugin and is not in the agent image.
-# deploy/docker/Dockerfile bakes the google_chat, slack and chat platforms and
-# installs only the google-cloud-pubsub library; the adapter itself ships solely as
-# agentplugins/pubsub-platform, and nothing in the install engine — Terraform, the
-# chart, or install.sh — puts it on a cluster.
-#
-# A consumer such as gke-stockout-investigator contributes only route config under
-# platforms.pubsub.extra.subscriptions, which the operator files on the default
-# profile (gatewayScopedPluginConfigSubtrees, platformagent_manifests.go). With no
-# adapter to read it the gateway opens no listener at all, and the failure is
-# silence: verify.sh reports "no sign the adapter saw the message at all" and each
-# stockout scenario then burns its full 360s watch reporting that the agent never
-# started an investigation. Runs 32986207520, 33018980784, 33031877720 and
-# 33061389550 each failed exactly that way, in both tests, deterministically.
-#
-# Installed here rather than by a test fixture because the adapter is a gateway
-# singleton shared by every alert-producing plugin, not a fixture of one suite —
-# and because the two things its installer needs already exist at this point: the
-# kubectl context resolved above and the Artifact Registry credentials configured
-# on the line before. The plugin's own install.sh is the canonical installer and is
-# idempotent (`helm upgrade --install`, and plugin_image_resolve skips the build
-# when the content tag is already published), so a re-run costs a no-op.
-#
-# Three workflows run this script, not one: rc-release-pipeline.yml, e2e-nightly-matrix.yml
-# and e2e-manual-runner.yml. All three carry alert-driven suites, so all three want the
-# adapter — but it means an install and a Helm release now happen on every one of them.
-# SKIP_PUBSUB_PLATFORM opts a run out.
-#
-# Warned about rather than fatal, in both halves below. In the RC pipeline this script
-# runs once, ahead of BOTH suites: the mandatory Google Chat gate, and the optional
-# cluster/audit one its step carries `continue-on-error` for. Alert ingress is a
-# dependency of the optional suite alone, so exiting non-zero here would let a
-# stockout-only problem fail the gate that was deliberately made the blocking one — and
-# would do it before the Chat gate had run at all. A warning leaves that structure
-# intact and puts the reason directly above the failure it explains.
-if is_truthy "${SKIP_PUBSUB_PLATFORM:-false}"; then
-  echo "⏭️  SKIP_PUBSUB_PLATFORM is set: leaving Pub/Sub alert ingress uninstalled."
-else
-  echo "📡 Installing the Pub/Sub platform adapter (alert ingress)..."
-  pubsub_installed="true"
-  KUBECTL_CONTEXT="$(kubectl config current-context)" \
-    GCP_PROJECT_ID="${PROJECT_ID}" \
-    HERMES_NAMESPACE="${AGENT_NAMESPACE}" \
-    "${REPO_ROOT}/agentplugins/pubsub-platform/install.sh" || pubsub_installed="false"
-fi
-
-if [ "${pubsub_installed:-skipped}" = "false" ]; then
-  echo "⚠️  WARNING: the Pub/Sub platform adapter failed to install. Alert ingress is dead," \
-    "so any alert-driven test below will report that the agent never saw its alert." >&2
-elif [ "${pubsub_installed:-skipped}" = "true" ]; then
-  # A caught-up observedGeneration is necessary but NOT sufficient, so this waits on the
-  # gateway's own generation settling rather than on the plugin's status alone.
-  # updatePluginStatuses is the FIRST statement of reconcileWorkload
-  # (platformagent_controller.go:527-529) — the status is written before the workload is
-  # rendered or applied, and it returns no error, so `phase=Ready` with
-  # observedGeneration caught up is consistent with the Deployment patch not having
-  # landed, or having failed. Breaking there and falling straight into `rollout status`
-  # would let it succeed against the pre-plugin ReplicaSet and the gateway would then
-  # restart mid-suite — during the mandatory Chat gate, in the RC pipeline.
-  #
-  # So: wait for the plugin to catch up, then require the gateway's .metadata.generation
-  # to hold still for a stability window before the rollout waits below run. This is the
-  # same reasoning, and the same 20s, as _GENERATION_STABLE_SECONDS in
-  # tests/e2e/test_stockout_investigation.py, which was written for this exact race.
-  echo "Waiting for the pubsubplatform AgentPlugin to reconcile..."
-  plugin_deadline=$(($(date +%s) + PLUGIN_READY_TIMEOUT))
-  plugin_ready="false"
-  while :; do
-    plugin_phase=""
-    plugin_observed=""
-    plugin_generation=""
-    read -r plugin_phase plugin_observed plugin_generation <<<"$(
-      kubectl get agentplugin pubsubplatform -n "${AGENT_NAMESPACE}" \
-        -o jsonpath='{.status.phase} {.status.observedGeneration} {.metadata.generation}' 2>/dev/null || true
-    )" || true
-    if [ "${plugin_phase}" = "Ready" ] && [ -n "${plugin_observed}" ] &&
-      [ "${plugin_observed}" = "${plugin_generation}" ]; then
-      echo "✅ pubsubplatform AgentPlugin is Ready at generation ${plugin_generation}."
-      plugin_ready="true"
-      break
-    fi
-    if [ "$(date +%s)" -ge "${plugin_deadline}" ]; then
-      echo "⚠️  WARNING: the pubsubplatform AgentPlugin did not reconcile within" \
-        "${PLUGIN_READY_TIMEOUT}s (phase='${plugin_phase:-<none>}'," \
-        "observedGeneration='${plugin_observed:-<none>}', generation='${plugin_generation:-<none>}')." \
-        "Alert ingress may not be serving when the suites below run." >&2
-      break
-    fi
-    sleep 5
-  done
-
-  if [ "${plugin_ready}" = "true" ]; then
-    echo "Waiting for the gateway's generation to settle (${GENERATION_STABLE_SECONDS}s)..."
-    gateway_generation=""
-    settle_deadline=$(($(date +%s) + GENERATION_STABLE_SECONDS))
-    while [ "$(date +%s)" -lt "${settle_deadline}" ]; do
-      sleep 3
-      current_generation="$(kubectl get deployment platform-agent-gateway -n "${AGENT_NAMESPACE}" \
-        -o jsonpath='{.metadata.generation}' 2>/dev/null || true)"
-      if [ -n "${current_generation}" ] && [ "${current_generation}" != "${gateway_generation}" ]; then
-        gateway_generation="${current_generation}"
-        settle_deadline=$(($(date +%s) + GENERATION_STABLE_SECONDS))
-      fi
-    done
-    echo "✅ gateway generation settled at ${gateway_generation:-<unreadable>}."
-  fi
-fi
 
 if [ -n "${COMMIT_SHA}" ]; then
   echo "🔍 Verifying platform-agent-gateway deployment container image matches commit ${COMMIT_SHA}..."
