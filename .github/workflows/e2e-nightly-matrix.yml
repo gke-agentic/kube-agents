@@ -91,8 +91,9 @@ jobs:
       # read no alert. test_environment offers gchat-e2e, audit-e2e and
       # agent-plugin-e2e, none of which touch alert ingress, and failing those
       # for an adapter they never use would be a regression against the warning
-      # this step replaced. The scheduled run passes no input, so the default
-      # 'all' is falsy here and ingress stays mandatory where it matters.
+      # this step replaced. A schedule trigger applies no workflow_dispatch
+      # default at all, so inputs.test_environment is empty there, contains()
+      # is false, and ingress stays mandatory where it matters.
       - name: Install Pub/Sub Alert Ingress
         env:
           AGENT_NAMESPACE: ${{ vars.AGENT_NAMESPACE }}

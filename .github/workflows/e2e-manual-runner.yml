@@ -99,13 +99,22 @@ jobs:
       # Fails the run rather than warning: a manual run that wanted no alert
       # ingress says so with skip_pubsub_platform, so reaching here and failing
       # means someone asked for ingress and did not get it.
+      #
+      # The contains() half is the same auto-skip e2e-nightly-matrix.yml
+      # applies, and for the same reason: gchat-e2e, audit-e2e and
+      # agent-plugin-e2e read no alert, so making the step fatal for them would
+      # charge a dispatch for a Helm release, a plugin image build and a
+      # restart of the shared gateway that its suite never uses. Both
+      # workflows offer the same seven choices, so a dispatcher who leaves the
+      # input at its default should get the nightly's answer rather than a
+      # different one. skip_pubsub_platform stays as the explicit override.
       - name: Install Pub/Sub Alert Ingress
         env:
           AGENT_NAMESPACE: ${{ vars.AGENT_NAMESPACE || 'kubeagents-system' }}
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           GCP_REGION: ${{ vars.GCP_REGION }}
           GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
-          SKIP_PUBSUB_PLATFORM: ${{ inputs.skip_pubsub_platform }}
+          SKIP_PUBSUB_PLATFORM: ${{ inputs.skip_pubsub_platform || contains(fromJSON('["gchat-e2e","audit-e2e","agent-plugin-e2e"]'), inputs.test_environment) }}
         run: ./scripts/release/install_pubsub_platform.sh
 
       - name: Connect to GKE & Configure Docker
