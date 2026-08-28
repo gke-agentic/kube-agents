@@ -373,7 +373,7 @@ source "{_COMMON_SH}"
         """The error is a pointer to the misconfigured `env:` entry, so it must be precise."""
         proc = self._run_common_func(
             f"{self._RESOLVE}"
-            "export GKE_CLUSTER_NAME=c GCP_REGION=r\n"
+            "export GKE_CLUSTER_NAME=c GCP_REGION=r AGENT_NAMESPACE=n\n"
             "release_resolve_target",
             env={"CI": "true"},
         )
@@ -381,11 +381,13 @@ source "{_COMMON_SH}"
         self.assertIn("GCP_PROJECT_ID", proc.stderr)
         self.assertNotIn("GKE_CLUSTER_NAME", proc.stderr)
         self.assertNotIn("GCP_REGION", proc.stderr)
+        self.assertNotIn("AGENT_NAMESPACE", proc.stderr)
 
     def test_release_resolve_target_passes_in_ci_when_set(self):
         proc = self._run_common_func(
             f"{self._RESOLVE}"
-            "export GKE_CLUSTER_NAME=rc-cluster GCP_REGION=us-central1 GCP_PROJECT_ID=proj\n"
+            "export GKE_CLUSTER_NAME=rc-cluster GCP_REGION=us-central1 GCP_PROJECT_ID=proj "
+            "AGENT_NAMESPACE=kubeagents-system\n"
             f"release_resolve_target\n{self._ECHO}",
             env={"CI": "true"},
         )
@@ -398,20 +400,21 @@ source "{_COMMON_SH}"
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("platform-agent-host|us-central1|kube-agents-rc|kubeagents-system", proc.stdout)
 
-    def test_release_resolve_target_defaults_agent_namespace_even_in_ci(self):
-        """Deliberate carve-out: the rc environment does not define it yet.
+    def test_release_resolve_target_requires_agent_namespace_in_ci(self):
+        """`vars.AGENT_NAMESPACE` expanding to empty must not read as the default.
 
-        Promoting AGENT_NAMESPACE into the required set before the variable exists
-        would turn the next RC run red for a value with one correct setting.
+        The rc and nightly environments both define it, so a job that sets the
+        targeting trio but not this one is misconfigured — and silently getting
+        `kubeagents-system` is what made that invisible.
         """
         proc = self._run_common_func(
             f"{self._RESOLVE}"
             "export GKE_CLUSTER_NAME=c GCP_REGION=r GCP_PROJECT_ID=p\n"
-            f"release_resolve_target\n{self._ECHO}",
+            "release_resolve_target",
             env={"CI": "true"},
         )
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("c|r|p|kubeagents-system", proc.stdout)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("AGENT_NAMESPACE", proc.stderr)
 
 
 if __name__ == "__main__":

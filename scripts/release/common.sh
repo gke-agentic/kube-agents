@@ -55,25 +55,27 @@ is_ci_pipeline() {
 # command substitution, and a `set -u` abort inside a subshell would leave the
 # variable empty and the script running against an unnamed target.
 #
-# The three targeting variables get no defaults in CI. A pipeline that reaches
-# here with GCP_PROJECT_ID unset has a misconfigured `env:` block or a variable
-# missing from its GitHub environment; defaulting PROJECT_ID to kube-agents-rc
-# there does not rescue the run, it points a real teardown-and-reinstall at a
-# real project nobody named. Failing names the variable instead, at the first
-# script that needs it rather than several steps later against a cluster that
-# does not exist. The defaults stay for the developer path, which is what the
+# None of the four get a default in CI. A pipeline that reaches here with
+# GCP_PROJECT_ID unset has a misconfigured `env:` block or a variable missing
+# from its GitHub environment; defaulting PROJECT_ID to kube-agents-rc there
+# does not rescue the run, it points a real teardown-and-reinstall at a real
+# project nobody named. Failing names the variable instead, at the first script
+# that needs it rather than several steps later against a cluster that does not
+# exist. The defaults stay for the developer path, which is what the
 # CLUSTER_NAME/REGION/PROJECT_ID half of the contract above is for.
 #
-# AGENT_NAMESPACE is deliberately not in that list yet. It is not a targeting
-# variable — guessing it wrong fails a kubectl call rather than acting on the
-# wrong project — and the `rc` environment does not define it today, so
-# promoting it would turn the next RC run red for a value that has exactly one
-# correct setting. Define AGENT_NAMESPACE in the rc and nightly environments,
-# then move it up: gke-labs/kube-agents#1013's follow-up.
+# AGENT_NAMESPACE is in the list because the `rc` and `nightly` environments
+# both define it. A workflow that binds neither environment reaches here with
+# all four empty and fails on the targeting trio regardless, so requiring the
+# namespace costs those callers nothing — and a job that sets the other three
+# but not this one is misconfigured in exactly the way silence used to hide,
+# since `vars.AGENT_NAMESPACE` expanding to empty is indistinguishable from the
+# default being correct.
 release_resolve_target() {
   CLUSTER_NAME="${GKE_CLUSTER_NAME:-${CLUSTER_NAME:-}}"
   REGION="${GCP_REGION:-${REGION:-}}"
   PROJECT_ID="${GCP_PROJECT_ID:-${PROJECT_ID:-}}"
+  AGENT_NAMESPACE="${AGENT_NAMESPACE:-}"
 
   if is_ci_pipeline; then
     # A string rather than an array: `${#arr[@]}` on an empty array aborts under
@@ -82,6 +84,7 @@ release_resolve_target() {
     [ -n "${CLUSTER_NAME}" ] || missing="${missing} GKE_CLUSTER_NAME"
     [ -n "${REGION}" ] || missing="${missing} GCP_REGION"
     [ -n "${PROJECT_ID}" ] || missing="${missing} GCP_PROJECT_ID"
+    [ -n "${AGENT_NAMESPACE}" ] || missing="${missing} AGENT_NAMESPACE"
     if [ -n "${missing}" ]; then
       echo "❌ Unset in CI:${missing}" >&2
       echo "   These come from the job's \`env:\` block, which reads them from the" >&2
@@ -93,9 +96,9 @@ release_resolve_target() {
     CLUSTER_NAME="${CLUSTER_NAME:-platform-agent-host}"
     REGION="${REGION:-us-central1}"
     PROJECT_ID="${PROJECT_ID:-kube-agents-rc}"
+    AGENT_NAMESPACE="${AGENT_NAMESPACE:-kubeagents-system}"
   fi
 
-  AGENT_NAMESPACE="${AGENT_NAMESPACE:-kubeagents-system}"
   export CLUSTER_NAME REGION PROJECT_ID AGENT_NAMESPACE
 }
 
