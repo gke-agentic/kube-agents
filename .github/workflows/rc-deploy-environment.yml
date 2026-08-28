@@ -146,8 +146,12 @@ jobs:
           # All three must be set before the minter is provisioned at all
           # (installer_common.sh:612-627); with any of them empty the install is
           # byte-identical to today's. The pair must also match the repository the
-          # E2E suite probes, which tests/e2e/e2e_config.yaml pins for `rc-e2e` —
-          # a token minted for one repository does not authenticate against another.
+          # E2E suite probes — a token minted for one repository does not
+          # authenticate against another. `rc-e2e` deliberately pins neither in
+          # tests/e2e/e2e_config.yaml, precisely so the value lives in one place:
+          # rc-release-pipeline.yml passes this same GITOPS_ORG/GITOPS_REPO pair
+          # to the suite, and conftest.py's _qualify_repo composes the bare
+          # repository name against the org.
           GITHUB_ORG: ${{ vars.GITOPS_ORG }}
           GITHUB_REPO: ${{ vars.GITOPS_REPO }}
           GITHUB_APP_ID: ${{ secrets.GH_APP_ID }}
