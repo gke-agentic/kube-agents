@@ -139,6 +139,60 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
 
+    def test_resolve_creatable_cluster_mode_defaults_to_autopilot(self):
+        """The line that decides what a bare ./install.sh builds.
+
+        install.sh writes CLUSTER_MODE into vars.sh before the tfvars generator
+        reads it, so installer_common.sh's own `:-$DEFAULT_CLUSTER_MODE` never
+        decides anything for this front door. This is the assertion that goes
+        red if the installer default is put back to standard.
+        """
+        proc = self._run_install_func(
+            f'{_SOURCE_INSTALLER_COMMON}resolve_creatable_cluster_mode "" us-central1'
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "autopilot")
+
+    def test_resolve_creatable_cluster_mode_honours_an_explicit_request(self):
+        for mode in ("standard", "autopilot"):
+            with self.subTest(mode=mode):
+                proc = self._run_install_func(
+                    f'{_SOURCE_INSTALLER_COMMON}resolve_creatable_cluster_mode {mode} us-central1'
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(proc.stdout.strip(), mode)
+
+    def test_resolve_creatable_cluster_mode_steps_aside_for_a_zone(self):
+        """A defaulted Autopilot demotes rather than writing a config Terraform
+        rejects. Reachable non-interactively via --cluster-name, where nothing
+        else checks the mode/location pair."""
+        proc = self._run_install_func(
+            f'{_SOURCE_INSTALLER_COMMON}resolve_creatable_cluster_mode "" us-central1-a'
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "standard")
+
+    def test_resolve_creatable_cluster_mode_does_not_rescue_an_explicit_autopilot(self):
+        """An impossible request stays impossible: the demotion is for a shape
+        nobody chose, not a way to silently build something else."""
+        proc = self._run_install_func(
+            f'{_SOURCE_INSTALLER_COMMON}resolve_creatable_cluster_mode autopilot us-central1-a'
+        )
+        self.assertEqual(proc.stdout.strip(), "autopilot")
+
+    def test_location_is_region_distinguishes_regions_from_zones(self):
+        for location, expected in (
+            ("us-central1", 0),
+            ("europe-west4", 0),
+            ("us-central1-a", 1),
+            ("europe-west4-b", 1),
+        ):
+            with self.subTest(location=location):
+                proc = self._run_install_func(
+                    f'{_SOURCE_INSTALLER_COMMON}location_is_region {location}'
+                )
+                self.assertEqual(proc.returncode, expected, proc.stdout)
+
     def _run_persist(self, requested, effective, starting_line):
         """persist_effective_cluster_mode against a throwaway vars.sh."""
         with tempfile.TemporaryDirectory() as tmp:
