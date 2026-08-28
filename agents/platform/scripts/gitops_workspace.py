@@ -577,6 +577,24 @@ def configure_identity(
     runner(["git", "config", "user.email", email], cwd=str(target))
 
 
+def _valid_repo_component(part: str) -> bool:
+    """Reject path components unsafe to hand to `gh -R` or use as a filesystem path.
+
+    The slug pattern permits "." and "-", so it happily produces "../..", and a
+    leading dash is parsed by `gh` as a flag. Neither is a shape the regex can
+    express.
+    """
+    return bool(part) and part not in (".", "..") and not part.startswith("-")
+
+
+def is_valid_repo_slug(repo: str) -> bool:
+    """Validate that repo is formatted as owner/name without path traversal or flag injection."""
+    if not repo or not BARE_REPO_RE.match(repo):
+        return False
+    owner, _, name = repo.partition("/")
+    return _valid_repo_component(owner) and _valid_repo_component(name)
+
+
 def extract_github_slug(entry: str) -> str | None:
     """Extracts 'owner/repo' slug from a raw URL or shorthand if it refers to GitHub."""
     s = entry.strip()
@@ -595,7 +613,7 @@ def extract_github_slug(entry: str) -> str | None:
             return None
 
     s = s.lstrip("/")
-    if BARE_REPO_RE.match(s):
+    if is_valid_repo_slug(s):
         return s
     return None
 
@@ -702,20 +720,14 @@ def resolve_repo(workspace: str | Path | None = None) -> str:
         except Exception:
             pass
 
-    try:
-        managed = get_managed_github_repos()
-        if len(managed) == 1:
-            return managed[0]
-        elif len(managed) > 1:
-            raise RuntimeError(
-                f"Multiple repositories configured in ConfigMap ({', '.join(managed)}): "
-                "please specify the target repository explicitly (e.g. via --repo <owner/repo>)."
-            )
-    except RuntimeError as e:
-        if "Multiple repositories configured" in str(e):
-            raise
-    except Exception:
-        pass
+    managed = get_managed_github_repos()
+    if len(managed) == 1:
+        return managed[0]
+    elif len(managed) > 1:
+        raise RuntimeError(
+            f"Multiple repositories configured in ConfigMap ({', '.join(managed)}): "
+            "please specify the target repository explicitly (e.g. via --repo <owner/repo>)."
+        )
 
     from github_token_refresh import get_current_git_repo
 

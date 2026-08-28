@@ -24,7 +24,7 @@ sys.path.append("/opt/defaults/scripts")
 sys.path.append("/opt/data/scripts")
 sys.path.append(str(Path(__file__).resolve().parents[3] / "scripts"))
 
-from gitops_workspace import get_managed_github_repos
+from gitops_workspace import get_managed_github_repos, is_valid_repo_slug
 
 SCRATCH_DIR = "/opt/data/scratch"
 
@@ -746,7 +746,7 @@ def handle_poll(args):
 
 
 def _validate_repo_or_exit(repo: str) -> None:
-    if not repo or not BARE_REPO_RE.match(repo):
+    if not repo or not is_valid_repo_slug(repo):
         print(
             json.dumps(
                 {

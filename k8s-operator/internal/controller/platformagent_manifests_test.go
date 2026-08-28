@@ -4388,7 +4388,6 @@ func TestBuildGitopsStateConfigMapInvalidGitRepo(t *testing.T) {
 	}
 }
 
-
 // agentWithEventWatcher builds a PlatformAgent whose harness names the emergency
 // stop explicitly. A nil `enabled` stands for the CR that writes the object but
 // not the key, which the CRD default covers rather than this code.

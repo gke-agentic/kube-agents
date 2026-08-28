@@ -4110,8 +4110,8 @@ func TestSyncGithubTokenMinterConfigMap(t *testing.T) {
 			Namespace: "test-ns",
 		},
 		Data: map[string]string{
-			"default.yaml":            "version: 'minty.abcxyz.dev/v2'\nscope:\n  platform-agent-scope:\n    repositories:\n      - 'default-repo'\n",
-			"unmanaged-static.yaml":   "version: 'minty.abcxyz.dev/v2'\n",
+			"default.yaml":          "version: 'minty.abcxyz.dev/v2'\nscope:\n  platform-agent-scope:\n    repositories:\n      - 'default-repo'\n",
+			"unmanaged-static.yaml": "version: 'minty.abcxyz.dev/v2'\n",
 		},
 	}
 

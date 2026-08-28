@@ -84,7 +84,6 @@ api_server_key = "REPLACE_WITH_A_STRONG_RANDOM_KEY"
 
 # Optional GitHub integration and token minter backend (GSA + KMS signing key).
 # enable_github_minter = true
-# github_org           = "my-github-org"
 # github_repo          = "my-github-org/my-repo"
 
 # Optional Slack integration. Needs no GCP resources: the tokens go into the

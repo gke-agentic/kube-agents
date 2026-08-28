@@ -399,9 +399,7 @@ With `enable_google_chat = true` the composition provisions the GCP backend
 with the created topic/subscription — restrict access with
 `google_chat_allowed_users` (empty = everyone).
 
-With `enable_github_minter = true`, set `github_org` to your GitHub Organization
-where the GitHub App is installed, and optionally set `github_repo` to seed the
-primary GitOps repository. Additional GitOps repositories within the same organization can also be registered in the ConfigMap by cluster administrators.
+With `enable_github_minter = true`, set `github_repo` to your primary GitOps repository (in `owner/repo` or GitHub URL format). Additional GitOps repositories within the same organization can also be registered in the ConfigMap by cluster administrators.
 
 `enable_slack = true` writes `slack_bot_token` / `slack_app_token` into the
 credentials Secret and turns on the CR's `slack` section, the same pair

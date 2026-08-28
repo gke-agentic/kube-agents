@@ -4320,20 +4320,6 @@ func toSlice(v any) ([]any, bool) {
 	return nil, false
 }
 
-// appendWorkloadIdentityUser conditionally appends the Workload Identity GSA as a User if specified
-func appendWorkloadIdentityUser(agent *agentv1alpha1.PlatformAgent, subjects []rbacv1.Subject) []rbacv1.Subject {
-	if agent.Spec.Security != nil && agent.Spec.Security.ServiceAccountAnnotations != nil {
-		if gsaEmail, ok := agent.Spec.Security.ServiceAccountAnnotations["iam.gke.io/gcp-service-account"]; ok {
-			subjects = append(subjects, rbacv1.Subject{
-				Kind: "User",
-				Name: gsaEmail,
-			})
-		}
-	}
-	return subjects
-}
-
-
 //go:embed leader_elect.py
 var leaderElectScript string
 

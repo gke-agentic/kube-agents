@@ -950,5 +950,18 @@ class SanitizerMirrorDriftTest(unittest.TestCase):
         )
 
 
+class RepoValidationTest(unittest.TestCase):
+    def test_unsafe_repo_shapes_rejected(self):
+        for unsafe in ["../..", "-x/-y", "-owner/repo", "owner/-repo", "owner/."]:
+            with self.subTest(repo=unsafe):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as ctx:
+                    resolver._validate_repo_or_exit(unsafe)
+                self.assertEqual(ctx.exception.code, 1)
+                payload = json.loads(out.getvalue())
+                self.assertEqual(payload["status"], "ERROR")
+                self.assertEqual(payload["reason"], "INVALID_REPOSITORY")
+
+
 if __name__ == "__main__":
     unittest.main()

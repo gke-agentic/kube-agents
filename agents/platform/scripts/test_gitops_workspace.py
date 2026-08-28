@@ -614,14 +614,11 @@ class TestResolveRepo(WorkspaceTestCase):
                 "acme/from-remote",
             )
 
-    def test_it_falls_back_to_the_git_remote_when_configmap_read_fails(self):
-        module = type(sys)("github_token_refresh")
-        module.get_current_git_repo = lambda: "acme/from-remote"
-        with patch("gitops_workspace.get_managed_github_repos", side_effect=RuntimeError("kubectl failed: Forbidden")), patch.dict(sys.modules, {"github_token_refresh": module}):
-            self.assertEqual(
-                gitops_workspace.resolve_repo(),
-                "acme/from-remote",
-            )
+    def test_raises_when_configmap_read_fails(self):
+        with patch("gitops_workspace.get_managed_github_repos", side_effect=RuntimeError("kubectl failed: Forbidden")):
+            with self.assertRaises(RuntimeError) as ctx:
+                gitops_workspace.resolve_repo()
+            self.assertIn("kubectl failed: Forbidden", str(ctx.exception))
 
     def test_get_managed_repo_entries_parses_structured_json(self):
         fake_cm = CompletedProcess(

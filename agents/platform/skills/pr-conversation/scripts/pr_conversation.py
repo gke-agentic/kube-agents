@@ -91,9 +91,9 @@ def _fail(message: str):
 
 def validate_repo(repo: str) -> str:
     """Ensure repo is formatted as owner/name and is in the managed repos allowlist if configured."""
-    if not repo or not BARE_REPO_RE.match(repo) or ".." in repo or repo.startswith("/") or repo.endswith("/"):
+    from gitops_workspace import get_managed_github_repos, is_valid_repo_slug
+    if not repo or not is_valid_repo_slug(repo):
         raise ValueError(f"Invalid repository format: {repo!r}. Expected 'owner/name'.")
-    from gitops_workspace import get_managed_github_repos
     managed = get_managed_github_repos()
     if managed and repo not in managed:
         raise ValueError(
