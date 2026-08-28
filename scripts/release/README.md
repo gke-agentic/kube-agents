@@ -34,7 +34,7 @@ page under "Why there is no `gke-admin` set".
 - `create_release_tag.sh`: Creates and pushes candidate release tags (`rc_YYMMDDHHMM_<short_sha>`, derived from commit timestamp) safely and idempotently. When executed locally outside CI, runs in dry-run mode (creates tag locally and skips remote push).
 - `validate_and_log_deploy_summary.sh`: Validates required environment variables and secrets, then logs a formatted deployment matrix and GCP cluster target overview for auditing before provisioning.
 - `rc_teardown_common.sh`: Sourced by the two scripts below, which both call `uninstall.sh` and read the same three outcomes out of its exit code (`./uninstall.sh --help` lists them). Holds the invocation, the `RC_TEARDOWN_STRICT` parsing, and the job-summary rendering; each caller decides for itself what a failure means.
-- `provision_rc_environment.sh`: Tears the RC environment down with `uninstall.sh`, then reinstalls it at the candidate commit with `install.sh`, against the dedicated RC GCP project. A failed teardown raises an `::error` annotation and a job-summary entry carrying the teardown output, and provisions anyway unless `RC_TEARDOWN_STRICT` is truthy — the choice between validating a candidate against stale state and letting a teardown problem block every release.
+- `provision_rc_environment.sh`: Tears the RC environment down with `uninstall.sh`, then reinstalls it at the candidate commit with `install.sh`, against the dedicated RC GCP project. A failed teardown raises an `::error` annotation and a job-summary entry carrying the teardown output, and provisions anyway unless `RC_TEARDOWN_STRICT` is truthy — the choice between validating a candidate against stale state and letting a teardown problem block every release. It also forwards the GitOps repository and, with it, the GitHub token minter, and stages an optional `GH_APP_PRIVATE_KEY` to a private temporary file because `install.sh` takes a path; see "Enabling the GitHub token minter on the RC" below for what to set.
 - `teardown_rc_environment.sh`: Destroys the RC environment after a run that passed end to end, so the cluster exists only for the length of a run rather than idling between the 3-hourly ones. A failure here is always fatal and `RC_TEARDOWN_STRICT` does not apply: nothing runs afterwards, so the alternative to a red job is a GKE cluster billing under a green pipeline. It runs only when steps 1–4 all succeeded, which is what leaves a failed run's environment standing to be examined live.
 - `wait_for_gke_readiness.sh`: Connects `kubectl` to the RC cluster, configures Artifact Registry credentials, installs the Pub/Sub platform adapter, and waits for `litellm` and `platform-agent-gateway` to report ready. The adapter is installed here because it is a gateway singleton the agent image does not carry and the install engine does not deploy: the stockout investigator and any other alert producer contribute only route config, so without `agentplugins/pubsub-platform` the gateway opens no listener and every alert-driven test fails on silence. `SKIP_PUBSUB_PLATFORM` skips that install for a suite that does not exercise alert ingress.
 - `tag_validated_release.sh`: Attaches the `*_validated` tag to a candidate commit upon 100% test pass.
@@ -65,6 +65,50 @@ A run that fails anywhere does leave its environment standing, deliberately — 
 
 - Nothing else removes that environment. The next run's step 2 does, which on the schedule is up to three hours later, so an investigation that needs longer than that wants the schedule paused rather than a race against it.
 - Step 2 is the only thing standing between a surviving environment and a candidate validated against stale state, which is what `RC_TEARDOWN_STRICT` decides. Truthy stops the run instead of installing on top; the same failure in step 5 is fatal regardless, because no later step compensates for it. Set it on the `rc` environment, where `GCP_PROJECT_ID` and every other value these jobs read already live — the repository level holds none of them, and `vars` resolving environment over repository makes a stray repository-level copy easy to set and then not find again.
+
+## Enabling the GitHub token minter on the RC
+
+`test_github_token_minting_and_connectivity` mints a real GitHub App token inside the agent pod and reads a repository back through it. It fails on an install where the minter was never provisioned: the chart renders the `github-token-minter` Deployment only under `githubMinter.enabled`, so the credential sidecar's refresh reaches no broker and answers `HTTP 502`, with the reason logged inside the sidecar where CI never sees it.
+
+The repository it probes is `test-org-kube-agent/agents-repo`, pinned for the `rc-e2e` environment in [`tests/e2e/e2e_config.yaml`](../../tests/e2e/e2e_config.yaml). The GitHub App has to be installed on that repository, and the minter has to be scoped to the same one — a token minted for one repository does not authenticate against another.
+
+Three settings on the `rc` GitHub environment turn it on, and all three must be present before the minter is provisioned at all ([`installer_common.sh`](../../k8s-operator/scripts/installer_common.sh)). With any of them empty the install is byte-identical to one that never had them.
+
+| Setting                | Value                 | Notes                                                                                                 |
+| ---------------------- | --------------------- | ----------------------------------------------------------------------------------------------------- |
+| Variable `GITOPS_ORG`  | `test-org-kube-agent` | Repository owner.                                                                                     |
+| Variable `GITOPS_REPO` | `agents-repo`         | Bare name, not `owner/repo`. Terraform's `github_repo` is composed as `${GITHUB_ORG}/${GITHUB_REPO}`. |
+| Secret `GH_APP_ID`     | the App ID            | Same App that is installed on the repository above.                                                   |
+
+`GITOPS_ORG` and `GITOPS_REPO` are deliberately separate from `GH_ORG` and `GH_REPO`, which every other workflow does use for this. On the `rc` environment that pair names the _release_ repository (`gke-labs/kube-agents`) and is what `common.sh`'s `get_target_repo` resolves for tag and release operations; pointing the minter at it would scope a live App token to this repository.
+
+The App's private key is separate, because it is signing material rather than configuration and never enters Terraform state. Import it into the minter's KMS key once, by hand — the same commands `install.sh` would run, against the RC project and region:
+
+```bash
+gcloud services enable cloudkms.googleapis.com --project=kube-agents-rc
+gcloud kms keyrings create github-token-minter-keyring \
+  --location=us-east4 --project=kube-agents-rc
+gcloud kms keys create github-token-minter-key \
+  --keyring=github-token-minter-keyring --location=us-east4 \
+  --purpose=asymmetric-signing --default-algorithm=rsa-sign-pkcs1-2048-sha256 \
+  --import-only --protection-level=software --project=kube-agents-rc
+
+git clone --depth 1 --branch v2.7.1 https://github.com/abcxyz/github-token-minter.git /tmp/minty
+cd /tmp/minty && go run ./cmd/minty tools import-pk \
+  -project-id=kube-agents-rc -location=us-east4 \
+  -key-ring=github-token-minter-keyring -key=github-token-minter-key \
+  -private-key=@/path/to/app.pem
+```
+
+That is a one-off. The key ring survives the teardown/reinstall cycle — `terraform destroy` cannot delete a Cloud KMS key ring, so `lifecycle.sh adopt-kms` re-adopts it on every apply and restores the key version the destroy disabled — and both the enable decision and `install.sh`'s own import step are satisfied by an existing enabled version. Confirm with:
+
+```bash
+gcloud kms keys versions list --key=github-token-minter-key \
+  --keyring=github-token-minter-keyring --location=us-east4 \
+  --project=kube-agents-rc --filter=state=ENABLED
+```
+
+Setting an optional `GH_APP_PRIVATE_KEY` secret to the `.pem` contents is the alternative: `provision_rc_environment.sh` writes it to a private temporary file and hands `install.sh` the path, which imports it on the first install that finds no enabled version. It exists to bootstrap an environment without a manual step, and costs an App private key living in GitHub Actions — which is why the manual import above is the better of the two. A gcloud-only import recipe, for when the Go toolchain is the problem, is in [`k8s-operator/config/integrations/github/README.md`](../../k8s-operator/config/integrations/github/README.md).
 
 ## Workflow Mapping
 
