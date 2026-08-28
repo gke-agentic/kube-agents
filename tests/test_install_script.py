@@ -178,7 +178,59 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
         proc = self._run_install_func(
             f'{_SOURCE_INSTALLER_COMMON}resolve_creatable_cluster_mode autopilot us-central1-a'
         )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout.strip(), "autopilot")
+
+    def test_main_resolves_the_creatable_shape_through_the_resolver(self):
+        """Pins the call site, not just the function.
+
+        resolve_creatable_cluster_mode is covered directly above, but nothing
+        made main() consult it: reverting the deciding line to the inline
+        `cluster_mode="${cluster_mode:-standard}"` it replaced left every
+        installer test green, so the headline behaviour of this change was
+        unpinned. main() is the whole interview and is not drivable from a
+        unit test, so this asserts on the source the way
+        tests/test_install_pubsub_platform.py asserts on workflow YAML.
+        """
+        source = _INSTALL_SH.read_text()
+        self.assertIn(
+            'cluster_mode="$(resolve_creatable_cluster_mode "$cluster_mode" "$region")"',
+            source,
+            "install.sh's interview must resolve the creatable shape through "
+            "resolve_creatable_cluster_mode: an inline default is untested and "
+            "skips the zonal demotion entirely.",
+        )
+        self.assertNotRegex(
+            source,
+            r'cluster_mode="\$\{cluster_mode:-\w+\}"',
+            "an inline `:-` default for cluster_mode is the exact shape this "
+            "test exists to keep out.",
+        )
+
+    def test_cluster_shape_menu_is_ordered_by_the_resolver(self):
+        """prompt_menu's enter default is option 1, so a hardcoded
+        Autopilot-first order turns pressing enter into an *explicit*
+        autopilot request -- which the resolver is then right to refuse to
+        demote, aborting a zonal interactive install that used to build
+        Standard. Deriving the order keeps the label, the enter key and the
+        resolver in agreement at both kinds of location.
+        """
+        source = _INSTALL_SH.read_text()
+        self.assertIn(
+            'menu_default="$(resolve_creatable_cluster_mode "" "$region")"',
+            source,
+            "the cluster-shape menu must take its order from the resolver.",
+        )
+        # Whichever branch runs, the option carrying "(Default)" is option 1
+        # and is the shape its own case arm assigns.
+        self.assertRegex(
+            source,
+            r'"\$\{autopilot_option\} \(Default\)"[\s\S]{0,400}?1\) cluster_mode="autopilot"',
+        )
+        self.assertRegex(
+            source,
+            r'"\$\{standard_option\} \(Default\)"[\s\S]{0,400}?1\) cluster_mode="standard"',
+        )
 
     def test_location_is_region_distinguishes_regions_from_zones(self):
         for location, expected in (

@@ -109,10 +109,12 @@ Flags for AI Agents & Automation:
   --cluster-name=NAME           GKE Cluster Name (default: DEFAULT_CLUSTER_NAME,
                                 currently platform-agent-host)
   --cluster-mode=MODE           Shape of a cluster this run creates: autopilot | standard
-                                (default: autopilot). Autopilot clusters are regional, so
-                                --region must be a region; pass --cluster-mode=standard to
-                                create a zonal cluster. Ignored when installing onto a
-                                cluster that already exists — its live shape wins.
+                                (default: DEFAULT_CLUSTER_MODE, currently autopilot).
+                                Autopilot clusters are regional. Passing this flag with
+                                autopilot and a zonal --region is an error; leaving it
+                                unset at a zonal --region builds Standard instead.
+                                Ignored when installing onto a cluster that already
+                                exists — its live shape wins.
   --model-provider=PROVIDER     Model provider: gemini | vertex_ai | anthropic | openai
                                 (default: gemini)
   --model-default-name=NAME     Default model name for the provider
@@ -296,13 +298,6 @@ validate_immutable_ref() {
   fi
 }
 
-# A cluster shape this install can create in this location. is_valid_cluster_mode
-# comes from installer_common.sh, so this runs after the workspace step.
-#
-# The region rule is the gke-cluster module's Autopilot precondition, checked
-# here as well because reaching it costs the whole interview first: a location
-# that only turns out to be wrong at terraform validate has already collected
-# every API key and integration answer.
 # Resolves the shape a run that CREATES a cluster will build, given what the
 # caller asked for ($1, may be empty) and the location ($2). Echoes the mode
 # and nothing else, so the caller can compare and explain.
@@ -330,6 +325,13 @@ resolve_creatable_cluster_mode() {
   echo "${DEFAULT_CLUSTER_MODE}"
 }
 
+# A cluster shape this install can create in this location. is_valid_cluster_mode
+# comes from installer_common.sh, so this runs after the workspace step.
+#
+# The region rule is the gke-cluster module's Autopilot precondition, checked
+# here as well because reaching it costs the whole interview first: a location
+# that only turns out to be wrong at terraform validate has already collected
+# every API key and integration answer.
 require_creatable_cluster_mode() {
   local mode="${1:-}" location="${2:-}"
   if ! is_valid_cluster_mode "$mode"; then
@@ -1607,20 +1609,44 @@ main() {
   fi
   # Only when --cluster-mode said nothing: a flag the caller passed is an
   # answer already, and re-asking would let a mis-keyed menu choice override
-  # it. Autopilot leads because it is the installer's default; the menu order
-  # and DEFAULT_CLUSTER_MODE have to agree, or the "(Default)" label lies to
-  # anyone who presses enter.
+  # it.
+  #
+  # The order comes from resolve_creatable_cluster_mode rather than being
+  # hardcoded, because prompt_menu's enter default is option 1. A fixed
+  # Autopilot-first order makes pressing enter an *explicit* autopilot
+  # request, which the resolver is then right to refuse to demote — so a
+  # zonal interactive install would abort here rather than build Standard,
+  # which is what it did before this default changed. Deriving the order
+  # keeps the "(Default)" label, the enter key and the resolver saying the
+  # same thing at both kinds of location.
   if [ -z "$cluster_mode" ] && [ "$ask_cluster_shape" = "true" ] &&
     [ "$PARAM_NON_INTERACTIVE" != "true" ]; then
-    local mode_choice=""
-    prompt_menu "Which shape should the GKE cluster be, if this run creates it?" \
-      "Autopilot — Google manages the nodes and you pay per Pod; regional only, and gVisor comes from its built-in RuntimeClass (Default)" \
-      "Standard — you size and pay for the node pool; carries the GKE Sandbox pool for --gvisor, and is the only shape that can be zonal" \
-      mode_choice
-    case "$mode_choice" in
-      1) cluster_mode="autopilot" ;;
-      2) cluster_mode="standard" ;;
-    esac
+    local mode_choice="" menu_default=""
+    local autopilot_option="Autopilot — Google manages the nodes and you pay per Pod; regional only, and gVisor comes from its built-in RuntimeClass"
+    local standard_option="Standard — you size and pay for the node pool; carries the GKE Sandbox pool for --gvisor, and is the only shape that can be zonal"
+    menu_default="$(resolve_creatable_cluster_mode "" "$region")"
+    if [ "$menu_default" = "autopilot" ]; then
+      prompt_menu "Which shape should the GKE cluster be, if this run creates it?" \
+        "${autopilot_option} (Default)" \
+        "${standard_option}" \
+        mode_choice
+      case "$mode_choice" in
+        1) cluster_mode="autopilot" ;;
+        2) cluster_mode="standard" ;;
+      esac
+    else
+      # Zonal location. Autopilot stays on the menu so picking it is still an
+      # explicit request that require_creatable_cluster_mode rejects by name,
+      # rather than a shape that silently turns into something else.
+      prompt_menu "Which shape should the GKE cluster be, if this run creates it?" \
+        "${standard_option} (Default)" \
+        "${autopilot_option} — not available at a zonal location" \
+        mode_choice
+      case "$mode_choice" in
+        1) cluster_mode="standard" ;;
+        2) cluster_mode="autopilot" ;;
+      esac
+    fi
   fi
   # Nothing asked, nothing passed: installer_common.sh owns the default, and
   # resolve_creatable_cluster_mode applies it. Explaining the demotion is the
@@ -1633,7 +1659,15 @@ main() {
   # whole interview had already been collected.
   local cluster_mode_requested="$cluster_mode"
   cluster_mode="$(resolve_creatable_cluster_mode "$cluster_mode" "$region")"
-  if [ -z "$cluster_mode_requested" ] && [ "$cluster_mode" != "$DEFAULT_CLUSTER_MODE" ]; then
+  # ask_cluster_shape gates the message for the same reason it gates the check
+  # below: on both adoption paths no cluster is created by this run, so the
+  # advice to "pass --region with a region" would point at a location the
+  # target cluster does not live at. On --cluster-name that is not merely
+  # noise — write_tfvars_from_state probes with --location "$REGION", so
+  # re-running with the suggested region misses the live cluster, takes the
+  # confirmed-NOT_FOUND branch, and creates a second one under -auto-approve.
+  if [ "$ask_cluster_shape" = "true" ] && [ -z "$cluster_mode_requested" ] &&
+    [ "$cluster_mode" != "$DEFAULT_CLUSTER_MODE" ]; then
     print_info "Location '${region}' is a zone and Autopilot clusters are regional, so a cluster created by this run will be Standard. Pass --region with a region to get the default Autopilot shape."
   fi
 
