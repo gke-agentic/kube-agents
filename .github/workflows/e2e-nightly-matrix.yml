@@ -82,16 +82,24 @@ jobs:
           location: ${{ vars.GCP_REGION || 'us-central1' }}
           project_id: ${{ vars.GCP_PROJECT_ID }}
 
-      # Not continue-on-error, unlike the RC pipeline: this workflow's whole
-      # purpose is the alert-driven matrix, so ingress that will not install is
-      # a reason to stop rather than a reason to run every scenario to its
-      # 360s timeout and report that the agent never saw its alert.
+      # Not continue-on-error, unlike the RC pipeline: on its nightly schedule
+      # this workflow runs the alert-driven matrix, so ingress that will not
+      # install is a reason to stop rather than a reason to run every scenario
+      # to its 360s timeout and report that the agent never saw its alert.
+      #
+      # SKIP_PUBSUB_PLATFORM keeps that from punishing the dispatch runs that
+      # read no alert. test_environment offers gchat-e2e, audit-e2e and
+      # agent-plugin-e2e, none of which touch alert ingress, and failing those
+      # for an adapter they never use would be a regression against the warning
+      # this step replaced. The scheduled run passes no input, so the default
+      # 'all' is falsy here and ingress stays mandatory where it matters.
       - name: Install Pub/Sub Alert Ingress
         env:
           AGENT_NAMESPACE: ${{ vars.AGENT_NAMESPACE }}
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           GCP_REGION: ${{ vars.GCP_REGION }}
           GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
+          SKIP_PUBSUB_PLATFORM: ${{ contains(fromJSON('["gchat-e2e","audit-e2e","agent-plugin-e2e"]'), inputs.test_environment) }}
         run: ./scripts/release/install_pubsub_platform.sh
 
       - name: Connect to GKE & Verify Readiness

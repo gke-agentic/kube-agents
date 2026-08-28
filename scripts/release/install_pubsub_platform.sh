@@ -31,11 +31,22 @@
 #
 # This script exits non-zero when it cannot deliver working alert ingress. It
 # does NOT decide whether that should fail the run, because the answer differs
-# per caller: in rc-release-pipeline.yml alert ingress is a dependency of the
-# optional cluster/audit suite alone and must not sink the mandatory Google Chat
-# gate, so that step carries `continue-on-error: true`; a workflow whose whole
-# purpose is alert-driven testing should let it fail. Expressing that in the
-# workflow keeps it where a reader can see it.
+# per caller: in rc-release-pipeline.yml the tests that read an alert are the
+# optional cluster/audit suite, so that step carries `continue-on-error: true`;
+# a workflow whose whole purpose is alert-driven testing should let it fail.
+# Expressing that in the workflow keeps it where a reader can see it.
+#
+# What `continue-on-error` does and does not buy, precisely: it covers failures
+# THIS script detects and reports. It does not make the adapter harmless to the
+# mandatory Google Chat gate, because the adapter re-templates the shared
+# platform-agent-gateway Deployment. An adapter that installs cleanly and then
+# leaves the gateway unable to roll out — an unpullable plugin image keeps the
+# whole agent pod from starting, since the image volume is part of its pod spec
+# — is not something this script can see: it waits on plugin readiness and
+# generation stability, not on a rollout. wait_for_gke_readiness.sh's
+# `kubectl rollout status` then fails the step that has no continue-on-error,
+# and the Chat gate never runs. That was equally true before this script
+# existed; the split narrows the blast radius, it does not remove it.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

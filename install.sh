@@ -1213,7 +1213,11 @@ import_github_pem() {
   # the cause instead of leaving a confusing failure two steps later.
   if ! gcloud kms keys describe "$key" --keyring="$keyring" --location="$kms_location" \
     --project="$project_id" >/dev/null 2>&1; then
-    print_warning "The minter's KMS signing key ${kms_location}/${keyring}/${key} does not exist and could not be created."
+    # Deliberately says "could not be confirmed" rather than "does not exist":
+    # describe also fails on an IAM denial for cloudkms.cryptoKeys.get or an API
+    # blip, and asserting absence from that would be stating more than was
+    # established. Whatever the cause, the import cannot safely proceed.
+    print_warning "The minter's KMS signing key ${kms_location}/${keyring}/${key} could not be confirmed to exist."
     [ -n "$kms_ring_err" ] && print_info "Keyring create said: ${kms_ring_err}"
     [ -n "$kms_key_err" ] && print_info "Key create said: ${kms_key_err}"
     print_info "The PEM import needs the keyring and the key, so it is being skipped; the minter deployment stays unready until both exist."
