@@ -24,7 +24,8 @@
 # is the stopgap that makes the RC gate honest until that lands, and it is meant
 # to be deleted wholesale when it does — which is why it is its own file rather
 # than a block inside wait_for_gke_readiness.sh. Removing it is `git rm` plus the
-# three workflow steps that call it.
+# three workflow steps that call it, `e2e-manual-runner.yml`'s
+# `skip_pubsub_platform` input, and `tests/test_install_pubsub_platform.py`.
 #
 # FAILURE POLICY LIVES IN THE WORKFLOW, NOT HERE
 #
@@ -88,8 +89,9 @@ echo "🔑 Configuring Docker authentication for Artifact Registry (${REGION}-do
 gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet || true
 
 # The plugin's own install.sh is the canonical installer and is idempotent
-# (`helm upgrade --install`, and plugin_image_resolve skips the build when the
-# content tag is already published), so a re-run costs a no-op.
+# (`helm upgrade --install`, and plugin_image_publish skips the build when the
+# content tag is already published — agentplugins/lib/plugin_image.sh:919-973),
+# so a re-run costs a no-op.
 echo "📡 Installing the Pub/Sub platform adapter..."
 if ! KUBECTL_CONTEXT="$(kubectl config current-context)" \
   GCP_PROJECT_ID="${PROJECT_ID}" \
@@ -100,11 +102,11 @@ if ! KUBECTL_CONTEXT="$(kubectl config current-context)" \
 fi
 
 # A caught-up observedGeneration is necessary but NOT sufficient, so this also
-# waits on the gateway's own generation settling. updatePluginStatuses is the
-# FIRST statement of reconcileWorkload (platformagent_controller.go:526-528) —
-# the status is written before the workload is rendered or applied, and it
-# returns no error, so `phase=Ready` with observedGeneration caught up is
-# consistent with the Deployment patch not having landed, or having failed.
+# waits on the gateway's own generation settling. updatePluginStatuses runs at
+# the top of reconcileWorkload, before anything is rendered or applied
+# (platformagent_controller.go:527-529), and it returns no error — so
+# `phase=Ready` with observedGeneration caught up is consistent with the
+# Deployment patch not having landed, or having failed.
 # Returning there and letting the caller fall straight into `rollout status`
 # would let it succeed against the pre-plugin ReplicaSet, and the gateway would
 # then restart mid-suite — during the mandatory Chat gate, in the RC pipeline.

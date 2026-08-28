@@ -1216,8 +1216,15 @@ import_github_pem() {
     print_warning "The minter's KMS signing key ${kms_location}/${keyring}/${key} does not exist and could not be created."
     [ -n "$kms_ring_err" ] && print_info "Keyring create said: ${kms_ring_err}"
     [ -n "$kms_key_err" ] && print_info "Key create said: ${kms_key_err}"
-    print_info "The PEM import needs that key, so it is being skipped; the minter deployment stays unready until both exist."
-    print_info "The gcloud-only recovery recipe is in k8s-operator/config/integrations/github/README.md."
+    print_info "The PEM import needs the keyring and the key, so it is being skipped; the minter deployment stays unready until both exist."
+    # Not the README's import recipe: that one presupposes the key and only covers
+    # loading a PEM into it. What failed here is the creation, so print the two
+    # commands that create it. --skip-initial-version-creation is the one that is
+    # easy to lose and the one KMS refuses an import-only key without.
+    print_info "Create them by hand with:"
+    print_info "  gcloud kms keyrings create ${keyring} --location=${kms_location} --project=${project_id}"
+    print_info "  gcloud kms keys create ${key} --keyring=${keyring} --location=${kms_location} --purpose=asymmetric-signing --default-algorithm=rsa-sign-pkcs1-2048-sha256 --import-only --skip-initial-version-creation --protection-level=software --project=${project_id}"
+    print_info "Then import the PEM with the recipe in k8s-operator/config/integrations/github/README.md."
     return 0
   fi
 
