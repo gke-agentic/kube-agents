@@ -2,20 +2,31 @@
 #
 # actionlint types the `secrets` context of a reusable workflow from its
 # `on.workflow_call.secrets` block alone. It has no model of ENVIRONMENT
-# secrets, which GitHub resolves at job level for any job declaring
-# `environment:` — including a job inside a called workflow, and without the
-# caller passing anything.
+# secrets, so it reports GH_APP_ID and GH_APP_PRIVATE_KEY — which
+# rc-deploy-environment.yml's `deploy-rc` job reads from the `rc` environment
+# it declares — as undefined properties.
 #
-# rc-deploy-environment.yml's `deploy-rc` job declares `environment: rc` and
-# reads GH_APP_ID and GH_APP_PRIVATE_KEY from that environment. Both resolve
-# correctly at runtime; actionlint cannot see that and reports them undefined.
+# An earlier version of this file said those two "resolve correctly at runtime"
+# on the strength of `environment: rc` alone. That was wrong, and suppressing
+# the warning is what hid it: the caller passed an explicit `secrets:` mapping
+# rather than `secrets: inherit`, so the called workflow's secrets context held
+# only GEMINI_API_KEY and GH_APP_ID arrived empty on every RC run. Reaching an
+# environment secret from a called workflow takes BOTH halves — the called job
+# declaring the environment, and the caller inheriting — and only the first was
+# in place. rc-release-pipeline.yml now passes `secrets: inherit`; the comment
+# on that job explains why a mapping cannot work there.
 #
-# Declaring them under `on.workflow_call.secrets` is NOT the fix. The caller
-# (rc-release-pipeline.yml) does not have these secrets to pass and does not use
-# `secrets: inherit`, so declaring them risks binding the name to an unpassed —
-# therefore empty — caller secret instead of the environment one. An empty
-# GITHUB_APP_ID silently disables the token minter, which is the precise failure
-# this wiring exists to eliminate, and it would fail invisibly rather than loudly.
+# So the suppression stays, because actionlint still cannot see environment
+# secrets, but it is now suppressing a false positive rather than a real defect.
+# Two things keep it honest:
+#
+#   - provision_rc_environment.sh hard-fails when GITHUB_ORG/GITHUB_REPO/
+#     GITHUB_APP_ID are partially set, so a regression here stops the deploy
+#     with a named cause instead of surfacing as an HTTP 502 in the E2E gate.
+#     That check, not this file, is what actually guards the wiring.
+#   - tests/test_rc_minter_secret_wiring.py pins `secrets: inherit` on the
+#     calling job.
+#
 # The patterns are matched unanchored against the whole message, so each one
 # names the secrets object's shape as well as the property. Without that tail a
 # pattern would also swallow the same property name raised against a different
@@ -23,6 +34,12 @@
 # this file -- and silence a real error. `gemini_api_key` is the discriminator:
 # it is the only secret the workflow_call block declares, so it appears in the
 # rendered type of the secrets context and nowhere else.
+#
+# These patterns are scoped to this one file, but not to the `deploy-rc` job
+# within it. A second job added to rc-deploy-environment.yml WITHOUT
+# `environment: rc` would raise the same message against the same object shape
+# and be silenced too. There is no job-level scoping in actionlint's config; the
+# hard-fail above is the backstop.
 paths:
   .github/workflows/rc-deploy-environment.yml:
     ignore:

@@ -111,18 +111,27 @@ fi
 # install byte-identical to one that never had them (the three-way guard on
 # GITHUB_ORG/GITHUB_REPO/GITHUB_APP_ID in installer_common.sh's write_tfvars_from_state).
 #
-# Partially set is the case worth shouting about. installer_common.sh prints its own
-# "GitHub minter deferred" warning only once all three are non-empty, so a single
-# missing value skips the minter in total silence — and the pipeline then fails much
-# later, in test_github_token_minting_and_connectivity, with the undiagnosable HTTP
-# 502 this wiring exists to remove.
+# Partially set is fatal, and this is where it stops. installer_common.sh prints its
+# own "GitHub minter deferred" warning only once all three are non-empty, so a single
+# missing value skips the minter in silence — and the run then dies much later, in
+# test_github_token_minting_and_connectivity, with the undiagnosable HTTP 502 this
+# wiring exists to remove. A `::warning` here is not enough: the deploy still goes
+# ahead, the gate still fails, and the cause is still forty minutes upstream of the
+# symptom. Failing now costs one RC environment; warning past it costs the whole run
+# and leaves someone reading a 502.
 #
-# The way it goes missing is specific. `vars.X` and `secrets.X` interpolate to the
-# empty string when unset OR set at a scope this job cannot see, and `secrets.GH_APP_ID`
-# resolves here only because the deploy-rc job declares `environment: rc` — the
-# workflow_call block declares just GEMINI_API_KEY and no `secrets: inherit`. So a
-# GH_APP_ID created as a repository secret rather than an rc-environment one arrives
-# empty and looks exactly like not having configured the minter at all.
+# All three empty is a different case and stays allowed: that is an install
+# deliberately configured without the minter, which is the default everywhere
+# outside the RC.
+#
+# The way a value goes missing is specific. `vars.X` and `secrets.X` interpolate to
+# the empty string when unset OR set at a scope the job cannot see. For the RC that
+# scope is the `rc` environment, and reaching it takes BOTH halves: the deploy-rc job
+# declares `environment: rc`, and rc-release-pipeline.yml passes `secrets: inherit`.
+# An explicit `secrets:` mapping in the caller cannot work — a `uses:` job has no
+# environment, so it resolves the names against nothing and forwards empties. That
+# was the bug: GH_APP_ID existed on the rc environment the whole time and arrived
+# here empty anyway.
 GITHUB_MINTER_SET=""
 GITHUB_MINTER_MISSING=""
 for _v in GITHUB_ORG GITHUB_REPO GITHUB_APP_ID; do
@@ -133,8 +142,9 @@ for _v in GITHUB_ORG GITHUB_REPO GITHUB_APP_ID; do
   fi
 done
 if [ -n "${GITHUB_MINTER_SET}" ] && [ -n "${GITHUB_MINTER_MISSING}" ]; then
-  echo "::warning title=GitHub token minter not provisioned::Set:${GITHUB_MINTER_SET}; empty:${GITHUB_MINTER_MISSING}. All three are required, so the minter is being skipped and any test that mints a live GitHub token will fail with HTTP 502. An empty value here usually means the variable or secret exists at the repository scope rather than on the 'rc' environment."
-  echo "==> GitHub token minter NOT provisioned — set:${GITHUB_MINTER_SET}; empty:${GITHUB_MINTER_MISSING}." >&2
+  echo "::error title=GitHub token minter is half-configured::Set:${GITHUB_MINTER_SET}; empty:${GITHUB_MINTER_MISSING}. All three are required. Refusing to provision an RC that would fail test_github_token_minting_and_connectivity with an HTTP 502. An empty value here means the variable or secret is missing, or is set at the repository scope rather than on the 'rc' environment — note that an environment SECRET also needs \`secrets: inherit\` on the calling job in rc-release-pipeline.yml."
+  echo "==> GitHub token minter half-configured — set:${GITHUB_MINTER_SET}; empty:${GITHUB_MINTER_MISSING}." >&2
+  exit 1
 fi
 
 # Memory mode mapping: kube_agents_memory/hindsight -> hindsight, none/off -> off, else -> file

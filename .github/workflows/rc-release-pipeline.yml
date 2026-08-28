@@ -46,14 +46,29 @@ jobs:
     if: |
       github.repository == 'gke-labs/kube-agents' &&
       needs.step-1-create-tag.outputs.skip_rc != 'true'
-    uses: ./.github/workflows/rc-deploy-environment.yml
+    # inherit, not an explicit mapping, and the reason is the same one
+    # staging-redeploy-integrations.yml already records: the called workflow's
+    # deploy-rc job reads GH_APP_ID and GH_APP_PRIVATE_KEY, which are `rc`
+    # ENVIRONMENT secrets. A `uses:` job cannot declare an environment, so any
+    # `secrets:` mapping written here is evaluated in THIS job — which has no
+    # environment — and passes them through empty. Declaring them under the
+    # called workflow's `on.workflow_call.secrets` does not help either: that
+    # only names what the caller may pass, and the caller still cannot resolve
+    # them.
+    #
+    # Empty is not a loud failure. All three of GITHUB_ORG/GITHUB_REPO/
+    # GITHUB_APP_ID must be non-empty before installer_common.sh provisions the
+    # minter at all, so a missing APP_ID skipped it and the run then died in
+    # test_github_token_minting_and_connectivity with an HTTP 502 that names
+    # nothing. provision_rc_environment.sh now hard-fails on the partial case
+    # rather than warning past it.
+    uses: ./.github/workflows/rc-deploy-environment.yml # zizmor: ignore[secrets-inherit]
     permissions:
       contents: read
       id-token: write
     with:
       rc_tag: ${{ needs.step-1-create-tag.outputs.rc_tag }}
-    secrets:
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+    secrets: inherit
 
   step-3-run-e2e-tests:
     name: Step 3 - Run E2E Tests

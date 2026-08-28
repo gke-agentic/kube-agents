@@ -464,15 +464,31 @@ exit {install_exit}
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual((tmp_dir / "pem_path.txt").read_text().strip(), "[]")
 
-    def test_partial_minter_config_is_warned_about(self):
-        # The repository-scope-secret trap: org and repo resolve, the App ID arrives
-        # empty, and installer_common.sh's own warning never fires because it requires
-        # all three. Without this the minter is skipped in silence.
+    def test_partial_minter_config_stops_the_deploy(self):
+        # The environment-secret trap: org and repo resolve, the App ID arrives empty,
+        # and installer_common.sh's own warning never fires because it requires all
+        # three. This used to warn and provision anyway, which moved the failure to
+        # test_github_token_minting_and_connectivity and turned it into an HTTP 502
+        # with no named cause. It is fatal here instead.
         proc, _ = self._run({"GITHUB_ORG": "acme", "GITHUB_REPO": "infra"})
-        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotEqual(
+            proc.returncode, 0, "a half-configured minter must not provision an RC"
+        )
         combined = proc.stdout + proc.stderr
         self.assertIn("GITHUB_APP_ID", combined)
-        self.assertIn("::warning", combined)
+        self.assertIn("::error", combined)
+
+    def test_a_partial_minter_config_does_not_reach_the_installer(self):
+        """Failing after install.sh has run would already have torn the RC down."""
+        proc, tmp_dir = self._run(
+            {"GITHUB_ORG": "acme", "GITHUB_REPO": "infra"},
+            install_body='printf "ran\\n" > installer_ran.txt\n',
+        )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertFalse(
+            (tmp_dir / "installer_ran.txt").exists(),
+            "the guard must fire before install.sh is invoked",
+        )
 
     def test_a_complete_minter_config_is_not_warned_about(self):
         proc, _ = self._run(
