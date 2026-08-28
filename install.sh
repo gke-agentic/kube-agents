@@ -485,15 +485,14 @@ verify_local_source_ref() {
     return 0
   fi
 
-  # In official stamped release archives (unpacked tarball/zip outside Git),
-  # BAKED_RELEASE_VERSION is stamped during release automation.
-  if [ -n "${BAKED_RELEASE_VERSION:-}" ] && [ "${BAKED_RELEASE_VERSION}" = "${expected_ref}" ]; then
-    SOURCE_REF_VERIFIED="${repo_dir}@${expected_ref}"
-    print_success "Verified install sources match baked official release ${BAKED_RELEASE_VERSION}."
-    return 0
-  fi
-
   if ! git -C "$repo_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    # In official stamped release archives (unpacked tarball/zip outside Git),
+    # BAKED_RELEASE_VERSION is stamped during release automation.
+    if [ -n "${BAKED_RELEASE_VERSION:-}" ] && [ "${BAKED_RELEASE_VERSION}" = "${expected_ref}" ]; then
+      SOURCE_REF_VERIFIED="${repo_dir}@${expected_ref}"
+      print_success "Verified install sources match baked official release ${BAKED_RELEASE_VERSION}."
+      return 0
+    fi
     if [ "$lenient" = "true" ]; then
       print_warning "Cannot verify source/image alignment because '$repo_dir' is not a Git worktree."
       SOURCE_REF_VERIFIED="${repo_dir}@${expected_ref}"

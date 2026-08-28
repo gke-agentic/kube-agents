@@ -463,6 +463,26 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("Verified install sources match baked official release 0.2.0", proc.stdout)
 
+    def test_verify_local_source_ref_in_git_worktree_enforces_git_alignment_even_with_baked_version(self):
+        """Verifies verify_local_source_ref strictly runs Git alignment in real Git checkouts even with baked version."""
+        with tempfile.TemporaryDirectory(prefix="git-repo-") as repo_dir:
+            repo_path = pathlib.Path(repo_dir)
+            subprocess.run(["git", "init"], cwd=str(repo_path), check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=str(repo_path), check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(repo_path), check=True)
+            (repo_path / "file.txt").write_text("initial\n")
+            subprocess.run(["git", "add", "file.txt"], cwd=str(repo_path), check=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=str(repo_path), check=True)
+            subprocess.run(["git", "tag", "0.2.0"], cwd=str(repo_path), check=True)
+
+            # Add an uncommitted modification to make working tree dirty
+            (repo_path / "file.txt").write_text("dirty uncommitted change\n")
+
+            cmd = f'BAKED_RELEASE_VERSION="0.2.0"; verify_local_source_ref "{repo_path}" "0.2.0"'
+            proc = self._run_install_func(cmd, cwd=repo_path)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("dirty checkout", proc.stdout)
+
 
 class EnsureExistingClusterNetworkPolicyTest(unittest.TestCase):
     """ensure_existing_cluster_network_policy's two-call enablement sequence.
