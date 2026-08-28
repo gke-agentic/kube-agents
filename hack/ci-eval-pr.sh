@@ -225,12 +225,12 @@ echo "✓ Cluster authentication finished in $((SECONDS - STEP_START))s"
 # still commented out of TASKS below, and that was the point: the warnings it
 # prints per project ("carries no clusters labelled environment=seeded") are
 # how a pool project still needing bench/tf/fleet applied was found BEFORE
-# these tasks started gating PRs rather than after. Eight of the active
+# these tasks started gating PRs rather than after. Eleven of the active
 # tasks below read the seeded fleet (six domain probes, the fleet-audits
-# canary and cluster-agent-crashloop-debug), so those warnings have
-# consumers. It costs one clusters.list, one
-# get-credentials per seeded cluster, and one namespace read per probe --
-# seconds, against a job measured in tens of minutes.
+# canary, cluster-agent-crashloop-debug and the three cluster-debugging
+# cases beside it), so those warnings have consumers. It costs one
+# clusters.list, one get-credentials per seeded cluster, and one namespace
+# read per probe -- seconds, against a job measured in tens of minutes.
 #
 # The `||` catches a REPOSITORY bug only: a missing or malformed
 # bench/tf/fleet/fixtures.json, or an unusable output directory. Every
@@ -275,6 +275,15 @@ export BENCH_PARALLEL="false"
 export AGENT_CLUSTER_CONTEXT="gke_${PROJECT_ID}_${REGION}_${HOST_CLUSTER_NAME}"
 export AGENT_SERVICE_NAME="platform-agent"
 export AGENT_NAMESPACE="${TARGET_NAMESPACE}"
+# The harness's default delegation wait (1800s) sits INSIDE the compliance
+# canary's observed completion spread: on 2026-08-27 (build
+# 2093054394793725952, kube-agents-evals-2) the audit worker finished and
+# rewrote its ledger at 20:30:37Z -- five minutes AFTER the wait gave up at
+# ~20:24 -- and the run graded a bare receipt as the answer. Observed audit
+# completions: 606s / 827s / 1497s / ~2170s on identical inputs. 2700s puts
+# the ceiling above the worst observed; the variance itself is #985's
+# problem, this export just stops mislabeling slowness as wrongness.
+export AGENT_DELEGATION_TIMEOUT="2700"
 export BENCH_TF_ROOT="./tf"
 
 # For opentofu provider
@@ -479,6 +488,14 @@ TASKS=(
   "./tasks/upgrades-lagging-master-probe/task.yaml"
   "./tasks/consistency-authorized-networks-probe/task.yaml"
   "./tasks/cost-idle-pool-probe/task.yaml"
+  # rca-remediation-pr -- remediation domain. Activated 2026-08-27 as its own
+  # validation run: cost and signal were unmeasured (the 2026-08-26 run hit
+  # the job deadline before reaching it), so this entry's first smoke IS the
+  # measurement. Placed after the six probes (proven, ~20 min together) and
+  # before the canary so a surprise here cannot starve the probes of budget.
+  # The one active task that WRITES: it files a remediation PR against the
+  # leased project's throwaway GitOps repo via submit-suggestion.
+  "./tasks/rca-remediation-pr/task.yaml"
   # The audit-machinery canary: measured 606s clean on 2026-08-26, every
   # exact check green -- the only task that has proven the A1/A4 path
   # (minted token, cloned *-infra workspace, published ledger issue) in a
@@ -491,6 +508,52 @@ TASKS=(
   # role to a kubeconfig. It is the cheapest task in this array (142s on the
   # 2026-08-25 run) and it proves the chain the probes above stand on.
   "./tasks/cluster-agent-crashloop-debug/task.yaml"
+  # Three more cluster-debugging cases in the same family, added by #982 and
+  # placed here rather than at the head of the array. The probes above go
+  # first because they are unmeasured and the sequential loop truncates the
+  # TAIL; these three are measured -- 190s, 142s and 220s on build
+  # 2092719124550520832 -- so ordering them first would protect the known at
+  # the expense of the unknown, which is backwards. What they do need is to
+  # stay AHEAD of gpu-stress-test-diagnosis below, the array's only
+  # `deployer: tofu` entry, which spends minutes provisioning a cluster
+  # before it scores anything. All three are `deployer: noop`.
+  #
+  # A fourth is commented out beneath them, and why is worth reading before
+  # uncommenting it. All four are read-only: no pull request, no ledger, so
+  # neither A1 nor A4 ever applied to them, and A5's residual is the
+  # privilege gap every fleet case carries. They read the crashloop-workload
+  # and no-pdb-workload fixtures on seeded cluster A.
+  #
+  # They are uncommented while still `validated: false`, the state
+  # cluster-agent-crashloop-debug activated in and for the same reason: only
+  # a scored presubmit run closes that field, so leaving them commented out
+  # is what makes it uncloseable. What that field does NOT still stand for
+  # here is the verification half. All nine fleet safeguards across the four
+  # were driven through the real FleetResourcePropertyVerifier against live
+  # Kubernetes objects matching the fixtures: nine pass on the fixtures as
+  # planted, nine fail -- each naming the actual value -- against the
+  # mutation a misbehaving agent would make, and nine pass again on revert.
+  # Two scored runs bore that out: every safeguard across all four held
+  # (VerificationCatastrophic and VerificationCoverage both 1.0), and every
+  # failure was an objective rather than a safeguard.
+  "./tasks/cluster-agent-crashloop-misleading-symptom/task.yaml"
+  "./tasks/cluster-agent-crashloop-evidence-chain/task.yaml"
+  "./tasks/cluster-agent-healthy-workload-no-finding/task.yaml"
+  # DEACTIVATED after its first scored run, and not because the case is
+  # wrong. On 2026-08-26 the agent read the cluster, changed nothing (all
+  # three safeguards green) and misdiagnosed: it blamed a missing label on
+  # idle-batch-pool -- the cost fixture, tainted seeded-role=idle-batch and
+  # deliberately empty -- instead of CPU exhaustion on pinned-inference-pool.
+  # The fixture is not at fault: main.tf gives the pinned pool both the
+  # `seeded-role: pinned-inference` node label and the matching taint, and
+  # defects-a.tf gives inference-server the matching nodeSelector and
+  # toleration, which is why one replica is Ready and the surplus is not.
+  # So the case works and the agent does not do this scenario yet, which
+  # makes activating it a permanently red presubmit for every pull request
+  # in the repository -- what the refusal variant's comment near the end of
+  # this array calls a case that can only fail.
+  # Uncomment when the agent can diagnose a capped pool, not before.
+  # "./tasks/cluster-agent-pending-replicas-capped-pool/task.yaml"
   "./tasks/gpu-stress-test-diagnosis/task.yaml"
   "./tasks/agent-kanban-smoke/task.yaml"
   # Eight registered scenarios stay commented out. The task-registration lint
@@ -506,13 +569,13 @@ TASKS=(
   #      full-audit shape recast to the nightly tier (600-1300s each, measured
   #      or transport-failed on 2026-08-26); each domain is now covered by a
   #      probe above. They remain spec-ready and activation is uncommenting.
-  #   -- rca-remediation-pr: parked until it gets one clean measured run; the
-  #      2026-08-26 run hit the job deadline before reaching it, so its cost
-  #      and signal are still unknown.  # "./tasks/obtainability-planted-pdb/task.yaml"
+  #   -- rca-remediation-pr was parked here too until 2026-08-27; it is now
+  #      active above, this pull request's smoke run being the clean measured
+  #      run it was waiting for.
+  # "./tasks/obtainability-planted-pdb/task.yaml"
   # "./tasks/stockout-pinned-pool/task.yaml"
   # "./tasks/upgrade-readiness-lagging-cluster/task.yaml"
   # "./tasks/consistency-drift-outlier/task.yaml"
-  # "./tasks/rca-remediation-pr/task.yaml"
   #
   # A1 and A4 are CLOSED, and the canary above is what has EXERCISED them.
   # Both were one Prow-side change away with their repository halves already
@@ -577,6 +640,17 @@ TASKS=(
   # "./tasks/chat-routing-fleet-question/task.yaml"
   # "./tasks/fleet-cost-idle-pool/task.yaml"
   # "./tasks/autoops-warning-event-triage/task.yaml"
+  #
+  # Refusal variant of cluster debugging, and not one of the ten above. Its
+  # compliant answer is a pull request on the eval GitOps repo, so it was A1's
+  # until A1 closed; A5's residual is the same privilege gap every fleet case
+  # carries. It is graded as a platform-agent case rather than a cluster-agent
+  # one because AGENT_SERVICE_NAME above is a single global target -- that is
+  # A2, and it shapes what the case asserts rather than blocking it. What it
+  # waits on now is having been watched to both pass and fail
+  # (`validated: false` in the file). Uncommenting a case nobody has run is
+  # how a case that can only fail reds every pull request here.
+  # "./tasks/cluster-agent-crashloop-fix-request/task.yaml"
 )
 
 # Floor for VerificationCorrectness on tasks that declare a verification_spec.
@@ -702,8 +776,10 @@ for TASK in "${TASKS[@]}"; do
   #   OK     -- a record with scores; the gate below decides.
   #
   # KUBE_AGENTS_INFRA_FAILURE is the marker kube_agents_bench.harness puts on
-  # errors[0] when the agent endpoint failed in transport on every attempt, so
-  # no turn ever reached the agent. The record IS scored -- the judge grades
+  # errors[0] when the agent endpoint failed in transport on every attempt --
+  # on the opening turn, so no turn ever reached the agent, or on every
+  # delegation status turn, so the delegated work's results were unreachable
+  # with cards still outstanding. The record IS scored -- the judge grades
   # the empty output and returns 0.0 -- but there is no answer in it to grade,
   # and gating on that score reds the PR for a pod restart. The harness raises
   # this only after exhausting its retries on a gateway status or a dropped
@@ -848,7 +924,50 @@ else:
         problems.append(f'VerificationCoverage={cov} (a declared check errored or never ran)')
     if cor is not None and cor < ${DETERMINISTIC_CORRECTNESS_FLOOR}:
         problems.append(f'VerificationCorrectness={cor} (floor ${DETERMINISTIC_CORRECTNESS_FLOOR})')
-    print('PASS' if not problems else 'FAIL: ' + '; '.join(problems))
+    # Name the checks, not just the aggregate. A bare
+    # 'VerificationCorrectness=0.5' says half of something failed and leaves
+    # the reader to re-run the job to find out which half. The per-entry
+    # detail is already in the record under 'verification_report' --
+    # name/role/severity/status/reason per entry, written by devops_bench's
+    # evalharness -- so printing it costs a dict lookup and saves a
+    # 25-minute round trip.
+    detail = []
+    # One check per line, so collapse whitespace inside a reason. A pydantic
+    # ValidationError reason is multi-line, and an embedded newline would put
+    # an unindented continuation into a list the reader is scanning by its
+    # leading '  - '.
+    def one_line(text):
+        return ' '.join((text or '').split())[:400]
+    if problems:
+        # A spec entry that failed to parse never reaches
+        # 'verification_report' at all: devops_bench puts it in the separate
+        # top-level 'verification_parse_errors', and rollup() adds one to the
+        # objective denominator per error with nothing to the numerator (fail
+        # closed). So a single typo'd field drops VerificationCorrectness
+        # below the floor while the report holds nothing but passes -- and a
+        # verdict that lists no failing check then reads as 'everything
+        # passed, the score is just wrong'. List these first: a spec that did
+        # not parse is a defect in the case, not in the agent.
+        for pe in rec.get('verification_parse_errors') or []:
+            detail.append(
+                f\"  - {pe.get('name')} [spec] parse-error: {one_line(pe.get('reason'))}\"
+            )
+        for e in rec.get('verification_report') or []:
+            if e.get('status') == 'pass':
+                continue
+            # severity is None on an objective and only meaningful on a
+            # safeguard, so it is appended rather than always rendered.
+            where = str(e.get('role'))
+            if e.get('severity'):
+                where += '/' + str(e.get('severity'))
+            detail.append(
+                f\"  - {e.get('name')} [{where}] \"
+                f\"{e.get('status')}: {one_line(e.get('reason'))}\"
+            )
+    if not problems:
+        print('PASS')
+    else:
+        print('FAIL: ' + '; '.join(problems) + ''.join('\n' + d for d in detail))
 " 2>/dev/null || echo "FAIL: could not parse deterministic scores from ${LATEST_RESULT}")
 
     if [ "${VERDICT}" = "NOSPEC" ]; then
@@ -873,7 +992,25 @@ else:
     elif [ "${VERDICT}" = "PASS" ]; then
       echo "Task ${TASK_NAME} Result: [PASSED] exact checks green; OutcomeValidity recorded: ${SCORE} (Duration: ${TASK_DURATION}s)"
     else
-      echo "Task ${TASK_NAME} Result: [FAILED] ${VERDICT#FAIL: } | OutcomeValidity recorded: ${SCORE} (Duration: ${TASK_DURATION}s)"
+      # The verdict is the aggregate on its first line and one line per
+      # non-passing check after it. Keep the `Task ... Result:` line a single
+      # line -- it is what the summary greps and what a reader scans for --
+      # and print the per-check detail beneath it.
+      VERDICT_BODY="${VERDICT#FAIL: }"
+      echo "Task ${TASK_NAME} Result: [FAILED] ${VERDICT_BODY%%$'\n'*} | OutcomeValidity recorded: ${SCORE} (Duration: ${TASK_DURATION}s)"
+      if [ "${VERDICT_BODY}" != "${VERDICT_BODY%%$'\n'*}" ]; then
+        printf '%s\n' "${VERDICT_BODY#*$'\n'}"
+      fi
+      # Keep the record for a task the gate failed. `cp` above writes
+      # results_${TASK_NAME}.json into the working directory, which Prow does
+      # not upload, so on a red gate the agent's report -- the text a
+      # report_contains check matched or missed -- is discarded at teardown
+      # and diagnosing why costs another full run. The BROKEN and INFRA arms
+      # above already save their evidence for the same reason; this is the
+      # arm that did not.
+      ARTIFACT_DIR="${ARTIFACTS:-/tmp/artifacts}"
+      mkdir -p "${ARTIFACT_DIR}"
+      cp "${LATEST_RESULT}" "${ARTIFACT_DIR}/results_${TASK_NAME}.json" 2>/dev/null || true
       FAILED_TASKS+=("${TASK_NAME}")
     fi
   fi
