@@ -87,15 +87,15 @@ The App's private key is separate, because it is signing material rather than co
 ```bash
 gcloud services enable cloudkms.googleapis.com --project=kube-agents-rc
 gcloud kms keyrings create github-token-minter-keyring \
-  --location=us-east4 --project=kube-agents-rc
+  --location=us-central1 --project=kube-agents-rc
 gcloud kms keys create github-token-minter-key \
-  --keyring=github-token-minter-keyring --location=us-east4 \
+  --keyring=github-token-minter-keyring --location=us-central1 \
   --purpose=asymmetric-signing --default-algorithm=rsa-sign-pkcs1-2048-sha256 \
   --import-only --protection-level=software --project=kube-agents-rc
 
 git clone --depth 1 --branch v2.7.1 https://github.com/abcxyz/github-token-minter.git /tmp/minty
 cd /tmp/minty && go run ./cmd/minty tools import-pk \
-  -project-id=kube-agents-rc -location=us-east4 \
+  -project-id=kube-agents-rc -location=us-central1 \
   -key-ring=github-token-minter-keyring -key=github-token-minter-key \
   -private-key=@/path/to/app.pem
 ```
@@ -104,7 +104,7 @@ That is a one-off. The key ring survives the teardown/reinstall cycle — `terra
 
 ```bash
 gcloud kms keys versions list --key=github-token-minter-key \
-  --keyring=github-token-minter-keyring --location=us-east4 \
+  --keyring=github-token-minter-keyring --location=us-central1 \
   --project=kube-agents-rc --filter=state=ENABLED
 ```
 

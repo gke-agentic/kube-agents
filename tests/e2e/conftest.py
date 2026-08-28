@@ -135,7 +135,7 @@ def gcp_region() -> str:
         return val
 
     cfg = _get_default_config_env()
-    return cfg.get("region") or "us-east4"
+    return cfg.get("region") or "us-central1"
 
 
 @pytest.fixture(scope="session")

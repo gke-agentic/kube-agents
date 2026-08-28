@@ -1188,9 +1188,17 @@ import_github_pem() {
   print_info "Ensuring the minter's KMS keyring and import-only signing key exist..."
   gcloud services enable cloudkms.googleapis.com --project="$project_id"
   gcloud kms keyrings create "$keyring" --location="$kms_location" --project="$project_id" 2>/dev/null || true
+  # --skip-initial-version-creation is required, not optional: KMS answers
+  # `INVALID_ARGUMENT: Import-only keys must skip initial version creation` without
+  # it, and because this call is silenced and `|| true`'d, the failure was invisible
+  # — the key was never created, the Minty import below then failed against a key
+  # that did not exist, and the minter deployed and never passed readiness. It
+  # matches skip_initial_version_creation in terraform/modules/github-minter, which
+  # is where the key normally comes from.
   gcloud kms keys create "$key" --keyring="$keyring" --location="$kms_location" \
     --purpose=asymmetric-signing --default-algorithm=rsa-sign-pkcs1-2048-sha256 \
-    --import-only --protection-level=software --project="$project_id" 2>/dev/null || true
+    --import-only --skip-initial-version-creation \
+    --protection-level=software --project="$project_id" 2>/dev/null || true
 
   print_info "Importing the GitHub App private key into KMS via the Minty CLI..."
   local minty_dir pem_abs

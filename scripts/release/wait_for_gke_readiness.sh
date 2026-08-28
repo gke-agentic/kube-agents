@@ -48,9 +48,10 @@ fi
 
 AGENT_NAMESPACE="${AGENT_NAMESPACE:-kubeagents-system}"
 
-# The agent's registry is not always the cluster's region. The RC runs a us-east4
-# cluster whose images come from us-central1-docker.pkg.dev, and anything the
-# plugin installers build goes to the agent's registry rather than this one:
+# The agent's registry is not always the cluster's region. The RC ran a us-east4
+# cluster off us-central1-docker.pkg.dev until the two were aligned, and nothing
+# requires them to agree — REGISTRY_PREFIX is set independently of the cluster.
+# Anything the plugin installers build goes to the agent's registry, not this one:
 # plugin_image_discover_registry (agentplugins/lib/plugin_image.sh) copies the
 # running agent's host, location, project and repository precisely so a plugin
 # lands somewhere the kubelet is already known to pull from. Authenticating only
