@@ -947,7 +947,16 @@ ensure_existing_cluster_cmek() {
 # postcondition backstops installs driven through bare Terraform.
 ensure_existing_cluster_workload_identity() {
   local project_id="$1" cluster_name="$2" region="$3"
-  local pool
+  local pool is_autopilot
+
+  is_autopilot=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
+    --location="$region" --project="$project_id" \
+    --format="value(autopilot.enabled)" 2>/dev/null) || is_autopilot="false"
+  if [ "$is_autopilot" = "True" ]; then
+    print_success "Existing cluster '$cluster_name' is GKE Autopilot (Workload Identity enabled natively)."
+    return 0
+  fi
+
   # `trap - ERR` inside the substitution: bash 3.2 (macOS's default, the
   # curl|bash audience) runs the inherited ERR trap in the subshell even
   # though the outer failure is handled, printing a spurious abort banner
@@ -975,10 +984,10 @@ ensure_existing_cluster_workload_identity() {
     gcloud container node-pools update "$legacy_pool" \
       --cluster="$cluster_name" --location="$region" --project="$project_id" \
       --workload-metadata=GKE_METADATA --quiet
-  done < <(gcloud container node-pools list --cluster="$cluster_name" \
+  done < <(trap - ERR; gcloud container node-pools list --cluster="$cluster_name" \
       --location="$region" --project="$project_id" \
       --format="csv[no-heading](name,config.workloadMetadataConfig.mode)" 2>/dev/null \
-    | awk -F',' '$2 != "GKE_METADATA" {print $1}')
+    | awk -F',' '$2 != "GKE_METADATA" {print $1}' || true)
 }
 
 # NetworkPolicy enforcement on a pre-existing cluster is the third such
