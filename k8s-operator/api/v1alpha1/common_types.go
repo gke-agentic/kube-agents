@@ -895,6 +895,14 @@ func CleanRepoSlugWithOrg(rawURL, org string) (string, error) {
 	cleaned := strings.TrimSpace(rawURL)
 	cleaned = strings.TrimSuffix(cleaned, ".git")
 
+	// Validate URL scheme if a scheme is present
+	if idx := strings.Index(cleaned, "://"); idx != -1 {
+		scheme := strings.ToLower(cleaned[:idx])
+		if scheme != "http" && scheme != "https" && scheme != "git" && scheme != "ssh" {
+			return "", fmt.Errorf("unsupported URL scheme %q; must be http, https, git, or ssh", scheme)
+		}
+	}
+
 	// Strip known URL schemes
 	for _, scheme := range []string{"ssh://", "git://", "https://", "http://"} {
 		cleaned = strings.TrimPrefix(cleaned, scheme)

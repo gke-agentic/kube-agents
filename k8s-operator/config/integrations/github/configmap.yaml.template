@@ -12,7 +12,7 @@ data:
         rule:
           if: "assertion.email in ['${PLATFORM_AGENT_GSA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com']"
         repositories:
-          - '*'
+          - '${GITHUB_REPO}'
         permissions:
           contents: 'write'
           pull_requests: 'write'

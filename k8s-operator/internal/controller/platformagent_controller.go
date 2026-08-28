@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -393,20 +394,6 @@ func (r *PlatformAgentReconciler) handleDeletion(ctx context.Context, agent *age
 			return ctrl.Result{}, err
 		}
 
-		configmapEditorRBACName := fmt.Sprintf("kubeagents:configmap-editor:%s:%s", agent.Namespace, agent.Name)
-
-		// Delete Configmap Editor RoleBinding
-		rbConfigmapEditor := &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: configmapEditorRBACName, Namespace: agent.Namespace}}
-		if err := client.IgnoreNotFound(r.Delete(ctx, rbConfigmapEditor)); err != nil {
-			return ctrl.Result{}, err
-		}
-
-		// Delete Configmap Editor Role
-		rConfigmapEditor := &rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: configmapEditorRBACName, Namespace: agent.Namespace}}
-		if err := client.IgnoreNotFound(r.Delete(ctx, rConfigmapEditor)); err != nil {
-			return ctrl.Result{}, err
-		}
-
 		// Resource is deleted. Safe to remove finalizer and update.
 		controllerutil.RemoveFinalizer(agent, platformAgentFinalizer)
 		if err := r.Update(ctx, agent); err != nil {
@@ -535,51 +522,53 @@ func (r *PlatformAgentReconciler) reconcileSettingsConfigMap(ctx context.Context
 	return hash, nil
 }
 
-func parseManagedRepoEntries(raw string) []agentv1alpha1.ManagedRepoEntry {
+func parseManagedRepoEntries(raw string) ([]agentv1alpha1.ManagedRepoEntry, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return nil
+		return nil, nil
 	}
-	if strings.HasPrefix(raw, "[") {
-		var entries []agentv1alpha1.ManagedRepoEntry
-		if err := json.Unmarshal([]byte(raw), &entries); err == nil {
-			var res []agentv1alpha1.ManagedRepoEntry
-			for _, e := range entries {
-				u := strings.TrimSpace(e.URL)
-				t := strings.TrimSpace(e.Type)
-				if u != "" && t != "" {
-					res = append(res, agentv1alpha1.ManagedRepoEntry{Type: t, URL: u})
-				}
-			}
-			return res
+	if !strings.HasPrefix(raw, "[") {
+		return nil, fmt.Errorf("managed_repos JSON must be an array starting with '['")
+	}
+	var entries []agentv1alpha1.ManagedRepoEntry
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal managed_repos JSON: %w", err)
+	}
+	var res []agentv1alpha1.ManagedRepoEntry
+	for _, e := range entries {
+		u := strings.TrimSpace(e.URL)
+		t := strings.TrimSpace(e.Type)
+		if u != "" && t != "" {
+			res = append(res, agentv1alpha1.ManagedRepoEntry{Type: t, URL: u})
 		}
 	}
-	return nil
+	return res, nil
 }
 
-func parseManagedRepos(raw string) []string {
-	entries := parseManagedRepoEntries(raw)
+func parseManagedRepos(raw string) ([]string, error) {
+	entries, err := parseManagedRepoEntries(raw)
+	if err != nil {
+		return nil, err
+	}
 	var res []string
 	for _, e := range entries {
 		res = append(res, e.URL)
 	}
-	return res
+	return res, nil
 }
 
 // reconcileGitopsStateConfigMap ensures the <agent-name>-gitops-state ConfigMap exists to track
 // managed repositories. If spec.integration.github.gitRepo is defined on the CR, it is seeded
 // into managed_repos and kept present on subsequent reconciles without removing any additional
-// repositories added to the ConfigMap by cluster administrators.
+// repositories added to the ConfigMap.
 //
 // Repository lifecycle and removal:
-// The operator treats spec.integration.github.gitRepo as declared desired state. If that repo
-// is absent from managed_repos in the existing ConfigMap, the reconciler re-appends it.
-// Therefore:
-//   - Additional repositories (added by cluster administrators) can be
-//     unregistered by removing them from the ConfigMap's managed_repos string.
-//   - CR-declared repositories must be removed or changed in the PlatformAgent CR itself
-//     (spec.integration.github.gitRepo); removing a CR-declared repo from the ConfigMap alone
-//     will cause the reconciler to re-add it on the next pass.
+// The reconciler appends any repository declared in spec.integration.github.gitRepo to managed_repos
+// if it is not already present in the ConfigMap, preserving all existing entries.
+// Repository removal/unregistration is administrator-driven via the ConfigMap: to unregister a
+// repository, remove its entry directly from managed_repos in the <agent-name>-gitops-state ConfigMap.
+// If the repository to be removed was declared in spec.integration.github.gitRepo on the CR, clear or
+// update gitRepo on the CR as well so the reconciler does not re-append it on subsequent passes.
 func (r *PlatformAgentReconciler) reconcileGitopsStateConfigMap(ctx context.Context, agent *agentv1alpha1.PlatformAgent) error {
 	cm := buildGitopsStateConfigMap(agent)
 	if err := ctrl.SetControllerReference(agent, cm, r.Scheme); err != nil {
@@ -613,8 +602,14 @@ func (r *PlatformAgentReconciler) reconcileGitopsStateConfigMap(ctx context.Cont
 			}
 			return r.syncGithubTokenMinterConfigMap(ctx, agent, cmRepo)
 		}
-		specEntries := parseManagedRepoEntries(cmRepo)
-		existingEntries := parseManagedRepoEntries(existing)
+		specEntries, err := parseManagedRepoEntries(cmRepo)
+		if err != nil {
+			return fmt.Errorf("failed to parse spec repository JSON: %w", err)
+		}
+		existingEntries, err := parseManagedRepoEntries(existing)
+		if err != nil {
+			return fmt.Errorf("failed to parse existing managed_repos in ConfigMap %s: %w", found.Name, err)
+		}
 		updated := false
 		for _, se := range specEntries {
 			present := false
@@ -666,6 +661,25 @@ func serializeManagedKeysAnnotation(keys map[string]struct{}) string {
 	return strings.Join(list, ",")
 }
 
+var minterRepoRegex = regexp.MustCompile(`(?m)^(\s*repositories:\s*\n)(?:\s*-\s*.*?\n)+`)
+
+func renderRepoPolicy(baseTemplate, repo string) string {
+	return minterRepoRegex.ReplaceAllStringFunc(baseTemplate, func(match string) string {
+		lines := strings.Split(match, "\n")
+		prefix := lines[0]
+		indent := ""
+		for _, ch := range prefix {
+			if ch == ' ' || ch == '\t' {
+				indent += string(ch)
+			} else {
+				break
+			}
+		}
+		itemIndent := indent + "  "
+		return prefix + "\n" + itemIndent + "- '" + repo + "'\n"
+	})
+}
+
 // syncGithubTokenMinterConfigMap ensures that for every repository in managed_repos,
 // a corresponding <repo>.yaml entry exists in github-token-minter-config ConfigMap,
 // and removes any operator-managed <repo>.yaml entry for repositories that are no longer managed.
@@ -702,8 +716,11 @@ func (r *PlatformAgentReconciler) syncGithubTokenMinterConfigMap(ctx context.Con
 		return nil
 	}
 
-	repos := parseManagedRepos(managedReposStr)
-	activeKeys := make(map[string]struct{}, len(repos))
+	repos, err := parseManagedRepos(managedReposStr)
+	if err != nil {
+		return fmt.Errorf("failed to parse managed_repos for minter policy sync: %w", err)
+	}
+	activeKeys := make(map[string]string, len(repos))
 	for _, fullRepo := range repos {
 		bareRepo := fullRepo
 		if idx := strings.LastIndex(fullRepo, "/"); idx != -1 {
@@ -713,19 +730,22 @@ func (r *PlatformAgentReconciler) syncGithubTokenMinterConfigMap(ctx context.Con
 		if bareRepo == "" {
 			continue
 		}
-		activeKeys[bareRepo+".yaml"] = struct{}{}
+		activeKeys[bareRepo+".yaml"] = bareRepo
 	}
 
 	updated := false
 
-	// Ensure all active managed repositories have policy entries
-	for key := range activeKeys {
-		if _, exists := minterCM.Data[key]; !exists {
-			minterCM.Data[key] = baseTemplate
-			updated = true
-		}
-		if _, managed := operatorManagedKeys[key]; !managed {
+	// Ensure all active managed repositories have policy entries scoped to each repository
+	for key, bareRepo := range activeKeys {
+		expectedContent := renderRepoPolicy(baseTemplate, bareRepo)
+		currentVal, exists := minterCM.Data[key]
+		_, managed := operatorManagedKeys[key]
+		if !exists {
+			minterCM.Data[key] = expectedContent
 			operatorManagedKeys[key] = struct{}{}
+			updated = true
+		} else if managed && currentVal != expectedContent {
+			minterCM.Data[key] = expectedContent
 			updated = true
 		}
 	}

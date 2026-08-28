@@ -1143,5 +1143,29 @@ class TrustGateTest(_Harness):
         self.assertIn(forge.IGNORE_LABEL, err.getvalue())
 
 
+class RepoValidationTest(_Harness):
+    def test_invalid_repo_format_rejected(self):
+        provider = answerable()
+        err = StringIO()
+        with self.assertRaises(SystemExit), redirect_stderr(err):
+            self.run_helper(["reply", "--repo", "../invalid", "--pr", "12", "--comment-id", "IC_1", "--body-file", self.scratch_file("r.md", "body"), "--no-change"], provider)
+        self.assertIn("Invalid repository format", err.getvalue())
+
+    def test_unmanaged_repo_rejected(self):
+        provider = answerable()
+        err = StringIO()
+        with self.assertRaises(SystemExit), redirect_stderr(err):
+            self.run_helper(["reply", "--repo", "unmanaged/repo", "--pr", "12", "--comment-id", "IC_1", "--body-file", self.scratch_file("r.md", "body"), "--no-change"], provider, repo="managed/repo")
+        self.assertIn("not in the managed repositories list", err.getvalue())
+
+    def test_poll_unmanaged_repo_returns_error(self):
+        provider = answerable()
+        _rc, out = self.run_helper(["poll", "--repo", "unmanaged/repo"], provider, repo="managed/repo")
+        payload = json.loads(out)
+        self.assertEqual(payload["status"], "ERROR")
+        self.assertEqual(payload["reason"], "INVALID_REPOSITORY")
+        self.assertIn("not in the managed repositories list", payload["value"])
+
+
 if __name__ == "__main__":
     unittest.main()

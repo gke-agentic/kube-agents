@@ -55,6 +55,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
 from datetime import datetime
@@ -72,6 +73,8 @@ import pr_triggers  # noqa: E402
 
 SCRATCH_DIR = "/opt/data/scratch"
 
+BARE_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
 # How much of a thread travels with the requests. Both caps are generous enough
 # that no ordinary review conversation meets them, and both report what they
 # dropped — `omitted_earlier` on the thread, `truncated_chars` on the comment —
@@ -86,9 +89,25 @@ def _fail(message: str):
     sys.exit(1)
 
 
+def validate_repo(repo: str) -> str:
+    """Ensure repo is formatted as owner/name and is in the managed repos allowlist if configured."""
+    if not repo or not BARE_REPO_RE.match(repo) or ".." in repo or repo.startswith("/") or repo.endswith("/"):
+        raise ValueError(f"Invalid repository format: {repo!r}. Expected 'owner/name'.")
+    from gitops_workspace import get_managed_github_repos
+    managed = get_managed_github_repos()
+    if managed and repo not in managed:
+        raise ValueError(
+            f"Repository {repo!r} is not in the managed repositories list: {managed}"
+        )
+    return repo
+
+
 def _resolve_repo(args=None) -> str:
     if args and getattr(args, "repo", None):
-        return args.repo
+        try:
+            return validate_repo(args.repo)
+        except ValueError as error:
+            _fail(str(error))
     _fail("No target repository specified; pass --repo <owner/repo>.")
 
 
@@ -267,9 +286,12 @@ def handle_poll(args) -> int:
     try:
         from gitops_workspace import get_managed_github_repos
         if getattr(args, "repo", None):
-            repos = [args.repo]
+            repos = [validate_repo(args.repo)]
         else:
             repos = get_managed_github_repos()
+    except ValueError as error:
+        print(json.dumps({"status": "ERROR", "reason": "INVALID_REPOSITORY", "value": str(error)}))
+        return 0
     except forge.ForgeError as error:
         print(json.dumps({"status": "ERROR", "reason": error.reason, "value": error.value}))
         return 0

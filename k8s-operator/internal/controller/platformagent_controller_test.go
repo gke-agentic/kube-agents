@@ -2596,6 +2596,25 @@ func TestReconcileGitopsStateConfigMap(t *testing.T) {
 	if verifyCM.Data["managed_repos"] != expectedMergedJSON {
 		t.Errorf("expected ConfigMap to contain merged repos, but got %v", verifyCM.Data["managed_repos"])
 	}
+
+	// 5. Unparseable managed_repos in ConfigMap should return an error and preserve existing data without overwriting
+	verifyCM.Data["managed_repos"] = `[invalid-json-text`
+	if err := fakeClient.Update(ctx, &verifyCM); err != nil {
+		t.Fatalf("failed to update ConfigMap with unparseable data: %v", err)
+	}
+
+	err = r.reconcileGitopsStateConfigMap(ctx, agent)
+	if err == nil {
+		t.Errorf("expected error when managed_repos contains unparseable JSON, got nil")
+	}
+
+	var unparseableVerifyCM corev1.ConfigMap
+	if err := fakeClient.Get(ctx, cmKey, &unparseableVerifyCM); err != nil {
+		t.Fatalf("failed to get ConfigMap after unparseable reconcile: %v", err)
+	}
+	if unparseableVerifyCM.Data["managed_repos"] != `[invalid-json-text` {
+		t.Errorf("expected ConfigMap to preserve unparseable data, but got %v", unparseableVerifyCM.Data["managed_repos"])
+	}
 }
 
 func TestReconcileNetworkPolicy_APIReader(t *testing.T) {
@@ -4082,7 +4101,7 @@ func TestSyncGithubTokenMinterConfigMap(t *testing.T) {
 			Namespace: "test-ns",
 		},
 		Data: map[string]string{
-			"default.yaml":            "version: 'minty.abcxyz.dev/v2'\n",
+			"default.yaml":            "version: 'minty.abcxyz.dev/v2'\nscope:\n  platform-agent-scope:\n    repositories:\n      - 'default-repo'\n",
 			"unmanaged-static.yaml":   "version: 'minty.abcxyz.dev/v2'\n",
 		},
 	}
@@ -4116,12 +4135,14 @@ func TestSyncGithubTokenMinterConfigMap(t *testing.T) {
 		t.Fatalf("failed to get updated ConfigMap: %v", err)
 	}
 
-	// Verify repo-1.yaml and repo-2.yaml were created
-	if updatedCM.Data["repo-1.yaml"] != "version: 'minty.abcxyz.dev/v2'\n" {
-		t.Errorf("expected repo-1.yaml to be created with base template, got %q", updatedCM.Data["repo-1.yaml"])
+	// Verify repo-1.yaml and repo-2.yaml were created and scoped to their respective repos
+	expectedRepo1 := "version: 'minty.abcxyz.dev/v2'\nscope:\n  platform-agent-scope:\n    repositories:\n      - 'repo-1'\n"
+	expectedRepo2 := "version: 'minty.abcxyz.dev/v2'\nscope:\n  platform-agent-scope:\n    repositories:\n      - 'repo-2'\n"
+	if updatedCM.Data["repo-1.yaml"] != expectedRepo1 {
+		t.Errorf("expected repo-1.yaml to be repo-scoped, got %q", updatedCM.Data["repo-1.yaml"])
 	}
-	if updatedCM.Data["repo-2.yaml"] != "version: 'minty.abcxyz.dev/v2'\n" {
-		t.Errorf("expected repo-2.yaml to be created with base template, got %q", updatedCM.Data["repo-2.yaml"])
+	if updatedCM.Data["repo-2.yaml"] != expectedRepo2 {
+		t.Errorf("expected repo-2.yaml to be repo-scoped, got %q", updatedCM.Data["repo-2.yaml"])
 	}
 
 	// Verify unmanaged-static.yaml was NOT pruned
@@ -4130,8 +4151,9 @@ func TestSyncGithubTokenMinterConfigMap(t *testing.T) {
 	}
 
 	// Verify default.yaml was preserved
-	if updatedCM.Data["default.yaml"] != "version: 'minty.abcxyz.dev/v2'\n" {
-		t.Errorf("expected default.yaml to be preserved")
+	expectedDefault := "version: 'minty.abcxyz.dev/v2'\nscope:\n  platform-agent-scope:\n    repositories:\n      - 'default-repo'\n"
+	if updatedCM.Data["default.yaml"] != expectedDefault {
+		t.Errorf("expected default.yaml to be preserved, got %q", updatedCM.Data["default.yaml"])
 	}
 
 	// Verify annotation tracks operator-managed keys
