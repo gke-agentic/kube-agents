@@ -470,17 +470,11 @@ get_image_manifest_digest() {
 
 # Resolves the candidate commit SHA where CI built the container images.
 # If a SemVer version is provided, checks:
-# 1. Candidate commit if passed explicitly or in RC_CANDIDATE_COMMIT
-# 2. Tag commit refs/tags/${version}^{commit}
-# 3. Parent commit refs/tags/${version}^^{commit} (where images were built by CI prior to detached HEAD tag stamping)
+# 1. Direct 40-character SHA if passed as argument
+# 2. Stamped release tag parent commit refs/tags/${version}^ (where images were built by CI prior to tag stamping)
+# 3. Direct tag commit refs/tags/${version}^{commit}
 resolve_source_image_commit() {
   local version_or_commit="${1:-}"
-  local explicit_candidate="${2:-${RC_CANDIDATE_COMMIT:-}}"
-
-  if [ -n "${explicit_candidate}" ] && git rev-parse --verify "${explicit_candidate}^{commit}" >/dev/null 2>&1; then
-    git rev-parse --verify "${explicit_candidate}^{commit}"
-    return 0
-  fi
 
   if [ -z "${version_or_commit}" ]; then
     echo "❌ ERROR: version_or_commit is required for resolve_source_image_commit." >&2
@@ -520,18 +514,7 @@ resolve_source_image_commit() {
     return 0
   fi
 
-  if [ -n "${explicit_candidate}" ]; then
-    echo "${explicit_candidate}"
-    return 0
-  fi
-
-  local head_sha
-  if head_sha="$(git rev-parse --verify HEAD 2>/dev/null)"; then
-    echo "${head_sha}"
-    return 0
-  fi
-
-  echo "❌ ERROR: Cannot resolve source image commit for version '${version}'!" >&2
+  echo "❌ ERROR: Cannot resolve source image commit for version '${version}' (tag 'refs/tags/${version}' not found in repository)." >&2
   return 1
 }
 

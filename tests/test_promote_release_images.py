@@ -50,14 +50,16 @@ class PromoteReleaseImagesScriptTest(unittest.TestCase):
                 self.assertIn("not a valid pure numeric SemVer", proc.stderr)
 
     def test_local_dry_run_skips_promotion(self):
-        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        temp_dir, repo_dir, git = create_mock_git_repo()
         try:
             bin_dir = pathlib.Path(temp_dir.name) / "bin"
             create_mock_docker_binary(bin_dir)
+            git("tag", MOCK_TARGET_RELEASE_TAG, "HEAD")
 
             proc = self._run_script(
                 [MOCK_TARGET_RELEASE_TAG],
                 bin_dir=str(bin_dir),
+                cwd=repo_dir,
             )
             self.assertEqual(proc.returncode, 0)
             self.assertIn("Dry-run: Remote image promotion", proc.stdout)
@@ -206,15 +208,17 @@ class PromoteReleaseImagesScriptTest(unittest.TestCase):
             temp_dir.cleanup()
 
     def test_promote_execution_env_vars(self):
-        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        temp_dir, repo_dir, git = create_mock_git_repo()
         try:
             bin_dir = pathlib.Path(temp_dir.name) / "bin"
             create_mock_docker_binary(bin_dir)
+            git("tag", MOCK_TARGET_RELEASE_TAG, "HEAD")
 
             proc = self._run_script(
                 [],
                 env={"CI": "true", "RELEASE_VERSION": MOCK_TARGET_RELEASE_TAG},
                 bin_dir=str(bin_dir),
+                cwd=repo_dir,
             )
             self.assertEqual(proc.returncode, 0)
             self.assertIn("PROMOTING RELEASE CONTAINER IMAGES", proc.stdout)
@@ -275,6 +279,23 @@ class PromoteReleaseImagesScriptTest(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("PROMOTING RELEASE CONTAINER IMAGES", proc.stdout)
             self.assertIn(f"Release Commit:  {direct_commit}", proc.stdout)
+        finally:
+            temp_dir.cleanup()
+
+    def test_missing_release_tag_fails_fast_without_head_fallback(self):
+        """Verifies promote_release_images fails fast with exit code 1 when tag does not exist (no HEAD fallback)."""
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            create_mock_docker_binary(bin_dir)
+
+            proc = self._run_script(
+                ["9.9.9"],
+                bin_dir=str(bin_dir),
+                cwd=repo_dir,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Cannot resolve source image commit for version '9.9.9'", proc.stderr)
         finally:
             temp_dir.cleanup()
 
