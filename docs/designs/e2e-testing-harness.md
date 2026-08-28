@@ -114,8 +114,9 @@ it is unset, the fixture takes it from that owner.
 The suites' `GITHUB_REPO` resolves to `owner/repo`: `test_agent_fleet_audit.py` asserts
 that shape and `agents/platform/scripts/github_token_refresh.py` refuses anything else.
 A bare repository name is accepted and qualified with `GITHUB_ORG`, because the CI
-variable behind it is bare — `vars.GH_REPO`, which the deploy workflows pass to the
-GitHub Token Minter alongside `vars.GH_ORG` rather than combined with it. That is the
+variable behind it is bare — `vars.GH_REPO` for the deploy workflows, which pass it to
+the GitHub Token Minter alongside `vars.GH_ORG` rather than combined with it, and
+`vars.GITOPS_REPO` with `vars.GITOPS_ORG` on the RC path, per the footnote above. That is the
 same spelling with a different meaning: the Token Minter's `GITHUB_REPO`
 ([install variables](../site/src/content/docs/deploy/token-minter.md)) is the bare name,
 and only the E2E suites' one is the qualified form.
