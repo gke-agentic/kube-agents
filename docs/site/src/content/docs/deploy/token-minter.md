@@ -25,6 +25,10 @@ Minty resolves the installation with `GET /orgs/{org}/installation` ([`pkg/serve
 
 Create the repo under an organization, or transfer an existing one into it. A free organization is enough. Note that GitHub shares one namespace across users and organizations, so you cannot create an organization whose name matches your own username.
 
+## Single-organization scoping boundary
+
+Minty's rule ConfigMap is mounted in-container at `/etc/minty/<GITHUB_ORG>`. A single PlatformAgent instance and its associated Minty deployment manage multiple repositories within the primary GitHub Organization where the GitHub App is installed. Additional repositories registered in the `gitops-state` ConfigMap must belong to this primary organization.
+
 ## Setup checklist
 
 ### GitHub App

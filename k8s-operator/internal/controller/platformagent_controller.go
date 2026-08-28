@@ -680,10 +680,14 @@ func renderRepoPolicy(baseTemplate, repo string) string {
 	})
 }
 
-// syncGithubTokenMinterConfigMap ensures that for every repository in managed_repos,
-// a corresponding <repo>.yaml entry exists in github-token-minter-config ConfigMap,
-// and removes any operator-managed <repo>.yaml entry for repositories that are no longer managed.
+// syncGithubTokenMinterConfigMap ensures that for every repository in managed_repos that belongs
+// to the primary GitHub organization (spec.integration.github.org), a corresponding <repo>.yaml
+// entry exists in github-token-minter-config ConfigMap.
+// Repositories belonging to a different organization are skipped because the minter instance is
+// bound to the primary organization directory (/etc/minty/<primary-org>/).
+// Operator-managed <repo>.yaml entries for repositories that are no longer managed are pruned.
 func (r *PlatformAgentReconciler) syncGithubTokenMinterConfigMap(ctx context.Context, agent *agentv1alpha1.PlatformAgent, managedReposStr string) error {
+	logger := logf.FromContext(ctx)
 	minterCM := &corev1.ConfigMap{}
 	err := r.Get(ctx, client.ObjectKey{Name: "github-token-minter-config", Namespace: agent.Namespace}, minterCM)
 	if err != nil {
@@ -716,21 +720,37 @@ func (r *PlatformAgentReconciler) syncGithubTokenMinterConfigMap(ctx context.Con
 		return nil
 	}
 
+	primaryOrg := ""
+	if agent.Spec.Integration != nil && agent.Spec.Integration.GitHub != nil {
+		primaryOrg = strings.TrimSpace(agent.Spec.Integration.GitHub.Org)
+	}
+
 	repos, err := parseManagedRepos(managedReposStr)
 	if err != nil {
 		return fmt.Errorf("failed to parse managed_repos for minter policy sync: %w", err)
 	}
 	activeKeys := make(map[string]string, len(repos))
 	for _, fullRepo := range repos {
-		bareRepo := fullRepo
-		if idx := strings.LastIndex(fullRepo, "/"); idx != -1 {
-			bareRepo = fullRepo[idx+1:]
-		}
-		bareRepo = strings.TrimSpace(bareRepo)
-		if bareRepo == "" {
+		fullRepo = strings.TrimSpace(fullRepo)
+		if fullRepo == "" {
 			continue
 		}
-		activeKeys[bareRepo+".yaml"] = bareRepo
+		slug, err := agentv1alpha1.CleanRepoSlugWithOrg(fullRepo, primaryOrg)
+		if err != nil {
+			logger.V(1).Info("skipping invalid repo in managed_repos for minter policy sync", "repo", fullRepo, "error", err)
+			continue
+		}
+		parts := strings.SplitN(slug, "/", 2)
+		if len(parts) == 2 {
+			repoOrg := parts[0]
+			bareRepo := parts[1]
+			if primaryOrg != "" && !strings.EqualFold(repoOrg, primaryOrg) {
+				logger.Info("skipping cross-org repository in minter policy sync; minter is scoped to primary org",
+					"repo", fullRepo, "repoOrg", repoOrg, "primaryOrg", primaryOrg)
+				continue
+			}
+			activeKeys[bareRepo+".yaml"] = bareRepo
+		}
 	}
 
 	updated := false

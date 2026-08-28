@@ -4093,6 +4093,15 @@ func TestSyncGithubTokenMinterConfigMap(t *testing.T) {
 	scheme := setupScheme()
 	agent := &agentv1alpha1.PlatformAgent{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "test-ns"},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
+				IntegrationSpec: agentv1alpha1.IntegrationSpec{
+					GitHub: &agentv1alpha1.GitHubSpec{
+						Org: "test-org",
+					},
+				},
+			},
+		},
 	}
 
 	minterCM := &corev1.ConfigMap{
@@ -4187,5 +4196,22 @@ func TestSyncGithubTokenMinterConfigMap(t *testing.T) {
 	expectedAnnAfter := "repo-1.yaml"
 	if ann := updatedCM.Annotations[AnnotationManagedMinterKeys]; ann != expectedAnnAfter {
 		t.Errorf("expected annotation %q, got %q", expectedAnnAfter, ann)
+	}
+
+	// 3. Sync with managed_repos including a cross-org repo (other-org/other-repo) — should skip creating other-repo.yaml
+	err = r.syncGithubTokenMinterConfigMap(ctx, agent, `[{"type":"github","url":"https://github.com/test-org/repo-1"},{"type":"github","url":"https://github.com/other-org/other-repo"}]`)
+	if err != nil {
+		t.Fatalf("syncGithubTokenMinterConfigMap failed with cross-org repo: %v", err)
+	}
+
+	if err := cl.Get(ctx, client.ObjectKey{Name: "github-token-minter-config", Namespace: "test-ns"}, updatedCM); err != nil {
+		t.Fatalf("failed to get updated ConfigMap: %v", err)
+	}
+
+	if _, exists := updatedCM.Data["repo-1.yaml"]; !exists {
+		t.Errorf("expected repo-1.yaml to remain present")
+	}
+	if _, exists := updatedCM.Data["other-repo.yaml"]; exists {
+		t.Errorf("expected cross-org other-repo.yaml to be skipped")
 	}
 }

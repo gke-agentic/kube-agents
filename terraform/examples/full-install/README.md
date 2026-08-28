@@ -401,7 +401,7 @@ with the created topic/subscription — restrict access with
 
 With `enable_github_minter = true`, set `github_org` to your GitHub Organization
 where the GitHub App is installed, and optionally set `github_repo` to seed the
-primary GitOps repository. Additional GitOps repositories can also be registered in the ConfigMap by cluster administrators.
+primary GitOps repository. Additional GitOps repositories within the same organization can also be registered in the ConfigMap by cluster administrators.
 
 `enable_slack = true` writes `slack_bot_token` / `slack_app_token` into the
 credentials Secret and turns on the CR's `slack` section, the same pair

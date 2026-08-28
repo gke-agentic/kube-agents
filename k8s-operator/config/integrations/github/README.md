@@ -53,6 +53,7 @@ To deploy the agent with GitHub integration, `install.sh` collects the details o
 
 Minty was originally designed for integration with GitHub Actions, which inherently provides OIDC tokens containing a specific `"repository"` claim. Deploying Minty in GKE introduces specific constraints regarding this validation model:
 
+- **Single-Organization Boundary:** Minty's rule ConfigMap is mounted in-container at `/etc/minty/<GITHUB_ORG>`. A single PlatformAgent instance and its associated Minty deployment manage multiple repositories within the primary GitHub Organization where the GitHub App is installed. Additional repositories registered in the `gitops-state` ConfigMap must belong to this primary organization.
 - **KSA Tokens are Unsupported:** Native Kubernetes Service Account (KSA) tokens do not support the injection of arbitrary custom claims such as `"repository"`. Consequently, Minty's default validation engine will reject KSA tokens due to the missing claim.
 - **GSA Tokens (The Solution):** To resolve this, Workload Identity is utilized to provide Google Service Account (GSA) OIDC tokens. Minty implements a specific exemption for tokens where the issuer is `https://accounts.google.com`. When processing a Google-issued token, Minty bypasses the `"repository"` claim requirement. Instead, it validates the caller's identity via the `assertion.email` rule and derives the target repository directly from the JSON POST payload.
 
