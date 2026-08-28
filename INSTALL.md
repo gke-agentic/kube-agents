@@ -42,6 +42,7 @@ curl -fsSL https://gke-labs.github.io/kube-agents/install.sh | bash
 ```
 
 _To pin to a specific official release, substitute `<RELEASE_VERSION>` with the desired version tag from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases):_
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSION>/install.sh | bash
 ```
