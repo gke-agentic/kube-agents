@@ -129,6 +129,17 @@ jobs:
           ./scripts/helm_upgrade_retry.sh kube-agents charts/kube-agents -n kubeagents-system \
             --reset-then-reuse-values --set "platformAgent.deployment.image.tag=${IMAGE_TAG}" --wait --timeout 10m
 
+      - name: Confirm the Operator Applied the Requested Tag
+        env:
+          IMAGE_TAG: "${{ env.IMAGE_TAG }}"
+        run: |
+          # Before the rollout gate, not after it: the gate cannot tell a fresh
+          # ReplicaSet from an untouched one, so a deploy the operator ignored
+          # reaches it already looking successful. The script's header explains
+          # what makes that possible and why every release image in the
+          # template is checked rather than the agent container alone.
+          ./scripts/confirm_agent_image.sh "$NAMESPACE" platform-agent-gateway "$IMAGE_TAG"
+
       - name: Verify Agent Deployment Rollout
         run: |
           # This is the only step that waits for the agent to come up. The
