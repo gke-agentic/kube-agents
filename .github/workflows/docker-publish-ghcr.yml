@@ -110,7 +110,7 @@ jobs:
         # pull per publish, on a runner already holding the buildx cache, to
         # cover only the case where the two workflows have drifted apart.
         run: |
-          REF="ghcr.io/${{ env.IMAGE_REPOSITORY }}/platform-agent:${{ github.sha }}"
+          REF="ghcr.io/$IMAGE_REPOSITORY/platform-agent:${{ github.sha }}"
           REVISION=$(docker buildx imagetools inspect "$REF" \
             --format '{{ index .Image.Config.Labels "org.opencontainers.image.revision" }}')
           if [ "$REVISION" != "${{ github.sha }}" ]; then
@@ -162,7 +162,7 @@ jobs:
         # empty -- it leaves an upstream commit sha in place, which reads as
         # this repository's provenance and resolves to nothing in it.
         run: |
-          REF="ghcr.io/${{ env.IMAGE_REPOSITORY }}/credential-proxy:${{ github.sha }}"
+          REF="ghcr.io/$IMAGE_REPOSITORY/credential-proxy:${{ github.sha }}"
           REVISION=$(docker buildx imagetools inspect "$REF" \
             --format '{{ index .Image.Config.Labels "org.opencontainers.image.revision" }}')
           if [ "$REVISION" != "${{ github.sha }}" ]; then
