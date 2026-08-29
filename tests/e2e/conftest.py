@@ -135,7 +135,7 @@ def gcp_region() -> str:
         return val
 
     cfg = _get_default_config_env()
-    return cfg.get("region") or "us-east4"
+    return cfg.get("region") or "us-central1"
 
 
 @pytest.fixture(scope="session")
@@ -197,9 +197,14 @@ def _qualify_repo(repo: Optional[str]) -> Optional[str]:
     consumer of this fixture wants 'owner/repo': test_github_target_repository_configuration
     asserts the shape, and github_token_refresh.py rejects anything else.
 
-    The owner comes from GITHUB_ORG or, failing that, e2e_config.yaml, which hard-codes
-    it for every e2e environment. So in CI a bare name is always composed, and the
-    owner it gets is that config default whenever nothing more specific is set.
+    The owner comes from GITHUB_ORG or, failing that, e2e_config.yaml. Most environments
+    hard-code it there, and a bare name is composed against that default whenever nothing
+    more specific is set. `rc-e2e` is the exception: it sets neither, because the same
+    pair scopes the token minter at install time and a value written in two places
+    drifts, so rc-release-pipeline.yml passes the `rc` environment's GITOPS_ORG and
+    GITOPS_REPO instead. With those unset there is no owner to compose against and a bare
+    name is returned unqualified, which github_repo's caller then reports as a structure
+    failure rather than resolving to the wrong repository.
 
     Only a value with no slash in it is composed. Anything else is returned as the
     caller gave it, trimmed of surrounding whitespace: 'owner/' and '/repo' stay as they

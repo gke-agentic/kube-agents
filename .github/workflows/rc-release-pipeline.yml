@@ -46,15 +46,25 @@ jobs:
     if: |
       github.repository == 'gke-labs/kube-agents' &&
       needs.step-1-create-tag.outputs.skip_rc != 'true'
-    uses: ./.github/workflows/rc-deploy-environment.yml
+    # inherit, not an explicit mapping — the same reason
+    # staging-redeploy-integrations.yml already records. The called deploy-rc
+    # job reads GH_APP_ID and GH_APP_PRIVATE_KEY, which are `rc` ENVIRONMENT
+    # secrets, and a `uses:` job cannot declare an environment, so any
+    # `secrets:` mapping written here resolves against nothing and forwards
+    # empties. Observed, not assumed: with the mapping in place, deploy-rc
+    # logged GITHUB_APP_ID as empty on a run five hours after the secret was
+    # created on the rc environment.
+    #
+    # scripts/release/README.md, "Enabling the GitHub token minter on the RC",
+    # is the single home for what the wiring requires and why; this comment is
+    # here because the mistake is made at this line.
+    uses: ./.github/workflows/rc-deploy-environment.yml # zizmor: ignore[secrets-inherit]
     permissions:
       contents: read
       id-token: write
     with:
       rc_tag: ${{ needs.step-1-create-tag.outputs.rc_tag }}
-    secrets:
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+    secrets: inherit
 
   step-3-run-e2e-tests:
     name: Step 3 - Run E2E Tests
@@ -67,7 +77,17 @@ jobs:
     concurrency:
       group: rc-environment
       cancel-in-progress: false
-    timeout-minutes: 30
+    # Roughly 40 of these 60 minutes can be spent before the first test runs,
+    # which is what a fresh Autopilot cluster costs when it has to scale nodes
+    # from zero and pull every image. wait_for_gke_readiness.sh gates litellm at
+    # 420s and the gateway at 900s, and pays each of those twice — once for
+    # `rollout status`, once for the paired `wait --for=condition=Available` —
+    # on top of a 300s image-tag verification loop. The adapter step ahead of it
+    # adds an image build and push plus up to 300s plugin-ready and 180s settle.
+    # At 30 the job timeout would fire first and report a broken deploy rather
+    # than a slow one. Re-derive this sum before lowering it; the readiness
+    # constants are in wait_for_gke_readiness.sh, not here.
+    timeout-minutes: 60
     permissions:
       contents: read
       id-token: write
@@ -94,7 +114,6 @@ jobs:
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
-          credentials_json: ${{ secrets.GCP_SA_KEY || '' }}
 
       - name: Set up Google Cloud SDK
         uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
@@ -106,39 +125,64 @@ jobs:
         uses: google-github-actions/get-gke-credentials@3da1e46a907576cefaa90c484278bb5b259dd395 # v3.0.0
         with:
           cluster_name: ${{ vars.GKE_CLUSTER_NAME }}
-          location: ${{ vars.GCP_REGION || 'us-east4' }}
+          location: ${{ vars.GCP_REGION }}
           project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      # continue-on-error, deliberately: alert ingress is a dependency of the
+      # optional cluster/audit suite below and of nothing else, so a stockout-only
+      # problem must not sink the Google Chat gate that was made the blocking one.
+      # The script itself exits non-zero on failure; the decision to tolerate that
+      # is this workflow's, and lives here rather than inside the script.
+      # Runs before readiness so the gateway re-template the adapter triggers is
+      # already in flight when the rollout waits start.
+      - name: Install Pub/Sub Alert Ingress
+        continue-on-error: true
+        env:
+          AGENT_NAMESPACE: ${{ vars.AGENT_NAMESPACE }}
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ vars.GCP_REGION }}
+          GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
+        run: ./scripts/release/install_pubsub_platform.sh
 
       - name: Connect to GKE & Wait for Pod Readiness
         env:
+          AGENT_NAMESPACE: ${{ vars.AGENT_NAMESPACE }}
           COMMIT_SHA: ${{ needs.step-1-create-tag.outputs.commit_sha }}
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           GCP_REGION: ${{ vars.GCP_REGION }}
           GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
         run: ./scripts/release/wait_for_gke_readiness.sh
 
-      - name: Configure Docker Authentication for Artifact Registry
-        env:
-          GCP_REGION: ${{ vars.GCP_REGION }}
-        run: |
-          REGION="${GCP_REGION:-us-east4}"
-          gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet || true
-
-      - name: Execute E2E Suite
+      - name: Execute Mandatory Google Chat E2E Gate
         env:
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           GCP_REGION: ${{ vars.GCP_REGION }}
           GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
-          REGISTRY: ${{ vars.REGISTRY || vars.REGISTRY_PREFIX || (vars.GCP_PROJECT_ID && format('{0}-docker.pkg.dev/{1}/kube-agents', vars.GCP_REGION || 'us-east4', vars.GCP_PROJECT_ID)) || '' }}
-          GITHUB_ORG: ${{ vars.GH_ORG || 'test-org-kube-agent' }}
-          GITHUB_REPO: ${{ vars.GH_REPO || 'test-org-kube-agent/agents-repo' }}
-          STOCKOUT_SCENARIOS: "04"
-          E2E_ENV: "rc-e2e"
+          E2E_ENV: "gchat-e2e"
           CHAT_TOPIC_NAME: ${{ vars.CHAT_TOPIC_NAME }}
+          CHAT_SPACE_ID: ${{ secrets.E2E_CHAT_SPACE_ID }}
           E2E_CHAT_CLIENT_ID: ${{ secrets.E2E_CHAT_CLIENT_ID }}
           E2E_CHAT_CLIENT_SECRET: ${{ secrets.E2E_CHAT_CLIENT_SECRET }}
           E2E_CHAT_REFRESH_TOKEN: ${{ secrets.E2E_CHAT_REFRESH_TOKEN }}
-          CHAT_SPACE_ID: ${{ secrets.E2E_CHAT_SPACE_ID }}
+        run: make test-e2e
+
+      - name: Execute Optional Cluster & Fleet Audit E2E Tests
+        continue-on-error: true
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ vars.GCP_REGION }}
+          GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
+          E2E_ENV: "rc-e2e"
+          STOCKOUT_SCENARIOS: "04"
+          FLEET_AUDIT_STREAMS: "all"
+          # The same pair rc-deploy-environment.yml gives the installer, so the
+          # repository the suite probes is the one the minter was scoped to. Read from
+          # the environment rather than pinned in e2e_config.yaml because a value
+          # written in both places drifts, and a token minted for one repository does
+          # not authenticate against another. Bare: the conftest github_repo fixture
+          # composes owner/repo from GITHUB_ORG when GITHUB_REPO carries no slash.
+          GITHUB_ORG: ${{ vars.GITOPS_ORG }}
+          GITHUB_REPO: ${{ vars.GITOPS_REPO }}
         run: make test-e2e
 
   step-4-tag-validated:
