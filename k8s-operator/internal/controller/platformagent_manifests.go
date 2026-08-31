@@ -4036,9 +4036,13 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, p
 	//    of them.
 	if profile.MetadataDaemonIP != "" {
 		metadataDaemonPeers := formatCIDRPeers([]string{metadataLinkLocalIP, profile.MetadataDaemonIP}, true)
+		port := profile.MetadataDaemonPort
+		if port == 0 {
+			port = metadataDaemonDefaultPort
+		}
 		egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{
 			Ports: []networkingv1.NetworkPolicyPort{
-				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(988))},
+				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(port))},
 			},
 			To: metadataDaemonPeers,
 		})

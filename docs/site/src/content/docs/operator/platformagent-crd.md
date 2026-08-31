@@ -430,10 +430,10 @@ Configures the operator-generated egress `NetworkPolicy`.
   discovery, and says so in its log.
 - `metadataDaemon` (object, optional) — pins the node-local cloud metadata daemon IP in rule 3. Its
   one field, `endpoint`, is required within it, so `metadataDaemon: {}` is rejected; an explicit
-  `endpoint: ""` suppresses rule 3 entirely, for datapaths without a post-NAT daemon. Unlike
-  `dnsClusterIPs` there is no discovery behind this one — leave it out and the operator falls
-  through the annotation and its own environment variable to `169.254.169.252`, which is why
-  `metadataDaemonIPSource` has no `Discovered` value.
+  `endpoint: ""` suppresses rule 3 entirely, for datapaths without a post-NAT daemon. Leave it
+  unspecified to let the operator discover the container port from the `kube-system/gke-metadata-server`
+  DaemonSet on port `metadata-server` (promoting `metadataDaemonIPSource` to `Discovered`). If undiscoverable,
+  it falls back to `169.254.169.252` on port `988`.
 - `additionalEgress` ([]EgressRule, optional, max 32 items) — appends custom CIDR and port egress
   rules to the generated policy. A peer CIDR broader than `/12` (IPv4) or `/48` (IPv6) is rejected at
   admission, so that a caller-supplied range cannot be widened into an unrestricted egress bypass.
@@ -488,7 +488,8 @@ The operator writes observed state to the `status` subresource:
 | `networkPolicy.dnsClusterIPs`          | []string | The DNS ClusterIPs written into rule 1.                                                             |
 | `networkPolicy.dnsClusterIPsSource`    | string   | Which rung answered: `Annotation`, `Spec`, `OperatorEnv`, `Discovered`, or `Default`.               |
 | `networkPolicy.metadataDaemonIP`       | string   | The post-NAT daemon IP in rule 3, empty when suppressed.                                            |
-| `networkPolicy.metadataDaemonIPSource` | string   | Which rung answered: `Annotation`, `Spec`, `OperatorEnv`, `Default`, or `Suppressed`.               |
+| `networkPolicy.metadataDaemonPort`     | int32    | The post-NAT daemon port in rule 3, resolved from live DaemonSet or default (`988`).               |
+| `networkPolicy.metadataDaemonIPSource` | string   | Which rung answered: `Annotation`, `Spec`, `OperatorEnv`, `Discovered`, `Default`, or `Suppressed`. |
 
 Three condition types appear in `conditions`, and only the first is always present:
 

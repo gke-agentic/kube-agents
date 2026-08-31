@@ -607,12 +607,11 @@ type NetworkPolicySpec struct {
 	// +optional
 	DNSClusterIPs []string `json:"dnsClusterIPs,omitempty"`
 
-	// MetadataDaemon describes the node-local cloud metadata daemon. There is no
-	// discovery for this one, unlike the DNS ClusterIP above: leave nil and the
-	// operator takes the kubeagents.x-k8s.io/metadata-daemon-ip annotation, then its
-	// own --kubernetes-metadata-daemon-ip flag, then the documented default
-	// 169.254.169.252. Present with Endpoint "" emits no post-NAT rule at all, for
-	// datapaths that evaluate pre-NAT or clouds without one.
+	// MetadataDaemon describes the node-local cloud metadata daemon. Leave nil to let
+	// the operator discover the container port from the kube-system/gke-metadata-server
+	// DaemonSet (falling back to port 988 and 169.254.169.252). Annotations and operator
+	// flags override discovery in that order. Present with Endpoint "" emits no post-NAT
+	// rule at all, for datapaths that evaluate pre-NAT or clouds without one.
 	// +optional
 	MetadataDaemon *MetadataDaemonSpec `json:"metadataDaemon,omitempty"`
 
@@ -805,7 +804,12 @@ type NetworkPolicyStatus struct {
 	// +optional
 	MetadataDaemonIP string `json:"metadataDaemonIP,omitempty"`
 
-	// MetadataDaemonIPSource reports which rung answered the metadata daemon IP (Annotation, Spec, OperatorEnv, Default, or Suppressed).
+	// MetadataDaemonPort is the post-NAT daemon port in rule 3, resolved from the live
+	// DaemonSet when metadataDaemonIPSource is Discovered, else the documented default (988).
+	// +optional
+	MetadataDaemonPort int32 `json:"metadataDaemonPort,omitempty"`
+
+	// MetadataDaemonIPSource reports which rung answered the metadata daemon IP (Annotation, Spec, OperatorEnv, Discovered, Default, or Suppressed).
 	// +optional
 	MetadataDaemonIPSource string `json:"metadataDaemonIPSource,omitempty"`
 }
