@@ -25,8 +25,10 @@ CI and names `GKE_CLUSTER_NAME`, `GCP_REGION`, `GCP_PROJECT_ID` and
 `AGENT_NAMESPACE` as required, so a step invoking a script that calls it with
 three of the four dies with `Unset in CI`. `e2e-manual-runner.yml`'s readiness
 step shipped that way and could never reach a cluster. Which scripts those are is
-derived from the source rather than listed here, so a new caller is covered
-without anyone remembering to add it.
+read out of `scripts/release/*.sh` rather than listed here, so a new caller in
+that directory is covered without anyone remembering to add it. A caller
+elsewhere, or one that is not a shell script, is not — that bound is the scan's,
+not an oversight.
 """
 
 import os
@@ -40,6 +42,10 @@ _WORKFLOWS = _REPO_ROOT / ".github" / "workflows"
 # Matches a repo-relative script path invoked as a command. Deliberately not a
 # YAML parse: a `run:` block is a shell script, so the invocation can sit behind
 # an `if`, a pipe, or a loop, and the text is what the runner ultimately executes.
+# It reads `bash ./scripts/foo.sh` as a command too, which needs read permission
+# and not a mode bit. No workflow writes that today — the interpreter-prefixed
+# invocations here omit the `./` and so never match — so this stays a known bound
+# rather than a special case the pattern carries for nobody.
 _INVOCATION = re.compile(r"(?<![\w/])\./((?:scripts|hack)/[\w/-]+\.(?:sh|py))")
 
 # Paths a workflow names on purpose without expecting them on this branch.
@@ -116,16 +122,21 @@ class ResolveTargetEnvWiringTest(unittest.TestCase):
 
         needed = _scripts_needing_resolve_target()
         checked = 0
-        for workflow in sorted(_WORKFLOWS.glob("*.yml")):
+        for workflow in sorted(_WORKFLOWS.glob("*.yml")) + sorted(_WORKFLOWS.glob("*.yaml")):
             doc = yaml.safe_load(workflow.read_text()) or {}
+            workflow_env = doc.get("env") or {}
             for job_name, job in (doc.get("jobs") or {}).items():
+                job_env = job.get("env") or {}
                 for step in job.get("steps") or []:
                     run = step.get("run") or ""
                     hit = next((s for s in needed if s in run), None)
                     if hit is None:
                         continue
                     checked += 1
-                    env = step.get("env") or {}
+                    # Workflow, job and step scopes, in the order the runner
+                    # resolves them: a step reading a coordinate declared once on
+                    # the job is wired correctly, not missing it.
+                    env = {**workflow_env, **job_env, **(step.get("env") or {})}
                     missing = [v for v in _RESOLVE_TARGET_VARS if v not in env]
                     with self.subTest(workflow=workflow.name, job=job_name, script=hit):
                         self.assertEqual(
