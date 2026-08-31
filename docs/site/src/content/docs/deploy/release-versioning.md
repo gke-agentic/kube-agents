@@ -65,6 +65,48 @@ gh workflow run release-publish.yml --repo gke-labs/kube-agents \
   -f explicit_release_version="1.0.0"
 ```
 
+## Emergency hotfix runbook
+
+The release gatekeeper enforces automated GKE RC validation (`rc_*_validated`) by default. In emergency situations, maintainers can bypass the live GKE validation gate while preserving all cryptographic and build integrity invariants.
+
+### Eligibility criteria
+
+Emergency gate bypass (`skip_rc_validation: true`) is strictly reserved for:
+1. **Critical CVE remediation**: Zero-day vulnerabilities in container dependencies requiring immediate publication.
+2. **Critical availability hotfixes**: Production-breaking regressions where waiting for the 3-hour RC validation cycle or cluster provisioning would prolong user-facing downtime.
+
+### Enforced security invariants
+
+Even during an emergency bypass, the pipeline strictly enforces:
+- **Prebuilt image presence**: `scripts/release/verify_release_eligibility.sh` verifies that all four container images (`k8s-operator`, `platform-agent`, `credential-proxy`, `replay-proxy`) exist in GHCR under `sha-<TARGET_COMMIT>`. Releases of unbuilt commits hard-fail.
+- **Mandatory audit reason**: `emergency_override_reason` must contain a non-whitespace justification. Empty or whitespace-only reasons abort the workflow (`exit 1`).
+- **Tag collision protection**: If the target SemVer tag already points to another commit, the release aborts.
+
+### Executing an emergency hotfix
+
+To publish an emergency release via the GitHub CLI:
+
+```bash
+# Emergency release from a specific commit SHA:
+gh workflow run release-publish.yml --repo gke-labs/kube-agents \
+  -f skip_rc_validation=true \
+  -f emergency_override_reason="CVE-2026-XXXX: Critical vulnerability in base container dependencies" \
+  -f target_commit="<HOTFIX_COMMIT_SHA>"
+
+# Emergency release with explicit SemVer override:
+gh workflow run release-publish.yml --repo gke-labs/kube-agents \
+  -f skip_rc_validation=true \
+  -f emergency_override_reason="Critical regression fix for gateway admission deadlock" \
+  -f explicit_release_version="0.3.1"
+```
+
+### Post-release reconciliation
+
+After an emergency publication:
+1. **Verify artifacts**: Confirm the published release tag, container images in GHCR, and signed Helm OCI chart via `gh release view <VERSION>`.
+2. **Trigger post-factum RC validation**: Manually trigger `.github/workflows/rc-release-pipeline.yml` against the released commit to run the full GKE E2E suite and ensure the fix validates cleanly on live infrastructure.
+3. **Record audit trail**: Attach the GitHub Actions run URL and emergency justification to the corresponding tracking issue or incident report.
+
 ## Clean promotion and artifact guarantees
 
 The release publish workflow enforces byte-for-byte fidelity with tested candidate binaries:
