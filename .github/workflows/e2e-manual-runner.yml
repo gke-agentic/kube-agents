@@ -148,6 +148,11 @@ jobs:
 
       - name: Connect to GKE & Configure Docker
         env:
+          # All four, not the three coordinates. wait_for_gke_readiness.sh calls
+          # release_resolve_target, which in CI refuses rather than defaulting and
+          # counts AGENT_NAMESPACE among what it requires — so omitting it fails
+          # this step outright. e2e-run.yml's equivalent step passes the same four.
+          AGENT_NAMESPACE: ${{ vars.AGENT_NAMESPACE }}
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           GCP_REGION: ${{ vars.GCP_REGION }}
           GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
