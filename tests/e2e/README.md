@@ -302,7 +302,7 @@ python3 tests/e2e/operator/credential_isolation_e2e_test.py
 
 ## 🤖 Running in GitHub Actions (CI)
 
-Two workflows run this suite. [`.github/workflows/e2e-gchat-test.yml`](../../.github/workflows/e2e-gchat-test.yml) is triggered manually via `workflow_dispatch` (or via GitHub CLI / Web UI). [`.github/workflows/rc-release-pipeline.yml`](../../.github/workflows/rc-release-pipeline.yml) also runs it, unattended, on a three-hourly schedule — its `step-3-run-e2e-tests` job calls the same `scripts/release/execute_e2e_tests.sh`, and `step-4-tag-validated` depends on the result. So a break here stops the release-candidate tag within three hours, whether or not anyone dispatches the manual workflow.
+Three workflows run this suite. [`.github/workflows/e2e-gchat-test.yml`](../../.github/workflows/e2e-gchat-test.yml) and [`.github/workflows/e2e-manual-runner.yml`](../../.github/workflows/e2e-manual-runner.yml) are triggered by hand via `workflow_dispatch` (or via GitHub CLI / Web UI). The third is [`.github/workflows/e2e-run.yml`](../../.github/workflows/e2e-run.yml), which runs nothing on its own — it is the reusable job that calls `scripts/release/execute_e2e_tests.sh`, and both pipelines delegate to it. [`.github/workflows/rc-release-pipeline.yml`](../../.github/workflows/rc-release-pipeline.yml) calls it unattended on a three-hourly schedule and `step-4-tag-validated` depends on the result, so a break here stops the release-candidate tag within three hours. [`.github/workflows/nightly-pipeline.yml`](../../.github/workflows/nightly-pipeline.yml) calls it too, gating the staging promotion — that one is `workflow_dispatch`-only for now, so it runs when somebody starts it.
 
 ### Triggering Workflow via GitHub CLI (`gh`):
 

@@ -199,9 +199,9 @@ def _qualify_repo(repo: Optional[str]) -> Optional[str]:
 
     The owner comes from GITHUB_ORG or, failing that, e2e_config.yaml. Most environments
     hard-code it there, and a bare name is composed against that default whenever nothing
-    more specific is set. `rc-e2e` is the exception: it sets neither, because the same
-    pair scopes the token minter at install time and a value written in two places
-    drifts, so rc-release-pipeline.yml passes the `rc` environment's GITOPS_ORG and
+    more specific is set. `rc-e2e` and `nightly-e2e` are the exceptions: they set neither,
+    because the same pair scopes the token minter at install time and a value written in
+    two places drifts, so e2e-run.yml passes the bound environment's GITOPS_ORG and
     GITOPS_REPO instead. With those unset there is no owner to compose against and a bare
     name is returned unqualified, which github_repo's caller then reports as a structure
     failure rather than resolving to the wrong repository.

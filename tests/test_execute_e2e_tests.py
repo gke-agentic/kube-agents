@@ -79,8 +79,10 @@ class ChildEnvironmentTest(unittest.TestCase):
     def test_selection_overrides_a_conflicting_ambient_value(self) -> None:
         """The regression: E2E_ENV must be set after **os.environ, not before.
 
-        e2e-manual-runner.yml dispatches a test_environment whose choices include
-        "all", which reaches the runner as E2E_ENV. The runner expands that into one child per environment, but the
+        A caller can select every environment at once, and e2e-manual-runner.yml
+        dispatches exactly that. No workflow exports an ambient E2E_ENV=all today --
+        e2e-run.yml is the only writer and writes one suite name -- so this ordering
+        is the only thing standing between here and the regression returning. The runner expands that into one child per environment, but the
         ambient "all" rode through to each of them, and conftest matches environment
         names exactly -- so the lookup found nothing. Reorder the dict so **os.environ
         lands last and the leak comes back.

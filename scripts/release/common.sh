@@ -368,6 +368,29 @@ setup_git_bot_user() {
   export GIT_COMMITTER_EMAIL="github-actions[bot]@users.noreply.github.com"
 }
 
+# Syncs remote tags into the local repository, in CI only.
+#
+# Every script that answers a question from the tag graph needs this first, and
+# each of them used to carry its own copy — a shallow or tagless checkout
+# otherwise resolves "no such tag" rather than failing, which is the quiet way
+# to skip a candidate or promote nothing.
+#
+# `|| true` throughout, deliberately: a fetch that cannot reach the network is
+# not itself the error. The caller's own lookup fails afterwards, naming the tag
+# it wanted, which is the message worth printing.
+#
+# find_latest_built_commit does NOT use this. It fetches `main` as well as the
+# tags, handles a shallow clone's --depth, and reports which remote answered, so
+# it is a different operation that happens to start the same way.
+release_fetch_tags() {
+  is_ci_pipeline || return 0
+
+  local target_repo
+  target_repo="$(get_target_repo)"
+  git fetch "https://github.com/${target_repo}.git" --tags >/dev/null 2>&1 ||
+    git fetch origin --tags >/dev/null 2>&1 || true
+}
+
 # Ensures a Git tag exists for a given commit SHA idempotently and pushes to origin.
 # Arguments: $1 = rc_tag, $2 = commit_sha, $3 = tag_message
 ensure_git_tag() {
@@ -383,14 +406,7 @@ ensure_git_tag() {
   local target_repo
   target_repo="$(get_target_repo)"
 
-  # Synchronize remote tags only in CI environments
-  if is_ci_pipeline; then
-    if [ -n "${target_repo}" ]; then
-      git fetch "https://github.com/${target_repo}.git" --tags >/dev/null 2>&1 || git fetch origin --tags >/dev/null 2>&1 || true
-    else
-      git fetch origin --tags >/dev/null 2>&1 || true
-    fi
-  fi
+  release_fetch_tags
 
   # Canonicalize commit SHA to full 40-character hash before comparison
   local target_full_sha

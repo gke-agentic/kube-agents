@@ -174,9 +174,9 @@ jobs:
           # with any of them empty the install is
           # byte-identical to today's. The pair must also match the repository the
           # E2E suite probes — a token minted for one repository does not
-          # authenticate against another. `rc-e2e` deliberately pins neither in
-          # tests/e2e/e2e_config.yaml, precisely so the value lives in one place:
-          # rc-release-pipeline.yml passes this same GITOPS_ORG/GITOPS_REPO pair
+          # authenticate against another. `rc-e2e` and `nightly-e2e` deliberately
+          # pin neither in tests/e2e/e2e_config.yaml, precisely so the value lives
+          # in one place: e2e-run.yml passes this same GITOPS_ORG/GITOPS_REPO pair
           # to the suite, and conftest.py's _qualify_repo composes the bare
           # repository name against the org.
           GITHUB_ORG: ${{ vars.GITOPS_ORG }}

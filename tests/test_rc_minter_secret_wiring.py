@@ -30,6 +30,15 @@ _WORKFLOWS = _REPO_ROOT / ".github" / "workflows"
 _PIPELINE = _WORKFLOWS / "rc-release-pipeline.yml"
 _DEPLOY = _WORKFLOWS / "rc-deploy-environment.yml"
 
+# The workflows the RC and nightly pipelines both call, each parameterised on
+# `github_environment`. Every one of them has to render that input into its job's
+# `environment:` and refuse to default it.
+_SHARED_WORKFLOWS = (
+    "rc-deploy-environment.yml",
+    "rc-teardown-environment.yml",
+    "e2e-run.yml",
+)
+
 
 def _jobs(path: pathlib.Path) -> dict:
     return yaml.safe_load(path.read_text())["jobs"]
@@ -64,14 +73,29 @@ class RcMinterSecretWiringTest(unittest.TestCase):
         )
 
     def test_the_environment_input_has_no_default(self):
-        """A `default: rc` would let a nightly caller that omits it rebuild the RC."""
-        for workflow in (_DEPLOY, _WORKFLOWS / "rc-teardown-environment.yml"):
-            with self.subTest(workflow=workflow.name):
-                spec = yaml.safe_load(workflow.read_text())[True]["workflow_call"]["inputs"][
-                    "github_environment"
-                ]
+        """A `default: rc` would let a nightly caller that omits it hit the RC.
+
+        All three shared workflows, not just the two that touch infrastructure.
+        On e2e-run.yml the same slip is quieter and not smaller: the nightly
+        matrix would authenticate to the RC project, test the RC's cluster, and
+        report green while holding the nightly-environment lock.
+        """
+        for name in _SHARED_WORKFLOWS:
+            with self.subTest(workflow=name):
+                spec = yaml.safe_load((_WORKFLOWS / name).read_text())[True]["workflow_call"][
+                    "inputs"
+                ]["github_environment"]
                 self.assertTrue(spec.get("required"))
                 self.assertNotIn("default", spec)
+
+    def test_every_shared_workflow_renders_the_environment_from_the_input(self):
+        """A literal `environment: rc` defeats the input without failing anything."""
+        for name in _SHARED_WORKFLOWS:
+            with self.subTest(workflow=name):
+                jobs = _jobs(_WORKFLOWS / name)
+                self.assertEqual(len(jobs), 1, f"{name} grew a second job; check its environment too")
+                job = next(iter(jobs.values()))
+                self.assertEqual(job.get("environment"), "${{ inputs.github_environment }}")
 
     def test_the_called_job_reads_both_app_secrets_from_the_environment(self):
         """Pins what the inherit is for, so a rename cannot quietly orphan it."""

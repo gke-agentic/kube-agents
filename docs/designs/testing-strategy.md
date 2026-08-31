@@ -1,6 +1,6 @@
 # kube-agents Testing Strategy
 
-> **STATUS: draft.** Real today: unit tests, a gating integration tier, and a standing seeded fleet. Presubmit runs two cases and blocks nothing; the release gate is one test. Nightly now exists as infrastructure — its own project, its own concurrency group, the full E2E matrix, and the staging promotion — but none of the eval tier §4.4 describes is built. Everything else here is the plan.
+> **STATUS: draft.** Real today: unit tests, a gating integration tier, and a standing seeded fleet. Presubmit runs two cases and blocks nothing; the release gate is one test. Nightly is a merged pipeline that has never run: `nightly-pipeline.yml` exists, with the full E2E matrix and the staging promotion, but it has no cron and its GCP project and GitHub environment are still to be created. None of the eval tier §4.4 describes is built either. Everything else here is the plan.
 
 ## 1. What we are building
 
@@ -181,13 +181,15 @@ A baseline is therefore valid for exactly one combination of five versions: flee
 
 ### 4.3 Release gate: have one test
 
-Every three hours, `rc-release-pipeline.yml` picks the newest built commit on `main`, rebuilds the RC environment from scratch with `install.sh`, runs one test, and tags the commit `*_validated`. That test posts _"what is 2 + 3?"_ to a Chat space and asserts the reply contains a 5. Install is covered; behaviour is not.
+Every three hours, `rc-release-pipeline.yml` picks the newest built commit on `main`, rebuilds the RC environment from scratch with `install.sh`, runs one test, and tags the commit `rc_*_validated`. That test posts _"what is 2 + 3?"_ to a Chat space and asserts the reply contains a 5. Install is covered; behaviour is not.
 
 Proposed: run the presubmit suite again here, against the assembled release. Exact checks block, judged scores are recorded. Keep the chat test; it is the only thing proving the assembled release can receive a message at all. Add a maintainers dashboard: one row per domain per RC, stamped with the commit and the model, written to BigQuery by the pipeline that already authenticates to GCP. Not a test, and the only reason a trend exists.
 
 ### 4.4 Nightly: the tier exists, the eval content does not
 
-> **What is built.** `nightly-pipeline.yml` takes the newest `rc_*_validated` candidate, builds a cluster from nothing in its own GCP project under its own concurrency group, runs the `nightly-e2e` matrix on it, tags the commit for staging when the matrix passes, and destroys the cluster. That is the "own project and concurrency group, so it never queues behind the release pipeline" sentence below, implemented. It ships without a cron; the schedule is turned on separately.
+> **What is built, and what it is waiting on.** `nightly-pipeline.yml` takes the newest `rc_*_validated` candidate, builds a cluster from nothing in a GCP project of its own under its own concurrency group, runs the `nightly-e2e` matrix on it, tags the commit for staging when the matrix passes, and destroys the cluster. That is the "own project and concurrency group, so it never queues behind the release pipeline" sentence below, expressed as a workflow.
+>
+> It has not run, and cannot yet. Two things outside this repository are missing — the GCP project itself and the `nightly` GitHub environment that supplies its coordinates — and without them the pipeline fails at authentication; `scripts/release/README.md`, "The nightly environment", lists what has to exist. It also ships without a cron, deliberately, so the first run is a deliberate dispatch rather than a schedule firing on merge night. **Until both land, nothing runs the full E2E matrix on any schedule.**
 >
 > **What is not.** None of the eval tier. The zero-cost landing tier for a new case is the unadmitted state in §4.2 and the volume argument is answered by the standing fleet making cases cheap, so neither came back. Upgrade-from-the-last-validated-release and hardware-specific cases are still unwritten.
 
@@ -199,13 +201,13 @@ Promotion out of it: to the release gate once it is fast enough, or to presubmit
 
 Every cell either **blocks**, is **recorded**, or nothing looks at it.
 
-| Tier             | 1. Authority                                                                                                        | 2. Correctness                                                          | 3. Drift                                           |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- | -------------------------------------------------- |
-| **Unit**         | **Blocks.** Generated RBAC diffed against a checked-in copy                                                         | Not covered                                                             | Not covered                                        |
-| **Integration**  | **Blocks.** Delivery paths, credential proxy wiring, the spec↔tool-registry contract, all deterministic             | Not covered (no model in the loop, by definition)                       | Not covered                                        |
-| **Presubmit**    | **Blocks.** Binary, so it cannot flake                                                                              | **Blocks.** Exact checks per run; judged scores as distributions (§4.2) | Not covered                                        |
-| **Release gate** | **Blocks.** Same checks, on the assembled release                                                                   | **Blocks** the exact checks, **records** the judged ones                | **Records.** Every 3h, so the densest trend we get |
-| **Nightly**      | **Blocks** the staging promotion. Same deterministic checks as the release gate, plus the operator plugin lifecycle | **Blocks** the exact checks. No judged scores run here                  | Not covered — see below                            |
+| Tier             | 1. Authority                                                                                                                                                             | 2. Correctness                                                          | 3. Drift                                           |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- | -------------------------------------------------- |
+| **Unit**         | **Blocks.** Generated RBAC diffed against a checked-in copy                                                                                                              | Not covered                                                             | Not covered                                        |
+| **Integration**  | **Blocks.** Delivery paths, credential proxy wiring, the spec↔tool-registry contract, all deterministic                                                                  | Not covered (no model in the loop, by definition)                       | Not covered                                        |
+| **Presubmit**    | **Blocks.** Binary, so it cannot flake                                                                                                                                   | **Blocks.** Exact checks per run; judged scores as distributions (§4.2) | Not covered                                        |
+| **Release gate** | **Blocks.** Same checks, on the assembled release                                                                                                                        | **Blocks** the exact checks, **records** the judged ones                | **Records.** Every 3h, so the densest trend we get |
+| **Nightly**      | **Blocks** the staging promotion — once it runs. Strictly more than the release gate: the suite that gate tolerates is blocking here, plus the operator plugin lifecycle | **Blocks** the exact checks. No judged scores run here                  | Not covered — see below                            |
 
 Nightly's Drift cell is the open one. It runs merged code on a schedule, which is exactly the precondition this section names for feeding Drift, but it records nothing — no per-domain scores, no row written anywhere. Whether it should is a decision for whoever owns this strategy rather than something the pipeline settled by existing.
 

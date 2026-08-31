@@ -207,6 +207,31 @@ source "{_COMMON_SH}"
         finally:
             temp_dir.cleanup()
 
+    def test_release_fetch_tags_is_a_no_op_outside_ci(self):
+        """It must not reach the network on a developer machine.
+
+        The CI arm cannot be exercised hermetically — it fetches a real URL — so
+        what is pinned here is the guard in front of it. Without the guard, every
+        script that calls this would try to hit github.com from a unit test.
+        """
+        temp_dir, repo_dir, _ = create_mock_git_repo()
+        try:
+            proc = self._run_common_func("release_fetch_tags", env={"CI": ""}, cwd=repo_dir)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(proc.stdout.strip(), "")
+
+            # And it stays quiet rather than failing when the fetch cannot work:
+            # a fetch that could not run is not itself the error, the caller's
+            # own lookup afterwards is.
+            proc = self._run_common_func(
+                "release_fetch_tags",
+                env={"CI": "true", "GH_ORG": "no-such-org-kube-agents", "GH_REPO": "no-such-repo"},
+                cwd=repo_dir,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+        finally:
+            temp_dir.cleanup()
+
     def test_get_target_repo(self):
         # Default
         proc = self._run_common_func('get_target_repo', env={"GH_ORG": "", "GH_REPO": "", "GITHUB_REPOSITORY": ""})

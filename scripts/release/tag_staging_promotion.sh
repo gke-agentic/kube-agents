@@ -37,6 +37,22 @@ elif [ "${STAGING_TAG}" != "${DERIVED_STAGING_TAG}" ]; then
   exit 1
 fi
 
+# The gate resolve_promotion_candidate.sh applies, applied again on the commit
+# rather than on the tag. COMMIT_SHA and RC_TAG are independent arguments, so
+# every check above can pass while COMMIT_SHA points somewhere else entirely —
+# and the tag pushed at it would read back to a candidate that was validated. A
+# staging_ tag is a deploy trigger, so the cost of being wrong here is an
+# unvalidated commit deployed to staging under a name that says otherwise.
+#
+# Duplicating the resolver's check is the point: this script is reachable by
+# hand and by any future caller, and the guarantee has to hold for those too.
+# Same helper, so the two cannot answer differently.
+if ! is_rc_candidate_commit_already_validated "${COMMIT_SHA}"; then
+  echo "❌ ERROR: commit ${COMMIT_SHA} carries no rc_*_validated tag; refusing to promote it to staging." >&2
+  echo "   Only candidates the RC pipeline validated can be promoted." >&2
+  exit 1
+fi
+
 # Namespace guard, kept even though the value was derived a line ago: this is the
 # last point before a live deploy trigger is pushed, and a future caller passing
 # STAGING_TAG in the environment reaches here too.

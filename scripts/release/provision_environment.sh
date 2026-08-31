@@ -30,12 +30,16 @@ teardown_require_inputs
 # minter in silence.
 #
 # This is a deliberate tightening, not the restoration of an existing failure.
-# Nothing downstream currently notices: the test that exercises minting,
-# test_github_token_minting_and_connectivity, runs under the `rc-e2e` step of
-# rc-release-pipeline.yml, which is `continue-on-error: true`. So a broken
-# minter has been costing an HTTP 502 in a tolerated step and validating the
-# candidate anyway — which is exactly how it went unnoticed. Refusing here
-# trades a silently degraded RC for a loud one.
+# On the RC nothing downstream notices: the test that exercises minting,
+# test_github_token_minting_and_connectivity, runs under e2e-run.yml's optional
+# suite, which the RC pipeline sets to `rc-e2e` and which carries
+# `continue-on-error: true`. So a broken minter has been costing an HTTP 502 in
+# a tolerated step and validating the candidate anyway — which is exactly how it
+# went unnoticed. Refusing here trades a silently degraded RC for a loud one.
+#
+# The nightly pipeline is the opposite case and needs no tightening to be loud:
+# the same test runs in its BLOCKING suite (`nightly-e2e`), so a half-configured
+# minter fails the run and promotes nothing.
 #
 # Above the teardown deliberately. `teardown_run` below is `uninstall.sh`,
 # so a check placed after it would refuse an environment it had already

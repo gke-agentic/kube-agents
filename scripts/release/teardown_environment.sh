@@ -10,10 +10,14 @@
 # It is reached ONLY when every earlier step succeeded — the job's `needs` carry
 # the implicit success() that gives that guarantee. A run that failed anywhere
 # leaves its environment standing on purpose, so the failure can be examined on
-# the live cluster; the next run's pre-install teardown in
-# provision_environment.sh is what eventually clears it. That is up to three
-# hours on the RC schedule and a full day on the nightly one, so a nightly
-# failure leaves a cluster billing for longer.
+# the live cluster.
+#
+# What clears it afterwards differs by pipeline, and the nightly answer is
+# "nobody". On the RC the next scheduled run's pre-install teardown in
+# provision_environment.sh removes it within three hours. The nightly pipeline
+# has no schedule yet, so nothing reclaims a nightly environment at all: it
+# stands, and bills, until someone dispatches the pipeline again or runs
+# uninstall.sh by hand. Revisit this paragraph when the nightly cron lands.
 set -euo pipefail
 
 export CLOUDSDK_CORE_DISABLE_PROMPTS="${CLOUDSDK_CORE_DISABLE_PROMPTS:-1}"
@@ -62,9 +66,10 @@ case "${TEARDOWN_STATUS}" in
       "" \
       "\`./uninstall.sh --non-interactive -y --project-id=${GCP_PROJECT_ID} --region=${GCP_REGION} --cluster-name=${GKE_CLUSTER_NAME}\`" \
       "" \
-      "The alternative is the next run's pre-install teardown, which is three hours away" \
-      "on the RC schedule and a day away on the nightly one, and will fail the same way" \
-      "if the cause is not fixed."
+      "On the RC pipeline the alternative is the next scheduled run's pre-install" \
+      "teardown, three hours away, which will fail the same way if the cause is not" \
+      "fixed. The nightly pipeline has no schedule, so there is no alternative there:" \
+      "nothing else will remove this environment."
     rm -f "${TEARDOWN_LOG}"
     exit "${TEARDOWN_STATUS}"
     ;;

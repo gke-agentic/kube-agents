@@ -34,16 +34,8 @@ SKIP_PROMOTION="false"
 SKIP_REASON=""
 
 # Tags are the whole input, and a shallow or tagless checkout would silently
-# resolve "no candidate" rather than fail. Fetch in CI the way the rest of the
-# release scripts do.
-if is_ci_pipeline; then
-  target_repo="$(get_target_repo)"
-  if [ -n "${target_repo}" ]; then
-    git fetch "https://github.com/${target_repo}.git" --tags >/dev/null 2>&1 || git fetch origin --tags >/dev/null 2>&1 || true
-  else
-    git fetch origin --tags >/dev/null 2>&1 || true
-  fi
-fi
+# resolve "no candidate" rather than fail.
+release_fetch_tags
 
 if [ -z "${RC_TAG}" ]; then
   RC_TAG="$(get_latest_validated_rc_tag)"

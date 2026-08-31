@@ -3,9 +3,9 @@
 Two workflows have to name the same repository, and it must not be the release
 repository. `rc-deploy-environment.yml` hands GITOPS_ORG/GITOPS_REPO to
 install.sh as GITHUB_ORG/GITHUB_REPO, which is what installer_common.sh scopes
-the minter's tokens to; `rc-release-pipeline.yml` hands the same pair to the
-E2E suite, because a token minted for one repository does not authenticate
-against another.
+the minter's tokens to; `e2e-run.yml` hands the same pair to the E2E suites,
+and `e2e-manual-runner.yml` to the ones it dispatches, because a token minted
+for one repository does not authenticate against another.
 
 The hazard is that every other workflow in this repository uses vars.GH_ORG /
 vars.GH_REPO for "the repository", and on the `rc` environment that pair names
@@ -76,12 +76,12 @@ class MinterRepositoryWiringTest(unittest.TestCase):
         self.assertEqual(
             {e.get("GITHUB_ORG") for e in envs},
             {envs[0].get("GITHUB_ORG")},
-            "rc-deploy-environment.yml and rc-release-pipeline.yml disagree on GITHUB_ORG",
+            "the installer and the E2E suites disagree on GITHUB_ORG",
         )
         self.assertEqual(
             {e.get("GITHUB_REPO") for e in envs},
             {envs[0].get("GITHUB_REPO")},
-            "rc-deploy-environment.yml and rc-release-pipeline.yml disagree on GITHUB_REPO",
+            "the installer and the E2E suites disagree on GITHUB_REPO",
         )
 
     def test_the_app_id_is_a_secret_not_a_var(self) -> None:

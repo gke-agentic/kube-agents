@@ -111,6 +111,7 @@ class TagCommitTest(unittest.TestCase):
     def test_tag_staging_promotion_wrapper_derives_the_tag(self):
         repo_dir, git = self._repo()
         head = git("rev-parse", "HEAD").stdout.strip()
+        git("tag", "-a", "rc_2608241820_b35543c_validated", "-m", "Validated")
 
         proc = self._run("tag_staging_promotion.sh", [head, "rc_2608241820_b35543c_validated"], repo_dir)
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -120,6 +121,7 @@ class TagCommitTest(unittest.TestCase):
         """An explicit staging tag has to be the one this candidate maps to."""
         repo_dir, git = self._repo()
         head = git("rev-parse", "HEAD").stdout.strip()
+        git("tag", "-a", "rc_2608241820_b35543c_validated", "-m", "Validated")
 
         proc = self._run(
             "tag_staging_promotion.sh",
@@ -128,7 +130,7 @@ class TagCommitTest(unittest.TestCase):
         )
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("does not match the tag derived from", proc.stderr)
-        self.assertEqual(git("tag", "-l").stdout.strip(), "")
+        self.assertEqual(git("tag", "-l", "staging_*").stdout.strip(), "")
 
     def test_tag_staging_promotion_guards_the_namespace(self):
         """The namespace guard, reached through the environment rather than argv."""
@@ -143,6 +145,27 @@ class TagCommitTest(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("not an rc_* candidate tag", proc.stderr)
         self.assertEqual(git("tag", "-l").stdout.strip(), "")
+
+    def test_tag_staging_promotion_refuses_an_unvalidated_commit(self):
+        """The resolver's gate, applied again at the last point before the push.
+
+        COMMIT_SHA and RC_TAG are independent arguments, so every shape check can
+        pass while the commit is something else entirely. The tag is a deploy
+        trigger, so the cost of missing this is an unvalidated commit on staging
+        under a name that reads back to a validated candidate.
+        """
+        repo_dir, git = self._repo()
+        head = git("rev-parse", "HEAD").stdout.strip()
+        # The tag exists, but on no commit this promotion names.
+        (pathlib.Path(repo_dir) / "second.txt").write_text("second\n")
+        git("add", "second.txt")
+        git("commit", "-m", "chore: second commit")
+        git("tag", "-a", "rc_2608241820_b35543c_validated", "-m", "Validated elsewhere")
+
+        proc = self._run("tag_staging_promotion.sh", [head, "rc_2608241820_b35543c_validated"], repo_dir)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("carries no rc_*_validated tag", proc.stderr)
+        self.assertEqual(git("tag", "-l", "staging_*").stdout.strip(), "")
 
     def test_tag_ga_release_still_routes_through_the_shared_tagger(self):
         repo_dir, git = self._repo()

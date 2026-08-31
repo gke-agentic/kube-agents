@@ -30,9 +30,10 @@
 #
 # This script exits non-zero when it cannot deliver working alert ingress. It
 # does NOT decide whether that should fail the run, because the answer differs
-# per caller: in rc-release-pipeline.yml the tests that read an alert are the
-# optional cluster/audit suite, so that step carries `continue-on-error: true`;
-# a workflow whose whole purpose is alert-driven testing should let it fail.
+# per caller: in e2e-run.yml the tests that read an alert are the optional
+# suite, which the RC pipeline uses and the nightly pipeline does not, so that
+# step carries `continue-on-error: true`; a caller whose blocking suite is
+# alert-driven should let it fail instead.
 # Expressing that in the workflow keeps it where a reader can see it.
 #
 # What `continue-on-error` does and does not buy, precisely: it covers failures

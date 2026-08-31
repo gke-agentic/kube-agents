@@ -213,25 +213,29 @@ jobs:
 
   step-5-teardown-env:
     name: Step 5 - Tear Down Nightly Environment
-    # Every earlier job, so that the implicit success() on `needs` is what gates
-    # this one: the cluster is destroyed only when the whole run passed. A
-    # failure anywhere leaves the environment standing to be examined live,
-    # which is the same contract as the RC pipeline's step 5 — and the same
-    # cost, worse: nothing else reclaims a nightly environment for 24 hours,
-    # where the RC one is reclaimed within 3 by the next run's pre-install
-    # teardown. A failed nightly leaves a GKE cluster billing until someone
-    # looks at it.
+    # The implicit success() on `needs` is what gates this one: a failure in
+    # resolve, deploy or the matrix leaves the environment standing to be
+    # examined live, which is the same contract as the RC pipeline's step 5.
     #
     # The `if:` below does NOT weaken that gate. It adds conditions rather than
     # replacing the success() check. An `always()` added here would remove it
     # and start destroying the environments this exists to preserve.
-    needs:
-      [
-        step-1-resolve-candidate,
-        step-2-deploy-env,
-        step-3-run-e2e-matrix,
-        step-4-promote-to-staging,
-      ]
+    #
+    # `step-4-promote-to-staging` is deliberately NOT in this list, which is the
+    # one place this diverges from the RC pipeline's step 5. Step 4 runs only
+    # after a green matrix, and the ways it can fail are all credential ones — a
+    # missing or expired RELEASE_BOT_TOKEN failing its checkout, or a rejected
+    # `git push`. None of those leave anything on the cluster worth looking at,
+    # and the run still goes red because the job did. Depending on it would mean
+    # a skipped-or-failed step 4 skips this job and strands a GKE cluster; the
+    # RC can absorb that because its next scheduled run reclaims the environment
+    # within three hours, and the nightly pipeline — which has no schedule —
+    # cannot. Nothing would remove it at all.
+    #
+    # The two jobs are safe to run concurrently: step 4 pushes a Git tag and
+    # touches no GCP resource, and this job holds the nightly-environment lock
+    # that everything touching the cluster contends on.
+    needs: [step-1-resolve-candidate, step-2-deploy-env, step-3-run-e2e-matrix]
     if: |
       github.repository == 'gke-labs/kube-agents' &&
       needs.step-1-resolve-candidate.outputs.skip_pipeline != 'true'

@@ -4,8 +4,8 @@ Four of these are failures that would be silent in CI — a green run that did t
 wrong thing — which is why they are pinned here rather than left to review:
 
   * a job pointed at `rc` instead of `nightly` tears down the RC environment,
-  * a skipped promotion job skips the teardown that `needs` it and leaves a GKE
-    cluster billing,
+  * a teardown that `needs` the promotion job is skipped when a tag push fails,
+    leaving a GKE cluster billing with nothing on it to diagnose,
   * a hardcoded `rc-environment` concurrency group makes an unrelated workflow
     contend for the release pipeline's cluster,
   * a staging tag shape the redeploy trigger does not match promotes nothing and
@@ -63,12 +63,12 @@ class NightlyPipelineWiringTest(unittest.TestCase):
         """It reads vars.REGISTRY_PREFIX; unbound, that resolves to empty in silence."""
         self.assertEqual(self.jobs["step-1-resolve-candidate"].get("environment"), "nightly")
 
-    def test_the_promotion_job_is_not_gated_on_skip_promotion(self):
-        """Gating the job would skip the teardown that needs it.
+    def test_the_promotion_job_runs_and_reports_rather_than_skipping(self):
+        """An already-promoted night should show a job that decided, not a gap.
 
-        A skipped job skips its dependents, and step 5 depends on step 4, so a
-        night whose candidate was already promoted would leave its cluster
-        running. The condition belongs on the steps.
+        Gating the job on skip_promotion would collapse the whole thing to
+        "skipped" and lose the summary line saying why. The condition sits on the
+        steps so the run records the decision it made.
         """
         job = self.jobs["step-4-promote-to-staging"]
         self.assertNotIn("skip_promotion", job["if"])
@@ -78,23 +78,32 @@ class NightlyPipelineWiringTest(unittest.TestCase):
             "the skip has to be expressed on the steps instead",
         )
 
-    def test_teardown_depends_on_every_earlier_job_and_keeps_the_success_gate(self):
+    def test_teardown_does_not_depend_on_the_promotion_job(self):
+        """Otherwise a failed tag push strands a GKE cluster with nothing to diagnose.
+
+        A skipped or failed job skips its dependents. Step 4 runs only after a
+        green matrix and fails only on credential problems — a missing
+        RELEASE_BOT_TOKEN, a rejected push — none of which leave anything on the
+        cluster worth looking at. The RC pipeline can afford the same dependency
+        because its next scheduled run reclaims the environment within three
+        hours; this pipeline has no schedule, so nothing would remove it at all.
+        """
         teardown = self.jobs["step-5-teardown-env"]
         self.assertEqual(
             set(teardown["needs"]),
-            {
-                "step-1-resolve-candidate",
-                "step-2-deploy-env",
-                "step-3-run-e2e-matrix",
-                "step-4-promote-to-staging",
-            },
+            {"step-1-resolve-candidate", "step-2-deploy-env", "step-3-run-e2e-matrix"},
         )
+
+    def test_teardown_keeps_the_success_gate_on_the_jobs_it_does_depend_on(self):
+        """A failed matrix must leave its cluster standing to be examined live."""
+        teardown = self.jobs["step-5-teardown-env"]
         self.assertNotIn(
             "always()",
             teardown["if"],
             "always() removes the implicit success() and destroys the environments "
             "a failed run leaves standing for diagnosis",
         )
+        self.assertIn("step-3-run-e2e-matrix", teardown["needs"])
 
     def test_the_promotion_tag_is_pushed_with_the_release_bot_token(self):
         """A tag pushed with GITHUB_TOKEN triggers no workflow, so staging never deploys."""
