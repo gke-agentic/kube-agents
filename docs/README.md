@@ -342,7 +342,7 @@ only what the title does not say.
 | `install/uninstall.md` | Site page | Removing the agent, operator, and provisioned GCP resources; agent-only vs full teardown. | Teardown | — |
 | `deploy/index.md` | Site page | Hub for the deploy section: Docker, Kustomize, Minty, release versioning, telemetry, GitOps. | Navigation | — |
 | `deploy/kustomize.md` | Site page | What ships in `deploy/kustomize/` and what the operator lays down on top of it. | Base vs operator-created objects | — |
-| `deploy/release-versioning.md` | Site page | How Release Candidate builds are promoted to immutable SemVer releases across container images, Helm charts, and TF modules. | SemVer promotion, chart appVersion, TF git tag ref pinning | SREs and contributors |
+| `deploy/release-versioning.md` | Site page | Release lifecycle, automated SemVer 2.0 governance, clean promotion, GA release execution, and emergency hotfix runbook. | SemVer calculation, RC validation gate, clean promotion, CLI dispatch, emergency runbook | SREs and maintainers |
 | `deploy/docker-images.md` | Site page | The images shipped from this repo and how tags are managed. | Image list, base pin, registry overrides, CI | — |
 | `deploy/token-minter.md` | Site page | Minty: the in-cluster broker minting short-lived GitHub App installation tokens; no long-lived secret on disk. | Token flow, KMS-held key, setup | Operator-side README: `k8s-operator/config/integrations/github/README.md` |
 | `deploy/telemetry.md` | Site page | Where OTel, Prometheus, and Cloud Logging fit in the shipping deploy, and how to point it at a collector other than the GKE-managed one. | What runs where, OTLP endpoint precedence and discovery, non-GKE clusters | — |
