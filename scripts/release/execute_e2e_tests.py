@@ -49,10 +49,27 @@ _SUITE_ENV_VAR = "E2E_SUITE"
 _LEGACY_SUITE_ENV_VAR = "E2E_ENV"
 _LEGACY_SUITES_KEY = "environments"
 _LEGACY_DEFAULT_KEY = "default_environment"
+_LEGACY_SUITE_SUFFIX = "-e2e"
 _ALIAS_REMOVAL_HINT = "the next release"
 
 # The one suite that needs no cluster: it drives the Google Chat API directly.
 _CHAT_ONLY_SUITE = "gchat"
+
+
+def canonical_suite_name(name: str) -> str:
+    """Strips the pre-rename `-e2e` suffix off a suite name.
+
+    The rename dropped a suffix that was redundant on all six suites, and the
+    values are the half of it no other alias covers. Two live paths still carry
+    the old spelling: `E2E_ENV=rc-e2e` in a developer's `.env`, which is what
+    `.env.example` recommended until this change, and a config from an older
+    checkout whose entries are themselves named `gchat-e2e` — where the name
+    reaches `_CHAT_ONLY_SUITE` rather than the selector, so normalising the
+    selector alone would not reach it.
+    """
+    if name.endswith(_LEGACY_SUITE_SUFFIX) and name != _LEGACY_SUITE_SUFFIX:
+        return name[: -len(_LEGACY_SUITE_SUFFIX)]
+    return name
 
 try:
     from dotenv import load_dotenv
@@ -201,7 +218,7 @@ def run_suite_tests(
 
     # Cluster-backed suites must have valid project_id and cluster_name. `gchat`
     # is the exception: it talks to the Chat API rather than to a cluster.
-    if suite_name != _CHAT_ONLY_SUITE:
+    if canonical_suite_name(suite_name) != _CHAT_ONLY_SUITE:
         if not project_id or not cluster_name:
             print(
                 f"Error: E2E suite '{suite_name}' requires GCP_PROJECT_ID and GKE_CLUSTER_NAME environment variables.",
@@ -324,6 +341,20 @@ def main() -> None:
 
     if selected_suite and selected_suite.lower() != "all":
         target_suites = [s for s in suites if s.get("name") == selected_suite]
+        # The suffix is the one part of the rename no name-level alias covers, so
+        # it is retried here rather than left to fail as "suite not found" — which
+        # is what a mid-flight `E2E_ENV=rc-e2e` would otherwise get, from a change
+        # whose whole promise is that the old spellings keep working.
+        if not target_suites:
+            canonical = canonical_suite_name(selected_suite)
+            if canonical != selected_suite:
+                target_suites = [s for s in suites if s.get("name") == canonical]
+                if target_suites:
+                    print(
+                        f"Warning: suite '{selected_suite}' is the pre-rename spelling of "
+                        f"'{canonical}' and will stop resolving after {_ALIAS_REMOVAL_HINT}.",
+                        file=sys.stderr,
+                    )
         if not target_suites:
             print(f"Error: Suite '{selected_suite}' not found in {args.config}", file=sys.stderr)
             sys.exit(1)

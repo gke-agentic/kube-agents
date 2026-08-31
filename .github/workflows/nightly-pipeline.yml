@@ -55,13 +55,21 @@ jobs:
     # `needs`: an `always()` added to a later job would silently un-guard it.
     if: github.repository == 'gke-labs/kube-agents'
     runs-on: ubuntu-latest
-    # Bound to `nightly` for one variable: REGISTRY_PREFIX, which decides where
-    # the candidate images are looked for. rc-create-tag.yml reads it from the
-    # `rc` environment for the same reason, and a step that resolves it from a
-    # different scope than the deploy job would verify one registry and install
-    # from another. Every `vars.*` this job reads therefore needs the `nightly`
-    # environment to define it — an unbound job resolves them all to empty in
-    # silence.
+    # Bound to `nightly` for GH_ORG, GH_REPO and REGISTRY_PREFIX — the three
+    # values that decide which repository the tag graph is read from and where
+    # the candidate images are looked for. rc-create-tag.yml binds `rc` for the
+    # same three, and a step resolving them from a different scope than the
+    # deploy job would verify one registry and install from another.
+    #
+    # REGISTRY_PREFIX is the odd one: no environment sets it and the repository
+    # scope holds no variables at all, so it arrives empty and
+    # get_registry_prefix falls back to DEFAULT_REGISTRY_PREFIX. That is the
+    # intended value — it is what 45 validated RC tags were resolved against —
+    # so the binding is what makes an environment able to override it, not what
+    # supplies it today.
+    #
+    # The binding is not optional either way: an unbound job resolves every
+    # `vars.*` to empty in silence, and GH_ORG and GH_REPO have no fallback.
     environment: nightly
     timeout-minutes: 15
     permissions:

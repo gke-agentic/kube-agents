@@ -9,8 +9,9 @@ so this was the common case rather than an edge.
 The fix is structural: the cron sits on `rc-scheduler.yml`, which resolves the
 candidate and dispatches the pipeline only when there is one. Every property
 that makes that work is easy to undo by accident and invisible when undone —
-putting the cron back, dispatching with the default token, or reimplementing the
-skip decision instead of calling the shared script — so each is pinned here.
+putting the cron back, dropping the `actions: write` the dispatch needs, or
+reimplementing the skip decision instead of calling the shared script — so each
+is pinned here.
 """
 
 import pathlib
@@ -105,17 +106,33 @@ class SchedulerDispatchWiring(unittest.TestCase):
                 return
         self.fail("no resolve_rc_tag.sh step found")
 
-    def test_the_dispatch_uses_the_bot_token(self) -> None:
-        """GITHUB_TOKEN cannot start a workflow: the dispatch would 204 silently.
+    def test_the_dispatch_uses_the_default_token(self) -> None:
+        """`workflow_dispatch` is exempt from the GITHUB_TOKEN suppression rule.
 
-        The failure mode is a green scheduler and a pipeline that never ran,
-        which is the same invisible skip this whole file exists to remove.
+        GitHub suppresses runs triggered by the default token to stop recursion
+        and names `workflow_dispatch` and `repository_dispatch` as the two
+        exceptions, so the default token starts the pipeline given the scope
+        below. Reaching for a PAT here would put the only trigger of the RC
+        pipeline behind a credential that can expire and whose scope cannot be
+        read from this repository.
         """
         for step in _steps(self.doc):
             if "gh workflow run" in (step.get("run") or ""):
-                self.assertIn("RELEASE_BOT_TOKEN", step["env"]["GH_TOKEN"])
+                self.assertIn("github.token", step["env"]["GH_TOKEN"])
                 return
         self.fail("no dispatch step found")
+
+    def test_the_dispatching_job_can_write_actions(self) -> None:
+        """The default token dispatches only with `actions: write`.
+
+        Without it the call 403s, no pipeline runs, and the scheduler is the only
+        thing that goes red — the invisible-skip failure in a new costume.
+        """
+        for job in self.doc["jobs"].values():
+            if any("gh workflow run" in (s.get("run") or "") for s in job.get("steps", [])):
+                self.assertEqual(job.get("permissions", {}).get("actions"), "write")
+                return
+        self.fail("no dispatch job found")
 
     def test_the_dispatch_is_gated_on_there_being_work(self) -> None:
         for step in _steps(self.doc):

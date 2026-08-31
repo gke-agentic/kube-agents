@@ -157,5 +157,48 @@ class ConfigDefaultTest(unittest.TestCase):
                 self.assertIn(fallback, names, f"{path.name} falls back to an unknown suite")
 
 
+class LegacySuiteSuffixTest(unittest.TestCase):
+    """The values are the half of the rename no name-level alias covers.
+
+    `E2E_ENV` -> `E2E_SUITE`, `--env` -> `--suite` and `environments:` ->
+    `suites:` are all aliased, so a reader is entitled to believe the old
+    spellings keep working. `E2E_ENV=rc-e2e` is an old spelling, and until the
+    suffix is stripped it reaches the lookup and exits 1 as an unknown suite.
+    """
+
+    def setUp(self) -> None:
+        self.runner = _load_runner()
+
+    def test_the_suffix_is_stripped(self) -> None:
+        for legacy, canonical in (
+            ("rc-e2e", "rc"),
+            ("nightly-e2e", "nightly"),
+            ("gchat-e2e", "gchat"),
+        ):
+            self.assertEqual(self.runner.canonical_suite_name(legacy), canonical)
+
+    def test_a_current_name_is_left_alone(self) -> None:
+        for name in ("rc", "nightly", "gchat", "agent-plugin"):
+            self.assertEqual(self.runner.canonical_suite_name(name), name)
+
+    def test_a_bare_suffix_is_not_stripped_to_nothing(self) -> None:
+        """Guards the slice: an empty suite name would match every entry's absence."""
+        self.assertEqual(self.runner.canonical_suite_name("-e2e"), "-e2e")
+
+    def test_the_chat_suite_needs_no_cluster_under_its_legacy_name(self) -> None:
+        """A pre-rename config names the suite `gchat-e2e`, and that name reaches
+        the cluster gate directly rather than through the selector — so the
+        selector-side strip does not cover it.
+
+        Without the strip the one suite that deliberately needs no cluster exits 1
+        demanding GCP_PROJECT_ID, which is the opposite of what the deprecation
+        note in the runner promises.
+        """
+        self.assertEqual(
+            self.runner.canonical_suite_name("gchat-e2e"),
+            self.runner._CHAT_ONLY_SUITE,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

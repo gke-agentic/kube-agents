@@ -146,10 +146,15 @@ reproduce, and because a value deleted from the web form fails the same way as o
 3. **A `nightly` GitHub environment** holding the same variables as `rc` rather than a trimmed
    subset — a missing one surfaces as an install failure deep in Terraform, not as a clear error.
    The ones the pipeline reads directly are `GCP_PROJECT_ID`, `GCP_REGION`, `GKE_CLUSTER_NAME`,
-   `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT`, `REGISTRY_PREFIX`, `AGENT_NAMESPACE`,
-   `GH_ORG`, `GH_REPO`, `GITOPS_ORG`, `GITOPS_REPO`, `CHAT_TOPIC_NAME` and `TEARDOWN_STRICT`
-   (still spelled `RC_TEARDOWN_STRICT` in both environments' settings; `teardown_common.sh` reads
-   either, preferring the unprefixed name). The rest are install inputs.
+   `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT`, `AGENT_NAMESPACE`, `GH_ORG`, `GH_REPO`,
+   `GITOPS_ORG`, `GITOPS_REPO`, `CHAT_TOPIC_NAME` and `TEARDOWN_STRICT` (still spelled
+   `RC_TEARDOWN_STRICT` in both environments' settings; `teardown_common.sh` reads either,
+   preferring the unprefixed name). The rest are install inputs.
+
+   `REGISTRY_PREFIX` is read too but is **optional and set on no environment**, so do not go
+   looking for it: the repository scope holds no variables at all, the workflows forward an empty
+   string, and `get_registry_prefix` falls back to `DEFAULT_REGISTRY_PREFIX`. Set it only to point
+   an environment at a registry other than `ghcr.io/gke-labs/kube-agents`.
 
    Two of those earn a line of their own because getting them wrong is silent rather than loud.
    `GITOPS_ORG`/`GITOPS_REPO` name the repository the token minter is scoped to and the suite
@@ -158,13 +163,17 @@ reproduce, and because a value deleted from the web form fails the same way as o
    `env:` key is defined even when its expression is empty, so an unset variable reaches the suite
    as an empty string rather than letting a configured default apply.
 
-   The secrets are separate from the variables, and this is where `nightly` is currently
-   incomplete: it has `GEMINI_API_KEY` but **not `GH_APP_ID`**, which `rc` does have. That one is
-   not optional and its absence is not a skipped feature — `provision_environment.sh` treats
-   `GITHUB_ORG`/`GITHUB_REPO`/`GITHUB_APP_ID` as all-or-nothing and hard-exits before teardown when
-   two of three are set, which is exactly the state `nightly` is in. Set it before the first
-   dispatch. The four `E2E_CHAT_*` secrets need nothing: they exist at repository scope and
-   cascade, so an environment that does not override them still resolves them.
+   The secrets are separate from the variables, and `nightly` needs `GH_APP_ID` and
+   `GEMINI_API_KEY` on top of them. `GH_APP_ID` is not optional and its absence is not a skipped
+   feature — `provision_environment.sh` treats `GITHUB_ORG`/`GITHUB_REPO`/`GITHUB_APP_ID` as
+   all-or-nothing and hard-exits before teardown when two of three are set.
+
+   The four `E2E_CHAT_*` secrets exist at repository scope and cascade, so an environment that
+   overrides **none** of them still resolves all four. Override them as a set or not at all. Three
+   of the four are a client id, a client secret and the refresh token issued against that pair: a
+   refresh token does not exchange against a different client, so an environment that overrides the
+   credentials and inherits the repository-scope refresh token fails the Chat token exchange — and
+   on `nightly` that is a blocking-suite failure reported as a Chat regression in the candidate.
 
 ### Integrations the nightly matrix needs and the RC does not
 
