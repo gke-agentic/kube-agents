@@ -38,16 +38,28 @@ away BEFORE `helm uninstall {{ .Release.Name }}`, otherwise the CR strands:
   helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}
 {{- end }}
 {{- if .Values.selfImprovement.enabled }}
+{{- $siMode := .Values.selfImprovement.mode | default "report-only" }}
+{{- /*
+The same ternary self-improvement.yaml computes for $prTarget, and it has to
+stay the same one: fork mode bases its pull requests on github.forkRepo,
+upstream mode on github.upstreamRepo. Naming forkRepo in both -- which this
+note used to do -- tells an operator who chose upstream mode that pull requests
+will land somewhere they will not.
+*/ -}}
+{{- $siPrTarget := ternary .Values.selfImprovement.github.forkRepo (.Values.selfImprovement.github.upstreamRepo | default "gke-labs/kube-agents") (eq $siMode "fork") }}
 
-The self-improvement loop is ON in {{ .Values.selfImprovement.mode | default "report-only" }} mode, on
+The self-improvement loop is ON in {{ $siMode }} mode, on
 {{ .Values.selfImprovement.schedule | default "0 * * * *" }}. It investigates this installation and
 writes to the ConfigMap "{{ .Values.selfImprovement.ledgerConfigMap | default "kube-agents-selfimprove-ledger" }}".
-{{- if ne (.Values.selfImprovement.mode | default "report-only") "report-only" }}
-It opens pull requests against {{ .Values.selfImprovement.github.forkRepo }}, so the Secret
+{{- if ne $siMode "report-only" }}
+It opens pull requests against {{ $siPrTarget }}, so the Secret
 "{{ .Values.selfImprovement.github.patSecret }}" must exist in {{ .Release.Namespace }} with a
 "{{ .Values.selfImprovement.github.patSecretKey | default "token" }}" entry holding the robot account's personal access token. The
-chart cannot check that the Secret exists: without it the pod starts, the run
-investigates at full model spend, and the filing turn fails at the end.
+chart checks that you named one, not that it is there. A Secret that is missing
+is loud rather than expensive — the Job mounts it, so the pod stays in
+CreateContainerConfigError and nothing is investigated. A Secret that exists
+with the wrong key is the expensive one: the pod starts, the run investigates,
+and the filing turn fails at the end.
 {{- end }}
 {{- end }}
 

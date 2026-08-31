@@ -315,10 +315,42 @@ class TestNetworkPolicy(unittest.TestCase):
         }
     }
 
-    def test_cidrs_are_collected_per_port(self):
-        self.assertEqual(enable.policy_cidrs(self.POLICY, 6443), ["34.118.224.1/32"])
-        self.assertEqual(enable.policy_cidrs(self.POLICY, 53), ["10.96.0.10/32"])
-        self.assertEqual(enable.policy_cidrs(self.POLICY, 80), [])
+    # The shape the chart actually renders on 443: everything, less the five
+    # private ranges, alongside the /32s it discovered for the API server.
+    WIDE_POLICY = {
+        "spec": {
+            "egress": [
+                {
+                    "ports": [{"port": 443}],
+                    "to": [
+                        {"ipBlock": {"cidr": "34.118.224.1/32"}},
+                        {"ipBlock": {"cidr": "10.96.0.1/32"}},
+                        {
+                            "ipBlock": {
+                                "cidr": "0.0.0.0/0",
+                                "except": [
+                                    "10.0.0.0/8",
+                                    "172.16.0.0/12",
+                                    "192.168.0.0/16",
+                                    "169.254.0.0/16",
+                                    "100.64.0.0/10",
+                                ],
+                            }
+                        },
+                    ],
+                }
+            ]
+        }
+    }
+
+    def test_blocks_are_collected_per_port(self):
+        self.assertEqual(
+            enable.policy_ip_blocks(self.POLICY, 6443), [{"cidr": "34.118.224.1/32"}]
+        )
+        self.assertEqual(
+            enable.policy_ip_blocks(self.POLICY, 53), [{"cidr": "10.96.0.10/32"}]
+        )
+        self.assertEqual(enable.policy_ip_blocks(self.POLICY, 80), [])
 
     def test_containment(self):
         self.assertTrue(enable.covered("34.118.224.1", ["34.118.224.0/24"]))
@@ -329,6 +361,31 @@ class TestNetworkPolicy(unittest.TestCase):
         every other finding in the report."""
         self.assertFalse(enable.covered("10.0.0.1", ["not-a-cidr"]))
         self.assertFalse(enable.covered("not-an-ip", ["10.0.0.0/8"]))
+
+    def test_an_excepted_address_is_not_covered(self):
+        """`0.0.0.0/0` with the private ranges excepted does not reach a private
+        API server. Reading `cidr` and ignoring `except` made every address on
+        earth covered, so `verify`'s api-server egress check could not fail --
+        it reported OK on precisely the install it exists to catch."""
+        blocks = enable.policy_ip_blocks(self.WIDE_POLICY, 443)
+        self.assertFalse(enable.covered("10.150.0.2", blocks))
+
+    def test_a_narrower_rule_still_covers_an_excepted_address(self):
+        """Egress rules are additive. 10.96.0.1 falls in the wide rule's
+        `except 10.0.0.0/8` and is still allowed, because a discovered /32
+        names it -- the normal shape of a correct install, which must not now
+        report as blocked."""
+        blocks = enable.policy_ip_blocks(self.WIDE_POLICY, 443)
+        self.assertTrue(enable.covered("10.96.0.1", blocks))
+        self.assertTrue(enable.covered("34.118.224.1", blocks))
+        # And a public address the wide rule does allow.
+        self.assertTrue(enable.covered("140.82.121.4", blocks))
+
+    def test_a_malformed_except_does_not_read_as_excepting_nothing(self):
+        """The safe direction for an unreadable policy is "not covered": the
+        other one turns a policy nobody can parse into a clean report."""
+        blocks = [{"cidr": "0.0.0.0/0", "except": ["not-a-cidr"]}]
+        self.assertFalse(enable.covered("10.150.0.2", blocks))
 
     def test_a_label_selected_kube_dns_counts_as_reachable(self):
         """A NetworkPolicy matches the destination pod, so kube-dns reached by
@@ -651,19 +708,70 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("missing scope", err.getvalue())
 
-    def test_secret_can_be_forced_past_the_scope_check(self):
-        applied = {}
+    def run_secret(self, argv=("secret", "--no-check-token"), kubectl=None):
+        """`secret` with a recording kubectl, returning (rc, calls).
+
+        `args` is recorded as well as `stdin`: the apply mode is not visible in
+        the manifest, and it is half of what keeps the token out of the
+        Secret's metadata.
+        """
+        calls = []
 
         def fake_kubectl(args, namespace=None, context=None, stdin=None, check=True):
-            applied["stdin"] = stdin
+            calls.append({"args": list(args), "stdin": stdin, "check": check})
+            if kubectl is not None:
+                return kubectl(list(args))
             return ""
 
         with mock.patch.dict(enable.os.environ, {"SELFIMPROVE_PAT": "ghp_x"}):
             with mock.patch.object(enable, "kubectl", fake_kubectl):
                 with contextlib.redirect_stdout(io.StringIO()):
-                    rc = enable.main(["secret", "--no-check-token"])
+                    with contextlib.redirect_stderr(io.StringIO()):
+                        rc = enable.main(list(argv))
+        return rc, calls
+
+    def test_secret_can_be_forced_past_the_scope_check(self):
+        rc, calls = self.run_secret()
         self.assertEqual(rc, 0)
+        applied = next(c for c in calls if c["args"][0] == "apply")
         self.assertEqual(json.loads(applied["stdin"])["stringData"], {"token": "ghp_x"})
+
+    def test_the_apply_is_server_side_under_a_named_field_manager(self):
+        """A client-side apply copies the submitted manifest into
+        kubectl.kubernetes.io/last-applied-configuration, which for a Secret
+        built from `stringData` puts the PAT in cleartext in metadata beside
+        its base64 `data`. The field manager has to be named too: under the
+        default one, apply preserves an annotation that is already there."""
+        rc, calls = self.run_secret()
+        self.assertEqual(rc, 0)
+        applied = next(c for c in calls if c["args"][0] == "apply")
+        self.assertIn("--server-side", applied["args"])
+        self.assertIn("--field-manager=selfimprove-enable", applied["args"])
+
+    def test_the_stale_annotation_is_removed_and_its_absence_is_not_fatal(self):
+        """SSA leaves the annotation behind on a Secret an earlier version of
+        this tool created client-side, so it is stripped explicitly rather than
+        left to kubectl's migration path. `check=False` because a Secret that
+        never had one makes `kubectl annotate` exit non-zero."""
+        rc, calls = self.run_secret()
+        self.assertEqual(rc, 0)
+        annotate = next(c for c in calls if c["args"][0] == "annotate")
+        self.assertIn(enable.LAST_APPLIED_ANNOTATION + "-", annotate["args"])
+        self.assertFalse(annotate["check"])
+
+    def test_a_field_manager_conflict_is_reported_rather_than_forced(self):
+        """Another owner -- a chart, an ExternalSecret -- is a collision worth
+        surfacing. --force-conflicts would turn it into a silent clobber."""
+
+        def conflicting(args):
+            if args[0] == "apply":
+                raise enable.KubeError("Apply failed with 1 conflict: conflict with \"helm\"")
+            return ""
+
+        rc, calls = self.run_secret(kubectl=conflicting)
+        self.assertEqual(rc, 1)
+        self.assertNotIn("--force-conflicts", next(c for c in calls if c["args"][0] == "apply")["args"])
+        self.assertEqual([c for c in calls if c["args"][0] == "annotate"], [])
 
 
 class TestJSONOutput(unittest.TestCase):
@@ -774,6 +882,252 @@ class TestJSONOutput(unittest.TestCase):
             {"checks": [{"status": "warn", "check": "a", "detail": "hmm", "fix": "do this"}],
              "failed": False},
         )
+
+
+class TestPromotionGap(unittest.TestCase):
+    def test_a_finding_that_already_has_a_pull_request_is_not_a_warning(self):
+        """The steady state of a working install: promoted again on every run,
+        deliberately not re-filed, so `promoted > filed` holds forever."""
+        rep = enable.Report(colour=False)
+        ledger = {
+            "findings": {
+                "f1": {"promotions": [{"url": "https://github.com/o/r/pull/1"}]},
+            }
+        }
+        enable.report_promotion_gap(rep, ledger, 1, 0, "")
+        self.assertEqual(rep.rows[0][0], enable.OK)
+        self.assertIn("already carry a pull request", rep.rows[0][2])
+
+    def test_a_refusal_still_explains_the_gap(self):
+        rep = enable.Report(colour=False)
+        ledger = {"findings": {"f1": {"refused": {"why": "unsafe"}}}}
+        enable.report_promotion_gap(rep, ledger, 1, 0, "")
+        self.assertEqual(rep.rows[0][0], enable.OK)
+        self.assertIn("recorded refusal", rep.rows[0][2])
+
+    def test_a_promotion_with_neither_is_still_the_warning(self):
+        rep = enable.Report(colour=False)
+        ledger = {"findings": {"f1": {"promotions": []}}}
+        enable.report_promotion_gap(rep, ledger, 1, 0, "")
+        self.assertEqual(rep.rows[0][0], enable.WARN)
+        self.assertEqual(rep.rows[0][1], "last run filed nothing new")
+
+
+class TestPreflightOrder(unittest.TestCase):
+    def test_the_kubernetes_version_is_checked_before_the_agent_exists(self):
+        """`check_cluster` returns None when the Deployment is merely absent --
+        the state a first preflight runs in -- and the 1.29 floor is a property
+        of the cluster, not of that Deployment."""
+        called = []
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(
+                mock.patch.object(enable, "check_values_shape", lambda *a: None)
+            )
+            stack.enter_context(mock.patch.object(enable, "check_github", lambda *a: None))
+            stack.enter_context(mock.patch.object(enable, "read_token", lambda a, **k: None))
+            stack.enter_context(
+                mock.patch.object(
+                    enable, "check_kubernetes_version", lambda *a: called.append("version")
+                )
+            )
+            stack.enter_context(mock.patch.object(enable, "check_cluster", lambda *a: None))
+            stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            enable.cmd_preflight(ns())
+        self.assertEqual(called, ["version"])
+
+
+class TestVerify(unittest.TestCase):
+    """`verify` reads a live install, so what it reads has to be the install.
+
+    Every test here covers one instance of a single defect: a check that reports
+    on the flags the command was invoked with, or on nothing at all, while
+    reading as though it had read the cluster. None of them fails loudly when it
+    regresses -- the row goes green.
+    """
+
+    REVISION = "abc123def456"
+
+    def cron(self, *, mode="fork", pat_secret="mounted-pat", pat_key="gh-token", env_extra=None):
+        """A CronJob shaped like the one `self-improvement.yaml` renders.
+
+        Fork mode on purpose: it is the mode where the two repository variables
+        disagree, so it is the one that catches a check reading the wrong one.
+        """
+        env = [
+            {"name": "SELFIMPROVE_MODE", "value": mode},
+            # The upstream, always -- what the runner clones.
+            {"name": "SELFIMPROVE_SOURCE_REPO", "value": "gke-labs/kube-agents"},
+            # The pull request's base, which under fork mode is the fork.
+            {"name": "SELFIMPROVE_UPSTREAM_REPO", "value": "robot/kube-agents"},
+            {"name": "SELFIMPROVE_FORK_REPO", "value": "robot/kube-agents"},
+            {"name": "SELFIMPROVE_BASE_BRANCH", "value": "main"},
+            {"name": "SELFIMPROVE_AGENT_DEPLOYMENT", "value": "platform-agent-gateway"},
+        ]
+        env.extend(env_extra or [])
+        return {
+            "spec": {
+                "schedule": "0 * * * *",
+                "jobTemplate": {
+                    "spec": {
+                        "template": {
+                            "spec": {
+                                "containers": [
+                                    {"name": "runner", "image": "img:1", "env": env}
+                                ],
+                                "volumes": [
+                                    {
+                                        "name": enable.PAT_VOLUME_NAME,
+                                        "secret": {
+                                            "secretName": pat_secret,
+                                            "items": [{"key": pat_key, "path": pat_key}],
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    }
+                },
+            }
+        }
+
+    def run_verify(self, objects, *, cron=None, github=None, **overrides):
+        """Drive `cmd_verify` against a dict of cluster objects.
+
+        Keyed by (kind, first argument), which is how `kube_json` is called
+        everywhere in the command. Returns the report rows, the keys that were
+        actually requested, and the GitHub paths that were fetched.
+        """
+        objects = dict(objects)
+        objects.setdefault(("cronjob", "kube-agents-selfimprove"), cron or self.cron())
+        asked, fetched = [], []
+
+        def fake_kube_json(argv, namespace=None, context=None):
+            asked.append((argv[1], argv[2]))
+            return objects.get((argv[1], argv[2]))
+
+        def fake_github(path, token, **kwargs):
+            fetched.append(path)
+            return (github or {}).get(path, resp(404))
+
+        args = ns(
+            cronjob="kube-agents-selfimprove",
+            networkpolicy="kube-agents-selfimprove",
+            mode="upstream",
+            **overrides,
+        )
+        rep = enable.Report(colour=False)
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(enable, "kube_json", fake_kube_json))
+            stack.enter_context(mock.patch.object(enable, "github", fake_github))
+            stack.enter_context(mock.patch.object(enable, "read_token", lambda a, **k: "t"))
+            stack.enter_context(
+                mock.patch.object(
+                    enable, "stamped_revision", lambda *a, **k: (self.REVISION, "pod-1")
+                )
+            )
+            stack.enter_context(mock.patch.object(enable, "Report", lambda **k: rep))
+            stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            enable.cmd_verify(args)
+        return rep, asked, fetched
+
+    def row(self, rep, name):
+        matches = [r for r in rep.rows if r[1] == name]
+        self.assertEqual(len(matches), 1, "expected one %r row, got %d" % (name, len(matches)))
+        return matches[0]
+
+    def test_the_secret_checked_is_the_one_the_cronjob_mounts(self):
+        """Not the one `--pat-secret` defaults to. An operator who set
+        `patSecret` got a green row about a Secret nothing mounts, while the pod
+        that needs the real one sat in CreateContainerConfigError."""
+        rep, asked, _ = self.run_verify(
+            {("secret", "mounted-pat"): {"data": {"gh-token": "eA=="}}}
+        )
+        row = self.row(rep, "pat secret")
+        self.assertEqual(row[0], enable.OK)
+        self.assertIn("mounted-pat", row[2])
+        self.assertIn("gh-token", row[2])
+        self.assertIn(("secret", "mounted-pat"), asked)
+        self.assertNotIn(("secret", "kube-agents-selfimprove-pat"), asked)
+
+    def test_a_mounted_secret_that_is_absent_fails_under_its_mounted_name(self):
+        rep, _, _ = self.run_verify({})
+        row = self.row(rep, "pat secret")
+        self.assertEqual(row[0], enable.FAIL)
+        self.assertIn("mounted-pat", row[2])
+
+    def test_the_stamped_revision_is_looked_for_in_the_source_repo(self):
+        """`SELFIMPROVE_UPSTREAM_REPO` is the pull request's base, which under
+        fork mode is the fork. Reading it as the source asks a fork to serve an
+        upstream commit -- a FAIL against a correct install, and no check at all
+        of the repository the runner clones."""
+        rep, _, fetched = self.run_verify(
+            {},
+            github={
+                "/repos/gke-labs/kube-agents/commits/%s" % self.REVISION: resp(200, {}),
+                "/repos/robot/kube-agents/compare/main...%s" % self.REVISION: resp(
+                    200, {"status": "behind", "behind_by": 0}
+                ),
+            },
+        )
+        self.assertIn("/repos/gke-labs/kube-agents/commits/%s" % self.REVISION, fetched)
+        self.assertNotIn("/repos/robot/kube-agents/commits/%s" % self.REVISION, fetched)
+        self.assertEqual(self.row(rep, "revision in source repo")[0], enable.OK)
+        # The base is still the fork -- this fix moves the source, not the base.
+        self.assertEqual(self.row(rep, "base contains the revision")[0], enable.OK)
+
+    def test_an_unreadable_kube_dns_does_not_read_as_reachable(self):
+        """`discovered_endpoints` turns a failed read into an empty list, and an
+        empty list leaves nothing blocked -- so the row went green having
+        checked nothing. The api-server branch already guarded against this."""
+        rep, _, _ = self.run_verify(
+            {
+                ("networkpolicy", "kube-agents-selfimprove"): TestNetworkPolicy.POLICY,
+                ("endpoints", "kubernetes"): {
+                    "subsets": [{"addresses": [{"ip": "34.118.224.1"}]}]
+                },
+            }
+        )
+        self.assertEqual(self.row(rep, "api server egress")[0], enable.OK)
+        self.assertEqual(self.row(rep, "dns egress")[0], enable.WARN)
+
+    def test_a_cronjob_with_no_mode_fails_rather_than_echoing_it(self):
+        """`rep.ok("mode", mode)` reported whatever string it found, including
+        none. Every row below branches on the value."""
+        cron = self.cron()
+        env = cron["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]["env"]
+        cron["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]["env"] = [
+            e for e in env if e["name"] != "SELFIMPROVE_MODE"
+        ]
+        rep, _, _ = self.run_verify({}, cron=cron)
+        self.assertEqual(self.row(rep, "mode")[0], enable.FAIL)
+
+    def test_a_mode_the_runner_does_not_know_is_a_failure(self):
+        cron = self.cron(mode="forked")
+        rep, _, _ = self.run_verify({}, cron=cron)
+        self.assertEqual(self.row(rep, "mode")[0], enable.FAIL)
+
+    def test_an_unset_repository_variable_still_warns(self):
+        """The arm exists and is reachable: `verify` reads whatever CronJob is
+        there, and one that is not chart-rendered can be missing these."""
+        cron = self.cron()
+        env = cron["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]["env"]
+        cron["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]["env"] = [
+            e for e in env if e["name"] != "SELFIMPROVE_BASE_BRANCH"
+        ]
+        rep, _, _ = self.run_verify({}, cron=cron)
+        self.assertEqual(self.row(rep, "base_branch")[0], enable.WARN)
+
+    def test_a_kube_dns_that_is_readable_and_allowed_still_passes(self):
+        rep, _, _ = self.run_verify(
+            {
+                ("networkpolicy", "kube-agents-selfimprove"): TestNetworkPolicy.POLICY,
+                ("endpoints", "kubernetes"): {
+                    "subsets": [{"addresses": [{"ip": "34.118.224.1"}]}]
+                },
+                ("svc", "-l"): {"items": [{"spec": {"clusterIP": "10.96.0.10"}}]},
+            }
+        )
+        self.assertEqual(self.row(rep, "dns egress")[0], enable.OK)
 
 
 if __name__ == "__main__":

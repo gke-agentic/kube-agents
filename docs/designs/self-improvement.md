@@ -1219,7 +1219,11 @@ the arguments; the five subcommands run in this order:
 - **`secret`** and **`labels`** — the two out-of-band objects. `secret` reads the token from a file,
   from stdin, or from the environment, never from an argument, and applies it as `stringData` over
   a pipe; `kubectl create secret --from-literal` would put it in argv, where the process table and
-  the shell's history file on the operator's own machine both keep a copy. `labels` creates
+  the shell's history file on the operator's own machine both keep a copy. The apply is
+  server-side, under its own field manager, for the other end of the same property: a client-side
+  apply copies the manifest it submitted into `kubectl.kubernetes.io/last-applied-configuration`,
+  which would leave the token in cleartext in the Secret's metadata beside its base64 `data`, where
+  every tool that redacts `data` and not annotations prints it. `labels` creates
   `self-improvement` and the four severity labels on the repository pull requests are opened
   against, because the filing turn can attach a label and cannot create one.
 - **`values`** — emits the `selfImprovement` block as a YAML values file for `helm`, or as HCL for

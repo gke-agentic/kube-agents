@@ -1452,6 +1452,45 @@ def _env_summary(container: Any) -> List[Dict[str, str]]:
     return rows
 
 
+def _container_state(state: Any) -> Optional[Dict[str, Any]]:
+    """Which of a container's three states is set, and why it is set.
+
+    Not `list(state.to_dict().keys())`. The generated `to_dict()` walks
+    `openapi_types` and assigns every attribute, unset ones included, so those
+    keys are the constant ["running", "terminated", "waiting"] for every
+    container of every pod -- identical output for a healthy pod and one in
+    CrashLoopBackOff, and no way for a reader to tell which it was looking at.
+
+    The reason is the part worth carrying: CrashLoopBackOff,
+    ImagePullBackOff and CreateContainerConfigError all arrive as
+    `waiting.reason`, and a container that exited arrives as
+    `terminated.reason` with an exit code. Those are the pod-level facts the
+    loop's investigations are built on.
+    """
+    if state is None:
+        return None
+    for name in ("waiting", "terminated", "running"):
+        sub = getattr(state, name, None)
+        if sub is None:
+            continue
+        out: Dict[str, Any] = {"state": name}
+        for attr, key in (
+            ("reason", "reason"),
+            ("message", "message"),
+            ("exit_code", "exitCode"),
+            ("signal", "signal"),
+            ("started_at", "startedAt"),
+            ("finished_at", "finishedAt"),
+        ):
+            value = getattr(sub, attr, None)
+            if value is not None:
+                out[key] = value if isinstance(value, int) else str(value)
+        return out
+    # Every state attribute unset. Real, if brief: it is what the API returns
+    # between a pod being scheduled and its first container status arriving.
+    return {"state": "unknown"}
+
+
 def cmd_k8s(args: argparse.Namespace) -> int:
     """Read the release namespace through the pod's own `view` binding.
 
@@ -1479,7 +1518,7 @@ def cmd_k8s(args: argparse.Namespace) -> int:
                         "ready": cs.ready,
                         "restarts": cs.restart_count,
                         "image": cs.image,
-                        "state": list((cs.state.to_dict() if cs.state else {}).keys()),
+                        "state": _container_state(cs.state),
                         "lastTerminated": (
                             cs.last_state.terminated.to_dict() if cs.last_state and cs.last_state.terminated else None
                         ),

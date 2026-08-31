@@ -94,6 +94,16 @@ REQUIRED_CLASSIC_SCOPES = ("repo", "read:org")
 
 GITHUB_API = os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
 
+#: Where a client-side `kubectl apply` stores the manifest it submitted, which
+#: for a Secret written from `stringData` means the value in cleartext. See the
+#: apply in `cmd_secret`.
+LAST_APPLIED_ANNOTATION = "kubectl.kubernetes.io/last-applied-configuration"
+
+#: The CronJob volume carrying the GitHub token, named by
+#: `charts/kube-agents/templates/self-improvement.yaml`. `verify` reads the
+#: Secret's name and key off it rather than off its own flags.
+PAT_VOLUME_NAME = "selfimprove-github-pat"
+
 sys.path.insert(0, str(REPO_ROOT / "agents" / "selfimprove" / "scripts"))
 try:  # pragma: no cover - the failure branch needs the module absent
     import selfimprove_ledger as ledger_mod
@@ -566,6 +576,12 @@ def secret_manifest(name: str, namespace: str, key: str, token: str) -> str:
     kept by the shell's history file. Piping a manifest keeps it on a pipe.
     `stringData` rather than `data` so nothing here has to base64 it, and so a
     reader of this function can see there is no encoding step to get wrong.
+
+    That choice is what makes the apply mode part of this contract rather than
+    a detail of the call site: a client-side apply would copy this manifest,
+    cleartext `stringData` and all, into the Secret's
+    last-applied-configuration annotation. `cmd_secret` applies server-side for
+    that reason -- do not simplify the flag away.
     """
     body = {
         "apiVersion": "v1",
@@ -853,7 +869,11 @@ def check_revision(
     rep.ok("stamped revision", "%s (from %s)" % (revision[:12], why))
     if not token:
         return
-    src = source_repo(args.upstream_repo)
+    # `source_repo` is set by `cmd_verify` from the CronJob's
+    # `SELFIMPROVE_SOURCE_REPO`, which is the repository the runner clones. The
+    # fallback carries the `preflight` path, which has no CronJob to read and
+    # whose `--upstream-repo` is the upstream by definition.
+    src = source_repo(getattr(args, "source_repo", "") or args.upstream_repo)
     resp = github("/repos/%s/commits/%s" % (src, revision), token)
     if resp.status != 200:
         rep.fail(
@@ -1086,17 +1106,46 @@ def discovered_endpoints(args: argparse.Namespace) -> Dict[str, List[str]]:
     return out
 
 
-def covered(address: str, cidrs: Sequence[str]) -> bool:
+def covered(address: str, blocks: Sequence[Any]) -> bool:
+    """Is an address inside any of these ipBlocks and outside every `except`?
+
+    A block is a NetworkPolicy `ipBlock` mapping, or a bare CIDR string for the
+    callers that have nothing to except.
+
+    Honouring `except` is what makes this answer anything. The chart's egress
+    rule for 443 is `0.0.0.0/0` with the five private ranges excepted, so a
+    reader that took `cidr` alone would find every address on earth covered and
+    could never report one as blocked -- the check would pass by construction.
+    Rules are additive, so an address excepted by the wide rule is still
+    covered if some narrower rule names it: that is exactly the shape of a
+    correct install, where the discovered API-server /32s sit alongside it.
+    """
     try:
         ip = ipaddress.ip_address(address)
     except ValueError:
         return False
-    for cidr in cidrs:
+    for block in blocks:
+        if isinstance(block, str):
+            block = {"cidr": block}
         try:
-            if ip in ipaddress.ip_network(cidr, strict=False):
-                return True
+            if ip not in ipaddress.ip_network(block.get("cidr") or "", strict=False):
+                continue
         except ValueError:
             continue
+        excepted = False
+        for hole in block.get("except") or []:
+            try:
+                if ip in ipaddress.ip_network(hole, strict=False):
+                    excepted = True
+                    break
+            except ValueError:
+                # A malformed `except` cannot be read as "excepts nothing":
+                # that is the direction that turns an unreadable policy into a
+                # clean report. Treat the whole block as not covering.
+                excepted = True
+                break
+        if not excepted:
+            return True
     return False
 
 
@@ -1124,11 +1173,23 @@ def report_promotion_gap(
     detail = "promoted %d, filed %d" % (promoted, filed)
     if note:
         detail += " -- %s" % note.splitlines()[0][:80]
-    if refused and not unfiled:
+    if not unfiled:
+        # No unexplained finding is the healthy case, and it is also the common
+        # one: a finding that already carries an open pull request is promoted
+        # again on every later run and deliberately not re-filed, so
+        # `promoted > filed` holds forever on a working install. Requiring a
+        # refusal to reach this arm turned that into a standing warning whose
+        # own fix text said nothing was wrong.
+        why = []
+        if refused:
+            why.append("%d carry a recorded refusal" % len(refused))
+        explained = len(entries) - len(unfiled) - len(refused)
+        if explained > 0:
+            why.append("%d already carry a pull request" % explained)
         rep.ok(
             "promotion gap explained",
-            "%s; %d finding(s) carry a recorded refusal, which is the loop declining to "
-            "write rather than failing to" % (detail, len(refused)),
+            "%s; every promoted finding is accounted for%s"
+            % (detail, " (%s)" % ", ".join(why) if why else ""),
         )
         return
     rep.warn(
@@ -1158,9 +1219,14 @@ def has_kube_dns_selector(policy: Dict[str, Any]) -> bool:
     return False
 
 
-def policy_cidrs(policy: Dict[str, Any], port: int) -> List[str]:
-    """Every ipBlock in the egress rules that open a given port."""
-    found: List[str] = []
+def policy_ip_blocks(policy: Dict[str, Any], port: int) -> List[Dict[str, Any]]:
+    """Every ipBlock in the egress rules that open a given port.
+
+    Whole blocks, not their `cidr` strings: `except` is half of what an ipBlock
+    says, and dropping it here is what made `covered` unable to report anything
+    as blocked. See `covered`.
+    """
+    found: List[Dict[str, Any]] = []
     for rule in (policy.get("spec", {}).get("egress") or []):
         ports = [p.get("port") for p in (rule.get("ports") or [])]
         if port not in ports:
@@ -1168,7 +1234,7 @@ def policy_cidrs(policy: Dict[str, Any], port: int) -> List[str]:
         for peer in rule.get("to") or []:
             block = peer.get("ipBlock") or {}
             if block.get("cidr"):
-                found.append(block["cidr"])
+                found.append(block)
     return found
 
 
@@ -1183,9 +1249,15 @@ def cmd_preflight(args: argparse.Namespace) -> int:
 
     check_values_shape(rep, args)
     check_github(rep, args, token)
+    # Before `check_cluster`, and not inside its `dep is not None` arm. The 1.29
+    # floor is a property of the cluster, not of the agent Deployment, and
+    # `check_cluster` returns None when that Deployment is merely absent -- the
+    # state a first preflight is run in. Gating the check there skipped it
+    # exactly when it was worth having. It reads `kubectl version` and reports a
+    # skip of its own when it cannot, so it is safe to run against nothing.
+    check_kubernetes_version(rep, args)
     dep = check_cluster(rep, args)
     if dep is not None:
-        check_kubernetes_version(rep, args)
         revision, why = stamped_revision(args.namespace, args.agent_deployment, args.context)
         check_revision(rep, args, token, revision, why)
         check_ksa(rep, args)
@@ -1271,11 +1343,60 @@ def cmd_secret(args: argparse.Namespace) -> int:
             % (args.namespace, args.pat_secret, args.pat_secret_key, len(token))
         )
         return done()
+    # --server-side, and the named field manager with it. A client-side apply
+    # copies the manifest it submitted into
+    # kubectl.kubernetes.io/last-applied-configuration, so the token would come
+    # to rest twice: base64 in `data`, where it belongs, and in cleartext in
+    # metadata, where every tool that redacts `data` and not annotations prints
+    # it -- `kubectl diff` masks only the top-level `data` map, and an operator
+    # scrubbing a base64 blob out of pasted output will not think to scrub an
+    # annotation. Rotating `data` by any other route then leaves the previous
+    # token there indefinitely, outliving its revocation. That is the one thing
+    # this module is written not to do: `secret_manifest` refuses
+    # --from-literal because argv is world-readable, `read_token` refuses a
+    # --token flag for the same reason, and `check_pat_secret` will not decode
+    # the Secret to check it.
+    #
+    # The field manager is load-bearing rather than cosmetic. Under the default
+    # `kubectl` manager, apply deliberately preserves an annotation that is
+    # already there; under a named one it migrates ownership and the applied
+    # config, which omits the annotation, removes it. So this also cleans up an
+    # install created by an earlier version of this tool. The explicit
+    # `annotate ...-` below is the belt to that braces: it does not depend on
+    # kubectl's migration path, which upstream describes as transitional.
+    #
+    # Preflight requires 1.29, so server-side apply is GA on every cluster this
+    # runs against.
+    try:
+        kubectl(
+            ["apply", "--server-side", "--field-manager=selfimprove-enable", "-f", "-"],
+            namespace=args.namespace,
+            context=args.context,
+            stdin=manifest,
+        )
+    except KubeError as exc:
+        if "conflict" not in str(exc).lower():
+            raise
+        say(
+            "refusing to overwrite %s/%s: another field manager owns it (a chart, an\n"
+            "ExternalSecret, or an earlier run under a different name). Delete the\n"
+            "Secret and re-run, or reconcile it where it is managed."
+            % (args.namespace, args.pat_secret),
+            file=sys.stderr,
+        )
+        rep.fail(
+            "secret",
+            "%s/%s is managed by something else" % (args.namespace, args.pat_secret),
+            str(exc),
+        )
+        return done()
+    # Non-fatal: an install that never had the annotation returns "not found"
+    # from `annotate`, and there is nothing to report in that case.
     kubectl(
-        ["apply", "-f", "-"],
+        ["annotate", "secret", args.pat_secret, LAST_APPLIED_ANNOTATION + "-"],
         namespace=args.namespace,
         context=args.context,
-        stdin=manifest,
+        check=False,
     )
     rep.ok(
         "secret",
@@ -1461,8 +1582,22 @@ def cmd_verify(args: argparse.Namespace) -> int:
         for e in ((runner or {}).get("env") or [])
         if "value" in e
     }
-    mode = env.get("SELFIMPROVE_MODE", "?")
-    rep.ok("mode", mode)
+    mode = env.get("SELFIMPROVE_MODE", "")
+    if mode in MODES:
+        rep.ok("mode", mode)
+    else:
+        # Echoing it back was not a check. Everything below branches on this
+        # value -- which repository is the base, whether a credential is
+        # mounted, which rows are skipped -- so a CronJob carrying no
+        # `SELFIMPROVE_MODE`, or one carrying a typo, silently took the
+        # report-only path through every one of them while the row read OK.
+        rep.fail(
+            "mode",
+            "SELFIMPROVE_MODE is %r, not one of %s" % (mode, ", ".join(MODES)),
+            "The runner reads this to decide whether it may file at all. Every check\n"
+            "below branches on it too, so the rest of this report is about a mode the\n"
+            "install does not have.",
+        )
 
     dep = kube_json(
         ["get", "deployment", env.get("SELFIMPROVE_AGENT_DEPLOYMENT", args.agent_deployment)],
@@ -1504,6 +1639,17 @@ def cmd_verify(args: argparse.Namespace) -> int:
             rep.warn(name.lower().replace("selfimprove_", ""), "unset")
 
     args.mode = mode
+    # Two variables, two questions, and reading the wrong one is silent. The
+    # chart renders `SELFIMPROVE_UPSTREAM_REPO` as the pull request's base --
+    # the fork, under fork mode; see the comment above `$prTarget` in
+    # self-improvement.yaml -- while the repository the run fetches its own
+    # source from is `SELFIMPROVE_SOURCE_REPO`, always the upstream. Deriving
+    # both from the first asked a fork to serve an upstream commit, so
+    # "revision in source repo" FAILed against a correctly configured fork-mode
+    # install and the repository the runner actually clones went unchecked.
+    # Bound before the overwrite below, so the fallback is the CLI's
+    # `--upstream-repo` rather than the base this line is about to install.
+    args.source_repo = env.get("SELFIMPROVE_SOURCE_REPO") or args.upstream_repo
     args.upstream_repo = env.get("SELFIMPROVE_UPSTREAM_REPO", args.upstream_repo)
     args.fork_repo = env.get("SELFIMPROVE_FORK_REPO", args.fork_repo)
     args.base_branch = env.get("SELFIMPROVE_BASE_BRANCH", args.base_branch)
@@ -1535,6 +1681,28 @@ def cmd_verify(args: argparse.Namespace) -> int:
                 "every rule can fire at %s" % (schedule or "this schedule"),
             )
 
+    # The Secret the CronJob mounts, not the one the CLI defaults to. `verify`
+    # reports on a live install, so an operator who set `patSecret` to anything
+    # other than the default got a check that read a Secret nothing mounts --
+    # green, while the pod that needs the real one sits in
+    # CreateContainerConfigError. The volume carries the key too, in `items`,
+    # so both halves of the question come from the same place the kubelet
+    # reads. Falling back to the flags keeps a CronJob whose volume this does
+    # not recognise checkable rather than skipped.
+    pat_volume = next(
+        (
+            v
+            for v in pod_spec.get("volumes") or []
+            if v.get("name") == PAT_VOLUME_NAME and (v.get("secret") or {}).get("secretName")
+        ),
+        None,
+    )
+    if pat_volume:
+        secret_source = pat_volume["secret"]
+        args.pat_secret = secret_source["secretName"]
+        items = secret_source.get("items") or []
+        if items and items[0].get("key"):
+            args.pat_secret_key = items[0]["key"]
     check_pat_secret(rep, args)
 
     policy = kube_json(
@@ -1546,7 +1714,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
         rep.skip("network policy", "%s absent, so egress is unrestricted" % args.networkpolicy)
     else:
         eps = discovered_endpoints(args)
-        allowed = policy_cidrs(policy, 443) + policy_cidrs(policy, 6443)
+        allowed = policy_ip_blocks(policy, 443) + policy_ip_blocks(policy, 6443)
         blocked = [a for a in eps["apiserver"] if not covered(a, allowed)]
         if not eps["apiserver"]:
             rep.warn("api server egress", "could not read the kubernetes Endpoints object")
@@ -1561,8 +1729,18 @@ def cmd_verify(args: argparse.Namespace) -> int:
             )
         else:
             rep.ok("api server egress", "%s allowed" % ", ".join(eps["apiserver"]))
-        dns_blocked = [a for a in eps["dns"] if not covered(a, policy_cidrs(policy, 53))]
-        if not dns_blocked:
+        dns_blocked = [a for a in eps["dns"] if not covered(a, policy_ip_blocks(policy, 53))]
+        if not eps["dns"]:
+            # The same guard the api-server branch above has, for the same
+            # reason. `discovered_endpoints` turns a failed read into an empty
+            # list, and an empty list makes `dns_blocked` empty too -- so
+            # without this the row reads OK having checked nothing.
+            rep.warn(
+                "dns egress",
+                "no Service matches k8s-app=kube-dns in kube-system, so the DNS rule was "
+                "not checked",
+            )
+        elif not dns_blocked:
             rep.ok("dns egress", "kube-dns reachable by address")
         elif has_kube_dns_selector(policy):
             # The ClusterIP is not in an ipBlock and does not need to be: the

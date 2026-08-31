@@ -1248,5 +1248,54 @@ class ErrorOutputTests(unittest.TestCase):
         self.assertIn(self.SECRET, buffer.getvalue())
 
 
+class ContainerStateTests(unittest.TestCase):
+    """`k8s pods` is where an investigation learns a pod is unhealthy.
+
+    The generated `V1ContainerState.to_dict()` walks `openapi_types` and
+    assigns every attribute, unset ones included, so `list(...keys())` was the
+    constant ["running", "terminated", "waiting"] on every container of every
+    pod -- byte-identical for a healthy pod and one in CrashLoopBackOff. These
+    cases pin the shape that replaced it.
+    """
+
+    class _Sub:
+        def __init__(self, **kw):
+            for key in ("reason", "message", "exit_code", "signal", "started_at", "finished_at"):
+                setattr(self, key, kw.get(key))
+
+    class _State:
+        def __init__(self, running=None, waiting=None, terminated=None):
+            self.running = running
+            self.waiting = waiting
+            self.terminated = terminated
+
+    def test_the_waiting_reason_is_what_survives(self):
+        state = self._State(waiting=self._Sub(reason="CrashLoopBackOff", message="back-off 5m0s"))
+        self.assertEqual(
+            E._container_state(state),
+            {"state": "waiting", "reason": "CrashLoopBackOff", "message": "back-off 5m0s"},
+        )
+
+    def test_a_terminated_container_carries_its_exit_code(self):
+        got = E._container_state(self._State(terminated=self._Sub(reason="Error", exit_code=137)))
+        self.assertEqual(got["state"], "terminated")
+        self.assertEqual(got["exitCode"], 137)
+
+    def test_a_healthy_container_is_distinguishable_from_a_broken_one(self):
+        """The whole point. Two states that used to serialise identically."""
+        running = E._container_state(self._State(running=self._Sub(started_at="2026-08-31T00:00:00Z")))
+        waiting = E._container_state(self._State(waiting=self._Sub(reason="ImagePullBackOff")))
+        self.assertNotEqual(running, waiting)
+        self.assertEqual(running["state"], "running")
+
+    def test_unset_fields_are_omitted_rather_than_rendered_as_null(self):
+        got = E._container_state(self._State(running=self._Sub()))
+        self.assertEqual(got, {"state": "running"})
+
+    def test_no_state_at_all(self):
+        self.assertIsNone(E._container_state(None))
+        self.assertEqual(E._container_state(self._State()), {"state": "unknown"})
+
+
 if __name__ == "__main__":
     unittest.main()
