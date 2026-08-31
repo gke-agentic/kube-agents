@@ -374,6 +374,39 @@ The distinction the pipelines must keep sharp either way: a night with no new ca
 tag and is not a failure, while an infrastructure failure, a red matrix, or a teardown that leaves a
 cluster running is a **red** run.
 
+### 3.5 Integrations the nightly environment needs, and the two the RC never had
+
+`nightly-e2e` is a superset of `rc-e2e`, so anything the RC environment is configured with the
+nightly one needs as well. That much is mechanical. The part worth stating is where the nightly
+matrix is **stricter** than the RC, because those are the places where copying the RC's
+configuration is not enough — and the one place where the suite as written today would fail on a
+correctly configured environment.
+
+| Integration               | On `rc` today                                     | What `nightly` needs                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **GitHub token minter**   | Configured, but its test is tolerated             | **Required, and blocking.** `test_github_token_minting_and_connectivity` lives in `test_agent_fleet_audit.py`, which `nightly-e2e` runs in its blocking suite where `rc-e2e` runs it under `continue-on-error`. So a half-configured minter costs the RC a tolerated HTTP 502 and costs nightly the whole run — and with it the staging promotion. Needs `GITOPS_ORG`, `GITOPS_REPO`, the `GH_APP_ID` secret, the App installed on that repository, and its private key imported into the nightly project's KMS key. |
+| **Google Chat**           | Configured                                        | Required, same shape: `GOOGLE_CHAT_ENABLED`, `GOOGLE_CHAT_MODE`, `CHAT_TOPIC_NAME`, and the four `E2E_CHAT_*` secrets. `gchat_agent_test.py` is in the matrix.                                                                                                                                                                                                                                                                                                                                                       |
+| **Pub/Sub alert ingress** | Installed per run by `install_pubsub_platform.sh` | Same, and it comes free — the extracted `e2e-run.yml` runs that script for both pipelines. Nightly runs **all** stockout scenarios where the RC runs one, so it exercises the ingress harder.                                                                                                                                                                                                                                                                                                                        |
+| **Model provider**        | `GEMINI_API_KEY` on `rc`                          | Its own key. Sharing the RC's would let a nightly run exhaust the quota the release gate depends on.                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| **Artifact Registry**     | Created by `install.sh`                           | Same, plus write access for the deploy service account: `operator/agentplugins_e2e_test.py` is nightly-only and builds and pushes a plugin image. `setup-gcp-github-wif.sh --admin` grants the roles.                                                                                                                                                                                                                                                                                                                |
+
+**The defect this turned up.** `nightly-e2e` in `tests/e2e/e2e_config.yaml` pins
+`GITHUB_ORG: test-org-kube-agent` and `GITHUB_REPO: test-org-kube-agent/agents-repo` — the exact
+placeholder pair the `rc-e2e` block was changed to stop pinning, and for the reason recorded in the
+comment there: no GitHub App is installed on that repository, and the same pair configures the
+minter at install time, so a value written in two places drifts. Under the RC's tolerated step that
+produced an HTTP 502 nobody noticed. Under nightly's blocking one it fails the run. The pins come
+out and the pipeline passes the environment's `GITOPS_ORG`/`GITOPS_REPO` to the suite, as
+`rc-release-pipeline.yml` already does.
+
+Two things are deliberately **not** in scope here, and neither becomes a prerequisite for the
+nightly pipeline:
+
+- **The `staging` environment.** It is a deploy target; nothing tests there. The promotion pushes a
+  tag and `staging-redeploy-*.yml` do the rest with the configuration they already have.
+- **The GA release path.** `release-publish.yml` runs against the release repository and is the
+  subject of [`weekly-release-promotion.md`](weekly-release-promotion.md).
+
 ## 4. Plan
 
 Each phase is independently shippable and leaves the tree working.
@@ -402,8 +435,9 @@ tool for this and it creates the Workload Identity pool, the provider (with the
 role set. Do not hand-roll the equivalent `gcloud` calls.
 
 What the script does not do, and so is the rest of this phase: creating the project itself, and
-creating the `nightly` GitHub environment with its variables (§3.2 item 3). No repository code
-changes. This is the long-pole item and the one that needs someone with GCP admin rights — start it
+creating the `nightly` GitHub environment with its variables (§3.2 item 3) and its integrations
+(§3.5 — the minter, Chat, the model key and Artifact Registry, of which the minter is the one that
+is stricter here than on the RC). No repository code changes. This is the long-pole item and the one that needs someone with GCP admin rights — start it
 first even though it lands second.
 
 **Phase 3 — make the environment workflows generic.** The renames and the `github_environment` input
