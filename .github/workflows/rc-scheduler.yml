@@ -106,11 +106,21 @@ jobs:
           RC_TAG: ${{ steps.resolve.outputs.rc_tag }}
         run: |
           set -euo pipefail
-          gh workflow run rc-release-pipeline.yml \
+          # Annotated rather than left to a bare non-zero exit. This is the one
+          # step whose failure means "the release-candidate pipeline is not
+          # running at all", and the token's ability to dispatch is the one
+          # thing about this workflow that cannot be checked from source: the
+          # API needs classic `repo` or fine-grained Actions: write, and
+          # RELEASE_BOT_TOKEN has until now only ever been used to check out and
+          # to push tags. A 403 here should say so on the run, not just red it.
+          if ! gh workflow run rc-release-pipeline.yml \
             --repo "${GITHUB_REPOSITORY}" \
             --ref "${GITHUB_REF_NAME}" \
             -f "commit_sha=${COMMIT_SHA}" \
-            -f "rc_tag=${RC_TAG}"
+            -f "rc_tag=${RC_TAG}"; then
+            echo "::error title=RC pipeline dispatch failed::Could not dispatch rc-release-pipeline.yml for ${COMMIT_SHA}. No release candidate is being tested until this succeeds. A 403 here means RELEASE_BOT_TOKEN lacks permission to dispatch a workflow (classic \`repo\`, or fine-grained Actions: write) — it is used elsewhere only for checkout and tag pushes, which need neither." >&2
+            exit 1
+          fi
           {
             echo "### Release candidate dispatched"
             echo ""

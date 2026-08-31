@@ -115,8 +115,10 @@ suites:
     # execute_e2e_tests.py merges `**os.environ` after these `env_vars` — so the
     # exported value wins whatever it is, and an environment that has not set
     # the variable would override this line with an empty string rather than
-    # falling back to it. The GitHub environment owns the value;
-    # gchat_agent_test.py's own default is the backstop.
+    # falling back to it. The GitHub environment owns the value outright: there
+    # is no working fallback anywhere, because gchat_agent_test.py's
+    # `os.environ.get(..., default)` only fires when the key is absent and the
+    # workflow always defines it.
     env_vars:
       FLEET_AUDIT_STREAMS: "all"
       STOCKOUT_SCENARIOS: "all"

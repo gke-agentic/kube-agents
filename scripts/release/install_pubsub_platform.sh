@@ -30,10 +30,14 @@
 #
 # This script exits non-zero when it cannot deliver working alert ingress. It
 # does NOT decide whether that should fail the run, because the answer differs
-# per caller: in e2e-run.yml the tests that read an alert are the optional
-# suite, which the RC pipeline uses and the nightly pipeline does not, so that
-# step carries `continue-on-error: true`; a caller whose blocking suite is
-# alert-driven should let it fail instead.
+# per caller, and e2e-run.yml takes that decision as an input rather than a
+# constant: `alert_ingress_required`, rendered into the step's
+# `continue-on-error`. It defaults false, which is the RC pipeline's case — the
+# tests that read an alert are its OPTIONAL suite, so a stockout-only problem
+# must not sink its blocking Chat gate. The nightly pipeline passes true,
+# because test_stockout_investigation.py runs in its BLOCKING suite; tolerating
+# a failure there would turn a missing adapter into every scenario burning its
+# full watch and reporting that the agent never investigated.
 # Expressing that in the workflow keeps it where a reader can see it.
 #
 # What `continue-on-error` does and does not buy, precisely: it covers failures

@@ -131,9 +131,10 @@ has run by hand.
 ### What has to exist before it can run
 
 None of this is in the repository, and the pipeline fails at `google-github-actions/auth` without
-it — a job bound to an environment that does not exist resolves every `vars.*` to empty. All three
-now exist; the list stays because it is what a second environment would have to reproduce, and
-because a variable deleted from the web form fails the same way as one never created.
+it — a job bound to an environment that does not exist resolves every `vars.*` to empty. The
+project and the environment now exist and the variables are complete; the secrets are not, and
+item 3 says which. The list stays whole because it is what a second environment would have to
+reproduce, and because a value deleted from the web form fails the same way as one never created.
 
 1. **A GCP project of its own.** `kube-agents-nightly`, not `kube-agents-rc`: sharing the project
    would put the two pipelines back on one cluster, which is the collision this exists to remove.
@@ -157,8 +158,12 @@ because a variable deleted from the web form fails the same way as one never cre
    `env:` key is defined even when its expression is empty, so an unset variable reaches the suite
    as an empty string rather than letting a configured default apply.
 
-   The secrets are separate from the variables and the environment needs `GH_APP_ID` and
-   `GEMINI_API_KEY` of its own. The four `E2E_CHAT_*` secrets exist at repository scope and
+   The secrets are separate from the variables, and this is where `nightly` is currently
+   incomplete: it has `GEMINI_API_KEY` but **not `GH_APP_ID`**, which `rc` does have. That one is
+   not optional and its absence is not a skipped feature — `provision_environment.sh` treats
+   `GITHUB_ORG`/`GITHUB_REPO`/`GITHUB_APP_ID` as all-or-nothing and hard-exits before teardown when
+   two of three are set, which is exactly the state `nightly` is in. Set it before the first
+   dispatch. The four `E2E_CHAT_*` secrets need nothing: they exist at repository scope and
    cascade, so an environment that does not override them still resolves them.
 
 ### Integrations the nightly matrix needs and the RC does not

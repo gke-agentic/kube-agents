@@ -102,8 +102,8 @@ case "${TEARDOWN_STATUS}" in
     # against stale state; continuing keeps a teardown problem from blocking
     # every release. TEARDOWN_STRICT picks, and the pipeline sets it from a
     # variable on the bound GitHub environment so the choice is a setting rather
-    # than a commit. It keeps its RC_ prefix because the value lives in GitHub
-    # settings; see teardown_common.sh.
+    # than a commit. It is read under both TEARDOWN_STRICT and the legacy
+    # RC_TEARDOWN_STRICT; see teardown_common.sh.
     if teardown_is_strict; then
       echo "$(teardown_strict_source) is set: refusing to provision on top of a failed teardown." >&2
       rm -f "${TEARDOWN_LOG}"

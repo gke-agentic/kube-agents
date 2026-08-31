@@ -200,10 +200,7 @@ jobs:
           # Set it on each environment this workflow is called with, alongside
           # GCP_PROJECT_ID and the rest — the bound environment is where every
           # other value this job reads comes from, and the repository level
-          # holds none of them. It keeps its RC_ prefix because the value lives
-          # in GitHub settings rather than in this repository; renaming the
-          # variable here without renaming it there turns strict teardown off in
-          # silence (scripts/release/teardown_common.sh).
+          # holds none of them.
           # `vars` resolves environment over repository over organization, so a
           # repository-level one works too and is the easier of the two to set
           # by accident and then not find again.
