@@ -3,16 +3,34 @@ name: "E2E: Manual Runner"
 # Runs an E2E suite against a cluster that ALREADY EXISTS. It provisions
 # nothing, and with no cluster standing it fails at get-gke-credentials.
 #
-# Both environments are ephemeral — a pipeline that passes destroys its own
-# cluster in its last step — so most of the time there is nothing here to run
-# against. What leaves one standing is a failed run: every pipeline's teardown
-# job is gated on the implicit success() of the ones before it, so a red run
-# keeps its cluster for diagnosis, which is the case this workflow exists for.
+# WHEN YOU CAN USE THIS
 #
-# To build one on purpose, dispatch the same three workflows the pipelines
-# chain: deploy-environment.yml (github_environment plus a tag or commit SHA),
-# then this, then teardown-environment.yml. Nothing reclaims a cluster you
+# Only against `rc` or `nightly`, and only while one of them has a cluster up.
+# Both are ephemeral: a pipeline that passes destroys its own cluster in its last
+# step, so what leaves one standing is a FAILED run — every pipeline's teardown
+# job hangs off the implicit success() of the ones before it, and a red run keeps
+# its cluster for diagnosis. That is the case this workflow exists for.
+#
+# So the window is narrow, and it closes on its own. On the RC the next scheduled
+# run is three hours away and tears the environment down before it reinstalls, so
+# a surviving cluster lasts until then at most. The nightly pipeline has no cron
+# yet, so nothing reclaims a nightly cluster at all today — it stands and bills
+# until someone dispatches the pipeline again or runs uninstall.sh by hand. Once
+# the nightly cron lands the window there becomes a day.
+#
+# What the window buys: a fix has just merged and you want to know whether it
+# clears the failure, without waiting out a fresh provision. Point this at the
+# cluster the failed run left behind and re-run the suite in minutes rather than
+# rebuilding a GKE cluster to learn the same thing.
+#
+# To build a cluster on purpose instead, dispatch the same three workflows the
+# pipelines chain: deploy-environment.yml (github_environment plus a tag or commit
+# SHA), then this, then teardown-environment.yml. Nothing reclaims a cluster you
 # create that way, so run the third.
+#
+# Extending this beyond the two ephemeral environments — to autopush, staging, or
+# any long-lived environment, so a suite can be run wherever a cluster already
+# stands — is tracked in https://github.com/gke-labs/kube-agents/issues/1072.
 
 on:
   #checkov:skip=CKV_GHA_7:Manual E2E test runner requires environment and scenario filter parameters

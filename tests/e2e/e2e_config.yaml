@@ -7,10 +7,13 @@
 
 version: "1.0"
 
+# Only `region`, `namespace` and `default_suite` are read — execute_e2e_tests.py's
+# run_suite_tests and conftest's settings fixture are the two readers. A key added
+# here that nothing looks up is inert and reads as configuration, which is how a
+# `timeout_seconds: 600` sat here being tuned by nobody and believed by readers.
 defaults:
   region: "us-central1"
   namespace: "kubeagents-system"
-  timeout_seconds: 600
   # The fallback when nothing sets E2E_SUITE. No CI path reaches it — e2e-run.yml
   # and e2e-manual-runner.yml both export the suite they picked — so this is the
   # local-developer default and conftest's fixture fallback. `gchat` because it is
