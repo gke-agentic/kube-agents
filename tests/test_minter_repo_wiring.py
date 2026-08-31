@@ -1,7 +1,7 @@
 """The repository the RC's GitHub token minter is scoped to.
 
 Two workflows have to name the same repository, and it must not be the release
-repository. `rc-deploy-environment.yml` hands GITOPS_ORG/GITOPS_REPO to
+repository. `deploy-environment.yml` hands GITOPS_ORG/GITOPS_REPO to
 install.sh as GITHUB_ORG/GITHUB_REPO, which is what installer_common.sh scopes
 the minter's tokens to; `e2e-run.yml` hands the same pair to the E2E suites,
 and `e2e-manual-runner.yml` to the ones it dispatches, because a token minted
@@ -27,7 +27,7 @@ _WORKFLOWS = _REPO_ROOT / ".github" / "workflows"
 # than the `run:` because e2e-run.yml runs `make test-e2e` twice -- the blocking
 # gate and the optional suite -- and both are handed a repository.
 _CONSUMERS = {
-    "rc-deploy-environment.yml": "Provision Environment in GCP",
+    "deploy-environment.yml": "Provision Environment in GCP",
     "e2e-run.yml": "Execute Blocking E2E Gate",
     "e2e-run.yml#optional": "Execute Optional E2E Suite",
     "e2e-manual-runner.yml": "Execute E2E Tests",
@@ -86,7 +86,7 @@ class MinterRepositoryWiringTest(unittest.TestCase):
 
     def test_the_app_id_is_a_secret_not_a_var(self) -> None:
         env = _step_env(
-            "rc-deploy-environment.yml", _CONSUMERS["rc-deploy-environment.yml"]
+            "deploy-environment.yml", _CONSUMERS["deploy-environment.yml"]
         )
         self.assertIn("secrets.GH_APP_ID", env.get("GITHUB_APP_ID", ""))
 

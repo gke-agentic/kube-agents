@@ -1,4 +1,4 @@
-name: Run E2E Suites
+name: "Shared: Run E2E Suites"
 
 # The E2E step of an environment pipeline, as a reusable workflow so the RC
 # pipeline and the nightly pipeline run the same job rather than two copies of
@@ -23,7 +23,7 @@ permissions:
 on:
   workflow_call:
     inputs:
-      # See rc-deploy-environment.yml for why this is named github_environment
+      # See deploy-environment.yml for why this is named github_environment
       # and carries no default.
       github_environment:
         description: "GitHub environment supplying the GCP project, region and cluster"
@@ -34,7 +34,7 @@ on:
         required: true
         type: string
       blocking_suite:
-        description: "E2E suite that gates the run (e2e_config.yaml environment name)"
+        description: "E2E suite that gates the run (e2e_config.yaml suite name)"
         required: true
         type: string
       optional_suite:
@@ -57,6 +57,17 @@ on:
         required: false
         default: 60
         type: number
+      # Whether a failed alert-ingress install fails the job. Default false
+      # reproduces the RC pipeline's previous behaviour exactly: the tests that
+      # read an alert are its optional suite, so a stockout-only problem must
+      # not sink the blocking gate. A caller whose BLOCKING suite reads an alert
+      # passes true, because there the ingress is a dependency of the gate and
+      # tolerating its failure only moves the red to a later, less legible step.
+      alert_ingress_required:
+        description: "Fail the job when the Pub/Sub alert ingress install fails"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   run-e2e:
@@ -121,15 +132,20 @@ jobs:
           location: ${{ vars.GCP_REGION }}
           project_id: ${{ vars.GCP_PROJECT_ID }}
 
-      # continue-on-error, deliberately: alert ingress is a dependency of the
-      # optional cluster/audit suite below and of nothing else, so a
-      # stockout-only problem must not sink the blocking gate. The script itself
-      # exits non-zero on failure; the decision to tolerate that is this
-      # workflow's, and lives here rather than inside the script. Runs before
-      # readiness so the gateway re-template the adapter triggers is already in
-      # flight when the rollout waits start.
+      # Whether a failure here is tolerated is the caller's decision, because
+      # which suite depends on the alert ingress differs per caller. The RC
+      # pipeline reads alerts only in its optional suite, so it leaves
+      # alert_ingress_required false and a stockout-only problem cannot sink the
+      # blocking gate. The nightly pipeline runs test_stockout_investigation.py
+      # with STOCKOUT_SCENARIOS=all inside its BLOCKING suite, so it passes true
+      # and a failed ingress install fails here — at the step that broke, rather
+      # than 360s later as an agent that never started an investigation.
+      #
+      # The script itself always exits non-zero on failure; only the tolerance
+      # lives here. Runs before readiness so the gateway re-template the adapter
+      # triggers is already in flight when the rollout waits start.
       - name: Install Pub/Sub Alert Ingress
-        continue-on-error: true
+        continue-on-error: ${{ !inputs.alert_ingress_required }}
         env:
           AGENT_NAMESPACE: ${{ vars.AGENT_NAMESPACE }}
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
@@ -151,13 +167,13 @@ jobs:
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           GCP_REGION: ${{ vars.GCP_REGION }}
           GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
-          E2E_ENV: ${{ inputs.blocking_suite }}
+          E2E_SUITE: ${{ inputs.blocking_suite }}
           CHAT_TOPIC_NAME: ${{ vars.CHAT_TOPIC_NAME }}
           CHAT_SPACE_ID: ${{ secrets.E2E_CHAT_SPACE_ID }}
           E2E_CHAT_CLIENT_ID: ${{ secrets.E2E_CHAT_CLIENT_ID }}
           E2E_CHAT_CLIENT_SECRET: ${{ secrets.E2E_CHAT_CLIENT_SECRET }}
           E2E_CHAT_REFRESH_TOKEN: ${{ secrets.E2E_CHAT_REFRESH_TOKEN }}
-          # The same pair rc-deploy-environment.yml gives the installer, so the
+          # The same pair deploy-environment.yml gives the installer, so the
           # repository the suite probes is the one the minter was scoped to.
           # Read from the environment rather than pinned in e2e_config.yaml
           # because a value written in both places drifts, and a token minted
@@ -175,7 +191,7 @@ jobs:
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           GCP_REGION: ${{ vars.GCP_REGION }}
           GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
-          E2E_ENV: ${{ inputs.optional_suite }}
+          E2E_SUITE: ${{ inputs.optional_suite }}
           STOCKOUT_SCENARIOS: ${{ inputs.stockout_scenarios }}
           FLEET_AUDIT_STREAMS: ${{ inputs.fleet_audit_streams }}
           CHAT_TOPIC_NAME: ${{ vars.CHAT_TOPIC_NAME }}

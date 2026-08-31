@@ -48,7 +48,7 @@ case "${TEARDOWN_STATUS}" in
     echo "==> Nothing to tear down: no Terraform state for '${GKE_CLUSTER_NAME}' (uninstall.sh exit 3)."
     ;;
   *)
-    # Always fatal, with no RC_TEARDOWN_STRICT escape. That variable governs
+    # Always fatal, with no TEARDOWN_STRICT escape. That variable governs
     # whether provision_environment.sh will install ON TOP of an environment
     # it failed to remove, which is a question about correctness of the next
     # install. Here the environment is simply still running and still being

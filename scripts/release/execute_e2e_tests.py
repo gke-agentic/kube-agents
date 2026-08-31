@@ -3,9 +3,16 @@
 
 Reads the test matrix from tests/e2e/e2e_config.yaml (or $E2E_CONFIG),
 resolves target GCP project, GKE cluster, region, and namespace for each
-environment (e.g. gchat-e2e, agent-plugin-e2e), and executes the specified
-pytest suites. The cluster is expected to exist already; nothing here
-provisions infrastructure.
+suite (e.g. gchat, agent-plugin), and executes the specified pytest suites.
+The cluster is expected to exist already; nothing here provisions
+infrastructure.
+
+A suite is a named list of test files, and it is not an environment in either
+of the other two senses the word carries here — a GitHub Actions environment,
+or a GCP project plus cluster. It used to be spelled `E2E_ENV` against an
+`environments:` key, one letter from the `test_environment` input that named
+the same thing and one word from the `github_environment` input that names a
+different one. The old spellings are still read; see the module constants.
 """
 
 import argparse
@@ -34,6 +41,19 @@ if "GOOGLE_APPLICATION_CREDENTIALS" in os.environ and os.path.isfile(os.environ[
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 _DEFAULT_CONFIG_PATH = _REPO_ROOT / "tests" / "e2e" / "e2e_config.yaml"
 
+# The suite selector, and the pre-rename spellings kept working for one release so
+# a checkout, a .env or a dispatch mid-flight does not break. Everything here is
+# deleted together: the four constants, the `--env` argument, the E2E_ENV export in
+# run_suite_tests, and the two deprecation warnings in main.
+_SUITE_ENV_VAR = "E2E_SUITE"
+_LEGACY_SUITE_ENV_VAR = "E2E_ENV"
+_LEGACY_SUITES_KEY = "environments"
+_LEGACY_DEFAULT_KEY = "default_environment"
+_ALIAS_REMOVAL_HINT = "the next release"
+
+# The one suite that needs no cluster: it drives the Google Chat API directly.
+_CHAT_ONLY_SUITE = "gchat"
+
 try:
     from dotenv import load_dotenv
     _env_file = _REPO_ROOT / ".env"
@@ -54,8 +74,10 @@ def load_yaml_config(config_path: pathlib.Path) -> Dict[str, Any]:
         import yaml
         return yaml.safe_load(content) or {}
     except ImportError:
-        # Robust fallback parser for simple environments list and nested env_vars
-        cfg: Dict[str, Any] = {"defaults": {}, "environments": []}
+        # Robust fallback parser for a simple suites list and nested env_vars.
+        # Keys off `- name:` blocks rather than the top-level key, so it reads
+        # `suites:` and the legacy `environments:` spelling identically.
+        cfg: Dict[str, Any] = {"defaults": {}, "suites": []}
         current_env: Optional[Dict[str, Any]] = None
         in_env_vars = False
         in_tests = False
@@ -67,7 +89,7 @@ def load_yaml_config(config_path: pathlib.Path) -> Dict[str, Any]:
                 in_env_vars = False
                 in_tests = False
                 if current_env:
-                    cfg["environments"].append(current_env)
+                    cfg["suites"].append(current_env)
                 name = stripped.split(":", 1)[1].strip().strip('"\'')
                 current_env = {
                     "name": name,
@@ -101,7 +123,7 @@ def load_yaml_config(config_path: pathlib.Path) -> Dict[str, Any]:
                 if k.strip() != "tests":
                     current_env[k.strip().lstrip("- ")] = v.strip().strip('"\'')
         if current_env:
-            cfg["environments"].append(current_env)
+            cfg["suites"].append(current_env)
         return cfg
 
 
@@ -156,32 +178,33 @@ def find_pytest_executable() -> str:
     return "pytest"
 
 
-def run_environment_tests(
+def run_suite_tests(
     env: Dict[str, Any],
     defaults: Dict[str, Any],
     extra_args: List[str],
 ) -> int:
-    """Executes pytest for a single environment definition."""
+    """Executes pytest for a single suite definition."""
     project_id = os.environ.get("GCP_PROJECT_ID") or os.environ.get("PROJECT_ID") or env.get("project_id", "")
     cluster_name = os.environ.get("GKE_CLUSTER_NAME") or os.environ.get("CLUSTER_NAME") or env.get("cluster_name", "")
     region = os.environ.get("GCP_REGION") or os.environ.get("REGION") or env.get("region") or defaults.get("region", "us-central1")
     namespace = os.environ.get("AGENT_NAMESPACE") or env.get("namespace") or defaults.get("namespace", "kubeagents-system")
     tests = env.get("tests") or ["tests/e2e/"]
 
-    env_name = env.get("name", "default")
+    suite_name = env.get("name", "default")
     print("\n" + "=" * 60)
-    print(f"Executing E2E Suite: {env_name}")
+    print(f"Executing E2E Suite: {suite_name}")
     print(f"Project:    {project_id}")
     print(f"Cluster:    {cluster_name} ({region})")
     print(f"Namespace:  {namespace}")
     print(f"Tests:      {', '.join(tests)}")
     print("=" * 60 + "\n")
 
-    # Cluster-backed environments must have valid project_id and cluster_name
-    if env_name != "gchat-e2e":
+    # Cluster-backed suites must have valid project_id and cluster_name. `gchat`
+    # is the exception: it talks to the Chat API rather than to a cluster.
+    if suite_name != _CHAT_ONLY_SUITE:
         if not project_id or not cluster_name:
             print(
-                f"Error: E2E environment '{env_name}' requires GCP_PROJECT_ID and GKE_CLUSTER_NAME environment variables.",
+                f"Error: E2E suite '{suite_name}' requires GCP_PROJECT_ID and GKE_CLUSTER_NAME environment variables.",
                 file=sys.stderr,
             )
             return 1
@@ -207,20 +230,24 @@ def run_environment_tests(
         "AGENT_NAMESPACE": namespace,
         "KUBE_CONTEXT": kube_ctx,
         "REGISTRY": reg,
-        # Name the environment we picked, so conftest's fixtures fall through to this
-        # environment's env_vars rather than e2e_config.yaml's default_environment.
-        # No fixture changes value today -- every key a config lookup would reach is
-        # either exported above or already in os.environ from **custom_env_vars -- with
-        # one exception. A caller can select every environment at once -- `--env all`,
-        # which e2e-manual-runner.yml dispatches -- and this loop expands that into one
-        # child per environment. An ambient E2E_ENV=all used to ride through to every one
+        # Name the suite we picked, so conftest's fixtures fall through to this
+        # suite's env_vars rather than e2e_config.yaml's default_suite. No fixture
+        # changes value today -- every key a config lookup would reach is either
+        # exported above or already in os.environ from **custom_env_vars -- with one
+        # exception. A caller can select every suite at once -- `--suite all`, which
+        # e2e-manual-runner.yml dispatches -- and this loop expands that into one
+        # child per suite. An ambient E2E_SUITE=all used to ride through to every one
         # of them, and conftest matches names exactly, so the lookup found nothing. No
-        # workflow exports E2E_ENV=all today (e2e-run.yml is the only writer, and it
-        # writes a single suite name), so the ordering here is the only thing keeping the
+        # workflow exports `all` today (e2e-run.yml is the only writer, and it writes a
+        # single suite name), so the ordering here is the only thing keeping the
         # regression from coming back the next time one does. Naming the child's own
-        # environment also stops being cosmetic the moment a block declares its own
+        # suite also stops being cosmetic the moment a block declares its own
         # project_id or cluster_name.
-        "E2E_ENV": env_name,
+        "E2E_SUITE": suite_name,
+        # The deprecated alias, exported alongside the real name for one release so a
+        # test or fixture still reading E2E_ENV keeps working while callers migrate.
+        # Remove both this line and the read in main() together; see _SUITE_ENV_VAR.
+        "E2E_ENV": suite_name,
     }
     if "CLOUDSDK_PYTHON" in env_vars:
         del env_vars["CLOUDSDK_PYTHON"]
@@ -243,19 +270,28 @@ def main() -> None:
         help="Path to YAML test matrix configuration file",
     )
     parser.add_argument(
+        "--suite",
+        type=str,
+        help="Filter execution to a specific suite name (e.g. gchat, agent-plugin)",
+    )
+    parser.add_argument(
         "--env",
         type=str,
-        help="Filter execution to a specific environment name (e.g. gchat-e2e, agent-plugin-e2e)",
+        help=f"Deprecated alias for --suite (removed after {_ALIAS_REMOVAL_HINT})",
     )
 
     args, extra_args = parser.parse_known_args()
 
     config = load_yaml_config(args.config)
     defaults = config.get("defaults", {})
-    environments: List[Dict[str, Any]] = config.get("environments", [])
+    # `suites:` is the key; `environments:` is the pre-rename spelling, read for one
+    # release so a config from an older checkout still runs. Both are the same shape.
+    suites: List[Dict[str, Any]] = config.get("suites") or config.get(
+        _LEGACY_SUITES_KEY, []
+    )
 
-    if not environments:
-        print("Warning: No environments defined. Running pytest tests/e2e/ directly.")
+    if not suites:
+        print("Warning: No suites defined. Running pytest tests/e2e/ directly.")
         pytest_bin = find_pytest_executable()
         sys.exit(
             subprocess.run(
@@ -264,19 +300,39 @@ def main() -> None:
             ).returncode
         )
 
-    selected_env = args.env or os.environ.get("E2E_ENV") or defaults.get("default_environment", "investigations-e2e")
-    # Filter target environments
-    if selected_env and selected_env.lower() != "all":
-        target_envs = [e for e in environments if e.get("name") == selected_env]
-        if not target_envs:
-            print(f"Error: Environment '{selected_env}' not found in {args.config}", file=sys.stderr)
+    selected_suite = (
+        args.suite
+        or args.env
+        or os.environ.get(_SUITE_ENV_VAR)
+        or os.environ.get(_LEGACY_SUITE_ENV_VAR)
+        or defaults.get("default_suite")
+        or defaults.get(_LEGACY_DEFAULT_KEY, "investigations")
+    )
+    # Say so rather than accepting it silently: an alias nobody is told is deprecated
+    # is an alias that never gets removed.
+    if args.env and not args.suite:
+        print(
+            f"Warning: --env is a deprecated alias for --suite and will be removed after {_ALIAS_REMOVAL_HINT}.",
+            file=sys.stderr,
+        )
+    elif not args.suite and not os.environ.get(_SUITE_ENV_VAR) and os.environ.get(_LEGACY_SUITE_ENV_VAR):
+        print(
+            f"Warning: {_LEGACY_SUITE_ENV_VAR} is a deprecated alias for {_SUITE_ENV_VAR} "
+            f"and will be removed after {_ALIAS_REMOVAL_HINT}.",
+            file=sys.stderr,
+        )
+
+    if selected_suite and selected_suite.lower() != "all":
+        target_suites = [s for s in suites if s.get("name") == selected_suite]
+        if not target_suites:
+            print(f"Error: Suite '{selected_suite}' not found in {args.config}", file=sys.stderr)
             sys.exit(1)
     else:
-        target_envs = environments
+        target_suites = suites
 
     overall_exit_code = 0
-    for env in target_envs:
-        exit_code = run_environment_tests(
+    for env in target_suites:
+        exit_code = run_suite_tests(
             env,
             defaults,
             extra_args,

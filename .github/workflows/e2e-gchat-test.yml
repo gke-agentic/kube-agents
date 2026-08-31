@@ -1,4 +1,4 @@
-name: Google Chat Agent E2E Test
+name: "E2E: Google Chat Agent"
 
 on:
   #checkov:skip=CKV_GHA_7:Manual E2E test dispatch requires target GCP project and chat space parameters

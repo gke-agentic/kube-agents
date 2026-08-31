@@ -1,4 +1,4 @@
-name: Manual E2E Runner
+name: "E2E: Manual Runner"
 
 on:
   #checkov:skip=CKV_GHA_7:Manual E2E test runner requires environment and scenario filter parameters
@@ -23,18 +23,21 @@ on:
         options:
           - "rc"
           - "nightly"
-      test_environment:
-        description: "Target test environment (rc-e2e, nightly-e2e, investigations-e2e, audit-e2e, agent-plugin-e2e, gchat-e2e, all)"
+      # `test_suite`, not `test_environment`: this names a list of test files in
+      # e2e_config.yaml, while `github_environment` above names the GitHub
+      # environment supplying the cluster. The two used to be one letter apart.
+      test_suite:
+        description: "Target test suite (rc, nightly, investigations, audit, agent-plugin, gchat, all)"
         required: false
-        default: "rc-e2e"
+        default: "rc"
         type: choice
         options:
-          - "rc-e2e"
-          - "nightly-e2e"
-          - "investigations-e2e"
-          - "audit-e2e"
-          - "agent-plugin-e2e"
-          - "gchat-e2e"
+          - "rc"
+          - "nightly"
+          - "investigations"
+          - "audit"
+          - "agent-plugin"
+          - "gchat"
           - "all"
       stockout_scenarios:
         description: "Stockout scenarios ('04' for fast smoke, 'all' for full matrix)"
@@ -70,7 +73,7 @@ permissions:
 
 jobs:
   run-e2e:
-    name: Run E2E (${{ inputs.test_environment || 'rc-e2e' }} on ${{ inputs.github_environment }})
+    name: Run E2E (${{ inputs.test_suite || 'rc' }} on ${{ inputs.github_environment }})
     runs-on: ubuntu-latest
     environment: ${{ inputs.github_environment }}
     timeout-minutes: 45
@@ -139,7 +142,7 @@ jobs:
           # github_repo fixture composes owner/repo from GITHUB_ORG.
           GITHUB_ORG: ${{ vars.GITOPS_ORG }}
           GITHUB_REPO: ${{ vars.GITOPS_REPO }}
-          TEST_ENVIRONMENT: ${{ inputs.test_environment }}
+          TEST_SUITE: ${{ inputs.test_suite }}
           STOCKOUT_SCENARIOS: ${{ inputs.stockout_scenarios }}
           FLEET_AUDIT_STREAMS: ${{ inputs.fleet_audit_streams || 'all' }}
           REBUILD_OPERATOR: ${{ inputs.rebuild_operator }}
@@ -150,9 +153,9 @@ jobs:
           E2E_CHAT_REFRESH_TOKEN: ${{ secrets.E2E_CHAT_REFRESH_TOKEN }}
           CHAT_SPACE_ID: ${{ secrets.E2E_CHAT_SPACE_ID }}
         run: |
-          TARGET_ENV="$TEST_ENVIRONMENT"
-          if [ "$TARGET_ENV" = "all" ]; then
-            python3 scripts/release/execute_e2e_tests.py --env all
+          TARGET_SUITE="$TEST_SUITE"
+          if [ "$TARGET_SUITE" = "all" ]; then
+            python3 scripts/release/execute_e2e_tests.py --suite all
           else
-            python3 scripts/release/execute_e2e_tests.py --env "$TARGET_ENV"
+            python3 scripts/release/execute_e2e_tests.py --suite "$TARGET_SUITE"
           fi

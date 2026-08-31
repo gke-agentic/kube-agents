@@ -1,0 +1,121 @@
+name: "RC: Scheduler"
+
+# The cron that used to sit on rc-release-pipeline.yml, moved one level up so
+# that a three-hourly tick with nothing to do produces no pipeline run at all.
+#
+# WHY THIS FILE EXISTS
+#
+# A skipped run and a passing run were indistinguishable, and the skip won. When
+# the pipeline found no new candidate, step 1 set `skip_rc=true`, every later job
+# was skipped by its `needs.step-1-create-tag.outputs.skip_rc != 'true'` guard,
+# and skipped jobs do not fail a run — so the run concluded **success**. Three
+# quiet hours after a genuine failure therefore painted the pipeline green while
+# the last run that actually did something was still red. Nothing alerted, and
+# the signal read backwards. Skips are the common case here, not an edge: 23 of
+# 68 candidates.
+#
+# Gating at the trigger fixes it at the run level rather than papering over it.
+# The pipeline now has no skip path, so every run of it is a real run and its
+# conclusion means what it says — which is what a status badge would need to be
+# worth adding, and badges are deliberately not part of this change.
+#
+# This job's own conclusion says nothing about the health of the release
+# candidate: it is green when it dispatched and green when it decided not to.
+# What it reports is in the job summary, and the thing to watch is the pipeline.
+
+permissions:
+  contents: read
+
+on:
+  schedule:
+    - cron: "17 */3 * * *"
+  # Dispatchable so the decision can be exercised by hand without waiting for a
+  # tick. It takes no inputs: the whole job is "work out whether there is
+  # anything to do", and a manual run that overrode that would be testing
+  # something else. To force a specific candidate through, dispatch
+  # rc-release-pipeline.yml directly — it still accepts commit_sha and rc_tag.
+  workflow_dispatch:
+
+concurrency:
+  group: rc-scheduler
+  cancel-in-progress: false
+
+jobs:
+  dispatch-if-there-is-work:
+    name: Dispatch the RC pipeline if a new candidate exists
+    # A fork inherits the cron but none of the credentials. The guard is on the
+    # job rather than trusted to cascade, matching every other scheduled
+    # workflow here.
+    if: github.repository == 'gke-labs/kube-agents'
+    runs-on: ubuntu-latest
+    # `rc` for GH_ORG, GH_REPO and REGISTRY_PREFIX, which is what decides where
+    # find_latest_built_commit looks for prebuilt images. Reading them from a
+    # different scope than the pipeline does would let this job resolve a
+    # candidate against one registry and the pipeline install from another.
+    environment: rc
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The resolver reads the tag graph to decide whether this commit has
+          # already been attempted or validated, so a shallow clone would answer
+          # "no such tag" and re-run a candidate every three hours.
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The same script, with the same inputs, that rc-create-tag.yml runs. That
+      # is the point: the skip decision has one implementation, so the gate that
+      # starts the pipeline and the gate inside it cannot drift into disagreeing
+      # about what a new candidate is.
+      - name: Resolve the newest candidate and decide whether to run
+        id: resolve
+        env:
+          IS_SCHEDULED: "true"
+          GH_ORG: ${{ vars.GH_ORG }}
+          GH_REPO: ${{ vars.GH_REPO }}
+          REGISTRY_PREFIX: ${{ vars.REGISTRY_PREFIX }}
+        run: ./scripts/release/resolve_rc_tag.sh
+
+      - name: Record that there is nothing to do
+        if: steps.resolve.outputs.skip_rc == 'true'
+        env:
+          COMMIT_SHA: ${{ steps.resolve.outputs.commit_sha }}
+        run: |
+          {
+            echo "### No new release candidate"
+            echo ""
+            echo "The newest built commit (\`${COMMIT_SHA}\`) has already been attempted or"
+            echo "validated, so no pipeline run was started. This is the normal quiet-tick"
+            echo "outcome and says nothing about the last pipeline run's result."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      # RELEASE_BOT_TOKEN, not GITHUB_TOKEN, and for the reason the tag push
+      # already documents: GitHub suppresses workflow runs triggered by the
+      # default token, so a dispatch made with it would return 204 and start
+      # nothing. The failure mode is a green scheduler and a pipeline that never
+      # ran, which is precisely the invisible-skip problem this file exists to
+      # remove.
+      - name: Dispatch the release pipeline
+        if: steps.resolve.outputs.skip_rc != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
+          COMMIT_SHA: ${{ steps.resolve.outputs.commit_sha }}
+          RC_TAG: ${{ steps.resolve.outputs.rc_tag }}
+        run: |
+          set -euo pipefail
+          gh workflow run rc-release-pipeline.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref "${GITHUB_REF_NAME}" \
+            -f "commit_sha=${COMMIT_SHA}" \
+            -f "rc_tag=${RC_TAG}"
+          {
+            echo "### Release candidate dispatched"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Commit | \`${COMMIT_SHA}\` |"
+            echo "| Candidate tag | \`${RC_TAG}\` |"
+          } >> "${GITHUB_STEP_SUMMARY}"

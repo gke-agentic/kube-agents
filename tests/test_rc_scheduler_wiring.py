@@ -1,0 +1,152 @@
+"""The RC cron lives on the scheduler, and the pipeline has no skip-green path.
+
+A skipped run and a passing run used to be the same green. Step 1 set
+`skip_rc=true`, every later job was skipped by its guard, skipped jobs do not
+fail a run, and the run concluded `success` — so a quiet tick three hours after
+a genuine failure reported the pipeline healthy. Skips were 23 of 68 candidates,
+so this was the common case rather than an edge.
+
+The fix is structural: the cron sits on `rc-scheduler.yml`, which resolves the
+candidate and dispatches the pipeline only when there is one. Every property
+that makes that work is easy to undo by accident and invisible when undone —
+putting the cron back, dispatching with the default token, or reimplementing the
+skip decision instead of calling the shared script — so each is pinned here.
+"""
+
+import pathlib
+import unittest
+
+import yaml
+
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+_WORKFLOWS = _REPO_ROOT / ".github" / "workflows"
+_SCHEDULER = "rc-scheduler.yml"
+_PIPELINE = "rc-release-pipeline.yml"
+_RC_CRON = "17 */3 * * *"
+
+
+def _workflow(name: str) -> dict:
+    doc = yaml.safe_load((_WORKFLOWS / name).read_text())
+    # An unquoted `on:` parses as the boolean True under the YAML 1.1 rules
+    # PyYAML implements.
+    if True in doc:
+        doc["on"] = doc.pop(True)
+    return doc
+
+
+def _steps(doc: dict) -> list[dict]:
+    steps: list[dict] = []
+    for job in doc.get("jobs", {}).values():
+        steps.extend(job.get("steps", []) or [])
+    return steps
+
+
+class SchedulerOwnsTheCron(unittest.TestCase):
+    def test_the_scheduler_carries_the_rc_cron(self) -> None:
+        schedule = _workflow(_SCHEDULER)["on"]["schedule"]
+        self.assertEqual([entry["cron"] for entry in schedule], [_RC_CRON])
+
+    def test_the_pipeline_has_no_schedule(self) -> None:
+        """A cron here restores the skip-paints-over-a-failure problem."""
+        self.assertNotIn(
+            "schedule",
+            _workflow(_PIPELINE)["on"],
+            "rc-release-pipeline.yml must be dispatch-only; rc-scheduler.yml owns "
+            "the cron so that a tick with nothing to do produces no run at all",
+        )
+
+    def test_exactly_one_workflow_holds_the_rc_cron(self) -> None:
+        """Two schedules would double-dispatch, and the second would be invisible."""
+        holders = []
+        for path in sorted(_WORKFLOWS.glob("*.yml")):
+            doc = _workflow(path.name)
+            for entry in (doc.get("on") or {}).get("schedule") or []:
+                if entry.get("cron") == _RC_CRON:
+                    holders.append(path.name)
+        self.assertEqual(holders, [_SCHEDULER])
+
+
+class SchedulerDispatchWiring(unittest.TestCase):
+    def setUp(self) -> None:
+        self.doc = _workflow(_SCHEDULER)
+        self.job = next(iter(self.doc["jobs"].values()))
+
+    def test_it_is_guarded_against_forks(self) -> None:
+        """A fork inherits the cron and none of the credentials."""
+        self.assertIn("gke-labs/kube-agents", self.job["if"])
+
+    def test_it_binds_the_rc_environment(self) -> None:
+        """`vars.*` resolve to empty in an unbound job, and silently.
+
+        REGISTRY_PREFIX decides where the resolver looks for prebuilt images, so
+        an unbound job would find no candidate and dispatch nothing, every tick,
+        with a green conclusion.
+        """
+        self.assertEqual(self.job["environment"], "rc")
+
+    def test_it_reuses_the_pipelines_own_resolver(self) -> None:
+        """One implementation of "is this a new candidate", not two.
+
+        The gate that starts the pipeline and the gate inside it have to agree;
+        a second copy here is how they drift.
+        """
+        runs = [step.get("run", "") for step in _steps(self.doc)]
+        self.assertTrue(
+            any("resolve_rc_tag.sh" in run for run in runs),
+            "the scheduler must call resolve_rc_tag.sh rather than reimplement the "
+            "skip decision",
+        )
+
+    def test_the_resolver_runs_in_scheduled_mode(self) -> None:
+        """IS_SCHEDULED=true is the branch that self-resolves and can skip."""
+        for step in _steps(self.doc):
+            if "resolve_rc_tag.sh" in (step.get("run") or ""):
+                self.assertEqual(str(step["env"]["IS_SCHEDULED"]).lower(), "true")
+                return
+        self.fail("no resolve_rc_tag.sh step found")
+
+    def test_the_dispatch_uses_the_bot_token(self) -> None:
+        """GITHUB_TOKEN cannot start a workflow: the dispatch would 204 silently.
+
+        The failure mode is a green scheduler and a pipeline that never ran,
+        which is the same invisible skip this whole file exists to remove.
+        """
+        for step in _steps(self.doc):
+            if "gh workflow run" in (step.get("run") or ""):
+                self.assertIn("RELEASE_BOT_TOKEN", step["env"]["GH_TOKEN"])
+                return
+        self.fail("no dispatch step found")
+
+    def test_the_dispatch_is_gated_on_there_being_work(self) -> None:
+        for step in _steps(self.doc):
+            if "gh workflow run" in (step.get("run") or ""):
+                self.assertIn("skip_rc", step["if"])
+                return
+        self.fail("no dispatch step found")
+
+    def test_the_dispatch_names_the_pipeline_and_passes_the_commit(self) -> None:
+        """Passing the resolved SHA is what stops `main` moving underneath the run."""
+        for step in _steps(self.doc):
+            run = step.get("run") or ""
+            if "gh workflow run" in run:
+                self.assertIn(_PIPELINE, run)
+                self.assertIn("commit_sha=", run)
+                return
+        self.fail("no dispatch step found")
+
+    def test_the_pipeline_accepts_what_the_scheduler_sends(self) -> None:
+        """A renamed input would fail every dispatch at the API, three-hourly."""
+        sent = set()
+        for step in _steps(self.doc):
+            run = step.get("run") or ""
+            if "gh workflow run" in run:
+                for token in run.split():
+                    if token.startswith('"') and "=" in token:
+                        sent.add(token.strip('"\\').split("=", 1)[0])
+        accepted = set(_workflow(_PIPELINE)["on"]["workflow_dispatch"]["inputs"])
+        self.assertTrue(sent, "the dispatch step passes no inputs")
+        self.assertLessEqual(sent, accepted, f"{sent - accepted} not accepted")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -337,6 +337,36 @@ exit 0
         self.assertIn("RC_TEARDOWN_STRICT not understood", proc.stderr)
         self.assertEqual(calls[-1], MOCK_INSTALL_SUCCESS_SIGNAL)
 
+    def test_the_unprefixed_strict_name_works_on_its_own(self):
+        """TEARDOWN_STRICT is the name; the RC_-prefixed one is the legacy spelling.
+
+        The rename is only safe because both are read. Dropping the fallback
+        before the GitHub environment settings are updated turns strict teardown
+        off with no error, so each half is pinned separately.
+        """
+        proc, calls, _ = self._run(
+            uninstall_exit=1, extra_env={"TEARDOWN_STRICT": "true"}
+        )
+        self.assertEqual(proc.returncode, 1, proc.stdout)
+        self.assertNotIn(MOCK_INSTALL_SUCCESS_SIGNAL, calls)
+
+    def test_the_legacy_strict_name_still_works_on_its_own(self):
+        """An environment nobody has migrated yet keeps strict teardown."""
+        proc, calls, _ = self._run(
+            uninstall_exit=1, extra_env={"RC_TEARDOWN_STRICT": "true"}
+        )
+        self.assertEqual(proc.returncode, 1, proc.stdout)
+        self.assertNotIn(MOCK_INSTALL_SUCCESS_SIGNAL, calls)
+
+    def test_the_new_strict_name_wins_over_a_stale_legacy_one(self):
+        """A migrated environment must not be overridden by a copy nobody deleted."""
+        proc, calls, _ = self._run(
+            uninstall_exit=1,
+            extra_env={"TEARDOWN_STRICT": "false", "RC_TEARDOWN_STRICT": "true"},
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(calls[-1], MOCK_INSTALL_SUCCESS_SIGNAL)
+
     def test_teardown_output_cannot_break_out_of_the_summary_fence(self):
         proc, _, summary = self._run(
             uninstall_exit=1,

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tears an ephemeral environment down and provisions it again at a candidate commit.
 #
-# Called by rc-deploy-environment.yml for both the RC pipeline and the nightly
+# Called by deploy-environment.yml for both the RC pipeline and the nightly
 # pipeline. Which environment it builds comes entirely from GCP_PROJECT_ID /
 # GCP_REGION / GKE_CLUSTER_NAME and the rest of the install inputs, which the
 # calling workflow reads from its GitHub environment — nothing here is
@@ -32,13 +32,13 @@ teardown_require_inputs
 # This is a deliberate tightening, not the restoration of an existing failure.
 # On the RC nothing downstream notices: the test that exercises minting,
 # test_github_token_minting_and_connectivity, runs under e2e-run.yml's optional
-# suite, which the RC pipeline sets to `rc-e2e` and which carries
+# suite, which the RC pipeline sets to `rc` and which carries
 # `continue-on-error: true`. So a broken minter has been costing an HTTP 502 in
 # a tolerated step and validating the candidate anyway — which is exactly how it
 # went unnoticed. Refusing here trades a silently degraded RC for a loud one.
 #
 # The nightly pipeline is the opposite case and needs no tightening to be loud:
-# the same test runs in its BLOCKING suite (`nightly-e2e`), so a half-configured
+# the same test runs in its BLOCKING suite (`nightly`), so a half-configured
 # minter fails the run and promotes nothing.
 #
 # Above the teardown deliberately. `teardown_run` below is `uninstall.sh`,
@@ -100,16 +100,16 @@ case "${TEARDOWN_STATUS}" in
     # Whether this is fatal is the caller's choice, because the two answers
     # trade different things. Stopping keeps a candidate from being validated
     # against stale state; continuing keeps a teardown problem from blocking
-    # every release. RC_TEARDOWN_STRICT picks, and the pipeline sets it from a
+    # every release. TEARDOWN_STRICT picks, and the pipeline sets it from a
     # variable on the bound GitHub environment so the choice is a setting rather
     # than a commit. It keeps its RC_ prefix because the value lives in GitHub
     # settings; see teardown_common.sh.
     if teardown_is_strict; then
-      echo "RC_TEARDOWN_STRICT is set: refusing to provision on top of a failed teardown." >&2
+      echo "$(teardown_strict_source) is set: refusing to provision on top of a failed teardown." >&2
       rm -f "${TEARDOWN_LOG}"
       exit "${TEARDOWN_STATUS}"
     fi
-    echo "==> Proceeding with provisioning anyway (RC_TEARDOWN_STRICT is not set); the environment is NOT fresh." >&2
+    echo "==> Proceeding with provisioning anyway ($(teardown_strict_source) is not set); the environment is NOT fresh." >&2
     ;;
 esac
 

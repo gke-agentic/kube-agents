@@ -1,12 +1,16 @@
-name: Nightly Pipeline
+name: "Nightly: Pipeline"
 
 # Builds a nightly environment from nothing, runs the full E2E matrix on it,
 # promotes the candidate to staging if the matrix passes, and destroys the
 # environment again.
 #
-# It owns its infrastructure end to end. Every job binds to the `nightly` GitHub
-# environment and takes the `nightly-environment` concurrency lock, so nothing
-# here queues behind — or races — the three-hourly RC pipeline.
+# It owns its infrastructure end to end, and nothing in it touches the RC
+# environment. The three jobs that touch a cluster — deploy, the matrix, teardown
+# — bind `nightly` and take the `nightly-environment` lock inside the workflow
+# each one calls, so none of them queues behind or races the three-hourly RC
+# pipeline. The other two do neither in full: step 1 binds `nightly` for its
+# variables without taking that lock, and step 4 only pushes a Git tag, so it
+# binds no environment and takes no lock.
 #
 # NO `schedule:` YET, on purpose. A cron and a workflow_dispatch button only
 # exist once the file is on the default branch, so the first real run is
@@ -29,10 +33,16 @@ on:
         default: ""
         type: string
 
-# One acquisition per run, at the pipeline level, so a second nightly cannot
-# start while this one holds a cluster. The per-job `nightly-environment` locks
-# inside the called workflows serialise against anything else pointed at the
-# same environment.
+# `nightly-pipeline` is a different group from the `nightly-environment` lock the
+# called workflows take, and it is this one that is acquired once per run: it
+# stops a second nightly starting while this one holds a cluster.
+#
+# The environment lock is not acquired once. Steps 2, 3 and 5 each take it and
+# release it, so there are gaps — which is exactly the trap the design names,
+# and an outsider pointed at the `nightly` environment can still interleave in
+# one. What makes that survivable is this group rather than that one: the only
+# other thing that runs the nightly environment end to end is another nightly
+# run, and `nightly-pipeline` is what keeps it out.
 concurrency:
   group: nightly-pipeline
   cancel-in-progress: false
@@ -132,7 +142,7 @@ jobs:
     # (GH_APP_ID, GH_APP_PRIVATE_KEY, GEMINI_API_KEY) from it. A `uses:` job
     # cannot declare an environment, so an explicit mapping here resolves at
     # repository scope and forwards empties.
-    uses: ./.github/workflows/rc-deploy-environment.yml # zizmor: ignore[secrets-inherit]
+    uses: ./.github/workflows/deploy-environment.yml # zizmor: ignore[secrets-inherit]
     permissions:
       contents: read
       id-token: write
@@ -156,9 +166,15 @@ jobs:
       commit_sha: ${{ needs.step-1-resolve-candidate.outputs.commit_sha }}
       # One suite, and it blocks. Unlike the RC gate there is no tolerated
       # half: the whole point of the nightly matrix is that everything in it
-      # has to pass before staging moves. `nightly-e2e` already carries
+      # has to pass before staging moves. `nightly` already carries
       # STOCKOUT_SCENARIOS=all and FLEET_AUDIT_STREAMS=all in e2e_config.yaml.
-      blocking_suite: "nightly-e2e"
+      blocking_suite: "nightly"
+      # The blocking suite runs test_stockout_investigation.py with
+      # STOCKOUT_SCENARIOS=all, which publishes to the topic the alert-ingress
+      # step installs. Tolerating a failed install here would turn a missing
+      # adapter into every stockout scenario burning its full 360s watch and
+      # reporting that the agent never investigated. Fail at the install.
+      alert_ingress_required: true
       # Above the 60 the RC gate uses: the matrix runs five test files where the
       # RC gate runs one, on top of the same fixed provisioning cost.
       timeout_minutes: 120
@@ -239,7 +255,7 @@ jobs:
     if: |
       github.repository == 'gke-labs/kube-agents' &&
       needs.step-1-resolve-candidate.outputs.skip_pipeline != 'true'
-    uses: ./.github/workflows/rc-teardown-environment.yml
+    uses: ./.github/workflows/teardown-environment.yml
     permissions:
       contents: read
       id-token: write

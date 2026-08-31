@@ -28,14 +28,14 @@ import yaml
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _WORKFLOWS = _REPO_ROOT / ".github" / "workflows"
 _PIPELINE = _WORKFLOWS / "rc-release-pipeline.yml"
-_DEPLOY = _WORKFLOWS / "rc-deploy-environment.yml"
+_DEPLOY = _WORKFLOWS / "deploy-environment.yml"
 
 # The workflows the RC and nightly pipelines both call, each parameterised on
 # `github_environment`. Every one of them has to render that input into its job's
 # `environment:` and refuse to default it.
 _SHARED_WORKFLOWS = (
-    "rc-deploy-environment.yml",
-    "rc-teardown-environment.yml",
+    "deploy-environment.yml",
+    "teardown-environment.yml",
     "e2e-run.yml",
 )
 

@@ -14,14 +14,21 @@
 #
 # Sourced, not executed: this file defines functions and runs nothing.
 
-# RC_TEARDOWN_STRICT keeps its name deliberately. The value lives in GitHub
-# environment settings rather than in this repository, so renaming it here
-# without renaming it there would leave teardown_is_strict reading an unset
-# variable — and unset is "off", silently. The code change and the settings
-# change have to land together; until someone with access to the `rc`
-# environment's settings can make the second half, the variable stays as it is.
+# TEARDOWN_STRICT is the name; RC_TEARDOWN_STRICT is the one the GitHub
+# environment settings still carry, and both are read.
 #
-# It is typed into a GitHub web form, so it accepts what
+# Renaming a variable that lives in a web form is normally two changes of which
+# only one is in the diff, and doing the code half alone turns strict teardown
+# off silently — no error, just a different default, because an unset variable
+# parses as "off". Reading both names removes that coupling entirely: this half
+# can land now, the `rc` and `nightly` settings can be renamed whenever someone
+# with access gets to it, and neither ordering breaks anything. Drop the legacy
+# name from the list below once both environments have been updated.
+#
+# The new name wins where both are set, so a migrated environment is not
+# overridden by a stale copy nobody deleted.
+#
+# The value is typed into a GitHub web form, so it accepts what
 # installer_common.sh's is_truthy accepts rather than the literal "true" alone —
 # a maintainer who types `1` must not get a pipeline that keeps installing over
 # a surviving environment while logging that strict mode is off. Inlined
@@ -29,14 +36,26 @@
 # (the accepted set is pinned by tests/testing/common.py's TRUTHY_BOOLEAN_INPUTS).
 # A value that is neither truthy nor an obvious "off" is a typo, and a typo in a
 # safety switch is worth a line of output.
+teardown_strict_source() {
+  if [ -n "${TEARDOWN_STRICT:-}" ]; then
+    echo "TEARDOWN_STRICT"
+  elif [ -n "${RC_TEARDOWN_STRICT:-}" ]; then
+    echo "RC_TEARDOWN_STRICT"
+  else
+    echo "TEARDOWN_STRICT"
+  fi
+}
+
 teardown_is_strict() {
-  local val="${RC_TEARDOWN_STRICT:-}"
+  local name val
+  name="$(teardown_strict_source)"
+  val="${!name:-}"
   val="${val//[[:space:]]/}"
   case "$val" in
     [Tt][Rr][Uu][Ee] | [Yy][Ee][Ss] | [Yy] | 1 | [Oo][Nn]) return 0 ;;
     "" | [Ff][Aa][Ll][Ss][Ee] | [Nn][Oo] | [Nn] | 0 | [Oo][Ff][Ff]) return 1 ;;
     *)
-      echo "::warning title=RC_TEARDOWN_STRICT not understood::'${RC_TEARDOWN_STRICT}' is neither truthy nor falsy; treating it as off." >&2
+      echo "::warning title=${name} not understood::'${val}' is neither truthy nor falsy; treating it as off." >&2
       return 1
       ;;
   esac

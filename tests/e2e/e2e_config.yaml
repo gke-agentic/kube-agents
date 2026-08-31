@@ -11,13 +11,19 @@ defaults:
   region: "us-central1"
   namespace: "kubeagents-system"
   timeout_seconds: 600
-  default_environment: "investigations-e2e"
+  default_suite: "investigations"
 
-environments:
+# A suite is a named list of test files plus the env vars those files need. It is
+# not an environment: it provisions nothing and names no cluster. The key was
+# `environments:` and the selector `E2E_ENV`, one word away from the
+# `github_environment` input that names a GitHub Actions environment and one
+# letter from the `test_environment` input that named this. execute_e2e_tests.py
+# still reads the old key and the old variable for one release.
+suites:
   # ----------------------------------------------------------------------------
   # 1. Google Chat Agent E2E Environment
   # ----------------------------------------------------------------------------
-  - name: "gchat-e2e"
+  - name: "gchat"
     description: "Google Chat ingress and messaging E2E test suite"
     tests:
       - "tests/e2e/gchat_agent_test.py"
@@ -25,7 +31,7 @@ environments:
   # ----------------------------------------------------------------------------
   # 2. In-Cluster Incident & Stockout Investigation E2E Environment
   # ----------------------------------------------------------------------------
-  - name: "investigations-e2e"
+  - name: "investigations"
     description: "In-cluster Agent API health and Stockout alert investigation scenarios"
     region: "us-central1"
     namespace: "kubeagents-system"
@@ -38,7 +44,7 @@ environments:
   # ----------------------------------------------------------------------------
   # 3. Fleet SRE Audit E2E Environment
   # ----------------------------------------------------------------------------
-  - name: "audit-e2e"
+  - name: "audit"
     description: "Fleet SRE Audit, Token isolation, and Dry-run ledger suites across all streams"
     region: "us-central1"
     namespace: "kubeagents-system"
@@ -53,7 +59,7 @@ environments:
   # ----------------------------------------------------------------------------
   # 4. Operator AgentPlugin Reconciliation E2E Environment
   # ----------------------------------------------------------------------------
-  - name: "agent-plugin-e2e"
+  - name: "agent-plugin"
     description: "Operator AgentPlugin CR reconciliation and Hermes overlay lifecycle suite"
     region: "us-central1"
     namespace: "kubeagents-system"
@@ -63,7 +69,7 @@ environments:
   # ----------------------------------------------------------------------------
   # 5. Release Candidate (RC) Promotion Gate Environment
   # ----------------------------------------------------------------------------
-  - name: "rc-e2e"
+  - name: "rc"
     description: "Release Candidate promotion gate: Agent API health, Fleet SRE Audit ledger validation, and fast stockout RCA (Scenario 04)"
     region: "us-central1"
     namespace: "kubeagents-system"
@@ -73,7 +79,7 @@ environments:
     # a repository the RC does not own. Pinning the real one here would only move the
     # problem: the same pair configures the minter at install time, and a value written
     # in two places drifts. e2e-run.yml passes the bound environment's GITOPS_ORG
-    # and GITOPS_REPO to the suite and rc-deploy-environment.yml passes them to the
+    # and GITOPS_REPO to the suite and deploy-environment.yml passes them to the
     # installer, so there is one source of truth —
     # scripts/release/README.md says how to set them.
     #
@@ -91,21 +97,29 @@ environments:
   # ----------------------------------------------------------------------------
   # 6. Full Nightly E2E Matrix Environment
   # ----------------------------------------------------------------------------
-  - name: "nightly-e2e"
+  - name: "nightly"
     description: "Full Nightly E2E Matrix: all audit streams, all stockout scenarios, operator plugin lifecycle, and chat integration"
     region: "us-central1"
     namespace: "kubeagents-system"
-    # No GITHUB_ORG/GITHUB_REPO here, for the reason spelled out under `rc-e2e`
+    # No GITHUB_ORG/GITHUB_REPO here, for the reason spelled out under `rc`
     # above: this suite runs test_github_token_minting_and_connectivity, the
     # placeholder pair names a repository no GitHub App is installed on, and the
     # same pair configures the minter at install time. e2e-run.yml passes the
     # bound environment's GITOPS_ORG and GITOPS_REPO to the suite and
-    # rc-deploy-environment.yml passes them to the installer, so there is one
+    # deploy-environment.yml passes them to the installer, so there is one
     # source of truth.
+    # No CHAT_TOPIC_NAME either, and for a mechanical reason rather than a
+    # policy one: it could never take effect here. e2e-run.yml exports
+    # `CHAT_TOPIC_NAME: ${{ vars.CHAT_TOPIC_NAME }}` unconditionally, an Actions
+    # `env:` key is defined even when its expression is empty, and
+    # execute_e2e_tests.py merges `**os.environ` after these `env_vars` — so the
+    # exported value wins whatever it is, and an environment that has not set
+    # the variable would override this line with an empty string rather than
+    # falling back to it. The GitHub environment owns the value;
+    # gchat_agent_test.py's own default is the backstop.
     env_vars:
       FLEET_AUDIT_STREAMS: "all"
       STOCKOUT_SCENARIOS: "all"
-      CHAT_TOPIC_NAME: "platform-agent-chat-events"
     tests:
       - "tests/e2e/test_agent_api_health.py"
       - "tests/e2e/test_agent_fleet_audit.py"

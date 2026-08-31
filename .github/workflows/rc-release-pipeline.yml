@@ -1,11 +1,15 @@
-name: RC Release E2E Pipeline
+name: "RC: Release Pipeline"
 
 permissions:
   contents: read
 
+# NO `schedule:` — rc-scheduler.yml owns the cron and dispatches this workflow
+# only when there is a new candidate to test. That is what makes a run of this
+# pipeline mean something: it no longer has a quiet-tick path that concludes
+# success having done nothing, so its last conclusion is the last real result.
+# rc-scheduler.yml's header has the full argument. Putting the cron back here
+# reintroduces the skip-paints-over-a-failure problem.
 on:
-  schedule:
-    - cron: "17 */3 * * *"
   #checkov:skip=CKV_GHA_7:Manual release candidate pipeline requires target commit sha and tag inputs
   workflow_dispatch:
     inputs:
@@ -25,10 +29,12 @@ concurrency:
 jobs:
   step-1-create-tag:
     name: Step 1 - Create Release Candidate Tag
-    # A fork inherits the cron but none of the release credentials, so every
-    # scheduled run there fails and mails the fork owner. The guard repeats on
-    # each job rather than relying on the skip cascading through `needs`: an
-    # `always()` added to a later job would silently un-guard the pipeline.
+    # The cron now sits on rc-scheduler.yml, so a fork no longer inherits a
+    # trigger that fires here on its own — but the guard stays on every job.
+    # A fork can still dispatch this by hand with none of the release
+    # credentials, and the guard is what a re-added `schedule:` would need. It
+    # repeats per job rather than relying on the skip cascading through `needs`:
+    # an `always()` added to a later job would silently un-guard the pipeline.
     if: github.repository == 'gke-labs/kube-agents'
     uses: ./.github/workflows/rc-create-tag.yml
     permissions:
@@ -36,6 +42,17 @@ jobs:
     with:
       commit_sha: ${{ inputs.commit_sha }}
       rc_tag: ${{ inputs.rc_tag }}
+      # Always false now that rc-scheduler.yml owns the cron: this workflow is
+      # only ever dispatched, and always with a commit_sha the scheduler already
+      # resolved. Kept wired rather than hardcoded so that re-adding a
+      # `schedule:` here restores the self-resolving path in one edit instead of
+      # silently running with is_scheduled false, which is the branch of
+      # resolve_rc_tag.sh that errors on a missing commit.
+      #
+      # The consequence, stated so the `skip_rc` guards below are not read as
+      # live: the skip decision has moved to the scheduler, so a dispatched run
+      # never sets skip_rc. The guards stay because they are still correct, and
+      # because they are what a re-added cron would need.
       is_scheduled: ${{ github.event_name == 'schedule' }}
     secrets:
       RELEASE_BOT_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
@@ -59,7 +76,7 @@ jobs:
     # scripts/release/README.md, "Enabling the GitHub token minter on the RC",
     # is the single home for what the wiring requires and why; this comment is
     # here because the mistake is made at this line.
-    uses: ./.github/workflows/rc-deploy-environment.yml # zizmor: ignore[secrets-inherit]
+    uses: ./.github/workflows/deploy-environment.yml # zizmor: ignore[secrets-inherit]
     permissions:
       contents: read
       id-token: write
@@ -89,8 +106,8 @@ jobs:
       commit_sha: ${{ needs.step-1-create-tag.outputs.commit_sha }}
       # The Chat gate blocks the candidate; the cluster and fleet-audit suite is
       # coverage that must not. Same split as before this job became a call.
-      blocking_suite: "gchat-e2e"
-      optional_suite: "rc-e2e"
+      blocking_suite: "gchat"
+      optional_suite: "rc"
       stockout_scenarios: "04"
       fleet_audit_streams: "all"
     secrets: inherit
@@ -133,7 +150,7 @@ jobs:
     if: |
       github.repository == 'gke-labs/kube-agents' &&
       needs.step-1-create-tag.outputs.skip_rc != 'true'
-    uses: ./.github/workflows/rc-teardown-environment.yml
+    uses: ./.github/workflows/teardown-environment.yml
     permissions:
       contents: read
       id-token: write

@@ -1,4 +1,4 @@
-name: Deploy Environment
+name: "Shared: Deploy Environment"
 
 permissions:
   contents: read
@@ -23,8 +23,8 @@ on:
       # The GitHub Actions environment, and nothing else: it renders straight
       # into the job's `environment:` key below, and its values are `rc` and
       # `nightly`. Not `target_environment`, because `test_environment` already
-      # exists on the E2E workflows naming a *test suite* (`rc-e2e`,
-      # `nightly-e2e`), and two near-identical names for different things is how
+      # exists on the E2E workflows naming a *test suite* (`rc`,
+      # `nightly`), and two near-identical names for different things is how
       # that confusion propagates.
       #
       # required, with NO default. A `default: rc` would mean a nightly caller
@@ -174,7 +174,7 @@ jobs:
           # with any of them empty the install is
           # byte-identical to today's. The pair must also match the repository the
           # E2E suite probes — a token minted for one repository does not
-          # authenticate against another. `rc-e2e` and `nightly-e2e` deliberately
+          # authenticate against another. `rc` and `nightly` deliberately
           # pin neither in tests/e2e/e2e_config.yaml, precisely so the value lives
           # in one place: e2e-run.yml passes this same GITOPS_ORG/GITOPS_REPO pair
           # to the suite, and conftest.py's _qualify_repo composes the bare
@@ -207,5 +207,10 @@ jobs:
           # `vars` resolves environment over repository over organization, so a
           # repository-level one works too and is the easier of the two to set
           # by accident and then not find again.
+          # Both spellings forwarded: teardown_common.sh prefers TEARDOWN_STRICT
+          # and falls back to the RC_-prefixed one the environment settings still
+          # carry, so the settings rename can happen on either side of this merge.
+          # Drop the second line once `rc` and `nightly` both define the new name.
+          TEARDOWN_STRICT: ${{ vars.TEARDOWN_STRICT }}
           RC_TEARDOWN_STRICT: ${{ vars.RC_TEARDOWN_STRICT }}
         run: ./scripts/release/provision_environment.sh

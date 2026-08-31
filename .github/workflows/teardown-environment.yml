@@ -1,4 +1,4 @@
-name: Tear Down Environment
+name: "Shared: Tear Down Environment"
 
 permissions:
   contents: read
@@ -20,7 +20,7 @@ on:
         type: string
   workflow_call:
     inputs:
-      # See rc-deploy-environment.yml for why this is named github_environment
+      # See deploy-environment.yml for why this is named github_environment
       # and why it has no default. Here the missing default matters more: a
       # nightly caller that omitted it would destroy the RC environment.
       github_environment:
