@@ -663,7 +663,7 @@ func serializeManagedKeysAnnotation(keys map[string]struct{}) string {
 
 var minterRepoRegex = regexp.MustCompile(`(?m)^(\s*repositories:\s*\n)(?:\s*-\s*.*?\n)+`)
 
-func renderRepoPolicy(baseTemplate, repo string) string {
+func renderRepoPolicy(baseTemplate string, repos []string) string {
 	return minterRepoRegex.ReplaceAllStringFunc(baseTemplate, func(match string) string {
 		lines := strings.Split(match, "\n")
 		prefix := lines[0]
@@ -676,7 +676,17 @@ func renderRepoPolicy(baseTemplate, repo string) string {
 			}
 		}
 		itemIndent := indent + "  "
-		return prefix + "\n" + itemIndent + "- '" + repo + "'\n"
+		var sb strings.Builder
+		sb.WriteString(prefix)
+		for _, r := range repos {
+			sb.WriteString("\n")
+			sb.WriteString(itemIndent)
+			sb.WriteString("- '")
+			sb.WriteString(r)
+			sb.WriteString("'")
+		}
+		sb.WriteString("\n")
+		return sb.String()
 	})
 }
 
@@ -722,13 +732,23 @@ func (r *PlatformAgentReconciler) syncGithubTokenMinterConfigMap(ctx context.Con
 
 	primaryOrg := ""
 	if agent.Spec.Integration != nil && agent.Spec.Integration.GitHub != nil {
-		primaryOrg = strings.TrimSpace(agent.Spec.Integration.GitHub.Org)
+		github := agent.Spec.Integration.GitHub
+		primaryOrg = strings.TrimSpace(github.Org)
+		if primaryOrg == "" && github.GitRepo != "" {
+			if cleaned, err := agentv1alpha1.CleanRepoSlug(github.GitRepo); err == nil {
+				parts := strings.SplitN(cleaned, "/", 2)
+				if len(parts) == 2 {
+					primaryOrg = parts[0]
+				}
+			}
+		}
 	}
 
 	repos, err := parseManagedRepos(managedReposStr)
 	if err != nil {
 		return fmt.Errorf("failed to parse managed_repos for minter policy sync: %w", err)
 	}
+	var allBareRepos []string
 	activeKeys := make(map[string]string, len(repos))
 	for _, fullRepo := range repos {
 		fullRepo = strings.TrimSpace(fullRepo)
@@ -749,15 +769,19 @@ func (r *PlatformAgentReconciler) syncGithubTokenMinterConfigMap(ctx context.Con
 					"repo", fullRepo, "repoOrg", repoOrg, "primaryOrg", primaryOrg)
 				continue
 			}
-			activeKeys[bareRepo+".yaml"] = bareRepo
+			if _, exists := activeKeys[bareRepo+".yaml"]; !exists {
+				activeKeys[bareRepo+".yaml"] = bareRepo
+				allBareRepos = append(allBareRepos, bareRepo)
+			}
 		}
 	}
+	sort.Strings(allBareRepos)
 
 	updated := false
 
-	// Ensure all active managed repositories have policy entries scoped to each repository
-	for key, bareRepo := range activeKeys {
-		expectedContent := renderRepoPolicy(baseTemplate, bareRepo)
+	// Ensure all active managed repositories have policy entries containing all same-org managed repositories
+	expectedContent := renderRepoPolicy(baseTemplate, allBareRepos)
+	for key := range activeKeys {
 		currentVal, exists := minterCM.Data[key]
 		_, managed := operatorManagedKeys[key]
 		if !exists {

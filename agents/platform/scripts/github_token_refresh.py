@@ -162,8 +162,8 @@ def refresh_git_credentials(
                     and m_repo not in repositories_to_scope
                 ):
                     repositories_to_scope.append(m_repo)
-    except Exception:
-        pass
+    except Exception as e:
+        log(f"WARNING: Could not expand managed repositories for token scoping: {e}")
 
     headers = {"Content-Type": "application/json", "X-OIDC-Token": oidc_token}
     body = {

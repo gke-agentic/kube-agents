@@ -4154,14 +4154,14 @@ func TestSyncGithubTokenMinterConfigMap(t *testing.T) {
 		t.Fatalf("failed to get updated ConfigMap: %v", err)
 	}
 
-	// Verify repo-1.yaml and repo-2.yaml were created and scoped to their respective repos
-	expectedRepo1 := "version: 'minty.abcxyz.dev/v2'\nscope:\n  platform-agent-scope:\n    repositories:\n      - 'repo-1'\n"
-	expectedRepo2 := "version: 'minty.abcxyz.dev/v2'\nscope:\n  platform-agent-scope:\n    repositories:\n      - 'repo-2'\n"
+	// Verify repo-1.yaml and repo-2.yaml were created and scoped to all managed repos in org
+	expectedRepo1 := "version: 'minty.abcxyz.dev/v2'\nscope:\n  platform-agent-scope:\n    repositories:\n      - 'repo-1'\n      - 'repo-2'\n"
+	expectedRepo2 := "version: 'minty.abcxyz.dev/v2'\nscope:\n  platform-agent-scope:\n    repositories:\n      - 'repo-1'\n      - 'repo-2'\n"
 	if updatedCM.Data["repo-1.yaml"] != expectedRepo1 {
-		t.Errorf("expected repo-1.yaml to be repo-scoped, got %q", updatedCM.Data["repo-1.yaml"])
+		t.Errorf("expected repo-1.yaml to contain all managed repos in org, got %q", updatedCM.Data["repo-1.yaml"])
 	}
 	if updatedCM.Data["repo-2.yaml"] != expectedRepo2 {
-		t.Errorf("expected repo-2.yaml to be repo-scoped, got %q", updatedCM.Data["repo-2.yaml"])
+		t.Errorf("expected repo-2.yaml to contain all managed repos in org, got %q", updatedCM.Data["repo-2.yaml"])
 	}
 
 	// Verify unmanaged-static.yaml was NOT pruned
@@ -4223,5 +4223,32 @@ func TestSyncGithubTokenMinterConfigMap(t *testing.T) {
 	}
 	if _, exists := updatedCM.Data["other-repo.yaml"]; exists {
 		t.Errorf("expected cross-org other-repo.yaml to be skipped")
+	}
+
+	// 4. Sync with empty Org but GitRepo set — should infer primaryOrg from GitRepo and skip cross-org repos
+	agentInferred := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-agent-inferred", Namespace: "test-ns"},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
+				IntegrationSpec: agentv1alpha1.IntegrationSpec{
+					GitHub: &agentv1alpha1.GitHubSpec{
+						Org:     "",
+						GitRepo: "test-org/main-repo",
+					},
+				},
+			},
+		},
+	}
+	err = r.syncGithubTokenMinterConfigMap(ctx, agentInferred, `[{"type":"github","url":"https://github.com/test-org/repo-1"},{"type":"github","url":"https://github.com/forbidden-org/forbidden-repo"}]`)
+	if err != nil {
+		t.Fatalf("syncGithubTokenMinterConfigMap with inferred org failed: %v", err)
+	}
+
+	if err := cl.Get(ctx, client.ObjectKey{Name: "github-token-minter-config", Namespace: "test-ns"}, updatedCM); err != nil {
+		t.Fatalf("failed to get updated ConfigMap: %v", err)
+	}
+
+	if _, exists := updatedCM.Data["forbidden-repo.yaml"]; exists {
+		t.Errorf("expected cross-org forbidden-repo.yaml to be skipped when primaryOrg is inferred from GitRepo")
 	}
 }

@@ -786,6 +786,8 @@ spec:
               value: /var/run/secrets/kubeagents/serviceaccount/token
             - name: TOKEN_BROKER_URL
               value: http://github-token-minter.kubeagents-system.svc.cluster.local:8080/token
+            - name: GITOPS_STATE_CONFIGMAP
+              value: platformagent-gitops-state
             - name: API_SERVER_KEY
               value: cluster-internal-trusted
             - name: AGENT_API_PROXY_PORT

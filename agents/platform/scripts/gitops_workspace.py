@@ -620,7 +620,7 @@ def extract_github_slug(entry: str) -> str | None:
 
 def get_managed_repo_entries() -> list[dict[str, str]]:
     """Reads the GitOps state ConfigMap and returns managed repo objects with 'type' and 'url'."""
-    cfg_name = os.environ.get("GITOPS_STATE_CONFIGMAP", os.environ.get("GITHUB_STATE_CONFIGMAP", "platform-agent-gitops-state"))
+    cfg_name = os.environ.get("GITOPS_STATE_CONFIGMAP", "platform-agent-gitops-state")
     ns = os.environ.get("KUBE_DEFAULT_NAMESPACE", "kubeagents-system")
     try:
         cm_res = subprocess.run(
@@ -687,7 +687,7 @@ def resolve_repo(workspace: str | Path | None = None) -> str:
     1. Workspace path clone decoding (if a leased workspace directory is provided).
     2. Workspace lease record (fallback if workspace is the lease holder directory).
     3. Git remote origin of workspace (if workspace is provided).
-    4. ConfigMap state ($GITHUB_STATE_CONFIGMAP).
+    4. ConfigMap state ($GITOPS_STATE_CONFIGMAP).
     5. Local git remote origin fallback (for local development/inside clone).
     """
     if workspace is not None:

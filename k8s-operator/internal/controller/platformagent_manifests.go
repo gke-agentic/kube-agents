@@ -2574,6 +2574,7 @@ func buildCredentialProxyEnv(agent *agentv1alpha1.PlatformAgent) []corev1.EnvVar
 		// reserves the name — appending after that call would leave it
 		// protected only by its presence in SensitiveEnvVars, which is
 		// incidental and would not hold for a name not on that list.
+		{Name: "GITOPS_STATE_CONFIGMAP", Value: agent.Name + "-gitops-state"},
 		{Name: "API_SERVER_KEY", Value: loopbackAgentAPIKey},
 	}
 	if credentialBrokerIsSplit(agent) {

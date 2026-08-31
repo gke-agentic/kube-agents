@@ -105,6 +105,41 @@ class GitHubTokenRefreshTest(unittest.TestCase):
         self.assertEqual(["repo1", "repo2"], body["repositories"])
         self.assertEqual("platform-agent-scope", body["scope"])
 
+    @patch("github_token_refresh.log")
+    @patch("github_token_refresh.subprocess.run")
+    @patch("github_token_refresh.urllib.request.urlopen")
+    @patch("gitops_workspace.get_managed_github_repos")
+    def test_managed_repos_expansion_failure_logs_warning(
+        self, get_managed_github_repos, urlopen, run, mock_log
+    ):
+        import json
+
+        get_managed_github_repos.side_effect = RuntimeError("ConfigMap not found")
+
+        def fake_run(cmd, **kwargs):
+            if "print-identity-token" in cmd:
+                return MagicMock(stdout="fake-oidc-token\n")
+            return MagicMock()
+
+        run.side_effect = fake_run
+
+        response = MagicMock()
+        response.status = 200
+        response.read.return_value = b"fake-installation-token"
+        response.__enter__.return_value = response
+        urlopen.return_value = response
+
+        with patch.dict(os.environ, {"CREDENTIAL_PROXY_URL": ""}, clear=False):
+            token = refresh_git_credentials("owner/repo1")
+
+        self.assertEqual("fake-installation-token", token)
+        request = urlopen.call_args.args[0]
+        body = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(["repo1"], body["repositories"])
+        mock_log.assert_any_call(
+            "WARNING: Could not expand managed repositories for token scoping: ConfigMap not found"
+        )
+
     @patch("github_token_refresh.time.sleep")
     @patch("github_token_refresh.urllib.request.urlopen")
     def test_sandbox_fails_immediately_on_sidecar_502(self, urlopen, sleep):
