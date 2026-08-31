@@ -253,6 +253,43 @@ source "{_COMMON_SH}"
         head = git("rev-parse", "HEAD").stdout.strip()
         self.assertNotEqual(self._trigger_matches(repo_dir, head, "staging_2608241820_b35543c"), 0)
 
+    def _repo_with_pipeline_markers(self, optional_runner=True, suite_selector=True):
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        self.addCleanup(temp_dir.cleanup)
+        release = pathlib.Path(repo_dir) / "scripts" / "release"
+        release.mkdir(parents=True, exist_ok=True)
+        if optional_runner:
+            (release / "run_optional_e2e_suites.sh").write_text("#!/usr/bin/env bash\n")
+        selector = "E2E_SUITE" if suite_selector else "E2E_ENV"
+        (release / "execute_e2e_tests.py").write_text(f'_VAR = "{selector}"\n')
+        git("add", "-A")
+        git("commit", "-m", "chore: pipeline markers")
+        return repo_dir, git("rev-parse", "HEAD").stdout.strip()
+
+    def _supports_shared_pipeline(self, repo_dir, commit):
+        return self._run_common_func(
+            f'candidate_supports_shared_pipeline "{commit}"', cwd=repo_dir
+        ).returncode
+
+    def test_a_restructured_candidate_supports_the_shared_pipeline(self):
+        repo_dir, head = self._repo_with_pipeline_markers()
+        self.assertEqual(self._supports_shared_pipeline(repo_dir, head), 0)
+
+    def test_a_candidate_without_the_optional_runner_does_not(self):
+        repo_dir, head = self._repo_with_pipeline_markers(optional_runner=False)
+        self.assertNotEqual(self._supports_shared_pipeline(repo_dir, head), 0)
+
+    def test_a_candidate_reading_only_the_old_selector_does_not(self):
+        """The silent half: the gate would run the runner's default suite instead."""
+        repo_dir, head = self._repo_with_pipeline_markers(suite_selector=False)
+        self.assertNotEqual(self._supports_shared_pipeline(repo_dir, head), 0)
+
+    def test_candidate_support_requires_a_commit(self):
+        repo_dir, _ = self._repo_with_pipeline_markers()
+        proc = self._run_common_func('candidate_supports_shared_pipeline ""', cwd=repo_dir)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("a commit is required", proc.stderr)
+
     def test_staging_trigger_requires_both_arguments(self):
         repo_dir, head = self._repo_with_staging_trigger(["staging_*"])
         proc = self._run_common_func('staging_trigger_matches_at_commit "" ""', cwd=repo_dir)
