@@ -13,12 +13,12 @@ The release pipeline guarantees that installer scripts (`install.sh`, `uninstall
 
 Every commit and build progresses through four distinct lifecycle tiers:
 
-| Tier | Format | Trigger | Purpose and guarantees |
-| :--- | :--- | :--- | :--- |
-| **Candidate Build** | `sha-<SHORT_SHA>` | Push to `main` branch | Developer build in GHCR; container images built once. |
-| **Release Candidate (RC)** | `rc_YYMMDDHHMM_<SHORT_SHA>` | Push to `main` / 3-hour cron | Candidate build selected for live cluster testing. |
-| **RC Validated** | `rc_YYMMDDHHMM_<SHORT_SHA>_validated` | Successful GKE E2E suite | Quality gate: proof that `install.sh` succeeded on a real GKE cluster. |
-| **GA Stable** | `X.Y.Z` (pure numeric SemVer) | Release publish workflow | Official production release tagged on the validated commit. |
+| Tier                       | Format                                | Trigger                      | Purpose and guarantees                                                 |
+| :------------------------- | :------------------------------------ | :--------------------------- | :--------------------------------------------------------------------- |
+| **Candidate Build**        | `sha-<SHORT_SHA>`                     | Push to `main` branch        | Developer build in GHCR; container images built once.                  |
+| **Release Candidate (RC)** | `rc_YYMMDDHHMM_<SHORT_SHA>`           | Push to `main` / 3-hour cron | Candidate build selected for live cluster testing.                     |
+| **RC Validated**           | `rc_YYMMDDHHMM_<SHORT_SHA>_validated` | Successful GKE E2E suite     | Quality gate: proof that `install.sh` succeeded on a real GKE cluster. |
+| **GA Stable**              | `X.Y.Z` (pure numeric SemVer)         | Release publish workflow     | Official production release tagged on the validated commit.            |
 
 ## Automated SemVer 2.0 calculation
 
@@ -44,6 +44,7 @@ When the GA release workflow runs, `scripts/release/calculate_next_version.sh` i
 ### Prerequisites
 
 Before triggering a production release:
+
 1. Target commit must exist on the `main` branch.
 2. Target commit must carry an `rc_*_validated` tag created by the automated RC validation pipeline ([`scripts/release/README.md`](https://github.com/gke-labs/kube-agents/tree/main/scripts/release)).
 3. All four required container images (`k8s-operator`, `platform-agent`, `credential-proxy`, `replay-proxy`) must exist in GHCR under `sha-<TARGET_COMMIT>`.
@@ -72,12 +73,14 @@ The release gatekeeper enforces automated GKE RC validation (`rc_*_validated`) b
 ### Eligibility criteria
 
 Emergency gate bypass (`skip_rc_validation: true`) is strictly reserved for:
+
 1. **Critical CVE remediation**: Zero-day vulnerabilities in container dependencies requiring immediate publication.
 2. **Critical availability hotfixes**: Production-breaking regressions where waiting for the 3-hour RC validation cycle or cluster provisioning would prolong user-facing downtime.
 
 ### Enforced security invariants
 
 Even during an emergency bypass, the pipeline strictly enforces:
+
 - **Prebuilt image presence**: `scripts/release/verify_release_eligibility.sh` verifies that all four container images (`k8s-operator`, `platform-agent`, `credential-proxy`, `replay-proxy`) exist in GHCR under `sha-<TARGET_COMMIT>`. Releases of unbuilt commits hard-fail.
 - **Mandatory audit reason**: `emergency_override_reason` must contain a non-whitespace justification. Empty or whitespace-only reasons abort the workflow (`exit 1`).
 - **Tag collision protection**: If the target SemVer tag already points to another commit, the release aborts.
@@ -103,6 +106,7 @@ gh workflow run release-publish.yml --repo gke-labs/kube-agents \
 ### Post-release reconciliation
 
 After an emergency publication:
+
 1. **Verify artifacts**: Confirm the published release tag, container images in GHCR, and signed Helm OCI chart via `gh release view <VERSION>`.
 2. **Trigger post-factum RC validation**: Manually trigger `.github/workflows/rc-release-pipeline.yml` against the released commit to run the full GKE E2E suite and ensure the fix validates cleanly on live infrastructure.
 3. **Record audit trail**: Attach the GitHub Actions run URL and emergency justification to the corresponding tracking issue or incident report.
