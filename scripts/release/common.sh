@@ -296,6 +296,67 @@ get_existing_staging_tag() {
   git tag --points-at "${sha}" "${STAGING_TAG_PREFIX}*" 2>/dev/null | head -n 1 || echo ""
 }
 
+# Reports whether the staging redeploys AT A GIVEN COMMIT would start on a given
+# tag, by reading the `push: tags:` patterns out of that commit's own copy of
+# staging-redeploy-agent.yml.
+#
+# A push event runs the workflows in the pushed ref's tree, not the ones on the
+# default branch, and a promotion tag lands on a candidate commit that can be days
+# old. So the question of whether a tag deploys anything is answered by the
+# candidate, and a promotion pushed at a commit whose trigger does not match the
+# tag succeeds, deploys nothing, and reports green — after which
+# get_existing_staging_tag sees the tag and no later run retries that candidate.
+#
+# The three redeploys share one trigger, so agent stands for all three.
+staging_trigger_matches_at_commit() {
+  local commit="${1:-}" tag="${2:-}"
+  local workflow=".github/workflows/staging-redeploy-agent.yml"
+  local yaml patterns pattern
+
+  if [ -z "${commit}" ] || [ -z "${tag}" ]; then
+    echo "❌ ERROR: a commit and a tag are required for staging_trigger_matches_at_commit." >&2
+    return 2
+  fi
+
+  yaml="$(git show "${commit}:${workflow}" 2>/dev/null)" || return 1
+
+  # The list items under the single `tags:` key, unquoted. Stops at the first
+  # line that is neither a list item nor blank, so it cannot run on into the rest
+  # of the file if the key is ever absent.
+  patterns="$(printf '%s\n' "${yaml}" | awk '
+    /^[[:space:]]*tags:[[:space:]]*$/ { in_tags = 1; next }
+    in_tags && /^[[:space:]]*#/ { next }
+    in_tags && /^[[:space:]]*$/ { next }
+    in_tags && /^[[:space:]]*-[[:space:]]/ {
+      item = $0
+      sub(/^[[:space:]]*-[[:space:]]*/, "", item)
+      sub(/[[:space:]]*$/, "", item)
+      gsub(/^"|"$/, "", item)
+      gsub(/^'"'"'|'"'"'$/, "", item)
+      print item
+      next
+    }
+    in_tags { in_tags = 0 }
+  ')"
+
+  [ -n "${patterns}" ] || return 1
+
+  while IFS= read -r pattern; do
+    [ -n "${pattern}" ] || continue
+    # Glob-matched rather than compared: the point is what GitHub would do with
+    # the pattern, not whether the file says what this branch expects. So the
+    # expansion is deliberately unquoted.
+    # shellcheck disable=SC2254
+    case "${tag}" in
+      ${pattern}) return 0 ;;
+    esac
+  done <<EOF
+${patterns}
+EOF
+
+  return 1
+}
+
 # Finds the latest commit on main whose required container images are already built in the registry
 find_latest_built_commit() {
   local target_repo

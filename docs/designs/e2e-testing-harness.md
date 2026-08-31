@@ -93,7 +93,7 @@ The test runner `scripts/release/execute_e2e_tests.py` reads configuration from 
 | `GCP_REGION`          | Target cluster region                     | `us-central1`       |
 | `STOCKOUT_SCENARIOS`  | Comma-separated scenario numbers or `all` | `04`                |
 | `FLEET_AUDIT_STREAMS` | Specific audit stream names or `all`      | `all`               |
-| `E2E_SUITE`           | Target suite selector                     | `investigations`    |
+| `E2E_SUITE`           | Target suite selector                     | `gchat`             |
 | `E2E_ENV`             | Deprecated alias for `E2E_SUITE`          | Unset               |
 | `GITHUB_ORG`          | Owner used to qualify `GITHUB_REPO`       | Config `env_vars`\* |
 | `GITHUB_REPO`         | Repository the GitHub probes target       | Config `env_vars`\* |

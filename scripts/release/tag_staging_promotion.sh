@@ -60,6 +60,27 @@ case "${STAGING_TAG}" in
     ;;
 esac
 
+# The candidate has to be able to answer the tag. A push event runs the workflows
+# in the pushed ref's tree, and the ref here points at a commit that may predate
+# the trigger this tag is shaped for — every rc_*_validated candidate up to
+# rc_2608310656_cf038a2_validated still declares `staging/**`, which a flat
+# staging_<ts>_<sha> does not match.
+#
+# Refusing is the point. The alternative is a promotion that pushes its tag,
+# deploys nothing, and reports green — and then never retries, because
+# get_existing_staging_tag finds the tag it just pushed and every later run sets
+# skip_promotion. A red step 4 leaves the candidate unpromoted, so the next
+# validated candidate is picked up normally.
+#
+# Delete this guard once no rc_*_validated tag predates the trigger rename; it is
+# the same window the script-name fallbacks in deploy-environment.yml and
+# teardown-environment.yml close.
+if ! staging_trigger_matches_at_commit "${COMMIT_SHA}" "${STAGING_TAG}"; then
+  echo "::error title=Candidate predates the staging_* trigger::Commit ${COMMIT_SHA} declares a staging-redeploy trigger that '${STAGING_TAG}' does not match, so pushing this tag would deploy nothing and still report success. Refusing. Promote a candidate validated after the trigger rename; the RC pipeline produces one every three hours." >&2
+  echo "==> Refusing to promote ${COMMIT_SHA}: its staging-redeploy trigger does not match '${STAGING_TAG}'." >&2
+  exit 1
+fi
+
 exec "${SCRIPT_DIR}/tag_commit.sh" \
   --title "PROMOTING VALIDATED CANDIDATE TO STAGING" \
   --detail "Source RC Tag: ${RC_TAG}" \

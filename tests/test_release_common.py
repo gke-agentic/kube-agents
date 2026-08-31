@@ -207,6 +207,58 @@ source "{_COMMON_SH}"
         finally:
             temp_dir.cleanup()
 
+    def _repo_with_staging_trigger(self, patterns):
+        """A mock repo whose HEAD carries staging-redeploy-agent.yml with `patterns`."""
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        self.addCleanup(temp_dir.cleanup)
+        workflow = pathlib.Path(repo_dir) / ".github" / "workflows"
+        workflow.mkdir(parents=True, exist_ok=True)
+        rendered = "\n".join(f'      - "{p}"' for p in patterns)
+        (workflow / "staging-redeploy-agent.yml").write_text(
+            "name: Staging Redeploy Agent\n\non:\n  push:\n    tags:\n" + rendered + "\n\njobs: {}\n"
+        )
+        git("add", "-A")
+        git("commit", "-m", "chore: staging trigger")
+        return repo_dir, git("rev-parse", "HEAD").stdout.strip()
+
+    def _trigger_matches(self, repo_dir, commit, tag):
+        proc = self._run_common_func(
+            f'staging_trigger_matches_at_commit "{commit}" "{tag}"', cwd=repo_dir
+        )
+        return proc.returncode
+
+    def test_staging_trigger_matches_the_tag_the_promotion_pushes(self):
+        repo_dir, head = self._repo_with_staging_trigger(["staging_*"])
+        self.assertEqual(self._trigger_matches(repo_dir, head, "staging_2608241820_b35543c"), 0)
+
+    def test_staging_trigger_rejects_a_commit_that_predates_the_rename(self):
+        """The whole reason the helper exists.
+
+        A push event runs the workflows in the pushed ref's tree. A candidate
+        still declaring `staging/**` does not match a flat `staging_<ts>_<sha>`,
+        so the promotion would deploy nothing and report success.
+        """
+        repo_dir, head = self._repo_with_staging_trigger(["staging/**"])
+        self.assertNotEqual(self._trigger_matches(repo_dir, head, "staging_2608241820_b35543c"), 0)
+        # The same tree does answer the tag shape it was written for.
+        self.assertEqual(self._trigger_matches(repo_dir, head, "staging/2026-07-23"), 0)
+
+    def test_staging_trigger_matches_when_any_listed_pattern_does(self):
+        repo_dir, head = self._repo_with_staging_trigger(["staging/**", "staging_*"])
+        self.assertEqual(self._trigger_matches(repo_dir, head, "staging_2608241820_b35543c"), 0)
+
+    def test_staging_trigger_refuses_when_the_workflow_is_absent(self):
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        self.addCleanup(temp_dir.cleanup)
+        head = git("rev-parse", "HEAD").stdout.strip()
+        self.assertNotEqual(self._trigger_matches(repo_dir, head, "staging_2608241820_b35543c"), 0)
+
+    def test_staging_trigger_requires_both_arguments(self):
+        repo_dir, head = self._repo_with_staging_trigger(["staging_*"])
+        proc = self._run_common_func('staging_trigger_matches_at_commit "" ""', cwd=repo_dir)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("a commit and a tag are required", proc.stderr)
+
     def test_release_fetch_tags_is_a_no_op_outside_ci(self):
         """It must not reach the network on a developer machine.
 

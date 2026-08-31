@@ -14,13 +14,16 @@
 #
 # Sourced, not executed: this file defines functions and runs nothing.
 
-# TEARDOWN_STRICT is the name; RC_TEARDOWN_STRICT is what the GitHub environment
-# settings carry. Both are read, and the new name wins where both are set.
+# TEARDOWN_STRICT is the name, and both `rc` and `nightly` define it, so that is
+# what deploy-environment.yml forwards and what CI reads. RC_TEARDOWN_STRICT is
+# the pre-rename spelling, read as a fallback and losing to the new name where
+# both are set.
 #
-# Reading both decouples this code from a value that lives in a web form: an
-# unset variable parses as "off", so honouring only the new name would turn
-# strict teardown off silently until someone with access renames the setting.
-# Drop the legacy name once `rc` and `nightly` have both been updated.
+# The fallback buys nothing in CI — the workflow forwards one name, and an
+# `env:` key is defined even when its expression is empty, so an unmigrated
+# setting would arrive as "" and read as "off" either way. It is for running
+# these scripts by hand against an environment nobody has migrated. Drop it once
+# the old variable is deleted from both settings pages.
 #
 # The value is hand-typed, so it accepts everything installer_common.sh's
 # is_truthy does rather than the literal "true" alone — a maintainer who types

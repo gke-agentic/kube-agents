@@ -60,8 +60,10 @@ dispatches `rc-release-pipeline.yml` whenever a new candidate exists, and
 release-candidate pipeline within three hours and stops the tag. Both it and `nightly-pipeline.yml`
 reach the suite through the same reusable `e2e-run.yml`; `e2e-gchat-test.yml` and
 `e2e-manual-runner.yml` are the by-hand callers. `tests/e2e/operator/agentplugins_e2e_test.py` is
-the exception inside the exception: it is in the `nightly` suite and nothing else, so nothing
-runs it on any trigger until the nightly pipeline gets a cron.
+the exception inside the exception: it is the whole of the `agent-plugin` suite and is in `nightly`
+too, and the nightly pipeline runs `agent-plugin` as tolerated coverage rather than as its gate — so
+nothing runs it on any automatic trigger until that pipeline gets a cron, and nothing fails when it
+does run.
 
 **A `*_e2e_test.py` suffix opts a plugin test out of CI, and `test_*.py` opts it in.**
 `agentplugins-test.yml` discovers on `test_*.py`, which deliberately does not match the

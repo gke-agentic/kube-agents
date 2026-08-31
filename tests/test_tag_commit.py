@@ -108,14 +108,47 @@ class TagCommitTest(unittest.TestCase):
             git("rev-parse", "rc_2608241820_b35543c_validated^{commit}").stdout.strip(), head
         )
 
+    def _commit_staging_trigger(self, repo_dir, git, pattern):
+        """Commits the redeploy trigger the promotion has to match.
+
+        A push event runs the workflows in the pushed ref's tree, so the commit
+        being tagged is what decides whether the tag deploys anything, and
+        tag_staging_promotion.sh refuses when it would not.
+        """
+        workflow = pathlib.Path(repo_dir) / ".github" / "workflows"
+        workflow.mkdir(parents=True, exist_ok=True)
+        (workflow / "staging-redeploy-agent.yml").write_text(
+            f'name: Staging Redeploy Agent\n\non:\n  push:\n    tags:\n      - "{pattern}"\n\njobs: {{}}\n'
+        )
+        git("add", "-A")
+        git("commit", "-m", "chore: staging trigger")
+        return git("rev-parse", "HEAD").stdout.strip()
+
     def test_tag_staging_promotion_wrapper_derives_the_tag(self):
         repo_dir, git = self._repo()
-        head = git("rev-parse", "HEAD").stdout.strip()
+        head = self._commit_staging_trigger(repo_dir, git, "staging_*")
         git("tag", "-a", "rc_2608241820_b35543c_validated", "-m", "Validated")
 
         proc = self._run("tag_staging_promotion.sh", [head, "rc_2608241820_b35543c_validated"], repo_dir)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(git("rev-parse", "staging_2608241820_b35543c^{commit}").stdout.strip(), head)
+
+    def test_tag_staging_promotion_refuses_a_candidate_the_tag_would_not_trigger(self):
+        """A promotion that deploys nothing must not report success.
+
+        Candidates predating the `staging/**` -> `staging_*` rename carry the old
+        trigger in their own tree, which a flat staging_<ts>_<sha> does not match.
+        Pushing anyway would go green having deployed nothing, and the tag it left
+        behind would make every later run skip that candidate.
+        """
+        repo_dir, git = self._repo()
+        head = self._commit_staging_trigger(repo_dir, git, "staging/**")
+        git("tag", "-a", "rc_2608241820_b35543c_validated", "-m", "Validated")
+
+        proc = self._run("tag_staging_promotion.sh", [head, "rc_2608241820_b35543c_validated"], repo_dir)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("does not match", proc.stderr)
+        self.assertEqual(git("tag", "-l", "staging_*").stdout.strip(), "")
 
     def test_tag_staging_promotion_refuses_a_mismatched_explicit_tag(self):
         """An explicit staging tag has to be the one this candidate maps to."""

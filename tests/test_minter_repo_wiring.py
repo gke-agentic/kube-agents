@@ -24,8 +24,9 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _WORKFLOWS = _REPO_ROOT / ".github" / "workflows"
 
 # workflow -> the step `name:` carrying the pair. Anchored on the name rather
-# than the `run:` because e2e-run.yml runs `make test-e2e` twice -- the blocking
-# gate and the optional suite -- and both are handed a repository.
+# than the `run:` because e2e-run.yml has two steps that run suites -- the
+# blocking gate and the optional list, through different scripts -- and both are
+# handed a repository.
 _CONSUMERS = {
     "deploy-environment.yml": "Provision Environment in GCP",
     "e2e-run.yml": "Execute Blocking E2E Gate",
