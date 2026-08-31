@@ -433,7 +433,8 @@ Configures the operator-generated egress `NetworkPolicy`.
   `endpoint: ""` suppresses rule 3 entirely, for datapaths without a post-NAT daemon. Leave it
   unspecified to let the operator discover the container port from the `kube-system/gke-metadata-server`
   DaemonSet on port `metadata-server` (promoting `metadataDaemonIPSource` to `Discovered`). If undiscoverable,
-  it falls back to `169.254.169.252` on port `988`.
+  it falls back to `169.254.169.252` on port `988`. Overriding the endpoint explicitly opts out of port
+  discovery and uses port `988`.
 - `additionalEgress` ([]EgressRule, optional, max 32 items) — appends custom CIDR and port egress
   rules to the generated policy. A peer CIDR broader than `/12` (IPv4) or `/48` (IPv6) is rejected at
   admission, so that a caller-supplied range cannot be widened into an unrestricted egress bypass.

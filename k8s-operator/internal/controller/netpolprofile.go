@@ -426,6 +426,8 @@ func trimmedAnnotation(agent *agentv1alpha1.PlatformAgent, key string) string {
 // images, a named port is the DaemonSet's API surface, and the IP itself (169.254.169.252)
 // appears in no structured field at all, so this only ever confirms the port.
 // Uses r.APIReader to bypass the Informer cache, ensuring zero cluster-wide cache overhead.
+// A cluster-wide TTL cache (like telemetry) is unnecessary here because PlatformAgent is a
+// cluster singleton, so this single point-lookup generates negligible API server load.
 // Every failure mode (Forbidden, NotFound, no matching port) returns 0 and an error or nil,
 // and is non-fatal by contract with the caller.
 func (r *PlatformAgentReconciler) discoverMetadataDaemonPort(ctx context.Context) (int32, error) {
