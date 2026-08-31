@@ -172,6 +172,32 @@ class ResolvePromotionCandidateTest(unittest.TestCase):
         self.assertEqual(out["skip_promotion"], "true")
         self.assertIn("predates the shared-pipeline restructure", out["skip_reason"])
 
+    def test_a_hand_passed_ineligible_candidate_fails_rather_than_skipping(self):
+        """Naming a candidate is a question about that candidate.
+
+        Answering with a green run whose later jobs were all skipped says it was
+        tested. The auto-resolved path skips because nothing is wrong there; this
+        one errors, matching the rule the header states for a hand-passed tag the
+        pipeline never validated.
+        """
+        repo_dir, git = self._repo(with_pipeline_markers=False)
+        git("tag", "-a", "rc_2608191200_2222222_validated", "-m", "Validated")
+
+        proc, out = self._run(repo_dir, args=("rc_2608191200_2222222_validated",))
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("predates the shared-pipeline restructure", proc.stderr)
+        self.assertIn("Omit rc_tag", proc.stderr)
+        self.assertEqual(out, {}, "a refused candidate must not emit outputs a later job reads")
+
+    def test_the_same_candidate_auto_resolved_skips_instead(self):
+        """Same tree, same tag — the difference is only who chose it."""
+        repo_dir, git = self._repo(with_pipeline_markers=False)
+        git("tag", "-a", "rc_2608191200_2222222_validated", "-m", "Validated")
+
+        proc, out = self._run(repo_dir)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(out["skip_pipeline"], "true")
+
     def test_a_candidate_missing_only_the_optional_suite_runner_is_skipped(self):
         """Both markers are checked, because they went missing independently."""
         repo_dir, git = self._repo()

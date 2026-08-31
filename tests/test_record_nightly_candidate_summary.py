@@ -61,12 +61,27 @@ class RecordNightlyCandidateSummaryTest(unittest.TestCase):
         self.assertIn(f"| Staging tag | `{_STAGING_TAG}` |", summary)
         self.assertIn("| Promotes | yes, if the matrix passes |", summary)
 
-    def test_skip_pipeline_reports_nothing_to_test_and_no_table(self):
+    def test_skip_pipeline_reports_no_matrix_and_no_table(self):
         proc, summary = self._run(
             {"SKIP_PIPELINE": "true", "SKIP_REASON": "no validated candidate"}
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("Nothing to test: no validated candidate", summary)
+        self.assertIn("No matrix this run: no validated candidate", summary)
+        self.assertNotIn("| Candidate |", summary)
+
+    def test_skip_pipeline_carries_a_reason_that_names_a_candidate(self):
+        """SKIP_PIPELINE has two causes and the line must not assert either.
+
+        A refused candidate is a real, validated one, so wording that says no
+        candidate exists would contradict the reason printed beside it.
+        """
+        _, summary = self._run(
+            {
+                "SKIP_PIPELINE": "true",
+                "SKIP_REASON": f"Candidate '{_RC_TAG}' predates the shared-pipeline restructure.",
+            }
+        )
+        self.assertIn(f"No matrix this run: Candidate '{_RC_TAG}' predates", summary)
         self.assertNotIn("| Candidate |", summary)
 
     def test_skip_promotion_still_reports_the_candidate(self):

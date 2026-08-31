@@ -37,8 +37,8 @@ page under "Why there is no `gke-admin` set".
 - `verify_candidate_images.sh`: Verifies that prebuilt container images (`k8s-operator`, `platform-agent`, `credential-proxy`, `replay-proxy`) exist in GHCR/registry for the target candidate SHA.
 - `tag_commit.sh`: The one place a Git tag is created and pushed. Prints a banner naming what is being tagged, then calls `ensure_git_tag`, which no-ops when the tag already points at the same commit and fails when it points at a different one. Every tagger below is a wrapper over it, keeping only what is genuinely its own; a second copy of this body is how the rungs of the release ladder drift apart.
 - `create_release_tag.sh`: Creates and pushes candidate release tags (`rc_YYMMDDHHMM_<short_sha>`, derived from commit timestamp) safely and idempotently. When executed locally outside CI, runs in dry-run mode (creates tag locally and skips remote push).
-- `resolve_promotion_candidate.sh`: Picks the candidate the nightly pipeline tests and decides whether passing it promotes anything. Emits `commit_sha`, `rc_tag`, `staging_tag`, `skip_reason`, `skip_pipeline` (no validated candidate exists at all) and `skip_promotion` (the candidate already carries a `staging_*` tag, so the matrix still runs and nothing is pushed). Selection and the validated check come from `common.sh`, so the promotion gate and the RC gate answer the same question. Every skip is exit 0; the exits that are not are a tag that does not resolve and a commit the RC pipeline never validated.
-- `record_nightly_candidate_summary.sh`: Renders step 1 of the nightly pipeline into the job summary — which candidate the run picked, and whether a green matrix will move staging. Keeps the two skips distinct: `SKIP_PIPELINE` means no candidate and no run at all, `SKIP_PROMOTION` means the matrix runs against a commit that already carries a staging tag and a pass pushes nothing.
+- `resolve_promotion_candidate.sh`: Picks the candidate the nightly pipeline tests and decides whether passing it promotes anything. Emits `commit_sha`, `rc_tag`, `staging_tag`, `skip_reason`, `skip_pipeline` (the run does nothing at all — either no validated candidate exists, or the newest one is refused because its tree predates the shared-pipeline restructure; see "Workflow Mapping" below) and `skip_promotion` (the candidate already carries a `staging_*` tag, so the matrix still runs and nothing is pushed). Selection and the validated check come from `common.sh`, so the promotion gate and the RC gate answer the same question. Every skip is exit 0; the exits that are not are a tag that does not resolve and a commit the RC pipeline never validated.
+- `record_nightly_candidate_summary.sh`: Renders step 1 of the nightly pipeline into the job summary — which candidate the run picked, and whether a green matrix will move staging. Keeps the two skips distinct: `SKIP_PIPELINE` means no run at all and carries `SKIP_REASON` to say which of its two causes applied, `SKIP_PROMOTION` means the matrix runs against a commit that already carries a staging tag and a pass pushes nothing.
 - `dispatch_rc_pipeline.sh`: Starts `rc-release-pipeline.yml` for a candidate `rc-scheduler.yml` resolved. Since the scheduler is the only thing that starts the pipeline, a failure here means no candidate is being tested at all, so it raises an `::error` annotation saying so before exiting non-zero, rather than leaving a bare exit code for the reader to interpret. The default `GITHUB_TOKEN` is enough: GitHub's recursion suppression exempts `workflow_dispatch`, which is why the staging tag push needs a PAT and this does not.
 - `record_rc_scheduler_skip.sh`: Records a quiet three-hourly tick. Because such a tick deliberately leaves no pipeline run behind, this summary is its only trace, and it says outright that a green scheduler reports nothing about the last pipeline run's result.
 - `run_optional_e2e_suites.sh`: Runs `e2e-run.yml`'s `optional_suites` list one suite at a time. Every suite runs regardless of what the ones before it did — a failure that short-circuited the loop would silently drop the coverage behind it — and the script exits non-zero if any failed, which the `continue-on-error` step turns into a red-but-tolerated result with the failing suites named in the job summary. The list is comma-separated because `workflow_call` has no list input type.
@@ -214,19 +214,21 @@ These modular scripts back the corresponding child workflows in `.github/workflo
 | `staging-redeploy-*.yml`   | Staging deploy on a promotion tag       | `peel_tag_commit.sh`                                                                                                                                                                           |
 | `release-publish.yml`      | GA Release Orchestration                | `calculate_next_version.sh`, `verify_release_eligibility.sh`, `tag_ga_release.sh`, `promote_release_images.sh`, `sign_release_images.sh`, `publish_helm_chart.sh`, `publish_github_release.sh` |
 
-`deploy-environment.yml` and `teardown-environment.yml` are the two rows where the
-workflow and the script come from different commits. Both check the candidate out
-over the workspace before running their script, so the script is the candidate's
-copy while the workflow is the caller's — which means a rename lands in the
-workflow before it exists in any tree the workflow runs against.
+`deploy-environment.yml`, `teardown-environment.yml` and `e2e-run.yml` are the rows
+where the workflow and the script come from different commits. Each checks the
+candidate out over the workspace before running its script, so the script is the
+candidate's copy while the workflow is the caller's — which means a rename lands in
+the workflow before it exists in any tree the workflow runs against.
+
+For the first two the mismatch is loud, so a fallback covers it.
 `provision_environment.sh` and `teardown_environment.sh` were renamed from
 `provision_rc_environment.sh` and `teardown_rc_environment.sh`, and every
 `rc_*_validated` tag up to `rc_2608310656_cf038a2_validated` predates that, so both
 steps fall back to the old name when the new one is absent. `get_latest_validated_rc_tag`
 has no recency window, so those candidates keep being resolved until the RC pipeline
-validates a post-rename commit. Delete both fallbacks once none is left.
+validates a post-rename commit.
 
-`e2e-run.yml` has the same seam and cannot be papered over the same way, because
+`e2e-run.yml` cannot be papered over the same way, because
 its two mismatches are silent rather than loud: it names the suite in `E2E_SUITE`,
 which a pre-rename runner ignores in favour of its own default, and it calls
 `run_optional_e2e_suites.sh`, which does not exist in those trees at all under a
@@ -240,5 +242,11 @@ check on the redeploy trigger, since it is reachable by hand.
 Those last two outlive the transition, unlike the script-name fallbacks above.
 `nightly-pipeline.yml`'s `rc_tag` input offers any validated candidate, and the
 tag graph keeps every candidate it ever validated, so naming an old one by hand
-stays possible long after the default path stops resolving one. Delete the
-fallbacks when no `rc_*_validated` tag predates the rename; keep the two checks.
+stays possible long after the default path stops resolving one. So: delete the
+two fallbacks once no `rc_*_validated` tag predates the rename, and keep the two
+checks.
+
+While any candidate is refused this way, a nightly dispatch reports that it did
+nothing rather than exercising the pipeline — including the by-hand run the
+"The nightly environment" section above asks for. Run the RC pipeline first and
+let it validate a post-restructure commit.

@@ -322,6 +322,13 @@ get_existing_staging_tag() {
 # any validated candidate, and the tag graph keeps every candidate it ever
 # validated. Naming one by hand is a supported thing to do and stays wrong for
 # the same reason it is wrong today.
+#
+# The two markers probe one epoch boundary — the shared-pipeline restructure —
+# and not the general question of whether a tree can be driven by these
+# workflows. Nine scripts run out of the candidate's checkout; these sample two.
+# That is sound for the boundary they were chosen for, because both arrived in
+# the commit that created it. A later restructure that adds a seam needs its own
+# marker here; this function will not notice on its own.
 candidate_supports_shared_pipeline() {
   local sha="${1:-}"
 
@@ -331,8 +338,18 @@ candidate_supports_shared_pipeline() {
   fi
 
   git cat-file -e "${sha}:scripts/release/run_optional_e2e_suites.sh" 2>/dev/null || return 1
-  git show "${sha}:scripts/release/execute_e2e_tests.py" 2>/dev/null |
-    grep -q "E2E_SUITE" || return 1
+
+  # `git grep`, not `git show | grep -q`. Under the `pipefail` this file sets,
+  # the pipeline reports whatever killed the producer: `grep -q` exits the moment
+  # it matches, `git show` then dies on SIGPIPE, and the pipeline fails with 141
+  # on a tree that does carry the marker. It needs a blob larger than the pipe
+  # buffer, so it would not fire today — execute_e2e_tests.py is around 16 KB —
+  # and it fails in the direction that skips a good candidate silently.
+  #
+  # Anything non-zero refuses, including an unreadable object. Refusing is the
+  # safe direction: the cost is a skipped night, and the alternative is testing a
+  # candidate whose tree we could not read.
+  git grep -q "E2E_SUITE" "${sha}" -- scripts/release/execute_e2e_tests.py 2>/dev/null || return 1
 
   return 0
 }

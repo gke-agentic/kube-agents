@@ -14,8 +14,11 @@
 #                   the same candidate a no-op rather than a second tag, and it is
 #                   why the nightly matrix keeps running on quiet nights.
 #
-# Every skip is exit 0. The only exit 1 is a tag that does not resolve to a
-# commit, or a hand-passed tag that the RC pipeline never validated.
+# Every skip is exit 0. The exits that are not: a tag that does not resolve to a
+# commit, and a hand-passed tag the RC pipeline never validated or whose tree
+# predates the shared-pipeline restructure. Both hand-passed cases fail rather
+# than skip, because a caller who named a candidate is owed an answer about that
+# candidate rather than a green run that quietly tested nothing.
 #
 # Selection and the validation check both come from common.sh rather than being
 # re-implemented here: a second answer to "is this commit validated" is how the RC
@@ -27,6 +30,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
 RC_TAG="${1:-${RC_TAG:-}}"
+# Whether the caller named the candidate or the resolver picked it. The two get
+# different treatment when a gate refuses: a resolver that picked a candidate
+# nobody asked for skips, while a candidate somebody asked for by name fails.
+RC_TAG_WAS_EXPLICIT="false"
+if [ -n "${RC_TAG}" ]; then
+  RC_TAG_WAS_EXPLICIT="true"
+fi
 
 COMMIT_SHA=""
 STAGING_TAG=""
@@ -71,11 +81,23 @@ else
   # while the run reported a green matrix. Better to build no cluster at all than
   # to publish a result that means something other than it says.
   #
-  # skip_pipeline rather than an error, because on the default path there is
-  # nothing wrong — only nothing yet to do, cleared by the next candidate the RC
-  # pipeline validates. It stays reachable afterwards through the `rc_tag`
-  # dispatch input, which offers any validated candidate however old.
+  # A skip when the resolver chose the candidate, an error when a human named it.
+  # Nothing is wrong on the resolver's path — there is only nothing yet to do,
+  # cleared by the next candidate the RC pipeline validates — and a failed run
+  # every three hours for a condition that resolves itself is noise. But someone
+  # who passes `rc_tag` asked for that candidate specifically, and answering with
+  # a green run in which every later job was skipped tells them it was tested.
+  # That is the distinction the header's "only exit 1" rule already draws for an
+  # unvalidated hand-passed tag, and tag_staging_promotion.sh draws for the
+  # matching trigger check.
   if ! candidate_supports_shared_pipeline "${COMMIT_SHA}"; then
+    if [ "${RC_TAG_WAS_EXPLICIT}" = "true" ]; then
+      echo "❌ ERROR: Candidate '${RC_TAG}' (${COMMIT_SHA:0:7}) predates the shared-pipeline restructure." >&2
+      echo "   Its tree carries neither the E2E_SUITE selector nor run_optional_e2e_suites.sh, so the" >&2
+      echo "   matrix would run a suite nobody asked for and report green. Refusing to test it." >&2
+      echo "   Omit rc_tag to take the newest eligible candidate instead." >&2
+      exit 1
+    fi
     SKIP_PIPELINE="true"
     SKIP_PROMOTION="true"
     SKIP_REASON="Candidate '${RC_TAG}' (${COMMIT_SHA:0:7}) predates the shared-pipeline restructure, so its tree does not carry the suite selector and scripts these workflows drive it with. Waiting for the RC pipeline to validate a newer candidate."
