@@ -210,6 +210,13 @@ func (r *PlatformAgentReconciler) resolveNetpolProfile(ctx context.Context, agen
 		port, err := r.discoverMetadataDaemonPort(ctx)
 		switch {
 		case err == nil && port > 0:
+			if port != metadataDaemonDefaultPort {
+				log.Info("Discovered non-default metadata daemon container port from DaemonSet",
+					"daemonset", metadataDaemonDaemonSet,
+					"namespace", metadataDaemonNamespace,
+					"port", port,
+					"default", metadataDaemonDefaultPort)
+			}
 			p.MetadataDaemonIP = metadataDaemonIP
 			p.MetadataDaemonPort = port
 			p.MetadataDaemonSource = netpolSourceDiscovered
