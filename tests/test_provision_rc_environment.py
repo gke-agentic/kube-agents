@@ -124,6 +124,8 @@ exit 0
                 f"--permission-set={MOCK_PERMISSION_SET} "
                 f"--registry-prefix={MOCK_REGISTRY_PREFIX} "
                 f"--user-profile-enabled={MOCK_USER_PROFILE_ENABLED} "
+                f"--enable-pubsub-platform "
+                f"--enable-stockout-investigator "
                 f"--memory=hindsight"
             )
             self.assertEqual(calls[1], expected_install_call)

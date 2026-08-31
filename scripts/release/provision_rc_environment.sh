@@ -144,6 +144,14 @@ if [ -n "${USER_PROFILE_ENABLED:-}" ]; then
   INSTALL_ARGS+=(--user-profile-enabled="${USER_PROFILE_ENABLED}")
 fi
 
+if [ "${ENABLE_PUBSUB_PLATFORM:-true}" = "true" ]; then
+  INSTALL_ARGS+=(--enable-pubsub-platform)
+fi
+
+if [ "${ENABLE_STOCKOUT_INVESTIGATOR:-true}" = "true" ]; then
+  INSTALL_ARGS+=(--enable-stockout-investigator)
+fi
+
 # No --gitops-org/--gitops-repo flags here: install.sh already seeds PARAM_GITOPS_ORG
 # and PARAM_GITOPS_REPO from the GITHUB_ORG and GITHUB_REPO this step exports
 # (the PARAM_GITOPS_* assignments near the top of install.sh), so passing them again

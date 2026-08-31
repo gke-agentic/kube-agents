@@ -84,6 +84,8 @@ PARAM_PERMISSION_SET="${PLATFORM_AGENT_PERMISSION_SET:-read-only}"
 PARAM_CUSTOM_ROLES="${PLATFORM_AGENT_CUSTOM_ROLES:-}"
 PARAM_ENABLE_GVISOR="${ENABLE_GVISOR:-false}"
 PARAM_ENABLE_WEBUI="${ENABLE_WEBUI:-false}"
+PARAM_ENABLE_PUBSUB_PLATFORM="${ENABLE_PUBSUB_PLATFORM:-false}"
+PARAM_ENABLE_STOCKOUT_INVESTIGATOR="${ENABLE_STOCKOUT_INVESTIGATOR:-false}"
 PARAM_MEMORY="${MEMORY:-file}"
 PARAM_IMAGE_TAG="${IMAGE_TAG:-}"
 PARAM_ALLOW_UNVERIFIED_SOURCE="${ALLOW_UNVERIFIED_SOURCE:-false}"
@@ -167,6 +169,9 @@ Flags for AI Agents & Automation:
   --enable-google-chat          Enable Google Chat integration
   --chat-topic-name=TOPIC       Pub/Sub topic name for Google Chat (default: platform-agent-chat-events)
   --google-chat-mode=MODE       Google Chat output mode: default | debug (default: default)
+  --enable-pubsub-platform      Enable Pub/Sub platform adapter AgentPlugin (default: false)
+  --enable-stockout-investigator
+                                Enable GKE Stockout Investigator AgentPlugin (default: false)
   --menu, --config              Launch interactive Day-2 Control Panel Menu (raspi-config style)
   -h, --help, -?                Show this help message
 EOF
@@ -197,6 +202,10 @@ parse_args() {
       --enable-web-ui=*|--enable-webui=*|--webui=*) PARAM_ENABLE_WEBUI="${1#*=}"; shift ;;
       --enable-web-ui|--enable-webui|--webui) PARAM_ENABLE_WEBUI="true"; shift ;;
       --user-profile-enabled=*) PARAM_USER_PROFILE_ENABLED="${1#*=}"; shift ;;
+      --enable-pubsub-platform=*|--enable-pubsub=*) PARAM_ENABLE_PUBSUB_PLATFORM="${1#*=}"; shift ;;
+      --enable-pubsub-platform|--enable-pubsub) PARAM_ENABLE_PUBSUB_PLATFORM="true"; shift ;;
+      --enable-stockout-investigator=*|--enable-stockout=*) PARAM_ENABLE_STOCKOUT_INVESTIGATOR="${1#*=}"; shift ;;
+      --enable-stockout-investigator|--enable-stockout) PARAM_ENABLE_STOCKOUT_INVESTIGATOR="true"; shift ;;
       --memory=*) PARAM_MEMORY="${1#*=}"; shift ;;
       --image-tag=*) PARAM_IMAGE_TAG="${1#*=}"; shift ;;
       --registry-prefix=*) PARAM_REGISTRY_PREFIX="${1#*=}"; shift ;;
@@ -2269,6 +2278,8 @@ main() {
   # sidecar behind on the tag of the install that wrote this file.
   write_state_var "$vars_file" OPERATOR_IMAGE "${registry_prefix}/k8s-operator"
   write_state_var "$vars_file" PLATFORM_AGENT_IMAGE "${registry_prefix}/platform-agent"
+  write_state_var "$vars_file" ENABLE_PUBSUB_PLATFORM "${PARAM_ENABLE_PUBSUB_PLATFORM:-false}"
+  write_state_var "$vars_file" ENABLE_STOCKOUT_INVESTIGATOR "${PARAM_ENABLE_STOCKOUT_INVESTIGATOR:-false}"
   write_state_var "$vars_file" ENABLE_GKE_BACKUP_PLAN "${ENABLE_GKE_BACKUP_PLAN:-false}"
   write_state_var "$vars_file" NO_CONFIRM "1"
   chmod 600 "$vars_file"
