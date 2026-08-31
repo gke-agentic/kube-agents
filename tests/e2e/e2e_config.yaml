@@ -94,9 +94,13 @@ environments:
     description: "Full Nightly E2E Matrix: all audit streams, all stockout scenarios, operator plugin lifecycle, and chat integration"
     region: "us-central1"
     namespace: "kubeagents-system"
+    # No GITHUB_ORG/GITHUB_REPO here, for the reason spelled out under `rc-e2e`
+    # above: this suite runs test_github_token_minting_and_connectivity, the
+    # placeholder pair names a repository no GitHub App is installed on, and the
+    # same pair configures the minter at install time. nightly-pipeline.yml
+    # passes the nightly environment's GITOPS_ORG and GITOPS_REPO to both, so
+    # there is one source of truth.
     env_vars:
-      GITHUB_ORG: "test-org-kube-agent"
-      GITHUB_REPO: "test-org-kube-agent/agents-repo"
       FLEET_AUDIT_STREAMS: "all"
       STOCKOUT_SCENARIOS: "all"
       CHAT_TOPIC_NAME: "platform-agent-chat-events"

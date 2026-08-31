@@ -137,6 +137,76 @@ source "{_COMMON_SH}"
         finally:
             temp_dir.cleanup()
 
+    def test_is_rc_candidate_commit_already_validated_is_anchored_to_the_rc_family(self):
+        """The glob has to be rc_*_validated, not *_validated.
+
+        This function gates resolve_rc_tag.sh's skip decision, so a validation
+        marker from another tag family matching it would make the RC pipeline
+        skip a candidate it never validated. staging_* is the family that made
+        this concrete, but the point is general.
+        """
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            head = git("rev-parse", "HEAD").stdout.strip()
+
+            proc = self._run_common_func(f'is_rc_candidate_commit_already_validated "{head}"', cwd=repo_dir)
+            self.assertNotEqual(proc.returncode, 0)
+
+            git("tag", "-a", "someone_elses_validated", "-m", "Not an RC marker")
+            proc = self._run_common_func(f'is_rc_candidate_commit_already_validated "{head}"', cwd=repo_dir)
+            self.assertNotEqual(proc.returncode, 0, "a non-rc_ tag ending _validated must not count")
+
+            git("tag", "-a", "rc_2608191200_2222222_validated", "-m", "RC marker")
+            proc = self._run_common_func(f'is_rc_candidate_commit_already_validated "{head}"', cwd=repo_dir)
+            self.assertEqual(proc.returncode, 0)
+        finally:
+            temp_dir.cleanup()
+
+    def test_staging_tag_for_rc(self):
+        cases = [
+            ("rc_2608241820_b35543c_validated", "staging_2608241820_b35543c"),
+            # The suffix is optional: the unvalidated tag maps to the same name,
+            # which is what makes the transform reversible.
+            ("rc_2608241820_b35543c", "staging_2608241820_b35543c"),
+        ]
+        for rc_tag, expected in cases:
+            with self.subTest(rc_tag=rc_tag):
+                proc = self._run_common_func(f'staging_tag_for_rc "{rc_tag}"')
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(proc.stdout.strip(), expected)
+
+    def test_staging_tag_for_rc_refuses_anything_outside_the_rc_family(self):
+        """The output is a live deploy trigger, so a typo must not compose one."""
+        for bad in ("", "0.2.0", "staging_2608241820_b35543c", "rc_", "not-a-tag"):
+            with self.subTest(bad=bad):
+                proc = self._run_common_func(f'staging_tag_for_rc "{bad}"')
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertEqual(proc.stdout.strip(), "")
+
+    def test_get_existing_staging_tag(self):
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            head = git("rev-parse", "HEAD").stdout.strip()
+
+            proc = self._run_common_func(f'get_existing_staging_tag "{head}"', cwd=repo_dir)
+            self.assertEqual(proc.returncode, 0)
+            self.assertEqual(proc.stdout.strip(), "")
+
+            # A staging tag on a DIFFERENT commit must not answer for this one.
+            (pathlib.Path(repo_dir) / "second.txt").write_text("second\n")
+            git("add", "second.txt")
+            git("commit", "-m", "chore: second commit")
+            other = git("rev-parse", "HEAD").stdout.strip()
+            git("tag", "-a", "staging_2608241820_b35543c", "-m", "Promoted elsewhere")
+
+            proc = self._run_common_func(f'get_existing_staging_tag "{head}"', cwd=repo_dir)
+            self.assertEqual(proc.stdout.strip(), "")
+
+            proc = self._run_common_func(f'get_existing_staging_tag "{other}"', cwd=repo_dir)
+            self.assertEqual(proc.stdout.strip(), "staging_2608241820_b35543c")
+        finally:
+            temp_dir.cleanup()
+
     def test_get_target_repo(self):
         # Default
         proc = self._run_common_func('get_target_repo', env={"GH_ORG": "", "GH_REPO": "", "GITHUB_REPOSITORY": ""})

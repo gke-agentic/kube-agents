@@ -3,7 +3,12 @@ name: Staging Redeploy Agent
 on:
   push:
     tags:
-      - "staging/**"
+      # Flat and underscore-separated, matching the rc_* family the nightly
+      # pipeline derives it from: staging_<ts>_<sha>. See
+      # scripts/release/common.sh's staging_tag_for_rc. The single historical
+      # staging/2026-07-23 tag never re-triggers, so nothing needs migrating —
+      # it simply stops matching.
+      - "staging_*"
 
 # The payload here is a `helm upgrade` on the shared `kube-agents` release.
 # Cancelling one mid-flight strands the release in pending-upgrade and every

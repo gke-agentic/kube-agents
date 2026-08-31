@@ -3,7 +3,12 @@ name: Staging Redeploy Integrations
 on:
   push:
     tags:
-      - "staging/**"
+      # Flat and underscore-separated, matching the rc_* family the nightly
+      # pipeline derives it from: staging_<ts>_<sha>. See
+      # scripts/release/common.sh's staging_tag_for_rc. The single historical
+      # staging/2026-07-23 tag never re-triggers, so nothing needs migrating —
+      # it simply stops matching.
+      - "staging_*"
 
 # The payload here is a `helm upgrade` on the shared `kube-agents` release.
 # Cancelling one mid-flight strands the release in pending-upgrade and every
@@ -25,7 +30,7 @@ permissions:
 jobs:
   call-deploy:
     # A fork inherits the tag trigger but none of the deploy credentials, so a
-    # staging/** tag pushed there would fail and mail the fork owner.
+    # staging_* tag pushed there would fail and mail the fork owner.
     if: github.repository == 'gke-labs/kube-agents'
     permissions:
       contents: read

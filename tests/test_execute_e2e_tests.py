@@ -79,8 +79,8 @@ class ChildEnvironmentTest(unittest.TestCase):
     def test_selection_overrides_a_conflicting_ambient_value(self) -> None:
         """The regression: E2E_ENV must be set after **os.environ, not before.
 
-        e2e-nightly-matrix.yml exports E2E_ENV from a dispatch input whose choices
-        include "all". The runner expands that into one child per environment, but the
+        e2e-manual-runner.yml dispatches a test_environment whose choices include
+        "all", which reaches the runner as E2E_ENV. The runner expands that into one child per environment, but the
         ambient "all" rode through to each of them, and conftest matches environment
         names exactly -- so the lookup found nothing. Reorder the dict so **os.environ
         lands last and the leak comes back.

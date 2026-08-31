@@ -38,7 +38,7 @@ elif [ "${IS_SCHEDULED}" = "true" ]; then
     exit 1
   fi
 
-  if is_commit_already_validated "${COMMIT_SHA}"; then
+  if is_rc_candidate_commit_already_validated "${COMMIT_SHA}"; then
     echo "ℹ️ Latest built commit ${COMMIT_SHA:0:7} is already validated (*_validated). Skipping redundant RC run." >&2
     SKIP_RC="true"
   elif is_commit_already_attempted "${COMMIT_SHA}"; then

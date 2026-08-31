@@ -1,0 +1,246 @@
+name: Nightly Pipeline
+
+# Builds a nightly environment from nothing, runs the full E2E matrix on it,
+# promotes the candidate to staging if the matrix passes, and destroys the
+# environment again.
+#
+# It owns its infrastructure end to end. Every job binds to the `nightly` GitHub
+# environment and takes the `nightly-environment` concurrency lock, so nothing
+# here queues behind — or races — the three-hourly RC pipeline.
+#
+# NO `schedule:` YET, on purpose. A cron and a workflow_dispatch button only
+# exist once the file is on the default branch, so the first real run is
+# necessarily after merge, and a dispatch-only workflow cannot affect anything
+# that runs today no matter how wrong it is. Exercise it by hand against the
+# nightly project until it is boring, then add the cron as a one-line follow-up:
+# turning the schedule on is the decision, and it deserves its own reviewable
+# change. The intended schedule is `cron: "0 2 * * *"`.
+
+permissions:
+  contents: read
+
+on:
+  #checkov:skip=CKV_GHA_7:Optional candidate override; the pipeline resolves the newest validated candidate when omitted
+  workflow_dispatch:
+    inputs:
+      rc_tag:
+        description: "Candidate rc_*_validated tag to test (optional; newest is used when omitted)"
+        required: false
+        default: ""
+        type: string
+
+# One acquisition per run, at the pipeline level, so a second nightly cannot
+# start while this one holds a cluster. The per-job `nightly-environment` locks
+# inside the called workflows serialise against anything else pointed at the
+# same environment.
+concurrency:
+  group: nightly-pipeline
+  cancel-in-progress: false
+
+jobs:
+  step-1-resolve-candidate:
+    name: Step 1 - Resolve Promotion Candidate
+    # A fork inherits workflow_dispatch but none of the credentials. The guard
+    # repeats on each job rather than relying on the skip cascading through
+    # `needs`: an `always()` added to a later job would silently un-guard it.
+    if: github.repository == 'gke-labs/kube-agents'
+    runs-on: ubuntu-latest
+    # Bound to `nightly` for one variable: REGISTRY_PREFIX, which decides where
+    # the candidate images are looked for. rc-create-tag.yml reads it from the
+    # `rc` environment for the same reason, and a step that resolves it from a
+    # different scope than the deploy job would verify one registry and install
+    # from another. Every `vars.*` this job reads therefore needs the `nightly`
+    # environment to define it — an unbound job resolves them all to empty in
+    # silence.
+    environment: nightly
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      commit_sha: ${{ steps.resolve.outputs.commit_sha }}
+      rc_tag: ${{ steps.resolve.outputs.rc_tag }}
+      staging_tag: ${{ steps.resolve.outputs.staging_tag }}
+      skip_pipeline: ${{ steps.resolve.outputs.skip_pipeline }}
+      skip_promotion: ${{ steps.resolve.outputs.skip_promotion }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve the newest validated candidate
+        id: resolve
+        env:
+          RC_TAG: ${{ inputs.rc_tag }}
+          GH_ORG: ${{ vars.GH_ORG }}
+          GH_REPO: ${{ vars.GH_REPO }}
+        run: ./scripts/release/resolve_promotion_candidate.sh
+
+      # The candidate was validated hours or days ago and its images are what
+      # the environment installs. A retention sweep or a registry problem
+      # between then and now must fail here, before a cluster is built.
+      - name: Verify candidate images are still in GHCR
+        if: steps.resolve.outputs.skip_pipeline != 'true'
+        env:
+          COMMIT_SHA: ${{ steps.resolve.outputs.commit_sha }}
+          GH_ORG: ${{ vars.GH_ORG }}
+          GH_REPO: ${{ vars.GH_REPO }}
+          REGISTRY_PREFIX: ${{ vars.REGISTRY_PREFIX }}
+        run: ./scripts/release/verify_candidate_images.sh
+
+      - name: Record what this run will do
+        env:
+          COMMIT_SHA: ${{ steps.resolve.outputs.commit_sha }}
+          RC_TAG: ${{ steps.resolve.outputs.rc_tag }}
+          STAGING_TAG: ${{ steps.resolve.outputs.staging_tag }}
+          SKIP_PIPELINE: ${{ steps.resolve.outputs.skip_pipeline }}
+          SKIP_PROMOTION: ${{ steps.resolve.outputs.skip_promotion }}
+          SKIP_REASON: ${{ steps.resolve.outputs.skip_reason }}
+        run: |
+          {
+            echo "### Nightly candidate"
+            echo ""
+            if [ "${SKIP_PIPELINE}" = "true" ]; then
+              echo "Nothing to test: ${SKIP_REASON}"
+            else
+              echo "| Field | Value |"
+              echo "| --- | --- |"
+              echo "| Candidate | \`${RC_TAG}\` |"
+              echo "| Commit | \`${COMMIT_SHA}\` |"
+              echo "| Staging tag | \`${STAGING_TAG}\` |"
+              if [ "${SKIP_PROMOTION}" = "true" ]; then
+                echo "| Promotes | no — already promoted |"
+              else
+                echo "| Promotes | yes, if the matrix passes |"
+              fi
+              if [ -n "${SKIP_REASON}" ]; then
+                echo ""
+                echo "${SKIP_REASON}"
+              fi
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  step-2-deploy-env:
+    name: Step 2 - Provision Nightly Environment
+    needs: step-1-resolve-candidate
+    if: |
+      github.repository == 'gke-labs/kube-agents' &&
+      needs.step-1-resolve-candidate.outputs.skip_pipeline != 'true'
+    # `inherit` for the reason rc-release-pipeline.yml's step 2 records: the
+    # called job declares an `environment:` and reads environment secrets
+    # (GH_APP_ID, GH_APP_PRIVATE_KEY, GEMINI_API_KEY) from it. A `uses:` job
+    # cannot declare an environment, so an explicit mapping here resolves at
+    # repository scope and forwards empties.
+    uses: ./.github/workflows/rc-deploy-environment.yml # zizmor: ignore[secrets-inherit]
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      github_environment: "nightly"
+      rc_tag: ${{ needs.step-1-resolve-candidate.outputs.commit_sha }}
+    secrets: inherit
+
+  step-3-run-e2e-matrix:
+    name: Step 3 - Run Nightly E2E Matrix
+    needs: [step-1-resolve-candidate, step-2-deploy-env]
+    if: |
+      github.repository == 'gke-labs/kube-agents' &&
+      needs.step-1-resolve-candidate.outputs.skip_pipeline != 'true'
+    uses: ./.github/workflows/e2e-run.yml # zizmor: ignore[secrets-inherit]
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      github_environment: "nightly"
+      commit_sha: ${{ needs.step-1-resolve-candidate.outputs.commit_sha }}
+      # One suite, and it blocks. Unlike the RC gate there is no tolerated
+      # half: the whole point of the nightly matrix is that everything in it
+      # has to pass before staging moves. `nightly-e2e` already carries
+      # STOCKOUT_SCENARIOS=all and FLEET_AUDIT_STREAMS=all in e2e_config.yaml.
+      blocking_suite: "nightly-e2e"
+      # Above the 60 the RC gate uses: the matrix runs five test files where the
+      # RC gate runs one, on top of the same fixed provisioning cost.
+      timeout_minutes: 120
+    secrets: inherit
+
+  step-4-promote-to-staging:
+    name: Step 4 - Promote Candidate to Staging
+    needs: [step-1-resolve-candidate, step-3-run-e2e-matrix]
+    # The implicit success() on `needs` is the gate: a red matrix promotes
+    # nothing and leaves staging where it is.
+    #
+    # skip_promotion is the separate, non-failure case — the candidate already
+    # carries a staging tag, so the night tested it and pushes nothing. That
+    # condition is on the STEPS below rather than on this job, deliberately. A
+    # skipped job skips everything that `needs` it, and step 5 needs this one,
+    # so gating the job here would leave a GKE cluster running on every night
+    # whose candidate was already promoted — the most common case once the RC
+    # pipeline has a quiet day.
+    if: |
+      github.repository == 'gke-labs/kube-agents' &&
+      needs.step-1-resolve-candidate.outputs.skip_pipeline != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      # RELEASE_BOT_TOKEN, not GITHUB_TOKEN. A tag pushed with the default token
+      # triggers no workflow, so staging-redeploy-*.yml would never start and
+      # the promotion would go green having deployed nothing.
+      - name: Checkout repository
+        if: needs.step-1-resolve-candidate.outputs.skip_promotion != 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_BOT_TOKEN }}
+
+      - name: Tag the candidate for staging
+        if: needs.step-1-resolve-candidate.outputs.skip_promotion != 'true'
+        env:
+          COMMIT_SHA: ${{ needs.step-1-resolve-candidate.outputs.commit_sha }}
+          RC_TAG: ${{ needs.step-1-resolve-candidate.outputs.rc_tag }}
+          STAGING_TAG: ${{ needs.step-1-resolve-candidate.outputs.staging_tag }}
+        run: ./scripts/release/tag_staging_promotion.sh
+
+      - name: Record that nothing was promoted
+        if: needs.step-1-resolve-candidate.outputs.skip_promotion == 'true'
+        env:
+          RC_TAG: ${{ needs.step-1-resolve-candidate.outputs.rc_tag }}
+        run: |
+          echo "Candidate ${RC_TAG} already carries a staging tag; the matrix ran, nothing was pushed." \
+            >> "${GITHUB_STEP_SUMMARY}"
+
+  step-5-teardown-env:
+    name: Step 5 - Tear Down Nightly Environment
+    # Every earlier job, so that the implicit success() on `needs` is what gates
+    # this one: the cluster is destroyed only when the whole run passed. A
+    # failure anywhere leaves the environment standing to be examined live,
+    # which is the same contract as the RC pipeline's step 5 — and the same
+    # cost, worse: nothing else reclaims a nightly environment for 24 hours,
+    # where the RC one is reclaimed within 3 by the next run's pre-install
+    # teardown. A failed nightly leaves a GKE cluster billing until someone
+    # looks at it.
+    #
+    # The `if:` below does NOT weaken that gate. It adds conditions rather than
+    # replacing the success() check. An `always()` added here would remove it
+    # and start destroying the environments this exists to preserve.
+    needs:
+      [
+        step-1-resolve-candidate,
+        step-2-deploy-env,
+        step-3-run-e2e-matrix,
+        step-4-promote-to-staging,
+      ]
+    if: |
+      github.repository == 'gke-labs/kube-agents' &&
+      needs.step-1-resolve-candidate.outputs.skip_pipeline != 'true'
+    uses: ./.github/workflows/rc-teardown-environment.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      github_environment: "nightly"
+      rc_tag: ${{ needs.step-1-resolve-candidate.outputs.commit_sha }}
+    secrets:
+      GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}

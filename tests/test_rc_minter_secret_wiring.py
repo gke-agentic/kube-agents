@@ -15,8 +15,8 @@ the run dies later in test_github_token_minting_and_connectivity with an HTTP
 502 that names nothing. That shipped once; these tests are so it cannot ship
 again without a red build.
 
-Only the workflow wiring is pinned here. The guard in provision_rc_environment.sh
-is covered by tests/test_provision_rc_environment.py, which executes the script
+Only the workflow wiring is pinned here. The guard in provision_environment.sh
+is covered by tests/test_provision_environment.py, which executes the script
 rather than reading it.
 """
 
@@ -46,9 +46,32 @@ class RcMinterSecretWiringTest(unittest.TestCase):
             "environment's GH_APP_ID is forwarded empty and the minter is skipped.",
         )
 
-    def test_the_called_job_declares_the_rc_environment(self):
-        """The other half. Inheriting is useless if the job cannot see the environment."""
-        self.assertEqual(_jobs(_DEPLOY)["deploy-rc"].get("environment"), "rc")
+    def test_the_called_job_declares_the_environment_it_was_asked_for(self):
+        """The other half. Inheriting is useless if the job cannot see the environment.
+
+        The deploy workflow serves both the RC and the nightly pipeline, so the
+        environment is an input rather than a literal — but it still has to
+        render into the job's `environment:` key, and the RC caller still has to
+        pass `rc`.
+        """
+        self.assertEqual(
+            _jobs(_DEPLOY)["deploy-environment"].get("environment"),
+            "${{ inputs.github_environment }}",
+        )
+        self.assertEqual(
+            _jobs(_PIPELINE)["step-2-deploy-env"]["with"]["github_environment"],
+            "rc",
+        )
+
+    def test_the_environment_input_has_no_default(self):
+        """A `default: rc` would let a nightly caller that omits it rebuild the RC."""
+        for workflow in (_DEPLOY, _WORKFLOWS / "rc-teardown-environment.yml"):
+            with self.subTest(workflow=workflow.name):
+                spec = yaml.safe_load(workflow.read_text())[True]["workflow_call"]["inputs"][
+                    "github_environment"
+                ]
+                self.assertTrue(spec.get("required"))
+                self.assertNotIn("default", spec)
 
     def test_the_called_job_reads_both_app_secrets_from_the_environment(self):
         """Pins what the inherit is for, so a rename cannot quietly orphan it."""

@@ -1,0 +1,188 @@
+name: Run E2E Suites
+
+# The E2E step of an environment pipeline, as a reusable workflow so the RC
+# pipeline and the nightly pipeline run the same job rather than two copies of
+# it that drift. Everything environment-specific arrives as an input: which
+# GitHub environment supplies the GCP coordinates, which commit was deployed,
+# and which suites to run.
+#
+# Two suites, deliberately asymmetric. `blocking_suite` is the gate — a failure
+# there fails the run and stops the pipeline promoting anything.
+# `optional_suite` is `continue-on-error`, for coverage worth having and not
+# worth blocking a release on. A caller that wants only a gate omits the second.
+
+permissions:
+  contents: read
+
+# workflow_call only, and no fork guard: a workflow reachable only this way is
+# gated by whichever pipeline calls it, both of which carry
+# `if: github.repository == 'gke-labs/kube-agents'`. It is deliberately not
+# dispatchable — e2e-manual-runner.yml is the by-hand route, and a second one
+# here would need every input duplicated across both trigger blocks, where an
+# input defined for one and read on the other resolves to empty.
+on:
+  workflow_call:
+    inputs:
+      # See rc-deploy-environment.yml for why this is named github_environment
+      # and carries no default.
+      github_environment:
+        description: "GitHub environment supplying the GCP project, region and cluster"
+        required: true
+        type: string
+      commit_sha:
+        description: "Commit SHA the environment was deployed at"
+        required: true
+        type: string
+      blocking_suite:
+        description: "E2E suite that gates the run (e2e_config.yaml environment name)"
+        required: true
+        type: string
+      optional_suite:
+        description: "Second suite, run with continue-on-error. Empty to skip."
+        required: false
+        default: ""
+        type: string
+      stockout_scenarios:
+        description: "Stockout scenario filter for the optional suite"
+        required: false
+        default: "04"
+        type: string
+      fleet_audit_streams:
+        description: "Fleet audit stream filter for the optional suite"
+        required: false
+        default: "all"
+        type: string
+      timeout_minutes:
+        description: "Job timeout"
+        required: false
+        default: 60
+        type: number
+
+jobs:
+  run-e2e:
+    name: Run E2E (${{ inputs.blocking_suite }})
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.github_environment }}
+    # The same lock the deploy and teardown jobs take for this environment: the
+    # suites run against the cluster those two create and destroy.
+    concurrency:
+      group: ${{ inputs.github_environment }}-environment
+      cancel-in-progress: false
+    # Roughly 40 of the default 60 minutes can be spent before the first test
+    # runs, which is what a fresh Autopilot cluster costs when it has to scale
+    # nodes from zero and pull every image. wait_for_gke_readiness.sh gates
+    # litellm at 420s and the gateway at 900s, and pays each of those twice —
+    # once for `rollout status`, once for the paired
+    # `wait --for=condition=Available` — on top of a 300s image-tag verification
+    # loop. The adapter step ahead of it adds an image build and push plus up to
+    # 300s plugin-ready and 180s settle. At 30 the job timeout would fire first
+    # and report a broken deploy rather than a slow one. Re-derive this sum
+    # before lowering it; the readiness constants are in
+    # wait_for_gke_readiness.sh, not here. The nightly matrix runs more suites
+    # than the RC gate and raises it via the input.
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      CLOUDSDK_PYTHON: "/usr/bin/python3"
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.commit_sha }}
+          persist-credentials: false
+
+      - name: Set up Python Environment
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: ".python-version"
+          cache: "pip"
+
+      - name: Install Python Dependencies
+        run: ./scripts/release/install_e2e_deps.sh
+
+      - name: Authenticate to Google Cloud via Workload Identity Federation (WIF)
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          version: "579.0.0"
+          install_components: "beta,gke-gcloud-auth-plugin"
+
+      - name: Authenticate to GKE
+        uses: google-github-actions/get-gke-credentials@3da1e46a907576cefaa90c484278bb5b259dd395 # v3.0.0
+        with:
+          cluster_name: ${{ vars.GKE_CLUSTER_NAME }}
+          location: ${{ vars.GCP_REGION }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      # continue-on-error, deliberately: alert ingress is a dependency of the
+      # optional cluster/audit suite below and of nothing else, so a
+      # stockout-only problem must not sink the blocking gate. The script itself
+      # exits non-zero on failure; the decision to tolerate that is this
+      # workflow's, and lives here rather than inside the script. Runs before
+      # readiness so the gateway re-template the adapter triggers is already in
+      # flight when the rollout waits start.
+      - name: Install Pub/Sub Alert Ingress
+        continue-on-error: true
+        env:
+          AGENT_NAMESPACE: ${{ vars.AGENT_NAMESPACE }}
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ vars.GCP_REGION }}
+          GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
+        run: ./scripts/release/install_pubsub_platform.sh
+
+      - name: Connect to GKE & Wait for Pod Readiness
+        env:
+          AGENT_NAMESPACE: ${{ vars.AGENT_NAMESPACE }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ vars.GCP_REGION }}
+          GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
+        run: ./scripts/release/wait_for_gke_readiness.sh
+
+      - name: Execute Blocking E2E Gate
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ vars.GCP_REGION }}
+          GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
+          E2E_ENV: ${{ inputs.blocking_suite }}
+          CHAT_TOPIC_NAME: ${{ vars.CHAT_TOPIC_NAME }}
+          CHAT_SPACE_ID: ${{ secrets.E2E_CHAT_SPACE_ID }}
+          E2E_CHAT_CLIENT_ID: ${{ secrets.E2E_CHAT_CLIENT_ID }}
+          E2E_CHAT_CLIENT_SECRET: ${{ secrets.E2E_CHAT_CLIENT_SECRET }}
+          E2E_CHAT_REFRESH_TOKEN: ${{ secrets.E2E_CHAT_REFRESH_TOKEN }}
+          # The same pair rc-deploy-environment.yml gives the installer, so the
+          # repository the suite probes is the one the minter was scoped to.
+          # Read from the environment rather than pinned in e2e_config.yaml
+          # because a value written in both places drifts, and a token minted
+          # for one repository does not authenticate against another. Bare: the
+          # conftest github_repo fixture composes owner/repo from GITHUB_ORG
+          # when GITHUB_REPO carries no slash.
+          GITHUB_ORG: ${{ vars.GITOPS_ORG }}
+          GITHUB_REPO: ${{ vars.GITOPS_REPO }}
+        run: make test-e2e
+
+      - name: Execute Optional E2E Suite
+        if: inputs.optional_suite != ''
+        continue-on-error: true
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ vars.GCP_REGION }}
+          GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
+          E2E_ENV: ${{ inputs.optional_suite }}
+          STOCKOUT_SCENARIOS: ${{ inputs.stockout_scenarios }}
+          FLEET_AUDIT_STREAMS: ${{ inputs.fleet_audit_streams }}
+          CHAT_TOPIC_NAME: ${{ vars.CHAT_TOPIC_NAME }}
+          CHAT_SPACE_ID: ${{ secrets.E2E_CHAT_SPACE_ID }}
+          E2E_CHAT_CLIENT_ID: ${{ secrets.E2E_CHAT_CLIENT_ID }}
+          E2E_CHAT_CLIENT_SECRET: ${{ secrets.E2E_CHAT_CLIENT_SECRET }}
+          E2E_CHAT_REFRESH_TOKEN: ${{ secrets.E2E_CHAT_REFRESH_TOKEN }}
+          GITHUB_ORG: ${{ vars.GITOPS_ORG }}
+          GITHUB_REPO: ${{ vars.GITOPS_REPO }}
+        run: make test-e2e

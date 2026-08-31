@@ -18,15 +18,14 @@ _INSTALL_SCRIPT = _REPO_ROOT / "scripts" / "release" / "install_pubsub_platform.
 _READINESS_SCRIPT = _REPO_ROOT / "scripts" / "release" / "wait_for_gke_readiness.sh"
 _WORKFLOWS = _REPO_ROOT / ".github" / "workflows"
 
-# Every workflow that waits for readiness against the RC cluster. Each one runs an
-# alert-driven suite, so each one needs the adapter.
+# Every workflow that waits for readiness against an ephemeral environment. Each
+# one runs an alert-driven suite, so each one needs the adapter.
 #
-# The nightly matrix and the manual runner belong here too and are deliberately
-# absent: neither declares an `environment:`, so every `vars.*` in them resolves
-# against repository-level variables, of which this repository defines none, and
-# both fail at `get-gke-credentials` before reaching any of this. Wiring them up
-# is #1013's follow-up, which binds them to an environment first.
-_CALLERS = ("rc-release-pipeline.yml",)
+# One entry, because there is one such job: `e2e-run.yml`, which the RC pipeline
+# and the nightly pipeline both call. The manual runner belongs here too and is
+# deliberately absent — it waits for readiness without installing the adapter,
+# which is #1013's follow-up.
+_CALLERS = ("e2e-run.yml",)
 
 
 def _steps(workflow_name: str) -> list[dict]:
@@ -121,16 +120,16 @@ class TestCallerWiring(unittest.TestCase):
                     "gateway then restarts mid-suite",
                 )
 
-    def test_rc_pipeline_tolerates_an_ingress_failure(self) -> None:
-        """Alert ingress feeds the optional suite only; it must not sink the Chat gate."""
-        steps = _steps("rc-release-pipeline.yml")
+    def test_the_shared_e2e_job_tolerates_an_ingress_failure(self) -> None:
+        """Alert ingress feeds the optional suite only; it must not sink the blocking gate."""
+        steps = _steps("e2e-run.yml")
         install_at = _run_index(steps, "install_pubsub_platform.sh")
         self.assertNotEqual(install_at, -1)
         self.assertIs(
             steps[install_at].get("continue-on-error"),
             True,
-            "the RC pipeline's adapter step must be continue-on-error: a stockout-only "
-            "problem must not fail the mandatory Google Chat gate",
+            "the adapter step must be continue-on-error: a stockout-only problem must "
+            "not fail the blocking gate, which on the RC is Google Chat",
         )
 
 

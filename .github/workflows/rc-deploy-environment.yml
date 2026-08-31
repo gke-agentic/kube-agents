@@ -1,18 +1,40 @@
-name: RC Step 2 - Deploy Environment
+name: Deploy Environment
 
 permissions:
   contents: read
 
 on:
-  #checkov:skip=CKV_GHA_7:Standalone launch requires release candidate tag or commit SHA input
+  #checkov:skip=CKV_GHA_7:Standalone launch requires the candidate tag or commit SHA and the environment to build
   workflow_dispatch:
     inputs:
+      github_environment:
+        description: "GitHub environment supplying the GCP project, region and cluster"
+        required: true
+        type: choice
+        options:
+          - "rc"
+          - "nightly"
       rc_tag:
-        description: "Release Candidate Tag or Commit SHA (Mandatory for Step 2 standalone launch)"
+        description: "Release Candidate Tag or Commit SHA (Mandatory for standalone launch)"
         required: true
         type: string
   workflow_call:
     inputs:
+      # The GitHub Actions environment, and nothing else: it renders straight
+      # into the job's `environment:` key below, and its values are `rc` and
+      # `nightly`. Not `target_environment`, because `test_environment` already
+      # exists on the E2E workflows naming a *test suite* (`rc-e2e`,
+      # `nightly-e2e`), and two near-identical names for different things is how
+      # that confusion propagates.
+      #
+      # required, with NO default. A `default: rc` would mean a nightly caller
+      # that omits the input silently tears down and rebuilds the RC
+      # environment, which is the one failure mode worth making impossible. The
+      # cost is an explicit argument at each call site.
+      github_environment:
+        description: "GitHub environment supplying the GCP project, region and cluster"
+        required: true
+        type: string
       rc_tag:
         description: "Release Candidate Tag or Commit SHA"
         required: true
@@ -23,11 +45,15 @@ on:
         required: true
 
 jobs:
-  deploy-rc:
+  deploy-environment:
     runs-on: ubuntu-latest
-    environment: rc
+    environment: ${{ inputs.github_environment }}
+    # One lock per environment, derived from the same input. `rc` still yields
+    # `rc-environment`, so the RC pipeline's serialisation is unchanged, and the
+    # nightly pipeline takes `nightly-environment` instead of contending for a
+    # cluster it does not deploy to.
     concurrency:
-      group: rc-environment
+      group: ${{ inputs.github_environment }}-environment
       cancel-in-progress: false
     timeout-minutes: 60
     permissions:
@@ -160,7 +186,7 @@ jobs:
           # key into the minter's KMS key by hand is the better one: the key ring
           # survives every teardown, so the import is a one-off and the signing
           # material never enters Actions. This is the bootstrap path — set it and
-          # provision_rc_environment.sh writes it to a private temporary file,
+          # provision_environment.sh writes it to a private temporary file,
           # because install.sh takes a path (GITHUB_PEM_PATH) and never a value.
           # Either way the import is skipped once the key has an enabled version.
           GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
@@ -171,11 +197,15 @@ jobs:
           # release is the worse outcome that week, so it is a variable rather
           # than a constant here.
           #
-          # Set it on the `rc` environment, alongside GCP_PROJECT_ID and the
-          # rest — this job's `environment: rc` is where every other value it
-          # reads comes from, and the repository level holds none of them.
+          # Set it on each environment this workflow is called with, alongside
+          # GCP_PROJECT_ID and the rest — the bound environment is where every
+          # other value this job reads comes from, and the repository level
+          # holds none of them. It keeps its RC_ prefix because the value lives
+          # in GitHub settings rather than in this repository; renaming the
+          # variable here without renaming it there turns strict teardown off in
+          # silence (scripts/release/teardown_common.sh).
           # `vars` resolves environment over repository over organization, so a
           # repository-level one works too and is the easier of the two to set
           # by accident and then not find again.
           RC_TEARDOWN_STRICT: ${{ vars.RC_TEARDOWN_STRICT }}
-        run: ./scripts/release/provision_rc_environment.sh
+        run: ./scripts/release/provision_environment.sh

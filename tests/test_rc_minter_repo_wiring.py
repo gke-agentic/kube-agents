@@ -24,12 +24,13 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _WORKFLOWS = _REPO_ROOT / ".github" / "workflows"
 
 # workflow -> the step `name:` carrying the pair. Anchored on the name rather
-# than the `run:` because rc-release-pipeline.yml runs `make test-e2e` twice --
-# the mandatory Chat gate and the optional suite -- and only the second is
-# handed a repository.
+# than the `run:` because e2e-run.yml runs `make test-e2e` twice -- the blocking
+# gate and the optional suite -- and both are handed a repository.
 _CONSUMERS = {
     "rc-deploy-environment.yml": "Provision Environment in GCP",
-    "rc-release-pipeline.yml": "Execute Optional Cluster & Fleet Audit E2E Tests",
+    "e2e-run.yml": "Execute Blocking E2E Gate",
+    "e2e-run.yml#optional": "Execute Optional E2E Suite",
+    "e2e-manual-runner.yml": "Execute E2E Tests",
 }
 
 # The pair that must never appear on these keys: on `rc` it is the release repo.
@@ -37,7 +38,8 @@ _FORBIDDEN = ("vars.GH_ORG", "vars.GH_REPO")
 
 
 def _step_env(workflow_name: str, step_name: str) -> dict:
-    doc = yaml.safe_load((_WORKFLOWS / workflow_name).read_text())
+    # A "file.yml#suffix" key lets one workflow appear twice with two steps.
+    doc = yaml.safe_load((_WORKFLOWS / workflow_name.split("#", 1)[0]).read_text())
     for job in (doc.get("jobs") or {}).values():
         for step in job.get("steps") or []:
             if step.get("name") == step_name:

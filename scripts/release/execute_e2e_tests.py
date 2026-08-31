@@ -211,8 +211,9 @@ def run_environment_tests(
         # environment's env_vars rather than e2e_config.yaml's default_environment.
         # No fixture changes value today -- every key a config lookup would reach is
         # either exported above or already in os.environ from **custom_env_vars -- with
-        # one exception. e2e-nightly-matrix.yml exports E2E_ENV from a dispatch input
-        # whose choices include "all"; this loop expands that into one child per
+        # one exception. e2e-manual-runner.yml dispatches a test_environment whose
+        # choices include "all", which reaches this runner as E2E_ENV; this loop
+        # expands that into one child per
         # environment, but the ambient "all" used to ride through to every one of them,
         # and conftest matches names exactly, so the lookup found nothing. Naming the
         # child's own environment also stops being cosmetic the moment a block declares

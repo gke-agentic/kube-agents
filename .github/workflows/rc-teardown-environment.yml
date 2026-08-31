@@ -1,18 +1,32 @@
-name: RC Step 5 - Tear Down Environment
+name: Tear Down Environment
 
 permissions:
   contents: read
 
 on:
-  #checkov:skip=CKV_GHA_7:Standalone launch requires the release candidate tag or commit SHA to pick the teardown engine
+  #checkov:skip=CKV_GHA_7:Standalone launch requires the candidate tag or commit SHA to pick the teardown engine, and the environment to destroy
   workflow_dispatch:
     inputs:
+      github_environment:
+        description: "GitHub environment naming the GCP project, region and cluster to destroy"
+        required: true
+        type: choice
+        options:
+          - "rc"
+          - "nightly"
       rc_tag:
-        description: "Release Candidate Tag or Commit SHA (Mandatory for Step 5 standalone launch)"
+        description: "Release Candidate Tag or Commit SHA (Mandatory for standalone launch)"
         required: true
         type: string
   workflow_call:
     inputs:
+      # See rc-deploy-environment.yml for why this is named github_environment
+      # and why it has no default. Here the missing default matters more: a
+      # nightly caller that omitted it would destroy the RC environment.
+      github_environment:
+        description: "GitHub environment naming the GCP project, region and cluster to destroy"
+        required: true
+        type: string
       rc_tag:
         description: "Release Candidate Tag or Commit SHA"
         required: true
@@ -23,13 +37,14 @@ on:
         required: false
 
 jobs:
-  teardown-rc:
+  teardown-environment:
     runs-on: ubuntu-latest
-    environment: rc
-    # Same group as the deploy and E2E jobs: this destroys the environment both
-    # of those operate on, so it must never overlap a run that is still using it.
+    environment: ${{ inputs.github_environment }}
+    # Same group as the deploy and E2E jobs for the same environment: this
+    # destroys what both of those operate on, so it must never overlap a run
+    # that is still using it.
     concurrency:
-      group: rc-environment
+      group: ${{ inputs.github_environment }}-environment
       cancel-in-progress: false
     # A GKE cluster destroy is slower than its create — node pools drain before
     # the control plane goes, and lifecycle.sh clears the PlatformAgent
@@ -100,4 +115,4 @@ jobs:
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           GCP_REGION: ${{ vars.GCP_REGION }}
           GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
-        run: ./scripts/release/teardown_rc_environment.sh
+        run: ./scripts/release/teardown_environment.sh

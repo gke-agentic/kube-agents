@@ -241,12 +241,64 @@ is_commit_already_attempted() {
   [ -n "${rc_tag}" ]
 }
 
-# Checks if a commit SHA has already been validated in a previous RC run (*_validated tag)
-is_commit_already_validated() {
+# Checks if a commit SHA carries the RC pipeline's validation marker (rc_*_validated).
+#
+# The pattern is anchored to the rc_ family on purpose. It used to be a bare
+# "*_validated", which matches any tag family that happens to end that way, and
+# this function gates resolve_rc_tag.sh's skip decision — so a validation marker
+# minted by some other pipeline would have been read as an RC validation and the
+# candidate skipped. The name says which family it speaks for for the same
+# reason. The other two consumers of the marker are already anchored to ^rc_
+# (verify_release_eligibility.sh, get_latest_validated_rc_tag).
+is_rc_candidate_commit_already_validated() {
   local sha="$1"
   local validated_tags
-  validated_tags=$(git tag --points-at "${sha}" "*_validated" 2>/dev/null || echo "")
+  validated_tags=$(git tag --points-at "${sha}" "rc_*_validated" 2>/dev/null || echo "")
   [ -n "${validated_tags}" ]
+}
+
+# ─── Staging promotion tags ───────────────────────────────────────────────────
+# The nightly pipeline promotes a validated RC candidate by tagging its commit
+# staging_<ts>_<sha>, which is what staging-redeploy-*.yml triggers on.
+export STAGING_TAG_PREFIX="staging_"
+
+# Derives the staging promotion tag from a validated RC tag:
+#   rc_2608241820_b35543c_validated  ->  staging_2608241820_b35543c
+#
+# Swap the prefix, drop the suffix. The timestamp stays first after the prefix
+# so `git tag -l --sort=-v:refname 'staging_*'` orders by time, the same
+# property the rc_* lookups depend on, and the transform is mechanical in both
+# directions so a staging tag reads back to its candidate without a lookup.
+#
+# The _validated suffix is deliberately not carried over: it records that the RC
+# gate passed, not that the promotion did.
+#
+# Refuses anything outside the rc_ family rather than composing staging_<junk>,
+# because the result is a live deploy trigger.
+staging_tag_for_rc() {
+  local rc_tag="${1:-}"
+  if [ -z "${rc_tag}" ]; then
+    echo "❌ ERROR: an RC tag is required for staging_tag_for_rc." >&2
+    return 1
+  fi
+
+  local core="${rc_tag%_validated}"
+  case "${core}" in
+    rc_?*) core="${core#rc_}" ;;
+    *)
+      echo "❌ ERROR: '${rc_tag}' is not an rc_* candidate tag; refusing to derive a staging tag from it." >&2
+      return 1
+      ;;
+  esac
+
+  echo "${STAGING_TAG_PREFIX}${core}"
+}
+
+# Finds an existing staging promotion tag on a commit SHA, if any. Empty output
+# means the commit has not been promoted yet.
+get_existing_staging_tag() {
+  local sha="$1"
+  git tag --points-at "${sha}" "${STAGING_TAG_PREFIX}*" 2>/dev/null | head -n 1 || echo ""
 }
 
 # Finds the latest commit on main whose required container images are already built in the registry
