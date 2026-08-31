@@ -73,7 +73,11 @@ A run that fails anywhere does leave its environment standing, deliberately — 
 
 The repository it probes comes from the same two variables that scope the minter, so the two cannot drift: `rc-deploy-environment.yml` gives them to the installer and `rc-release-pipeline.yml` gives them to the suite. The GitHub App has to be installed on that repository — a token minted for one repository does not authenticate against another.
 
-Three settings on the `rc` GitHub environment turn it on, and all three must be present before the minter is provisioned at all ([`installer_common.sh`](../../k8s-operator/scripts/installer_common.sh)). With any of them empty the install is byte-identical to one that never had them.
+Three settings on the `rc` GitHub environment turn it on, and all three must be present before the minter is provisioned at all ([`installer_common.sh`](../../k8s-operator/scripts/installer_common.sh)). All three empty is a supported configuration — an install without a minter, which is the default everywhere outside the RC. Some set and some empty is not: `provision_rc_environment.sh` refuses, before the teardown, rather than reprovisioning an RC whose token-minting test would fail with an HTTP 502 forty minutes later.
+
+`GH_APP_ID` is a _secret_, and that takes one thing the two variables do not. A called workflow receives only the secrets its caller passes, so reaching the `rc` environment's copy needs both halves: `rc-release-pipeline.yml` calling this workflow with `secrets: inherit`, and the `deploy-rc` job declaring `environment: rc`. An explicit `secrets:` mapping in the caller cannot substitute — a `uses:` job has no environment, so it resolves the names against nothing and forwards empty strings, which is indistinguishable from never having configured the minter. `tests/test_rc_minter_secret_wiring.py` pins both halves.
+
+Set all three on the environment rather than the repository. A repository-level copy is not invisible — `vars` resolve environment over repository, and `secrets: inherit` carries the caller's repository secrets too — which is the problem: the wrong scope quietly works, so a stray copy is easy to set and then never find again.
 
 | Setting                | Value                  | Notes                                                                                                 |
 | ---------------------- | ---------------------- | ----------------------------------------------------------------------------------------------------- |

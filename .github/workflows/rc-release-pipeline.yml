@@ -46,14 +46,25 @@ jobs:
     if: |
       github.repository == 'gke-labs/kube-agents' &&
       needs.step-1-create-tag.outputs.skip_rc != 'true'
-    uses: ./.github/workflows/rc-deploy-environment.yml
+    # inherit, not an explicit mapping — the same reason
+    # staging-redeploy-integrations.yml already records. The called deploy-rc
+    # job reads GH_APP_ID and GH_APP_PRIVATE_KEY, which are `rc` ENVIRONMENT
+    # secrets, and a `uses:` job cannot declare an environment, so any
+    # `secrets:` mapping written here resolves against nothing and forwards
+    # empties. Observed, not assumed: with the mapping in place, deploy-rc
+    # logged GITHUB_APP_ID as empty on a run five hours after the secret was
+    # created on the rc environment.
+    #
+    # scripts/release/README.md, "Enabling the GitHub token minter on the RC",
+    # is the single home for what the wiring requires and why; this comment is
+    # here because the mistake is made at this line.
+    uses: ./.github/workflows/rc-deploy-environment.yml # zizmor: ignore[secrets-inherit]
     permissions:
       contents: read
       id-token: write
     with:
       rc_tag: ${{ needs.step-1-create-tag.outputs.rc_tag }}
-    secrets:
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+    secrets: inherit
 
   step-3-run-e2e-tests:
     name: Step 3 - Run E2E Tests

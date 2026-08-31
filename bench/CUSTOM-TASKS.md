@@ -128,6 +128,16 @@ provider fills in defaults for any variable the task did not set:
 `PROJECT_ID` and `CLUSTER_NAME` are not optional in practice: the run refuses to start without them
 unless you pass `--no-infra`, so the kind fallbacks in that table are unreachable from the CLI.
 
+**A second channel, with different precedence.** `hack/ci-eval-pr.sh` also exports
+`TF_VAR_host_cluster_name`, `TF_VAR_host_cluster_location` and `TF_VAR_agent_namespace` for the
+whole run, naming the install the runner deployed. Any stack that declares those variables receives
+them; one that does not, ignores them. They are not in the table above because they arrive by a
+different route and lose a different tie: the provider's defaults are passed as `-var` and beat a
+`variables.tf` default, while `TF_VAR_` beats a default but loses to `-var`. So a task's own
+`variables:` block naming `host_cluster_name` silently wins over the runner's — which is why
+`bench/tasks/autoops-warning-event-triage/task.yaml` sets everything else there and deliberately
+not those.
+
 Declare each of these in your stack's `variables.tf` to receive it. An injected variable the stack
 does not declare is dropped with nothing but a log warning, so a missing declaration surfaces as a
 stack built with the wrong defaults rather than as an error. A variable the _task_ sets and the
@@ -203,6 +213,13 @@ slug AND a non-empty `verification_spec` AND is an active (uncommented) entry in
 registered commented-out leaves its domain honestly uncovered until it activates, and
 activating it forces the allowlist edit in `domains.yaml` in the same change. devops-bench
 ignores the extra key (`extra: "ignore"` on its task model), so the field is free to carry.
+
+A task may also carry a top-level `expected_fail: true`, which inverts the presubmit's verdict for
+it: failing is the declared outcome, and _passing_ every repetition is what reports. That is the
+eval-driven-development marker — write the case for a gap before the fix exists, land it
+expected-fail, and the flip to `false` shows up in the diff that closes the gap. It defaults to
+`false`, so no existing task needs the field, and like `domain:` it is read by `bench-gate` rather
+than by devops-bench.
 
 A new task must also be registered: the presubmit runs only what the `TASKS` array in
 `hack/ci-eval-pr.sh` names, and `scripts/test_task_registration.py` fails the build for a
@@ -281,6 +298,10 @@ Things the loader will hold you to:
 - **`id` also accepts `task_id`,** and `prompt` also accepts `goal` or `input`, for older
   specs. Those aliases are upstream compatibility for other people's corpora: a task in
   this repository uses `id` and `prompt`, and the validator rejects `task_id`.
+- **The directory name is the case identity,** and `bench-gate` refuses a task whose `id` disagrees
+  with it. devops-bench joins on the folder — it writes `folder:` into the record and `taskFolder:`
+  into `rows.json` — and `baselines/<id>.jsonl` joins on the same string, so a task that answers to
+  two names would score against another case's evidence.
 
 Placeholders are substituted in the prompt, the expected output, and the verification spec:
 `{{PROJECT_ID}}`, `{{CLUSTER_NAME}}`, `{{APP_LOCATION}}`, `{{TARGET_DEPLOYMENT_NAME}}`,

@@ -464,29 +464,57 @@ exit {install_exit}
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual((tmp_dir / "pem_path.txt").read_text().strip(), "[]")
 
-    def test_partial_minter_config_is_warned_about(self):
-        # The repository-scope-secret trap: org and repo resolve, the App ID arrives
-        # empty, and installer_common.sh's own warning never fires because it requires
-        # all three. Without this the minter is skipped in silence.
+    def test_partial_minter_config_stops_the_deploy(self):
+        # The environment-secret trap: org and repo resolve, the App ID arrives empty,
+        # and installer_common.sh's own warning never fires because it requires all
+        # three. This used to warn and provision anyway, which moved the failure to
+        # test_github_token_minting_and_connectivity and turned it into an HTTP 502
+        # with no named cause. It is fatal here instead.
         proc, _ = self._run({"GITHUB_ORG": "acme", "GITHUB_REPO": "infra"})
-        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotEqual(
+            proc.returncode, 0, "a half-configured minter must not provision an RC"
+        )
         combined = proc.stdout + proc.stderr
         self.assertIn("GITHUB_APP_ID", combined)
-        self.assertIn("::warning", combined)
+        self.assertIn("::error", combined)
 
-    def test_a_complete_minter_config_is_not_warned_about(self):
+    def test_a_partial_minter_config_refuses_before_the_teardown(self):
+        """The guard has to sit above `rc_teardown_run`, not merely above install.sh.
+
+        This script is uninstall.sh followed by install.sh. A guard placed after the
+        teardown refuses an environment it has already destroyed and leaves the RC
+        down until someone re-runs the pipeline — the same trap the `gke-admin`
+        release note in scripts/release/README.md describes.
+        """
+        proc, tmp_dir = self._run(
+            {"GITHUB_ORG": "acme", "GITHUB_REPO": "infra"},
+            install_body='printf "ran\\n" > installer_ran.txt\n',
+        )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertFalse(
+            (tmp_dir / "installer_ran.txt").exists(),
+            "the guard must fire before install.sh is invoked",
+        )
+        combined = proc.stdout + proc.stderr
+        self.assertNotIn(
+            "Tearing down existing RC environment",
+            combined,
+            "the guard must fire before uninstall.sh destroys the environment",
+        )
+
+    def test_a_complete_minter_config_provisions_without_complaint(self):
         proc, _ = self._run(
             {"GITHUB_ORG": "acme", "GITHUB_REPO": "infra", "GITHUB_APP_ID": "4143620"}
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertNotIn("GitHub token minter not provisioned", proc.stdout + proc.stderr)
+        self.assertNotIn("half-configured", proc.stdout + proc.stderr)
 
-    def test_no_minter_config_at_all_is_not_warned_about(self):
-        # Every environment that deliberately runs without a minter would otherwise get
-        # a warning on every provision.
+    def test_no_minter_config_at_all_provisions_without_complaint(self):
+        # Every environment that deliberately runs without a minter — which is all of
+        # them outside the RC — would otherwise be refused on every provision.
         proc, _ = self._run({})
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertNotIn("GitHub token minter not provisioned", proc.stdout + proc.stderr)
+        self.assertNotIn("half-configured", proc.stdout + proc.stderr)
 
 
 if __name__ == "__main__":

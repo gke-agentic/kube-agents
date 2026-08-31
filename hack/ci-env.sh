@@ -65,6 +65,30 @@ ensure_helm() {
   echo "Installed helm ${HELM_VERSION} (${arch}) to ${dir}"
 }
 
+# ─── Bench Result Collection (runs on PASS as well as on failure) ──────────────
+# Split out of dump_prow_artifacts_on_failure, which wraps its whole body in
+# `if [ "$exit_code" -ne 0 ]`. That meant the eval job had NEVER kept a record
+# from a passing run -- exactly backwards for a rate-based gate, whose baseline
+# store is built from green runs on main. The copy is one `cp`, so there is no
+# reason to condition it; the expensive diagnostics (kubectl logs, describe
+# pods, gcloud builds list) stay failure-only below.
+#
+# Callers must invoke this BEFORE dump_prow_artifacts_on_failure: that function
+# reads `$?` on its first line, so anything running ahead of it must leave the
+# status alone. Every command here ends in `|| true` for that reason.
+collect_bench_results() {
+  local artifact_dir="${ARTIFACTS:-/tmp/artifacts}"
+  mkdir -p "${artifact_dir}" || true
+
+  # Devops-bench Evaluation Results (if run in eval script)
+  if [ -d "${SCRIPT_DIR}/../bench/results" ]; then
+    cp -r "${SCRIPT_DIR}/../bench/results/"* "${artifact_dir}/" 2>/dev/null || true
+  elif [ -d "/app/results" ]; then
+    cp -r /app/results/* "${artifact_dir}/" 2>/dev/null || true
+  fi
+  cp results_*.json "${artifact_dir}/" 2>/dev/null || true
+}
+
 # ─── Shared Artifact Collection Handler for Prow Job Failures ───────────────────
 dump_prow_artifacts_on_failure() {
   local exit_code=$?
@@ -94,13 +118,10 @@ dump_prow_artifacts_on_failure() {
     # 3. Detailed Pod Descriptions & K8s Events (explains image pull errors, scheduling blocks, OOMKilled, probe failures)
     kubectl describe pods -n "${ns}" > "${artifact_dir}/k8s-pod-descriptions.txt" 2>&1 || true
     kubectl get pods,svc,events -n "${ns}" -o wide > "${artifact_dir}/k8s-cluster-status.txt" 2>&1 || true
-    
-    # 4. Devops-bench Evaluation Results (if run in eval script)
-    if [ -d "${SCRIPT_DIR}/../bench/results" ]; then
-      cp -r "${SCRIPT_DIR}/../bench/results/"* "${artifact_dir}/" 2>/dev/null || true
-    elif [ -d "/app/results" ]; then
-      cp -r /app/results/* "${artifact_dir}/" 2>/dev/null || true
-    fi
-    cp results_*.json "${artifact_dir}/" 2>/dev/null || true
+
+    # 4. Devops-bench Evaluation Results used to be copied here. They now come
+    #    from collect_bench_results() above, which runs on green too. Callers
+    #    that want both must call it FIRST -- see the note on that function.
+    collect_bench_results
   fi
 }

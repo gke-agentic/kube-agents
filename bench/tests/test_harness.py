@@ -11,7 +11,6 @@ from __future__ import annotations
 import http.client
 import json
 import subprocess
-import sys
 import threading
 import time
 import urllib.error
@@ -25,9 +24,11 @@ import pytest
 
 from devops_bench.agents import AGENTS, AgentResult
 from kube_agents_bench import harness, transcript
+from kube_agents_bench.cases import CaseSpec
 from kube_agents_bench.harness import KubeAgentsHarness
 from kube_agents_bench.parsing import merge_new as _merge_new
 from kube_agents_bench.parsing import parse_response as _parse_response
+from kube_agents_bench.scoring import Rung, classify_rep
 
 # Verbatim response from the platform-agent Observability & Benchmarking docs
 # (stateful Responses API). Notably: function_call_output carries NO name --
@@ -1357,19 +1358,28 @@ def test_the_tunnel_is_torn_down_rather_than_probed(monkeypatch: pytest.MonkeyPa
 # --- the ci-eval-pr.sh contract ----------------------------------------------
 
 
-def _run_class_classifier(results_path: object, deployer: str) -> str:
-    """Run hack/ci-eval-pr.sh's RUN_CLASS snippet against a results.json.
+def _classify(results_path: object, deployer: str):
+    """Classify a results.json the way the gate does, for a given deployer.
 
-    The marker string is a contract between two files in two languages. Copying
-    it into an assertion here would only prove this test agrees with itself, so
-    the snippet is lifted out of the shell script and executed as written.
+    This used to lift the ``RUN_CLASS`` snippet out of ``hack/ci-eval-pr.sh``
+    and exec it, because the marker was a contract between two files in two
+    languages and copying the literal into an assertion would only have proved
+    the test agreed with itself. #899 moved that classification into
+    ``bench-gate``, so the snippet no longer exists and the call goes direct.
+    The contract is unchanged and still not copied: the record below is built
+    from a real :func:`harness._infra_failure`, so the marker travels from the
+    code that writes it to the code that reads it.
     """
-    script = (Path(__file__).resolve().parents[2] / "hack" / "ci-eval-pr.sh").read_text()
-    body = script.split('RUN_CLASS=$(python3 -c "', 1)[1].split('\n" 2>/dev/null', 1)[0]
-    body = body.replace("${LATEST_RESULT}", str(results_path)).replace("${DEPLOYER}", deployer)
-    return subprocess.run(
-        [sys.executable, "-c", body], capture_output=True, text=True, check=True
-    ).stdout.strip()
+    spec = CaseSpec(
+        case_id="gpu-stress-test-diagnosis",
+        name="gpu-stress-test-diagnosis",
+        domain=None,
+        deployer=deployer,
+        declares_verification_spec=False,
+        expected_fail=False,
+        path=Path("task.yaml"),
+    )
+    return classify_rep(spec, results_path, 1)
 
 
 @pytest.fixture
@@ -1398,18 +1408,18 @@ def results_json(tmp_path: Path) -> Any:
 
 
 def test_the_marker_classifies_the_run_as_infra(results_json: Any) -> None:
-    """The whole point: INFRA_FAILED_TASKS, not FAILED_TASKS.
+    """The whole point: excused as infrastructure, not counted as a failure.
 
     The record is scored -- the judge graded the empty output and returned 0.0
-    -- so the pre-existing "has scores" test would have called this OK and let
-    a pod restart red the pull request.
+    -- so without the marker check the ladder reads a real 0.0 and spends a
+    repetition on a pod restart.
     """
     path = results_json(harness._infra_failure("HTTP 502 from agent endpoint"))
 
-    assert _run_class_classifier(path, "opentofu") == "INFRA"
+    assert _classify(path, "opentofu").outcome == "infra"
     # No noop carve-out: an unreachable agent endpoint is infrastructure
     # whatever the task provisions.
-    assert _run_class_classifier(path, "noop") == "INFRA"
+    assert _classify(path, "noop").outcome == "infra"
 
 
 def test_an_ordinary_scored_record_is_still_graded(results_json: Any) -> None:
@@ -1418,21 +1428,23 @@ def test_an_ordinary_scored_record_is_still_graded(results_json: Any) -> None:
         scores={"OutcomeValidity": 0.9},
     )
 
-    assert _run_class_classifier(path, "opentofu") == "OK"
+    assert _classify(path, "opentofu").outcome != "infra"
 
 
 def test_an_agent_error_without_the_marker_is_still_graded(results_json: Any) -> None:
     """A 500 reaches the judge exactly as it did before this change."""
     path = results_json(AgentResult.errored("HTTP 500 from agent endpoint: agent exploded"))
 
-    assert _run_class_classifier(path, "opentofu") == "OK"
+    assert _classify(path, "opentofu").outcome != "infra"
 
 
 def test_a_scoreless_record_still_blocks(results_json: Any) -> None:
-    """The BROKEN branch must survive the marker check being inserted above it."""
+    """The blocking branch must survive the marker check being inserted above it."""
     path = results_json(AgentResult(output="", trajectory=[]), scores={})
 
-    assert _run_class_classifier(path, "opentofu") == "BROKEN"
+    rep = _classify(path, "opentofu")
+    assert rep.outcome == "blocked"
+    assert rep.rung is Rung.CHECK_DID_NOT_RUN
 
 
 # --- delegated (kanban) work -------------------------------------------------
