@@ -296,6 +296,40 @@ get_existing_staging_tag() {
   git tag --points-at "${sha}" "${STAGING_TAG_PREFIX}*" 2>/dev/null | head -n 1 || echo ""
 }
 
+# Reports whether a candidate commit's tree carries what the shared pipeline
+# workflows invoke against it.
+#
+# deploy-environment.yml, e2e-run.yml and teardown-environment.yml each check the
+# candidate out over the workspace and then run scripts from THAT tree, while the
+# workflow YAML comes from the caller's ref. A candidate validated before that
+# structure landed is therefore driven by workflows expecting scripts and a suite
+# selector it does not have — and two of those mismatches are silent rather than
+# loud, which is what makes this worth refusing over:
+#
+#   * e2e-run.yml names the suite in E2E_SUITE. A pre-rename runner reads only
+#     E2E_ENV, so it falls back to its own default and the blocking gate tests
+#     something other than what the run reports it gated on.
+#   * run_optional_e2e_suites.sh is absent there entirely, and its step is
+#     continue-on-error, so the optional suites contribute nothing and the run
+#     still goes green.
+#
+# Both markers are checked because they fail independently. Delete this, and the
+# resolver's use of it, once no rc_*_validated tag predates the restructure.
+candidate_supports_shared_pipeline() {
+  local sha="${1:-}"
+
+  if [ -z "${sha}" ]; then
+    echo "❌ ERROR: a commit is required for candidate_supports_shared_pipeline." >&2
+    return 2
+  fi
+
+  git cat-file -e "${sha}:scripts/release/run_optional_e2e_suites.sh" 2>/dev/null || return 1
+  git show "${sha}:scripts/release/execute_e2e_tests.py" 2>/dev/null |
+    grep -q "E2E_SUITE" || return 1
+
+  return 0
+}
+
 # Reports whether the staging redeploys AT A GIVEN COMMIT would start on a given
 # tag, by reading the `push: tags:` patterns out of that commit's own copy of
 # staging-redeploy-agent.yml.

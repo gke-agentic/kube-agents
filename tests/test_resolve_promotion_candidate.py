@@ -24,10 +24,28 @@ _SCRIPT = _REPO_ROOT / "scripts" / "release" / "resolve_promotion_candidate.sh"
 
 
 class ResolvePromotionCandidateTest(unittest.TestCase):
-    def _repo(self):
+    def _repo(self, with_pipeline_markers=True):
         temp_dir, repo_dir, git = create_mock_git_repo()
         self.addCleanup(temp_dir.cleanup)
-        return pathlib.Path(repo_dir), git
+        repo_dir = pathlib.Path(repo_dir)
+        if with_pipeline_markers:
+            self._seed_pipeline_markers(repo_dir, git)
+        return repo_dir, git
+
+    def _seed_pipeline_markers(self, repo_dir, git):
+        """What candidate_supports_shared_pipeline looks for in a candidate's tree.
+
+        The shared workflows run scripts out of the candidate's own checkout, so
+        the resolver skips a candidate that predates them. Every case here that is
+        not about that check needs a tree which passes it, and because git commits
+        whole trees, seeding once covers the commits the tests stack on top.
+        """
+        release = repo_dir / "scripts" / "release"
+        release.mkdir(parents=True, exist_ok=True)
+        (release / "run_optional_e2e_suites.sh").write_text("#!/usr/bin/env bash\n")
+        (release / "execute_e2e_tests.py").write_text('_SUITE_ENV_VAR = "E2E_SUITE"\n')
+        git("add", "-A")
+        git("commit", "-m", "chore: shared pipeline scripts")
 
     def _commit(self, repo_dir, git, name):
         (repo_dir / f"{name}.txt").write_text(f"{name}\n")
@@ -135,6 +153,47 @@ class ResolvePromotionCandidateTest(unittest.TestCase):
         proc, _ = self._run(repo_dir, args=("rc_does_not_exist_validated",))
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("Cannot resolve a commit", proc.stderr)
+
+    def test_a_candidate_predating_the_restructure_skips_the_whole_pipeline(self):
+        """No cluster, no matrix, no tag — and no failure either.
+
+        The shared workflows run scripts out of the candidate's checkout. A
+        candidate without them would be driven with a suite selector its runner
+        ignores, so the gate would test the wrong suite and the optional step
+        would contribute nothing, while the run reported a green matrix. Skipping
+        whole is the only outcome that does not publish a misleading result.
+        """
+        repo_dir, git = self._repo(with_pipeline_markers=False)
+        git("tag", "-a", "rc_2608191200_2222222_validated", "-m", "Validated")
+
+        proc, out = self._run(repo_dir)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(out["skip_pipeline"], "true")
+        self.assertEqual(out["skip_promotion"], "true")
+        self.assertIn("predates the shared-pipeline restructure", out["skip_reason"])
+
+    def test_a_candidate_missing_only_the_optional_suite_runner_is_skipped(self):
+        """Both markers are checked, because they went missing independently."""
+        repo_dir, git = self._repo()
+        (repo_dir / "scripts" / "release" / "run_optional_e2e_suites.sh").unlink()
+        git("add", "-A")
+        git("commit", "-m", "chore: drop the optional runner")
+        git("tag", "-a", "rc_2608191200_2222222_validated", "-m", "Validated")
+
+        proc, out = self._run(repo_dir)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(out["skip_pipeline"], "true")
+
+    def test_a_candidate_whose_runner_predates_the_selector_rename_is_skipped(self):
+        repo_dir, git = self._repo()
+        (repo_dir / "scripts" / "release" / "execute_e2e_tests.py").write_text('_ENV_VAR = "E2E_ENV"\n')
+        git("add", "-A")
+        git("commit", "-m", "chore: pre-rename runner")
+        git("tag", "-a", "rc_2608191200_2222222_validated", "-m", "Validated")
+
+        proc, out = self._run(repo_dir)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(out["skip_pipeline"], "true")
 
 
 if __name__ == "__main__":

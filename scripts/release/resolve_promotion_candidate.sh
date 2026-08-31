@@ -4,9 +4,10 @@
 #
 # Two decisions, deliberately separate:
 #
-#   skip_pipeline   there is no validated candidate to test at all, so the run has
-#                   nothing to deploy. Rare: it means the RC pipeline has never
-#                   produced an rc_*_validated tag.
+#   skip_pipeline   there is nothing worth deploying: either no validated
+#                   candidate exists at all, or the newest one predates the
+#                   shared-pipeline restructure and the workflows would drive it
+#                   with scripts and a suite selector its tree does not have.
 #   skip_promotion  the candidate is already promoted — a staging_* tag points at
 #                   its commit. The night still deploys and tests it; only the tag
 #                   push is skipped. That is what makes re-running the pipeline on
@@ -63,11 +64,28 @@ else
 
   STAGING_TAG="$(staging_tag_for_rc "${RC_TAG}")"
 
-  existing_staging_tag="$(get_existing_staging_tag "${COMMIT_SHA}")"
-  if [ -n "${existing_staging_tag}" ]; then
+  # A candidate that predates the shared-pipeline restructure is skipped whole
+  # rather than run against. The workflows would drive it with a suite selector
+  # and scripts its tree does not have, and both mismatches are silent: the gate
+  # would test the wrong suite and the optional step would contribute nothing,
+  # while the run reported a green matrix. Better to build no cluster at all than
+  # to publish a result that means something other than it says.
+  #
+  # skip_pipeline rather than an error, because there is nothing wrong here —
+  # only nothing yet to do. The next candidate the RC pipeline validates clears
+  # it, which is at most three hours away.
+  if ! candidate_supports_shared_pipeline "${COMMIT_SHA}"; then
+    SKIP_PIPELINE="true"
     SKIP_PROMOTION="true"
-    SKIP_REASON="Commit ${COMMIT_SHA:0:7} is already promoted as '${existing_staging_tag}'; the matrix still runs, nothing is tagged."
+    SKIP_REASON="Candidate '${RC_TAG}' (${COMMIT_SHA:0:7}) predates the shared-pipeline restructure, so its tree does not carry the suite selector and scripts these workflows drive it with. Waiting for the RC pipeline to validate a newer candidate."
     echo "ℹ️ ${SKIP_REASON}" >&2
+  else
+    existing_staging_tag="$(get_existing_staging_tag "${COMMIT_SHA}")"
+    if [ -n "${existing_staging_tag}" ]; then
+      SKIP_PROMOTION="true"
+      SKIP_REASON="Commit ${COMMIT_SHA:0:7} is already promoted as '${existing_staging_tag}'; the matrix still runs, nothing is tagged."
+      echo "ℹ️ ${SKIP_REASON}" >&2
+    fi
   fi
 fi
 

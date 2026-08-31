@@ -225,3 +225,15 @@ workflow before it exists in any tree the workflow runs against.
 steps fall back to the old name when the new one is absent. `get_latest_validated_rc_tag`
 has no recency window, so those candidates keep being resolved until the RC pipeline
 validates a post-rename commit. Delete both fallbacks once none is left.
+
+`e2e-run.yml` has the same seam and cannot be papered over the same way, because
+its two mismatches are silent rather than loud: it names the suite in `E2E_SUITE`,
+which a pre-rename runner ignores in favour of its own default, and it calls
+`run_optional_e2e_suites.sh`, which does not exist in those trees at all under a
+`continue-on-error` step. Either way the run reports a green matrix having tested
+something else. So the nightly refuses those candidates outright rather than
+running against them — `candidate_supports_shared_pipeline` checks both markers and
+`resolve_promotion_candidate.sh` turns a negative into `skip_pipeline`, so no
+cluster is built and nothing is tagged. `tag_staging_promotion.sh` keeps its own
+check on the redeploy trigger, since it is reachable by hand. Delete all of these
+together, on the same condition.
