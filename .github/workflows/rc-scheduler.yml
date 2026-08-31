@@ -87,14 +87,7 @@ jobs:
         if: steps.resolve.outputs.skip_rc == 'true'
         env:
           COMMIT_SHA: ${{ steps.resolve.outputs.commit_sha }}
-        run: |
-          {
-            echo "### No new release candidate"
-            echo ""
-            echo "The newest built commit (\`${COMMIT_SHA}\`) has already been attempted or"
-            echo "validated, so no pipeline run was started. This is the normal quiet-tick"
-            echo "outcome and says nothing about the last pipeline run's result."
-          } >> "${GITHUB_STEP_SUMMARY}"
+        run: ./scripts/release/record_rc_scheduler_skip.sh
 
       # GITHUB_TOKEN, with `actions: write` above. The suppression rule that
       # makes the promotion job use RELEASE_BOT_TOKEN does not reach this step:
@@ -115,25 +108,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           COMMIT_SHA: ${{ steps.resolve.outputs.commit_sha }}
           RC_TAG: ${{ steps.resolve.outputs.rc_tag }}
-        run: |
-          set -euo pipefail
-          # Annotated rather than left to a bare non-zero exit. This is the one
-          # step whose failure means "the release-candidate pipeline is not
-          # running at all", so it should say that on the run rather than just
-          # redding it.
-          if ! gh workflow run rc-release-pipeline.yml \
-            --repo "${GITHUB_REPOSITORY}" \
-            --ref "${GITHUB_REF_NAME}" \
-            -f "commit_sha=${COMMIT_SHA}" \
-            -f "rc_tag=${RC_TAG}"; then
-            echo "::error title=RC pipeline dispatch failed::Could not dispatch rc-release-pipeline.yml for ${COMMIT_SHA}. No release candidate is being tested until this succeeds. A 403 here means the job lost its \`actions: write\` permission; a 404 usually means rc-release-pipeline.yml is missing from ${GITHUB_REF_NAME} or has no workflow_dispatch trigger." >&2
-            exit 1
-          fi
-          {
-            echo "### Release candidate dispatched"
-            echo ""
-            echo "| Field | Value |"
-            echo "| --- | --- |"
-            echo "| Commit | \`${COMMIT_SHA}\` |"
-            echo "| Candidate tag | \`${RC_TAG}\` |"
-          } >> "${GITHUB_STEP_SUMMARY}"
+        run: ./scripts/release/dispatch_rc_pipeline.sh

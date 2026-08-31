@@ -115,29 +115,7 @@ jobs:
           SKIP_PIPELINE: ${{ steps.resolve.outputs.skip_pipeline }}
           SKIP_PROMOTION: ${{ steps.resolve.outputs.skip_promotion }}
           SKIP_REASON: ${{ steps.resolve.outputs.skip_reason }}
-        run: |
-          {
-            echo "### Nightly candidate"
-            echo ""
-            if [ "${SKIP_PIPELINE}" = "true" ]; then
-              echo "Nothing to test: ${SKIP_REASON}"
-            else
-              echo "| Field | Value |"
-              echo "| --- | --- |"
-              echo "| Candidate | \`${RC_TAG}\` |"
-              echo "| Commit | \`${COMMIT_SHA}\` |"
-              echo "| Staging tag | \`${STAGING_TAG}\` |"
-              if [ "${SKIP_PROMOTION}" = "true" ]; then
-                echo "| Promotes | no — already promoted |"
-              else
-                echo "| Promotes | yes, if the matrix passes |"
-              fi
-              if [ -n "${SKIP_REASON}" ]; then
-                echo ""
-                echo "${SKIP_REASON}"
-              fi
-            fi
-          } >> "${GITHUB_STEP_SUMMARY}"
+        run: ./scripts/release/record_nightly_candidate_summary.sh
 
   step-2-deploy-env:
     name: Step 2 - Provision Nightly Environment
@@ -172,19 +150,32 @@ jobs:
     with:
       github_environment: "nightly"
       commit_sha: ${{ needs.step-1-resolve-candidate.outputs.commit_sha }}
-      # One suite, and it blocks. Unlike the RC gate there is no tolerated
-      # half: the whole point of the nightly matrix is that everything in it
-      # has to pass before staging moves. `nightly` already carries
-      # STOCKOUT_SCENARIOS=all and FLEET_AUDIT_STREAMS=all in e2e_config.yaml.
-      blocking_suite: "nightly"
-      # The blocking suite runs test_stockout_investigation.py with
-      # STOCKOUT_SCENARIOS=all, which publishes to the topic the alert-ingress
-      # step installs. Tolerating a failed install here would turn a missing
-      # adapter into every stockout scenario burning its full 360s watch and
-      # reporting that the agent never investigated. Fail at the install.
+      # The gate is what has passed on a real cluster, not everything the matrix
+      # runs. `rc` — Agent API health, the fleet-audit ledger across all streams,
+      # and stockout scenario 04 — runs on every RC pipeline and passes there, so
+      # it is evidence rather than a guess. The other three files have never
+      # completed a green run: e2e-nightly-matrix.yml, the workflow this replaces,
+      # has never had a successful run at all. Gating a staging promotion on them
+      # today would mean the first red night tells you nothing about whether the
+      # candidate is bad or the suite is, and staging stops moving either way.
+      #
+      # They still run, as optional_suites, so a night produces the full matrix's
+      # worth of signal. Promote one into blocking_suite as it earns it — the bar
+      # is a green nightly run with the file in the optional list.
+      blocking_suite: "rc"
+      # Together these cover every file `nightly` holds that `rc` does not:
+      # agentplugins_e2e_test.py, gchat_agent_test.py, and the stockout file
+      # across every scenario rather than the one the gate pins.
+      optional_suites: "agent-plugin,gchat,stockout-full"
+      # The BLOCKING suite runs test_stockout_investigation.py, which reads an
+      # alert off the topic this step installs. Tolerating a failed install would
+      # turn a missing adapter into scenario 04 burning its full 360s watch and
+      # reporting that the agent never investigated. Fail at the install, where
+      # the error names the cause.
       alert_ingress_required: true
-      # Above the 60 the RC gate uses: the matrix runs five test files where the
-      # RC gate runs one, on top of the same fixed provisioning cost.
+      # Above the 60 the RC gate uses: this runs the same five test files, just
+      # split across a gate and three tolerated suites, on top of the same fixed
+      # provisioning cost.
       timeout_minutes: 120
     secrets: inherit
 
@@ -270,5 +261,3 @@ jobs:
     with:
       github_environment: "nightly"
       rc_tag: ${{ needs.step-1-resolve-candidate.outputs.commit_sha }}
-    secrets:
-      GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}

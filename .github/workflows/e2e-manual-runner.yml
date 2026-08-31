@@ -1,5 +1,19 @@
 name: "E2E: Manual Runner"
 
+# Runs an E2E suite against a cluster that ALREADY EXISTS. It provisions
+# nothing, and with no cluster standing it fails at get-gke-credentials.
+#
+# Both environments are ephemeral — a pipeline that passes destroys its own
+# cluster in its last step — so most of the time there is nothing here to run
+# against. What leaves one standing is a failed run: every pipeline's teardown
+# job is gated on the implicit success() of the ones before it, so a red run
+# keeps its cluster for diagnosis, which is the case this workflow exists for.
+#
+# To build one on purpose, dispatch the same three workflows the pipelines
+# chain: deploy-environment.yml (github_environment plus a tag or commit SHA),
+# then this, then teardown-environment.yml. Nothing reclaims a cluster you
+# create that way, so run the third.
+
 on:
   #checkov:skip=CKV_GHA_7:Manual E2E test runner requires environment and scenario filter parameters
   workflow_dispatch:
@@ -27,7 +41,7 @@ on:
       # e2e_config.yaml, while `github_environment` above names the GitHub
       # environment supplying the cluster. The two used to be one letter apart.
       test_suite:
-        description: "Target test suite (rc, nightly, investigations, audit, agent-plugin, gchat, all)"
+        description: "Target test suite from e2e_config.yaml, or 'all' to run every suite"
         required: false
         default: "rc"
         type: choice
@@ -38,11 +52,14 @@ on:
           - "audit"
           - "agent-plugin"
           - "gchat"
+          - "stockout-full"
           - "all"
       stockout_scenarios:
-        description: "Stockout scenarios ('04' for fast smoke, 'all' for full matrix)"
+        # Matched by prefix or exact slug, so '04' still selects the same
+        # scenario; the slug is the default because it says which one.
+        description: "Stockout scenarios (a slug such as '04-missing-zone-fallback', or 'all')"
         required: false
-        default: "04"
+        default: "04-missing-zone-fallback"
         type: string
       fleet_audit_streams:
         description: "Fleet audit stream filter ('all', 'stockout-prevention', or specific stream)"
@@ -73,7 +90,7 @@ permissions:
 
 jobs:
   run-e2e:
-    name: Run E2E (${{ inputs.test_suite || 'rc' }} on ${{ inputs.github_environment }})
+    name: Run E2E (${{ inputs.test_suite }} on ${{ inputs.github_environment }})
     runs-on: ubuntu-latest
     environment: ${{ inputs.github_environment }}
     timeout-minutes: 45
@@ -100,9 +117,8 @@ jobs:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER || '' }}
-          service_account: ${{ vars.GCP_SERVICE_ACCOUNT || '' }}
-          credentials_json: ${{ secrets.GCP_SA_KEY || '' }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
       - name: Set up Google Cloud SDK
         uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
@@ -114,7 +130,7 @@ jobs:
         uses: google-github-actions/get-gke-credentials@3da1e46a907576cefaa90c484278bb5b259dd395 # v3.0.0
         with:
           cluster_name: ${{ vars.GKE_CLUSTER_NAME }}
-          location: ${{ vars.GCP_REGION || 'us-east4' }}
+          location: ${{ vars.GCP_REGION }}
           project_id: ${{ vars.GCP_PROJECT_ID }}
 
       - name: Connect to GKE & Configure Docker
@@ -124,16 +140,18 @@ jobs:
           GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
         run: |
           ./scripts/release/wait_for_gke_readiness.sh
-          REGION="${GCP_REGION:-us-east4}"
-          gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet || true
+          gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet || true
 
       - name: Execute E2E Tests
         env:
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           GCP_REGION: ${{ vars.GCP_REGION }}
           GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
-          AGENT_NAMESPACE: ${{ vars.AGENT_NAMESPACE || 'kubeagents-system' }}
-          REGISTRY: ${{ vars.REGISTRY || vars.REGISTRY_PREFIX || (vars.GCP_PROJECT_ID && format('{0}-docker.pkg.dev/{1}/kube-agents', vars.GCP_REGION || 'us-east4', vars.GCP_PROJECT_ID)) || '' }}
+          AGENT_NAMESPACE: ${{ vars.AGENT_NAMESPACE }}
+          # No REGISTRY here. execute_e2e_tests.py already resolves it the same
+          # way — REGISTRY, then REGISTRY_PREFIX, then
+          # <region>-docker.pkg.dev/<project>/kube-agents — so a chain in the
+          # workflow was a second copy of that logic in a second place to drift.
           # GITOPS_*, not GH_*. On both `rc` and `nightly` the GH_ORG/GH_REPO
           # pair names the RELEASE repository (gke-labs/kube-agents), which is
           # what common.sh's get_target_repo resolves for tag operations —
@@ -144,7 +162,7 @@ jobs:
           GITHUB_REPO: ${{ vars.GITOPS_REPO }}
           TEST_SUITE: ${{ inputs.test_suite }}
           STOCKOUT_SCENARIOS: ${{ inputs.stockout_scenarios }}
-          FLEET_AUDIT_STREAMS: ${{ inputs.fleet_audit_streams || 'all' }}
+          FLEET_AUDIT_STREAMS: ${{ inputs.fleet_audit_streams }}
           REBUILD_OPERATOR: ${{ inputs.rebuild_operator }}
           TEST_DESTRUCTIVE_CRD: ${{ inputs.test_destructive_crd }}
           CHAT_TOPIC_NAME: ${{ vars.CHAT_TOPIC_NAME }}
@@ -152,10 +170,8 @@ jobs:
           E2E_CHAT_CLIENT_SECRET: ${{ secrets.E2E_CHAT_CLIENT_SECRET }}
           E2E_CHAT_REFRESH_TOKEN: ${{ secrets.E2E_CHAT_REFRESH_TOKEN }}
           CHAT_SPACE_ID: ${{ secrets.E2E_CHAT_SPACE_ID }}
-        run: |
-          TARGET_SUITE="$TEST_SUITE"
-          if [ "$TARGET_SUITE" = "all" ]; then
-            python3 scripts/release/execute_e2e_tests.py --suite all
-          else
-            python3 scripts/release/execute_e2e_tests.py --suite "$TARGET_SUITE"
-          fi
+        # One line, because both arms of the `if` this replaces ran the same
+        # command: `--suite all` is what execute_e2e_tests.py already expands
+        # into one child process per suite. The wrapper, not the .py, so this
+        # goes through the same entry point as e2e-run.yml and `make test-e2e`.
+        run: ./scripts/release/execute_e2e_tests.sh --suite "${TEST_SUITE}"

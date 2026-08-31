@@ -106,10 +106,10 @@ jobs:
       commit_sha: ${{ needs.step-1-create-tag.outputs.commit_sha }}
       # The Chat gate blocks the candidate; the cluster and fleet-audit suite is
       # coverage that must not. Same split as before this job became a call.
+      # The scenario and stream filters moved into the `rc` suite's `env_vars`
+      # in e2e_config.yaml, where they were already declared.
       blocking_suite: "gchat"
-      optional_suite: "rc"
-      stockout_scenarios: "04"
-      fleet_audit_streams: "all"
+      optional_suites: "rc"
     secrets: inherit
 
   step-4-tag-validated:
@@ -157,5 +157,3 @@ jobs:
     with:
       github_environment: "rc"
       rc_tag: ${{ needs.step-1-create-tag.outputs.rc_tag }}
-    secrets:
-      GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}

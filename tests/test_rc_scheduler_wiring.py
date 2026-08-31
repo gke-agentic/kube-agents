@@ -25,6 +25,22 @@ _SCHEDULER = "rc-scheduler.yml"
 _PIPELINE = "rc-release-pipeline.yml"
 _RC_CRON = "17 */3 * * *"
 
+# The dispatch itself lives in a script rather than inline in the workflow, so
+# these read across the seam: the workflow decides when to run it and with which
+# token, the script decides what it sends. Both halves still have to agree with
+# the pipeline's declared inputs, which is what the last test here checks.
+_DISPATCH_SCRIPT_NAME = "dispatch_rc_pipeline.sh"
+_DISPATCH_SCRIPT = _REPO_ROOT / "scripts" / "release" / _DISPATCH_SCRIPT_NAME
+_DISPATCH_SOURCE = _DISPATCH_SCRIPT.read_text()
+
+
+def _dispatch_step(doc: dict) -> dict:
+    """The step that runs the dispatch script, or fails the calling test."""
+    for step in _steps(doc):
+        if _DISPATCH_SCRIPT_NAME in (step.get("run") or ""):
+            return step
+    raise AssertionError(f"no step runs {_DISPATCH_SCRIPT_NAME}")
+
 
 def _workflow(name: str) -> dict:
     doc = yaml.safe_load((_WORKFLOWS / name).read_text())
@@ -116,11 +132,7 @@ class SchedulerDispatchWiring(unittest.TestCase):
         pipeline behind a credential that can expire and whose scope cannot be
         read from this repository.
         """
-        for step in _steps(self.doc):
-            if "gh workflow run" in (step.get("run") or ""):
-                self.assertIn("github.token", step["env"]["GH_TOKEN"])
-                return
-        self.fail("no dispatch step found")
+        self.assertIn("github.token", _dispatch_step(self.doc)["env"]["GH_TOKEN"])
 
     def test_the_dispatching_job_can_write_actions(self) -> None:
         """The default token dispatches only with `actions: write`.
@@ -129,39 +141,35 @@ class SchedulerDispatchWiring(unittest.TestCase):
         thing that goes red — the invisible-skip failure in a new costume.
         """
         for job in self.doc["jobs"].values():
-            if any("gh workflow run" in (s.get("run") or "") for s in job.get("steps", [])):
+            steps = job.get("steps", []) or []
+            if any(_DISPATCH_SCRIPT_NAME in (s.get("run") or "") for s in steps):
                 self.assertEqual(job.get("permissions", {}).get("actions"), "write")
                 return
         self.fail("no dispatch job found")
 
     def test_the_dispatch_is_gated_on_there_being_work(self) -> None:
-        for step in _steps(self.doc):
-            if "gh workflow run" in (step.get("run") or ""):
-                self.assertIn("skip_rc", step["if"])
-                return
-        self.fail("no dispatch step found")
+        self.assertIn("skip_rc", _dispatch_step(self.doc)["if"])
+
+    def test_the_dispatch_step_supplies_what_the_script_requires(self) -> None:
+        """The script reads its inputs from the environment and aborts on any
+        missing one, so a step that stops exporting a variable turns every
+        three-hourly dispatch into a hard failure."""
+        exported = set(_dispatch_step(self.doc).get("env", {}))
+        self.assertLessEqual({"GH_TOKEN", "COMMIT_SHA", "RC_TAG"}, exported)
 
     def test_the_dispatch_names_the_pipeline_and_passes_the_commit(self) -> None:
         """Passing the resolved SHA is what stops `main` moving underneath the run."""
-        for step in _steps(self.doc):
-            run = step.get("run") or ""
-            if "gh workflow run" in run:
-                self.assertIn(_PIPELINE, run)
-                self.assertIn("commit_sha=", run)
-                return
-        self.fail("no dispatch step found")
+        self.assertIn(_PIPELINE, _DISPATCH_SOURCE)
+        self.assertIn("commit_sha=", _DISPATCH_SOURCE)
 
     def test_the_pipeline_accepts_what_the_scheduler_sends(self) -> None:
         """A renamed input would fail every dispatch at the API, three-hourly."""
         sent = set()
-        for step in _steps(self.doc):
-            run = step.get("run") or ""
-            if "gh workflow run" in run:
-                for token in run.split():
-                    if token.startswith('"') and "=" in token:
-                        sent.add(token.strip('"\\').split("=", 1)[0])
+        for token in _DISPATCH_SOURCE.split():
+            if token.startswith('"') and "=" in token:
+                sent.add(token.strip('"\\').split("=", 1)[0])
         accepted = set(_workflow(_PIPELINE)["on"]["workflow_dispatch"]["inputs"])
-        self.assertTrue(sent, "the dispatch step passes no inputs")
+        self.assertTrue(sent, "the dispatch script passes no inputs")
         self.assertLessEqual(sent, accepted, f"{sent - accepted} not accepted")
 
 

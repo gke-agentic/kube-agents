@@ -11,7 +11,13 @@ defaults:
   region: "us-central1"
   namespace: "kubeagents-system"
   timeout_seconds: 600
-  default_suite: "investigations"
+  # The fallback when nothing sets E2E_SUITE. No CI path reaches it — e2e-run.yml
+  # and e2e-manual-runner.yml both export the suite they picked — so this is the
+  # local-developer default and conftest's fixture fallback. `gchat` because it is
+  # the only suite with an unbroken record of passing on a real cluster; it needs
+  # the E2E_CHAT_* credentials, and failing on a missing credential is a clearer
+  # answer than a suite that half-runs.
+  default_suite: "gchat"
 
 # A suite is a named list of test files plus the env vars those files need. It is
 # not an environment: it provisions nothing and names no cluster. The key was
@@ -36,7 +42,10 @@ suites:
     region: "us-central1"
     namespace: "kubeagents-system"
     env_vars:
-      STOCKOUT_SCENARIOS: "04"
+      # The full slug rather than the bare "04". test_stockout_investigation.py
+      # matches by prefix or exact slug, so both select the same scenario, and
+      # the slug says which one without a lookup.
+      STOCKOUT_SCENARIOS: "04-missing-zone-fallback"
     tests:
       - "tests/e2e/test_agent_api_health.py"
       - "tests/e2e/test_stockout_investigation.py"
@@ -88,7 +97,8 @@ suites:
     # actually installed with out of platform-agent-settings.
     env_vars:
       FLEET_AUDIT_STREAMS: "all"
-      STOCKOUT_SCENARIOS: "04"
+      # See `investigations` above for why this is the slug and not "04".
+      STOCKOUT_SCENARIOS: "04-missing-zone-fallback"
     tests:
       - "tests/e2e/test_agent_api_health.py"
       - "tests/e2e/test_agent_fleet_audit.py"
@@ -97,6 +107,14 @@ suites:
   # ----------------------------------------------------------------------------
   # 6. Full Nightly E2E Matrix Environment
   # ----------------------------------------------------------------------------
+  # Every nightly test file in one unit, for a hand-dispatched "run the lot".
+  # nightly-pipeline.yml does NOT run it as a single suite: it gates the staging
+  # promotion on `rc` — the subset with a green run on a real cluster behind it —
+  # and runs `agent-plugin`, `gchat` and `stockout-full` alongside as optional
+  # coverage. Those three cover the files this suite adds on top of `rc`, so the
+  # pipeline still executes everything here; what it does not do is let a file
+  # that has never passed decide whether staging moves. Fold one back into the
+  # gate as it earns it.
   - name: "nightly"
     description: "Full Nightly E2E Matrix: all audit streams, all stockout scenarios, operator plugin lifecycle, and chat integration"
     region: "us-central1"
@@ -128,3 +146,20 @@ suites:
       - "tests/e2e/test_stockout_investigation.py"
       - "tests/e2e/operator/agentplugins_e2e_test.py"
       - "tests/e2e/gchat_agent_test.py"
+
+  # ----------------------------------------------------------------------------
+  # 7. Full Stockout Scenario Matrix
+  # ----------------------------------------------------------------------------
+  # The one thing `nightly` adds over `rc` that no existing suite covers: the
+  # stockout file across every scenario rather than the single one the promotion
+  # gate runs. Split out so the nightly pipeline can run it as optional coverage
+  # while gating on `rc`, and so the wide run is selectable by hand without
+  # pulling in the other four files.
+  - name: "stockout-full"
+    description: "Stockout investigation across every scenario in STOCKOUT_SCENARIO_DEFINITIONS"
+    region: "us-central1"
+    namespace: "kubeagents-system"
+    env_vars:
+      STOCKOUT_SCENARIOS: "all"
+    tests:
+      - "tests/e2e/test_stockout_investigation.py"

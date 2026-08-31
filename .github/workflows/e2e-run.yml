@@ -6,10 +6,22 @@ name: "Shared: Run E2E Suites"
 # GitHub environment supplies the GCP coordinates, which commit was deployed,
 # and which suites to run.
 #
-# Two suites, deliberately asymmetric. `blocking_suite` is the gate — a failure
-# there fails the run and stops the pipeline promoting anything.
-# `optional_suite` is `continue-on-error`, for coverage worth having and not
-# worth blocking a release on. A caller that wants only a gate omits the second.
+# Two kinds of suite, deliberately asymmetric. `blocking_suite` is the gate — a
+# failure there fails the run and stops the pipeline promoting anything.
+# `optional_suites` is a list, run `continue-on-error`, for coverage worth having
+# and not worth blocking a release on. A caller that wants only a gate omits it.
+#
+# The list is what lets a pipeline gate on the suites that have passed on a real
+# cluster while still running the ones that have not. Comma-separated because
+# `workflow_call` has no list input type — arrays exist only for
+# `workflow_dispatch` choices — and each entry runs in its own step-level group
+# so a failure names the suite rather than the step.
+#
+# Per-suite filters (STOCKOUT_SCENARIOS, FLEET_AUDIT_STREAMS) are NOT inputs
+# here. They belong to the suite, and e2e_config.yaml's `env_vars` is where a
+# suite declares them; a single workflow input could only apply one value across
+# a whole list, which is how `rc` and `stockout-full` would end up running the
+# same scenario filter.
 
 permissions:
   contents: read
@@ -37,20 +49,10 @@ on:
         description: "E2E suite that gates the run (e2e_config.yaml suite name)"
         required: true
         type: string
-      optional_suite:
-        description: "Second suite, run with continue-on-error. Empty to skip."
+      optional_suites:
+        description: "Comma-separated suites run with continue-on-error. Empty to skip."
         required: false
         default: ""
-        type: string
-      stockout_scenarios:
-        description: "Stockout scenario filter for the optional suite"
-        required: false
-        default: "04"
-        type: string
-      fleet_audit_streams:
-        description: "Fleet audit stream filter for the optional suite"
-        required: false
-        default: "all"
         type: string
       timeout_minutes:
         description: "Job timeout"
@@ -182,18 +184,22 @@ jobs:
           # when GITHUB_REPO carries no slash.
           GITHUB_ORG: ${{ vars.GITOPS_ORG }}
           GITHUB_REPO: ${{ vars.GITOPS_REPO }}
-        run: make test-e2e
+        run: ./scripts/release/execute_e2e_tests.sh
 
-      - name: Execute Optional E2E Suite
-        if: inputs.optional_suite != ''
+      # continue-on-error is the tolerance; the script exits non-zero when any
+      # suite in the list failed, so the step goes red-but-tolerated and the job
+      # summary names which one. E2E_SUITE is deliberately NOT set: the script
+      # passes each suite as `--suite`, and an ambient E2E_SUITE would ride
+      # through to every child (see execute_e2e_tests.py on why that broke the
+      # `all` expansion).
+      - name: Execute Optional E2E Suites
+        if: inputs.optional_suites != ''
         continue-on-error: true
         env:
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           GCP_REGION: ${{ vars.GCP_REGION }}
           GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
-          E2E_SUITE: ${{ inputs.optional_suite }}
-          STOCKOUT_SCENARIOS: ${{ inputs.stockout_scenarios }}
-          FLEET_AUDIT_STREAMS: ${{ inputs.fleet_audit_streams }}
+          OPTIONAL_SUITES: ${{ inputs.optional_suites }}
           CHAT_TOPIC_NAME: ${{ vars.CHAT_TOPIC_NAME }}
           CHAT_SPACE_ID: ${{ secrets.E2E_CHAT_SPACE_ID }}
           E2E_CHAT_CLIENT_ID: ${{ secrets.E2E_CHAT_CLIENT_ID }}
@@ -201,4 +207,4 @@ jobs:
           E2E_CHAT_REFRESH_TOKEN: ${{ secrets.E2E_CHAT_REFRESH_TOKEN }}
           GITHUB_ORG: ${{ vars.GITOPS_ORG }}
           GITHUB_REPO: ${{ vars.GITOPS_REPO }}
-        run: make test-e2e
+        run: ./scripts/release/run_optional_e2e_suites.sh

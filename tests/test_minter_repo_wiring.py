@@ -29,7 +29,7 @@ _WORKFLOWS = _REPO_ROOT / ".github" / "workflows"
 _CONSUMERS = {
     "deploy-environment.yml": "Provision Environment in GCP",
     "e2e-run.yml": "Execute Blocking E2E Gate",
-    "e2e-run.yml#optional": "Execute Optional E2E Suite",
+    "e2e-run.yml#optional": "Execute Optional E2E Suites",
     "e2e-manual-runner.yml": "Execute E2E Tests",
 }
 

@@ -31,10 +31,14 @@ on:
         description: "Release Candidate Tag or Commit SHA"
         required: true
         type: string
-    secrets:
-      GCP_SA_KEY:
-        description: "Google Cloud Service Account JSON key"
-        required: false
+    # No `secrets:` block. This workflow authenticates with Workload Identity
+    # Federation off the bound environment's GCP_WORKLOAD_IDENTITY_PROVIDER and
+    # GCP_SERVICE_ACCOUNT variables, and needs nothing else. It used to declare
+    # an optional GCP_SA_KEY as a service-account-key fallback; that secret is
+    # set at no scope — not repository, not `rc`, not `nightly` — so the
+    # fallback resolved to an empty string on every run it has ever had. A
+    # credential path nothing populates is one more thing to keep in step for no
+    # behaviour, so it is gone rather than left declared.
 
 jobs:
   teardown-environment:
@@ -86,7 +90,6 @@ jobs:
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
-          credentials_json: ${{ secrets.GCP_SA_KEY || '' }}
 
       # kubectl and gke-gcloud-auth-plugin, because lifecycle.sh fetches cluster
       # credentials itself and clears the PlatformAgent finalizers with kubectl

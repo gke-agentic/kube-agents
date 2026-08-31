@@ -204,10 +204,10 @@ jobs:
           # `vars` resolves environment over repository over organization, so a
           # repository-level one works too and is the easier of the two to set
           # by accident and then not find again.
-          # Both spellings forwarded: teardown_common.sh prefers TEARDOWN_STRICT
-          # and falls back to the RC_-prefixed one the environment settings still
-          # carry, so the settings rename can happen on either side of this merge.
-          # Drop the second line once `rc` and `nightly` both define the new name.
+          # One spelling. `rc` and `nightly` both define TEARDOWN_STRICT now, so
+          # the legacy RC_-prefixed forward is gone from here. teardown_common.sh
+          # still reads the old name as a fallback for anyone running these
+          # scripts by hand against an environment nobody has migrated; drop that
+          # once the old variable is deleted from both environment settings.
           TEARDOWN_STRICT: ${{ vars.TEARDOWN_STRICT }}
-          RC_TEARDOWN_STRICT: ${{ vars.RC_TEARDOWN_STRICT }}
         run: ./scripts/release/provision_environment.sh
