@@ -489,7 +489,7 @@ The operator writes observed state to the `status` subresource:
 | `networkPolicy.dnsClusterIPs`          | []string | The DNS ClusterIPs written into rule 1.                                                             |
 | `networkPolicy.dnsClusterIPsSource`    | string   | Which rung answered: `Annotation`, `Spec`, `OperatorEnv`, `Discovered`, or `Default`.               |
 | `networkPolicy.metadataDaemonIP`       | string   | The post-NAT daemon IP in rule 3, empty when suppressed.                                            |
-| `networkPolicy.metadataDaemonPort`     | int32    | The post-NAT daemon port in rule 3, resolved from live DaemonSet or default (`988`).               |
+| `networkPolicy.metadataDaemonPort`     | int32    | The post-NAT daemon port in rule 3, resolved from live DaemonSet or default (`988`).                |
 | `networkPolicy.metadataDaemonIPSource` | string   | Which rung answered: `Annotation`, `Spec`, `OperatorEnv`, `Discovered`, `Default`, or `Suppressed`. |
 
 Three condition types appear in `conditions`, and only the first is always present:
