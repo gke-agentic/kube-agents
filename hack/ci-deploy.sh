@@ -265,8 +265,11 @@ export CACHE_IMAGE="${CACHE_IMAGE:-us-docker.pkg.dev/kube-agents-prow/kube-agent
 # same reason the old inline `|| echo ""` was: an unstamped PR image is a
 # supported outcome, and failing the deploy over the stamp is worse.
 BUILT_TREE_SHA="$("${SCRIPT_DIR}/../scripts/git_revision_stamp.sh" 2>/dev/null || echo "")"
+# The postsubmit's mode=max cache manifests; CACHE_IMAGE stays the fallback.
+export BUILDCACHE_IMAGE="${BUILDCACHE_IMAGE:-us-docker.pkg.dev/kube-agents-prow/kube-agents/platform-agent:buildcache}"
+export PROXY_BUILDCACHE_IMAGE="${PROXY_BUILDCACHE_IMAGE:-us-docker.pkg.dev/kube-agents-prow/kube-agents/credential-proxy:buildcache}"
 gcloud builds submit --config="deploy/docker/cloudbuild-ci.yaml" \
-  --substitutions="_PLATFORM_URI=${AR_REPO}/platform-agent:${TAG},_PROXY_URI=${AR_REPO}/credential-proxy:${TAG},_OPERATOR_URI=${AR_REPO}/kube-agents-operator:${TAG},_CACHE_IMAGE=${CACHE_IMAGE},_HERMES_AGENT_TAG=${HERMES_AGENT_TAG},_REQUIRE_CACHE=${REQUIRE_CACHE:-false},_GIT_SHA=${BUILT_TREE_SHA}" \
+  --substitutions="_PLATFORM_URI=${AR_REPO}/platform-agent:${TAG},_PROXY_URI=${AR_REPO}/credential-proxy:${TAG},_OPERATOR_URI=${AR_REPO}/kube-agents-operator:${TAG},_CACHE_IMAGE=${CACHE_IMAGE},_BUILDCACHE_IMAGE=${BUILDCACHE_IMAGE},_PROXY_BUILDCACHE_IMAGE=${PROXY_BUILDCACHE_IMAGE},_HERMES_AGENT_TAG=${HERMES_AGENT_TAG},_REQUIRE_CACHE=${REQUIRE_CACHE:-false},_GIT_SHA=${BUILT_TREE_SHA}" \
   --project="${PROJECT_ID}" "${BUILD_WORKER_ARGS[@]}" --quiet .
 echo "✓ Container image builds finished in $((SECONDS - STEP_START))s"
 
@@ -323,37 +326,70 @@ STEP_START=$SECONDS
 echo "=== [$(date -u +'%Y-%m-%dT%H:%M:%SZ')] Verifying Platform Agent API Connectivity ==="
 API_KEY="$(kubectl get secret platform-agent-secrets -n "${NAMESPACE}" -o jsonpath='{.data.API_SERVER_KEY}' | base64 --decode)"
 
-kubectl port-forward svc/platform-agent -n "${NAMESPACE}" 8642:8642 >/tmp/pf-8642.log 2>&1 &
-PF_PID=$!
+# On cold autoscaling pools the API-server tunnel behind `kubectl port-forward`
+# drops mid-request ("error: lost connection to pod" with the gateway pod
+# healthy throughout), and a dead port-forward never comes back on its own —
+# so every attempt gets a fresh tunnel, and only the response decides health.
+PF_PID=""
 cleanup_pf_and_dump() {
   kill "${PF_PID:-}" 2>/dev/null || true
   dump_prow_artifacts_on_failure
 }
 trap cleanup_pf_and_dump EXIT
 
-echo "Waiting for platform-agent port-forward on port 8642..."
-for i in {1..30}; do
-  if nc -z localhost 8642 2>/dev/null; then
+CONNECTIVITY_ATTEMPTS=5
+CONNECTIVITY_OK="false"
+: >/tmp/pf-8642.log
+for ((attempt = 1; attempt <= CONNECTIVITY_ATTEMPTS; attempt++)); do
+  # Kill any previous tunnel and start a fresh one; the log is appended so a
+  # failure dump shows every attempt, not just the last.
+  if [ -n "${PF_PID}" ]; then
+    kill "${PF_PID}" 2>/dev/null || true
+    wait "${PF_PID}" 2>/dev/null || true
+  fi
+  echo "--- port-forward attempt ${attempt}/${CONNECTIVITY_ATTEMPTS} ---" >>/tmp/pf-8642.log
+  kubectl port-forward svc/platform-agent -n "${NAMESPACE}" 8642:8642 >>/tmp/pf-8642.log 2>&1 &
+  PF_PID=$!
+
+  echo "Waiting for platform-agent port-forward on port 8642 (attempt ${attempt}/${CONNECTIVITY_ATTEMPTS})..."
+  for i in {1..30}; do
+    if nc -z localhost 8642 2>/dev/null; then
+      break
+    fi
+    sleep 1
+  done
+
+  HEALTH_RESP="$(curl -s --max-time 120 -X POST http://localhost:8642/v1/responses \
+    -H "Authorization: Bearer ${API_KEY}" \
+    -H "Content-Type: application/json" \
+    -d '{"model": "model-default", "input": "ping"}' || true)"
+
+  if [[ "$HEALTH_RESP" == *"output"* || "$HEALTH_RESP" == *"assistant"* || "$HEALTH_RESP" == *"pong"* ]]; then
+    CONNECTIVITY_OK="true"
     break
   fi
-  sleep 1
+  if [ -z "${HEALTH_RESP}" ]; then
+    FAIL_REASON="empty response after port-forward drop"
+  else
+    FAIL_REASON="unexpected response: ${HEALTH_RESP}"
+  fi
+  if [ "${attempt}" -lt "${CONNECTIVITY_ATTEMPTS}" ]; then
+    echo "connectivity attempt ${attempt}/${CONNECTIVITY_ATTEMPTS} failed: ${FAIL_REASON}; respawning tunnel"
+  else
+    echo "connectivity attempt ${attempt}/${CONNECTIVITY_ATTEMPTS} failed: ${FAIL_REASON}"
+  fi
 done
 
-HEALTH_RESP="$(curl -s -X POST http://localhost:8642/v1/responses \
-  -H "Authorization: Bearer ${API_KEY}" \
-  -H "Content-Type: application/json" \
-  -d '{"model": "model-default", "input": "ping"}' || true)"
-  
-kill $PF_PID 2>/dev/null || true
+kill "${PF_PID:-}" 2>/dev/null || true
 trap dump_prow_artifacts_on_failure EXIT
 
-if [[ "$HEALTH_RESP" == *"output"* || "$HEALTH_RESP" == *"assistant"* || "$HEALTH_RESP" == *"pong"* ]]; then
+if [ "${CONNECTIVITY_OK}" = "true" ]; then
   echo "✓ Agent API Server responded successfully in $((SECONDS - STEP_START))s!"
 else
-  echo "ERROR: Platform Agent API server connectivity check failed!"
+  echo "ERROR: Platform Agent API server connectivity check failed after ${CONNECTIVITY_ATTEMPTS} attempts!"
   echo "Response received: ${HEALTH_RESP}"
-  echo "=== Debug: Port Forward Log ==="
-  cat /tmp/pf-8642.log 2>/dev/null || true
+  echo "=== Debug: Port Forward Log (tail) ==="
+  tail -n 40 /tmp/pf-8642.log 2>/dev/null || true
   echo "=== Debug: Kubernetes Workloads in Namespace ${NAMESPACE} ==="
   kubectl get pods,svc -n "${NAMESPACE}" || true
   exit 1
