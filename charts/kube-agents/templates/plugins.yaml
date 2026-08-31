@@ -1,0 +1,87 @@
+{{- if .Values.plugins }}
+{{- if and .Values.plugins.stockoutInvestigator .Values.plugins.stockoutInvestigator.enabled }}
+{{- if not (and .Values.plugins.pubsubPlatform .Values.plugins.pubsubPlatform.enabled) }}
+{{- fail "plugins.stockoutInvestigator is enabled, but plugins.pubsubPlatform is disabled: the GKE Stockout Investigator requires the pubsub-platform adapter for Cloud Pub/Sub alert ingress. Set plugins.pubsubPlatform.enabled=true." }}
+{{- end }}
+{{- end }}
+
+{{- if and .Values.plugins.pubsubPlatform .Values.plugins.pubsubPlatform.enabled }}
+---
+apiVersion: kubeagents.x-k8s.io/v1alpha1
+kind: AgentPlugin
+metadata:
+  name: {{ .Values.plugins.pubsubPlatform.name | default "pubsubplatform" }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kube-agents.labels" . | nindent 4 }}
+spec:
+  agentRef: {{ .Values.plugins.pubsubPlatform.agentRef | default "platform-agent" | quote }}
+  image: {{ printf "%s:%s" (include "kube-agents.imageRepository" (dict "repository" .Values.plugins.pubsubPlatform.image.repository "registry" (include "kube-agents.imageRegistry" .))) (.Values.plugins.pubsubPlatform.image.tag | default .Chart.AppVersion) | quote }}
+  config: |
+    platform_toolsets:
+      pubsub:
+        - mcp-router
+        - kanban
+        - memory
+        - hermes-cli
+        - hermes-api-server
+        - mcp-platform_control
+        - mcp-developer_knowledge
+
+    platforms:
+      pubsub:
+        enabled: true
+{{- end }}
+
+{{- if and .Values.plugins.stockoutInvestigator .Values.plugins.stockoutInvestigator.enabled }}
+{{- $cluster := .Values.plugins.stockoutInvestigator.clusterName | default .Values.platformAgent.harness.clusterName -}}
+{{- if not $cluster }}
+{{- fail "plugins.stockoutInvestigator is enabled, but neither plugins.stockoutInvestigator.clusterName nor platformAgent.harness.clusterName is set. Set plugins.stockoutInvestigator.clusterName to the target GKE cluster name." }}
+{{- end }}
+---
+apiVersion: kubeagents.x-k8s.io/v1alpha1
+kind: AgentPlugin
+metadata:
+  name: {{ .Values.plugins.stockoutInvestigator.name | default "gkestockoutinvestigator" }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kube-agents.labels" . | nindent 4 }}
+spec:
+  agentRef: {{ .Values.plugins.stockoutInvestigator.agentRef | default "platform-agent" | quote }}
+  image: {{ printf "%s:%s" (include "kube-agents.imageRepository" (dict "repository" .Values.plugins.stockoutInvestigator.image.repository "registry" (include "kube-agents.imageRegistry" .))) (.Values.plugins.stockoutInvestigator.image.tag | default .Chart.AppVersion) | quote }}
+  targetProfile: {{ .Values.plugins.stockoutInvestigator.targetProfile | default "platform" | quote }}
+  config: |
+    platforms:
+      pubsub:
+        enabled: true
+        extra:
+          subscriptions:
+            gke_stockout_alerts:
+              deliver: log
+              agent_profile: platform
+              dispatch: kanban
+              prompt: 'GKE Scale-up Failure Alert.
+
+                Judge whether this is a real, active stockout or a duplicate/stale signal,
+                and if it is real, diagnose it and propose a GitOps remediation PR.
+
+                Alert Details:
+                {__raw__}'
+              query: '(log_id("test-stockout") OR log_id("container.googleapis.com/cluster-autoscaler-visibility")) AND (jsonPayload.messageId:("scale.up.error.out.of.resources" OR "scale.up.error.quota.exceeded" OR "scale.up.error.ip.space.exhausted" OR "scale.up.no.scale.up") OR jsonPayload.noDecisionStatus.noScaleUp:* OR jsonPayload.resultInfo.results.errorMsg.messageId:("scale.up.error.out.of.resources" OR "scale.up.error.quota.exceeded" OR "scale.up.error.ip.space.exhausted" OR "scale.up.no.scale.up"))'
+              filter: "resource.labels.cluster_name == '{{ $cluster }}' and jsonPayload.noDecisionStatus.noScaleUp.unhandledPodGroups.0.podGroup.samplePod.controller.name != '' or jsonPayload.resource.labels.cluster_name == '{{ $cluster }}' and jsonPayload.noDecisionStatus.noScaleUp.unhandledPodGroups.0.podGroup.samplePod.controller.name != ''"
+              threshold_count: {{ (.Values.plugins.stockoutInvestigator.pubsub | default dict).thresholdCount | default 1 }}
+              threshold_window_seconds: {{ (.Values.plugins.stockoutInvestigator.pubsub | default dict).thresholdWindowSeconds | default 300 }}
+              deduplicate_fields:
+              - [resource.labels.project_id, jsonPayload.resource.labels.project_id]
+              - [resource.labels.location, jsonPayload.resource.labels.location]
+              - [resource.labels.cluster_name, jsonPayload.resource.labels.cluster_name]
+              - jsonPayload.noDecisionStatus.noScaleUp.unhandledPodGroups.0.podGroup.samplePod.namespace
+              - jsonPayload.noDecisionStatus.noScaleUp.unhandledPodGroups.0.podGroup.samplePod.controller.kind
+              - jsonPayload.noDecisionStatus.noScaleUp.unhandledPodGroups.0.podGroup.samplePod.controller.name
+              skills:
+              - gkestockoutinvestigator:gke-stockout-investigator
+              subscription: {{ (.Values.plugins.stockoutInvestigator.pubsub | default dict).subscription | default "gke-stockout-alerts-sub" | quote }}
+              topic: {{ (.Values.plugins.stockoutInvestigator.pubsub | default dict).topic | default "gke-stockout-alerts-topic" | quote }}
+              sink: {{ (.Values.plugins.stockoutInvestigator.pubsub | default dict).sink | default "gke-stockout-alerts-sink" | quote }}
+{{- end }}
+{{- end }}

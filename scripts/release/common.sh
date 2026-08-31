@@ -14,12 +14,14 @@ export DEFAULT_REGISTRY_PREFIX="ghcr.io/gke-labs/kube-agents"
 export DEFAULT_RELEASE_REPO="gke-labs/kube-agents"
 export DEFAULT_INITIAL_VERSION="0.1.0"
 
-# Declarative registry of all 4 required container images
+# Declarative registry of all required release container images
 export REQUIRED_RELEASE_IMAGES=(
   "k8s-operator"
   "platform-agent"
   "credential-proxy"
   "replay-proxy"
+  "pubsub-platform"
+  "gke-stockout-investigator"
 )
 
 # ─── Boolean Parsing ──────────────────────────────────────────────────────────

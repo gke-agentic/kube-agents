@@ -580,3 +580,35 @@ platformAgent:
       serviceUrl: "https://smba.trafficmanager.net/teams/"
       # Render responses with Microsoft Adaptive Cards v1.5 (markdown fallback if false).
       adaptiveCards: true
+
+# AgentPlugins deployed into the cluster.
+plugins:
+  # Pub/Sub platform adapter AgentPlugin: opens the event listener for Cloud Pub/Sub subscriptions.
+  pubsubPlatform:
+    enabled: false
+    name: pubsubplatform
+    agentRef: platform-agent
+    image:
+      repository: ghcr.io/gke-labs/kube-agents/pubsub-platform
+      tag: "" # defaults to Chart.appVersion
+      pullPolicy: IfNotPresent
+
+  # GKE Stockout Investigator AgentPlugin: diagnoses autoscaler scale-up failures and opens GitOps PRs.
+  # Requires plugins.pubsubPlatform.enabled=true for alert ingress.
+  stockoutInvestigator:
+    enabled: false
+    name: gkestockoutinvestigator
+    agentRef: platform-agent
+    targetProfile: platform
+    # Target cluster name. Required when enabled (defaults to platformAgent.harness.clusterName if empty).
+    clusterName: ""
+    image:
+      repository: ghcr.io/gke-labs/kube-agents/gke-stockout-investigator
+      tag: "" # defaults to Chart.appVersion
+      pullPolicy: IfNotPresent
+    pubsub:
+      topic: gke-stockout-alerts-topic
+      subscription: gke-stockout-alerts-sub
+      sink: gke-stockout-alerts-sink
+      thresholdCount: 1
+      thresholdWindowSeconds: 300

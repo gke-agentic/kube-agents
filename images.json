@@ -37,6 +37,24 @@
       "description": "Record/replay proxy for model traffic."
     },
     {
+      "name": "pubsub-platform",
+      "origin": "first-party",
+      "repository": "ghcr.io/gke-labs/kube-agents/pubsub-platform",
+      "tagPolicy": "release",
+      "override": "PUBSUB_PLATFORM_IMAGE",
+      "pulledBy": "The pubsub-platform AgentPlugin.",
+      "description": "Pub/Sub ingress adapter plugin opening event listeners for Cloud Pub/Sub subscriptions."
+    },
+    {
+      "name": "gke-stockout-investigator",
+      "origin": "first-party",
+      "repository": "ghcr.io/gke-labs/kube-agents/gke-stockout-investigator",
+      "tagPolicy": "release",
+      "override": "STOCKOUT_INVESTIGATOR_IMAGE",
+      "pulledBy": "The gke-stockout-investigator AgentPlugin.",
+      "description": "Autonomous diagnostic and remediation skill for GKE compute stockouts."
+    },
+    {
       "name": "litellm",
       "origin": "third-party",
       "repository": "ghcr.io/berriai/litellm",
