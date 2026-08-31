@@ -29,31 +29,21 @@ teardown_require_inputs
 # deferred" warning only fires once they are, so one missing value skips the
 # minter in silence.
 #
-# This is a deliberate tightening, not the restoration of an existing failure.
-# On the RC nothing downstream notices: the test that exercises minting,
-# test_github_token_minting_and_connectivity, runs under e2e-run.yml's optional
-# suite, which the RC pipeline sets to `rc` and which carries
-# `continue-on-error: true`. So a broken minter has been costing an HTTP 502 in
-# a tolerated step and validating the candidate anyway — which is exactly how it
-# went unnoticed. Refusing here trades a silently degraded RC for a loud one.
+# Nothing downstream catches it on the RC, which is why the check is here: the
+# test that exercises minting runs in an optional, `continue-on-error` suite
+# there, so a broken minter costs an HTTP 502 in a tolerated step and validates
+# the candidate anyway. The nightly pipeline runs the same test in its blocking
+# suite and needs no such help.
 #
-# The nightly pipeline is the opposite case and needs no tightening to be loud:
-# the same test runs in its BLOCKING suite (`nightly`), so a half-configured
-# minter fails the run and promotes nothing.
+# Above the teardown deliberately. `teardown_run` below is `uninstall.sh`, so a
+# check placed after it would refuse an environment it had already destroyed and
+# leave it down until someone re-ran the pipeline.
 #
-# Above the teardown deliberately. `teardown_run` below is `uninstall.sh`,
-# so a check placed after it would refuse an environment it had already
-# destroyed and leave the environment down until someone re-ran the pipeline — the same
-# trap the `gke-admin` release note in this directory's README describes.
+# All three empty stays allowed: that is an install deliberately without a
+# minter, which is the default outside the RC and nightly environments.
 #
-# All three empty is a different case and stays allowed: an install deliberately
-# without a minter, which is the default everywhere outside the RC and nightly
-# environments.
-#
-# Why a value goes missing, and what has to be true for it not to, is in
-# scripts/release/README.md under "Enabling the GitHub token minter on the RC",
-# which the nightly environment needs in its own right — see "The nightly
-# environment" in the same file.
+# Why a value goes missing is in scripts/release/README.md under "Enabling the
+# GitHub token minter on the RC".
 GITHUB_MINTER_SET=""
 GITHUB_MINTER_MISSING=""
 for _v in GITHUB_ORG GITHUB_REPO GITHUB_APP_ID; do
@@ -184,9 +174,8 @@ fi
 # A secret only exists here as a variable, so it has to be materialised.
 #
 # The import is skipped when the key already has an ENABLED version, so in each
-# environment
-# this only does work on the first install after the key is created: lifecycle.sh's
-# adopt-kms re-adopts the key ring on every subsequent apply, and uninstall.sh's
+# environment this only does work on the first install after the key is created:
+# lifecycle.sh's adopt-kms re-adopts the key ring on every apply, and uninstall.sh's
 # "Kept by design" summary records that GCP cannot delete key rings at all. The
 # teardown does not disable the version either -- lifecycle.sh's forget_kms runs
 # `terraform state rm` on the crypto key before the destroy, so the destroy never

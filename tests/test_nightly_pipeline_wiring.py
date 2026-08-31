@@ -1,6 +1,6 @@
 """Invariants of the nightly pipeline that only the workflow YAML can carry.
 
-Four of these are failures that would be silent in CI — a green run that did the
+Five of these are failures that would be silent in CI — a green run that did the
 wrong thing — which is why they are pinned here rather than left to review:
 
   * a job pointed at `rc` instead of `nightly` tears down the RC environment,
@@ -9,7 +9,9 @@ wrong thing — which is why they are pinned here rather than left to review:
   * a hardcoded `rc-environment` concurrency group makes an unrelated workflow
     contend for the release pipeline's cluster,
   * a staging tag shape the redeploy trigger does not match promotes nothing and
-    still reports success.
+    still reports success,
+  * a redeploy that deploys the pushed ref's SHA rather than the commit it peels
+    to pulls an image tag nothing ever published.
 """
 
 import fnmatch
@@ -19,7 +21,7 @@ import unittest
 
 import yaml
 
-from tests.testing.common import get_isolated_test_env
+from tests.testing.common import create_mock_git_repo, get_isolated_test_env
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _WORKFLOWS = _REPO_ROOT / ".github" / "workflows"
@@ -155,6 +157,54 @@ class StagingTagContractTest(unittest.TestCase):
                     any(fnmatch.fnmatch(tag, pattern) for pattern in patterns),
                     f"{tag!r} matches none of {patterns!r}",
                 )
+
+    def test_the_promotion_tag_is_annotated(self):
+        """Which is what makes the peel below necessary rather than defensive.
+
+        An annotated tag's ref points at a tag object; the push event hands that
+        object's SHA to github.sha. If this ever became a lightweight tag the peel
+        would still be correct, just redundant.
+        """
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        self.addCleanup(temp_dir.cleanup)
+        head = git("rev-parse", "HEAD").stdout.strip()
+
+        proc = subprocess.run(
+            ["bash", "-c", f'source "{_COMMON_SH}"; ensure_git_tag staging_2608241820_b35543c "{head}" "promotion"'],
+            capture_output=True,
+            text=True,
+            env=get_isolated_test_env(),
+            cwd=repo_dir,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            git("cat-file", "-t", "staging_2608241820_b35543c").stdout.strip(),
+            "tag",
+        )
+
+    def test_no_staging_redeploy_passes_the_raw_push_sha_to_the_deploy(self):
+        """An annotated tag's ref resolves to the tag object, not to the commit.
+
+        github.sha is the new value of the pushed ref, so on these triggers it is
+        that tag object's SHA. It reaches `helm upgrade --set …image.tag`, and
+        GHCR images are published under commit SHAs, so the unpeeled value names
+        an image that was never built.
+        """
+        for workflow in _STAGING_REDEPLOYS:
+            with self.subTest(workflow=workflow):
+                jobs = _doc(_WORKFLOWS / workflow)["jobs"]
+                resolve = jobs["resolve-commit"]
+                self.assertTrue(
+                    any("peel_tag_commit.sh" in step.get("run", "") for step in resolve["steps"]),
+                    "resolve-commit is supposed to peel the tag",
+                )
+                self.assertEqual(jobs["call-deploy"]["needs"], "resolve-commit")
+                for key in ("image_tag", "checkout_sha"):
+                    value = jobs["call-deploy"]["with"].get(key)
+                    if value is None:
+                        continue
+                    self.assertNotIn("github.sha", value, f"{key} must use the peeled commit")
+                    self.assertIn("resolve-commit", value, f"{key} must use the peeled commit")
 
 
 if __name__ == "__main__":

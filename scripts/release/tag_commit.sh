@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 # Creates and pushes one annotated Git tag on a commit, safely and idempotently.
 #
-# This is the body the release ladder's taggers all had a copy of: print a
-# banner naming what is being tagged, then call ensure_git_tag, which no-ops when
-# the tag already points at the same commit and fails when it points elsewhere.
+# The shared body of every rung of the release ladder: print a banner naming what
+# is being tagged, then call ensure_git_tag, which no-ops when the tag already
+# points at the same commit and fails when it points elsewhere.
 # create_release_tag.sh (rc_*), tag_validated_release.sh (_validated),
-# tag_staging_promotion.sh (staging_*) and tag_ga_release.sh (GA SemVer) are
-# wrappers over it, each keeping only what is genuinely its own. A second copy of
-# this logic is how the rungs of the ladder drift apart.
+# tag_staging_promotion.sh (staging_*) and tag_ga_release.sh (GA SemVer) wrap it,
+# each keeping only what is genuinely its own.
 #
 # Usage: tag_commit.sh [--title TITLE] [--detail "Label: value"]... <tag> <commit-sha> [message]
 set -euo pipefail

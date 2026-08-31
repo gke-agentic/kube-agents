@@ -3,12 +3,11 @@ name: "RC: Release Pipeline"
 permissions:
   contents: read
 
-# NO `schedule:` — rc-scheduler.yml owns the cron and dispatches this workflow
-# only when there is a new candidate to test. That is what makes a run of this
-# pipeline mean something: it no longer has a quiet-tick path that concludes
-# success having done nothing, so its last conclusion is the last real result.
-# rc-scheduler.yml's header has the full argument. Putting the cron back here
-# reintroduces the skip-paints-over-a-failure problem.
+# No `schedule:` — rc-scheduler.yml owns the cron and dispatches this workflow
+# only when there is a new candidate. That is what makes a run of this pipeline
+# mean something: with no quiet-tick path that concludes success having done
+# nothing, its last conclusion is the last real result. Putting the cron back
+# here undoes that; rc-scheduler.yml's header has the argument.
 on:
   #checkov:skip=CKV_GHA_7:Manual release candidate pipeline requires target commit sha and tag inputs
   workflow_dispatch:
@@ -29,12 +28,10 @@ concurrency:
 jobs:
   step-1-create-tag:
     name: Step 1 - Create Release Candidate Tag
-    # The cron now sits on rc-scheduler.yml, so a fork no longer inherits a
-    # trigger that fires here on its own — but the guard stays on every job.
-    # A fork can still dispatch this by hand with none of the release
-    # credentials, and the guard is what a re-added `schedule:` would need. It
-    # repeats per job rather than relying on the skip cascading through `needs`:
-    # an `always()` added to a later job would silently un-guard the pipeline.
+    # A fork can dispatch this by hand with none of the release credentials, and
+    # the guard is what a re-added `schedule:` would need. It repeats per job
+    # rather than relying on the skip cascading through `needs`: an `always()`
+    # added to a later job would silently un-guard the pipeline.
     if: github.repository == 'gke-labs/kube-agents'
     uses: ./.github/workflows/rc-create-tag.yml
     permissions:
@@ -42,17 +39,14 @@ jobs:
     with:
       commit_sha: ${{ inputs.commit_sha }}
       rc_tag: ${{ inputs.rc_tag }}
-      # Always false now that rc-scheduler.yml owns the cron: this workflow is
-      # only ever dispatched, and always with a commit_sha the scheduler already
-      # resolved. Kept wired rather than hardcoded so that re-adding a
-      # `schedule:` here restores the self-resolving path in one edit instead of
-      # silently running with is_scheduled false, which is the branch of
-      # resolve_rc_tag.sh that errors on a missing commit.
+      # Always false while rc-scheduler.yml owns the cron: this workflow is only
+      # dispatched, and always with a commit_sha the scheduler resolved. Wired
+      # rather than hardcoded so re-adding a `schedule:` restores the
+      # self-resolving path in one edit, instead of running with is_scheduled
+      # false — the branch of resolve_rc_tag.sh that errors on a missing commit.
       #
-      # The consequence, stated so the `skip_rc` guards below are not read as
-      # live: the skip decision has moved to the scheduler, so a dispatched run
-      # never sets skip_rc. The guards stay because they are still correct, and
-      # because they are what a re-added cron would need.
+      # It also means a run never sets skip_rc, so the `skip_rc` guards below
+      # never fire today. They stay because a re-added cron would need them.
       is_scheduled: ${{ github.event_name == 'schedule' }}
     secrets:
       RELEASE_BOT_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
@@ -63,19 +57,16 @@ jobs:
     if: |
       github.repository == 'gke-labs/kube-agents' &&
       needs.step-1-create-tag.outputs.skip_rc != 'true'
-    # inherit, not an explicit mapping — the same reason
-    # staging-redeploy-integrations.yml already records. The called
-    # deploy-environment job reads GH_APP_ID and GH_APP_PRIVATE_KEY, which are
-    # `rc` ENVIRONMENT secrets, and a `uses:` job cannot declare an
-    # environment, so any `secrets:` mapping written here resolves
-    # against nothing and forwards
-    # empties. Observed, not assumed: with the mapping in place, that job
-    # logged GITHUB_APP_ID as empty on a run five hours after the secret was
-    # created on the rc environment.
+    # inherit, not an explicit mapping. The called deploy-environment job reads
+    # GH_APP_ID and GH_APP_PRIVATE_KEY, which are `rc` ENVIRONMENT secrets, and a
+    # `uses:` job cannot declare an environment — so a `secrets:` mapping written
+    # here resolves at repository scope and forwards empties. Observed: with the
+    # mapping in place that job logged GITHUB_APP_ID as empty five hours after the
+    # secret was created on the rc environment.
     #
-    # scripts/release/README.md, "Enabling the GitHub token minter on the RC",
-    # is the single home for what the wiring requires and why; this comment is
-    # here because the mistake is made at this line.
+    # scripts/release/README.md, "Enabling the GitHub token minter on the RC", is
+    # the single home for the wiring; this comment is here because the mistake is
+    # made at this line.
     uses: ./.github/workflows/deploy-environment.yml # zizmor: ignore[secrets-inherit]
     permissions:
       contents: read
@@ -105,9 +96,8 @@ jobs:
       github_environment: "rc"
       commit_sha: ${{ needs.step-1-create-tag.outputs.commit_sha }}
       # The Chat gate blocks the candidate; the cluster and fleet-audit suite is
-      # coverage that must not. Same split as before this job became a call.
-      # The scenario and stream filters moved into the `rc` suite's `env_vars`
-      # in e2e_config.yaml, where they were already declared.
+      # coverage that must not. Their scenario and stream filters are declared in
+      # the `rc` suite's `env_vars` in e2e_config.yaml.
       blocking_suite: "gchat"
       optional_suites: "rc"
     secrets: inherit

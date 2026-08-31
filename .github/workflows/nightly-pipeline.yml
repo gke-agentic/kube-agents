@@ -4,21 +4,15 @@ name: "Nightly: Pipeline"
 # promotes the candidate to staging if the matrix passes, and destroys the
 # environment again.
 #
-# It owns its infrastructure end to end, and nothing in it touches the RC
-# environment. The three jobs that touch a cluster — deploy, the matrix, teardown
-# — bind `nightly` and take the `nightly-environment` lock inside the workflow
-# each one calls, so none of them queues behind or races the three-hourly RC
-# pipeline. The other two do neither in full: step 1 binds `nightly` for its
-# variables without taking that lock, and step 4 only pushes a Git tag, so it
-# binds no environment and takes no lock.
+# Nothing in it touches the RC environment. The three jobs that touch a cluster —
+# deploy, the matrix, teardown — bind `nightly` and take the
+# `nightly-environment` lock, so none of them queues behind or races the
+# three-hourly RC pipeline. Step 1 binds `nightly` for its variables without
+# taking the lock; step 4 only pushes a Git tag, so it does neither.
 #
-# NO `schedule:` YET, on purpose. A cron and a workflow_dispatch button only
-# exist once the file is on the default branch, so the first real run is
-# necessarily after merge, and a dispatch-only workflow cannot affect anything
-# that runs today no matter how wrong it is. Exercise it by hand against the
-# nightly project until it is boring, then add the cron as a one-line follow-up:
-# turning the schedule on is the decision, and it deserves its own reviewable
-# change. The intended schedule is `cron: "0 2 * * *"`.
+# Dispatch-only on purpose: turning the schedule on is its own decision and its
+# own reviewable change. Exercise it by hand against the nightly project until it
+# is boring, then add `cron: "0 2 * * *"`.
 
 permissions:
   contents: read
@@ -33,16 +27,11 @@ on:
         default: ""
         type: string
 
-# `nightly-pipeline` is a different group from the `nightly-environment` lock the
-# called workflows take, and it is this one that is acquired once per run: it
-# stops a second nightly starting while this one holds a cluster.
-#
-# The environment lock is not acquired once. Steps 2, 3 and 5 each take it and
-# release it, so there are gaps — which is exactly the trap the design names,
-# and an outsider pointed at the `nightly` environment can still interleave in
-# one. What makes that survivable is this group rather than that one: the only
-# other thing that runs the nightly environment end to end is another nightly
-# run, and `nightly-pipeline` is what keeps it out.
+# Distinct from the `nightly-environment` lock the called workflows take. That
+# one is acquired and released three times over — by steps 2, 3 and 5 — so a
+# workflow pointed at the `nightly` environment can interleave in a gap. This
+# group is held for the whole run, and it is what keeps the only thing that
+# drives the environment end to end, another nightly, out of those gaps.
 concurrency:
   group: nightly-pipeline
   cancel-in-progress: false
@@ -55,21 +44,15 @@ jobs:
     # `needs`: an `always()` added to a later job would silently un-guard it.
     if: github.repository == 'gke-labs/kube-agents'
     runs-on: ubuntu-latest
-    # Bound to `nightly` for GH_ORG, GH_REPO and REGISTRY_PREFIX — the three
-    # values that decide which repository the tag graph is read from and where
-    # the candidate images are looked for. rc-create-tag.yml binds `rc` for the
-    # same three, and a step resolving them from a different scope than the
-    # deploy job would verify one registry and install from another.
+    # Bound for GH_ORG, GH_REPO and REGISTRY_PREFIX — which repository the tag
+    # graph is read from, and where the candidate images are looked for. Resolving
+    # those from a different scope than the deploy job would verify one registry
+    # and install from another. An unbound job resolves every `vars.*` to empty in
+    # silence, and GH_ORG and GH_REPO have no fallback.
     #
-    # REGISTRY_PREFIX is the odd one: no environment sets it and the repository
-    # scope holds no variables at all, so it arrives empty and
-    # get_registry_prefix falls back to DEFAULT_REGISTRY_PREFIX. That is the
-    # intended value — it is what 45 validated RC tags were resolved against —
-    # so the binding is what makes an environment able to override it, not what
-    # supplies it today.
-    #
-    # The binding is not optional either way: an unbound job resolves every
-    # `vars.*` to empty in silence, and GH_ORG and GH_REPO have no fallback.
+    # REGISTRY_PREFIX is set at no scope, so it arrives empty and
+    # get_registry_prefix falls back to DEFAULT_REGISTRY_PREFIX. Binding is what
+    # lets an environment override that, not what supplies it.
     environment: nightly
     timeout-minutes: 15
     permissions:
@@ -150,18 +133,13 @@ jobs:
     with:
       github_environment: "nightly"
       commit_sha: ${{ needs.step-1-resolve-candidate.outputs.commit_sha }}
-      # The gate is what has passed on a real cluster, not everything the matrix
-      # runs. `rc` — Agent API health, the fleet-audit ledger across all streams,
-      # and stockout scenario 04 — runs on every RC pipeline and passes there, so
-      # it is evidence rather than a guess. The other three files have never
-      # completed a green run: e2e-nightly-matrix.yml, the workflow this replaces,
-      # has never had a successful run at all. Gating a staging promotion on them
-      # today would mean the first red night tells you nothing about whether the
-      # candidate is bad or the suite is, and staging stops moving either way.
-      #
-      # They still run, as optional_suites, so a night produces the full matrix's
-      # worth of signal. Promote one into blocking_suite as it earns it — the bar
-      # is a green nightly run with the file in the optional list.
+      # The gate is only what has already passed on a real cluster. `rc` — Agent
+      # API health, the fleet-audit ledger across all streams, and stockout
+      # scenario 04 — runs on every RC pipeline and passes there. Gating on a
+      # suite with no green run behind it means the first red night says nothing
+      # about whether the candidate or the suite is bad, and staging stops moving
+      # either way. Promote a suite in once it earns it; the bar is a green
+      # nightly run with it in the optional list.
       blocking_suite: "rc"
       # Together these cover every file `nightly` holds that `rc` does not:
       # agentplugins_e2e_test.py, gchat_agent_test.py, and the stockout file
@@ -173,9 +151,8 @@ jobs:
       # reporting that the agent never investigated. Fail at the install, where
       # the error names the cause.
       alert_ingress_required: true
-      # Above the 60 the RC gate uses: this runs the same five test files, just
-      # split across a gate and three tolerated suites, on top of the same fixed
-      # provisioning cost.
+      # Double the RC gate's 60: the same fixed provisioning cost, but all five
+      # test files rather than one suite's worth.
       timeout_minutes: 120
     secrets: inherit
 
@@ -185,13 +162,10 @@ jobs:
     # The implicit success() on `needs` is the gate: a red matrix promotes
     # nothing and leaves staging where it is.
     #
-    # skip_promotion is the separate, non-failure case — the candidate already
-    # carries a staging tag, so the night tested it and pushes nothing. That
-    # condition is on the STEPS below rather than on this job, deliberately. A
-    # skipped job skips everything that `needs` it, and step 5 needs this one,
-    # so gating the job here would leave a GKE cluster running on every night
-    # whose candidate was already promoted — the most common case once the RC
-    # pipeline has a quiet day.
+    # skip_promotion — the candidate already carries a staging tag — is checked on
+    # the STEPS below rather than here. A skipped job skips everything that
+    # `needs` it, and step 5 needs this one, so gating the job would strand a GKE
+    # cluster on every night whose candidate was already promoted.
     if: |
       github.repository == 'gke-labs/kube-agents' &&
       needs.step-1-resolve-candidate.outputs.skip_pipeline != 'true'
@@ -228,28 +202,18 @@ jobs:
 
   step-5-teardown-env:
     name: Step 5 - Tear Down Nightly Environment
-    # The implicit success() on `needs` is what gates this one: a failure in
-    # resolve, deploy or the matrix leaves the environment standing to be
-    # examined live, which is the same contract as the RC pipeline's step 5.
+    # The implicit success() on `needs` is the gate: a failure in resolve, deploy
+    # or the matrix leaves the environment standing to be examined live. The `if:`
+    # below adds to that check rather than replacing it — an `always()` here would
+    # remove it and start destroying the environments this exists to preserve.
     #
-    # The `if:` below does NOT weaken that gate. It adds conditions rather than
-    # replacing the success() check. An `always()` added here would remove it
-    # and start destroying the environments this exists to preserve.
-    #
-    # `step-4-promote-to-staging` is deliberately NOT in this list, which is the
-    # one place this diverges from the RC pipeline's step 5. Step 4 runs only
-    # after a green matrix, and the ways it can fail are all credential ones — a
-    # missing or expired RELEASE_BOT_TOKEN failing its checkout, or a rejected
-    # `git push`. None of those leave anything on the cluster worth looking at,
-    # and the run still goes red because the job did. Depending on it would mean
-    # a skipped-or-failed step 4 skips this job and strands a GKE cluster; the
-    # RC can absorb that because its next scheduled run reclaims the environment
-    # within three hours, and the nightly pipeline — which has no schedule —
-    # cannot. Nothing would remove it at all.
-    #
-    # The two jobs are safe to run concurrently: step 4 pushes a Git tag and
-    # touches no GCP resource, and this job holds the nightly-environment lock
-    # that everything touching the cluster contends on.
+    # `step-4-promote-to-staging` is deliberately absent from the list. Its only
+    # failure modes are credential ones — an expired RELEASE_BOT_TOKEN, a rejected
+    # push — which leave nothing on the cluster worth looking at, and depending on
+    # it would strand a GKE cluster that nothing else reclaims: this pipeline has
+    # no schedule, so there is no next run to clean up after it. Running the two
+    # concurrently is safe, because step 4 touches no GCP resource and this job
+    # holds the nightly-environment lock.
     needs: [step-1-resolve-candidate, step-2-deploy-env, step-3-run-e2e-matrix]
     if: |
       github.repository == 'gke-labs/kube-agents' &&

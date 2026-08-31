@@ -1,27 +1,16 @@
 name: "RC: Scheduler"
 
-# The cron that used to sit on rc-release-pipeline.yml, moved one level up so
-# that a three-hourly tick with nothing to do produces no pipeline run at all.
+# Holds the RC pipeline's cron one level up, so a three-hourly tick with nothing
+# to do produces no pipeline run at all.
 #
-# WHY THIS FILE EXISTS
+# The pipeline used to make that decision itself, and a run that skipped every
+# job concluded success — skipped jobs do not fail a run. Since skips are the
+# common case, three quiet hours after a genuine failure painted the pipeline
+# green while the last run that did anything was still red. Gating at the trigger
+# leaves the pipeline with no skip path, so its conclusion means what it says.
 #
-# A skipped run and a passing run were indistinguishable, and the skip won. When
-# the pipeline found no new candidate, step 1 set `skip_rc=true`, every later job
-# was skipped by its `needs.step-1-create-tag.outputs.skip_rc != 'true'` guard,
-# and skipped jobs do not fail a run — so the run concluded **success**. Three
-# quiet hours after a genuine failure therefore painted the pipeline green while
-# the last run that actually did something was still red. Nothing alerted, and
-# the signal read backwards. Skips are the common case here, not an edge: 23 of
-# 68 candidates.
-#
-# Gating at the trigger fixes it at the run level rather than papering over it.
-# The pipeline now has no skip path, so every run of it is a real run and its
-# conclusion means what it says — which is what a status badge would need to be
-# worth adding, and badges are deliberately not part of this change.
-#
-# This job's own conclusion says nothing about the health of the release
-# candidate: it is green when it dispatched and green when it decided not to.
-# What it reports is in the job summary, and the thing to watch is the pipeline.
+# This job's own conclusion does not: it is green when it dispatched and green
+# when it decided not to. What it decided is in the job summary.
 
 permissions:
   contents: read
@@ -57,8 +46,8 @@ jobs:
     permissions:
       contents: read
       # For the dispatch step below. `workflow_dispatch` is one of the two events
-      # GitHub exempts from the run-suppression rule, so the default token can
-      # start the pipeline given this scope — no secret, and nothing to expire.
+      # GitHub exempts from the recursion suppression that would otherwise stop
+      # the default token starting another run.
       actions: write
     steps:
       - name: Checkout repository
@@ -89,19 +78,10 @@ jobs:
           COMMIT_SHA: ${{ steps.resolve.outputs.commit_sha }}
         run: ./scripts/release/record_rc_scheduler_skip.sh
 
-      # GITHUB_TOKEN, with `actions: write` above. The suppression rule that
-      # makes the promotion job use RELEASE_BOT_TOKEN does not reach this step:
-      # GitHub suppresses runs triggered by the default token to stop recursion,
-      # and names `workflow_dispatch` and `repository_dispatch` as the two events
-      # exempt from it — they always create runs. A tag pushed with the default
-      # token really does trigger nothing, which is why nightly-pipeline.yml's
-      # step 4 needs the PAT; a dispatch made with it starts the pipeline.
-      #
-      # Preferring it here is not just correctness about the docs. This step is
-      # now the only thing that starts the RC pipeline, so whatever it depends on
-      # is a single point of failure — and the default token needs no secret to
-      # be present, cannot expire, and carries a scope declared in this file
-      # rather than one set on an account nobody can inspect from source.
+      # GITHUB_TOKEN rather than the PAT nightly-pipeline.yml's step 4 needs.
+      # This step is the only thing that starts the RC pipeline, so whatever it
+      # depends on is a single point of failure, and the default token needs no
+      # secret to be present and cannot expire.
       - name: Dispatch the release pipeline
         if: steps.resolve.outputs.skip_rc != 'true'
         env:

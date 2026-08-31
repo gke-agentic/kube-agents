@@ -18,18 +18,14 @@ on:
   #checkov:skip=CKV_GHA_7:Manual E2E test runner requires environment and scenario filter parameters
   workflow_dispatch:
     inputs:
-      # Without this the job binds to no GitHub environment, every `vars.*`
-      # below resolves to empty — the repository scope holds none of these —
-      # and google-github-actions/auth fails with "must specify exactly one of
-      # workload_identity_provider or credentials_json". That is why this
-      # workflow has never had a successful run.
+      # Required, because the job binds this as its `environment:` and every
+      # `vars.*` below comes from it — the repository scope holds none of them,
+      # so an unbound job fails at google-github-actions/auth with "must specify
+      # exactly one of workload_identity_provider or credentials_json".
       #
-      # An input rather than a hardcoded `rc`, because this is dispatch-only and
-      # legitimately wants to target whichever environment is standing:
-      # `nightly` while a failed nightly run's cluster is up for diagnosis, `rc`
-      # while a failed RC run's is. Note that both are ephemeral — a passing
-      # pipeline destroys its cluster, so most of the time there is nothing here
-      # to run against.
+      # An input rather than a hardcoded `rc`: whichever cluster is standing is
+      # the one worth attaching to, and either pipeline can be the one that left
+      # theirs behind.
       github_environment:
         description: "GitHub environment whose cluster to run against"
         required: true
@@ -39,7 +35,7 @@ on:
           - "nightly"
       # `test_suite`, not `test_environment`: this names a list of test files in
       # e2e_config.yaml, while `github_environment` above names the GitHub
-      # environment supplying the cluster. The two used to be one letter apart.
+      # environment supplying the cluster.
       test_suite:
         description: "Target test suite from e2e_config.yaml, or 'all' to run every suite"
         required: false
@@ -77,9 +73,8 @@ on:
         default: "false"
         type: string
 
-# Follows the environment it was dispatched against. Hardcoding `rc-environment`
-# here used to make this workflow contend with the RC pipeline for a cluster it
-# does not deploy to, whichever environment it was actually pointed at.
+# Follows the environment it was dispatched against, so a run pointed at
+# `nightly` holds the nightly lock rather than queueing behind the RC pipeline.
 concurrency:
   group: ${{ inputs.github_environment }}-environment
   cancel-in-progress: false
@@ -148,16 +143,14 @@ jobs:
           GCP_REGION: ${{ vars.GCP_REGION }}
           GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
           AGENT_NAMESPACE: ${{ vars.AGENT_NAMESPACE }}
-          # No REGISTRY here. execute_e2e_tests.py already resolves it the same
-          # way — REGISTRY, then REGISTRY_PREFIX, then
-          # <region>-docker.pkg.dev/<project>/kube-agents — so a chain in the
-          # workflow was a second copy of that logic in a second place to drift.
-          # GITOPS_*, not GH_*. On both `rc` and `nightly` the GH_ORG/GH_REPO
-          # pair names the RELEASE repository (gke-labs/kube-agents), which is
-          # what common.sh's get_target_repo resolves for tag operations —
-          # handing it to a suite that mints a GitHub App token would scope a
-          # live token at this repository. GITOPS_REPO is bare; the conftest
-          # github_repo fixture composes owner/repo from GITHUB_ORG.
+          # No REGISTRY: execute_e2e_tests.py resolves it already, and a second
+          # chain here is a second thing to keep in step.
+          #
+          # GITOPS_*, not GH_*. On both environments the GH_ORG/GH_REPO pair
+          # names the RELEASE repository, so handing it to a suite that mints a
+          # GitHub App token would scope a live token at this repository.
+          # GITOPS_REPO is bare; conftest's github_repo fixture composes
+          # owner/repo against GITHUB_ORG.
           GITHUB_ORG: ${{ vars.GITOPS_ORG }}
           GITHUB_REPO: ${{ vars.GITOPS_REPO }}
           TEST_SUITE: ${{ inputs.test_suite }}
@@ -170,8 +163,7 @@ jobs:
           E2E_CHAT_CLIENT_SECRET: ${{ secrets.E2E_CHAT_CLIENT_SECRET }}
           E2E_CHAT_REFRESH_TOKEN: ${{ secrets.E2E_CHAT_REFRESH_TOKEN }}
           CHAT_SPACE_ID: ${{ secrets.E2E_CHAT_SPACE_ID }}
-        # One line, because both arms of the `if` this replaces ran the same
-        # command: `--suite all` is what execute_e2e_tests.py already expands
-        # into one child process per suite. The wrapper, not the .py, so this
-        # goes through the same entry point as e2e-run.yml and `make test-e2e`.
+        # The wrapper rather than the .py, so this goes through the same entry
+        # point as e2e-run.yml and `make test-e2e`. `--suite all` needs no special
+        # case: execute_e2e_tests.py expands it into one child process per suite.
         run: ./scripts/release/execute_e2e_tests.sh --suite "${TEST_SUITE}"

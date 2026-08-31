@@ -31,14 +31,9 @@ on:
         description: "Release Candidate Tag or Commit SHA"
         required: true
         type: string
-    # No `secrets:` block. This workflow authenticates with Workload Identity
+    # No `secrets:` block: this workflow authenticates with Workload Identity
     # Federation off the bound environment's GCP_WORKLOAD_IDENTITY_PROVIDER and
-    # GCP_SERVICE_ACCOUNT variables, and needs nothing else. It used to declare
-    # an optional GCP_SA_KEY as a service-account-key fallback; that secret is
-    # set at no scope — not repository, not `rc`, not `nightly` — so the
-    # fallback resolved to an empty string on every run it has ever had. A
-    # credential path nothing populates is one more thing to keep in step for no
-    # behaviour, so it is gone rather than left declared.
+    # GCP_SERVICE_ACCOUNT variables, and needs nothing else.
 
 jobs:
   teardown-environment:
@@ -118,4 +113,19 @@ jobs:
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           GCP_REGION: ${{ vars.GCP_REGION }}
           GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
-        run: ./scripts/release/teardown_environment.sh
+        # Same rename fallback as deploy-environment.yml, and for the same
+        # reason: the workspace is the candidate's tree, and every candidate up
+        # to rc_2608310656_cf038a2_validated carries this script as
+        # teardown_rc_environment.sh. It matters here beyond the nightly's first
+        # run — this workflow's standalone dispatch is the documented way to
+        # reclaim an environment stranded by a failed pipeline, and such an
+        # environment was installed from a pre-rename candidate by definition.
+        #
+        # Delete this fallback once no rc_*_validated tag predates the rename.
+        run: |
+          if [ -f ./scripts/release/teardown_environment.sh ]; then
+            ./scripts/release/teardown_environment.sh
+          else
+            echo "==> Candidate predates the teardown_environment.sh rename; running teardown_rc_environment.sh."
+            ./scripts/release/teardown_rc_environment.sh
+          fi

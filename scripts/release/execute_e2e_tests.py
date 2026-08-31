@@ -247,19 +247,11 @@ def run_suite_tests(
         "AGENT_NAMESPACE": namespace,
         "KUBE_CONTEXT": kube_ctx,
         "REGISTRY": reg,
-        # Name the suite we picked, so conftest's fixtures fall through to this
-        # suite's env_vars rather than e2e_config.yaml's default_suite. No fixture
-        # changes value today -- every key a config lookup would reach is either
-        # exported above or already in os.environ from **custom_env_vars -- with one
-        # exception. A caller can select every suite at once -- `--suite all`, which
-        # e2e-manual-runner.yml dispatches -- and this loop expands that into one
-        # child per suite. An ambient E2E_SUITE=all used to ride through to every one
-        # of them, and conftest matches names exactly, so the lookup found nothing. No
-        # workflow exports `all` today (e2e-run.yml is the only writer, and it writes a
-        # single suite name), so the ordering here is the only thing keeping the
-        # regression from coming back the next time one does. Naming the child's own
-        # suite also stops being cosmetic the moment a block declares its own
-        # project_id or cluster_name.
+        # The child's own suite, overriding whatever the caller set. `--suite all`
+        # expands into one child per suite, and an ambient E2E_SUITE=all riding
+        # through to each of them matches no suite in conftest, which looks names
+        # up exactly. Nothing exports `all` today, so this assignment is the only
+        # thing stopping that regression the next time something does.
         "E2E_SUITE": suite_name,
         # The deprecated alias, exported alongside the real name for one release so a
         # test or fixture still reading E2E_ENV keeps working while callers migrate.
@@ -341,10 +333,9 @@ def main() -> None:
 
     if selected_suite and selected_suite.lower() != "all":
         target_suites = [s for s in suites if s.get("name") == selected_suite]
-        # The suffix is the one part of the rename no name-level alias covers, so
-        # it is retried here rather than left to fail as "suite not found" — which
-        # is what a mid-flight `E2E_ENV=rc-e2e` would otherwise get, from a change
-        # whose whole promise is that the old spellings keep working.
+        # The `-e2e` suffix is the one part of the rename no name-level alias
+        # covers, so it is retried rather than left to fail as "suite not found"
+        # — which is what a mid-flight `E2E_ENV=rc-e2e` would otherwise get.
         if not target_suites:
             canonical = canonical_suite_name(selected_suite)
             if canonical != selected_suite:

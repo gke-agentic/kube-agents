@@ -14,28 +14,21 @@
 #
 # Sourced, not executed: this file defines functions and runs nothing.
 
-# TEARDOWN_STRICT is the name; RC_TEARDOWN_STRICT is the one the GitHub
-# environment settings still carry, and both are read.
+# TEARDOWN_STRICT is the name; RC_TEARDOWN_STRICT is what the GitHub environment
+# settings carry. Both are read, and the new name wins where both are set.
 #
-# Renaming a variable that lives in a web form is normally two changes of which
-# only one is in the diff, and doing the code half alone turns strict teardown
-# off silently — no error, just a different default, because an unset variable
-# parses as "off". Reading both names removes that coupling entirely: this half
-# can land now, the `rc` and `nightly` settings can be renamed whenever someone
-# with access gets to it, and neither ordering breaks anything. Drop the legacy
-# name from the list below once both environments have been updated.
+# Reading both decouples this code from a value that lives in a web form: an
+# unset variable parses as "off", so honouring only the new name would turn
+# strict teardown off silently until someone with access renames the setting.
+# Drop the legacy name once `rc` and `nightly` have both been updated.
 #
-# The new name wins where both are set, so a migrated environment is not
-# overridden by a stale copy nobody deleted.
-#
-# The value is typed into a GitHub web form, so it accepts what
-# installer_common.sh's is_truthy accepts rather than the literal "true" alone —
-# a maintainer who types `1` must not get a pipeline that keeps installing over
-# a surviving environment while logging that strict mode is off. Inlined
-# because these scripts do not source installer_common.sh; keep the two in step
-# (the accepted set is pinned by tests/testing/common.py's TRUTHY_BOOLEAN_INPUTS).
-# A value that is neither truthy nor an obvious "off" is a typo, and a typo in a
-# safety switch is worth a line of output.
+# The value is hand-typed, so it accepts everything installer_common.sh's
+# is_truthy does rather than the literal "true" alone — a maintainer who types
+# `1` must not get a pipeline that installs over a surviving environment while
+# logging that strict mode is off. Inlined because these scripts do not source
+# installer_common.sh; tests/testing/common.py's TRUTHY_BOOLEAN_INPUTS pins the
+# accepted set for both. Anything neither truthy nor obviously "off" is a typo,
+# and a typo in a safety switch is worth a line of output.
 teardown_strict_source() {
   if [ -n "${TEARDOWN_STRICT:-}" ]; then
     echo "TEARDOWN_STRICT"

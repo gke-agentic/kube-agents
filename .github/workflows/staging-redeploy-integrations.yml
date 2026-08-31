@@ -3,11 +3,8 @@ name: Staging Redeploy Integrations
 on:
   push:
     tags:
-      # Flat and underscore-separated, matching the rc_* family the nightly
-      # pipeline derives it from: staging_<ts>_<sha>. See
-      # scripts/release/common.sh's staging_tag_for_rc. The single historical
-      # staging/2026-07-23 tag never re-triggers, so nothing needs migrating —
-      # it simply stops matching.
+      # staging_<ts>_<sha>, which scripts/release/common.sh's staging_tag_for_rc
+      # derives from the validated rc_* candidate tag.
       - "staging_*"
 
 # The payload here is a `helm upgrade` on the shared `kube-agents` release.
@@ -28,7 +25,27 @@ permissions:
   contents: read
 
 jobs:
+  # github.sha on a tag push is the new value of the ref, and the promotion tags
+  # are annotated, so it is the tag object's SHA rather than the commit's. The
+  # deploy below checks it out. Peel it once here.
+  resolve-commit:
+    if: github.repository == 'gke-labs/kube-agents'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      commit_sha: ${{ steps.peel.outputs.commit_sha }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Peel the promotion tag to its commit
+        id: peel
+        run: ./scripts/release/peel_tag_commit.sh
+
   call-deploy:
+    needs: resolve-commit
     # A fork inherits the tag trigger but none of the deploy credentials, so a
     # staging_* tag pushed there would fail and mail the fork owner.
     if: github.repository == 'gke-labs/kube-agents'
@@ -44,4 +61,4 @@ jobs:
     with:
       target_environment: "staging"
       force_deploy: true
-      checkout_sha: ${{ github.sha }}
+      checkout_sha: ${{ needs.resolve-commit.outputs.commit_sha }}

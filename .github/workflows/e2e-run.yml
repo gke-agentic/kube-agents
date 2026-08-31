@@ -1,37 +1,27 @@
 name: "Shared: Run E2E Suites"
 
-# The E2E step of an environment pipeline, as a reusable workflow so the RC
-# pipeline and the nightly pipeline run the same job rather than two copies of
-# it that drift. Everything environment-specific arrives as an input: which
-# GitHub environment supplies the GCP coordinates, which commit was deployed,
-# and which suites to run.
+# The E2E step of an environment pipeline, shared so the RC and nightly
+# pipelines run the same job rather than two copies of it that drift.
 #
-# Two kinds of suite, deliberately asymmetric. `blocking_suite` is the gate — a
-# failure there fails the run and stops the pipeline promoting anything.
-# `optional_suites` is a list, run `continue-on-error`, for coverage worth having
-# and not worth blocking a release on. A caller that wants only a gate omits it.
+# The two suite inputs are deliberately asymmetric. `blocking_suite` is the gate:
+# a failure fails the run and the pipeline promotes nothing. `optional_suites`
+# runs `continue-on-error`, which is what lets a pipeline gate on the suites that
+# have passed on a real cluster while still running the ones that have not. It is
+# comma-separated because `workflow_call` has no list input type.
 #
-# The list is what lets a pipeline gate on the suites that have passed on a real
-# cluster while still running the ones that have not. Comma-separated because
-# `workflow_call` has no list input type — arrays exist only for
-# `workflow_dispatch` choices — and each entry runs in its own step-level group
-# so a failure names the suite rather than the step.
-#
-# Per-suite filters (STOCKOUT_SCENARIOS, FLEET_AUDIT_STREAMS) are NOT inputs
-# here. They belong to the suite, and e2e_config.yaml's `env_vars` is where a
-# suite declares them; a single workflow input could only apply one value across
-# a whole list, which is how `rc` and `stockout-full` would end up running the
-# same scenario filter.
+# Per-suite filters (STOCKOUT_SCENARIOS, FLEET_AUDIT_STREAMS) are not inputs here
+# — a single input could only apply one value across the whole list, so `rc` and
+# `stockout-full` would share a scenario filter. Each suite declares its own in
+# e2e_config.yaml's `env_vars`.
 
 permissions:
   contents: read
 
-# workflow_call only, and no fork guard: a workflow reachable only this way is
-# gated by whichever pipeline calls it, both of which carry
-# `if: github.repository == 'gke-labs/kube-agents'`. It is deliberately not
-# dispatchable — e2e-manual-runner.yml is the by-hand route, and a second one
-# here would need every input duplicated across both trigger blocks, where an
-# input defined for one and read on the other resolves to empty.
+# workflow_call only, so no fork guard is needed: the calling pipelines carry
+# `if: github.repository == 'gke-labs/kube-agents'`. e2e-manual-runner.yml is the
+# by-hand route; adding a dispatch trigger here would mean duplicating every
+# input across both trigger blocks, where one defined for the wrong trigger
+# resolves to empty.
 on:
   workflow_call:
     inputs:
@@ -59,12 +49,7 @@ on:
         required: false
         default: 60
         type: number
-      # Whether a failed alert-ingress install fails the job. Default false
-      # reproduces the RC pipeline's previous behaviour exactly: the tests that
-      # read an alert are its optional suite, so a stockout-only problem must
-      # not sink the blocking gate. A caller whose BLOCKING suite reads an alert
-      # passes true, because there the ingress is a dependency of the gate and
-      # tolerating its failure only moves the red to a later, less legible step.
+      # See the step that reads it for when a caller should pass true.
       alert_ingress_required:
         description: "Fail the job when the Pub/Sub alert ingress install fails"
         required: false
@@ -81,18 +66,13 @@ jobs:
     concurrency:
       group: ${{ inputs.github_environment }}-environment
       cancel-in-progress: false
-    # Roughly 40 of the default 60 minutes can be spent before the first test
-    # runs, which is what a fresh Autopilot cluster costs when it has to scale
-    # nodes from zero and pull every image. wait_for_gke_readiness.sh gates
-    # litellm at 420s and the gateway at 900s, and pays each of those twice —
-    # once for `rollout status`, once for the paired
-    # `wait --for=condition=Available` — on top of a 300s image-tag verification
-    # loop. The adapter step ahead of it adds an image build and push plus up to
-    # 300s plugin-ready and 180s settle. At 30 the job timeout would fire first
-    # and report a broken deploy rather than a slow one. Re-derive this sum
-    # before lowering it; the readiness constants are in
-    # wait_for_gke_readiness.sh, not here. The nightly matrix runs more suites
-    # than the RC gate and raises it via the input.
+    # Roughly 40 of the default 60 minutes can go before the first test runs: a
+    # fresh Autopilot cluster scaling from zero and pulling every image, then
+    # wait_for_gke_readiness.sh's litellm (420s) and gateway (900s) gates paid
+    # twice each, plus a 300s image-tag verification loop and the adapter build
+    # ahead of it. Lower this and the job timeout fires before the tests do,
+    # reporting a broken deploy rather than a slow one. Re-derive the sum from
+    # wait_for_gke_readiness.sh before changing it.
     timeout-minutes: ${{ inputs.timeout_minutes }}
     permissions:
       contents: read
@@ -134,18 +114,15 @@ jobs:
           location: ${{ vars.GCP_REGION }}
           project_id: ${{ vars.GCP_PROJECT_ID }}
 
-      # Whether a failure here is tolerated is the caller's decision, because
-      # which suite depends on the alert ingress differs per caller. The RC
-      # pipeline reads alerts only in its optional suite, so it leaves
-      # alert_ingress_required false and a stockout-only problem cannot sink the
-      # blocking gate. The nightly pipeline runs test_stockout_investigation.py
-      # with STOCKOUT_SCENARIOS=all inside its BLOCKING suite, so it passes true
-      # and a failed ingress install fails here — at the step that broke, rather
-      # than 360s later as an agent that never started an investigation.
+      # Tolerance is the caller's decision, because which suite depends on the
+      # alert ingress differs per caller. A caller whose BLOCKING suite reads an
+      # alert passes alert_ingress_required, so a broken ingress fails here rather
+      # than 360s later as an agent that never started an investigation; a caller
+      # that only reads alerts in an optional suite leaves it false so a
+      # stockout-only problem cannot sink its gate.
       #
-      # The script itself always exits non-zero on failure; only the tolerance
-      # lives here. Runs before readiness so the gateway re-template the adapter
-      # triggers is already in flight when the rollout waits start.
+      # Runs before readiness so the gateway re-template the adapter triggers is
+      # already in flight when the rollout waits start.
       - name: Install Pub/Sub Alert Ingress
         continue-on-error: ${{ !inputs.alert_ingress_required }}
         env:
@@ -176,22 +153,18 @@ jobs:
           E2E_CHAT_CLIENT_SECRET: ${{ secrets.E2E_CHAT_CLIENT_SECRET }}
           E2E_CHAT_REFRESH_TOKEN: ${{ secrets.E2E_CHAT_REFRESH_TOKEN }}
           # The same pair deploy-environment.yml gives the installer, so the
-          # repository the suite probes is the one the minter was scoped to.
-          # Read from the environment rather than pinned in e2e_config.yaml
-          # because a value written in both places drifts, and a token minted
-          # for one repository does not authenticate against another. Bare: the
-          # conftest github_repo fixture composes owner/repo from GITHUB_ORG
-          # when GITHUB_REPO carries no slash.
+          # repository the suite probes is the one the minter was scoped to — a
+          # token minted for one repository does not authenticate against
+          # another. GITHUB_REPO is bare; conftest's github_repo fixture composes
+          # owner/repo against GITHUB_ORG.
           GITHUB_ORG: ${{ vars.GITOPS_ORG }}
           GITHUB_REPO: ${{ vars.GITOPS_REPO }}
         run: ./scripts/release/execute_e2e_tests.sh
 
-      # continue-on-error is the tolerance; the script exits non-zero when any
-      # suite in the list failed, so the step goes red-but-tolerated and the job
-      # summary names which one. E2E_SUITE is deliberately NOT set: the script
-      # passes each suite as `--suite`, and an ambient E2E_SUITE would ride
-      # through to every child (see execute_e2e_tests.py on why that broke the
-      # `all` expansion).
+      # The script exits non-zero when any suite in the list failed, so the step
+      # goes red-but-tolerated and the job summary names which one. E2E_SUITE is
+      # deliberately unset: the script passes each suite as `--suite`, and an
+      # ambient E2E_SUITE would ride through to every child process.
       - name: Execute Optional E2E Suites
         if: inputs.optional_suites != ''
         continue-on-error: true

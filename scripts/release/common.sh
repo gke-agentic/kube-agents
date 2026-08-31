@@ -243,13 +243,10 @@ is_commit_already_attempted() {
 
 # Checks if a commit SHA carries the RC pipeline's validation marker (rc_*_validated).
 #
-# The pattern is anchored to the rc_ family on purpose. It used to be a bare
-# "*_validated", which matches any tag family that happens to end that way, and
-# this function gates resolve_rc_tag.sh's skip decision — so a validation marker
-# minted by some other pipeline would have been read as an RC validation and the
-# candidate skipped. The name says which family it speaks for for the same
-# reason. The other two consumers of the marker are already anchored to ^rc_
-# (verify_release_eligibility.sh, get_latest_validated_rc_tag).
+# Anchored to the rc_ family, and named for it: this gates resolve_rc_tag.sh's
+# skip decision and the nightly promotion, so a marker minted by some other tag
+# family must not read as an RC validation. verify_release_eligibility.sh and
+# get_latest_validated_rc_tag anchor the same way.
 is_rc_candidate_commit_already_validated() {
   local sha="$1"
   local validated_tags
@@ -265,13 +262,11 @@ export STAGING_TAG_PREFIX="staging_"
 # Derives the staging promotion tag from a validated RC tag:
 #   rc_2608241820_b35543c_validated  ->  staging_2608241820_b35543c
 #
-# Swap the prefix, drop the suffix. The timestamp stays first after the prefix
-# so `git tag -l --sort=-v:refname 'staging_*'` orders by time, the same
-# property the rc_* lookups depend on, and the transform is mechanical in both
-# directions so a staging tag reads back to its candidate without a lookup.
-#
-# The _validated suffix is deliberately not carried over: it records that the RC
-# gate passed, not that the promotion did.
+# The timestamp stays first after the prefix so `git tag -l --sort=-v:refname
+# 'staging_*'` orders by time, and the transform is mechanical in both
+# directions, so a staging tag reads back to its candidate without a lookup. The
+# _validated suffix is dropped: it records that the RC gate passed, not that the
+# promotion did.
 #
 # Refuses anything outside the rc_ family rather than composing staging_<junk>,
 # because the result is a live deploy trigger.
@@ -370,18 +365,16 @@ setup_git_bot_user() {
 
 # Syncs remote tags into the local repository, in CI only.
 #
-# Every script that answers a question from the tag graph needs this first, and
-# each of them used to carry its own copy — a shallow or tagless checkout
-# otherwise resolves "no such tag" rather than failing, which is the quiet way
-# to skip a candidate or promote nothing.
+# Every script that answers a question from the tag graph calls this first: a
+# shallow or tagless checkout otherwise resolves "no such tag" rather than
+# failing, which is the quiet way to skip a candidate or promote nothing.
 #
-# `|| true` throughout, deliberately: a fetch that cannot reach the network is
-# not itself the error. The caller's own lookup fails afterwards, naming the tag
-# it wanted, which is the message worth printing.
+# `|| true` throughout, deliberately. An unreachable network is not itself the
+# error; the caller's own lookup fails afterwards naming the tag it wanted, which
+# is the message worth printing.
 #
-# find_latest_built_commit does NOT use this. It fetches `main` as well as the
-# tags, handles a shallow clone's --depth, and reports which remote answered, so
-# it is a different operation that happens to start the same way.
+# find_latest_built_commit does not use this — it fetches `main` too, handles a
+# shallow clone's --depth, and reports which remote answered.
 release_fetch_tags() {
   is_ci_pipeline || return 0
 

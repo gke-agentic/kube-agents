@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # Starts rc-release-pipeline.yml for a resolved candidate, from rc-scheduler.yml.
 #
-# This step is now the only thing that starts the release-candidate pipeline, so
-# its failure means "no candidate is being tested at all" rather than "one run
-# went wrong". It says that in an annotation instead of leaving a bare non-zero
-# exit for somebody to interpret.
+# It is the only thing that starts that pipeline, so a failure here means "no
+# candidate is being tested at all" rather than "one run went wrong". It says so
+# in an annotation instead of leaving a bare non-zero exit to interpret.
 #
 # GITHUB_TOKEN is enough here, and the scheduler passes it. GitHub suppresses
 # workflow runs triggered by the default token to stop recursion, but names
