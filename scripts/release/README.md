@@ -61,7 +61,7 @@ The end-to-end pipeline (`.github/workflows/rc-release-pipeline.yml`) is dispatc
 - **Scheduled Cadence (`rc-scheduler.yml`, every 3 hours `17 */3 * * *`, best-effort)**:
   - Automatically scans recent commits on `main` (`FETCH_HEAD`) for published container images in GHCR, using the same `resolve_rc_tag.sh` the pipeline runs.
   - **Redundant Run Skipping**: If the latest candidate commit already carries an `rc_*_validated` tag or was previously attempted, the scheduler dispatches nothing and records why in its job summary. The pipeline gets no run at all, which is the point — a skipped pipeline run concluded `success` and painted over the last run that failed.
-  - Dispatches with `RELEASE_BOT_TOKEN`: a `workflow_dispatch` made with the default `GITHUB_TOKEN` returns 204 and starts nothing.
+  - Dispatches with the default `GITHUB_TOKEN` and `actions: write` on the job. `workflow_dispatch` and `repository_dispatch` are the two events GitHub exempts from the rule that suppresses runs triggered by that token, so no PAT is needed here — unlike a tag push, where the suppression is real and `RELEASE_BOT_TOKEN` is required.
   - _Note_: Scheduled runs are scheduled at minute `17` to avoid GitHub Actions peak top-of-the-hour queue congestion; actual start times are best-effort based on GitHub scheduler availability.
 - **Manual Trigger (`workflow_dispatch`)**:
   - Requires an explicit `commit_sha` input to rigorously test a specific target commit.
