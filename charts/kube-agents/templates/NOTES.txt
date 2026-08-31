@@ -55,11 +55,12 @@ writes to the ConfigMap "{{ .Values.selfImprovement.ledgerConfigMap | default "k
 It opens pull requests against {{ $siPrTarget }}, so the Secret
 "{{ .Values.selfImprovement.github.patSecret }}" must exist in {{ .Release.Namespace }} with a
 "{{ .Values.selfImprovement.github.patSecretKey | default "token" }}" entry holding the robot account's personal access token. The
-chart checks that you named one, not that it is there. A Secret that is missing
-is loud rather than expensive — the Job mounts it, so the pod stays in
-CreateContainerConfigError and nothing is investigated. A Secret that exists
-with the wrong key is the expensive one: the pod starts, the run investigates,
-and the filing turn fails at the end.
+chart checks that you named one, not that it is there. Getting it wrong is loud
+rather than expensive — the Job mounts that one entry by name, so a Secret that
+is absent, or present without that key, holds the pod in
+CreateContainerConfigError and nothing is investigated. The expensive case is
+the one that mounts: a token the robot account cannot file with, where the run
+investigates for an hour and only the filing turn at the end fails.
 {{- end }}
 {{- end }}
 
