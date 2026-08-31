@@ -6,7 +6,6 @@ REQUIRED_VARS=(
   "GCP_PROJECT_ID"
   "GCP_REGION"
   "GKE_CLUSTER_NAME"
-  "GCP_SERVICE_ACCOUNT"
 )
 
 MISSING_VARS=()
@@ -15,6 +14,10 @@ for var in "${REQUIRED_VARS[@]}"; do
     MISSING_VARS+=("$var")
   fi
 done
+
+if [ -z "${GCP_SERVICE_ACCOUNT:-}" ] && [ -z "${GCP_SA_KEY:-}" ]; then
+  MISSING_VARS+=("GCP_SERVICE_ACCOUNT variable or GCP_SA_KEY secret")
+fi
 
 # Validate API key only if using Gemini model provider
 PROVIDER="${MODEL_PROVIDER:-gemini}"
