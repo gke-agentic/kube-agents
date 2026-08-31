@@ -498,6 +498,20 @@ resource "helm_release" "kube_agents" {
         key     = var.github_minter_kms_key
       }
     }
+    plugins = {
+      pubsubPlatform = {
+        enabled = var.enable_pubsub_platform || var.enable_stockout_investigator
+      }
+      stockoutInvestigator = {
+        enabled     = var.enable_stockout_investigator
+        clusterName = module.gke_cluster.cluster_name
+        pubsub = {
+          topic        = var.stockout_pubsub_topic
+          subscription = var.stockout_pubsub_subscription
+          sink         = var.stockout_pubsub_sink
+        }
+      }
+    }
     }),
     # Second document rather than a merge() into the first: Helm deep-merges
     # successive values documents, so a caller can reach a single leaf
