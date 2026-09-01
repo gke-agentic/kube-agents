@@ -74,7 +74,8 @@ def chat_service(credentials: Credentials) -> Resource:
     if not CHAT_SPACE_ID:
         pytest.fail(
             "CHAT_SPACE_ID environment variable is required (e.g., spaces/AAQAfrKMyng)\n"
-            "Tip: SRE variables can be loaded by running 'source k8s-operator/scripts/vars.sh'"
+            "Tip: the install's coordinates can be loaded with "
+            "'set -a; . install.env; set +a'"
         )
 
     return build("chat", "v1", credentials=credentials)

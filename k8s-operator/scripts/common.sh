@@ -449,6 +449,21 @@ init_var_image_tag() {
   fi
 }
 
+# Where the install configuration lives, relative to this file. VARS_FILE sits
+# in k8s-operator/scripts/; install.env sits at the repository root two levels
+# up. Derived from VARS_FILE rather than SCRIPT_DIR so that a caller which
+# redirects VARS_FILE for a test redirects both together.
+install_env_file_for_state() {
+  if [ -n "${KUBE_AGENTS_INSTALL_ENV:-}" ]; then
+    echo "${KUBE_AGENTS_INSTALL_ENV}"
+    return 0
+  fi
+  local scripts_dir
+  scripts_dir="$(cd "$(dirname "${VARS_FILE}")" 2>/dev/null && pwd || echo "")"
+  [ -n "$scripts_dir" ] || return 0
+  echo "$(cd "${scripts_dir}/../.." 2>/dev/null && pwd || echo "")/install.env"
+}
+
 load_state() {
   local env_registry_prefix="${REGISTRY_PREFIX:-}"
   local env_third_party_prefix="${THIRD_PARTY_REGISTRY_PREFIX:-}"
@@ -463,6 +478,17 @@ load_state() {
     chmod 600 "$VARS_FILE" 2>/dev/null || true
     umask "$old_umask"
     source "$VARS_FILE"
+  fi
+  # install.env last, so the hand-authored input wins over the derived state.
+  # This is what lets the dev scripts and the print_instructions_* helpers keep
+  # working on an install that has an install.env and no vars.sh.
+  local state_install_env
+  state_install_env="$(install_env_file_for_state)"
+  if [ -n "$state_install_env" ] && [ -f "$state_install_env" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$state_install_env"
+    set +a
   fi
   # Sourcing vars.sh restores the saved REGISTRY_PREFIX over a freshly
   # exported one (saved state wins, as for every knob). Say so instead of

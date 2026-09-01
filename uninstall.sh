@@ -336,6 +336,9 @@ main() {
   # install.sh. Print helpers are already defined above, as the file expects.
   # shellcheck disable=SC1091
   source "${repo_dir}/k8s-operator/scripts/installer_common.sh"
+  # Legacy state first, then install.env over the top of it, so the
+  # hand-authored input wins. Both are optional here: unlike upgrade.sh, a
+  # teardown can proceed on --project-id/--cluster-name/--region alone.
   if [ -f "${repo_dir}/k8s-operator/scripts/vars.sh" ]; then
     # shellcheck disable=SC1091
     if ! source "${repo_dir}/k8s-operator/scripts/vars.sh"; then
@@ -343,6 +346,11 @@ main() {
       exit 1
     fi
     print_success "Loaded configuration state from k8s-operator/scripts/vars.sh"
+  fi
+  local install_env_file
+  install_env_file="$(default_install_env_file "$repo_dir")"
+  if load_install_env "$install_env_file"; then
+    print_success "Loaded install configuration from: ${install_env_file}"
   fi
 
   local target_project="${PARAM_PROJECT_ID:-${PROJECT_ID:-}}"
@@ -471,7 +479,14 @@ main() {
     cd "$compose_dir"
     ./lifecycle.sh destroy -auto-approve -input=false
   )
+  # The derived state goes; install.env stays. It is the operator's own file,
+  # not something this tool generated, and deleting it would throw away the
+  # configuration a re-install would otherwise reuse. Say so rather than
+  # leaving a file behind silently.
   rm -f "$state_file"
+  if [ -f "$install_env_file" ]; then
+    print_info "Left your install configuration in place: ${install_env_file}"
+  fi
 
   write_report "SUCCESS"
 

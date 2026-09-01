@@ -100,7 +100,13 @@ if [ -z "$INSTALL_ENV_FILE" ]; then
   unset _install_env_dir
 fi
 
-load_install_env() {
+# Named apart from installer_common.sh's load_install_env, which this file
+# sources later and which upgrade.sh and uninstall.sh use. The two differ on
+# purpose: that one returns 1 for "no file" so a caller can report it, while
+# this one runs before any helper is available and treats an explicitly named
+# file that is missing as fatal. Sharing a name would leave the later
+# definition silently replacing this one.
+bootstrap_install_env() {
   local file="${1:-}"
   [ -n "$file" ] || return 0
   if [ ! -f "$file" ]; then
@@ -123,7 +129,7 @@ load_install_env() {
   set +a
   print_success "Loaded install configuration from: ${file}"
 }
-load_install_env "$INSTALL_ENV_FILE"
+bootstrap_install_env "$INSTALL_ENV_FILE"
 
 # ─── Agentic & Automation Parameter States ────────────────────────────────────
 PARAM_NON_INTERACTIVE="${NONINTERACTIVE:-false}"
@@ -1420,6 +1426,11 @@ run_menu_system() {
       exit 1
     fi
   fi
+  # install.env was already loaded at startup, but sourcing vars.sh just now put
+  # the derived state back over the top of it. Re-apply the input so the
+  # hand-authored file is what the panel opens on, whichever order the two
+  # files disagree in.
+  load_install_env "$INSTALL_ENV_FILE" || true
 
   local project_id="${PROJECT_ID:-$(gcloud config get-value project 2>/dev/null || echo "")}"
   local project_number="${PROJECT_NUMBER:-}"

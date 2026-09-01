@@ -343,10 +343,21 @@ main() {
     fi
   done
 
+  # Shared defaults, the install.env loader, and the terraform.tfvars generator.
+  # Sourced here rather than just before the generator, because the state load
+  # below needs load_install_env. Print helpers are already defined above, as
+  # the file expects.
+  # shellcheck disable=SC1091
+  source "${repo_dir}/k8s-operator/scripts/installer_common.sh"
+
+  # Two sources, in this order, so the hand-authored input wins: a legacy
+  # vars.sh from an install that predates install.env, then install.env over
+  # the top of it. Either one on its own is enough to upgrade.
   local state_file="${repo_dir}/k8s-operator/scripts/vars.sh"
+  local install_env_file
+  install_env_file="$(default_install_env_file "$repo_dir")"
   local state_loaded="false"
   if [ -f "$state_file" ]; then
-    # Load state
     # shellcheck disable=SC1090,SC1091
     if ! source "$state_file"; then
       print_error "Configuration state is invalid and could not be loaded."
@@ -354,8 +365,13 @@ main() {
     fi
     state_loaded="true"
     print_success "Loaded existing configuration state from k8s-operator/scripts/vars.sh"
-  else
-    print_warning "No saved configuration state (k8s-operator/scripts/vars.sh) was found in ${repo_dir}."
+  fi
+  if load_install_env "$install_env_file"; then
+    state_loaded="true"
+    print_success "Loaded install configuration from: ${install_env_file}"
+  fi
+  if [ "$state_loaded" != "true" ]; then
+    print_warning "No install configuration (install.env) and no saved state (k8s-operator/scripts/vars.sh) was found in ${repo_dir}."
   fi
 
   local target_project="${PARAM_PROJECT_ID:-${PROJECT_ID:-}}"
@@ -382,13 +398,13 @@ main() {
     exit 0
   fi
 
-  # Fail closed without saved installer state: the delegated provisioning
-  # scripts re-render the PlatformAgent Custom Resource (and operator images)
-  # from vars.sh, so upgrading without it would silently reset chat, allowed
-  # users, dashboard, and model-provider configuration to blank defaults.
+  # Fail closed without any configuration: the upgrade re-renders the
+  # PlatformAgent Custom Resource from it, so upgrading without it would
+  # silently reset chat, allowed users, dashboard, and model-provider
+  # configuration to blank defaults.
   if [ "$state_loaded" != "true" ]; then
-    print_error "Refusing to upgrade without the installation's saved configuration state."
-    print_info "Run upgrade.sh from the directory where kube-agents was installed (it contains k8s-operator/scripts/vars.sh), or restore that file first."
+    print_error "Refusing to upgrade without the installation's configuration."
+    print_info "Run upgrade.sh from the directory holding the install's install.env, point KUBE_AGENTS_INSTALL_ENV at one, or restore k8s-operator/scripts/vars.sh."
     exit 1
   fi
 
@@ -431,11 +447,6 @@ main() {
   local target_namespace="${NAMESPACE:-kubeagents-system}"
   print_step "3. Reconciling Pod-Scoped Session Keys"
   backfill_session_kv_keys "$target_namespace"
-
-  # Shared defaults and the terraform.tfvars generator. Print helpers are
-  # already defined above, as the file expects.
-  # shellcheck disable=SC1091
-  source "${repo_dir}/k8s-operator/scripts/installer_common.sh"
 
   # Helm never touches the crds/ directory on upgrade — that is Helm's own
   # documented behaviour, and the Terraform helm provider inherits it — so CRD

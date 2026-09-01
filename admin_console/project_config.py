@@ -77,30 +77,52 @@ def _parse_assignment_value(raw_value: str) -> str:
     return words[0] if len(words) == 1 else ""
 
 
-def load_provisioned_target(vars_path: Path) -> DeploymentTarget | None:
-    """Read the non-secret deployment coordinates allowlist from vars.sh.
+# `export` is optional because the two files this reads differ: install.env is
+# a hand-authored dotenv (`K=V`) and the vars.sh it replaced was generated with
+# `printf %q` (`export K=V`). A pattern that required `export` matched nothing
+# in install.env and returned None, which the portal reads as "no provisioned
+# target" -- it falls back to the query parameter and the persisted connection
+# rather than failing, so the regression would be silent.
+_ASSIGNMENT = re.compile(
+    r"^\s*(?:export\s+)?(PROJECT_ID|CLUSTER_NAME|REGION|NAMESPACE)=(.*)$"
+)
 
-    The provision state is shell code and may contain secrets. It must never be
-    sourced by the portal. Only fixed assignment names and validated values are
-    accepted here.
-    """
-    if not vars_path.is_file():
-        return None
 
+def _read_assignments(path: Path) -> dict[str, str]:
+    """The allowlisted assignments in one file, or {} if it cannot be read."""
     values: dict[str, str] = {}
+    if not path.is_file():
+        return values
     try:
-        lines = vars_path.read_text(encoding="utf-8").splitlines()
+        lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return None
-
-    assignment = re.compile(
-        r"^\s*export\s+(PROJECT_ID|CLUSTER_NAME|REGION|NAMESPACE)=(.*)$"
-    )
+        return values
     for line in lines:
-        match = assignment.fullmatch(line)
+        match = _ASSIGNMENT.fullmatch(line)
         if not match or match.group(1) not in STATE_KEYS:
             continue
         values[match.group(1)] = _parse_assignment_value(match.group(2).strip())
+    return values
+
+
+def load_provisioned_target(
+    vars_path: Path, install_env_path: Path | None = None
+) -> DeploymentTarget | None:
+    """Read the non-secret deployment coordinates allowlist from the install.
+
+    Both files may contain secrets and both are shell-ish. Neither is ever
+    sourced by the portal. Only fixed assignment names and validated values are
+    accepted here.
+
+    `install_env_path` is the hand-authored input and wins on every key it
+    carries; `vars_path` is the generated state it replaced, still read so a
+    deployment from before the change keeps working.
+    """
+    values = _read_assignments(vars_path)
+    if install_env_path is not None:
+        values.update(_read_assignments(install_env_path))
+    if not values:
+        return None
 
     project_id = values.get("PROJECT_ID", "")
     cluster_name = values.get("CLUSTER_NAME", "")

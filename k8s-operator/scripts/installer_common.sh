@@ -222,6 +222,51 @@ retry() {
   return 1
 }
 
+# ─── install.env: the hand-authored install configuration ─────────────────────
+# The input every front door reads. install.sh carries its own copy of this
+# loader because it must run before its parameter block and has to work as a
+# standalone curl | bash download with no checkout to source from; the two are
+# kept in step by tests/test_install_script.py. upgrade.sh and uninstall.sh use
+# these.
+#
+# Where the file is, given a repository directory. An explicit
+# KUBE_AGENTS_INSTALL_ENV wins, which is how CI renders one from its own
+# variables rather than keeping install state on an ephemeral runner.
+default_install_env_file() {
+  local repo_dir="${1:-.}"
+  if [ -n "${KUBE_AGENTS_INSTALL_ENV:-}" ]; then
+    echo "${KUBE_AGENTS_INSTALL_ENV}"
+    return 0
+  fi
+  echo "${repo_dir}/install.env"
+}
+
+# Load it into the environment. `set -a` rather than a K=V parser because these
+# values have to reach write_tfvars_from_state and the TF_VAR_* handoff at the
+# end of it, both of which read the environment: a conventional dotenv without
+# `export` would parse and then not travel.
+#
+# Returns 1 when there is no file, so a caller can tell "nothing to load" from
+# "loaded". A file that exists but does not parse is fatal — continuing would
+# provision from defaults, which is the failure this whole input model exists
+# to remove.
+load_install_env() {
+  local file="${1:-}"
+  [ -n "$file" ] && [ -f "$file" ] || return 1
+  # Checked before sourcing: a stray quote would otherwise abort the caller
+  # through its ERR trap with a bash parse error naming no file.
+  if ! bash -n "$file" 2>/dev/null; then
+    print_error "Install configuration '$file' is not valid shell and could not be loaded."
+    print_info "Each line is NAME=value; quote any value containing spaces."
+    exit 1
+  fi
+  set -a
+  # shellcheck disable=SC1090
+  . "$file"
+  set +a
+  return 0
+}
+
 # ─── vars.sh Persistence ──────────────────────────────────────────────────────
 # vars.sh is the install's machine-readable record: the admin console, the e2e
 # tests, and the Day-2 menu all read it. VARS_FILE must be set by the caller.
