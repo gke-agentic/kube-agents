@@ -316,8 +316,10 @@ is_commit_already_attempted() {
 #
 # Anchored to the rc_ family, and named for it: this gates resolve_rc_tag.sh's
 # skip decision and the nightly promotion, so a marker minted by some other tag
-# family must not read as an RC validation. verify_release_eligibility.sh and
-# get_latest_validated_rc_tag anchor the same way.
+# family must not read as an RC validation. get_latest_validated_rc_tag anchors
+# the same way. The GA gate does not appear in that list any more:
+# verify_release_eligibility.sh reads the staging family alone, and takes the RC
+# validation as implied by it — see STAGING_TAG_SHAPE_REGEX below.
 is_rc_candidate_commit_already_validated() {
   local sha="$1"
   local validated_tags
@@ -420,7 +422,15 @@ staging_promotion_tags_at_commit() {
 # redundant promotion costs nothing.
 get_existing_staging_tag() {
   local sha="$1"
-  staging_promotion_tags_at_commit "${sha}" | head -n 1 || echo ""
+  local tags
+  tags="$(staging_promotion_tags_at_commit "${sha}")"
+  # Narrowed to the first line with a parameter expansion rather than a pipe into
+  # `head -n 1`, for the reason get_latest_staging_tag gives above: under
+  # `set -o pipefail` head closing the pipe early makes the producer exit 141, and
+  # the `|| echo ""` that usually sits beside it reads that as "not promoted" —
+  # which is the exact misreport this function was shape-anchored to prevent.
+  [ -n "${tags}" ] && printf '%s\n' "${tags%%$'\n'*}"
+  return 0
 }
 
 # Reports whether a candidate commit's tree carries what the shared pipeline

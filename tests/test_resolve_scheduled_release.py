@@ -347,6 +347,11 @@ class ResolveScheduledReleaseTest(unittest.TestCase):
 
         Skipping green here would hide it — and it would hide it every run,
         because the tag stays newest until somebody deletes it.
+
+        It fails through the same exit as every verdict, so the outputs the gate
+        job declares are written. A bare `exit 1` resolves `gate_tag` and
+        `skip_reason` to empty for the reader who most needs them: the one asking
+        why the release did not happen.
         """
         temp_dir, repo_dir, git, _ = self._repo()
         try:
@@ -356,9 +361,14 @@ class ResolveScheduledReleaseTest(unittest.TestCase):
             git("tag", "-d", MOCK_LATEST_STAGING_TAG)
             git("tag", MOCK_LATEST_STAGING_TAG, blob)
 
-            proc, _, _ = self._run(repo_dir)
+            proc, outputs, summary = self._run(repo_dir)
             self.assertNotEqual(proc.returncode, 0)
-            self.assertIn("does not resolve to a commit", proc.stderr)
+            self.assertIn("does not resolve to a commit", proc.stdout)
+            self.assertEqual(outputs["should_release"], "false")
+            self.assertEqual(outputs["gate_tag"], MOCK_LATEST_STAGING_TAG)
+            self.assertIn("does not resolve to a commit", outputs["skip_reason"])
+            self.assertIn("::error", proc.stdout)
+            self.assertIn("gate failed", summary.lower())
         finally:
             temp_dir.cleanup()
 

@@ -46,6 +46,12 @@ LATEST_GA_TAG=""
 # Set only by condition 3. See the halt handling in emit_and_exit.
 HALTED_FOR_HUMAN=""
 
+# Set by the two paths that fail on a broken tag graph rather than on a verdict.
+# They still leave through emit_and_exit: the job declares gate_tag and
+# skip_reason as outputs, and a bare `exit 1` resolves both to empty for the one
+# reader who most needs to know why the release did not happen.
+ERRORED=""
+
 emit_and_exit() {
   if [ -n "${GITHUB_OUTPUT:-}" ]; then
     {
@@ -57,7 +63,12 @@ emit_and_exit() {
   fi
 
   echo "======================================================================"
-  if [ "${SHOULD_RELEASE}" = "true" ]; then
+  if [ -n "${ERRORED}" ]; then
+    echo "❌ FAILED — THE TAG GRAPH DID NOT ANSWER"
+    echo "Reason:                ${SKIP_REASON}"
+    echo "Newest gate tag:       ${GATE_TAG:-<none>}"
+    echo "Latest GA tag:         ${LATEST_GA_TAG:-<none>}"
+  elif [ "${SHOULD_RELEASE}" = "true" ]; then
     echo "🚀 RELEASING"
     echo "Gate-passing commit:   ${RELEASE_COMMIT}"
     echo "From gate tag:         ${GATE_TAG}"
@@ -77,7 +88,11 @@ emit_and_exit() {
 
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     {
-      if [ "${SHOULD_RELEASE}" = "true" ]; then
+      if [ -n "${ERRORED}" ]; then
+        echo "### Release gate failed"
+        echo ""
+        echo "${SKIP_REASON}"
+      elif [ "${SHOULD_RELEASE}" = "true" ]; then
         echo "### Releasing \`${RELEASE_COMMIT:0:7}\`"
         echo ""
         echo "Gate passed as \`${GATE_TAG}\`."
@@ -91,6 +106,11 @@ emit_and_exit() {
         echo "${SKIP_REASON}"
       fi
     } >> "${GITHUB_STEP_SUMMARY}"
+  fi
+
+  if [ -n "${ERRORED}" ]; then
+    echo "::error title=GA release gate failed::${SKIP_REASON}"
+    exit 1
   fi
 
   # A halt is not like the other two outcomes: it persists until somebody acts.
@@ -131,8 +151,9 @@ if [ -z "${GATE_TAG}" ]; then
 fi
 
 if ! RELEASE_COMMIT="$(git rev-parse --verify "${GATE_TAG}^{commit}" 2>/dev/null)"; then
-  echo "❌ ERROR: Gate tag '${GATE_TAG}' does not resolve to a commit." >&2
-  exit 1
+  ERRORED="true"
+  SKIP_REASON="Gate tag '${GATE_TAG}' does not resolve to a commit."
+  emit_and_exit
 fi
 
 # ── 2. Is there anything new in it? ──────────────────────────────────────────
@@ -147,8 +168,12 @@ if [ -z "${LATEST_GA_TAG}" ]; then
   emit_and_exit
 fi
 
+# The helper has already printed git's own stderr, which says more about why than
+# anything reconstructable here; this only carries the failure into the outputs.
 if ! release_read_commit_range "${LATEST_GA_TAG}" "${RELEASE_COMMIT}"; then
-  exit 1
+  ERRORED="true"
+  SKIP_REASON="Could not read the commit range ${LATEST_GA_TAG}..${RELEASE_COMMIT:0:7} — see the log."
+  emit_and_exit
 fi
 
 if [ -z "${RELEASE_RANGE_SUBJECTS}" ]; then

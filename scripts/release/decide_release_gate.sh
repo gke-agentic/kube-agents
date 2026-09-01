@@ -25,9 +25,24 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 EVENT_NAME="${EVENT_NAME:-workflow_dispatch}"
 MODE="${SCHEDULE_GATE:-bypass}"
+TARGET_COMMIT="${TARGET_COMMIT:-}"
 
 if [ "${EVENT_NAME}" = "schedule" ]; then
   MODE="evaluate"
+fi
+
+# The two resolver-consulting modes answer "what would the cron do", and the cron
+# has no commit to name: the resolver picks its own from the tag graph. Naming one
+# alongside them asks two different questions and acts on the answers to both —
+# under `evaluate` the publish job's TARGET_COMMIT prefers the input, so the run
+# would publish a commit whose range condition 3 never scanned, breaking change and
+# all. Refuse rather than pick a winner. An emergency dispatch naming a commit is
+# `bypass`, which is the default and unaffected.
+if [ -n "${TARGET_COMMIT}" ] && { [ "${MODE}" = "evaluate" ] || [ "${MODE}" = "dry-run" ]; }; then
+  echo "❌ ERROR: schedule_gate '${MODE}' decides which commit to release from the tag graph;" >&2
+  echo "   target_commit '${TARGET_COMMIT}' cannot be set alongside it. Use schedule_gate" >&2
+  echo "   'bypass' to release a named commit, or clear target_commit to run the gate." >&2
+  exit 1
 fi
 
 emit() {

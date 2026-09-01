@@ -188,6 +188,58 @@ class DecideReleaseGateTest(unittest.TestCase):
         finally:
             temp_dir.cleanup()
 
+    # ── a named commit and a gate that picks its own are incompatible ────────
+
+    def test_evaluate_refuses_a_dispatch_that_also_names_a_commit(self):
+        """The gate would judge one commit and the publish job would ship another.
+
+        release-publish.yml resolves `TARGET_COMMIT` as
+        `inputs.target_commit || needs.evaluate-schedule.outputs.release_commit`,
+        so the input wins. Left to run, `evaluate` scans the range behind the
+        newest staging tag — breaking-change halt included — and then publishes
+        whatever commit was typed into the form instead.
+        """
+        temp_dir, repo_dir, _, _ = self._repo()
+        try:
+            proc, outputs, _ = self._run(
+                repo_dir,
+                env={"SCHEDULE_GATE": "evaluate", "TARGET_COMMIT": "deadbeef"},
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertNotIn("should_release", outputs)
+            self.assertIn("target_commit", proc.stderr)
+            self.assertNotIn(_RESOLVER_MARKER, proc.stdout)
+        finally:
+            temp_dir.cleanup()
+
+    def test_dry_run_refuses_a_dispatch_that_also_names_a_commit(self):
+        """Publishes nothing either way, but would report a verdict about the wrong commit."""
+        temp_dir, repo_dir, _, _ = self._repo()
+        try:
+            proc, outputs, _ = self._run(
+                repo_dir,
+                env={"SCHEDULE_GATE": "dry-run", "TARGET_COMMIT": "deadbeef"},
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertNotIn("should_release", outputs)
+            self.assertIn("target_commit", proc.stderr)
+        finally:
+            temp_dir.cleanup()
+
+    def test_bypass_still_accepts_a_named_commit(self):
+        """The emergency path names a commit; refusing it there would break the release."""
+        temp_dir, repo_dir, _, _ = self._repo()
+        try:
+            proc, outputs, _ = self._run(
+                repo_dir,
+                env={"SCHEDULE_GATE": "bypass", "TARGET_COMMIT": "deadbeef"},
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(outputs["should_release"], "true")
+            self.assertEqual(outputs["release_commit"], "")
+        finally:
+            temp_dir.cleanup()
+
     # ── an unrecognised mode is not silently a bypass ────────────────────────
 
     def test_an_unknown_mode_fails_rather_than_defaulting_to_publish(self):

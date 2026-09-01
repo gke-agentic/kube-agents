@@ -22,10 +22,11 @@ Every commit and build progresses through five distinct lifecycle tiers:
 | **GA Stable**              | `X.Y.Z` (pure numeric SemVer)         | Release publish workflow      | Official production release tagged on a stamped commit parented by the target commit (staging-promoted by default).    |
 
 Only a staging-promoted commit is releasable. An `rc_*_validated` tag records the narrow
-three-hourly suite; the GA gate reads the `staging_<ts>_<sha>` tag that
-[`nightly-pipeline.yml`](https://github.com/gke-labs/kube-agents/tree/main/scripts/release) pushes
-after the full matrix passes. The gate matches that tag's shape rather than the bare `staging_`
-prefix, because the prefix is also a hand-pushable redeploy trigger.
+three-hourly suite; the GA gate reads the `staging_<ts>_<sha>` tag that `nightly-pipeline.yml`
+pushes after the full matrix passes
+([`scripts/release/README.md`](https://github.com/gke-labs/kube-agents/tree/main/scripts/release)).
+The gate matches that tag's shape rather than the bare `staging_` prefix, because the prefix is
+also a hand-pushable redeploy trigger.
 
 ## Automated SemVer 2.0 calculation
 

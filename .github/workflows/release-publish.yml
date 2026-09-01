@@ -107,6 +107,10 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           SCHEDULE_GATE: ${{ inputs.schedule_gate }}
+          # Read only to refuse the combination, never to release: a named commit
+          # and a gate that picks its own are two different requests, and the
+          # publish job below prefers the input. See the script.
+          TARGET_COMMIT: ${{ inputs.target_commit }}
         run: ./scripts/release/decide_release_gate.sh
 
   publish-release:

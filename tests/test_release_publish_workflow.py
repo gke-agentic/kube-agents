@@ -128,6 +128,16 @@ class ReleasePublishWorkflowTest(unittest.TestCase):
         self.assertEqual(step["env"]["EVENT_NAME"], "${{ github.event_name }}")
         self.assertEqual(step["env"]["SCHEDULE_GATE"], "${{ inputs.schedule_gate }}")
 
+    def test_the_gate_job_sees_the_dispatched_target_commit(self):
+        """The script refuses `evaluate`/`dry-run` alongside one; it needs to be told.
+
+        Bare `inputs.target_commit`, never ORed with the gate's own answer: this
+        is read to reject a combination, and a fallback here would make the
+        check fire on the schedule path where no commit was named at all.
+        """
+        step = self._step(_GATE_JOB, "Decide")
+        self.assertEqual(step["env"]["TARGET_COMMIT"], "${{ inputs.target_commit }}")
+
     def test_the_gate_job_checks_out_the_whole_tag_graph(self):
         """The verdict is made out of tags; a shallow clone answers 'nothing to release'."""
         step = self._step(_GATE_JOB, "Checkout repository")
