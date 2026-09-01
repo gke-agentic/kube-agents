@@ -13,12 +13,12 @@ The release pipeline guarantees that installer scripts (`install.sh`, `uninstall
 
 Every commit and build progresses through four distinct lifecycle tiers:
 
-| Tier                       | Format                                | Trigger                       | Purpose and guarantees                                                 |
-| :------------------------- | :------------------------------------ | :---------------------------- | :--------------------------------------------------------------------- |
-| **Candidate Build**        | `<COMMIT_SHA>` (bare 40-char SHA)     | Push to `main` branch         | Developer build in GHCR; container images built once.                  |
-| **Release Candidate (RC)** | `rc_YYMMDDHHMM_<SHORT_SHA>`           | 3-hour cron / manual dispatch | Candidate build selected for live cluster testing.                     |
-| **RC Validated**           | `rc_YYMMDDHHMM_<SHORT_SHA>_validated` | Successful GKE E2E suite      | Quality gate: proof that `install.sh` succeeded on a real GKE cluster. |
-| **GA Stable**              | `X.Y.Z` (pure numeric SemVer)         | Release publish workflow      | Official production release tagged on the validated commit.            |
+| Tier                       | Format                                | Trigger                       | Purpose and guarantees                                                                   |
+| :------------------------- | :------------------------------------ | :---------------------------- | :--------------------------------------------------------------------------------------- |
+| **Candidate Build**        | `<COMMIT_SHA>` (bare 40-char SHA)     | Push to `main` branch         | Developer build in GHCR; container images built once.                                    |
+| **Release Candidate (RC)** | `rc_YYMMDDHHMM_<SHORT_SHA>`           | 3-hour cron / manual dispatch | Candidate build selected for live cluster testing.                                       |
+| **RC Validated**           | `rc_YYMMDDHHMM_<SHORT_SHA>_validated` | Successful GKE E2E suite      | Quality gate: proof that `install.sh` succeeded on a real GKE cluster.                   |
+| **GA Stable**              | `X.Y.Z` (pure numeric SemVer)         | Release publish workflow      | Official production release tagged on a stamped commit parented by the validated commit. |
 
 ## Automated SemVer 2.0 calculation
 
