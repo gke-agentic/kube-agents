@@ -62,7 +62,7 @@ gh workflow run release-publish.yml --repo gke-labs/kube-agents
 
 # Releasing a specific validated commit:
 gh workflow run release-publish.yml --repo gke-labs/kube-agents \
-  -f target_commit="d3be984d4128f73111f1816e138a06e938927909"
+  -f target_commit="<TARGET_COMMIT_SHA>"
 
 # Manual version override (e.g. promoting 0.y.z to 1.0.0):
 gh workflow run release-publish.yml --repo gke-labs/kube-agents \
