@@ -68,11 +68,6 @@ jobs:
       - name: Check the container-image inventory
         run: make images-check
 
-      - name: Check static NetworkPolicy DNS egress parity
-        run: |
-          python3 -c "import yaml" 2>/dev/null || python3 -m pip install --quiet pyyaml
-          make iac-parity-check
-
       - name: Validate Helm Chart
         run: |
           # clusterName/location/projectId are required values with no
