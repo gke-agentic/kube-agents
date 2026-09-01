@@ -31,29 +31,75 @@ their own copies:
 Change a default here and every front door follows. Do **not** restate these values in
 `install.sh`, in a chart, or in prose — link to this table instead.
 
-## The state file: `vars.sh`
+## The install configuration: `install.env`
 
-`vars.sh` (git-ignored, `chmod 600`) is the install's machine-readable record, written by
-`install.sh` and read by the Day-2 menu, `uninstall.sh`, `upgrade.sh`, the admin console,
-the e2e tests, and `scripts/live_test_lease.py` — which, being run by a hook on a
-contributor's machine, matches an allowlist of `export K=V` lines with a regex and never
-sources the file. The `terraform.tfvars` the engine consumes is generated from it on
-every run, so the two cannot disagree. Set `PERSIST_SECRETS_ON_DISK=false` to keep
-credentials out of both files: the generator omits them from `terraform.tfvars` and
-exports them as `TF_VAR_*` for the apply instead, and later runs recover them from the
-live `platform-agent-secrets` Secret (only when kubectl's current context is this
-install's cluster). `SKIP_CERT_MANAGER=true` makes the generator emit
-`enable_cert_manager = false`, for a cluster whose cert-manager comes from somewhere
-else.
+An install has one hand-authored input and one derived artifact, and the difference
+between them is the whole model.
 
-`CLUSTER_MODE` (`autopilot` or `standard`, from `install.sh --cluster-mode`) is the one
-key whose saved value the generator will discard. It supplies the shape of a cluster that
-does not exist yet, and nothing else: whenever the liveness probe finds a cluster, that
-cluster's own shape is written instead, and `install.sh` writes that shape back to
-`vars.sh` so the record and the cluster stay in step. `uninstall.sh` and
-`upgrade.sh` regenerate `terraform.tfvars` from `vars.sh` with no flag to correct it
-with, and a `CLUSTER_MODE` that disagreed with the live cluster would take that
-cluster's resource count to 0 — turning the next apply into a replacement.
+**`<repo>/install.env`** (git-ignored, `chmod 600`, from the checked-in
+`install.env.example`) is the input. Every front door loads it — `install.sh` before its
+parameter block, `upgrade.sh` and `uninstall.sh` through `load_install_env`, the Day-2
+menu, and `common.sh`'s `load_state` for the dev scripts — with `set -a` so the values
+reach `write_tfvars_from_state` and the `TF_VAR_*` handoff, both of which read the
+environment. Order of authority is **flag, then file, then the defaults above**.
+`KUBE_AGENTS_INSTALL_ENV` points at a different path, which is how CI renders one from
+its own variables rather than keeping install state on an ephemeral runner.
+
+`install.sh` reads it and does not rewrite it. It creates one at the end of a first
+install, when there is nothing there, and never touches it again; the Day-2 menu's
+"Save & Apply" is the one path that edits it, one key at a time, leaving comments and
+ordering intact. That asymmetry is deliberate: a file the documentation tells you to edit
+and the next run overwrites is what made the old `vars.sh` confusing.
+
+**`terraform/examples/full-install/terraform.tfvars`** is the derived artifact,
+regenerated on every run from the loaded environment. Nobody edits it.
+
+Loading the input first is also what fixes non-interactive re-runs (#1060). Every
+`PARAM_X="${VAR:-}"` seed already knew how to inherit from the environment; giving it a
+file to inherit from makes inheritance the default path rather than something each flag
+has to remember, so the next flag added inherits too.
+
+### What is deliberately not in it
+
+Derived values are recomputed every run rather than stored, because a stored copy can
+only disagree with the live answer. `PROJECT_NUMBER` comes from `gcloud projects
+describe` and `KMS_LOCATION` from `derive_kms_location`. `create_cluster` and the
+**effective** `CLUSTER_MODE` come from `write_tfvars_from_state`'s own probe of the live
+cluster. `NO_CONFIRM` describes an invocation, not an install, and comes from
+`-y`/`--non-interactive`.
+
+`CLUSTER_MODE` in `install.env` therefore supplies one thing: the shape of a cluster that
+does not exist yet. Whenever the probe finds a cluster, that cluster's own shape wins and
+the configured value is discarded — which is what stops a hand-written
+`CLUSTER_MODE=standard` against a live Autopilot cluster from taking its resource count
+to 0 and turning the next apply into a replacement. Nothing writes the probe's answer
+back, so the file never becomes an input and an output at once.
+
+### Credentials
+
+`PERSIST_SECRETS_ON_DISK=false` keeps them out of every file the installer writes: the
+generator omits them from `terraform.tfvars` and exports them as `TF_VAR_*` for the apply
+instead, and later runs recover them from the live `platform-agent-secrets` Secret (only
+when kubectl's current context is this install's cluster). `API_SERVER_KEY` is generated
+once, when the configuration carries none and none can be recovered — not on every run,
+which used to replace the Secret and restart every pod holding it.
+
+`SKIP_CERT_MANAGER=true` makes the generator emit `enable_cert_manager = false`, for a
+cluster whose cert-manager comes from somewhere else.
+
+### The predecessor: `vars.sh`
+
+`k8s-operator/scripts/vars.sh` was the generated state file `install.env` replaces. It is
+no longer written. Every reader still accepts one so that an install predating the change
+keeps working with no action from its owner: each loads `vars.sh` first and `install.env`
+over the top, so the input wins. `install.sh` additionally migrates — it reads a legacy
+`vars.sh`, warns, and writes those values into `install.env` on the way out, after which
+the old file can be deleted.
+
+Both Python readers — `scripts/live_test_lease.py` and `admin_console/project_config.py`
+— match an allowlist of assignments with a regex and never source either file, because
+both hold credentials. They accept `K=V` and `export K=V` alike, since `install.env` is a
+dotenv and `vars.sh` was generated with `printf %q`.
 
 ## File directory
 

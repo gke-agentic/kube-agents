@@ -18,7 +18,7 @@ k8s-operator/
 ├── config/                 # Kustomize base for the operator + integrations
 ├── internal/               # controller reconciler + admission webhook logic
 ├── examples/               # sample PlatformAgent CR
-├── scripts/                # shared installer helpers (vars.sh state, tfvars generator)
+├── scripts/                # shared installer helpers (install.env loader, tfvars generator)
 ├── testing/staging_workloads/  # multi-cluster staging PoC
 ├── Dockerfile              # controller manager image
 └── Makefile                # generate, build, test, deploy

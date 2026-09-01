@@ -59,8 +59,10 @@ on_error() {
   local bash_cmd="$3"
   echo -e "\n\033[91m\033[1m✗ Error encountered at line ${line_no} (exit code ${exit_code}): ${bash_cmd}\033[0m" >&2
   write_json_report "FAILED" "${line_no}" "${bash_cmd}" 2>/dev/null || true
-  if [[ "${vars_file:-}" == *.tmp ]]; then
-    rm -f -- "$vars_file"
+  # A half-written install.env must not be left where the next run would load
+  # it. The real file is only ever moved into place complete.
+  if [ -n "${INSTALL_ENV_FILE:-}" ] && [ -f "${INSTALL_ENV_FILE}.tmp" ]; then
+    rm -f -- "${INSTALL_ENV_FILE}.tmp"
   fi
   exit "$exit_code"
 }
@@ -77,28 +79,64 @@ BAKED_RELEASE_VERSION=""
 # something each flag has to remember to do and becomes the default path, which
 # is what closes #1060 rather than patching its seven instances.
 #
-# An input, never an output. install.sh does not write here; it derives
-# terraform.tfvars (and, for now, vars.sh) from it. A file that is both would be
-# the thing that made vars.sh confusing -- "auto-generated" in its header and
-# hand-edited in the documentation, with the hand edits discarded on the next
-# run.
+# An input the installer reads and does not rewrite. It creates one at the end
+# of a first install, when there is nothing there, and never touches it again:
+# a file the documentation tells you to edit and the next run overwrites is
+# exactly the complaint against vars.sh, whose header said "auto-generated"
+# while INSTALL.md told you to hand-edit it.
 #
 # `set -a` rather than a K=V parser: these values have to reach
 # write_tfvars_from_state and the TF_VAR_* handoff at the end of it, both of
 # which read the environment. A conventional dotenv without `export` would parse
 # and then not travel.
+#
+# Always resolves to a path, whether or not a file is there yet -- a first
+# install has nothing to read, and this is also where the file gets written.
 INSTALL_ENV_FILE="${KUBE_AGENTS_INSTALL_ENV:-}"
-if [ -z "$INSTALL_ENV_FILE" ]; then
+INSTALL_ENV_EXPLICIT="false"
+if [ -n "$INSTALL_ENV_FILE" ]; then
+  INSTALL_ENV_EXPLICIT="true"
+else
   _install_env_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || echo "")"
-  if [ -n "$_install_env_dir" ] && [ -f "${_install_env_dir}/install.env" ]; then
+  if [ -n "$_install_env_dir" ]; then
     INSTALL_ENV_FILE="${_install_env_dir}/install.env"
-  elif [ -f "install.env" ]; then
-    # curl | bash has no script directory to look beside, so the working
-    # directory is the only other place the operator could have put it.
+  else
+    INSTALL_ENV_FILE="$(pwd)/install.env"
+  fi
+  # curl | bash has no script directory to look beside, so the working
+  # directory is the other place the operator could have put one.
+  if [ ! -f "$INSTALL_ENV_FILE" ] && [ -f "install.env" ]; then
     INSTALL_ENV_FILE="$(pwd)/install.env"
   fi
   unset _install_env_dir
 fi
+
+# The state file install.env replaces. Loaded FIRST so install.env wins on
+# every key it carries, and only from a checkout -- a fresh clone has none.
+# This is the migration: an existing install keeps working with no action from
+# its owner, and the run writes their values into install.env on the way out.
+LEGACY_VARS_FILE=""
+_legacy_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || echo "")"
+if [ -n "$_legacy_dir" ] && [ -f "${_legacy_dir}/k8s-operator/scripts/vars.sh" ]; then
+  LEGACY_VARS_FILE="${_legacy_dir}/k8s-operator/scripts/vars.sh"
+fi
+unset _legacy_dir
+
+load_legacy_vars_file() {
+  local file="${1:-}"
+  [ -n "$file" ] && [ -f "$file" ] || return 0
+  if ! bash -n "$file" 2>/dev/null; then
+    print_error "Legacy install state '$file' is not valid shell and could not be loaded."
+    exit 1
+  fi
+  set -a
+  # shellcheck disable=SC1090
+  . "$file"
+  set +a
+  # stderr, like the load message below and for the same reason.
+  print_warning "Loaded legacy install state from ${file}; install.env replaces it." >&2
+  print_info "This run writes those values to ${INSTALL_ENV_FILE}. Check it, then delete vars.sh." >&2
+}
 
 # Named apart from installer_common.sh's load_install_env, which this file
 # sources later and which upgrade.sh and uninstall.sh use. The two differ on
@@ -110,25 +148,32 @@ bootstrap_install_env() {
   local file="${1:-}"
   [ -n "$file" ] || return 0
   if [ ! -f "$file" ]; then
-    # Only reachable via an explicit KUBE_AGENTS_INSTALL_ENV: the discovery
-    # above only ever names a file it has already seen. A path that was asked
-    # for by name and is not there is a mistake, not a first install.
-    print_error "KUBE_AGENTS_INSTALL_ENV names '$file', which does not exist."
-    exit 1
+    if [ "$INSTALL_ENV_EXPLICIT" = "true" ]; then
+      # Asked for by name and not there. That is a mistake, not a first
+      # install, and continuing would provision from defaults.
+      print_error "KUBE_AGENTS_INSTALL_ENV names '$file', which does not exist." >&2
+      exit 1
+    fi
+    return 0
   fi
   # Checked before sourcing: a stray quote would otherwise abort the run through
   # the ERR trap with a bash parse error and no indication of which file.
   if ! bash -n "$file" 2>/dev/null; then
-    print_error "Install configuration '$file' is not valid shell and could not be loaded."
-    print_info "Each line is NAME=value; quote any value containing spaces."
+    print_error "Install configuration '$file' is not valid shell and could not be loaded." >&2
+    print_info "Each line is NAME=value; quote any value containing spaces." >&2
     exit 1
   fi
   set -a
   # shellcheck disable=SC1090
   . "$file"
   set +a
-  print_success "Loaded install configuration from: ${file}"
+  # stderr, not stdout. This runs at source time, before main(), so anything on
+  # stdout here lands in front of whatever the caller went on to capture --
+  # including a function's echoed return value when the test suite sources this
+  # file to exercise one. It is a diagnostic either way, not data.
+  print_success "Loaded install configuration from: ${file}" >&2
 }
+load_legacy_vars_file "$LEGACY_VARS_FILE"
 bootstrap_install_env "$INSTALL_ENV_FILE"
 
 # ─── Agentic & Automation Parameter States ────────────────────────────────────
@@ -154,15 +199,25 @@ PARAM_OPENAI_API_KEY="${OPENAI_API_KEY:-}"
 PARAM_ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
 PARAM_GITOPS_ORG="${GITHUB_ORG:-}"
 PARAM_GITOPS_REPO="${GITHUB_REPO:-}"
-PARAM_PERMISSION_SET="${PLATFORM_AGENT_PERMISSION_SET:-read-only}"
+# Left empty where installer_common.sh owns the default, the way
+# PARAM_MODEL_PROVIDER above is: resolve_shared_defaults fills them in once the
+# helpers are sourced, so no default is spelled twice.
+PARAM_PERMISSION_SET="${PLATFORM_AGENT_PERMISSION_SET:-}"
 PARAM_CUSTOM_ROLES="${PLATFORM_AGENT_CUSTOM_ROLES:-}"
-PARAM_ENABLE_GVISOR="${ENABLE_GVISOR:-true}"
+# Assigned only when the environment (or install.env) actually carries one, so
+# that "unset" and "set to empty" stay distinguishable all the way to the
+# validator. resolve_shared_defaults then fills it with ${VAR-...}, not
+# ${VAR:-...}: `--gvisor=` with no value must be rejected rather than silently
+# read as the default.
+if [ -n "${ENABLE_GVISOR+set}" ]; then
+  PARAM_ENABLE_GVISOR="${ENABLE_GVISOR}"
+fi
 # HERMES_DASHBOARD_ENABLED as well as ENABLE_WEBUI: the flag is spelled
 # --enable-web-ui and the install records the setting under the Hermes name, so
 # a file written from a previous install carries the second spelling and only
 # the second. The same asymmetry applies to MEMORY / MEMORY_PROVIDER below and
-# to GOOGLE_CHAT_ENABLED above.
-PARAM_ENABLE_WEBUI="${ENABLE_WEBUI:-${HERMES_DASHBOARD_ENABLED:-false}}"
+# to GOOGLE_CHAT_ENABLED below.
+PARAM_ENABLE_WEBUI="${ENABLE_WEBUI:-${HERMES_DASHBOARD_ENABLED:-}}"
 # MEMORY is the input spelling (file | hindsight | off). MEMORY_PROVIDER is what
 # the install records, so translate it back when that is all there is.
 memory_mode_from_provider() {
@@ -174,7 +229,6 @@ memory_mode_from_provider() {
   esac
 }
 PARAM_MEMORY="${MEMORY:-$(memory_mode_from_provider "${MEMORY_PROVIDER:-}")}"
-PARAM_MEMORY="${PARAM_MEMORY:-file}"
 PARAM_ALLOWED_USERS="${ALLOWED_USERS:-}"
 PARAM_IMAGE_TAG="${IMAGE_TAG:-}"
 PARAM_ALLOW_UNVERIFIED_SOURCE="${ALLOW_UNVERIFIED_SOURCE:-false}"
@@ -193,11 +247,11 @@ PARAM_THIRD_PARTY_REGISTRY_PREFIX="${THIRD_PARTY_REGISTRY_PREFIX:-}"
 # (or a re-run) that had Chat on and did not repeat --enable-google-chat
 # regenerated google_chat_enabled = false and planned the Pub/Sub topic and
 # subscription away. That asymmetry is #1060's first item.
-PARAM_ENABLE_GOOGLE_CHAT="${PARAM_ENABLE_GOOGLE_CHAT:-${GOOGLE_CHAT_ENABLED:-false}}"
+PARAM_ENABLE_GOOGLE_CHAT="${GOOGLE_CHAT_ENABLED:-}"
 PARAM_CHAT_TOPIC_NAME="${CHAT_TOPIC_NAME:-}"
 PARAM_GOOGLE_CHAT_MODE="${GOOGLE_CHAT_MODE:-}"
 PARAM_MODEL_DEFAULT_NAME="${MODEL_DEFAULT_NAME:-}"
-PARAM_USER_PROFILE_ENABLED="${USER_PROFILE_ENABLED:-false}"
+PARAM_USER_PROFILE_ENABLED="${USER_PROFILE_ENABLED:-}"
 
 show_help() {
   cat << EOF
@@ -449,28 +503,14 @@ require_creatable_cluster_mode() {
   fi
 }
 
-# vars.sh must record the shape the install HAS, not the one the interview
-# asked for. The two differ whenever a cluster already existed: the tfvars
-# generator probed its live shape and the request had no say. Leaving the
-# request on disk is how the value that later rebuilds a deleted cluster —
-# and that uninstall.sh and upgrade.sh regenerate from, with no flag to
-# correct it — ends up naming the wrong shape.
-#
-# Runs after write_tfvars_from_state, which is what sets TFVARS_CLUSTER_MODE;
-# save_var rewrites the one key rather than the file, so the line the state
-# step already wrote is replaced rather than duplicated.
-persist_effective_cluster_mode() {
-  local requested="${1:-}" effective="${TFVARS_CLUSTER_MODE:-}"
-  [ -n "$effective" ] || return 0
-  [ "$effective" != "$requested" ] || return 0
-  print_info "Cluster '${CLUSTER_NAME:-}' is GKE $(cluster_mode_label "$effective"), not $(cluster_mode_label "$requested"); recording its live shape in vars.sh."
-  # DRY_RUN=0 pins save_var's dry-run guard, which tests a variable install.sh
-  # never sets (it has PARAM_DRY_RUN, spelled "true", so `DRY_RUN=1` here is a
-  # REAL install whose write save_var would skip, and `DRY_RUN=true` is an
-  # integer-comparison error). Every other vars.sh key goes through
-  # write_state_var, which has no guard; this one is written on the same terms.
-  DRY_RUN=0 save_var CLUSTER_MODE "$effective"
-}
+# There is no persist_effective_cluster_mode any more. It wrote the probed
+# cluster shape back into vars.sh so that a later run would not rebuild a
+# deleted cluster in the wrong shape. That is unnecessary now and was always
+# the wrong shape of fix: write_tfvars_from_state re-probes on every run and
+# every branch with a live cluster takes the mode from the probe, so the
+# configured value can never reach a running cluster's tfvars. Writing the
+# finding back also made the file an input and an output at once, which is the
+# property this refactor exists to remove.
 
 # How GKE writes the shape. bash 3.2, still macOS's /bin/bash, has no ${var^}.
 cluster_mode_label() {
@@ -547,25 +587,123 @@ json_escape() {
   printf '%s' "$value"
 }
 
-write_state_var() {
+write_env_var() {
   local destination="$1"
   local var_name="$2"
   local var_value="$3"
-  printf 'export %s=%q\n' "$var_name" "$var_value" >> "$destination"
+  # No `export`: install.env is a conventional dotenv, and install.sh loads it
+  # with `set -a` so the keyword would be redundant. %q still does the quoting,
+  # so a value with spaces or a quote survives the round trip.
+  printf '%s=%q\n' "$var_name" "$var_value" >> "$destination"
 }
 
-# Credentials follow PERSIST_SECRETS_ON_DISK: false keeps them out of
-# vars.sh. Exported for this run either way, so the tfvars generator still
-# sees them; later runs recover them from the live Secret (see
-# write_tfvars_from_state).
-write_secret_state_var() {
+# Credentials follow PERSIST_SECRETS_ON_DISK: false keeps them out of every
+# file the installer writes. They still travel to Terraform for this run as
+# TF_VAR_*, and later runs recover them from the live 'platform-agent-secrets'
+# Secret (see write_tfvars_from_state).
+write_secret_env_var() {
   local destination="$1"
   local var_name="$2"
   local var_value="$3"
-  export "${var_name}=${var_value}"
-  if is_truthy "${PERSIST_SECRETS_ON_DISK:-true}"; then
-    write_state_var "$destination" "$var_name" "$var_value"
+  if [ -z "$var_value" ]; then
+    return 0
   fi
+  if is_truthy "${PERSIST_SECRETS_ON_DISK:-true}"; then
+    write_env_var "$destination" "$var_name" "$var_value"
+  fi
+}
+
+# Create install.env from what this run resolved, but ONLY when there is no
+# file there. An operator who hand-authored one owns it: rewriting it would
+# discard their comments and their formatting, and re-introduce the exact
+# complaint against vars.sh -- a file the documentation tells you to edit and
+# the next run overwrites.
+#
+# Called after write_tfvars_from_state so the API_SERVER_KEY it records is the
+# one the install settled on: recovered from a live Secret when there was one,
+# freshly minted only when there was not.
+#
+# Derived values are left out by construction. PROJECT_NUMBER and KMS_LOCATION
+# are recomputed wherever they are used, and the cluster shape written here is
+# the one the interview asked for, never the probed TFVARS_CLUSTER_MODE -- see
+# the note where persist_effective_cluster_mode used to be.
+bootstrap_install_env_file() {
+  local destination="${1:-}" image_tag="${2:-}"
+  [ -n "$destination" ] || return 0
+  if [ -f "$destination" ]; then
+    print_info "Left your install configuration as you wrote it: ${destination}"
+    return 0
+  fi
+  if [ "$PARAM_DRY_RUN" = "true" ]; then
+    print_info "Dry-run: not creating ${destination}."
+    return 0
+  fi
+
+  local old_umask
+  old_umask="$(umask)"
+  umask 077
+  local tmp="${destination}.tmp"
+  {
+    printf '%s\n' "# kube-agents install configuration, created by install.sh on $(date -u +%Y-%m-%dT%H:%M:%SZ)."
+    printf '%s\n' "# This file is yours now: install.sh reads it and never rewrites it."
+    printf '%s\n' "# Edit it and re-run the installer to change the install."
+    printf '%s\n' "# See install.env.example for every supported key and what it does."
+    printf '%s\n' "#"
+    printf '%s\n' "# Installed at image tag ${image_tag}. IMAGE_TAG is deliberately absent:"
+    printf '%s\n' "# it is chosen per run with --image-tag, not inherited."
+    printf '\n'
+  } > "$tmp"
+  write_env_var "$tmp" PROJECT_ID "${PROJECT_ID:-}"
+  write_env_var "$tmp" CLUSTER_NAME "${CLUSTER_NAME:-}"
+  write_env_var "$tmp" REGION "${REGION:-}"
+  write_env_var "$tmp" CLUSTER_MODE "${CLUSTER_MODE:-}"
+  write_env_var "$tmp" MODEL_PROVIDER "${MODEL_PROVIDER:-}"
+  write_env_var "$tmp" MODEL_DEFAULT_NAME "${MODEL_DEFAULT_NAME:-}"
+  write_env_var "$tmp" VERTEX_PROJECT_ID "${VERTEX_PROJECT_ID:-}"
+  write_env_var "$tmp" VERTEX_LOCATION "${VERTEX_LOCATION:-}"
+  write_secret_env_var "$tmp" GEMINI_API_KEY "${GEMINI_API_KEY:-}"
+  write_secret_env_var "$tmp" OPENAI_API_KEY "${OPENAI_API_KEY:-}"
+  write_secret_env_var "$tmp" ANTHROPIC_API_KEY "${ANTHROPIC_API_KEY:-}"
+  write_env_var "$tmp" ALLOWED_USERS "${ALLOWED_USERS:-}"
+  write_env_var "$tmp" CHAT_TOPIC_NAME "${CHAT_TOPIC_NAME:-}"
+  write_env_var "$tmp" CHAT_SUB_NAME "${CHAT_SUB_NAME:-}"
+  write_env_var "$tmp" GOOGLE_CHAT_ENABLED "${GOOGLE_CHAT_ENABLED:-$DEFAULT_GOOGLE_CHAT_ENABLED}"
+  write_env_var "$tmp" GOOGLE_CHAT_MODE "${GOOGLE_CHAT_MODE:-$DEFAULT_GOOGLE_CHAT_MODE}"
+  write_env_var "$tmp" SLACK_ENABLED "${SLACK_ENABLED:-false}"
+  write_secret_env_var "$tmp" SLACK_BOT_TOKEN "${SLACK_BOT_TOKEN:-}"
+  write_secret_env_var "$tmp" SLACK_APP_TOKEN "${SLACK_APP_TOKEN:-}"
+  write_env_var "$tmp" SLACK_ALLOWED_USERS "${SLACK_ALLOWED_USERS:-}"
+  write_env_var "$tmp" SLACK_HOME_CHANNEL "${SLACK_HOME_CHANNEL:-}"
+  write_env_var "$tmp" SLACK_HOME_CHANNEL_NAME "${SLACK_HOME_CHANNEL_NAME:-}"
+  write_secret_env_var "$tmp" API_SERVER_KEY "${API_SERVER_KEY:-}"
+  write_env_var "$tmp" PLATFORM_AGENT_PERMISSION_SET "${PLATFORM_AGENT_PERMISSION_SET:-$DEFAULT_PERMISSION_SET}"
+  if [ "${PLATFORM_AGENT_PERMISSION_SET:-}" = "custom" ]; then
+    write_env_var "$tmp" PLATFORM_AGENT_CUSTOM_ROLES "${PLATFORM_AGENT_CUSTOM_ROLES:-}"
+  fi
+  write_env_var "$tmp" GITHUB_ORG "${GITHUB_ORG:-}"
+  write_env_var "$tmp" GITHUB_REPO "${GITHUB_REPO:-}"
+  write_env_var "$tmp" GITHUB_APP_ID "${GITHUB_APP_ID:-}"
+  write_env_var "$tmp" KMS_KEYRING "${KMS_KEYRING:-}"
+  write_env_var "$tmp" KMS_KEY "${KMS_KEY:-}"
+  write_env_var "$tmp" GITHUB_PEM_PATH "${GITHUB_PEM_PATH:-}"
+  write_env_var "$tmp" MEMORY "$PARAM_MEMORY"
+  write_env_var "$tmp" USER_PROFILE_ENABLED "${USER_PROFILE_ENABLED:-$DEFAULT_USER_PROFILE_ENABLED}"
+  write_env_var "$tmp" HERMES_DASHBOARD_ENABLED "${HERMES_DASHBOARD_ENABLED:-$DEFAULT_ENABLE_WEBUI}"
+  write_env_var "$tmp" ENABLE_GVISOR "${ENABLE_GVISOR:-$DEFAULT_ENABLE_GVISOR}"
+  write_env_var "$tmp" ENABLE_GKE_BACKUP_PLAN "${ENABLE_GKE_BACKUP_PLAN:-$DEFAULT_ENABLE_GKE_BACKUP_PLAN}"
+  write_env_var "$tmp" REGISTRY_PREFIX "${REGISTRY_PREFIX:-}"
+  if [ -n "${THIRD_PARTY_REGISTRY_PREFIX:-}" ]; then
+    write_env_var "$tmp" THIRD_PARTY_REGISTRY_PREFIX "${THIRD_PARTY_REGISTRY_PREFIX}"
+  fi
+  if ! is_truthy "${PERSIST_SECRETS_ON_DISK:-true}"; then
+    printf '\n%s\n' "# PERSIST_SECRETS_ON_DISK=false: credentials are deliberately absent." >> "$tmp"
+    write_env_var "$tmp" PERSIST_SECRETS_ON_DISK "false"
+  fi
+  chmod 600 "$tmp"
+  mv -f -- "$tmp" "$destination"
+  umask "$old_umask"
+  print_success "Wrote your install configuration to: ${destination}"
+  print_info "Edit that file and re-run install.sh to change this install. It is never overwritten."
 }
 
 verify_local_source_ref() {
@@ -705,11 +843,29 @@ source_provisioning_helpers() {
   print_success "Loaded installer defaults from k8s-operator/scripts/installer_common.sh"
 }
 
-# Fill in the parameters whose default lives in common.sh. Called once, after
-# sourcing, so a flag or environment variable still wins over the shared default.
+# Fill in the parameters whose default lives in installer_common.sh. Called
+# once, after sourcing, so a flag, an environment variable or an install.env
+# value still wins over the shared default.
+#
+# Every default this installer applies goes through here. The alternative --
+# `${PARAM_X:-false}` at each point of use -- is a second copy of the default
+# living next to the code that reads it, and two copies drift. It also reads
+# as though the value might legitimately be unset at that point, which it
+# cannot be: this runs in step 2, before the interview.
 resolve_shared_defaults() {
   PARAM_MODEL_PROVIDER="${PARAM_MODEL_PROVIDER:-$DEFAULT_MODEL_PROVIDER}"
   PARAM_REGISTRY_PREFIX="${PARAM_REGISTRY_PREFIX:-$DEFAULT_REGISTRY_PREFIX}"
+  PARAM_PERMISSION_SET="${PARAM_PERMISSION_SET:-$DEFAULT_PERMISSION_SET}"
+  # ${VAR-...}, not ${VAR:-...}: an explicit `--gvisor=` sets it to empty, and
+  # that has to survive to the validator rather than being read as the default.
+  PARAM_ENABLE_GVISOR="${PARAM_ENABLE_GVISOR-$DEFAULT_ENABLE_GVISOR}"
+  PARAM_ENABLE_WEBUI="${PARAM_ENABLE_WEBUI:-$DEFAULT_ENABLE_WEBUI}"
+  PARAM_USER_PROFILE_ENABLED="${PARAM_USER_PROFILE_ENABLED:-$DEFAULT_USER_PROFILE_ENABLED}"
+  PARAM_MEMORY="${PARAM_MEMORY:-$DEFAULT_MEMORY}"
+  PARAM_ENABLE_GOOGLE_CHAT="${PARAM_ENABLE_GOOGLE_CHAT:-$DEFAULT_GOOGLE_CHAT_ENABLED}"
+  PARAM_GOOGLE_CHAT_MODE="${PARAM_GOOGLE_CHAT_MODE:-$DEFAULT_GOOGLE_CHAT_MODE}"
+  PARAM_CHAT_TOPIC_NAME="${PARAM_CHAT_TOPIC_NAME:-$DEFAULT_CHAT_TOPIC_NAME}"
+  PARAM_GITOPS_REPO="${PARAM_GITOPS_REPO:-$DEFAULT_GITOPS_REPO}"
 }
 
 # Wait for one deployment to roll out, animating a spinner with the elapsed time
@@ -1079,7 +1235,7 @@ write_json_report() {
   "gvisor_enabled": ${enable_gvisor:-false},
   "memory_mode": "$(json_escape "${memory_mode:-file}")",
   "gitops_repo": "$(json_escape "$report_gitops_repo")",
-  "vars_file": "$(json_escape "${vars_file:-}")",
+  "install_env_file": "$(json_escape "${INSTALL_ENV_FILE:-}")",
   "timestamp": "$(json_escape "$timestamp")"
 }
 EOF
@@ -1597,44 +1753,50 @@ run_menu_system() {
         export PARAM_PERMISSION_SET="$permission_set" PARAM_ENABLE_GVISOR="$enable_gvisor"
         export GOOGLE_CHAT_ENABLED="$google_chat_enabled" SLACK_ENABLED="$slack_enabled"
 
-        save_var PROJECT_ID "$project_id"
-        save_var PROJECT_NUMBER "$project_number"
-        save_var CLUSTER_NAME "$cluster_name"
-        save_var REGION "$region"
-        save_var KMS_LOCATION "$(derive_kms_location "$region")"
-        save_var MODEL_PROVIDER "$model_provider"
-        save_var MODEL_DEFAULT_NAME "$model_default_name"
-        save_var VERTEX_PROJECT_ID "$vertex_project_id"
-        save_var VERTEX_LOCATION "$vertex_location"
-        save_secret_var GEMINI_API_KEY "$gemini_api_key"
-        save_secret_var OPENAI_API_KEY "$openai_api_key"
-        save_secret_var ANTHROPIC_API_KEY "$anthropic_api_key"
-        save_var ALLOWED_USERS "$allowed_users"
-        save_var CHAT_TOPIC_NAME "$chat_topic_name"
-        save_var CHAT_SUB_NAME "$chat_sub_name"
-        save_var GOOGLE_CHAT_ENABLED "$google_chat_enabled"
-        save_var SLACK_ENABLED "$slack_enabled"
-        save_var PLATFORM_AGENT_PERMISSION_SET "$permission_set"
+        # Into install.env, one key at a time, leaving the operator's comments
+        # and ordering alone. This panel is the one place allowed to write
+        # there: "Save & Apply" is an explicit instruction to record a change,
+        # unlike install.sh silently regenerating an input.
+        #
+        # PROJECT_NUMBER, KMS_LOCATION and NO_CONFIRM are no longer written.
+        # The first two are derived wherever they are used, and the third
+        # describes an invocation rather than the install.
+        save_env_var PROJECT_ID "$project_id"
+        save_env_var CLUSTER_NAME "$cluster_name"
+        save_env_var REGION "$region"
+        save_env_var MODEL_PROVIDER "$model_provider"
+        save_env_var MODEL_DEFAULT_NAME "$model_default_name"
+        save_env_var VERTEX_PROJECT_ID "$vertex_project_id"
+        save_env_var VERTEX_LOCATION "$vertex_location"
+        save_secret_env_var GEMINI_API_KEY "$gemini_api_key"
+        save_secret_env_var OPENAI_API_KEY "$openai_api_key"
+        save_secret_env_var ANTHROPIC_API_KEY "$anthropic_api_key"
+        save_env_var ALLOWED_USERS "$allowed_users"
+        save_env_var CHAT_TOPIC_NAME "$chat_topic_name"
+        save_env_var CHAT_SUB_NAME "$chat_sub_name"
+        save_env_var GOOGLE_CHAT_ENABLED "$google_chat_enabled"
+        save_env_var SLACK_ENABLED "$slack_enabled"
+        save_env_var PLATFORM_AGENT_PERMISSION_SET "$permission_set"
         if [ "$permission_set" = "custom" ]; then
-          save_var PLATFORM_AGENT_CUSTOM_ROLES "$custom_roles"
+          save_env_var PLATFORM_AGENT_CUSTOM_ROLES "$custom_roles"
         fi
-        save_var ENABLE_GVISOR "$enable_gvisor"
-        save_var HERMES_DASHBOARD_ENABLED "$enable_webui"
-        save_var GITHUB_ORG "$github_org"
-        save_var GITHUB_REPO "$github_repo"
-        save_var GITHUB_APP_ID "$github_app_id"
-        save_var KMS_KEYRING "$kms_keyring"
-        save_var KMS_KEY "$kms_key"
-        save_var GITHUB_PEM_PATH "$github_pem_path"
-        save_var NO_CONFIRM "1"
-        print_success "Updated configuration saved to: $vars_file"
+        save_env_var ENABLE_GVISOR "$enable_gvisor"
+        save_env_var HERMES_DASHBOARD_ENABLED "$enable_webui"
+        save_env_var GITHUB_ORG "$github_org"
+        save_env_var GITHUB_REPO "$github_repo"
+        save_env_var GITHUB_APP_ID "$github_app_id"
+        save_env_var KMS_KEYRING "$kms_keyring"
+        save_env_var KMS_KEY "$kms_key"
+        save_env_var GITHUB_PEM_PATH "$github_pem_path"
+        print_success "Updated configuration saved to: $INSTALL_ENV_FILE"
 
         # One engine for every kind of change: a full terraform apply
         # reconciles GCP resources and chart values alike, so a Vertex switch
         # lands its IAM, the gateway, and the agent in one pass. When nothing
         # GCP-side moved, the apply is a fast no-op around the Helm upgrade.
-        # shellcheck disable=SC1090
-        source "$vars_file"
+        #
+        # No re-source: save_env_var exports as it writes, so the environment
+        # write_tfvars_from_state reads is already current.
         write_tfvars_from_state "$(tf_compose_dir "$repo_dir")/terraform.tfvars" "$image_tag"
         print_info "Re-applying the install to GKE cluster '$cluster_name' (terraform apply)..."
         run_lifecycle_apply "$repo_dir" "/tmp/kube-agents-apply-$(date -u +%Y%m%dT%H%M%SZ).log"
@@ -1932,14 +2094,14 @@ main() {
   # 6. Chat & Messaging Platform Integration
   print_step "6. Chat & Messaging Integrations Setup"
   local chat_choice=""
-  if [ "$PARAM_NON_INTERACTIVE" = "true" ] || [ "${PARAM_ENABLE_GOOGLE_CHAT:-false}" = "true" ] || [ "${SLACK_ENABLED:-false}" = "true" ]; then
+  if [ "$PARAM_NON_INTERACTIVE" = "true" ] || [ "$PARAM_ENABLE_GOOGLE_CHAT" = "true" ] || [ "${SLACK_ENABLED:-false}" = "true" ]; then
     # SLACK_ENABLED (with SLACK_BOT_TOKEN / SLACK_APP_TOKEN and the other
     # SLACK_* variables) is the non-interactive spelling of the Slack
     # interview, the same variables the Day-2 menu reads. Without it Slack
     # would be reachable only through a controlling tty.
-    if [ "${PARAM_ENABLE_GOOGLE_CHAT:-false}" = "true" ] && [ "${SLACK_ENABLED:-false}" = "true" ]; then
+    if [ "$PARAM_ENABLE_GOOGLE_CHAT" = "true" ] && [ "${SLACK_ENABLED:-false}" = "true" ]; then
       chat_choice="3"
-    elif [ "${PARAM_ENABLE_GOOGLE_CHAT:-false}" = "true" ]; then
+    elif [ "$PARAM_ENABLE_GOOGLE_CHAT" = "true" ]; then
       chat_choice="1"
     elif [ "${SLACK_ENABLED:-false}" = "true" ]; then
       chat_choice="2"
@@ -1967,9 +2129,9 @@ main() {
   if [ -z "$allowed_users" ]; then
     allowed_users_hint="empty list"
   fi
-  local chat_topic_name="${PARAM_CHAT_TOPIC_NAME:-${CHAT_TOPIC_NAME:-platform-agent-chat-events}}"
+  local chat_topic_name="$PARAM_CHAT_TOPIC_NAME"
   local chat_sub_name="${CHAT_SUB_NAME:-platform-agent-chat-events-sub}"
-  local google_chat_mode="${PARAM_GOOGLE_CHAT_MODE:-${GOOGLE_CHAT_MODE:-default}}"
+  local google_chat_mode="$PARAM_GOOGLE_CHAT_MODE"
   if [[ ! "$google_chat_mode" =~ ^(default|debug)$ ]]; then
     print_error "--google-chat-mode must be either 'default' or 'debug'."
     exit 1
@@ -2122,7 +2284,7 @@ main() {
   # 8. GitOps Infrastructure Repository Connection
   print_step "8. GitOps Infrastructure Repository Setup"
   local github_org="${PARAM_GITOPS_ORG:-}"
-  local github_repo="${PARAM_GITOPS_REPO:-gke-fleet-iac}"
+  local github_repo="$PARAM_GITOPS_REPO"
   # Env fallbacks, not bare empties: the non-interactive path never reaches
   # the interview prompts below, so GITHUB_APP_ID / GITHUB_PEM_PATH exported
   # into the run are the only way an automated install can enable the minter.
@@ -2195,12 +2357,12 @@ main() {
 
   # 9. Agent Permissions & Sandbox Isolation Boundary
   print_step "9. Agent Security & Runtime Isolation Boundary"
-  local permission_set="${PARAM_PERMISSION_SET:-read-only}"
+  local permission_set="$PARAM_PERMISSION_SET"
   # Normalise and keep the normalised value, the way common.sh does. The gate
   # below normalises its own argument so that every spelling reaches the right
   # message, but it cannot fix the caller's variable -- and everything
   # downstream compares against the lowercase literal: the custom-roles check
-  # and the over-reach warning just below, write_state_var's PLATFORM_AGENT_*
+  # and the over-reach warning just below, the exported PLATFORM_AGENT_*
   # pair, and terraform's case-sensitive contains() on permission_set. Passing
   # `Custom` through raw would clear the gate and then miss all four.
   permission_set=$(printf '%s' "$permission_set" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
@@ -2221,16 +2383,16 @@ main() {
   if [ "$permission_set" = "custom" ] && [ -n "$custom_roles" ]; then
     warn_on_overreaching_custom_roles "$custom_roles"
   fi
-  # ${VAR-default}, not ${VAR:-default}: PARAM_ENABLE_GVISOR is always set (see
-  # its declaration), so the only way it arrives empty is `--gvisor=` with no
-  # value. Substituting on empty would silently read that as the default; this
-  # form lets it reach the validator below and be rejected.
-  local enable_gvisor="${PARAM_ENABLE_GVISOR-true}"
+  # No `:-` fallback: resolve_shared_defaults already applied
+  # DEFAULT_ENABLE_GVISOR with ${VAR-...}, which leaves `--gvisor=` (set, but
+  # empty) empty on purpose so the validator below rejects it instead of
+  # silently reading it as the default.
+  local enable_gvisor="$PARAM_ENABLE_GVISOR"
   if [[ ! "$enable_gvisor" =~ ^(true|false)$ ]]; then
     print_error "--gvisor must be either true or false."
     exit 1
   fi
-  if [[ ! "${PARAM_ENABLE_WEBUI:-false}" =~ ^(true|false)$ ]]; then
+  if [[ ! "$PARAM_ENABLE_WEBUI" =~ ^(true|false)$ ]]; then
     print_error "--enable-web-ui must be either true or false."
     exit 1
   fi
@@ -2244,7 +2406,7 @@ main() {
   # searchable store existed: an upgrade that says nothing about memory keeps
   # the store it already has, and no install grows a Postgres database it never
   # asked for. Enterprise deployments opt in with --memory=hindsight.
-  local memory_mode="${PARAM_MEMORY:-file}"
+  local memory_mode="$PARAM_MEMORY"
   if [[ ! "$memory_mode" =~ ^(off|file|hindsight)$ ]]; then
     print_error "--memory must be one of: off, file, hindsight."
     exit 1
@@ -2312,7 +2474,7 @@ main() {
     fi
 
     local webui_choice=""
-    if is_truthy "${PARAM_ENABLE_WEBUI:-false}"; then
+    if is_truthy "$PARAM_ENABLE_WEBUI"; then
       webui_choice="2"
     fi
     prompt_menu "Enable Hermes Web UI (Port 9119 Dashboard) for Agent Observability?" \
@@ -2388,8 +2550,7 @@ main() {
     off) memory_provider="none" ;;
   esac
 
-  print_step "10. Generating Configuration State (k8s-operator/scripts/vars.sh)"
-  local vars_file="${repo_dir}/k8s-operator/scripts/vars.sh"
+  print_step "10. Resolving Install Configuration"
   local registry_prefix="${PARAM_REGISTRY_PREFIX%/}"
   if [ -z "$registry_prefix" ] || [[ "$registry_prefix" == *"://"* ]]; then
     print_error "--registry-prefix must be a non-empty registry path without a URL scheme."
@@ -2409,78 +2570,73 @@ main() {
   # replace the Secret and restart the pods holding it (#1060, item 8).
   local api_server_key="${API_SERVER_KEY:-}"
 
-  local old_umask
-  old_umask="$(umask)"
-  umask 077
-  local final_vars_file="$vars_file"
-  vars_file="${vars_file}.tmp"
-  printf '%s\n' '# Auto-generated by kube-agents zero-friction installer' > "$vars_file"
-  write_state_var "$vars_file" PROJECT_ID "$project_id"
-  write_state_var "$vars_file" PROJECT_NUMBER "$project_number"
-  write_state_var "$vars_file" CLUSTER_NAME "$cluster_name"
-  write_state_var "$vars_file" CLUSTER_MODE "$cluster_mode"
-  write_state_var "$vars_file" REGION "$region"
-  write_state_var "$vars_file" KMS_LOCATION "$(derive_kms_location "$region")"
-  write_state_var "$vars_file" ENABLE_GVISOR "$enable_gvisor"
-  write_state_var "$vars_file" GVISOR_POOL_NAME "gvisor-pool"
-  write_state_var "$vars_file" MODEL_PROVIDER "$model_provider"
-  write_state_var "$vars_file" MODEL_DEFAULT_NAME "$model_default_name"
-  write_state_var "$vars_file" VERTEX_PROJECT_ID "$vertex_project_id"
-  write_state_var "$vars_file" VERTEX_LOCATION "$vertex_location"
-  write_secret_state_var "$vars_file" GEMINI_API_KEY "$gemini_api_key"
-  write_secret_state_var "$vars_file" OPENAI_API_KEY "$openai_api_key"
-  write_secret_state_var "$vars_file" ANTHROPIC_API_KEY "$anthropic_api_key"
-  write_state_var "$vars_file" ALLOWED_USERS "$allowed_users"
-  write_state_var "$vars_file" CHAT_TOPIC_NAME "$chat_topic_name"
-  write_state_var "$vars_file" CHAT_SUB_NAME "$chat_sub_name"
-  write_state_var "$vars_file" GOOGLE_CHAT_ENABLED "$google_chat_enabled"
-  write_state_var "$vars_file" GOOGLE_CHAT_MODE "$google_chat_mode"
-  write_state_var "$vars_file" SLACK_ENABLED "$slack_enabled"
-  write_secret_state_var "$vars_file" SLACK_BOT_TOKEN "$slack_bot_token"
-  write_secret_state_var "$vars_file" SLACK_APP_TOKEN "$slack_app_token"
-  write_state_var "$vars_file" SLACK_ALLOWED_USERS "$slack_allowed_users"
-  write_state_var "$vars_file" SLACK_HOME_CHANNEL "$slack_home_channel"
-  write_state_var "$vars_file" SLACK_HOME_CHANNEL_NAME "$slack_home_channel_name"
-  write_secret_state_var "$vars_file" API_SERVER_KEY "$api_server_key"
-  write_state_var "$vars_file" PLATFORM_AGENT_PERMISSION_SET "$permission_set"
-  if [ "$permission_set" = "custom" ]; then
-    write_state_var "$vars_file" PLATFORM_AGENT_CUSTOM_ROLES "$custom_roles"
-  fi
-  write_state_var "$vars_file" GITHUB_ORG "$github_org"
-  write_state_var "$vars_file" GITHUB_REPO "$github_repo"
-  write_state_var "$vars_file" GITHUB_APP_ID "$github_app_id"
-  write_state_var "$vars_file" KMS_KEYRING "$kms_keyring"
-  write_state_var "$vars_file" KMS_KEY "$kms_key"
-  write_state_var "$vars_file" GITHUB_PEM_PATH "$github_pem_path"
-  write_state_var "$vars_file" MEMORY_ENABLED "$memory_enabled"
-  write_state_var "$vars_file" MEMORY_PROVIDER "$memory_provider"
-  write_state_var "$vars_file" USER_PROFILE_ENABLED "${PARAM_USER_PROFILE_ENABLED:-${USER_PROFILE_ENABLED:-false}}"
-  write_state_var "$vars_file" HERMES_DASHBOARD_ENABLED "${PARAM_ENABLE_WEBUI:-false}"
-  write_state_var "$vars_file" REGISTRY_PREFIX "$registry_prefix"
-  # Written only when asked for. An empty value here would be sourced over an
-  # exported one, turning "leave them upstream" from a default into an override
-  # the installer never took a flag for.
+  # Straight into the environment, which is where write_tfvars_from_state and
+  # the TF_VAR_* handoff read from. This used to go to disk and come back:
+  # every value was written to vars.sh and the file re-sourced, purely to
+  # populate these same variables. The round trip is what made a generated
+  # file look like the install's source of truth.
+  #
+  # Four values that vars.sh carried are gone rather than moved, because they
+  # are derived and a stored copy can only disagree with the live answer.
+  # PROJECT_NUMBER comes from `gcloud projects describe` and KMS_LOCATION from
+  # derive_kms_location, both re-run every time they are needed; the effective
+  # CLUSTER_MODE and create_cluster come from the generator's own probe of the
+  # live cluster. NO_CONFIRM is gone too: it is a property of this invocation,
+  # set by -y/--non-interactive, not configuration to inherit.
+  export PROJECT_ID="$project_id"
+  export PROJECT_NUMBER="$project_number"
+  export CLUSTER_NAME="$cluster_name"
+  export CLUSTER_MODE="$cluster_mode"
+  export REGION="$region"
+  export ENABLE_GVISOR="$enable_gvisor"
+  # No GVISOR_POOL_NAME. It has no flag and no interview question, so anything
+  # exported here would be a constant written over whatever install.env says --
+  # the generator already applies DEFAULT_GVISOR_POOL_NAME when nothing sets it,
+  # which leaves the operator's value free to win. The same reasoning keeps
+  # ENABLE_GKE_BACKUP_PLAN out of this block.
+  export MODEL_PROVIDER="$model_provider"
+  export MODEL_DEFAULT_NAME="$model_default_name"
+  export VERTEX_PROJECT_ID="$vertex_project_id"
+  export VERTEX_LOCATION="$vertex_location"
+  export GEMINI_API_KEY="$gemini_api_key"
+  export OPENAI_API_KEY="$openai_api_key"
+  export ANTHROPIC_API_KEY="$anthropic_api_key"
+  export ALLOWED_USERS="$allowed_users"
+  export CHAT_TOPIC_NAME="$chat_topic_name"
+  export CHAT_SUB_NAME="$chat_sub_name"
+  export GOOGLE_CHAT_ENABLED="$google_chat_enabled"
+  export GOOGLE_CHAT_MODE="$google_chat_mode"
+  export SLACK_ENABLED="$slack_enabled"
+  export SLACK_BOT_TOKEN="$slack_bot_token"
+  export SLACK_APP_TOKEN="$slack_app_token"
+  export SLACK_ALLOWED_USERS="$slack_allowed_users"
+  export SLACK_HOME_CHANNEL="$slack_home_channel"
+  export SLACK_HOME_CHANNEL_NAME="$slack_home_channel_name"
+  export API_SERVER_KEY="$api_server_key"
+  export PLATFORM_AGENT_PERMISSION_SET="$permission_set"
+  export PLATFORM_AGENT_CUSTOM_ROLES="$custom_roles"
+  export GITHUB_ORG="$github_org"
+  export GITHUB_REPO="$github_repo"
+  export GITHUB_APP_ID="$github_app_id"
+  export KMS_KEYRING="$kms_keyring"
+  export KMS_KEY="$kms_key"
+  export GITHUB_PEM_PATH="$github_pem_path"
+  export MEMORY_ENABLED="$memory_enabled"
+  export MEMORY_PROVIDER="$memory_provider"
+  export USER_PROFILE_ENABLED="$PARAM_USER_PROFILE_ENABLED"
+  export HERMES_DASHBOARD_ENABLED="$PARAM_ENABLE_WEBUI"
+  export REGISTRY_PREFIX="$registry_prefix"
+  # Exported only when asked for, the way it was only ever persisted when asked
+  # for: an empty value here is an override the installer never took a flag
+  # for, turning "leave the third-party images upstream" from a default into an
+  # instruction.
   if [ -n "$third_party_registry_prefix" ]; then
-    write_state_var "$vars_file" THIRD_PARTY_REGISTRY_PREFIX "$third_party_registry_prefix"
+    export THIRD_PARTY_REGISTRY_PREFIX="$third_party_registry_prefix"
   fi
-  # No *_IMAGE keys here. The operator reads OPERATOR_IMAGE and
+  # No *_IMAGE variables. The operator reads OPERATOR_IMAGE and
   # PLATFORM_AGENT_IMAGE from its own pod environment, where the chart sets them
-  # from values.yaml; nothing ever read them back out of this file. The images
-  # this install pulls are decided by REGISTRY_PREFIX above and the image_tag
-  # the tfvars generator writes.
-  write_state_var "$vars_file" ENABLE_GKE_BACKUP_PLAN "${ENABLE_GKE_BACKUP_PLAN:-false}"
-  write_state_var "$vars_file" NO_CONFIRM "1"
-  chmod 600 "$vars_file"
-  mv -f -- "$vars_file" "$final_vars_file"
-  vars_file="$final_vars_file"
-  umask "$old_umask"
-  print_success "Configuration saved to: $vars_file"
-
-  # The engine input, generated from the state file just written so the two
-  # can never disagree. Re-sourcing vars.sh is what puts that state in the
-  # environment write_tfvars_from_state reads.
-  # shellcheck disable=SC1090
-  source "$vars_file"
+  # from values.yaml. The images this install pulls are decided by
+  # REGISTRY_PREFIX above and the image_tag the tfvars generator writes.
 
   local tfvars_file
   tfvars_file="$(tf_compose_dir "$repo_dir")/terraform.tfvars"
@@ -2489,14 +2645,16 @@ main() {
   # leave this unset so an unfindable key stays an error for them.
   KUBE_AGENTS_GENERATE_API_SERVER_KEY=true \
     write_tfvars_from_state "$tfvars_file" "$image_tag"
-  persist_effective_cluster_mode "$cluster_mode"
-  # The key the generator settled on — recovered from the live Secret, or minted
-  # when there was none — replaces whatever this run wrote a moment ago, which
-  # was empty on a first install. Same shape as the cluster-mode writeback
-  # above: save_secret_var rewrites the one line rather than the file, and
-  # honours PERSIST_SECRETS_ON_DISK.
-  DRY_RUN=0 save_secret_var API_SERVER_KEY "${API_SERVER_KEY:-}"
   print_success "Terraform input saved to: $tfvars_file"
+
+  # Written once, and only when there is nothing there. The probed cluster
+  # shape is deliberately NOT recorded: it used to be written back into
+  # vars.sh, and a file that is read as configuration and also written as
+  # findings is the thing that made vars.sh confusing. The probe is
+  # authoritative on every run regardless of what the file says, which is what
+  # stops a hand-written CLUSTER_MODE=standard from planning a live Autopilot
+  # cluster's replacement.
+  bootstrap_install_env_file "$INSTALL_ENV_FILE" "$image_tag"
 
   # Pre-Flight Summary & Final Confirmation Checkpoint
   print_step "11. Pre-Flight Configuration Summary"
@@ -2559,7 +2717,7 @@ main() {
     local confirm_choice=""
     prompt_read "\nProceed with automated GKE cluster & Platform Agent provisioning? (Y/n)" confirm_choice "y"
     if [[ ! "$confirm_choice" =~ ^[Yy]$ ]]; then
-      print_warning "Provisioning paused by user. Configuration saved to: $vars_file"
+      print_warning "Provisioning paused by user. Configuration saved to: $INSTALL_ENV_FILE"
       print_info "To launch provisioning later, run: ${C_BOLD}cd terraform/examples/full-install && KUBE_AGENTS_STATE_BUCKET=auto ./lifecycle.sh apply${C_RESET}"
       write_json_report "PAUSED"
       exit 0
@@ -2689,7 +2847,7 @@ main() {
   if [ "${slack_enabled:-false}" = "true" ]; then
     echo -e "  • ${C_CYAN}Slack App Link:${C_RESET} ${C_UNDERLINE}https://app.slack.com/client${C_RESET}"
   fi
-  if [ "${PARAM_ENABLE_WEBUI:-false}" = "true" ] || [ "${HERMES_DASHBOARD_ENABLED:-false}" = "true" ]; then
+  if [ "$PARAM_ENABLE_WEBUI" = "true" ]; then
     echo -e "  • ${C_CYAN}Hermes Web UI (Port 9119):${C_RESET} ${C_GREEN}Enabled${C_RESET}"
     # A sandboxed pod cannot be reached with `kubectl port-forward`: the forward
     # is established in the host-side CNI netns while the dashboard listens in

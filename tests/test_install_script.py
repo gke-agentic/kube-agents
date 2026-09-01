@@ -330,57 +330,59 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
                 )
                 self.assertEqual(proc.returncode, expected, proc.stdout)
 
-    def _run_persist(self, requested, effective, starting_line):
-        """persist_effective_cluster_mode against a throwaway vars.sh."""
-        with tempfile.TemporaryDirectory() as tmp:
-            vars_file = pathlib.Path(tmp) / "vars.sh"
-            vars_file.write_text(starting_line)
-            call = (
-                f'{_SOURCE_INSTALLER_COMMON}'
-                f'VARS_FILE="{vars_file}"; TFVARS_CLUSTER_MODE="{effective}"; '
-                f'persist_effective_cluster_mode "{requested}"'
-            )
-            proc = self._run_install_func(call)
-            return proc, vars_file.read_text()
+    def test_the_probed_cluster_shape_is_never_written_back(self):
+        """There is no persist_effective_cluster_mode, and there must not be.
 
-    def test_persist_effective_cluster_mode_records_the_probed_shape(self):
-        """vars.sh must record what the install HAS, not what was asked for.
-
-        The generator's probe overrules --cluster-mode on any cluster that
-        already exists. Leaving the request on disk is how the value that
-        rebuilds a deleted cluster — and that uninstall.sh and upgrade.sh
-        regenerate from — comes to name the wrong shape.
+        It existed so that a later run would not rebuild a deleted cluster in
+        the wrong shape, by recording the probe's answer over the interview's.
+        That is unnecessary -- write_tfvars_from_state re-probes every run and
+        every branch with a live cluster takes the mode from the probe, so a
+        stale configured value can never reach a running cluster's tfvars --
+        and it was the one place the installer wrote its own findings back into
+        the file it reads as configuration. A file that is an input and an
+        output at once is the property this refactor removes, so a
+        reintroduction is a regression even though it would look like a fix.
         """
-        for requested, effective in (
-            ("autopilot", "standard"),
-            ("standard", "autopilot"),
-        ):
-            with self.subTest(requested=requested, effective=effective):
-                proc, content = self._run_persist(
-                    requested, effective, f"export CLUSTER_MODE={requested}\n"
-                )
-                self.assertEqual(proc.returncode, 0, proc.stdout)
-                self.assertIn(f"export CLUSTER_MODE={effective}", content)
-                self.assertNotIn(f"export CLUSTER_MODE={requested}", content)
-
-    def test_persist_effective_cluster_mode_leaves_an_agreeing_file_alone(self):
-        proc, content = self._run_persist(
-            "autopilot", "autopilot", "export CLUSTER_MODE=autopilot\n"
+        source = _INSTALL_SH.read_text()
+        # The name still appears, in the comment explaining why it is gone.
+        # What must not come back is a definition or a call.
+        self.assertNotRegex(
+            source,
+            r"^\s*persist_effective_cluster_mode\s*\(\)",
+            "persist_effective_cluster_mode must not be redefined",
         )
-        self.assertEqual(proc.returncode, 0, proc.stdout)
-        self.assertEqual(content, "export CLUSTER_MODE=autopilot\n")
+        self.assertNotRegex(
+            source,
+            r"^\s*persist_effective_cluster_mode\s+",
+            "persist_effective_cluster_mode must not be called",
+        )
+        self.assertNotIn(
+            "save_var CLUSTER_MODE",
+            source,
+            "the probed shape must not be written back into the install "
+            "configuration; the probe is authoritative on every run",
+        )
 
-    def test_persist_effective_cluster_mode_without_a_generator_answer(self):
-        """No TFVARS_CLUSTER_MODE means the generator never ran; do not guess."""
-        with tempfile.TemporaryDirectory() as tmp:
-            vars_file = pathlib.Path(tmp) / "vars.sh"
-            vars_file.write_text("export CLUSTER_MODE=autopilot\n")
-            proc = self._run_install_func(
-                f'{_SOURCE_INSTALLER_COMMON}VARS_FILE="{vars_file}"; '
-                'persist_effective_cluster_mode standard'
-            )
-            self.assertEqual(proc.returncode, 0, proc.stdout)
-            self.assertEqual(vars_file.read_text(), "export CLUSTER_MODE=autopilot\n")
+    def test_the_installer_no_longer_writes_the_state_file(self):
+        """vars.sh is read as a legacy input and never generated.
+
+        Regenerating it would put the old two-file model back: a derived file
+        that other tools read, drifting from the input that actually decides
+        the install.
+        """
+        source = _INSTALL_SH.read_text()
+        self.assertNotIn(
+            "write_state_var",
+            source,
+            "install.sh must not write vars.sh; install.env is the input and "
+            "terraform.tfvars the only derived artifact",
+        )
+        self.assertIn(
+            "load_legacy_vars_file",
+            source,
+            "an existing install's vars.sh must still be read, so upgrading "
+            "needs no action from its owner",
+        )
 
     def test_parse_args_enable_google_chat(self):
         """Verifies parse_args captures --enable-google-chat."""
@@ -732,6 +734,26 @@ class InstallEnvInputTest(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
         self.assertIn("OK", proc.stdout)
+
+    def test_loading_says_nothing_on_stdout(self):
+        """Sourcing install.sh must leave stdout clean.
+
+        The load happens at source time, before main(), so a message on stdout
+        lands in front of whatever the caller captures next -- including a
+        function's echoed return value, which is how most of this file's tests
+        read install.sh. That made the suite pass or fail depending on whether
+        the developer running it happened to have an install.env, which is the
+        worst kind of flake: it looks like the change under test.
+        """
+        proc = self._source_with_env_file(
+            'printf "%s" "ONLY-THIS"',
+            contents="PROJECT_ID=noisy\n",
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        # Byte-for-byte: a function that echoes its answer is read exactly this
+        # way, so anything else on stdout corrupts it.
+        self.assertEqual(proc.stdout, "ONLY-THIS")
+        self.assertIn("Loaded install configuration", proc.stderr)
 
     def test_it_is_discovered_beside_the_script(self):
         """The documented location, and the one a curl | bash install into a

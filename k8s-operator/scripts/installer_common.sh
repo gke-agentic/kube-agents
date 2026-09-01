@@ -40,6 +40,34 @@ DEFAULT_CLUSTER_MODE="autopilot"
 DEFAULT_VERTEX_LOCATION="global"
 DEFAULT_MODEL_PROVIDER="gemini"
 
+# The toggles an install gets for saying nothing. Constants here rather than
+# `${VAR:-false}` at each point of use: an inline fallback is a second copy of
+# the default, and the copies drift -- which is how the installer's
+# permission-set default once disagreed with the provisioner's. install.sh
+# binds these through resolve_shared_defaults so a flag or an install.env value
+# still wins.
+DEFAULT_PERMISSION_SET="read-only"
+# On by default: the agent runs untrusted model output, and GKE Sandbox is the
+# boundary that contains it. --gvisor=false opts out.
+DEFAULT_ENABLE_GVISOR="true"
+DEFAULT_ENABLE_WEBUI="false"
+DEFAULT_USER_PROFILE_ENABLED="false"
+DEFAULT_ENABLE_GKE_BACKUP_PLAN="false"
+DEFAULT_GOOGLE_CHAT_ENABLED="false"
+DEFAULT_GOOGLE_CHAT_MODE="default"
+# `file` because it is what every install got before the searchable store
+# existed, so an upgrade that says nothing keeps the store it already has.
+DEFAULT_MEMORY="file"
+DEFAULT_CHAT_TOPIC_NAME="platform-agent-chat-events"
+DEFAULT_CHAT_SUB_NAME="platform-agent-chat-events-sub"
+DEFAULT_GITOPS_REPO="gke-fleet-iac"
+DEFAULT_KMS_KEYRING="github-token-minter-keyring"
+DEFAULT_KMS_KEY="github-token-minter-key"
+# The sandbox node pool the gke-cluster module creates on a Standard cluster.
+# Autopilot has no pool to name. write_tfvars_from_state applies this default
+# itself, so install.sh deliberately does not export a value over it.
+DEFAULT_GVISOR_POOL_NAME="gvisor-pool"
+
 # All kube-agents images (k8s-operator, platform-agent, credential-proxy,
 # replay-proxy) default to this public registry prefix. Behind-the-firewall
 # installs set REGISTRY_PREFIX to pull mirrored images instead.
@@ -267,9 +295,69 @@ load_install_env() {
   return 0
 }
 
-# ─── vars.sh Persistence ──────────────────────────────────────────────────────
-# vars.sh is the install's machine-readable record: the admin console, the e2e
-# tests, and the Day-2 menu all read it. VARS_FILE must be set by the caller.
+# ─── install.env Persistence ──────────────────────────────────────────────────
+# Rewrite ONE key in install.env, leaving every other line -- including the
+# operator's comments and ordering -- exactly as it was. INSTALL_ENV_FILE must
+# be set by the caller.
+#
+# The Day-2 control panel is the only caller, and it is the one place that may
+# write here: "Save & Apply Configuration Changes" is an explicit instruction
+# to record a change, not the installer quietly overwriting an input. install.sh
+# itself only ever creates the file when there is none.
+#
+# No `export` keyword in the output: install.env is a dotenv, loaded with
+# `set -a`. The value is still %q-quoted, so spaces and quotes survive.
+save_env_var() {
+  local var_name=$1
+  local var_val=$2
+  export "${var_name}=${var_val}"
+
+  local old_umask
+  old_umask=$(umask)
+  umask 077
+
+  if [ -f "$INSTALL_ENV_FILE" ]; then
+    chmod 600 "$INSTALL_ENV_FILE" 2>/dev/null || true
+    # Drops the previous assignment whichever spelling it used, so a file
+    # migrated from vars.sh does not end up carrying both.
+    grep -E -v "^[[:space:]]*(export[[:space:]]+)?${var_name}=" "$INSTALL_ENV_FILE" \
+      > "$INSTALL_ENV_FILE.tmp" 2>/dev/null || true
+    chmod 600 "$INSTALL_ENV_FILE.tmp" 2>/dev/null || true
+    mv "$INSTALL_ENV_FILE.tmp" "$INSTALL_ENV_FILE"
+  fi
+  printf "%s=%q\n" "$var_name" "$var_val" >> "$INSTALL_ENV_FILE"
+  chmod 600 "$INSTALL_ENV_FILE" 2>/dev/null || true
+
+  umask "$old_umask"
+}
+
+# The same, for a credential. PERSIST_SECRETS_ON_DISK=false keeps it out of the
+# file and removes any copy already there, while still exporting it for this
+# run -- the live Secret is its home, and write_tfvars_from_state recovers it.
+save_secret_env_var() {
+  local var_name=$1
+  local var_val=$2
+  export "${var_name}=${var_val}"
+  if is_truthy "${PERSIST_SECRETS_ON_DISK:-true}"; then
+    save_env_var "$var_name" "$var_val"
+  elif [ -f "$INSTALL_ENV_FILE" ]; then
+    local old_umask
+    old_umask=$(umask)
+    umask 077
+    chmod 600 "$INSTALL_ENV_FILE" 2>/dev/null || true
+    grep -E -v "^[[:space:]]*(export[[:space:]]+)?${var_name}=" "$INSTALL_ENV_FILE" \
+      > "$INSTALL_ENV_FILE.tmp" 2>/dev/null || true
+    chmod 600 "$INSTALL_ENV_FILE.tmp" 2>/dev/null || true
+    mv "$INSTALL_ENV_FILE.tmp" "$INSTALL_ENV_FILE"
+    chmod 600 "$INSTALL_ENV_FILE" 2>/dev/null || true
+    umask "$old_umask"
+  fi
+}
+
+# ─── vars.sh Persistence (legacy) ─────────────────────────────────────────────
+# The generated state file install.env replaced. Still written by the dev
+# scripts through common.sh's init_var helpers, and still read everywhere as a
+# fallback, so these stay. VARS_FILE must be set by the caller.
 save_var() {
   local var_name=$1
   local var_val=$2
@@ -803,7 +891,7 @@ write_tfvars_from_state() {
     echo "allow_external_dns_traffic = true"
     echo "deletion_protection        = false"
     echo "enable_gvisor_node_pool    = ${gvisor_node_pool}"
-    echo "gvisor_pool_name           = $(hcl_str "${GVISOR_POOL_NAME:-gvisor-pool}")"
+    echo "gvisor_pool_name           = $(hcl_str "${GVISOR_POOL_NAME:-$DEFAULT_GVISOR_POOL_NAME}")"
     echo "agent_runtime_class        = $(hcl_str "${agent_runtime_class}")"
     echo "enable_cert_manager        = ${enable_cert_manager}"
     echo ""

@@ -222,13 +222,12 @@ The composition's
 [README](https://github.com/gke-labs/kube-agents/blob/main/terraform/examples/full-install/README.md)
 has the detail.
 
-`REGISTRY_PREFIX` and `THIRD_PARTY_REGISTRY_PREFIX` are persisted to the installer's state file
-(`vars.sh`) like every other knob, so re-runs reuse them; `terraform.tfvars` is regenerated from
-that state on every run. Changing the registry _after_ a first run means re-running `install.sh`
-with the new flag (or editing the saved values in `vars.sh` — saved state wins over a new
-export).
+`REGISTRY_PREFIX` and `THIRD_PARTY_REGISTRY_PREFIX` live in the install configuration
+(`install.env`) like every other knob, so re-runs reuse them; `terraform.tfvars` is regenerated
+from it on every run. Changing the registry _after_ a first run means editing `install.env` and
+re-running `install.sh`, or passing the flag again — a flag beats the file.
 
-`IMAGE_TAG` is per-run and is deliberately not saved to `vars.sh`: the installer passes it into
+`IMAGE_TAG` is per-run and is deliberately not recorded in `install.env`: the installer passes it into
 `terraform.tfvars` as `image_tag`, which overrides both first-party image tags in the chart. The
 third-party images are excluded, because their tags come from `images.json` and have nothing to
 do with `IMAGE_TAG`.

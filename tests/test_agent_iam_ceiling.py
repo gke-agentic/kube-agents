@@ -343,16 +343,23 @@ class InstallerFrontDoorTest(unittest.TestCase):
         every spelling reaches the right message, but it cannot fix the
         variable in the caller. Everything downstream of the call in install.sh
         compares against the lowercase literal -- the custom-roles requirement,
-        the over-reach warning, the two `write_state_var` lines, and (through
-        the generated tfvars) terraform's case-sensitive `contains()` on
-        permission_set. So a `--permission-set=Custom` that cleared the gate
+        the over-reach warning, the exported PLATFORM_AGENT_* pair, and
+        (through the generated tfvars) terraform's case-sensitive `contains()`
+        on permission_set. So a `--permission-set=Custom` that cleared the gate
         and stayed `Custom` would miss all of them and fail much later, in the
         apply, with an error about a different value entirely. The fix is one
         line and this is what holds it there.
+
+        The assignment carries no `:-read-only` any more: installer_common.sh
+        owns that default and resolve_shared_defaults binds it, so there is one
+        home for it rather than a copy at each point of use. What this test is
+        about is unchanged -- that whatever the variable is read from, it is
+        normalised before anything branches on it.
         """
         source = INSTALL_SH.read_text(encoding="utf-8")
         assignment = re.search(
-            r'^\s*local permission_set="\$\{PARAM_PERMISSION_SET:-read-only\}"$',
+            r'^\s*local permission_set="\$(?:PARAM_PERMISSION_SET|'
+            r'\{PARAM_PERMISSION_SET(?::-[^}]*)?\})"$',
             source,
             re.M,
         )
