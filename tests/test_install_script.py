@@ -884,6 +884,59 @@ class NonInteractiveRerunInheritanceTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
         self.assertIn("U=from-the-flag@example.com", proc.stdout)
 
+    def test_the_gitops_repo_names_are_gitops_prefixed(self):
+        """#1026. GITOPS_ORG / GITOPS_REPO are the installer's input names.
+
+        The old pair collided with two other things: GH_ORG / GH_REPO on the rc
+        and nightly environments name the *release* repository, and tests/e2e
+        uses GITHUB_ORG / GITHUB_REPO for the repository a test acts on. Three
+        repositories, two names.
+        """
+        proc = self._params(
+            "GITOPS_ORG=an-org\nGITOPS_REPO=a-repo\n",
+            'echo "O=$PARAM_GITOPS_ORG R=$PARAM_GITOPS_REPO"',
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("O=an-org R=a-repo", proc.stdout)
+
+    def test_the_old_names_still_work_and_say_so(self):
+        """A deprecation, not a break: an install.env or a CI environment still
+        carrying GITHUB_ORG / GITHUB_REPO keeps working, and is told to rename."""
+        proc = self._params(
+            "GITHUB_ORG=an-org\nGITHUB_REPO=a-repo\n",
+            'source k8s-operator/scripts/installer_common.sh; '
+            'normalize_gitops_repo_vars; '
+            'echo "O=$GITOPS_ORG R=$GITOPS_REPO"',
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("O=an-org R=a-repo", proc.stdout)
+        combined = proc.stdout + proc.stderr
+        self.assertIn("GITHUB_ORG is deprecated", combined)
+        self.assertIn("GITOPS_ORG", combined)
+
+    def test_the_new_names_win_over_the_old(self):
+        """Both present is a mid-migration environment, not an error. The name
+        that survives is the one being migrated to."""
+        proc = self._params(
+            "GITHUB_ORG=old-org\nGITOPS_ORG=new-org\n",
+            'source k8s-operator/scripts/installer_common.sh; '
+            'normalize_gitops_repo_vars; echo "O=$GITOPS_ORG"',
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("O=new-org", proc.stdout)
+
+    def test_the_old_names_are_kept_in_step_for_one_release(self):
+        """The agent runtime and the chart still speak GITHUB_*. They are
+        exported FROM the GITOPS_* value rather than left as a second source of
+        truth, so the two can never disagree."""
+        proc = self._params(
+            "GITOPS_ORG=new-org\nGITOPS_REPO=new-repo\n",
+            'source k8s-operator/scripts/installer_common.sh; '
+            'normalize_gitops_repo_vars; echo "O=$GITHUB_ORG R=$GITHUB_REPO"',
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("O=new-org R=new-repo", proc.stdout)
+
     def test_the_api_server_key_is_not_minted_by_install_sh(self):
         """#1060 item 8. Generating it here exported it, and the generator's
         recovery loop skips any key already set -- so the live Secret could
@@ -1046,7 +1099,7 @@ class ImportGithubPemKmsKeyTest(unittest.TestCase):
             body = (
                 f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n'
                 f'source "{_INSTALLER_COMMON}"\n'
-                "GITHUB_ORG=an-org GITHUB_REPO=a-repo GITHUB_APP_ID=12345 "
+                "GITOPS_ORG=an-org GITOPS_REPO=a-repo GITHUB_APP_ID=12345 "
                 f'GITHUB_PEM_PATH="{pem}" import_github_pem a-project us-central1-a\n'
             )
             proc = subprocess.run(

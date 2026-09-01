@@ -486,7 +486,7 @@ kubectl rollout status deployment -n kubeagents-system
 
 To optionally deploy the LiteLLM Gateway or GitHub Token Minter:
 
-`GITHUB_ORG` must be a GitHub **organization**. The Token Minter looks App installations up at `/orgs/{org}/installation`, which does not exist for personal accounts, so a user-owned GitOps repo deploys cleanly and then fails every token request with a 404. This manual path skips the installer's preflight check — see [`k8s-operator/config/integrations/github/README.md`](k8s-operator/config/integrations/github/README.md).
+`GITOPS_ORG` must be a GitHub **organization**. The Token Minter looks App installations up at `/orgs/{org}/installation`, which does not exist for personal accounts, so a user-owned GitOps repo deploys cleanly and then fails every token request with a 404. This manual path skips the installer's preflight check — see [`k8s-operator/config/integrations/github/README.md`](k8s-operator/config/integrations/github/README.md).
 
 ```bash
 # Deploy LiteLLM Gateway
@@ -505,8 +505,8 @@ export KMS_LOCATION="your-kms-region" # a region; Cloud KMS has no zonal locatio
 export KMS_KEYRING="your-kms-keyring"
 export KMS_KEY="your-kms-key"
 export KMS_KEY_VERSION="your-kms-key-version"
-export GITHUB_ORG="your-github-org"
-export GITHUB_REPO="your-github-repo"
+export GITOPS_ORG="your-github-org"
+export GITOPS_REPO="your-github-repo"
 export GITHUB_MINTER_KSA_NAME="kubeagents-github-minter"
 export GITHUB_MINTER_GSA_NAME="kubeagents-github-minter-gsa"
 export PLATFORM_AGENT_GSA_NAME="kubeagents-platform-gsa"

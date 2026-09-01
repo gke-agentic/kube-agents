@@ -373,6 +373,10 @@ main() {
   if [ "$state_loaded" != "true" ]; then
     print_warning "No install configuration (install.env) and no saved state (k8s-operator/scripts/vars.sh) was found in ${repo_dir}."
   fi
+  # GITOPS_ORG / GITOPS_REPO are the names; a configuration still carrying
+  # GITHUB_ORG / GITHUB_REPO is accepted with a warning. Runs after the load and
+  # before anything reads the coordinates.
+  normalize_gitops_repo_vars
 
   local target_project="${PARAM_PROJECT_ID:-${PROJECT_ID:-}}"
   local target_cluster="${PARAM_CLUSTER_NAME:-${CLUSTER_NAME:-platform-agent-host}}"
@@ -515,7 +519,7 @@ main() {
           --filter='state=ENABLED' --format='value(name)' 2>/dev/null || true; } | head -1)"
         if [ -z "$minter_enabled_version" ]; then
           print_error "The GitHub minter is enabled in the generated configuration, but its KMS signing key has no ENABLED version — the apply would wait on a minter that can never become ready."
-          print_info "Import the App key with install.sh (which runs the import before its apply), or unset GITHUB_APP_ID in vars.sh to upgrade without the minter."
+          print_info "Import the App key with install.sh (which runs the import before its apply), or unset GITHUB_APP_ID in install.env to upgrade without the minter."
           exit 1
         fi
       fi

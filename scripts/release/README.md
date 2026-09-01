@@ -97,7 +97,7 @@ Set all three on the environment rather than the repository. A repository-level 
 | Setting                | Value                  | Notes                                                                                                 |
 | ---------------------- | ---------------------- | ----------------------------------------------------------------------------------------------------- |
 | Variable `GITOPS_ORG`  | `gke-agentic`          | Repository owner.                                                                                     |
-| Variable `GITOPS_REPO` | `kube-agents-rc-infra` | Bare name, not `owner/repo`. Terraform's `github_repo` is composed as `${GITHUB_ORG}/${GITHUB_REPO}`. |
+| Variable `GITOPS_REPO` | `kube-agents-rc-infra` | Bare name, not `owner/repo`. Terraform's `github_repo` is composed as `${GITOPS_ORG}/${GITOPS_REPO}`. |
 | Secret `GH_APP_ID`     | the App ID             | Same App that is installed on the repository above.                                                   |
 
 `GITOPS_ORG` and `GITOPS_REPO` are deliberately separate from `GH_ORG` and `GH_REPO`, which every other workflow does use for this. On the `rc` environment that pair names the _release_ repository (`gke-labs/kube-agents`) and is what `common.sh`'s `get_target_repo` resolves for tag and release operations; pointing the minter at it would scope a live App token to this repository.
@@ -172,7 +172,7 @@ reproduce, and because a value deleted from the web form fails the same way as o
 
    The secrets are separate from the variables, and `nightly` needs `GH_APP_ID` and
    `GEMINI_API_KEY` on top of them. `GH_APP_ID` is not optional and its absence is not a skipped
-   feature — `provision_environment.sh` treats `GITHUB_ORG`/`GITHUB_REPO`/`GITHUB_APP_ID` as
+   feature — `provision_environment.sh` treats `GITOPS_ORG`/`GITOPS_REPO`/`GITHUB_APP_ID` as
    all-or-nothing and hard-exits before teardown when two of three are set.
 
    The four `E2E_CHAT_*` secrets exist at repository scope and cascade, so an environment that

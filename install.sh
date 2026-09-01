@@ -197,8 +197,8 @@ PARAM_VERTEX_LOCATION="${VERTEX_LOCATION:-}"
 PARAM_GEMINI_API_KEY="${GEMINI_API_KEY:-}"
 PARAM_OPENAI_API_KEY="${OPENAI_API_KEY:-}"
 PARAM_ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
-PARAM_GITOPS_ORG="${GITHUB_ORG:-}"
-PARAM_GITOPS_REPO="${GITHUB_REPO:-}"
+PARAM_GITOPS_ORG="${GITOPS_ORG:-${GITHUB_ORG:-}}"
+PARAM_GITOPS_REPO="${GITOPS_REPO:-${GITHUB_REPO:-}}"
 # Left empty where installer_common.sh owns the default, the way
 # PARAM_MODEL_PROVIDER above is: resolve_shared_defaults fills them in once the
 # helpers are sourced, so no default is spelled twice.
@@ -680,8 +680,8 @@ bootstrap_install_env_file() {
   if [ "${PLATFORM_AGENT_PERMISSION_SET:-}" = "custom" ]; then
     write_env_var "$tmp" PLATFORM_AGENT_CUSTOM_ROLES "${PLATFORM_AGENT_CUSTOM_ROLES:-}"
   fi
-  write_env_var "$tmp" GITHUB_ORG "${GITHUB_ORG:-}"
-  write_env_var "$tmp" GITHUB_REPO "${GITHUB_REPO:-}"
+  write_env_var "$tmp" GITOPS_ORG "${GITOPS_ORG:-}"
+  write_env_var "$tmp" GITOPS_REPO "${GITOPS_REPO:-}"
   write_env_var "$tmp" GITHUB_APP_ID "${GITHUB_APP_ID:-}"
   write_env_var "$tmp" KMS_KEYRING "${KMS_KEYRING:-}"
   write_env_var "$tmp" KMS_KEY "${KMS_KEY:-}"
@@ -853,6 +853,7 @@ source_provisioning_helpers() {
 # as though the value might legitimately be unset at that point, which it
 # cannot be: this runs in step 2, before the interview.
 resolve_shared_defaults() {
+  normalize_gitops_repo_vars
   PARAM_MODEL_PROVIDER="${PARAM_MODEL_PROVIDER:-$DEFAULT_MODEL_PROVIDER}"
   PARAM_REGISTRY_PREFIX="${PARAM_REGISTRY_PREFIX:-$DEFAULT_REGISTRY_PREFIX}"
   PARAM_PERMISSION_SET="${PARAM_PERMISSION_SET:-$DEFAULT_PERMISSION_SET}"
@@ -1442,7 +1443,7 @@ apply_managed_otel_scope() {
 # instructions when Go is unavailable.
 import_github_pem() {
   local project_id="$1" region="$2"
-  [ -n "${GITHUB_ORG:-}" ] && [ -n "${GITHUB_REPO:-}" ] && [ -n "${GITHUB_APP_ID:-}" ] || return 0
+  [ -n "${GITOPS_ORG:-}" ] && [ -n "${GITOPS_REPO:-}" ] && [ -n "${GITHUB_APP_ID:-}" ] || return 0
   local pem_path="${GITHUB_PEM_PATH:-}"
   local kms_location keyring="${KMS_KEYRING:-github-token-minter-keyring}" key="${KMS_KEY:-github-token-minter-key}"
   kms_location="$(derive_kms_location "$region")"
@@ -1614,8 +1615,8 @@ run_menu_system() {
   # nobody asked for on the next apply.
   local enable_gvisor="${ENABLE_GVISOR:-false}"
   local enable_webui="${HERMES_DASHBOARD_ENABLED:-false}"
-  local github_org="${GITHUB_ORG:-}"
-  local github_repo="${GITHUB_REPO:-gke-fleet-iac}"
+  local github_org="${GITOPS_ORG:-${GITHUB_ORG:-}}"
+  local github_repo="${GITOPS_REPO:-${GITHUB_REPO:-$DEFAULT_GITOPS_REPO}}"
   local github_app_id="${GITHUB_APP_ID:-}"
   local kms_keyring="${KMS_KEYRING:-}"
   local kms_key="${KMS_KEY:-}"
@@ -1782,8 +1783,8 @@ run_menu_system() {
         fi
         save_env_var ENABLE_GVISOR "$enable_gvisor"
         save_env_var HERMES_DASHBOARD_ENABLED "$enable_webui"
-        save_env_var GITHUB_ORG "$github_org"
-        save_env_var GITHUB_REPO "$github_repo"
+        save_env_var GITOPS_ORG "$github_org"
+        save_env_var GITOPS_REPO "$github_repo"
         save_env_var GITHUB_APP_ID "$github_app_id"
         save_env_var KMS_KEYRING "$kms_keyring"
         save_env_var KMS_KEY "$kms_key"
@@ -2298,7 +2299,7 @@ main() {
     # option 2 is what pressing enter should mean. Left at option 1, an
     # interactive re-run walks back through the create flow for a repository
     # that exists; answering the prompts with the loaded values then keeps it,
-    # but skipping them drops GITHUB_ORG and turns the minter off (#1060, item 6).
+    # but skipping them drops GITOPS_ORG and turns the minter off (#1060, item 6).
     local gitops_choice=""
     if [ -n "$github_org" ]; then
       gitops_choice="2"
@@ -2341,7 +2342,7 @@ main() {
         # cluster, node pools and operator are already built. Settle it
         # here, while nothing has been created yet.
         if [ "$PARAM_NON_INTERACTIVE" = "true" ] || ! has_controlling_tty; then
-          print_error "Set GITHUB_ORG to an organization and re-run, or export SKIP_GITHUB_ORG_CHECK=true to bypass this check."
+          print_error "Set GITOPS_ORG to an organization and re-run, or export SKIP_GITHUB_ORG_CHECK=true to bypass this check."
           exit 1
         fi
       done
@@ -2615,8 +2616,12 @@ main() {
   export API_SERVER_KEY="$api_server_key"
   export PLATFORM_AGENT_PERMISSION_SET="$permission_set"
   export PLATFORM_AGENT_CUSTOM_ROLES="$custom_roles"
-  export GITHUB_ORG="$github_org"
-  export GITHUB_REPO="$github_repo"
+  export GITOPS_ORG="$github_org"
+  export GITOPS_REPO="$github_repo"
+  # One release of overlap: the agent runtime and the chart still speak
+  # GITHUB_*, and normalize_gitops_repo_vars keeps them equal to the GITOPS_*
+  # values rather than letting them be a second source of truth.
+  normalize_gitops_repo_vars
   export GITHUB_APP_ID="$github_app_id"
   export KMS_KEYRING="$kms_keyring"
   export KMS_KEY="$kms_key"
@@ -2732,7 +2737,7 @@ main() {
   # already settled it interactively; this catches a vars.sh edited by hand
   # and the non-interactive flag path. Warns-only when GitHub is unreachable;
   # SKIP_GITHUB_ORG_CHECK=true bypasses it.
-  check_github_org_is_organization "${GITHUB_ORG:-}"
+  check_github_org_is_organization "${GITOPS_ORG:-}"
 
   # The three script behaviours a data source cannot express: CMEK, the
   # Workload Identity pool, and NetworkPolicy enforcement on a cluster that

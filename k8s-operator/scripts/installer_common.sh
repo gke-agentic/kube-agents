@@ -354,6 +354,41 @@ save_secret_env_var() {
   fi
 }
 
+# ─── GitOps repository input names ────────────────────────────────────────────
+# The installer's GitOps coordinates are GITOPS_ORG / GITOPS_REPO. They used to
+# be GITHUB_ORG / GITHUB_REPO, which collided with two other things that mean
+# something else:
+#
+#   - GH_ORG / GH_REPO on the rc and nightly environments name the RELEASE
+#     repository (gke-labs/kube-agents), read by scripts/release/common.sh.
+#     GITOPS_ORG / GITOPS_REPO there name the GitOps repository. A workflow
+#     wiring the installer therefore had to write
+#     `GITHUB_ORG: ${{ vars.GITOPS_ORG }}`, which reads like a mistake and
+#     invites someone to "fix" it to vars.GH_ORG -- scoping a live GitHub App
+#     token at the release repository.
+#   - tests/e2e declares GITHUB_ORG / GITHUB_REPO for the repository a TEST
+#     acts on. Those keep their names; only the installer's inputs move.
+#
+# Call this once, after the install configuration is loaded and before anything
+# reads the coordinates. One home for the fallback, so no reader needs to know
+# both spellings.
+normalize_gitops_repo_vars() {
+  if [ -z "${GITOPS_ORG:-}" ] && [ -n "${GITHUB_ORG:-}" ]; then
+    export GITOPS_ORG="${GITHUB_ORG}"
+    print_warning "GITHUB_ORG is deprecated as an installer input; rename it to GITOPS_ORG (it still works this release)."
+  fi
+  if [ -z "${GITOPS_REPO:-}" ] && [ -n "${GITHUB_REPO:-}" ]; then
+    export GITOPS_REPO="${GITHUB_REPO}"
+    print_warning "GITHUB_REPO is deprecated as an installer input; rename it to GITOPS_REPO (it still works this release)."
+  fi
+  # Exported back under the old names too. The agent runtime, the chart values
+  # and k8s-operator/config/integrations/github all still speak GITHUB_*, and
+  # this is one release of overlap rather than a second source of truth: the
+  # value always comes from GITOPS_*.
+  export GITHUB_ORG="${GITOPS_ORG:-}"
+  export GITHUB_REPO="${GITOPS_REPO:-}"
+}
+
 # ─── vars.sh Persistence (legacy) ─────────────────────────────────────────────
 # The generated state file install.env replaced. Still written by the dev
 # scripts through common.sh's init_var helpers, and still read everywhere as a
@@ -467,7 +502,7 @@ github_account_type() {
 # fallback to the /users/{user}/installation endpoint that serves personal
 # accounts, so a user-owned GitOps repo can never mint a token. Left unchecked
 # that surfaces far downstream, as an HTTP 500 from a Minty that deployed and
-# passed its readiness probes, so catch it while GITHUB_ORG is still being set.
+# passed its readiness probes, so catch it while GITOPS_ORG is still being set.
 #
 # This exits, so it is the wrong entry point for anything that can still
 # re-prompt: install.sh calls github_account_type directly and settles the value
@@ -485,22 +520,22 @@ check_github_org_is_organization() {
   case "$(github_account_type "$org")" in
     organization) return 0 ;;
     user)
-      print_error "GITHUB_ORG='${org}' is a GitHub user account, not an organization."
+      print_error "GITOPS_ORG='${org}' is a GitHub user account, not an organization."
       print_error "The GitHub Token Minter looks installations up at /orgs/${org}/installation,"
       print_error "which does not exist for personal accounts, so every token request would"
       print_error "fail with a 404 after deployment."
       print_error "Move the GitOps repository to an organization (a free one is enough) and set"
-      print_error "GITHUB_ORG in ${VARS_FILE:-scripts/vars.sh} to it, or re-run with"
+      print_error "GITOPS_ORG in install.env to it, or re-run with"
       print_error "SKIP_GITHUB_ORG_CHECK=true to bypass this check."
       print_error "See the chart's githubMinter values and terraform/modules/github-minter."
       exit 1
       ;;
     missing)
-      print_error "GITHUB_ORG='${org}' does not exist on GitHub."
+      print_error "GITOPS_ORG='${org}' does not exist on GitHub."
       print_error "Check the spelling. The Token Minter resolves installations at"
       print_error "/orgs/${org}/installation, so a name that does not exist fails every"
       print_error "token request after deployment."
-      print_error "Edit GITHUB_ORG in ${VARS_FILE:-scripts/vars.sh}, or re-run with"
+      print_error "Edit GITOPS_ORG in install.env, or re-run with"
       print_error "SKIP_GITHUB_ORG_CHECK=true to bypass this check."
       print_error "(GitHub Enterprise Server is not supported: this check, and the Minter,"
       print_error "both talk to api.github.com.)"
@@ -789,7 +824,7 @@ write_tfvars_from_state() {
   # import mutating anything before the confirmation (or on a dry run).
   # With no key and no PEM, defer the minter loudly rather than wedge.
   local enable_github_minter="false"
-  if [ -n "${GITHUB_ORG:-}" ] && [ -n "${GITHUB_REPO:-}" ] && [ -n "${GITHUB_APP_ID:-}" ]; then
+  if [ -n "${GITOPS_ORG:-}" ] && [ -n "${GITOPS_REPO:-}" ] && [ -n "${GITHUB_APP_ID:-}" ]; then
     local minter_key_version=""
     minter_key_version="$({ gcloud kms keys versions list \
       --key "${KMS_KEY:-github-token-minter-key}" \
@@ -941,8 +976,8 @@ write_tfvars_from_state() {
     echo "slack_home_channel      = $(hcl_str "${SLACK_HOME_CHANNEL:-}")"
     echo "slack_home_channel_name = $(hcl_str "${SLACK_HOME_CHANNEL_NAME:-}")"
     echo ""
-    if [ -n "${GITHUB_ORG:-}" ] && [ -n "${GITHUB_REPO:-}" ]; then
-      echo "github_repo = $(hcl_str "${GITHUB_ORG}/${GITHUB_REPO}")"
+    if [ -n "${GITOPS_ORG:-}" ] && [ -n "${GITOPS_REPO:-}" ]; then
+      echo "github_repo = $(hcl_str "${GITOPS_ORG}/${GITOPS_REPO}")"
     fi
     echo "enable_github_minter = ${enable_github_minter}"
     echo "github_app_id        = $(hcl_str "${GITHUB_APP_ID:-}")"

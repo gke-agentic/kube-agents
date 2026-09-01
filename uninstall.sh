@@ -352,6 +352,9 @@ main() {
   if load_install_env "$install_env_file"; then
     print_success "Loaded install configuration from: ${install_env_file}"
   fi
+  # GITOPS_ORG / GITOPS_REPO are the names; a configuration still carrying
+  # GITHUB_ORG / GITHUB_REPO is accepted with a warning.
+  normalize_gitops_repo_vars
 
   local target_project="${PARAM_PROJECT_ID:-${PROJECT_ID:-}}"
   local target_cluster="${PARAM_CLUSTER_NAME:-${CLUSTER_NAME:-platform-agent-host}}"
