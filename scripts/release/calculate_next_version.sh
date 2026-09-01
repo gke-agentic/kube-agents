@@ -116,13 +116,14 @@ fi
 echo "📌 Latest GA Tag: ${LATEST_GA_TAG}" >&2
 IFS='.' read -r MAJOR MINOR PATCH <<< "${LATEST_GA_TAG}"
 
-# 5. Inspect commit range for subjects (%s) and bodies (%b)
-COMMITS_RANGE="${LATEST_GA_TAG}..${RC_CANDIDATE_COMMIT}"
-if ! COMMITS_SUBJECTS="$(git log "${COMMITS_RANGE}" --format="%s" 2>&1)"; then
-  echo "❌ ERROR: Failed to read commit log for range '${COMMITS_RANGE}': ${COMMITS_SUBJECTS}" >&2
+# 5. Inspect commit range for subjects (%s) and bodies (%b). The read lives in
+# common.sh so the bump and resolve_scheduled_release.sh's release decision are
+# always taken over the same set of commits.
+if ! release_read_commit_range "${LATEST_GA_TAG}" "${RC_CANDIDATE_COMMIT}"; then
   exit 1
 fi
-COMMITS_BODIES="$(git log "${COMMITS_RANGE}" --format="%b" 2>/dev/null || echo "")"
+COMMITS_SUBJECTS="${RELEASE_RANGE_SUBJECTS}"
+COMMITS_BODIES="${RELEASE_RANGE_BODIES}"
 
 if [ -z "${COMMITS_SUBJECTS}" ]; then
   echo "ℹ️ No new commits since ${LATEST_GA_TAG}. Keeping current version." >&2
@@ -162,8 +163,11 @@ if [ "${HAS_BREAKING}" = "true" ]; then
     MINOR=0
     PATCH=0
   fi
-# New features bump MINOR and reset PATCH
-elif echo "${COMMITS_SUBJECTS}" | grep -qE "^feat(\([^)]+\))?:"; then
+# New features bump MINOR and reset PATCH. Herestring rather than `echo |`, for
+# the reason commit_messages_have_breaking_change gives: under pipefail grep exits
+# on its first match, the producer dies on SIGPIPE, and a large enough range reads
+# as "no feat:" — a patch bump where a minor was owed.
+elif grep -qE "^feat(\([^)]+\))?:" <<<"${COMMITS_SUBJECTS}"; then
   BUMP_TYPE="minor"
   MINOR=$((MINOR + 1))
   PATCH=0

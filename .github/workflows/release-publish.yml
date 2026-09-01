@@ -79,10 +79,22 @@ jobs:
     outputs:
       should_release: ${{ steps.decide.outputs.should_release }}
       release_commit: ${{ steps.decide.outputs.release_commit }}
+      # Nothing consumes these two, deliberately: they are what a reader gets
+      # when `publish-release` is skipped and the question is why. The step
+      # summary says the same thing in prose; this is the machine-readable copy,
+      # available from the API without opening the log.
+      gate_tag: ${{ steps.decide.outputs.gate_tag }}
+      skip_reason: ${{ steps.decide.outputs.skip_reason }}
     steps:
       # `fetch-depth: 0` because the decision is made entirely out of the tag
       # graph and the commit range behind it. `persist-credentials: false`
       # because nothing here pushes.
+      #
+      # Unconditional, though the `bypass` mode reads no git state at all. The
+      # step below runs a script out of the checkout, so skipping it on the
+      # cheapest path would leave that step invoking a file that is not on disk.
+      # The cost is one clone on a manual release that then spends minutes
+      # promoting and signing images from a second `fetch-depth: 0` checkout.
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -201,6 +201,45 @@ get_latest_validated_rc_tag() {
 # 141 — so a corpus large enough to still be buffered makes matching input read
 # as "no breaking change". That is the unsafe direction, and it is the same
 # hazard candidate_supports_shared_pipeline already avoids for the same reason.
+# Reads the commits between the last GA tag and a candidate, into
+# RELEASE_RANGE_SUBJECTS (`%s`) and RELEASE_RANGE_BODIES (`%b`).
+#
+# Shared for the same reason the predicate below is: calculate_next_version.sh
+# applies it to pick a bump and resolve_scheduled_release.sh applies it to decide
+# whether to release at all, so the two have to be looking at the same commits.
+# A `--no-merges` or a path filter added to one range and not the other would
+# scope the bump and the halt differently, silently.
+#
+# Stderr is kept out of the captured value. `$(git log … 2>&1)` merges warnings
+# into the output on SUCCESS, not only on failure — and git warns on success for
+# an ambiguous refname, which is what a branch sharing a GA tag's name produces.
+# An empty range then captures `warning: refname '0.1.0' is ambiguous.`, reads as
+# non-empty, and an unattended run publishes a release for a week with nothing in
+# it. The message is still reported, from the failure branch, where it belongs.
+#
+# Arguments: $1 = base GA tag, $2 = candidate commit-ish. Returns non-zero if the
+# range cannot be read.
+release_read_commit_range() {
+  local base_tag="${1:-}"
+  local target="${2:-}"
+  local range="${base_tag}..${target}"
+  local stderr_file
+  stderr_file="$(mktemp)"
+
+  RELEASE_RANGE_SUBJECTS=""
+  RELEASE_RANGE_BODIES=""
+
+  if ! RELEASE_RANGE_SUBJECTS="$(git log "${range}" --format="%s" 2>"${stderr_file}")"; then
+    echo "❌ ERROR: Failed to read commit log for range '${range}': $(cat "${stderr_file}")" >&2
+    rm -f "${stderr_file}"
+    return 1
+  fi
+  rm -f "${stderr_file}"
+
+  RELEASE_RANGE_BODIES="$(git log "${range}" --format="%b" 2>/dev/null || echo "")"
+  return 0
+}
+
 commit_messages_have_breaking_change() {
   local subjects="${1:-}"
   local bodies="${2:-}"

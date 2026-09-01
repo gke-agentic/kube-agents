@@ -21,24 +21,10 @@
 # branch and GA releases stop until somebody publishes by hand — so it fails the
 # job. A skip means "nothing to do this week"; red means "something needs you".
 #
-# What this is actually buying, since the publishing path is less fragile than it
-# looks. An ordinary quiet week already ends green without any of this:
-# calculate_next_version.sh exits 0 with has_changes=false, and
-# verify_release_eligibility.sh recognises the GA tag as the stamped child of the
-# candidate and takes its idempotent-skip branch. Three narrower things are left,
-# and they are the reason this exists:
-#
-#   - The halt. Nothing in the publishing path stops for a breaking change.
-#   - Two shapes that do go red on a run with nothing to ship. No rc_*_validated
-#     tag anywhere trips the exit 1 in verify_release_eligibility.sh; and a GA tag
-#     sitting on a commit that is not this candidate's stamped child — what an
-#     emergency release leaves behind — trips its "tag already exists on a
-#     different commit" collision. Condition 2 covers the second.
-#   - Deciding in one place, on the tag graph, rather than depending on a
-#     `gh release view` call and a commit-shape heuristic several scripts deep.
-#
-# A red run should mean the machinery is broken, not that this week had nothing
-# to ship, or nobody reads the red ones.
+# Why this gate is worth having when the publishing path already skips a quiet
+# week on its own is `scripts/release/README.md`, "The weekly GA release". It is
+# canonical for the reasoning; do not restate it here. Writing the argument out
+# twice is how one wrong sentence came to need correcting in two files.
 #
 # There is deliberately no weekday or elapsed-time check in here. The cron is
 # the cadence, so no wall-clock arithmetic exists anywhere in the decision, and
@@ -159,14 +145,11 @@ if [ -z "${LATEST_GA_TAG}" ]; then
   emit_and_exit
 fi
 
-RANGE="${LATEST_GA_TAG}..${RELEASE_COMMIT}"
-if ! COMMITS_SUBJECTS="$(git log "${RANGE}" --format="%s" 2>&1)"; then
-  echo "❌ ERROR: Failed to read commit log for range '${RANGE}': ${COMMITS_SUBJECTS}" >&2
+if ! release_read_commit_range "${LATEST_GA_TAG}" "${RELEASE_COMMIT}"; then
   exit 1
 fi
-COMMITS_BODIES="$(git log "${RANGE}" --format="%b" 2>/dev/null || echo "")"
 
-if [ -z "${COMMITS_SUBJECTS}" ]; then
+if [ -z "${RELEASE_RANGE_SUBJECTS}" ]; then
   # Two shapes reach here and both are "nothing to ship". The ordinary quiet week
   # would be handled without this — verify_release_eligibility.sh recognises the
   # GA tag as the stamped child of this candidate and skips green on its own — so
@@ -196,7 +179,7 @@ fi
 # Reached only with a GA tag in hand, which is what keeps this bounded. Against
 # all of history it would match some long-shipped `feat!:` and then never stop
 # matching it, since there is no range to shrink: one permanent halt, every run.
-if commit_messages_have_breaking_change "${COMMITS_SUBJECTS}" "${COMMITS_BODIES}"; then
+if commit_messages_have_breaking_change "${RELEASE_RANGE_SUBJECTS}" "${RELEASE_RANGE_BODIES}"; then
   HALTED_FOR_HUMAN="true"
   SKIP_REASON="A breaking change is waiting to ship. Releases carrying one are published by a human: run release-publish.yml manually against ${RELEASE_COMMIT:0:7}."
   emit_and_exit

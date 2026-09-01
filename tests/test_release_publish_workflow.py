@@ -90,11 +90,24 @@ class ReleasePublishWorkflowTest(unittest.TestCase):
         self.assertIn(f"needs.{_GATE_JOB}.outputs.should_release == 'true'", condition)
 
     def test_an_unattended_run_targets_the_gate_passing_commit(self):
-        """Without the fallback the gate picks a commit the publish job ignores."""
+        """Without the fallback the gate picks a commit the publish job ignores.
+
+        Order is asserted, not just presence. Swapping the operands still
+        satisfies "both are mentioned", and the swap is a real regression: on an
+        emergency dispatch that names `target_commit` explicitly, the gate's
+        commit would win and the wrong commit would be released.
+        """
         step = self._step(_PUBLISH_JOB, "Calculate Next Release Version")
         target = " ".join(step["env"]["TARGET_COMMIT"].split())
-        self.assertIn(f"needs.{_GATE_JOB}.outputs.release_commit", target)
-        self.assertIn("inputs.target_commit", target)
+        dispatch_at = target.find("inputs.target_commit")
+        gate_at = target.find(f"needs.{_GATE_JOB}.outputs.release_commit")
+        self.assertNotEqual(dispatch_at, -1, f"dispatch input missing from {target!r}")
+        self.assertNotEqual(gate_at, -1, f"gate fallback missing from {target!r}")
+        self.assertLess(
+            dispatch_at,
+            gate_at,
+            f"an explicit target_commit must win over the gate's: {target!r}",
+        )
 
     def test_the_gate_job_runs_the_mode_script(self):
         step = self._step(_GATE_JOB, "Decide")

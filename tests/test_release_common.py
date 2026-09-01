@@ -640,6 +640,74 @@ source "{_COMMON_SH}"
         )
         self.assertEqual(proc.returncode, 0, f"stderr={proc.stderr} rc={proc.returncode}")
 
+    # ── release_read_commit_range ────────────────────────────────────────────
+
+    def test_release_read_commit_range_reports_subjects_and_bodies(self):
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            git("tag", "-a", "0.1.0", "-m", "r")
+            (pathlib.Path(repo_dir) / "b.txt").write_text("b\n")
+            git("add", "b.txt")
+            git("commit", "-m", "feat: a thing\n\nBREAKING CHANGE: it moved")
+            proc = self._run_common_func(
+                'release_read_commit_range "0.1.0" "HEAD"\n'
+                'echo "S=${RELEASE_RANGE_SUBJECTS}"\necho "B=${RELEASE_RANGE_BODIES}"',
+                cwd=repo_dir,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("S=feat: a thing", proc.stdout)
+            self.assertIn("BREAKING CHANGE: it moved", proc.stdout)
+        finally:
+            temp_dir.cleanup()
+
+    def test_release_read_commit_range_keeps_git_warnings_out_of_the_subjects(self):
+        """An empty range must read as empty even when git warns on success.
+
+        A branch sharing a GA tag's name makes `git log 0.1.0..HEAD` succeed and
+        warn about the ambiguous refname. Captured with `2>&1` that warning
+        becomes the subject list, so an empty range reads as "there are commits
+        to ship" — and the scheduled gate publishes a release for a week with
+        nothing in it.
+        """
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            git("tag", "-a", "0.1.0", "-m", "r")
+            git("branch", "0.1.0")
+            proc = self._run_common_func(
+                'release_read_commit_range "0.1.0" "HEAD"\n'
+                'echo "SUBJECTS=[${RELEASE_RANGE_SUBJECTS}]"',
+                cwd=repo_dir,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("SUBJECTS=[]", proc.stdout)
+            self.assertNotIn("ambiguous", proc.stdout)
+        finally:
+            temp_dir.cleanup()
+
+    def test_release_read_commit_range_fails_and_reports_on_a_bad_range(self):
+        temp_dir, repo_dir, _ = create_mock_git_repo()
+        try:
+            proc = self._run_common_func(
+                'release_read_commit_range "no-such-tag" "HEAD"', cwd=repo_dir
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Failed to read commit log", proc.stderr)
+        finally:
+            temp_dir.cleanup()
+
+    def test_neither_caller_keeps_its_own_copy_of_the_range_read(self):
+        """Scoping the bump and the halt to different commit sets is silent."""
+        for script in ("calculate_next_version.sh", "resolve_scheduled_release.sh"):
+            with self.subTest(script=script):
+                text = (_REPO_ROOT / "scripts" / "release" / script).read_text()
+                body = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+                self.assertNotIn(
+                    '--format="%s"',
+                    body,
+                    f"{script} reads the commit range itself instead of calling common.sh",
+                )
+                self.assertIn("release_read_commit_range", body, f"{script} does not call the helper")
+
     def test_neither_caller_keeps_its_own_copy_of_the_breaking_regexes(self):
         """A second copy is how the bump and the halt come to disagree."""
         bang_regex = r"^[a-z]+(\([^)]+\))?!:"
