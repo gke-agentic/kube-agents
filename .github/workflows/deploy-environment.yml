@@ -168,7 +168,7 @@ jobs:
           USER_PROFILE_ENABLED: ${{ vars.USER_PROFILE_ENABLED }}
           ENABLE_PUBSUB_PLATFORM: ${{ vars.ENABLE_PUBSUB_PLATFORM }}
           ENABLE_STOCKOUT_INVESTIGATOR: ${{ vars.ENABLE_STOCKOUT_INVESTIGATOR }}
-          ALLOW_UNENCRYPTED_SECRETS: ${{ vars.ALLOW_UNENCRYPTED_SECRETS || 'true' }}
+          ALLOW_UNENCRYPTED_SECRETS: ${{ vars.ALLOW_UNENCRYPTED_SECRETS }}
           # The GitOps repository the agent targets, and the one the token minter
           # scopes its tokens to. Deliberately NOT vars.GH_ORG/vars.GH_REPO: that
           # pair names the RELEASE repository, so reusing it here would scope a
