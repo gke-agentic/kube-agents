@@ -253,26 +253,14 @@ init_third_party_image() {
   warn_on_third_party_prefix_mismatch "$var_name"
 }
 
-# Warn when a persisted *_IMAGE value no longer lives under the effective
-# registry prefix — e.g. REGISTRY_PREFIX was exported after a first run
-# already saved image defaults derived from another registry. The saved
-# value still wins (state reuse), so surface the mixed state instead of
-# silently applying it halfway.
-warn_on_registry_prefix_mismatch() {
-  local var_name=$1
-  local image_val="${!var_name:-}"
-  [ -z "$image_val" ] && return 0
-  case "$image_val" in
-    "$(registry_prefix)"/*) ;;
-    *)
-      print_warning "${var_name}='${image_val}' does not match REGISTRY_PREFIX '$(registry_prefix)'. The saved value wins; edit ${VARS_FILE} (or unset ${var_name}) to migrate this image to the new registry."
-      ;;
-  esac
-}
-
-# The same check for an image this project does not build, which belongs under
-# the third-party prefix rather than REGISTRY_PREFIX. A default install leaves
-# that prefix empty and the image upstream, so there is nothing to compare.
+# Warn when an *_IMAGE value for an image this project does not build sits
+# outside the third-party prefix rather than REGISTRY_PREFIX. A default install
+# leaves that prefix empty and the image upstream, so there is nothing to
+# compare.
+#
+# There is no REGISTRY_PREFIX counterpart to this. One existed to guard the
+# persisted OPERATOR_IMAGE / PLATFORM_AGENT_IMAGE entries, and it went with
+# them: nothing read those keys back, so the guard had no callers either.
 warn_on_third_party_prefix_mismatch() {
   local var_name=$1
   local image_val="${!var_name:-}"

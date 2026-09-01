@@ -2308,19 +2308,11 @@ main() {
   if [ -n "$third_party_registry_prefix" ]; then
     write_state_var "$vars_file" THIRD_PARTY_REGISTRY_PREFIX "$third_party_registry_prefix"
   fi
-  # Bare repository paths on purpose: IMAGE_TAG is scoped to a single pipeline
-  # run and is never persisted here, so the consuming step attaches it with
-  # qualify_image_ref.
-  #
-  # Two images are absent on purpose. REPLAY_IMAGE belongs to the dev-only
-  # inference-replay deploy, whose make target requires it from the caller.
-  # CREDENTIAL_PROXY_IMAGE would pin the sidecar for
-  # every PlatformAgent in the cluster: the operator otherwise derives it from
-  # each CR's own agent image, and a cluster-wide env override beats that
-  # derivation, so a later re-render of the CR at a new tag would leave the
-  # sidecar behind on the tag of the install that wrote this file.
-  write_state_var "$vars_file" OPERATOR_IMAGE "${registry_prefix}/k8s-operator"
-  write_state_var "$vars_file" PLATFORM_AGENT_IMAGE "${registry_prefix}/platform-agent"
+  # No *_IMAGE keys here. The operator reads OPERATOR_IMAGE and
+  # PLATFORM_AGENT_IMAGE from its own pod environment, where the chart sets them
+  # from values.yaml; nothing ever read them back out of this file. The images
+  # this install pulls are decided by REGISTRY_PREFIX above and the image_tag
+  # the tfvars generator writes.
   write_state_var "$vars_file" ENABLE_GKE_BACKUP_PLAN "${ENABLE_GKE_BACKUP_PLAN:-false}"
   write_state_var "$vars_file" NO_CONFIRM "1"
   chmod 600 "$vars_file"
