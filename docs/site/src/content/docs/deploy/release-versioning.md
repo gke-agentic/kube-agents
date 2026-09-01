@@ -109,7 +109,7 @@ gh workflow run release-publish.yml --repo gke-labs/kube-agents \
 After an emergency publication, complete these three reconciliation steps:
 
 1. Confirm the published release tag, container images in GHCR, and signed Helm OCI chart via `gh release view <VERSION>`.
-2. Manually trigger `.github/workflows/rc-release-pipeline.yml` against the released commit to run the full GKE E2E suite and ensure the fix validates cleanly on live infrastructure.
+2. Manually trigger `.github/workflows/rc-release-pipeline.yml` against the hotfix commit (`-f commit_sha="<HOTFIX_COMMIT_SHA>"`, matching the SHA passed as `target_commit`) to run the full GKE E2E suite and ensure the fix validates cleanly on live infrastructure. Do not pass the tagged release commit: `tag_ga_release.sh` creates a stamped release commit on detached HEAD that lacks SHA-tagged container images in GHCR, causing the RC pipeline's image verification step to fail.
 3. Attach the GitHub Actions run URL and emergency justification to the corresponding tracking issue or incident report.
 
 ## Clean promotion and artifact guarantees
