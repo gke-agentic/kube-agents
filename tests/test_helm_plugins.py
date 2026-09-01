@@ -123,6 +123,31 @@ class HelmPluginsTemplatingTest(unittest.TestCase):
         self.assertIn("us-docker.pkg.dev/my-proj/my-mirror/pubsub-platform:", proc.stdout)
         self.assertIn("us-docker.pkg.dev/my-proj/my-mirror/gke-stockout-investigator:", proc.stdout)
 
+    @unittest.skipUnless(shutil.which("helm"), "helm is not installed")
+    def test_plugins_inherit_platform_agent_image_tag(self):
+        cmd = [
+            "helm",
+            "template",
+            "test-release",
+            str(_CHART),
+            "--set",
+            "platformAgent.harness.clusterName=ci-cluster",
+            "--set",
+            "platformAgent.harness.location=us-central1",
+            "--set",
+            "platformAgent.harness.projectId=ci-project",
+            "--set",
+            "platformAgent.deployment.image.tag=custom-sha-12345",
+            "--set",
+            "plugins.pubsubPlatform.enabled=true",
+            "--set",
+            "plugins.stockoutInvestigator.enabled=true",
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        self.assertIn("ghcr.io/gke-labs/kube-agents/pubsub-platform:custom-sha-12345", proc.stdout)
+        self.assertIn("ghcr.io/gke-labs/kube-agents/gke-stockout-investigator:custom-sha-12345", proc.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
+
