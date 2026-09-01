@@ -193,6 +193,9 @@ fi
 if [ "$1" = "release" ] && [ "$2" = "create" ]; then
   exit 0
 fi
+if [ "$1" = "release" ] && [ "$2" = "upload" ]; then
+  exit 0
+fi
 exit 1
 """
     gh_path.write_text(content)
