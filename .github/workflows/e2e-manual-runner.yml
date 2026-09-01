@@ -156,7 +156,6 @@ jobs:
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           GCP_REGION: ${{ vars.GCP_REGION }}
           GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
-          AGENT_NAMESPACE: ${{ vars.AGENT_NAMESPACE || 'kubeagents-system' }}
         run: |
           ./scripts/release/wait_for_gke_readiness.sh
           gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet || true
