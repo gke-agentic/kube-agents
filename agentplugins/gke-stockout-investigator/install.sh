@@ -291,27 +291,36 @@ plugin_image_publish "$SCRIPT_DIR" "${SCRIPT_DIR}/files"
 # attaches to nothing, report success, and investigate no alert ever — with the tuning
 # landing on the agent that was never given the skill.
 echo "Step 6: Deploying GKE Stockout Investigator AgentPlugin via Helm..."
-# If the AgentPlugin is already owned by another release (e.g. the main kube-agents chart),
-# update Helm ownership metadata so this standalone release can upgrade it without collision.
+# If the AgentPlugin is already deployed as part of the main kube-agents release,
+# skip standalone sub-chart deployment to avoid ownership collisions.
 if kubectl --context="$CONTEXT" get agentplugin "$RELEASE" -n "$NAMESPACE" >/dev/null 2>&1; then
     current_rel="$(kubectl --context="$CONTEXT" get agentplugin "$RELEASE" -n "$NAMESPACE" -o jsonpath='{.metadata.annotations.meta\.helm\.sh/release-name}' 2>/dev/null || true)"
-    if [ -n "$current_rel" ] && [ "$current_rel" != "$RELEASE" ]; then
-        echo "Adopting AgentPlugin $RELEASE from release '${current_rel}' to '$RELEASE'..."
-        kubectl --context="$CONTEXT" annotate agentplugin "$RELEASE" -n "$NAMESPACE" meta.helm.sh/release-name="$RELEASE" --overwrite >/dev/null 2>&1 || true
-        kubectl --context="$CONTEXT" annotate agentplugin "$RELEASE" -n "$NAMESPACE" meta.helm.sh/release-namespace="$NAMESPACE" --overwrite >/dev/null 2>&1 || true
-        kubectl --context="$CONTEXT" label agentplugin "$RELEASE" -n "$NAMESPACE" app.kubernetes.io/managed-by="Helm" --overwrite >/dev/null 2>&1 || true
+    if [ "$current_rel" = "kube-agents" ]; then
+        echo "AgentPlugin $RELEASE is already managed by the main kube-agents release. Skipping standalone sub-chart deployment."
+    else
+        helm upgrade --install "$RELEASE" "$SCRIPT_DIR" \
+            --kube-context "$CONTEXT" \
+            --namespace "$NAMESPACE" \
+            --create-namespace \
+            --set agentRef="$AGENT_REF" \
+            --set image="$IMAGE" \
+            --set clusterName="$CLUSTER_NAME" \
+            --set pubsub.topic="$TOPIC" \
+            --set pubsub.subscription="$SUBSCRIPTION" \
+            --set pubsub.sink="$SINK_NAME"
     fi
+else
+    helm upgrade --install "$RELEASE" "$SCRIPT_DIR" \
+        --kube-context "$CONTEXT" \
+        --namespace "$NAMESPACE" \
+        --create-namespace \
+        --set agentRef="$AGENT_REF" \
+        --set image="$IMAGE" \
+        --set clusterName="$CLUSTER_NAME" \
+        --set pubsub.topic="$TOPIC" \
+        --set pubsub.subscription="$SUBSCRIPTION" \
+        --set pubsub.sink="$SINK_NAME"
 fi
-helm upgrade --install "$RELEASE" "$SCRIPT_DIR" \
-    --kube-context "$CONTEXT" \
-    --namespace "$NAMESPACE" \
-    --create-namespace \
-    --set agentRef="$AGENT_REF" \
-    --set image="$IMAGE" \
-    --set clusterName="$CLUSTER_NAME" \
-    --set pubsub.topic="$TOPIC" \
-    --set pubsub.subscription="$SUBSCRIPTION" \
-    --set pubsub.sink="$SINK_NAME"
 
 # Step 6b: Apply the execution limits this workload needs.
 #

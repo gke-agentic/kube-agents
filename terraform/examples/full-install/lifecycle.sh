@@ -271,28 +271,6 @@ adopt_kms() {
     fi
   done
 
-  # If an AgentPlugin exists on the cluster from an imperative sub-chart install,
-  # adopt its Helm ownership into the main kube-agents release so helm_release.kube_agents
-  # upgrades smoothly without ownership metadata collisions.
-  local cluster_name namespace
-  cluster_name=$(tfvar cluster_name)
-  namespace=$(tfvar namespace)
-  if gcloud container clusters get-credentials "$cluster_name" --location "$location" \
-        --project "$project" >/dev/null 2>&1; then
-    for plugin in pubsubplatform gkestockoutinvestigator; do
-      if kubectl get agentplugin "$plugin" -n "$namespace" >/dev/null 2>&1; then
-        local current_rel
-        current_rel="$(kubectl get agentplugin "$plugin" -n "$namespace" -o jsonpath='{.metadata.annotations.meta\.helm\.sh/release-name}' 2>/dev/null || true)"
-        if [[ -n "$current_rel" && "$current_rel" != "kube-agents" ]]; then
-          log "adopting in-cluster AgentPlugin $plugin from release '$current_rel' into 'kube-agents'"
-          kubectl annotate agentplugin "$plugin" -n "$namespace" meta.helm.sh/release-name="kube-agents" --overwrite >/dev/null 2>&1 || true
-          kubectl annotate agentplugin "$plugin" -n "$namespace" meta.helm.sh/release-namespace="$namespace" --overwrite >/dev/null 2>&1 || true
-          kubectl label agentplugin "$plugin" -n "$namespace" app.kubernetes.io/managed-by="Helm" --overwrite >/dev/null 2>&1 || true
-        fi
-      fi
-    done
-  fi
-
   drop_override
   trap - EXIT
   log "resource adoption complete: $adopted imported"

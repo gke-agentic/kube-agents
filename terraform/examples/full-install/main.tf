@@ -313,6 +313,10 @@ module "github_minter" {
   depends_on = [google_project_service.required]
 }
 
+# Stockout Investigator Pub/Sub Infrastructure (Topic, Subscription, Logging Sink, IAM).
+# Declaratively provisioned by the composition when enable_stockout_investigator = true.
+# Matches the resource names and filter configuration created imperatively by
+# agentplugins/gke-stockout-investigator/install.sh.
 resource "google_pubsub_topic" "stockout_alerts" {
   #checkov:skip=CKV_GCP_83:Stockout alert topic uses default Google-managed encryption keys
   count   = var.enable_stockout_investigator ? 1 : 0
