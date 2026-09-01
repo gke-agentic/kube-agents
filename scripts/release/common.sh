@@ -26,6 +26,7 @@ export REQUIRED_RELEASE_IMAGES=(
 
 # Declarative registry of release bundle directories, root files, and Helm charts
 export RELEASE_BUNDLE_DIRECTORIES=(
+  "terraform"
   "k8s-operator"
   "deploy"
   "charts"
@@ -41,6 +42,7 @@ export RELEASE_BUNDLE_ROOT_FILES=(
   "install.sh"
   "uninstall.sh"
   "upgrade.sh"
+  "images.json"
   "README.md"
   "LICENSE"
 )

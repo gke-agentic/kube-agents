@@ -847,9 +847,9 @@ echo "FILES:${RELEASE_BUNDLE_ROOT_FILES[*]}"
 """
         proc = self._run_common_func(script)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("DIRS:k8s-operator deploy charts scripts examples", proc.stdout)
+        self.assertIn("DIRS:terraform k8s-operator deploy charts scripts examples", proc.stdout)
         self.assertIn("CHARTS:charts/kube-agents", proc.stdout)
-        self.assertIn("FILES:install.sh uninstall.sh upgrade.sh README.md LICENSE", proc.stdout)
+        self.assertIn("FILES:install.sh uninstall.sh upgrade.sh images.json README.md LICENSE", proc.stdout)
 
 
 if __name__ == "__main__":
