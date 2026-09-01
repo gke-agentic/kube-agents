@@ -851,6 +851,21 @@ echo "FILES:${RELEASE_BUNDLE_ROOT_FILES[*]}"
         self.assertIn("CHARTS:charts/kube-agents", proc.stdout)
         self.assertIn("FILES:install.sh uninstall.sh upgrade.sh images.json README.md LICENSE", proc.stdout)
 
+    def test_extract_commit_tree(self):
+        """Verifies extract_commit_tree extracts exact committed files to target directory."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            head_commit = subprocess.check_output(
+                ["git", "-C", str(_REPO_ROOT), "rev-parse", "HEAD"], text=True
+            ).strip()
+            target_dir = pathlib.Path(temp_dir) / "extracted"
+            proc = self._run_common_func(
+                f'extract_commit_tree "{head_commit}" "{target_dir}" "README.md"',
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            extracted_file = target_dir / "README.md"
+            self.assertTrue(extracted_file.exists())
+            self.assertEqual(extracted_file.read_text(), (_REPO_ROOT / "README.md").read_text())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -285,8 +285,18 @@ def create_mock_git_binary(
 
     content = f"""#!/bin/sh
 echo "mock git: $@" >> "{log_path}"
+while [ $# -gt 0 ]; do
+  if [ "$1" = "-C" ]; then
+    shift 2
+  else
+    break
+  fi
+done
 if [ "$1" = "rev-parse" ]; then
   {rev_parse_action}
+fi
+if [ "$1" = "cat-file" ]; then
+  exit 0
 fi
 if [ "$1" = "archive" ]; then
   {archive_body}

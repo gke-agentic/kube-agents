@@ -96,28 +96,28 @@ stage_bundle_files() {
   local target_bundle_dir="${TMP_STAGE_DIR}/${BUNDLE_PREFIX}"
   mkdir -p "${target_bundle_dir}"
 
-  echo "📁 Staging release bundle directories and root assets into ${target_bundle_dir}..."
+  local commit_sha
+  commit_sha="$(resolve_bundle_commit "${TAG_NAME}")"
+
+  echo "📁 Staging release bundle from commit ${commit_sha:0:7} into ${target_bundle_dir}..."
+  local archive_paths=()
   for dir_name in "${RELEASE_BUNDLE_DIRECTORIES[@]}"; do
-    local src_dir="${REPO_ROOT}/${dir_name}"
-    if [ -d "${src_dir}" ]; then
-      if [ "${dir_name}" = "k8s-operator" ]; then
-        mkdir -p "${target_bundle_dir}/k8s-operator"
-        for sub in "${src_dir}"/*; do
-          [ -e "$sub" ] || continue
-          # Exclude local test binaries
-          [ "$(basename "$sub")" = "bin" ] && continue
-          cp -r "$sub" "${target_bundle_dir}/k8s-operator/"
-        done
-      else
-        cp -r "${src_dir}" "${target_bundle_dir}/"
-      fi
+    if git -C "${REPO_ROOT}" cat-file -e "${commit_sha}:${dir_name}" 2>/dev/null; then
+      archive_paths+=("${dir_name}")
+    fi
+  done
+  for file_name in "${RELEASE_BUNDLE_ROOT_FILES[@]}"; do
+    if git -C "${REPO_ROOT}" cat-file -e "${commit_sha}:${file_name}" 2>/dev/null; then
+      archive_paths+=("${file_name}")
     fi
   done
 
-  # Ensure staged files are writable for sanitization
+  extract_commit_tree "${commit_sha}" "${target_bundle_dir}" "${archive_paths[@]}"
+
+  # Ensure staged files are writable for sanitization and version stamping
   chmod -R u+w "${target_bundle_dir}"
 
-  # Sanitize sensitive configs, tokens, temporary files, and local caches
+  # Defense-in-depth: Sanitize sensitive configs, tokens, temporary files, and local caches
   find "${target_bundle_dir}" -type f \( \
     \( -name ".env*" ! -name "tags.env" \) -o \
     -name "vars.sh" -o \
@@ -152,13 +152,6 @@ stage_bundle_files() {
     -name ".astro" -o \
     -name "node_modules" \
   \) -exec rm -rf {} +
-
-  for file_name in "${RELEASE_BUNDLE_ROOT_FILES[@]}"; do
-    local src_file="${REPO_ROOT}/${file_name}"
-    if [ -f "${src_file}" ]; then
-      cp "${src_file}" "${target_bundle_dir}/"
-    fi
-  done
 }
 
 sync_bundle_versions() {

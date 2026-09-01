@@ -213,6 +213,56 @@ class PackageReleaseBundleTest(unittest.TestCase):
             self.assertEqual(files1, files2, "Reruns should cover identical set of release artifacts")
             self.assertFalse((dist_dir / "checksums.tmp").exists(), "No temporary files should be left")
 
+    def test_bundle_staged_from_commit_excludes_untracked_and_ignored_working_tree_files(self):
+        """Verifies release bundle extracts strictly from git commit tree and ignores untracked files."""
+        untracked_root_file = _REPO_ROOT / "test_untracked_leak.tmp"
+        untracked_tf_file = _REPO_ROOT / "terraform" / "test_lifecycle_override.tf"
+        untracked_root_file.write_text("LEAK")
+        untracked_tf_file.write_text("LEAK")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            try:
+                temp_path = pathlib.Path(temp_dir)
+                bin_dir = create_minimal_tools_bin(temp_dir)
+                dist_dir = temp_path / "dist"
+                create_mock_helm_binary(bin_dir)
+                create_mock_syft_binary(bin_dir)
+
+                head_commit = subprocess.check_output(
+                    ["git", "-C", str(_REPO_ROOT), "rev-parse", "HEAD"], text=True
+                ).strip()
+
+                proc = self._run_script(
+                    [MOCK_RELEASE_BUNDLE_VERSION],
+                    env={
+                        "PATH": str(bin_dir),
+                        "DIST_DIR": str(dist_dir),
+                        "CI": "true",
+                        "REGISTRY_PREFIX": MOCK_DEFAULT_REGISTRY_PREFIX,
+                        "TARGET_COMMIT": head_commit,
+                    },
+                )
+                self.assertEqual(proc.returncode, 0, f"STDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}")
+
+                tarball_path = dist_dir / f"kube-agents-{MOCK_RELEASE_BUNDLE_VERSION}.tar.gz"
+                unpack_dir = temp_path / "unpacked"
+                unpack_dir.mkdir()
+                kwargs = {}
+                if hasattr(tarfile, "data_filter"):
+                    kwargs["filter"] = "data"
+                with tarfile.open(tarball_path, "r:gz") as tar:
+                    tar.extractall(unpack_dir, **kwargs)
+
+                bundle_root = unpack_dir / f"kube-agents-{MOCK_RELEASE_BUNDLE_VERSION}"
+                self.assertFalse((bundle_root / "test_untracked_leak.tmp").exists(), "Untracked file must NOT be in bundle")
+                self.assertFalse((bundle_root / "terraform" / "test_lifecycle_override.tf").exists(), "Override must NOT be in bundle")
+                self.assertTrue((bundle_root / "install.sh").exists(), "Tracked install.sh must be in bundle")
+            finally:
+                if untracked_root_file.exists():
+                    untracked_root_file.unlink()
+                if untracked_tf_file.exists():
+                    untracked_tf_file.unlink()
+
 
 if __name__ == "__main__":
     unittest.main()
