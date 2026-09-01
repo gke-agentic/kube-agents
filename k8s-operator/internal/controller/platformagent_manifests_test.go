@@ -5387,7 +5387,8 @@ func TestCRSuppliedSidecarsAreNotHardenedByTheOperator(t *testing.T) {
 }
 
 // TestGitOpsStateVolumeIsMountedAsDirectory verifies that the GitOps state ConfigMap
-// is mounted as a directory (never subPath) so kubelet live updates work without pod restart.
+// is mounted as a directory (never subPath) so kubelet live updates work without pod restart,
+// and is propagated to both the agent and credential proxy containers.
 func TestGitOpsStateVolumeIsMountedAsDirectory(t *testing.T) {
 	agent := newTestPlatformAgent()
 	dep := buildDeployment(agent, "h1", "h2", "h3", "h4", nil, renderOptions{})
@@ -5410,32 +5411,37 @@ func TestGitOpsStateVolumeIsMountedAsDirectory(t *testing.T) {
 		t.Errorf("expected ConfigMap name %s, got %s", agent.Name+"-gitops-state", stateVol.ConfigMap.Name)
 	}
 
-	// Check platform-agent container mount
-	gateway := containerNamed(t, dep, "platform-agent")
-	var stateMount *corev1.VolumeMount
-	for i, m := range gateway.VolumeMounts {
-		if m.Name == gitopsStateVolumeName {
-			stateMount = &gateway.VolumeMounts[i]
+	for _, containerName := range []string{"platform-agent", "envoy-credential-proxy"} {
+		c, found := findContainer(spec, containerName)
+		if !found {
+			t.Fatalf("expected container %q in pod spec", containerName)
 		}
-	}
-	if stateMount == nil {
-		t.Fatalf("expected mount %q in platform-agent container", gitopsStateVolumeName)
-	}
-	if stateMount.MountPath != gitopsStateDir {
-		t.Errorf("expected mount path %s, got %s", gitopsStateDir, stateMount.MountPath)
-	}
-	if stateMount.SubPath != "" {
-		t.Errorf("gitops state must be a directory mount (no SubPath), got %q", stateMount.SubPath)
-	}
-	if !stateMount.ReadOnly {
-		t.Errorf("gitops state mount must be read-only")
-	}
 
-	// Check environment variable
-	gotPath, found := envValue(gateway, "GITOPS_STATE_PATH")
-	if !found {
-		t.Errorf("expected GITOPS_STATE_PATH in platform-agent container")
-	} else if gotPath != filepath.Join(gitopsStateDir, "managed_repos") {
-		t.Errorf("expected GITOPS_STATE_PATH %s, got %s", filepath.Join(gitopsStateDir, "managed_repos"), gotPath)
+		var stateMount *corev1.VolumeMount
+		for i, m := range c.VolumeMounts {
+			if m.Name == gitopsStateVolumeName {
+				stateMount = &c.VolumeMounts[i]
+			}
+		}
+		if stateMount == nil {
+			t.Fatalf("expected mount %q in %s container", gitopsStateVolumeName, containerName)
+		}
+		if stateMount.MountPath != gitopsStateDir {
+			t.Errorf("[%s] expected mount path %s, got %s", containerName, gitopsStateDir, stateMount.MountPath)
+		}
+		if stateMount.SubPath != "" {
+			t.Errorf("[%s] gitops state must be a directory mount (no SubPath), got %q", containerName, stateMount.SubPath)
+		}
+		if !stateMount.ReadOnly {
+			t.Errorf("[%s] gitops state mount must be read-only", containerName)
+		}
+
+		// Check environment variable
+		gotPath, found := envValue(c, "GITOPS_STATE_PATH")
+		if !found {
+			t.Errorf("[%s] expected GITOPS_STATE_PATH in container", containerName)
+		} else if gotPath != filepath.Join(gitopsStateDir, "managed_repos") {
+			t.Errorf("[%s] expected GITOPS_STATE_PATH %s, got %s", containerName, filepath.Join(gitopsStateDir, "managed_repos"), gotPath)
+		}
 	}
 }

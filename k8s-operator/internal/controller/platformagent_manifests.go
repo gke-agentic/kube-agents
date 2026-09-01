@@ -2632,6 +2632,7 @@ func buildCredentialProxySidecar(agent *agentv1alpha1.PlatformAgent, homeDir str
 			// the management cluster, which never gets a Cluster Agent profile.
 			{Name: "event-watcher-ksa-token", MountPath: "/var/run/secrets/kubernetes.io/serviceaccount", ReadOnly: true},
 			{Name: "platform-agent-data-vol", MountPath: homeDir},
+			{Name: gitopsStateVolumeName, MountPath: gitopsStateDir, ReadOnly: true},
 		}, scopedPoolMounts...),
 		SecurityContext: securityContext,
 	}
@@ -2675,6 +2676,7 @@ func buildCredentialProxyEnv(agent *agentv1alpha1.PlatformAgent) []corev1.EnvVar
 		// protected only by its presence in SensitiveEnvVars, which is
 		// incidental and would not hold for a name not on that list.
 		{Name: "GITOPS_STATE_CONFIGMAP", Value: agent.Name + "-gitops-state"},
+		{Name: "GITOPS_STATE_PATH", Value: path.Join(gitopsStateDir, "managed_repos")},
 		{Name: "API_SERVER_KEY", Value: loopbackAgentAPIKey},
 	}
 	// Set in both directions, deliberately. The broker's own default is off, so
@@ -2956,6 +2958,20 @@ func buildCredentialProxyVolumes(agent *agentv1alpha1.PlatformAgent) []corev1.Vo
 			}}},
 		}}},
 		buildEventWatcherTokenVolume(),
+	}
+}
+
+func buildGitopsStateVolume(agent *agentv1alpha1.PlatformAgent) corev1.Volume {
+	return corev1.Volume{
+		Name: gitopsStateVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: agent.Name + "-gitops-state",
+				},
+				DefaultMode: ptr.To(int32(0644)),
+			},
+		},
 	}
 }
 
@@ -3528,17 +3544,7 @@ func buildDefaultVolumes(agent *agentv1alpha1.PlatformAgent) []corev1.Volume {
 				},
 			},
 		},
-		{
-			Name: gitopsStateVolumeName,
-			VolumeSource: corev1.VolumeSource{
-				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: agent.Name + "-gitops-state",
-					},
-					DefaultMode: ptr.To(int32(0644)),
-				},
-			},
-		},
+		buildGitopsStateVolume(agent),
 		{
 			// Bounded, like every other scratch emptyDir here. Without a
 			// sizeLimit a runaway write fills the node's ephemeral storage and the

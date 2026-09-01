@@ -595,6 +595,8 @@ spec:
               value: http://github-token-minter.kubeagents-system.svc.cluster.local:8080/token
             - name: GITOPS_STATE_CONFIGMAP
               value: platformagent-gitops-state
+            - name: GITOPS_STATE_PATH
+              value: /etc/gitops/managed_repos
             - name: API_SERVER_KEY
               value: cluster-internal-trusted
             - name: CREDENTIAL_PROXY_SCOPED_SA_POOL
@@ -693,6 +695,9 @@ spec:
               readOnly: true
             - mountPath: /opt/data
               name: platform-agent-data-vol
+            - mountPath: /etc/gitops
+              name: gitops-state-volume
+              readOnly: true
       securityContext:
         fsGroup: 10000
         runAsGroup: 10000
@@ -748,6 +753,10 @@ spec:
         - name: platform-agent-data-vol
           persistentVolumeClaim:
             claimName: platformagent-data
+        - configMap:
+            defaultMode: 420
+            name: platformagent-gitops-state
+          name: gitops-state-volume
 status: {}
 ---
 apiVersion: v1
