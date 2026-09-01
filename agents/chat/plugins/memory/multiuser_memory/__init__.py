@@ -63,11 +63,12 @@ def _is_safe_char(ch: str) -> bool:
     # U+2060-U+206F (Word joiner, invisible operators, bidi isolates)
     # U+FEFF (Zero-width no-break space / BOM)
     # U+00AD (Soft hyphen), U+034F (Combining grapheme joiner), U+061C (Arabic letter mark), U+180E (Mongolian vowel separator)
+    # U+2028 (Line separator), U+2029 (Paragraph separator), U+2800 (Braille pattern blank)
     if (
         0x200B <= code <= 0x200F
         or 0x202A <= code <= 0x202E
         or 0x2060 <= code <= 0x206F
-        or code in (0xFEFF, 0x00AD, 0x034F, 0x061C, 0x180E)
+        or code in (0xFEFF, 0x00AD, 0x034F, 0x061C, 0x180E, 0x2028, 0x2029, 0x2800)
     ):
         return False
     # Strip Unicode tag block and non-printable supplementary blocks (U+E0000 and above)
@@ -95,10 +96,10 @@ def _neutralize_prompt_injection(text: str) -> str:
         return ""
 
     # Delimiter tags (<system...>, <instruction...>, <prompt...>, <admin...>, <untrusted_...>)
-    # Narrowed to whole tag names with no internal newlines to avoid colliding with
-    # standard SOP commands (e.g. <context>, <system-node-critical>, CPU < system).
+    # Uses a lookahead (?=[ \t>]) and [^>\n]*> to prevent quadratic backtracking and ensure
+    # tags cannot span across newlines or collide with SOP commands (e.g. <context>, <system-node-critical>).
     text = re.sub(
-        r"</?(system|instruction|prompt|admin|untrusted_[a-z0-9_]+)(?:\s+[^>\n]*)?>",
+        r"</?(system|instruction|prompt|admin|untrusted_[a-z0-9_-]+)(?=[ \t>])[^>\n]*>",
         r"[\1_tag_neutralized]",
         text,
         flags=re.IGNORECASE,
@@ -116,6 +117,15 @@ def _neutralize_prompt_injection(text: str) -> str:
     replacements = {
         r"<\|im_start\|>": "[token_start]",
         r"<\|im_end\|>": "[token_end]",
+        r"<\|start_header_id\|>": "[token_start_header_id]",
+        r"<\|end_header_id\|>": "[token_end_header_id]",
+        r"<\|eot_id\|>": "[token_eot_id]",
+        r"<\|endoftext\|>": "[token_endoftext]",
+        r"<\|system\|>": "[token_system]",
+        r"<\|user\|>": "[token_user]",
+        r"<\|assistant\|>": "[token_assistant]",
+        r"<start_of_turn>": "[token_start_of_turn]",
+        r"<end_of_turn>": "[token_end_of_turn]",
         r"###\s*System:": "[SYSTEM_TEXT]:",
         r"###\s*Instruction:": "[INSTRUCTION_TEXT]:",
         r"\[INST\]": "[INST_TEXT]",
@@ -380,9 +390,11 @@ class MultiUserFileMemoryProvider(MemoryProvider):
                 if entry == old_c or entry == old_sanitized:
                     target_idx = idx
                     break
-                if sanitize_for_prompt(entry) == old_c or sanitize_for_prompt(entry) == old_rendered:
-                    target_idx = idx
-                    break
+            if target_idx is None:
+                for idx, entry in enumerate(entries):
+                    if sanitize_for_prompt(entry) in (old_c, old_rendered):
+                        target_idx = idx
+                        break
 
             if target_idx is not None:
                 entries[target_idx] = sanitized_new
@@ -403,9 +415,11 @@ class MultiUserFileMemoryProvider(MemoryProvider):
                 if entry == old_c or entry == old_sanitized:
                     target_idx = idx
                     break
-                if sanitize_for_prompt(entry) == old_c or sanitize_for_prompt(entry) == old_rendered:
-                    target_idx = idx
-                    break
+            if target_idx is None:
+                for idx, entry in enumerate(entries):
+                    if sanitize_for_prompt(entry) in (old_c, old_rendered):
+                        target_idx = idx
+                        break
 
             if target_idx is not None:
                 entries.pop(target_idx)
