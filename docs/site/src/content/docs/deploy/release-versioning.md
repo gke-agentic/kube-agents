@@ -48,6 +48,7 @@ Before triggering a production release:
 1. Target commit must exist on the `main` branch.
 2. Target commit must carry an `rc_*_validated` tag created by the automated RC validation pipeline ([`scripts/release/README.md`](https://github.com/gke-labs/kube-agents/tree/main/scripts/release)).
 3. All four required container images (`k8s-operator`, `platform-agent`, `credential-proxy`, `replay-proxy`) must exist in GHCR under `sha-<TARGET_COMMIT>`.
+4. GitHub CLI (`gh`) version 2.40.0 or newer installed and authenticated with `repo` and `workflow` permissions (`gh auth status`).
 
 ### Triggering the release workflow
 
