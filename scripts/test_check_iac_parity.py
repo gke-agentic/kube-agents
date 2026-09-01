@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from scripts.check_iac_parity import (
+    EXCLUDED_NETPOL_MANIFESTS,
     HOUSE_SHAPE_EXCEPT,
     REQUIRED_DNS_LITERAL,
     REQUIRED_EXCEPT_MINIMUM,
@@ -16,6 +17,7 @@ from scripts.check_iac_parity import (
     check_all,
     check_dns_egress_rule,
     check_network_policy_file,
+    discover_dns_network_policies,
     is_house_shape,
     load_network_policies,
     main,
@@ -39,18 +41,30 @@ class CheckIacParityProductionTest(unittest.TestCase):
             f"Expected {len(STATIC_NETWORK_POLICIES)} DNS rules checked, got {rules_checked}",
         )
 
-    def test_roster_contains_all_known_copies(self):
-        expected_subset = {
-            "charts/kube-agents/templates/litellm.yaml",
-            "charts/kube-agents/templates/github-minter.yaml",
-            "deploy/kustomize/platform/networkpolicy-core-egress.yaml",
-            "examples/litellm-chatgpt-subscription/networkpolicy.yaml",
-            "examples/litellm-gemini/networkpolicy.yaml",
-            "examples/vllm-gemma/networkpolicy.yaml",
-            "k8s-operator/config/integrations/github/deployment.yaml.template",
-            "k8s-operator/config/integrations/litellm/base/networkpolicy.yaml",
-        }
-        self.assertTrue(expected_subset.issubset(set(STATIC_NETWORK_POLICIES)))
+    def test_discovery_matches_roster_exactly(self):
+        """Ensure no DNS NetworkPolicy in the repository escapes the static roster.
+
+        Mirroring scripts/test_test_discovery.py: any static manifest in the tree
+        containing a port-53 egress rule must either be in STATIC_NETWORK_POLICIES
+        or explicitly listed in EXCLUDED_NETPOL_MANIFESTS with a reviewed reason.
+        """
+        discovered = discover_dns_network_policies()
+        roster = set(STATIC_NETWORK_POLICIES)
+
+        untracked = discovered - roster
+        self.assertEqual(
+            untracked,
+            set(),
+            f"Found DNS-bearing NetworkPolicy files not tracked in STATIC_NETWORK_POLICIES: {sorted(untracked)}. "
+            "Either add them to STATIC_NETWORK_POLICIES or to EXCLUDED_NETPOL_MANIFESTS with an explicit reason.",
+        )
+
+        stale = roster - discovered
+        self.assertEqual(
+            stale,
+            set(),
+            f"STATIC_NETWORK_POLICIES contains files that no longer contain DNS egress rules: {sorted(stale)}",
+        )
 
 
 class CheckIacParitySyntheticTest(unittest.TestCase):
@@ -68,6 +82,26 @@ class CheckIacParitySyntheticTest(unittest.TestCase):
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
         return p
+
+    def test_discovery_catches_untracked_dns_policy(self):
+        """Verify that discover_dns_network_policies flags newly introduced manifests."""
+        manifest = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: new-service-egress
+spec:
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: 53
+      to:
+        - ipBlock:
+            cidr: 10.96.0.10/32
+"""
+        self._write_manifest("examples/new-service/networkpolicy.yaml", manifest)
+        discovered = discover_dns_network_policies(root=self.root)
+        self.assertIn("examples/new-service/networkpolicy.yaml", discovered)
 
     def test_missing_dns_literal_fails(self):
         manifest = """apiVersion: networking.k8s.io/v1
@@ -244,6 +278,36 @@ spec:
         self.assertEqual(rules, 1)
         self.assertEqual(errors, [])
 
+    def test_multi_doc_unrelated_syntax_error_ignored(self):
+        manifest = """apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: broken-unrelated
+spec: [unclosed json syntax
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: valid-netpol
+spec:
+  egress:
+    - ports:
+        - port: 53
+      to:
+        - ipBlock:
+            cidr: 10.96.0.10/32
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+"""
+        p = self._write_manifest("resilient.yaml", manifest)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 1)
+        self.assertEqual(errors, [])
+
     def test_missing_dns_rule_fails(self):
         manifest = """apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -297,6 +361,28 @@ spec:
         rules, errors = check_network_policy_file(p, self.root)
         self.assertEqual(rules, 1)
         self.assertEqual(errors, [])
+
+    def test_main_success_default(self):
+        self.assertEqual(main([]), 0)
+
+    def test_main_verbose(self):
+        self.assertEqual(main(["-v"]), 0)
+
+    def test_main_failure(self):
+        manifest = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-netpol
+spec:
+  egress:
+    - ports:
+        - port: 53
+      to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+"""
+        p = self._write_manifest("failing.yaml", manifest)
+        self.assertEqual(main([str(p)]), 1)
 
 
 if __name__ == "__main__":

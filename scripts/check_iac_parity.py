@@ -65,6 +65,20 @@ STATIC_NETWORK_POLICIES: tuple[str, ...] = (
     "k8s-operator/config/integrations/litellm/base/networkpolicy.yaml",
 )
 
+# Manifests containing kind: NetworkPolicy that are deliberately excluded from the
+# static DNS parity roster. Every entry must carry its reviewed reason.
+EXCLUDED_NETPOL_MANIFESTS: dict[str, str] = {
+    # Operator reconciliation test fixtures; golden expected outputs verified by Go controller tests.
+    "k8s-operator/internal/testing/testdata/platform/expected/platformagent.yaml": "operator golden test fixture",
+    "k8s-operator/internal/testing/testdata/platform/expected/platformagent-tagged.yaml": "operator golden test fixture",
+    "k8s-operator/internal/testing/testdata/platform/expected/platformagent-telemetry.yaml": "operator golden test fixture",
+    "k8s-operator/internal/testing/testdata/platform/expected/platformagent-split-broker.yaml": "operator golden test fixture",
+}
+
+IGNORED_DIRS: frozenset[str] = frozenset(
+    {".venv", "node_modules", "__pycache__", ".git", ".coverage-data", ".terraform", ".claude", "docs/site"}
+)
+
 REQUIRED_DNS_LITERAL = "10.96.0.10/32"
 REQUIRED_WILDCARD_CIDR = "0.0.0.0/0"
 REQUIRED_EXCEPT_MINIMUM: frozenset[str] = frozenset(
@@ -98,16 +112,75 @@ def sanitize_helm_template(text: str) -> str:
 
 
 def load_network_policies(path: Path) -> list[dict]:
-    """Read a manifest or template file and return all NetworkPolicy documents."""
+    """Read a manifest or template file and return all NetworkPolicy documents.
+
+    Parses document-by-document so syntax anomalies in unrelated manifests (like
+    Deployments or ConfigMaps in the same template file) do not fail NetworkPolicy
+    extraction.
+    """
     if not path.is_file():
         raise FileNotFoundError(f"File not found: {path}")
     raw_content = path.read_text(encoding="utf-8")
     sanitized = sanitize_helm_template(raw_content)
     policies: list[dict] = []
-    for doc in yaml.safe_load_all(sanitized):
-        if isinstance(doc, dict) and doc.get("kind") == "NetworkPolicy":
-            policies.append(doc)
+
+    # Split documents on YAML boundary '---'
+    for chunk in re.split(r"^---(?:\s.*)?$", sanitized, flags=re.MULTILINE):
+        chunk_stripped = chunk.strip()
+        if not chunk_stripped:
+            continue
+        # Only parse chunks that declare kind: NetworkPolicy
+        if not re.search(r"^\s*kind:\s*['\"]?NetworkPolicy['\"]?", chunk_stripped, flags=re.MULTILINE):
+            continue
+        try:
+            doc = yaml.safe_load(chunk_stripped)
+            if isinstance(doc, dict) and doc.get("kind") == "NetworkPolicy":
+                policies.append(doc)
+        except Exception as exc:
+            raise ValueError(f"malformed NetworkPolicy document in {path}: {exc}") from exc
+
     return policies
+
+
+def discover_dns_network_policies(root: Path = REPO_ROOT) -> set[str]:
+    """Scan the repository tree for all manifest files defining a port-53 DNS egress rule.
+
+    Mirroring scripts/test_test_discovery.py, this discovery scan prevents any unlisted
+    DNS-bearing NetworkPolicy from escaping the static parity guard.
+
+    Returns:
+        set[str]: set of repo-relative POSIX file paths.
+    """
+    discovered: set[str] = set()
+    patterns = ("*.yaml", "*.yml", "*.yaml.template", "*.yml.template")
+    for pattern in patterns:
+        for path in root.rglob(pattern):
+            if any(part in IGNORED_DIRS for part in path.parts):
+                continue
+            rel = path.relative_to(root).as_posix()
+            if rel in EXCLUDED_NETPOL_MANIFESTS:
+                continue
+            try:
+                raw = path.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            # Fast check before parsing
+            if "NetworkPolicy" not in raw or "53" not in raw:
+                continue
+            try:
+                policies = load_network_policies(path)
+            except Exception:
+                continue
+            for pol in policies:
+                spec = pol.get("spec") or {}
+                for rule in spec.get("egress") or []:
+                    if not isinstance(rule, dict):
+                        continue
+                    ports = rule.get("ports") or []
+                    if any(isinstance(p, dict) and p.get("port") in (53, "53") for p in ports):
+                        discovered.add(rel)
+                        break
+    return discovered
 
 
 def check_dns_egress_rule(
@@ -239,7 +312,7 @@ def check_all(
     return total_rules, all_errors
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Verify DNS egress rule parity across static NetworkPolicy copies."
     )
@@ -254,7 +327,7 @@ def main() -> int:
         nargs="*",
         help="Optional specific file paths to check (defaults to STATIC_NETWORK_POLICIES).",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     files = args.files if args.files else STATIC_NETWORK_POLICIES
     if args.verbose:
