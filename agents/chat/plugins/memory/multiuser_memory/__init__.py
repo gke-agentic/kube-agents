@@ -144,8 +144,10 @@ def sanitize_memory_entry(text: str) -> str:
 
     cleaned = _strip_unsafe_chars(text)
     cleaned = _neutralize_prompt_injection(cleaned)
-    # Delimiter smuggling: neutralize delimiter sequence (\\n§\\n) so a new entry cannot split on storage
-    cleaned = re.sub(r"(?:\r?\n|^)\s*§\s*(?:\r?\n|$)", "\n;\n", cleaned)
+    # Delimiter smuggling: neutralize delimiter lines and sequences so a new entry cannot split on storage
+    cleaned = re.sub(r"(?m)^[^\S\n]*§[^\S\n]*$", ";", cleaned)
+    while ENTRY_DELIMITER in cleaned:
+        cleaned = cleaned.replace(ENTRY_DELIMITER, "\n;\n")
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
@@ -279,7 +281,17 @@ class MultiUserFileMemoryProvider(MemoryProvider):
     def _write_entries(self, target: str, entries: List[str]) -> None:
         path = self._path_for(target)
         path.parent.mkdir(parents=True, exist_ok=True)
-        content = ENTRY_DELIMITER.join(entries) if entries else ""
+        clean_entries = []
+        for e in entries:
+            if not e or not isinstance(e, str):
+                continue
+            # Guard against delimiter smuggling at the write boundary
+            if ENTRY_DELIMITER in e:
+                e = e.replace(ENTRY_DELIMITER, "\n;\n")
+            s = e.strip()
+            if s:
+                clean_entries.append(s)
+        content = ENTRY_DELIMITER.join(clean_entries) if clean_entries else ""
         tmp_path = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
         tmp_path.write_text(content, encoding="utf-8")
         atomic_replace(tmp_path, path)

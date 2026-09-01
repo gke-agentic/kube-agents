@@ -303,6 +303,15 @@ class TestInputValidationAndSanitization(MultiUserMemoryTestCase):
         self.assertEqual(len(raw_file.split(mum.ENTRY_DELIMITER)), 1)
         self.assertIn("Safe fact 1\n;\nInjected hidden fact 2", raw_file)
 
+        # Adjacent delimiter lines (e.g. A\n§\n§\nB\n§\n§\nC) must not leave surviving delimiters
+        res_adjacent = p.handle_tool_call(
+            "multiuser_memory",
+            {"action": "add", "target": "memory", "content": "Part A\n§\n§\nPart B\n§\n§\nPart C"},
+        )
+        self.assertTrue(json.loads(res_adjacent)["success"], res_adjacent)
+        raw_file_adj = (self.home / "memories" / "MEMORY.md").read_text(encoding="utf-8")
+        self.assertEqual(len(raw_file_adj.split(mum.ENTRY_DELIMITER)), 2)
+
         # But inline section signs (e.g. SOP.md §1.6) are preserved on disk
         res2 = p.handle_tool_call(
             "multiuser_memory",
@@ -313,8 +322,9 @@ class TestInputValidationAndSanitization(MultiUserMemoryTestCase):
         self.assertIn("Refer to SOP.md §1.6 for guidance", raw_file2)
 
         entries = p._read_entries("memory")
-        self.assertEqual(len(entries), 2)
-        self.assertEqual(entries[1], "Refer to SOP.md §1.6 for guidance")
+        self.assertEqual(len(entries), 3)
+        self.assertEqual(entries[1], "Part A\n;\n;\nPart B\n;\n;\nPart C")
+        self.assertEqual(entries[2], "Refer to SOP.md §1.6 for guidance")
 
     def test_markdown_header_neutralization(self):
         p = self.provider(chat_type="dm")
