@@ -92,7 +92,7 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_UPGRADE_SH}"
             self.assertIn("Verified upgrade sources match baked official release 0.2.0", proc.stdout)
 
     def test_verify_local_source_ref_accepts_release_bundle_marker_in_non_git_dir(self):
-        """Verifies verify_local_source_ref succeeds for unpacked release bundle when baked version matches."""
+        """Verifies verify_local_source_ref in upgrade.sh logs bundle provenance attribution when .release-bundle matches baked version."""
         import tempfile
 
         with tempfile.TemporaryDirectory(prefix="unpacked-upgrade-bundle-") as outer_dir:
@@ -105,7 +105,7 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_UPGRADE_SH}"
             self.assertIn(f"Verified upgrade sources match official release bundle {MOCK_RELEASE_BUNDLE_VERSION}", proc.stdout)
 
     def test_verify_local_source_ref_rejects_unbaked_release_bundle_marker_in_non_git_dir(self):
-        """Verifies verify_local_source_ref in upgrade.sh refuses unauthenticated .release-bundle self-attestation without baked version."""
+        """Verifies .release-bundle marker cannot bypass unversioned source directory rejection in upgrade.sh when baked version is empty."""
         import tempfile
 
         with tempfile.TemporaryDirectory(prefix="unpacked-unbaked-upgrade-") as outer_dir:

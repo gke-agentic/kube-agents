@@ -542,7 +542,7 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
             self.assertIn("Verified install sources match baked official release 0.2.0", proc.stdout)
 
     def test_verify_local_source_ref_accepts_release_bundle_marker_in_non_git_dir(self):
-        """Verifies verify_local_source_ref succeeds for unpacked release bundle when baked version matches."""
+        """Verifies verify_local_source_ref logs bundle provenance attribution when .release-bundle matches baked version."""
         with tempfile.TemporaryDirectory(prefix="unpacked-bundle-") as outer_dir:
             archive_dir = pathlib.Path(outer_dir) / f"kube-agents-{MOCK_RELEASE_BUNDLE_VERSION}"
             create_mock_release_bundle_marker(archive_dir)
@@ -553,7 +553,7 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
             self.assertIn(f"Verified install sources match official release bundle {MOCK_RELEASE_BUNDLE_VERSION}", proc.stdout)
 
     def test_verify_local_source_ref_rejects_unbaked_release_bundle_marker_without_override(self):
-        """Verifies verify_local_source_ref refuses unauthenticated .release-bundle self-attestation without baked version."""
+        """Verifies .release-bundle marker cannot bypass unversioned source directory rejection when baked version is empty."""
         with tempfile.TemporaryDirectory(prefix="unpacked-unbaked-") as outer_dir:
             archive_dir = pathlib.Path(outer_dir) / f"kube-agents-{MOCK_RELEASE_BUNDLE_VERSION}"
             create_mock_release_bundle_marker(archive_dir)
