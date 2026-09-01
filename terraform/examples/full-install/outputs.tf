@@ -64,3 +64,18 @@ output "github_minter_kms_key" {
   description = "KMS signing key to import the GitHub App PEM into (null when the minter is disabled)"
   value       = try(module.github_minter[0].kms_key, null)
 }
+
+output "stockout_pubsub_topic" {
+  description = "Pub/Sub topic for GKE stockout alerts (null when enable_stockout_investigator is false)"
+  value       = try(google_pubsub_topic.stockout_alerts[0].name, null)
+}
+
+output "stockout_pubsub_subscription" {
+  description = "Pub/Sub subscription for GKE stockout alerts (null when enable_stockout_investigator is false)"
+  value       = try(google_pubsub_subscription.stockout_alerts[0].name, null)
+}
+
+output "stockout_pubsub_sink" {
+  description = "Cloud Logging sink for GKE stockout alerts (null when enable_stockout_investigator is false)"
+  value       = try(google_logging_project_sink.stockout_alerts[0].name, null)
+}

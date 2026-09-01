@@ -13,8 +13,10 @@ locals {
     # enabled without the API.
     "gkebackup.googleapis.com",
   ]
-  chat_apis = var.enable_google_chat ? [
+  pubsub_apis = (var.enable_google_chat || var.enable_pubsub_platform || var.enable_stockout_investigator) ? [
     "pubsub.googleapis.com",
+  ] : []
+  chat_apis = var.enable_google_chat ? [
     "chat.googleapis.com",
     "gsuiteaddons.googleapis.com",
   ] : []
@@ -37,7 +39,7 @@ locals {
   github_org        = length(local.github_repo_parts) == 2 ? local.github_repo_parts[0] : ""
   github_repo_name  = length(local.github_repo_parts) == 2 ? local.github_repo_parts[1] : ""
 
-  required_apis = toset(concat(local.base_apis, local.chat_apis))
+  required_apis = toset(concat(local.base_apis, local.pubsub_apis, local.chat_apis))
 
   # The agent's GCP IAM permission-set bundle, kept verbatim so the two install
   # paths hand the agent the same authority. Kubernetes RBAC is read-only
@@ -297,6 +299,62 @@ module "github_minter" {
   depends_on = [google_project_service.required]
 }
 
+resource "google_pubsub_topic" "stockout_alerts" {
+  #checkov:skip=CKV_GCP_83:Stockout alert topic uses default Google-managed encryption keys
+  count   = var.enable_stockout_investigator ? 1 : 0
+  project = var.project_id
+  name    = var.stockout_pubsub_topic
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_pubsub_subscription" "stockout_alerts" {
+  count   = var.enable_stockout_investigator ? 1 : 0
+  project = var.project_id
+  name    = var.stockout_pubsub_subscription
+  topic   = google_pubsub_topic.stockout_alerts[0].id
+
+  ack_deadline_seconds = 60
+
+  expiration_policy {
+    ttl = ""
+  }
+}
+
+resource "google_logging_project_sink" "stockout_alerts" {
+  count       = var.enable_stockout_investigator ? 1 : 0
+  project     = var.project_id
+  name        = var.stockout_pubsub_sink
+  destination = "pubsub.googleapis.com/${google_pubsub_topic.stockout_alerts[0].id}"
+  filter      = "resource.type=\"k8s_cluster\" AND (log_id(\"test-stockout\") OR log_id(\"container.googleapis.com/cluster-autoscaler-visibility\")) AND (jsonPayload.messageId:(\"scale.up.error.out.of.resources\" OR \"scale.up.error.quota.exceeded\" OR \"scale.up.error.ip.space.exhausted\" OR \"scale.up.no.scale.up\") OR jsonPayload.noDecisionStatus.noScaleUp:* OR jsonPayload.resultInfo.results.errorMsg.messageId:(\"scale.up.error.out.of.resources\" OR \"scale.up.error.quota.exceeded\" OR \"scale.up.error.ip.space.exhausted\" OR \"scale.up.no.scale.up\")) AND (resource.labels.cluster_name=\"${module.gke_cluster.cluster_name}\" OR jsonPayload.resource.labels.cluster_name=\"${module.gke_cluster.cluster_name}\")"
+
+  unique_writer_identity = true
+}
+
+resource "google_pubsub_topic_iam_member" "stockout_sink_writer" {
+  count   = var.enable_stockout_investigator ? 1 : 0
+  project = var.project_id
+  topic   = google_pubsub_topic.stockout_alerts[0].name
+  role    = "roles/pubsub.publisher"
+  member  = google_logging_project_sink.stockout_alerts[0].writer_identity
+}
+
+resource "google_pubsub_subscription_iam_member" "stockout_agent_subscriber" {
+  count        = var.enable_stockout_investigator ? 1 : 0
+  project      = var.project_id
+  subscription = google_pubsub_subscription.stockout_alerts[0].name
+  role         = "roles/pubsub.subscriber"
+  member       = "serviceAccount:${module.kube_agents_iam.service_account_email}"
+}
+
+resource "google_pubsub_subscription_iam_member" "stockout_agent_viewer" {
+  count        = var.enable_stockout_investigator ? 1 : 0
+  project      = var.project_id
+  subscription = google_pubsub_subscription.stockout_alerts[0].name
+  role         = "roles/pubsub.viewer"
+  member       = "serviceAccount:${module.kube_agents_iam.service_account_email}"
+}
+
 # cert-manager, the certificate source for the operator's admission webhooks.
 #
 # Two deliberate choices:
@@ -543,6 +601,12 @@ resource "helm_release" "kube_agents" {
     google_project_service.vertex_ai,
     google_project_iam_member.litellm_vertex_user,
     helm_release.cert_manager,
+    google_pubsub_topic.stockout_alerts,
+    google_pubsub_subscription.stockout_alerts,
+    google_logging_project_sink.stockout_alerts,
+    google_pubsub_topic_iam_member.stockout_sink_writer,
+    google_pubsub_subscription_iam_member.stockout_agent_subscriber,
+    google_pubsub_subscription_iam_member.stockout_agent_viewer,
   ]
 
   lifecycle {
