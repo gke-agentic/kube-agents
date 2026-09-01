@@ -928,7 +928,7 @@ func frontDoorOverlay(agent *agentv1alpha1.PlatformAgent) map[string]any {
 
 // memoryProviderIsHindsightBacked reports whether a provider talks to the in-cluster
 // Hindsight service. Keep in sync with memory_provider_uses_hindsight in
-// k8s-operator/scripts/common.sh, which decides whether to deploy it.
+// scripts/installer/common.sh, which decides whether to deploy it.
 func memoryProviderIsHindsightBacked(provider string) bool {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case kubeAgentsMemoryProvider, "hindsight":
@@ -2739,7 +2739,7 @@ func buildCredentialProxyEnv(agent *agentv1alpha1.PlatformAgent) []corev1.EnvVar
 			// cannot answer that when it renders the manifest — the answer is a
 			// property of the cluster, read at bootstrap time — so the describe is
 			// inlined here. agents/platform/scripts/gke_endpoint.py and
-			// k8s-operator/scripts/gke_dns_endpoint.sh implement the same predicate;
+			// scripts/installer/gke_dns_endpoint.sh implement the same predicate;
 			// keep all three in step.
 			//
 			// Deciding on the configuration rather than trying --dns-endpoint and

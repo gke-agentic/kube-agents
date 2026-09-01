@@ -335,7 +335,7 @@ main() {
   # Defaults, validators, and the terraform.tfvars generator shared with
   # install.sh. Print helpers are already defined above, as the file expects.
   # shellcheck disable=SC1091
-  source "${repo_dir}/k8s-operator/scripts/installer_common.sh"
+  source "${repo_dir}/scripts/installer/installer_common.sh"
   # Legacy state first, then install.env over the top of it, so the
   # hand-authored input wins. Both are optional here: unlike upgrade.sh, a
   # teardown can proceed on --project-id/--cluster-name/--region alone.

@@ -168,4 +168,4 @@ That leaves the cluster with the same validation coverage a chart install has. R
 - [PlatformAgent CRD](/kube-agents/operator/platformagent-crd/) — reference for `PlatformAgent` custom resource.
 - [AgentPlugin CRD](/kube-agents/operator/agentplugin-crd/) — reference for `AgentPlugin` custom resource.
 - [Development](/kube-agents/operator/development/) — build, test, and run the operator locally.
-- [`k8s-operator/scripts/README.md`](https://github.com/gke-labs/kube-agents/blob/main/k8s-operator/scripts/README.md) — the installer helper scripts that live beside the operator.
+- [`scripts/installer/README.md`](https://github.com/gke-labs/kube-agents/blob/main/scripts/installer/README.md) — the installer helper scripts that live beside the operator.

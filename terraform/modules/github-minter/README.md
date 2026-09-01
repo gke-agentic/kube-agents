@@ -40,7 +40,7 @@ GitHub integration is configured) uses for the minter's GCP half; the chart's
 `githubMinter.*` values render the Kubernetes half, and the PEM import above completes
 the pair. The canonical identifiers (GSA `kubeagents-github-minter-gsa`, KSA
 `kubeagents-github-minter`, namespace `kubeagents-system`) also appear in
-`k8s-operator/scripts/common.sh` for the dev tooling, and the module's defaults mirror
+`scripts/installer/common.sh` for the dev tooling, and the module's defaults mirror
 them.
 
 ## Usage

@@ -392,12 +392,12 @@ to agree about it, and the reason they are listed together is that a disagreemen
 between any two of them is silent: the install still succeeds, and what is wrong
 is either a database nobody asked for or a memory tool that never loads.
 
-| Where                                               | What it holds                                                                  |
-| --------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `install.sh --memory=file\|hindsight\|off`          | the question a human answers, also prompted interactively                      |
-| `MEMORY_PROVIDER` in `k8s-operator/scripts/vars.sh` | the answer, as a provider name; validated against `MEMORY_PROVIDER_CHOICES`    |
-| `spec.harness.memory.provider`                      | the answer, on the CR — the only copy the running system reads                 |
-| `MEMORY_PROVIDER` env on the pod                    | the same value, for the entrypoint, which runs before `config.yaml` is in play |
+| Where                                          | What it holds                                                                  |
+| ---------------------------------------------- | ------------------------------------------------------------------------------ |
+| `install.sh --memory=file\|hindsight\|off`     | the question a human answers, also prompted interactively                      |
+| `MEMORY_PROVIDER` in the install configuration | the answer, as a provider name; validated against `MEMORY_PROVIDER_CHOICES`    |
+| `spec.harness.memory.provider`                 | the answer, on the CR — the only copy the running system reads                 |
+| `MEMORY_PROVIDER` env on the pod               | the same value, for the entrypoint, which runs before `config.yaml` is in play |
 
 `MEMORY_PROVIDER` is the only variable in that answer. The install also writes
 `MEMORY_ENABLED`, and it is deliberately **not** consulted anywhere in the list

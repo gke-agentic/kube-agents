@@ -5,6 +5,12 @@ its `lifecycle.sh`, with the repository-root `install.sh` / `uninstall.sh` / `up
 as the front doors. This directory holds the helpers those front doors (and the dev
 tooling) share.
 
+These lived under `k8s-operator/scripts/` until they moved here. That was the address of
+the fourteen numbered `provision_*.sh` scripts #748 deleted when Terraform + Helm became
+the only engine, and the helpers stayed behind at it — serving three repository-root
+scripts from inside the Go operator's directory, which is not where anyone looks for
+them. `vars.sh` was the piece of that residue #1081 noticed first.
+
 ## Shared defaults live in `installer_common.sh`
 
 `installer_common.sh` is the single home for the values every installer front-end must
@@ -131,10 +137,8 @@ dotenv and `vars.sh` was generated with `printf %q`.
 - **[gke_dns_endpoint.sh](gke_dns_endpoint.sh)**: `gke_dns_endpoint_flag`, which decides whether a given cluster should be reached with `get-credentials --dns-endpoint`. Kept out of `common.sh` and free of its helpers so `hack/ci-env.sh`, `scripts/release/common.sh`, `upgrade.sh`, and the staging-workload scripts can source the one predicate without also taking on the state file. It sets `GKE_DNS_ENDPOINT_FLAG` rather than echoing, so that callers do not run it in a `$(...)` subshell that would discard its memo of whether the local gcloud offers the flag at all. That answer leaves it empty — as do a cluster with no externally reachable DNS endpoint and a describe call that fails — leaving today's IP-endpoint command untouched.
 - **[min_versions.sh](min_versions.sh)**: minimum tool versions, side-effect-free so
   `install.sh` can source it standalone before any checkout exists.
-- **[update_cluster_name.sh](update_cluster_name.sh)**: patches the target GKE cluster
-  name into the deployed `PlatformAgent` spec, triggering the operator to reconcile.
 - **[print_instructions_gchat.sh](print_instructions_gchat.sh)** /
   **[print_instructions_slack.sh](print_instructions_slack.sh)**: post-install manual-step
   instructions, printed by `install.sh` when the integration is enabled.
-- **[dev/dev_rebuild_agent.sh](dev/dev_rebuild_agent.sh)**: fast local development utility
+- **[../dev/dev_rebuild_agent.sh](../dev/dev_rebuild_agent.sh)**: fast local development utility
   that builds, pushes, and redeploys agent container images.

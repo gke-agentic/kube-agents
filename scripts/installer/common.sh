@@ -15,12 +15,12 @@ VARS_FILE="${VARS_FILE:-${SCRIPT_DIR}/vars.sh}"
 
 # Minimum tool versions. Sourced from the helper's own directory rather than
 # SCRIPT_DIR, which callers under scripts/dev/ override to point at themselves.
-# shellcheck source=k8s-operator/scripts/min_versions.sh
+# shellcheck source=scripts/installer/min_versions.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/min_versions.sh"
 
 # gke_dns_endpoint_flag, shared with hack/ci-env.sh and scripts/release/common.sh.
 # Resolved from BASH_SOURCE for the same reason as the line above.
-# shellcheck source=k8s-operator/scripts/gke_dns_endpoint.sh
+# shellcheck source=scripts/installer/gke_dns_endpoint.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gke_dns_endpoint.sh"
 
 # Defaults, validators, vars.sh persistence, and the terraform.tfvars
@@ -28,7 +28,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gke_dns_endpoint.sh"
 # upgrade.sh). The definitions moved there so the installers do not have to
 # source this whole pipeline helper; this file keeps only what the numbered
 # provision/teardown steps need on top.
-# shellcheck source=k8s-operator/scripts/installer_common.sh
+# shellcheck source=scripts/installer/installer_common.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/installer_common.sh"
 
 # ─── ANSI Colors ──────────────────────────────────────────────────────────────
@@ -450,7 +450,7 @@ init_var_image_tag() {
 }
 
 # Where the install configuration lives, relative to this file. VARS_FILE sits
-# in k8s-operator/scripts/; install.env sits at the repository root two levels
+# in scripts/installer/; install.env sits at the repository root two levels
 # up. Derived from VARS_FILE rather than SCRIPT_DIR so that a caller which
 # redirects VARS_FILE for a test redirects both together.
 install_env_file_for_state() {

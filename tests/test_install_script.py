@@ -24,7 +24,7 @@ from tests.testing.common import (
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _INSTALL_SH = _REPO_ROOT / "install.sh"
-_INSTALLER_COMMON = _REPO_ROOT / "k8s-operator" / "scripts" / "installer_common.sh"
+_INSTALLER_COMMON = _REPO_ROOT / "scripts" / "installer" / "installer_common.sh"
 
 # install.sh sources the shared helpers from the acquired workspace partway
 # through main(), so a validator that leans on one is unreachable from a bare
@@ -483,10 +483,10 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
         temp_dir, repo_dir, git = create_mock_git_repo()
         try:
             # Add installer_common.sh so repo is recognized as kube-agents
-            scripts_dir = pathlib.Path(repo_dir) / "k8s-operator" / "scripts"
+            scripts_dir = pathlib.Path(repo_dir) / "scripts" / "installer"
             scripts_dir.mkdir(parents=True, exist_ok=True)
             (scripts_dir / "installer_common.sh").write_text("# mock installer_common.sh\n")
-            git("add", "k8s-operator/scripts/installer_common.sh")
+            git("add", "scripts/installer/installer_common.sh")
             git("commit", "-m", "chore: add installer_common.sh")
 
             # Apply both an rc_* tag and a 0.2.0 GA tag on the same commit
@@ -506,7 +506,7 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
         with tempfile.TemporaryDirectory(prefix="archive-test-") as outer_dir:
             archive_dir = pathlib.Path(outer_dir) / "kube-agents-0.2.0"
             archive_dir.mkdir(parents=True)
-            scripts_dir = archive_dir / "k8s-operator" / "scripts"
+            scripts_dir = archive_dir / "scripts" / "installer"
             scripts_dir.mkdir(parents=True)
             (scripts_dir / "installer_common.sh").write_text("# mock installer_common.sh\n")
 
@@ -920,7 +920,7 @@ class NonInteractiveRerunInheritanceTest(unittest.TestCase):
         carrying GITHUB_ORG / GITHUB_REPO keeps working, and is told to rename."""
         proc = self._params(
             "GITHUB_ORG=an-org\nGITHUB_REPO=a-repo\n",
-            'source k8s-operator/scripts/installer_common.sh; '
+            'source scripts/installer/installer_common.sh; '
             'normalize_gitops_repo_vars; '
             'echo "O=$GITOPS_ORG R=$GITOPS_REPO"',
         )
@@ -935,7 +935,7 @@ class NonInteractiveRerunInheritanceTest(unittest.TestCase):
         that survives is the one being migrated to."""
         proc = self._params(
             "GITHUB_ORG=old-org\nGITOPS_ORG=new-org\n",
-            'source k8s-operator/scripts/installer_common.sh; '
+            'source scripts/installer/installer_common.sh; '
             'normalize_gitops_repo_vars; echo "O=$GITOPS_ORG"',
         )
         self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
@@ -947,7 +947,7 @@ class NonInteractiveRerunInheritanceTest(unittest.TestCase):
         truth, so the two can never disagree."""
         proc = self._params(
             "GITOPS_ORG=new-org\nGITOPS_REPO=new-repo\n",
-            'source k8s-operator/scripts/installer_common.sh; '
+            'source scripts/installer/installer_common.sh; '
             'normalize_gitops_repo_vars; echo "O=$GITHUB_ORG R=$GITHUB_REPO"',
         )
         self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)

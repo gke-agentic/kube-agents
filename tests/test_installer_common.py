@@ -1,4 +1,4 @@
-"""Unit tests for k8s-operator/scripts/installer_common.sh helpers.
+"""Unit tests for scripts/installer/installer_common.sh helpers.
 
 Covers the Terraform-state cluster probe (a managed-mode cluster entry reads
 as "ours", a data-mode entry from an existing-cluster install does not, and
@@ -16,7 +16,7 @@ import unittest
 from tests.testing.common import get_isolated_test_env
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
-_INSTALLER_COMMON = _REPO_ROOT / "k8s-operator" / "scripts" / "installer_common.sh"
+_INSTALLER_COMMON = _REPO_ROOT / "scripts" / "installer" / "installer_common.sh"
 
 # installer_common.sh's contract: the caller defines the print helpers.
 _PRINT_STUBS = """
@@ -604,7 +604,7 @@ class InstallDefaultsFileTest(unittest.TestCase):
     """
 
     _DEFAULTS = _REPO_ROOT / "install.defaults.env"
-    _INSTALLER_COMMON = _REPO_ROOT / "k8s-operator" / "scripts" / "installer_common.sh"
+    _INSTALLER_COMMON = _REPO_ROOT / "scripts" / "installer" / "installer_common.sh"
 
     def test_the_file_ships_with_the_repository(self):
         """Not git-ignored, unlike install.env. Every front door needs it to

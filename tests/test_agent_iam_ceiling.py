@@ -37,7 +37,7 @@ import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS = REPO_ROOT / "k8s-operator" / "scripts"
+SCRIPTS = REPO_ROOT / "scripts" / "installer"
 COMMON_SH = SCRIPTS / "common.sh"
 INSTALLER_COMMON_SH = SCRIPTS / "installer_common.sh"
 INSTALL_SH = REPO_ROOT / "install.sh"
@@ -499,7 +499,7 @@ class NoShippedInstallPathGrantsContainerAdminTest(unittest.TestCase):
     Scoped to what an install actually runs — the Terraform composition and
     modules, and the three shell front doors. Deliberately not the whole
     repository: the evaluation fleet under bench/ and the developer bootstrap
-    under k8s-operator/scripts/dev/ grant admin roles to identities that are
+    under scripts/dev/ grant admin roles to identities that are
     not the agent, and folding them in here would either fail permanently or
     have to be excepted by name.
 

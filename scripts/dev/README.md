@@ -1,6 +1,10 @@
 # Development Scripts
 
-This directory contains development and infrastructure setup scripts for the `k8s-operator`.
+Local iteration tooling for this repository: rebuilding and redeploying agent images,
+setting up Workload Identity Federation for CI, and tearing down the dev Artifact
+Registry. These sat under `k8s-operator/scripts/dev/` until they moved here — they are
+repository tooling rather than operator code, and the shared helpers they source now
+live in the sibling [`../installer/`](../installer/README.md).
 
 ## `setup-gcp-github-wif.sh`
 
@@ -40,7 +44,7 @@ export PROJECT_ID="my-gcp-project-id"
 export SA_NAME="github-actions-sa"
 export GITHUB_REPO="your-github-username/your-repo-name"
 
-cd k8s-operator/scripts/dev/
+cd scripts/dev/
 chmod +x setup-gcp-github-wif.sh
 
 # Standard roles for CI deployment

@@ -10,8 +10,8 @@
 #     --upgrade-mode=full --image-tag=<SEMVER_TAG_OR_FULL_COMMIT_SHA>
 #
 # Run this from the directory holding your original install checkout: the
-# upgrade refuses to re-render cluster configuration without the saved
-# k8s-operator/scripts/vars.sh state from the installation.
+# upgrade refuses to re-render cluster configuration without the install's
+# install.env (a legacy k8s-operator/scripts/vars.sh also satisfies it).
 # ==============================================================================
 
 set -Eeuo pipefail
@@ -311,10 +311,10 @@ main() {
 
   local script_dir repo_dir
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  if [ -f "${script_dir}/k8s-operator/scripts/installer_common.sh" ]; then
+  if [ -f "${script_dir}/scripts/installer/installer_common.sh" ]; then
     repo_dir="$script_dir"
     verify_local_source_ref "$repo_dir" "$PARAM_IMAGE_TAG"
-  elif [ -f "$(pwd)/k8s-operator/scripts/installer_common.sh" ]; then
+  elif [ -f "$(pwd)/scripts/installer/installer_common.sh" ]; then
     repo_dir="$(pwd)"
     verify_local_source_ref "$repo_dir" "$PARAM_IMAGE_TAG"
   else
@@ -348,7 +348,7 @@ main() {
   # below needs load_install_env. Print helpers are already defined above, as
   # the file expects.
   # shellcheck disable=SC1091
-  source "${repo_dir}/k8s-operator/scripts/installer_common.sh"
+  source "${repo_dir}/scripts/installer/installer_common.sh"
 
   # Two sources, in this order, so the hand-authored input wins: a legacy
   # vars.sh from an install that predates install.env, then install.env over
@@ -430,13 +430,13 @@ main() {
   print_step "2. Connecting kubectl to GKE Cluster"
   # Taken from repo_dir rather than beside this script: upgrade.sh is also run
   # piped from curl, where BASH_SOURCE names no directory to look in.
-  local dns_helper="${repo_dir}/k8s-operator/scripts/gke_dns_endpoint.sh"
+  local dns_helper="${repo_dir}/scripts/installer/gke_dns_endpoint.sh"
   GKE_DNS_ENDPOINT_FLAG=""
   if [ -f "$dns_helper" ]; then
     # source= points -x runs at the real file; disable=SC1091 covers the bare
     # `shellcheck upgrade.sh` that CI runs, where the directive locates the file
     # but following it still needs -x, so the info-level finding fails the job.
-    # shellcheck source=k8s-operator/scripts/gke_dns_endpoint.sh
+    # shellcheck source=scripts/installer/gke_dns_endpoint.sh
     # shellcheck disable=SC1091
     source "$dns_helper"
     gke_dns_endpoint_flag "$target_cluster" "$target_region" "$target_project"

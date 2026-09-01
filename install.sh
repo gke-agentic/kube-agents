@@ -15,7 +15,7 @@
 set -Eeuo pipefail
 
 # ─── ANSI Colors & Terminal Responsive Helpers ─────────────────────────────────
-# A function because k8s-operator/scripts/common.sh defines the same variables
+# A function because scripts/installer/common.sh defines the same variables
 # unconditionally: sourcing it would re-enable colour under NO_COLOR or in a pipe,
 # so the installer re-applies its own policy afterwards.
 configure_colors() {
@@ -31,7 +31,7 @@ configure_colors
 
 # Defined here, ahead of everything that reports, because loading install.env
 # below is the first thing this script does and it has to be able to say so.
-# k8s-operator/scripts/common.sh defines its own print_* helpers formatted for
+# scripts/installer/common.sh defines its own print_* helpers formatted for
 # the state file, so source_provisioning_helpers re-applies these afterwards.
 define_print_helpers() {
   print_step() { echo -e "\n${C_MAGENTA}${C_BOLD}>>> $1 <<<${C_RESET}"; }
@@ -184,7 +184,7 @@ PARAM_REGION="${REGION:-}"
 PARAM_CLUSTER_NAME="${CLUSTER_NAME:-}"
 # Only consulted when this run creates the cluster. Against one that already
 # exists the tfvars generator's live probe decides the shape; see
-# write_tfvars_from_state in k8s-operator/scripts/installer_common.sh. Empty
+# write_tfvars_from_state in scripts/installer/installer_common.sh. Empty
 # means "not chosen yet" — the interview asks, and falls back to
 # installer_common.sh's DEFAULT_CLUSTER_MODE when there is nobody to ask. The
 # shape is deliberately not named here: that table is the one home for it.
@@ -264,7 +264,7 @@ Flags for AI Agents & Automation:
   -y, --yes, --non-interactive  Run in non-interactive mode (use flags/defaults)
   --dry-run                     Validate prerequisites & output config/plan without creating resources
   --project-id=ID               Target GCP Project ID
-  --region=REGION               Target GCP Region (default: k8s-operator/scripts/common.sh
+  --region=REGION               Target GCP Region (default: scripts/installer/common.sh
                                 DEFAULT_REGION, currently us-central1)
   --cluster-name=NAME           GKE Cluster Name (default: DEFAULT_CLUSTER_NAME,
                                 currently platform-agent-host)
@@ -419,17 +419,17 @@ EOF
   printf '%b\n\n' "${C_RESET}"
 }
 
-# Minimum tool versions, kept in k8s-operator/scripts/min_versions.sh so the
+# Minimum tool versions, kept in scripts/installer/min_versions.sh so the
 # numbers live in exactly one place. This installer is also downloaded and run
 # on its own, before any checkout exists, so the source is guarded: in that
 # case the workspace step clones the repository and the check runs against the
 # clone's copy.
 _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || echo "")"
-_min_versions="${_script_dir}/k8s-operator/scripts/min_versions.sh"
+_min_versions="${_script_dir}/scripts/installer/min_versions.sh"
 if [ -r "$_min_versions" ]; then
   # CI runs shellcheck without -x, so the source= hint alone still raises
   # SC1091 for a file it was not handed as input.
-  # shellcheck source=k8s-operator/scripts/min_versions.sh disable=SC1091
+  # shellcheck source=scripts/installer/min_versions.sh disable=SC1091
   source "$_min_versions"
 else
   require_min_gcloud_version() { return 0; }
@@ -535,7 +535,7 @@ default_image_tag() {
   # running the curl | bash one-liner from inside any unrelated Git repository
   # would offer that repository's HEAD, which then fails at `git fetch` for a
   # ref the kube-agents clone has never heard of.
-  if [ ! -f "${repo_dir}/k8s-operator/scripts/installer_common.sh" ]; then
+  if [ ! -f "${repo_dir}/scripts/installer/installer_common.sh" ]; then
     return 0
   fi
   # 2. Check if local git repo is checked out at an exact SemVer release tag
@@ -709,7 +709,7 @@ bootstrap_install_env_file() {
 verify_local_source_ref() {
   local repo_dir="$1"
   local expected_ref="$2"
-  # The installer runs k8s-operator/scripts/* from this checkout while deploying
+  # The installer runs scripts/installer/* from this checkout while deploying
   # the container image built from $expected_ref, so a mismatch means the cluster
   # gets manifests from one revision and an agent runtime from another. --dry-run
   # touches nothing, and --allow-unverified-source is the explicit opt-out for
@@ -794,10 +794,10 @@ acquire_source_repo() {
   local resolved_dir=""
   local script_dir=""
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || echo "")"
-  if [ -n "$script_dir" ] && [ -f "${script_dir}/k8s-operator/scripts/installer_common.sh" ]; then
+  if [ -n "$script_dir" ] && [ -f "${script_dir}/scripts/installer/installer_common.sh" ]; then
     resolved_dir="$script_dir"
     print_success "Using repository directory: $resolved_dir"
-  elif [ -f "k8s-operator/scripts/installer_common.sh" ]; then
+  elif [ -f "scripts/installer/installer_common.sh" ]; then
     resolved_dir="$(pwd)"
     print_success "Using current repository directory: $resolved_dir"
   else
@@ -820,7 +820,7 @@ acquire_source_repo() {
   printf -v "$dest_var" '%s' "$resolved_dir"
 }
 
-# k8s-operator/scripts/installer_common.sh is the source of truth for install
+# scripts/installer/installer_common.sh is the source of truth for install
 # defaults, validation rules, and the terraform.tfvars generator. The installer
 # sources it rather than keeping its own copies, which is how the two drifted
 # apart before (an installer menu whose permission-set default disagreed with
@@ -828,19 +828,21 @@ acquire_source_repo() {
 # derive_kms_location).
 source_provisioning_helpers() {
   local repo_dir="$1"
-  local helper_script="${repo_dir}/k8s-operator/scripts/installer_common.sh"
+  local helper_script="${repo_dir}/scripts/installer/installer_common.sh"
   if [ ! -f "$helper_script" ]; then
     print_error "Cannot find installer helpers at $helper_script."
     exit 1
   fi
-  SCRIPT_DIR="${repo_dir}/k8s-operator/scripts"
-  VARS_FILE="${SCRIPT_DIR}/vars.sh"
+  SCRIPT_DIR="${repo_dir}/scripts/installer"
+  # The legacy state file, still at its original address: an install made
+  # before the move has one there and nowhere else.
+  VARS_FILE="${repo_dir}/k8s-operator/scripts/vars.sh"
   # shellcheck source=/dev/null
   source "$helper_script"
   # gke_dns_endpoint_flag, for the credentials fetch before the health checks.
   # shellcheck source=/dev/null
   source "${SCRIPT_DIR}/gke_dns_endpoint.sh"
-  print_success "Loaded installer defaults from k8s-operator/scripts/installer_common.sh"
+  print_success "Loaded installer defaults from scripts/installer/installer_common.sh"
 }
 
 # Fill in the parameters whose default lives in installer_common.sh. Called
@@ -1566,7 +1568,7 @@ run_menu_system() {
   local repo_dir
   repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   local vars_file="${repo_dir}/k8s-operator/scripts/vars.sh"
-  local helper_script="${repo_dir}/k8s-operator/scripts/installer_common.sh"
+  local helper_script="${repo_dir}/scripts/installer/installer_common.sh"
 
   if [ ! -f "$helper_script" ]; then
     print_error "Cannot find installer helpers at $helper_script."
@@ -2194,7 +2196,7 @@ main() {
   # two are the only credentials it needs. The project defaults to the install
   # target; the location does not, because a model is only callable from a
   # location that serves it and the cluster's region often is not one — see
-  # DEFAULT_VERTEX_LOCATION in k8s-operator/scripts/installer_common.sh.
+  # DEFAULT_VERTEX_LOCATION in scripts/installer/installer_common.sh.
   local vertex_project_id="${PARAM_VERTEX_PROJECT_ID:-$project_id}"
   local vertex_location="${PARAM_VERTEX_LOCATION:-$DEFAULT_VERTEX_LOCATION}"
 
@@ -2374,7 +2376,7 @@ main() {
   require_supported_permission_set "$permission_set" || exit 1
   local custom_roles="${PARAM_CUSTOM_ROLES:-}"
   # This rule is also written in init_var_platform_agent_permission_set
-  # (k8s-operator/scripts/common.sh), which has no caller left in the repository
+  # (scripts/installer/common.sh), which has no caller left in the repository
   # -- the numbered provision scripts that used to invoke it went with #797. So
   # this is the only place it runs, not a duplicate of somewhere it also runs.
   if [ "$permission_set" = "custom" ] && [ "$PARAM_NON_INTERACTIVE" = "true" ] && [ -z "$custom_roles" ]; then
@@ -2538,7 +2540,7 @@ main() {
   # `none` rather than an empty string: the choice has to survive the trip
   # through the CR, and an absent provider takes the CRD default. The operator
   # translates `none` back to Hermes' own spelling — see MEMORY_PROVIDER_CHOICES
-  # in k8s-operator/scripts/common.sh.
+  # in scripts/installer/common.sh.
   #
   # `multiuser_memory` is the default provider everywhere it is named with no
   # install to ask (the CRD default, common.sh, and both profiles' config.yaml),
@@ -2870,11 +2872,11 @@ main() {
 
   if [ "${google_chat_enabled:-false}" = "true" ]; then
     echo ""
-    IMAGE_TAG="$image_tag" bash "${repo_dir}/k8s-operator/scripts/print_instructions_gchat.sh" || true
+    IMAGE_TAG="$image_tag" bash "${repo_dir}/scripts/installer/print_instructions_gchat.sh" || true
   fi
   if [ "${slack_enabled:-false}" = "true" ]; then
     echo ""
-    IMAGE_TAG="$image_tag" bash "${repo_dir}/k8s-operator/scripts/print_instructions_slack.sh" || true
+    IMAGE_TAG="$image_tag" bash "${repo_dir}/scripts/installer/print_instructions_slack.sh" || true
   fi
 }
 

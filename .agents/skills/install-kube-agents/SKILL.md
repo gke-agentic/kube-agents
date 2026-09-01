@@ -18,7 +18,7 @@ GCP resource and installs the Helm chart (`charts/kube-agents`) that owns every 
 Terraform state goes to a GCS bucket (`<project>-kube-agents-tfstate`, versioned, prefix
 `kube-agents/<cluster>`), so `uninstall.sh` and `upgrade.sh` can find the install from a fresh
 clone. The installer sources
-[`k8s-operator/scripts/installer_common.sh`](../../../k8s-operator/scripts/README.md) before its
+[`scripts/installer/installer_common.sh`](../../../scripts/installer/README.md) before its
 first prompt, so its defaults and accepted values are the ones defined there; that file is where a
 default changes.
 
@@ -110,7 +110,7 @@ Upon completion, `install.sh` generates a machine-readable JSON status report at
 
 ## Supported Command-Line Flags
 
-Defaults marked "`installer_common.sh`" come from `k8s-operator/scripts/installer_common.sh` and
+Defaults marked "`installer_common.sh`" come from `scripts/installer/installer_common.sh` and
 are listed there, not here. Run `./install.sh --help` for the authoritative list.
 
 | Flag                                 | Description                                                                                                                                                                                                                                            | Default                                         |

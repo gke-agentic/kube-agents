@@ -11,7 +11,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # gke_dns_endpoint_flag: reach each cluster over the endpoint deploy_infra.sh used.
-# shellcheck source=k8s-operator/scripts/gke_dns_endpoint.sh
+# shellcheck source=scripts/installer/gke_dns_endpoint.sh
 source "${SCRIPT_DIR}/../../scripts/gke_dns_endpoint.sh"
 
 # ANSI Colors

@@ -9,9 +9,9 @@ on:
       - "upgrade.sh"
       # The three scripts source their defaults, validators, and the tfvars
       # generator from these helpers, so a change there must run this gate too.
-      - "k8s-operator/scripts/installer_common.sh"
-      - "k8s-operator/scripts/min_versions.sh"
-      - "k8s-operator/scripts/gke_dns_endpoint.sh"
+      - "scripts/installer/installer_common.sh"
+      - "scripts/installer/min_versions.sh"
+      - "scripts/installer/gke_dns_endpoint.sh"
       - ".github/workflows/installer-matrix-test.yml"
   push:
     branches: [main]

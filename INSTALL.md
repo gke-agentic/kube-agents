@@ -9,7 +9,7 @@ This comprehensive, step-by-step guide explains how to install, configure, deplo
 > For the explanatory material — why each component exists, architecture, troubleshooting in depth,
 > and the concept guides — see **<https://gke-labs.github.io/kube-agents/>**. For the shared
 > installer defaults and the `install.env` configuration model, see
-> [`k8s-operator/scripts/README.md`](k8s-operator/scripts/README.md).
+> [`scripts/installer/README.md`](scripts/installer/README.md).
 
 ---
 
@@ -66,9 +66,9 @@ the canonical description of what gets created. Three things stay outside Terraf
 installer itself: CMEK database encryption on a **pre-existing** cluster (a `gcloud` pre-step), the
 managed-OTel collection scope (no Terraform field exists), and the GitHub App private-key import
 into KMS (the PEM must not enter Terraform state). The installer sources
-`k8s-operator/scripts/installer_common.sh`, so its defaults (region, cluster name, model provider,
+`scripts/installer/installer_common.sh`, so its defaults (region, cluster name, model provider,
 registry prefix) and its accepted values live in exactly one place; see
-[Shared defaults live in `installer_common.sh`](k8s-operator/scripts/README.md#shared-defaults-live-in-installer_commonsh).
+[Shared defaults live in `installer_common.sh`](scripts/installer/README.md#shared-defaults-live-in-installer_commonsh).
 
 Three behaviours worth knowing before the first run:
 

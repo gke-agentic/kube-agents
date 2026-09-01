@@ -133,10 +133,10 @@ identifier appears, add its source here.
 <!-- prettier-ignore -->
 | Identifier | Source of truth |
 | --- | --- |
-| Service-account names, namespace, permission-set defaults | `k8s-operator/scripts/common.sh` |
-| The installer's `--gvisor` default | `install.sh` |
+| Service-account names, namespace, permission-set defaults | `scripts/installer/common.sh` |
+| Every default an install gets for saying nothing | `install.defaults.env` |
 | Go toolchain version | `k8s-operator/go.mod` |
-| Minimum supported tool versions (`gcloud`) | `k8s-operator/scripts/min_versions.sh` |
+| Minimum supported tool versions (`gcloud`) | `scripts/installer/min_versions.sh` |
 | Toolsets, plugins, and MCP servers of an agent profile | that profile's `config.yaml` (`agents/platform/`, `agents/chat/`, `agents/cluster/`) |
 | Cron job rosters and schedules | `agents/chat/defaults/cron/jobs.json` and `agents/platform/cron/jobs.json` |
 | Persona rules and `§N` section numbering | the profile's `SOUL.md` |
@@ -155,9 +155,9 @@ identifier appears, add its source here.
 | Agent egress-allowlist policy: metadata addresses, the `-sandbox-metadata-deny` name, the `controlPlaneCIDRs` floors (`/16`, `/32`), and the `EgressPolicyRequiresSplitBroker` / `EgressAllowlistRefused` reasons | `k8s-operator/internal/controller/platformagent_egress_policy.go` and `platformagent_controller.go` |
 | Scoped service-account pool: `CREDENTIAL_PROXY_SCOPED_SA_POOL{,_FILE}`, the pool file path, the scope-key spelling, and the `ka-<name>-<hash8>` account ids | `agents/platform/scripts/scoped_sa_pool.py`, `k8s-operator/internal/controller/platformagent_manifests.go`, `terraform/modules/kube-agents-iam/scoped_pool.tf` |
 | Image inventory: every image an install pulls, and its upstream pin | `images.json` |
-| Registry prefix defaults (`REGISTRY_PREFIX`, `THIRD_PARTY_REGISTRY_PREFIX`) | `k8s-operator/scripts/common.sh` |
-| Provisioning image-tag attachment (`qualify_image_ref`) | `k8s-operator/scripts/common.sh` |
-| GKE host-discovery label | `k8s-operator/scripts/common.sh` |
+| Registry prefix defaults (`REGISTRY_PREFIX`, `THIRD_PARTY_REGISTRY_PREFIX`) | `scripts/installer/common.sh` |
+| Provisioning image-tag attachment (`qualify_image_ref`) | `scripts/installer/common.sh` |
+| GKE host-discovery label | `scripts/installer/common.sh` |
 | GitOps clone layout (`/opt/data/gitops/...`) and leases | `agents/platform/scripts/gitops_workspace.py` |
 | fleet-audit finding-id pattern and rendering caps | `agents/platform/skills/fleet-audit/scripts/audit_report.py` |
 | Helm chart value defaults (KSA/secret names, image repos, tag rules) | `charts/kube-agents/values.yaml` |
@@ -180,7 +180,7 @@ identifier appears, add its source here.
 | Credential-proxy refusal rule ids, refused flags, forced git config | `agents/platform/scripts/credential_proxy.py` |
 | Command-policy allowlisted verbs and denied `kubectl`/`gcloud` flags | `agents/platform/scripts/command_policy.py` |
 | Which CI pool project maps to which GitOps repository | `gitops_repo_for_project()` in `hack/ci-deploy.sh` |
-| Roles the pool verifier accepts as Artifact Registry upload rights, and the API set it requires | `scripts/verify_ci_pool_project.py`, whose `VALID_CMEK_STATES` mirrors `is_valid_cmek_encryption_state()` in `k8s-operator/scripts/installer_common.sh`, whose `PLATFORM_GSA_ROLES` mirrors `local.read_only_roles` in `terraform/examples/full-install/main.tf`, and whose cluster names mirror `bench/tf/fleet` and whose fixture check parses the summary line `hack/fleet-kubeconfigs.sh` prints, whose signing probe reads `githubMinter.kms.keyVersion` from `charts/kube-agents/values.yaml`, and whose mapping check reads `hack/ci-deploy.sh` from `gke-labs/main` as well as the local tree |
+| Roles the pool verifier accepts as Artifact Registry upload rights, and the API set it requires | `scripts/verify_ci_pool_project.py`, whose `VALID_CMEK_STATES` mirrors `is_valid_cmek_encryption_state()` in `scripts/installer/installer_common.sh`, whose `PLATFORM_GSA_ROLES` mirrors `local.read_only_roles` in `terraform/examples/full-install/main.tf`, and whose cluster names mirror `bench/tf/fleet` and whose fixture check parses the summary line `hack/fleet-kubeconfigs.sh` prints, whose signing probe reads `githubMinter.kms.keyVersion` from `charts/kube-agents/values.yaml`, and whose mapping check reads `hack/ci-deploy.sh` from `gke-labs/main` as well as the local tree |
 
 ## 3. Documentation eras and status
 
@@ -402,8 +402,8 @@ only what the title does not say.
 | `k8s-operator/cmd/k8s-event-watcher/README.md` | Component README | The Go daemon that streams, filters, and deduplicates GKE warning events and forwards unique incidents to trigger autonomous diagnostic sessions. | Event filtering, dedup windows, snapshots | Watcher developers/operators |
 | `k8s-operator/config/integrations/github/README.md` | Component README | The GitHub Token Minter (Minty) integration: short-lived GitHub App tokens brokered against Workload Identity OIDC, App key held in Cloud KMS. | Token flow, App setup, KMS import | Operators wiring GitOps write access; site page `deploy/token-minter.md` is the narrative |
 | `k8s-operator/config/integrations/hindsight/README.md` | Component README | The Hindsight API and its Postgres/pgvector database — the memory store behind the Chat Agent: the kustomize dev copy of what the chart renders, why it needs no credentials, and the in-cluster URL the agent image bakes in. | Passwordless Postgres, NetworkPolicy, digest pinning, no HF egress | Operators installing the memory store; the design rationale is `docs/designs/memory.md` |
-| `k8s-operator/scripts/README.md` | Component README | **Canonical** home for the shared installer defaults (the table; the values live in `install.defaults.env`), the `install.env` configuration model, and the helper scripts the installer front doors still share. | Shared defaults, configuration model, helper inventory | Installer and dev-tooling developers |
-| `k8s-operator/scripts/dev/README.md` | Component README | The script automating GCP Workload Identity Federation so GitHub Actions can deploy keylessly. | WIF/OIDC CI auth | Repo maintainers |
+| `scripts/installer/README.md` | Component README | **Canonical** home for the shared installer defaults (the table; the values live in `install.defaults.env`), the `install.env` configuration model, and the helper scripts the installer front doors still share. | Shared defaults, configuration model, helper inventory | Installer and dev-tooling developers |
+| `scripts/dev/README.md` | Component README | The script automating GCP Workload Identity Federation so GitHub Actions can deploy keylessly. | WIF/OIDC CI auth | Repo maintainers |
 | `k8s-operator/testing/staging_workloads/README.md` | Component README | Terraform PoC that stamps out multi-cluster GKE staging fleets with realistic workload bundles and traffic simulators. | Cluster maps, workload bundle, load shapes | Developers building staging fleets |
 | `scripts/eval_dashboard/SCHEMA.md` | Reference | The `data.json` contract (schema version 1) between the eval-dashboard collector (`scripts/eval_dashboard/collect.py`, which writes it from Prow logs) and the dashboard renderer and publisher built against it in parallel: field names, types, derivation rules, and the additive-only change policy with `schema_version` bumps. | Run and case records, task results, pass rates, additive-only evolution | Dashboard collector/renderer/publisher developers |
 | `scripts/release/README.md` | Component README | Overview of the release automation scripts: candidate tag creation, environment provisioning and teardown, GKE readiness & E2E test execution, validated tag promotion, the nightly staging promotion, and the GA release. Carries what the nightly environment needs before it can run, and is canonical for the GA release gate and how its schedule is turned on. | Release Candidate scripts, RC automation | CI maintainers and release operators |

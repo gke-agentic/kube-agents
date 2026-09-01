@@ -748,7 +748,7 @@ class NamingIsNotRunning(unittest.TestCase):
         "grep -rn kubectl deploy/",
         "rg lifecycle.sh terraform/",
         "man kubectl",
-        "vim k8s-operator/scripts/dev/dev_rebuild_agent.sh",
+        "vim scripts/dev/dev_rebuild_agent.sh",
     )
 
     def test_reading_about_a_mutating_command_is_not_one(self):

@@ -130,7 +130,7 @@ running install:
   registry prefix the install records. The push itself touches no cluster, but overwriting a tag
   the install is running is how one agent's image became another's, which is the incident this
   exists to prevent. A stock install records the public
-  [`DEFAULT_REGISTRY_PREFIX`](../../k8s-operator/scripts/installer_common.sh) rather than a private
+  [`DEFAULT_REGISTRY_PREFIX`](../../scripts/installer/installer_common.sh) rather than a private
   one, so this guard is only as specific as the prefix the install was given. A push whose image ref
   did not expand asks rather than passing, because an unreadable ref and an absent one are different
   answers. That covers the ref that says nothing at all — `docker push $(cat last-image)` — and the
