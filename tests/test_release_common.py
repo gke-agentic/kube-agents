@@ -600,6 +600,60 @@ source "{_COMMON_SH}"
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("AGENT_NAMESPACE", proc.stderr)
 
+    # ── commit_messages_have_breaking_change ─────────────────────────────────
+    #
+    # Shared by calculate_next_version.sh, which reads it to pick the bump, and
+    # resolve_scheduled_release.sh, which reads it to decide whether an
+    # unattended release stops for a human. The two disagreeing is silent in the
+    # unsafe direction, so the last test here pins that neither keeps a copy.
+
+    def test_commit_messages_have_breaking_change_detects_a_bang_subject(self):
+        for subject in ("feat!: drop it", "fix(operator)!: drop the v1alpha1 field"):
+            with self.subTest(subject=subject):
+                proc = self._run_common_func(f'commit_messages_have_breaking_change "{subject}" ""')
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_commit_messages_have_breaking_change_detects_a_footer(self):
+        for body in ("BREAKING CHANGE: the yaml spec moved", "BREAKING-CHANGE: the yaml spec moved"):
+            with self.subTest(body=body):
+                proc = self._run_common_func(f'commit_messages_have_breaking_change "" "{body}"')
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_commit_messages_have_breaking_change_ignores_ordinary_commits(self):
+        proc = self._run_common_func(
+            'commit_messages_have_breaking_change "feat: add a thing\nfix: mend a thing" "just prose"'
+        )
+        self.assertNotEqual(proc.returncode, 0)
+
+    def test_commit_messages_have_breaking_change_survives_a_large_corpus(self):
+        """`echo … | grep -q` would report 141 here, which reads as "not breaking".
+
+        grep exits on its first match, the producer dies on SIGPIPE, and under
+        `set -o pipefail` the pipeline reports 141 — so matching input reads as no
+        breaking change, in the direction that ships one unattended. The herestring
+        form is immune, and this is what holds it that way.
+        """
+        proc = self._run_common_func(
+            'set -o pipefail\n'
+            'big="BREAKING CHANGE: something"$\'\\n\'"$(head -c 400000 /dev/zero | tr "\\0" "y")"\n'
+            'commit_messages_have_breaking_change "" "${big}"'
+        )
+        self.assertEqual(proc.returncode, 0, f"stderr={proc.stderr} rc={proc.returncode}")
+
+    def test_neither_caller_keeps_its_own_copy_of_the_breaking_regexes(self):
+        """A second copy is how the bump and the halt come to disagree."""
+        bang_regex = r"^[a-z]+(\([^)]+\))?!:"
+        for script in ("calculate_next_version.sh", "resolve_scheduled_release.sh"):
+            with self.subTest(script=script):
+                text = (_REPO_ROOT / "scripts" / "release" / script).read_text()
+                body = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+                self.assertNotIn(
+                    bang_regex,
+                    body,
+                    f"{script} re-implements the breaking-change test instead of calling common.sh",
+                )
+                self.assertIn("commit_messages_have_breaking_change", body, f"{script} does not call the helper")
+
 
 if __name__ == "__main__":
     unittest.main()

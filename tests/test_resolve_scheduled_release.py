@@ -132,6 +132,26 @@ class ResolveScheduledReleaseTest(unittest.TestCase):
         finally:
             temp_dir.cleanup()
 
+    def test_a_breaking_change_does_not_wedge_a_repository_with_no_ga_tag(self):
+        """With no GA tag there is no range, so the halt must not scan all history.
+
+        It would match some long-shipped `feat!:` and then never stop matching
+        it, because there is no range left to shrink — one halt, permanently, on
+        every run. `calculate_next_version.sh` takes the opposite branch in the
+        same state and publishes the initial version without scanning, so a halt
+        here would also make the two disagree about a never-released repository.
+        """
+        temp_dir, repo_dir, _, head = self._repo(
+            ga_tag=None, new_commit_msg=MOCK_COMMIT_MSG_BREAKING_PRE_1_0
+        )
+        try:
+            proc, outputs, _ = self._run(repo_dir)
+            self.assertEqual(proc.returncode, 0, proc.stdout)
+            self.assertEqual(outputs["should_release"], "true")
+            self.assertEqual(outputs["release_commit"], head)
+        finally:
+            temp_dir.cleanup()
+
     # ── Condition 2: is there anything new? ──────────────────────────────────
 
     def test_nothing_new_since_the_last_ga_tag_is_a_skip(self):

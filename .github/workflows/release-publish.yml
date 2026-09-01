@@ -5,25 +5,19 @@ name: Release & Publish (GA)
 #
 # Everything that decides *whether* to release now lives in the
 # `evaluate-schedule` job, and everything that decides *what* to publish stays
-# where it was. That split is what a weekly cron needs, because the publishing
-# path answers "nothing to release" with exit 1 — correct when a human asked,
-# a red run every quiet week when nobody did.
+# where it was. That split is what an unattended run needs: it adds the halt on a
+# breaking change, which the publishing path has no counterpart for, and it keeps
+# the two shapes that do exit 1 with nothing to ship — no rc_*_validated tag at
+# all, and a GA tag left by an emergency release on a commit that is not the
+# candidate's stamped child — from being a red run nobody reads.
 #
 # Dispatch-only on purpose. The gate is built and tested, but turning the
 # schedule on is its own decision and its own reviewable change: exercise it by
-# hand with `schedule_gate: dry-run`, then `evaluate`, and once a real cron tick
-# would have done the right thing, add
+# hand with `schedule_gate: dry-run`, then `evaluate`, and add the `schedule:`
+# block once a real cron tick would have done the right thing.
 #
-#   schedule:
-#     - cron: "17 5 * * 4"
-#
-# above `workflow_dispatch`. Thursday because it leaves a working day to react
-# to a bad release, which Friday does not; 05:17 UTC because it is comfortably
-# after the nightly pipeline's slot, so a candidate promoted overnight is
-# visible — the gate is a poll, so being wrong about that costs latency and
-# never correctness. Minute 17 rather than 00 for the reason
-# `scripts/release/README.md` gives for the RC pipeline: the Actions scheduler
-# is most congested on the hour.
+# `scripts/release/README.md`, "The weekly GA release", is canonical for the cron
+# value and the reasoning behind it — do not restate either here.
 
 on:
   #checkov:skip=CKV_GHA_7:GA release publish workflow requires explicit version override, target commit, emergency bypass and schedule-gate parameters

@@ -32,7 +32,7 @@ page under "Why there is no `gke-admin` set".
 
 ## Overview of Scripts
 
-- `common.sh`: Centralized registry/repository helpers (`DEFAULT_REGISTRY_PREFIX`, `DEFAULT_RELEASE_REPO`, `REQUIRED_RELEASE_IMAGES`), commit discovery (`find_latest_built_commit`), validation check (`is_rc_candidate_commit_already_validated`, anchored to the `rc_*_validated` family so no other tag family can answer for it), the staging promotion tag transform (`staging_tag_for_rc`, `get_existing_staging_tag`), container image promotion (`promote_release_images`), automated bot tagging (`ensure_git_tag`), and `release_fetch_tags` — the CI-only tag sync every script that answers a question from the tag graph runs first, since a shallow or tagless checkout otherwise resolves "no such tag" rather than failing. It also holds `release_resolve_target`, which resolves the cluster the two kubectl-facing scripts below act on. **In CI that resolution has no defaults**: `GKE_CLUSTER_NAME`, `GCP_REGION`, `GCP_PROJECT_ID` and `AGENT_NAMESPACE` must all be set — they come from the job's `env:` block, which reads them from the workflow's GitHub environment — and the script exits non-zero naming whichever is missing. A release script guessing which project it targets is the failure this prevents, since the old default pointed a teardown-and-reinstall at `kube-agents-rc` whatever the caller meant. Outside CI (`CI` unset or falsy) the developer defaults still apply, so running these by hand after `install.sh` needs no extra exports.
+- `common.sh`: Centralized registry/repository helpers (`DEFAULT_REGISTRY_PREFIX`, `DEFAULT_RELEASE_REPO`, `REQUIRED_RELEASE_IMAGES`), commit discovery (`find_latest_built_commit`), validation check (`is_rc_candidate_commit_already_validated`, anchored to the `rc_*_validated` family so no other tag family can answer for it), the Conventional Commits breaking-change test (`commit_messages_have_breaking_change`, shared by the version calculator and the scheduled-release gate so a bump and a halt cannot disagree about what "breaking" means), the staging promotion tag transform (`staging_tag_for_rc`, `get_existing_staging_tag`), container image promotion (`promote_release_images`), automated bot tagging (`ensure_git_tag`), and `release_fetch_tags` — the CI-only tag sync every script that answers a question from the tag graph runs first, since a shallow or tagless checkout otherwise resolves "no such tag" rather than failing. It also holds `release_resolve_target`, which resolves the cluster the two kubectl-facing scripts below act on. **In CI that resolution has no defaults**: `GKE_CLUSTER_NAME`, `GCP_REGION`, `GCP_PROJECT_ID` and `AGENT_NAMESPACE` must all be set — they come from the job's `env:` block, which reads them from the workflow's GitHub environment — and the script exits non-zero naming whichever is missing. A release script guessing which project it targets is the failure this prevents, since the old default pointed a teardown-and-reinstall at `kube-agents-rc` whatever the caller meant. Outside CI (`CI` unset or falsy) the developer defaults still apply, so running these by hand after `install.sh` needs no extra exports.
 - `resolve_rc_tag.sh`: Validates candidate commit SHAs, resolves input tags/commit inputs, discovers the latest built commit on `main` during scheduled runs, checks for an existing `rc_*_validated` tag to skip redundant runs, and sets workflow step outputs.
 - `verify_candidate_images.sh`: Verifies that prebuilt container images (`k8s-operator`, `platform-agent`, `credential-proxy`, `replay-proxy`) exist in GHCR/registry for the target candidate SHA.
 - `tag_commit.sh`: The one place a Git tag is created and pushed. Prints a banner naming what is being tagged, then calls `ensure_git_tag`, which no-ops when the tag already points at the same commit and fails when it points at a different one. Every tagger below is a wrapper over it, keeping only what is genuinely its own; a second copy of this body is how the rungs of the release ladder drift apart.
@@ -51,7 +51,7 @@ page under "Why there is no `gke-admin` set".
 - `install_pubsub_platform.sh`: Installs `agentplugins/pubsub-platform`, the adapter that turns a Pub/Sub alert into agent work, and waits for the plugin to reconcile and the gateway's generation to settle. It exists because the adapter is a gateway singleton the agent image does not carry and the install engine does not deploy: the stockout investigator and any other alert producer contribute only route config, so without the adapter the gateway opens no listener and every alert-driven test fails on silence. That is a gap in the install rather than in the harness, tracked in [#1013](https://github.com/gke-labs/kube-agents/issues/1013); this makes the gate honest until that lands, and is meant to be deleted with it. Called by `e2e-run.yml`, the reusable E2E job the RC and nightly pipelines both delegate to, so both get it. It pays for a Helm release and, when the plugin source has changed since the last run, an image build. It exits non-zero when it cannot deliver working ingress and leaves the consequence to the caller: the step is `continue-on-error` because on the RC alert ingress is a dependency of the optional suite alone. That covers the failures this script detects and reports, and no more — an adapter that installs cleanly and then wedges the gateway rollout fails `wait_for_gke_readiness.sh`, which carries no `continue-on-error`, and the Chat gate never runs. The script's own header states the limit; do not read the flag as a guarantee the mandatory gate is insulated. `SKIP_PUBSUB_PLATFORM` opts a run out. `e2e-manual-runner.yml` does not call it; wiring that up is part of #1013's follow-up.
 - `wait_for_gke_readiness.sh`: Connects `kubectl` to the target cluster, configures Artifact Registry credentials, optionally verifies the gateway is running the candidate commit's image — delegated to `scripts/confirm_agent_image.sh`, which the agent redeploy workflow runs for the same purpose — and waits for `litellm` and `platform-agent-gateway` to report ready. It waits and does not install. In `e2e-run.yml` — the one caller that installs alert ingress today — `install_pubsub_platform.sh` runs before it, so the gateway re-template the adapter causes is already in flight when the rollout waits start. Ordering the two is the caller's job, not something this script checks.
 - `tag_validated_release.sh`: Attaches the `rc_*_validated` marker to a candidate commit upon 100% test pass, by appending `_validated` to its `rc_*` tag.
-- `resolve_scheduled_release.sh`: Decides whether an unattended run of `release-publish.yml` should publish. Three conditions — a candidate carries an `rc_*_validated` tag, commits exist between the newest GA tag and that candidate, and nothing in the range is a breaking change — emitted as `should_release`, `release_commit`, `gate_tag` and `skip_reason`. The first two failing are skips with exit 0, because a quiet week is not a broken pipeline and a workflow that goes red most weeks is one nobody reads. A breaking change is not a skip: it recurs until somebody publishes by hand, so it raises an `::error` and exits non-zero. There is no weekday or elapsed-time check in it — the cron is the cadence — and no "already released?" condition either, because a GA tag on the gated commit empties the range and the second condition covers it. It reuses `get_latest_validated_rc_tag` rather than re-implementing the lookup, so this gate and `verify_release_eligibility.sh` cannot disagree about which candidate is validated.
+- `resolve_scheduled_release.sh`: Decides whether an unattended run of `release-publish.yml` should publish. Three conditions — a candidate carries an `rc_*_validated` tag, commits exist between the newest GA tag and that candidate, and nothing in the range is a breaking change — emitted as `should_release`, `release_commit`, `gate_tag` and `skip_reason`. The first two failing are skips with exit 0; a breaking change is not a skip, because it recurs until somebody publishes by hand, so it raises an `::error` and exits non-zero. A repository with no GA tag yet skips both remaining conditions rather than evaluating them against all of history, matching what `calculate_next_version.sh` does in that state — checking would halt on some long-shipped `feat!:` with no range left to shrink, permanently. There is no weekday or elapsed-time check in it — the cron is the cadence — and no "already released?" condition either, because a GA tag on the gated commit empties the range and the second condition covers it. It takes both the candidate lookup (`get_latest_validated_rc_tag`) and the breaking-change definition (`commit_messages_have_breaking_change`) from `common.sh` rather than re-implementing either: the first keeps it agreeing with `verify_release_eligibility.sh` about which candidate is validated, the second keeps it agreeing with `calculate_next_version.sh` about what "breaking" means. See "The weekly GA release" below for what the gate is actually buying over the publishing path's own behaviour.
 - `decide_release_gate.sh`: Chooses which way into `release-publish.yml` a run is taking and emits the verdict the publish job is gated on. A `schedule` event always evaluates; a dispatch reads the workflow's `schedule_gate` input — `bypass` (the default, and what every dispatch did before the gate existed, emergency path included), `dry-run` (run the resolver, report the verdict, publish nothing) and `evaluate` (act on it, exactly as a cron tick would). An unrecognised mode exits non-zero rather than falling back to publishing.
 - `calculate_next_version.sh`: Automatically calculates the next SemVer 2.0 version from Conventional Commits since the latest numeric GA release tag.
 - `verify_release_eligibility.sh`: Release gatekeeper that verifies commit eligibility, checks for live RC validation tags (`rc_*_validated`), performs tag collision detection, and verifies all 4 required container images exist in registry.
@@ -215,28 +215,48 @@ the three conditions and the skip semantics do not move, only the tag family con
 Nothing is lost by dropping the `rc_*_validated` requirement when that happens, because a staging
 tag is only ever created from a candidate that already carries one.
 
-**Why the gate is a script rather than a `schedule:` block.** The publishing path answers "nothing
-to release" with a non-zero exit: `verify_release_eligibility.sh` exits 1 when no commit carries a
-validated tag, and `calculate_next_version.sh` has nothing to compute when no commits have landed
-since the last GA tag. Triggered by hand those are correct, visible errors — somebody asked, and
-got an answer. On a cron they are a red run every week that happened to have nothing to ship, and
-a workflow that is red most weeks is one nobody reads. So the gate checks the same conditions
-first and skips green, leaving red to mean the machinery is broken.
+**Why the gate is a script rather than a `schedule:` block.** Less of the answer than you might
+expect is "the quiet week would go red". It would not: on an ordinary week with nothing merged
+since the last release, `calculate_next_version.sh` exits 0 with `has_changes=false`, then
+`verify_release_eligibility.sh` recognises the GA tag as the stamped single-parent child of the
+gated candidate, finds the GitHub Release, and takes its idempotent-skip branch. `skip_release=true`
+gates every publishing step and the job finishes green today, with none of this.
 
-The one exception is a breaking change in the range, which fails the job. It will not clear itself
-— every following run takes the same branch and GA releases stop — so it is something somebody has
-to act on rather than a quiet week. Publish that one by hand.
+Three narrower things are left, and together they are the gate:
+
+- **The halt.** Nothing in the publishing path stops for a breaking change, and an unattended run
+  is exactly where one should not go out unwatched. It will not clear itself either — every
+  following run takes the same branch and GA releases stop — so it fails the job rather than
+  skipping. Publish that one by hand.
+- **Two shapes that do exit 1 with nothing to ship.** No `rc_*_validated` tag anywhere in history
+  trips `verify_release_eligibility.sh`; and a GA tag sitting on a commit that is not the gated
+  candidate's stamped child — what an emergency release leaves behind — trips its "tag already
+  exists on a different commit" collision. Condition 2 covers the second, which is the one that
+  recurs.
+- **Deciding in one place.** The idempotent-skip branch reaches its answer through a
+  `gh release view` network call and a commit-shape heuristic several scripts deep. The gate reads
+  the tag graph and says so in the job summary.
+
+On the ordinary week, then, condition 2 saves a checkout, a version calculation and four registry
+inspections rather than a red run. Red is left to mean the machinery is broken.
 
 **It ships without a `schedule:`.** The gate is built and tested; turning the cron on is its own
 decision and its own reviewable change, the way `nightly-pipeline.yml` shipped. Exercise it in
 order:
 
 1. `workflow_dispatch` with `schedule_gate: dry-run` — the resolver runs against the real tag graph
-   and reports what a cron tick would decide. Nothing is published.
+   and reports what a cron tick would decide. Nothing is published. Note that a dry run still goes
+   **red** if the verdict is a halt: it reports what the cron would do, and going red is part of
+   that.
 2. Same again with `evaluate` — the verdict is honoured, so a `should_release=true` publishes a
    real GA release. This is a cron tick in every respect except what started it.
 3. Add `schedule: - cron: "17 5 * * 4"` to the workflow. Thursday leaves a working day to react to
-   a bad release, which Friday does not, and 05:17 UTC is comfortably after the nightly slot.
+   a bad release, which Friday does not. 05:17 UTC is meant to sit after the nightly pipeline has
+   finished, but that is an estimate rather than a measured margin — the nightly's own cron does
+   not exist yet either, and its proposed 02:00 start gives a little over three hours for a run
+   that budgets 60 minutes on the deploy alone. Being wrong about it costs latency and never
+   correctness, because the gate is a poll: a candidate promoted later is simply picked up by the
+   following week. Pick a later slot if the two turn out to overlap.
 
 Leaving the input alone (`bypass`) keeps a dispatch behaving exactly as it did before any of this
 existed, emergency override included. That path is unreachable from a schedule.

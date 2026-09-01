@@ -143,9 +143,10 @@ fi
 BUMP_TYPE="patch"
 HAS_BREAKING="false"
 
-# Check for Breaking Changes in subject (feat!:, fix!:) or footer (BREAKING CHANGE: / BREAKING-CHANGE:)
-if echo "${COMMITS_SUBJECTS}" | grep -qE "^[a-z]+(\([^)]+\))?!:" || \
-   echo "${COMMITS_BODIES}" | grep -qE "^[[:space:]]*BREAKING[ -]CHANGE:[[:space:]]+"; then
+# Check for Breaking Changes in subject (feat!:, fix!:) or footer (BREAKING CHANGE: / BREAKING-CHANGE:).
+# The definition lives in common.sh because resolve_scheduled_release.sh gates an
+# unattended release on the same question and the two must not drift.
+if commit_messages_have_breaking_change "${COMMITS_SUBJECTS}" "${COMMITS_BODIES}"; then
   HAS_BREAKING="true"
 fi
 

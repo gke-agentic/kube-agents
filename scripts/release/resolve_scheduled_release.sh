@@ -8,13 +8,7 @@
 # choosing when to click "Run workflow": is this candidate one we are willing to
 # ship with nobody watching?
 #
-# Three conditions, and each is checked here rather than left to the publishing
-# steps because of how those steps fail. verify_release_eligibility.sh exits 1
-# when its gate is not satisfied, and calculate_next_version.sh has nothing to
-# compute when no commits have landed since the last GA tag. Triggered by hand
-# those are correct, visible errors — a human asked, and got an answer. On a
-# schedule they are a red run every week that happened to have nothing to ship,
-# and a workflow that is red most weeks is one nobody reads.
+# Three conditions:
 #
 #   1. A candidate has passed the gate — the newest rc_*_validated tag. Skip.
 #   2. There is something to release: commits exist between the newest GA tag
@@ -26,6 +20,25 @@
 # breaking change does not clear itself — every following run takes the same
 # branch and GA releases stop until somebody publishes by hand — so it fails the
 # job. A skip means "nothing to do this week"; red means "something needs you".
+#
+# What this is actually buying, since the publishing path is less fragile than it
+# looks. An ordinary quiet week already ends green without any of this:
+# calculate_next_version.sh exits 0 with has_changes=false, and
+# verify_release_eligibility.sh recognises the GA tag as the stamped child of the
+# candidate and takes its idempotent-skip branch. Three narrower things are left,
+# and they are the reason this exists:
+#
+#   - The halt. Nothing in the publishing path stops for a breaking change.
+#   - Two shapes that do go red on a run with nothing to ship. No rc_*_validated
+#     tag anywhere trips the exit 1 in verify_release_eligibility.sh; and a GA tag
+#     sitting on a commit that is not this candidate's stamped child — what an
+#     emergency release leaves behind — trips its "tag already exists on a
+#     different commit" collision. Condition 2 covers the second.
+#   - Deciding in one place, on the tag graph, rather than depending on a
+#     `gh release view` call and a commit-shape heuristic several scripts deep.
+#
+# A red run should mean the machinery is broken, not that this week had nothing
+# to ship, or nobody reads the red ones.
 #
 # There is deliberately no weekday or elapsed-time check in here. The cron is
 # the cadence, so no wall-clock arithmetic exists anywhere in the decision, and
@@ -135,24 +148,37 @@ if ! RELEASE_COMMIT="$(git rev-parse --verify "${GATE_TAG}^{commit}" 2>/dev/null
 fi
 
 # ── 2. Is there anything new in it? ──────────────────────────────────────────
-if [ -n "${LATEST_GA_TAG}" ]; then
-  RANGE="${LATEST_GA_TAG}..${RELEASE_COMMIT}"
-  if ! COMMITS_SUBJECTS="$(git log "${RANGE}" --format="%s" 2>&1)"; then
-    echo "❌ ERROR: Failed to read commit log for range '${RANGE}': ${COMMITS_SUBJECTS}" >&2
-    exit 1
-  fi
-  COMMITS_BODIES="$(git log "${RANGE}" --format="%b" 2>/dev/null || echo "")"
+#
+# With no GA tag there is no range and nothing to check: the repository has never
+# released, so everything reachable is new. Both remaining conditions are skipped
+# rather than evaluated against all of history — see condition 3 for why that
+# matters — which is also what calculate_next_version.sh does in this state,
+# publishing DEFAULT_INITIAL_VERSION without scanning.
+if [ -z "${LATEST_GA_TAG}" ]; then
+  SHOULD_RELEASE="true"
+  emit_and_exit
+fi
 
-  if [ -z "${COMMITS_SUBJECTS}" ]; then
-    # Two shapes reach here and both are "nothing to ship": the ordinary quiet
-    # week, and the case where an emergency release already put the GA tag on or
-    # ahead of the gated commit. Neither is worth a red run.
-    SKIP_REASON="No commits between ${LATEST_GA_TAG} and the gate-passing commit ${RELEASE_COMMIT:0:7}."
-    emit_and_exit
-  fi
-else
-  COMMITS_SUBJECTS="$(git log "${RELEASE_COMMIT}" --format="%s" 2>/dev/null || echo "")"
-  COMMITS_BODIES="$(git log "${RELEASE_COMMIT}" --format="%b" 2>/dev/null || echo "")"
+RANGE="${LATEST_GA_TAG}..${RELEASE_COMMIT}"
+if ! COMMITS_SUBJECTS="$(git log "${RANGE}" --format="%s" 2>&1)"; then
+  echo "❌ ERROR: Failed to read commit log for range '${RANGE}': ${COMMITS_SUBJECTS}" >&2
+  exit 1
+fi
+COMMITS_BODIES="$(git log "${RANGE}" --format="%b" 2>/dev/null || echo "")"
+
+if [ -z "${COMMITS_SUBJECTS}" ]; then
+  # Two shapes reach here and both are "nothing to ship". The ordinary quiet week
+  # would be handled without this — verify_release_eligibility.sh recognises the
+  # GA tag as the stamped child of this candidate and skips green on its own — so
+  # what this saves there is a wasted checkout, version calculation and four
+  # registry inspections rather than a red run.
+  #
+  # The other shape is the one that goes red today: an emergency release put the
+  # GA tag on a commit that is not this candidate's stamped child, so the
+  # eligibility check reports "tag already exists on a different commit" and exits
+  # 1. On a schedule that is a red run with nothing wrong.
+  SKIP_REASON="No commits between ${LATEST_GA_TAG} and the gate-passing commit ${RELEASE_COMMIT:0:7}."
+  emit_and_exit
 fi
 
 # ── 3. Is any of it a breaking change? ───────────────────────────────────────
@@ -160,11 +186,17 @@ fi
 # Spelled as "breaking" rather than "MAJOR" deliberately. calculate_next_version.sh
 # implements SemVer clause 4, so while the repository is on 0.y.z a breaking
 # change bumps MINOR and the MAJOR digit never moves — a guard written against
-# MAJOR would pass every breaking release straight through until 1.0.0. The
-# regexes are the ones calculate_next_version.sh step 6 uses, so the two agree on
-# what "breaking" means.
-if echo "${COMMITS_SUBJECTS}" | grep -qE "^[a-z]+(\([^)]+\))?!:" ||
-  echo "${COMMITS_BODIES}" | grep -qE "^[[:space:]]*BREAKING[ -]CHANGE:[[:space:]]+"; then
+# MAJOR would pass every breaking release straight through until 1.0.0.
+#
+# The definition is common.sh's, shared with calculate_next_version.sh, because a
+# second copy here is how the bump and the halt come to disagree about what
+# "breaking" means — and the direction that fails silently is the gate waving one
+# through into an unattended release.
+#
+# Reached only with a GA tag in hand, which is what keeps this bounded. Against
+# all of history it would match some long-shipped `feat!:` and then never stop
+# matching it, since there is no range to shrink: one permanent halt, every run.
+if commit_messages_have_breaking_change "${COMMITS_SUBJECTS}" "${COMMITS_BODIES}"; then
   HALTED_FOR_HUMAN="true"
   SKIP_REASON="A breaking change is waiting to ship. Releases carrying one are published by a human: run release-publish.yml manually against ${RELEASE_COMMIT:0:7}."
   emit_and_exit
