@@ -15,7 +15,7 @@ Every commit and build progresses through four distinct lifecycle tiers:
 
 | Tier                       | Format                                | Trigger                      | Purpose and guarantees                                                 |
 | :------------------------- | :------------------------------------ | :--------------------------- | :--------------------------------------------------------------------- |
-| **Candidate Build**        | `sha-<SHORT_SHA>`                     | Push to `main` branch        | Developer build in GHCR; container images built once.                  |
+| **Candidate Build**        | `<COMMIT_SHA>` (bare 40-char SHA)     | Push to `main` branch        | Developer build in GHCR; container images built once.                  |
 | **Release Candidate (RC)** | `rc_YYMMDDHHMM_<SHORT_SHA>`           | Push to `main` / 3-hour cron | Candidate build selected for live cluster testing.                     |
 | **RC Validated**           | `rc_YYMMDDHHMM_<SHORT_SHA>_validated` | Successful GKE E2E suite     | Quality gate: proof that `install.sh` succeeded on a real GKE cluster. |
 | **GA Stable**              | `X.Y.Z` (pure numeric SemVer)         | Release publish workflow     | Official production release tagged on the validated commit.            |
@@ -47,7 +47,7 @@ Before triggering a production release:
 
 1. Target commit must exist on the `main` branch.
 2. Target commit must carry an `rc_*_validated` tag created by the automated RC validation pipeline ([`scripts/release/README.md`](https://github.com/gke-labs/kube-agents/tree/main/scripts/release)).
-3. All four required container images (`k8s-operator`, `platform-agent`, `credential-proxy`, `replay-proxy`) must exist in GHCR under `sha-<TARGET_COMMIT>`.
+3. All four required container images (`k8s-operator`, `platform-agent`, `credential-proxy`, `replay-proxy`) must exist in GHCR under `<TARGET_COMMIT>`.
 4. GitHub CLI (`gh`) version 2.40.0 or newer installed and authenticated with `repo` and `workflow` permissions (`gh auth status`).
 
 ### Triggering the release workflow
@@ -82,7 +82,7 @@ Emergency gate bypass (`skip_rc_validation: true`) is strictly reserved for:
 
 Even during an emergency bypass, the pipeline strictly enforces:
 
-- **Prebuilt image presence**: `scripts/release/verify_release_eligibility.sh` verifies that all four container images (`k8s-operator`, `platform-agent`, `credential-proxy`, `replay-proxy`) exist in GHCR under `sha-<TARGET_COMMIT>`. Releases of unbuilt commits hard-fail.
+- **Prebuilt image presence**: `scripts/release/verify_release_eligibility.sh` verifies that all four container images (`k8s-operator`, `platform-agent`, `credential-proxy`, `replay-proxy`) exist in GHCR under `<TARGET_COMMIT>`. Releases of unbuilt commits hard-fail.
 - **Mandatory audit reason**: `emergency_override_reason` must contain a non-whitespace justification. Empty or whitespace-only reasons abort the workflow (`exit 1`).
 - **Tag collision protection**: If the target SemVer tag already points to another commit, the release aborts.
 
@@ -117,7 +117,7 @@ After an emergency publication:
 
 The release publish workflow enforces byte-for-byte fidelity with tested candidate binaries:
 
-1. **Zero container rebuilds**: Container images are compiled only once on push to `main`. `scripts/release/promote_release_images.sh` retags existing `sha-<TARGET_COMMIT>` manifests to numeric `X.Y.Z` in GHCR using `docker buildx imagetools create`.
+1. **Zero container rebuilds**: Container images are compiled only once on push to `main`. `scripts/release/promote_release_images.sh` retags existing `<TARGET_COMMIT>` manifests to numeric `X.Y.Z` in GHCR using `docker buildx imagetools create`.
 2. **Cosign OIDC signature**: Promoted container images in GHCR are cryptographically signed using Keyless Cosign via GitHub Actions OIDC tokens (`scripts/release/sign_release_images.sh`).
 3. **OCI Helm chart**: `scripts/release/publish_helm_chart.sh` packages `charts/kube-agents` at version `X.Y.Z` (matching `appVersion`), pushes the OCI package to `oci://ghcr.io/gke-labs/kube-agents/charts/kube-agents:X.Y.Z`, and signs the OCI manifest via Cosign.
 4. **Installer version lock**: `scripts/release/tag_ga_release.sh` creates a single-parent release commit on detached HEAD, stamps `BAKED_RELEASE_VERSION="X.Y.Z"` into root scripts (`install.sh`, `uninstall.sh`, `upgrade.sh`), and tags the stamped commit.
