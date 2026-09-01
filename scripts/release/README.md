@@ -201,21 +201,11 @@ release path, which runs from `release-publish.yml` against the release reposito
 
 These modular scripts back the corresponding child workflows in `.github/workflows/`:
 
-<<<<<<< HEAD
-| GitHub Workflow               | Release Step                            | Executed Scripts                                                                                                                                                                               |
-| ----------------------------- | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `rc-create-tag.yml`           | Step 1 - Create Candidate Tag           | `resolve_rc_tag.sh`, `verify_candidate_images.sh`, `create_release_tag.sh`                                                                                                                     |
-| `rc-deploy-environment.yml`   | Step 2 - Deploy Environment             | `resolve_rc_tag.sh`, `validate_and_log_deploy_summary.sh`, `provision_rc_environment.sh`                                                                                                       |
-| `rc-release-pipeline.yml`     | Step 3 - GKE Readiness & E2E Validation | `install_e2e_deps.sh`, `wait_for_gke_readiness.sh`, `execute_e2e_tests.sh`                                                                                     |
-| `rc-tag-validated.yml`        | Step 4 - Validate Candidate Commit      | `resolve_rc_tag.sh`, `tag_validated_release.sh`                                                                                                                                                |
-| `rc-teardown-environment.yml` | Step 5 - Tear Down Environment          | `resolve_rc_tag.sh`, `teardown_rc_environment.sh`                                                                                                                                              |
-| `release-publish.yml`         | GA Release Orchestration                | `calculate_next_version.sh`, `verify_release_eligibility.sh`, `tag_ga_release.sh`, `promote_release_images.sh`, `sign_release_images.sh`, `publish_helm_chart.sh`, `publish_github_release.sh` |
-=======
 | GitHub Workflow            | Release Step                            | Executed Scripts                                                                                                                                                                               |
 | -------------------------- | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `rc-create-tag.yml`        | Step 1 - Create Candidate Tag           | `resolve_rc_tag.sh`, `verify_candidate_images.sh`, `create_release_tag.sh`                                                                                                                     |
 | `deploy-environment.yml`   | Step 2 - Deploy Environment             | `resolve_rc_tag.sh`, `validate_and_log_deploy_summary.sh`, `provision_environment.sh`                                                                                                          |
-| `e2e-run.yml`              | Step 3 - GKE Readiness & E2E Validation | `install_e2e_deps.sh`, `install_pubsub_platform.sh`, `wait_for_gke_readiness.sh`, `execute_e2e_tests.sh`, `run_optional_e2e_suites.sh`                                                         |
+| `e2e-run.yml`              | Step 3 - GKE Readiness & E2E Validation | `install_e2e_deps.sh`, `wait_for_gke_readiness.sh`, `execute_e2e_tests.sh`, `run_optional_e2e_suites.sh`                                                                                       |
 | `rc-tag-validated.yml`     | Step 4 - Validate Candidate Commit      | `resolve_rc_tag.sh`, `tag_validated_release.sh`                                                                                                                                                |
 | `teardown-environment.yml` | Step 5 - Tear Down Environment          | `resolve_rc_tag.sh`, `teardown_environment.sh`                                                                                                                                                 |
 | `nightly-pipeline.yml`     | Nightly promotion to staging            | `resolve_promotion_candidate.sh`, `verify_candidate_images.sh`, `record_nightly_candidate_summary.sh`, `tag_staging_promotion.sh`, plus the three shared workflows above                       |
@@ -259,4 +249,3 @@ While any candidate is refused this way, a nightly dispatch reports that it did
 nothing rather than exercising the pipeline — including the by-hand run the
 "The nightly environment" section above asks for. Run the RC pipeline first and
 let it validate a post-restructure commit.
->>>>>>> upstream/main
