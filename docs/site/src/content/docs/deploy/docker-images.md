@@ -61,7 +61,7 @@ Needed only to rebuild the images above from source, not to run an install. Each
 | Image | Upstream reference | Pin | Override | Pulled by |
 | ----- | ------------------ | --- | -------- | --------- |
 | `hermes-agent` | `docker.io/nousresearch/hermes-agent` | `HERMES_AGENT_TAG` in [`tags.env`](https://github.com/gke-labs/kube-agents/blob/main/tags.env) | `HERMES_AGENT_IMAGE` | deploy/docker/Dockerfile (agent-base stage). |
-| `envoy` | `docker.io/envoyproxy/envoy` | `v1.39.0` | `ENVOY_IMAGE` | deploy/docker/Dockerfile (envoy-bin stage). |
+| `envoy` | `docker.io/envoyproxy/envoy` | `v1.39.1` | `ENVOY_IMAGE` | deploy/docker/Dockerfile (envoy-bin stage). |
 | `golang` | `docker.io/library/golang` | `1.26-alpine` | `GOLANG_IMAGE` | deploy/docker/Dockerfile and k8s-operator/Dockerfile builder stages. |
 | `python` | `docker.io/library/python` | `3.11-slim` | `PYTHON_IMAGE` | examples/inference-replay/replay-proxy/Dockerfile. |
 | `distroless-static` | `gcr.io/distroless/static` | `nonroot` | `DISTROLESS_IMAGE` | k8s-operator/Dockerfile runtime stage. |
