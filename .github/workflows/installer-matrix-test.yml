@@ -9,6 +9,7 @@ on:
       - "upgrade.sh"
       # The three scripts source their defaults, validators, and the tfvars
       # generator from these helpers, so a change there must run this gate too.
+      - "install.defaults.env"
       - "scripts/installer/installer_common.sh"
       - "scripts/installer/min_versions.sh"
       - "scripts/installer/gke_dns_endpoint.sh"

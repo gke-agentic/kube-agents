@@ -186,6 +186,15 @@ jobs:
           # variable names for the repository a test acts on.
           GITOPS_ORG: ${{ vars.GITOPS_ORG }}
           GITOPS_REPO: ${{ vars.GITOPS_REPO }}
+          # The old names as well, for the same reason as the
+          # provision_rc_environment.sh fallback in the run block below: this
+          # step executes the checked-out candidate's scripts, and every
+          # candidate predating the GITOPS_* rename reads GITHUB_ORG/GITHUB_REPO
+          # — with those empty and GITHUB_APP_ID set, its half-configured-minter
+          # guard refuses the deploy outright. On a post-rename tree GITOPS_*
+          # wins and these two are ignored. Delete them alongside that fallback.
+          GITHUB_ORG: ${{ vars.GITOPS_ORG }}
+          GITHUB_REPO: ${{ vars.GITOPS_REPO }}
           GITHUB_APP_ID: ${{ secrets.GH_APP_ID }}
           # Optional, and the lesser of the two routes. Importing the App's private
           # key into the minter's KMS key by hand is the better one: the key ring

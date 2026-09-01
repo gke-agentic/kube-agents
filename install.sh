@@ -2474,13 +2474,19 @@ main() {
     # every set, so neither belongs in these labels. read-only leads because it is
     # the documented default and the only set that enforces no cloud-plane writes.
     # See docs/site/src/content/docs/reference/security-and-iam.md.
-    local perm_choice=""
+    # The "(Default)" tag follows the option enter keeps — the seeded one on a
+    # re-run — for the reason the gVisor prompt below gives: a static tag on
+    # option 1 contradicts what an empty answer does once a recorded setting
+    # seeds the choice. The order stays fixed so the option numbers are stable.
+    local perm_choice="" perm_tag_ro=" (Default)" perm_tag_custom=""
     if [ "$permission_set" = "custom" ]; then
       perm_choice="2"
+      perm_tag_ro=""
+      perm_tag_custom=" (Default)"
     fi
     prompt_menu "Select Platform Agent GCP IAM Permission Set:" \
-      "read-only — auditing and observability, no GCP write capability (Default)" \
-      "custom — exactly the roles you list, no built-in bundle" \
+      "read-only — auditing and observability, no GCP write capability${perm_tag_ro}" \
+      "custom — exactly the roles you list, no built-in bundle${perm_tag_custom}" \
       perm_choice
 
     case "$perm_choice" in
@@ -2569,16 +2575,25 @@ main() {
     # "saying nothing" on a re-run means keeping what is there, not taking the
     # first entry: omitting --memory used to delete a Hindsight deployment
     # (#1060, item 5).
-    local memory_choice=""
+    # The "(Default)" tag follows the option enter keeps, like the permission-set
+    # prompt above: on a re-run that seeded hindsight or off, a static tag on the
+    # file store would claim enter does something it does not. The order stays
+    # fixed so the option numbers are stable.
+    local memory_choice="" mem_tag_file="" mem_tag_hind="" mem_tag_off=""
     case "$memory_mode" in
       file) memory_choice="1" ;;
       hindsight) memory_choice="2" ;;
       off) memory_choice="3" ;;
     esac
+    case "$memory_choice" in
+      2) mem_tag_hind=" (Default)" ;;
+      3) mem_tag_off=" (Default)" ;;
+      *) mem_tag_file=" (Default)" ;;
+    esac
     prompt_menu "Should the agent remember things between conversations?" \
-      "Files on the agent's own disk (Default) - For small or personal deployments. Per-user Markdown, no extra services to run, does not scale past a few pages" \
-      "Searchable store - For enterprise deployments. Ranked recall that scales, deploys Hindsight (API + Postgres) into the cluster" \
-      "No - Nothing is retained once a session ends" \
+      "Files on the agent's own disk${mem_tag_file} - For small or personal deployments. Per-user Markdown, no extra services to run, does not scale past a few pages" \
+      "Searchable store${mem_tag_hind} - For enterprise deployments. Ranked recall that scales, deploys Hindsight (API + Postgres) into the cluster" \
+      "No${mem_tag_off} - Nothing is retained once a session ends" \
       memory_choice
 
     # Every branch assigns, rather than letting option 1 fall through to

@@ -949,16 +949,16 @@ write_tfvars_from_state() {
       echo "# terraform as TF_VAR_* environment variables instead."
     fi
     echo ""
-    echo "permission_set = $(hcl_str "${PLATFORM_AGENT_PERMISSION_SET:-read-only}")"
+    echo "permission_set = $(hcl_str "${PLATFORM_AGENT_PERMISSION_SET:-$DEFAULT_PERMISSION_SET}")"
     if [ "${PLATFORM_AGENT_PERMISSION_SET:-}" = "custom" ]; then
       echo "project_roles  = $(hcl_csv_list "${PLATFORM_AGENT_CUSTOM_ROLES:-}")"
     fi
     echo ""
-    echo "enable_google_chat        = $(hcl_bool "${GOOGLE_CHAT_ENABLED:-false}")"
-    echo "chat_topic_name           = $(hcl_str "${CHAT_TOPIC_NAME:-platform-agent-chat-events}")"
+    echo "enable_google_chat        = $(hcl_bool "${GOOGLE_CHAT_ENABLED:-$DEFAULT_GOOGLE_CHAT_ENABLED}")"
+    echo "chat_topic_name           = $(hcl_str "${CHAT_TOPIC_NAME:-$DEFAULT_CHAT_TOPIC_NAME}")"
     echo "chat_subscription_name    = $(hcl_str "${CHAT_SUB_NAME:-$DEFAULT_CHAT_SUB_NAME}")"
     echo "google_chat_allowed_users = $(hcl_csv_list "${ALLOWED_USERS:-}")"
-    echo "google_chat_mode          = $(hcl_str "${GOOGLE_CHAT_MODE:-default}")"
+    echo "google_chat_mode          = $(hcl_str "${GOOGLE_CHAT_MODE:-$DEFAULT_GOOGLE_CHAT_MODE}")"
     echo ""
     echo "enable_slack            = $(hcl_bool "${SLACK_ENABLED:-false}")"
     if is_truthy "${PERSIST_SECRETS_ON_DISK:-true}"; then
@@ -981,11 +981,11 @@ write_tfvars_from_state() {
       echo "github_minter_kms_key = $(hcl_str "${KMS_KEY}")"
     fi
     echo ""
-    echo "enable_gke_backup_plan = $(hcl_bool "${ENABLE_GKE_BACKUP_PLAN:-false}")"
+    echo "enable_gke_backup_plan = $(hcl_bool "${ENABLE_GKE_BACKUP_PLAN:-$DEFAULT_ENABLE_GKE_BACKUP_PLAN}")"
     echo ""
     echo "# The CRD defaults dashboardEnabled to true; the installer has always"
     echo "# defaulted it to false and asks. Memory settings mirror --memory."
-    echo "hermes_dashboard_enabled = $(hcl_bool "${HERMES_DASHBOARD_ENABLED:-false}")"
+    echo "hermes_dashboard_enabled = $(hcl_bool "${HERMES_DASHBOARD_ENABLED:-$DEFAULT_ENABLE_WEBUI}")"
     echo "memory_enabled           = $(hcl_bool "${MEMORY_ENABLED:-false}")"
     echo "memory_provider          = $(hcl_str "$memory_provider")"
     echo "user_profile_enabled     = $(hcl_bool "${USER_PROFILE_ENABLED:-false}")"

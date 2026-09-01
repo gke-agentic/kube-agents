@@ -73,17 +73,29 @@ class MinterRepositoryWiringTest(unittest.TestCase):
 
         `GITHUB_ORG: ${{ vars.GITOPS_ORG }}` invites a "fix" to vars.GH_ORG,
         which is exactly how a live App token gets scoped at the release
-        repository. The installer's inputs are GITOPS_*, so the workflow now
-        passes them straight through with nothing to reconcile.
+        repository. The installer's inputs are GITOPS_*, so the workflow
+        passes them straight through — and, for as long as validated
+        candidates predating the rename can be deployed, it passes the old
+        names as well, because those trees read only GITHUB_* and their
+        half-configured-minter guard refuses the deploy with them empty.
+        The transition pair must map to vars.GITOPS_*, never vars.GH_*;
+        drop it together with the provision_rc_environment.sh fallback.
         """
         env = _step_env(
             "deploy-environment.yml", _CONSUMERS["deploy-environment.yml"][0]
         )
         self.assertIn("vars.GITOPS_ORG", env.get("GITOPS_ORG", ""))
-        self.assertNotIn(
-            "GITHUB_ORG", env,
-            "the installer step must not map the pair onto the deprecated names",
-        )
+        self.assertIn("vars.GITOPS_REPO", env.get("GITOPS_REPO", ""))
+        for legacy, expected in (
+            ("GITHUB_ORG", "vars.GITOPS_ORG"),
+            ("GITHUB_REPO", "vars.GITOPS_REPO"),
+        ):
+            self.assertIn(
+                expected,
+                env.get(legacy, expected),
+                f"{legacy} is the transition spelling for pre-rename candidates; "
+                f"it may only carry {expected}",
+            )
 
     def test_neither_consumer_falls_back_to_the_release_repository(self) -> None:
         for workflow, (step, org_key, repo_key) in _CONSUMERS.items():
