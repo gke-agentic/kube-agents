@@ -12,66 +12,32 @@
 # ==============================================================================
 
 # ─── Shared Installer Defaults ────────────────────────────────────────────────
-# The values every installer front-end must agree on. Each default has exactly
-# one home here so the entry points cannot drift apart.
-DEFAULT_CLUSTER_NAME="platform-agent-host"
-DEFAULT_REGION="us-central1"
-# Autopilot, because it is the shape this project is developed and validated
-# against: the autopush and staging installs already run it, the chart needs no
-# node pool, and gVisor comes from Autopilot's built-in RuntimeClass rather than
-# a dedicated pool. Standard remains a first-class choice and is what
-# --cluster-mode=standard, CLUSTER_MODE=standard, or a hand-written tfvars
-# selects; it is also required for a zonal install, which Autopilot cannot do.
+# Every default an install gets for saying nothing lives in install.defaults.env
+# at the repository root, beside install.env. One file, one job: this one has
+# none of them inline, and neither does any point of use. Precedence is
+# install.defaults.env → install.env → a flag.
 #
-# This decides ONE thing: the shape a FRESH install creates. It never reaches a
-# cluster that already exists -- see write_tfvars_from_state, where every branch
-# with a live cluster takes its mode from the probe instead.
-DEFAULT_CLUSTER_MODE="autopilot"
-# Vertex serves each model from its own subset of locations, and the cluster's
-# region is usually not one of them -- gemini-3.5-flash, the vertex_ai default,
-# is not served from us-central1 (DEFAULT_REGION), so a region-derived default
-# 404s on a stock install. The global endpoint serves the first-party Gemini
-# models from wherever has capacity, which is the only default that works
-# without knowing the cluster's region. Two reasons to override it: it gives no
-# in-region ML processing guarantee, and a Model Garden partner model (Claude,
-# Llama, Mistral) may be served only from specific regions. Which locations
-# serve which model:
-# https://docs.cloud.google.com/vertex-ai/generative-ai/docs/learn/locations
-DEFAULT_VERTEX_LOCATION="global"
-DEFAULT_MODEL_PROVIDER="gemini"
-
-# The toggles an install gets for saying nothing. Constants here rather than
-# `${VAR:-false}` at each point of use: an inline fallback is a second copy of
-# the default, and the copies drift -- which is how the installer's
-# permission-set default once disagreed with the provisioner's. install.sh
-# binds these through resolve_shared_defaults so a flag or an install.env value
-# still wins.
-DEFAULT_PERMISSION_SET="read-only"
-# On by default: the agent runs untrusted model output, and GKE Sandbox is the
-# boundary that contains it. --gvisor=false opts out.
-DEFAULT_ENABLE_GVISOR="true"
-DEFAULT_ENABLE_WEBUI="false"
-DEFAULT_USER_PROFILE_ENABLED="false"
-DEFAULT_ENABLE_GKE_BACKUP_PLAN="false"
-DEFAULT_GOOGLE_CHAT_ENABLED="false"
-DEFAULT_GOOGLE_CHAT_MODE="default"
-# `file` because it is what every install got before the searchable store
-# existed, so an upgrade that says nothing keeps the store it already has.
-DEFAULT_MEMORY="file"
-DEFAULT_CHAT_TOPIC_NAME="platform-agent-chat-events"
-DEFAULT_CHAT_SUB_NAME="platform-agent-chat-events-sub"
-DEFAULT_GITOPS_REPO="gke-fleet-iac"
-DEFAULT_KMS_KEYRING="github-token-minter-keyring"
-DEFAULT_KMS_KEY="github-token-minter-key"
-# The sandbox node pool the gke-cluster module creates on a Standard cluster.
-# Autopilot has no pool to name. write_tfvars_from_state applies this default
-# itself, so install.sh deliberately does not export a value over it.
-DEFAULT_GVISOR_POOL_NAME="gvisor-pool"
-
-# All kube-agents images (k8s-operator, platform-agent, credential-proxy,
-# replay-proxy) default to this public registry prefix. Behind-the-firewall
-# installs set REGISTRY_PREFIX to pull mirrored images instead.
-DEFAULT_REGISTRY_PREFIX="ghcr.io/gke-labs/kube-agents"
+# Sourced WITHOUT `set -a`, unlike install.env. These stay shell variables: they
+# are this project's defaults, not the install's configuration, and exporting
+# them would put DEFAULT_* into the environment Terraform and the agent see.
+#
+# Resolved relative to this file rather than the working directory, because
+# upgrade.sh and uninstall.sh source these helpers from a fresh clone whose
+# path nobody knows in advance.
+_installer_common_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || echo "")"
+INSTALL_DEFAULTS_FILE="${KUBE_AGENTS_INSTALL_DEFAULTS:-${_installer_common_dir}/../../install.defaults.env}"
+unset _installer_common_dir
+if [ -r "$INSTALL_DEFAULTS_FILE" ]; then
+  # shellcheck source=/dev/null
+  . "$INSTALL_DEFAULTS_FILE"
+else
+  # Reachable only from a broken checkout. Every front door needs these to
+  # decide anything at all, so guessing here would produce an install nobody
+  # asked for; refuse and name the file.
+  echo "  ✗ Cannot find the install defaults at ${INSTALL_DEFAULTS_FILE}." >&2
+  echo "  ℹ It ships with the repository. Re-clone, or point KUBE_AGENTS_INSTALL_DEFAULTS at a copy." >&2
+  return 1 2>/dev/null || exit 1
+fi
 
 # Model provider → the model the install defaults to for that provider.
 default_model_for_provider() {

@@ -33,6 +33,20 @@ _SOURCE_INSTALLER_COMMON = f'source "{_INSTALLER_COMMON}"; '
 
 
 class InstallScriptValidationTest(unittest.TestCase):
+    def setUp(self):
+        """Pin the install configuration to an empty file.
+
+        install.sh loads install.env at source time, so a developer who has a
+        real one in this checkout would have its values seeded into every
+        PARAM_* these tests read -- and the suite would pass or fail depending
+        on whose machine it ran on. Tests that are about the loading itself set
+        KUBE_AGENTS_INSTALL_ENV themselves; everything else gets nothing.
+        """
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self._empty_install_env = pathlib.Path(tmp.name) / "install.env"
+        self._empty_install_env.write_text("")
+
     def _run_install_func(self, func_call, env=None, cwd=None, bin_dir=None):
         """Source install.sh in test mode and run the given function call.
 
@@ -42,7 +56,9 @@ class InstallScriptValidationTest(unittest.TestCase):
 KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
 {func_call}
 """
-        full_env = get_isolated_test_env(overrides=env, bin_dir=bin_dir)
+        overrides = {"KUBE_AGENTS_INSTALL_ENV": str(self._empty_install_env)}
+        overrides.update(env or {})
+        full_env = get_isolated_test_env(overrides=overrides, bin_dir=bin_dir)
         return subprocess.run(
             ["bash", "-c", setup],
             capture_output=True,

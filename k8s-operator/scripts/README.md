@@ -28,8 +28,17 @@ their own copies:
 | `tf_state_bucket` / `tf_state_prefix`    | Where the install's Terraform state lives in GCS                                       |
 | `write_tfvars_from_state <dest> [tag]`   | The `terraform.tfvars` generator (reads the `vars.sh` variable set)                    |
 
-Change a default here and every front door follows. Do **not** restate these values in
-`install.sh`, in a chart, or in prose — link to this table instead.
+The values themselves live in [`install.defaults.env`](../../install.defaults.env) at the
+repository root, which `installer_common.sh` sources. That file does one job and holds
+nothing else: every default an install gets for saying nothing, and no configuration.
+Change a default there and every front door follows. Do **not** restate one in
+`install.sh`, in a chart, in a `${VAR:-value}` at a point of use, or in prose — link to
+this table instead. A second copy of a default is how the installer's permission-set
+default once disagreed with the provisioner's.
+
+It is sourced **without** `set -a`, unlike `install.env`: these are the project's
+defaults, not the install's configuration, so they stay shell variables rather than
+entering the environment Terraform and the agent see.
 
 ## The install configuration: `install.env`
 
@@ -53,6 +62,14 @@ and the next run overwrites is what made the old `vars.sh` confusing.
 
 **`terraform/examples/full-install/terraform.tfvars`** is the derived artifact,
 regenerated on every run from the loaded environment. Nobody edits it.
+
+**`<repo>/install.defaults.env`** is checked in and holds the defaults, nothing else. It
+is not configuration and not something an operator edits per install; it is where this
+project decides what an install gets for saying nothing. Full precedence:
+
+```
+install.defaults.env  →  install.env  →  a command-line flag
+```
 
 Loading the input first is also what fixes non-interactive re-runs (#1060). Every
 `PARAM_X="${VAR:-}"` seed already knew how to inherit from the environment; giving it a
@@ -103,8 +120,10 @@ dotenv and `vars.sh` was generated with `printf %q`.
 
 ## File directory
 
-- **[installer_common.sh](installer_common.sh)**: shared defaults, validators, `vars.sh`
-  persistence, GitHub org checks, and the `terraform.tfvars` generator (table above).
+- **[installer_common.sh](installer_common.sh)**: the `install.env` loader, validators,
+  GitHub org checks, and the `terraform.tfvars` generator (table above). Sources the
+  defaults from [`install.defaults.env`](../../install.defaults.env) rather than
+  declaring any itself.
 - **[common.sh](common.sh)**: utilities the dev tooling and the Prow CI scripts
   (`hack/ci-deploy.sh`) use — colour output, `init_var`/`load_state`,
   registry and third-party-image resolution, cluster connection helpers. Sources

@@ -32,6 +32,7 @@ from tests.testing.common import create_minimal_tools_bin, get_isolated_test_env
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _UNINSTALL_SH = _REPO_ROOT / "uninstall.sh"
 _INSTALLER_COMMON = _REPO_ROOT / "k8s-operator" / "scripts" / "installer_common.sh"
+_INSTALL_DEFAULTS = _REPO_ROOT / "install.defaults.env"
 
 
 class ResolveStateLocationTest(unittest.TestCase):
@@ -250,6 +251,11 @@ bash -c "exit 3"
         (root / "terraform" / "examples" / "full-install" / "lifecycle.sh").touch()
         shutil.copy(_UNINSTALL_SH, root / "uninstall.sh")
         shutil.copy(_INSTALLER_COMMON, root / "k8s-operator" / "scripts" / "installer_common.sh")
+        # installer_common.sh sources the defaults from the repository root and
+        # refuses to run without them, so a fake repo needs the real file. A
+        # checkout genuinely missing it cannot decide anything about an install,
+        # which is why that is a hard failure rather than a fallback.
+        shutil.copy(_INSTALL_DEFAULTS, root / "install.defaults.env")
         return root
 
     def _run_whole_script(self, tmp, gcloud_body):

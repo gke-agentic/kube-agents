@@ -538,10 +538,13 @@ class InstallerCommonTest(unittest.TestCase):
         # readiness, and the apply waits on it — the generator defers.
         with tempfile.TemporaryDirectory() as out_dir:
             dest = pathlib.Path(out_dir) / "terraform.tfvars"
+            # GITOPS_*, the installer's names as of #1026. The generator reads
+            # them directly; normalize_gitops_repo_vars folds the deprecated
+            # GITHUB_* pair in before it runs, and is covered separately.
             env = {
                 "API_SERVER_KEY": "k",
-                "GITHUB_ORG": "org",
-                "GITHUB_REPO": "repo",
+                "GITOPS_ORG": "org",
+                "GITOPS_REPO": "repo",
                 "GITHUB_APP_ID": "42",
             }
             proc = self._run(f'write_tfvars_from_state "{dest}"', env=env, kms_versions="")
@@ -588,6 +591,100 @@ class InstallerCommonTest(unittest.TestCase):
         region, vertex_location = proc.stdout.split()
         self.assertEqual(vertex_location, "global")
         self.assertNotEqual(region, vertex_location)
+
+
+class InstallDefaultsFileTest(unittest.TestCase):
+    """install.defaults.env holds every default, and only defaults.
+
+    One file, one job. The alternative -- a `${VAR:-value}` at each point of use
+    -- is a second copy of the default living next to the code that reads it,
+    and copies drift: that is how the installer's permission-set default once
+    disagreed with the provisioner's, and how the chart sat on LiteLLM v1.92.0
+    for a release after the kustomize base had moved on.
+    """
+
+    _DEFAULTS = _REPO_ROOT / "install.defaults.env"
+    _INSTALLER_COMMON = _REPO_ROOT / "k8s-operator" / "scripts" / "installer_common.sh"
+
+    def test_the_file_ships_with_the_repository(self):
+        """Not git-ignored, unlike install.env. Every front door needs it to
+        decide anything at all, including on a fresh clone."""
+        self.assertTrue(self._DEFAULTS.is_file())
+        tracked = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "install.defaults.env"],
+            cwd=str(_REPO_ROOT), capture_output=True, text=True,
+        )
+        self.assertEqual(tracked.returncode, 0, "install.defaults.env must be committed")
+
+    def test_it_holds_nothing_but_defaults(self):
+        """A configuration key here would apply to every install rather than
+        one, which is the opposite of what install.env is for."""
+        assignments = [
+            line.split("=", 1)[0].strip()
+            for line in self._DEFAULTS.read_text().splitlines()
+            if line.strip() and not line.lstrip().startswith("#") and "=" in line
+        ]
+        self.assertTrue(assignments, "the defaults file declares nothing")
+        for name in assignments:
+            with self.subTest(name=name):
+                self.assertTrue(
+                    name.startswith("DEFAULT_"),
+                    f"{name} is not a default; install configuration belongs in install.env",
+                )
+
+    def test_the_defaults_are_not_inlined_anywhere_else(self):
+        """installer_common.sh must source them, not restate them."""
+        source = self._INSTALLER_COMMON.read_text()
+        self.assertIn("install.defaults.env", source)
+        self.assertNotRegex(
+            source,
+            r"^DEFAULT_\w+=",
+            "installer_common.sh must not declare a default; they live in "
+            "install.defaults.env so there is exactly one copy",
+        )
+
+    def test_sourcing_the_helpers_puts_them_in_scope(self):
+        """The half that can break silently: whether the source actually
+        resolves. Under `set -u` a missing constant aborts rather than
+        expanding empty, so this is what a broken path would look like."""
+        proc = subprocess.run(
+            ["bash", "-c",
+             f'set -u; source "{self._INSTALLER_COMMON}"; '
+             'echo "$DEFAULT_CLUSTER_NAME|$DEFAULT_CLUSTER_MODE|$DEFAULT_MEMORY|'
+             '$DEFAULT_PERMISSION_SET|$DEFAULT_REGISTRY_PREFIX"'],
+            capture_output=True, text=True, cwd=str(_REPO_ROOT),
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            proc.stdout.strip(),
+            "platform-agent-host|autopilot|file|read-only|ghcr.io/gke-labs/kube-agents",
+        )
+
+    def test_they_are_not_exported(self):
+        """Shell variables, not environment. install.env is sourced with
+        `set -a` because its values must reach Terraform; these must not --
+        DEFAULT_* in the environment the agent and Terraform see would be noise
+        at best and an accidental override at worst.
+        """
+        proc = subprocess.run(
+            ["bash", "-c",
+             f'source "{self._INSTALLER_COMMON}" >/dev/null 2>&1; '
+             'env | grep -c "^DEFAULT_" || true'],
+            capture_output=True, text=True, cwd=str(_REPO_ROOT),
+        )
+        self.assertEqual(proc.stdout.strip(), "0", "DEFAULT_* leaked into the environment")
+
+    def test_it_is_found_from_any_working_directory(self):
+        """upgrade.sh and uninstall.sh source the helpers from a fresh clone,
+        so the path is resolved relative to installer_common.sh rather than to
+        the caller's cwd."""
+        proc = subprocess.run(
+            ["bash", "-c",
+             f'set -u; source "{self._INSTALLER_COMMON}"; echo "$DEFAULT_CLUSTER_MODE"'],
+            capture_output=True, text=True, cwd=tempfile.gettempdir(),
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "autopilot")
 
 
 if __name__ == "__main__":
