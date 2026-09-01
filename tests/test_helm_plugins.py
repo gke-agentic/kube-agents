@@ -147,6 +147,30 @@ class HelmPluginsTemplatingTest(unittest.TestCase):
         self.assertIn("ghcr.io/gke-labs/kube-agents/pubsub-platform:custom-sha-12345", proc.stdout)
         self.assertIn("ghcr.io/gke-labs/kube-agents/gke-stockout-investigator:custom-sha-12345", proc.stdout)
 
+    @unittest.skipUnless(shutil.which("helm"), "helm is not installed")
+    def test_stockout_investigator_renders_tuning(self):
+        cmd = [
+            "helm",
+            "template",
+            "test-release",
+            str(_CHART),
+            "--set",
+            "platformAgent.harness.clusterName=ci-cluster",
+            "--set",
+            "platformAgent.harness.location=us-central1",
+            "--set",
+            "platformAgent.harness.projectId=ci-project",
+            "--set",
+            "plugins.pubsubPlatform.enabled=true",
+            "--set",
+            "plugins.stockoutInvestigator.enabled=true",
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        self.assertIn("tuning:", proc.stdout)
+        self.assertIn("maxInProgress: 3", proc.stdout)
+        self.assertIn("maxTurns: 200", proc.stdout)
+        self.assertIn("maxTurns: 150", proc.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

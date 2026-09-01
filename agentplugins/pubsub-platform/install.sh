@@ -88,6 +88,17 @@ plugin_image_publish "$SCRIPT_DIR" "${SCRIPT_DIR}/files/platforms/pubsub"
 # Deploy the chart directly. This used to call scripts/deploy_extension.sh, which is not
 # in this repository — the installer could never have run as written.
 echo "Deploying pubsub-platform extension via Helm chart..."
+# If the AgentPlugin is already owned by another release (e.g. the main kube-agents chart),
+# update Helm ownership metadata so this standalone release can upgrade it without collision.
+if kubectl --context="$CONTEXT" get agentplugin pubsubplatform -n "$NAMESPACE" >/dev/null 2>&1; then
+    current_rel="$(kubectl --context="$CONTEXT" get agentplugin pubsubplatform -n "$NAMESPACE" -o jsonpath='{.metadata.annotations.meta\.helm\.sh/release-name}' 2>/dev/null || true)"
+    if [ -n "$current_rel" ] && [ "$current_rel" != "pubsubplatform" ]; then
+        echo "Adopting AgentPlugin pubsubplatform from release '${current_rel}' to 'pubsubplatform'..."
+        kubectl --context="$CONTEXT" annotate agentplugin pubsubplatform -n "$NAMESPACE" meta.helm.sh/release-name="pubsubplatform" --overwrite >/dev/null 2>&1 || true
+        kubectl --context="$CONTEXT" annotate agentplugin pubsubplatform -n "$NAMESPACE" meta.helm.sh/release-namespace="$NAMESPACE" --overwrite >/dev/null 2>&1 || true
+        kubectl --context="$CONTEXT" label agentplugin pubsubplatform -n "$NAMESPACE" app.kubernetes.io/managed-by="Helm" --overwrite >/dev/null 2>&1 || true
+    fi
+fi
 # agentRef is passed, not left to values.yaml. The operator ignores a plugin whose
 # agentRef names no PlatformAgent in the namespace, so an AGENT_REF honoured by the image
 # discovery above but not here would install a plugin that attaches to nothing, report

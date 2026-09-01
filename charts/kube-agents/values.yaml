@@ -416,6 +416,18 @@ platformAgent:
       enabled: null # CRD default: false
       provider: "" # CRD default: multiuser_memory
       userProfileEnabled: null # CRD default: false
+    # Execution limits per agent persona. Empty omits the field so CRD/Hermes
+    # defaults apply. When plugins.stockoutInvestigator.enabled=true, the chart
+    # automatically applies tuning (maxInProgress: 3, platform.maxTurns: 200,
+    # cluster.maxTurns: 150) unless overridden here.
+    tuning: {}
+      # maxInProgress: 3
+      # platform:
+      #   apiMaxRetries: 8
+      #   maxTurns: 200
+      # cluster:
+      #   apiMaxRetries: 8
+      #   maxTurns: 150
   deployment:
     image:
       repository: ghcr.io/gke-labs/kube-agents/platform-agent
