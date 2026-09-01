@@ -497,18 +497,32 @@ resource "helm_release" "kube_agents" {
       }
     }
     plugins = {
-      pubsubPlatform = {
-        enabled = var.enable_pubsub_platform || var.enable_stockout_investigator
-      }
-      stockoutInvestigator = {
-        enabled     = var.enable_stockout_investigator
-        clusterName = module.gke_cluster.cluster_name
-        pubsub = {
-          topic        = var.stockout_pubsub_topic
-          subscription = var.stockout_pubsub_subscription
-          sink         = var.stockout_pubsub_sink
-        }
-      }
+      pubsubPlatform = merge(
+        {
+          enabled = var.enable_pubsub_platform || var.enable_stockout_investigator
+        },
+        var.image_tag != "" ? {
+          image = {
+            tag = var.image_tag
+          }
+        } : {}
+      )
+      stockoutInvestigator = merge(
+        {
+          enabled     = var.enable_stockout_investigator
+          clusterName = module.gke_cluster.cluster_name
+          pubsub = {
+            topic        = var.stockout_pubsub_topic
+            subscription = var.stockout_pubsub_subscription
+            sink         = var.stockout_pubsub_sink
+          }
+        },
+        var.image_tag != "" ? {
+          image = {
+            tag = var.image_tag
+          }
+        } : {}
+      )
     }
     }),
     # Second document rather than a merge() into the first: Helm deep-merges

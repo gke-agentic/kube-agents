@@ -16,7 +16,7 @@ metadata:
     {{- include "kube-agents.labels" . | nindent 4 }}
 spec:
   agentRef: {{ .Values.plugins.pubsubPlatform.agentRef | default "platform-agent" | quote }}
-  image: {{ printf "%s:%s" (include "kube-agents.imageRepository" (dict "repository" .Values.plugins.pubsubPlatform.image.repository "registry" (include "kube-agents.imageRegistry" .))) (.Values.plugins.pubsubPlatform.image.tag | default .Chart.AppVersion) | quote }}
+  image: {{ printf "%s:%s" (include "kube-agents.imageRepository" (dict "repository" .Values.plugins.pubsubPlatform.image.repository "registry" (include "kube-agents.imageRegistry" .))) (.Values.plugins.pubsubPlatform.image.tag | default .Values.platformAgent.deployment.image.tag | default .Chart.AppVersion) | quote }}
   config: |
     platform_toolsets:
       pubsub:
@@ -48,7 +48,7 @@ metadata:
     {{- include "kube-agents.labels" . | nindent 4 }}
 spec:
   agentRef: {{ .Values.plugins.stockoutInvestigator.agentRef | default "platform-agent" | quote }}
-  image: {{ printf "%s:%s" (include "kube-agents.imageRepository" (dict "repository" .Values.plugins.stockoutInvestigator.image.repository "registry" (include "kube-agents.imageRegistry" .))) (.Values.plugins.stockoutInvestigator.image.tag | default .Chart.AppVersion) | quote }}
+  image: {{ printf "%s:%s" (include "kube-agents.imageRepository" (dict "repository" .Values.plugins.stockoutInvestigator.image.repository "registry" (include "kube-agents.imageRegistry" .))) (.Values.plugins.stockoutInvestigator.image.tag | default .Values.platformAgent.deployment.image.tag | default .Chart.AppVersion) | quote }}
   targetProfile: {{ .Values.plugins.stockoutInvestigator.targetProfile | default "platform" | quote }}
   config: |
     platforms:
