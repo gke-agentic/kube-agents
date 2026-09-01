@@ -35,9 +35,11 @@ When the GA release workflow runs, `scripts/release/calculate_next_version.sh` i
 
 ### SemVer 2.0 Clause 4 and the 1.0.0 manual governance rule
 
-1. **Initial development phase (`0.y.z`)**: Per [SemVer 2.0 Clause 4](https://semver.org/#spec-item-4), any breaking change during initial development increments `MINOR` (`0.2.1` -> `0.3.0`), resetting `PATCH` to 0.
-2. **Manual `1.0.0` transition**: The automated version calculator **never** promotes `0.y.z` to `1.0.0` on its own. Declaring API stability and graduating to `1.0.0` is a manual governance decision by project maintainers. It must be triggered explicitly via the `explicit_release_version: "1.0.0"` input parameter.
-3. **Stable phase (`1.x.x` and above)**: Once `1.0.0` is established, the automated calculator resumes normal SemVer rules: breaking changes bump `MAJOR`, new features bump `MINOR`, and bug fixes bump `PATCH`.
+During initial development (`0.y.z`), any breaking change increments `MINOR` (`0.2.1` -> `0.3.0`) and resets `PATCH` to 0, per [SemVer 2.0 Clause 4](https://semver.org/#spec-item-4).
+
+The automated version calculator never promotes `0.y.z` to `1.0.0` on its own. Declaring API stability and graduating to `1.0.0` is a manual governance decision by project maintainers, triggered explicitly through the `explicit_release_version: "1.0.0"` workflow input.
+
+Once `1.0.0` is established, the automated calculator resumes standard SemVer rules: breaking changes bump `MAJOR`, new features bump `MINOR`, and bug fixes bump `PATCH`.
 
 ## Cutting a GA release
 
@@ -73,18 +75,15 @@ The release gatekeeper enforces automated GKE RC validation (`rc_*_validated`) b
 
 ### Eligibility criteria
 
-Emergency gate bypass (`skip_rc_validation: true`) is strictly reserved for:
-
-1. **Critical CVE remediation**: Zero-day vulnerabilities in container dependencies requiring immediate publication.
-2. **Critical availability hotfixes**: Production-breaking regressions where waiting for the 3-hour RC validation cycle or cluster provisioning would prolong user-facing downtime.
+Emergency gate bypass (`skip_rc_validation: true`) is strictly reserved for two scenarios: zero-day CVE vulnerabilities in container dependencies requiring immediate publication, or critical production regressions where waiting for the 3-hour RC validation cycle or cluster provisioning would prolong user-facing downtime.
 
 ### Enforced security invariants
 
-Even during an emergency bypass, the pipeline strictly enforces:
+Even during an emergency bypass, the pipeline enforces three hard safety barriers:
 
-- **Prebuilt image presence**: `scripts/release/verify_release_eligibility.sh` verifies that all four container images (`k8s-operator`, `platform-agent`, `credential-proxy`, `replay-proxy`) exist in GHCR under `<TARGET_COMMIT>`. Releases of unbuilt commits hard-fail.
-- **Mandatory audit reason**: `emergency_override_reason` must contain a non-whitespace justification. Empty or whitespace-only reasons abort the workflow (`exit 1`).
-- **Tag collision protection**: If the target SemVer tag already points to another commit, the release aborts.
+1. `scripts/release/verify_release_eligibility.sh` checks that all four container images (`k8s-operator`, `platform-agent`, `credential-proxy`, `replay-proxy`) exist in GHCR under `<TARGET_COMMIT>`. Releases of unbuilt commits hard-fail.
+2. `emergency_override_reason` must contain a non-whitespace justification; empty or whitespace-only reasons abort the workflow (`exit 1`).
+3. Target SemVer tags must not already exist on another commit; tag collisions abort the release.
 
 ### Executing an emergency hotfix
 
@@ -107,21 +106,21 @@ gh workflow run release-publish.yml --repo gke-labs/kube-agents \
 
 ### Post-release reconciliation
 
-After an emergency publication:
+After an emergency publication, complete these three reconciliation steps:
 
-1. **Verify artifacts**: Confirm the published release tag, container images in GHCR, and signed Helm OCI chart via `gh release view <VERSION>`.
-2. **Trigger post-factum RC validation**: Manually trigger `.github/workflows/rc-release-pipeline.yml` against the released commit to run the full GKE E2E suite and ensure the fix validates cleanly on live infrastructure.
-3. **Record audit trail**: Attach the GitHub Actions run URL and emergency justification to the corresponding tracking issue or incident report.
+1. Confirm the published release tag, container images in GHCR, and signed Helm OCI chart via `gh release view <VERSION>`.
+2. Manually trigger `.github/workflows/rc-release-pipeline.yml` against the released commit to run the full GKE E2E suite and ensure the fix validates cleanly on live infrastructure.
+3. Attach the GitHub Actions run URL and emergency justification to the corresponding tracking issue or incident report.
 
 ## Clean promotion and artifact guarantees
 
-The release publish workflow enforces byte-for-byte fidelity with tested candidate binaries:
+The release publish workflow enforces byte-for-byte fidelity with tested candidate binaries across five layers:
 
-1. **Zero container rebuilds**: Container images are compiled only once on push to `main`. `scripts/release/promote_release_images.sh` retags existing `<TARGET_COMMIT>` manifests to numeric `X.Y.Z` in GHCR using `docker buildx imagetools create`.
-2. **Cosign OIDC signature**: Promoted container images in GHCR are cryptographically signed using Keyless Cosign via GitHub Actions OIDC tokens (`scripts/release/sign_release_images.sh`).
-3. **OCI Helm chart**: `scripts/release/publish_helm_chart.sh` packages `charts/kube-agents` at version `X.Y.Z` (matching `appVersion`), pushes the OCI package to `oci://ghcr.io/gke-labs/kube-agents/charts/kube-agents:X.Y.Z`, and signs the OCI manifest via Cosign.
-4. **Installer version lock**: `scripts/release/tag_ga_release.sh` creates a single-parent release commit on detached HEAD, stamps `BAKED_RELEASE_VERSION="X.Y.Z"` into root scripts (`install.sh`, `uninstall.sh`, `upgrade.sh`), and tags the stamped commit.
-5. **Drift prevention in `install.sh`**: `verify_local_source_ref` verifies that unversioned source directories match `BAKED_RELEASE_VERSION` and that Git checkouts match the requested tag commit SHA, halting execution if local scripts diverge from container images.
+1. Container images are compiled only once on push to `main`. `scripts/release/promote_release_images.sh` retags existing `<TARGET_COMMIT>` manifests to numeric `X.Y.Z` in GHCR using `docker buildx imagetools create`.
+2. Promoted container images in GHCR are cryptographically signed using Keyless Cosign via GitHub Actions OIDC tokens (`scripts/release/sign_release_images.sh`).
+3. `scripts/release/publish_helm_chart.sh` packages `charts/kube-agents` at version `X.Y.Z` (matching `appVersion`), pushes the OCI package to `oci://ghcr.io/gke-labs/kube-agents/charts/kube-agents:X.Y.Z`, and signs the OCI manifest via Cosign.
+4. `scripts/release/tag_ga_release.sh` creates a single-parent release commit on detached HEAD, stamps `BAKED_RELEASE_VERSION="X.Y.Z"` into root scripts (`install.sh`, `uninstall.sh`, `upgrade.sh`), and tags the stamped commit.
+5. `verify_local_source_ref` in `install.sh` verifies that unversioned source directories match `BAKED_RELEASE_VERSION` and that Git checkouts match the requested tag commit SHA, halting execution if local scripts diverge from container images.
 
 ## Helm chart versioning
 
