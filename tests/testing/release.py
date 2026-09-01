@@ -22,6 +22,12 @@ MOCK_INITIAL_VERSION = "0.1.0"
 MOCK_BASE_TAG_PRE_1_0 = "0.1.4"
 MOCK_BASE_TAG_1_X = "1.2.3"
 MOCK_RC_VALIDATED_TAG = "rc_0.2.0_validated"
+
+# Real-shaped rc_<ts>_<sha>_validated tags, for the scheduled-release gate. The
+# newer timestamp has to sort above the older one under `git tag --sort=-v:refname`,
+# which is how common.sh picks the candidate.
+MOCK_LATEST_VALIDATED_RC_TAG = "rc_2609010217_a1b2c3d_validated"
+MOCK_OLDER_VALIDATED_RC_TAG = "rc_2608310217_9f8e7d6_validated"
 MOCK_TARGET_RELEASE_VERSION = "0.2.0"
 MOCK_TARGET_RELEASE_TAG = "0.2.0"
 MOCK_EXPLICIT_RELEASE_VERSION_NEXT = "0.3.0"

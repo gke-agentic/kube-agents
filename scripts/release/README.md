@@ -51,6 +51,8 @@ page under "Why there is no `gke-admin` set".
 - `install_pubsub_platform.sh`: Installs `agentplugins/pubsub-platform`, the adapter that turns a Pub/Sub alert into agent work, and waits for the plugin to reconcile and the gateway's generation to settle. It exists because the adapter is a gateway singleton the agent image does not carry and the install engine does not deploy: the stockout investigator and any other alert producer contribute only route config, so without the adapter the gateway opens no listener and every alert-driven test fails on silence. That is a gap in the install rather than in the harness, tracked in [#1013](https://github.com/gke-labs/kube-agents/issues/1013); this makes the gate honest until that lands, and is meant to be deleted with it. Called by `e2e-run.yml`, the reusable E2E job the RC and nightly pipelines both delegate to, so both get it. It pays for a Helm release and, when the plugin source has changed since the last run, an image build. It exits non-zero when it cannot deliver working ingress and leaves the consequence to the caller: the step is `continue-on-error` because on the RC alert ingress is a dependency of the optional suite alone. That covers the failures this script detects and reports, and no more — an adapter that installs cleanly and then wedges the gateway rollout fails `wait_for_gke_readiness.sh`, which carries no `continue-on-error`, and the Chat gate never runs. The script's own header states the limit; do not read the flag as a guarantee the mandatory gate is insulated. `SKIP_PUBSUB_PLATFORM` opts a run out. `e2e-manual-runner.yml` does not call it; wiring that up is part of #1013's follow-up.
 - `wait_for_gke_readiness.sh`: Connects `kubectl` to the target cluster, configures Artifact Registry credentials, optionally verifies the gateway is running the candidate commit's image — delegated to `scripts/confirm_agent_image.sh`, which the agent redeploy workflow runs for the same purpose — and waits for `litellm` and `platform-agent-gateway` to report ready. It waits and does not install. In `e2e-run.yml` — the one caller that installs alert ingress today — `install_pubsub_platform.sh` runs before it, so the gateway re-template the adapter causes is already in flight when the rollout waits start. Ordering the two is the caller's job, not something this script checks.
 - `tag_validated_release.sh`: Attaches the `rc_*_validated` marker to a candidate commit upon 100% test pass, by appending `_validated` to its `rc_*` tag.
+- `resolve_scheduled_release.sh`: Decides whether an unattended run of `release-publish.yml` should publish. Three conditions — a candidate carries an `rc_*_validated` tag, commits exist between the newest GA tag and that candidate, and nothing in the range is a breaking change — emitted as `should_release`, `release_commit`, `gate_tag` and `skip_reason`. The first two failing are skips with exit 0, because a quiet week is not a broken pipeline and a workflow that goes red most weeks is one nobody reads. A breaking change is not a skip: it recurs until somebody publishes by hand, so it raises an `::error` and exits non-zero. There is no weekday or elapsed-time check in it — the cron is the cadence — and no "already released?" condition either, because a GA tag on the gated commit empties the range and the second condition covers it. It reuses `get_latest_validated_rc_tag` rather than re-implementing the lookup, so this gate and `verify_release_eligibility.sh` cannot disagree about which candidate is validated.
+- `decide_release_gate.sh`: Chooses which way into `release-publish.yml` a run is taking and emits the verdict the publish job is gated on. A `schedule` event always evaluates; a dispatch reads the workflow's `schedule_gate` input — `bypass` (the default, and what every dispatch did before the gate existed, emergency path included), `dry-run` (run the resolver, report the verdict, publish nothing) and `evaluate` (act on it, exactly as a cron tick would). An unrecognised mode exits non-zero rather than falling back to publishing.
 - `calculate_next_version.sh`: Automatically calculates the next SemVer 2.0 version from Conventional Commits since the latest numeric GA release tag.
 - `verify_release_eligibility.sh`: Release gatekeeper that verifies commit eligibility, checks for live RC validation tags (`rc_*_validated`), performs tag collision detection, and verifies all 4 required container images exist in registry.
 - `tag_ga_release.sh`: Creates and pushes official GA SemVer Git tags (`X.Y.Z`) on a detached HEAD commit stamped with the release version in installer scripts (`install.sh`, `uninstall.sh`, `upgrade.sh`). Note: candidate commits must carry the `^BAKED_RELEASE_VERSION=` placeholder line in root installer scripts.
@@ -198,21 +200,71 @@ Two things this list deliberately does not cover, because they are not part of t
 pipeline: the `staging` environment, which is a deploy target that nothing tests, and the GA
 release path, which runs from `release-publish.yml` against the release repository.
 
+## The weekly GA release
+
+`release-publish.yml` has a gate job, `evaluate-schedule`, that answers the question a human used
+to answer by choosing when to click "Run workflow". It runs before anything is published and the
+publishing job is conditioned on its verdict, so the decision is one `if:` rather than one per
+publishing step.
+
+The gate reads the newest `rc_*_validated` tag. That is one rung below where it eventually
+belongs — the `staging_<ts>_<sha>` tag the nightly pipeline pushes is the stronger evidence, since
+it means the full matrix passed rather than the narrow three-hourly suite. Moving it is a separate
+change, held until the nightly pipeline is producing staging tags reliably, and it is a small one:
+the three conditions and the skip semantics do not move, only the tag family condition 1 reads.
+Nothing is lost by dropping the `rc_*_validated` requirement when that happens, because a staging
+tag is only ever created from a candidate that already carries one.
+
+**Why the gate is a script rather than a `schedule:` block.** The publishing path answers "nothing
+to release" with a non-zero exit: `verify_release_eligibility.sh` exits 1 when no commit carries a
+validated tag, and `calculate_next_version.sh` has nothing to compute when no commits have landed
+since the last GA tag. Triggered by hand those are correct, visible errors — somebody asked, and
+got an answer. On a cron they are a red run every week that happened to have nothing to ship, and
+a workflow that is red most weeks is one nobody reads. So the gate checks the same conditions
+first and skips green, leaving red to mean the machinery is broken.
+
+The one exception is a breaking change in the range, which fails the job. It will not clear itself
+— every following run takes the same branch and GA releases stop — so it is something somebody has
+to act on rather than a quiet week. Publish that one by hand.
+
+**It ships without a `schedule:`.** The gate is built and tested; turning the cron on is its own
+decision and its own reviewable change, the way `nightly-pipeline.yml` shipped. Exercise it in
+order:
+
+1. `workflow_dispatch` with `schedule_gate: dry-run` — the resolver runs against the real tag graph
+   and reports what a cron tick would decide. Nothing is published.
+2. Same again with `evaluate` — the verdict is honoured, so a `should_release=true` publishes a
+   real GA release. This is a cron tick in every respect except what started it.
+3. Add `schedule: - cron: "17 5 * * 4"` to the workflow. Thursday leaves a working day to react to
+   a bad release, which Friday does not, and 05:17 UTC is comfortably after the nightly slot.
+
+Leaving the input alone (`bypass`) keeps a dispatch behaving exactly as it did before any of this
+existed, emergency override included. That path is unreachable from a schedule.
+
+Two things to know about a weekly cadence, neither of them a reason to change it. A Thursday that
+produces nothing costs a full week, because there is no rate limiter inside the resolver to buy the
+week back — the cron is the cadence, which is what keeps wall-clock arithmetic out of the decision
+entirely. Against today's gate that is rare, since the RC pipeline runs every three hours; it gets
+more likely when the gate moves to staging. And a green skip and a green pass are both `success` to
+GitHub, so "the release workflow is green" does not distinguish a week that shipped from a week
+that had nothing to ship. Reading the job summary is how you tell, until scheduled work here grows
+an out-of-band signal.
+
 ## Workflow Mapping
 
 These modular scripts back the corresponding child workflows in `.github/workflows/`:
 
-| GitHub Workflow            | Release Step                            | Executed Scripts                                                                                                                                                                               |
-| -------------------------- | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `rc-create-tag.yml`        | Step 1 - Create Candidate Tag           | `resolve_rc_tag.sh`, `verify_candidate_images.sh`, `create_release_tag.sh`                                                                                                                     |
-| `deploy-environment.yml`   | Step 2 - Deploy Environment             | `resolve_rc_tag.sh`, `validate_and_log_deploy_summary.sh`, `provision_environment.sh`                                                                                                          |
-| `e2e-run.yml`              | Step 3 - GKE Readiness & E2E Validation | `install_e2e_deps.sh`, `install_pubsub_platform.sh`, `wait_for_gke_readiness.sh`, `execute_e2e_tests.sh`, `run_optional_e2e_suites.sh`                                                         |
-| `rc-tag-validated.yml`     | Step 4 - Validate Candidate Commit      | `resolve_rc_tag.sh`, `tag_validated_release.sh`                                                                                                                                                |
-| `teardown-environment.yml` | Step 5 - Tear Down Environment          | `resolve_rc_tag.sh`, `teardown_environment.sh`                                                                                                                                                 |
-| `nightly-pipeline.yml`     | Nightly promotion to staging            | `resolve_promotion_candidate.sh`, `verify_candidate_images.sh`, `record_nightly_candidate_summary.sh`, `tag_staging_promotion.sh`, plus the three shared workflows above                       |
-| `rc-scheduler.yml`         | Three-hourly RC trigger                 | `resolve_rc_tag.sh`, `record_rc_scheduler_skip.sh`, `dispatch_rc_pipeline.sh`                                                                                                                  |
-| `staging-redeploy-*.yml`   | Staging deploy on a promotion tag       | `peel_tag_commit.sh`                                                                                                                                                                           |
-| `release-publish.yml`      | GA Release Orchestration                | `calculate_next_version.sh`, `verify_release_eligibility.sh`, `tag_ga_release.sh`, `promote_release_images.sh`, `sign_release_images.sh`, `publish_helm_chart.sh`, `publish_github_release.sh` |
+| GitHub Workflow            | Release Step                            | Executed Scripts                                                                                                                                                                                                                                         |
+| -------------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rc-create-tag.yml`        | Step 1 - Create Candidate Tag           | `resolve_rc_tag.sh`, `verify_candidate_images.sh`, `create_release_tag.sh`                                                                                                                                                                               |
+| `deploy-environment.yml`   | Step 2 - Deploy Environment             | `resolve_rc_tag.sh`, `validate_and_log_deploy_summary.sh`, `provision_environment.sh`                                                                                                                                                                    |
+| `e2e-run.yml`              | Step 3 - GKE Readiness & E2E Validation | `install_e2e_deps.sh`, `install_pubsub_platform.sh`, `wait_for_gke_readiness.sh`, `execute_e2e_tests.sh`, `run_optional_e2e_suites.sh`                                                                                                                   |
+| `rc-tag-validated.yml`     | Step 4 - Validate Candidate Commit      | `resolve_rc_tag.sh`, `tag_validated_release.sh`                                                                                                                                                                                                          |
+| `teardown-environment.yml` | Step 5 - Tear Down Environment          | `resolve_rc_tag.sh`, `teardown_environment.sh`                                                                                                                                                                                                           |
+| `nightly-pipeline.yml`     | Nightly promotion to staging            | `resolve_promotion_candidate.sh`, `verify_candidate_images.sh`, `record_nightly_candidate_summary.sh`, `tag_staging_promotion.sh`, plus the three shared workflows above                                                                                 |
+| `rc-scheduler.yml`         | Three-hourly RC trigger                 | `resolve_rc_tag.sh`, `record_rc_scheduler_skip.sh`, `dispatch_rc_pipeline.sh`                                                                                                                                                                            |
+| `staging-redeploy-*.yml`   | Staging deploy on a promotion tag       | `peel_tag_commit.sh`                                                                                                                                                                                                                                     |
+| `release-publish.yml`      | GA Release Orchestration                | `decide_release_gate.sh`, `resolve_scheduled_release.sh`, `calculate_next_version.sh`, `verify_release_eligibility.sh`, `tag_ga_release.sh`, `promote_release_images.sh`, `sign_release_images.sh`, `publish_helm_chart.sh`, `publish_github_release.sh` |
 
 `deploy-environment.yml`, `teardown-environment.yml` and `e2e-run.yml` are the rows
 where the workflow and the script come from different commits. Each checks the
