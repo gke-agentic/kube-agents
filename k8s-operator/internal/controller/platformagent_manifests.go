@@ -560,6 +560,11 @@ const (
 	// managedVolumeName projects the two keys above into managedScopeDir under the names
 	// Hermes expects (config.yaml and .env).
 	managedVolumeName = "platform-agent-managed-vol"
+
+	// gitopsStateVolumeName projects the GitOps state ConfigMap as a mounted directory
+	// volume into the agent container so skills can read managed repositories directly from disk.
+	gitopsStateVolumeName = "gitops-state-volume"
+	gitopsStateDir        = "/etc/gitops"
 )
 
 // loopbackAgentAPIKey is the bearer the Hermes API server on 127.0.0.1:8642 accepts, and
@@ -1744,6 +1749,10 @@ func buildPodTemplateSpec(agent *agentv1alpha1.PlatformAgent, configHash, fluent
 			Name:  "GITOPS_STATE_CONFIGMAP",
 			Value: agent.Name + "-gitops-state",
 		},
+		{
+			Name:  "GITOPS_STATE_PATH",
+			Value: path.Join(gitopsStateDir, "managed_repos"),
+		},
 	}
 
 	// The two exceptions to "no credentials in the sandbox", both of them
@@ -2289,6 +2298,15 @@ func buildDefaultVolumeMounts(homeDir string) []corev1.VolumeMount {
 			Name:      "system-metadata",
 			MountPath: path.Dir(sessionKVDBPath),
 			SubPath:   "session",
+		},
+		{
+			// Directory mount, never subPath: a subPath does not receive kubelet
+			// ConfigMap updates. As a mounted directory, updates to managed repos
+			// in the ConfigMap are automatically synced live by the kubelet without
+			// restarting the agent pod.
+			Name:      gitopsStateVolumeName,
+			MountPath: gitopsStateDir,
+			ReadOnly:  true,
 		},
 		{
 			// The one writable path outside the PVC, and the reason
@@ -3398,6 +3416,17 @@ func buildDefaultVolumes(agent *agentv1alpha1.PlatformAgent) []corev1.Volume {
 				ConfigMap: &corev1.ConfigMapVolumeSource{
 					LocalObjectReference: corev1.LocalObjectReference{
 						Name: agent.Name + "-settings",
+					},
+					DefaultMode: ptr.To(int32(0644)),
+				},
+			},
+		},
+		{
+			Name: gitopsStateVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: agent.Name + "-gitops-state",
 					},
 					DefaultMode: ptr.To(int32(0644)),
 				},

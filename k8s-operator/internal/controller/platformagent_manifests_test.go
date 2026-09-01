@@ -795,6 +795,20 @@ func TestBuildDeployment(t *testing.T) {
 			t.Errorf("expected settings-volume to be read-only")
 		}
 	}
+	if _, ok := mountsMap["gitops-state-volume"]; !ok {
+		t.Errorf("expected gitops-state-volume mount, not found")
+	} else {
+		m := mountsMap["gitops-state-volume"]
+		if m.MountPath != "/etc/gitops" {
+			t.Errorf("expected gitops-state-volume mount path /etc/gitops, got %s", m.MountPath)
+		}
+		if m.SubPath != "" {
+			t.Errorf("gitops-state-volume must be a directory mount (no subpath), got %s", m.SubPath)
+		}
+		if !m.ReadOnly {
+			t.Errorf("expected gitops-state-volume to be read-only")
+		}
+	}
 	if _, ok := mountsMap["system-metadata"]; !ok {
 		t.Errorf("expected system-metadata mount, not found")
 	} else if mountsMap["system-metadata"].MountPath != "/var/lib/kube-agents/session" {
@@ -890,6 +904,24 @@ func TestBuildDeployment(t *testing.T) {
 				t.Errorf("expected settings-volume ConfigMap DefaultMode to be set, got nil")
 			} else if *v.ConfigMap.DefaultMode != int32(0644) {
 				t.Errorf("expected settings-volume ConfigMap DefaultMode 0644, got %o", *v.ConfigMap.DefaultMode)
+			}
+		}
+	}
+
+	if _, ok := volumesMap["gitops-state-volume"]; !ok {
+		t.Errorf("expected gitops-state-volume, not found")
+	} else {
+		v := volumesMap["gitops-state-volume"]
+		if v.ConfigMap == nil {
+			t.Errorf("expected gitops-state-volume to be ConfigMap")
+		} else {
+			if v.ConfigMap.Name != "my-agent-gitops-state" {
+				t.Errorf("expected gitops-state-volume ConfigMap name my-agent-gitops-state, got %s", v.ConfigMap.Name)
+			}
+			if v.ConfigMap.DefaultMode == nil {
+				t.Errorf("expected gitops-state-volume ConfigMap DefaultMode to be set, got nil")
+			} else if *v.ConfigMap.DefaultMode != int32(0644) {
+				t.Errorf("expected gitops-state-volume ConfigMap DefaultMode 0644, got %o", *v.ConfigMap.DefaultMode)
 			}
 		}
 	}
@@ -5351,5 +5383,59 @@ func TestCRSuppliedSidecarsAreNotHardenedByTheOperator(t *testing.T) {
 				"if that is now intended, docs/credential-isolation-design.md says otherwise",
 				c.Name, c.SecurityContext)
 		}
+	}
+}
+
+// TestGitOpsStateVolumeIsMountedAsDirectory verifies that the GitOps state ConfigMap
+// is mounted as a directory (never subPath) so kubelet live updates work without pod restart.
+func TestGitOpsStateVolumeIsMountedAsDirectory(t *testing.T) {
+	agent := newTestPlatformAgent()
+	dep := buildDeployment(agent, "h1", "h2", "h3", "h4", nil, renderOptions{})
+	spec := dep.Spec.Template.Spec
+
+	// Check volume
+	var stateVol *corev1.Volume
+	for i, v := range spec.Volumes {
+		if v.Name == gitopsStateVolumeName {
+			stateVol = &spec.Volumes[i]
+		}
+	}
+	if stateVol == nil {
+		t.Fatalf("expected volume %q in pod spec, got volumes %v", gitopsStateVolumeName, spec.Volumes)
+	}
+	if stateVol.ConfigMap == nil {
+		t.Fatalf("expected volume %q to be ConfigMap", gitopsStateVolumeName)
+	}
+	if stateVol.ConfigMap.Name != agent.Name+"-gitops-state" {
+		t.Errorf("expected ConfigMap name %s, got %s", agent.Name+"-gitops-state", stateVol.ConfigMap.Name)
+	}
+
+	// Check platform-agent container mount
+	gateway := containerNamed(t, dep, "platform-agent")
+	var stateMount *corev1.VolumeMount
+	for i, m := range gateway.VolumeMounts {
+		if m.Name == gitopsStateVolumeName {
+			stateMount = &gateway.VolumeMounts[i]
+		}
+	}
+	if stateMount == nil {
+		t.Fatalf("expected mount %q in platform-agent container", gitopsStateVolumeName)
+	}
+	if stateMount.MountPath != gitopsStateDir {
+		t.Errorf("expected mount path %s, got %s", gitopsStateDir, stateMount.MountPath)
+	}
+	if stateMount.SubPath != "" {
+		t.Errorf("gitops state must be a directory mount (no SubPath), got %q", stateMount.SubPath)
+	}
+	if !stateMount.ReadOnly {
+		t.Errorf("gitops state mount must be read-only")
+	}
+
+	// Check environment variable
+	gotPath, found := envValue(gateway, "GITOPS_STATE_PATH")
+	if !found {
+		t.Errorf("expected GITOPS_STATE_PATH in platform-agent container")
+	} else if gotPath != filepath.Join(gitopsStateDir, "managed_repos") {
+		t.Errorf("expected GITOPS_STATE_PATH %s, got %s", filepath.Join(gitopsStateDir, "managed_repos"), gotPath)
 	}
 }

@@ -10,6 +10,7 @@ test that the audit's untracked manifests survive a reattach runs real git
 against a local bare repository.
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -639,6 +640,44 @@ class TestResolveRepo(WorkspaceTestCase):
                 gitops_workspace.get_managed_github_repos(),
                 ["acme/repo1"],
             )
+
+    def test_get_managed_repo_entries_reads_from_mounted_file(self):
+        state_file = self.tmp_path / "managed_repos"
+        state_file.write_text(
+            json.dumps([
+                {"type": "github", "url": "https://github.com/acme/file-repo1"},
+                {"type": "gitlab", "url": "https://gitlab.com/acme/file-repo2"},
+            ]),
+            encoding="utf-8",
+        )
+        with patch.dict(os.environ, {"GITOPS_STATE_PATH": str(state_file)}), patch("subprocess.run") as mock_run:
+            self.assertEqual(
+                gitops_workspace.get_managed_repo_entries(),
+                [
+                    {"type": "github", "url": "https://github.com/acme/file-repo1"},
+                    {"type": "gitlab", "url": "https://gitlab.com/acme/file-repo2"},
+                ],
+            )
+            self.assertEqual(
+                gitops_workspace.get_managed_github_repos(),
+                ["acme/file-repo1"],
+            )
+            mock_run.assert_not_called()
+
+    def test_get_managed_repo_entries_handles_empty_mounted_file(self):
+        state_file = self.tmp_path / "managed_repos_empty"
+        state_file.write_text("   \n", encoding="utf-8")
+        with patch.dict(os.environ, {"GITOPS_STATE_PATH": str(state_file)}), patch("subprocess.run") as mock_run:
+            self.assertEqual(gitops_workspace.get_managed_repo_entries(), [])
+            self.assertEqual(gitops_workspace.get_managed_github_repos(), [])
+            mock_run.assert_not_called()
+
+    def test_get_managed_repo_entries_handles_invalid_json_in_file(self):
+        state_file = self.tmp_path / "managed_repos_invalid"
+        state_file.write_text("not-json", encoding="utf-8")
+        with patch.dict(os.environ, {"GITOPS_STATE_PATH": str(state_file)}), patch("subprocess.run") as mock_run:
+            self.assertEqual(gitops_workspace.get_managed_repo_entries(), [])
+            mock_run.assert_not_called()
 
     def test_get_managed_github_repos_filters_github_urls(self):
         fake_cm = CompletedProcess(

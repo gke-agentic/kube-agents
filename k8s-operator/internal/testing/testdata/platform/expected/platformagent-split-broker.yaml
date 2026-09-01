@@ -836,6 +836,8 @@ spec:
               value: /var/lib/kube-agents/session/session_kv.db
             - name: GITOPS_STATE_CONFIGMAP
               value: platformagent-gitops-state
+            - name: GITOPS_STATE_PATH
+              value: /etc/gitops/managed_repos
             - name: SESSION_KV_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -959,6 +961,9 @@ spec:
             - mountPath: /var/lib/kube-agents/session
               name: system-metadata
               subPath: session
+            - mountPath: /etc/gitops
+              name: gitops-state-volume
+              readOnly: true
             - mountPath: /tmp
               name: tmp-scratch
             - mountPath: /var/run/secrets/kubeagents/credential-proxy
@@ -1176,6 +1181,10 @@ spec:
             defaultMode: 420
             name: platformagent-settings
           name: settings-volume
+        - configMap:
+            defaultMode: 420
+            name: platformagent-gitops-state
+          name: gitops-state-volume
         - emptyDir:
             sizeLimit: 2Gi
           name: tmp-scratch

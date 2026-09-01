@@ -618,13 +618,52 @@ def extract_github_slug(entry: str) -> str | None:
     return None
 
 
+DEFAULT_GITOPS_STATE_PATH = "/etc/gitops/managed_repos"
+
+
+def _parse_managed_repos_json(repos_str: str) -> list[dict[str, str]]:
+    """Parse JSON string containing list of repo specifications."""
+    repos_str = repos_str.strip()
+    if not repos_str:
+        return []
+    entries: list[dict[str, str]] = []
+    if repos_str.startswith("["):
+        try:
+            parsed = json.loads(repos_str)
+            if isinstance(parsed, list):
+                for item in parsed:
+                    if isinstance(item, dict):
+                        url = str(item.get("url", "")).strip()
+                        repo_type = str(item.get("type", "")).strip()
+                        if url and repo_type:
+                            entries.append({"type": repo_type, "url": url})
+        except json.JSONDecodeError:
+            pass
+    return entries
+
+
 def get_managed_repo_entries() -> list[dict[str, str]]:
-    """Reads the GitOps state ConfigMap and returns managed repo objects with 'type' and 'url'."""
+    """Reads managed repos from the mounted state file or falls back to ConfigMap via kubectl."""
+    state_file_path = os.environ.get("GITOPS_STATE_PATH", DEFAULT_GITOPS_STATE_PATH)
+    state_file = Path(state_file_path)
+    if state_file.is_file():
+        try:
+            content = state_file.read_text(encoding="utf-8")
+            return _parse_managed_repos_json(content)
+        except Exception:
+            pass
+
     cfg_name = os.environ.get("GITOPS_STATE_CONFIGMAP", "platform-agent-gitops-state")
     ns = os.environ.get("KUBE_DEFAULT_NAMESPACE", "kubeagents-system")
+    cmd = ["kubectl", "get", "configmap", cfg_name, "-n", ns, "-o", "json"]
+    context = os.environ.get("KUBE_CONTEXT_NAME", "").strip()
+    if context:
+        cmd.extend(["--context", context])
+    cwd = agent_home() if Path(agent_home()).is_dir() else None
     try:
         cm_res = subprocess.run(
-            ["kubectl", "get", "configmap", cfg_name, "-n", ns, "-o", "json"],
+            cmd,
+            cwd=str(cwd) if cwd else None,
             capture_output=True,
             text=True,
             check=True,
@@ -647,25 +686,7 @@ def get_managed_repo_entries() -> list[dict[str, str]]:
         ) from e
 
     repos_str = (cm.get("data") or {}).get("managed_repos", "")
-    if not repos_str:
-        return []
-    repos_str = repos_str.strip()
-    entries: list[dict[str, str]] = []
-
-    if repos_str.startswith("["):
-        try:
-            parsed = json.loads(repos_str)
-            if isinstance(parsed, list):
-                for item in parsed:
-                    if isinstance(item, dict):
-                        url = str(item.get("url", "")).strip()
-                        repo_type = str(item.get("type", "")).strip()
-                        if url and repo_type:
-                            entries.append({"type": repo_type, "url": url})
-        except json.JSONDecodeError:
-            pass
-
-    return entries
+    return _parse_managed_repos_json(repos_str)
 
 
 def get_managed_github_repos() -> list[str]:
