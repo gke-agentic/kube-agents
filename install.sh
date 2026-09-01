@@ -29,6 +29,19 @@ configure_colors() {
 }
 configure_colors
 
+# Defined here, ahead of everything that reports, because loading install.env
+# below is the first thing this script does and it has to be able to say so.
+# k8s-operator/scripts/common.sh defines its own print_* helpers formatted for
+# the state file, so source_provisioning_helpers re-applies these afterwards.
+define_print_helpers() {
+  print_step() { echo -e "\n${C_MAGENTA}${C_BOLD}>>> $1 <<<${C_RESET}"; }
+  print_success() { echo -e "  ${C_GREEN}✓ $1${C_RESET}"; }
+  print_info() { echo -e "  ${C_CYAN}ℹ $1${C_RESET}"; }
+  print_warning() { echo -e "  ${C_YELLOW}⚠ $1${C_RESET}"; }
+  print_error() { echo -e "  ${C_RED}✗ $1${C_RESET}"; }
+}
+define_print_helpers
+
 # ─── Process Lock File & Error Trap Handling ────────────────────────────────
 LOCK_FILE="/tmp/kube-agents-install.lock"
 if command -v flock >/dev/null 2>&1; then
@@ -57,6 +70,61 @@ trap 'on_error $? $LINENO "$BASH_COMMAND"' ERR
 # Release automation stamps this value (e.g. BAKED_RELEASE_VERSION="0.2.0") when publishing a GA release.
 BAKED_RELEASE_VERSION=""
 
+# ─── Install Configuration Input (install.env) ────────────────────────────────
+# The hand-authored record of what this install is, loaded BEFORE the parameter
+# block below so that every `${VAR:-}` seed in it inherits from the file. That
+# ordering is the whole mechanism: inheriting prior configuration stops being
+# something each flag has to remember to do and becomes the default path, which
+# is what closes #1060 rather than patching its seven instances.
+#
+# An input, never an output. install.sh does not write here; it derives
+# terraform.tfvars (and, for now, vars.sh) from it. A file that is both would be
+# the thing that made vars.sh confusing -- "auto-generated" in its header and
+# hand-edited in the documentation, with the hand edits discarded on the next
+# run.
+#
+# `set -a` rather than a K=V parser: these values have to reach
+# write_tfvars_from_state and the TF_VAR_* handoff at the end of it, both of
+# which read the environment. A conventional dotenv without `export` would parse
+# and then not travel.
+INSTALL_ENV_FILE="${KUBE_AGENTS_INSTALL_ENV:-}"
+if [ -z "$INSTALL_ENV_FILE" ]; then
+  _install_env_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || echo "")"
+  if [ -n "$_install_env_dir" ] && [ -f "${_install_env_dir}/install.env" ]; then
+    INSTALL_ENV_FILE="${_install_env_dir}/install.env"
+  elif [ -f "install.env" ]; then
+    # curl | bash has no script directory to look beside, so the working
+    # directory is the only other place the operator could have put it.
+    INSTALL_ENV_FILE="$(pwd)/install.env"
+  fi
+  unset _install_env_dir
+fi
+
+load_install_env() {
+  local file="${1:-}"
+  [ -n "$file" ] || return 0
+  if [ ! -f "$file" ]; then
+    # Only reachable via an explicit KUBE_AGENTS_INSTALL_ENV: the discovery
+    # above only ever names a file it has already seen. A path that was asked
+    # for by name and is not there is a mistake, not a first install.
+    print_error "KUBE_AGENTS_INSTALL_ENV names '$file', which does not exist."
+    exit 1
+  fi
+  # Checked before sourcing: a stray quote would otherwise abort the run through
+  # the ERR trap with a bash parse error and no indication of which file.
+  if ! bash -n "$file" 2>/dev/null; then
+    print_error "Install configuration '$file' is not valid shell and could not be loaded."
+    print_info "Each line is NAME=value; quote any value containing spaces."
+    exit 1
+  fi
+  set -a
+  # shellcheck disable=SC1090
+  . "$file"
+  set +a
+  print_success "Loaded install configuration from: ${file}"
+}
+load_install_env "$INSTALL_ENV_FILE"
+
 # ─── Agentic & Automation Parameter States ────────────────────────────────────
 PARAM_NON_INTERACTIVE="${NONINTERACTIVE:-false}"
 PARAM_DRY_RUN="${DRY_RUN:-false}"
@@ -83,8 +151,25 @@ PARAM_GITOPS_REPO="${GITHUB_REPO:-}"
 PARAM_PERMISSION_SET="${PLATFORM_AGENT_PERMISSION_SET:-read-only}"
 PARAM_CUSTOM_ROLES="${PLATFORM_AGENT_CUSTOM_ROLES:-}"
 PARAM_ENABLE_GVISOR="${ENABLE_GVISOR:-true}"
-PARAM_ENABLE_WEBUI="${ENABLE_WEBUI:-false}"
-PARAM_MEMORY="${MEMORY:-file}"
+# HERMES_DASHBOARD_ENABLED as well as ENABLE_WEBUI: the flag is spelled
+# --enable-web-ui and the install records the setting under the Hermes name, so
+# a file written from a previous install carries the second spelling and only
+# the second. The same asymmetry applies to MEMORY / MEMORY_PROVIDER below and
+# to GOOGLE_CHAT_ENABLED above.
+PARAM_ENABLE_WEBUI="${ENABLE_WEBUI:-${HERMES_DASHBOARD_ENABLED:-false}}"
+# MEMORY is the input spelling (file | hindsight | off). MEMORY_PROVIDER is what
+# the install records, so translate it back when that is all there is.
+memory_mode_from_provider() {
+  case "${1:-}" in
+    kube_agents_memory) echo "hindsight" ;;
+    none) echo "off" ;;
+    multiuser_memory) echo "file" ;;
+    *) echo "" ;;
+  esac
+}
+PARAM_MEMORY="${MEMORY:-$(memory_mode_from_provider "${MEMORY_PROVIDER:-}")}"
+PARAM_MEMORY="${PARAM_MEMORY:-file}"
+PARAM_ALLOWED_USERS="${ALLOWED_USERS:-}"
 PARAM_IMAGE_TAG="${IMAGE_TAG:-}"
 PARAM_ALLOW_UNVERIFIED_SOURCE="${ALLOW_UNVERIFIED_SOURCE:-false}"
 # "<repo_dir>@<ref>" already checked by verify_local_source_ref, so the pre-flight
@@ -96,6 +181,17 @@ PARAM_REGISTRY_PREFIX="${REGISTRY_PREFIX:-}"
 # because widening REGISTRY_PREFIX to cover images its mirror was never given is
 # exactly the failure third_party_registry_prefix() exists to avoid.
 PARAM_THIRD_PARTY_REGISTRY_PREFIX="${THIRD_PARTY_REGISTRY_PREFIX:-}"
+# Seeded from GOOGLE_CHAT_ENABLED so Google Chat inherits the way Slack already
+# did. The chat gate reads SLACK_ENABLED out of the loaded configuration and
+# PARAM_ENABLE_GOOGLE_CHAT from the flag alone, so before this an install.env
+# (or a re-run) that had Chat on and did not repeat --enable-google-chat
+# regenerated google_chat_enabled = false and planned the Pub/Sub topic and
+# subscription away. That asymmetry is #1060's first item.
+PARAM_ENABLE_GOOGLE_CHAT="${PARAM_ENABLE_GOOGLE_CHAT:-${GOOGLE_CHAT_ENABLED:-false}}"
+PARAM_CHAT_TOPIC_NAME="${CHAT_TOPIC_NAME:-}"
+PARAM_GOOGLE_CHAT_MODE="${GOOGLE_CHAT_MODE:-}"
+PARAM_MODEL_DEFAULT_NAME="${MODEL_DEFAULT_NAME:-}"
+PARAM_USER_PROFILE_ENABLED="${USER_PROFILE_ENABLED:-false}"
 
 show_help() {
   cat << EOF
@@ -165,10 +261,18 @@ Flags for AI Agents & Automation:
   --allow-unverified-source     Provision from a dirty or mismatched checkout (local script edits
                                 are applied even though the deployed image was built elsewhere)
   --enable-google-chat          Enable Google Chat integration
+  --allowed-users=EMAILS        Comma-separated user emails allowed to talk to the
+                                agent over Google Chat. Empty allows all users
   --chat-topic-name=TOPIC       Pub/Sub topic name for Google Chat (default: platform-agent-chat-events)
   --google-chat-mode=MODE       Google Chat output mode: default | debug (default: default)
   --menu, --config              Launch interactive Day-2 Control Panel Menu (raspi-config style)
   -h, --help, -?                Show this help message
+
+Configuration file:
+  install.env beside this script (override with KUBE_AGENTS_INSTALL_ENV) is
+  loaded first, and a flag beats it. Start from install.env.example. Anything
+  it sets is inherited by later runs, so a re-run that omits a flag keeps the
+  value rather than reverting it to the default above.
 EOF
 }
 
@@ -203,6 +307,7 @@ parse_args() {
       --third-party-registry-prefix=*) PARAM_THIRD_PARTY_REGISTRY_PREFIX="${1#*=}"; shift ;;
       --allow-unverified-source|--allow-dirty) PARAM_ALLOW_UNVERIFIED_SOURCE="true"; shift ;;
       --enable-google-chat|--google-chat) PARAM_ENABLE_GOOGLE_CHAT="true"; shift ;;
+      --allowed-users=*) PARAM_ALLOWED_USERS="${1#*=}"; shift ;;
       --chat-topic-name=*) PARAM_CHAT_TOPIC_NAME="${1#*=}"; shift ;;
       --google-chat-mode=*) PARAM_GOOGLE_CHAT_MODE="${1#*=}"; shift ;;
       -h|--help|-\?|help) show_help; exit 0 ;;
@@ -253,17 +358,6 @@ EOF
   draw_separator
   printf '%b\n\n' "${C_RESET}"
 }
-
-# Re-applied after sourcing common.sh, which defines its own print_* helpers
-# formatted for the state file.
-define_print_helpers() {
-  print_step() { echo -e "\n${C_MAGENTA}${C_BOLD}>>> $1 <<<${C_RESET}"; }
-  print_success() { echo -e "  ${C_GREEN}✓ $1${C_RESET}"; }
-  print_info() { echo -e "  ${C_CYAN}ℹ $1${C_RESET}"; }
-  print_warning() { echo -e "  ${C_YELLOW}⚠ $1${C_RESET}"; }
-  print_error() { echo -e "  ${C_RED}✗ $1${C_RESET}"; }
-}
-define_print_helpers
 
 # Minimum tool versions, kept in k8s-operator/scripts/min_versions.sh so the
 # numbers live in exactly one place. This installer is also downloaded and run
@@ -750,10 +844,20 @@ prompt_menu() {
   local var_name="${options[${#options[@]}-1]}"
   unset 'options[${#options[@]}-1]'
 
+  # The option an empty answer selects. A caller that has already worked out
+  # which option matches the loaded configuration pre-sets the choice variable,
+  # and pressing enter then keeps that setting instead of reverting it to option
+  # 1. Anything that is not an option number falls back to 1, so a caller that
+  # sets nothing behaves exactly as before.
+  local default_choice="${!var_name:-1}"
+  if ! [[ "$default_choice" =~ ^[0-9]+$ ]] ||
+    [ "$default_choice" -lt 1 ] || [ "$default_choice" -gt "${#options[@]}" ]; then
+    default_choice=1
+  fi
+
   if [ "$PARAM_NON_INTERACTIVE" = "true" ]; then
-    local current_choice="${!var_name:-1}"
-    printf -v "$var_name" '%s' "$current_choice"
-    print_info "Auto-selected option ($var_name): $current_choice"
+    printf -v "$var_name" '%s' "$default_choice"
+    print_info "Auto-selected option ($var_name): $default_choice"
     return 0
   fi
 
@@ -771,7 +875,7 @@ prompt_menu() {
 
   local choice=""
   while true; do
-    prompt_read "Select an option (1-${#options[@]})" choice "1"
+    prompt_read "Select an option (1-${#options[@]})" choice "$default_choice"
     if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#options[@]}" ]; then
       printf -v "$var_name" '%s' "$choice"
       break
@@ -1843,7 +1947,11 @@ main() {
   local google_chat_enabled="false"
   local slack_enabled="false"
   # Empty by default: the allowlist is opt-in, and an unset list allows all users.
-  local allowed_users="${ALLOWED_USERS:-}"
+  # PARAM_ALLOWED_USERS carries both --allowed-users and the loaded ALLOWED_USERS,
+  # so an install that had an allowlist keeps it on a re-run that says nothing.
+  # Before there was a flag at all, a non-interactive re-run emptied the list and
+  # opened the agent to every user -- #1060's seventh item.
+  local allowed_users="${PARAM_ALLOWED_USERS:-}"
   local allowed_users_hint=""
   if [ -z "$allowed_users" ]; then
     allowed_users_hint="empty list"
@@ -1925,7 +2033,16 @@ main() {
   local anthropic_api_key="${PARAM_ANTHROPIC_API_KEY:-}"
 
   if [ "$PARAM_NON_INTERACTIVE" != "true" ]; then
+    # Pre-set to the provider already configured, so pressing enter keeps it.
+    # Every arm below assigns unconditionally, which is why an unseeded menu
+    # silently reset a vertex_ai install to gemini (#1060, item 2).
     local model_choice=""
+    case "$model_provider" in
+      gemini) model_choice="1" ;;
+      vertex_ai) model_choice="2" ;;
+      openai) model_choice="3" ;;
+      anthropic) model_choice="4" ;;
+    esac
     prompt_menu "Select Model Provider for the Platform Agent:" \
       "Google Gemini (Recommended: $(default_model_for_provider gemini) / Gemini API)" \
       "Google Vertex AI / Model Garden (no API key — Workload Identity)" \
@@ -2004,7 +2121,15 @@ main() {
   local github_pem_path="${GITHUB_PEM_PATH:-}"
 
   if [ "$PARAM_NON_INTERACTIVE" != "true" ]; then
+    # An install that already names an org has a repository to connect, so
+    # option 2 is what pressing enter should mean. Left at option 1, an
+    # interactive re-run walks back through the create flow for a repository
+    # that exists; answering the prompts with the loaded values then keeps it,
+    # but skipping them drops GITHUB_ORG and turns the minter off (#1060, item 6).
     local gitops_choice=""
+    if [ -n "$github_org" ]; then
+      gitops_choice="2"
+    fi
     prompt_menu "Would you like to connect or create a GitOps repo for automated PRs?" \
       "Create a NEW GitHub Repository automatically (Recommended)" \
       "Connect an EXISTING GitHub Repository" \
@@ -2120,6 +2245,9 @@ main() {
     # the documented default and the only set that enforces no cloud-plane writes.
     # See docs/site/src/content/docs/reference/security-and-iam.md.
     local perm_choice=""
+    if [ "$permission_set" = "custom" ]; then
+      perm_choice="2"
+    fi
     prompt_menu "Select Platform Agent GCP IAM Permission Set:" \
       "read-only — auditing and observability, no GCP write capability (Default)" \
       "custom — exactly the roles you list, no built-in bundle" \
@@ -2152,6 +2280,11 @@ main() {
     # the else branch keeps an explicit --gvisor=false from being re-enabled by
     # someone confirming the prompt. Option 2 is "the other one" either way.
     local gvisor_choice=""
+    # Upstream reorders the two options by the value in hand and moves the
+    # "(Default)" label with them, which is a better answer than seeding the
+    # choice index: the label, the enter key and the resulting value all agree.
+    # Nothing to add here — the loaded install.env reaches $enable_gvisor, and
+    # this branch already keeps it.
     local gvisor_yes="Yes - gVisor Secure Kernel Sandbox (Hardened Workload Isolation)"
     local gvisor_no="No - Standard Container Runtime"
     local gvisor_prompt="Enable GKE Sandbox (gVisor) Runtime Isolation for Agent Workloads?"
@@ -2168,6 +2301,9 @@ main() {
     fi
 
     local webui_choice=""
+    if is_truthy "${PARAM_ENABLE_WEBUI:-false}"; then
+      webui_choice="2"
+    fi
     prompt_menu "Enable Hermes Web UI (Port 9119 Dashboard) for Agent Observability?" \
       "No - Disabled for reduced attack surface (Default)" \
       "Yes - Enabled for local browser debugging (port 9119)" \
@@ -2183,11 +2319,19 @@ main() {
     # whole on every turn, so it is bounded by the window; Hindsight retrieves only
     # what a question needs, at the price of an API server and a database.
     #
-    # The file store is listed first because prompt_menu's default answer is
-    # always option 1, and this is the one an install should get for saying
-    # nothing — it is what installs got before the searchable store existed, and
-    # it is the only option that adds no services to the cluster.
+    # The file store is listed first because it is the one an install should get
+    # for saying nothing — it is what installs got before the searchable store
+    # existed, and it is the only option that adds no services to the cluster.
+    # An install that already chose otherwise seeds its own option below, so
+    # "saying nothing" on a re-run means keeping what is there, not taking the
+    # first entry: omitting --memory used to delete a Hindsight deployment
+    # (#1060, item 5).
     local memory_choice=""
+    case "$memory_mode" in
+      file) memory_choice="1" ;;
+      hindsight) memory_choice="2" ;;
+      off) memory_choice="3" ;;
+    esac
     prompt_menu "Should the agent remember things between conversations?" \
       "Files on the agent's own disk (Default) - For small or personal deployments. Per-user Markdown, no extra services to run, does not scale past a few pages" \
       "Searchable store - For enterprise deployments. Ranked recall that scales, deploys Hindsight (API + Postgres) into the cluster" \
@@ -2247,12 +2391,12 @@ main() {
     exit 1
   fi
 
-  local api_server_key
-  api_server_key="$(openssl rand -hex 16 2>/dev/null || python3 -c "import secrets; print(secrets.token_hex(16))" 2>/dev/null || head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-  if [ -z "$api_server_key" ]; then
-    print_error "Unable to generate API_SERVER_KEY from a secure random source."
-    exit 1
-  fi
+  # Whatever the loaded configuration carries, and nothing invented here. When
+  # it carries none, write_tfvars_from_state tries the live Secret first and
+  # mints one only if that fails — see KUBE_AGENTS_GENERATE_API_SERVER_KEY,
+  # exported below. Generating at this point instead is what made every re-run
+  # replace the Secret and restart the pods holding it (#1060, item 8).
+  local api_server_key="${API_SERVER_KEY:-}"
 
   local old_umask
   old_umask="$(umask)"
@@ -2329,8 +2473,18 @@ main() {
 
   local tfvars_file
   tfvars_file="$(tf_compose_dir "$repo_dir")/terraform.tfvars"
-  write_tfvars_from_state "$tfvars_file" "$image_tag"
+  # install.sh is the one front door allowed to mint an API_SERVER_KEY, and only
+  # after the generator has tried the live Secret. upgrade.sh and uninstall.sh
+  # leave this unset so an unfindable key stays an error for them.
+  KUBE_AGENTS_GENERATE_API_SERVER_KEY=true \
+    write_tfvars_from_state "$tfvars_file" "$image_tag"
   persist_effective_cluster_mode "$cluster_mode"
+  # The key the generator settled on — recovered from the live Secret, or minted
+  # when there was none — replaces whatever this run wrote a moment ago, which
+  # was empty on a first install. Same shape as the cluster-mode writeback
+  # above: save_secret_var rewrites the one line rather than the file, and
+  # honours PERSIST_SECRETS_ON_DISK.
+  DRY_RUN=0 save_secret_var API_SERVER_KEY "${API_SERVER_KEY:-}"
   print_success "Terraform input saved to: $tfvars_file"
 
   # Pre-Flight Summary & Final Confirmation Checkpoint

@@ -631,6 +631,264 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
         self.assertIn("RC=1", proc.stdout)
 
 
+class InstallEnvInputTest(unittest.TestCase):
+    """install.env is an input, loaded before the parameter block.
+
+    The ordering is the mechanism: every `PARAM_X="${VAR:-}"` seed already knew
+    how to inherit from the environment, and loading the file into the
+    environment first is what makes inheritance the default path rather than
+    something each flag has to remember. That is what closes #1060 as a class
+    instead of patching its seven instances, so these tests are about the
+    inheritance itself, not about any one flag.
+    """
+
+    def _source_with_env_file(self, body, contents=None, env=None, path=None):
+        """Source install.sh with KUBE_AGENTS_INSTALL_ENV pointing at a file.
+
+        The explicit path rather than the beside-the-script discovery: a
+        developer's real install.env would otherwise decide the result. The
+        discovery itself is covered separately below.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = pathlib.Path(tmp) / (path or "install.env")
+            if contents is not None:
+                env_file.write_text(contents)
+            overrides = {"KUBE_AGENTS_INSTALL_ENV": str(env_file)}
+            overrides.update(env or {})
+            # Cleared so an exported value from the developer's own shell
+            # cannot stand in for the file under test.
+            full_env = get_isolated_test_env(overrides=overrides)
+            for leaking in (
+                "PROJECT_ID", "REGION", "CLUSTER_NAME", "MODEL_PROVIDER",
+                "ENABLE_GVISOR", "MEMORY", "MEMORY_PROVIDER", "ALLOWED_USERS",
+                "GOOGLE_CHAT_ENABLED", "API_SERVER_KEY", "ENABLE_WEBUI",
+                "HERMES_DASHBOARD_ENABLED", "PLATFORM_AGENT_PERMISSION_SET",
+            ):
+                full_env.pop(leaking, None)
+            full_env.update(overrides)
+            setup = f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n{body}\n'
+            return subprocess.run(
+                ["bash", "-c", setup],
+                capture_output=True,
+                text=True,
+                env=full_env,
+                cwd=str(_REPO_ROOT),
+            )
+
+    def test_values_reach_the_parameter_block(self):
+        """The whole point: a value in the file arrives as a PARAM_*."""
+        proc = self._source_with_env_file(
+            'echo "P=$PARAM_PROJECT_ID R=$PARAM_REGION M=$PARAM_MODEL_PROVIDER"',
+            contents="PROJECT_ID=from-the-file\nREGION=europe-west4\nMODEL_PROVIDER=vertex_ai\n",
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("P=from-the-file R=europe-west4 M=vertex_ai", proc.stdout)
+
+    def test_a_flag_beats_the_file(self):
+        """Order of authority: flag, then file, then default."""
+        proc = self._source_with_env_file(
+            'parse_args --project-id=from-the-flag; echo "P=$PARAM_PROJECT_ID"',
+            contents="PROJECT_ID=from-the-file\n",
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("P=from-the-flag", proc.stdout)
+
+    def test_the_values_are_exported_not_merely_assigned(self):
+        """write_tfvars_from_state and the TF_VAR_* handoff read the
+        environment, so a value that parsed but did not export would reach
+        neither. `set -a` around the source is what guarantees it."""
+        proc = self._source_with_env_file(
+            "bash -c 'echo EXPORTED=\"$PROJECT_ID\"'",
+            contents="PROJECT_ID=travels-to-children\n",
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("EXPORTED=travels-to-children", proc.stdout)
+
+    def test_a_named_file_that_is_absent_is_an_error(self):
+        """Only reachable through an explicit KUBE_AGENTS_INSTALL_ENV. Asking
+        for a path by name and not getting it is a mistake, not a first
+        install, and silently continuing would provision from defaults."""
+        proc = self._source_with_env_file("true", contents=None)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("does not exist", proc.stdout + proc.stderr)
+
+    def test_an_unparseable_file_is_reported_by_name(self):
+        """Sourcing it would abort through the ERR trap with a bash parse
+        error and no indication of which file was at fault."""
+        proc = self._source_with_env_file("true", contents='PROJECT_ID="unclosed\n')
+        self.assertNotEqual(proc.returncode, 0)
+        combined = proc.stdout + proc.stderr
+        self.assertIn("not valid shell", combined)
+
+    def test_no_file_at_all_is_the_ordinary_first_install(self):
+        """A first install has nothing to inherit and must not be blocked."""
+        full_env = get_isolated_test_env(overrides={"KUBE_AGENTS_INSTALL_ENV": ""})
+        proc = subprocess.run(
+            ["bash", "-c", f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"; echo OK'],
+            capture_output=True,
+            text=True,
+            env=full_env,
+            cwd=str(tempfile.gettempdir()),
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("OK", proc.stdout)
+
+    def test_it_is_discovered_beside_the_script(self):
+        """The documented location, and the one a curl | bash install into a
+        working directory also finds."""
+        with tempfile.TemporaryDirectory() as tmp:
+            home = pathlib.Path(tmp)
+            (home / "install.sh").write_text(_INSTALL_SH.read_text())
+            (home / "install.env").write_text("PROJECT_ID=found-beside-the-script\n")
+            proc = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    f'KUBE_AGENTS_SOURCE_ONLY=true source "{home}/install.sh"; '
+                    'echo "P=$PARAM_PROJECT_ID"',
+                ],
+                capture_output=True,
+                text=True,
+                env=get_isolated_test_env(overrides={"KUBE_AGENTS_INSTALL_ENV": ""}),
+                cwd=str(home),
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            self.assertIn("P=found-beside-the-script", proc.stdout)
+
+
+class NonInteractiveRerunInheritanceTest(unittest.TestCase):
+    """The eight settings #1060 names, each checked for inheritance.
+
+    Every one of these destroyed something when a non-interactive re-run
+    omitted its flag: the Pub/Sub topic, kubeagents-litellm-gsa, the gVisor
+    pool, the custom role list, a Hindsight deployment, the GitOps org, the
+    allowlist that keeps the agent private, and the Secret every pod holds.
+    """
+
+    def _params(self, contents, body):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = pathlib.Path(tmp) / "install.env"
+            env_file.write_text(contents)
+            full_env = get_isolated_test_env(
+                overrides={"KUBE_AGENTS_INSTALL_ENV": str(env_file)}
+            )
+            return subprocess.run(
+                ["bash", "-c",
+                 f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n{body}\n'],
+                capture_output=True,
+                text=True,
+                env=full_env,
+                cwd=str(_REPO_ROOT),
+            )
+
+    def test_google_chat_inherits_the_way_slack_already_did(self):
+        """#1060 item 1. The chat gate reads SLACK_ENABLED out of the loaded
+        configuration but read PARAM_ENABLE_GOOGLE_CHAT from the flag alone, so
+        Chat -- and only Chat -- reverted to false and planned its Pub/Sub
+        topic and subscription away."""
+        proc = self._params(
+            "GOOGLE_CHAT_ENABLED=true\n", 'echo "C=$PARAM_ENABLE_GOOGLE_CHAT"'
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("C=true", proc.stdout)
+
+    def test_the_settings_that_seeded_from_their_own_name(self):
+        """Model provider, gVisor, permission set and custom roles, GitOps org.
+        These already read an environment variable of the right name; what they
+        never had was a file to read it from."""
+        proc = self._params(
+            "MODEL_PROVIDER=vertex_ai\n"
+            "ENABLE_GVISOR=true\n"
+            "PLATFORM_AGENT_PERMISSION_SET=custom\n"
+            "PLATFORM_AGENT_CUSTOM_ROLES=roles/container.viewer\n"
+            "GITHUB_ORG=an-org\n"
+            "GITHUB_REPO=a-repo\n",
+            'echo "M=$PARAM_MODEL_PROVIDER G=$PARAM_ENABLE_GVISOR '
+            'P=$PARAM_PERMISSION_SET C=$PARAM_CUSTOM_ROLES '
+            'O=$PARAM_GITOPS_ORG R=$PARAM_GITOPS_REPO"',
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn(
+            "M=vertex_ai G=true P=custom C=roles/container.viewer O=an-org R=a-repo",
+            proc.stdout,
+        )
+
+    def test_memory_inherits_through_the_recorded_spelling(self):
+        """#1060 item 5. The flag is --memory (file|hindsight|off) but the
+        install records MEMORY_PROVIDER, so a file written from a previous
+        install carries only the second spelling. Without the translation,
+        omitting --memory deleted a Hindsight API and its Postgres."""
+        for provider, expected in (
+            ("kube_agents_memory", "hindsight"),
+            ("none", "off"),
+            ("multiuser_memory", "file"),
+        ):
+            with self.subTest(provider=provider):
+                proc = self._params(
+                    f"MEMORY_PROVIDER={provider}\n", 'echo "M=$PARAM_MEMORY"'
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+                self.assertIn(f"M={expected}", proc.stdout)
+
+    def test_memory_prefers_the_input_spelling_when_both_are_present(self):
+        proc = self._params(
+            "MEMORY=off\nMEMORY_PROVIDER=kube_agents_memory\n", 'echo "M=$PARAM_MEMORY"'
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("M=off", proc.stdout)
+
+    def test_the_dashboard_inherits_through_its_recorded_spelling_too(self):
+        proc = self._params(
+            "HERMES_DASHBOARD_ENABLED=true\n", 'echo "W=$PARAM_ENABLE_WEBUI"'
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("W=true", proc.stdout)
+
+    def test_allowed_users_has_a_flag_and_inherits(self):
+        """#1060 item 7. There was no --allowed-users at all, so a
+        non-interactive run emptied the list -- and an empty list allows every
+        user, which opens the agent rather than merely losing a setting."""
+        proc = self._params(
+            "ALLOWED_USERS=a@example.com,b@example.com", 'echo "U=$PARAM_ALLOWED_USERS"'
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("U=a@example.com,b@example.com", proc.stdout)
+
+        proc = self._params(
+            "ALLOWED_USERS=from-the-file@example.com",
+            'parse_args --allowed-users=from-the-flag@example.com; '
+            'echo "U=$PARAM_ALLOWED_USERS"',
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("U=from-the-flag@example.com", proc.stdout)
+
+    def test_the_api_server_key_is_not_minted_by_install_sh(self):
+        """#1060 item 8. Generating it here exported it, and the generator's
+        recovery loop skips any key already set -- so the live Secret could
+        never be read back and every run replaced it, restarting every pod.
+        Minting moved into write_tfvars_from_state, after that recovery.
+        """
+        source = _INSTALL_SH.read_text()
+        self.assertNotIn(
+            "openssl rand -hex 16",
+            source,
+            "install.sh must not mint an API_SERVER_KEY before the generator "
+            "has had a chance to recover the live one",
+        )
+        self.assertIn(
+            "KUBE_AGENTS_GENERATE_API_SERVER_KEY=true",
+            source,
+            "install.sh is the one front door entitled to mint a key, and says so",
+        )
+
+    def test_a_configured_api_server_key_is_carried_through(self):
+        proc = self._params(
+            "API_SERVER_KEY=deadbeefdeadbeef\n", 'echo "K=$API_SERVER_KEY"'
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("K=deadbeefdeadbeef", proc.stdout)
+
+
 class EnsureExistingClusterNetworkPolicyTest(unittest.TestCase):
     """ensure_existing_cluster_network_policy's two-call enablement sequence.
 

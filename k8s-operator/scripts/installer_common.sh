@@ -591,11 +591,32 @@ write_tfvars_from_state() {
     done
   fi
 
+  # Minting the key happens HERE, after the recovery loop above, and only for a
+  # caller that opted in — install.sh, which is the one front door entitled to
+  # create an install that did not exist. Doing it earlier is what #1060's
+  # eighth item was: install.sh generated a fresh key unconditionally and
+  # exported it, the loop above skips any key already set, and so the live one
+  # was never read back. Every run replaced the Secret and restarted the pods.
+  # upgrade.sh and uninstall.sh deliberately do not set this: for them an
+  # unfindable key means something is wrong, not that a new install is starting.
+  if [ -z "${API_SERVER_KEY:-}" ] && is_truthy "${KUBE_AGENTS_GENERATE_API_SERVER_KEY:-false}"; then
+    local generated
+    generated="$(openssl rand -hex 16 2>/dev/null \
+      || python3 -c "import secrets; print(secrets.token_hex(16))" 2>/dev/null \
+      || head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    if [ -z "$generated" ]; then
+      print_error "Unable to generate API_SERVER_KEY from a secure random source."
+      return 1
+    fi
+    export API_SERVER_KEY="$generated"
+    print_info "Generated a new API_SERVER_KEY: this install had none and none could be recovered from a live cluster."
+  fi
+
   # The composition requires api_server_key non-empty, so fail here with the
   # recovery path spelled out rather than aborting the caller on an opaque
   # unbound-variable error under set -u.
   if [ -z "${API_SERVER_KEY:-}" ]; then
-    print_error "API_SERVER_KEY is not set, vars.sh does not carry it (PERSIST_SECRETS_ON_DISK=false keeps it out), and it could not be recovered from the live Secret."
+    print_error "API_SERVER_KEY is not set, the install configuration does not carry it (PERSIST_SECRETS_ON_DISK=false keeps it out), and it could not be recovered from the live Secret."
     print_info "Recover it and re-run: export API_SERVER_KEY=\"\$(kubectl get secret platform-agent-secrets -n kubeagents-system -o jsonpath='{.data.API_SERVER_KEY}' | base64 --decode)\""
     return 1
   fi
