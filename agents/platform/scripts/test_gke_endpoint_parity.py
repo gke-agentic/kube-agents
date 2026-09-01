@@ -27,7 +27,7 @@ import unittest
 import gke_endpoint
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-BASH_HELPER = os.path.join(REPO_ROOT, "k8s-operator", "scripts", "gke_dns_endpoint.sh")
+BASH_HELPER = os.path.join(REPO_ROOT, "scripts", "installer", "gke_dns_endpoint.sh")
 MANIFESTS_GO = os.path.join(
     REPO_ROOT, "k8s-operator", "internal", "controller", "platformagent_manifests.go"
 )
