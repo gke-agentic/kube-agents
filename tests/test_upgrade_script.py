@@ -18,6 +18,10 @@ from tests.testing.common import (
     VALID_IMMUTABLE_REFS,
     get_isolated_test_env,
 )
+from tests.testing.release import (
+    MOCK_RELEASE_BUNDLE_VERSION,
+    create_mock_release_bundle_marker,
+)
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _UPGRADE_SH = _REPO_ROOT / "upgrade.sh"
@@ -92,15 +96,13 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_UPGRADE_SH}"
         import tempfile
 
         with tempfile.TemporaryDirectory(prefix="unpacked-upgrade-bundle-") as outer_dir:
-            archive_dir = pathlib.Path(outer_dir) / "kube-agents-0.3.0"
-            archive_dir.mkdir(parents=True)
-            bundle_file = archive_dir / ".release-bundle"
-            bundle_file.write_text("name=kube-agents\nversion=0.3.0\ntag=0.3.0\ncommit=d3be984\n")
+            archive_dir = pathlib.Path(outer_dir) / f"kube-agents-{MOCK_RELEASE_BUNDLE_VERSION}"
+            create_mock_release_bundle_marker(archive_dir)
 
-            cmd = f'BAKED_RELEASE_VERSION=""; verify_local_source_ref "{archive_dir}" "0.3.0"'
+            cmd = f'BAKED_RELEASE_VERSION=""; verify_local_source_ref "{archive_dir}" "{MOCK_RELEASE_BUNDLE_VERSION}"'
             proc = self._run_upgrade_func(cmd, cwd=archive_dir)
             self.assertEqual(proc.returncode, 0, proc.stderr)
-            self.assertIn("Verified upgrade sources match official release bundle 0.3.0", proc.stdout)
+            self.assertIn(f"Verified upgrade sources match official release bundle {MOCK_RELEASE_BUNDLE_VERSION}", proc.stdout)
 
     def test_verify_local_source_ref_in_git_worktree_enforces_git_alignment(self):
         """Verifies verify_local_source_ref in upgrade.sh enforces clean git status in real git checkouts."""

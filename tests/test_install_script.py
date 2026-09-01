@@ -21,6 +21,10 @@ from tests.testing.common import (
     create_mock_git_repo,
     get_isolated_test_env,
 )
+from tests.testing.release import (
+    MOCK_RELEASE_BUNDLE_VERSION,
+    create_mock_release_bundle_marker,
+)
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _INSTALL_SH = _REPO_ROOT / "install.sh"
@@ -540,15 +544,13 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
     def test_verify_local_source_ref_accepts_release_bundle_marker_in_non_git_dir(self):
         """Verifies verify_local_source_ref succeeds for unpacked release bundle with .release-bundle metadata."""
         with tempfile.TemporaryDirectory(prefix="unpacked-bundle-") as outer_dir:
-            archive_dir = pathlib.Path(outer_dir) / "kube-agents-0.3.0"
-            archive_dir.mkdir(parents=True)
-            bundle_file = archive_dir / ".release-bundle"
-            bundle_file.write_text("name=kube-agents\nversion=0.3.0\ntag=0.3.0\ncommit=d3be984\n")
+            archive_dir = pathlib.Path(outer_dir) / f"kube-agents-{MOCK_RELEASE_BUNDLE_VERSION}"
+            create_mock_release_bundle_marker(archive_dir)
 
-            cmd = f'BAKED_RELEASE_VERSION=""; verify_local_source_ref "{archive_dir}" "0.3.0"'
+            cmd = f'BAKED_RELEASE_VERSION=""; verify_local_source_ref "{archive_dir}" "{MOCK_RELEASE_BUNDLE_VERSION}"'
             proc = self._run_install_func(cmd, cwd=archive_dir)
             self.assertEqual(proc.returncode, 0, proc.stderr)
-            self.assertIn("Verified install sources match official release bundle 0.3.0", proc.stdout)
+            self.assertIn(f"Verified install sources match official release bundle {MOCK_RELEASE_BUNDLE_VERSION}", proc.stdout)
 
     def test_verify_local_source_ref_in_git_worktree_enforces_git_alignment_even_with_baked_version(self):
         """Verifies verify_local_source_ref strictly runs Git alignment in real Git checkouts even with baked version."""

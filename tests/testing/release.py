@@ -43,6 +43,8 @@ MOCK_HANDMADE_STAGING_TAG = "staging_hotfix"
 MOCK_TARGET_RELEASE_VERSION = "0.2.0"
 MOCK_TARGET_RELEASE_TAG = "0.2.0"
 MOCK_EXPLICIT_RELEASE_VERSION_NEXT = "0.3.0"
+MOCK_RELEASE_BUNDLE_VERSION = "0.3.0"
+MOCK_RELEASE_BUNDLE_TAG = "0.3.0"
 MOCK_DOWNGRADE_RELEASE_VERSION = "0.1.0"
 MOCK_COLLIDING_RELEASE_TAG = "0.1.9"
 
@@ -291,5 +293,60 @@ exit 0
     git_path.write_text(content)
     git_path.chmod(0o755)
     return git_path, log_path
+
+
+def create_mock_syft_binary(bin_dir, log_file=None, fail_on_images=None):
+    """Creates a mock syft CLI that writes mock SPDX or CycloneDX JSON."""
+    bin_path = pathlib.Path(bin_dir)
+    bin_path.mkdir(parents=True, exist_ok=True)
+    syft_path = bin_path / "syft"
+    log_path = log_file if log_file else (bin_path / "syft.log")
+
+    fail_checks = ""
+    if fail_on_images:
+        for img in fail_on_images:
+            fail_checks += f'  if [[ "$target" == *"{img}"* ]]; then echo "Mock syft error for {img}" >&2; exit 1; fi\n'
+
+    content = f"""#!/usr/bin/env bash
+echo "syft $*" >> "{log_path}"
+target="$1"
+format=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    format="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+
+{fail_checks}
+
+if [ "$format" = "spdx-json" ]; then
+  echo '{{"spdxVersion":"SPDX-2.3","name":"mock-sbom","packages":[]}}'
+elif [ "$format" = "cyclonedx-json" ]; then
+  echo '{{"bomFormat":"CycloneDX","specVersion":"1.5","components":[]}}'
+else
+  echo '{{"sbom":true}}'
+fi
+exit 0
+"""
+    syft_path.write_text(content)
+    syft_path.chmod(0o755)
+    return syft_path, log_path
+
+
+def create_mock_release_bundle_marker(
+    bundle_dir, version=MOCK_RELEASE_BUNDLE_VERSION, tag=None, commit="d3be984"
+):
+    """Writes a .release-bundle metadata marker file into the given bundle directory."""
+    bundle_path = pathlib.Path(bundle_dir)
+    bundle_path.mkdir(parents=True, exist_ok=True)
+    marker_file = bundle_path / ".release-bundle"
+    resolved_tag = tag if tag is not None else version
+    marker_file.write_text(
+        f"name=kube-agents\nversion={version}\ntag={resolved_tag}\ncommit={commit}\n"
+    )
+    return marker_file
 
 
