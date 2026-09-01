@@ -4,15 +4,14 @@
 #
 # A scheduled run has no human behind it, so the verdict comes from
 # resolve_scheduled_release.sh. A manual dispatch does, and that human clicking
-# "Run workflow" *is* the gate — so by default it short-circuits to `true` and
-# every dispatch behaves exactly as it did before the gate existed, emergency
-# path included.
+# "Run workflow" *is* the gate — so by default it short-circuits to `true`,
+# emergency path included.
 #
-# The two remaining modes exist because the schedule is not on yet. A resolver
-# that has only ever run in unit tests is a resolver nobody has watched decide,
-# and the first time it decides must not be the first time it runs unattended:
+# The two remaining modes make the unattended verdict reachable on demand, which
+# is the only way to see what the cron will decide without waiting a week for it
+# to decide it:
 #
-#   bypass    (default) A human decided. Publishes, as dispatches always have.
+#   bypass    (default) A human decided. Publishes.
 #   dry-run   Run the resolver, report its verdict, publish nothing. What the
 #             cron would do, with the consequences left off.
 #   evaluate  Run the resolver and honour it. Exactly a cron tick, on demand.
@@ -41,8 +40,8 @@ case "${MODE}" in
   bypass)
     echo "Manual dispatch — the decision to release has already been made."
     # release_commit is deliberately empty: on this path the publish job falls
-    # back to `inputs.target_commit`, or to the scripts' own resolution, which
-    # is what a dispatch has always done.
+    # back to `inputs.target_commit`, or to the scripts' own resolution. A
+    # commit named here would override the one the dispatcher asked for.
     emit "should_release=true" "release_commit=" "gate_tag=" "skip_reason="
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
       {

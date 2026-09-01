@@ -52,7 +52,7 @@ class ReleasePublishWorkflowTest(unittest.TestCase):
         self.assertIn("workflow_dispatch", self.triggers)
 
     def test_the_schedule_gate_input_offers_the_three_modes(self):
-        """dry-run is what makes the gate exercisable before the cron exists."""
+        """dry-run is how the cron's verdict is read without waiting for the cron."""
         gate_input = self.triggers["workflow_dispatch"]["inputs"]["schedule_gate"]
         self.assertEqual(gate_input["default"], "bypass")
         self.assertEqual(sorted(gate_input["options"]), ["bypass", "dry-run", "evaluate"])
@@ -127,7 +127,7 @@ class ReleasePublishWorkflowTest(unittest.TestCase):
         self.assertEqual(self.workflow["permissions"], {"contents": "read"})
 
     def test_every_publishing_step_still_sits_behind_the_eligibility_skip(self):
-        """The scheduled gate is added to the existing check, not in place of it."""
+        """The job-level verdict does not stand in for the per-step eligibility skip."""
         gated = [
             step
             for step in self.jobs[_PUBLISH_JOB]["steps"]

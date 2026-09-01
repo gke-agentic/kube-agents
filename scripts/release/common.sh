@@ -184,23 +184,6 @@ get_latest_validated_rc_tag() {
   git tag -l --sort=-v:refname 'rc_*_validated' 2>/dev/null | grep -E '^rc_.*_validated$' | head -n 1 || echo ""
 }
 
-# Answers "does this commit range carry a breaking change?" — a `feat!:`-style
-# bang on the type, or a BREAKING CHANGE / BREAKING-CHANGE footer.
-#
-# Both callers take the same answer from here rather than each holding a copy of
-# the regexes. calculate_next_version.sh reads it to pick the bump, and
-# resolve_scheduled_release.sh reads it to decide whether an unattended release
-# has to stop for a human. Two copies drift in a way nothing notices: widen one
-# to catch a footer variant and the gate silently stops halting on that shape,
-# so a breaking change ships unattended with every suite green.
-#
-# Arguments: $1 = commit subjects (`git log --format=%s`), $2 = bodies (`%b`).
-#
-# Herestrings rather than `echo … | grep -q`. Under `set -o pipefail` grep exits
-# on its first match, the producer then dies on SIGPIPE, and the pipeline reports
-# 141 — so a corpus large enough to still be buffered makes matching input read
-# as "no breaking change". That is the unsafe direction, and it is the same
-# hazard candidate_supports_shared_pipeline already avoids for the same reason.
 # Reads the commits between the last GA tag and a candidate, into
 # RELEASE_RANGE_SUBJECTS (`%s`) and RELEASE_RANGE_BODIES (`%b`).
 #
@@ -240,6 +223,23 @@ release_read_commit_range() {
   return 0
 }
 
+# Answers "does this commit range carry a breaking change?" — a `feat!:`-style
+# bang on the type, or a BREAKING CHANGE / BREAKING-CHANGE footer.
+#
+# Both callers take the same answer from here rather than each holding a copy of
+# the regexes. calculate_next_version.sh reads it to pick the bump, and
+# resolve_scheduled_release.sh reads it to decide whether an unattended release
+# has to stop for a human. Two copies drift in a way nothing notices: widen one
+# to catch a footer variant and the gate silently stops halting on that shape,
+# so a breaking change ships unattended with every suite green.
+#
+# Herestrings rather than `echo … | grep -q`. Under `set -o pipefail` grep exits
+# on its first match, the producer then dies on SIGPIPE, and the pipeline reports
+# 141 — so a corpus large enough to still be buffered makes matching input read
+# as "no breaking change". That is the unsafe direction, and it is the same
+# hazard candidate_supports_shared_pipeline already avoids for the same reason.
+#
+# Arguments: $1 = commit subjects (`git log --format=%s`), $2 = bodies (`%b`).
 commit_messages_have_breaking_change() {
   local subjects="${1:-}"
   local bodies="${2:-}"

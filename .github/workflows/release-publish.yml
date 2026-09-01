@@ -3,18 +3,13 @@ name: Release & Publish (GA)
 # Promotes a gate-passing commit to a GA release: SemVer from Conventional
 # Commits, a tag, promoted and signed images, a Helm chart, a GitHub Release.
 #
-# Everything that decides *whether* to release now lives in the
-# `evaluate-schedule` job, and everything that decides *what* to publish stays
-# where it was. That split is what an unattended run needs: it adds the halt on a
-# breaking change, which the publishing path has no counterpart for, and it keeps
-# the two shapes that do exit 1 with nothing to ship — no rc_*_validated tag at
-# all, and a GA tag left by an emergency release on a commit that is not the
-# candidate's stamped child — from being a red run nobody reads.
-#
-# Dispatch-only on purpose. The gate is built and tested, but turning the
-# schedule on is its own decision and its own reviewable change: exercise it by
-# hand with `schedule_gate: dry-run`, then `evaluate`, and add the `schedule:`
-# block once a real cron tick would have done the right thing.
+# Whether to release is decided in `evaluate-schedule`; what to publish is
+# decided in `publish-release`. An unattended run needs that split: it adds the
+# halt on a breaking change, which the publishing path has no counterpart for,
+# and it keeps the two shapes that exit 1 with nothing to ship — no
+# rc_*_validated tag at all, and a GA tag left by an emergency release on a
+# commit that is not the candidate's stamped child — from being a red run nobody
+# reads.
 #
 # `scripts/release/README.md`, "The weekly GA release", is canonical for the cron
 # value and the reasoning behind it — do not restate either here.
@@ -137,15 +132,16 @@ jobs:
         env:
           EXPLICIT_RELEASE_VERSION: ${{ inputs.explicit_release_version }}
           # An unattended run releases the exact commit the gate passed, not
-          # merely whatever the scripts would auto-resolve. `inputs.target_commit`
-          # is empty on a schedule event, so this falls through to the gate's
-          # answer; on a bypassing dispatch the gate returns empty and a named
-          # commit — or the scripts' own resolution — wins, exactly as before.
+          # whatever the scripts would auto-resolve. `inputs.target_commit` is
+          # empty on a schedule event, so the gate's answer is what is left; on a
+          # bypassing dispatch the gate returns empty and a named commit — or the
+          # scripts' own resolution — wins.
           #
-          # Today the two agree: the gate reads the newest rc_*_validated tag and
-          # so does calculate_next_version.sh. They stop agreeing the moment the
-          # gate moves to the staging tag, and dropping this fallback then makes
-          # the gate decorative without anything looking wrong.
+          # The order matters and the fallback is load-bearing: the gate reads the
+          # newest rc_*_validated tag while calculate_next_version.sh resolves its
+          # own candidate, and nothing forces those to be the same commit. Drop
+          # the fallback and the gate becomes decorative without anything looking
+          # wrong.
           TARGET_COMMIT: ${{ inputs.target_commit || needs.evaluate-schedule.outputs.release_commit }}
           SKIP_RC_VALIDATION: ${{ inputs.skip_rc_validation }}
         run: ./scripts/release/calculate_next_version.sh

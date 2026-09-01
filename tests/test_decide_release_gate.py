@@ -74,10 +74,10 @@ class DecideReleaseGateTest(unittest.TestCase):
         git("tag", "-a", MOCK_LATEST_VALIDATED_RC_TAG, "-m", "validated candidate")
         return temp_dir, repo_dir, git, head
 
-    # ── bypass: a dispatch behaves as it always has ──────────────────────────
+    # ── bypass: the human who dispatched is the gate ─────────────────────────
 
     def test_a_dispatch_defaults_to_bypassing_the_gate(self):
-        """No schedule_gate input at all — the shape of every dispatch before this change."""
+        """No schedule_gate input at all — an unset variable must not evaluate."""
         temp_dir, repo_dir, _, _ = self._repo()
         try:
             proc, outputs, summary = self._run(repo_dir, env={"EVENT_NAME": "workflow_dispatch"})
