@@ -251,11 +251,11 @@ def strip_markers(text: str) -> str:
     than GitHub's comment limit allows — converges in 2,602 passes and 0.08s.
     """
     text = normalise_newlines(text)
-    while True:
-        stripped = MARKER_RE.sub("", text)
-        if stripped == text:
-            return text.strip()
-        text = stripped
+    while "agent-" in text:
+        text, n = MARKER_RE.subn("", text)
+        if n == 0:
+            break
+    return text.strip()
 
 
 def bot_allowlist() -> set[str]:

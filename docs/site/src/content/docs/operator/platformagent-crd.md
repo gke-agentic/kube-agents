@@ -402,6 +402,8 @@ Default image: derived dynamically from the operator's container image at runtim
 - `serviceAccountAnnotations` — passed through to the KSA. Typically holds `iam.gke.io/gcp-service-account` for Workload Identity binding.
 - `splitCredentialBrokerPod` — default `false`, and **leave it off for now**. Renders the credential broker as its own Deployment and Service instead of a sidecar. The broker still runs commands in a directory the agent created on the shared data volume, so today both Pods have to see the same files: on the default ReadWriteOnce disk the broker Pod cannot attach the volume, never becomes ready, and every proxied command reports the credential proxy as unavailable. That coupling is being removed rather than worked around — the broker will own the workspace on its own ordinary volume and take file content from the agent instead of a directory — and the flag becomes adoptable then. A ReadWriteMany claim satisfies the current design if you want it, but it is not something this product requires of you, and co-scheduling both Pods on one node is not a workaround. **Also requires `harness.eventWatcher.enabled: false`** — the event watcher lives in the credential container and delivers over the agent Pod's loopback, so the split strands it; asking for both is refused with `Degraded`/`SplitBrokerStrandsEventWatcher`. See [Credential isolation § Splitting the broker into its own Pod](/kube-agents/reference/credential-isolation/#splitting-the-broker-into-its-own-pod).
 
+- `scopedServiceAccounts` — the cluster→service-account mapping for the [scoped service account pool](/kube-agents/reference/security-and-iam/#the-scoped-service-account-pool). Absent (the default) the pool is disarmed and the broker runs on the agent's own identity. A non-empty list arms it: the operator renders the mapping into the credential-proxy ConfigMap, mounts it read-only, and sets `CREDENTIAL_PROXY_SCOPED_SA_POOL=1` on the broker, which then mints a short-lived token for the account a request's target cluster maps to and refuses a cluster with no entry (`403`, rule `gcp.scoped-sa.unmapped-scope`) rather than falling back to the wider credential. The list is keyed on `(projectId, location, clusterName)` so a duplicate cluster is rejected at `kubectl apply` rather than crashlooping the broker at startup; entries are bounded at 100 and each component is pattern-validated. **Leave it empty for now**: pool members currently hold no IAM grant, so an armed pool turns every mapped-cluster read into a `Forbidden` — see the caution on the pool section.
+
 The Workload Identity target GSA (`kubeagents-platform-gsa@<project>.iam.gserviceaccount.com`) is created and bound by the [`kube-agents-iam` Terraform module](https://github.com/gke-labs/kube-agents/tree/main/terraform/modules/kube-agents-iam) with one of these permission sets:
 
 - `read-only` (default)
@@ -430,10 +432,11 @@ Configures the operator-generated egress `NetworkPolicy`.
   discovery, and says so in its log.
 - `metadataDaemon` (object, optional) — pins the node-local cloud metadata daemon IP in rule 3. Its
   one field, `endpoint`, is required within it, so `metadataDaemon: {}` is rejected; an explicit
-  `endpoint: ""` suppresses rule 3 entirely, for datapaths without a post-NAT daemon. Unlike
-  `dnsClusterIPs` there is no discovery behind this one — leave it out and the operator falls
-  through the annotation and its own environment variable to `169.254.169.252`, which is why
-  `metadataDaemonIPSource` has no `Discovered` value.
+  `endpoint: ""` suppresses rule 3 entirely, for datapaths without a post-NAT daemon. Leave it
+  unspecified to let the operator discover the container port from the `kube-system/gke-metadata-server`
+  DaemonSet on port `metadata-server` (promoting `metadataDaemonIPSource` to `Discovered`). If undiscoverable,
+  it falls back to `169.254.169.252` on port `988`. Overriding the endpoint explicitly opts out of port
+  discovery and uses port `988`.
 - `additionalEgress` ([]EgressRule, optional, max 32 items) — appends custom CIDR and port egress
   rules to the generated policy. A peer CIDR broader than `/12` (IPv4) or `/48` (IPv6) is rejected at
   admission, so that a caller-supplied range cannot be widened into an unrestricted egress bypass.
@@ -488,7 +491,8 @@ The operator writes observed state to the `status` subresource:
 | `networkPolicy.dnsClusterIPs`          | []string | The DNS ClusterIPs written into rule 1.                                                             |
 | `networkPolicy.dnsClusterIPsSource`    | string   | Which rung answered: `Annotation`, `Spec`, `OperatorEnv`, `Discovered`, or `Default`.               |
 | `networkPolicy.metadataDaemonIP`       | string   | The post-NAT daemon IP in rule 3, empty when suppressed.                                            |
-| `networkPolicy.metadataDaemonIPSource` | string   | Which rung answered: `Annotation`, `Spec`, `OperatorEnv`, `Default`, or `Suppressed`.               |
+| `networkPolicy.metadataDaemonPort`     | int32    | The post-NAT daemon port in rule 3, resolved from live DaemonSet or default (`988`).                |
+| `networkPolicy.metadataDaemonIPSource` | string   | Which rung answered: `Annotation`, `Spec`, `OperatorEnv`, `Discovered`, `Default`, or `Suppressed`. |
 
 Three condition types appear in `conditions`, and only the first is always present:
 

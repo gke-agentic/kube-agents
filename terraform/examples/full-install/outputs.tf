@@ -79,3 +79,8 @@ output "stockout_pubsub_sink" {
   description = "Cloud Logging sink for GKE stockout alerts (null when enable_stockout_investigator is false)"
   value       = try(google_logging_project_sink.stockout_alerts[0].name, null)
 }
+
+output "scoped_service_accounts" {
+  description = "Map from GKE resource name to the service account for that cluster. The key is what the credential broker matches on, so the two are directly comparable. The accounts hold no IAM grant as of 2026-08-12; see scoped_pool.tf."
+  value       = module.kube_agents_iam.scoped_service_accounts
+}

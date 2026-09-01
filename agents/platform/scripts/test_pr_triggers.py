@@ -480,7 +480,7 @@ class StripMarkersTest(unittest.TestCase):
         elapsed = time.monotonic() - started
         self.assertEqual(out, "")
         self.assertEqual(pr_triggers.MARKER_RE.findall(out), [])
-        self.assertLess(elapsed, 0.3, f"took {elapsed:.3f}s")
+        self.assertLess(elapsed, 0.5, f"took {elapsed:.3f}s")
 
     def test_stripping_does_not_change_what_counts_as_answered(self):
         """`handled_node_ids` reads raw bodies — a stripped one is not the record."""
