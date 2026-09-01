@@ -1037,14 +1037,14 @@ verify_local_source_ref() {
     # In official stamped release archives (unpacked tarball/zip outside Git),
     # BAKED_RELEASE_VERSION is stamped during release automation.
     if [ -n "${BAKED_RELEASE_VERSION:-}" ] && [ "${BAKED_RELEASE_VERSION}" = "${expected_ref}" ]; then
+      local bundle_version=""
+      if bundle_version="$(matches_release_bundle_ref "$repo_dir" "$expected_ref")"; then
+        SOURCE_REF_VERIFIED="${repo_dir}@${expected_ref}"
+        print_success "Verified install sources match official release bundle ${bundle_version}."
+        return 0
+      fi
       SOURCE_REF_VERIFIED="${repo_dir}@${expected_ref}"
       print_success "Verified install sources match baked official release ${BAKED_RELEASE_VERSION}."
-      return 0
-    fi
-    local bundle_version=""
-    if bundle_version="$(matches_release_bundle_ref "$repo_dir" "$expected_ref")"; then
-      SOURCE_REF_VERIFIED="${repo_dir}@${expected_ref}"
-      print_success "Verified install sources match official release bundle ${bundle_version}."
       return 0
     fi
     if [ "$lenient" = "true" ]; then

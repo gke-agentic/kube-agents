@@ -542,15 +542,26 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
             self.assertIn("Verified install sources match baked official release 0.2.0", proc.stdout)
 
     def test_verify_local_source_ref_accepts_release_bundle_marker_in_non_git_dir(self):
-        """Verifies verify_local_source_ref succeeds for unpacked release bundle with .release-bundle metadata."""
+        """Verifies verify_local_source_ref succeeds for unpacked release bundle when baked version matches."""
         with tempfile.TemporaryDirectory(prefix="unpacked-bundle-") as outer_dir:
+            archive_dir = pathlib.Path(outer_dir) / f"kube-agents-{MOCK_RELEASE_BUNDLE_VERSION}"
+            create_mock_release_bundle_marker(archive_dir)
+
+            cmd = f'BAKED_RELEASE_VERSION="{MOCK_RELEASE_BUNDLE_VERSION}"; verify_local_source_ref "{archive_dir}" "{MOCK_RELEASE_BUNDLE_VERSION}"'
+            proc = self._run_install_func(cmd, cwd=archive_dir)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn(f"Verified install sources match official release bundle {MOCK_RELEASE_BUNDLE_VERSION}", proc.stdout)
+
+    def test_verify_local_source_ref_rejects_unbaked_release_bundle_marker_without_override(self):
+        """Verifies verify_local_source_ref refuses unauthenticated .release-bundle self-attestation without baked version."""
+        with tempfile.TemporaryDirectory(prefix="unpacked-unbaked-") as outer_dir:
             archive_dir = pathlib.Path(outer_dir) / f"kube-agents-{MOCK_RELEASE_BUNDLE_VERSION}"
             create_mock_release_bundle_marker(archive_dir)
 
             cmd = f'BAKED_RELEASE_VERSION=""; verify_local_source_ref "{archive_dir}" "{MOCK_RELEASE_BUNDLE_VERSION}"'
             proc = self._run_install_func(cmd, cwd=archive_dir)
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            self.assertIn(f"Verified install sources match official release bundle {MOCK_RELEASE_BUNDLE_VERSION}", proc.stdout)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Refusing to provision from an unversioned source directory", proc.stdout)
 
     def test_verify_local_source_ref_in_git_worktree_enforces_git_alignment_even_with_baked_version(self):
         """Verifies verify_local_source_ref strictly runs Git alignment in real Git checkouts even with baked version."""
