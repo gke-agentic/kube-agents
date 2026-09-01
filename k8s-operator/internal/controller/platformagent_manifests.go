@@ -986,6 +986,7 @@ func buildPluginStagingInitContainer(homeDir string, plugin *agentv1alpha1.Agent
 		Name:            fmt.Sprintf("stage-plugin-%s", plugin.Name),
 		Image:           plugin.Spec.Image,
 		ImagePullPolicy: pullPolicy,
+		SecurityContext: hardenedSecurityContext(),
 		Command: []string{
 			"/bin/sh",
 			"-c",

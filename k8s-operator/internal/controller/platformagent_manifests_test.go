@@ -5324,8 +5324,11 @@ var operatorBuiltContainers = []string{
 // the author forgot to harden arrives as an unknown name, not as a silent pass.
 func TestEveryContainerHasAHardenedSecurityContext(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		agent *agentv1alpha1.PlatformAgent
+		name            string
+		agent           *agentv1alpha1.PlatformAgent
+		plugins         []*agentv1alpha1.AgentPlugin
+		extraContainers []string
+		renderOpts      renderOptions
 		// The dashboard is the one operator-built container a CR can switch off.
 		absent string
 	}{
@@ -5341,15 +5344,30 @@ func TestEveryContainerHasAHardenedSecurityContext(t *testing.T) {
 			}(),
 			absent: "platform-agent-dashboard",
 		},
+		{
+			name:  "with staging plugin",
+			agent: newTestPlatformAgent(),
+			plugins: []*agentv1alpha1.AgentPlugin{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "myplugin", Namespace: "default"},
+					Spec:       agentv1alpha1.AgentPluginSpec{Image: "example.com/plugin:v1"},
+				},
+			},
+			extraContainers: []string{"stage-plugin-myplugin"},
+			renderOpts:      renderOptions{imageVolumeSupported: false},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pod := buildPodTemplateSpec(tc.agent, "h", "h", "h", "h", nil, renderOptions{})
+			pod := buildPodTemplateSpec(tc.agent, "h", "h", "h", "h", tc.plugins, tc.renderOpts)
 
-			want := make(map[string]bool, len(operatorBuiltContainers))
+			want := make(map[string]bool, len(operatorBuiltContainers)+len(tc.extraContainers))
 			for _, n := range operatorBuiltContainers {
 				if n != tc.absent {
 					want[n] = true
 				}
+			}
+			for _, n := range tc.extraContainers {
+				want[n] = true
 			}
 
 			all := append(append([]corev1.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...)
