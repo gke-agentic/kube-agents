@@ -37,14 +37,14 @@ spec:
     memory:
       {{- . | nindent 6 }}
     {{- end }}
-    {{- $tuning := .Values.platformAgent.harness.tuning | default dict }}
+    {{- $tuning := deepCopy (.Values.platformAgent.harness.tuning | default dict) }}
     {{- if and .Values.plugins (and .Values.plugins.stockoutInvestigator .Values.plugins.stockoutInvestigator.enabled) }}
     {{- $defaultStockoutTuning := dict "maxInProgress" 3 "platform" (dict "apiMaxRetries" 8 "maxTurns" 200) "cluster" (dict "apiMaxRetries" 8 "maxTurns" 150) }}
     {{- $tuning = merge $tuning $defaultStockoutTuning }}
     {{- end }}
-    {{- if or $tuning.maxInProgress $tuning.platform $tuning.cluster $tuning.default }}
+    {{- if or (hasKey $tuning "maxInProgress") $tuning.platform $tuning.cluster $tuning.default }}
     tuning:
-      {{- if $tuning.maxInProgress }}
+      {{- if hasKey $tuning "maxInProgress" }}
       maxInProgress: {{ $tuning.maxInProgress }}
       {{- end }}
       {{- with $tuning.default }}

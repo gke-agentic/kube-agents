@@ -15,12 +15,15 @@ adapter — but neither requires the other.
 
 ## Installing
 
-Each plugin has an `install.sh` that provisions whatever cloud resources it needs, builds
-and pushes its image, and installs the chart. It needs `gcloud`, `kubectl`, `helm`, an
-image builder and an agent already deployed to attach to — but no Cloud Build, and no
-image to build or push beforehand. Nothing is defaulted to a particular fleet: the
-project comes from your `gcloud` config, and values that cannot be guessed are required,
-because the failure they cause is silent. See the plugin's own README.
+Plugins can be deployed in two ways:
+
+1. **Declaratively via Terraform + Helm (Recommended)**:
+   Set `enable_pubsub_platform = true` and `enable_stockout_investigator = true` in `terraform.tfvars` (or pass `--enable-pubsub-platform` and `--enable-stockout-investigator` to root `install.sh`). The main `kube-agents` Helm chart renders the `AgentPlugin` custom resources and Terraform provisions any supporting GCP resources (Pub/Sub topics, subscriptions, and logging sinks).
+
+2. **Standalone via `install.sh` (Developer workflows)**:
+   Each plugin directory carries an `install.sh` for developer iteration and dynamic attachment to existing clusters. It provisions necessary cloud resources via `gcloud`, builds and pushes a local OCI image, and deploys the plugin's standalone sub-chart. If the plugin is already managed by the main `kube-agents` release, the installer detects it and exits cleanly without conflicting.
+
+See the plugin's own README for detailed parameters.
 
 Before it provisions anything, an installer settles its image reference, checks its
 builder, creates the registry repository if it is missing and confirms it can get a

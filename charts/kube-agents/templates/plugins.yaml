@@ -1,3 +1,7 @@
+# This template renders AgentPlugin custom resources for optional platform plugins
+# (pubsub-platform and gke-stockout-investigator) into the main kube-agents release.
+# This provides declarative deployment via Helm and Terraform (gke-labs/kube-agents#1013),
+# mirroring the specs from agentplugins/*/templates/agentplugin.yaml.
 {{- if .Values.plugins }}
 {{- if and .Values.plugins.stockoutInvestigator .Values.plugins.stockoutInvestigator.enabled }}
 {{- if not (and .Values.plugins.pubsubPlatform .Values.plugins.pubsubPlatform.enabled) }}
@@ -15,8 +19,11 @@ metadata:
   labels:
     {{- include "kube-agents.labels" . | nindent 4 }}
 spec:
-  agentRef: {{ .Values.plugins.pubsubPlatform.agentRef | default "platform-agent" | quote }}
+  agentRef: {{ .Values.plugins.pubsubPlatform.agentRef | default .Values.platformAgent.name | quote }}
   image: {{ printf "%s:%s" (include "kube-agents.imageRepository" (dict "repository" .Values.plugins.pubsubPlatform.image.repository "registry" (include "kube-agents.imageRegistry" .))) (.Values.plugins.pubsubPlatform.image.tag | default .Values.platformAgent.deployment.image.tag | default .Chart.AppVersion) | quote }}
+  {{- with .Values.plugins.pubsubPlatform.image.pullPolicy }}
+  imagePullPolicy: {{ . | quote }}
+  {{- end }}
   config: |
     platform_toolsets:
       pubsub:
@@ -61,8 +68,11 @@ metadata:
   labels:
     {{- include "kube-agents.labels" . | nindent 4 }}
 spec:
-  agentRef: {{ .Values.plugins.stockoutInvestigator.agentRef | default "platform-agent" | quote }}
+  agentRef: {{ .Values.plugins.stockoutInvestigator.agentRef | default .Values.platformAgent.name | quote }}
   image: {{ printf "%s:%s" (include "kube-agents.imageRepository" (dict "repository" .Values.plugins.stockoutInvestigator.image.repository "registry" (include "kube-agents.imageRegistry" .))) (.Values.plugins.stockoutInvestigator.image.tag | default .Values.platformAgent.deployment.image.tag | default .Chart.AppVersion) | quote }}
+  {{- with .Values.plugins.stockoutInvestigator.image.pullPolicy }}
+  imagePullPolicy: {{ . | quote }}
+  {{- end }}
   # Install into the Platform Agent's profile, not the front door. The skill is used by
   # whichever profile does the remediation, and a Hermes plugin is only usable by the
   # profile it is installed in — the profile's load is what runs register(ctx), and that
@@ -73,6 +83,27 @@ spec:
   # listener actually runs. The subscription's own `agent_profile: platform` is what
   # sends the resulting work here.
   targetProfile: {{ .Values.plugins.stockoutInvestigator.targetProfile | default "platform" | quote }}
+  # No `approvals:` block, deliberately. It carried `mode: off`, which was neither
+  # needed nor as narrow as it looked.
+  #
+  # Not needed: the alert is dispatched with `dispatch: kanban`, and the board's worker
+  # is a detached `hermes -p platform chat -q` subprocess — the dispatcher strips the
+  # session context vars from its environment, and HERMES_INTERACTIVE, HERMES_EXEC_ASK
+  # and HERMES_GATEWAY_SESSION are unset in the pod. Hermes' approval gates return
+  # approved for exactly that case (non-interactive, non-gateway, non-cron), so nothing
+  # prompts and nothing hangs. Cron watchdogs are separately covered by the fleet
+  # default `approvals.cron_mode: approve`.
+  #
+  # Not narrow: `approvals` is one of the subtrees a plugin may set, and it lands on the
+  # whole `platform` profile — every session it runs, not just this route's. Turning
+  # approvals off there is an authority grant, which the site's security-and-iam page
+  # names as the caveat that allowlisting bounds where a plugin writes, not how much
+  # authority it grants itself. Paying that for a path that does not need it is a bad
+  # trade.
+  #
+  # Anyone switching this route to `dispatch: api` should revisit that: a gateway-hosted
+  # turn IS a gateway approval context, and a dangerous command there would wait out the
+  # approval timeout with no human attached.
   config: |
     platforms:
       pubsub:
@@ -96,6 +127,12 @@ spec:
               # tools, so it delegates one anyway — after burning a full turn of its own to
               # decide that. Filing directly skips that turn.
               dispatch: kanban
+              # No `require_skills` here, though the guard it names is one this route
+              # would want. It cannot work on this path: skills are only loaded in the
+              # gateway for turns that run in the gateway, and this route's do not, so
+              # the adapter never sees a skill go missing and has nothing to refuse.
+              # Setting it anyway advertised a guarantee nothing enforced. The adapter
+              # now warns at startup if a route pairs it with `dispatch: kanban`.
               prompt: 'GKE Scale-up Failure Alert.
 
                 Judge whether this is a real, active stockout or a duplicate/stale signal,
@@ -154,6 +191,8 @@ spec:
               - gkestockoutinvestigator:gke-stockout-investigator
               subscription: {{ (.Values.plugins.stockoutInvestigator.pubsub | default dict).subscription | default "gke-stockout-alerts-sub" | quote }}
               topic: {{ (.Values.plugins.stockoutInvestigator.pubsub | default dict).topic | default "gke-stockout-alerts-topic" | quote }}
+              # Sink configuration matching the Log Router sink that exports autoscaler logs
+              # to the topic above.
               sink: {{ (.Values.plugins.stockoutInvestigator.pubsub | default dict).sink | default "gke-stockout-alerts-sink" | quote }}
 {{- end }}
 {{- end }}
