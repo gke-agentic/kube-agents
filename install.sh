@@ -772,16 +772,34 @@ warn_unrecorded_interview_answers() {
 
   # A key the file does not carry is not drift: it inherits the default, and
   # warning about every unset key would bury the ones that matter.
+  #
+  # Two rules decide what belongs in this list, and getting either wrong makes
+  # an entry inert rather than loud:
+  #
+  #   1. The setting must have an interview question. ENABLE_GKE_BACKUP_PLAN and
+  #      GVISOR_POOL_NAME are deliberately kept out of the export block below
+  #      precisely because nothing asks about them, so they cannot drift and
+  #      listing them here would only ever compare a value against itself.
+  #   2. The answer must be readable under the key's own name. Most of the
+  #      interview re-exports into exactly that name, but MEMORY does not: its
+  #      answer lands in PARAM_MEMORY and in MEMORY_PROVIDER, and MEMORY itself
+  #      still holds whatever install.env set at startup. Comparing `$MEMORY`
+  #      would therefore always find them equal and never report the one case
+  #      that matters most -- switching to Hindsight, getting it provisioned,
+  #      and having the next run derive multiuser_memory from the unchanged file
+  #      and tear the Hindsight API and its Postgres back down.
   local key recorded current drifted=""
   for key in GOOGLE_CHAT_ENABLED SLACK_ENABLED ALLOWED_USERS SLACK_ALLOWED_USERS \
     SLACK_BOT_TOKEN SLACK_APP_TOKEN SLACK_HOME_CHANNEL SLACK_HOME_CHANNEL_NAME \
     CHAT_TOPIC_NAME MODEL_PROVIDER MODEL_DEFAULT_NAME PLATFORM_AGENT_PERMISSION_SET \
     PLATFORM_AGENT_CUSTOM_ROLES ENABLE_GVISOR HERMES_DASHBOARD_ENABLED MEMORY \
-    USER_PROFILE_ENABLED ENABLE_GKE_BACKUP_PLAN GITOPS_ORG GITOPS_REPO \
-    GITHUB_APP_ID GITHUB_PEM_PATH; do
+    USER_PROFILE_ENABLED GITOPS_ORG GITOPS_REPO GITHUB_APP_ID GITHUB_PEM_PATH; do
     grep -qE "^[[:space:]]*${key}=" "$file" 2>/dev/null || continue
     recorded="$(recorded_install_env_value "$file" "$key")"
-    current="${!key:-}"
+    case "$key" in
+      MEMORY) current="${PARAM_MEMORY:-}" ;;
+      *) current="${!key:-}" ;;
+    esac
     [ "$recorded" != "$current" ] || continue
     drifted="${drifted}${drifted:+ }${key}"
   done
@@ -795,6 +813,12 @@ warn_unrecorded_interview_answers() {
     case "$key" in
       *TOKEN | *_KEY | *SECRET)
         print_info "  ${key}=<the value you entered>"
+        ;;
+      # Same indirection as the comparison above, for the same reason: printing
+      # ${MEMORY} here would hand the operator the value they just changed away
+      # from, which is worse than printing nothing.
+      MEMORY)
+        print_info "  MEMORY=${PARAM_MEMORY:-}"
         ;;
       *)
         print_info "  ${key}=${!key:-}"

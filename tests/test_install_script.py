@@ -1662,6 +1662,44 @@ class UnrecordedInterviewAnswersAreReportedTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertNotIn("does not record", proc.stdout + proc.stderr)
 
+    def test_a_changed_memory_answer_is_named(self):
+        """The case the whole warning matters most for, and the one an entry
+        that reads `$MEMORY` cannot see.
+
+        `install.sh` never re-exports `MEMORY` after the memory interview: the
+        answer lands in `PARAM_MEMORY` and in `MEMORY_PROVIDER`, while `MEMORY`
+        still holds whatever `install.env` set at startup. So comparing against
+        `$MEMORY` always finds them equal. An operator with `MEMORY=file` who
+        picks the searchable store gets Hindsight provisioned, no warning, and
+        an unchanged file — and the next run derives `multiuser_memory` from it
+        and tears the Hindsight API and its Postgres back down.
+        """
+        proc = self._warn(
+            "MEMORY=file\n", {"PARAM_MEMORY": "hindsight"}
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        combined = proc.stdout + proc.stderr
+        self.assertIn("does not record", combined)
+        self.assertIn("MEMORY=hindsight", combined)
+
+    def test_an_unchanged_memory_answer_says_nothing(self):
+        proc = self._warn("MEMORY=file\n", {"PARAM_MEMORY": "file"})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("does not record", proc.stdout + proc.stderr)
+
+    def test_settings_with_no_interview_question_are_not_listed(self):
+        """ENABLE_GKE_BACKUP_PLAN and GVISOR_POOL_NAME are deliberately kept out
+        of the export block because nothing asks about them, so an entry for
+        them here could only ever compare a value against itself."""
+        source = _INSTALL_SH.read_text()
+        body = source.split("warn_unrecorded_interview_answers() {")[1]
+        # The key list itself, not the comment above it that names these two as
+        # the examples of what to leave out.
+        keys = body.split("for key in ")[1].split("; do")[0]
+        self.assertIn("MEMORY", keys, "sanity: the list was located")
+        self.assertNotIn("ENABLE_GKE_BACKUP_PLAN", keys)
+        self.assertNotIn("GVISOR_POOL_NAME", keys)
+
     def test_a_secret_is_named_without_its_value(self):
         proc = self._warn(
             "SLACK_BOT_TOKEN=xoxb-old\n", {"SLACK_BOT_TOKEN": "xoxb-brand-new"}

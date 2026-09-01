@@ -152,19 +152,51 @@ class PersistStateVarTest(unittest.TestCase):
     def test_upgrade_guards_every_persist_call_on_the_file_existing(self):
         """uninstall.sh already wraps the same three calls this way; upgrade.sh
         was the last unguarded writer. Checked against the source rather than
-        by driving main(), which needs gcloud and a cluster."""
-        source = _UPGRADE_SH.read_text()
-        self.assertRegex(
-            source,
-            re.compile(
-                r'if \[ -f "\$state_file" \]; then\s*\n'
-                r'(?:.*\n)*?\s*persist_state_var "\$state_file" PROJECT_ID',
-                re.MULTILINE,
-            ),
-            "the persist_state_var calls must sit inside [ -f \"$state_file\" ]; "
-            "an install.env-only install has no vars.sh and the append aborts "
-            "the upgrade",
+        by driving main(), which needs gcloud and a cluster.
+
+        Checked by walking the block structure, not by a regex bridging from an
+        `if [ -f "$state_file" ]` to a `persist_state_var` line. `upgrade.sh`
+        contains three such `if` lines — one inside `persist_state_var` itself,
+        one on the legacy-state load, one the real guard — and an unanchored
+        search takes the leftmost, so a bridging pattern anchors on the helper's
+        own internal guard nearly 300 lines away and stays green when the real
+        guard is deleted. Same correction as the chat-menu guard.
+        """
+        lines = _UPGRADE_SH.read_text().splitlines()
+        calls = [
+            i for i, line in enumerate(lines)
+            if re.match(r'\s*persist_state_var "\$state_file" \w+', line)
+        ]
+        self.assertEqual(
+            3, len(calls),
+            f"expected the three coordinate persists, found {len(calls)}",
         )
+        for i in calls:
+            with self.subTest(line=i + 1):
+                # Walk back to the nearest enclosing `if` at a lower indent and
+                # require it to be the file-existence guard. A guard that is
+                # deleted leaves the nearest enclosing `if` as the per-parameter
+                # `[ -n "$PARAM_..." ]`, whose own enclosing block is the
+                # function body — so this fails exactly when the guard goes.
+                # Strictly decreasing indent, so this collects the chain of
+                # blocks that actually enclose the call rather than the sibling
+                # `fi`s and neighbouring calls that merely sit further left.
+                min_indent = len(lines[i]) - len(lines[i].lstrip())
+                enclosing = []
+                for j in range(i - 1, -1, -1):
+                    if not lines[j].strip():
+                        continue
+                    ind = len(lines[j]) - len(lines[j].lstrip())
+                    if ind < min_indent:
+                        enclosing.append(lines[j].strip())
+                        min_indent = ind
+                self.assertTrue(
+                    any('[ -f "$state_file" ]' in line for line in enclosing[:3]),
+                    "each persist_state_var call must sit inside "
+                    '`[ -f "$state_file" ]`; an install.env-only install has no '
+                    "vars.sh and the unconditional append aborts the upgrade. "
+                    f"Enclosing blocks were: {enclosing[:3]}",
+                )
 
     def test_an_install_env_only_install_still_records_the_override(self):
         """The guard must not lose the override, only the file write: the
