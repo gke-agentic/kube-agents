@@ -524,6 +524,8 @@ class InstallerCommonTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         region, vertex_location = proc.stdout.split()
         self.assertEqual(vertex_location, "global")
+        self.assertNotEqual(region, vertex_location)
+
     def test_tfvars_generation_includes_plugin_enablement(self):
         with tempfile.TemporaryDirectory() as out_dir:
             dest = pathlib.Path(out_dir) / "terraform.tfvars"
