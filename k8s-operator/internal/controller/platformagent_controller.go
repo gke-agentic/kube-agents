@@ -1705,10 +1705,6 @@ func evaluatePluginReadiness(
 	case duplicate:
 		return degraded("DuplicatePluginName", fmt.Sprintf(
 			"Plugin name '%s' collides with built-in or already registered plugin.", plugin.Name))
-	case !imageVolumeSupported:
-		return degraded("ImageVolumeUnsupported", fmt.Sprintf(
-			"Kubernetes version does not support ImageVolumeSource (requires 1.35+). OCI volume for agent %s was not mounted.",
-			agent.Name))
 	case imageFailure != "":
 		// The image volume is part of the agent's pod spec, so an unpullable plugin
 		// image keeps the whole agent pod from starting. Reporting Ready here would
@@ -1719,6 +1715,9 @@ func evaluatePluginReadiness(
 	}
 
 	message := fmt.Sprintf("Plugin successfully applied to agent %s.", agent.Name)
+	if !imageVolumeSupported {
+		message = fmt.Sprintf("Plugin successfully staged via init container for agent %s (ImageVolumeSource unsupported).", agent.Name)
+	}
 	if issues := pluginConfigIssues(plugin); len(issues) > 0 {
 		message = fmt.Sprintf("%s %s", message, strings.Join(issues, " "))
 	}

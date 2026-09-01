@@ -1671,19 +1671,22 @@ func TestUpdatePluginStatuses_ImageVolumeUnsupported(t *testing.T) {
 		t.Fatalf("failed to fetch updated plugin: %v", err)
 	}
 
-	if updatedPlugin.Status.Phase != "Degraded" {
-		t.Errorf("expected Status.Phase 'Degraded', got '%s'", updatedPlugin.Status.Phase)
+	if updatedPlugin.Status.Phase != "Ready" {
+		t.Errorf("expected Status.Phase 'Ready', got '%s'", updatedPlugin.Status.Phase)
 	}
 
 	cond := meta.FindStatusCondition(updatedPlugin.Status.Conditions, "Ready")
 	if cond == nil {
 		t.Fatalf("expected 'Ready' status condition to be set")
 	}
-	if cond.Status != metav1.ConditionFalse {
-		t.Errorf("expected condition Status False, got %s", cond.Status)
+	if cond.Status != metav1.ConditionTrue {
+		t.Errorf("expected condition Status True, got %s", cond.Status)
 	}
-	if cond.Reason != "ImageVolumeUnsupported" {
-		t.Errorf("expected condition Reason 'ImageVolumeUnsupported', got '%s'", cond.Reason)
+	if cond.Reason != "Applied" {
+		t.Errorf("expected condition Reason 'Applied', got '%s'", cond.Reason)
+	}
+	if !strings.Contains(cond.Message, "init container") {
+		t.Errorf("expected condition Message to mention init container staging, got '%s'", cond.Message)
 	}
 }
 
@@ -2120,7 +2123,7 @@ func TestUpdatePluginStatuses_NoWriteWhenUnchanged(t *testing.T) {
 		t.Errorf("expected no second status write (resourceVersion %s), got %s", rvFirst, afterSecond.ResourceVersion)
 	}
 
-	// A genuine change must still be written.
+	// A genuine change (message updated to reflect init container staging) must still be written.
 	changed := afterSecond.DeepCopy()
 	r.updatePluginStatuses(ctx, agent, []*agentv1alpha1.AgentPlugin{changed}, false /* imageVolumeSupported */)
 	var afterThird agentv1alpha1.AgentPlugin
@@ -2128,10 +2131,10 @@ func TestUpdatePluginStatuses_NoWriteWhenUnchanged(t *testing.T) {
 		t.Fatalf("get after third: %v", err)
 	}
 	if afterThird.ResourceVersion == rvFirst {
-		t.Errorf("expected a status write when the plugin degrades, resourceVersion unchanged at %s", rvFirst)
+		t.Errorf("expected a status write when the condition changes, resourceVersion unchanged at %s", rvFirst)
 	}
-	if afterThird.Status.Phase != "Degraded" {
-		t.Errorf("expected Phase 'Degraded', got '%s'", afterThird.Status.Phase)
+	if afterThird.Status.Phase != "Ready" {
+		t.Errorf("expected Phase 'Ready', got '%s'", afterThird.Status.Phase)
 	}
 }
 

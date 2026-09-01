@@ -132,5 +132,3 @@ jobs:
           cosign sign --yes "ghcr.io/$IMAGE_REPOSITORY/credential-proxy@$CREDENTIAL_PROXY_DIGEST"
           cosign sign --yes "ghcr.io/$IMAGE_REPOSITORY/pubsub-platform@$PUBSUB_PLATFORM_DIGEST"
           cosign sign --yes "ghcr.io/$IMAGE_REPOSITORY/gke-stockout-investigator@$STOCKOUT_INVESTIGATOR_DIGEST"
-
-
