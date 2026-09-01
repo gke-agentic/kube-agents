@@ -64,6 +64,13 @@ on_error() {
   if [ -n "${INSTALL_ENV_FILE:-}" ] && [ -f "${INSTALL_ENV_FILE}.tmp" ]; then
     rm -f -- "${INSTALL_ENV_FILE}.tmp"
   fi
+  # Same for the tfvars the generator was midway through writing. It is mode
+  # 600 and carries every secret the run was given, and it is named one
+  # character from the file the next reader would open. write_tfvars_from_state
+  # publishes the path while the write is in flight and clears it after the mv.
+  if [ -n "${TFVARS_TMP_FILE:-}" ] && [ -f "${TFVARS_TMP_FILE}" ]; then
+    rm -f -- "${TFVARS_TMP_FILE}"
+  fi
   exit "$exit_code"
 }
 trap 'on_error $? $LINENO "$BASH_COMMAND"' ERR
@@ -711,11 +718,98 @@ write_secret_env_var() {
 # are recomputed wherever they are used, and the cluster shape written here is
 # the one the interview asked for, never the probed TFVARS_CLUSTER_MODE -- see
 # the note where persist_effective_cluster_mode used to be.
+# The value install.env records for one key, empty when it records none.
+# Reads the file rather than the environment: install.env was sourced at
+# startup into these very names, and the interview has since overwritten them,
+# so the environment no longer remembers what the file said.
+#
+# Always returns 0. A `return 1` for "no such key" would be the natural
+# signature and is the wrong one here: this is called from a command
+# substitution, `set -E` propagates the ERR trap into that subshell, and the
+# trap fires on the non-zero return before the caller's `||` is ever consulted
+# -- printing an abort banner per absent key. Callers test presence separately.
+recorded_install_env_value() {
+  local file="${1:-}" key="${2:-}" line=""
+  [ -n "$file" ] && [ -f "$file" ] || return 0
+  line="$(grep -E "^[[:space:]]*${key}=" "$file" 2>/dev/null | tail -1 || true)"
+  [ -n "$line" ] || return 0
+  line="${line#*=}"
+  line="${line%\"}"
+  line="${line#\"}"
+  printf '%s' "$line"
+}
+
+# Say so when an interactive answer changed something the file still records
+# differently.
+#
+# install.env is an input: install.sh creates one when there is none and never
+# rewrites it. The interview, though, still runs in full on every interactive
+# invocation, and its answers go straight into the environment
+# write_tfvars_from_state reads. So an operator who answers "None" at the chat
+# menu gets the Pub/Sub topic destroyed by this apply and re-created by the
+# next run, because the file still says the integration is on. Nothing else
+# tells them: "Left your install configuration as you wrote it" reads as
+# reassurance, and the Day-2 menu's Save & Apply is the only path that writes a
+# key back.
+#
+# A warning rather than a write, deliberately. Making install.sh persist here
+# would contradict the contract stated in install.env.example, INSTALL.md and
+# the chart's CI story -- #1117 renders this file on an ephemeral runner and
+# needs the installer to treat it as read-only. Naming the drift costs nothing
+# and leaves the decision where it belongs.
+#
+# The list is the interview's own settings, not everything the file holds:
+# IMAGE_TAG and the recovered secrets legitimately differ on a normal run and
+# would make this noise. Keep it in step with the interview.
+warn_unrecorded_interview_answers() {
+  local file="${1:-}"
+  [ -n "$file" ] && [ -f "$file" ] || return 0
+  # A non-interactive run typed nothing; its answers came from flags and this
+  # very file, so there is no drift to report that the operator did not author.
+  [ "$PARAM_NON_INTERACTIVE" != "true" ] || return 0
+  has_controlling_tty || return 0
+  [ "$PARAM_DRY_RUN" != "true" ] || return 0
+
+  # A key the file does not carry is not drift: it inherits the default, and
+  # warning about every unset key would bury the ones that matter.
+  local key recorded current drifted=""
+  for key in GOOGLE_CHAT_ENABLED SLACK_ENABLED ALLOWED_USERS SLACK_ALLOWED_USERS \
+    SLACK_BOT_TOKEN SLACK_APP_TOKEN SLACK_HOME_CHANNEL SLACK_HOME_CHANNEL_NAME \
+    CHAT_TOPIC_NAME MODEL_PROVIDER MODEL_DEFAULT_NAME PLATFORM_AGENT_PERMISSION_SET \
+    PLATFORM_AGENT_CUSTOM_ROLES ENABLE_GVISOR HERMES_DASHBOARD_ENABLED MEMORY \
+    USER_PROFILE_ENABLED ENABLE_GKE_BACKUP_PLAN GITOPS_ORG GITOPS_REPO \
+    GITHUB_APP_ID GITHUB_PEM_PATH; do
+    grep -qE "^[[:space:]]*${key}=" "$file" 2>/dev/null || continue
+    recorded="$(recorded_install_env_value "$file" "$key")"
+    current="${!key:-}"
+    [ "$recorded" != "$current" ] || continue
+    drifted="${drifted}${drifted:+ }${key}"
+  done
+  [ -n "$drifted" ] || return 0
+
+  print_warning "This run applied answers that ${file} does not record."
+  print_info "install.env is an input: install.sh reads it and never rewrites it."
+  print_info "The next run -- or upgrade.sh, or the Day-2 menu -- regenerates from"
+  print_info "the file, which will revert what you just changed. Update these keys:"
+  for key in $drifted; do
+    case "$key" in
+      *TOKEN | *_KEY | *SECRET)
+        print_info "  ${key}=<the value you entered>"
+        ;;
+      *)
+        print_info "  ${key}=${!key:-}"
+        ;;
+    esac
+  done
+  print_info "Or re-run './install.sh --menu' and use Save & Apply, which writes them for you."
+}
+
 bootstrap_install_env_file() {
   local destination="${1:-}" image_tag="${2:-}"
   [ -n "$destination" ] || return 0
   if [ -f "$destination" ]; then
     print_info "Left your install configuration as you wrote it: ${destination}"
+    warn_unrecorded_interview_answers "$destination"
     return 0
   fi
   if [ "$PARAM_DRY_RUN" = "true" ]; then
@@ -2205,12 +2299,22 @@ main() {
   # variables) is the non-interactive spelling of the Slack interview, the same
   # variables the Day-2 menu reads. Without it Slack would be reachable only
   # through a controlling tty.
+  #
+  # Read through is_truthy, not string-compared against the lowercase literal.
+  # Every boolean the generator writes goes through hcl_bool -> is_truthy, which
+  # accepts True/yes/y/1/on; these two were the only ones that did not, and
+  # install.env is a file the documentation now tells operators to hand-write.
+  # `GOOGLE_CHAT_ENABLED=True` used to leave PARAM_ENABLE_GOOGLE_CHAT unequal to
+  # "true", drop chat_choice to 4, and plan the Pub/Sub topic away on the next
+  # -y run -- while upgrade.sh read the same file as enabled, so the two front
+  # doors disagreed about one file. The sibling booleans fail loudly on their
+  # ^(true|false)$ validators instead; only these two were silent.
   local chat_choice=""
-  if [ "$PARAM_ENABLE_GOOGLE_CHAT" = "true" ] && [ "${SLACK_ENABLED:-false}" = "true" ]; then
+  if is_truthy "$PARAM_ENABLE_GOOGLE_CHAT" && is_truthy "${SLACK_ENABLED:-false}"; then
     chat_choice="3"
-  elif [ "$PARAM_ENABLE_GOOGLE_CHAT" = "true" ]; then
+  elif is_truthy "$PARAM_ENABLE_GOOGLE_CHAT"; then
     chat_choice="1"
-  elif [ "${SLACK_ENABLED:-false}" = "true" ]; then
+  elif is_truthy "${SLACK_ENABLED:-false}"; then
     chat_choice="2"
   fi
   # Nothing configured and nobody to ask: "None", as before. Left unset when

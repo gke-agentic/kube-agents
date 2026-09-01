@@ -59,6 +59,13 @@ on_error() {
   fi
   echo -e "\n\033[91m\033[1m✗ Teardown error encountered at line ${line_no} (exit code ${exit_code}): ${bash_cmd}\033[0m" >&2
   write_report "FAILED" "true" "${line_no}" "${bash_cmd}" 2>/dev/null || true
+  # A tfvars the generator was midway through writing is mode 600, carries
+  # every secret this run was given, and is named one character from the file
+  # the next reader would open. write_tfvars_from_state publishes the path
+  # while the write is in flight and clears it after the mv.
+  if [ -n "${TFVARS_TMP_FILE:-}" ] && [ -f "${TFVARS_TMP_FILE}" ]; then
+    rm -f -- "${TFVARS_TMP_FILE}"
+  fi
   exit "$exit_code"
 }
 trap 'on_error $? $LINENO "$BASH_COMMAND"' ERR

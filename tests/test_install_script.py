@@ -1359,19 +1359,43 @@ class ChatInterviewInheritsAndStillAsksTest(unittest.TestCase):
 
     _SOURCE = _INSTALL_SH.read_text()
 
+    def _chat_block(self):
+        block = self._SOURCE.split("6. Chat & Messaging Platform Integration")[1]
+        return block.split("local google_chat_enabled")[0]
+
     def test_the_menu_is_not_inside_the_inheritance_branch(self):
         """prompt_menu for the chat options must be reached unconditionally;
-        the seeds above it only pre-select an answer."""
-        chat_block = self._SOURCE.split("6. Chat & Messaging Platform Integration")[1]
-        chat_block = chat_block.split("local google_chat_enabled")[0]
-        self.assertIn("prompt_menu", chat_block)
-        menu_line = chat_block.index("prompt_menu")
-        # Anything still gating the menu on the inherited value is the defect.
-        self.assertNotRegex(
-            chat_block[:menu_line],
-            re.compile(r'else\s*\n\s*prompt_menu', re.MULTILINE),
-            "the chat menu must not sit in the else-arm of the inheritance "
-            "check; seed chat_choice and let prompt_menu default to it",
+        the seeds above it only pre-select an answer.
+
+        Checked structurally rather than by searching the text before the call.
+        Slicing at `chat_block.index("prompt_menu")` cannot work: the slice
+        stops at the first occurrence, so by construction it never contains the
+        string the pattern needs, and the first occurrence here is the comment
+        naming prompt_menu rather than the call. The property that actually
+        distinguishes fixed from broken is nesting depth -- the defect had the
+        call at four spaces inside an `else` arm, the fix has it at two, in the
+        function body.
+        """
+        code = [
+            line for line in self._chat_block().splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        calls = [line for line in code if re.match(r"^\s*prompt_menu\b", line)]
+        self.assertEqual(
+            1, len(calls),
+            "expected exactly one chat prompt_menu call in the block; "
+            f"found {len(calls)}",
+        )
+        indent = len(calls[0]) - len(calls[0].lstrip())
+        self.assertEqual(
+            2, indent,
+            "the chat menu must sit at function-body level, not nested in an "
+            "if/else arm; seed chat_choice and let prompt_menu default to it",
+        )
+        previous = code[code.index(calls[0]) - 1].strip()
+        self.assertNotEqual(
+            "else", previous,
+            "the chat menu must not be the else-arm of the inheritance check",
         )
 
     def test_all_four_options_are_still_offered(self):
@@ -1383,8 +1407,7 @@ class ChatInterviewInheritsAndStillAsksTest(unittest.TestCase):
     def test_a_configured_install_pre_selects_its_current_integration(self):
         """The seeds, which are what makes enter a no-op rather than a
         change."""
-        chat_block = self._SOURCE.split("6. Chat & Messaging Platform Integration")[1]
-        chat_block = chat_block.split("local google_chat_enabled")[0]
+        chat_block = self._chat_block()
         self.assertIn('chat_choice="3"', chat_block)
         self.assertIn('chat_choice="1"', chat_block)
         self.assertIn('chat_choice="2"', chat_block)
@@ -1412,18 +1435,46 @@ class SlackPromptsKeepTheirCurrentValuesTest(unittest.TestCase):
 
     _SOURCE = _INSTALL_SH.read_text()
 
+    @staticmethod
+    def _logical_lines(source):
+        """Join backslash continuations, so a wrapped call is one line.
+
+        Without this the scan below is vacuous for any prompt whose call is
+        wrapped: the matched physical line ends in `\\` rather than in the
+        argument, so a pattern anchored at end-of-line can never fire. Two of
+        the four prompts named here are wrapped.
+        """
+        joined, buffer = [], ""
+        for line in source.splitlines():
+            buffer += line.rstrip("\\") if line.rstrip().endswith("\\") else line
+            if not line.rstrip().endswith("\\"):
+                joined.append(buffer)
+                buffer = ""
+        if buffer:
+            joined.append(buffer)
+        return joined
+
     def test_no_slack_prompt_passes_a_bare_empty_default(self):
+        lines = self._logical_lines(self._SOURCE)
         for prompt in ("Slack Bot Token", "Slack App Token",
                        "Slack Home Channel ID", "Slack Home Channel Name"):
             with self.subTest(prompt=prompt):
-                for line in self._SOURCE.splitlines():
-                    if prompt in line and "prompt_read" in line:
-                        self.assertNotRegex(
-                            line,
-                            re.compile(r'"\s*"\s*(true|false)?\s*$'),
-                            f"{prompt} passes an empty default, which clears it "
-                            "when the operator presses enter",
-                        )
+                matched = [
+                    line for line in lines
+                    if prompt in line and "prompt_read" in line
+                ]
+                self.assertTrue(
+                    matched,
+                    f"no prompt_read call found for {prompt}; this scan would "
+                    "otherwise pass by matching nothing",
+                )
+                for line in matched:
+                    self.assertNotRegex(
+                        line,
+                        re.compile(r'"\s*"\s*(true|false)?\s*$'),
+                        f"{prompt} passes an empty default, which clears it "
+                        "when the operator presses enter",
+                    )
 
     def test_each_slack_prompt_defaults_to_its_own_current_value(self):
         for var in ("slack_bot_token", "slack_app_token", "slack_allowed_users",
@@ -1463,6 +1514,207 @@ class SlackPromptsKeepTheirCurrentValuesTest(unittest.TestCase):
                               self._SOURCE, re.MULTILINE)),
             "both the Slack-only and the Both arms must call it",
         )
+
+
+class ChatBooleansAreReadThroughIsTruthyTest(unittest.TestCase):
+    """`install.env` is hand-authored, so its booleans arrive in any spelling.
+
+    Every boolean the generator writes goes through `hcl_bool` -> `is_truthy`,
+    which accepts `True`, `yes`, `y`, `1`, `on`. These two never reached it on
+    install.sh's path: the chat gate string-compared against the lowercase
+    literal. `GOOGLE_CHAT_ENABLED=True` therefore dropped `chat_choice` to 4 and
+    planned the Pub/Sub topic away on the next `-y` run, while `upgrade.sh` read
+    the same file as enabled — two front doors disagreeing about one file. The
+    sibling booleans fail loudly on their `^(true|false)$` validators instead;
+    only these two were silent.
+    """
+
+    def _chat_choice(self, contents):
+        """The chat option install.sh resolves for a given install.env."""
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = pathlib.Path(tmp) / "install.env"
+            env_file.write_text(contents)
+            env_file.chmod(0o600)
+            return subprocess.run(
+                ["bash", "-c",
+                 f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n'
+                 'source scripts/installer/installer_common.sh\n'
+                 'resolve_shared_defaults\n'
+                 'c=""\n'
+                 'if is_truthy "$PARAM_ENABLE_GOOGLE_CHAT" && is_truthy "${SLACK_ENABLED:-false}"; then c=3\n'
+                 'elif is_truthy "$PARAM_ENABLE_GOOGLE_CHAT"; then c=1\n'
+                 'elif is_truthy "${SLACK_ENABLED:-false}"; then c=2\n'
+                 'fi\n'
+                 'echo "C=${c:-4}"'],
+                capture_output=True, text=True,
+                env=get_isolated_test_env(
+                    overrides={"KUBE_AGENTS_INSTALL_ENV": str(env_file)}
+                ),
+                cwd=str(_REPO_ROOT),
+            )
+
+    def test_the_gate_does_not_string_compare_against_the_lowercase_literal(self):
+        """The source-level guard. A reintroduced `= "true"` here is the bug,
+        and it is invisible to the behavioural cases below on a `true` file."""
+        block = self._SOURCE_BLOCK()
+        self.assertNotIn('"$PARAM_ENABLE_GOOGLE_CHAT" = "true"', block)
+        self.assertNotIn('"${SLACK_ENABLED:-false}" = "true"', block)
+        self.assertIn('is_truthy "$PARAM_ENABLE_GOOGLE_CHAT"', block)
+        self.assertIn('is_truthy "${SLACK_ENABLED:-false}"', block)
+
+    def _SOURCE_BLOCK(self):
+        source = _INSTALL_SH.read_text()
+        block = source.split("6. Chat & Messaging Platform Integration")[1]
+        return block.split("local google_chat_enabled")[0]
+
+    def test_every_truthy_spelling_enables_chat(self):
+        for spelling in ("true", "True", "TRUE", "yes", "y", "1", "on", "On"):
+            with self.subTest(spelling=spelling):
+                proc = self._chat_choice(f"GOOGLE_CHAT_ENABLED={spelling}\n")
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertIn(
+                    "C=1", proc.stdout,
+                    f"GOOGLE_CHAT_ENABLED={spelling} must enable Google Chat; "
+                    "resolving to None plans the Pub/Sub topic away",
+                )
+
+    def test_falsy_spellings_still_mean_off(self):
+        for spelling in ("false", "False", "no", "0", "off", ""):
+            with self.subTest(spelling=spelling):
+                proc = self._chat_choice(f"GOOGLE_CHAT_ENABLED={spelling}\n")
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertIn("C=4", proc.stdout)
+
+    def test_slack_reads_the_same_way(self):
+        for spelling in ("True", "yes", "1"):
+            with self.subTest(spelling=spelling):
+                proc = self._chat_choice(f"SLACK_ENABLED={spelling}\n")
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertIn("C=2", proc.stdout)
+
+
+class UnrecordedInterviewAnswersAreReportedTest(unittest.TestCase):
+    """An interactive answer that `install.env` does not record must be named.
+
+    `install.env` is an input the installer never rewrites, but the interview
+    still runs on every interactive invocation and its answers reach
+    `terraform.tfvars` and the cluster. So answering "None" at the chat menu
+    destroys the Pub/Sub topic on this apply and the next run puts it back,
+    because the file still says the integration is on. The only signal was
+    "Left your install configuration as you wrote it", which reads as
+    reassurance. This warns instead, naming each key and the line to paste.
+    """
+
+    def _warn(self, recorded, env_overrides, non_interactive=False):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = pathlib.Path(tmp) / "install.env"
+            env_file.write_text(recorded)
+            env_file.chmod(0o600)
+            assignments = "\n".join(
+                f'export {k}={v!r}' .replace("'", '"')
+                for k, v in env_overrides.items()
+            )
+            ni = "true" if non_interactive else "false"
+            return subprocess.run(
+                ["bash", "-c",
+                 f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n'
+                 f'PARAM_NON_INTERACTIVE={ni}\n'
+                 'PARAM_DRY_RUN=false\n'
+                 'has_controlling_tty() { return 0; }\n'
+                 f'{assignments}\n'
+                 f'warn_unrecorded_interview_answers "{env_file}"'],
+                capture_output=True, text=True,
+                env=get_isolated_test_env(
+                    overrides={"KUBE_AGENTS_INSTALL_ENV": str(env_file)}
+                ),
+                cwd=str(_REPO_ROOT),
+            )
+
+    def test_a_changed_chat_answer_is_named(self):
+        proc = self._warn(
+            "GOOGLE_CHAT_ENABLED=true\n", {"GOOGLE_CHAT_ENABLED": "false"}
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        combined = proc.stdout + proc.stderr
+        self.assertIn("does not record", combined)
+        self.assertIn("GOOGLE_CHAT_ENABLED=false", combined)
+
+    def test_an_unchanged_answer_says_nothing(self):
+        proc = self._warn(
+            "GOOGLE_CHAT_ENABLED=true\n", {"GOOGLE_CHAT_ENABLED": "true"}
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("does not record", proc.stdout + proc.stderr)
+
+    def test_a_non_interactive_run_says_nothing(self):
+        """It typed nothing: its answers came from flags and this very file."""
+        proc = self._warn(
+            "GOOGLE_CHAT_ENABLED=true\n", {"GOOGLE_CHAT_ENABLED": "false"},
+            non_interactive=True,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("does not record", proc.stdout + proc.stderr)
+
+    def test_a_key_the_file_does_not_carry_is_not_reported(self):
+        """Absent is not drift — the file inherits the default, and warning
+        about every unset key would bury the ones that matter."""
+        proc = self._warn("PROJECT_ID=a-project\n", {"MEMORY": "hindsight"})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("does not record", proc.stdout + proc.stderr)
+
+    def test_a_secret_is_named_without_its_value(self):
+        proc = self._warn(
+            "SLACK_BOT_TOKEN=xoxb-old\n", {"SLACK_BOT_TOKEN": "xoxb-brand-new"}
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        combined = proc.stdout + proc.stderr
+        self.assertIn("SLACK_BOT_TOKEN", combined)
+        self.assertNotIn("xoxb-brand-new", combined)
+
+    def test_it_is_reached_when_the_file_already_exists(self):
+        """bootstrap_install_env_file returns early on an existing file; the
+        warning has to sit before that return or it never runs at all."""
+        source = _INSTALL_SH.read_text()
+        early_return = source.split("bootstrap_install_env_file() {")[1]
+        early_return = early_return.split("if [ \"$PARAM_DRY_RUN\"")[0]
+        self.assertIn("warn_unrecorded_interview_answers", early_return)
+
+
+class TfvarsTempFileIsCleanedUpTest(unittest.TestCase):
+    """A partial `terraform.tfvars.tmp` holds every secret the run was given.
+
+    `write_tfvars_from_state` writes `${dest}.tmp`, `chmod 600`s it and then
+    `mv`s it. A failure in between used to be covered by a trap branch that
+    removed any `$vars_file` ending in `.tmp`; the replacement removed only
+    `${INSTALL_ENV_FILE}.tmp`, so the tfvars residue survived — mode 600, full
+    of secrets, and named one character from the file the next reader opens.
+    """
+
+    def test_the_generator_publishes_and_clears_the_path(self):
+        source = (_REPO_ROOT / "scripts" / "installer" / "installer_common.sh").read_text()
+        self.assertIn('TFVARS_TMP_FILE="${dest}.tmp"', source)
+        self.assertIn('TFVARS_TMP_FILE=""', source)
+        # Published before the redirect, cleared after the mv, in that order.
+        self.assertLess(
+            source.index('TFVARS_TMP_FILE="${dest}.tmp"'),
+            source.index('mv -f -- "${dest}.tmp" "$dest"'),
+        )
+        self.assertLess(
+            source.index('mv -f -- "${dest}.tmp" "$dest"'),
+            source.index('TFVARS_TMP_FILE=""'),
+        )
+
+    def test_every_front_door_removes_it_on_error(self):
+        """All three run the same generator, so all three can leave the same
+        residue."""
+        for name in ("install.sh", "upgrade.sh", "uninstall.sh"):
+            with self.subTest(name=name):
+                source = (_REPO_ROOT / name).read_text()
+                handler = source.split("on_error() {")[1].split("\n}")[0]
+                self.assertIn(
+                    "TFVARS_TMP_FILE", handler,
+                    f"{name}'s ERR trap must remove a partial tfvars",
+                )
 
 
 if __name__ == "__main__":
