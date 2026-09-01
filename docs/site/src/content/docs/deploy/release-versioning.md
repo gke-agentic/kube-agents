@@ -88,19 +88,20 @@ Even during an emergency bypass, the pipeline strictly enforces:
 
 ### Executing an emergency hotfix
 
-To publish an emergency release via the GitHub CLI:
+To publish an emergency release via the GitHub CLI. Always specify `target_commit` to pin the exact hotfix commit SHA; omitting `target_commit` causes the workflow to default to the tip of `main` (`HEAD`), releasing all intervening commits without prior GKE E2E validation:
 
 ```bash
-# Emergency release from a specific commit SHA:
+# Emergency release from a specific commit SHA (version calculated automatically):
 gh workflow run release-publish.yml --repo gke-labs/kube-agents \
   -f skip_rc_validation=true \
   -f emergency_override_reason="CVE-2026-XXXX: Critical vulnerability in base container dependencies" \
   -f target_commit="<HOTFIX_COMMIT_SHA>"
 
-# Emergency release with explicit SemVer override:
+# Emergency release from a specific commit SHA with explicit SemVer override:
 gh workflow run release-publish.yml --repo gke-labs/kube-agents \
   -f skip_rc_validation=true \
   -f emergency_override_reason="Critical regression fix for gateway admission deadlock" \
+  -f target_commit="<HOTFIX_COMMIT_SHA>" \
   -f explicit_release_version="0.3.1"
 ```
 
