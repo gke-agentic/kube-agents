@@ -742,5 +742,83 @@ class InstallDefaultsFileTest(unittest.TestCase):
         self.assertEqual(proc.stdout.strip(), "autopilot")
 
 
+class NormalizeMemoryVarsTest(unittest.TestCase):
+    """install.env's MEMORY must beat a migrated vars.sh's MEMORY_PROVIDER.
+
+    The two files spell the setting differently, so the load order that gives
+    install.env the last word on every other key cannot do it for this one. The
+    pre-install.env installer wrote `export MEMORY_PROVIDER=...` into vars.sh
+    and every migrated install still has it; install.sh's migration writes only
+    MEMORY. write_tfvars_from_state prefers MEMORY_PROVIDER, so without the
+    normalizer the stale provider won and an upgrade regenerated the tfvars
+    against the old store -- the apply then deleting the Hindsight API and its
+    Postgres. #1060 item 5, on the front doors install.sh does not cover.
+    """
+
+    _INSTALLER_COMMON = _REPO_ROOT / "scripts" / "installer" / "installer_common.sh"
+
+    def _normalize(self, assignments):
+        proc = subprocess.run(
+            ["bash", "-c",
+             f'set -u; {_PRINT_STUBS}\nsource "{self._INSTALLER_COMMON}"\n'
+             f'{assignments}\nnormalize_memory_vars\n'
+             'echo "P=${MEMORY_PROVIDER:-}"'],
+            capture_output=True, text=True, cwd=str(_REPO_ROOT),
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return proc.stdout.strip()
+
+    def test_the_install_env_mode_overrides_a_legacy_provider(self):
+        """The defect exactly: vars.sh says the file store, the operator's
+        install.env says Hindsight, and the generated provider must be
+        Hindsight's."""
+        self.assertEqual(
+            "P=kube_agents_memory",
+            self._normalize('MEMORY_PROVIDER=multiuser_memory\nMEMORY=hindsight'),
+        )
+
+    def test_every_mode_translates(self):
+        for mode, provider in (
+            ("hindsight", "kube_agents_memory"),
+            ("file", "multiuser_memory"),
+            ("off", "none"),
+        ):
+            with self.subTest(mode=mode):
+                self.assertEqual(
+                    f"P={provider}",
+                    self._normalize(f'MEMORY_PROVIDER=multiuser_memory\nMEMORY={mode}'),
+                )
+
+    def test_nothing_recorded_leaves_the_provider_alone(self):
+        """An install that never carried MEMORY -- a vars.sh-only install that
+        has not been migrated yet -- must keep the provider it has."""
+        self.assertEqual(
+            "P=kube_agents_memory",
+            self._normalize('MEMORY_PROVIDER=kube_agents_memory'),
+        )
+
+    def test_an_unrecognised_mode_leaves_the_provider_alone(self):
+        """A typo in install.env must not silently retarget the store: blanking
+        the provider here would fall through to the project default and plan
+        the same deletion the normalizer exists to prevent."""
+        self.assertEqual(
+            "P=kube_agents_memory",
+            self._normalize('MEMORY_PROVIDER=kube_agents_memory\nMEMORY=hindsigt'),
+        )
+
+    def test_the_front_doors_that_load_both_files_call_it(self):
+        """upgrade.sh, uninstall.sh and install.sh's Day-2 menu each source a
+        legacy vars.sh and then load install.env over it, and each generates
+        tfvars without passing through install.sh's parameter block. A caller
+        that loads both and skips the normalizer has the defect back."""
+        for name in ("upgrade.sh", "uninstall.sh", "install.sh"):
+            with self.subTest(name=name):
+                self.assertIn(
+                    "normalize_memory_vars",
+                    (_REPO_ROOT / name).read_text(),
+                    f"{name} loads vars.sh and install.env; it must normalize the pair",
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

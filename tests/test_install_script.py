@@ -1198,5 +1198,272 @@ class ImportGithubPemKmsKeyTest(unittest.TestCase):
         self.assertIn("ALREADY_EXISTS: it already exists", proc.stdout)
 
 
+class InstallEnvIsCreatedInTheCheckoutTest(unittest.TestCase):
+    """The configuration file has to land where every other front door looks.
+
+    Under `curl … | bash` -- Method 0 in INSTALL.md, the documented fastest
+    install -- ${BASH_SOURCE[0]} names no file, so a script-relative path
+    resolves to whatever directory the operator was standing in.
+    acquire_source_repo then clones to $HOME/kube-agents and cd's there, while
+    every other reader resolves ${repo_dir}/install.env
+    (default_install_env_file). Freezing the invocation directory dropped the
+    whole configuration -- API_SERVER_KEY and the plaintext model keys included
+    -- somewhere no later run would look: upgrade.sh hit its fail-closed
+    branch, and a re-run of the one-liner rebuilt every PARAM_* from defaults,
+    which is the #1060 class this change exists to close.
+    """
+
+    def _resolved_paths(self, cwd, home, extra_env=None):
+        """What install.sh picks for install.env and the legacy vars.sh.
+
+        Piped into `bash -s` rather than sourced by path, because that is the
+        whole point: `source /abs/path/install.sh` sets BASH_SOURCE and the
+        script can see where it lives, while `curl … | bash` leaves the array
+        empty and `${BASH_SOURCE[0]:-.}` collapses to the working directory.
+        Sourcing by path here would exercise the one case that never had the
+        bug.
+        """
+        overrides = {"HOME": str(home), "KUBE_AGENTS_SOURCE_ONLY": "true"}
+        overrides.update(extra_env or {})
+        # KUBE_AGENTS_INSTALL_ENV is what get_isolated_test_env normally pins;
+        # these cases are about the fallback that runs when it is unset.
+        full_env = get_isolated_test_env(overrides=overrides)
+        if "KUBE_AGENTS_INSTALL_ENV" not in (extra_env or {}):
+            full_env.pop("KUBE_AGENTS_INSTALL_ENV", None)
+        script = _INSTALL_SH.read_text() + (
+            '\necho "ENV=$INSTALL_ENV_FILE"\necho "LEGACY=$LEGACY_VARS_FILE"\n'
+        )
+        return subprocess.run(
+            ["bash", "-s"], input=script,
+            capture_output=True, text=True, env=full_env, cwd=str(cwd),
+        )
+
+    def test_a_checkout_run_uses_the_checkout(self):
+        """The ordinary `./install.sh` case, unchanged: the script sits in a
+        checkout, so that checkout is where the file belongs."""
+        with tempfile.TemporaryDirectory() as home:
+            proc = self._resolved_paths(_REPO_ROOT, home)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn(f"ENV={_REPO_ROOT}/install.env", proc.stdout)
+
+    def test_a_piped_run_from_elsewhere_uses_the_clone_not_the_cwd(self):
+        """The regression. Standing in a directory that is not a checkout, with
+        no install.env to hand, the file must be destined for the clone
+        acquire_source_repo will make -- not for the cwd."""
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as home:
+            proc = self._resolved_paths(tmp, home)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn(f"ENV={home}/kube-agents/install.env", proc.stdout)
+            self.assertNotIn(f"ENV={tmp}/install.env", proc.stdout)
+
+    def test_an_install_env_the_operator_placed_still_wins(self):
+        """Backwards compatibility: putting the file in the directory you run
+        from is a deliberate act and keeps working."""
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as home:
+            (pathlib.Path(tmp) / "install.env").write_text("PROJECT_ID=from-the-cwd\n")
+            proc = self._resolved_paths(tmp, home)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            # realpath: this path comes back through `pwd`, and on macOS the
+            # temporary directory is /var/... symlinked to /private/var/...
+            resolved = pathlib.Path(tmp).resolve()
+            self.assertIn(f"ENV={resolved}/install.env", proc.stdout)
+
+    def test_the_explicit_override_still_wins(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as home:
+            named = pathlib.Path(tmp) / "named.env"
+            named.write_text("PROJECT_ID=from-the-override\n")
+            proc = self._resolved_paths(
+                tmp, home, extra_env={"KUBE_AGENTS_INSTALL_ENV": str(named)}
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn(f"ENV={named}", proc.stdout)
+
+    def test_the_legacy_vars_file_is_looked_for_in_the_same_checkout(self):
+        """Same root cause, same fix: resolved script-relative, a piped re-run
+        against an existing clone never found the legacy file and silently
+        skipped the migration it exists for."""
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as home:
+            legacy = pathlib.Path(home) / "kube-agents" / "k8s-operator" / "scripts"
+            legacy.mkdir(parents=True)
+            (legacy / "vars.sh").write_text("export PROJECT_ID=from-the-legacy-file\n")
+            proc = self._resolved_paths(tmp, home)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn(f"LEGACY={legacy}/vars.sh", proc.stdout)
+
+
+class InstallEnvPermissionsTest(unittest.TestCase):
+    """A copied install.env is a credential file at the operator's umask.
+
+    install.env.example is tracked 100644 and the documented way to create the
+    real file is to copy it, so a stock umask 022 yields 0644 -- and that file
+    is where GEMINI_API_KEY, SLACK_BOT_TOKEN and API_SERVER_KEY end up. Nothing
+    else reaches it: bootstrap_install_env_file returns the moment the
+    destination exists, so its chmod 600 never runs, and save_env_var's is
+    reachable only from the Day-2 menu. INSTALL.md meanwhile states flatly that
+    the file is 0600, and the predecessor vars.sh always was.
+    """
+
+    def _load(self, mode):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = pathlib.Path(tmp) / "install.env"
+            env_file.write_text("PROJECT_ID=a-project\n")
+            env_file.chmod(mode)
+            proc = subprocess.run(
+                ["bash", "-c",
+                 f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n'
+                 'echo "P=$PROJECT_ID"'],
+                capture_output=True, text=True,
+                env=get_isolated_test_env(
+                    overrides={"KUBE_AGENTS_INSTALL_ENV": str(env_file)}
+                ),
+                cwd=str(_REPO_ROOT),
+            )
+            return proc, stat.S_IMODE(env_file.stat().st_mode)
+
+    def test_a_world_readable_configuration_is_tightened_on_load(self):
+        proc, mode = self._load(0o644)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(0o600, mode, "install.sh must chmod 600 a 0644 install.env")
+        self.assertIn("P=a-project", proc.stdout, "and still load it")
+        self.assertIn("Tightened permissions", proc.stdout + proc.stderr)
+
+    def test_a_group_readable_configuration_is_tightened_too(self):
+        _, mode = self._load(0o640)
+        self.assertEqual(0o600, mode)
+
+    def test_an_already_private_file_is_left_alone_and_unannounced(self):
+        proc, mode = self._load(0o600)
+        self.assertEqual(0o600, mode)
+        self.assertNotIn("Tightened permissions", proc.stdout + proc.stderr)
+
+    def test_the_copy_recipe_tells_the_operator_to_chmod_it(self):
+        """The tightening only helps from the next run onwards, so the recipe
+        that creates the file has to say so itself."""
+        example = (_REPO_ROOT / "install.env.example").read_text()
+        self.assertIn("cp install.env.example install.env", example)
+        self.assertIn("chmod 600 install.env", example)
+        self.assertIn("chmod 600", (_REPO_ROOT / "INSTALL.md").read_text())
+
+
+class ChatInterviewInheritsAndStillAsksTest(unittest.TestCase):
+    """Inheriting the chat setting must pre-select the menu, not skip it.
+
+    PARAM_ENABLE_GOOGLE_CHAT is now seeded from GOOGLE_CHAT_ENABLED, but the
+    gate around the menu was still the one that decides whether to run the
+    interview at all -- so it stopped distinguishing "asked for on this run"
+    from "inherited from the file". An interactive re-run against a configured
+    install never saw the four options, leaving no way to turn Chat off or to
+    add Slack. Every other setting reworked here seeds its choice variable and
+    still calls prompt_menu, whose default_choice exists for exactly this.
+    """
+
+    _SOURCE = _INSTALL_SH.read_text()
+
+    def test_the_menu_is_not_inside_the_inheritance_branch(self):
+        """prompt_menu for the chat options must be reached unconditionally;
+        the seeds above it only pre-select an answer."""
+        chat_block = self._SOURCE.split("6. Chat & Messaging Platform Integration")[1]
+        chat_block = chat_block.split("local google_chat_enabled")[0]
+        self.assertIn("prompt_menu", chat_block)
+        menu_line = chat_block.index("prompt_menu")
+        # Anything still gating the menu on the inherited value is the defect.
+        self.assertNotRegex(
+            chat_block[:menu_line],
+            re.compile(r'else\s*\n\s*prompt_menu', re.MULTILINE),
+            "the chat menu must not sit in the else-arm of the inheritance "
+            "check; seed chat_choice and let prompt_menu default to it",
+        )
+
+    def test_all_four_options_are_still_offered(self):
+        for option in ("Google Chat (Pub/Sub", "Slack (Socket Mode",
+                       "Both Google Chat and Slack", "None (CLI & REST"):
+            with self.subTest(option=option):
+                self.assertIn(option, self._SOURCE)
+
+    def test_a_configured_install_pre_selects_its_current_integration(self):
+        """The seeds, which are what makes enter a no-op rather than a
+        change."""
+        chat_block = self._SOURCE.split("6. Chat & Messaging Platform Integration")[1]
+        chat_block = chat_block.split("local google_chat_enabled")[0]
+        self.assertIn('chat_choice="3"', chat_block)
+        self.assertIn('chat_choice="1"', chat_block)
+        self.assertIn('chat_choice="2"', chat_block)
+        # And "None" is still what a non-interactive run with nothing
+        # configured gets, rather than option 1.
+        self.assertIn('chat_choice="${chat_choice:-4}"', chat_block)
+
+
+class SlackPromptsKeepTheirCurrentValuesTest(unittest.TestCase):
+    """Pressing enter through the Slack interview must not clear the install.
+
+    prompt_read keeps a non-empty current value on the non-interactive path,
+    but the interactive branch applies the default argument, and
+    `[ -z "$input_val" ] && [ -n "$default_val" ]` is false when that default
+    is empty -- so it falls through and assigns the empty string. Passing a
+    bare "" therefore cleared SLACK_BOT_TOKEN, SLACK_APP_TOKEN,
+    SLACK_HOME_CHANNEL and SLACK_HOME_CHANNEL_NAME, and replaced the Slack
+    allowlist with the Google Chat one. The tokens are usually rescued by the
+    Secret-recovery loop; the allowlist is not, and an empty slack_allowed_users
+    means every workspace member may talk to the agent.
+
+    This is the defect the change already fixed one screen lower, for the
+    GitOps prompts, and left in place here.
+    """
+
+    _SOURCE = _INSTALL_SH.read_text()
+
+    def test_no_slack_prompt_passes_a_bare_empty_default(self):
+        for prompt in ("Slack Bot Token", "Slack App Token",
+                       "Slack Home Channel ID", "Slack Home Channel Name"):
+            with self.subTest(prompt=prompt):
+                for line in self._SOURCE.splitlines():
+                    if prompt in line and "prompt_read" in line:
+                        self.assertNotRegex(
+                            line,
+                            re.compile(r'"\s*"\s*(true|false)?\s*$'),
+                            f"{prompt} passes an empty default, which clears it "
+                            "when the operator presses enter",
+                        )
+
+    def test_each_slack_prompt_defaults_to_its_own_current_value(self):
+        for var in ("slack_bot_token", "slack_app_token", "slack_allowed_users",
+                    "slack_home_channel", "slack_home_channel_name"):
+            with self.subTest(var=var):
+                self.assertRegex(
+                    self._SOURCE,
+                    re.compile(rf'{var} "\${var}"'),
+                    f"{var} must be prompted with itself as the default",
+                )
+
+    def test_the_slack_allowlist_is_not_seeded_from_the_chat_allowlist(self):
+        """They are different lists for different platforms; arm 3 configures
+        both at once and used the Chat one for Slack."""
+        self.assertNotIn('slack_allowed_users "$allowed_users"', self._SOURCE)
+
+    def test_the_tokens_are_not_echoed_back_as_a_visible_default(self):
+        """prompt_read renders the default into the prompt text, so a secret
+        passed as one would be printed. The label argument is what avoids it."""
+        for var in ("slack_bot_token", "slack_app_token"):
+            with self.subTest(var=var):
+                self.assertRegex(
+                    self._SOURCE,
+                    re.compile(rf'{var} "\${var}" true "\$\w+_hint"'),
+                    f"{var} must pass a label so the value is not displayed",
+                )
+
+    def test_both_arms_share_one_definition(self):
+        """Arms 2 and 3 ran identical copies, and the copies are what drifted.
+        One helper, called twice."""
+        self.assertEqual(
+            1, self._SOURCE.count("_prompt_slack_settings() {"),
+            "the Slack prompts must be defined exactly once",
+        )
+        self.assertEqual(
+            2, len(re.findall(r'^\s*_prompt_slack_settings\s*$',
+                              self._SOURCE, re.MULTILINE)),
+            "both the Slack-only and the Both arms must call it",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

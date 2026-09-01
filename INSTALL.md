@@ -200,7 +200,8 @@ KUBE_AGENTS_STATE_BUCKET=auto ./lifecycle.sh apply
   `terraform.tfvars` from it, and `terraform apply` reconciles whatever changed. Flags you omit
   keep the value the file records rather than reverting to a default, so bumping `--image-tag`
   alone changes only the image tag. To change configuration, edit `install.env` (copy
-  `install.env.example` if the first install has not written one yet) and re-run, use
+  `install.env.example` and `chmod 600` it if the first install has not written one yet — the
+  example is tracked world-readable and the file it becomes holds your API keys) and re-run, use
   `./install.sh --menu` (Save & Apply re-applies through the same engine), or edit your
   hand-written tfvars and re-apply.
 
@@ -221,7 +222,7 @@ KUBE_AGENTS_STATE_BUCKET=auto ./lifecycle.sh apply
 
 The automated installer includes local state hardening and Cloud KMS (CMEK) etcd database encryption:
 
-- **Local State Security**: The `install.env` configuration — and the `terraform.tfvars` generated from it — is protected with strict file permissions (`umask 077`, `chmod 600`). The Terraform **state** additionally holds every secret in plaintext; it lives in the versioned GCS state bucket, whose IAM is its protection.
+- **Local State Security**: The `install.env` configuration — and the `terraform.tfvars` generated from it — is protected with strict file permissions (`umask 077`, `chmod 600`). An `install.env` the installer wrote is 0600 from the start; one you created by copying `install.env.example` is whatever your umask made it, so `chmod 600` it yourself. `install.sh` tightens a group- or world-readable one when it loads it and prints what it did. The Terraform **state** additionally holds every secret in plaintext; it lives in the versioned GCS state bucket, whose IAM is its protection.
 - **GKE Database Encryption (CMEK)**: GKE etcd database encryption is configured automatically using Cloud KMS (`kms_keyring_name` / `kms_key_name`, default `platform-agent-keyring` / `k8s-secret-encryption-key`). On a **pre-existing** cluster Terraform cannot enable it, so `install.sh` does that as a `gcloud` pre-step before the apply.
 - **`ALLOW_UNENCRYPTED_SECRETS`**: Set `ALLOW_UNENCRYPTED_SECRETS=true` before running `install.sh` against an existing unencrypted cluster to skip that CMEK pre-step (testing environments only).
 - **`PERSIST_SECRETS_ON_DISK`**: By default (`PERSIST_SECRETS_ON_DISK=true`), credentials (API keys, Slack tokens) are saved to `install.env`. Set `PERSIST_SECRETS_ON_DISK=false` to keep them out of every file the installer writes; they travel to Terraform as `TF_VAR_*` and later runs recover them from the live `platform-agent-secrets` Secret.

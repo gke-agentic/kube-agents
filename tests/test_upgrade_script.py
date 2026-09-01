@@ -6,6 +6,7 @@ piped stdin execution, and source ref alignment in upgrade.sh.
 
 import os
 import pathlib
+import re
 import subprocess
 import unittest
 
@@ -105,6 +106,73 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_UPGRADE_SH}"
             proc = self._run_upgrade_func(cmd, cwd=repo_path)
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn("dirty checkout", proc.stdout)
+
+
+class PersistStateVarTest(unittest.TestCase):
+    """persist_state_var must not create the vars.sh tree this release removed.
+
+    Its grep/mv rewrite tests for the file, but the append that follows is
+    unconditional, so the redirect opens a path under k8s-operator/scripts/ --
+    a directory nothing creates any more. Under `set -Eeuo pipefail` and the
+    ERR trap that aborts the upgrade at step 1.
+
+    Reachable only since install.env: before it, state_loaded could be true
+    only if vars.sh existed, so the directory always existed by the time this
+    ran. Letting install.env satisfy state_loaded is what exposed the write.
+    The invocation that breaks is the one show_help gives as its own example,
+    `./upgrade.sh --non-interactive --project-id=... --cluster-name=...`.
+    """
+
+    def _persist_into(self, state_file):
+        """Call persist_state_var against a path whose parent may not exist."""
+        return subprocess.run(
+            ["bash", "-c",
+             f'KUBE_AGENTS_SOURCE_ONLY=true source "{_UPGRADE_SH}"\n'
+             f'persist_state_var "{state_file}" PROJECT_ID a-project\n'
+             'echo DONE'],
+            capture_output=True, text=True,
+            env=get_isolated_test_env(), cwd=str(_REPO_ROOT),
+        )
+
+    def test_the_append_needs_a_directory_that_no_longer_exists(self):
+        """The mechanism, pinned so the guard below cannot be read as
+        redundant: called against a missing tree, the helper itself fails."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = pathlib.Path(tmp) / "k8s-operator" / "scripts" / "vars.sh"
+            proc = self._persist_into(missing)
+            self.assertNotEqual(
+                proc.returncode, 0,
+                "persist_state_var appended into a directory that does not exist; "
+                "if this now succeeds the callers' [ -f ] guard may be droppable",
+            )
+            self.assertFalse(missing.exists())
+
+    def test_upgrade_guards_every_persist_call_on_the_file_existing(self):
+        """uninstall.sh already wraps the same three calls this way; upgrade.sh
+        was the last unguarded writer. Checked against the source rather than
+        by driving main(), which needs gcloud and a cluster."""
+        source = _UPGRADE_SH.read_text()
+        self.assertRegex(
+            source,
+            re.compile(
+                r'if \[ -f "\$state_file" \]; then\s*\n'
+                r'(?:.*\n)*?\s*persist_state_var "\$state_file" PROJECT_ID',
+                re.MULTILINE,
+            ),
+            "the persist_state_var calls must sit inside [ -f \"$state_file\" ]; "
+            "an install.env-only install has no vars.sh and the append aborts "
+            "the upgrade",
+        )
+
+    def test_an_install_env_only_install_still_records_the_override(self):
+        """The guard must not lose the override, only the file write: the
+        exports right after are what the rest of the run reads."""
+        source = _UPGRADE_SH.read_text()
+        for var in ("PROJECT_ID", "CLUSTER_NAME", "REGION"):
+            with self.subTest(var=var):
+                self.assertIn(f'export {var}="$target_', source)
 
 
 if __name__ == "__main__":

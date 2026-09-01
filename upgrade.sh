@@ -377,6 +377,10 @@ main() {
   # GITHUB_ORG / GITHUB_REPO is accepted with a warning. Runs after the load and
   # before anything reads the coordinates.
   normalize_gitops_repo_vars
+  # Same shape, for the memory setting: install.env records MEMORY, a migrated
+  # vars.sh still carries the old MEMORY_PROVIDER, and the file loaded second
+  # has to win.
+  normalize_memory_vars
 
   local target_project="${PARAM_PROJECT_ID:-${PROJECT_ID:-}}"
   local target_cluster="${PARAM_CLUSTER_NAME:-${CLUSTER_NAME:-platform-agent-host}}"
@@ -414,14 +418,26 @@ main() {
 
   # Persist explicit target overrides so the delegated provisioning scripts,
   # which re-source vars.sh, act on the same cluster we fetch credentials for.
-  if [ -n "$PARAM_PROJECT_ID" ]; then
-    persist_state_var "$state_file" PROJECT_ID "$target_project"
-  fi
-  if [ -n "$PARAM_CLUSTER_NAME" ]; then
-    persist_state_var "$state_file" CLUSTER_NAME "$target_cluster"
-  fi
-  if [ -n "$PARAM_REGION" ]; then
-    persist_state_var "$state_file" REGION "$target_region"
+  #
+  # Only into a vars.sh that is already there, the way uninstall.sh guards the
+  # same three calls. persist_state_var's append is unconditional -- only its
+  # grep/mv rewrite tests for the file -- so on an install.env-only install the
+  # redirect would open a path under k8s-operator/scripts/, a directory this
+  # release no longer creates, and `set -Eeuo pipefail` would abort the upgrade
+  # at step 1. Before install.env, state_loaded could only be true if vars.sh
+  # existed, so the directory always did too; making install.env satisfy
+  # state_loaded is what exposed the unguarded write. The exports below are
+  # what the rest of this run actually reads.
+  if [ -f "$state_file" ]; then
+    if [ -n "$PARAM_PROJECT_ID" ]; then
+      persist_state_var "$state_file" PROJECT_ID "$target_project"
+    fi
+    if [ -n "$PARAM_CLUSTER_NAME" ]; then
+      persist_state_var "$state_file" CLUSTER_NAME "$target_cluster"
+    fi
+    if [ -n "$PARAM_REGION" ]; then
+      persist_state_var "$state_file" REGION "$target_region"
+    fi
   fi
   export PROJECT_ID="$target_project"
   export CLUSTER_NAME="$target_cluster"

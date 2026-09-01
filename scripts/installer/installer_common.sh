@@ -55,6 +55,32 @@ memory_provider_from_mode() {
   esac
 }
 
+# Make install.env's MEMORY win over a legacy vars.sh MEMORY_PROVIDER, for the
+# front doors that load both files and then generate tfvars directly.
+#
+# The two files spell the setting differently, so "install.env wins on every key
+# it carries" cannot hold for this one by load order alone: the pre-install.env
+# installer persisted `export MEMORY_PROVIDER=…` into vars.sh, every migrated
+# install still has it on disk, and install.sh's migration writes only MEMORY.
+# write_tfvars_from_state prefers MEMORY_PROVIDER (install.sh's own run exports
+# the interview's answer there, and must keep winning), so the stale provider
+# would shadow the operator's edited MEMORY and regenerate the tfvars against
+# the old store -- an apply then deleting the Hindsight API and its Postgres.
+# That is #1060 item 5 on the front doors install.sh does not cover.
+#
+# Call after BOTH loads and before anything reads the pair. Not called by
+# install.sh's own run, which resolves the same precedence in its parameter
+# block (PARAM_MEMORY) and exports MEMORY_PROVIDER from the interview later.
+normalize_memory_vars() {
+  local from_mode
+  [ -n "${MEMORY:-}" ] || return 0
+  from_mode="$(memory_provider_from_mode "${MEMORY}")"
+  # An unrecognised MEMORY leaves whatever was already there rather than
+  # blanking it: a typo in install.env must not silently retarget the store.
+  [ -n "$from_mode" ] || return 0
+  export MEMORY_PROVIDER="$from_mode"
+}
+
 # Model provider → the model the install defaults to for that provider.
 default_model_for_provider() {
   case "${1:-}" in

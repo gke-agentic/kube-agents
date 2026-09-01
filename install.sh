@@ -109,21 +109,52 @@ unset _install_defaults_dir
 #
 # Always resolves to a path, whether or not a file is there yet -- a first
 # install has nothing to read, and this is also where the file gets written.
+#
+# The directory is the CHECKOUT the run will end up in, which under
+# `curl … | bash` is not the directory the operator is standing in. There
+# ${BASH_SOURCE[0]} names no file, so a script-relative path resolves to the
+# invocation directory; acquire_source_repo then clones to $HOME/kube-agents
+# and cd's there, and every other front door resolves the file as
+# ${repo_dir}/install.env (default_install_env_file). Freezing the invocation
+# directory here therefore wrote the whole configuration -- API_SERVER_KEY and
+# the plaintext model keys included -- somewhere no later run would look, so
+# upgrade.sh hit its fail-closed branch and a re-run of the one-liner rebuilt
+# every PARAM_* from defaults: the #1060 class this change exists to close,
+# reinstated on the documented fastest install.
+#
+# So resolve the same repo_dir acquire_source_repo will pick, by the same test
+# and in the same order, before the parameter block reads any of it. This has
+# to stay in step with acquire_source_repo; the shared marker file is the
+# coupling, and test_install_script.py pins the pair.
+_resolve_repo_dir_for_state() {
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || echo "")"
+  if [ -n "$script_dir" ] && [ -f "${script_dir}/scripts/installer/installer_common.sh" ]; then
+    printf '%s' "$script_dir"
+  elif [ -f "scripts/installer/installer_common.sh" ]; then
+    pwd
+  else
+    printf '%s' "$HOME/kube-agents"
+  fi
+}
+_state_repo_dir="$(_resolve_repo_dir_for_state)"
+
 INSTALL_ENV_FILE="${KUBE_AGENTS_INSTALL_ENV:-}"
 INSTALL_ENV_EXPLICIT="false"
 if [ -n "$INSTALL_ENV_FILE" ]; then
   INSTALL_ENV_EXPLICIT="true"
 else
   _install_env_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || echo "")"
-  if [ -n "$_install_env_dir" ]; then
+  # An install.env the operator actually put beside the script, or in the
+  # directory they are standing in, still wins -- those are deliberate acts and
+  # predate this resolution. Only when neither is there does the checkout
+  # decide, which is the case that was landing outside it.
+  if [ -n "$_install_env_dir" ] && [ -f "${_install_env_dir}/install.env" ]; then
     INSTALL_ENV_FILE="${_install_env_dir}/install.env"
+  elif [ -f "install.env" ]; then
+    INSTALL_ENV_FILE="$(pwd)/install.env"
   else
-    INSTALL_ENV_FILE="$(pwd)/install.env"
-  fi
-  # curl | bash has no script directory to look beside, so the working
-  # directory is the other place the operator could have put one.
-  if [ ! -f "$INSTALL_ENV_FILE" ] && [ -f "install.env" ]; then
-    INSTALL_ENV_FILE="$(pwd)/install.env"
+    INSTALL_ENV_FILE="${_state_repo_dir}/install.env"
   fi
   unset _install_env_dir
 fi
@@ -132,12 +163,16 @@ fi
 # every key it carries, and only from a checkout -- a fresh clone has none.
 # This is the migration: an existing install keeps working with no action from
 # its owner, and the run writes their values into install.env on the way out.
+#
+# Resolved against the same checkout, and for the same reason: under
+# `curl … | bash` a script-relative path pointed at the invocation directory,
+# so a re-run of the one-liner against an existing $HOME/kube-agents never
+# found the legacy file and silently skipped the migration it exists for.
 LEGACY_VARS_FILE=""
-_legacy_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || echo "")"
-if [ -n "$_legacy_dir" ] && [ -f "${_legacy_dir}/k8s-operator/scripts/vars.sh" ]; then
-  LEGACY_VARS_FILE="${_legacy_dir}/k8s-operator/scripts/vars.sh"
+if [ -f "${_state_repo_dir}/k8s-operator/scripts/vars.sh" ]; then
+  LEGACY_VARS_FILE="${_state_repo_dir}/k8s-operator/scripts/vars.sh"
 fi
-unset _legacy_dir
+unset _state_repo_dir
 
 load_legacy_vars_file() {
   local file="${1:-}"
@@ -179,6 +214,26 @@ bootstrap_install_env() {
     print_error "Install configuration '$file' is not valid shell and could not be loaded." >&2
     print_info "Each line is NAME=value; quote any value containing spaces." >&2
     exit 1
+  fi
+  # Tighten a world- or group-readable configuration before reading it. The
+  # documented way to create one is `cp install.env.example install.env`, and
+  # install.env.example is tracked 100644, so a stock umask 022 leaves the file
+  # 0644 -- and it is where the operator then writes GEMINI_API_KEY,
+  # SLACK_BOT_TOKEN, API_SERVER_KEY and the rest. Nothing else reaches it:
+  # bootstrap_install_env_file returns early once the destination exists, so
+  # its chmod 600 never runs, and save_env_var's is reachable only from the
+  # Day-2 menu. INSTALL.md states flatly that the file is 0600, and the
+  # predecessor vars.sh always was, being installer-created under umask 077.
+  # Announced rather than silent: the permissions of a file the operator owns
+  # are theirs to know about.
+  local mode=""
+  mode="$(stat -f '%OLp' "$file" 2>/dev/null || stat -c '%a' "$file" 2>/dev/null || echo "")"
+  if [ -n "$mode" ] && [ "${mode: -2}" != "00" ]; then
+    if chmod 600 "$file" 2>/dev/null; then
+      print_warning "Tightened permissions on ${file} to 0600 (was ${mode}); it holds credentials." >&2
+    else
+      print_warning "${file} is mode ${mode} and holds credentials; chmod 600 it." >&2
+    fi
   fi
   set -a
   # shellcheck disable=SC1090
@@ -1619,6 +1674,12 @@ run_menu_system() {
   # hand-authored file is what the panel opens on, whichever order the two
   # files disagree in.
   load_install_env "$INSTALL_ENV_FILE" || true
+  # ...and the same for the memory setting, which the two files spell
+  # differently (install.env MEMORY, legacy vars.sh MEMORY_PROVIDER) so load
+  # order alone cannot make the input win. Save & Apply generates tfvars
+  # directly, without passing through the parameter block that resolves this
+  # pair on install.sh's own run.
+  normalize_memory_vars
 
   local project_id="${PROJECT_ID:-$(gcloud config get-value project 2>/dev/null || echo "")}"
   local project_number="${PROJECT_NUMBER:-}"
@@ -2125,29 +2186,45 @@ main() {
 
   # 6. Chat & Messaging Platform Integration
   print_step "6. Chat & Messaging Integrations Setup"
+  # The option the loaded configuration already corresponds to. It is a
+  # PRE-SELECTION, not a decision: prompt_menu takes a pre-set choice variable
+  # as its default (install.sh:1076), so enter keeps the current integration
+  # and any other answer changes it. Every other setting reworked here -- the
+  # permission set, gVisor, the Web UI, memory, the model provider -- inherits
+  # this way and still asks.
+  #
+  # Deciding here instead is what made an interactive re-run against a
+  # configured install skip the menu outright, leaving no way to turn Chat off
+  # or to add Slack alongside it. Before install.env this gate could not fire
+  # on a re-run at all: PARAM_ENABLE_GOOGLE_CHAT came from the flag alone and
+  # startup sourced no configuration, so an interactive run always reached the
+  # menu. Seeding it from GOOGLE_CHAT_ENABLED is what turned "asked for on this
+  # run" into "inherited from the file" without the gate noticing.
+  #
+  # SLACK_ENABLED (with SLACK_BOT_TOKEN / SLACK_APP_TOKEN and the other SLACK_*
+  # variables) is the non-interactive spelling of the Slack interview, the same
+  # variables the Day-2 menu reads. Without it Slack would be reachable only
+  # through a controlling tty.
   local chat_choice=""
-  if [ "$PARAM_NON_INTERACTIVE" = "true" ] || [ "$PARAM_ENABLE_GOOGLE_CHAT" = "true" ] || [ "${SLACK_ENABLED:-false}" = "true" ]; then
-    # SLACK_ENABLED (with SLACK_BOT_TOKEN / SLACK_APP_TOKEN and the other
-    # SLACK_* variables) is the non-interactive spelling of the Slack
-    # interview, the same variables the Day-2 menu reads. Without it Slack
-    # would be reachable only through a controlling tty.
-    if [ "$PARAM_ENABLE_GOOGLE_CHAT" = "true" ] && [ "${SLACK_ENABLED:-false}" = "true" ]; then
-      chat_choice="3"
-    elif [ "$PARAM_ENABLE_GOOGLE_CHAT" = "true" ]; then
-      chat_choice="1"
-    elif [ "${SLACK_ENABLED:-false}" = "true" ]; then
-      chat_choice="2"
-    else
-      chat_choice="4"
-    fi
-  else
-    prompt_menu "Select Chat Channel Integration(s):" \
-      "Google Chat (Pub/Sub Event Streaming)" \
-      "Slack (Socket Mode App)" \
-      "Both Google Chat and Slack" \
-      "None (CLI & REST API Gateway only)" \
-      chat_choice
+  if [ "$PARAM_ENABLE_GOOGLE_CHAT" = "true" ] && [ "${SLACK_ENABLED:-false}" = "true" ]; then
+    chat_choice="3"
+  elif [ "$PARAM_ENABLE_GOOGLE_CHAT" = "true" ]; then
+    chat_choice="1"
+  elif [ "${SLACK_ENABLED:-false}" = "true" ]; then
+    chat_choice="2"
   fi
+  # Nothing configured and nobody to ask: "None", as before. Left unset when
+  # there IS someone to ask, so prompt_menu falls back to option 1 for a first
+  # install exactly as it used to.
+  if [ "$PARAM_NON_INTERACTIVE" = "true" ] || ! has_controlling_tty; then
+    chat_choice="${chat_choice:-4}"
+  fi
+  prompt_menu "Select Chat Channel Integration(s):" \
+    "Google Chat (Pub/Sub Event Streaming)" \
+    "Slack (Socket Mode App)" \
+    "Both Google Chat and Slack" \
+    "None (CLI & REST API Gateway only)" \
+    chat_choice
 
   local google_chat_enabled="false"
   local slack_enabled="false"
@@ -2169,13 +2246,49 @@ main() {
     exit 1
   fi
   # Seeded from the environment so the non-interactive path can carry the
-  # Slack settings: prompt_read keeps a non-empty current value there, and
-  # prompts with it as the prefill when there is a tty.
+  # Slack settings: prompt_read keeps a non-empty current value there.
   local slack_bot_token="${SLACK_BOT_TOKEN:-}"
   local slack_app_token="${SLACK_APP_TOKEN:-}"
   local slack_allowed_users="${SLACK_ALLOWED_USERS:-}"
   local slack_home_channel="${SLACK_HOME_CHANNEL:-}"
   local slack_home_channel_name="${SLACK_HOME_CHANNEL_NAME:-}"
+
+  # One definition for both arms that ask it. Arms 2 and 3 ran identical
+  # copies, and the copies are what drifted: the "pass the current value, not
+  # a bare empty string" fix landed on the GitOps prompts a screen below and
+  # not here.
+  #
+  # Each prompt takes its OWN current value as the default. A bare "" only
+  # looks harmless -- prompt_read keeps a non-empty current value on the
+  # non-interactive path (install.sh:998), but the interactive branch applies
+  # the default argument, and `[ -z "$input_val" ] && [ -n "$default_val" ]`
+  # is false when that default is empty, so it falls through and assigns the
+  # empty string. Pressing enter through the interview therefore cleared the
+  # tokens, the home channel and the Slack allowlist. The tokens are usually
+  # rescued by the Secret-recovery loop in installer_common.sh; the allowlist
+  # is not, and an empty slack_allowed_users means every workspace member may
+  # talk to the agent.
+  #
+  # The allowlist also took $allowed_users -- the GOOGLE CHAT list -- which on
+  # arm 3 replaced the Slack allowlist with the Chat one.
+  _prompt_slack_settings() {
+    # A secret must not be echoed back as a visible "[default: xoxb-…]", so the
+    # tokens pass a label instead of letting prompt_read print the value.
+    local bot_hint="" app_hint="" slack_allowed_hint=""
+    [ -n "$slack_bot_token" ] && bot_hint="keep existing"
+    [ -n "$slack_app_token" ] && app_hint="keep existing"
+    # Same shape as allowed_users_hint above: an empty list has to read as a
+    # deliberate choice rather than as a missing default.
+    [ -z "$slack_allowed_users" ] && slack_allowed_hint="empty list"
+    prompt_read "Slack Bot Token (xoxb-...)" slack_bot_token "$slack_bot_token" true "$bot_hint"
+    prompt_read "Slack App Token (xapp-...)" slack_app_token "$slack_app_token" true "$app_hint"
+    prompt_read "Allowed Slack User IDs / Emails (comma-separated)" \
+      slack_allowed_users "$slack_allowed_users" false "$slack_allowed_hint"
+    prompt_read "Slack Home Channel ID (optional, e.g. C0123456789)" \
+      slack_home_channel "$slack_home_channel"
+    prompt_read "Slack Home Channel Name (optional, e.g. #gke-alerts)" \
+      slack_home_channel_name "$slack_home_channel_name"
+  }
 
   case "$chat_choice" in
     1)
@@ -2186,11 +2299,7 @@ main() {
       ;;
     2)
       slack_enabled="true"
-      prompt_read "Slack Bot Token (xoxb-...)" slack_bot_token "" true
-      prompt_read "Slack App Token (xapp-...)" slack_app_token "" true
-      prompt_read "Allowed Slack User IDs / Emails (comma-separated)" slack_allowed_users "$allowed_users"
-      prompt_read "Slack Home Channel ID (optional, e.g. C0123456789)" slack_home_channel ""
-      prompt_read "Slack Home Channel Name (optional, e.g. #gke-alerts)" slack_home_channel_name ""
+      _prompt_slack_settings
       ;;
     3)
       google_chat_enabled="true"
@@ -2198,11 +2307,7 @@ main() {
       prompt_read "Allowed User Email(s) for Google Chat (comma-separated, empty allows all users)" \
         allowed_users "$allowed_users" false "$allowed_users_hint"
       prompt_read "Pub/Sub Topic Name for Google Chat" chat_topic_name "$chat_topic_name"
-      prompt_read "Slack Bot Token (xoxb-...)" slack_bot_token "" true
-      prompt_read "Slack App Token (xapp-...)" slack_app_token "" true
-      prompt_read "Allowed Slack User IDs / Emails (comma-separated)" slack_allowed_users "$allowed_users"
-      prompt_read "Slack Home Channel ID (optional, e.g. C0123456789)" slack_home_channel ""
-      prompt_read "Slack Home Channel Name (optional, e.g. #gke-alerts)" slack_home_channel_name ""
+      _prompt_slack_settings
       ;;
     4)
       print_info "Chat integrations disabled. Agent will operate via CLI / REST API Gateway."
