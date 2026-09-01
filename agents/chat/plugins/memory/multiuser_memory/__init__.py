@@ -340,7 +340,15 @@ class MultiUserFileMemoryProvider(MemoryProvider):
         entries = self._read_entries(target)
 
         if action == "read":
-            return json.dumps({"success": True, "target": target, "entries": entries}, ensure_ascii=False)
+            sanitized_view = [sanitize_for_prompt(e) for e in entries]
+            return json.dumps(
+                {
+                    "success": True,
+                    "target": target,
+                    "entries": [e for e in sanitized_view if e],
+                },
+                ensure_ascii=False,
+            )
 
         elif action == "add":
             content_val = args.get("content")
@@ -365,11 +373,16 @@ class MultiUserFileMemoryProvider(MemoryProvider):
 
             old_c = old_val.strip()
             old_sanitized = sanitize_memory_entry(old_c)
+            old_rendered = sanitize_for_prompt(old_c)
+
             target_idx = None
-            if old_c in entries:
-                target_idx = entries.index(old_c)
-            elif old_sanitized in entries:
-                target_idx = entries.index(old_sanitized)
+            for idx, entry in enumerate(entries):
+                if entry == old_c or entry == old_sanitized:
+                    target_idx = idx
+                    break
+                if sanitize_for_prompt(entry) == old_c or sanitize_for_prompt(entry) == old_rendered:
+                    target_idx = idx
+                    break
 
             if target_idx is not None:
                 entries[target_idx] = sanitized_new
@@ -383,14 +396,19 @@ class MultiUserFileMemoryProvider(MemoryProvider):
                 return tool_error("Content to remove is required.")
             old_c = old_val.strip()
             old_sanitized = sanitize_memory_entry(old_c)
-            to_remove = None
-            if old_c in entries:
-                to_remove = old_c
-            elif old_sanitized in entries:
-                to_remove = old_sanitized
+            old_rendered = sanitize_for_prompt(old_c)
 
-            if to_remove is not None:
-                entries.remove(to_remove)
+            target_idx = None
+            for idx, entry in enumerate(entries):
+                if entry == old_c or entry == old_sanitized:
+                    target_idx = idx
+                    break
+                if sanitize_for_prompt(entry) == old_c or sanitize_for_prompt(entry) == old_rendered:
+                    target_idx = idx
+                    break
+
+            if target_idx is not None:
+                entries.pop(target_idx)
                 self._write_entries(target, entries)
                 return json.dumps({"success": True, "message": f"Removed from {target} memory."})
             return tool_error(f"Exact match not found in {target} memory.")
