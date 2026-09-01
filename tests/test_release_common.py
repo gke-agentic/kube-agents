@@ -838,6 +838,19 @@ source "{_COMMON_SH}"
                 )
                 self.assertIn("commit_messages_have_breaking_change", body, f"{script} does not call the helper")
 
+    def test_release_bundle_registries(self):
+        """Verifies common.sh exports release bundle directories, root files, and charts."""
+        script = """
+echo "DIRS:${RELEASE_BUNDLE_DIRECTORIES[*]}"
+echo "CHARTS:${RELEASE_HELM_CHARTS[*]}"
+echo "FILES:${RELEASE_BUNDLE_ROOT_FILES[*]}"
+"""
+        proc = self._run_common_func(script)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("DIRS:k8s-operator deploy charts scripts examples", proc.stdout)
+        self.assertIn("CHARTS:charts/kube-agents", proc.stdout)
+        self.assertIn("FILES:install.sh uninstall.sh upgrade.sh README.md LICENSE", proc.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

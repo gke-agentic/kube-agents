@@ -24,6 +24,27 @@ export REQUIRED_RELEASE_IMAGES=(
   "gke-stockout-investigator"
 )
 
+# Declarative registry of release bundle directories, root files, and Helm charts
+export RELEASE_BUNDLE_DIRECTORIES=(
+  "k8s-operator"
+  "deploy"
+  "charts"
+  "scripts"
+  "examples"
+)
+
+export RELEASE_HELM_CHARTS=(
+  "charts/kube-agents"
+)
+
+export RELEASE_BUNDLE_ROOT_FILES=(
+  "install.sh"
+  "uninstall.sh"
+  "upgrade.sh"
+  "README.md"
+  "LICENSE"
+)
+
 # ─── Boolean Parsing ──────────────────────────────────────────────────────────
 # Interpret a value as a boolean toggle. Returns 0 (success) for common
 # affirmative spellings and 1 otherwise. Matching is case-insensitive and

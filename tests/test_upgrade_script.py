@@ -87,6 +87,21 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_UPGRADE_SH}"
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("Verified upgrade sources match baked official release 0.2.0", proc.stdout)
 
+    def test_verify_local_source_ref_accepts_release_bundle_marker_in_non_git_dir(self):
+        """Verifies verify_local_source_ref succeeds for unpacked release bundle with .release-bundle metadata."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="unpacked-upgrade-bundle-") as outer_dir:
+            archive_dir = pathlib.Path(outer_dir) / "kube-agents-0.3.0"
+            archive_dir.mkdir(parents=True)
+            bundle_file = archive_dir / ".release-bundle"
+            bundle_file.write_text("name=kube-agents\nversion=0.3.0\ntag=0.3.0\ncommit=d3be984\n")
+
+            cmd = f'BAKED_RELEASE_VERSION=""; verify_local_source_ref "{archive_dir}" "0.3.0"'
+            proc = self._run_upgrade_func(cmd, cwd=archive_dir)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("Verified upgrade sources match official release bundle 0.3.0", proc.stdout)
+
     def test_verify_local_source_ref_in_git_worktree_enforces_git_alignment(self):
         """Verifies verify_local_source_ref in upgrade.sh enforces clean git status in real git checkouts."""
         import tempfile

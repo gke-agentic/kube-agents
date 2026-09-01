@@ -108,6 +108,25 @@ is_valid_model_provider() {
   [[ "${1:-}" =~ ^(gemini|vertex_ai|anthropic|openai)$ ]]
 }
 
+# Checks if a directory contains a .release-bundle metadata file matching expected_ref.
+# Returns 0 and prints the bundle version if matched, 1 otherwise.
+matches_release_bundle_ref() {
+  local repo_dir="$1"
+  local expected_ref="$2"
+  local bundle_file="${repo_dir}/.release-bundle"
+
+  if [ -f "$bundle_file" ]; then
+    local bundle_version bundle_tag
+    bundle_version="$(grep -E "^version=" "$bundle_file" 2>/dev/null | cut -d'=' -f2- | tr -d '[:space:]' || echo "")"
+    bundle_tag="$(grep -E "^tag=" "$bundle_file" 2>/dev/null | cut -d'=' -f2- | tr -d '[:space:]' || echo "")"
+    if [ -n "$bundle_version" ] && { [ "$bundle_version" = "$expected_ref" ] || [ "$bundle_tag" = "$expected_ref" ]; }; then
+      echo "$bundle_version"
+      return 0
+    fi
+  fi
+  return 1
+}
+
 # The GCP IAM role bundles the install knows how to grant. Kubernetes RBAC is
 # read-only in every one of them; see the site's reference/security-and-iam.
 is_valid_permission_set() {
