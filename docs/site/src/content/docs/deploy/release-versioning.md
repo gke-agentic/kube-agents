@@ -22,16 +22,16 @@ Every commit and build progresses through four distinct lifecycle tiers:
 
 ## Automated SemVer 2.0 calculation
 
-When the GA release workflow runs, `scripts/release/calculate_next_version.sh` inspects Conventional Commits in the range `<LATEST_GA_TAG>..HEAD`:
+When the GA release workflow runs, `scripts/release/calculate_next_version.sh` inspects Conventional Commits in the range `<LATEST_GA_TAG>..<TARGET_COMMIT>` (resolving to the latest validated RC commit on the standard automated path, or the specified commit / `HEAD` under emergency bypass):
 
 <!-- prettier-ignore -->
-| Commit type landed on `main` | Current version | Calculated next version | Precedence and action |
+| Commit type in release range | Current version | Calculated next version | Precedence and action |
 | :--- | :--- | :--- | :--- |
 | `fix:`, `chore:`, `docs:`, `perf:` | `0.2.0` | `0.2.1` | Patch bump |
 | `feat:` | `0.2.0` | `0.3.0` | Minor bump, Patch resets to 0 |
 | `feat!:`, `fix!:`, `BREAKING CHANGE:` | `0.2.0` | `0.3.0` | Minor bump (SemVer 2.0 Clause 4 in `0.y.z`) |
 | `feat!:`, `fix!:`, `BREAKING CHANGE:` | `1.2.0` | `2.0.0` | Major bump (in `1.x.x`+) |
-| _(No new commits on main)_ | `0.2.0` | `0.2.0` | No changes (`skip_release=true`) |
+| _(No new commits in release range)_ | `0.2.0` | `0.2.0` | No changes (`skip_release=true`) |
 
 ### SemVer 2.0 Clause 4 and the 1.0.0 manual governance rule
 
