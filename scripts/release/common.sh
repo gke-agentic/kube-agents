@@ -44,14 +44,12 @@ is_ci_pipeline() {
 }
 
 # ─── Cluster connection ───────────────────────────────────────────────────────
-# Two scripts in this directory point kubectl at the RC cluster before doing
-# anything to it — install_pubsub_platform.sh and wait_for_gke_readiness.sh — and
-# a workflow runs them as separate steps, so each starts from a fresh shell and
-# has to resolve the target itself. The pair lives here rather than being
-# duplicated, because the resolution order below is a contract with the
-# workflows: GKE_CLUSTER_NAME/GCP_REGION/GCP_PROJECT_ID are what the `env:` blocks
-# set, and CLUSTER_NAME/REGION/PROJECT_ID are the installer's own names, which a
-# developer running these by hand after install.sh already has exported.
+# Release scripts point kubectl at the RC cluster before doing anything to it,
+# such as wait_for_gke_readiness.sh, resolving the target itself. The helpers live
+# here rather than being duplicated, because the resolution order below is a
+# contract with the workflows: GKE_CLUSTER_NAME/GCP_REGION/GCP_PROJECT_ID are what
+# the `env:` blocks set, and CLUSTER_NAME/REGION/PROJECT_ID are the installer's own
+# names, which a developer running these by hand after install.sh already has exported.
 #
 # Assigns to globals rather than echoing: a caller reading an echo would need
 # command substitution, and a `set -u` abort inside a subshell would leave the

@@ -271,8 +271,7 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
         `cluster_mode="${cluster_mode:-standard}"` it replaced left every
         installer test green, so the headline behaviour of this change was
         unpinned. main() is the whole interview and is not drivable from a
-        unit test, so this asserts on the source the way
-        tests/test_install_pubsub_platform.py asserts on workflow YAML.
+        unit test, so this asserts on the source directly.
         """
         source = _INSTALL_SH.read_text()
         self.assertIn(
