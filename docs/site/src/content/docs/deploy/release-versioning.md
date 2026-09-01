@@ -7,18 +7,18 @@ sidebar:
 
 `kube-agents` follows strict [Semantic Versioning 2.0.0](https://semver.org/) (`MAJOR.MINOR.PATCH`) without a `v` prefix for official releases across container images, OCI Helm charts, and Terraform modules.
 
-The release pipeline guarantees that installer scripts (`install.sh`, `uninstall.sh`, `upgrade.sh`) and container runtime images are bit-for-bit synchronized from the exact same commit, validated on a live GKE cluster before any release tag is published.
+The release pipeline guarantees that installer scripts (`install.sh`, `uninstall.sh`, `upgrade.sh`) and container runtime images are bit-for-bit synchronized from the exact same commit and, absent an emergency bypass, validated on a live GKE cluster before any release tag is published.
 
 ## Tag and artifact taxonomy
 
 Every commit and build progresses through four distinct lifecycle tiers:
 
-| Tier                       | Format                                | Trigger                       | Purpose and guarantees                                                                   |
-| :------------------------- | :------------------------------------ | :---------------------------- | :--------------------------------------------------------------------------------------- |
-| **Candidate Build**        | `<COMMIT_SHA>` (bare 40-char SHA)     | Push to `main` branch         | Developer build in GHCR; container images built once.                                    |
-| **Release Candidate (RC)** | `rc_YYMMDDHHMM_<SHORT_SHA>`           | 3-hour cron / manual dispatch | Candidate build selected for live cluster testing.                                       |
-| **RC Validated**           | `rc_YYMMDDHHMM_<SHORT_SHA>_validated` | Successful GKE E2E suite      | Quality gate: proof that `install.sh` succeeded on a real GKE cluster.                   |
-| **GA Stable**              | `X.Y.Z` (pure numeric SemVer)         | Release publish workflow      | Official production release tagged on a stamped commit parented by the validated commit. |
+| Tier                       | Format                                | Trigger                       | Purpose and guarantees                                                                                              |
+| :------------------------- | :------------------------------------ | :---------------------------- | :------------------------------------------------------------------------------------------------------------------ |
+| **Candidate Build**        | `<COMMIT_SHA>` (bare 40-char SHA)     | Push to `main` branch         | Developer build in GHCR; container images built once.                                                               |
+| **Release Candidate (RC)** | `rc_YYMMDDHHMM_<SHORT_SHA>`           | 3-hour cron / manual dispatch | Candidate build selected for live cluster testing.                                                                  |
+| **RC Validated**           | `rc_YYMMDDHHMM_<SHORT_SHA>_validated` | Successful GKE E2E suite      | Quality gate: proof that `install.sh` succeeded on a real GKE cluster.                                              |
+| **GA Stable**              | `X.Y.Z` (pure numeric SemVer)         | Release publish workflow      | Official production release tagged on a stamped commit parented by the target commit (validated on GKE by default). |
 
 ## Automated SemVer 2.0 calculation
 
