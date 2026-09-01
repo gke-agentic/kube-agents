@@ -38,7 +38,11 @@ relay is always attempted. The home channel is needed one hop later, where the S
 posts what the Chat Agent composed: `_send_to_chat` runs `hermes send --to <platform>` with no
 chat id, and that bare form is the one `hermes send` documents as "platform (home channel)". Where
 there is none the send fails and the roster entry records
-`last_delivery_error: "composed but not delivered to google_chat"`. The value is set either by the
+`last_delivery_error: "composed but not delivered to google_chat"`. On an install with more than
+one chat platform enabled the send fans out to all of them, so one platform missing a home channel
+costs the recap only that audience: the entry then records
+`last_delivery_error: "chat relay partial: the report did not reach slack."` and the run is still a
+delivery. The value is set either by the
 CR — `spec.integration.googleChat.homeChannel`, which the operator renders into the pod as
 `GOOGLE_CHAT_HOME_CHANNEL` — or by running `/sethome` in the channel you want it in. Every entry
 on the roster shipping `deliver: "chat"` takes this route; nothing about it is specific to

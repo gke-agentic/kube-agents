@@ -88,13 +88,19 @@ class KVServer:
                 "PYTHONPATH": str(SCRIPTS_DIR),
             }
         )
-        # An absent config file gets `get_active_platform` past the yaml branch
-        # but not to a fixed answer: it then reads SLACK_BOT_TOKEN from the
-        # environment and returns "slack" if it finds one
-        # (`session_kv_server.py:431`). Dropping the chat credentials is what
-        # makes the fallback deterministic, and it also means a server started
-        # here holds no token to post with.
-        for leaked in ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "GOOGLE_CHAT_WEBHOOK"):
+        # An absent config file gets `enabled_chat_platforms` past both yaml
+        # branches but not to a fixed answer: it then resolves each platform
+        # from the environment, and a maintainer's own shell is exactly where
+        # those variables live. Dropping every signal it reads is what makes the
+        # fallback deterministic, and dropping the credentials among them also
+        # means a server started here holds no token to post with. Keep this
+        # list in step with `session_kv_server._CHAT_ENV_SIGNALS`; a signal it
+        # gains and this loses reintroduces the hazard silently.
+        for leaked in (
+            "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_RELAY_URL", "SLACK_HOME_CHANNEL",
+            "GOOGLE_CHAT_WEBHOOK", "GOOGLE_CHAT_RELAY_URL", "GOOGLE_CHAT_PROJECT_ID",
+            "GOOGLE_CHAT_HOME_CHANNEL",
+        ):
             run_env.pop(leaked, None)
         # And a `hermes` that cannot reach a workspace, shadowing any real one
         # on the runner's PATH. `_post_initial_alert` shells out to a bare

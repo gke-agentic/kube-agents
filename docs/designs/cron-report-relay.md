@@ -360,6 +360,46 @@ caps report length instead (`CRON_REPORT_MAX_CHARS`, default 12000), which bound
 the accident that route actually has: a job that cats a log into the model and
 the channel.
 
+The cap truncates rather than rejects. It answered HTTP 413 until #1094, and the
+finding then existed only in the job's saved output with a line in
+`last_delivery_error` that nothing read — which cost three fleet-wide audit
+reports at 60k characters apiece over 30 and 31 August 2026. The head survives,
+because every governance SOP leads with its summary and puts the evidence
+appendix last, and the cut copy ends with a `[truncated]` line naming
+`cron/output/<job_id>/`, where the whole report is.
+
+## Which platforms a report is posted to
+
+Every chat platform the install has enabled, resolved by
+`session_kv_server.enabled_chat_platforms`. Three sources, most specific first,
+and consulted **per platform** so that one naming Slack cannot hide a Google Chat
+another knows about: the operator's managed scope
+(`/etc/hermes/config.yaml`, which carries `platforms.<p>.enabled` as explicit
+booleans and therefore settles it outright on a deployed pod), the profile's own
+writable `config.yaml`, then per-platform environment signals for an install
+neither file describes.
+
+A dual-platform install gets the report on both. Picking one is what #1094 was:
+the resolver returned on its first match, Slack led the order, and an install
+with Slack enabled but no home channel and no connection lost every scheduled
+governance report for seven days while Google Chat — which had a home channel —
+received nothing. A partial fan-out is still a 200, because the report is in a
+channel and a re-run would double-post there; the platforms it missed come back
+in the response body's `undelivered`, which the relay adapter turns into
+`last_delivery_error`.
+
+Only one leg is threaded. A thread id is platform-local, so the session's routing
+row names one platform and only that leg replays the stored thread; the others
+post to their own home channel each time. If the routed leg is the one that
+failed, the routing moves to a leg that landed, so a reply reaches a session that
+holds the report.
+
+`get_active_platform` is the single-destination sibling, for
+`_post_initial_alert`: an incident alert registers the thread it gets back as the
+session's routing and the triage card's completion is addressed there, so two
+threads on two platforms would leave the report addressable to only one. It picks
+the first enabled platform and logs a warning naming the destination that lost.
+
 ## What a job has to do: nothing
 
 A job relays because of one field. `deliver: "chat"` and no prompt boilerplate —
@@ -451,7 +491,10 @@ every one of them is visible to a job author:
   saying so only in a log is how the seven consecutive failures above went
   unnoticed. So the degradation is stated twice: the posted message is prefixed
   `[unrelayed]`, naming the profile and job, and the response body carries
-  `"relay": "degraded"` next to `"status": "delivered"`.
+  `"relay": "degraded"` next to `"status": "delivered"`. A fan-out leg that
+  failed while another landed is reported the same way and for the same reason,
+  through `undelivered` — see [Which platforms a report is posted
+  to](#which-platforms-a-report-is-posted-to).
   That is the whole reason the route blocks rather than accepting into a
   background task: answering `accepted` first would make each of those failures
   invisible, leaving the run written down as delivered with nothing in the

@@ -98,6 +98,16 @@ MANAGED_DOTENV_PATH = os.path.join(
     os.environ.get("HERMES_MANAGED_DIR", "").strip() or "/etc/hermes", ".env"
 )
 
+# The other half of the managed scope, and the only file on this pod that states
+# which chat platforms the CR turned on. `renderConfigYAML` always emits
+# `platforms.google_chat.enabled` and `platforms.slack.enabled` as explicit
+# booleans (no omitempty on either field), so unlike CONFIG_PATH this answers
+# the question rather than falling silent — see `enabled_chat_platforms`.
+# Resolved from HERMES_MANAGED_DIR the same way, and for the same reason.
+MANAGED_CONFIG_PATH = os.path.join(
+    os.environ.get("HERMES_MANAGED_DIR", "").strip() or "/etc/hermes", "config.yaml"
+)
+
 
 def _dotenv_value(path: str, name: str) -> str:
     """Return `name`'s value from a dotenv file, or "" if it does not carry one.
@@ -648,62 +658,161 @@ def get_severity_details(event_type: str, reason: str) -> tuple[str, str]:
 
 
 
-def get_active_platform() -> str:
+# The chat platforms this harness ships an egress path for, in the order a
+# message is posted to them and in the order a single-destination caller picks
+# one. Google Chat leads, and the ordering is the whole of #1094.
+#
+# #855 put Slack first, on the reasoning that a dual-platform install "resolves
+# the same way whichever branch answers". It does — and the answer it resolves
+# to is the wrong one. Autopush had both integrations on, Slack with no home
+# channel and a gateway that could not connect, so every scheduled governance
+# report from 2026-08-25 to 2026-09-01 was composed by the Chat Agent, posted
+# nowhere, and lost. Google Chat first means a dual-platform install *gains* a
+# platform rather than having its messages moved to one; the same order, for the
+# same reason, is what open PR #996 gives the Cluster Agent reconcile summary.
+#
+# This does not undo #855. That defect was a Slack-*only* install calling itself
+# google_chat, and resolution below is per platform: with Google Chat off,
+# nothing puts it in the list whatever the order says.
+CHAT_PLATFORMS = ("google_chat", "slack")
+
+# Per-platform environment signals, consulted only when no config file settles
+# the question. The relay URL leads each list because the operator sets it on
+# this container exactly when the matching `spec.integration.<p>.enabled` is
+# true (platformagent_manifests.go, the GoogleChat/Slack blocks in
+# buildPodTemplateSpec and renderManagedEnv), so it answers the question rather
+# than approximating it.
+#
+# SLACK_BOT_TOKEN is kept, and is inert on a deployed pod: a token is a
+# credential, so it lives in the credential-proxy container and never reaches
+# this one — the specific defect #855 fixed. It stays because a bare
+# `docker run` off the image has no operator to render a relay URL, and there an
+# exported token is the only statement that Slack is configured.
+_CHAT_ENV_SIGNALS: Dict[str, tuple[str, ...]] = {
+    "google_chat": ("GOOGLE_CHAT_RELAY_URL", "GOOGLE_CHAT_PROJECT_ID", "GOOGLE_CHAT_HOME_CHANNEL"),
+    "slack": ("SLACK_RELAY_URL", "SLACK_BOT_TOKEN", "SLACK_HOME_CHANNEL"),
+}
+
+# Where a message goes when nothing resolves at all. Preserves what every caller
+# here did before any of this existed, so an install this cannot read is no
+# worse off than it was and no send is addressed to the empty string.
+DEFAULT_CHAT_PLATFORM = "google_chat"
+
+
+def _mapping(value: object) -> dict:
+    """`value` if it is a mapping, else an empty one.
+
+    Every traversal of a parsed config goes through this. `config.yaml` is a
+    file the running agent writes to and a human may hand-edit, so
+    `platforms: slack` is valid YAML that parses to a string and reaches `.get`
+    as one. A wrong shape must cost the platform resolution, not the caller.
+    """
+    return value if isinstance(value, dict) else {}
+
+
+def _platforms_enabled_in(path: str) -> Dict[str, bool]:
+    """`platforms.<name>.enabled` from one config file, for the keys that set it.
+
+    Absent keys are absent from the result rather than False: "this file does
+    not say" and "this file says no" are different answers, and only the second
+    may override a lower-precedence source. A bare `enabled:` with no value
+    parses to None, which is the first answer, so it is dropped too.
+    """
     try:
         import yaml
-        with open(CONFIG_PATH, "r") as f:
-            cfg = yaml.safe_load(f) or {}
-        platforms = cfg.get("platforms", {})
-        if platforms.get("slack", {}).get("enabled"):
-            return "slack"
-        if platforms.get("google_chat", {}).get("enabled"):
-            return "google_chat"
+        with open(path, "r") as handle:
+            cfg = yaml.safe_load(handle) or {}
+        platforms = _mapping(_mapping(cfg).get("platforms"))
+    except FileNotFoundError:
+        return {}
     except Exception as exc:
-        logger.error(f"Failed to parse config.yaml for active platform: {exc}")
-    # This is the selector on an operator-managed pod, not a corner case.
-    # CONFIG_PATH is $PLATFORM_AGENT_HOME/config.yaml — the agent's own
-    # writable file, seeded from agents/chat/config.yaml. The operator's
-    # `platforms.<p>.enabled` does not go there: renderConfigYAML writes it to
-    # the managed scope mounted read-only at /etc/hermes, which Hermes overlays
-    # per leaf key inside its own config loader rather than merging to disk
-    # (docker-entrypoint.sh, "The pins do NOT come through this file"; the
-    # template block at agents/chat/config.yaml:257 says the same from the
-    # other side). The open() above therefore reads a `platforms` subtree with
-    # no `enabled` key at all, both branches fall through, and control arrives
-    # here on every alert.
-    #
-    # So SLACK_RELAY_URL is not a better fallback signal, it is the answer.
-    # SLACK_BOT_TOKEN never reaches this container — it is a credential, so it
-    # lives in the credential-proxy container, which is what
-    # TestBuildDeploymentSlackIntegration in platformagent_manifests_test.go
-    # pins (TestBuildDeployment holds the general "no Secret-backed env in the
-    # sandbox" rule, but its fixture configures Google Chat only and never
-    # renders a Slack variable to check). Asking for the token here was asking
-    # a question whose answer in a deployed pod is always "no", so every
-    # Slack-only install called itself google_chat and lost the alert to a
-    # `hermes send` against a platform that is not configured. SLACK_RELAY_URL
-    # is set on this container exactly when spec.integration.slack.enabled is.
-    #
-    # Slack-before-Google-Chat matches the try block above, so an install with
-    # both integrations enabled resolves the same way whichever branch answers.
-    # That is a routing change for a dual-platform install, which until now
-    # always landed on google_chat here; see Risk & Rollout on the PR.
-    #
-    # The token is still accepted rather than replaced: it is the signal that
-    # works for a bare `docker run` off the image, where no operator has
-    # rendered anything and an exported token is all there is.
-    # platform_mcp_server.py:690 leans on the same absent SLACK_BOT_TOKEN, but
-    # it is not as badly off: it also accepts SLACK_HOME_CHANNEL, which the
-    # operator does render on this container when spec.integration.slack
-    # .homeChannel is set and which is allowlisted into that child
-    # (agents/platform/config.yaml). So it misroutes only on a Slack install
-    # with no home channel anywhere — an install whose sends have no
-    # destination in any case. It is deliberately left alone here — open PR
-    # #735 fixes that copy, and it needs the MCP env allowlist widened to pass
-    # SLACK_RELAY_URL through, which is that PR's to do.
-    if os.environ.get("SLACK_RELAY_URL") or os.environ.get("SLACK_BOT_TOKEN"):
-        return "slack"
-    return "google_chat"
+        logger.error(f"Failed to parse {path} for the active chat platform: {exc}")
+        return {}
+
+    out: Dict[str, bool] = {}
+    for name in CHAT_PLATFORMS:
+        block = _mapping(platforms.get(name))
+        if block.get("enabled") is not None:
+            out[name] = bool(block["enabled"])
+    return out
+
+
+def enabled_chat_platforms() -> list[str]:
+    """Every chat platform this install posts to, in CHAT_PLATFORMS order.
+
+    Three sources, most specific first, resolved **per platform** rather than
+    per source — so a file that names one platform cannot silence another that
+    only a lower-precedence source knows about. That short circuit is the shape
+    of the bug this replaces: one `if` matched, the function returned, and the
+    other platform was never considered.
+
+    1. The managed scope, `/etc/hermes/config.yaml`. On an operator-managed pod
+       this settles it outright: `renderConfigYAML` writes both
+       `platforms.<p>.enabled` keys as explicit booleans on every reconcile, so
+       the CR's answer is on disk in the container and there is nothing to
+       infer. Reading it is what #1094 means by "stop guessing the platform".
+    2. CONFIG_PATH, the profile's own writable `config.yaml`. Authoritative on
+       an install that has no operator — a `docker run` off the image, a profile
+       configured by hand — and normally silent on a managed pod: Hermes
+       overlays the managed scope per leaf inside its own config loader rather
+       than merging it onto this file (docker-entrypoint.sh, "The pins do NOT
+       come through this file"), so the `platforms` subtree here carries no
+       `enabled` key at all. #855 established that; it is read second rather
+       than dropped because it is the truth on the installs that do write it.
+    3. The environment signals above, for an install neither file describes.
+
+    Never returns an empty list — an install that resolves to nothing gets
+    DEFAULT_CHAT_PLATFORM.
+
+    This is the third copy of this question in the tree, and the copies should
+    converge rather than a fourth being added: `platform_mcp_server
+    .get_enabled_platforms` is still keyed on the absent SLACK_BOT_TOKEN (#735
+    is open against it), and open PR #996 adds `chat_platforms
+    .enabled_chat_platforms` for the Cluster Agent reconcile summary (#989).
+    The ordering and the precedence here are deliberately #996's, so that
+    whichever lands second is a re-point rather than a behaviour change.
+    """
+    from_managed = _platforms_enabled_in(MANAGED_CONFIG_PATH)
+    from_profile = _platforms_enabled_in(CONFIG_PATH)
+
+    resolved = []
+    for name in CHAT_PLATFORMS:
+        if name in from_managed:
+            enabled = from_managed[name]
+        elif name in from_profile:
+            enabled = from_profile[name]
+        else:
+            enabled = any(
+                os.environ.get(var, "").strip()
+                for var in _CHAT_ENV_SIGNALS.get(name, ())
+            )
+        if enabled:
+            resolved.append(name)
+    return resolved or [DEFAULT_CHAT_PLATFORM]
+
+
+def get_active_platform() -> str:
+    """The one platform a single-destination caller posts to.
+
+    `_post_initial_alert` needs exactly one: it registers the thread it gets
+    back as the session's routing, the triage card's completion is addressed to
+    that thread, and a thread belongs to one platform — `hermes send` refuses a
+    Google Chat thread addressed as Slack rather than degrading it to the home
+    channel. Two alerts in two threads would leave the report addressable to
+    only one of them, so this path picks rather than fans out.
+
+    Picking is not the same as picking silently, which is #1094's other half:
+    an install with more than one platform enabled says so in the log, once per
+    call, naming the destination that lost. The relay in
+    :func:`relay_cron_report` has no such constraint and does fan out.
+    """
+    platforms = enabled_chat_platforms()
+    if len(platforms) > 1:
+        logger.warning(
+            f"{len(platforms)} chat platforms are enabled ({', '.join(platforms)}); "
+            f"this send takes one destination and uses '{platforms[0]}'"
+        )
+    return platforms[0]
 
 
 def _post_initial_alert(active_platform: str, alert_msg: str) -> str | None:
@@ -1141,6 +1250,8 @@ _CRON_REPORT_SESSION_RE = re.compile(r"[^a-zA-Z0-9_-]+")
 # A report is a chat message, not a document. The cap is generous enough for a
 # full audit summary and small enough that a job which accidentally cats a log
 # cannot push a megabyte through the model and into the channel.
+#
+# It is a truncation point and not a rejection: see :func:`_truncate_report`.
 CRON_REPORT_MAX_CHARS = int(os.getenv("CRON_REPORT_MAX_CHARS", "12000") or "12000")
 
 # `job_id` and `title` are labels, and a label is one short line. The bound is
@@ -1198,6 +1309,44 @@ def _sanitize_label(value: str) -> str:
     return neutralised
 
 
+def _truncate_report(report: str, profile: str, job_id: str) -> str:
+    """Cut an oversized report down to the cap rather than dropping it.
+
+    An over-cap report used to be answered with HTTP 413, which the scheduler
+    recorded in `last_delivery_error` and nothing else did anything about — so
+    the finding was lost. That is not a hypothetical: the fleet-wide audits on
+    the autopush roster produce 60k characters against a 12000 cap, and
+    `stockout-prevention` and `compliance-audit` were dropped whole on 30 and 31
+    August 2026 (#1094).
+
+    A cut report is worse than a whole one and much better than none. The head
+    is what survives, because every governance SOP on the roster leads with its
+    summary and puts the evidence appendix last, so the first 12000 characters
+    are the part a reader needs. The notice names the directory the scheduler
+    saved the full text to, so nothing is only in the truncated copy.
+
+    Not a link: the file lives on the agent's PVC under
+    `$HERMES_HOME/cron/output/<job_id>/<timestamp>.md` and the run's own
+    timestamp is not on this request, so the directory is as precise as this
+    layer can honestly be.
+    """
+    if len(report) <= CRON_REPORT_MAX_CHARS:
+        return report
+
+    notice = (
+        f"\n\n---\n[truncated] This report was {len(report)} characters, over the "
+        f"{CRON_REPORT_MAX_CHARS}-character chat limit. The text above is the "
+        f"beginning of it; the whole report was saved by the scheduler under "
+        f"`cron/output/{job_id}/` in the {profile} profile's home."
+    )
+    kept = max(0, CRON_REPORT_MAX_CHARS - len(notice))
+    logger.warning(
+        f"Relay for {profile}/{job_id}: report is {len(report)} chars, truncating to "
+        f"{kept} for the {CRON_REPORT_MAX_CHARS}-char chat limit"
+    )
+    return report[:kept].rstrip() + notice
+
+
 def _cron_report_session_id(profile: str, job_id: str, day: str) -> str:
     """Deterministic session id for one job's reports on one UTC day.
 
@@ -1220,8 +1369,16 @@ def _cron_report_session_id(profile: str, job_id: str, day: str) -> str:
     return f"cron-{slug[:80]}-{day.replace('-', '')}"
 
 
-def _lookup_session_routing(session_id: str) -> tuple[str, str]:
-    """Read back (chat_id, thread_id) for a session, or ("", "") if unrouted."""
+def _lookup_session_routing(session_id: str) -> tuple[str, str, str]:
+    """Read back (platform, chat_id, thread_id), or ("", "", "") if unrouted.
+
+    `platform` matters to the fan-out in :func:`relay_cron_report`: a thread
+    belongs to exactly one platform, and replaying a Google Chat thread id on
+    the Slack leg addresses a thread that does not exist. Only the leg this
+    names may reuse the stored thread. `_ensure_session_row` seeds the field
+    with the `cron-report` sentinel, which matches no platform, so a session
+    nothing has routed yet reads as unrouted here rather than as Google Chat.
+    """
     try:
         with closing(sqlite3.connect(SESSION_KV_DB_PATH, timeout=5.0)) as conn:
             row = conn.execute(
@@ -1229,12 +1386,16 @@ def _lookup_session_routing(session_id: str) -> tuple[str, str]:
                 (session_id,),
             ).fetchone()
         if not row:
-            return "", ""
+            return "", "", ""
         meta = json.loads(row[0])
-        return str(meta.get("chat_id") or ""), str(meta.get("thread_id") or "")
+        return (
+            str(meta.get("platform") or ""),
+            str(meta.get("chat_id") or ""),
+            str(meta.get("thread_id") or ""),
+        )
     except Exception as exc:
         logger.error(f"Failed to read session routing for {session_id}: {exc}")
-        return "", ""
+        return "", "", ""
 
 
 def _ensure_session_row(session_id: str, profile: str, job_id: str, title: str = "") -> None:
@@ -1467,13 +1628,23 @@ def _unrelayed_notice(profile: str, job_id: str) -> str:
 
 def relay_cron_report(
     session_id: str, profile: str, job_id: str, title: str, report: str
-) -> tuple[str | None, bool]:
+) -> tuple[str | None, bool, list[str]]:
     """Hand a specialist's finished report to the Chat Agent, then post its reply.
 
-    Returns `(error, degraded)`. `error` is None when the report reached chat,
-    else a short description of what went wrong; the caller turns that into a
-    non-2xx and the string ends up in the job's `last_delivery_error` — see
-    :func:`submit_cron_report`.
+    Returns `(error, degraded, undelivered)`. `error` is None when the report
+    reached at least one chat platform, else a short description of what went
+    wrong; the caller turns that into a non-2xx and the string ends up in the
+    job's `last_delivery_error` — see :func:`submit_cron_report`.
+
+    `undelivered` names the enabled platforms this report did not reach while
+    another one did. The send fans out — every platform
+    :func:`enabled_chat_platforms` resolves gets the report, because a
+    dual-platform install has two audiences and delivering to one of them is
+    how #1094 lost seven days of governance output to a Slack leg that had no
+    home channel and no connection. A partial failure is a 200: the report is
+    in a channel and a re-run would post it twice to the platform that already
+    has it. It is not silent either — the caller puts this list in the response
+    body, from where the relay adapter writes it to `last_delivery_error`.
 
     `degraded` is the half that a boolean-or-nothing return used to swallow. The
     Chat Agent's turn can fail while the send still succeeds, and posting the raw
@@ -1494,7 +1665,7 @@ def relay_cron_report(
     report is posted unrelayed — a scheduled finding that reached a real problem
     should not be lost because the front door was busy.
     """
-    active_platform = get_active_platform()
+    platforms = enabled_chat_platforms()
     api_url = os.environ.get("PLATFORM_API_URL", "http://127.0.0.1:8642")
     headers = {"Content-Type": "application/json"}
     token = _gateway_api_token()
@@ -1516,19 +1687,57 @@ def relay_cron_report(
         logger.warning(f"Relay for {profile}/{job_id}: posting the raw report, unrelayed")
         message = _unrelayed_notice(profile, job_id) + report
 
-    chat_id, thread_id = _lookup_session_routing(session_id)
-    new_thread_id = _send_to_chat(active_platform, message, chat_id, thread_id)
-    if not new_thread_id:
-        logger.error(f"Relay for {profile}/{job_id}: report composed but not delivered")
-        return f"composed but not delivered to {active_platform}", degraded
+    routed_platform, chat_id, thread_id = _lookup_session_routing(session_id)
 
-    if new_thread_id != thread_id:
-        _register_session_routing(session_id, active_platform, new_thread_id)
-        chat_id, thread_id = _lookup_session_routing(session_id)
+    # One send per enabled platform. Only the leg the session is already routed
+    # to may reuse the stored thread — a thread id is platform-local, and
+    # `hermes send` refuses a Google Chat thread addressed as Slack rather than
+    # degrading it to the home channel. Every other leg posts to its own home
+    # channel, so the second platform gets a top-level message per report
+    # instead of a thread of its own; per-platform threading needs a routing row
+    # that can hold more than one, which this does not attempt.
+    threads: Dict[str, str] = {}
+    for platform in platforms:
+        threaded = platform == routed_platform
+        new_thread_id = _send_to_chat(
+            platform,
+            message,
+            chat_id if threaded else "",
+            thread_id if threaded else "",
+        )
+        if new_thread_id:
+            threads[platform] = new_thread_id
+        else:
+            logger.error(
+                f"Relay for {profile}/{job_id}: report composed but not delivered to {platform}"
+            )
+
+    undelivered = [p for p in platforms if p not in threads]
+    if not threads:
+        return f"composed but not delivered to {', '.join(platforms)}", degraded, undelivered
+
+    # The routed leg keeps the thread the user replies into; if it is the leg
+    # that failed, the first one that did land takes it over, so a follow-up
+    # question reaches a session that has the report rather than one addressed
+    # at a platform the report never arrived on.
+    owner = routed_platform if routed_platform in threads else next(
+        p for p in platforms if p in threads
+    )
+    if owner != routed_platform or threads[owner] != thread_id:
+        _register_session_routing(session_id, owner, threads[owner])
+        _, chat_id, thread_id = _lookup_session_routing(session_id)
 
     _store_incident_report(chat_id, thread_id, message)
-    logger.info(f"Relayed {profile}/{job_id} report to {active_platform} thread {thread_id}")
-    return None, degraded
+    logger.info(
+        f"Relayed {profile}/{job_id} report to {', '.join(threads)} "
+        f"({owner} thread {thread_id})"
+    )
+    if undelivered:
+        logger.error(
+            f"Relay for {profile}/{job_id}: delivered to {', '.join(threads)} but not to "
+            f"{', '.join(undelivered)}"
+        )
+    return None, degraded, undelivered
 
 
 @app.post("/v1/cron-reports", dependencies=[Depends(verify_api_key)])
@@ -1565,17 +1774,15 @@ def submit_cron_report(request_data: Dict[str, Any]) -> Dict[str, str]:
         raise HTTPException(status_code=400, detail="job_id field is required")
     if not report:
         raise HTTPException(status_code=400, detail="report field is required")
-    if len(report) > CRON_REPORT_MAX_CHARS:
-        raise HTTPException(
-            status_code=413,
-            detail=f"report is {len(report)} chars, over the {CRON_REPORT_MAX_CHARS} limit",
-        )
+    report = _truncate_report(report, profile, job_id)
 
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     session_id = _cron_report_session_id(profile, job_id, day)
 
     try:
-        error, degraded = relay_cron_report(session_id, profile, job_id, title, report)
+        error, degraded, undelivered = relay_cron_report(
+            session_id, profile, job_id, title, report
+        )
     except Exception as exc:  # never leak a stack trace into last_delivery_error
         logger.exception(f"Relay for {profile}/{job_id} raised")
         raise HTTPException(status_code=502, detail=f"chat relay failed: {type(exc).__name__}") from exc
@@ -1584,10 +1791,14 @@ def submit_cron_report(request_data: Dict[str, Any]) -> Dict[str, str]:
     # 200, because the report is in the channel and the run did its job. `relay`
     # is what tells the scheduler which of the two deliveries it got, so a job
     # whose front door has been down all week is visible without reading logs.
+    # `undelivered` is the same idea one platform down: a fan-out that reached
+    # one audience and missed another is a delivery, and still something the run
+    # record has to carry.
     return {
         "status": "delivered",
         "session_id": session_id,
         "relay": "degraded" if degraded else "ok",
+        "undelivered": ",".join(undelivered),
     }
 def _watcher_features(header_value: str) -> set:
     """The response behaviours the calling watcher said it understands.
