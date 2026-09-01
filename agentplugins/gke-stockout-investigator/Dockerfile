@@ -1,2 +1,2 @@
-FROM alpine:3.24
+FROM scratch
 COPY files/ /

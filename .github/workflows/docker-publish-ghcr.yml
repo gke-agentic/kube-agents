@@ -3,7 +3,6 @@ name: Publish to GHCR
 on:
   push:
     branches: [main]
-  workflow_dispatch:
 
 # Queue rather than cancel: every publish should complete, but not interleave.
 concurrency:
@@ -16,7 +15,7 @@ permissions:
 jobs:
   publish-ghcr:
     runs-on: ubuntu-latest
-    if: github.repository == 'gke-labs/kube-agents' || github.event_name == 'workflow_dispatch'
+    if: github.repository == 'gke-labs/kube-agents'
     permissions:
       contents: read
       packages: write
@@ -107,14 +106,6 @@ jobs:
           tags: |
             ghcr.io/${{ env.IMAGE_REPOSITORY }}/gke-stockout-investigator:latest
             ghcr.io/${{ env.IMAGE_REPOSITORY }}/gke-stockout-investigator:${{ github.sha }}
-
-      - name: Mirror Third-Party Images to GHCR (cert-manager, litellm, fluent-bit)
-        env:
-          MIRROR_PREFIX: ghcr.io/${{ env.IMAGE_REPOSITORY }}
-          MIRROR_THIRD_PARTY_PREFIX: ghcr.io/${{ env.IMAGE_REPOSITORY }}
-          INCLUDE: third-party
-        run: |
-          ./scripts/mirror_images.sh
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2

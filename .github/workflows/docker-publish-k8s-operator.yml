@@ -3,7 +3,6 @@ name: Publish Controller to GHCR
 on:
   push:
     branches: [main]
-  workflow_dispatch:
 
 # Queue rather than cancel: every publish should complete, but not interleave.
 concurrency:
@@ -16,7 +15,7 @@ permissions:
 jobs:
   publish-controller-ghcr:
     runs-on: ubuntu-latest
-    if: github.repository == 'gke-labs/kube-agents' || github.event_name == 'workflow_dispatch'
+    if: github.repository == 'gke-labs/kube-agents'
     permissions:
       contents: read
       packages: write

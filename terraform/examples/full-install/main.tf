@@ -328,10 +328,16 @@ resource "google_pubsub_subscription" "stockout_alerts" {
   name    = var.stockout_pubsub_subscription
   topic   = google_pubsub_topic.stockout_alerts[0].id
 
-  ack_deadline_seconds = 60
+  ack_deadline_seconds       = 60
+  message_retention_duration = "604800s"
 
   expiration_policy {
     ttl = ""
+  }
+
+  retry_policy {
+    minimum_backoff = "10s"
+    maximum_backoff = "600s"
   }
 }
 
@@ -340,7 +346,7 @@ resource "google_logging_project_sink" "stockout_alerts" {
   project     = var.project_id
   name        = var.stockout_pubsub_sink
   destination = "pubsub.googleapis.com/${google_pubsub_topic.stockout_alerts[0].id}"
-  filter      = "resource.type=\"k8s_cluster\" AND (log_id(\"test-stockout\") OR log_id(\"container.googleapis.com/cluster-autoscaler-visibility\")) AND (jsonPayload.messageId:(\"scale.up.error.out.of.resources\" OR \"scale.up.error.quota.exceeded\" OR \"scale.up.error.ip.space.exhausted\" OR \"scale.up.no.scale.up\") OR jsonPayload.noDecisionStatus.noScaleUp:* OR jsonPayload.resultInfo.results.errorMsg.messageId:(\"scale.up.error.out.of.resources\" OR \"scale.up.error.quota.exceeded\" OR \"scale.up.error.ip.space.exhausted\" OR \"scale.up.no.scale.up\")) AND (resource.labels.cluster_name=\"${module.gke_cluster.cluster_name}\" OR jsonPayload.resource.labels.cluster_name=\"${module.gke_cluster.cluster_name}\")"
+  filter      = "(log_id(\"test-stockout\") OR log_id(\"container.googleapis.com/cluster-autoscaler-visibility\")) AND (resource.labels.cluster_name=\"${module.gke_cluster.cluster_name}\" OR jsonPayload.resource.labels.cluster_name=\"${module.gke_cluster.cluster_name}\") AND (jsonPayload.messageId:(\"scale.up.error.out.of.resources\" OR \"scale.up.error.quota.exceeded\" OR \"scale.up.error.ip.space.exhausted\" OR \"scale.up.no.scale.up\") OR jsonPayload.noDecisionStatus.noScaleUp:* OR jsonPayload.resultInfo.results.errorMsg.messageId:(\"scale.up.error.out.of.resources\" OR \"scale.up.error.quota.exceeded\" OR \"scale.up.error.ip.space.exhausted\" OR \"scale.up.no.scale.up\"))"
 
   unique_writer_identity = true
 }

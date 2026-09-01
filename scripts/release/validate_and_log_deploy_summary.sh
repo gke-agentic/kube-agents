@@ -6,6 +6,7 @@ REQUIRED_VARS=(
   "GCP_PROJECT_ID"
   "GCP_REGION"
   "GKE_CLUSTER_NAME"
+  "GCP_SERVICE_ACCOUNT"
 )
 
 MISSING_VARS=()
@@ -14,10 +15,6 @@ for var in "${REQUIRED_VARS[@]}"; do
     MISSING_VARS+=("$var")
   fi
 done
-
-if [ -z "${GCP_SERVICE_ACCOUNT:-}" ] && [ -z "${GCP_SA_KEY:-}" ]; then
-  MISSING_VARS+=("GCP_SERVICE_ACCOUNT variable or GCP_SA_KEY secret")
-fi
 
 # Validate API key only if using Gemini model provider
 PROVIDER="${MODEL_PROVIDER:-gemini}"
@@ -63,6 +60,6 @@ echo "Enable GKE Backup Plan:     ${ENABLE_GKE_BACKUP_PLAN:-<NOT SET>}"
 echo "Agent K8s Permission Set:   ${PLATFORM_AGENT_PERMISSION_SET:-<NOT SET>}"
 echo "Memory Provider:            ${MEMORY_PROVIDER:-<NOT SET>}"
 echo "User Profile Enabled:       ${USER_PROFILE_ENABLED:-<NOT SET>}"
-echo "Pub/Sub Platform Plugin:    ${ENABLE_PUBSUB_PLATFORM:-<DEFAULT (true)>}"
-echo "Stockout Investigator:      ${ENABLE_STOCKOUT_INVESTIGATOR:-<DEFAULT (true)>}"
+echo "Pub/Sub Platform Plugin:    ${ENABLE_PUBSUB_PLATFORM:-<DEFAULT (false)>}"
+echo "Stockout Investigator:      ${ENABLE_STOCKOUT_INVESTIGATOR:-<DEFAULT (false)>}"
 echo "======================================================================"

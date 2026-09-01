@@ -149,11 +149,11 @@ if [ -n "${USER_PROFILE_ENABLED:-}" ]; then
   INSTALL_ARGS+=(--user-profile-enabled="${USER_PROFILE_ENABLED}")
 fi
 
-if [ "${ENABLE_PUBSUB_PLATFORM:-true}" = "true" ]; then
+if [ "${ENABLE_PUBSUB_PLATFORM:-false}" = "true" ]; then
   INSTALL_ARGS+=(--enable-pubsub-platform)
 fi
 
-if [ "${ENABLE_STOCKOUT_INVESTIGATOR:-true}" = "true" ]; then
+if [ "${ENABLE_STOCKOUT_INVESTIGATOR:-false}" = "true" ]; then
   INSTALL_ARGS+=(--enable-stockout-investigator)
 fi
 

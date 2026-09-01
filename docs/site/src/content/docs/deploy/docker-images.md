@@ -33,8 +33,8 @@ Tagged with the release version; `:latest` on every push to `main`.
 | `credential-proxy` | `ghcr.io/gke-labs/kube-agents/credential-proxy` | release tag | `CREDENTIAL_PROXY_IMAGE` | The credential-proxy sidecar in the agent pod. |
 | `k8s-operator` | `ghcr.io/gke-labs/kube-agents/k8s-operator` | release tag | `OPERATOR_IMAGE` | The controller-manager Deployment. |
 | `replay-proxy` | `ghcr.io/gke-labs/kube-agents/replay-proxy` | release tag | `REPLAY_IMAGE` | The optional inference-replay integration. |
-| `pubsub-platform` | `ghcr.io/gke-labs/kube-agents/pubsub-platform` | release tag | `PUBSUB_PLATFORM_IMAGE` | The pubsub-platform AgentPlugin. |
-| `gke-stockout-investigator` | `ghcr.io/gke-labs/kube-agents/gke-stockout-investigator` | release tag | `STOCKOUT_INVESTIGATOR_IMAGE` | The gke-stockout-investigator AgentPlugin. |
+| `pubsub-platform` | `ghcr.io/gke-labs/kube-agents/pubsub-platform` | release tag | — | The pubsub-platform AgentPlugin. |
+| `gke-stockout-investigator` | `ghcr.io/gke-labs/kube-agents/gke-stockout-investigator` | release tag | — | The gke-stockout-investigator AgentPlugin. |
 
 ### Pulled by an install, built elsewhere
 
