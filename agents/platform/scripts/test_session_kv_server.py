@@ -1365,6 +1365,94 @@ class TestAlertPlatformFallback(unittest.TestCase):
         self.assertIn("google_chat", detail)
         self.assertIn("slack", detail)
 
+    def test_the_pick_says_which_platform_will_not_get_the_alert(self):
+        """#1094's other half: picking is fine, picking SILENTLY is the defect.
+
+        The warning has to come off the pick, not out of the fall-through. The
+        fall-through logs only after a leg has refused, so on the common
+        dual-platform install -- where the first leg accepts -- it never runs,
+        and taking `platforms[0]` directly would emit nothing at all.
+        """
+        with self.assertLogs(session_kv_server.logger, level="WARNING") as logs:
+            self._run(lambda _platform, _msg: "spaces/AAA/threads/T1")
+        picked = [line for line in logs.output if "will not receive it" in line]
+        self.assertEqual(len(picked), 1, "exactly one warning, on the pick")
+        self.assertIn("google_chat", picked[0])
+        self.assertIn("slack", picked[0])
+
+    def test_a_send_with_no_message_id_is_not_posted_to_a_second_platform(self):
+        """`hermes send` can succeed and return stdout with no parseable id.
+
+        The alert is in that channel already, so falling through to the next
+        platform to chase a thread id posts it twice. Delivered-but-unthreaded
+        is recorded as unconfirmed instead.
+        """
+        alert = self._run(
+            lambda platform, _msg: session_kv_server.ALERT_SENT_WITHOUT_THREAD
+            if platform == "google_chat" else "1712345678.000100")
+        self.assertEqual(
+            [c.args[0] for c in alert.call_args_list], ["google_chat"],
+            "an alert that landed must not be posted again to chase a thread id")
+        session_kv_server._register_session_routing.assert_not_called()
+        session_kv_server.mark_delivery_failed.assert_called_once()
+
+
+class TestSlackHomeChannelResolution(unittest.TestCase):
+    """`_slack_home_channel` -- the environment, then either config file.
+
+    The operator renders SLACK_HOME_CHANNEL only when the CR sets
+    `slack.homeChannel`, but `/sethome` writes `platforms.slack.home_channel`
+    into the writable config.yaml instead -- which is why that file is not
+    mounted read-only. Reading the environment alone gave such an install an
+    empty `chat_id`, which `_lookup_platform_threads` drops, so the Slack leg
+    opened a fresh top-level message on every report and got no incident row
+    while the send itself succeeded.
+    """
+
+    def setUp(self):
+        env = patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("SLACK_HOME_CHANNEL", None)
+        self._point("MANAGED_CONFIG_PATH", None)
+        self._point("CONFIG_PATH", None)
+
+    def _point(self, attribute, text):
+        if text is None:
+            named = "/nonexistent/kube-agents-test-absent.yaml"
+        else:
+            with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".yaml", delete=False) as handle:
+                handle.write(text)
+                named = handle.name
+            self.addCleanup(os.unlink, named)
+        patcher = patch.object(session_kv_server, attribute, named)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_environment_wins_when_the_operator_rendered_one(self):
+        os.environ["SLACK_HOME_CHANNEL"] = "C0ENV"
+        self._point("CONFIG_PATH", "platforms:\n  slack:\n    home_channel: C0FILE\n")
+        self.assertEqual(session_kv_server._slack_home_channel(), "C0ENV")
+
+    def test_a_sethome_channel_is_found_when_the_environment_is_silent(self):
+        self._point("CONFIG_PATH", "platforms:\n  slack:\n    home_channel: C0FILE\n")
+        self.assertEqual(session_kv_server._slack_home_channel(), "C0FILE")
+
+    def test_the_managed_scope_is_read_before_the_profile_copy(self):
+        self._point("MANAGED_CONFIG_PATH", "platforms:\n  slack:\n    home_channel: C0MANAGED\n")
+        self._point("CONFIG_PATH", "platforms:\n  slack:\n    home_channel: C0FILE\n")
+        self.assertEqual(session_kv_server._slack_home_channel(), "C0MANAGED")
+
+    def test_nothing_anywhere_is_the_empty_string(self):
+        # #1094's autopush shape. Still no home channel -- the point is that it
+        # degrades to "" rather than raising.
+        self.assertEqual(session_kv_server._slack_home_channel(), "")
+
+    def test_a_hostile_config_shape_costs_the_lookup_and_not_the_caller(self):
+        self._point("CONFIG_PATH", "platforms: slack\n")
+        self.assertEqual(session_kv_server._slack_home_channel(), "")
+
 
 class TestAlertDailyQuota(unittest.TestCase):
     """The per-severity daily ceiling enforced in /sessions/{id}/inject."""
@@ -2493,6 +2581,105 @@ class TestCronReportRelay(unittest.TestCase):
             third["google_chat"], ("spaces/AAA", "spaces/AAA/threads/T1"),
             "the recovered leg must reply into the thread it opened, not orphan a new one",
         )
+
+    def test_a_leg_that_missed_this_report_does_not_get_its_incident_row(self):
+        """Keeping the thread is not the same as being sent the report.
+
+        `platform_threads` is additive and the session id is per UTC day, so
+        after a leg fails once the map still holds its thread -- deliberately,
+        so the next report can reply into it. Writing this report's incident
+        row against that thread would overwrite the channel's stored context
+        with a report it never received, and `_store_incident_report` is
+        INSERT OR REPLACE on (chat_id, thread_id), so the report still on
+        screen there is the one destroyed. A reply under it would then have
+        `incident_context` prepend text that was never posted in that channel.
+        """
+        import sqlite3
+
+        state = {"google_chat_up": True}
+
+        def flaky(platform, *_args, **_kwargs):
+            if platform == "google_chat":
+                return "spaces/AAA/threads/T1" if state["google_chat_up"] else None
+            return "1712345678.000100"
+
+        with patch.object(session_kv_server, "enabled_chat_platforms",
+                          return_value=["google_chat", "slack"]), \
+             patch.object(session_kv_server, "_create_gateway_session", return_value=True), \
+             patch.object(session_kv_server, "_run_relay_turn",
+                          side_effect=lambda *a, **k: f"COMPOSED:{a[2]}"), \
+             patch.object(session_kv_server, "_send_to_chat", side_effect=flaky):
+            self.client.post("/v1/cron-reports", json={"job_id": "jm", "report": "ONE"})
+            state["google_chat_up"] = False
+            self.client.post("/v1/cron-reports", json={"job_id": "jm", "report": "TWO"})
+
+        with sqlite3.connect(temp_db_path) as conn:
+            stored = dict(conn.execute("SELECT thread_id, report FROM incidents"))
+
+        self.assertIn("TWO", stored["1712345678.000100"],
+                      "the leg that landed must carry the report it received")
+        self.assertIn(
+            "ONE", stored["spaces/AAA/threads/T1"],
+            "the leg that missed report two must keep report one -- the one its "
+            "channel can actually see -- not be overwritten with report two",
+        )
+
+    def test_a_session_routed_before_the_upgrade_keeps_its_thread(self):
+        """Roll-forward, which is the direction that actually happens.
+
+        A row written by the code this replaces has the top-level
+        platform/chat_id/thread_id triple and no `platform_threads` map. Without
+        seeding the owning leg from the triple the first report after the
+        rollout sends with ('', '') and orphans a top-level message instead of
+        replying into the thread the session already has.
+        """
+        import sqlite3
+        from datetime import datetime, timezone
+
+        session_id = session_kv_server._cron_report_session_id(
+            "platform", "jn", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+        pre_upgrade = {
+            "platform": "google_chat",
+            "chat_id": "spaces/AAA",
+            "thread_id": "spaces/AAA/threads/T1",
+        }
+        with sqlite3.connect(temp_db_path) as conn:
+            with conn:
+                conn.execute(
+                    "INSERT INTO session_metadata (session_id, metadata) VALUES (?, ?)",
+                    (session_id, json.dumps(pre_upgrade)),
+                )
+
+        with patch.object(session_kv_server, "enabled_chat_platforms",
+                          return_value=["google_chat"]), \
+             patch.object(session_kv_server, "_create_gateway_session", return_value=True), \
+             patch.object(session_kv_server, "_run_relay_turn", return_value="composed"), \
+             patch.object(session_kv_server, "_send_to_chat",
+                          return_value="spaces/AAA/threads/T1") as send:
+            self.client.post("/v1/cron-reports", json={"job_id": "jn", "report": "r"})
+
+        self.assertEqual(
+            send.call_args.args[2:], ("spaces/AAA", "spaces/AAA/threads/T1"),
+            "the first report after the rollout must reply into the existing thread",
+        )
+
+    def test_the_receipt_says_when_the_report_was_truncated(self):
+        """The human sees the [truncated] line in the channel; the agent that
+        wrote the report -- the only party that could split it -- saw nothing."""
+        with patch.object(session_kv_server, "enabled_chat_platforms",
+                          return_value=["google_chat"]), \
+             patch.object(session_kv_server, "_create_gateway_session", return_value=True), \
+             patch.object(session_kv_server, "_run_relay_turn", return_value="composed"), \
+             patch.object(session_kv_server, "_send_to_chat",
+                          return_value="spaces/AAA/threads/T1"):
+            over = self.client.post(
+                "/v1/cron-reports",
+                json={"job_id": "jo", "report": "x" * (session_kv_server.CRON_REPORT_MAX_CHARS + 1)},
+            )
+            fits = self.client.post("/v1/cron-reports", json={"job_id": "jp", "report": "short"})
+
+        self.assertEqual(over.json()["truncated"], "true")
+        self.assertEqual(fits.json()["truncated"], "")
 
     def test_a_reply_in_either_channel_finds_the_report(self):
         """`incident_context` resolves by (chat_id, thread_id), so a fan-out that

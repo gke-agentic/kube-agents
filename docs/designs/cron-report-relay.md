@@ -414,19 +414,38 @@ on every run. The top-level `platform`/`chat_id`/`thread_id` triple still holds
 one address, because the event-triage card has one destination; it goes to the
 leg the session was already routed to, or to the first that landed.
 
-An incident row is stored for every leg that landed, so a reply in any channel
-the report reached replays it. Storing only one left a reply in the other channel
-answered by an agent that had never seen the report.
+An incident row is stored for every leg that landed **on that run**, so a reply
+in any channel the report reached replays it. Storing only one left a reply in
+the other channel answered by an agent that had never seen the report. The
+qualifier is load-bearing in the other direction: `platform_threads` is additive
+and never pruned, and the session id is per job per UTC day, so the map also
+holds legs that landed earlier today and failed just now. Writing a row for one
+of those would overwrite that channel's stored context with a report it never
+received, and the store is `INSERT OR REPLACE` on `(chat_id, thread_id)`, so the
+report still on its screen would be the one lost.
 
-`get_active_platform` is the single-destination sibling, for
-`_post_initial_alert`: an incident alert registers the thread it gets back as the
-session's routing and the triage card's completion is addressed there, so two
-threads on two platforms would leave the report addressable to only one. It
-returns the first enabled platform and logs a warning naming the platforms that
-will not receive the message — and the alert path then tries each enabled
-platform in turn until one accepts, so a broken first leg costs a retry rather
-than the alert. Ordering alone would have mirrored #1094 onto whichever installs
-have the _other_ platform broken.
+`get_active_platform` is the single-destination sibling, called by the alert
+path — `trigger_agent_troubleshooter`, which drives `_post_initial_alert`. An
+incident alert registers the thread it gets back as the session's routing and
+the triage card's completion is addressed there, so two threads on two platforms
+would leave the report addressable to only one. It returns the first enabled
+platform and logs a warning naming the platforms that will not receive the
+message — and the alert path then tries each enabled platform in turn until one
+accepts, so a broken first leg costs a retry rather than the alert. Ordering
+alone would have mirrored #1094 onto whichever installs have the _other_
+platform broken.
+
+The warning fires on the pick rather than inside the fall-through, and that is
+why the pick goes through this function instead of taking `platforms[0]`
+directly. The fall-through logs only after a leg has already refused, so on the
+common dual-platform install — where the first leg accepts — nothing would say
+the second was skipped, and #1094's other half would be documented as fixed
+while emitting nothing.
+
+One send that reports success can still fail to yield a thread id, and the alert
+path treats that as delivered rather than retrying it: the alert is already in
+that channel, so trying the next platform would post it a second time to chase
+an id. The run is recorded as an unconfirmed delivery instead.
 
 ## What a job has to do: nothing
 

@@ -737,6 +737,51 @@ def _platforms_enabled_in(path: str) -> Dict[str, bool]:
     return out
 
 
+def _platform_setting_in(path: str, platform: str, key: str) -> str:
+    """`platforms.<platform>.<key>` from one config file, or `""` if unset.
+
+    The string sibling of :func:`_platforms_enabled_in`, and hostile to the same
+    shapes for the same reason: this file is hand-editable and agent-writable.
+    """
+    try:
+        import yaml
+        with open(path, "r") as handle:
+            cfg = yaml.safe_load(handle) or {}
+        platforms = _mapping(_mapping(cfg).get("platforms"))
+    except FileNotFoundError:
+        return ""
+    except Exception as exc:
+        logger.error(f"Failed to parse {path} for {platform}.{key}: {exc}")
+        return ""
+    return str(_mapping(platforms.get(platform)).get(key) or "").strip()
+
+
+def _slack_home_channel() -> str:
+    """Slack's home channel, from the environment or from either config file.
+
+    The operator renders `SLACK_HOME_CHANNEL` only when the CR sets
+    `slack.homeChannel`, and that is not the only way an install gets one:
+    `/sethome` writes `platforms.slack.home_channel` into the writable
+    `config.yaml`, which is precisely why that file is not mounted read-only.
+    Reading the environment alone left such an install's Slack leg with an empty
+    `chat_id` — which :func:`_lookup_platform_threads` drops — so the leg opened
+    a fresh top-level message on every report and got no incident row, while the
+    send itself succeeded and nothing looked wrong.
+
+    Environment first, so an install whose CR sets the channel resolves exactly
+    as it did before; the files are consulted only when it is absent, which is
+    the case that was broken.
+    """
+    env = os.environ.get("SLACK_HOME_CHANNEL", "").strip()
+    if env:
+        return env
+    for path in (MANAGED_CONFIG_PATH, CONFIG_PATH):
+        value = _platform_setting_in(path, "slack", "home_channel")
+        if value:
+            return value
+    return ""
+
+
 def enabled_chat_platforms() -> list[str]:
     """Every chat platform this install posts to, in CHAT_PLATFORMS order.
 
@@ -800,12 +845,12 @@ def enabled_chat_platforms() -> list[str]:
     return resolved or [DEFAULT_CHAT_PLATFORM]
 
 
-def get_active_platform() -> str:
+def get_active_platform(platforms: Optional[list[str]] = None) -> str:
     """The one platform a single-destination caller posts to.
 
-    `_post_initial_alert` needs exactly one: it registers the thread it gets
-    back as the session's routing, the triage card's completion is addressed to
-    that thread, and a thread belongs to one platform — `hermes send` refuses a
+    The alert path needs exactly one: it registers the thread it gets back as
+    the session's routing, the triage card's completion is addressed to that
+    thread, and a thread belongs to one platform — `hermes send` refuses a
     Google Chat thread addressed as Slack rather than degrading it to the home
     channel. Two alerts in two threads would leave the report addressable to
     only one of them, so this path picks rather than fans out.
@@ -814,8 +859,13 @@ def get_active_platform() -> str:
     an install with more than one platform enabled says so in the log, once per
     call, naming the destination that lost. The relay in
     :func:`relay_cron_report` has no such constraint and does fan out.
+
+    `platforms` lets the caller pass a resolution it has already made, so
+    `trigger_agent_troubleshooter` — which needs the whole list for its
+    fall-through — gets the pick and the warning off the same answer rather
+    than resolving twice and risking two different ones. Omitted, it resolves.
     """
-    platforms = enabled_chat_platforms()
+    platforms = platforms or enabled_chat_platforms()
     if len(platforms) > 1:
         logger.warning(
             f"{len(platforms)} chat platforms are enabled; this send takes one "
@@ -825,8 +875,23 @@ def get_active_platform() -> str:
     return platforms[0]
 
 
+#: Returned by :func:`_post_initial_alert` when `hermes send` reported success
+#: but no message id could be read out of its `--json` stdout. Distinct from
+#: `None`, which means the send itself failed. The caller must not try the next
+#: platform on this one: the alert IS in the first platform's channel, and
+#: falling through would post it a second time somewhere else. Deliberately not
+#: a plausible thread id, so a caller that ignores it addresses nothing.
+ALERT_SENT_WITHOUT_THREAD = "\x00alert-sent-without-thread"
+
+
 def _post_initial_alert(active_platform: str, alert_msg: str) -> str | None:
-    """Send initial warning alert via hermes CLI and return the thread/message ID."""
+    """Send initial warning alert via hermes CLI and return the thread/message ID.
+
+    Three outcomes, not two: a thread id, `None` when the send failed, and
+    :data:`ALERT_SENT_WITHOUT_THREAD` when it succeeded and the id could not be
+    parsed. The route's own docstring names that third case as one that has
+    happened here, and it is the one where a retry does damage rather than good.
+    """
     try:
         res = subprocess.run(
             ["hermes", "send", "--json", "--to", active_platform, alert_msg],
@@ -844,6 +909,12 @@ def _post_initial_alert(active_platform: str, alert_msg: str) -> str | None:
                 thread_key = msg_part.split(".")[0]
                 return f"{space_part}/threads/{thread_key}"
             return msg_id
+        # Sent, but unaddressable. Say which, so the caller does not re-send.
+        logger.error(
+            f"Alert posted to '{active_platform}' but its response carried no message id; "
+            "the alert is delivered and the session cannot be threaded to it"
+        )
+        return ALERT_SENT_WITHOUT_THREAD
     except subprocess.CalledProcessError as exc:
         logger.error(f"Failed to post warning alert. Stdout: {exc.stdout}. Stderr: {exc.stderr}. Exc: {exc}")
     except Exception as exc:
@@ -948,7 +1019,7 @@ def _register_session_routing(session_id: str, platform: str, thread_id: str) ->
                     meta["thread_id"] = thread_id
                     meta["platform"] = platform
                     if platform == "slack":
-                        meta["chat_id"] = os.environ.get("SLACK_HOME_CHANNEL", "")
+                        meta["chat_id"] = _slack_home_channel()
                     else:
                         meta["chat_id"] = thread_id.split("/threads/")[0]
 
@@ -1212,10 +1283,25 @@ def trigger_agent_troubleshooter(
     #    send that fails while a working Slack sits second in the list. The
     #    relay learned to fan out for this reason; without this loop the alert
     #    path would have learned nothing.
+    #    The pick goes through `get_active_platform` rather than `platforms[0]`
+    #    so that a dual-platform install says in the log which destination the
+    #    alert took and which one will not see it. That warning is the other
+    #    half of #1094 — picking silently — and it has to fire on the pick
+    #    itself: the fall-through below logs only once a leg has already
+    #    refused, so on an install whose first leg accepts, nothing would say
+    #    the second was skipped.
     platforms = enabled_chat_platforms()
-    active_platform, thread_id = platforms[0], None
-    for candidate in platforms:
+    active_platform = get_active_platform(platforms)
+    thread_id = None
+    for candidate in [active_platform] + [p for p in platforms if p != active_platform]:
         thread_id = _post_initial_alert(candidate, alert_msg)
+        if thread_id == ALERT_SENT_WITHOUT_THREAD:
+            # Delivered, and unthreadable. Stop: the reader has the alert, and
+            # trying the next platform would post it to a second channel to
+            # chase a thread id. Fall into the `else` below, which records the
+            # delivery as unconfirmed rather than lost — the honest reading.
+            active_platform, thread_id = candidate, None
+            break
         if thread_id:
             active_platform = candidate
             break
@@ -1788,8 +1874,23 @@ def relay_cron_report(
         # the line most likely to be dropped. See :func:`_truncate_report`.
         message = truncation_notice + message
 
-    routed_platform = _lookup_session_routing(session_id)[0]
+    routed_platform, routed_chat_id, routed_thread_id = _lookup_session_routing(session_id)
     known_threads = _lookup_platform_threads(session_id)
+    if (
+        routed_platform
+        and routed_platform not in known_threads
+        and routed_chat_id
+        and routed_thread_id
+    ):
+        # A session routed by the code this replaces has the top-level triple
+        # and no `platform_threads` map. Roll-forward has the same shape as the
+        # rollback the risk note describes, and it is the direction that
+        # actually happens: without this seed the first report after the
+        # rollout finds no per-leg entry, sends with `('', '')`, and orphans a
+        # top-level message instead of replying into the thread the session
+        # already has. One message per job that already reported earlier the
+        # same UTC day, since session ids are per day.
+        known_threads[routed_platform] = (routed_chat_id, routed_thread_id)
 
     # One send per enabled platform, each into its OWN thread. A thread id is
     # platform-local, so every leg reads its own entry and none can pick up
@@ -1822,11 +1923,23 @@ def relay_cron_report(
     for platform in [p for p in platforms if p in threads and p != owner] + [owner]:
         _register_session_routing(session_id, platform, threads[platform])
 
-    # One incident row per landed leg, so a reply in ANY of the channels the
-    # report reached replays it. Storing only the owner's is what left a reply
-    # in the other channel answered by an agent that had never seen the report.
-    for chat_id, thread_id in _lookup_platform_threads(session_id).values():
-        _store_incident_report(chat_id, thread_id, message)
+    # One incident row per leg that landed ON THIS RUN, so a reply in any of
+    # the channels the report actually reached replays it. Storing only the
+    # owner's is what left a reply in the other channel answered by an agent
+    # that had never seen the report.
+    #
+    # The filter is not decoration. `platform_threads` is additive and never
+    # pruned, and the session id is per job per UTC day, so the read-back also
+    # holds legs that landed earlier today and failed just now — and a platform
+    # an operator disabled mid-day, which is no longer in `platforms` at all.
+    # `_store_incident_report` is INSERT OR REPLACE on `(chat_id, thread_id)`,
+    # so writing those rows would overwrite each channel's stored context with a
+    # report it never received and drop the one still on its screen.
+    registered = _lookup_platform_threads(session_id)
+    for platform in threads:
+        entry = registered.get(platform)
+        if entry:
+            _store_incident_report(entry[0], entry[1], message)
 
     logger.info(
         f"Relayed {profile}/{job_id} report to {', '.join(threads)} "
@@ -1893,12 +2006,15 @@ def submit_cron_report(request_data: Dict[str, Any]) -> Dict[str, str]:
     # whose front door has been down all week is visible without reading logs.
     # `undelivered` is the same idea one platform down: a fan-out that reached
     # one audience and missed another is a delivery, and still something the run
-    # record has to carry.
+    # record has to carry. `truncated` is the third: the human sees the
+    # `[truncated]` line in the channel, and without this the agent that wrote
+    # the report — the one that could have split it — is told only "accepted".
     return {
         "status": "delivered",
         "session_id": session_id,
         "relay": "degraded" if degraded else "ok",
         "undelivered": ",".join(undelivered),
+        "truncated": "true" if truncation_notice else "",
     }
 def _watcher_features(header_value: str) -> set:
     """The response behaviours the calling watcher said it understands.

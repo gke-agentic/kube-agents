@@ -843,6 +843,13 @@ def report_to_chat(report: str, job_id: str, title: str = "") -> str:
         caveats.append(
             f"it did not reach {undelivered}, so that audience has not seen it"
         )
+    if str(payload.get("truncated") or "").strip():
+        labels.append("truncated")
+        caveats.append(
+            "it was over the chat character limit, so only the beginning of it "
+            "was posted and the rest is only in the saved output — write a "
+            "shorter report next time rather than resending this one"
+        )
     if caveats:
         return (
             f"SUCCESS ({', '.join(labels)}): the report was posted to chat "
