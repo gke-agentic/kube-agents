@@ -72,6 +72,23 @@ trap 'on_error $? $LINENO "$BASH_COMMAND"' ERR
 # Release automation stamps this value (e.g. BAKED_RELEASE_VERSION="0.2.0") when publishing a GA release.
 BAKED_RELEASE_VERSION=""
 
+# ─── Install Defaults (install.defaults.env) ──────────────────────────────────
+# Sourced before the parameter block so the DEFAULT_* values are in scope where
+# the parameters are declared, and no default has to be spelled a second time
+# here. Without `set -a`: these are the project's defaults, not the install's
+# configuration, and they must not enter the environment Terraform sees.
+#
+# Absent when install.sh is downloaded on its own (curl | bash), where there is
+# no checkout yet. That is not fatal — resolve_shared_defaults applies the same
+# values once the workspace step has cloned the repository and sourced
+# installer_common.sh, which reads this same file. Same source either way.
+_install_defaults_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || echo "")"
+if [ -n "$_install_defaults_dir" ] && [ -r "${_install_defaults_dir}/install.defaults.env" ]; then
+  # shellcheck source=install.defaults.env disable=SC1091
+  . "${_install_defaults_dir}/install.defaults.env"
+fi
+unset _install_defaults_dir
+
 # ─── Install Configuration Input (install.env) ────────────────────────────────
 # The hand-authored record of what this install is, loaded BEFORE the parameter
 # block below so that every `${VAR:-}` seed in it inherits from the file. That
@@ -204,14 +221,13 @@ PARAM_GITOPS_REPO="${GITOPS_REPO:-${GITHUB_REPO:-}}"
 # helpers are sourced, so no default is spelled twice.
 PARAM_PERMISSION_SET="${PLATFORM_AGENT_PERMISSION_SET:-}"
 PARAM_CUSTOM_ROLES="${PLATFORM_AGENT_CUSTOM_ROLES:-}"
-# Assigned only when the environment (or install.env) actually carries one, so
-# that "unset" and "set to empty" stay distinguishable all the way to the
-# validator. resolve_shared_defaults then fills it with ${VAR-...}, not
-# ${VAR:-...}: `--gvisor=` with no value must be rejected rather than silently
-# read as the default.
-if [ -n "${ENABLE_GVISOR+set}" ]; then
-  PARAM_ENABLE_GVISOR="${ENABLE_GVISOR}"
-fi
+# ${VAR-...} throughout, never ${VAR:-...}: `--gvisor=` with no value sets this
+# to the empty string, and that has to survive to the validator in main rather
+# than being silently read back as the default. The default itself comes from
+# install.defaults.env, sourced above — and again through
+# resolve_shared_defaults for the curl | bash case, where there was no checkout
+# to read it from yet.
+PARAM_ENABLE_GVISOR="${ENABLE_GVISOR-${DEFAULT_ENABLE_GVISOR-}}"
 # HERMES_DASHBOARD_ENABLED as well as ENABLE_WEBUI: the flag is spelled
 # --enable-web-ui and the install records the setting under the Hermes name, so
 # a file written from a previous install carries the second spelling and only
