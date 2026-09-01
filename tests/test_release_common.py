@@ -205,6 +205,39 @@ source "{_COMMON_SH}"
         finally:
             temp_dir.cleanup()
 
+    def test_the_promotion_check_and_the_release_gate_agree_on_one_commit(self):
+        """A tag one of them counts and the other does not makes a candidate unshippable.
+
+        `get_existing_staging_tag` sets `skip_promotion` in
+        `resolve_promotion_candidate.sh`; `staging_promotion_tags_at_commit` is what
+        the release gate reads. Let the first count a hand-pushed `staging_hotfix`
+        and the nightly concludes the commit is already promoted, so it never
+        pushes the real tag — while the gate, matching on shape, reads the same
+        commit as never promoted. Nothing is red and the candidate quietly cannot
+        be released.
+        """
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            head = git("rev-parse", "HEAD").stdout.strip()
+            git("tag", "-a", "staging_hotfix", head, "-m", "Hand-made trigger")
+
+            existing = self._run_common_func(
+                f'get_existing_staging_tag "{head}"', cwd=repo_dir
+            ).stdout.strip()
+            gate = self._run_common_func(
+                f'staging_promotion_tags_at_commit "{head}"', cwd=repo_dir
+            ).stdout.strip()
+            self.assertEqual(existing, gate, "the two lookups disagree on a prefix-only tag")
+            self.assertEqual(existing, "")
+
+            git("tag", "-a", "staging_2608191200_2222222", head, "-m", "Promoted")
+            existing = self._run_common_func(
+                f'get_existing_staging_tag "{head}"', cwd=repo_dir
+            ).stdout.strip()
+            self.assertEqual(existing, "staging_2608191200_2222222")
+        finally:
+            temp_dir.cleanup()
+
     def test_is_rc_candidate_commit_already_validated_is_anchored_to_the_rc_family(self):
         """The glob has to be rc_*_validated, not *_validated.
 

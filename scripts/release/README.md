@@ -252,27 +252,46 @@ idempotent skip and the emergency-leftover collision return well before
 turns a red run into a green one, rather than on the quiet week, where it turns one green outcome
 into a more legible green outcome. Red is left to mean the machinery is broken.
 
+### Read this before you dispatch a release
+
+**Until the nightly pipeline has pushed its first `staging_<ts>_<sha>` tag, no GA release can be
+published at all** — not by cron, and not by hand. `bypass` short-circuits the gate job, so the
+dispatch still starts; two steps later `verify_release_eligibility.sh` finds no staging tag on the
+candidate and exits 1:
+
+```
+❌ BLOCKED: Commit <sha> has NOT been promoted to staging!
+   No tag matching 'staging_<ts>_<sha>' points to this commit.
+```
+
+There are no staging tags in this repository yet, so that is the state on the day the retarget
+lands, for the ordinary manual release as much as for a scheduled one. It is the gate working as
+designed rather than a bug, but it is a release outage until step 1 below is done. The way through
+is step 1; `skip_staging_validation` with an audit reason also passes, and is the emergency
+override for hotfixes rather than a way to cut an ordinary release.
+
+### Turning it on
+
 **It ships without a `schedule:`, and the reason is one rung down the ladder.** The gate reads the
 staging tag; `nightly-pipeline.yml` is the only thing that pushes one, and it is dispatch-only too.
 A weekly cron over a tag family nothing produces on a schedule would skip green every Thursday and
-demonstrate nothing about the gate. So the nightly cron goes on first. Then, in order:
+demonstrate nothing about the gate. So, in order:
 
-1. `workflow_dispatch` with `schedule_gate: dry-run` — the resolver runs against the real tag graph
-   and reports what a cron tick would decide. Nothing is published. Note that a dry run still goes
-   **red** if the verdict is a halt: it reports what the cron would do, and going red is part of
-   that.
-2. Same again with `evaluate` — the verdict is honoured, so a `should_release=true` publishes a
+1. **Get `nightly-pipeline.yml` green.** Dispatch it against a validated candidate and let it push
+   a real `staging_<ts>_<sha>` tag. Everything below is unreachable until one exists, and so is a
+   GA release. Its own cron goes on once that is boring.
+2. `workflow_dispatch` on `release-publish.yml` with `schedule_gate: dry-run` — the resolver runs
+   against the real tag graph and reports what a cron tick would decide. Nothing is published. Note
+   that a dry run still goes **red** if the verdict is a halt: it reports what the cron would do,
+   and going red is part of that.
+3. Same again with `evaluate` — the verdict is honoured, so a `should_release=true` publishes a
    real GA release. This is a cron tick in every respect except what started it.
-3. Add `schedule: - cron: "17 5 * * 4"` to the workflow. Thursday leaves a working day to react to
+4. Add `schedule: - cron: "17 5 * * 4"` to the workflow. Thursday leaves a working day to react to
    a bad release, which Friday does not. 05:17 UTC is meant to sit after the nightly pipeline has
    finished, but that is an estimate rather than a measured margin — its proposed 02:00 start gives
    a little over three hours for a run that budgets 60 minutes on the deploy alone. Being wrong
    about it costs latency and never correctness, because the gate is a poll: a candidate promoted
    later is simply picked up the following week. Pick a later slot if the two turn out to overlap.
-
-Until step 3, the only way to reach the gate is by hand. That is not a hole in it — `bypass` is
-still the dispatch default, so a manual release behaves as it always has, emergency override
-included, and the two evaluating modes are there to be run deliberately.
 
 Two things to know about a weekly cadence, neither of them a reason to change it. A Thursday that
 produces nothing costs a full week, because there is no rate limiter inside the resolver to buy the

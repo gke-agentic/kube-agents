@@ -152,18 +152,15 @@ if ! release_read_commit_range "${LATEST_GA_TAG}" "${RELEASE_COMMIT}"; then
 fi
 
 if [ -z "${RELEASE_RANGE_SUBJECTS}" ]; then
-  # Two shapes reach here and both are "nothing to ship", but only one of them
-  # needs this condition. The ordinary quiet week does not:
-  # verify_release_eligibility.sh recognises the GA tag as the stamped child of
-  # this candidate and takes its idempotent-skip branch, green, before it reaches
-  # any registry inspection. Skipping here saves the publish job's checkout, a
-  # version calculation and a `gh release view` call, and no more.
+  # Two shapes reach here and both are "nothing to ship". The one this condition
+  # exists for is the emergency leftover: a GA tag sitting on a commit that is not
+  # this candidate's stamped child, which makes verify_release_eligibility.sh
+  # report "tag already exists on a different commit" and exit 1 — a red run with
+  # nothing wrong, every week, until somebody releases by hand.
   #
-  # The shape that does need it is the one that goes red: an emergency release
-  # put the GA tag on a commit that is not this candidate's stamped child, so the
-  # eligibility check reports "tag already exists on a different commit" and exits
-  # 1. On a schedule that is a red run with nothing wrong, every week, until
-  # somebody releases by hand.
+  # The ordinary quiet week reaches here too and does not need it; that path is
+  # already green without this. What the skip is and is not worth on that path is
+  # `scripts/release/README.md`, "The weekly GA release", which is canonical.
   SKIP_REASON="No commits between ${LATEST_GA_TAG} and the gate-passing commit ${RELEASE_COMMIT:0:7}."
   emit_and_exit
 fi

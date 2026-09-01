@@ -181,7 +181,7 @@ if [ -z "${VALIDATED_TAGS}" ]; then
   exit 1
 fi
 
-FIRST_VAL_TAG="$(echo "${VALIDATED_TAGS}" | head -n 1)"
+FIRST_VAL_TAG="$(head -n 1 <<<"${VALIDATED_TAGS}")"
 echo "✅ ELIGIBLE: Found staging promotion tag(s) on commit ${RC_CANDIDATE_COMMIT}:"
 for tag in ${VALIDATED_TAGS}; do
   echo "   • ${tag}"

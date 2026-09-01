@@ -16,6 +16,7 @@ from tests.testing.release import (
     MOCK_COLLIDING_RELEASE_TAG,
     MOCK_EMERGENCY_OVERRIDE_REASON,
     MOCK_NONEXISTENT_REF,
+    MOCK_HANDMADE_STAGING_TAG,
     MOCK_LATEST_STAGING_TAG,
     MOCK_TARGET_RELEASE_TAG,
     create_mock_gh_binary,
@@ -397,6 +398,47 @@ exit {docker_exit}
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn("BLOCKED: Commit", proc.stderr)
             self.assertIn("has NOT been promoted to staging", proc.stderr)
+        finally:
+            temp_dir.cleanup()
+
+    def test_blocked_when_the_staging_tag_is_prefix_only(self):
+        """`staging_*` is a live deploy trigger; only the shape is release evidence.
+
+        `staging-redeploy-*.yml` fires on the bare prefix, so a hand-pushed
+        `staging_hotfix` is a supported way to redeploy staging. Match the prefix
+        here and that tag authorises a GA release of a commit the nightly matrix
+        never ran against. Swapping `staging_promotion_tags_at_commit` back to a
+        prefix match is what this test exists to fail on.
+        """
+        temp_dir, repo_dir, git, commit_sha, bin_dir = self._create_mock_repo()
+        try:
+            git(
+                "tag", "-a", MOCK_HANDMADE_STAGING_TAG, commit_sha,
+                "-m", f"Hand-made {MOCK_HANDMADE_STAGING_TAG}",
+            )
+            proc = self._run_verify_script(
+                repo_dir,
+                args=[MOCK_TARGET_RELEASE_TAG, commit_sha],
+                bin_dir=bin_dir,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("has NOT been promoted to staging", proc.stderr)
+        finally:
+            temp_dir.cleanup()
+
+    def test_a_prefix_only_tag_does_not_auto_resolve_a_candidate(self):
+        """The auto-resolve path reads the same family and must filter it the same way."""
+        temp_dir, repo_dir, git, commit_sha, bin_dir = self._create_mock_repo()
+        try:
+            git(
+                "tag", "-a", MOCK_HANDMADE_STAGING_TAG, commit_sha,
+                "-m", f"Hand-made {MOCK_HANDMADE_STAGING_TAG}",
+            )
+            proc = self._run_verify_script(
+                repo_dir, args=[MOCK_TARGET_RELEASE_TAG], bin_dir=bin_dir
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("No staging-promoted commit found in history", proc.stderr)
         finally:
             temp_dir.cleanup()
 

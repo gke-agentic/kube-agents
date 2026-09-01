@@ -426,11 +426,27 @@ class CalculateNextVersionTest(unittest.TestCase):
             temp_dir.cleanup()
 
     def test_emergency_override_calculates_from_head(self):
+        """A promoted commit must exist, or the override is indistinguishable from the default.
+
+        With no staging tag in the repository the auto-resolve branch also falls
+        through to HEAD, so every assertion below passes whether or not the
+        override is honoured — and did, while the test was still setting the
+        pre-rename `SKIP_RC_VALIDATION`. The staging tag on an older commit is
+        what makes the two branches produce different answers.
+        """
         temp_dir, repo_dir, git = self._create_mock_repo()
         try:
             git("tag", "-a", "0.1.0", "-m", "Release 0.1.0")
 
-            # Commit on main without RC tag
+            # A promoted commit the auto-resolve branch would pick instead of HEAD,
+            # and a patch bump rather than HEAD's minor, so the two cannot be confused.
+            (pathlib.Path(repo_dir) / "promoted.txt").write_text("promoted")
+            git("add", "promoted.txt")
+            git("commit", "-m", "fix: promoted candidate")
+            promoted_sha = git("rev-parse", "HEAD").stdout.strip()
+            git("tag", "-a", "staging_2608191200_2222222", promoted_sha, "-m", "Promoted")
+
+            # Commit on main that was never promoted
             (pathlib.Path(repo_dir) / "emergency.txt").write_text("hotfix")
             git("add", "emergency.txt")
             git("commit", "-m", "feat: emergency hotfix")
@@ -440,15 +456,45 @@ class CalculateNextVersionTest(unittest.TestCase):
             proc = self._run_calc_script(
                 repo_dir,
                 args=["", ""],
-                env={"SKIP_RC_VALIDATION": "true", "GITHUB_OUTPUT": str(gh_out)},
+                env={"SKIP_STAGING_VALIDATION": "true", "GITHUB_OUTPUT": str(gh_out)},
             )
             self.assertEqual(proc.returncode, 0)
+            self.assertIn("Emergency override", proc.stderr)
             self.assertEqual(proc.stdout.strip(), "0.2.0")
 
             outputs = gh_out.read_text()
             self.assertIn("release_version=0.2.0", outputs)
             self.assertIn("version=0.2.0", outputs)
             self.assertIn(f"release_commit={head_sha}", outputs)
+            self.assertNotIn(promoted_sha, outputs)
+        finally:
+            temp_dir.cleanup()
+
+    def test_without_the_override_the_promoted_commit_wins_over_head(self):
+        """The other side of the branch above, so neither can pass by coincidence."""
+        temp_dir, repo_dir, git = self._create_mock_repo()
+        try:
+            git("tag", "-a", "0.1.0", "-m", "Release 0.1.0")
+
+            (pathlib.Path(repo_dir) / "promoted.txt").write_text("promoted")
+            git("add", "promoted.txt")
+            git("commit", "-m", "fix: promoted candidate")
+            promoted_sha = git("rev-parse", "HEAD").stdout.strip()
+            git("tag", "-a", "staging_2608191200_2222222", promoted_sha, "-m", "Promoted")
+
+            (pathlib.Path(repo_dir) / "emergency.txt").write_text("hotfix")
+            git("add", "emergency.txt")
+            git("commit", "-m", "feat: unpromoted commit")
+
+            gh_out = pathlib.Path(repo_dir) / "gh_out.txt"
+            proc = self._run_calc_script(
+                repo_dir,
+                args=["", ""],
+                env={"GITHUB_OUTPUT": str(gh_out)},
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertEqual(proc.stdout.strip(), "0.1.1")
+            self.assertIn(f"release_commit={promoted_sha}", gh_out.read_text())
         finally:
             temp_dir.cleanup()
 

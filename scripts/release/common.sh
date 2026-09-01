@@ -202,6 +202,8 @@ get_latest_validated_rc_tag() {
 #
 # Arguments: $1 = base GA tag, $2 = candidate commit-ish. Returns non-zero if the
 # range cannot be read.
+#
+# shellcheck disable=SC2034  # RELEASE_RANGE_* are the return channel, read by callers.
 release_read_commit_range() {
   local base_tag="${1:-}"
   local target="${2:-}"
@@ -367,9 +369,15 @@ staging_tag_for_rc() {
 # workflows trigger on, and the difference is the whole defence. The prefix is a
 # trigger anyone can push by hand; a `staging_hotfix` typed at a terminal would
 # otherwise read back to the release gate as "the full nightly matrix passed on
-# this commit". The timestamp and short SHA in the right places cannot be
-# produced by accident, and a hand-made tag that does match names a real
-# candidate.
+# this commit". The timestamp and short SHA in the right places are not produced
+# by accident.
+#
+# It stops an accident, not an attacker. Nothing checks that the 7-hex field is
+# the short SHA of the commit the tag points at, or that the commit carries
+# rc_*_validated, so a deliberately composed `staging_<ts>_<sha>` satisfies the
+# gate. That is no weaker than the rc_*_validated gate it replaces — equally a
+# tag anyone with push access could create — but it is not the stronger
+# guarantee the shape makes it look like.
 export STAGING_TAG_SHAPE_REGEX='^staging_[0-9]{10}_[0-9a-f]{7}$'
 
 # Finds the newest shape-valid staging promotion tag anywhere in the repository.
@@ -399,13 +407,20 @@ staging_promotion_tags_at_commit() {
 # Finds an existing staging promotion tag on a commit SHA, if any. Empty output
 # means the commit has not been promoted yet.
 #
-# Prefix-matched, unlike the two above, because it answers "should the nightly
-# promote this again?" rather than "may this be released?". Erring towards
-# already-promoted stops a duplicate deploy trigger; erring towards promoted when
-# it was not would ship an unvalidated commit.
+# Shape-matched, like the two above, and it has to be. This is what
+# resolve_promotion_candidate.sh reads to set `skip_promotion`, so a prefix match
+# here means a hand-pushed `staging_hotfix` — which staging-redeploy-*.yml
+# legitimately triggers on — tells the nightly the commit is already promoted. It
+# then never pushes the real staging_<ts>_<sha> tag, and the release gate, which
+# does match on shape, reads that same commit as unreleasable. The candidate goes
+# quietly unshippable, and the two lookups have to agree for it not to.
+#
+# Erring towards not-yet-promoted is the safe direction on its own terms too:
+# `ensure_git_tag` no-ops when the tag already points at the same commit, so a
+# redundant promotion costs nothing.
 get_existing_staging_tag() {
   local sha="$1"
-  git tag --points-at "${sha}" "${STAGING_TAG_PREFIX}*" 2>/dev/null | head -n 1 || echo ""
+  staging_promotion_tags_at_commit "${sha}" | head -n 1 || echo ""
 }
 
 # Reports whether a candidate commit's tree carries what the shared pipeline
