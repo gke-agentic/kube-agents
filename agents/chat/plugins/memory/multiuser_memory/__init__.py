@@ -94,9 +94,11 @@ def _neutralize_prompt_injection(text: str) -> str:
     if not text:
         return ""
 
-    # Delimiter tags (<system...>, <instruction...>, <prompt...>, <context...>, <admin...>, <untrusted_...>, etc.)
+    # Delimiter tags (<system...>, <instruction...>, <prompt...>, <admin...>, <untrusted_...>)
+    # Narrowed to whole tag names with no internal newlines to avoid colliding with
+    # standard SOP commands (e.g. <context>, <system-node-critical>, CPU < system).
     text = re.sub(
-        r"<[/\s]*(system|instruction|prompt|context|admin|untrusted_[a-z0-9_-]+)\b[^>]*>",
+        r"</?(system|instruction|prompt|admin|untrusted_[a-z0-9_]+)(?:\s+[^>\n]*)?>",
         r"[\1_tag_neutralized]",
         text,
         flags=re.IGNORECASE,
@@ -136,14 +138,13 @@ def _neutralize_prompt_injection(text: str) -> str:
 def sanitize_memory_entry(text: str) -> str:
     """Sanitize a new memory entry before storage.
 
-    Strips unsafe control/bidi characters, neutralizes prompt injection tokens,
-    and neutralizes entry delimiter smuggling (\\n§\\n) without mutating inline section symbols.
+    Strips unsafe control/bidi characters and neutralizes entry delimiter smuggling (\n§\n)
+    while keeping the stored content faithful and non-destructive.
     """
     if not text or not isinstance(text, str):
         return ""
 
     cleaned = _strip_unsafe_chars(text)
-    cleaned = _neutralize_prompt_injection(cleaned)
     # Delimiter smuggling: neutralize delimiter lines and sequences so a new entry cannot split on storage
     cleaned = re.sub(r"(?m)^[^\S\n]*§[^\S\n]*$", ";", cleaned)
     while ENTRY_DELIMITER in cleaned:
