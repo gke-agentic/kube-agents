@@ -1836,6 +1836,17 @@ func TestIsImageVolumeSupported_DiscoveryVersion(t *testing.T) {
 	if isImageVolumeSupported(dc35, agentDisableAnnot) {
 		t.Errorf("expected annotation override 'false' to force isImageVolumeSupported to false even on K8s 1.35")
 	}
+
+	// 5. Server version >= 1.35 on GKE returns false (defaults to fallback initContainer staging)
+	dcGKE := &fakeVersionDiscovery{ver: &version.Info{Major: "1", Minor: "35", GitVersion: "v1.35.7-gke.1027000"}}
+	if isImageVolumeSupported(dcGKE, agent) {
+		t.Errorf("expected isImageVolumeSupported to return false on GKE (falls back to initContainer staging)")
+	}
+
+	// 6. Annotation override "true" on GKE forces isImageVolumeSupported to true
+	if !isImageVolumeSupported(dcGKE, agentEnableAnnot) {
+		t.Errorf("expected annotation override 'true' to force isImageVolumeSupported to true on GKE")
+	}
 }
 
 func TestResolveAgentPlugins_MissingCRDGracefulHandling(t *testing.T) {

@@ -1652,6 +1652,15 @@ func clusterImageVolumeSupport(dc discovery.DiscoveryInterface) (supported bool,
 		return false, false
 	}
 
+	// GKE clusters (GitVersion containing "-gke") enforce admission policies (such as GKE Warden's
+	// autopilot-volume-type-limitation on Autopilot) that reject the Image volume type.
+	// We default to the fallback initContainer/emptyDir staging mechanism on GKE clusters unless
+	// explicitly enabled via annotation.
+	if strings.Contains(ver.GitVersion, "-gke") {
+		log.Info("GKE cluster detected; using initContainer plugin staging fallback. " + override)
+		return false, true
+	}
+
 	if major > 1 {
 		return true, true
 	}
