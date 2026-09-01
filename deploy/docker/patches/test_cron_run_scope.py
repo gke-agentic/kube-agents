@@ -11,12 +11,14 @@ import unittest
 
 from cron_run_scope import (
     CRON_RESPONSE_LIMIT,
+    CRON_RISK_ENV,
     CRON_RUN_ENV,
     WORKER_TASK_ENV,
     clip_cron_response,
     cron_ownership_violation,
     cron_run_scope,
     current_cron_job,
+    current_cron_risk,
     missing_task_id_error,
 )
 
@@ -33,13 +35,22 @@ class CronRunScopeTest(unittest.TestCase):
 
     def setUp(self):
         self.addCleanup(os.environ.pop, CRON_RUN_ENV, None)
+        self.addCleanup(os.environ.pop, CRON_RISK_ENV, None)
         os.environ.pop(CRON_RUN_ENV, None)
+        os.environ.pop(CRON_RISK_ENV, None)
 
     def test_the_marker_is_set_during_the_run_and_cleared_after(self):
         self.assertEqual(current_cron_job(), "")
-        with cron_run_scope(JOB_ID):
+        self.assertEqual(current_cron_risk(), "low")
+        with cron_run_scope(JOB_ID, risk="high"):
             self.assertEqual(current_cron_job(), JOB_ID)
+            self.assertEqual(current_cron_risk(), "high")
         self.assertEqual(current_cron_job(), "")
+        self.assertEqual(current_cron_risk(), "low")
+
+    def test_default_risk_is_low(self):
+        with cron_run_scope(JOB_ID):
+            self.assertEqual(current_cron_risk(), "low")
 
     def test_the_marker_is_cleared_when_the_run_raises(self):
         with self.assertRaises(RuntimeError):

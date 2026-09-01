@@ -35,6 +35,7 @@ def job(job_id, **extra):
         "name": job_id.replace("-", " ").title(),
         "schedule": {"kind": "cron", "expr": "20 6 * * *"},
         "prompt": f"run {job_id}",
+        "risk": "low",
         "enabled": True,
         **extra,
     }
@@ -199,6 +200,10 @@ class CronStoreMergeTest(unittest.TestCase):
         # on the delivery job — so this rule holds for named profiles only.
         merged = self.overlay([job("audit", deliver="chat")], [job("audit", deliver="all")])
         self.assertEqual("chat", merged[0]["deliver"])
+
+    def test_the_image_decides_the_risk_tier(self):
+        merged = self.overlay([job("audit", risk="low")], [job("audit", risk="high")])
+        self.assertEqual("low", merged[0]["risk"])
 
     def test_a_job_the_image_does_not_ship_is_kept(self):
         merged = self.overlay([job("audit")], [job("audit"), job("operator-added")])

@@ -173,3 +173,18 @@ in production. Run it after touching anything in `../governance/`.
 No prompt is quoted here on purpose. A copy in prose is one more place for the
 same numbers to go stale, and the test above checks the roster against the SOPs
 — not this file against the roster.
+
+## `risk` tier contract
+
+Every job entry across both rosters declares an explicit `"risk": "low" | "medium" | "high"`.
+The field is validated by `scripts/check_prompt_assets.py` (`check_cron_risk`) and enforced
+across pod restarts by `profile_scaffold.py::merge_cron_store` (an image-owned key).
+
+- `"low"`: Read-only governance watchdogs, audits, and internal scheduler plumbing. Runs under
+  the configured `cron_mode` (typically `approve`), protected by Tirith POSIX shell content
+  scans, terminal escape rejection, and lookalike TLD blocks.
+- `"medium"`: Jobs with intermediate operational scope.
+- `"high"`: Jobs with broad operational authority or untrusted input sources (such as
+  `github-repo-watcher`). Escalates effective approval mode to `deny` under `cron_risk_gate.py`,
+  routing commands into strict pattern and policy evaluation.
+

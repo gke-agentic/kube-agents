@@ -95,6 +95,7 @@ Each job in `jobs.json` follows this schema:
 {
   "id": "compliance-audit",
   "name": "Security & RBAC Posture Audit",
+  "risk": "low",
   "schedule": {
     "kind": "cron",
     "expr": "20 6 * * *",
@@ -108,6 +109,7 @@ Each job in `jobs.json` follows this schema:
 ```
 
 - **`id`** — stable identifier, referenced in observability and disable/enable ops. It outlives renames: `obtainability-audit` is now the Workload Reliability Audit, but the id stays put.
+- **`risk`** — declared risk tier (`"low"`, `"medium"`, or `"high"`). High-risk jobs escalate tool approval mode to `deny` during execution, requiring every command to pass policy evaluation. Autonomous watchdogs run as `"low"`, while high-exposure tasks run as `"high"`. Defaults to `"low"`.
 - **`schedule.expr`** — standard 5-field cron in the pod's local time zone (UTC unless the pod's TZ is overridden).
 - **`prompt`** — what the run is asked to do, copied verbatim into the turn. Governance jobs point at an SOP **relative to the profile home** (`governance/<sop>.md`), which is where `profile_scaffold.py` overlays the baked `/opt/platform-template/governance/` directory. An absolute `/opt/defaults/governance/...` path does not resolve — nothing is mounted there. The seven audit prompts also state how long their SOP is and which section holds the checks, because a read that stops early lands in the preamble and the run reports a clean fleet it never inspected; a test in `audit_report.py`'s suite re-derives both numbers from the file so a stale citation fails there rather than at 06:20. What the prompts deliberately do **not** restate is the `[SILENT]` rule — each SOP's closing section states it in full, qualifiers included, and a shorter version in the prompt would both lose the qualifiers and tell the run what its answer looks like before it decides what to check.
 - **`skills`** — the skills the work needs. The scheduler prepends each one's content to the prompt, force-loading it ahead of the first turn rather than leaving the load to the model's discretion. The seven audits use `fleet-audit`.

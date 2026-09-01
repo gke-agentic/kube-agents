@@ -44,6 +44,29 @@ SCHEDULER_EXPECTED_PARAMS = ("adapters", "loop", "verbose")
 #: second ``outcome=None``.
 SCHEDULER_PATCHED_MARKER = 'outcome["response"] = final_response'
 
+SCHEDULER_RUN_JOB = (
+    "        _deferred_agents: list = []\n"
+    "        try:\n"
+    "            success, output, final_response, error = run_job(\n"
+    "                job, defer_agent_teardown=_deferred_agents,\n"
+    "                extra_prompt=extra_prompt,\n"
+    "            )\n"
+)
+
+SCHEDULER_RUN_JOB_PATCHED = (
+    "        _deferred_agents: list = []\n"
+    "        try:\n"
+    "            # kube-agents patch: enter cron run & risk scope so scheduled runs\n"
+    "            # enforce risk-keyed approval gates and execute_code blocks.\n"
+    "            # See tools/cron_run_scope.py and tools/cron_risk_gate.py.\n"
+    "            from tools.cron_run_scope import cron_run_scope\n"
+    '            with cron_run_scope(job["id"], risk=str(job.get("risk") or "low")):\n'
+    "                success, output, final_response, error = run_job(\n"
+    "                    job, defer_agent_teardown=_deferred_agents,\n"
+    "                    extra_prompt=extra_prompt,\n"
+    "                )\n"
+)
+
 SCHEDULER_SAVE_OUTPUT = '            output_file = save_job_output(job["id"], output)\n'
 
 SCHEDULER_SAVE_OUTPUT_PATCHED = (
@@ -124,7 +147,7 @@ CRONJOB_EXECUTE_PATCHED = (
     "            # it away.\n"
     "            outcome: Dict[str, Any] = {}\n"
     "            try:\n"
-    "                with cron_run_scope(job_id):\n"
+    '                with cron_run_scope(job_id, risk=str(job.get("risk") or "low")):\n'
     "                    processed = run_one_job(\n"
     "                        job, adapters=adapters, loop=gateway_loop,\n"
     "                        extra_prompt=extra_prompt, outcome=outcome,\n"
@@ -242,10 +265,13 @@ def apply(root: Path) -> None:
     # same def, so the order also has to be this way round.
     scheduler.insert(run_one.keyword_only_end(), SCHEDULER_OUTCOME_PARAM)
     scheduler.substitute(
+        SCHEDULER_RUN_JOB, SCHEDULER_RUN_JOB_PATCHED, label="scoped run_job"
+    )
+    scheduler.substitute(
         SCHEDULER_SAVE_OUTPUT, SCHEDULER_SAVE_OUTPUT_PATCHED, label="saved output"
     )
     scheduler.substitute(SCHEDULER_TAIL, SCHEDULER_TAIL_PATCHED, label="run tail")
-    scheduler.commit("1 locator, 2 anchors")
+    scheduler.commit("1 locator, 3 anchors")
 
     cronjob = patchlib.Patch(root, "tools/cronjob_tools.py", prefix=PREFIX)
     cronjob.substitute(
