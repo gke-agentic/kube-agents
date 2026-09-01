@@ -122,7 +122,10 @@ locals {
   # third_party_image_registry, falling back to image_registry, the same
   # precedence the chart's kube-agents.thirdPartyImageRegistry helper applies.
   # Empty means the upstream registries.
-  third_party_registry = trimsuffix(var.third_party_image_registry, "/")
+  third_party_registry = trimsuffix(
+    var.third_party_image_registry != "" ? var.third_party_image_registry : var.image_registry,
+    "/"
+  )
 
   # Mirrored image overrides for helm_release.cert_manager below. Destination
   # names follow images.json (<prefix>/<name>:<tag>) — the contract
