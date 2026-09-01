@@ -22,7 +22,7 @@ from tests.testing.common import (
 from tests.testing.release import (
     MOCK_COMMIT_MSG_BREAKING_PRE_1_0,
     MOCK_COMMIT_MSG_FEAT,
-    MOCK_LATEST_VALIDATED_RC_TAG,
+    MOCK_LATEST_STAGING_TAG,
 )
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -71,7 +71,7 @@ class DecideReleaseGateTest(unittest.TestCase):
         git("add", "second.txt")
         git("commit", "-m", new_commit_msg)
         head = git("rev-parse", "HEAD").stdout.strip()
-        git("tag", "-a", MOCK_LATEST_VALIDATED_RC_TAG, "-m", "validated candidate")
+        git("tag", "-a", MOCK_LATEST_STAGING_TAG, "-m", "promoted to staging")
         return temp_dir, repo_dir, git, head
 
     # ── bypass: the human who dispatched is the gate ─────────────────────────

@@ -26,8 +26,10 @@ from tests.testing.release import (
     MOCK_COMMIT_MSG_BREAKING_PRE_1_0,
     MOCK_COMMIT_MSG_FEAT,
     MOCK_COMMIT_MSG_FIX,
+    MOCK_HANDMADE_STAGING_TAG,
+    MOCK_LATEST_STAGING_TAG,
     MOCK_LATEST_VALIDATED_RC_TAG,
-    MOCK_OLDER_VALIDATED_RC_TAG,
+    MOCK_OLDER_STAGING_TAG,
 )
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -76,20 +78,57 @@ class ResolveScheduledReleaseTest(unittest.TestCase):
         head = git("rev-parse", "HEAD").stdout.strip()
 
         if validated:
-            git("tag", "-a", MOCK_LATEST_VALIDATED_RC_TAG, "-m", "validated candidate")
+            git("tag", "-a", MOCK_LATEST_STAGING_TAG, "-m", "promoted to staging")
         return temp_dir, repo_dir, git, head
 
     # ── Condition 1: has anything passed the gate? ───────────────────────────
 
-    def test_no_validated_candidate_is_a_skip_not_an_error(self):
+    def test_no_promoted_candidate_is_a_skip_not_an_error(self):
         temp_dir, repo_dir, _, _ = self._repo(validated=False)
         try:
             proc, outputs, summary = self._run(repo_dir)
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertEqual(outputs["should_release"], "false")
             self.assertEqual(outputs["gate_tag"], "")
-            self.assertIn("rc_*_validated", outputs["skip_reason"])
+            self.assertIn("staging_<ts>_<sha>", outputs["skip_reason"])
             self.assertIn("No release this run", summary)
+        finally:
+            temp_dir.cleanup()
+
+    def test_an_rc_validated_tag_alone_is_not_enough_to_release(self):
+        """The gate moved a rung up the ladder: staging, not the three-hourly suite.
+
+        An `rc_*_validated` tag means the narrow RC suite passed. Reading it here
+        would release commits the full nightly matrix has never seen, which is the
+        whole thing the staging rung exists to prevent.
+        """
+        temp_dir, repo_dir, git, _ = self._repo(validated=False)
+        try:
+            git("tag", "-a", MOCK_LATEST_VALIDATED_RC_TAG, "-m", "validated candidate")
+
+            proc, outputs, _ = self._run(repo_dir)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(outputs["should_release"], "false")
+            self.assertEqual(outputs["gate_tag"], "")
+        finally:
+            temp_dir.cleanup()
+
+    def test_a_hand_made_staging_tag_is_not_gate_evidence(self):
+        """`staging_*` is a deploy trigger anyone can push; the shape is the gate.
+
+        `staging-redeploy-*.yml` fires on the bare prefix, so a `staging_hotfix`
+        pushed by hand is a supported way to redeploy staging. It must not also
+        read back to the release gate as "the nightly matrix passed here".
+        """
+        temp_dir, repo_dir, git, _ = self._repo(validated=False)
+        try:
+            git("tag", "-a", MOCK_HANDMADE_STAGING_TAG, "-m", "hand-made trigger")
+
+            proc, outputs, _ = self._run(repo_dir)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(outputs["should_release"], "false")
+            self.assertEqual(outputs["gate_tag"], "")
+            self.assertIn("staging_<ts>_<sha>", outputs["skip_reason"])
         finally:
             temp_dir.cleanup()
 
@@ -99,12 +138,12 @@ class ResolveScheduledReleaseTest(unittest.TestCase):
         try:
             # An older candidate on the first commit. get_latest_validated_rc_tag
             # sorts by refname, so the timestamps in the tag names decide.
-            git("tag", "-a", MOCK_OLDER_VALIDATED_RC_TAG, "-m", "older candidate", "HEAD~1")
+            git("tag", "-a", MOCK_OLDER_STAGING_TAG, "-m", "older promotion", "HEAD~1")
 
             proc, outputs, _ = self._run(repo_dir)
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertEqual(outputs["should_release"], "true")
-            self.assertEqual(outputs["gate_tag"], MOCK_LATEST_VALIDATED_RC_TAG)
+            self.assertEqual(outputs["gate_tag"], MOCK_LATEST_STAGING_TAG)
             self.assertEqual(outputs["release_commit"], newest)
         finally:
             temp_dir.cleanup()
@@ -116,7 +155,7 @@ class ResolveScheduledReleaseTest(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertEqual(outputs["should_release"], "true")
             self.assertEqual(outputs["release_commit"], head)
-            self.assertEqual(outputs["gate_tag"], MOCK_LATEST_VALIDATED_RC_TAG)
+            self.assertEqual(outputs["gate_tag"], MOCK_LATEST_STAGING_TAG)
             self.assertEqual(outputs["skip_reason"], "")
             self.assertIn("Releasing", summary)
         finally:
@@ -164,7 +203,7 @@ class ResolveScheduledReleaseTest(unittest.TestCase):
         temp_dir, repo_dir, git = create_mock_git_repo()
         try:
             git("tag", "-a", _GA_TAG, "-m", f"release {_GA_TAG}")
-            git("tag", "-a", MOCK_LATEST_VALIDATED_RC_TAG, "-m", "validated candidate")
+            git("tag", "-a", MOCK_LATEST_STAGING_TAG, "-m", "promoted to staging")
 
             proc, outputs, _ = self._run(repo_dir)
             self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -177,7 +216,7 @@ class ResolveScheduledReleaseTest(unittest.TestCase):
         """The emergency-release shape: GA tagged on a commit newer than the gate's."""
         temp_dir, repo_dir, git = create_mock_git_repo()
         try:
-            git("tag", "-a", MOCK_LATEST_VALIDATED_RC_TAG, "-m", "validated candidate")
+            git("tag", "-a", MOCK_LATEST_STAGING_TAG, "-m", "promoted to staging")
             (pathlib.Path(repo_dir) / "hotfix.txt").write_text("hotfix\n")
             git("add", "hotfix.txt")
             git("commit", "-m", "fix: emergency hotfix")
@@ -208,7 +247,7 @@ class ResolveScheduledReleaseTest(unittest.TestCase):
             git("add", "second.txt")
             git("commit", "-m", MOCK_COMMIT_MSG_FIX)
             head = git("rev-parse", "HEAD").stdout.strip()
-            git("tag", "-a", MOCK_LATEST_VALIDATED_RC_TAG, "-m", "validated candidate")
+            git("tag", "-a", MOCK_LATEST_STAGING_TAG, "-m", "promoted to staging")
 
             proc, outputs, _ = self._run(repo_dir)
             self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -277,7 +316,7 @@ class ResolveScheduledReleaseTest(unittest.TestCase):
             git("add", "after.txt")
             git("commit", "-m", MOCK_COMMIT_MSG_FIX)
             head = git("rev-parse", "HEAD").stdout.strip()
-            git("tag", "-a", MOCK_LATEST_VALIDATED_RC_TAG, "-m", "validated candidate")
+            git("tag", "-a", MOCK_LATEST_STAGING_TAG, "-m", "promoted to staging")
 
             proc, outputs, _ = self._run(repo_dir)
             self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -314,8 +353,8 @@ class ResolveScheduledReleaseTest(unittest.TestCase):
             # A tag on a blob rather than a commit. `git tag -l` lists it, so it
             # is selected as the newest candidate and then fails to peel.
             blob = git("hash-object", "-w", "init.txt").stdout.strip()
-            git("tag", "-d", MOCK_LATEST_VALIDATED_RC_TAG)
-            git("tag", MOCK_LATEST_VALIDATED_RC_TAG, blob)
+            git("tag", "-d", MOCK_LATEST_STAGING_TAG)
+            git("tag", MOCK_LATEST_STAGING_TAG, blob)
 
             proc, _, _ = self._run(repo_dir)
             self.assertNotEqual(proc.returncode, 0)

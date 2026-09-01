@@ -6,15 +6,20 @@ name: Release & Publish (GA)
 # Whether to release is decided in `evaluate-schedule`; what to publish is
 # decided in `publish-release`. An unattended run needs that split: it adds the
 # halt on a breaking change, which the publishing path has no counterpart for,
-# and it keeps the two shapes that exit 1 with nothing to ship — no
-# rc_*_validated tag at all, and a GA tag left by an emergency release on a
-# commit that is not the candidate's stamped child — from being a red run nobody
-# reads.
+# and it keeps the two shapes that exit 1 with nothing to ship — no staging tag
+# at all, and a GA tag left by an emergency release on a commit that is not the
+# candidate's stamped child — from being a red run nobody reads.
 #
 # `scripts/release/README.md`, "The weekly GA release", is canonical for the cron
 # value and the reasoning behind it — do not restate either here.
 
 on:
+  # No `schedule:` yet, and the reason is upstream of this workflow: the gate now
+  # reads the staging tag, and nightly-pipeline.yml — the only thing that pushes
+  # one — is itself dispatch-only. A weekly cron over a tag family nothing
+  # produces on a schedule would skip green every Thursday and prove nothing.
+  # Turn the nightly cron on first; scripts/release/README.md has the value and
+  # the ordering.
   #checkov:skip=CKV_GHA_7:GA release publish workflow requires explicit version override, target commit, emergency bypass and schedule-gate parameters
   workflow_dispatch:
     inputs:
@@ -32,16 +37,16 @@ on:
         required: false
         type: string
       target_commit:
-        description: "Target commit SHA. If omitted, automatically resolved from the latest commit with an 'rc_*_validated' tag."
+        description: "Target commit SHA. If omitted, automatically resolved from the newest commit carrying a 'staging_<ts>_<sha>' tag."
         required: false
         type: string
-      skip_rc_validation:
-        description: "Emergency override: bypass live RC GKE validation check."
+      skip_staging_validation:
+        description: "Emergency override: bypass the staging promotion gate (the full nightly E2E matrix)."
         required: false
         type: boolean
         default: false
       emergency_override_reason:
-        description: "Required audit justification when skip_rc_validation is enabled."
+        description: "Required audit justification when skip_staging_validation is enabled."
         required: false
         type: string
 
@@ -62,7 +67,7 @@ jobs:
   evaluate-schedule:
     name: Decide Whether To Release
     runs-on: ubuntu-latest
-    # A fork inherits workflow_dispatch — and would inherit the cron — but none
+    # A fork inherits workflow_dispatch — and will inherit the cron — but none
     # of the release credentials. The guard repeats on both jobs rather than
     # relying on the skip cascading through `needs`: an `always()` added to the
     # publish job later would silently un-guard it.
@@ -137,13 +142,14 @@ jobs:
           # bypassing dispatch the gate returns empty and a named commit — or the
           # scripts' own resolution — wins.
           #
-          # The order matters and the fallback is load-bearing: the gate reads the
-          # newest rc_*_validated tag while calculate_next_version.sh resolves its
-          # own candidate, and nothing forces those to be the same commit. Drop
-          # the fallback and the gate becomes decorative without anything looking
+          # The order matters and the fallback is load-bearing. Both the gate and
+          # calculate_next_version.sh resolve the newest staging tag today, so
+          # they agree — but nothing forces them to keep agreeing, and a candidate
+          # promoted between the two jobs would already split them. Drop the
+          # fallback and the gate becomes decorative without anything looking
           # wrong.
           TARGET_COMMIT: ${{ inputs.target_commit || needs.evaluate-schedule.outputs.release_commit }}
-          SKIP_RC_VALIDATION: ${{ inputs.skip_rc_validation }}
+          SKIP_STAGING_VALIDATION: ${{ inputs.skip_staging_validation }}
         run: ./scripts/release/calculate_next_version.sh
 
       - name: Verify Release Eligibility
@@ -151,7 +157,7 @@ jobs:
         env:
           RELEASE_VERSION: ${{ steps.calculate-version.outputs.release_version }}
           RC_CANDIDATE_COMMIT: ${{ steps.calculate-version.outputs.rc_candidate_commit }}
-          SKIP_RC_VALIDATION: ${{ inputs.skip_rc_validation }}
+          SKIP_STAGING_VALIDATION: ${{ inputs.skip_staging_validation }}
           EMERGENCY_OVERRIDE_REASON: ${{ inputs.emergency_override_reason }}
           GH_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
         run: ./scripts/release/verify_release_eligibility.sh

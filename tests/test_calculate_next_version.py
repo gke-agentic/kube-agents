@@ -348,19 +348,24 @@ class CalculateNextVersionTest(unittest.TestCase):
         finally:
             temp_dir.cleanup()
 
-    def test_auto_resolve_target_commit_from_validated_rc_tag(self):
+    def test_auto_resolve_target_commit_from_staging_promotion_tag(self):
+        """The same tag the release gate reads.
+
+        Resolving a different candidate here would compute the version for one
+        commit and let the gate publish another.
+        """
         temp_dir, repo_dir, git = self._create_mock_repo()
         try:
             # Initial commit tagged 0.1.0
             git("tag", "-a", "0.1.0", "-m", "Release 0.1.0")
 
-            # Second commit: fix commit with validated RC tag
+            # Second commit: fix commit promoted to staging
             (pathlib.Path(repo_dir) / "fix.txt").write_text("fix")
             git("add", "fix.txt")
             git("commit", "-m", "fix: resolve bug")
             fix_sha = git("rev-parse", "HEAD").stdout.strip()
-            rc_tag = "rc_2608191200_2222222_validated"
-            git("tag", "-a", rc_tag, fix_sha, "-m", f"Validated {rc_tag}")
+            staging_tag = "staging_2608191200_2222222"
+            git("tag", "-a", staging_tag, fix_sha, "-m", f"Promoted {staging_tag}")
 
             # Third commit on main: unvalidated feat commit
             (pathlib.Path(repo_dir) / "feat.txt").write_text("feat")

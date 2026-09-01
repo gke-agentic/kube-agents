@@ -11,7 +11,7 @@ source "${SCRIPT_DIR}/common.sh"
 EXPLICIT_RELEASE_VERSION="${EXPLICIT_RELEASE_VERSION:-${3:-}}"
 BASE_TAG_PARAM="${1:-${BASE_TAG_PARAM:-${BASE_TAG:-}}}"
 TARGET_REF_PARAM="${2:-${TARGET_REF_PARAM:-${TARGET_COMMIT:-${TARGET_REF:-}}}}"
-SKIP_VALIDATION="${SKIP_RC_VALIDATION:-${4:-false}}"
+SKIP_VALIDATION="${SKIP_STAGING_VALIDATION:-${4:-false}}"
 
 # 0. Protection against Shallow Checkout and Remote Tag Sync in CI
 if is_ci_pipeline; then
@@ -31,10 +31,12 @@ if [ -z "${TARGET_REF_PARAM}" ] || [ "${TARGET_REF_PARAM}" = "null" ]; then
     TARGET_REF_PARAM="HEAD"
     echo "ℹ️ Emergency override: calculating version from HEAD" >&2
   else
-    LATEST_VALIDATED_TAG="$(get_latest_validated_rc_tag)"
-    if [ -n "${LATEST_VALIDATED_TAG}" ]; then
-      TARGET_REF_PARAM="${LATEST_VALIDATED_TAG}"
-      echo "ℹ️ Auto-resolved target commit from latest validated RC tag '${LATEST_VALIDATED_TAG}'" >&2
+    # The same lookup the release gate uses. The two resolving differently would
+    # compute a version for one commit and publish another.
+    LATEST_GATE_TAG="$(get_latest_staging_tag)"
+    if [ -n "${LATEST_GATE_TAG}" ]; then
+      TARGET_REF_PARAM="${LATEST_GATE_TAG}"
+      echo "ℹ️ Auto-resolved target commit from newest staging promotion tag '${LATEST_GATE_TAG}'" >&2
     else
       TARGET_REF_PARAM="HEAD"
     fi

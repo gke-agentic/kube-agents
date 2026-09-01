@@ -358,8 +358,51 @@ staging_tag_for_rc() {
   echo "${STAGING_TAG_PREFIX}${core}"
 }
 
+# The shape a staging tag must have to count as release evidence:
+# staging_<YYMMDDHHMM>_<7-hex>, which is exactly what staging_tag_for_rc composes
+# from a validated rc_ tag and therefore exactly what the nightly pipeline
+# pushes.
+#
+# The GA gate matches this rather than the STAGING_TAG_PREFIX the deploy
+# workflows trigger on, and the difference is the whole defence. The prefix is a
+# trigger anyone can push by hand; a `staging_hotfix` typed at a terminal would
+# otherwise read back to the release gate as "the full nightly matrix passed on
+# this commit". The timestamp and short SHA in the right places cannot be
+# produced by accident, and a hand-made tag that does match names a real
+# candidate.
+export STAGING_TAG_SHAPE_REGEX='^staging_[0-9]{10}_[0-9a-f]{7}$'
+
+# Finds the newest shape-valid staging promotion tag anywhere in the repository.
+# Empty output means nothing has been promoted to staging.
+#
+# `--sort=-v:refname` orders by the timestamp immediately after the prefix, which
+# is why staging_tag_for_rc puts it there. The list is materialised before it is
+# filtered rather than piped into `grep | head`: under `set -o pipefail` head
+# closing the pipe early makes grep exit 141, which a trailing `|| echo ""` then
+# turns into "nothing has passed the gate" — a skipped release, silently, once
+# the tag list outgrows a pipe buffer.
+get_latest_staging_tag() {
+  local tags
+  tags="$(git tag -l --sort=-v:refname "${STAGING_TAG_PREFIX}*" 2>/dev/null || true)"
+  grep -m1 -E "${STAGING_TAG_SHAPE_REGEX}" <<<"${tags}" || true
+}
+
+# Lists the shape-valid staging promotion tags pointing at a commit, one per
+# line. Empty output means this commit has not passed the nightly matrix.
+staging_promotion_tags_at_commit() {
+  local sha="${1:-}"
+  local tags
+  tags="$(git tag --points-at "${sha}" "${STAGING_TAG_PREFIX}*" 2>/dev/null || true)"
+  grep -E "${STAGING_TAG_SHAPE_REGEX}" <<<"${tags}" || true
+}
+
 # Finds an existing staging promotion tag on a commit SHA, if any. Empty output
 # means the commit has not been promoted yet.
+#
+# Prefix-matched, unlike the two above, because it answers "should the nightly
+# promote this again?" rather than "may this be released?". Erring towards
+# already-promoted stops a duplicate deploy trigger; erring towards promoted when
+# it was not would ship an unvalidated commit.
 get_existing_staging_tag() {
   local sha="$1"
   git tag --points-at "${sha}" "${STAGING_TAG_PREFIX}*" 2>/dev/null | head -n 1 || echo ""

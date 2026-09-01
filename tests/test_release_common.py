@@ -137,6 +137,74 @@ source "{_COMMON_SH}"
         finally:
             temp_dir.cleanup()
 
+    def test_get_latest_staging_tag_matches_the_shape_not_the_prefix(self):
+        """`staging_*` is a deploy trigger anyone can push; the GA gate reads this.
+
+        `staging-redeploy-*.yml` fires on the bare prefix, so hand-made trigger
+        tags are a supported thing to have in the graph. Matching the prefix here
+        would let one of them read back as "the full nightly matrix passed on
+        this commit", which is the only evidence a GA release has.
+        """
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            proc = self._run_common_func("get_latest_staging_tag", cwd=repo_dir)
+            self.assertEqual(proc.returncode, 0)
+            self.assertEqual(proc.stdout.strip(), "")
+
+            git("tag", "-a", "staging_2608181000_1111111", "-m", "Older promotion")
+            git("tag", "-a", "staging_2608191200_2222222", "-m", "Newer promotion")
+            # Sorts newest-first, so a hand-made tag must not win by name alone.
+            git("tag", "-a", "staging_zzzz", "-m", "Hand-made trigger")
+            git("tag", "-a", "staging_hotfix", "-m", "Hand-made trigger")
+            git("tag", "-a", "rc_2608191300_3333333_validated", "-m", "RC only")
+
+            proc = self._run_common_func("get_latest_staging_tag", cwd=repo_dir)
+            self.assertEqual(proc.returncode, 0)
+            self.assertEqual(proc.stdout.strip(), "staging_2608191200_2222222")
+        finally:
+            temp_dir.cleanup()
+
+    def test_get_latest_staging_tag_agrees_with_staging_tag_for_rc(self):
+        """The shape is derived, not declared: a real promotion has to match it.
+
+        STAGING_TAG_SHAPE_REGEX and staging_tag_for_rc are two spellings of the
+        same format. If either moves without the other, the nightly pipeline
+        pushes tags the release gate cannot see and GA releases stop silently.
+        """
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            proc = self._run_common_func(
+                'staging_tag_for_rc "rc_2608241820_b35543c_validated"', cwd=repo_dir
+            )
+            derived = proc.stdout.strip()
+            self.assertEqual(derived, "staging_2608241820_b35543c")
+
+            git("tag", "-a", derived, "-m", "Promoted")
+            proc = self._run_common_func("get_latest_staging_tag", cwd=repo_dir)
+            self.assertEqual(proc.stdout.strip(), derived)
+        finally:
+            temp_dir.cleanup()
+
+    def test_staging_promotion_tags_at_commit_filters_by_shape(self):
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            head = git("rev-parse", "HEAD").stdout.strip()
+            git("tag", "-a", "staging_hotfix", head, "-m", "Hand-made trigger")
+
+            proc = self._run_common_func(
+                f'staging_promotion_tags_at_commit "{head}"', cwd=repo_dir
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertEqual(proc.stdout.strip(), "")
+
+            git("tag", "-a", "staging_2608191200_2222222", head, "-m", "Promoted")
+            proc = self._run_common_func(
+                f'staging_promotion_tags_at_commit "{head}"', cwd=repo_dir
+            )
+            self.assertEqual(proc.stdout.strip(), "staging_2608191200_2222222")
+        finally:
+            temp_dir.cleanup()
+
     def test_is_rc_candidate_commit_already_validated_is_anchored_to_the_rc_family(self):
         """The glob has to be rc_*_validated, not *_validated.
 

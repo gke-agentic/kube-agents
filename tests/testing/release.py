@@ -28,6 +28,16 @@ MOCK_RC_VALIDATED_TAG = "rc_0.2.0_validated"
 # which is how common.sh picks the candidate.
 MOCK_LATEST_VALIDATED_RC_TAG = "rc_2609010217_a1b2c3d_validated"
 MOCK_OLDER_VALIDATED_RC_TAG = "rc_2608310217_9f8e7d6_validated"
+
+# The staging promotion tags those two map to under staging_tag_for_rc, and the
+# gate the GA release actually reads. Kept in step with the rc_ pair above so a
+# test can tag both families on one commit and mean the same candidate.
+MOCK_LATEST_STAGING_TAG = "staging_2609010217_a1b2c3d"
+MOCK_OLDER_STAGING_TAG = "staging_2608310217_9f8e7d6"
+
+# Carries the deploy-triggering prefix and not the shape. Anyone can push this;
+# the release gate must not read it as evidence that the nightly matrix passed.
+MOCK_HANDMADE_STAGING_TAG = "staging_hotfix"
 MOCK_TARGET_RELEASE_VERSION = "0.2.0"
 MOCK_TARGET_RELEASE_TAG = "0.2.0"
 MOCK_EXPLICIT_RELEASE_VERSION_NEXT = "0.3.0"

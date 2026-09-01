@@ -14,12 +14,13 @@ Three expressions carry it, and each fails quietly if it is dropped:
     direction, but still silent.
   - the `TARGET_COMMIT` fallback to the gate's `release_commit`. Lose it and a
     scheduled run still publishes, just from whatever calculate_next_version.sh
-    auto-resolves on its own. Today that happens to be the same commit, so
-    nothing looks wrong; the moment the gate moves to the staging tag it stops
-    being the same commit and the gate is decorative.
+    auto-resolves on its own. The two read the same tag family, so nothing would
+    look wrong — until a candidate is promoted between the gate job and the
+    publish job, and the release goes out at a commit nothing gated.
 
-The cron is deliberately absent — the schedule is turned on as its own change,
-after the gate has been exercised by hand. The test below does not require one,
+The cron is deliberately absent: the gate reads the staging tag, and the nightly
+pipeline that pushes one is itself dispatch-only, so a weekly cron would skip
+green every week and demonstrate nothing. The test below does not require one,
 but does constrain what it may be when it arrives.
 """
 
@@ -71,6 +72,18 @@ class ReleasePublishWorkflowTest(unittest.TestCase):
             self.assertNotEqual(dow, "*", f"'{entry['cron']}' fires daily; the cadence must be weekly")
             self.assertEqual(dom, "*", f"'{entry['cron']}' pins a day of month rather than a weekday")
             del minute, hour, month
+
+    def test_the_emergency_bypass_names_the_gate_it_bypasses(self):
+        """`skip_rc_validation` names the RC suite, which is no longer the gate."""
+        inputs = self.triggers["workflow_dispatch"]["inputs"]
+        self.assertIn("skip_staging_validation", inputs)
+        self.assertNotIn("skip_rc_validation", inputs)
+        for step in self.jobs[_PUBLISH_JOB]["steps"]:
+            self.assertNotIn(
+                "SKIP_RC_VALIDATION",
+                step.get("env", {}),
+                f"{step.get('name')} still sets SKIP_RC_VALIDATION",
+            )
 
     def test_both_jobs_carry_the_fork_guard(self):
         """AGENTS.md requires it on every job of a self-triggering credentialed workflow."""

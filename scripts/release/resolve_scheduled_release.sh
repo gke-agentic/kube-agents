@@ -3,14 +3,15 @@
 # release.
 #
 # The publishing pipeline is unchanged by this script. It still calculates a
-# version from Conventional Commits and still refuses a commit with no
-# rc_*_validated tag. This answers only the question a human used to answer by
+# version from Conventional Commits and still refuses a commit that has not
+# passed the gate. This answers only the question a human used to answer by
 # choosing when to click "Run workflow": is this candidate one we are willing to
 # ship with nobody watching?
 #
 # Three conditions:
 #
-#   1. A candidate has passed the gate — the newest rc_*_validated tag. Skip.
+#   1. A candidate has passed the gate — the newest staging_<ts>_<sha> tag,
+#      matched on its shape rather than its prefix. Skip.
 #   2. There is something to release: commits exist between the newest GA tag
 #      and that candidate's commit. Skip.
 #   3. Nothing in the range is a breaking change. HALT.
@@ -30,10 +31,6 @@
 # "has this candidate already been released?" needs no condition of its own:
 # if the newest GA tag points at the gated commit, condition 2's range is empty
 # and the skip already covers it. The state lives in the tags.
-#
-# Gate selection is the one part expected to move. Today it reads the
-# rc_*_validated family; once the nightly pipeline is producing staging_<ts>_<sha>
-# tags reliably it reads those instead, and nothing else in this file changes.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -117,13 +114,19 @@ LATEST_GA_TAG="$(get_latest_ga_tag)"
 
 # ── 1. Has anything passed the gate? ─────────────────────────────────────────
 #
+# The staging tag is the evidence, and it is the only evidence: it means the full
+# nightly matrix passed on this commit, where an rc_*_validated tag means only the
+# narrow three-hourly suite did. Requiring both would re-check a property the
+# first already guarantees — the nightly only ever promotes a candidate that
+# carries rc_*_validated — and would leave two gates to keep in step.
+#
 # Reusing common.sh's lookup rather than re-implementing it: a second answer to
-# "which candidate is validated" is how this gate and verify_release_eligibility.sh
-# drift apart, and they have to agree or the resolver waves through a commit the
-# publish job then refuses with exit 1.
-GATE_TAG="$(get_latest_validated_rc_tag)"
+# "which candidate has been promoted" is how this gate and
+# verify_release_eligibility.sh drift apart, and they have to agree or the
+# resolver waves through a commit the publish job then refuses with exit 1.
+GATE_TAG="$(get_latest_staging_tag)"
 if [ -z "${GATE_TAG}" ]; then
-  SKIP_REASON="No candidate has passed the gate — no 'rc_*_validated' tag exists."
+  SKIP_REASON="No candidate has passed the gate — no 'staging_<ts>_<sha>' tag exists."
   emit_and_exit
 fi
 
