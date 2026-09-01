@@ -65,9 +65,8 @@ kube-agents/
 │                                                  the published pages
 ├── examples/                                      gitops-repo template + inference/
 │                                                  integration READMEs
-├── k8s-operator/                                  operator, event watcher, Minty,
-│                                                  installer-helper READMEs
-├── scripts/release/                               Release automation scripts README
+├── k8s-operator/                                  operator, event watcher, Minty READMEs
+├── scripts/                                       installer/, dev/ and release/ READMEs
 ├── terraform/                                     companion Terraform modules +
 │                                                  the full-install composition
 └── tests/e2e/                                     Google Chat E2E suite README
@@ -133,8 +132,8 @@ identifier appears, add its source here.
 <!-- prettier-ignore -->
 | Identifier | Source of truth |
 | --- | --- |
-| Service-account names, namespace, permission-set defaults | `scripts/installer/common.sh` |
-| Every default an install gets for saying nothing | `install.defaults.env` |
+| Service-account names and namespace | `scripts/installer/common.sh` |
+| Defaults an install gets for saying nothing (region, cluster, permission set, registry prefix) | `install.defaults.env` |
 | Go toolchain version | `k8s-operator/go.mod` |
 | Minimum supported tool versions (`gcloud`) | `scripts/installer/min_versions.sh` |
 | Toolsets, plugins, and MCP servers of an agent profile | that profile's `config.yaml` (`agents/platform/`, `agents/chat/`, `agents/cluster/`) |
@@ -155,7 +154,7 @@ identifier appears, add its source here.
 | Agent egress-allowlist policy: metadata addresses, the `-sandbox-metadata-deny` name, the `controlPlaneCIDRs` floors (`/16`, `/32`), and the `EgressPolicyRequiresSplitBroker` / `EgressAllowlistRefused` reasons | `k8s-operator/internal/controller/platformagent_egress_policy.go` and `platformagent_controller.go` |
 | Scoped service-account pool: `CREDENTIAL_PROXY_SCOPED_SA_POOL{,_FILE}`, the pool file path, the scope-key spelling, and the `ka-<name>-<hash8>` account ids | `agents/platform/scripts/scoped_sa_pool.py`, `k8s-operator/internal/controller/platformagent_manifests.go`, `terraform/modules/kube-agents-iam/scoped_pool.tf` |
 | Image inventory: every image an install pulls, and its upstream pin | `images.json` |
-| Registry prefix defaults (`REGISTRY_PREFIX`, `THIRD_PARTY_REGISTRY_PREFIX`) | `scripts/installer/common.sh` |
+| Registry prefix defaults (`REGISTRY_PREFIX`, `THIRD_PARTY_REGISTRY_PREFIX`) | `install.defaults.env` |
 | Provisioning image-tag attachment (`qualify_image_ref`) | `scripts/installer/common.sh` |
 | GKE host-discovery label | `scripts/installer/common.sh` |
 | GitOps clone layout (`/opt/data/gitops/...`) and leases | `agents/platform/scripts/gitops_workspace.py` |

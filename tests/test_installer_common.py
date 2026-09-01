@@ -8,6 +8,7 @@ behind --custom-roles, and the API_SERVER_KEY guard in the tfvars generator.
 
 import json
 import pathlib
+import re
 import stat
 import subprocess
 import tempfile
@@ -414,10 +415,62 @@ class InstallerCommonTest(unittest.TestCase):
         self.assertIn("rc=0", proc.stdout, proc.stderr)
         self.assertNotIn("1.27.4-gke.800", proc.stderr)
 
+    def _tfvars(self, env):
+        """Generate a terraform.tfvars and return its text.
+
+        The generator writes `<dest>.tmp` and renames it into place, so the
+        destination has to be a real path in a writable directory.
+        """
+        with tempfile.TemporaryDirectory() as out_dir:
+            dest = pathlib.Path(out_dir) / "terraform.tfvars"
+            proc = self._run(f'write_tfvars_from_state "{dest}"; echo "rc=$?"', env=env)
+            self.assertIn("rc=0", proc.stdout, proc.stderr)
+            return dest.read_text()
+
+    def test_memory_provider_is_derived_from_the_recorded_mode(self):
+        """install.env records MEMORY; the tfvars carry memory_provider.
+
+        upgrade.sh and the Day-2 menu load the file and never pass through
+        install.sh's parameter block, so with only MEMORY set the generator
+        used to fall through to multiuser_memory and the apply deleted a
+        Hindsight install's API server and Postgres.
+        """
+        for mode, provider in (
+            ("hindsight", "kube_agents_memory"),
+            ("off", "none"),
+            ("file", "multiuser_memory"),
+        ):
+            with self.subTest(mode=mode):
+                self.assertIn(
+                    f'memory_provider          = "{provider}"',
+                    self._tfvars(env={"API_SERVER_KEY": "k", "MEMORY": mode}),
+                )
+
+    def test_an_explicit_memory_provider_still_wins_over_the_mode(self):
+        """install.sh exports MEMORY_PROVIDER on its own run; that is the
+        more specific answer and the mode must not override it."""
+        self.assertIn(
+            'memory_provider          = "kube_agents_memory"',
+            self._tfvars(
+                env={
+                    "API_SERVER_KEY": "k",
+                    "MEMORY": "file",
+                    "MEMORY_PROVIDER": "kube_agents_memory",
+                }
+            ),
+        )
+
+    def test_memory_provider_falls_back_when_nothing_is_recorded(self):
+        """Neither name set — the project default, not an empty string."""
+        self.assertIn(
+            'memory_provider          = "multiuser_memory"',
+            self._tfvars(env={"API_SERVER_KEY": "k"}),
+        )
+
     def test_tfvars_autopilot_floor_names_a_way_out_for_every_caller(self):
         # The abort's remedy has to work for whoever hit it. --gvisor=false is
-        # install.sh's; upgrade.sh rejects that flag and reads vars.sh instead,
-        # so naming only the flag sends its callers to a dead end.
+        # install.sh's; upgrade.sh rejects that flag and reads install.env
+        # instead, so naming only the flag sends its callers to a dead end.
         proc = self._run(
             # _PRINT_STUBS swallows print_info, and the way out is printed
             # there rather than beside the error.
@@ -428,7 +481,7 @@ class InstallerCommonTest(unittest.TestCase):
         )
         self.assertIn("rc=1", proc.stdout, proc.stderr)
         self.assertIn("--gvisor=false", proc.stderr)
-        self.assertIn("vars.sh", proc.stderr)
+        self.assertIn("install.env", proc.stderr)
 
     def test_tfvars_gvisor_off_clears_the_floor_on_a_sub_floor_autopilot(self):
         # The composition uninstall.sh relies on: an explicit false must skip
@@ -636,9 +689,11 @@ class InstallDefaultsFileTest(unittest.TestCase):
         """installer_common.sh must source them, not restate them."""
         source = self._INSTALLER_COMMON.read_text()
         self.assertIn("install.defaults.env", source)
+        # re.MULTILINE, or `^` anchors at offset 0 only and a DEFAULT_* added
+        # anywhere below the first line passes this guard unnoticed.
         self.assertNotRegex(
             source,
-            r"^DEFAULT_\w+=",
+            re.compile(r"^DEFAULT_\w+=", re.MULTILINE),
             "installer_common.sh must not declare a default; they live in "
             "install.defaults.env so there is exactly one copy",
         )

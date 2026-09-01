@@ -8,9 +8,9 @@ if [ -z "${SCRIPT_DIR:-}" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fi
 # Honour a caller-provided path. Scripts under scripts/dev/ set SCRIPT_DIR to
-# their own directory but keep the single state file in scripts/, so deriving
-# the path from SCRIPT_DIR here would point them at a scripts/dev/vars.sh that
-# load_state then creates empty — silently blanking IMAGE_TAG and AGENT_IMAGE.
+# their own directory but keep the single state file in scripts/installer/, so
+# deriving the path from SCRIPT_DIR here would point them at a
+# scripts/dev/vars.sh holding none of the state they saved.
 VARS_FILE="${VARS_FILE:-${SCRIPT_DIR}/vars.sh}"
 
 # Minimum tool versions. Sourced from the helper's own directory rather than
@@ -467,16 +467,14 @@ install_env_file_for_state() {
 load_state() {
   local env_registry_prefix="${REGISTRY_PREFIX:-}"
   local env_third_party_prefix="${THIRD_PARTY_REGISTRY_PREFIX:-}"
+  # Read if present, never created. install.env is the input now, and creating
+  # an empty vars.sh here gained nothing — sourcing it is a no-op, and save_var
+  # appends to a missing file on its own. What it did do was leave a stray
+  # scripts/installer/vars.sh behind on every chat-enabled install: install.sh
+  # assigns VARS_FILE without exporting it, so the print_instructions_* children
+  # fell back to the default beside this file and created one.
   if [ -f "$VARS_FILE" ]; then
     chmod 600 "$VARS_FILE" 2>/dev/null || true
-    source "$VARS_FILE"
-  elif [ "${DRY_RUN:-0}" -ne 1 ]; then
-    local old_umask
-    old_umask=$(umask)
-    umask 077
-    echo "# SRE Sourced Variables for GKE & GCP Setup" > "$VARS_FILE"
-    chmod 600 "$VARS_FILE" 2>/dev/null || true
-    umask "$old_umask"
     source "$VARS_FILE"
   fi
   # install.env last, so the hand-authored input wins over the derived state.
@@ -578,7 +576,7 @@ ensure_teardown_state() {
     export DEV_ARTIFACT_REGISTRY_CREATED="${DEV_ARTIFACT_REGISTRY_CREATED:-false}"
     if [ "${GOOGLE_CHAT_ENABLED:-false}" = "true" ]; then
       export CHAT_TOPIC_NAME="${CHAT_TOPIC_NAME:-platform-agent-chat-events}"
-      export CHAT_SUB_NAME="${CHAT_SUB_NAME:-platform-agent-chat-events-sub}"
+      export CHAT_SUB_NAME="${CHAT_SUB_NAME:-$DEFAULT_CHAT_SUB_NAME}"
     else
       export CHAT_TOPIC_NAME="${CHAT_TOPIC_NAME:-}"
       export CHAT_SUB_NAME="${CHAT_SUB_NAME:-}"

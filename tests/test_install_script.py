@@ -362,14 +362,16 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
         source = _INSTALL_SH.read_text()
         # The name still appears, in the comment explaining why it is gone.
         # What must not come back is a definition or a call.
+        # re.MULTILINE, or `^` anchors at offset 0 only and neither guard can
+        # ever fail however the function comes back.
         self.assertNotRegex(
             source,
-            r"^\s*persist_effective_cluster_mode\s*\(\)",
+            re.compile(r"^\s*persist_effective_cluster_mode\s*\(\)", re.MULTILINE),
             "persist_effective_cluster_mode must not be redefined",
         )
         self.assertNotRegex(
             source,
-            r"^\s*persist_effective_cluster_mode\s+",
+            re.compile(r"^\s*persist_effective_cluster_mode\s+", re.MULTILINE),
             "persist_effective_cluster_mode must not be called",
         )
         self.assertNotIn(

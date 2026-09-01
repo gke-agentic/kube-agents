@@ -110,8 +110,9 @@ Upon completion, `install.sh` generates a machine-readable JSON status report at
 
 ## Supported Command-Line Flags
 
-Defaults marked "`installer_common.sh`" come from `scripts/installer/installer_common.sh` and
-are listed there, not here. Run `./install.sh --help` for the authoritative list.
+Defaults marked "`installer_common.sh`" reach the installer through
+`scripts/installer/installer_common.sh`; the values themselves are listed in
+`install.defaults.env` at the repository root, not here. Run `./install.sh --help` for the authoritative list.
 
 | Flag                                 | Description                                                                                                                                                                                                                                            | Default                                         |
 | :----------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------- |
@@ -138,4 +139,5 @@ are listed there, not here. Run `./install.sh --help` for the authoritative list
 | `--enable-google-chat`               | Enable the Google Chat integration                                                                                                                                                                                                                     | `false`                                         |
 | `--gvisor=true\|false`               | Enable GKE Sandbox (gVisor) runtime isolation                                                                                                                                                                                                          | `true`                                          |
 | `--enable-web-ui=true\|false`        | Enable the Hermes Web UI on port 9119                                                                                                                                                                                                                  | `false`                                         |
+| `--allowed-users=EMAILS`             | Comma-separated chat users allowed to reach the agent; empty allows everyone                                                                                                                                                                           | _unset_                                         |
 | `-h, --help, -?`                     | Output CLI usage banner and parameter details                                                                                                                                                                                                          | `N/A`                                           |

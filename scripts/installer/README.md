@@ -13,8 +13,9 @@ them. `vars.sh` was the piece of that residue #1081 noticed first.
 
 ## Shared defaults live in `installer_common.sh`
 
-`installer_common.sh` is the single home for the values every installer front-end must
-agree on. `install.sh`, `uninstall.sh`, and `upgrade.sh` source it rather than keeping
+`installer_common.sh` is where every installer front-end picks up the values it must
+agree on; it reads them from [`install.defaults.env`](../../install.defaults.env) and
+declares none itself. `install.sh`, `uninstall.sh`, and `upgrade.sh` source it rather than keeping
 their own copies:
 
 | Symbol                                   | What it fixes                                                                          |
@@ -32,7 +33,7 @@ their own copies:
 | `is_valid_cluster_mode <mode>`           | Accepted cluster shapes: `autopilot`, `standard`                                       |
 | `derive_kms_location <region>`           | Region for Cloud KMS (strips a zone suffix)                                            |
 | `tf_state_bucket` / `tf_state_prefix`    | Where the install's Terraform state lives in GCS                                       |
-| `write_tfvars_from_state <dest> [tag]`   | The `terraform.tfvars` generator (reads the `vars.sh` variable set)                    |
+| `write_tfvars_from_state <dest> [tag]`   | The `terraform.tfvars` generator (reads the loaded `install.env` variable set)         |
 
 The values themselves live in [`install.defaults.env`](../../install.defaults.env) at the
 repository root, which `installer_common.sh` sources. That file does one job and holds
@@ -112,12 +113,18 @@ cluster whose cert-manager comes from somewhere else.
 
 ### The predecessor: `vars.sh`
 
-`k8s-operator/scripts/vars.sh` was the generated state file `install.env` replaces. It is
-no longer written. Every reader still accepts one so that an install predating the change
-keeps working with no action from its owner: each loads `vars.sh` first and `install.env`
-over the top, so the input wins. `install.sh` additionally migrates — it reads a legacy
-`vars.sh`, warns, and writes those values into `install.env` on the way out, after which
-the old file can be deleted.
+`k8s-operator/scripts/vars.sh` was the generated state file `install.env` replaces. No
+front door writes one any more. Every reader still accepts one so that an install
+predating the change keeps working with no action from its owner: each loads `vars.sh`
+first and `install.env` over the top, so the input wins. `install.sh` additionally
+migrates — it reads a legacy `vars.sh`, warns, and writes those values into `install.env`
+on the way out, after which the old file can be deleted.
+
+One writer is left, and it is not an install one. The dev tooling under `scripts/dev/`
+records whether it created the throwaway Artifact Registry (`DEV_ARTIFACT_REGISTRY_CREATED`)
+through `save_var`, which lands in `scripts/installer/vars.sh` beside these helpers. That
+file is developer scratch state, git-ignored, and holds nothing an install is configured
+from; deleting it costs at most one redundant registry check.
 
 Both Python readers — `scripts/live_test_lease.py` and `admin_console/project_config.py`
 — match an allowlist of assignments with a regex and never source either file, because

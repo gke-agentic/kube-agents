@@ -7,8 +7,8 @@
 # install to the same engine (terraform/examples/full-install).
 #
 # Contract: the caller defines print_info / print_warning / print_error before
-# calling anything here that reports. Functions read the vars.sh variable set
-# from the environment (source vars.sh first); none of them prompt.
+# calling anything here that reports. Functions read the install.env variable
+# set from the environment (load it first); none of them prompt.
 # ==============================================================================
 
 # ─── Shared Installer Defaults ────────────────────────────────────────────────
@@ -38,6 +38,22 @@ else
   echo "  ℹ It ships with the repository. Re-clone, or point KUBE_AGENTS_INSTALL_DEFAULTS at a copy." >&2
   return 1 2>/dev/null || exit 1
 fi
+
+# Memory mode (the input spelling, recorded in install.env as MEMORY) → the
+# provider name everything downstream reads. The inverse of install.sh's
+# memory_mode_from_provider, and needed here because install.env records the
+# mode while write_tfvars_from_state emits the provider: upgrade.sh and the
+# Day-2 menu load the file and never pass through install.sh's parameter block,
+# so without this they generated memory_provider = "multiuser_memory" for a
+# Hindsight install and the apply deleted the Hindsight API and its Postgres.
+memory_provider_from_mode() {
+  case "${1:-}" in
+    hindsight) echo "kube_agents_memory" ;;
+    off) echo "none" ;;
+    file) echo "multiuser_memory" ;;
+    *) echo "" ;;
+  esac
+}
 
 # Model provider → the model the install defaults to for that provider.
 default_model_for_provider() {
@@ -600,6 +616,17 @@ write_tfvars_from_state() {
   local dest="$1"
   local image_tag="${2:-${IMAGE_TAG:-latest}}"
 
+  # MEMORY_PROVIDER when the caller set it (install.sh's own run exports it),
+  # otherwise translated from the MEMORY mode install.env records, and only
+  # then the project default. upgrade.sh and the Day-2 menu reach here with
+  # MEMORY set and MEMORY_PROVIDER unset, and taking the default there is what
+  # reverted a Hindsight install to the file store.
+  local memory_provider="${MEMORY_PROVIDER:-}"
+  if [ -z "$memory_provider" ]; then
+    memory_provider="$(memory_provider_from_mode "${MEMORY:-}")"
+  fi
+  : "${memory_provider:=${DEFAULT_MEMORY_PROVIDER}}"
+
   # cluster_mode follows the LIVE cluster when there is one. Hardcoding
   # "standard" here planned the destruction of every existing Autopilot
   # install the moment a front door regenerated tfvars against it — the
@@ -793,8 +820,8 @@ write_tfvars_from_state() {
   if [ -n "${GITOPS_ORG:-}" ] && [ -n "${GITOPS_REPO:-}" ] && [ -n "${GITHUB_APP_ID:-}" ]; then
     local minter_key_version=""
     minter_key_version="$({ gcloud kms keys versions list \
-      --key "${KMS_KEY:-github-token-minter-key}" \
-      --keyring "${KMS_KEYRING:-github-token-minter-keyring}" \
+      --key "${KMS_KEY:-$DEFAULT_KMS_KEY}" \
+      --keyring "${KMS_KEYRING:-$DEFAULT_KMS_KEYRING}" \
       --location "$(derive_kms_location "${REGION}")" \
       --project "${PROJECT_ID}" --filter='state=ENABLED' \
       --format='value(name)' 2>/dev/null || true; } | head -1)"
@@ -866,7 +893,7 @@ write_tfvars_from_state() {
         print_warning "Could not read the GKE version of Autopilot cluster '${CLUSTER_NAME}'; proceeding as though it supports GKE Sandbox. Below ${GVISOR_AUTOPILOT_MIN_VERSION} the agent Deployment is never created and this run fails at its final check."
       elif ! gke_version_at_least "$master_version" "$GVISOR_AUTOPILOT_MIN_VERSION"; then
         print_error "Autopilot cluster '${CLUSTER_NAME}' runs GKE ${master_version}, and its gvisor RuntimeClass needs ${GVISOR_AUTOPILOT_MIN_VERSION} or later."
-        print_info "Upgrade the cluster, or run the agent on the standard runtime: install.sh takes --gvisor=false, and upgrade.sh reads the choice from ENABLE_GVISOR in k8s-operator/scripts/vars.sh. Continuing would apply every GCP and Helm resource and then fail on a missing agent Deployment."
+        print_info "Upgrade the cluster, or run the agent on the standard runtime: install.sh takes --gvisor=false, and upgrade.sh reads the choice from ENABLE_GVISOR in install.env. Continuing would apply every GCP and Helm resource and then fail on a missing agent Deployment."
         print_info "Tearing down instead? uninstall.sh forces ENABLE_GVISOR=false and is never blocked by this check; if you reach it from some other caller, export ENABLE_GVISOR=false first."
         return 1
       fi
@@ -929,7 +956,7 @@ write_tfvars_from_state() {
     echo ""
     echo "enable_google_chat        = $(hcl_bool "${GOOGLE_CHAT_ENABLED:-false}")"
     echo "chat_topic_name           = $(hcl_str "${CHAT_TOPIC_NAME:-platform-agent-chat-events}")"
-    echo "chat_subscription_name    = $(hcl_str "${CHAT_SUB_NAME:-platform-agent-chat-events-sub}")"
+    echo "chat_subscription_name    = $(hcl_str "${CHAT_SUB_NAME:-$DEFAULT_CHAT_SUB_NAME}")"
     echo "google_chat_allowed_users = $(hcl_csv_list "${ALLOWED_USERS:-}")"
     echo "google_chat_mode          = $(hcl_str "${GOOGLE_CHAT_MODE:-default}")"
     echo ""
@@ -960,7 +987,7 @@ write_tfvars_from_state() {
     echo "# defaulted it to false and asks. Memory settings mirror --memory."
     echo "hermes_dashboard_enabled = $(hcl_bool "${HERMES_DASHBOARD_ENABLED:-false}")"
     echo "memory_enabled           = $(hcl_bool "${MEMORY_ENABLED:-false}")"
-    echo "memory_provider          = $(hcl_str "${MEMORY_PROVIDER:-multiuser_memory}")"
+    echo "memory_provider          = $(hcl_str "$memory_provider")"
     echo "user_profile_enabled     = $(hcl_bool "${USER_PROFILE_ENABLED:-false}")"
   } > "${dest}.tmp"
   chmod 600 "${dest}.tmp"

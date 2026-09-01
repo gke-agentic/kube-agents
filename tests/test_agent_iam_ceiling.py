@@ -95,7 +95,7 @@ def _run_bash(script: str, env_overrides: dict[str, str]) -> subprocess.Complete
 
     CI=1 makes `init_var` take defaults instead of blocking on a prompt, and
     VARS_FILE points at a temp file so nothing touches the developer's real
-    (git-ignored) k8s-operator/scripts/vars.sh. TERM=dumb keeps common.sh's
+    (git-ignored) scripts/installer/vars.sh. TERM=dumb keeps common.sh's
     EXIT trap (`tput cnorm`) from writing cursor escapes into the stdout the
     assertions are read from.
     """

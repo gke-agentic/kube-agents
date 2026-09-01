@@ -240,7 +240,7 @@ Claude Code executes without being asked. A pull request can change both it and 
 so checking out a fork's branch into an already-trusted checkout — or into a worktree of one, which
 is how `.claude/commands/pr-review-batch.md` reviews every open pull request — would arm whatever
 that branch says on the reviewer's next Bash call, with their kubeconfigs and their mode-600
-an install configuration in reach. Workspace trust is granted per directory and is not re-asked when the branch
+install configuration in reach. Workspace trust is granted per directory and is not re-asked when the branch
 changes, so the reviewing case is exactly the one it does not cover. Shipping an example keeps the
 reviewer's execution path free of fork content; the cost is that the protection has to be asked
 for.

@@ -221,13 +221,26 @@ PARAM_GITOPS_REPO="${GITOPS_REPO:-${GITHUB_REPO:-}}"
 # helpers are sourced, so no default is spelled twice.
 PARAM_PERMISSION_SET="${PLATFORM_AGENT_PERMISSION_SET:-}"
 PARAM_CUSTOM_ROLES="${PLATFORM_AGENT_CUSTOM_ROLES:-}"
-# ${VAR-...} throughout, never ${VAR:-...}: `--gvisor=` with no value sets this
-# to the empty string, and that has to survive to the validator in main rather
-# than being silently read back as the default. The default itself comes from
+# Set-ness, never ${VAR:-...}: `--gvisor=` with no value sets this to the empty
+# string, and that has to survive to the validator in main rather than being
+# silently read back as the default. The default itself comes from
 # install.defaults.env, sourced above — and again through
 # resolve_shared_defaults for the curl | bash case, where there was no checkout
 # to read it from yet.
-PARAM_ENABLE_GVISOR="${ENABLE_GVISOR-${DEFAULT_ENABLE_GVISOR-}}"
+#
+# Leaving PARAM_ENABLE_GVISOR *unset* when neither name is set is what makes that
+# second route work. `${ENABLE_GVISOR-${DEFAULT_ENABLE_GVISOR-}}` assigned the
+# empty string instead, which is indistinguishable from `--gvisor=`: under
+# curl | bash there is no install.defaults.env beside the script, so
+# DEFAULT_ENABLE_GVISOR was unset here, and resolve_shared_defaults' own
+# ${PARAM_ENABLE_GVISOR-...} then saw a variable that was already set and left it
+# empty. Every documented one-liner install aborted on "--gvisor must be either
+# true or false."
+if [ -n "${ENABLE_GVISOR+x}" ]; then
+  PARAM_ENABLE_GVISOR="$ENABLE_GVISOR"
+elif [ -n "${DEFAULT_ENABLE_GVISOR+x}" ]; then
+  PARAM_ENABLE_GVISOR="$DEFAULT_ENABLE_GVISOR"
+fi
 # HERMES_DASHBOARD_ENABLED as well as ENABLE_WEBUI: the flag is spelled
 # --enable-web-ui and the install records the setting under the Hermes name, so
 # a file written from a previous install carries the second spelling and only
@@ -1463,7 +1476,7 @@ import_github_pem() {
   local project_id="$1" region="$2"
   [ -n "${GITOPS_ORG:-}" ] && [ -n "${GITOPS_REPO:-}" ] && [ -n "${GITHUB_APP_ID:-}" ] || return 0
   local pem_path="${GITHUB_PEM_PATH:-}"
-  local kms_location keyring="${KMS_KEYRING:-github-token-minter-keyring}" key="${KMS_KEY:-github-token-minter-key}"
+  local kms_location keyring="${KMS_KEYRING:-$DEFAULT_KMS_KEYRING}" key="${KMS_KEY:-$DEFAULT_KMS_KEY}"
   kms_location="$(derive_kms_location "$region")"
 
   local enabled_version
@@ -1622,7 +1635,7 @@ run_menu_system() {
   local slack_enabled="${SLACK_ENABLED:-false}"
   local allowed_users="${ALLOWED_USERS:-}"
   local chat_topic_name="${CHAT_TOPIC_NAME:-platform-agent-chat-events}"
-  local chat_sub_name="${CHAT_SUB_NAME:-platform-agent-chat-events-sub}"
+  local chat_sub_name="${CHAT_SUB_NAME:-$DEFAULT_CHAT_SUB_NAME}"
   local permission_set="${PLATFORM_AGENT_PERMISSION_SET:-read-only}"
   local custom_roles="${PLATFORM_AGENT_CUSTOM_ROLES:-}"
   # Not the fresh-install default. The control panel describes an install that
@@ -2149,7 +2162,7 @@ main() {
     allowed_users_hint="empty list"
   fi
   local chat_topic_name="$PARAM_CHAT_TOPIC_NAME"
-  local chat_sub_name="${CHAT_SUB_NAME:-platform-agent-chat-events-sub}"
+  local chat_sub_name="${CHAT_SUB_NAME:-$DEFAULT_CHAT_SUB_NAME}"
   local google_chat_mode="$PARAM_GOOGLE_CHAT_MODE"
   if [[ ! "$google_chat_mode" =~ ^(default|debug)$ ]]; then
     print_error "--google-chat-mode must be either 'default' or 'debug'."
@@ -2242,10 +2255,20 @@ main() {
       "Anthropic ($(default_model_for_provider anthropic) / Anthropic API)" \
       model_choice
 
+    # A model the install already pins survives a re-run that leaves the
+    # provider alone; changing provider has to take the new provider's default,
+    # because the old model name is not valid for it. Every arm used to assign
+    # unconditionally, so pressing enter through the interview silently
+    # downgraded a pinned MODEL_DEFAULT_NAME to the provider default. The Day-2
+    # menu's vertex arm already worked this way.
+    local model_provider_was="$model_provider"
+    local model_name_was="$model_default_name"
     case "$model_choice" in
       1)
         model_provider="gemini"
-        model_default_name="$(default_model_for_provider gemini)"
+        if [ "$model_provider_was" != "gemini" ] || [ -z "$model_name_was" ]; then
+          model_default_name="$(default_model_for_provider gemini)"
+        fi
         local detected_key="${GEMINI_API_KEY:-}"
         if [ -z "$detected_key" ]; then
           detected_key=$(gcloud secrets versions access latest --secret="gemini-api-key" --project="$project_id" 2>/dev/null || echo "")
@@ -2256,16 +2279,25 @@ main() {
         model_provider="vertex_ai"
         prompt_read "Vertex AI Project ID" vertex_project_id "$vertex_project_id"
         prompt_read "Vertex AI Location" vertex_location "$vertex_location"
-        prompt_read "Vertex Model ID (publisher model, e.g. gemini-3.5-flash)" model_default_name "$(default_model_for_provider vertex_ai)"
+        local vertex_model_default
+        vertex_model_default="$(default_model_for_provider vertex_ai)"
+        if [ "$model_provider_was" = "vertex_ai" ] && [ -n "$model_name_was" ]; then
+          vertex_model_default="$model_name_was"
+        fi
+        prompt_read "Vertex Model ID (publisher model, e.g. gemini-3.5-flash)" model_default_name "$vertex_model_default"
         ;;
       3)
         model_provider="openai"
-        model_default_name="$(default_model_for_provider openai)"
+        if [ "$model_provider_was" != "openai" ] || [ -z "$model_name_was" ]; then
+          model_default_name="$(default_model_for_provider openai)"
+        fi
         prompt_read "OpenAI API Key" openai_api_key "${OPENAI_API_KEY:-}" true
         ;;
       4)
         model_provider="anthropic"
-        model_default_name="$(default_model_for_provider anthropic)"
+        if [ "$model_provider_was" != "anthropic" ] || [ -z "$model_name_was" ]; then
+          model_default_name="$(default_model_for_provider anthropic)"
+        fi
         prompt_read "Anthropic API Key" anthropic_api_key "${ANTHROPIC_API_KEY:-}" true
         ;;
     esac
@@ -2308,16 +2340,16 @@ main() {
   # the interview prompts below, so GITHUB_APP_ID / GITHUB_PEM_PATH exported
   # into the run are the only way an automated install can enable the minter.
   local github_app_id="${GITHUB_APP_ID:-}"
-  local kms_keyring="${KMS_KEYRING:-github-token-minter-keyring}"
-  local kms_key="${KMS_KEY:-github-token-minter-key}"
+  local kms_keyring="${KMS_KEYRING:-$DEFAULT_KMS_KEYRING}"
+  local kms_key="${KMS_KEY:-$DEFAULT_KMS_KEY}"
   local github_pem_path="${GITHUB_PEM_PATH:-}"
 
   if [ "$PARAM_NON_INTERACTIVE" != "true" ]; then
     # An install that already names an org has a repository to connect, so
-    # option 2 is what pressing enter should mean. Left at option 1, an
-    # interactive re-run walks back through the create flow for a repository
-    # that exists; answering the prompts with the loaded values then keeps it,
-    # but skipping them drops GITOPS_ORG and turns the minter off (#1060, item 6).
+    # option 2 is what pressing enter should mean. Options 1 and 2 run the same
+    # block, so this only makes the offered wording match the install — what
+    # actually keeps GITOPS_ORG and the minter credentials across a re-run
+    # (#1060, item 6) is that each prompt below defaults to the loaded value.
     local gitops_choice=""
     if [ -n "$github_org" ]; then
       gitops_choice="2"
@@ -2338,8 +2370,14 @@ main() {
       detected_gh_org=$(gh api user/orgs -q '.[0].login' 2>/dev/null || echo "")
       print_info "The GitOps repo must belong to a GitHub organization; a personal account cannot"
       print_info "mint tokens. A free organization is enough."
+      # Every default below is the loaded value first, the project default or
+      # the probe second. prompt_read assigns the empty input when its default
+      # is empty, so passing a bare "" here meant pressing enter through the
+      # interview cleared GITHUB_APP_ID and the PEM path on an install that had
+      # them — write_tfvars_from_state's three-way guard then set
+      # enable_github_minter = false and the apply removed the minter.
       while true; do
-        prompt_read "GitHub Organization" github_org "${detected_gh_org}"
+        prompt_read "GitHub Organization" github_org "${github_org:-$detected_gh_org}"
 
         local org_problem=""
         if [ -z "$github_org" ]; then
@@ -2364,13 +2402,13 @@ main() {
           exit 1
         fi
       done
-      prompt_read "GitOps Repository Name" github_repo "gke-fleet-iac"
+      prompt_read "GitOps Repository Name" github_repo "${github_repo:-$DEFAULT_GITOPS_REPO}"
 
       print_info "GitHub access uses the short-lived GitHub App token minter."
-      prompt_read "GitHub App ID" github_app_id ""
-      prompt_read "Cloud KMS Keyring Name" kms_keyring "github-token-minter-keyring"
-      prompt_read "Cloud KMS Key Name" kms_key "github-token-minter-key"
-      prompt_read "Path to downloaded GitHub App Private Key (.pem)" github_pem_path ""
+      prompt_read "GitHub App ID" github_app_id "${github_app_id}"
+      prompt_read "Cloud KMS Keyring Name" kms_keyring "${kms_keyring:-$DEFAULT_KMS_KEYRING}"
+      prompt_read "Cloud KMS Key Name" kms_key "${kms_key:-$DEFAULT_KMS_KEY}"
+      prompt_read "Path to downloaded GitHub App Private Key (.pem)" github_pem_path "${github_pem_path}"
     fi
   fi
 
@@ -2492,17 +2530,30 @@ main() {
       fi
     fi
 
+    # Reordered rather than seeded, exactly as the gVisor prompt above is, and
+    # for the reason its comment gives: seeding the choice index left "(Default)"
+    # on option 1 while Enter selected option 2, and — because only the "=2" arm
+    # assigned — answering "No" against an enabled dashboard did nothing at all,
+    # so a dashboard recorded in install.env could never be turned off again.
+    # Every branch assigns.
+    local webui_yes="Yes - Enabled for local browser debugging (port 9119)"
+    local webui_no="No - Disabled for reduced attack surface"
+    local webui_prompt="Enable Hermes Web UI (Port 9119 Dashboard) for Agent Observability?"
     local webui_choice=""
     if is_truthy "$PARAM_ENABLE_WEBUI"; then
-      webui_choice="2"
-    fi
-    prompt_menu "Enable Hermes Web UI (Port 9119 Dashboard) for Agent Observability?" \
-      "No - Disabled for reduced attack surface (Default)" \
-      "Yes - Enabled for local browser debugging (port 9119)" \
-      webui_choice
-
-    if [ "$webui_choice" = "2" ]; then
-      PARAM_ENABLE_WEBUI="true"
+      prompt_menu "$webui_prompt" "${webui_yes} (Default)" "$webui_no" webui_choice
+      if [ "$webui_choice" = "2" ]; then
+        PARAM_ENABLE_WEBUI="false"
+      else
+        PARAM_ENABLE_WEBUI="true"
+      fi
+    else
+      prompt_menu "$webui_prompt" "${webui_no} (Default)" "$webui_yes" webui_choice
+      if [ "$webui_choice" = "2" ]; then
+        PARAM_ENABLE_WEBUI="true"
+      else
+        PARAM_ENABLE_WEBUI="false"
+      fi
     fi
 
     # The two stores differ in what they cost to run and in how far they scale,
@@ -2539,6 +2590,12 @@ main() {
       3) memory_mode="off" ;;
     esac
   fi
+
+  # bootstrap_install_env_file records PARAM_MEMORY, not this local, so the
+  # answer has to travel back. Without it an interactive install that chose the
+  # searchable store provisioned Hindsight and then wrote MEMORY=file, and the
+  # next re-run inherited `file` and deleted what it had just built.
+  PARAM_MEMORY="$memory_mode"
 
   # MEMORY_PROVIDER carries the whole choice — including "no memory at all",
   # which is what `none` means. Everything downstream reads it and nothing else:
@@ -2774,8 +2831,8 @@ main() {
   # here rather than wedging the apply.
   import_github_pem "$project_id" "$region"
   local minter_enabled_version=""
-  minter_enabled_version="$({ gcloud kms keys versions list --key "${KMS_KEY:-github-token-minter-key}" \
-    --keyring "${KMS_KEYRING:-github-token-minter-keyring}" \
+  minter_enabled_version="$({ gcloud kms keys versions list --key "${KMS_KEY:-$DEFAULT_KMS_KEY}" \
+    --keyring "${KMS_KEYRING:-$DEFAULT_KMS_KEYRING}" \
     --location "$(derive_kms_location "$region")" --project "$project_id" \
     --filter='state=ENABLED' --format='value(name)' 2>/dev/null || true; } | head -1)"
   if grep -q '^enable_github_minter = true$' "$tfvars_file" 2>/dev/null && [ -z "$minter_enabled_version" ]; then

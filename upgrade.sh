@@ -513,8 +513,8 @@ main() {
       if grep -q '^enable_github_minter = true$' \
         "${repo_dir}/terraform/examples/full-install/terraform.tfvars" 2>/dev/null; then
         minter_enabled_version="$({ gcloud kms keys versions list \
-          --key "${KMS_KEY:-github-token-minter-key}" \
-          --keyring "${KMS_KEYRING:-github-token-minter-keyring}" \
+          --key "${KMS_KEY:-$DEFAULT_KMS_KEY}" \
+          --keyring "${KMS_KEYRING:-$DEFAULT_KMS_KEYRING}" \
           --location "$(derive_kms_location "${REGION}")" --project "${PROJECT_ID}" \
           --filter='state=ENABLED' --format='value(name)' 2>/dev/null || true; } | head -1)"
         if [ -z "$minter_enabled_version" ]; then

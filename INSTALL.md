@@ -66,8 +66,9 @@ the canonical description of what gets created. Three things stay outside Terraf
 installer itself: CMEK database encryption on a **pre-existing** cluster (a `gcloud` pre-step), the
 managed-OTel collection scope (no Terraform field exists), and the GitHub App private-key import
 into KMS (the PEM must not enter Terraform state). The installer sources
-`scripts/installer/installer_common.sh`, so its defaults (region, cluster name, model provider,
-registry prefix) and its accepted values live in exactly one place; see
+`scripts/installer/installer_common.sh`, which reads `install.defaults.env`, so its defaults
+(region, cluster name, model provider, registry prefix) and its accepted values live in exactly
+one place; see
 [Shared defaults live in `installer_common.sh`](scripts/installer/README.md#shared-defaults-live-in-installer_commonsh).
 
 Three behaviours worth knowing before the first run:
@@ -195,27 +196,13 @@ KUBE_AGENTS_STATE_BUCKET=auto ./lifecycle.sh apply
   for local state — fine for a hand-driven evaluation, wrong for anything `uninstall.sh` or
   `upgrade.sh` should later find. The state contains every secret the install was given; the
   bucket's IAM is its protection.
-<<<<<<< HEAD
-- `install.sh` re-runs rebuild `k8s-operator/scripts/vars.sh` from that run's flags and environment
-  rather than reading the previous one, then regenerate `terraform.tfvars` from it and let
-  `terraform apply` reconcile whatever changed. Anything you do not re-supply falls back to its
-  default — including `--gvisor`, which defaults to `true`, so a bare re-run moves an unsandboxed
-  install onto the sandbox. `./install.sh --menu` is the re-run that carries the previous choices:
-  it reads the existing state, and Save & Apply re-applies through the same engine. Sourcing
-  `k8s-operator/scripts/vars.sh` before a flag-driven re-run gets most of the way — its entries are
-  `export`ed, so a child `./install.sh` sees them — but not all of it. The file records the memory
-  choice as `MEMORY_PROVIDER` and the dashboard as `HERMES_DASHBOARD_ENABLED`, while `install.sh`
-  reads `MEMORY` and `ENABLE_WEBUI`, so both revert to their defaults (file-backed memory, dashboard
-  off) unless you also pass `--memory` and `--enable-web-ui`. For a hand-driven install, edit your
-  tfvars and re-apply.
-=======
 - `install.sh` re-runs are idempotent: it loads `install.env` from the first run, regenerates
   `terraform.tfvars` from it, and `terraform apply` reconciles whatever changed. Flags you omit
   keep the value the file records rather than reverting to a default, so bumping `--image-tag`
-  alone changes only the image tag. To change configuration, edit `install.env` and re-run, use
+  alone changes only the image tag. To change configuration, edit `install.env` (copy
+  `install.env.example` if the first install has not written one yet) and re-run, use
   `./install.sh --menu` (Save & Apply re-applies through the same engine), or edit your
   hand-written tfvars and re-apply.
->>>>>>> 60578f2 (refactor(installer)!: stop generating vars.sh; install.env is the only input)
 
 - **Private Container Registry**: If your GKE clusters may only pull from an approved registry, see
   [Private container registry](#private-container-registry) below for the full recipe. Mirroring
@@ -486,7 +473,9 @@ kubectl rollout status deployment -n kubeagents-system
 
 To optionally deploy the LiteLLM Gateway or GitHub Token Minter:
 
-`GITOPS_ORG` must be a GitHub **organization**. The Token Minter looks App installations up at `/orgs/{org}/installation`, which does not exist for personal accounts, so a user-owned GitOps repo deploys cleanly and then fails every token request with a 404. This manual path skips the installer's preflight check — see [`k8s-operator/config/integrations/github/README.md`](k8s-operator/config/integrations/github/README.md).
+`GITHUB_ORG` must be a GitHub **organization**. The Token Minter looks App installations up at `/orgs/{org}/installation`, which does not exist for personal accounts, so a user-owned GitOps repo deploys cleanly and then fails every token request with a 404. This manual path skips the installer's preflight check — see [`k8s-operator/config/integrations/github/README.md`](k8s-operator/config/integrations/github/README.md).
+
+`GITHUB_ORG`/`GITHUB_REPO` here, not the `GITOPS_ORG`/`GITOPS_REPO` the installer takes: this is the hand-driven `make deploy-github` path, whose envsubst allowlist in `k8s-operator/Makefile` passes the `GITHUB_*` names. The rename is scoped to the installer's own inputs.
 
 ```bash
 # Deploy LiteLLM Gateway
@@ -505,8 +494,8 @@ export KMS_LOCATION="your-kms-region" # a region; Cloud KMS has no zonal locatio
 export KMS_KEYRING="your-kms-keyring"
 export KMS_KEY="your-kms-key"
 export KMS_KEY_VERSION="your-kms-key-version"
-export GITOPS_ORG="your-github-org"
-export GITOPS_REPO="your-github-repo"
+export GITHUB_ORG="your-github-org"
+export GITHUB_REPO="your-github-repo"
 export GITHUB_MINTER_KSA_NAME="kubeagents-github-minter"
 export GITHUB_MINTER_GSA_NAME="kubeagents-github-minter-gsa"
 export PLATFORM_AGENT_GSA_NAME="kubeagents-platform-gsa"
