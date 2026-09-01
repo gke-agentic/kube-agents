@@ -90,12 +90,9 @@ def _strip_unsafe_chars(text: str) -> str:
 
 
 def _neutralize_prompt_injection(text: str) -> str:
-    """Neutralize LLM special tokens, prompt injection delimiters, delimiter smuggling, and markdown headers."""
+    """Neutralize LLM special tokens, prompt injection tags, and code fence framing."""
     if not text:
         return ""
-
-    # Delimiter smuggling: replace the section sign (§) so entries cannot be split or forged
-    text = text.replace("§", ";")
 
     # Delimiter tags (<system...>, <instruction...>, <prompt...>, <context...>, <admin...>, <untrusted_...>, etc.)
     text = re.sub(
@@ -133,26 +130,40 @@ def _neutralize_prompt_injection(text: str) -> str:
     for pattern, replacement in replacements.items():
         text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
 
-    # Markdown header injection: neutralize lines starting with '#' so entries cannot create new prompt sections
-    text = re.sub(r"(?m)^(\s*)#+\s*", r"\1", text)
-
     return text
 
 
-def sanitize_memory_entry(text: str, max_length: int = MAX_ENTRY_LENGTH) -> str:
-    """Sanitize a single memory entry before storage or system prompt rendering."""
+def sanitize_memory_entry(text: str) -> str:
+    """Sanitize a new memory entry before storage.
+
+    Strips unsafe control/bidi characters, neutralizes prompt injection tokens,
+    and neutralizes entry delimiter smuggling (\\n§\\n) without mutating inline section symbols.
+    """
     if not text or not isinstance(text, str):
         return ""
 
     cleaned = _strip_unsafe_chars(text)
     cleaned = _neutralize_prompt_injection(cleaned)
+    # Delimiter smuggling: neutralize delimiter sequence (\\n§\\n) so a new entry cannot split on storage
+    cleaned = re.sub(r"(?:\r?\n|^)\s*§\s*(?:\r?\n|$)", "\n;\n", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
-    cleaned = cleaned.strip()
+    return cleaned.strip()
 
-    if len(cleaned) > max_length:
-        cleaned = cleaned[:max_length].rstrip()
 
-    return cleaned
+def sanitize_for_prompt(text: str) -> str:
+    """Sanitize a memory entry specifically for injection-safe system prompt rendering.
+
+    Runs in-memory during prompt construction without modifying stored data on disk.
+    """
+    if not text or not isinstance(text, str):
+        return ""
+
+    cleaned = _strip_unsafe_chars(text)
+    cleaned = _neutralize_prompt_injection(cleaned)
+    # Neutralize lines starting with '#' so entries cannot create new root-level markdown prompt sections
+    cleaned = re.sub(r"(?m)^(\s*)#+\s*", r"\1", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
 
 
 def validate_memory_entry(content: Any, max_length: int = MAX_ENTRY_LENGTH) -> Tuple[Optional[str], Optional[str]]:
@@ -165,7 +176,7 @@ def validate_memory_entry(content: Any, max_length: int = MAX_ENTRY_LENGTH) -> T
     if len(raw) > max_length:
         return None, f"Memory entry exceeds maximum length of {max_length} characters (got {len(raw)})."
 
-    sanitized = sanitize_memory_entry(raw, max_length=max_length)
+    sanitized = sanitize_memory_entry(raw)
     if not sanitized:
         return None, "Memory entry is empty or contains only invalid/control characters."
 
@@ -260,13 +271,7 @@ class MultiUserFileMemoryProvider(MemoryProvider):
             text = path.read_text(encoding="utf-8").strip()
             if not text:
                 return []
-            raw_entries = [e.strip() for e in text.split(ENTRY_DELIMITER) if e.strip()]
-            sanitized_entries = []
-            for e in raw_entries:
-                s = sanitize_memory_entry(e)
-                if s:
-                    sanitized_entries.append(s)
-            return sanitized_entries
+            return [e.strip() for e in text.split(ENTRY_DELIMITER) if e.strip()]
         except Exception as e:
             logger.error("Failed reading memory file %s: %s", path, e)
             return []
@@ -274,8 +279,7 @@ class MultiUserFileMemoryProvider(MemoryProvider):
     def _write_entries(self, target: str, entries: List[str]) -> None:
         path = self._path_for(target)
         path.parent.mkdir(parents=True, exist_ok=True)
-        clean_entries = [sanitize_memory_entry(e) for e in entries if sanitize_memory_entry(e)]
-        content = ENTRY_DELIMITER.join(clean_entries) if clean_entries else ""
+        content = ENTRY_DELIMITER.join(entries) if entries else ""
         tmp_path = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
         tmp_path.write_text(content, encoding="utf-8")
         atomic_replace(tmp_path, path)
@@ -286,8 +290,10 @@ class MultiUserFileMemoryProvider(MemoryProvider):
         ]
         mem_entries = self._read_entries("memory")
         if mem_entries:
-            content = "\n".join(f"- {e}" for e in mem_entries)
-            blocks.append(f"## System & Environment Memory (Shared SOPs)\n{content}")
+            rendered = [sanitize_for_prompt(e) for e in mem_entries]
+            content = "\n".join(f"- {e}" for e in rendered if e)
+            if content:
+                blocks.append(f"## System & Environment Memory (Shared SOPs)\n{content}")
 
         if self._session_is_shared:
             blocks.append(SHARED_SESSION_NOTICE)
@@ -295,8 +301,10 @@ class MultiUserFileMemoryProvider(MemoryProvider):
 
         user_entries = self._read_entries("user")
         if user_entries:
-            content = "\n".join(f"- {e}" for e in user_entries)
-            blocks.append(f"## User Profile Memory (Private to {self._user_id})\n{content}")
+            rendered = [sanitize_for_prompt(e) for e in user_entries]
+            content = "\n".join(f"- {e}" for e in rendered if e)
+            if content:
+                blocks.append(f"## User Profile Memory (Private to {self._user_id})\n{content}")
 
         return "\n\n".join(blocks)
 
