@@ -864,9 +864,14 @@ class TestSessionKvServerAuth(unittest.TestCase):
         # happens after.
         self._trigger = patch.object(session_kv_server, "trigger_agent_troubleshooter")
         self._trigger.start()
-        # (error, degraded) — an unconfigured MagicMock would not unpack.
+        # (error, degraded, undelivered) — an unconfigured MagicMock would not
+        # unpack, and neither would a stale 2-tuple: the route would raise
+        # ValueError, get caught by the 502 handler, and this suite would still
+        # pass because it only asserts the status is not 401/403/503. So the
+        # arity here is what keeps the authenticated case exercising a healthy
+        # relay rather than the exception path.
         self._relay = patch.object(
-            session_kv_server, "relay_cron_report", return_value=(None, False)
+            session_kv_server, "relay_cron_report", return_value=(None, False, [])
         )
         self._relay.start()
 
@@ -1295,14 +1300,70 @@ class TestEnabledChatPlatforms(unittest.TestCase):
         )
 
     def test_a_single_destination_caller_says_which_platform_lost(self):
-        # #1094's other half: picking is fine, picking silently is not.
+        # #1094's other half: picking is fine, picking silently is not. The log
+        # has to name the platform that will NOT receive it -- naming only the
+        # winner leaves a reader to infer the loss from a list.
         self._point(
             "MANAGED_CONFIG_PATH",
             "platforms:\n  google_chat:\n    enabled: true\n  slack:\n    enabled: true\n",
         )
         with self.assertLogs(session_kv_server.logger, level="WARNING") as logs:
             self.assertEqual(session_kv_server.get_active_platform(), "google_chat")
-        self.assertIn("slack", "".join(logs.output))
+        line = "".join(logs.output)
+        self.assertIn("slack", line)
+        self.assertIn("will not receive it", line)
+
+
+class TestAlertPlatformFallback(unittest.TestCase):
+    """The alert path takes the first platform that ACCEPTS the alert.
+
+    It cannot fan out — it registers the thread it gets back as the session's
+    routing and the triage card's completion is addressed there — so it picks
+    one. Picking without a fallback would only move which install loses: #1094
+    was a dual-platform install whose Slack leg was dead, and an order that
+    leads with Google Chat mirrors it exactly for an install whose Google Chat
+    leg is the broken one.
+    """
+
+    def setUp(self):
+        patcher = patch.object(
+            session_kv_server, "enabled_chat_platforms",
+            return_value=["google_chat", "slack"])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for name in ("_register_session_routing", "_create_gateway_session",
+                     "_start_agent_turn", "mark_delivery_failed"):
+            p = patch.object(session_kv_server, name)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _run(self, post):
+        with patch.object(session_kv_server, "_post_initial_alert", side_effect=post) as alert:
+            session_kv_server.trigger_agent_troubleshooter("s1", "alert", {}, 7)
+        return alert
+
+    def test_a_dead_first_leg_does_not_cost_the_alert(self):
+        alert = self._run(
+            lambda platform, _msg: None if platform == "google_chat" else "1712345678.000100")
+        self.assertEqual([c.args[0] for c in alert.call_args_list], ["google_chat", "slack"])
+        session_kv_server._register_session_routing.assert_called_once_with(
+            "s1", "slack", "1712345678.000100")
+        session_kv_server.mark_delivery_failed.assert_not_called()
+
+    def test_the_first_leg_wins_when_it_works(self):
+        alert = self._run(lambda _platform, _msg: "spaces/AAA/threads/T1")
+        self.assertEqual([c.args[0] for c in alert.call_args_list], ["google_chat"],
+                         "a working first leg must not also post to the second")
+        session_kv_server._register_session_routing.assert_called_once_with(
+            "s1", "google_chat", "spaces/AAA/threads/T1")
+
+    def test_every_leg_failing_is_still_recorded_as_undelivered(self):
+        self._run(lambda _platform, _msg: None)
+        session_kv_server._register_session_routing.assert_not_called()
+        session_kv_server.mark_delivery_failed.assert_called_once()
+        detail = session_kv_server.mark_delivery_failed.call_args.args[1]
+        self.assertIn("google_chat", detail)
+        self.assertIn("slack", detail)
 
 
 class TestAlertDailyQuota(unittest.TestCase):
@@ -2011,6 +2072,14 @@ class TestCronReportRelay(unittest.TestCase):
 
         os.environ["SESSION_KV_API_KEY"] = API_KEY
         self.client = TestClient(session_kv_server.app, headers=AUTH_HEADERS)
+        # Slack's chat_id comes from SLACK_HOME_CHANNEL (`_register_session_routing`),
+        # and without one `_send_to_chat` cannot thread a Slack reply at all --
+        # which is #1094's autopush install, not a properly configured one. The
+        # fan-out tests below are about a dual-platform install that works, so
+        # they get the home channel autopush is missing.
+        env = patch.dict(os.environ, {"SLACK_HOME_CHANNEL": "C0123456789"})
+        env.start()
+        self.addCleanup(env.stop)
         # The temp database is shared across this file; a stale routing row for
         # a derived session id would make the second test see the first's thread.
         with sqlite3.connect(temp_db_path) as conn:
@@ -2263,18 +2332,66 @@ class TestCronReportRelay(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         posted = send.call_args.args[1]
-        self.assertLessEqual(len(posted), session_kv_server.CRON_REPORT_MAX_CHARS)
-        # The head survives, so the summary every governance SOP leads with does.
-        self.assertTrue(posted.startswith("HHH"), posted[:20])
-        # And the reader is told where the whole thing is, rather than being left
-        # to believe the cut copy is all there was.
+        # The cap bounds the REPORT -- what reaches the model -- not the posted
+        # message, which also carries the notice this server wrote.
+        self.assertIn("HHH", posted)
+        self.assertLessEqual(
+            len(posted.split("[truncated]")[-1].split("\n\n", 1)[-1]),
+            session_kv_server.CRON_REPORT_MAX_CHARS,
+        )
+        # The reader is told where the whole thing is, rather than being left to
+        # believe the cut copy is all there was.
         self.assertIn("[truncated]", posted)
         self.assertIn("cron/output/compliance-audit/", posted)
 
     def test_a_report_at_the_limit_is_left_alone(self):
         """Off-by-one at the boundary would mark every full-size report cut."""
         exact = "x" * session_kv_server.CRON_REPORT_MAX_CHARS
-        self.assertEqual(session_kv_server._truncate_report(exact, "platform", "j"), exact)
+        self.assertEqual(
+            session_kv_server._truncate_report(exact, "platform", "j"), (exact, ""))
+
+    def test_the_truncation_notice_survives_a_chat_agent_that_drops_it(self):
+        """The notice is prepended after the turn, not fed to the model.
+
+        `_build_relay_instructions` tells the Chat Agent to add "nothing at the
+        bottom", so a notice appended to the report is the line it is most
+        likely to drop -- and it is the one line telling the reader the report
+        is incomplete. This stubs a turn that returns only its own prose, the
+        way a compliant Chat Agent would.
+        """
+        over = "H" * (session_kv_server.CRON_REPORT_MAX_CHARS + 50_000)
+        with patch.object(session_kv_server, "enabled_chat_platforms", return_value=["google_chat"]), \
+             patch.object(session_kv_server, "_create_gateway_session", return_value=True), \
+             patch.object(session_kv_server, "_run_relay_turn", return_value="A composed summary."), \
+             patch.object(session_kv_server, "_send_to_chat", return_value="spaces/AAA/threads/T1") as send:
+            self.client.post(
+                "/v1/cron-reports", json={"job_id": "compliance-audit", "report": over}
+            )
+
+        posted = send.call_args.args[1]
+        self.assertTrue(posted.startswith("[truncated]"), posted[:40])
+        self.assertIn("cron/output/compliance-audit/", posted)
+        self.assertIn("A composed summary.", posted)
+
+    def test_the_model_never_sees_more_than_the_cap(self):
+        """The cap exists to bound what reaches the model, so truncation must
+        cut the report itself and not merely mark it."""
+        over = "H" * (session_kv_server.CRON_REPORT_MAX_CHARS + 50_000)
+        report, notice = session_kv_server._truncate_report(over, "platform", "compliance-audit")
+        self.assertLessEqual(len(report), session_kv_server.CRON_REPORT_MAX_CHARS)
+        self.assertTrue(notice)
+
+    def test_a_cap_smaller_than_the_notice_still_bounds_the_report(self):
+        """The notice is not part of the report, so it cannot push it over.
+
+        When the notice was appended, `max(0, cap - len(notice))` returned a
+        string ~2.5x a small cap -- the bound silently exceeded by the thing
+        enforcing it.
+        """
+        with patch.object(session_kv_server, "CRON_REPORT_MAX_CHARS", 100):
+            report, notice = session_kv_server._truncate_report("y" * 500, "platform", "j")
+        self.assertEqual(len(report), 100)
+        self.assertTrue(notice)
 
     def test_the_fan_out_reaches_every_enabled_platform(self):
         """#1094: a dual-platform install has two audiences, not a favourite.
@@ -2324,22 +2441,79 @@ class TestCronReportRelay(unittest.TestCase):
         self.assertIn("google_chat", detail)
         self.assertIn("slack", detail)
 
-    def test_only_the_routed_leg_replays_the_stored_thread(self):
+    def test_each_leg_replays_its_own_thread_and_never_another_s(self):
         """A thread id is platform-local; replaying it on the other leg addresses
         a thread that does not exist."""
+        def per_platform(platform, *_args, **_kwargs):
+            return "spaces/AAA/threads/T1" if platform == "google_chat" else "1712345678.000100"
+
         with patch.object(session_kv_server, "enabled_chat_platforms",
                           return_value=["google_chat", "slack"]), \
              patch.object(session_kv_server, "_create_gateway_session", return_value=True), \
              patch.object(session_kv_server, "_run_relay_turn", return_value="composed"), \
-             patch.object(session_kv_server, "_send_to_chat",
-                          return_value="spaces/AAA/threads/T1") as send:
+             patch.object(session_kv_server, "_send_to_chat", side_effect=per_platform) as send:
             self.client.post("/v1/cron-reports", json={"job_id": "ji", "report": "first"})
             send.reset_mock()
             self.client.post("/v1/cron-reports", json={"job_id": "ji", "report": "second"})
 
         by_platform = {c.args[0]: c.args[2:] for c in send.call_args_list}
         self.assertEqual(by_platform["google_chat"], ("spaces/AAA", "spaces/AAA/threads/T1"))
-        self.assertEqual(by_platform["slack"], ("", ""))
+        # Slack replays Slack's own thread, not Google Chat's, and not nothing.
+        self.assertEqual(by_platform["slack"][1], "1712345678.000100")
+
+    def test_a_leg_that_fails_once_keeps_its_thread_for_the_next_report(self):
+        """A transient failure used to unthread a leg for the rest of the day.
+
+        Ownership moved to the leg that landed, and because only the owner
+        replayed a thread, the recovered platform started a fresh top-level
+        message on every subsequent report -- orphans nobody could reply into
+        with context.
+        """
+        state = {"google_chat_up": True}
+
+        def flaky(platform, *_args, **_kwargs):
+            if platform == "google_chat":
+                return "spaces/AAA/threads/T1" if state["google_chat_up"] else None
+            return "1712345678.000100"
+
+        with patch.object(session_kv_server, "enabled_chat_platforms",
+                          return_value=["google_chat", "slack"]), \
+             patch.object(session_kv_server, "_create_gateway_session", return_value=True), \
+             patch.object(session_kv_server, "_run_relay_turn", return_value="composed"), \
+             patch.object(session_kv_server, "_send_to_chat", side_effect=flaky) as send:
+            self.client.post("/v1/cron-reports", json={"job_id": "jk", "report": "one"})
+            state["google_chat_up"] = False           # transient outage
+            self.client.post("/v1/cron-reports", json={"job_id": "jk", "report": "two"})
+            state["google_chat_up"] = True            # recovered
+            send.reset_mock()
+            self.client.post("/v1/cron-reports", json={"job_id": "jk", "report": "three"})
+
+        third = {c.args[0]: c.args[2:] for c in send.call_args_list}
+        self.assertEqual(
+            third["google_chat"], ("spaces/AAA", "spaces/AAA/threads/T1"),
+            "the recovered leg must reply into the thread it opened, not orphan a new one",
+        )
+
+    def test_a_reply_in_either_channel_finds_the_report(self):
+        """`incident_context` resolves by (chat_id, thread_id), so a fan-out that
+        stores only the owner's address leaves the other channel's readers
+        talking to an agent that never saw the report."""
+        import sqlite3
+
+        def per_platform(platform, *_args, **_kwargs):
+            return "spaces/AAA/threads/T1" if platform == "google_chat" else "1712345678.000100"
+
+        with patch.object(session_kv_server, "enabled_chat_platforms",
+                          return_value=["google_chat", "slack"]), \
+             patch.object(session_kv_server, "_create_gateway_session", return_value=True), \
+             patch.object(session_kv_server, "_run_relay_turn", return_value="composed"), \
+             patch.object(session_kv_server, "_send_to_chat", side_effect=per_platform):
+            self.client.post("/v1/cron-reports", json={"job_id": "jl", "report": "r"})
+
+        with sqlite3.connect(temp_db_path) as conn:
+            threads = {row[0] for row in conn.execute("SELECT thread_id FROM incidents")}
+        self.assertIn("spaces/AAA/threads/T1", threads)
+        self.assertIn("1712345678.000100", threads)
 
     def test_the_routing_falls_to_a_leg_that_actually_landed(self):
         """If the routed platform is the one that failed, the follow-up thread has

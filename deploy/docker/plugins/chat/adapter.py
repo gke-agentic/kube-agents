@@ -231,8 +231,9 @@ async def standalone_send(
     for.
 
     ``chat_id``, ``thread_id``, ``media_files`` and ``force_document`` are
-    accepted for signature parity and ignored: the relay route has exactly one
-    destination, and the Chat Agent decides where its own message goes.
+    accepted for signature parity and ignored: this sender names no destination
+    at all. The route resolves them itself — one per enabled chat platform — and
+    the Chat Agent decides what its own message says.
 
     The error strings become ``last_delivery_error``, so they name the condition
     and never the key.
@@ -375,8 +376,8 @@ def register(ctx) -> None:
         standalone_sender_fn=standalone_send,
         # No chunking. The Chat Agent is composing a message from this text, not
         # posting it; the length bound that matters is CRON_REPORT_MAX_CHARS on
-        # the relay route, which rejects rather than silently splitting a report
-        # into pieces that each start a separate turn.
+        # the relay route, which truncates to a single marked report rather than
+        # splitting it into pieces that each start a separate turn.
         max_message_length=0,
         emoji="🗣️",
         # Never offer /update from a channel that has no inbound side.

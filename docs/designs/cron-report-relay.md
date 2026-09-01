@@ -362,11 +362,18 @@ the channel.
 
 The cap truncates rather than rejects. It answered HTTP 413 until #1094, and the
 finding then existed only in the job's saved output with a line in
-`last_delivery_error` that nothing read — which cost three fleet-wide audit
-reports at 60k characters apiece over 30 and 31 August 2026. The head survives,
-because every governance SOP leads with its summary and puts the evidence
-appendix last, and the cut copy ends with a `[truncated]` line naming
-`cron/output/<job_id>/`, where the whole report is.
+`last_delivery_error` that nothing read; #1094 records three runs lost that way
+over 30 and 31 August 2026, across `stockout-prevention` and `compliance-audit`,
+whose fleet-wide output runs to several times this cap. The head survives, and
+the message opens with a `[truncated]` line naming `cron/output/<job_id>/`,
+where the whole report is.
+
+That line is prepended to the **composed message, after the relay turn** — not
+appended to the report before it. Appended, it is model input, and the relay
+instructions tell the Chat Agent to reproduce the report while adding "nothing
+at the bottom": the one sentence telling a reader the report is incomplete would
+be the sentence the instructions invite it to drop. Prepending it afterwards is
+how `[unrelayed]` already makes the same kind of admission unconditional.
 
 ## Which platforms a report is posted to
 
@@ -375,30 +382,51 @@ Every chat platform the install has enabled, resolved by
 and consulted **per platform** so that one naming Slack cannot hide a Google Chat
 another knows about: the operator's managed scope
 (`/etc/hermes/config.yaml`, which carries `platforms.<p>.enabled` as explicit
-booleans and therefore settles it outright on a deployed pod), the profile's own
-writable `config.yaml`, then per-platform environment signals for an install
-neither file describes.
+booleans and therefore settles it outright on a deployed pod), then `CONFIG_PATH`
+— `/opt/data/config.yaml`, the front door's own writable file rather than a named
+profile's — then per-platform environment signals for an install neither file
+describes.
 
 A dual-platform install gets the report on both. Picking one is what #1094 was:
 the resolver returned on its first match, Slack led the order, and an install
-with Slack enabled but no home channel and no connection lost every scheduled
-governance report for seven days while Google Chat — which had a home channel —
-received nothing. A partial fan-out is still a 200, because the report is in a
-channel and a re-run would double-post there; the platforms it missed come back
-in the response body's `undelivered`, which the relay adapter turns into
-`last_delivery_error`.
+with Slack enabled but no home channel lost every scheduled governance report for
+seven days while Google Chat — which had a home channel — received nothing. A
+partial fan-out is still a 200, because the report is in a channel and a re-run
+would double-post there; the platforms it missed come back in the response body's
+`undelivered`, which the relay adapter turns into `last_delivery_error`.
 
-Only one leg is threaded. A thread id is platform-local, so the session's routing
-row names one platform and only that leg replays the stored thread; the others
-post to their own home channel each time. If the routed leg is the one that
-failed, the routing moves to a leg that landed, so a reply reaches a session that
-holds the report.
+**This widens who sees a report, and that is a deliberate change rather than a
+side effect.** A governance report carries `evidence.excerpt` — literal
+`kubectl -o yaml` from workloads other teams deploy — and on an install that
+enabled two platforms for two different audiences it now reaches both, with no
+per-job or per-platform opt-out and no CR edit required to take effect. The
+alternative is the status quo, where the same install silently reaches one
+audience and the operator cannot tell which; a report going somewhere unintended
+is visible and correctable, and a report going nowhere was not. An install that
+wants one destination should enable one platform.
+
+Each leg keeps its own thread. A thread id is platform-local, so the session row
+carries `platform_threads` — one `(chat_id, thread_id)` per platform — and every
+leg replays only its own. Keeping a single address instead is how a leg that
+failed once stayed unthreaded for the rest of the day: the next report found the
+row naming another platform, posted a fresh top-level message, and did it again
+on every run. The top-level `platform`/`chat_id`/`thread_id` triple still holds
+one address, because the event-triage card has one destination; it goes to the
+leg the session was already routed to, or to the first that landed.
+
+An incident row is stored for every leg that landed, so a reply in any channel
+the report reached replays it. Storing only one left a reply in the other channel
+answered by an agent that had never seen the report.
 
 `get_active_platform` is the single-destination sibling, for
 `_post_initial_alert`: an incident alert registers the thread it gets back as the
 session's routing and the triage card's completion is addressed there, so two
-threads on two platforms would leave the report addressable to only one. It picks
-the first enabled platform and logs a warning naming the destination that lost.
+threads on two platforms would leave the report addressable to only one. It
+returns the first enabled platform and logs a warning naming the platforms that
+will not receive the message — and the alert path then tries each enabled
+platform in turn until one accepts, so a broken first leg costs a retry rather
+than the alert. Ordering alone would have mirrored #1094 onto whichever installs
+have the _other_ platform broken.
 
 ## What a job has to do: nothing
 

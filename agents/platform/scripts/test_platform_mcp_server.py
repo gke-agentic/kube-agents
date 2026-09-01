@@ -846,6 +846,38 @@ class TestReportToChat(unittest.TestCase):
         result = report_to_chat("finding", job_id="j1")
         self.assertIn("SUCCESS", result)
         self.assertNotIn("degraded", result)
+        self.assertNotIn("partial", result)
+
+    @patch.dict(os.environ, {"HERMES_HOME": "/opt/data/profiles/platform", "SESSION_KV_API_KEY": "k"})
+    @patch("urllib.request.urlopen")
+    def test_a_partial_fan_out_is_not_reported_as_a_clean_success(self, mock_urlopen):
+        """The route fans out, so `relay: ok` no longer means everyone saw it.
+
+        This is the sibling of the relay adapter's own `undelivered` handling;
+        a caller that reads only `relay` tells the agent a half-delivered report
+        went out cleanly.
+        """
+        mock_urlopen.return_value = self._urlopen(
+            b'{"status": "delivered", "relay": "ok", "undelivered": "slack", "session_id": "s1"}'
+        )
+        result = report_to_chat("finding", job_id="j1")
+        self.assertIn("partial", result)
+        self.assertIn("slack", result)
+        self.assertNotIn("ERROR", result)
+        self.assertIn("do not send it again", result.lower())
+
+    @patch.dict(os.environ, {"HERMES_HOME": "/opt/data/profiles/platform", "SESSION_KV_API_KEY": "k"})
+    @patch("urllib.request.urlopen")
+    def test_degraded_and_partial_are_both_reported(self, mock_urlopen):
+        """A run can hit both, and an early return would drop one of them."""
+        mock_urlopen.return_value = self._urlopen(
+            b'{"status": "delivered", "relay": "degraded", "undelivered": "slack",'
+            b' "session_id": "s1"}'
+        )
+        result = report_to_chat("finding", job_id="j1")
+        self.assertIn("degraded", result)
+        self.assertIn("partial", result)
+        self.assertIn("unrelayed", result)
 
 
 class TestSanitizationAndMutationRemoval(unittest.TestCase):

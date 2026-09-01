@@ -85,17 +85,26 @@ class KVServer:
                 "SESSION_KV_API_KEY": API_KEY,
                 "PLATFORM_AGENT_CONFIG_PATH": str(tmp_path / "absent-config.yaml"),
                 "PLATFORM_AGENT_DOTENV_PATH": str(tmp_path / "absent.env"),
+                # The managed scope, and the reason it is pinned at an empty
+                # directory rather than left alone: it is the HIGHEST-precedence
+                # source `enabled_chat_platforms` reads, resolved from this
+                # variable with a default of /etc/hermes. A maintainer running
+                # the seams on a workstation that has an /etc/hermes/config.yaml
+                # -- or that exports this variable -- would otherwise have the
+                # server answer from their own install, ahead of everything
+                # below. Absent files here, so both yaml branches fall through
+                # and the scrubbed environment is what decides.
+                "HERMES_MANAGED_DIR": str(tmp_path / "absent-managed-scope"),
                 "PYTHONPATH": str(SCRIPTS_DIR),
             }
         )
-        # An absent config file gets `enabled_chat_platforms` past both yaml
-        # branches but not to a fixed answer: it then resolves each platform
-        # from the environment, and a maintainer's own shell is exactly where
-        # those variables live. Dropping every signal it reads is what makes the
-        # fallback deterministic, and dropping the credentials among them also
-        # means a server started here holds no token to post with. Keep this
-        # list in step with `session_kv_server._CHAT_ENV_SIGNALS`; a signal it
-        # gains and this loses reintroduces the hazard silently.
+        # With both config files absent, `enabled_chat_platforms` resolves each
+        # platform from the environment, and a maintainer's own shell is exactly
+        # where those variables live. Dropping every signal it reads is what
+        # makes the fallback deterministic, and dropping the credentials among
+        # them also means a server started here holds no token to post with.
+        # Keep this list in step with `session_kv_server._CHAT_ENV_SIGNALS`; a
+        # signal it gains and this loses reintroduces the hazard silently.
         for leaked in (
             "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_RELAY_URL", "SLACK_HOME_CHANNEL",
             "GOOGLE_CHAT_WEBHOOK", "GOOGLE_CHAT_RELAY_URL", "GOOGLE_CHAT_PROJECT_ID",

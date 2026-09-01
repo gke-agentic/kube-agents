@@ -751,7 +751,8 @@ def enabled_chat_platforms() -> list[str]:
        `platforms.<p>.enabled` keys as explicit booleans on every reconcile, so
        the CR's answer is on disk in the container and there is nothing to
        infer. Reading it is what #1094 means by "stop guessing the platform".
-    2. CONFIG_PATH, the profile's own writable `config.yaml`. Authoritative on
+    2. CONFIG_PATH — `/opt/data/config.yaml`, the front door's own writable
+       file rather than a named profile's. Authoritative on
        an install that has no operator — a `docker run` off the image, a profile
        configured by hand — and normally silent on a managed pod: Hermes
        overlays the managed scope per leaf inside its own config loader rather
@@ -769,8 +770,16 @@ def enabled_chat_platforms() -> list[str]:
     .get_enabled_platforms` is still keyed on the absent SLACK_BOT_TOKEN (#735
     is open against it), and open PR #996 adds `chat_platforms
     .enabled_chat_platforms` for the Cluster Agent reconcile summary (#989).
-    The ordering and the precedence here are deliberately #996's, so that
-    whichever lands second is a re-point rather than a behaviour change.
+
+    Converging on #996's module is a re-point for the ORDER and the per-platform
+    resolution, which are deliberately the same, and NOT for the sources: #996
+    reads `CONFIG_PATH` then the environment, and the managed scope above is a
+    third source it does not have, at higher precedence than either. Dropping it
+    is not a refactor — on a pod whose CR sets `slack.enabled: false` while a
+    stale `SLACK_RELAY_URL` lingers in the container environment, this resolves
+    `["google_chat"]` and #996's resolves `["google_chat", "slack"]`, re-enabling
+    a leg an operator turned off. Whichever lands second has to carry
+    `_platforms_enabled_in(MANAGED_CONFIG_PATH)` across with it.
     """
     from_managed = _platforms_enabled_in(MANAGED_CONFIG_PATH)
     from_profile = _platforms_enabled_in(CONFIG_PATH)
@@ -809,8 +818,9 @@ def get_active_platform() -> str:
     platforms = enabled_chat_platforms()
     if len(platforms) > 1:
         logger.warning(
-            f"{len(platforms)} chat platforms are enabled ({', '.join(platforms)}); "
-            f"this send takes one destination and uses '{platforms[0]}'"
+            f"{len(platforms)} chat platforms are enabled; this send takes one "
+            f"destination, so it uses '{platforms[0]}' and "
+            f"{', '.join(platforms[1:])} will not receive it"
         )
     return platforms[0]
 
@@ -916,6 +926,15 @@ def _register_session_routing(session_id: str, platform: str, thread_id: str) ->
     the patch treats as non-chat and declines to substitute — so a session that
     never reached this function keeps today's behaviour instead of being
     re-addressed to a guess.
+
+    The same call also records the thread under `platform_threads`, keyed by
+    platform. Those three fields hold ONE address because the card has one
+    destination, but a fanned-out cron report has a thread per platform, and
+    keeping only the winner's is what made a leg that failed once stay unthreaded
+    for the rest of the day: the next report found the row naming another
+    platform, posted a fresh top-level message, and did it again on every run.
+    `platform_threads` is additive and never overwritten by another platform, so
+    each leg keeps its own thread whatever the top-level fields say.
     """
     try:
         with closing(sqlite3.connect(SESSION_KV_DB_PATH, timeout=5.0)) as conn:
@@ -932,7 +951,16 @@ def _register_session_routing(session_id: str, platform: str, thread_id: str) ->
                         meta["chat_id"] = os.environ.get("SLACK_HOME_CHANNEL", "")
                     else:
                         meta["chat_id"] = thread_id.split("/threads/")[0]
-                    
+
+                    threads = meta.get("platform_threads")
+                    if not isinstance(threads, dict):
+                        threads = {}
+                    threads[platform] = {
+                        "chat_id": meta["chat_id"],
+                        "thread_id": thread_id,
+                    }
+                    meta["platform_threads"] = threads
+
                     # Update SQLite metadata table
                     conn.execute(
                         "UPDATE session_metadata SET metadata = ? WHERE session_id = ?",
@@ -1169,11 +1197,34 @@ def trigger_agent_troubleshooter(
     event_row_id: Optional[int] = None,
 ) -> None:
     """Post warning alert to Chat, configure thread mapping, and trigger the agent loop in background."""
-    active_platform = get_active_platform()
+    # 1. Post initial warning notification to Google Chat or Slack.
+    #
+    #    One destination, but the first one is not the only one tried. This path
+    #    cannot fan out the way `relay_cron_report` does — it registers the
+    #    thread it gets back as the session's routing, the triage card's
+    #    completion is addressed there, and a thread belongs to one platform —
+    #    so it takes the first platform that actually accepts the alert.
+    #
+    #    Falling through matters because picking is otherwise just a choice of
+    #    which install loses. #1094 was a dual-platform install whose Slack leg
+    #    had no home channel, and reordering alone would mirror it: an install
+    #    whose *Google Chat* leg is the broken one would lose every alert to a
+    #    send that fails while a working Slack sits second in the list. The
+    #    relay learned to fan out for this reason; without this loop the alert
+    #    path would have learned nothing.
+    platforms = enabled_chat_platforms()
+    active_platform, thread_id = platforms[0], None
+    for candidate in platforms:
+        thread_id = _post_initial_alert(candidate, alert_msg)
+        if thread_id:
+            active_platform = candidate
+            break
+        if len(platforms) > 1:
+            logger.warning(
+                f"Alert for session {session_id} was not accepted by '{candidate}'"
+                + (f"; trying the next enabled platform" if candidate != platforms[-1] else "")
+            )
 
-    # 1. Post initial warning notification to Google Chat or Slack
-    thread_id = _post_initial_alert(active_platform, alert_msg)
-    
     # 2. Register thread-to-session mappings for two-way chat routing. This has
     #    to happen before the turn in step 5: the card that turn files reads
     #    this row to address its completion back to the alert's thread (see
@@ -1196,11 +1247,12 @@ def trigger_agent_troubleshooter(
         # mode is false reassurance.
         mark_delivery_failed(
             event_row_id,
-            f"no message id from '{active_platform}'; see the session server log",
+            f"no message id from {' or '.join(repr(p) for p in platforms)}; "
+            "see the session server log",
         )
         logger.error(
-            f"Alert for session {session_id} was not delivered to '{active_platform}'; "
-            "the daily recap will report it as undelivered"
+            f"Alert for session {session_id} was not delivered to any enabled platform "
+            f"({', '.join(platforms)}); the daily recap will report it as undelivered"
         )
 
     # 3. Configure HTTP authentication headers for Hermes REST gateway
@@ -1309,21 +1361,30 @@ def _sanitize_label(value: str) -> str:
     return neutralised
 
 
-def _truncate_report(report: str, profile: str, job_id: str) -> str:
-    """Cut an oversized report down to the cap rather than dropping it.
+def _truncate_report(report: str, profile: str, job_id: str) -> tuple[str, str]:
+    """Cut an oversized report to the cap. Returns `(report, notice)`.
+
+    `notice` is `""` for a report that fits, and otherwise the line that says so
+    — which the caller **prepends to the composed message after the relay turn**
+    rather than appending here. That placement is the point. Appended to the
+    report, the notice is model input: it reaches the Chat Agent as the last
+    lines of a document that `_build_relay_instructions` tells it to reproduce
+    while adding "nothing at the bottom", so the one sentence a reader needs in
+    order to know the report is incomplete is the sentence the instructions
+    invite it to drop. Prepending it to the finished message is how
+    :func:`_unrelayed_notice` makes the same kind of admission unconditional,
+    and this follows it.
 
     An over-cap report used to be answered with HTTP 413, which the scheduler
     recorded in `last_delivery_error` and nothing else did anything about — so
-    the finding was lost. That is not a hypothetical: the fleet-wide audits on
-    the autopush roster produce 60k characters against a 12000 cap, and
-    `stockout-prevention` and `compliance-audit` were dropped whole on 30 and 31
-    August 2026 (#1094).
+    the finding was lost. #1094 records three such runs on the autopush roster
+    over 30 and 31 August 2026, across `stockout-prevention` and
+    `compliance-audit`, whose fleet-wide output runs to roughly five times this
+    cap.
 
     A cut report is worse than a whole one and much better than none. The head
-    is what survives, because every governance SOP on the roster leads with its
-    summary and puts the evidence appendix last, so the first 12000 characters
-    are the part a reader needs. The notice names the directory the scheduler
-    saved the full text to, so nothing is only in the truncated copy.
+    survives, and the notice names the directory the scheduler saved the full
+    text to, so nothing is only in the truncated copy.
 
     Not a link: the file lives on the agent's PVC under
     `$HERMES_HOME/cron/output/<job_id>/<timestamp>.md` and the run's own
@@ -1331,20 +1392,19 @@ def _truncate_report(report: str, profile: str, job_id: str) -> str:
     layer can honestly be.
     """
     if len(report) <= CRON_REPORT_MAX_CHARS:
-        return report
+        return report, ""
 
     notice = (
-        f"\n\n---\n[truncated] This report was {len(report)} characters, over the "
-        f"{CRON_REPORT_MAX_CHARS}-character chat limit. The text above is the "
-        f"beginning of it; the whole report was saved by the scheduler under "
-        f"`cron/output/{job_id}/` in the {profile} profile's home."
+        f"[truncated] This report was {len(report)} characters, over the "
+        f"{CRON_REPORT_MAX_CHARS}-character chat limit, so what follows is the "
+        f"beginning of it. The whole report was saved by the scheduler under "
+        f"`cron/output/{job_id}/` in the {profile} profile's home.\n\n"
     )
-    kept = max(0, CRON_REPORT_MAX_CHARS - len(notice))
     logger.warning(
         f"Relay for {profile}/{job_id}: report is {len(report)} chars, truncating to "
-        f"{kept} for the {CRON_REPORT_MAX_CHARS}-char chat limit"
+        f"{CRON_REPORT_MAX_CHARS} for the chat limit"
     )
-    return report[:kept].rstrip() + notice
+    return report[:CRON_REPORT_MAX_CHARS].rstrip(), notice
 
 
 def _cron_report_session_id(profile: str, job_id: str, day: str) -> str:
@@ -1372,13 +1432,24 @@ def _cron_report_session_id(profile: str, job_id: str, day: str) -> str:
 def _lookup_session_routing(session_id: str) -> tuple[str, str, str]:
     """Read back (platform, chat_id, thread_id), or ("", "", "") if unrouted.
 
-    `platform` matters to the fan-out in :func:`relay_cron_report`: a thread
-    belongs to exactly one platform, and replaying a Google Chat thread id on
-    the Slack leg addresses a thread that does not exist. Only the leg this
-    names may reuse the stored thread. `_ensure_session_row` seeds the field
-    with the `cron-report` sentinel, which matches no platform, so a session
-    nothing has routed yet reads as unrouted here rather than as Google Chat.
+    This is the session's ONE address — what the event-triage card is addressed
+    to. `_ensure_session_row` seeds `platform` with the `cron-report` sentinel,
+    which matches no platform, so a session nothing has routed yet reads as
+    unrouted here rather than as Google Chat.
+
+    For the per-leg threads a fanned-out report needs, see
+    :func:`_lookup_platform_threads`.
     """
+    meta = _session_metadata(session_id)
+    return (
+        str(meta.get("platform") or ""),
+        str(meta.get("chat_id") or ""),
+        str(meta.get("thread_id") or ""),
+    )
+
+
+def _session_metadata(session_id: str) -> Dict[str, Any]:
+    """The parsed metadata blob for a session, or `{}` if there is none."""
     try:
         with closing(sqlite3.connect(SESSION_KV_DB_PATH, timeout=5.0)) as conn:
             row = conn.execute(
@@ -1386,16 +1457,34 @@ def _lookup_session_routing(session_id: str) -> tuple[str, str, str]:
                 (session_id,),
             ).fetchone()
         if not row:
-            return "", "", ""
+            return {}
         meta = json.loads(row[0])
-        return (
-            str(meta.get("platform") or ""),
-            str(meta.get("chat_id") or ""),
-            str(meta.get("thread_id") or ""),
-        )
+        return meta if isinstance(meta, dict) else {}
     except Exception as exc:
         logger.error(f"Failed to read session routing for {session_id}: {exc}")
-        return "", "", ""
+        return {}
+
+
+def _lookup_platform_threads(session_id: str) -> Dict[str, tuple[str, str]]:
+    """Each platform's own `(chat_id, thread_id)` for this session.
+
+    A thread id is platform-local — `hermes send` refuses a Google Chat thread
+    addressed as Slack rather than degrading it to the home channel — so a
+    fanned-out report cannot share one address across its legs. Every leg reads
+    its own entry here and none of them can pick up another's.
+    """
+    threads = _session_metadata(session_id).get("platform_threads")
+    if not isinstance(threads, dict):
+        return {}
+    out: Dict[str, tuple[str, str]] = {}
+    for platform, entry in threads.items():
+        if not isinstance(entry, dict):
+            continue
+        chat_id = str(entry.get("chat_id") or "")
+        thread_id = str(entry.get("thread_id") or "")
+        if chat_id and thread_id:
+            out[str(platform)] = (chat_id, thread_id)
+    return out
 
 
 def _ensure_session_row(session_id: str, profile: str, job_id: str, title: str = "") -> None:
@@ -1627,7 +1716,12 @@ def _unrelayed_notice(profile: str, job_id: str) -> str:
 
 
 def relay_cron_report(
-    session_id: str, profile: str, job_id: str, title: str, report: str
+    session_id: str,
+    profile: str,
+    job_id: str,
+    title: str,
+    report: str,
+    truncation_notice: str = "",
 ) -> tuple[str | None, bool, list[str]]:
     """Hand a specialist's finished report to the Chat Agent, then post its reply.
 
@@ -1687,24 +1781,23 @@ def relay_cron_report(
         logger.warning(f"Relay for {profile}/{job_id}: posting the raw report, unrelayed")
         message = _unrelayed_notice(profile, job_id) + report
 
-    routed_platform, chat_id, thread_id = _lookup_session_routing(session_id)
+    if truncation_notice:
+        # After the turn, never before it. Appended to the report it would be
+        # model input, and the instructions tell the Chat Agent to add "nothing
+        # at the bottom" — so the one line saying the report is incomplete is
+        # the line most likely to be dropped. See :func:`_truncate_report`.
+        message = truncation_notice + message
 
-    # One send per enabled platform. Only the leg the session is already routed
-    # to may reuse the stored thread — a thread id is platform-local, and
-    # `hermes send` refuses a Google Chat thread addressed as Slack rather than
-    # degrading it to the home channel. Every other leg posts to its own home
-    # channel, so the second platform gets a top-level message per report
-    # instead of a thread of its own; per-platform threading needs a routing row
-    # that can hold more than one, which this does not attempt.
+    routed_platform = _lookup_session_routing(session_id)[0]
+    known_threads = _lookup_platform_threads(session_id)
+
+    # One send per enabled platform, each into its OWN thread. A thread id is
+    # platform-local, so every leg reads its own entry and none can pick up
+    # another's; a leg with no entry yet posts to its home channel and gets one.
     threads: Dict[str, str] = {}
     for platform in platforms:
-        threaded = platform == routed_platform
-        new_thread_id = _send_to_chat(
-            platform,
-            message,
-            chat_id if threaded else "",
-            thread_id if threaded else "",
-        )
+        leg_chat_id, leg_thread_id = known_threads.get(platform, ("", ""))
+        new_thread_id = _send_to_chat(platform, message, leg_chat_id, leg_thread_id)
         if new_thread_id:
             threads[platform] = new_thread_id
         else:
@@ -1716,21 +1809,28 @@ def relay_cron_report(
     if not threads:
         return f"composed but not delivered to {', '.join(platforms)}", degraded, undelivered
 
-    # The routed leg keeps the thread the user replies into; if it is the leg
-    # that failed, the first one that did land takes it over, so a follow-up
-    # question reaches a session that has the report rather than one addressed
-    # at a platform the report never arrived on.
+    # Register every leg that landed, so each keeps its own thread for the rest
+    # of the day. Order matters: the owner goes last, because the top-level
+    # `platform`/`chat_id`/`thread_id` fields hold one address and the last
+    # write wins. The owner is the routed platform when it landed, else the
+    # first that did — so a follow-up question reaches a session that has the
+    # report rather than one addressed at a platform it never arrived on, and a
+    # leg that fails once does not lose its thread for the rest of the day.
     owner = routed_platform if routed_platform in threads else next(
         p for p in platforms if p in threads
     )
-    if owner != routed_platform or threads[owner] != thread_id:
-        _register_session_routing(session_id, owner, threads[owner])
-        _, chat_id, thread_id = _lookup_session_routing(session_id)
+    for platform in [p for p in platforms if p in threads and p != owner] + [owner]:
+        _register_session_routing(session_id, platform, threads[platform])
 
-    _store_incident_report(chat_id, thread_id, message)
+    # One incident row per landed leg, so a reply in ANY of the channels the
+    # report reached replays it. Storing only the owner's is what left a reply
+    # in the other channel answered by an agent that had never seen the report.
+    for chat_id, thread_id in _lookup_platform_threads(session_id).values():
+        _store_incident_report(chat_id, thread_id, message)
+
     logger.info(
         f"Relayed {profile}/{job_id} report to {', '.join(threads)} "
-        f"({owner} thread {thread_id})"
+        f"(replies routed to {owner})"
     )
     if undelivered:
         logger.error(
@@ -1774,14 +1874,14 @@ def submit_cron_report(request_data: Dict[str, Any]) -> Dict[str, str]:
         raise HTTPException(status_code=400, detail="job_id field is required")
     if not report:
         raise HTTPException(status_code=400, detail="report field is required")
-    report = _truncate_report(report, profile, job_id)
+    report, truncation_notice = _truncate_report(report, profile, job_id)
 
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     session_id = _cron_report_session_id(profile, job_id, day)
 
     try:
         error, degraded, undelivered = relay_cron_report(
-            session_id, profile, job_id, title, report
+            session_id, profile, job_id, title, report, truncation_notice
         )
     except Exception as exc:  # never leak a stack trace into last_delivery_error
         logger.exception(f"Relay for {profile}/{job_id} raised")
