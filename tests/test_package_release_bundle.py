@@ -111,6 +111,10 @@ class PackageReleaseBundleTest(unittest.TestCase):
             create_mock_helm_binary(bin_dir)
             create_mock_syft_binary(bin_dir)
 
+            head_commit = subprocess.check_output(
+                ["git", "-C", str(_REPO_ROOT), "rev-parse", "HEAD"], text=True
+            ).strip()
+
             proc = self._run_script(
                 [MOCK_RELEASE_BUNDLE_VERSION],
                 env={
@@ -118,6 +122,7 @@ class PackageReleaseBundleTest(unittest.TestCase):
                     "DIST_DIR": str(dist_dir),
                     "CI": "true",
                     "REGISTRY_PREFIX": MOCK_DEFAULT_REGISTRY_PREFIX,
+                    "TARGET_COMMIT": head_commit,
                 },
             )
             self.assertEqual(proc.returncode, 0, f"STDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}")
@@ -156,6 +161,7 @@ class PackageReleaseBundleTest(unittest.TestCase):
             self.assertIn("name=kube-agents", marker_content)
             self.assertIn(f"version={MOCK_RELEASE_BUNDLE_VERSION}", marker_content)
             self.assertIn(f"tag={MOCK_RELEASE_BUNDLE_VERSION}", marker_content)
+            self.assertIn(f"commit={head_commit}", marker_content)
 
             # Verify BAKED_RELEASE_VERSION stamping
             stamped_install = (bundle_root / "install.sh").read_text()
@@ -182,11 +188,16 @@ class PackageReleaseBundleTest(unittest.TestCase):
             create_mock_helm_binary(bin_dir)
             create_mock_syft_binary(bin_dir)
 
+            head_commit = subprocess.check_output(
+                ["git", "-C", str(_REPO_ROOT), "rev-parse", "HEAD"], text=True
+            ).strip()
+
             env = {
                 "PATH": str(bin_dir),
                 "DIST_DIR": str(dist_dir),
                 "CI": "true",
                 "REGISTRY_PREFIX": MOCK_DEFAULT_REGISTRY_PREFIX,
+                "TARGET_COMMIT": head_commit,
             }
 
             proc1 = self._run_script([MOCK_RELEASE_BUNDLE_VERSION], env=env)
