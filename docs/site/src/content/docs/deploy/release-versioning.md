@@ -11,18 +11,25 @@ The release pipeline guarantees that installer scripts (`install.sh`, `uninstall
 
 ## Tag and artifact taxonomy
 
-Every commit and build progresses through four distinct lifecycle tiers:
+Every commit and build progresses through five distinct lifecycle tiers:
 
-| Tier                       | Format                                | Trigger                       | Purpose and guarantees                                                                                              |
-| :------------------------- | :------------------------------------ | :---------------------------- | :------------------------------------------------------------------------------------------------------------------ |
-| **Candidate Build**        | `<COMMIT_SHA>` (bare 40-char SHA)     | Push to `main` branch         | Developer build in GHCR; container images built once.                                                               |
-| **Release Candidate (RC)** | `rc_YYMMDDHHMM_<SHORT_SHA>`           | 3-hour cron / manual dispatch | Candidate build selected for live cluster testing.                                                                  |
-| **RC Validated**           | `rc_YYMMDDHHMM_<SHORT_SHA>_validated` | Successful GKE E2E suite      | Quality gate: proof that `install.sh` succeeded on a real GKE cluster.                                              |
-| **GA Stable**              | `X.Y.Z` (pure numeric SemVer)         | Release publish workflow      | Official production release tagged on a stamped commit parented by the target commit (validated on GKE by default). |
+| Tier                       | Format                                | Trigger                       | Purpose and guarantees                                                                                                 |
+| :------------------------- | :------------------------------------ | :---------------------------- | :--------------------------------------------------------------------------------------------------------------------- |
+| **Candidate Build**        | `<COMMIT_SHA>` (bare 40-char SHA)     | Push to `main` branch         | Developer build in GHCR; container images built once.                                                                  |
+| **Release Candidate (RC)** | `rc_YYMMDDHHMM_<SHORT_SHA>`           | 3-hour cron / manual dispatch | Candidate build selected for live cluster testing.                                                                     |
+| **RC Validated**           | `rc_YYMMDDHHMM_<SHORT_SHA>_validated` | Successful GKE E2E suite      | Quality gate: proof that `install.sh` succeeded on a real GKE cluster.                                                 |
+| **Staging Promoted**       | `staging_YYMMDDHHMM_<SHORT_SHA>`      | Successful nightly matrix     | Quality gate for GA: the full nightly E2E matrix passed on the commit. Also the deploy trigger for the staging estate. |
+| **GA Stable**              | `X.Y.Z` (pure numeric SemVer)         | Release publish workflow      | Official production release tagged on a stamped commit parented by the target commit (staging-promoted by default).    |
+
+Only a staging-promoted commit is releasable. An `rc_*_validated` tag records the narrow
+three-hourly suite; the GA gate reads the `staging_<ts>_<sha>` tag that
+[`nightly-pipeline.yml`](https://github.com/gke-labs/kube-agents/tree/main/scripts/release) pushes
+after the full matrix passes. The gate matches that tag's shape rather than the bare `staging_`
+prefix, because the prefix is also a hand-pushable redeploy trigger.
 
 ## Automated SemVer 2.0 calculation
 
-When the GA release workflow runs, `scripts/release/calculate_next_version.sh` inspects Conventional Commits in the range `<LATEST_GA_TAG>..<TARGET_COMMIT>` (resolving to the latest validated RC commit on the standard automated path, or the specified commit / `HEAD` under emergency bypass):
+When the GA release workflow runs, `scripts/release/calculate_next_version.sh` inspects Conventional Commits in the range `<LATEST_GA_TAG>..<TARGET_COMMIT>` (resolving to the latest staging-promoted commit on the standard automated path, or the specified commit / `HEAD` under emergency bypass):
 
 <!-- prettier-ignore -->
 | Commit type in release range | Current version | Calculated next version | Precedence and action |
@@ -48,7 +55,7 @@ Once `1.0.0` is established, the automated calculator resumes standard SemVer ru
 Before triggering a production release:
 
 1. Target commit must exist on the `main` branch.
-2. Target commit must carry an `rc_*_validated` tag created by the automated RC validation pipeline ([`scripts/release/README.md`](https://github.com/gke-labs/kube-agents/tree/main/scripts/release)).
+2. Target commit must carry a `staging_<ts>_<sha>` tag created by the nightly promotion pipeline ([`scripts/release/README.md`](https://github.com/gke-labs/kube-agents/tree/main/scripts/release)). An `rc_*_validated` tag is not checked alongside it: a staging tag is only ever derived from a candidate that already carries one.
 3. All four required container images (`k8s-operator`, `platform-agent`, `credential-proxy`, `replay-proxy`) must exist in GHCR under `<TARGET_COMMIT>`.
 4. GitHub CLI (`gh`) version 2.40.0 or newer installed and authenticated with `repo` and `workflow` permissions (`gh auth status`).
 
@@ -60,7 +67,7 @@ Execute `.github/workflows/release-publish.yml` from the GitHub Actions web inte
 # Standard automated release (SemVer calculated automatically from Conventional Commits):
 gh workflow run release-publish.yml --repo gke-labs/kube-agents
 
-# Releasing a specific validated commit:
+# Releasing a specific staging-promoted commit:
 gh workflow run release-publish.yml --repo gke-labs/kube-agents \
   -f target_commit="<TARGET_COMMIT_SHA>"
 
@@ -69,13 +76,22 @@ gh workflow run release-publish.yml --repo gke-labs/kube-agents \
   -f explicit_release_version="1.0.0"
 ```
 
+Every release is started by hand: the workflow has no `schedule:`. It carries the gate an
+unattended run would need — release only a staging-promoted candidate, skip quietly when nothing
+new has landed since the last GA tag, and stop for a human when a breaking change is waiting to
+ship — behind a `schedule_gate` input that defaults to `bypass`, so a dispatch publishes exactly as
+it did before. `dry-run` reports the verdict in the job summary and publishes nothing; `evaluate`
+acts on it, as a cron tick would.
+[`scripts/release/README.md`](https://github.com/gke-labs/kube-agents/tree/main/scripts/release) is
+canonical for that gate and for the cadence.
+
 ## Emergency hotfix runbook
 
-The release gatekeeper enforces automated GKE RC validation (`rc_*_validated`) by default. In emergency situations, maintainers can bypass the live GKE validation gate while preserving all cryptographic and build integrity invariants.
+The release gatekeeper enforces staging promotion (`staging_<ts>_<sha>`, the full nightly GKE E2E matrix) by default. In emergency situations, maintainers can bypass the live GKE validation gate while preserving all cryptographic and build integrity invariants.
 
 ### Eligibility criteria
 
-Emergency gate bypass (`skip_rc_validation: true`) is strictly reserved for two scenarios: zero-day CVE vulnerabilities in container dependencies requiring immediate publication, or critical production regressions where waiting for the 3-hour RC validation cycle or cluster provisioning would prolong user-facing downtime.
+Emergency gate bypass (`skip_staging_validation: true`) is strictly reserved for two scenarios: zero-day CVE vulnerabilities in container dependencies requiring immediate publication, or critical production regressions where waiting for the next nightly promotion or cluster provisioning would prolong user-facing downtime.
 
 ### Enforced security invariants
 
@@ -92,13 +108,13 @@ To publish an emergency release via the GitHub CLI. Always specify `target_commi
 ```bash
 # Emergency release from a specific commit SHA (version calculated automatically):
 gh workflow run release-publish.yml --repo gke-labs/kube-agents \
-  -f skip_rc_validation=true \
+  -f skip_staging_validation=true \
   -f emergency_override_reason="CVE-2026-XXXX: Critical vulnerability in base container dependencies" \
   -f target_commit="<HOTFIX_COMMIT_SHA>"
 
 # Emergency release from a specific commit SHA with explicit SemVer override:
 gh workflow run release-publish.yml --repo gke-labs/kube-agents \
-  -f skip_rc_validation=true \
+  -f skip_staging_validation=true \
   -f emergency_override_reason="Critical regression fix for gateway admission deadlock" \
   -f target_commit="<HOTFIX_COMMIT_SHA>" \
   -f explicit_release_version="0.3.1"
