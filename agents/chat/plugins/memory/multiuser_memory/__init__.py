@@ -1,9 +1,10 @@
 import hashlib
 import json
 import logging
+import re
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 from utils import atomic_replace
@@ -11,6 +12,8 @@ from utils import atomic_replace
 logger = logging.getLogger(__name__)
 
 ENTRY_DELIMITER = "\n§\n"
+MAX_ENTRY_LENGTH = 2000
+MAX_ENTRIES_PER_TARGET = 500
 
 MEMORY_TOOL_SCHEMA = {
     "name": "multiuser_memory",
@@ -43,6 +46,130 @@ SHARED_SESSION_NOTICE = (
     "Use target='memory' only for facts that are genuinely shared; personal memory "
     "works in a direct message."
 )
+
+
+def _is_safe_char(ch: str) -> bool:
+    """Check whether a character is safe from control/zero-width/bidi smuggling."""
+    code = ord(ch)
+    # Preserve newline (\n, 10) and tab (\t, 9)
+    if code in (9, 10):
+        return True
+    # Strip C0 control characters (< 32), DEL (127), and C1 control characters (128-159)
+    if code < 32 or 127 <= code <= 159:
+        return False
+    # Strip zero-width, bidi, and format control characters
+    # U+200B-U+200F (Zero-width space, non-joiner, joiner, LRM, RLM)
+    # U+202A-U+202E (Bidi embedding/override controls: LRE, RLE, PDF, LRO, RLO)
+    # U+2060-U+206F (Word joiner, invisible operators, bidi isolates)
+    # U+FEFF (Zero-width no-break space / BOM)
+    # U+00AD (Soft hyphen), U+034F (Combining grapheme joiner), U+061C (Arabic letter mark), U+180E (Mongolian vowel separator)
+    if (
+        0x200B <= code <= 0x200F
+        or 0x202A <= code <= 0x202E
+        or 0x2060 <= code <= 0x206F
+        or code in (0xFEFF, 0x00AD, 0x034F, 0x061C, 0x180E)
+    ):
+        return False
+    # Strip Unicode tag block and non-printable supplementary blocks (U+E0000 and above)
+    if code >= 0xE0000:
+        return False
+    return True
+
+
+def _strip_unsafe_chars(text: str) -> str:
+    """Strip ANSI escape sequences, carriage returns, control, zero-width, and bidi characters."""
+    if not text:
+        return ""
+    cleaned = re.sub(r"\r", "", text)
+    cleaned = re.sub(
+        r"(?:\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])|\x9B[0-?]*[ -/]*[@-~])",
+        "",
+        cleaned,
+    )
+    return "".join(ch for ch in cleaned if _is_safe_char(ch))
+
+
+def _neutralize_prompt_injection(text: str) -> str:
+    """Neutralize LLM special tokens, prompt injection delimiters, delimiter smuggling, and markdown headers."""
+    if not text:
+        return ""
+
+    # Delimiter smuggling: replace the section sign (§) so entries cannot be split or forged
+    text = text.replace("§", ";")
+
+    # Delimiter tags (<system...>, <instruction...>, <prompt...>, <context...>, <admin...>, <untrusted_...>, etc.)
+    text = re.sub(
+        r"<[/\s]*(system|instruction|prompt|context|admin|untrusted_[a-z0-9_-]+)\b[^>]*>",
+        r"[\1_tag_neutralized]",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Markdown code fence injection attempting to frame system/instruction blocks
+    text = re.sub(
+        r"(?<!`)`{3,}[^\S\n]*(system|instruction|prompt)\b",
+        r"```text",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Specific LLM special tokens, instruction markers, and fake security notices
+    replacements = {
+        r"<\|im_start\|>": "[token_start]",
+        r"<\|im_end\|>": "[token_end]",
+        r"###\s*System:": "[SYSTEM_TEXT]:",
+        r"###\s*Instruction:": "[INSTRUCTION_TEXT]:",
+        r"\[INST\]": "[INST_TEXT]",
+        r"\[/INST\]": "[/INST_TEXT]",
+        r"<<SYS>>": "[SYS_TEXT]",
+        r"<</SYS>>": "[/SYS_TEXT]",
+        r"<USER_REQUEST>": "[USER_REQUEST_TAG]",
+        r"</USER_REQUEST>": "[/USER_REQUEST_TAG]",
+        r"<TOOL_CALL>": "[TOOL_CALL_TAG]",
+        r"</TOOL_CALL>": "[/TOOL_CALL_TAG]",
+        r"===\s*\[SECURITY NOTICE:": "=== [SECURITY_NOTICE_TEXT:",
+        r"\[SECURITY NOTICE:": "[SECURITY_NOTICE_TEXT:",
+    }
+    for pattern, replacement in replacements.items():
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+
+    # Markdown header injection: neutralize lines starting with '#' so entries cannot create new prompt sections
+    text = re.sub(r"(?m)^(\s*)#+\s*", r"\1", text)
+
+    return text
+
+
+def sanitize_memory_entry(text: str, max_length: int = MAX_ENTRY_LENGTH) -> str:
+    """Sanitize a single memory entry before storage or system prompt rendering."""
+    if not text or not isinstance(text, str):
+        return ""
+
+    cleaned = _strip_unsafe_chars(text)
+    cleaned = _neutralize_prompt_injection(cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    cleaned = cleaned.strip()
+
+    if len(cleaned) > max_length:
+        cleaned = cleaned[:max_length].rstrip()
+
+    return cleaned
+
+
+def validate_memory_entry(content: Any, max_length: int = MAX_ENTRY_LENGTH) -> Tuple[Optional[str], Optional[str]]:
+    """Validate a memory entry. Returns (sanitized_content, error_message)."""
+    if content is None or not isinstance(content, str):
+        return None, "Content must be a non-empty string."
+    raw = content.strip()
+    if not raw:
+        return None, "Content cannot be empty."
+    if len(raw) > max_length:
+        return None, f"Memory entry exceeds maximum length of {max_length} characters (got {len(raw)})."
+
+    sanitized = sanitize_memory_entry(raw, max_length=max_length)
+    if not sanitized:
+        return None, "Memory entry is empty or contains only invalid/control characters."
+
+    return sanitized, None
 
 
 def _thread_sessions_are_per_user() -> bool:
@@ -133,7 +260,13 @@ class MultiUserFileMemoryProvider(MemoryProvider):
             text = path.read_text(encoding="utf-8").strip()
             if not text:
                 return []
-            return [e.strip() for e in text.split(ENTRY_DELIMITER) if e.strip()]
+            raw_entries = [e.strip() for e in text.split(ENTRY_DELIMITER) if e.strip()]
+            sanitized_entries = []
+            for e in raw_entries:
+                s = sanitize_memory_entry(e)
+                if s:
+                    sanitized_entries.append(s)
+            return sanitized_entries
         except Exception as e:
             logger.error("Failed reading memory file %s: %s", path, e)
             return []
@@ -141,7 +274,8 @@ class MultiUserFileMemoryProvider(MemoryProvider):
     def _write_entries(self, target: str, entries: List[str]) -> None:
         path = self._path_for(target)
         path.parent.mkdir(parents=True, exist_ok=True)
-        content = ENTRY_DELIMITER.join(entries) if entries else ""
+        clean_entries = [sanitize_memory_entry(e) for e in entries if sanitize_memory_entry(e)]
+        content = ENTRY_DELIMITER.join(clean_entries) if clean_entries else ""
         tmp_path = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
         tmp_path.write_text(content, encoding="utf-8")
         atomic_replace(tmp_path, path)
@@ -189,37 +323,55 @@ class MultiUserFileMemoryProvider(MemoryProvider):
 
         elif action == "add":
             content_val = args.get("content")
-            content = content_val.strip() if isinstance(content_val, str) else ""
-            if not content:
-                return tool_error("Content required for 'add'.")
-            if content not in entries:
-                entries.append(content)
+            sanitized_content, err = validate_memory_entry(content_val)
+            if err:
+                return tool_error(err)
+            if len(entries) >= MAX_ENTRIES_PER_TARGET and sanitized_content not in entries:
+                return tool_error(f"Maximum memory entries ({MAX_ENTRIES_PER_TARGET}) reached for {target} memory.")
+            if sanitized_content not in entries:
+                entries.append(sanitized_content)
                 self._write_entries(target, entries)
             return json.dumps({"success": True, "message": f"Added to {target} memory."})
 
         elif action == "replace":
             old_val = args.get("old_content") or args.get("old_text")
             new_val = args.get("new_content") or args.get("content")
-            old_c = old_val.strip() if isinstance(old_val, str) else ""
-            new_c = new_val.strip() if isinstance(new_val, str) else ""
-            if not old_c or not new_c:
+            if not old_val or not isinstance(old_val, str) or not old_val.strip():
                 return tool_error("old_content and new_content required for 'replace'.")
+            sanitized_new, err = validate_memory_entry(new_val)
+            if err:
+                return tool_error(err)
+
+            old_c = old_val.strip()
+            old_sanitized = sanitize_memory_entry(old_c)
+            target_idx = None
             if old_c in entries:
-                idx = entries.index(old_c)
-                entries[idx] = new_c
+                target_idx = entries.index(old_c)
+            elif old_sanitized in entries:
+                target_idx = entries.index(old_sanitized)
+
+            if target_idx is not None:
+                entries[target_idx] = sanitized_new
                 self._write_entries(target, entries)
-                return json.dumps({"success": True, "message": f"Replaced entry in {target} memory."}) 
+                return json.dumps({"success": True, "message": f"Replaced entry in {target} memory."})
             return tool_error(f"Old content exact match not found in {target} memory.")
 
         elif action == "remove":
             old_val = args.get("old_content") or args.get("content")
-            old_c = old_val.strip() if isinstance(old_val, str) else ""
-            if not old_c:
+            if not old_val or not isinstance(old_val, str) or not old_val.strip():
                 return tool_error("Content to remove is required.")
+            old_c = old_val.strip()
+            old_sanitized = sanitize_memory_entry(old_c)
+            to_remove = None
             if old_c in entries:
-                entries.remove(old_c)
+                to_remove = old_c
+            elif old_sanitized in entries:
+                to_remove = old_sanitized
+
+            if to_remove is not None:
+                entries.remove(to_remove)
                 self._write_entries(target, entries)
-                return json.dumps({"success": True, "message": f"Removed from {target} memory."}) 
+                return json.dumps({"success": True, "message": f"Removed from {target} memory."})
             return tool_error(f"Exact match not found in {target} memory.")
 
         return tool_error(f"Invalid action: {action}")
