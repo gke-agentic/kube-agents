@@ -167,9 +167,21 @@ class PackageReleaseBundleTest(unittest.TestCase):
             stamped_install = (bundle_root / "install.sh").read_text()
             self.assertIn(f'BAKED_RELEASE_VERSION="{MOCK_RELEASE_BUNDLE_VERSION}"', stamped_install)
 
-            # Verify terraform/ directory exists in bundle
+            # Verify terraform/ directory exists in bundle and preserves tfvars examples
             self.assertTrue((bundle_root / "terraform").is_dir(), "terraform/ should be in bundle")
             self.assertTrue((bundle_root / "images.json").is_file(), "images.json should be in bundle")
+            self.assertTrue(
+                (bundle_root / "terraform" / "examples" / "full-install" / "terraform.tfvars.example").is_file(),
+                "terraform.tfvars.example should be preserved in bundle",
+            )
+            self.assertTrue(
+                (bundle_root / "terraform" / "examples" / "ci-pool-minter" / "terraform.tfvars.example").is_file(),
+                "ci-pool-minter terraform.tfvars.example should be preserved in bundle",
+            )
+            self.assertFalse(
+                (bundle_root / "terraform" / "examples" / "full-install" / "terraform.tfvars").exists(),
+                "terraform.tfvars should be sanitized from bundle",
+            )
 
             # Verify checksums.txt covers all files and excludes itself
             checksums_content = checksums_path.read_text()

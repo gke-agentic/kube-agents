@@ -128,7 +128,7 @@ stage_bundle_files() {
     -name "*.p12" -o \
     -name "*.pfx" -o \
     -name "*.id_rsa" -o \
-    -name "*.tfvars*" -o \
+    \( -name "*.tfvars*" ! -name "*.tfvars.example" \) -o \
     -name "*.tfstate*" -o \
     -name "*.secret*" -o \
     -name "secrets.yaml" -o \
