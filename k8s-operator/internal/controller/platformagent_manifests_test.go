@@ -3141,17 +3141,50 @@ func TestBuildDeployment_AgentPlugins_ImageVolumeUnsupported(t *testing.T) {
 	// Pass isImageVolumeSupported = false
 	dep := buildDeployment(agent, "h1", "h2", "h3", "h4", plugins, renderOptions{})
 
-	for _, vol := range dep.Spec.Template.Spec.Volumes {
-		if vol.Name == "plugin-myplugin" {
-			t.Errorf("expected plugin-myplugin volume to NOT be attached when isImageVolumeSupported is false")
+	// 1. Volume must be attached as EmptyDir
+	var pluginVol *corev1.Volume
+	for i := range dep.Spec.Template.Spec.Volumes {
+		if dep.Spec.Template.Spec.Volumes[i].Name == "plugin-myplugin" {
+			pluginVol = &dep.Spec.Template.Spec.Volumes[i]
+			break
 		}
 	}
+	if pluginVol == nil {
+		t.Fatalf("expected plugin-myplugin volume to be attached as EmptyDir when isImageVolumeSupported is false")
+	}
+	if pluginVol.EmptyDir == nil {
+		t.Errorf("expected plugin-myplugin volume source to be EmptyDir, got %+v", pluginVol)
+	}
 
-	container := dep.Spec.Template.Spec.Containers[0]
-	for _, m := range container.VolumeMounts {
-		if m.Name == "plugin-myplugin" {
-			t.Errorf("expected plugin-myplugin volume mount to NOT be attached when isImageVolumeSupported is false")
+	// 2. InitContainer must stage the plugin
+	var stageInit *corev1.Container
+	for i := range dep.Spec.Template.Spec.InitContainers {
+		if dep.Spec.Template.Spec.InitContainers[i].Name == "stage-plugin-myplugin" {
+			stageInit = &dep.Spec.Template.Spec.InitContainers[i]
+			break
 		}
+	}
+	if stageInit == nil {
+		t.Fatalf("expected stage-plugin-myplugin init container to be present")
+	}
+	if stageInit.Image != "gcr.io/my-plugin:v1" {
+		t.Errorf("expected init container image 'gcr.io/my-plugin:v1', got %q", stageInit.Image)
+	}
+
+	// 3. Main container must mount the volume
+	container := dep.Spec.Template.Spec.Containers[0]
+	var pluginMount *corev1.VolumeMount
+	for i := range container.VolumeMounts {
+		if container.VolumeMounts[i].Name == "plugin-myplugin" {
+			pluginMount = &container.VolumeMounts[i]
+			break
+		}
+	}
+	if pluginMount == nil {
+		t.Fatalf("expected plugin-myplugin volume mount in platform-agent container")
+	}
+	if pluginMount.MountPath != "/opt/data/plugins/myplugin" {
+		t.Errorf("expected mount path /opt/data/plugins/myplugin, got %q", pluginMount.MountPath)
 	}
 }
 
