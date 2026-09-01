@@ -432,11 +432,27 @@ platformAgent:
     availability:
       # Number of agent pods. `null` omits the field; the operator defaults to 1.
       replicas: null
-      # RuntimeClass for the agent pod. Set to "gvisor" for GKE Sandbox kernel
-      # isolation — on a Standard cluster that needs the sandbox node pool the
-      # gke-cluster module's enable_gvisor_node_pool creates; Autopilot ships
-      # the RuntimeClass natively. Empty omits the field.
-      runtimeClassName: ""
+      # RuntimeClass for the agent pod. "gvisor" asks for GKE Sandbox kernel
+      # isolation, and is the default because the agent executes model-authored
+      # commands and an unsandboxed pod shares the node kernel with everything
+      # else scheduled there.
+      #
+      # Autopilot ships the RuntimeClass natively (GKE 1.27.4-gke.800 and
+      # later). A Standard cluster needs the sandbox node pool that the
+      # gke-cluster module's enable_gvisor_node_pool creates; without it the
+      # operator refuses to write the agent Deployment and reports
+      # RuntimeClassNotFound on the PlatformAgent. Set "" to omit the field and
+      # run on the standard container runtime.
+      #
+      # The Terraform composition always passes this explicitly (from
+      # agent_runtime_class, which install.sh derives from --gvisor), so this
+      # default is what a direct `helm install` gets -- and what a `helm
+      # upgrade` of a release that never set the key adopts, since Helm merges
+      # the new chart's defaults. That upgrade path fails quietly where the
+      # RuntimeClass is missing: the operator stops before reconciling the
+      # workload, so the previous unsandboxed Deployment keeps running while
+      # .status says Degraded. See the chart README's Usage section.
+      runtimeClassName: "gvisor"
     # Extra environment for the agent container, applied after the operator's own
     # values so it overrides them. Telemetry is the case this exists for, though
     # a cluster with no collector no longer needs it: when discovery completes
