@@ -718,11 +718,6 @@ write_tfvars_from_state() {
     echo "create_cluster             = ${create_cluster}"
     echo "allow_external_dns_traffic = true"
     echo "deletion_protection        = false"
-    local enable_db_encryption=true
-    if is_truthy "${ALLOW_UNENCRYPTED_SECRETS:-false}"; then
-      enable_db_encryption=false
-    fi
-    echo "enable_database_encryption = ${enable_db_encryption}"
     echo "enable_gvisor_node_pool    = ${gvisor_node_pool}"
     echo "gvisor_pool_name           = $(hcl_str "${GVISOR_POOL_NAME:-gvisor-pool}")"
     echo "agent_runtime_class        = $(hcl_str "${agent_runtime_class}")"
