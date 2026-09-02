@@ -112,6 +112,25 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # The revision being reconciled TO, not the one the caller happens to
+          # sit on. `upgrade.sh --image-tag=X` refuses a checkout whose HEAD is
+          # not X (verify_local_source_ref), and the nightly's whole job is to
+          # promote a candidate OLDER than the commit it was dispatched from --
+          # so without this, every staging reconcile exits 1 on a version
+          # mismatch before applying anything. Worse than a red job: step 5 is
+          # deliberately decoupled from this one's outcome, so the tag would
+          # still be pushed and staging's images would move with its
+          # infrastructure left exactly as stale as before.
+          #
+          # It is also the right thing on its own terms. An environment runs one
+          # commit: its images, its Helm values and its Terraform composition
+          # come from the same tree, and reconciling the candidate's images with
+          # main's composition would be a combination nothing has ever tested.
+          #
+          # Empty is the tagless case -- autopush, and every plan -- where
+          # actions/checkout falls back to the caller's ref, which is what those
+          # want: main's composition, images left where they are.
+          ref: ${{ inputs.image_tag }}
           persist-credentials: false
 
       - name: Authenticate to GCP via Workload Identity Federation (WIF)

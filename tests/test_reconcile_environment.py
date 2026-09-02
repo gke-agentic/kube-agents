@@ -171,6 +171,21 @@ class ReconcileWorkflowTest(unittest.TestCase):
             with self.subTest(uses=uses):
                 self.assertRegex(uses.split("@")[1].split()[0], r"^[0-9a-f]{40}$")
 
+    def test_it_checks_out_the_revision_it_is_reconciling_to(self):
+        """`upgrade.sh --image-tag=X` refuses a checkout whose HEAD is not X.
+
+        The nightly promotes a candidate older than the commit it was dispatched
+        from, so a checkout at the caller's ref makes every staging reconcile
+        exit 1 on a version mismatch. And because step 5 is decoupled from this
+        job's outcome, the promotion tag goes out anyway: staging's images move
+        and its infrastructure stays stale, which is the state this whole change
+        exists to end. Empty falls back to the caller's ref, which is what the
+        tagless autopush reconcile and every plan want.
+        """
+        checkout = next(step for step in self.job["steps"]
+                        if str(step.get("uses", "")).startswith("actions/checkout@"))
+        self.assertEqual(checkout["with"]["ref"], "${{ inputs.image_tag }}")
+
     def test_it_can_read_the_actions_api(self):
         """The in-flight redeploy check is a `gh run list`."""
         self.assertEqual(self.job["permissions"].get("actions"), "read")
