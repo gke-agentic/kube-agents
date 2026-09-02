@@ -423,6 +423,11 @@ purely configuration — the Slack app itself is a manual step (below).
   `AgentPlugin/gkestockoutinvestigator` resource targeting the `platform` profile
   with tuned execution limits. Requires `enable_pubsub_platform = true`.
 
+If a plugin was previously installed using the standalone `agentplugins/*/install.sh` scripts,
+uninstall its standalone release before setting these variables (`helm uninstall pubsubplatform -n <namespace>`,
+`helm uninstall gkestockoutinvestigator -n <namespace>`). Helm checks object ownership metadata
+(`meta.helm.sh/release-name`) and refuses to adopt existing resources owned by another release.
+
 **Manual steps that no IaC can perform** — canonical walkthrough:
 [INSTALL.md § Enable Google Chat & Slack Integrations](../../../INSTALL.md#step-4-enable-google-chat--slack-integrations-manual-required-steps):
 
