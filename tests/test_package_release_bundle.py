@@ -2,6 +2,7 @@
 
 import os
 import pathlib
+import re
 import subprocess
 import tarfile
 import tempfile
@@ -186,6 +187,32 @@ class PackageReleaseBundleTest(unittest.TestCase):
                 (bundle_root / "terraform" / "examples" / "full-install" / "terraform.tfvars").exists(),
                 "terraform.tfvars should be sanitized from bundle",
             )
+
+            # Verify every path dereferenced by install.sh, upgrade.sh, and uninstall.sh
+            # that exists in the committed repository is present in the release bundle.
+            installer_files = ["install.sh", "upgrade.sh", "uninstall.sh"]
+            path_pattern = re.compile(r"\$\{(?:repo_dir|script_dir)\}/([a-zA-Z0-9_./-]+)")
+            dereferenced_paths = set()
+            for fname in installer_files:
+                content = (_REPO_ROOT / fname).read_text()
+                for match in path_pattern.finditer(content):
+                    dereferenced_paths.add(match.group(1).rstrip("\"'"))
+
+            for rel_path in sorted(dereferenced_paths):
+                # Only verify files/dirs tracked in the Git commit (skip dynamic runtime state files like vars.sh or install.env)
+                is_committed = (
+                    subprocess.run(
+                        ["git", "-C", str(_REPO_ROOT), "cat-file", "-e", f"{head_commit}:{rel_path}"],
+                        capture_output=True,
+                    ).returncode
+                    == 0
+                )
+                if is_committed:
+                    bundle_item = bundle_root / rel_path
+                    self.assertTrue(
+                        bundle_item.exists(),
+                        f"Installer dereferences '${{repo_dir}}/{rel_path}' which exists in repo commit {head_commit[:7]} but is missing from bundle!",
+                    )
 
             # Verify checksums.txt covers all files and excludes itself
             checksums_content = checksums_path.read_text()
