@@ -2481,6 +2481,84 @@ func TestUpdatePluginStatuses_ImagePullFailureIsReported(t *testing.T) {
 	}
 }
 
+func TestUpdatePluginStatuses_StagingFailureIsReported(t *testing.T) {
+	scheme := setupScheme()
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{Name: "target-agent", Namespace: "test-ns"},
+	}
+	failingPlugin := &agentv1alpha1.AgentPlugin{
+		ObjectMeta: metav1.ObjectMeta{Name: "failstage", Namespace: "test-ns"},
+		Spec:       agentv1alpha1.AgentPluginSpec{AgentRef: "target-agent", Image: "gcr.io/proj/plugin:v1"},
+	}
+	healthyPlugin := &agentv1alpha1.AgentPlugin{
+		ObjectMeta: metav1.ObjectMeta{Name: "okstage", Namespace: "test-ns"},
+		Spec:       agentv1alpha1.AgentPluginSpec{AgentRef: "target-agent", Image: "gcr.io/proj/plugin:v2"},
+	}
+
+	stagingContainerName := buildPluginStagingContainerName("failstage")
+	okContainerName := buildPluginStagingContainerName("okstage")
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "target-agent-gateway-xyz",
+			Namespace: "test-ns",
+			Labels:    map[string]string{"app": "target-agent-gateway"},
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodPending,
+			InitContainerStatuses: []corev1.ContainerStatus{
+				{
+					Name: stagingContainerName,
+					State: corev1.ContainerState{
+						Terminated: &corev1.ContainerStateTerminated{
+							ExitCode: 1,
+							Reason:   "Error",
+						},
+					},
+				},
+				{
+					Name: okContainerName,
+					State: corev1.ContainerState{
+						Running: &corev1.ContainerStateRunning{},
+					},
+				},
+			},
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(failingPlugin, healthyPlugin, pod).
+		WithStatusSubresource(failingPlugin, healthyPlugin).
+		Build()
+
+	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
+	ctx := context.Background()
+	r.updatePluginStatuses(ctx, agent, []*agentv1alpha1.AgentPlugin{failingPlugin, healthyPlugin}, false)
+
+	var bad, good agentv1alpha1.AgentPlugin
+	if err := cl.Get(ctx, types.NamespacedName{Name: "failstage", Namespace: "test-ns"}, &bad); err != nil {
+		t.Fatalf("get bad plugin: %v", err)
+	}
+	if err := cl.Get(ctx, types.NamespacedName{Name: "okstage", Namespace: "test-ns"}, &good); err != nil {
+		t.Fatalf("get good plugin: %v", err)
+	}
+
+	if bad.Status.Phase != "Degraded" {
+		t.Errorf("expected failing staging plugin Phase 'Degraded', got %q", bad.Status.Phase)
+	}
+	cond := meta.FindStatusCondition(bad.Status.Conditions, "Ready")
+	if cond == nil || cond.Reason != "StagingFailed" {
+		t.Fatalf("expected Reason 'StagingFailed', got %+v", cond)
+	}
+	if !strings.Contains(cond.Message, "staging init container exited with code 1") {
+		t.Errorf("expected exit code 1 in condition message, got %q", cond.Message)
+	}
+	if good.Status.Phase != "Ready" {
+		t.Errorf("expected healthy staging plugin Phase 'Ready', got %q", good.Status.Phase)
+	}
+}
+
 func TestDetectPluginImageFailures_IgnoresUnrelatedPullFailures(t *testing.T) {
 	scheme := setupScheme()
 	agent := &agentv1alpha1.PlatformAgent{

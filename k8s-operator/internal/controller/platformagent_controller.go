@@ -86,6 +86,9 @@ const (
 	gkeAutopilotAPIGroup = "auto.gke.io"
 	gkeWardenAPIGroup    = "warden.gke.io"
 
+	pluginFailureReasonImagePull = "ImagePullFailed"
+	pluginFailureReasonStaging   = "StagingFailed"
+
 	// The condition reporting that cluster event ingestion has been switched off
 	// on the spec. It is written only in that state — see updateStatusReady.
 	eventWatcherConditionType  = "EventWatcher"
@@ -2319,14 +2322,19 @@ func (r *PlatformAgentReconciler) imageVolumeSupported(agent *agentv1alpha1.Plat
 	return supported
 }
 
-// evaluatePluginReadiness decides a plugin's Ready condition. imageFailure is the
-// kubelet's message when the agent pod cannot pull this plugin's image, empty otherwise.
+type pluginFailure struct {
+	reason  string
+	message string
+}
+
+// evaluatePluginReadiness decides a plugin's Ready condition. failure is the
+// detected failure (image pull or staging container exit), nil otherwise.
 func evaluatePluginReadiness(
 	agent *agentv1alpha1.PlatformAgent,
 	plugin *agentv1alpha1.AgentPlugin,
 	imageVolumeSupported bool,
 	duplicate bool,
-	imageFailure string,
+	failure *pluginFailure,
 ) (phase string, condition metav1.Condition) {
 	degraded := func(reason, message string) (string, metav1.Condition) {
 		return "Degraded", metav1.Condition{
@@ -2342,13 +2350,17 @@ func evaluatePluginReadiness(
 	case duplicate:
 		return degraded("DuplicatePluginName", fmt.Sprintf(
 			"Plugin name '%s' collides with built-in or already registered plugin.", plugin.Name))
-	case imageFailure != "":
-		// The image volume is part of the agent's pod spec, so an unpullable plugin
-		// image keeps the whole agent pod from starting. Reporting Ready here would
-		// point whoever is debugging the outage away from its actual cause.
-		return degraded("ImagePullFailed", fmt.Sprintf(
-			"Plugin image '%s' could not be pulled, which is blocking agent %s from starting: %s",
-			plugin.Spec.Image, agent.Name, imageFailure))
+	case failure != nil:
+		if failure.reason == pluginFailureReasonImagePull {
+			// The image volume is part of the agent's pod spec, so an unpullable plugin
+			// image keeps the whole agent pod from starting. Reporting Ready here would
+			// point whoever is debugging the outage away from its actual cause.
+			return degraded(pluginFailureReasonImagePull, fmt.Sprintf(
+				"Plugin image '%s' could not be pulled, which is blocking agent %s from starting: %s",
+				plugin.Spec.Image, agent.Name, failure.message))
+		}
+		return degraded(failure.reason, fmt.Sprintf(
+			"Plugin staging failed for agent %s: %s", agent.Name, failure.message))
 	}
 
 	message := fmt.Sprintf("Plugin successfully applied to agent %s.", agent.Name)
@@ -2366,7 +2378,7 @@ func evaluatePluginReadiness(
 func (r *PlatformAgentReconciler) updatePluginStatuses(ctx context.Context, agent *agentv1alpha1.PlatformAgent, plugins []*agentv1alpha1.AgentPlugin, imageVolumeSupported bool) {
 	now := metav1.Now()
 	seenNames := make(map[string]bool)
-	imageFailures := r.detectPluginImageFailures(ctx, agent, plugins)
+	pluginFailures := r.detectPluginFailures(ctx, agent, plugins)
 
 	for _, plugin := range plugins {
 		original := plugin.DeepCopy()
@@ -2380,7 +2392,11 @@ func (r *PlatformAgentReconciler) updatePluginStatuses(ctx context.Context, agen
 		duplicate := IsBuiltInPlugin(plugin.Name) || seenNames[normName]
 		seenNames[normName] = true
 
-		phase, condition := evaluatePluginReadiness(agent, plugin, imageVolumeSupported, duplicate, imageFailures[plugin.Name])
+		var failure *pluginFailure
+		if f, exists := pluginFailures[plugin.Name]; exists {
+			failure = &f
+		}
+		phase, condition := evaluatePluginReadiness(agent, plugin, imageVolumeSupported, duplicate, failure)
 		condition.LastTransitionTime = now
 		plugin.Status.Phase = phase
 		meta.SetStatusCondition(&plugin.Status.Conditions, condition)
@@ -2418,12 +2434,10 @@ func logPluginCondition(plugin *agentv1alpha1.AgentPlugin, condition metav1.Cond
 		"plugin", plugin.Name, "reason", condition.Reason)
 }
 
-// detectPluginImageFailures maps plugin name to the kubelet's message when the agent's
-// pod cannot pull that plugin's image. The failure surfaces on the platform-agent
-// container's waiting state, carrying the offending reference in its message, so a
-// plugin is only blamed when its own image is named.
-func (r *PlatformAgentReconciler) detectPluginImageFailures(ctx context.Context, agent *agentv1alpha1.PlatformAgent, plugins []*agentv1alpha1.AgentPlugin) map[string]string {
-	failures := map[string]string{}
+// detectPluginFailures maps plugin name to its detected failure when the agent pod
+// cannot pull the plugin image or when staging the plugin via init container fails.
+func (r *PlatformAgentReconciler) detectPluginFailures(ctx context.Context, agent *agentv1alpha1.PlatformAgent, plugins []*agentv1alpha1.AgentPlugin) map[string]pluginFailure {
+	failures := map[string]pluginFailure{}
 	if len(plugins) == 0 {
 		return failures
 	}
@@ -2435,6 +2449,47 @@ func (r *PlatformAgentReconciler) detectPluginImageFailures(ctx context.Context,
 	}
 
 	for _, pod := range podList.Items {
+		// 1. Check init container statuses for staging failures or image pull issues
+		for _, cs := range pod.Status.InitContainerStatuses {
+			for _, plugin := range plugins {
+				if cs.Name != buildPluginStagingContainerName(plugin.Name) {
+					continue
+				}
+				if w := cs.State.Waiting; w != nil {
+					if w.Reason == "ImagePullBackOff" || w.Reason == "ErrImagePull" {
+						failures[plugin.Name] = pluginFailure{
+							reason:  pluginFailureReasonImagePull,
+							message: w.Message,
+						}
+					} else if w.Reason == "CrashLoopBackOff" {
+						msg := w.Message
+						if cs.LastTerminationState.Terminated != nil && cs.LastTerminationState.Terminated.ExitCode != 0 {
+							msg = fmt.Sprintf("staging init container exited with code %d", cs.LastTerminationState.Terminated.ExitCode)
+							if cs.LastTerminationState.Terminated.Message != "" {
+								msg = fmt.Sprintf("%s: %s", msg, cs.LastTerminationState.Terminated.Message)
+							}
+						} else if msg == "" {
+							msg = "staging init container crashed"
+						}
+						failures[plugin.Name] = pluginFailure{
+							reason:  pluginFailureReasonStaging,
+							message: msg,
+						}
+					}
+				} else if t := cs.State.Terminated; t != nil && t.ExitCode != 0 {
+					msg := fmt.Sprintf("staging init container exited with code %d", t.ExitCode)
+					if t.Message != "" {
+						msg = fmt.Sprintf("%s: %s", msg, t.Message)
+					}
+					failures[plugin.Name] = pluginFailure{
+						reason:  pluginFailureReasonStaging,
+						message: msg,
+					}
+				}
+			}
+		}
+
+		// 2. Check main container waiting on image volumes (ImageVolumeSource)
 		for _, cs := range pod.Status.ContainerStatuses {
 			w := cs.State.Waiting
 			if w == nil || (w.Reason != "ImagePullBackOff" && w.Reason != "ErrImagePull") {
@@ -2442,12 +2497,28 @@ func (r *PlatformAgentReconciler) detectPluginImageFailures(ctx context.Context,
 			}
 			for _, plugin := range plugins {
 				if imageReferencedIn(w.Message, plugin.Spec.Image) {
-					failures[plugin.Name] = w.Message
+					failures[plugin.Name] = pluginFailure{
+						reason:  pluginFailureReasonImagePull,
+						message: w.Message,
+					}
 				}
 			}
 		}
 	}
 	return failures
+}
+
+// detectPluginImageFailures maps plugin name to the kubelet's message when the agent's
+// pod cannot pull that plugin's image.
+func (r *PlatformAgentReconciler) detectPluginImageFailures(ctx context.Context, agent *agentv1alpha1.PlatformAgent, plugins []*agentv1alpha1.AgentPlugin) map[string]string {
+	all := r.detectPluginFailures(ctx, agent, plugins)
+	images := map[string]string{}
+	for name, f := range all {
+		if f.reason == pluginFailureReasonImagePull {
+			images[name] = f.message
+		}
+	}
+	return images
 }
 
 // isImageRefChar reports whether b could be part of an image reference, and so whether a

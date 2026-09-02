@@ -5521,3 +5521,25 @@ func TestGitOpsStateVolumeIsMountedAsDirectory(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildPluginStagingInitContainer_AssertsNonEmptyAndFailsOnErrors(t *testing.T) {
+	plugin := &agentv1alpha1.AgentPlugin{
+		ObjectMeta: metav1.ObjectMeta{Name: "myplugin"},
+		Spec: agentv1alpha1.AgentPluginSpec{
+			Image: "busybox:musl",
+		},
+	}
+	c := buildPluginStagingInitContainer("/home/agent", plugin)
+	if len(c.Command) != 3 || c.Command[0] != "/bin/sh" || c.Command[1] != "-c" {
+		t.Fatalf("unexpected command: %v", c.Command)
+	}
+	script := c.Command[2]
+	if strings.HasSuffix(strings.TrimSpace(script), "; true") {
+		t.Errorf("script must not swallow errors with trailing '; true', got: %s", script)
+	}
+	expectedAssertion := `[ -n "$(ls -A /home/agent/plugins/myplugin)" ]`
+	if !strings.Contains(script, expectedAssertion) {
+		t.Errorf("script must assert non-empty mount with %q, got: %s", expectedAssertion, script)
+	}
+}
+

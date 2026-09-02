@@ -977,8 +977,8 @@ func buildPluginStagingInitContainer(homeDir string, plugin *agentv1alpha1.Agent
 	if plugin.Spec.ImagePullPolicy != nil {
 		pullPolicy = *plugin.Spec.ImagePullPolicy
 	}
-	stageScript := fmt.Sprintf("mkdir -p %s && (if [ -d /files ]; then cp -a /files/. %s/; else for item in /*; do case \"$item\" in /bin|/boot|/dev|/etc|/home|/lib*|/media|/mnt|/opt|/proc|/root|/run|/sbin|/srv|/sys|/tmp|/usr|/var) ;; *) cp -a \"$item\" %s/ ;; esac; done; fi); true",
-		mountPath, mountPath, mountPath)
+	stageScript := fmt.Sprintf("mkdir -p %s && (if [ -d /files ]; then cp -a /files/. %s/; else for item in /*; do case \"$item\" in /bin|/boot|/dev|/etc|/home|/lib*|/media|/mnt|/opt|/proc|/root|/run|/sbin|/srv|/sys|/tmp|/usr|/var) ;; *) cp -a \"$item\" %s/ ;; esac; done; fi) && [ -n \"$(ls -A %s)\" ]",
+		mountPath, mountPath, mountPath, mountPath)
 
 	return corev1.Container{
 		Name:            buildPluginStagingContainerName(plugin.Name),
