@@ -1730,6 +1730,31 @@ class UnrecordedInterviewAnswersAreReportedTest(unittest.TestCase):
         self.assertIn("does not record", combined)
         self.assertIn("SLACK_HOME_CHANNEL=#gke-incidents", combined)
 
+    def test_an_export_prefixed_key_is_still_compared(self):
+        """`export K=V` is a spelling install.env.example calls harmless.
+
+        Both greps here matched a bare `K=` only, so an `export`-prefixed key
+        was skipped outright — and skipping is silent and in the direction of
+        no warning. Every other reader of the file accepts the prefix:
+        `save_env_var`, `scripts/live_test_lease.py` and
+        `admin_console/project_config.py`.
+        """
+        proc = self._warn(
+            "export GOOGLE_CHAT_ENABLED=true\n", {"GOOGLE_CHAT_ENABLED": "false"}
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        combined = proc.stdout + proc.stderr
+        self.assertIn("does not record", combined)
+        self.assertIn("GOOGLE_CHAT_ENABLED=false", combined)
+
+    def test_an_unchanged_export_prefixed_key_says_nothing(self):
+        """Reading the prefix must not have turned every such key into drift."""
+        proc = self._warn(
+            "export GOOGLE_CHAT_ENABLED=true\n", {"GOOGLE_CHAT_ENABLED": "true"}
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("does not record", proc.stdout + proc.stderr)
+
     def test_a_changed_memory_answer_is_named(self):
         """The case the whole warning matters most for, and the one an entry
         that reads `$MEMORY` cannot see.

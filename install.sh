@@ -194,7 +194,20 @@ load_legacy_vars_file() {
   set +a
   # stderr, like the load message below and for the same reason.
   print_warning "Loaded legacy install state from ${file}; install.env replaces it." >&2
-  print_info "This run writes those values to ${INSTALL_ENV_FILE}. Check it, then delete vars.sh." >&2
+  # Telling the operator to delete vars.sh is only safe once its values are
+  # somewhere else, and this function cannot promise that. bootstrap_install_env_file
+  # is the sole writer, it runs near the end of main(), and it returns early
+  # when install.env already exists -- so --help, --menu, --dry-run, any abort,
+  # and every run against a file the operator wrote themselves reach the write
+  # never or as a no-op. An existing install.env is the dangerous case rather
+  # than the safe-looking one: `cp install.env.example install.env` carries no
+  # MEMORY, so discarding vars.sh there loses the only record that the install
+  # runs Hindsight, and the next apply derives multiuser_memory and tears it down.
+  if [ -f "$INSTALL_ENV_FILE" ]; then
+    print_info "${INSTALL_ENV_FILE} already exists and this run will not rewrite it. Copy anything you still need from vars.sh into it before deleting vars.sh." >&2
+  else
+    print_info "Once this run creates ${INSTALL_ENV_FILE}, check it against vars.sh and then delete vars.sh." >&2
+  fi
 }
 
 # Named apart from installer_common.sh's load_install_env, which this file
@@ -234,7 +247,13 @@ bootstrap_install_env() {
   # Announced rather than silent: the permissions of a file the operator owns
   # are theirs to know about.
   local mode=""
-  mode="$(stat -f '%OLp' "$file" 2>/dev/null || stat -c '%a' "$file" 2>/dev/null || echo "")"
+  # GNU first, BSD second, and the order is load-bearing. On coreutils `-f` is
+  # --file-system and takes no argument, so `stat -f '%OLp' FILE` prints a
+  # multi-line filesystem block on stdout and exits 1 -- non-empty output on
+  # the failure path, which the `||` chain then concatenates with the real mode
+  # and the warning below prints verbatim. BSD `stat -c` fails with empty
+  # stdout, so putting GNU first costs macOS nothing.
+  mode="$(stat -c '%a' "$file" 2>/dev/null || stat -f '%OLp' "$file" 2>/dev/null || echo "")"
   if [ -n "$mode" ] && [ "${mode: -2}" != "00" ]; then
     if chmod 600 "$file" 2>/dev/null; then
       print_warning "Tightened permissions on ${file} to 0600 (was ${mode}); it holds credentials." >&2
@@ -355,7 +374,7 @@ Flags for AI Agents & Automation:
   -y, --yes, --non-interactive  Run in non-interactive mode (use flags/defaults)
   --dry-run                     Validate prerequisites & output config/plan without creating resources
   --project-id=ID               Target GCP Project ID
-  --region=REGION               Target GCP Region (default: scripts/installer/common.sh
+  --region=REGION               Target GCP Region (default: install.defaults.env
                                 DEFAULT_REGION, currently us-central1)
   --cluster-name=NAME           GKE Cluster Name (default: DEFAULT_CLUSTER_NAME,
                                 currently platform-agent-host)
@@ -407,8 +426,9 @@ Flags for AI Agents & Automation:
   --third-party-registry-prefix=PATH
                                 Registry path holding the mirrored third-party images
                                 (LiteLLM, fluent-bit, the GitHub token minter, Hindsight).
-                                Unset, they follow --registry-prefix when that is set and
-                                stay upstream otherwise. See 'make mirror-images'
+                                Unset, they stay on their upstream registries --
+                                --registry-prefix deliberately does not cover them.
+                                See 'make mirror-images'
   --allow-unverified-source     Provision from a dirty or mismatched checkout (local script edits
                                 are applied even though the deployed image was built elsewhere)
   --enable-google-chat          Enable Google Chat integration
@@ -553,7 +573,7 @@ validate_immutable_ref() {
 #
 # A function rather than an inline `:-` because this one line is what a bare
 # ./install.sh actually builds, and the inline form was untestable: install.sh
-# writes CLUSTER_MODE into vars.sh before the generator ever reads it, so
+# exports CLUSTER_MODE before the generator ever reads it, so
 # installer_common.sh's own fallback never decides anything for this front
 # door, and a test of that fallback proves nothing about this.
 resolve_creatable_cluster_mode() {
@@ -768,7 +788,14 @@ unquote_shell_value() {
 recorded_install_env_value() {
   local file="${1:-}" key="${2:-}" line=""
   [ -n "$file" ] && [ -f "$file" ] || return 0
-  line="$(grep -E "^[[:space:]]*${key}=" "$file" 2>/dev/null | tail -1 || true)"
+  # install.env.example tells the operator `export K=V` is harmless, and every
+  # other reader of the file honours that: save_env_var, live_test_lease.py and
+  # project_config.py all skip an optional `export`. Matching it here keeps this
+  # reader in step -- missing the prefix skipped the key silently, and in the
+  # direction of no warning at all.
+  # The `${line#*=}` below strips through the first `=`, so the longer prefix
+  # needs nothing further.
+  line="$(grep -E "^[[:space:]]*(export[[:space:]]+)?${key}=" "$file" 2>/dev/null | tail -1 || true)"
   [ -n "$line" ] || return 0
   line="${line#*=}"
   unquote_shell_value "$line"
@@ -829,7 +856,7 @@ warn_unrecorded_interview_answers() {
     CHAT_TOPIC_NAME MODEL_PROVIDER MODEL_DEFAULT_NAME PLATFORM_AGENT_PERMISSION_SET \
     PLATFORM_AGENT_CUSTOM_ROLES ENABLE_GVISOR HERMES_DASHBOARD_ENABLED MEMORY \
     USER_PROFILE_ENABLED GITOPS_ORG GITOPS_REPO GITHUB_APP_ID GITHUB_PEM_PATH; do
-    grep -qE "^[[:space:]]*${key}=" "$file" 2>/dev/null || continue
+    grep -qE "^[[:space:]]*(export[[:space:]]+)?${key}=" "$file" 2>/dev/null || continue
     recorded="$(recorded_install_env_value "$file" "$key")"
     case "$key" in
       MEMORY) current="${PARAM_MEMORY:-}" ;;
@@ -1493,7 +1520,7 @@ tf_compose_dir() {
 }
 
 # Runs lifecycle.sh apply against the generated terraform.tfvars. Reads the
-# install coordinates from the environment (source vars.sh first).
+# install coordinates from the environment (load install.env first).
 run_lifecycle_apply() {
   local repo_dir="$1"
   local log_file="$2"
@@ -3092,7 +3119,7 @@ main() {
   print_info "Provisioning GCP APIs, GKE Cluster, cert-manager, Operator, LiteLLM gateway, and Platform Agent..."
 
   # Re-validate the GitOps org before spending an apply on it. The interview
-  # already settled it interactively; this catches a vars.sh edited by hand
+  # already settled it interactively; this catches an install.env edited by hand
   # and the non-interactive flag path. Warns-only when GitHub is unreachable;
   # SKIP_GITHUB_ORG_CHECK=true bypasses it.
   check_github_org_is_organization "${GITOPS_ORG:-}"

@@ -467,12 +467,15 @@ install_env_file_for_state() {
 load_state() {
   local env_registry_prefix="${REGISTRY_PREFIX:-}"
   local env_third_party_prefix="${THIRD_PARTY_REGISTRY_PREFIX:-}"
-  # Read if present, never created. install.env is the input now, and creating
-  # an empty vars.sh here gained nothing — sourcing it is a no-op, and save_var
-  # appends to a missing file on its own. What it did do was leave a stray
-  # scripts/installer/vars.sh behind on every chat-enabled install: install.sh
-  # assigns VARS_FILE without exporting it, so the print_instructions_* children
-  # fell back to the default beside this file and created one.
+  # Read if present, never created here. save_var below still appends to
+  # VARS_FILE on its own, so a run that records anything creates the file
+  # whether or not this block ran; opening it eagerly would only add an empty
+  # one to the runs that record nothing.
+  #
+  # $state_source tracks which file last supplied a value, so the warnings
+  # below can name the file an operator has to edit. install.env is loaded
+  # second and wins, and it is the file most installs now have.
+  local state_source="$VARS_FILE"
   if [ -f "$VARS_FILE" ]; then
     chmod 600 "$VARS_FILE" 2>/dev/null || true
     source "$VARS_FILE"
@@ -487,20 +490,22 @@ load_state() {
     # shellcheck disable=SC1090
     . "$state_install_env"
     set +a
+    state_source="$state_install_env"
   fi
-  # Sourcing vars.sh restores the saved REGISTRY_PREFIX over a freshly
-  # exported one (saved state wins, as for every knob). Say so instead of
-  # silently ignoring the export.
+  # A recorded REGISTRY_PREFIX wins over a freshly exported one, as for every
+  # knob. Say so instead of silently ignoring the export, and name the file
+  # that actually holds it -- naming VARS_FILE sends an operator whose value
+  # came from install.env to edit a file that may not exist.
   if [ -n "$env_registry_prefix" ] && [ -n "${REGISTRY_PREFIX:-}" ] \
     && [ "$env_registry_prefix" != "$REGISTRY_PREFIX" ]; then
-    print_warning "Ignoring exported REGISTRY_PREFIX='${env_registry_prefix}': the saved value '${REGISTRY_PREFIX}' from ${VARS_FILE} wins. Edit ${VARS_FILE} (REGISTRY_PREFIX and the saved *_IMAGE values) to change registries."
+    print_warning "Ignoring exported REGISTRY_PREFIX='${env_registry_prefix}': the recorded value '${REGISTRY_PREFIX}' from ${state_source} wins. Edit ${state_source} (REGISTRY_PREFIX and any recorded *_IMAGE values) to change registries."
   fi
   # And the same for the third-party prefix, which is the one an operator is
   # most likely to export on a re-run after pointing cert-manager and
   # fluent-bit at a different mirror.
   if [ -n "$env_third_party_prefix" ] && [ -n "${THIRD_PARTY_REGISTRY_PREFIX:-}" ] \
     && [ "$env_third_party_prefix" != "$THIRD_PARTY_REGISTRY_PREFIX" ]; then
-    print_warning "Ignoring exported THIRD_PARTY_REGISTRY_PREFIX='${env_third_party_prefix}': the saved value '${THIRD_PARTY_REGISTRY_PREFIX}' from ${VARS_FILE} wins. Edit ${VARS_FILE} to change it."
+    print_warning "Ignoring exported THIRD_PARTY_REGISTRY_PREFIX='${env_third_party_prefix}': the recorded value '${THIRD_PARTY_REGISTRY_PREFIX}' from ${state_source} wins. Edit ${state_source} to change it."
   fi
   if [ "${REQUIRES_IMAGE_TAG:-0}" -eq 1 ]; then
     init_var_image_tag
@@ -519,9 +524,33 @@ load_state() {
 }
 
 ensure_teardown_state() {
+  # Both files, in load_state's order: VARS_FILE first, install.env last so the
+  # hand-authored input wins. Reading only VARS_FILE is not enough here --
+  # it holds dev scratch state (the artifact-registry repo name, whether this
+  # checkout created it) and never the install coordinates, because
+  # dev_rebuild_agent.sh takes those from install.env and init_var saves only a
+  # variable that was empty. Callers expand PROJECT_ID and REGION under
+  # `set -u`, so an unset one aborts the teardown before it deletes anything.
+  local state_install_env=""
+  state_install_env="$(install_env_file_for_state)"
   if [ -f "$VARS_FILE" ]; then
     chmod 600 "$VARS_FILE" 2>/dev/null || true
     source "$VARS_FILE"
+  fi
+  if [ -n "$state_install_env" ] && [ -f "$state_install_env" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$state_install_env"
+    set +a
+  fi
+  # Branch on whether the coordinates are known, not on whether a file exists:
+  # a VARS_FILE carrying only dev scratch state satisfies the second and not
+  # the first, and prompting is the correct answer there.
+  if [ -n "${PROJECT_ID:-}" ]; then
+    # install.env is hand-authored, so a file naming PROJECT_ID and not REGION
+    # is a plausible thing to receive, and both are expanded under `set -u`.
+    export REGION="${REGION:-$DEFAULT_REGION}"
+    export CLUSTER_NAME="${CLUSTER_NAME:-$DEFAULT_CLUSTER_NAME}"
     export GKE_DB_KMS_KEYRING="${GKE_DB_KMS_KEYRING:-}"
     export GKE_DB_KMS_KEY="${GKE_DB_KMS_KEY:-}"
     export GCP_ARTIFACT_REGISTRY_REPO_NAME="${GCP_ARTIFACT_REGISTRY_REPO_NAME:-${REPO_NAME:-kube-agents}}"
@@ -537,7 +566,7 @@ ensure_teardown_state() {
     export LITELLM_KSA_NAME="kubeagents-litellm"
     export LITELLM_GSA_NAME="kubeagents-litellm-gsa"
   else
-    echo -e "  ${C_YELLOW}⚠ State file ${VARS_FILE} not found. Prompting for target values...${C_RESET}"
+    echo -e "  ${C_YELLOW}⚠ No install coordinates in ${VARS_FILE} or install.env. Prompting for target values...${C_RESET}"
     local ACTIVE_PROJECT
     ACTIVE_PROJECT="$(gcloud config get-value project 2>/dev/null || echo "")"
     if is_non_interactive; then

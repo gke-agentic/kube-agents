@@ -638,7 +638,7 @@ sys.exit(0 if managed else 1)
 }
 
 # Writes the terraform.tfvars the full-install composition consumes, from the
-# vars.sh variable set in the environment (source vars.sh first). The same
+# install.env variable set in the environment (load it first). The same
 # generator runs from install.sh, upgrade.sh, and uninstall.sh, so the three
 # front-ends can never describe different installs.
 #
@@ -676,7 +676,7 @@ write_tfvars_from_state() {
   # deletion-protection apply and upgrade's full apply both became cluster
   # replacements.
   #
-  # CLUSTER_MODE (install.sh --cluster-mode, persisted to vars.sh) therefore
+  # CLUSTER_MODE (install.sh --cluster-mode, recorded in install.env) therefore
   # decides ONE case: the fresh create, where the probe found no cluster and
   # the interview is the only information there is. Every branch on which a
   # cluster exists assigns cluster_mode from the probe, so a stale or

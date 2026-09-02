@@ -117,8 +117,11 @@ cluster whose cert-manager comes from somewhere else.
 front door writes one any more. Every reader still accepts one so that an install
 predating the change keeps working with no action from its owner: each loads `vars.sh`
 first and `install.env` over the top, so the input wins. `install.sh` additionally
-migrates — it reads a legacy `vars.sh`, warns, and writes those values into `install.env`
-on the way out, after which the old file can be deleted.
+migrates — it reads a legacy `vars.sh` and warns, and a full run that has no `install.env`
+yet writes those values into one on the way out, after which the old file can be deleted.
+A run that already has an `install.env` does not: `bootstrap_install_env_file` treats an
+existing file as the operator's, so the legacy values are loaded for that run and recorded
+nowhere. Delete `vars.sh` only once `install.env` carries what you need from it.
 
 One writer is left, and it is not an install one. The dev tooling under `scripts/dev/`
 records whether it created the throwaway Artifact Registry (`DEV_ARTIFACT_REGISTRY_CREATED`)
