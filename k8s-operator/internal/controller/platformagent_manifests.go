@@ -971,6 +971,36 @@ func pluginMountPath(homeDir string, plugin *agentv1alpha1.AgentPlugin) string {
 	return fmt.Sprintf("%s/plugins/%s", homeDir, plugin.Name)
 }
 
+// buildPluginStagingInitContainer builds an init container that extracts a plugin's container image
+// into an emptyDir volume on clusters where ImageVolumeSource is unsupported or restricted (e.g. GKE Autopilot).
+func buildPluginStagingInitContainer(homeDir string, plugin *agentv1alpha1.AgentPlugin) corev1.Container {
+	mountPath := pluginMountPath(homeDir, plugin)
+	pullPolicy := corev1.PullIfNotPresent
+	if plugin.Spec.ImagePullPolicy != nil {
+		pullPolicy = *plugin.Spec.ImagePullPolicy
+	}
+	stageScript := fmt.Sprintf("mkdir -p %s && (if [ -d /files ]; then cp -a /files/. %s/; else for item in /*; do case \"$item\" in /bin|/boot|/dev|/etc|/home|/lib*|/media|/mnt|/opt|/proc|/root|/run|/sbin|/srv|/sys|/tmp|/usr|/var) ;; *) cp -a \"$item\" %s/ ;; esac; done; fi); true",
+		mountPath, mountPath, mountPath)
+
+	return corev1.Container{
+		Name:            fmt.Sprintf("stage-plugin-%s", plugin.Name),
+		Image:           plugin.Spec.Image,
+		ImagePullPolicy: pullPolicy,
+		SecurityContext: hardenedSecurityContext(),
+		Command: []string{
+			"/bin/sh",
+			"-c",
+			stageScript,
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			{
+				Name:      buildPluginVolumeName(plugin.Name),
+				MountPath: mountPath,
+			},
+		},
+	}
+}
+
 // partitionPluginsByProfile splits plugins into those belonging to the default profile
 // and those targeting a named profile, keyed by profile name. Order is preserved so the
 // rendered config is stable across reconciles.
@@ -1671,6 +1701,12 @@ func buildPodTemplateSpec(agent *agentv1alpha1.PlatformAgent, configHash, fluent
 	// credentialed deployments before the agent sandbox can mount the PVC.
 	initContainers = append([]corev1.Container{buildSandboxCredentialCleanup(image, pullPolicy)}, initContainers...)
 
+	if !opts.imageVolumeSupported {
+		for _, plugin := range agentPlugins {
+			initContainers = append(initContainers, buildPluginStagingInitContainer(homeDir, plugin))
+		}
+	}
+
 	pluginsDebugVal := "0"
 	if agent.Spec.Harness != nil && agent.Spec.Harness.Hermes != nil && agent.Spec.Harness.Hermes.PluginsDebug != nil {
 		if *agent.Spec.Harness.Hermes.PluginsDebug {
@@ -2040,10 +2076,12 @@ func buildPodTemplateSpec(agent *agentv1alpha1.PlatformAgent, configHash, fluent
 				},
 			})
 		} else {
-			manifestsLog.Error(fmt.Errorf("ImageVolumeSource unsupported on Kubernetes < 1.35"),
-				"skipping plugin OCI image volume mount to prevent deployment pod validation failure",
-				"plugin", plugin.Name,
-				"platformagent", agent.Name)
+			volumes = append(volumes, corev1.Volume{
+				Name: buildPluginVolumeName(plugin.Name),
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
+				},
+			})
 		}
 	}
 	volumes = append(volumes, buildCustomStorageVolumes(agent)...)
@@ -3056,13 +3094,11 @@ func buildBaseContainers(agent *agentv1alpha1.PlatformAgent, image string, envVa
 		args = []string{"hermes", "--profile", platformProfileName, "gateway", "run"}
 	}
 
-	if isImageVolumeSupported {
-		for _, plugin := range agentPlugins {
-			volumeMounts = append(volumeMounts, corev1.VolumeMount{
-				Name:      buildPluginVolumeName(plugin.Name),
-				MountPath: pluginMountPath(homeDir, plugin),
-			})
-		}
+	for _, plugin := range agentPlugins {
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      buildPluginVolumeName(plugin.Name),
+			MountPath: pluginMountPath(homeDir, plugin),
+		})
 	}
 
 	// APPENDED LAST, and that position is the guard, not a style choice. It is not routed
