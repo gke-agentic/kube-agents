@@ -8,6 +8,7 @@ import os
 import pathlib
 import re
 import subprocess
+import tempfile
 import time
 import unittest
 
@@ -206,6 +207,79 @@ class PersistStateVarTest(unittest.TestCase):
         for var in ("PROJECT_ID", "CLUSTER_NAME", "REGION"):
             with self.subTest(var=var):
                 self.assertIn(f'export {var}="$target_', source)
+
+
+class DirtyCheckoutRefusalTest(unittest.TestCase):
+    """A tagless upgrade still applies this checkout to a live install.
+
+    `--image-tag` makes three refusals possible at once, and only the middle one
+    — does HEAD match the requested ref — actually needs a tag. Gating the whole
+    function on the tag's presence let `--keep-image-tag` carry uncommitted edits
+    to `terraform/` or `charts/` into a real `terraform apply`, which is the
+    invisible drift this pull request exists to end.
+    """
+
+    def _run(self, func_call, env=None, cwd=None):
+        setup = (f'KUBE_AGENTS_SOURCE_ONLY=true source "{_UPGRADE_SH}"\n'
+                 f"{func_call}\n")
+        return subprocess.run(
+            ["bash", "-c", setup], capture_output=True, text=True,
+            env=get_isolated_test_env(overrides=env), cwd=str(cwd or _REPO_ROOT),
+        )
+
+    def _repo(self, tmp, dirty):
+        """A real git checkout, clean or with a tracked file modified."""
+        subprocess.run(["git", "init", "-q", tmp], check=True)
+        for cmd in (["config", "user.email", "t@example.com"],
+                    ["config", "user.name", "T"]):
+            subprocess.run(["git", "-C", tmp, *cmd], check=True)
+        target = os.path.join(tmp, "main.tf")
+        with open(target, "w") as handle:
+            handle.write("# committed\n")
+        subprocess.run(["git", "-C", tmp, "add", "."], check=True)
+        subprocess.run(["git", "-C", tmp, "commit", "-qm", "init"], check=True)
+        if dirty:
+            with open(target, "a") as handle:
+                handle.write("# uncommitted local edit\n")
+        return tmp
+
+    def test_a_dirty_checkout_is_refused_without_a_tag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo(tmp, dirty=True)
+            proc = self._run(f'verify_local_source_clean "{repo}"')
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("dirty checkout", proc.stdout + proc.stderr)
+
+    def test_a_clean_checkout_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo(tmp, dirty=False)
+            proc = self._run(f'verify_local_source_clean "{repo}"')
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def test_an_unversioned_directory_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = self._run(f'verify_local_source_clean "{tmp}"')
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("unversioned source directory", proc.stdout + proc.stderr)
+
+    def test_the_previews_warn_instead_of_refusing(self):
+        """--plan and --dry-run change nothing, and a plan of a tree mid-edit is
+        the one command that answers "what have I changed here"."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo(tmp, dirty=True)
+            for flag in ("PARAM_PLAN", "PARAM_DRY_RUN"):
+                with self.subTest(flag=flag):
+                    proc = self._run(
+                        f'{flag}=true; verify_local_source_clean "{repo}"')
+                    self.assertEqual(proc.returncode, 0,
+                                     proc.stdout + proc.stderr)
+                    self.assertIn("uncommitted source changes",
+                                  proc.stdout + proc.stderr)
+
+    def test_the_tagless_paths_call_it(self):
+        """Both in-checkout arms, so neither route skips the check."""
+        source = _UPGRADE_SH.read_text()
+        self.assertEqual(source.count('verify_local_source_clean "$repo_dir"'), 2)
 
 
 class InteractiveImageTagPromptTest(unittest.TestCase):

@@ -38,7 +38,8 @@ on:
         type: string
 
 # Distinct from the `nightly-environment` lock the called workflows take. That
-# one is acquired and released three times over — by steps 2, 3 and 5 — so a
+# one is acquired and released three times over — by the deploy, the matrix and
+# the teardown, whatever their step numbers happen to be — so a
 # workflow pointed at the `nightly` environment can interleave in a gap. This
 # group is held for the whole run, and it is what keeps the only thing that
 # drives the environment end to end, another nightly, out of those gaps.

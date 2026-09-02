@@ -256,6 +256,47 @@ backfill_session_kv_keys() {
   fi
 }
 
+# The two refusals that do not need a ref to make sense: an unversioned source
+# directory, and a dirty one. Split out of verify_local_source_ref because a
+# tagless run still applies this checkout's Terraform and charts to a live
+# install -- so skipping the ref COMPARISON, which is the only part a missing
+# tag actually makes impossible, must not take these with it. Without this,
+# `--keep-image-tag` would apply uncommitted local edits to an environment and
+# say nothing, which is the invisible drift #1117 exists to end.
+#
+# The previews are warned rather than refused. --dry-run and --plan change
+# nothing, and a plan of what the working tree WOULD apply is a reasonable thing
+# to want from a tree that is mid-edit; refusing it would take away the one
+# command that answers "what have I changed here".
+verify_local_source_clean() {
+  local repo_dir="$1" preview="false"
+  if [ "$PARAM_DRY_RUN" = "true" ] || [ "$PARAM_PLAN" = "true" ]; then
+    preview="true"
+  fi
+
+  if ! git -C "$repo_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if [ -n "${BAKED_RELEASE_VERSION:-}" ]; then
+      return 0
+    fi
+    if [ "$preview" = "true" ]; then
+      print_warning "Cannot verify the source directory because '$repo_dir' is not a Git worktree."
+      return 0
+    fi
+    print_error "Refusing to upgrade from an unversioned source directory: $repo_dir"
+    return 1
+  fi
+
+  if [ -n "$(git -C "$repo_dir" status --porcelain --untracked-files=no)" ]; then
+    if [ "$preview" = "true" ]; then
+      print_warning "This preview is using uncommitted source changes; a real upgrade would require a clean checkout."
+      return 0
+    fi
+    print_error "Refusing to upgrade from a dirty checkout: its Terraform, charts and scripts match no commit, so what this run would apply exists nowhere else. Commit or stash, or use --plan to preview."
+    return 1
+  fi
+  print_success "Verified the upgrade sources are a clean checkout of $(git -C "$repo_dir" rev-parse --short HEAD)."
+}
+
 verify_local_source_ref() {
   local repo_dir="$1"
   local expected_ref="$2"
@@ -414,16 +455,29 @@ main() {
   esac
 
   # A tagless run cannot fetch its own engine — there is no tag to fetch — and
-  # cannot verify the checkout against a ref it was not given. Both are things
+  # cannot compare the checkout against a ref it was not given. Both are things
   # the tag makes possible rather than things the run needs.
+  #
+  # What the tag does NOT excuse is the state of the checkout itself: a tagless
+  # run still applies this directory's Terraform and charts to a live install,
+  # so verify_local_source_clean runs either way and only the ref comparison is
+  # conditional.
   local script_dir repo_dir
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   if [ -f "${script_dir}/scripts/installer/installer_common.sh" ]; then
     repo_dir="$script_dir"
-    [ -z "$PARAM_IMAGE_TAG" ] || verify_local_source_ref "$repo_dir" "$PARAM_IMAGE_TAG"
+    if [ -n "$PARAM_IMAGE_TAG" ]; then
+      verify_local_source_ref "$repo_dir" "$PARAM_IMAGE_TAG"
+    else
+      verify_local_source_clean "$repo_dir"
+    fi
   elif [ -f "$(pwd)/scripts/installer/installer_common.sh" ]; then
     repo_dir="$(pwd)"
-    [ -z "$PARAM_IMAGE_TAG" ] || verify_local_source_ref "$repo_dir" "$PARAM_IMAGE_TAG"
+    if [ -n "$PARAM_IMAGE_TAG" ]; then
+      verify_local_source_ref "$repo_dir" "$PARAM_IMAGE_TAG"
+    else
+      verify_local_source_clean "$repo_dir"
+    fi
   elif [ -z "$PARAM_IMAGE_TAG" ]; then
     print_error "--plan and --keep-image-tag have to run from a kube-agents checkout: without --image-tag there is no ref to fetch the engine at."
     exit 1

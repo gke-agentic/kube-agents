@@ -55,7 +55,14 @@ output() {
 # At the repository root, which is where every front door looks for it and
 # where scripts/live_test_lease.py discovers which install this checkout is
 # pointed at. .gitignore already excludes it.
-INSTALL_ENV="${REPO_ROOT}/install.env"
+# An inbound KUBE_AGENTS_INSTALL_ENV wins. The renderer truncates whatever it
+# writes to, and on a workstation that default path is a hand-authored file
+# holding credentials that nothing backs up -- so the variable whose whole job
+# is to point the installer somewhere else is honoured here rather than
+# overwritten. A GitHub runner sets neither and gets the checkout root, which is
+# also where scripts/live_test_lease.py looks to discover which install this
+# checkout is pointed at.
+INSTALL_ENV="${KUBE_AGENTS_INSTALL_ENV:-${REPO_ROOT}/install.env}"
 export KUBE_AGENTS_INSTALL_ENV="${INSTALL_ENV}"
 
 echo "==> Rendering the install configuration for '${ENV_NAME}'."
