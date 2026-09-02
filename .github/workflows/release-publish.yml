@@ -226,6 +226,12 @@ jobs:
           RELEASE_VERSION: ${{ steps.calculate-version.outputs.release_version }}
         run: ./scripts/release/package_release_bundle.sh
 
+      - name: Sign Release Bundle Checksums
+        if: steps.verify-eligibility.outputs.skip_release != 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.calculate-version.outputs.release_version }}
+        run: ./scripts/release/sign_release_artifacts.sh
+
       - name: Publish GitHub Release
         if: steps.verify-eligibility.outputs.skip_release != 'true'
         env:

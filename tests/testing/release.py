@@ -167,6 +167,17 @@ def create_mock_cosign_binary(bin_dir, log_file=None, fail_sign=False):
     exit_code = 1 if fail_sign else 0
     content = f"""#!/bin/sh
 echo "mock cosign: $@" >> "{log_path}"
+if [ {exit_code} -eq 0 ]; then
+  bundle_flag=0
+  for arg in "$@"; do
+    if [ "$bundle_flag" -eq 1 ]; then
+      touch "$arg"
+      bundle_flag=0
+    elif [ "$arg" = "--bundle" ]; then
+      bundle_flag=1
+    fi
+  done
+fi
 exit {exit_code}
 """
     cosign_path.write_text(content)
