@@ -180,6 +180,20 @@ jobs:
           NAMESPACE: ${{ vars.NAMESPACE }}
         run: |
           set -euo pipefail
+          # The workspace here is the CANDIDATE's tree (see the checkout step
+          # above), and render_install_env.sh only exists from the commit that
+          # added it. Every rc_*_validated tag older than that resolves to a
+          # tree without it, so say which of the two things went wrong rather
+          # than letting `No such file or directory` stand for both.
+          #
+          # No `if [ -f ]` fallthrough: skipping the check and carrying on to
+          # the teardown is the silent half of this, and the whole point of the
+          # step is to refuse. Pass a post-merge commit SHA as rc_tag — the
+          # input takes one — to rebuild from a tree that has the script.
+          if [ ! -f ./scripts/release/render_install_env.sh ]; then
+            echo "::error title=This candidate predates the live-test lease check::The commit being deployed has no scripts/release/render_install_env.sh, so this job cannot name the install to ask whether its lease is held — and it will not tear '${TARGET}' down without asking. Re-run with rc_tag set to a commit SHA at or after the one that added that script."
+            exit 1
+          fi
           # Not --strict: this only has to name the install, and a missing
           # install setting is the reconcile path's problem, not the lease's.
           ./scripts/release/render_install_env.sh install.env
@@ -290,6 +304,58 @@ jobs:
           # over repository over organization, so a repository-level one also
           # works and is the easier of the two to set by accident.
           TEARDOWN_STRICT: ${{ vars.TEARDOWN_STRICT }}
+          # Everything below is what `render_install_env.sh`'s MAPPING carries
+          # and this step used not to. Both paths read the same GitHub
+          # environment, so a setting missing here is not "defaulted on the
+          # rebuild" — it is a rebuild that installs something different from
+          # what the reconcile would have applied, with nothing in the run
+          # saying so.
+          #
+          # ALLOWED_USERS is why this is not cosmetic. install.sh seeds
+          # PARAM_ALLOWED_USERS from the environment and an absent list is not
+          # "no opinion": it renders `google_chat_allowed_users = []`, the
+          # chart omits the key, and the operator reads an absent list as
+          # allow-all. A rebuild of a long-lived environment without it opens
+          # the install to the whole domain, which is the one omission here
+          # that WIDENS access rather than removing a feature.
+          #
+          # No flags for any of these: install.sh reads them from the
+          # environment, the same mechanism the GITOPS_* pair above already
+          # relies on.
+          ALLOWED_USERS: ${{ vars.ALLOWED_USERS }}
+          # Not install settings — the empty allowlist is already what produces
+          # allow-all. Their only job is to let an operator SAY that the open
+          # allowlist is intended, which is what the guard in
+          # provision_environment.sh asks for. Same pair, same purpose, as in
+          # reconcile-environment.yml.
+          GOOGLE_CHAT_ALLOW_ALL_USERS: ${{ vars.GOOGLE_CHAT_ALLOW_ALL_USERS }}
+          SLACK_ALLOW_ALL_USERS: ${{ vars.SLACK_ALLOW_ALL_USERS }}
+          # Turns that guard on. `rc` and `nightly` are torn down and rebuilt
+          # every run and carry no allowlist by design, so they stay exempt —
+          # the same long-lived/ephemeral split `render_install_env.sh` draws
+          # with --strict.
+          LONG_LIVED_ENVIRONMENT: ${{ (inputs.github_environment == 'autopush' || inputs.github_environment == 'staging') && 'true' || '' }}
+          SLACK_ENABLED: ${{ vars.SLACK_ENABLED }}
+          SLACK_ALLOWED_USERS: ${{ vars.SLACK_ALLOWED_USERS }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_TOKEN }}
+          SLACK_HOME_CHANNEL: ${{ vars.SLACK_HOME_CHANNEL }}
+          SLACK_HOME_CHANNEL_NAME: ${{ vars.SLACK_HOME_CHANNEL_NAME }}
+          CLUSTER_MODE: ${{ vars.CLUSTER_MODE }}
+          VERTEX_PROJECT_ID: ${{ vars.VERTEX_PROJECT_ID }}
+          VERTEX_LOCATION: ${{ vars.VERTEX_LOCATION }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CHAT_SUB_NAME: ${{ vars.CHAT_SUB_NAME }}
+          KMS_KEYRING: ${{ vars.KMS_KEYRING }}
+          KMS_KEY: ${{ vars.KMS_KEY }}
+          PLATFORM_AGENT_CUSTOM_ROLES: ${{ vars.PLATFORM_AGENT_CUSTOM_ROLES }}
+          HERMES_DASHBOARD_ENABLED: ${{ vars.HERMES_DASHBOARD_ENABLED }}
+          THIRD_PARTY_REGISTRY_PREFIX: ${{ vars.THIRD_PARTY_REGISTRY_PREFIX }}
+          # The installer's own spelling, from the CI-side name — the same
+          # translation render_install_env.sh's `NAMESPACE:AGENT_NAMESPACE`
+          # mapping makes. The bare NAMESPACE fallback is staging's spelling.
+          NAMESPACE: ${{ vars.AGENT_NAMESPACE || vars.NAMESPACE }}
         # provision_environment.sh is this change's name for what candidates up
         # to and including rc_2608310656_cf038a2_validated carry as
         # provision_rc_environment.sh. get_latest_validated_rc_tag has no recency

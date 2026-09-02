@@ -202,9 +202,14 @@ if [ "$STRICT" = "true" ]; then
   check_allowlist() {
     local enabled_var="$1" list_var="$2" allow_all_var="$3" platform="$4"
     is_truthy "${!enabled_var:-}" || return 0
-    [ -z "${!list_var:-}" ] || return 0
+    # Emptiness is the installer's own, not `-z`. hcl_csv_list splits on
+    # `, \t\n` and drops empty items, so a value that is nothing but
+    # separators — a list cleared down to a stray comma — is non-empty to
+    # `-z` and renders `[]` to Terraform. Testing it any other way is a
+    # second expression of the rule that disagrees with the first.
+    [ "$(hcl_csv_list "${!list_var:-}")" = "[]" ] || return 0
     ! is_truthy "${!allow_all_var:-}" || return 0
-    echo "::error title=${platform} is enabled with no allowlist::${list_var} is empty on this environment, and an empty allowlist means EVERY user is admitted — the operator turns an absent list into allow-all for ${platform}. Set ${list_var} to the users this install should admit, or set ${allow_all_var}=true to say the open allowlist is intended."
+    echo "::error title=${platform} is enabled with no allowlist::${list_var} names no users on this environment — it is unset, or it holds only separators — and an empty allowlist means EVERY user is admitted, because the operator turns an absent list into allow-all for ${platform}. Set ${list_var} to the users this install should admit, or set ${allow_all_var}=true to say the open allowlist is intended."
     echo "==> ${platform} enabled with an empty ${list_var} and no ${allow_all_var}=true." >&2
     return 1
   }

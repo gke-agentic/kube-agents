@@ -218,6 +218,25 @@ class AllowlistGuardTest(unittest.TestCase):
                 self.assertEqual(rc, 1, f"{spelling!r} was not read as enabled")
                 self.assertIn("ALLOWED_USERS", log)
 
+    def test_a_separator_only_allowlist_names_nobody_and_is_refused(self):
+        """Non-empty to `-z`, empty to the installer — which is the gap.
+
+        `hcl_csv_list` splits on `, \\t\\n` and drops empty items, so a list
+        cleared down to a stray comma renders `google_chat_allowed_users = []`
+        and admits the whole domain, exactly as an unset one does. The guard
+        therefore has to measure emptiness the way the installer does rather
+        than with a second expression of the rule.
+        """
+        for value in (" ", ",", ", ,", ",,", "\t", " , "):
+            with self.subTest(value=value):
+                rc, log, text = render(
+                    {**_COORDS, **_STRICT_SETTINGS, "ALLOWED_USERS": value},
+                    strict=True)
+                self.assertEqual(
+                    rc, 1, f"{value!r} names no users but was accepted")
+                self.assertIn("Google Chat is enabled with no allowlist", log)
+                self.assertNotIn("ALLOWED_USERS", parse(text))
+
     def test_an_integration_that_is_off_needs_no_allowlist(self):
         rc, log, _ = render(
             {**_COORDS, **_STRICT_SETTINGS, "GOOGLE_CHAT_ENABLED": "false"},

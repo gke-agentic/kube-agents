@@ -28,6 +28,21 @@
 #   plus every install setting render_install_env.sh maps.
 set -euo pipefail
 
+# How long to wait for an in-flight redeploy of this environment, and how often
+# to look. A `terraform apply` running concurrently with the `helm upgrade` a
+# redeploy performs contends for the same release, so the reconcile waits;
+# past the deadline it gives up and runs again tomorrow rather than blocking a
+# nightly on a stuck deploy.
+readonly REDEPLOY_WAIT_SECONDS=900
+readonly REDEPLOY_POLL_SECONDS=30
+# `gh run list` page size. Only the in-flight states are counted, and a
+# redeploy workflow with more than this many runs already queued is a problem
+# no wait will fix.
+readonly REDEPLOY_RUN_QUERY_LIMIT=20
+# Long enough to cover a full apply, short enough that a crashed run does not
+# lock the environment out for a working day.
+readonly LEASE_TTL_MINUTES=90
+
 MODE="${RECONCILE_MODE:-plan}"
 ENV_NAME="${GITHUB_ENVIRONMENT:-unknown}"
 LEASE_POLICY="${LEASE_POLICY:-defer}"
@@ -117,7 +132,7 @@ await_redeploys() {
   command -v gh >/dev/null 2>&1 || { echo "==> gh not available; skipping the redeploy check."; return 0; }
   [ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ] || { echo "==> No token for the redeploy check; skipping."; return 0; }
 
-  local deadline=$((SECONDS + 900)) running
+  local deadline=$((SECONDS + REDEPLOY_WAIT_SECONDS)) running
   while [ "$SECONDS" -lt "$deadline" ]; do
     running=""
     for component in agent controller integrations; do
@@ -133,17 +148,17 @@ await_redeploys() {
       # `--status` takes one value, so the filtering is done in jq instead.
       local n
       n="$(gh run list --repo "${GITHUB_REPOSITORY:-gke-labs/kube-agents}" \
-        --workflow "$wf" --limit 20 --json status \
+        --workflow "$wf" --limit "$REDEPLOY_RUN_QUERY_LIMIT" --json status \
         --jq '[.[] | select(.status == "in_progress" or .status == "queued" or .status == "waiting")] | length' \
         2>/dev/null || echo 0)"
       [ "$n" = "0" ] || running="${running} ${wf}(${n})"
     done
     [ -n "$running" ] || return 0
     echo "==> Waiting for in-flight redeploys:${running}"
-    sleep 30
+    sleep "$REDEPLOY_POLL_SECONDS"
   done
 
-  echo "::warning title=Redeploy still running::A redeploy of '${ENV_NAME}' was still in flight after 15 minutes; skipping this reconcile rather than running a terraform apply concurrently with a helm upgrade on the same release."
+  echo "::warning title=Redeploy still running::A redeploy of '${ENV_NAME}' was still in flight after $((REDEPLOY_WAIT_SECONDS / 60)) minutes; skipping this reconcile rather than running a terraform apply concurrently with a helm upgrade on the same release."
   return 1
 }
 
@@ -184,7 +199,7 @@ if [ "$MODE" = "apply" ] && [ "$LEASE_POLICY" != "ignore" ]; then
   # and every step of a workflow run is a different shell.
   export KUBE_AGENTS_LEASE_SESSION="gha-${GITHUB_RUN_ID:-manual}"
   if python3 "${REPO_ROOT}/scripts/live_test_lease.py" acquire \
-    --note "scheduled reconcile of ${ENV_NAME}" --ttl 90; then
+    --note "scheduled reconcile of ${ENV_NAME}" --ttl "$LEASE_TTL_MINUTES"; then
     LEASE_HELD="true"
   else
     holder="$(python3 "${REPO_ROOT}/scripts/live_test_lease.py" status --json 2>/dev/null || echo '[]')"

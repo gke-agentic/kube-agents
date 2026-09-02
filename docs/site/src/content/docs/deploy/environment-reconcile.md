@@ -98,11 +98,15 @@ before using it.
 The reconcile renders an `install.env` from the environment's GitHub variables
 and secrets with `scripts/release/render_install_env.sh`, and
 `install.env.example` documents what each key means. The rebuild button takes a
-different route to the same settings — `provision_environment.sh` turns them
-into `install.sh` flags. The two are separate copies rather than one function,
-and only their one overlapping translation, `MEMORY_PROVIDER`, is pinned against
-drift by a test; the rest of the variable set is not, and `provision_environment.sh`
-additionally accepts `GITHUB_ORG`/`GITHUB_REPO` aliases the renderer does not.
+different route to the same settings — `provision_environment.sh` turns the
+cluster coordinates into `install.sh` flags and the workflow puts the rest in
+the environment `install.sh` reads. The two are separate copies rather than one
+function, so two tests hold them together: one pins their overlapping
+translation, `MEMORY_PROVIDER`, and one pins every key the renderer writes
+against what the rebuild workflow exports, because a setting only one path
+carries is a rebuild that installs something the reconcile would not have.
+`provision_environment.sh` additionally accepts `GITHUB_ORG`/`GITHUB_REPO`
+aliases the renderer does not.
 
 Every setting below is **required** on a long-lived environment, and the
 reconcile fails naming all the missing ones at once rather than starting. This
@@ -142,7 +146,15 @@ so leaving one unset admits every user in the domain:
 Neither `*_ALLOW_ALL_USERS` variable is written into `install.env`. The empty
 allowlist is already what produces allow-all downstream; the variable exists so
 that an environment which wants it has to say so, and one that lost its
-allowlist to a typo fails instead.
+allowlist to a typo fails instead. A value that is only separators — a list
+cleared down to a stray comma — counts as empty, because that is what it
+renders to.
+
+Both paths refuse an empty allowlist on a long-lived environment: the strict
+render stops the reconcile, and `provision_environment.sh` stops the rebuild
+above its teardown. `rc` and `nightly` are exempt by design — they are
+destroyed and rebuilt every run and no real user reaches them, so an
+unconditional check would fail the RC pipeline rather than protect anything.
 
 Optional, and copied through when set: `CLUSTER_MODE`, `MODEL_DEFAULT_NAME`,
 `VERTEX_PROJECT_ID`, `VERTEX_LOCATION`, `GOOGLE_CHAT_MODE`, `CHAT_TOPIC_NAME`,
