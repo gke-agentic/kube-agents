@@ -650,7 +650,7 @@ plugins:
   pubsubPlatform:
     enabled: false
     name: pubsubplatform
-    agentRef: platform-agent
+    agentRef: "" # defaults to platformAgent.name
     image:
       repository: ghcr.io/gke-labs/kube-agents/pubsub-platform
       tag: "" # defaults to Chart.appVersion
@@ -661,7 +661,7 @@ plugins:
   stockoutInvestigator:
     enabled: false
     name: gkestockoutinvestigator
-    agentRef: platform-agent
+    agentRef: "" # defaults to platformAgent.name
     targetProfile: platform
     # Target cluster name. Required when enabled (defaults to platformAgent.harness.clusterName if empty).
     clusterName: ""

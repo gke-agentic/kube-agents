@@ -171,6 +171,30 @@ class HelmPluginsTemplatingTest(unittest.TestCase):
         self.assertIn("maxTurns: 200", proc.stdout)
         self.assertIn("maxTurns: 150", proc.stdout)
 
+    @unittest.skipUnless(shutil.which("helm"), "helm is not installed")
+    def test_plugins_inherit_custom_platform_agent_name(self):
+        cmd = [
+            "helm",
+            "template",
+            "test-release",
+            str(_CHART),
+            "--set",
+            "platformAgent.harness.clusterName=ci-cluster",
+            "--set",
+            "platformAgent.harness.location=us-central1",
+            "--set",
+            "platformAgent.harness.projectId=ci-project",
+            "--set",
+            "platformAgent.name=custom-platform-agent",
+            "--set",
+            "plugins.pubsubPlatform.enabled=true",
+            "--set",
+            "plugins.stockoutInvestigator.enabled=true",
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        self.assertIn('agentRef: "custom-platform-agent"', proc.stdout)
+        self.assertNotIn('agentRef: "platform-agent"', proc.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
