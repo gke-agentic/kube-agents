@@ -849,7 +849,7 @@ echo "FILES:${RELEASE_BUNDLE_ROOT_FILES[*]}"
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("DIRS:terraform k8s-operator deploy charts scripts examples", proc.stdout)
         self.assertIn("CHARTS:charts/kube-agents", proc.stdout)
-        self.assertIn("FILES:install.sh uninstall.sh upgrade.sh install.defaults.env install.env.example images.json README.md LICENSE", proc.stdout)
+        self.assertIn("FILES:install.sh uninstall.sh upgrade.sh install.defaults.env install.env.example images.json Makefile INSTALL.md README.md LICENSE", proc.stdout)
 
     def test_extract_commit_tree(self):
         """Verifies extract_commit_tree extracts exact committed files to target directory."""

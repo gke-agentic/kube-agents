@@ -45,6 +45,8 @@ export RELEASE_BUNDLE_ROOT_FILES=(
   "install.defaults.env"
   "install.env.example"
   "images.json"
+  "Makefile"
+  "INSTALL.md"
   "README.md"
   "LICENSE"
 )
