@@ -105,10 +105,11 @@ def _neutralize_prompt_injection(text: str) -> str:
         text,
         flags=re.IGNORECASE,
     )
-    # 2. Spaced opening tags (< system>, < system/>, etc.), anchored so they cannot collide with
+    # 2. Spaced opening tags without attributes (< system>, < system/>) or with attributes
+    #    (< system role="admin">), gated on an '=' before '>' to prevent colliding with
     #    threshold inequalities like 'CPU < system reserved; page if utilization > 90%'.
     text = re.sub(
-        r"<[ \t]+(system|instruction|prompt|admin|untrusted_[a-z0-9_-]+)[ \t]*[/ \t]*>",
+        r"<[ \t]+(system|instruction|prompt|admin|untrusted_[a-z0-9_-]+)(?:[ \t]*(?:/[ \t]*)?>|(?=[ \t])(?=[^>\n]*=)[^>\n]*>)",
         r"[\1_tag_neutralized]",
         text,
         flags=re.IGNORECASE,
@@ -184,8 +185,9 @@ def sanitize_for_prompt(text: str) -> str:
     cleaned = _neutralize_prompt_injection(cleaned)
     # Neutralize lines starting with '#' so entries cannot create new root-level markdown prompt sections.
     # Consumes all leading hash runs and spaces/tabs (e.g. '# ## Heading' or '  # # # Heading')
-    # so subsequent hashes cannot become un-neutralized headings.
-    cleaned = re.sub(r"(?m)^(\s*)#+[# \t]*", r"\1", cleaned)
+    # so subsequent hashes cannot become un-neutralized headings. Uses [^\S\n]* rather than \s*
+    # to avoid quadratic backtracking across lines of newlines.
+    cleaned = re.sub(r"(?m)^([^\S\n]*)#+[# \t]*", r"\1", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 

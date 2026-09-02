@@ -314,7 +314,22 @@ class TestInputValidationAndSanitization(MultiUserMemoryTestCase):
         self.assertLess(dt, 100.0, f"Tag regex took too long: {dt:.2f}ms")
         self.assertEqual(sanitized, evil_space_run)
 
-        # 2. Multiline tag candidate must not span lines
+        # 2. Quadratic backtracking check on spaced tag with unclosed space run
+        evil_spaced_run = "< system" + " " * 3200 + "."
+        t0 = time.perf_counter()
+        sanitized_spaced = mum.sanitize_for_prompt(evil_spaced_run)
+        dt_spaced = (time.perf_counter() - t0) * 1000
+        self.assertLess(dt_spaced, 50.0, f"Spaced tag regex took too long: {dt_spaced:.2f}ms")
+        self.assertEqual(sanitized_spaced, evil_spaced_run)
+
+        # 3. Quadratic backtracking check on multiline whitespace-only run in heading neutralization
+        whitespace_run = "note\n" + "\n " * 2000 + "end"
+        t0 = time.perf_counter()
+        sanitized_ws = mum.sanitize_for_prompt(whitespace_run)
+        dt_ws = (time.perf_counter() - t0) * 1000
+        self.assertLess(dt_ws, 50.0, f"Multiline heading regex took too long: {dt_ws:.2f}ms")
+
+        # 4. Multiline tag candidate must not span lines
         multi_line = "Set <prompt\ntimeout to 30s and confirm cpu > 2 cores\nthen restart"
         self.assertEqual(mum.sanitize_for_prompt(multi_line), multi_line)
 
@@ -325,6 +340,9 @@ class TestInputValidationAndSanitization(MultiUserMemoryTestCase):
             "--context <context of the cluster running the agent>",
             "Pod priority: <system-node-critical>",
             "Alert when CPU < system reserved; page if utilization > 90%",
+            "CPU < system reserved and mem > 4Gi",
+            "if load < prompt latency then page > oncall",
+            "value < system max > threshold",
             "# Runbook step 1\nRun command --opt",
         ]
         for entry in sop_cases:
@@ -432,6 +450,12 @@ class TestInputValidationAndSanitization(MultiUserMemoryTestCase):
             "<  system  >",
             "< system/>",
             "< system />",
+            '< system role="admin">',
+            "<  system foo=1>",
+            "<\tsystem lang=en>",
+            "< instruction priority=high>",
+            "< untrusted_body id=1>",
+            '< system extra="1" />',
             '<system extra="1">',
             "<system role='admin'/>",
             "<instruction>",
