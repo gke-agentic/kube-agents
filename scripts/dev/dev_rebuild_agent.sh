@@ -9,9 +9,7 @@
 set -e
 
 # scripts/dev/ is two levels below the repository root, and the shared helpers
-# are its sibling in scripts/installer/. Both were one level deeper when these
-# lived under k8s-operator/scripts/, which is why this used to branch on the
-# suffix of its own path.
+# are its sibling in scripts/installer/.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 INSTALLER_DIR="${REPO_ROOT}/scripts/installer"

@@ -124,10 +124,10 @@ def _parse_assignment_value(raw_value: str, scope: dict[str, str]) -> str:
 
 # `export` is optional because the two files this reads differ: install.env is
 # a hand-authored dotenv (`K=V`) and the vars.sh it replaced was generated with
-# `printf %q` (`export K=V`). A pattern that required `export` matched nothing
-# in install.env and returned None, which the portal reads as "no provisioned
-# target" -- it falls back to the query parameter and the persisted connection
-# rather than failing, so the regression would be silent.
+# `printf %q` (`export K=V`). A pattern requiring `export` matches nothing in
+# install.env and returns None, which the portal reads as "no provisioned
+# target" and silently falls back to the query parameter and the persisted
+# connection rather than failing -- so getting this wrong fails quietly.
 _ASSIGNMENT = re.compile(
     r"^\s*(?:export\s+)?(PROJECT_ID|CLUSTER_NAME|REGION|NAMESPACE)=(.*)$"
 )

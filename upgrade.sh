@@ -432,10 +432,7 @@ main() {
   # grep/mv rewrite tests for the file -- so on an install.env-only install the
   # redirect would open a path under k8s-operator/scripts/, a directory this
   # release no longer creates, and `set -Eeuo pipefail` would abort the upgrade
-  # at step 1. Before install.env, state_loaded could only be true if vars.sh
-  # existed, so the directory always did too; making install.env satisfy
-  # state_loaded is what exposed the unguarded write. The exports below are
-  # what the rest of this run actually reads.
+  # at step 1. The exports below are what the rest of this run actually reads.
   if [ -f "$state_file" ]; then
     if [ -n "$PARAM_PROJECT_ID" ]; then
       persist_state_var "$state_file" PROJECT_ID "$target_project"

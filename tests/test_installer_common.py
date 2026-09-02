@@ -769,9 +769,8 @@ class NormalizeMemoryVarsTest(unittest.TestCase):
         return proc.stdout.strip()
 
     def test_the_install_env_mode_overrides_a_legacy_provider(self):
-        """The defect exactly: vars.sh says the file store, the operator's
-        install.env says Hindsight, and the generated provider must be
-        Hindsight's."""
+        """A legacy vars.sh says the file store, the operator's install.env says
+        Hindsight, and the generated provider must be Hindsight's."""
         self.assertEqual(
             "P=kube_agents_memory",
             self._normalize('MEMORY_PROVIDER=multiuser_memory\nMEMORY=hindsight'),

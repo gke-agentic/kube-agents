@@ -822,10 +822,12 @@ class NonInteractiveRerunInheritanceTest(unittest.TestCase):
             )
 
     def test_google_chat_inherits_the_way_slack_already_did(self):
-        """#1060 item 1. The chat gate reads SLACK_ENABLED out of the loaded
-        configuration but read PARAM_ENABLE_GOOGLE_CHAT from the flag alone, so
-        Chat -- and only Chat -- reverted to false and planned its Pub/Sub
-        topic and subscription away."""
+        """Google Chat inherits from the loaded configuration, as Slack does.
+
+        The chat gate reads SLACK_ENABLED out of the file; PARAM_ENABLE_GOOGLE_CHAT
+        taking the flag alone would revert Chat -- and only Chat -- to false and
+        plan its Pub/Sub topic and subscription away. (see #1060)
+        """
         proc = self._params(
             "GOOGLE_CHAT_ENABLED=true\n", 'echo "C=$PARAM_ENABLE_GOOGLE_CHAT"'
         )
@@ -854,10 +856,13 @@ class NonInteractiveRerunInheritanceTest(unittest.TestCase):
         )
 
     def test_memory_inherits_through_the_recorded_spelling(self):
-        """#1060 item 5. The flag is --memory (file|hindsight|off) but the
-        install records MEMORY_PROVIDER, so a file written from a previous
-        install carries only the second spelling. Without the translation,
-        omitting --memory deleted a Hindsight API and its Postgres."""
+        """--memory and the recorded setting are spelled differently.
+
+        The flag is --memory (file|hindsight|off) and the install records
+        MEMORY_PROVIDER, so a file written by a previous install carries only the
+        second spelling. Without the translation, omitting --memory deletes a
+        Hindsight API and its Postgres. (see #1060)
+        """
         for provider, expected in (
             ("kube_agents_memory", "hindsight"),
             ("none", "off"),
@@ -885,9 +890,11 @@ class NonInteractiveRerunInheritanceTest(unittest.TestCase):
         self.assertIn("W=true", proc.stdout)
 
     def test_allowed_users_has_a_flag_and_inherits(self):
-        """#1060 item 7. There was no --allowed-users at all, so a
-        non-interactive run emptied the list -- and an empty list allows every
-        user, which opens the agent rather than merely losing a setting."""
+        """The allowlist survives a non-interactive re-run.
+
+        An empty list allows every user, so losing it opens the agent rather
+        than merely dropping a setting. (see #1060)
+        """
         proc = self._params(
             "ALLOWED_USERS=a@example.com,b@example.com", 'echo "U=$PARAM_ALLOWED_USERS"'
         )
@@ -903,7 +910,7 @@ class NonInteractiveRerunInheritanceTest(unittest.TestCase):
         self.assertIn("U=from-the-flag@example.com", proc.stdout)
 
     def test_the_gitops_repo_names_are_gitops_prefixed(self):
-        """#1026. GITOPS_ORG / GITOPS_REPO are the installer's input names.
+        """GITOPS_ORG / GITOPS_REPO are the installer's input names. (see #1026)
 
         The old pair collided with two other things: GH_ORG / GH_REPO on the rc
         and nightly environments name the *release* repository, and tests/e2e
@@ -956,10 +963,11 @@ class NonInteractiveRerunInheritanceTest(unittest.TestCase):
         self.assertIn("O=new-org R=new-repo", proc.stdout)
 
     def test_the_api_server_key_is_not_minted_by_install_sh(self):
-        """#1060 item 8. Generating it here exported it, and the generator's
-        recovery loop skips any key already set -- so the live Secret could
-        never be read back and every run replaced it, restarting every pod.
-        Minting moved into write_tfvars_from_state, after that recovery.
+        """API_SERVER_KEY is minted inside write_tfvars_from_state, after recovery.
+
+        The generator's recovery loop skips any key already set, so a key
+        exported before it shadows the live Secret: every run would replace the
+        Secret and restart every pod. (see #1060)
         """
         source = _INSTALL_SH.read_text()
         self.assertNotIn(
@@ -1247,9 +1255,9 @@ class InstallEnvIsCreatedInTheCheckoutTest(unittest.TestCase):
             self.assertIn(f"ENV={_REPO_ROOT}/install.env", proc.stdout)
 
     def test_a_piped_run_from_elsewhere_uses_the_clone_not_the_cwd(self):
-        """The regression. Standing in a directory that is not a checkout, with
-        no install.env to hand, the file must be destined for the clone
-        acquire_source_repo will make -- not for the cwd."""
+        """Standing in a directory that is not a checkout, with no install.env to
+        hand, the file must be destined for the clone acquire_source_repo will
+        make -- not for the cwd."""
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as home:
             proc = self._resolved_paths(tmp, home)
             self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -1503,8 +1511,7 @@ class SlackPromptsKeepTheirCurrentValuesTest(unittest.TestCase):
                 )
 
     def test_both_arms_share_one_definition(self):
-        """Arms 2 and 3 ran identical copies, and the copies are what drifted.
-        One helper, called twice."""
+        """One helper, called by both arms that ask, so the two cannot drift."""
         self.assertEqual(
             1, self._SOURCE.count("_prompt_slack_settings() {"),
             "the Slack prompts must be defined exactly once",

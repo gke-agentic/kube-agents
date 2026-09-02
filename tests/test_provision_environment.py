@@ -547,7 +547,7 @@ exit {install_exit}
         self.assertNotIn("half-configured", proc.stdout + proc.stderr)
 
     def test_the_gitops_names_are_accepted(self):
-        """GITOPS_ORG / GITOPS_REPO are the installer's names as of #1026.
+        """GITOPS_ORG / GITOPS_REPO are the installer's names. (see #1026)
 
         The old pair collided with GH_ORG / GH_REPO on these very environments,
         which name the *release* repository — so the workflow had to write

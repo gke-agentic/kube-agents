@@ -258,9 +258,8 @@ init_third_party_image() {
 # leaves that prefix empty and the image upstream, so there is nothing to
 # compare.
 #
-# There is no REGISTRY_PREFIX counterpart to this. One existed to guard the
-# persisted OPERATOR_IMAGE / PLATFORM_AGENT_IMAGE entries, and it went with
-# them: nothing read those keys back, so the guard had no callers either.
+# Only third-party images are checked. OPERATOR_IMAGE and PLATFORM_AGENT_IMAGE
+# are not persisted, so there is no recorded value left to go stale.
 warn_on_third_party_prefix_mismatch() {
   local var_name=$1
   local image_val="${!var_name:-}"

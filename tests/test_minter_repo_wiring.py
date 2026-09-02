@@ -69,7 +69,7 @@ class MinterRepositoryWiringTest(unittest.TestCase):
                 self.assertIn("vars.GITOPS_REPO", env.get(repo_key, ""))
 
     def test_the_installer_takes_the_pair_under_its_own_names(self) -> None:
-        """#1026. Passing them as GITHUB_* was the line that read like a bug.
+        """The workflow passes the installer's GITOPS_* names straight through. (see #1026)
 
         `GITHUB_ORG: ${{ vars.GITOPS_ORG }}` invites a "fix" to vars.GH_ORG,
         which is exactly how a live App token gets scoped at the release

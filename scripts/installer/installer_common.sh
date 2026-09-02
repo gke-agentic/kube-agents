@@ -44,8 +44,8 @@ fi
 # memory_mode_from_provider, and needed here because install.env records the
 # mode while write_tfvars_from_state emits the provider: upgrade.sh and the
 # Day-2 menu load the file and never pass through install.sh's parameter block,
-# so without this they generated memory_provider = "multiuser_memory" for a
-# Hindsight install and the apply deleted the Hindsight API and its Postgres.
+# so without this they would generate memory_provider = "multiuser_memory" for
+# a Hindsight install and the apply would delete it.
 memory_provider_from_mode() {
   case "${1:-}" in
     hindsight) echo "kube_agents_memory" ;;
@@ -66,7 +66,6 @@ memory_provider_from_mode() {
 # the interview's answer there, and must keep winning), so the stale provider
 # would shadow the operator's edited MEMORY and regenerate the tfvars against
 # the old store -- an apply then deleting the Hindsight API and its Postgres.
-# That is #1060 item 5 on the front doors install.sh does not cover.
 #
 # Call after BOTH loads and before anything reads the pair. Not called by
 # install.sh's own run, which resolves the same precedence in its parameter
@@ -796,10 +795,9 @@ write_tfvars_from_state() {
 
   # Minting the key happens HERE, after the recovery loop above, and only for a
   # caller that opted in — install.sh, which is the one front door entitled to
-  # create an install that did not exist. Doing it earlier is what #1060's
-  # eighth item was: install.sh generated a fresh key unconditionally and
-  # exported it, the loop above skips any key already set, and so the live one
-  # was never read back. Every run replaced the Secret and restarted the pods.
+  # create an install that did not exist. Order matters: the loop above skips
+  # any key already set, so a key minted before it would shadow the live Secret
+  # and every run would replace it and restart the pods holding it.
   # upgrade.sh and uninstall.sh deliberately do not set this: for them an
   # unfindable key means something is wrong, not that a new install is starting.
   if [ -z "${API_SERVER_KEY:-}" ] && is_truthy "${KUBE_AGENTS_GENERATE_API_SERVER_KEY:-false}"; then

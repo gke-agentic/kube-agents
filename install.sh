@@ -100,8 +100,7 @@ unset _install_defaults_dir
 # The hand-authored record of what this install is, loaded BEFORE the parameter
 # block below so that every `${VAR:-}` seed in it inherits from the file. That
 # ordering is the whole mechanism: inheriting prior configuration stops being
-# something each flag has to remember to do and becomes the default path, which
-# is what closes #1060 rather than patching its seven instances.
+# something each flag has to remember to do and becomes the default path.
 #
 # An input the installer reads and does not rewrite. It creates one at the end
 # of a first install, when there is nothing there, and never touches it again:
@@ -123,11 +122,10 @@ unset _install_defaults_dir
 # invocation directory; acquire_source_repo then clones to $HOME/kube-agents
 # and cd's there, and every other front door resolves the file as
 # ${repo_dir}/install.env (default_install_env_file). Freezing the invocation
-# directory here therefore wrote the whole configuration -- API_SERVER_KEY and
-# the plaintext model keys included -- somewhere no later run would look, so
-# upgrade.sh hit its fail-closed branch and a re-run of the one-liner rebuilt
-# every PARAM_* from defaults: the #1060 class this change exists to close,
-# reinstated on the documented fastest install.
+# directory here would put the whole configuration -- API_SERVER_KEY and the
+# plaintext model keys included -- where no later run looks: upgrade.sh would
+# take its fail-closed branch, and a re-run of the one-liner would rebuild
+# every PARAM_* from defaults.
 #
 # So resolve the same repo_dir acquire_source_repo will pick, by the same test
 # and in the same order, before the parameter block reads any of it. This has
@@ -171,10 +169,9 @@ fi
 # This is the migration: an existing install keeps working with no action from
 # its owner, and the run writes their values into install.env on the way out.
 #
-# Resolved against the same checkout, and for the same reason: under
-# `curl … | bash` a script-relative path pointed at the invocation directory,
-# so a re-run of the one-liner against an existing $HOME/kube-agents never
-# found the legacy file and silently skipped the migration it exists for.
+# Resolved against the same checkout, for the same reason: under
+# `curl … | bash` a script-relative path names the invocation directory, not
+# the clone the migration has to read.
 LEGACY_VARS_FILE=""
 if [ -f "${_state_repo_dir}/k8s-operator/scripts/vars.sh" ]; then
   LEGACY_VARS_FILE="${_state_repo_dir}/k8s-operator/scripts/vars.sh"
@@ -309,14 +306,12 @@ PARAM_CUSTOM_ROLES="${PLATFORM_AGENT_CUSTOM_ROLES:-}"
 # resolve_shared_defaults for the curl | bash case, where there was no checkout
 # to read it from yet.
 #
-# Leaving PARAM_ENABLE_GVISOR *unset* when neither name is set is what makes that
-# second route work. `${ENABLE_GVISOR-${DEFAULT_ENABLE_GVISOR-}}` assigned the
-# empty string instead, which is indistinguishable from `--gvisor=`: under
-# curl | bash there is no install.defaults.env beside the script, so
-# DEFAULT_ENABLE_GVISOR was unset here, and resolve_shared_defaults' own
-# ${PARAM_ENABLE_GVISOR-...} then saw a variable that was already set and left it
-# empty. Every documented one-liner install aborted on "--gvisor must be either
-# true or false."
+# Leaving PARAM_ENABLE_GVISOR *unset* when neither name is set is what makes
+# that second route work. Assigning the empty string here would be
+# indistinguishable from `--gvisor=`: under curl | bash there is no
+# install.defaults.env beside the script, so DEFAULT_ENABLE_GVISOR is unset at
+# this point, and resolve_shared_defaults' own ${PARAM_ENABLE_GVISOR-...} would
+# see a variable already set and leave it empty for the validator to reject.
 if [ -n "${ENABLE_GVISOR+x}" ]; then
   PARAM_ENABLE_GVISOR="$ENABLE_GVISOR"
 elif [ -n "${DEFAULT_ENABLE_GVISOR+x}" ]; then
@@ -351,12 +346,11 @@ PARAM_REGISTRY_PREFIX="${REGISTRY_PREFIX:-}"
 # because widening REGISTRY_PREFIX to cover images its mirror was never given is
 # exactly the failure third_party_registry_prefix() exists to avoid.
 PARAM_THIRD_PARTY_REGISTRY_PREFIX="${THIRD_PARTY_REGISTRY_PREFIX:-}"
-# Seeded from GOOGLE_CHAT_ENABLED so Google Chat inherits the way Slack already
-# did. The chat gate reads SLACK_ENABLED out of the loaded configuration and
-# PARAM_ENABLE_GOOGLE_CHAT from the flag alone, so before this an install.env
-# (or a re-run) that had Chat on and did not repeat --enable-google-chat
-# regenerated google_chat_enabled = false and planned the Pub/Sub topic and
-# subscription away. That asymmetry is #1060's first item.
+# Seeded from GOOGLE_CHAT_ENABLED so Google Chat inherits the way Slack does.
+# The chat gate reads SLACK_ENABLED out of the loaded configuration; without
+# this seed PARAM_ENABLE_GOOGLE_CHAT would come from the flag alone, and a
+# re-run that did not repeat --enable-google-chat would regenerate
+# google_chat_enabled = false and plan the Pub/Sub topic and subscription away.
 PARAM_ENABLE_GOOGLE_CHAT="${GOOGLE_CHAT_ENABLED:-}"
 PARAM_CHAT_TOPIC_NAME="${CHAT_TOPIC_NAME:-}"
 PARAM_GOOGLE_CHAT_MODE="${GOOGLE_CHAT_MODE:-}"
@@ -614,15 +608,6 @@ require_creatable_cluster_mode() {
   fi
 }
 
-# There is no persist_effective_cluster_mode any more. It wrote the probed
-# cluster shape back into vars.sh so that a later run would not rebuild a
-# deleted cluster in the wrong shape. That is unnecessary now and was always
-# the wrong shape of fix: write_tfvars_from_state re-probes on every run and
-# every branch with a live cluster takes the mode from the probe, so the
-# configured value can never reach a running cluster's tfvars. Writing the
-# finding back also made the file an input and an output at once, which is the
-# property this refactor exists to remove.
-
 # How GKE writes the shape. bash 3.2, still macOS's /bin/bash, has no ${var^}.
 cluster_mode_label() {
   case "${1:-}" in
@@ -736,8 +721,8 @@ write_secret_env_var() {
 #
 # Derived values are left out by construction. PROJECT_NUMBER and KMS_LOCATION
 # are recomputed wherever they are used, and the cluster shape written here is
-# the one the interview asked for, never the probed TFVARS_CLUSTER_MODE -- see
-# the note where persist_effective_cluster_mode used to be.
+# the one the interview asked for, never the probed TFVARS_CLUSTER_MODE, which
+# write_tfvars_from_state re-derives on every run.
 # The value install.env records for one key, empty when it records none.
 # Reads the file rather than the environment: install.env was sourced at
 # startup into these very names, and the interview has since overwritten them,
@@ -754,11 +739,10 @@ write_secret_env_var() {
 # save_env_var in scripts/installer/installer_common.sh both serialise with
 # `printf '%s=%q\n'`, and %q renders the empty string as the two-character
 # literal '' and escapes anything the shell would treat specially -- so
-# `#gke-alerts` is written `\#gke-alerts`. Returning either verbatim made every
-# comparison in warn_unrecorded_interview_answers below unequal: the seven keys
-# bootstrap_install_env_file writes empty on a stock install were reported as
-# drifted on every interactive run, and the line the banner printed for each
-# (`KEY=`) changed nothing, so the next run reported them again. That buried the
+# `#gke-alerts` is written `\#gke-alerts`. Comparing a quoted recorded value
+# against an unquoted environment one reports every empty key as drifted, and
+# the line the banner prints for each (`KEY=`) changes nothing, so the next run
+# reports them again. That buries the
 # one case the warning exists for.
 #
 # A hand-authored file is the other half of the same problem and the reason
@@ -791,7 +775,7 @@ recorded_install_env_value() {
   # install.env.example tells the operator `export K=V` is harmless, and every
   # other reader of the file honours that: save_env_var, live_test_lease.py and
   # project_config.py all skip an optional `export`. Matching it here keeps this
-  # reader in step -- missing the prefix skipped the key silently, and in the
+  # reader in step -- missing the prefix skips the key silently, and in the
   # direction of no warning at all.
   # The `${line#*=}` below strips through the first `=`, so the longer prefix
   # needs nothing further.
@@ -2035,8 +2019,8 @@ run_menu_system() {
         # there: "Save & Apply" is an explicit instruction to record a change,
         # unlike install.sh silently regenerating an input.
         #
-        # PROJECT_NUMBER, KMS_LOCATION and NO_CONFIRM are no longer written.
-        # The first two are derived wherever they are used, and the third
+        # PROJECT_NUMBER, KMS_LOCATION and NO_CONFIRM are deliberately not
+        # written. The first two are derived wherever they are used, and the third
         # describes an invocation rather than the install.
         save_env_var PROJECT_ID "$project_id"
         save_env_var CLUSTER_NAME "$cluster_name"
@@ -2302,8 +2286,8 @@ main() {
   # hardcoded, because prompt_menu's enter default is option 1. A fixed
   # Autopilot-first order makes pressing enter an *explicit* autopilot
   # request, which the resolver is then right to refuse to demote — so a
-  # zonal interactive install would abort here rather than build Standard,
-  # which is what it did before this default changed. Deriving the order
+  # zonal interactive install would abort here rather than build Standard.
+  # Deriving the order
   # keeps the "(Default)" label, the enter key and the resolver saying the
   # same thing at both kinds of location.
   if [ -z "$cluster_mode" ] && [ "$ask_cluster_shape" = "true" ] &&
@@ -2377,14 +2361,6 @@ main() {
   # permission set, gVisor, the Web UI, memory, the model provider -- inherits
   # this way and still asks.
   #
-  # Deciding here instead is what made an interactive re-run against a
-  # configured install skip the menu outright, leaving no way to turn Chat off
-  # or to add Slack alongside it. Before install.env this gate could not fire
-  # on a re-run at all: PARAM_ENABLE_GOOGLE_CHAT came from the flag alone and
-  # startup sourced no configuration, so an interactive run always reached the
-  # menu. Seeding it from GOOGLE_CHAT_ENABLED is what turned "asked for on this
-  # run" into "inherited from the file" without the gate noticing.
-  #
   # SLACK_ENABLED (with SLACK_BOT_TOKEN / SLACK_APP_TOKEN and the other SLACK_*
   # variables) is the non-interactive spelling of the Slack interview, the same
   # variables the Day-2 menu reads. Without it Slack would be reachable only
@@ -2394,11 +2370,11 @@ main() {
   # Every boolean the generator writes goes through hcl_bool -> is_truthy, which
   # accepts True/yes/y/1/on; these two were the only ones that did not, and
   # install.env is a file the documentation now tells operators to hand-write.
-  # `GOOGLE_CHAT_ENABLED=True` used to leave PARAM_ENABLE_GOOGLE_CHAT unequal to
-  # "true", drop chat_choice to 4, and plan the Pub/Sub topic away on the next
-  # -y run -- while upgrade.sh read the same file as enabled, so the two front
-  # doors disagreed about one file. The sibling booleans fail loudly on their
-  # ^(true|false)$ validators instead; only these two were silent.
+  # A string compare against the lowercase literal would read
+  # `GOOGLE_CHAT_ENABLED=True` as off, drop chat_choice to 4 and plan the
+  # Pub/Sub topic away, while upgrade.sh read the same file as enabled. The
+  # sibling booleans fail loudly on their ^(true|false)$ validators instead;
+  # only these two are silent.
   local chat_choice=""
   if is_truthy "$PARAM_ENABLE_GOOGLE_CHAT" && is_truthy "${SLACK_ENABLED:-$DEFAULT_SLACK_ENABLED}"; then
     chat_choice="3"
@@ -2425,8 +2401,6 @@ main() {
   # Empty by default: the allowlist is opt-in, and an unset list allows all users.
   # PARAM_ALLOWED_USERS carries both --allowed-users and the loaded ALLOWED_USERS,
   # so an install that had an allowlist keeps it on a re-run that says nothing.
-  # Before there was a flag at all, a non-interactive re-run emptied the list and
-  # opened the agent to every user -- #1060's seventh item.
   local allowed_users="${PARAM_ALLOWED_USERS:-}"
   local allowed_users_hint=""
   if [ -z "$allowed_users" ]; then
@@ -2457,8 +2431,8 @@ main() {
   # non-interactive path (install.sh:998), but the interactive branch applies
   # the default argument, and `[ -z "$input_val" ] && [ -n "$default_val" ]`
   # is false when that default is empty, so it falls through and assigns the
-  # empty string. Pressing enter through the interview therefore cleared the
-  # tokens, the home channel and the Slack allowlist. The tokens are usually
+  # empty string, so a bare "" default clears the tokens, the home channel and
+  # the Slack allowlist. The tokens are usually
   # rescued by the Secret-recovery loop in installer_common.sh; the allowlist
   # is not, and an empty slack_allowed_users means every workspace member may
   # talk to the agent.
@@ -2538,8 +2512,8 @@ main() {
 
   if [ "$PARAM_NON_INTERACTIVE" != "true" ]; then
     # Pre-set to the provider already configured, so pressing enter keeps it.
-    # Every arm below assigns unconditionally, which is why an unseeded menu
-    # silently reset a vertex_ai install to gemini (#1060, item 2).
+    # Every arm below assigns unconditionally, so an unseeded menu would reset
+    # the configured provider.
     local model_choice=""
     case "$model_provider" in
       gemini) model_choice="1" ;;
@@ -2556,10 +2530,9 @@ main() {
 
     # A model the install already pins survives a re-run that leaves the
     # provider alone; changing provider has to take the new provider's default,
-    # because the old model name is not valid for it. Every arm used to assign
-    # unconditionally, so pressing enter through the interview silently
-    # downgraded a pinned MODEL_DEFAULT_NAME to the provider default. The Day-2
-    # menu's vertex arm already worked this way.
+    # because the old model name is not valid for it. An arm that assigned
+    # unconditionally would downgrade a pinned MODEL_DEFAULT_NAME to the
+    # provider default on a re-run that changed nothing.
     local model_provider_was="$model_provider"
     local model_name_was="$model_default_name"
     case "$model_choice" in
@@ -2647,8 +2620,8 @@ main() {
     # An install that already names an org has a repository to connect, so
     # option 2 is what pressing enter should mean. Options 1 and 2 run the same
     # block, so this only makes the offered wording match the install — what
-    # actually keeps GITOPS_ORG and the minter credentials across a re-run
-    # (#1060, item 6) is that each prompt below defaults to the loaded value.
+    # actually keeps GITOPS_ORG and the minter credentials across a re-run is
+    # that each prompt below defaults to the loaded value.
     local gitops_choice=""
     if [ -n "$github_org" ]; then
       gitops_choice="2"
@@ -2815,11 +2788,6 @@ main() {
     # the else branch keeps an explicit --gvisor=false from being re-enabled by
     # someone confirming the prompt. Option 2 is "the other one" either way.
     local gvisor_choice=""
-    # Upstream reorders the two options by the value in hand and moves the
-    # "(Default)" label with them, which is a better answer than seeding the
-    # choice index: the label, the enter key and the resulting value all agree.
-    # Nothing to add here — the loaded install.env reaches $enable_gvisor, and
-    # this branch already keeps it.
     local gvisor_yes="Yes - gVisor Secure Kernel Sandbox (Hardened Workload Isolation)"
     local gvisor_no="No - Standard Container Runtime"
     local gvisor_prompt="Enable GKE Sandbox (gVisor) Runtime Isolation for Agent Workloads?"
@@ -2835,12 +2803,9 @@ main() {
       fi
     fi
 
-    # Reordered rather than seeded, exactly as the gVisor prompt above is, and
-    # for the reason its comment gives: seeding the choice index left "(Default)"
-    # on option 1 while Enter selected option 2, and — because only the "=2" arm
-    # assigned — answering "No" against an enabled dashboard did nothing at all,
-    # so a dashboard recorded in install.env could never be turned off again.
-    # Every branch assigns.
+    # Ordered by the current value, as the gVisor prompt above is: the
+    # "(Default)" tag, the enter key and the resulting value have to agree.
+    # Every branch assigns, so either answer takes effect.
     local webui_yes="Yes - Enabled for local browser debugging (port 9119)"
     local webui_no="No - Disabled for reduced attack surface"
     local webui_prompt="Enable Hermes Web UI (Port 9119 Dashboard) for Agent Observability?"
@@ -2872,8 +2837,8 @@ main() {
     # existed, and it is the only option that adds no services to the cluster.
     # An install that already chose otherwise seeds its own option below, so
     # "saying nothing" on a re-run means keeping what is there, not taking the
-    # first entry: omitting --memory used to delete a Hindsight deployment
-    # (#1060, item 5).
+    # first entry, so that omitting --memory cannot delete a Hindsight
+    # deployment.
     # The "(Default)" tag follows the option enter keeps, like the permission-set
     # prompt above: on a re-run that seeded hindsight or off, a static tag on the
     # file store would claim enter does something it does not. The order stays
@@ -2906,9 +2871,9 @@ main() {
   fi
 
   # bootstrap_install_env_file records PARAM_MEMORY, not this local, so the
-  # answer has to travel back. Without it an interactive install that chose the
-  # searchable store provisioned Hindsight and then wrote MEMORY=file, and the
-  # next re-run inherited `file` and deleted what it had just built.
+  # answer has to travel back. Without it bootstrap_install_env_file would
+  # record MEMORY=file for an install that chose Hindsight, and the next run
+  # would tear down what this one built.
   PARAM_MEMORY="$memory_mode"
 
   # MEMORY_PROVIDER carries the whole choice — including "no memory at all",
@@ -2956,18 +2921,17 @@ main() {
   # Whatever the loaded configuration carries, and nothing invented here. When
   # it carries none, write_tfvars_from_state tries the live Secret first and
   # mints one only if that fails — see KUBE_AGENTS_GENERATE_API_SERVER_KEY,
-  # exported below. Generating at this point instead is what made every re-run
-  # replace the Secret and restart the pods holding it (#1060, item 8).
+  # exported below. Generating one here instead would replace the live Secret
+  # on every re-run and restart the pods holding it.
   local api_server_key="${API_SERVER_KEY:-}"
 
   # Straight into the environment, which is where write_tfvars_from_state and
-  # the TF_VAR_* handoff read from. This used to go to disk and come back:
-  # every value was written to vars.sh and the file re-sourced, purely to
-  # populate these same variables. The round trip is what made a generated
-  # file look like the install's source of truth.
+  # the TF_VAR_* handoff read from. Nothing is persisted here: install.env is
+  # an input, and a file that is both read as configuration and written as
+  # findings has two answers for one question.
   #
-  # Four values that vars.sh carried are gone rather than moved, because they
-  # are derived and a stored copy can only disagree with the live answer.
+  # Four values are deliberately absent, because they are derived and a stored
+  # copy can only disagree with the live answer.
   # PROJECT_NUMBER comes from `gcloud projects describe` and KMS_LOCATION from
   # derive_kms_location, both re-run every time they are needed; the effective
   # CLUSTER_MODE and create_cluster come from the generator's own probe of the
@@ -3042,9 +3006,8 @@ main() {
   print_success "Terraform input saved to: $tfvars_file"
 
   # Written once, and only when there is nothing there. The probed cluster
-  # shape is deliberately NOT recorded: it used to be written back into
-  # vars.sh, and a file that is read as configuration and also written as
-  # findings is the thing that made vars.sh confusing. The probe is
+  # shape is deliberately NOT recorded: a file that is read as configuration
+  # and also written as findings has two answers for one question. The probe is
   # authoritative on every run regardless of what the file says, which is what
   # stops a hand-written CLUSTER_MODE=standard from planning a live Autopilot
   # cluster's replacement.
