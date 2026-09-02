@@ -175,6 +175,30 @@ class ReconcileWorkflowTest(unittest.TestCase):
         """The in-flight redeploy check is a `gh run list`."""
         self.assertEqual(self.job["permissions"].get("actions"), "read")
 
+    def test_every_variable_the_renderer_reads_is_passed_through(self):
+        """The renderer reaches for the environment, never for `vars.` itself.
+
+        So a setting the workflow does not export is not "unset on that
+        environment" — it is unset everywhere, permanently, and a guard keyed on
+        it either never fires or can never be satisfied. The allowlist guard is
+        the second kind: without GOOGLE_CHAT_ALLOW_ALL_USERS on this step there
+        is no way to tell it the open allowlist is deliberate.
+        """
+        exported = set()
+        for step in self.job["steps"]:
+            exported.update(step.get("env", {}))
+        renderer = (_REPO_ROOT / "scripts" / "release"
+                    / "render_install_env.sh").read_text()
+        # Right of the colon in MAPPING is the name the workflow exports.
+        mapped = set(re.findall(r"^[A-Z_][A-Z0-9_]*:([A-Z_][A-Z0-9_]*)$",
+                                renderer, re.MULTILINE))
+        # Plus the ones the guards read directly rather than through MAPPING.
+        mapped.update({"MEMORY_PROVIDER", "GOOGLE_CHAT_ALLOW_ALL_USERS",
+                       "SLACK_ALLOW_ALL_USERS"})
+        self.assertTrue(mapped, "MAPPING did not parse; the regex is stale")
+        missing = sorted(mapped - exported)
+        self.assertEqual(missing, [], f"never reaches the renderer: {missing}")
+
 
 class DriftWorkflowTest(unittest.TestCase):
     def setUp(self):
@@ -314,6 +338,36 @@ class ReconcileScriptTest(unittest.TestCase):
         """
         self.assertIn("state=ENABLED", self.text)
         self.assertIn("DESTROY the minter", self.text)
+
+    def test_the_minter_guard_reads_the_key_names_from_their_one_home(self):
+        """A second copy of a default is how this guard queries a keyring that
+        does not exist, finds no enabled version, and refuses every apply.
+
+        install.defaults.env owns the names and installer_common.sh owns the
+        location rule, so the guard must reach for both rather than restate
+        either — the same requirement scripts/installer/README.md puts on
+        install.sh, upgrade.sh and the chart.
+        """
+        self.assertIn("${KMS_KEY:-$DEFAULT_KMS_KEY}", self.text)
+        self.assertIn("${KMS_KEYRING:-$DEFAULT_KMS_KEYRING}", self.text)
+        self.assertIn('derive_kms_location "${REGION}"', self.text)
+        for literal in ("github-token-minter-key", "github-token-minter-keyring",
+                        "${REGION%-[a-z]}"):
+            with self.subTest(literal=literal):
+                self.assertNotIn(literal, self.text)
+
+    def test_the_names_it_reaches_for_are_the_ones_that_exist(self):
+        """An assertion on spelling alone would survive a rename of either."""
+        defaults = (_REPO_ROOT / "install.defaults.env").read_text()
+        self.assertIn("DEFAULT_KMS_KEY=", defaults)
+        self.assertIn("DEFAULT_KMS_KEYRING=", defaults)
+        common = (_REPO_ROOT / "scripts" / "installer"
+                  / "installer_common.sh").read_text()
+        self.assertIn("derive_kms_location()", common)
+        # And one source brings both, which is why the guard sources only the
+        # helpers: installer_common.sh loads the defaults file on the way in.
+        self.assertIn("INSTALL_DEFAULTS_FILE", common)
+        self.assertIn("scripts/installer/installer_common.sh", self.text)
 
     def test_a_failed_plan_does_not_report_itself_as_planned(self):
         """`result` is the caller's contract; only `drift` carried this before."""

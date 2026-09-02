@@ -105,10 +105,24 @@ Google Chat with it.
 | `USER_PROFILE_ENABLED`          | `USER_PROFILE_ENABLED`          | Absent resets it                                            |
 | `ENABLE_GKE_BACKUP_PLAN`        | `ENABLE_GKE_BACKUP_PLAN`        | Absent destroys the backup plan                             |
 
+Required when the integration they belong to is switched on, because an empty
+allowlist is not "no opinion" — the operator reads an absent list as allow-all,
+so leaving one unset admits every user in the domain:
+
+| GitHub variable       | Required when         | Say allow-all instead with    |
+| --------------------- | --------------------- | ----------------------------- |
+| `ALLOWED_USERS`       | `GOOGLE_CHAT_ENABLED` | `GOOGLE_CHAT_ALLOW_ALL_USERS` |
+| `SLACK_ALLOWED_USERS` | `SLACK_ENABLED`       | `SLACK_ALLOW_ALL_USERS`       |
+
+Neither `*_ALLOW_ALL_USERS` variable is written into `install.env`. The empty
+allowlist is already what produces allow-all downstream; the variable exists so
+that an environment which wants it has to say so, and one that lost its
+allowlist to a typo fails instead.
+
 Optional, and copied through when set: `CLUSTER_MODE`, `MODEL_DEFAULT_NAME`,
 `VERTEX_PROJECT_ID`, `VERTEX_LOCATION`, `GOOGLE_CHAT_MODE`, `CHAT_TOPIC_NAME`,
-`CHAT_SUB_NAME`, `ALLOWED_USERS`, `SLACK_ENABLED`, `SLACK_ALLOWED_USERS`,
-`SLACK_HOME_CHANNEL`, `SLACK_HOME_CHANNEL_NAME`, `PLATFORM_AGENT_CUSTOM_ROLES`,
+`CHAT_SUB_NAME`, `SLACK_ENABLED`, `SLACK_HOME_CHANNEL`,
+`SLACK_HOME_CHANNEL_NAME`, `PLATFORM_AGENT_CUSTOM_ROLES`,
 `HERMES_DASHBOARD_ENABLED`, `REGISTRY_PREFIX`, `THIRD_PARTY_REGISTRY_PREFIX`,
 `KMS_KEYRING`, `KMS_KEY`, `GITOPS_ORG`, `GITOPS_REPO`. Secrets: `GH_APP_ID`,
 `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `SLACK_BOT_TOKEN`,

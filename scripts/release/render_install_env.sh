@@ -172,6 +172,39 @@ if [ "$STRICT" = "true" ]; then
   fi
 fi
 
+# The chat allowlists are the one omission in this file that WIDENS access
+# rather than removing a feature, so they cannot sit in REQUIRED_STRICT above:
+# that list is unconditional, and an environment with the integration switched
+# off has no allowlist to state.
+#
+# Empty is not "no opinion" here. `emit` drops an empty value, the installer
+# renders `google_chat_allowed_users = []`, the chart's `with` omits the key,
+# and the operator reads an absent list as GOOGLE_CHAT_ALLOW_ALL_USERS=true
+# (platformagent_manifests.go's allowAllUsers). Nothing downstream reads the
+# running CR's allowlist back, so an environment variable that is unset, typoed
+# or cleared opens a long-lived install to the whole domain on the next
+# unattended apply, with no record of what it used to hold.
+#
+# Allow-all stays reachable, but only by saying it: set the matching
+# *_ALLOW_ALL_USERS variable to `true`. It is deliberately NOT mapped into
+# install.env — the empty allowlist is already what produces it — so its only
+# job is to make the intent explicit here.
+if [ "$STRICT" = "true" ]; then
+  check_allowlist() {
+    local enabled_var="$1" list_var="$2" allow_all_var="$3" platform="$4"
+    case "${!enabled_var:-}" in true|TRUE|True|1|yes) ;; *) return 0 ;; esac
+    [ -z "${!list_var:-}" ] || return 0
+    case "${!allow_all_var:-}" in true|TRUE|True|1|yes) return 0 ;; esac
+    echo "::error title=${platform} is enabled with no allowlist::${list_var} is empty on this environment, and an empty allowlist means EVERY user is admitted — the operator turns an absent list into allow-all for ${platform}. Set ${list_var} to the users this install should admit, or set ${allow_all_var}=true to say the open allowlist is intended."
+    echo "==> ${platform} enabled with an empty ${list_var} and no ${allow_all_var}=true." >&2
+    return 1
+  }
+  allowlist_status=0
+  check_allowlist GOOGLE_CHAT_ENABLED ALLOWED_USERS GOOGLE_CHAT_ALLOW_ALL_USERS "Google Chat" || allowlist_status=1
+  check_allowlist SLACK_ENABLED SLACK_ALLOWED_USERS SLACK_ALLOW_ALL_USERS "Slack" || allowlist_status=1
+  [ "$allowlist_status" -eq 0 ] || exit 1
+fi
+
 # ---------------------------------------------------------------------------
 # Settings that need translating rather than copying
 # ---------------------------------------------------------------------------

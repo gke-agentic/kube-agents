@@ -39,6 +39,12 @@ _STRICT_SETTINGS = {
     "ENABLE_GKE_BACKUP_PLAN": "true",
 }
 
+# The allowlist is required too, but only while its integration is on, so it is
+# not part of the unconditional list above. A strict render that is expected to
+# SUCCEED needs it, because _STRICT_SETTINGS switches Google Chat on.
+_ALLOWLIST = {"ALLOWED_USERS": "reconcile-tester@example.com"}
+_STRICT_OK = {**_STRICT_SETTINGS, **_ALLOWLIST}
+
 
 def render(env, strict=False):
     """Runs the renderer and returns (returncode, stdout+stderr, rendered text)."""
@@ -100,7 +106,7 @@ class RequiredInputsTest(unittest.TestCase):
         self.assertEqual(parse(text)["PROJECT_ID"], "kube-agents-autopush")
 
     def test_strict_passes_once_every_setting_is_present(self):
-        rc, log, text = render({**_COORDS, **_STRICT_SETTINGS}, strict=True)
+        rc, log, text = render({**_COORDS, **_STRICT_OK}, strict=True)
         self.assertEqual(rc, 0, log)
         self.assertEqual(parse(text)["PLATFORM_AGENT_PERMISSION_SET"], "custom")
 
@@ -118,7 +124,7 @@ class MinterGuardTest(unittest.TestCase):
 
     def test_a_half_configured_minter_is_refused_under_strict(self):
         rc, log, _ = render(
-            {**_COORDS, **_STRICT_SETTINGS, "GITHUB_APP_ID": "12345"},
+            {**_COORDS, **_STRICT_OK, "GITHUB_APP_ID": "12345"},
             strict=True)
         self.assertEqual(rc, 1)
         self.assertIn("half-configured", log)
@@ -127,14 +133,14 @@ class MinterGuardTest(unittest.TestCase):
 
     def test_all_three_together_are_accepted(self):
         rc, log, text = render(
-            {**_COORDS, **_STRICT_SETTINGS, "GITHUB_APP_ID": "12345",
+            {**_COORDS, **_STRICT_OK, "GITHUB_APP_ID": "12345",
              "GITOPS_ORG": "gke-agentic", "GITOPS_REPO": "gke-fleet-iac"},
             strict=True)
         self.assertEqual(rc, 0, log)
         self.assertEqual(parse(text)["GITHUB_APP_ID"], "12345")
 
     def test_none_of_the_three_is_an_install_without_a_minter(self):
-        rc, log, _ = render({**_COORDS, **_STRICT_SETTINGS}, strict=True)
+        rc, log, _ = render({**_COORDS, **_STRICT_OK}, strict=True)
         self.assertEqual(rc, 0, log)
 
     def test_the_coordinates_are_reported_before_the_minter(self):
@@ -143,6 +149,69 @@ class MinterGuardTest(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("Install configuration is incomplete", log)
         self.assertNotIn("half-configured", log)
+
+
+class AllowlistGuardTest(unittest.TestCase):
+    """The one omission here that WIDENS access instead of removing a feature.
+
+    `emit` drops an empty value, so an unset ALLOWED_USERS renders no line at
+    all; the installer emits `google_chat_allowed_users = []`, the chart's
+    `with` omits the key, and the operator reads an absent list as
+    GOOGLE_CHAT_ALLOW_ALL_USERS=true (allowAllUsers in
+    platformagent_manifests.go). Nothing reads the running CR's allowlist back,
+    so on a long-lived environment a cleared variable is an unattended apply
+    that admits the whole domain and loses the old list.
+    """
+
+    def test_chat_enabled_with_no_allowlist_is_refused_under_strict(self):
+        rc, log, _ = render({**_COORDS, **_STRICT_SETTINGS}, strict=True)
+        self.assertEqual(rc, 1)
+        self.assertIn("ALLOWED_USERS", log)
+        self.assertIn("::error title=Google Chat is enabled with no allowlist::", log)
+
+    def test_an_allowlist_satisfies_it(self):
+        rc, log, _ = render({**_COORDS, **_STRICT_OK}, strict=True)
+        self.assertEqual(rc, 0, log)
+
+    def test_allow_all_has_to_be_stated_and_then_is_accepted(self):
+        rc, log, text = render(
+            {**_COORDS, **_STRICT_SETTINGS, "GOOGLE_CHAT_ALLOW_ALL_USERS": "true"},
+            strict=True)
+        self.assertEqual(rc, 0, log)
+        # It says the empty allowlist is intended; it is not itself a setting
+        # the installer reads, so it must not reach install.env.
+        self.assertNotIn("GOOGLE_CHAT_ALLOW_ALL_USERS", parse(text))
+        self.assertNotIn("ALLOWED_USERS", parse(text))
+
+    def test_slack_is_guarded_on_its_own_switch(self):
+        rc, log, _ = render(
+            {**_COORDS, **_STRICT_OK, "SLACK_ENABLED": "true"}, strict=True)
+        self.assertEqual(rc, 1)
+        self.assertIn("SLACK_ALLOWED_USERS", log)
+
+        rc, log, _ = render(
+            {**_COORDS, **_STRICT_OK, "SLACK_ENABLED": "true",
+             "SLACK_ALLOWED_USERS": "someone@example.com"}, strict=True)
+        self.assertEqual(rc, 0, log)
+
+    def test_both_platforms_are_reported_in_one_run(self):
+        """Same reason the missing-variable message names them all at once."""
+        rc, log, _ = render(
+            {**_COORDS, **_STRICT_SETTINGS, "SLACK_ENABLED": "true"}, strict=True)
+        self.assertEqual(rc, 1)
+        self.assertIn("Google Chat is enabled with no allowlist", log)
+        self.assertIn("Slack is enabled with no allowlist", log)
+
+    def test_an_integration_that_is_off_needs_no_allowlist(self):
+        rc, log, _ = render(
+            {**_COORDS, **_STRICT_SETTINGS, "GOOGLE_CHAT_ENABLED": "false"},
+            strict=True)
+        self.assertEqual(rc, 0, log)
+
+    def test_the_guard_does_not_fire_without_strict(self):
+        """The ephemeral path installs from nothing, so it takes nothing away."""
+        rc, log, _ = render({**_COORDS, "GOOGLE_CHAT_ENABLED": "true"})
+        self.assertEqual(rc, 0, log)
 
 
 class MemoryMappingAgreementTest(unittest.TestCase):

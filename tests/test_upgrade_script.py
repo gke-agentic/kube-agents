@@ -8,6 +8,7 @@ import os
 import pathlib
 import re
 import subprocess
+import time
 import unittest
 
 from tests.testing.common import (
@@ -205,6 +206,79 @@ class PersistStateVarTest(unittest.TestCase):
         for var in ("PROJECT_ID", "CLUSTER_NAME", "REGION"):
             with self.subTest(var=var):
                 self.assertIn(f'export {var}="$target_', source)
+
+
+class InteractiveImageTagPromptTest(unittest.TestCase):
+    """A bare Enter at the tag prompt has to stay the hard error it always was.
+
+    It used to abort inside `validate_immutable_ref`, whose first branch rejects
+    an empty ref. `--plan` and `--keep-image-tag` made the tag optional, so that
+    call now runs only when a tag is present — and without an explicit check the
+    empty answer would instead skip `verify_local_source_ref` (the dirty-checkout
+    refusal) and silently become `--keep-image-tag`.
+
+    Driven through a pty rather than asserted against the source, because the
+    prompt reads from /dev/tty specifically so that it cannot be fed on stdin.
+    """
+
+    def _answer_prompt_with_enter(self):
+        import pty
+        import select
+
+        pid, fd = pty.fork()
+        if pid == 0:  # pragma: no cover - replaced by execve
+            # os._exit, not an exception: a raise here would unwind inside a
+            # forked copy of the test runner and report a second suite result.
+            try:
+                os.chdir(str(_REPO_ROOT))
+                os.execve(
+                    "/bin/bash",
+                    ["bash", str(_UPGRADE_SH)],
+                    {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                     "HOME": os.environ.get("HOME", "/tmp"), "TERM": "dumb"},
+                )
+            finally:
+                os._exit(127)
+        out = b""
+        answered = False
+        # A cap rather than a wait: if the guard ever regresses, the run does
+        # not hang the suite, it proceeds and this fails on the exit code.
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([fd], [], [], 0.5)
+            if ready:
+                try:
+                    chunk = os.read(fd, 4096)
+                except OSError:  # the child closed the pty
+                    break
+                if not chunk:
+                    break
+                out += chunk
+            if not answered and b"Target image tag" in out:
+                os.write(fd, b"\n")
+                answered = True
+        else:
+            os.kill(pid, 9)
+            self.fail("upgrade.sh did not exit within 30s of the empty answer")
+        _, status = os.waitpid(pid, 0)
+        self.assertTrue(answered, "the tag prompt never appeared")
+        return status, out.decode(errors="replace")
+
+    def test_a_bare_enter_at_the_prompt_aborts(self):
+        status, out = self._answer_prompt_with_enter()
+        self.assertTrue(os.WIFEXITED(status), f"upgrade.sh was signalled: {out}")
+        self.assertEqual(os.WEXITSTATUS(status), 1, out)
+        self.assertIn("--image-tag is required", out)
+        # And it names the flag that asks for what an empty answer looked like
+        # it might have meant, rather than leaving the reader to find it.
+        self.assertIn("--keep-image-tag", out)
+
+    def test_it_stops_before_touching_the_install(self):
+        """Nothing may run between the empty answer and the exit."""
+        _, out = self._answer_prompt_with_enter()
+        for forbidden in ("get-credentials", "terraform", "helm"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, out)
 
 
 if __name__ == "__main__":

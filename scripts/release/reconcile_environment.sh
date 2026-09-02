@@ -226,10 +226,20 @@ fi
 # Same destroy-by-omission class as the strict list, so it gets the same
 # treatment: stop, and say which of the two ways out to take.
 if [ "$MODE" = "apply" ] && [ -n "${GITHUB_APP_ID:-}" ]; then
-  kms_location="${REGION%-[a-z]}"
+  # The key names and the location rule come from the installer's own homes --
+  # install.defaults.env and derive_kms_location -- rather than being restated
+  # here. A second copy of either is how this guard ends up querying a keyring
+  # that does not exist, finding no enabled version, and refusing every apply
+  # for the environment with a message about a rotated key.
+  # installer_common.sh loads install.defaults.env on the way in, so one source
+  # brings both DEFAULT_KMS_* and derive_kms_location.
+  # shellcheck source=scripts/installer/installer_common.sh
+  # shellcheck disable=SC1091
+  . "${REPO_ROOT}/scripts/installer/installer_common.sh"
+  kms_location="$(derive_kms_location "${REGION}")"
   minter_key_version="$({ gcloud kms keys versions list \
-    --key "${KMS_KEY:-github-token-minter-key}" \
-    --keyring "${KMS_KEYRING:-github-token-minter-keyring}" \
+    --key "${KMS_KEY:-$DEFAULT_KMS_KEY}" \
+    --keyring "${KMS_KEYRING:-$DEFAULT_KMS_KEYRING}" \
     --location "${kms_location}" --project "${PROJECT_ID}" \
     --filter='state=ENABLED' --format='value(name)' 2>/dev/null || true; } | head -1)"
   if [ -z "${minter_key_version}" ]; then

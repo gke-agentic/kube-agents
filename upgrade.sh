@@ -367,6 +367,14 @@ main() {
     if [ -c /dev/tty ] && ( : </dev/tty ) 2>/dev/null; then
       printf '%b' "  ${C_CYAN}Target image tag (validated release tag or full commit SHA): ${C_RESET}" >/dev/tty
       read -r PARAM_IMAGE_TAG </dev/tty
+      # A bare Enter is still the empty tag this arm exists to reject. It used
+      # to abort inside validate_immutable_ref, which now runs only for a tag
+      # that is present -- so without this, pressing Enter would skip
+      # verify_local_source_ref and silently become --keep-image-tag.
+      if [ -z "$PARAM_IMAGE_TAG" ]; then
+        print_error "--image-tag is required; use a validated release tag or full commit SHA. To upgrade everything except the images, pass --keep-image-tag."
+        exit 1
+      fi
     else
       print_error "--image-tag is required when no interactive terminal is available (e.g. curl | bash)."
       exit 1
