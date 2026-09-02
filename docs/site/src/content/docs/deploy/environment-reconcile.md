@@ -5,6 +5,16 @@ sidebar:
   order: 8
 ---
 
+:::note[For maintainers of this repository]
+This page is about the environments **kube-agents itself** runs its CI against —
+`autopush`, `staging`, `rc` and `nightly`, in Google-owned GCP projects. Nothing
+here is something you configure on your own install; for that, see the
+[Quick start](/kube-agents/install/quickstart-gke/). It sits in the published docs
+alongside [CI pool project prerequisites](/kube-agents/deploy/ci-pool-projects/)
+and [release versioning](/kube-agents/deploy/release-versioning/), which have the
+same audience.
+:::
+
 `autopush` and `staging` are long-lived: they are installed once and then kept
 running, and people live-test pull requests against them. `rc` and `nightly` are
 the opposite — every pipeline run destroys them and builds them again from
