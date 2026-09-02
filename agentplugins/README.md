@@ -35,11 +35,11 @@ establishes. Everything after that point is idempotent.
 
 ## Images
 
-A plugin image is `FROM scratch` plus a COPY of one directory, so the whole build is a
-single tar layer and [`lib/plugin_image.sh`](lib/plugin_image.sh) — shared by both
-installers — can produce it locally. Nothing here submits a Cloud Build: that needs the
-API, the billing and a credential Cloud Build will accept for quota, none of which a
-laptop reliably has, and the installers have to work there.
+A plugin image is built on `busybox:musl` (or `FROM scratch`) plus a COPY of the plugin files,
+so the build is a single tar layer that [`lib/plugin_image.sh`](lib/plugin_image.sh) — shared by
+both installers — can produce locally using either Docker or crane. Nothing here submits a Cloud
+Build: that needs the API, the billing and a credential Cloud Build will accept for quota, none
+of which a laptop reliably has, and the installers have to work there.
 
 | Variable           | Default                                                    | What it changes                                       |
 | ------------------ | ---------------------------------------------------------- | ----------------------------------------------------- |
