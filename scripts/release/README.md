@@ -122,10 +122,11 @@ Setting an optional `GH_APP_PRIVATE_KEY` secret to the `.pem` contents is the al
 ## The nightly environment
 
 `nightly-pipeline.yml` resolves the newest `rc_*_validated` candidate, builds a whole environment
-at that commit, and runs the `nightly` matrix on it. If the matrix passes it then reconciles
-`staging` and `autopush` against the same composition, tags the commit `staging_<ts>_<sha>`, and
+at that commit, and runs the `nightly` matrix on it. If the matrix passes it reconciles `staging`
+against the same composition, tags the commit `staging_<ts>_<sha>`, reconciles `autopush`, and
 destroys the nightly environment. The staging tag is the deploy trigger: pushing it starts
-`staging-redeploy-{agent,controller,integrations}.yml`.
+`staging-redeploy-{agent,controller,integrations}.yml` — which is why staging's reconcile goes
+before it and autopush's, which no tag starts, goes after.
 
 The two reconciles are #1117, and their placement is the substance of it. They run only after the
 matrix, because applying a composition nobody has built from scratch to an environment people

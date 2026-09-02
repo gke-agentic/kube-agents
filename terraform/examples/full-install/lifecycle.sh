@@ -2,10 +2,10 @@
 #
 # Makes `apply` and `destroy` repeatable for this composition.
 #
-# Four things in this stack are not symmetric — applying them is not the inverse
-# of destroying them — and every one of them turns the second `terraform apply`
-# of a project's life into a failure. Terraform cannot express any of them, so
-# they live here rather than in a README telling you to remember them:
+# Several things in this stack are not symmetric — applying them is not the
+# inverse of destroying them — and every one of them turns the second `terraform
+# apply` of a project's life into a failure. Terraform cannot express any of
+# them, so they live here rather than in a README telling you to remember them:
 #
 #   1. Cloud KMS key rings and crypto keys CANNOT be deleted, ever. `terraform
 #      destroy` drops them from state and leaves them in the project, so the next
@@ -22,6 +22,10 @@
 #   3. A GKE BackupPlan cannot be deleted while it still owns backups.
 #   4. The cluster is created with deletion_protection = true, which a destroy
 #      cannot override on its own — the attribute has to be applied as false first.
+#   5. A Pub/Sub topic or subscription that already exists makes the create 409.
+#      Reachable on a FIRST install too: configuring the Chat app in the Cloud
+#      console creates the topic before the installer ever runs. `adopt_pubsub`
+#      imports whichever of the two is already there before applying.
 #
 # Usage:
 #   ./lifecycle.sh apply    [extra terraform args...]
@@ -34,10 +38,11 @@
 # 0 for "in sync" and 2 for "there are changes".
 #
 # Remote state (opt-in): set KUBE_AGENTS_STATE_BUCKET to a GCS bucket name, or
-# to "auto" for <project_id>-kube-agents-tfstate. The bucket is created if
-# missing (versioned, uniform access) and a gitignored backend_override.tf
-# points Terraform at gs://<bucket>/<KUBE_AGENTS_STATE_PREFIX, default
-# kube-agents/<cluster_name>>. Unset, state stays local as before.
+# to "auto" for <project_id>-kube-agents-tfstate. On `apply` and `destroy` the
+# bucket is created if missing (versioned, uniform access); `plan` creates
+# nothing and fails instead, per its read-only contract above. A gitignored
+# backend_override.tf points Terraform at gs://<bucket>/<KUBE_AGENTS_STATE_PREFIX,
+# default kube-agents/<cluster_name>>. Unset, state stays local as before.
 #
 set -euo pipefail
 
@@ -581,7 +586,7 @@ case "${1:-}" in
     # The line range is the header comment above, so it moves whenever that
     # comment grows. It ends at the blank comment line before `set -euo
     # pipefail`.
-    sed -n '2,41p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,46p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     exit 1
     ;;
 esac

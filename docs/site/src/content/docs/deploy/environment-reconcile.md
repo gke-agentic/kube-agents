@@ -80,8 +80,10 @@ The reconcile renders an `install.env` from the environment's GitHub variables
 and secrets with `scripts/release/render_install_env.sh`, and
 `install.env.example` documents what each key means. The rebuild button takes a
 different route to the same settings — `provision_environment.sh` turns them
-into `install.sh` flags — so the two are kept in agreement by a test rather than
-by being one function.
+into `install.sh` flags. The two are separate copies rather than one function,
+and only their one overlapping translation, `MEMORY_PROVIDER`, is pinned against
+drift by a test; the rest of the variable set is not, and `provision_environment.sh`
+additionally accepts `GITHUB_ORG`/`GITHUB_REPO` aliases the renderer does not.
 
 Every setting below is **required** on a long-lived environment, and the
 reconcile fails naming all the missing ones at once rather than starting. This
@@ -91,6 +93,10 @@ destruction of whatever the default does not mention. On an environment that is
 rebuilt every run that costs a feature; on one that has been up for a month it
 takes the gVisor node pool, the Hindsight database, or the Pub/Sub topic behind
 Google Chat with it.
+
+Required for a **plan** as much as for an apply: the reconcile renders `--strict`
+before it branches on the mode, so until an environment carries all ten the daily
+drift report goes red on it rather than reporting no drift.
 
 | GitHub variable                 | install.env key                 | Notes                                                       |
 | ------------------------------- | ------------------------------- | ----------------------------------------------------------- |

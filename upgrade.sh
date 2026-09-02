@@ -336,6 +336,26 @@ EOF
   print_success "Upgrade report written to: $report_file"
 }
 
+# Runs lifecycle.sh from the composition directory with the install's Terraform
+# state coordinates in the environment.
+#
+# One function rather than the same subshell written out at each call site: the
+# plan and the apply must not be able to come to disagree about which state they
+# are talking to. It also keeps `cd` and the two exports from leaking into the
+# rest of the run -- and keeps shellcheck's SC2030/SC2031 quiet, which matters
+# because CI runs a bare `shellcheck upgrade.sh` and fails on info severity.
+run_lifecycle() {
+  local composition_dir="$1"
+  shift
+  (
+    cd "$composition_dir" || return 1
+    KUBE_AGENTS_STATE_BUCKET="${KUBE_AGENTS_STATE_BUCKET:-auto}"
+    KUBE_AGENTS_STATE_PREFIX="$(tf_state_prefix)"
+    export KUBE_AGENTS_STATE_BUCKET KUBE_AGENTS_STATE_PREFIX
+    ./lifecycle.sh "$@"
+  )
+}
+
 main() {
   parse_args "$@"
   print_banner
@@ -626,13 +646,8 @@ main() {
     print_step "4. Planning (read-only)"
     print_info "Comparing this checkout's composition against the install's Terraform state."
     local plan_status=0
-    (
-      cd "${repo_dir}/terraform/examples/full-install"
-      export KUBE_AGENTS_STATE_BUCKET="${KUBE_AGENTS_STATE_BUCKET:-auto}"
-      export KUBE_AGENTS_STATE_PREFIX
-      KUBE_AGENTS_STATE_PREFIX="$(tf_state_prefix)"
-      ./lifecycle.sh plan -detailed-exitcode
-    ) || plan_status=$?
+    run_lifecycle "${repo_dir}/terraform/examples/full-install" \
+      plan -detailed-exitcode || plan_status=$?
 
     # terraform's -detailed-exitcode contract: 0 no changes, 1 error, 2 changes.
     # It is passed through as this script's own exit code so a caller can act on
@@ -693,13 +708,8 @@ main() {
       # A full terraform apply against the regenerated tfvars: both image tags
       # move, and every setting recorded in install.env is re-rendered — the successor
       # of the old path's re-render of the CR from saved state.
-      (
-        cd "${repo_dir}/terraform/examples/full-install"
-        export KUBE_AGENTS_STATE_BUCKET="${KUBE_AGENTS_STATE_BUCKET:-auto}"
-        export KUBE_AGENTS_STATE_PREFIX
-        KUBE_AGENTS_STATE_PREFIX="$(tf_state_prefix)"
-        ./lifecycle.sh apply -auto-approve -input=false
-      )
+      run_lifecycle "${repo_dir}/terraform/examples/full-install" \
+        apply -auto-approve -input=false
       print_success "Full atomic upgrade completed successfully!"
       ;;
   esac
