@@ -64,7 +64,7 @@ if gh release view "${RELEASE_VERSION}" --repo "${TARGET_REPO}" >/dev/null 2>&1;
   echo "ℹ️ GitHub Release '${RELEASE_VERSION}' already exists for repository ${TARGET_REPO}."
   if [ "${#dist_files[@]}" -gt 0 ]; then
     echo "🚀 Uploading/updating release assets to existing release '${RELEASE_VERSION}'..."
-    gh release upload "${RELEASE_VERSION}" "${dist_files[@]}" \
+    gh release upload "${RELEASE_VERSION}" ${dist_files[@]+"${dist_files[@]}"} \
       --repo "${TARGET_REPO}" \
       --clobber
     echo "✅ Successfully uploaded ${#dist_files[@]} artifacts to existing release '${RELEASE_VERSION}'."
@@ -80,7 +80,7 @@ if ! is_ci_pipeline; then
   exit 0
 fi
 
-gh release create "${RELEASE_VERSION}" "${dist_files[@]}" \
+gh release create "${RELEASE_VERSION}" ${dist_files[@]+"${dist_files[@]}"} \
   --repo "${TARGET_REPO}" \
   --target "${RELEASE_COMMIT}" \
   --title "Release ${RELEASE_VERSION}" \

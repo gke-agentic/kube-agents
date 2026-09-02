@@ -277,6 +277,11 @@ class PackageReleaseBundleTest(unittest.TestCase):
                 if untracked_tf_file.exists():
                     untracked_tf_file.unlink()
 
+    def test_packager_script_uses_bash_32_guarded_array_syntax(self):
+        """Verifies package_release_bundle.sh uses ${archive_paths[@]+"${archive_paths[@]}"} for macOS bash 3.2 safety."""
+        content = _PACKAGE_SCRIPT.read_text()
+        self.assertIn('${archive_paths[@]+"${archive_paths[@]}"}', content)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -112,7 +112,7 @@ stage_bundle_files() {
     fi
   done
 
-  extract_commit_tree "${commit_sha}" "${target_bundle_dir}" "${archive_paths[@]}"
+  extract_commit_tree "${commit_sha}" "${target_bundle_dir}" ${archive_paths[@]+"${archive_paths[@]}"}
 
   # Ensure staged files are writable for sanitization and version stamping
   chmod -R u+w "${target_bundle_dir}"

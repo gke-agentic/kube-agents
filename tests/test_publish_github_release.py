@@ -313,6 +313,49 @@ class PublishGithubReleaseScriptTest(unittest.TestCase):
         finally:
             temp_dir.cleanup()
 
+    def test_publish_without_dist_dir_uses_guarded_array_expansion_for_bash_32(self):
+        """Verifies publish_github_release creates release cleanly when DIST_DIR is absent or empty (bash 3.2 guard)."""
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            bin_dir = pathlib.Path(temp_dir.name) / "bin"
+            _, gh_log = create_mock_gh_binary(bin_dir)
+
+            dummy_file = pathlib.Path(repo_dir) / "version.txt"
+            dummy_file.write_text("v0.2.0\n")
+            git("add", "version.txt")
+            git("commit", "-m", "chore: release 0.2.0")
+            expected_tag_sha = git("rev-parse", "HEAD").stdout.strip()
+            git("tag", MOCK_TARGET_RELEASE_TAG, expected_tag_sha)
+
+            nonexistent_dist = pathlib.Path(temp_dir.name) / "nonexistent_dist"
+
+            proc = self._run_script(
+                [MOCK_TARGET_RELEASE_TAG],
+                env={
+                    "CI": "true",
+                    "GH_TOKEN": "mock-token-123",
+                    "DIST_DIR": str(nonexistent_dist),
+                },
+                bin_dir=str(bin_dir),
+                cwd=repo_dir,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("Release Artifacts: None found", proc.stdout)
+            self.assertIn(f"Successfully published GitHub Release '{MOCK_TARGET_RELEASE_TAG}'", proc.stdout)
+
+            gh_calls = gh_log.read_text()
+            self.assertIn(f"release create {MOCK_TARGET_RELEASE_TAG}", gh_calls)
+        finally:
+            temp_dir.cleanup()
+
+    def test_publish_script_uses_bash_32_guarded_array_syntax(self):
+        """Verifies publish_github_release.sh uses ${dist_files[@]+"${dist_files[@]}"} to avoid macOS bash 3.2 unbound variable."""
+        content = _PUBLISH_GITHUB_RELEASE_SH.read_text()
+        self.assertIn('${dist_files[@]+"${dist_files[@]}"}', content)
+        for line in content.splitlines():
+            if "gh release create" in line or "gh release upload" in line:
+                self.assertIn('${dist_files[@]+"${dist_files[@]}"}', line)
+
 
 if __name__ == "__main__":
     unittest.main()
