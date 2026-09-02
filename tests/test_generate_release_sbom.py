@@ -236,6 +236,252 @@ class GenerateReleaseSbomTest(unittest.TestCase):
             files_run2 = sorted([f.name for f in dist_dir.glob("*.json")])
             self.assertEqual(files_run1, files_run2)
 
+    def _create_mock_swap_tools(
+        self,
+        bin_dir,
+        log_file,
+        initial_swap_mb=0,
+        fail_fallocate=False,
+        fail_sudo=False,
+    ):
+        """Hermetically creates mock sudo, free, fallocate, mkswap, swapon, swapoff in bin_dir."""
+        bin_path = pathlib.Path(bin_dir)
+        bin_path.mkdir(parents=True, exist_ok=True)
+
+        sudo_path = bin_path / "sudo"
+        sudo_code = f"""#!/bin/sh
+echo "mock sudo: $@" >> "{log_file}"
+if [ "{fail_sudo}" = "True" ]; then
+  exit 1
+fi
+if [ "$1" = "-n" ]; then
+  shift
+fi
+if [ "$1" = "true" ]; then
+  exit 0
+fi
+"$@"
+"""
+        sudo_path.write_text(sudo_code)
+        sudo_path.chmod(0o755)
+
+        free_path = bin_path / "free"
+        free_code = f"""#!/bin/sh
+echo "Swap:        {initial_swap_mb}          0          {initial_swap_mb}"
+"""
+        free_path.write_text(free_code)
+        free_path.chmod(0o755)
+
+        fallocate_path = bin_path / "fallocate"
+        fallocate_exit = "echo 'mock fallocate failure' >&2; exit 1" if fail_fallocate else 'touch "$3"; exit 0'
+        fallocate_code = f"""#!/bin/sh
+echo "mock fallocate: $@" >> "{log_file}"
+{fallocate_exit}
+"""
+        fallocate_path.write_text(fallocate_code)
+        fallocate_path.chmod(0o755)
+
+        for tool in ("mkswap", "swapon", "swapoff"):
+            t_path = bin_path / tool
+            t_path.write_text(f"""#!/bin/sh
+echo "mock {tool}: $@" >> "{log_file}"
+exit 0
+""")
+            t_path.chmod(0o755)
+
+    def test_syft_squashed_scope_and_resource_limits(self):
+        """Verifies that Syft is called with --scope squashed for images and exports resource limits."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = pathlib.Path(temp_dir)
+            bin_dir = temp_path / "bin"
+            dist_dir = temp_path / "dist"
+            target_dir = temp_path / "stage"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            (target_dir / "app.txt").write_text("sample content")
+
+            syft_log = temp_path / "syft.log"
+            create_mock_syft_binary(bin_dir, log_file=syft_log)
+
+            proc = self._run_script(
+                [MOCK_RELEASE_BUNDLE_VERSION, str(target_dir)],
+                env={
+                    "DIST_DIR": str(dist_dir),
+                    "CI": "true",
+                    "REGISTRY_PREFIX": MOCK_DEFAULT_REGISTRY_PREFIX,
+                    "SYFT_PARALLELISM": "3",
+                    "GOMAXPROCS": "3",
+                    "GOMEMLIMIT": "3GiB",
+                },
+                bin_dir=bin_dir,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+
+            # Check syft log to ensure --scope squashed was passed for every image
+            syft_calls = syft_log.read_text().splitlines()
+            for img in MOCK_REQUIRED_RELEASE_IMAGES:
+                matching = [c for c in syft_calls if f"{img}:{MOCK_RELEASE_BUNDLE_VERSION}" in c]
+                self.assertTrue(matching, f"Expected syft call for image {img}")
+                self.assertIn("--scope squashed", matching[0], f"Image {img} must use --scope squashed")
+
+    def test_ci_swap_allocation_and_trap_cleanup(self):
+        """Verifies that Linux CI dynamically allocates swap and cleans it up reliably via EXIT trap."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = pathlib.Path(temp_dir)
+            bin_dir = temp_path / "bin"
+            dist_dir = temp_path / "dist"
+            target_dir = temp_path / "stage"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            (target_dir / "app.txt").write_text("sample content")
+
+            swap_file = temp_path / "mock_swapfile"
+            swap_log = temp_path / "swap.log"
+
+            create_mock_syft_binary(bin_dir)
+            self._create_mock_swap_tools(bin_dir, swap_log, initial_swap_mb=512)
+
+            proc = self._run_script(
+                [MOCK_RELEASE_BUNDLE_VERSION, str(target_dir)],
+                env={
+                    "DIST_DIR": str(dist_dir),
+                    "CI": "true",
+                    "REGISTRY_PREFIX": MOCK_DEFAULT_REGISTRY_PREFIX,
+                    "SWAP_FILE_PATH": str(swap_file),
+                },
+                bin_dir=bin_dir,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("Configuring temporary 10G swap space in CI", proc.stdout)
+            self.assertIn("Disabling and removing temporary CI swap space...", proc.stdout)
+
+            # Verify the sequence of calls logged
+            log_content = swap_log.read_text()
+            self.assertIn(f"mock fallocate: -l 10G {swap_file}", log_content)
+            self.assertIn(f"mock mkswap: {swap_file}", log_content)
+            self.assertIn(f"mock swapon: {swap_file}", log_content)
+            self.assertIn(f"mock swapoff: {swap_file}", log_content)
+            # Verify file was cleaned up on exit
+            self.assertFalse(swap_file.exists(), "Swap file should be removed on exit")
+
+    def test_ci_swap_allocation_failure_warns_and_continues(self):
+        """Verifies that failure during swap allocation logs a warning and allows SBOM generation to continue."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = pathlib.Path(temp_dir)
+            bin_dir = temp_path / "bin"
+            dist_dir = temp_path / "dist"
+            target_dir = temp_path / "stage"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            (target_dir / "app.txt").write_text("sample content")
+
+            swap_file = temp_path / "mock_swapfile"
+            swap_log = temp_path / "swap.log"
+
+            create_mock_syft_binary(bin_dir)
+            self._create_mock_swap_tools(bin_dir, swap_log, initial_swap_mb=512, fail_fallocate=True)
+
+            proc = self._run_script(
+                [MOCK_RELEASE_BUNDLE_VERSION, str(target_dir)],
+                env={
+                    "DIST_DIR": str(dist_dir),
+                    "CI": "true",
+                    "REGISTRY_PREFIX": MOCK_DEFAULT_REGISTRY_PREFIX,
+                    "SWAP_FILE_PATH": str(swap_file),
+                },
+                bin_dir=bin_dir,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("Warning: Failed to configure swap space", proc.stderr)
+            self.assertNotIn("Disabling and removing temporary CI swap space...", proc.stdout)
+
+    def test_ci_swap_skipped_when_sufficient_swap(self):
+        """Verifies that CI does not attempt swap creation when system already has >= 4096MB swap."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = pathlib.Path(temp_dir)
+            bin_dir = temp_path / "bin"
+            dist_dir = temp_path / "dist"
+            target_dir = temp_path / "stage"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            (target_dir / "app.txt").write_text("sample content")
+
+            swap_file = temp_path / "mock_swapfile"
+            swap_log = temp_path / "swap.log"
+
+            create_mock_syft_binary(bin_dir)
+            self._create_mock_swap_tools(bin_dir, swap_log, initial_swap_mb=8192)
+
+            proc = self._run_script(
+                [MOCK_RELEASE_BUNDLE_VERSION, str(target_dir)],
+                env={
+                    "DIST_DIR": str(dist_dir),
+                    "CI": "true",
+                    "REGISTRY_PREFIX": MOCK_DEFAULT_REGISTRY_PREFIX,
+                    "SWAP_FILE_PATH": str(swap_file),
+                },
+                bin_dir=bin_dir,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertNotIn("Configuring temporary 10G swap space", proc.stdout)
+            if swap_log.exists():
+                self.assertNotIn("mock fallocate", swap_log.read_text())
+
+    def test_ci_swap_skipped_when_sudo_fails(self):
+        """Verifies that CI skips swap creation when passwordless sudo is unavailable."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = pathlib.Path(temp_dir)
+            bin_dir = temp_path / "bin"
+            dist_dir = temp_path / "dist"
+            target_dir = temp_path / "stage"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            (target_dir / "app.txt").write_text("sample content")
+
+            swap_file = temp_path / "mock_swapfile"
+            swap_log = temp_path / "swap.log"
+
+            create_mock_syft_binary(bin_dir)
+            self._create_mock_swap_tools(bin_dir, swap_log, initial_swap_mb=512, fail_sudo=True)
+
+            proc = self._run_script(
+                [MOCK_RELEASE_BUNDLE_VERSION, str(target_dir)],
+                env={
+                    "DIST_DIR": str(dist_dir),
+                    "CI": "true",
+                    "REGISTRY_PREFIX": MOCK_DEFAULT_REGISTRY_PREFIX,
+                    "SWAP_FILE_PATH": str(swap_file),
+                },
+                bin_dir=bin_dir,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertNotIn("Configuring temporary 10G swap space", proc.stdout)
+            if swap_log.exists():
+                self.assertNotIn("mock fallocate", swap_log.read_text())
+
+    def test_staging_directory_cleaned_up_on_failure(self):
+        """Verifies that the intermediate TMP_SBOM_DIR is completely deleted on failure."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = pathlib.Path(temp_dir)
+            bin_dir = temp_path / "bin"
+            dist_dir = temp_path / "dist"
+            target_dir = temp_path / "stage"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            staging_parent = temp_path / "staging_parent"
+            staging_parent.mkdir(parents=True, exist_ok=True)
+
+            failing_img = MOCK_REQUIRED_RELEASE_IMAGES[0]
+            create_mock_syft_binary(bin_dir, fail_on_images=[failing_img])
+
+            proc = self._run_script(
+                [MOCK_RELEASE_BUNDLE_VERSION, str(target_dir)],
+                env={
+                    "DIST_DIR": str(dist_dir),
+                    "CI": "true",
+                    "REGISTRY_PREFIX": MOCK_DEFAULT_REGISTRY_PREFIX,
+                    "TMPDIR": str(staging_parent),
+                },
+                bin_dir=bin_dir,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            leaked_dirs = list(staging_parent.glob("kube-agents-sbom-*"))
+            self.assertEqual(len(leaked_dirs), 0, f"Expected 0 leaked staging directories, found: {leaked_dirs}")
+
 
 if __name__ == "__main__":
     unittest.main()
