@@ -719,7 +719,7 @@ write_secret_env_var() {
   if [ -z "$var_value" ]; then
     return 0
   fi
-  if is_truthy "${PERSIST_SECRETS_ON_DISK:-true}"; then
+  if is_truthy "${PERSIST_SECRETS_ON_DISK:-$DEFAULT_PERSIST_SECRETS_ON_DISK}"; then
     write_env_var "$destination" "$var_name" "$var_value"
   fi
 }
@@ -933,7 +933,7 @@ bootstrap_install_env_file() {
   write_env_var "$tmp" CHAT_SUB_NAME "${CHAT_SUB_NAME:-}"
   write_env_var "$tmp" GOOGLE_CHAT_ENABLED "${GOOGLE_CHAT_ENABLED:-$DEFAULT_GOOGLE_CHAT_ENABLED}"
   write_env_var "$tmp" GOOGLE_CHAT_MODE "${GOOGLE_CHAT_MODE:-$DEFAULT_GOOGLE_CHAT_MODE}"
-  write_env_var "$tmp" SLACK_ENABLED "${SLACK_ENABLED:-false}"
+  write_env_var "$tmp" SLACK_ENABLED "${SLACK_ENABLED:-$DEFAULT_SLACK_ENABLED}"
   write_secret_env_var "$tmp" SLACK_BOT_TOKEN "${SLACK_BOT_TOKEN:-}"
   write_secret_env_var "$tmp" SLACK_APP_TOKEN "${SLACK_APP_TOKEN:-}"
   write_env_var "$tmp" SLACK_ALLOWED_USERS "${SLACK_ALLOWED_USERS:-}"
@@ -959,7 +959,7 @@ bootstrap_install_env_file() {
   if [ -n "${THIRD_PARTY_REGISTRY_PREFIX:-}" ]; then
     write_env_var "$tmp" THIRD_PARTY_REGISTRY_PREFIX "${THIRD_PARTY_REGISTRY_PREFIX}"
   fi
-  if ! is_truthy "${PERSIST_SECRETS_ON_DISK:-true}"; then
+  if ! is_truthy "${PERSIST_SECRETS_ON_DISK:-$DEFAULT_PERSIST_SECRETS_ON_DISK}"; then
     printf '\n%s\n' "# PERSIST_SECRETS_ON_DISK=false: credentials are deliberately absent." >> "$tmp"
     write_env_var "$tmp" PERSIST_SECRETS_ON_DISK "false"
   fi
@@ -1873,11 +1873,11 @@ run_menu_system() {
   local openai_api_key="${OPENAI_API_KEY:-}"
   local anthropic_api_key="${ANTHROPIC_API_KEY:-}"
   local google_chat_enabled="${GOOGLE_CHAT_ENABLED:-false}"
-  local slack_enabled="${SLACK_ENABLED:-false}"
+  local slack_enabled="${SLACK_ENABLED:-$DEFAULT_SLACK_ENABLED}"
   local allowed_users="${ALLOWED_USERS:-}"
-  local chat_topic_name="${CHAT_TOPIC_NAME:-platform-agent-chat-events}"
+  local chat_topic_name="${CHAT_TOPIC_NAME:-$DEFAULT_CHAT_TOPIC_NAME}"
   local chat_sub_name="${CHAT_SUB_NAME:-$DEFAULT_CHAT_SUB_NAME}"
-  local permission_set="${PLATFORM_AGENT_PERMISSION_SET:-read-only}"
+  local permission_set="${PLATFORM_AGENT_PERMISSION_SET:-$DEFAULT_PERMISSION_SET}"
   local custom_roles="${PLATFORM_AGENT_CUSTOM_ROLES:-}"
   # Not the fresh-install default. The control panel describes an install that
   # already exists and its Save & Apply re-applies what it displays, so a
@@ -1886,7 +1886,11 @@ run_menu_system() {
   # "gVisor Sandbox" for an unsandboxed install and then provision a node pool
   # nobody asked for on the next apply.
   local enable_gvisor="${ENABLE_GVISOR:-false}"
-  local enable_webui="${HERMES_DASHBOARD_ENABLED:-false}"
+  # DEFAULT_ENABLE_WEBUI is "false" and the paragraph above applies to it too:
+  # the panel has to read as what an unconfigured install is running. Flipping
+  # that default on would make this show a dashboard nobody deployed, so the
+  # two have to be reconsidered together.
+  local enable_webui="${HERMES_DASHBOARD_ENABLED:-$DEFAULT_ENABLE_WEBUI}"
   local github_org="${GITOPS_ORG:-${GITHUB_ORG:-}}"
   local github_repo="${GITOPS_REPO:-${GITHUB_REPO:-$DEFAULT_GITOPS_REPO}}"
   local github_app_id="${GITHUB_APP_ID:-}"
@@ -2396,11 +2400,11 @@ main() {
   # doors disagreed about one file. The sibling booleans fail loudly on their
   # ^(true|false)$ validators instead; only these two were silent.
   local chat_choice=""
-  if is_truthy "$PARAM_ENABLE_GOOGLE_CHAT" && is_truthy "${SLACK_ENABLED:-false}"; then
+  if is_truthy "$PARAM_ENABLE_GOOGLE_CHAT" && is_truthy "${SLACK_ENABLED:-$DEFAULT_SLACK_ENABLED}"; then
     chat_choice="3"
   elif is_truthy "$PARAM_ENABLE_GOOGLE_CHAT"; then
     chat_choice="1"
-  elif is_truthy "${SLACK_ENABLED:-false}"; then
+  elif is_truthy "${SLACK_ENABLED:-$DEFAULT_SLACK_ENABLED}"; then
     chat_choice="2"
   fi
   # Nothing configured and nobody to ask: "None", as before. Left unset when

@@ -1558,9 +1558,9 @@ class ChatBooleansAreReadThroughIsTruthyTest(unittest.TestCase):
         and it is invisible to the behavioural cases below on a `true` file."""
         block = self._SOURCE_BLOCK()
         self.assertNotIn('"$PARAM_ENABLE_GOOGLE_CHAT" = "true"', block)
-        self.assertNotIn('"${SLACK_ENABLED:-false}" = "true"', block)
+        self.assertNotIn('"${SLACK_ENABLED:-$DEFAULT_SLACK_ENABLED}" = "true"', block)
         self.assertIn('is_truthy "$PARAM_ENABLE_GOOGLE_CHAT"', block)
-        self.assertIn('is_truthy "${SLACK_ENABLED:-false}"', block)
+        self.assertIn('is_truthy "${SLACK_ENABLED:-$DEFAULT_SLACK_ENABLED}"', block)
 
     def _SOURCE_BLOCK(self):
         source = _INSTALL_SH.read_text()

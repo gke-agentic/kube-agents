@@ -368,8 +368,8 @@ main() {
   normalize_memory_vars
 
   local target_project="${PARAM_PROJECT_ID:-${PROJECT_ID:-}}"
-  local target_cluster="${PARAM_CLUSTER_NAME:-${CLUSTER_NAME:-platform-agent-host}}"
-  local target_region="${PARAM_REGION:-${REGION:-us-central1}}"
+  local target_cluster="${PARAM_CLUSTER_NAME:-${CLUSTER_NAME:-$DEFAULT_CLUSTER_NAME}}"
+  local target_region="${PARAM_REGION:-${REGION:-$DEFAULT_REGION}}"
 
   if [ -z "$target_project" ]; then
     target_project="$(gcloud config get-value project 2>/dev/null || true)"

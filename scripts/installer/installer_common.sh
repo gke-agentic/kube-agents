@@ -356,7 +356,7 @@ save_secret_env_var() {
   local var_name=$1
   local var_val=$2
   export "${var_name}=${var_val}"
-  if is_truthy "${PERSIST_SECRETS_ON_DISK:-true}"; then
+  if is_truthy "${PERSIST_SECRETS_ON_DISK:-$DEFAULT_PERSIST_SECRETS_ON_DISK}"; then
     save_env_var "$var_name" "$var_val"
   elif [ -f "$INSTALL_ENV_FILE" ]; then
     local old_umask
@@ -442,7 +442,7 @@ save_secret_var() {
   if [ "${DRY_RUN:-0}" -eq 1 ]; then
     return 0
   fi
-  if is_truthy "${PERSIST_SECRETS_ON_DISK:-true}"; then
+  if is_truthy "${PERSIST_SECRETS_ON_DISK:-$DEFAULT_PERSIST_SECRETS_ON_DISK}"; then
     save_var "$var_name" "$var_val"
   else
     if [ -f "$VARS_FILE" ]; then
@@ -978,7 +978,7 @@ write_tfvars_from_state() {
     echo "vertex_project_id  = $(hcl_str "${VERTEX_PROJECT_ID:-}")"
     echo "vertex_location    = $(hcl_str "${VERTEX_LOCATION:-}")"
     echo ""
-    if is_truthy "${PERSIST_SECRETS_ON_DISK:-true}"; then
+    if is_truthy "${PERSIST_SECRETS_ON_DISK:-$DEFAULT_PERSIST_SECRETS_ON_DISK}"; then
       echo "api_server_key    = $(hcl_str "${API_SERVER_KEY:-}")"
       echo "gemini_api_key    = $(hcl_str "${GEMINI_API_KEY:-}")"
       echo "openai_api_key    = $(hcl_str "${OPENAI_API_KEY:-}")"
@@ -1006,8 +1006,8 @@ write_tfvars_from_state() {
     echo "google_chat_allowed_users = $(hcl_csv_list "${ALLOWED_USERS:-}")"
     echo "google_chat_mode          = $(hcl_str "${GOOGLE_CHAT_MODE:-$DEFAULT_GOOGLE_CHAT_MODE}")"
     echo ""
-    echo "enable_slack            = $(hcl_bool "${SLACK_ENABLED:-false}")"
-    if is_truthy "${PERSIST_SECRETS_ON_DISK:-true}"; then
+    echo "enable_slack            = $(hcl_bool "${SLACK_ENABLED:-$DEFAULT_SLACK_ENABLED}")"
+    if is_truthy "${PERSIST_SECRETS_ON_DISK:-$DEFAULT_PERSIST_SECRETS_ON_DISK}"; then
       echo "slack_bot_token         = $(hcl_str "${SLACK_BOT_TOKEN:-}")"
       echo "slack_app_token         = $(hcl_str "${SLACK_APP_TOKEN:-}")"
     fi
@@ -1032,9 +1032,9 @@ write_tfvars_from_state() {
     echo "# The CRD defaults dashboardEnabled to true; the installer has always"
     echo "# defaulted it to false and asks. Memory settings mirror --memory."
     echo "hermes_dashboard_enabled = $(hcl_bool "${HERMES_DASHBOARD_ENABLED:-$DEFAULT_ENABLE_WEBUI}")"
-    echo "memory_enabled           = $(hcl_bool "${MEMORY_ENABLED:-false}")"
+    echo "memory_enabled           = $(hcl_bool "${MEMORY_ENABLED:-$DEFAULT_MEMORY_ENABLED}")"
     echo "memory_provider          = $(hcl_str "$memory_provider")"
-    echo "user_profile_enabled     = $(hcl_bool "${USER_PROFILE_ENABLED:-false}")"
+    echo "user_profile_enabled     = $(hcl_bool "${USER_PROFILE_ENABLED:-$DEFAULT_USER_PROFILE_ENABLED}")"
   } > "${dest}.tmp"
   chmod 600 "${dest}.tmp"
   mv -f -- "${dest}.tmp" "$dest"

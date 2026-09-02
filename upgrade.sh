@@ -390,8 +390,8 @@ main() {
   normalize_memory_vars
 
   local target_project="${PARAM_PROJECT_ID:-${PROJECT_ID:-}}"
-  local target_cluster="${PARAM_CLUSTER_NAME:-${CLUSTER_NAME:-platform-agent-host}}"
-  local target_region="${PARAM_REGION:-${REGION:-us-central1}}"
+  local target_cluster="${PARAM_CLUSTER_NAME:-${CLUSTER_NAME:-$DEFAULT_CLUSTER_NAME}}"
+  local target_region="${PARAM_REGION:-${REGION:-$DEFAULT_REGION}}"
 
   if [ -z "$target_project" ]; then
     target_project="$(gcloud config get-value project 2>/dev/null || true)"
@@ -407,7 +407,7 @@ main() {
   if [ "$PARAM_DRY_RUN" = "true" ]; then
     print_step "2. Dry-Run Upgrade Plan Preview"
     echo -e "  • ${C_CYAN}Action:${C_RESET} Perform ${PARAM_UPGRADE_MODE} upgrade on cluster '${target_cluster}'"
-    echo -e "  • ${C_CYAN}Image Overrides:${C_RESET} ${REGISTRY_PREFIX:-ghcr.io/gke-labs/kube-agents}/*:${PARAM_IMAGE_TAG}"
+    echo -e "  • ${C_CYAN}Image Overrides:${C_RESET} ${REGISTRY_PREFIX:-$DEFAULT_REGISTRY_PREFIX}/*:${PARAM_IMAGE_TAG}"
     echo -e "  • ${C_CYAN}Secrets:${C_RESET} generate SESSION_KV_API_KEY / SESSION_KV_SALT into 'platform-agent-secrets' only if absent (existing values are never rewritten)"
     write_report "DRY_RUN_COMPLETE"
     exit 0
