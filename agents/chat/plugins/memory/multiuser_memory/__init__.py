@@ -95,11 +95,20 @@ def _neutralize_prompt_injection(text: str) -> str:
     if not text:
         return ""
 
-    # Delimiter tags (<system...>, <instruction...>, <prompt...>, <admin...>, <untrusted_...>)
-    # Uses a lookahead (?=[ \t>]) and [^>\n]*> to prevent quadratic backtracking and ensure
-    # tags cannot span across newlines or collide with SOP commands (e.g. <context>, <system-node-critical>).
+    # Delimiter tags (<system...>, </system...>, < system>, <system/>, < /system>, etc.)
+    # 1. Closing/spaced-closing (</ system>, < / system>), self-closing (<system/>, <system />),
+    #    and standard tags (<system>, <system extra="1">). Uses (?=[ \t>/]) lookahead to defuse
+    #    self-closing tags without mangling SOP hyphenated names (<system-node-critical>).
     text = re.sub(
-        r"</?(system|instruction|prompt|admin|untrusted_[a-z0-9_-]+)(?=[ \t>])[^>\n]*>",
+        r"<(?:[ \t]*/[ \t]*|/?)(system|instruction|prompt|admin|untrusted_[a-z0-9_-]+)(?=[ \t>/])[^>\n]*>",
+        r"[\1_tag_neutralized]",
+        text,
+        flags=re.IGNORECASE,
+    )
+    # 2. Spaced opening tags (< system>, < system/>, etc.), anchored so they cannot collide with
+    #    threshold inequalities like 'CPU < system reserved; page if utilization > 90%'.
+    text = re.sub(
+        r"<[ \t]+(system|instruction|prompt|admin|untrusted_[a-z0-9_-]+)[ \t]*[/ \t]*>",
         r"[\1_tag_neutralized]",
         text,
         flags=re.IGNORECASE,
@@ -173,8 +182,10 @@ def sanitize_for_prompt(text: str) -> str:
 
     cleaned = _strip_unsafe_chars(text)
     cleaned = _neutralize_prompt_injection(cleaned)
-    # Neutralize lines starting with '#' so entries cannot create new root-level markdown prompt sections
-    cleaned = re.sub(r"(?m)^(\s*)#+\s*", r"\1", cleaned)
+    # Neutralize lines starting with '#' so entries cannot create new root-level markdown prompt sections.
+    # Consumes all leading hash runs and spaces/tabs (e.g. '# ## Heading' or '  # # # Heading')
+    # so subsequent hashes cannot become un-neutralized headings.
+    cleaned = re.sub(r"(?m)^(\s*)#+[# \t]*", r"\1", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 

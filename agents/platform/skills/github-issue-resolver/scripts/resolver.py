@@ -499,7 +499,7 @@ def _is_safe_char(ch: str) -> bool:
         0x200B <= code <= 0x200F
         or 0x202A <= code <= 0x202E
         or 0x2060 <= code <= 0x206F
-        or code in (0xFEFF, 0x00AD, 0x034F, 0x061C, 0x180E, 0x2028, 0x2029, 0x2800)
+        or code in (0xFEFF, 0x00AD, 0x034F, 0x061C, 0x180E)
     ):
         return False
     # Strip Unicode tag block and non-printable supplementary blocks (U+E0000 and above)
