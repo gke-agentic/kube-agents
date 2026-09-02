@@ -175,7 +175,7 @@ class InstallerCommonTest(unittest.TestCase):
     # ── write_tfvars_from_state: the API_SERVER_KEY guard ────────────────────
 
     def test_tfvars_generation_without_api_server_key_fails_with_guidance(self):
-        # vars.sh omits API_SERVER_KEY when PERSIST_SECRETS_ON_DISK=false
+        # install.env omits API_SERVER_KEY when PERSIST_SECRETS_ON_DISK=false
         # stripped it; under the front doors' `set -u` an unguarded read would
         # abort on an opaque unbound-variable error mid-run.
         proc = self._run(
@@ -231,7 +231,7 @@ class InstallerCommonTest(unittest.TestCase):
             self.assertIn("create_cluster             = true", content)
 
     def test_tfvars_fresh_create_honours_cluster_mode(self):
-        # --cluster-mode reaches the generator through vars.sh. The probe found
+        # --cluster-mode reaches the generator through the exported environment. The probe found
         # nothing, so the interview's choice is the only shape on offer.
         #
         # Asks for "standard" specifically: autopilot is now DEFAULT_CLUSTER_MODE,
@@ -248,7 +248,7 @@ class InstallerCommonTest(unittest.TestCase):
             self.assertIn("create_cluster             = true", content)
 
     def test_tfvars_fresh_create_rejects_an_unknown_cluster_mode(self):
-        # vars.sh is hand-editable, and an unknown shape reaching Terraform
+        # install.env is hand-editable, and an unknown shape reaching Terraform
         # fails at validate with the whole interview already paid for.
         proc = self._run(
             'rc=0; write_tfvars_from_state /dev/null || rc=$?; echo "rc=$rc"',
@@ -259,14 +259,14 @@ class InstallerCommonTest(unittest.TestCase):
 
     def test_tfvars_live_cluster_outranks_a_conflicting_cluster_mode(self):
         # The teardown path: uninstall.sh and upgrade.sh regenerate through
-        # this generator from vars.sh alone and have no flag to correct a wrong
+        # this generator from install.env alone and have no flag to correct a wrong
         # CLUSTER_MODE with. A persisted value that disagrees with the live
         # cluster must lose in BOTH directions — either way round, the losing
         # answer takes the cluster's count to 0 and turns the next apply into a
         # replacement.
         with tempfile.TemporaryDirectory() as out_dir:
             dest = pathlib.Path(out_dir) / "terraform.tfvars"
-            # Live Autopilot, vars.sh says standard.
+            # Live Autopilot, install.env says standard.
             proc = self._run(
                 f'write_tfvars_from_state "{dest}"; echo "rc=$?"',
                 env={"API_SERVER_KEY": "k", "CLUSTER_MODE": "standard"},
@@ -274,7 +274,7 @@ class InstallerCommonTest(unittest.TestCase):
             )
             self.assertIn("rc=0", proc.stdout, proc.stderr)
             self.assertIn('cluster_mode               = "autopilot"', dest.read_text())
-            # Live Standard, vars.sh says autopilot.
+            # Live Standard, install.env says autopilot.
             proc = self._run(
                 f'write_tfvars_from_state "{dest}"; echo "rc=$?"',
                 env={"API_SERVER_KEY": "k", "CLUSTER_MODE": "autopilot"},
@@ -383,8 +383,8 @@ class InstallerCommonTest(unittest.TestCase):
             self.assertIn("enable_gvisor_node_pool    = true", dest.read_text())
 
     def test_tfvars_leaves_the_agent_unsandboxed_when_gvisor_is_unset(self):
-        # install.sh owns the default-on policy and always writes the result to
-        # vars.sh before calling this, so an unset ENABLE_GVISOR here is not a
+        # install.sh owns the default-on policy and always exports the result
+        # before calling this, so an unset ENABLE_GVISOR here is not a
         # fresh install -- it is a caller reading an install that already
         # exists, and such an install is not sandboxed. Deciding otherwise
         # would make the generator disagree with the running cluster.
@@ -486,8 +486,8 @@ class InstallerCommonTest(unittest.TestCase):
     def test_tfvars_gvisor_off_clears_the_floor_on_a_sub_floor_autopilot(self):
         # The composition uninstall.sh relies on: an explicit false must skip
         # the floor check, not merely the tfvars values. The unset case above
-        # only covers a teardown from a fresh clone with no vars.sh; the
-        # ordinary teardown sources one saying "true" and uninstall.sh exports
+        # only covers a teardown from a fresh clone with no install.env; the
+        # ordinary teardown loads one saying "true" and uninstall.sh exports
         # false over it, which is this row.
         proc = self._run(
             'rc=0; write_tfvars_from_state /dev/null || rc=$?; echo "rc=$rc"',
@@ -539,7 +539,7 @@ class InstallerCommonTest(unittest.TestCase):
         self.assertIn("Could not probe cluster", proc.stderr)
 
     def test_tfvars_generation_recovers_credentials_from_live_secret(self):
-        # PERSIST_SECRETS_ON_DISK=false leaves vars.sh without the keys; the
+        # PERSIST_SECRETS_ON_DISK=false leaves install.env without the keys; the
         # live Secret is their home, so the generator reads them back from it.
         recovered_b64 = "cmVjb3ZlcmVkLWtleQ=="  # base64("recovered-key")
         kubectl_stub = (

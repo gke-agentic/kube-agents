@@ -455,7 +455,7 @@ def resolve_installs(cwd=None, also=None):
 def _resolvable_installs(cwd=None):
     """`resolve_installs`, for callers that have something to do either way.
 
-    Release is the case: an unreadable config file or a malformed vars.sh is a
+    Release is the case: an unreadable config file or a malformed install configuration is a
     reason to lose the nicer labels, not a reason to leave a held lease on a
     shared cluster until it expires.
     """
@@ -1171,7 +1171,7 @@ def plugin_installer(head):
 
     They share a basename and nothing else. A plugin installer applies an
     AgentPlugin CR and a chart through `$KUBECTL_CONTEXT` or the current
-    context, and never reads `vars.sh` -- so resolving it through the checkout,
+    context, and never reads the checkout's install configuration -- so resolving it through the checkout,
     the way the root installers must be resolved, would take one install's
     lease while the command mutated another.
     """
@@ -1602,7 +1602,7 @@ def classify(command, installs, cwd=None, _depth=0):
             continue
 
         # ---- installer / redeploy scripts ----------------------------------
-        # These read vars.sh and reconfigure an install wholesale, so an
+        # These read install.env and reconfigure an install wholesale, so an
         # unresolvable target is worth a prompt rather than a silent pass.
         hit = entry_point(head)
         if hit:

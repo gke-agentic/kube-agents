@@ -406,7 +406,7 @@ init_var_memory_provider() {
   fi
 
   # Persist the normalised value so the migration and the lower-casing stick,
-  # and so the later steps that read vars.sh see what this step decided.
+  # and so a later run of the dev tooling sees what this step decided.
   save_var "MEMORY_PROVIDER" "$MEMORY_PROVIDER"
 }
 

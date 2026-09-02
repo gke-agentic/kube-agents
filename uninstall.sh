@@ -474,8 +474,8 @@ main() {
 
   # A destroy needs no sandbox, so it must not be refusable on the sandbox's
   # account. write_tfvars_from_state runs the Autopilot version-floor check
-  # whenever ENABLE_GVISOR is truthy, and the block above has just sourced a
-  # vars.sh that — since the installer default flipped — says "true" on every
+  # whenever ENABLE_GVISOR is truthy, and the block above has just loaded an
+  # install.env that — since the installer default flipped — says "true" on every
   # new install. Against a sub-floor Autopilot cluster that check returns 1
   # under `set -Eeuo pipefail` and the destroy never runs, which is an install
   # with no working way to remove itself. The reachable route there is the

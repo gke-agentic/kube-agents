@@ -423,8 +423,8 @@ class GvisorFloorCannotBlockTheTeardownTest(unittest.TestCase):
     """A destroy is not refusable on the sandbox's account.
 
     `write_tfvars_from_state` runs the Autopilot version-floor check whenever
-    ENABLE_GVISOR is truthy, and returns 1 below the floor. uninstall.sh sources
-    vars.sh whenever the checkout has one, and since the installer default
+    ENABLE_GVISOR is truthy, and returns 1 below the floor. uninstall.sh loads the
+    checkout's install.env, and since the installer default
     flipped that file says "true" on every new install -- so the ordinary
     teardown, from the checkout that installed, is the case the floor can abort.
     The `false` fallback inside write_tfvars_from_state does not cover it; only

@@ -751,14 +751,14 @@ write_tfvars_from_state() {
 
   # Installing onto an existing cluster: fetch its credentials now, before the
   # recovery loop below — adoption is exactly the case where the credentials
-  # live only in that cluster's Secret (a fresh clone has no vars.sh values),
+  # live only in that cluster's Secret (a fresh clone has no install.env values),
   # and recovery is gated on the kubectl context actually being this cluster.
   if [ "$create_cluster" = "false" ] && command -v kubectl >/dev/null 2>&1; then
     gcloud container clusters get-credentials "${CLUSTER_NAME}" --location "${REGION}" \
       --project "${PROJECT_ID}" >/dev/null 2>&1 || true
   fi
 
-  # vars.sh does not always carry the credentials: PERSIST_SECRETS_ON_DISK=false
+  # install.env does not always carry the credentials: PERSIST_SECRETS_ON_DISK=false
   # keeps them out of it. Their home is the live Secret, so recover any
   # missing key from it — best-effort, since on a fresh install there is
   # no cluster to ask yet and the keys are still in the environment.
@@ -789,7 +789,7 @@ write_tfvars_from_state() {
         -o jsonpath="{.data.${secret_key}}" 2>/dev/null || true; } | base64 --decode 2>/dev/null || true)"
       if [ -n "$secret_val" ]; then
         export "${secret_key}=${secret_val}"
-        print_info "Recovered ${secret_key} from the live 'platform-agent-secrets' Secret (vars.sh does not persist it)."
+        print_info "Recovered ${secret_key} from the live 'platform-agent-secrets' Secret (install.env does not persist it)."
       fi
     done
   fi
@@ -883,18 +883,18 @@ write_tfvars_from_state() {
   # cluster_mode keeps --gvisor=true meaning the same thing on either shape.
   #
   # The fallback stays false even though a fresh install now defaults to the
-  # sandbox. install.sh owns that default and always writes the result to
-  # vars.sh before sourcing it and calling this function, so the fallback here
+  # sandbox. install.sh owns that default and exports ENABLE_GVISOR before
+  # calling this function, so the fallback here
   # never decides a new install — it only decides the callers that read an
-  # install that already exists. uninstall.sh is the one that matters: vars.sh
-  # is optional there, and the documented `curl … | bash` teardown runs from a
-  # fresh clone that has none. Defaulting on for that caller would let the
-  # Autopilot version-floor check below abort a destroy, leaving an install
-  # with no working way to remove itself.
+  # install that already exists. uninstall.sh is the one that matters:
+  # install.env is optional there, and the documented `curl … | bash` teardown
+  # runs from a fresh clone that has none. Defaulting on for that caller would
+  # let the Autopilot version-floor check below abort a destroy, leaving an
+  # install with no working way to remove itself.
   #
-  # The fallback only reaches the teardown that has no vars.sh, which is not
-  # the ordinary one — a teardown from the checkout that installed sources a
-  # vars.sh saying ENABLE_GVISOR="true". uninstall.sh therefore exports false
+  # The fallback only reaches the teardown that has no install.env, which is not
+  # the ordinary one — a teardown from the checkout that installed loads an
+  # install.env saying ENABLE_GVISOR="true". uninstall.sh therefore exports false
   # itself before calling this, and the comment there is where that argument
   # lives. Do not read the fallback as protecting the teardown on its own.
   local gvisor_node_pool="false" agent_runtime_class=""

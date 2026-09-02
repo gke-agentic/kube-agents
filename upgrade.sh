@@ -143,9 +143,10 @@ json_escape() {
   printf '%s' "$value"
 }
 
-# Persist one variable into the saved installer state. The provisioning
-# scripts re-source vars.sh via load_state, so exporting alone is not enough:
-# a value must be written here for the delegated scripts to honor it.
+# Persist one variable into a legacy vars.sh, for an install that still has
+# one. Nothing in this repository re-sources it -- the exports after each call
+# are what this run reads -- but a tool still pointed at the old file would
+# otherwise name a different target than the one this run acts on.
 persist_state_var() {
   local state_file="$1"
   local var_name="$2"
@@ -423,8 +424,8 @@ main() {
     exit 1
   fi
 
-  # Persist explicit target overrides so the delegated provisioning scripts,
-  # which re-source vars.sh, act on the same cluster we fetch credentials for.
+  # Keep a legacy vars.sh agreeing with the confirmed target, the way
+  # uninstall.sh does, so no tool still pointed at it names another cluster.
   #
   # Only into a vars.sh that is already there, the way uninstall.sh guards the
   # same three calls. persist_state_var's append is unconditional -- only its
@@ -506,7 +507,7 @@ main() {
     exit 1
   fi
 
-  # NAMESPACE steers the generator's Secret-recovery reads (vars.sh omits
+  # NAMESPACE steers the generator's Secret-recovery reads (install.env omits
   # credentials when PERSIST_SECRETS_ON_DISK=false; the live Secret has them).
   NAMESPACE="$target_namespace" \
     write_tfvars_from_state "${repo_dir}/terraform/examples/full-install/terraform.tfvars" "$PARAM_IMAGE_TAG"
@@ -529,7 +530,7 @@ main() {
       print_step "4. Executing Full Atomic Upgrade (Terraform + Helm)"
       apply_crd_upgrades
       # install.sh's post-generation minter guard, without its import step:
-      # an upgrade never imports the App key, so a vars.sh that enables the
+      # an upgrade never imports the App key, so an install.env that enables the
       # minter against a key with no ENABLED version would wedge the apply on
       # the minter's readiness until the helm timeout fails the upgrade.
       # Refuse up front instead and name the two ways out.
@@ -547,7 +548,7 @@ main() {
         fi
       fi
       # A full terraform apply against the regenerated tfvars: both image tags
-      # move, and every setting saved in vars.sh is re-rendered — the successor
+      # move, and every setting recorded in install.env is re-rendered — the successor
       # of the old path's re-render of the CR from saved state.
       (
         cd "${repo_dir}/terraform/examples/full-install"

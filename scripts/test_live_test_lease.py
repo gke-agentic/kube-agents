@@ -677,7 +677,7 @@ class MutationsAreGuarded(unittest.TestCase):
 
 
 class InstallerEntryPoints(unittest.TestCase):
-    """The installers act on vars.sh, not on your kubectl context."""
+    """The installers act on the checkout's install configuration, not on your kubectl context."""
 
     def test_install_sh_resolves_through_the_checkout(self):
         with TemporaryDirectory() as tmp:
@@ -729,7 +729,7 @@ class InstallerEntryPoints(unittest.TestCase):
     def test_a_plugin_installer_follows_the_context_not_the_checkout(self):
         """`agentplugins/*/install.sh` shares a basename with the root
         installer and nothing else: it applies an AgentPlugin CR through the
-        current kubectl context and never reads vars.sh. Resolving it through
+        current kubectl context and never reads the checkout's install configuration. Resolving it through
         the checkout takes one install's lease while it mutates another.
         """
         with TemporaryDirectory() as tmp:
@@ -1032,7 +1032,7 @@ class WhereAMutationHides(unittest.TestCase):
         self.guarded("kubectl --context %s apply -f cr.yaml &" % CTX)
 
     def test_a_cd_into_another_checkout(self):
-        """The installer reads the vars.sh of wherever it ends up running."""
+        """The installer reads the install configuration of wherever it ends up running."""
         with TemporaryDirectory() as checkout, TemporaryDirectory() as elsewhere:
             _write_vars_sh(checkout)
             self.guarded("cd %s && ./upgrade.sh" % checkout, cwd=elsewhere)
@@ -1442,7 +1442,7 @@ class HookEntryPoints(unittest.TestCase):
         self.assertIsNone(self.hook("kubectl delete ns x", tool="Read"))
 
     def test_nothing_configured_protects_nothing(self):
-        """The default state of a fresh clone: no vars.sh, no config file."""
+        """The default state of a fresh clone: no install.env, no vars.sh, no config file."""
         with mock.patch.object(lease, "resolve_installs", return_value={}):
             with mock.patch.object(lease.sys, "stdin", io.StringIO(json.dumps(
                     {"tool_name": "Bash",

@@ -243,7 +243,7 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
     def test_resolve_creatable_cluster_mode_defaults_to_autopilot(self):
         """The line that decides what a bare ./install.sh builds.
 
-        install.sh writes CLUSTER_MODE into vars.sh before the tfvars generator
+        install.sh exports CLUSTER_MODE before the tfvars generator
         reads it, so installer_common.sh's own `:-$DEFAULT_CLUSTER_MODE` never
         decides anything for this front door. This is the assertion that goes
         red if the installer default is put back to standard.
