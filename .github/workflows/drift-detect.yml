@@ -14,9 +14,9 @@ name: "Drift: Long-Lived Environments"
 # against an environment that does not currently exist reports the whole
 # composition as missing.
 #
-# This is #1117 §8, and it is the part of that issue with no prerequisites: the
-# reason the drift went unnoticed for a month was not that it was hard to fix,
-# it was that nothing anywhere said it had happened.
+# A report is worth having even when nobody acts on it: the reason autopush's
+# drift went unnoticed for a month was not that it was hard to fix, it was that
+# nothing anywhere said it had happened. That is #1117 §8.
 
 permissions:
   contents: read

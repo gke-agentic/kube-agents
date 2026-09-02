@@ -10,7 +10,7 @@ name: "Shared: Reconcile Environment"
 # nobody wants rebuilt nightly.
 #
 # In-place is also the only path that exercises what a real user upgrading an
-# existing install goes through. Nothing in CI covered it before this.
+# existing install goes through. Nothing else in CI covers it.
 
 permissions:
   contents: read
@@ -117,10 +117,10 @@ jobs:
           # not X (verify_local_source_ref), and the nightly's whole job is to
           # promote a candidate OLDER than the commit it was dispatched from --
           # so without this, every staging reconcile exits 1 on a version
-          # mismatch before applying anything. Worse than a red job: step 5 is
-          # deliberately decoupled from this one's outcome, so the tag would
-          # still be pushed and staging's images would move with its
-          # infrastructure left exactly as stale as before.
+          # mismatch before applying anything. Worse than a red job: the
+          # nightly's promotion job is deliberately decoupled from this one's
+          # outcome, so the tag would still be pushed and staging's images would
+          # move with its infrastructure left exactly as stale as before.
           #
           # It is also the right thing on its own terms. An environment runs one
           # commit: its images, its Helm values and its Terraform composition

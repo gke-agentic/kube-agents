@@ -10,9 +10,8 @@
 # both of them a month behind while reporting themselves as "main".
 #
 # This is the in-place half of the answer (#1117's Option A). The other half,
-# destroying and rebuilding from nothing, is deploy-environment.yml, which the
-# same issue keeps as a dispatch-only button because it takes the cluster with
-# it.
+# destroying and rebuilding from nothing, is deploy-environment.yml, which stays
+# a dispatch-only button because it takes the cluster with it.
 #
 # Usage:
 #   RECONCILE_MODE=plan|apply reconcile_environment.sh
@@ -52,16 +51,16 @@ output() {
 # ---------------------------------------------------------------------------
 # 1. Configuration
 # ---------------------------------------------------------------------------
-# At the repository root, which is where every front door looks for it and
-# where scripts/live_test_lease.py discovers which install this checkout is
-# pointed at. .gitignore already excludes it.
 # An inbound KUBE_AGENTS_INSTALL_ENV wins. The renderer truncates whatever it
-# writes to, and on a workstation that default path is a hand-authored file
+# writes to, and on a workstation the default path is a hand-authored file
 # holding credentials that nothing backs up -- so the variable whose whole job
 # is to point the installer somewhere else is honoured here rather than
-# overwritten. A GitHub runner sets neither and gets the checkout root, which is
-# also where scripts/live_test_lease.py looks to discover which install this
-# checkout is pointed at.
+# overwritten.
+#
+# A GitHub runner sets it nowhere and gets the repository root, which is where
+# every front door looks for install.env and where scripts/live_test_lease.py
+# discovers which install this checkout is pointed at. .gitignore already
+# excludes it.
 INSTALL_ENV="${KUBE_AGENTS_INSTALL_ENV:-${REPO_ROOT}/install.env}"
 export KUBE_AGENTS_INSTALL_ENV="${INSTALL_ENV}"
 
@@ -309,8 +308,8 @@ if [ "$MODE" = "plan" ]; then
       summary "### The plan for \`${ENV_NAME}\` failed"
       output "drift" "unknown"
       # `failed`, not `planned`. A caller branching on `result` has to be able
-      # to tell a plan that ran from one that broke, and only `drift` carried
-      # that before.
+      # to tell a plan that ran from one that broke without also having to read
+      # `drift` to find out.
       output "result" "failed"
       ;;
   esac

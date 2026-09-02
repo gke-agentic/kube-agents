@@ -125,8 +125,8 @@ Examples:
   # Dry-run upgrade preview
   ./upgrade.sh --dry-run --upgrade-mode=full
 
-  # What has this install drifted from? Reads the running image tag from the
-  # cluster, so the report is composition drift rather than image lag.
+  # What has this install drifted from? Holds the image tag at the one
+  # Terraform state records, so the report is composition drift, not image lag.
   ./upgrade.sh --plan
 EOF
 }
@@ -428,10 +428,11 @@ main() {
     if [ -c /dev/tty ] && ( : </dev/tty ) 2>/dev/null; then
       printf '%b' "  ${C_CYAN}Target image tag (validated release tag or full commit SHA): ${C_RESET}" >/dev/tty
       read -r PARAM_IMAGE_TAG </dev/tty
-      # A bare Enter is still the empty tag this arm exists to reject. It used
-      # to abort inside validate_immutable_ref, which now runs only for a tag
-      # that is present -- so without this, pressing Enter would skip
-      # verify_local_source_ref and silently become --keep-image-tag.
+      # A bare Enter is still the empty tag this arm exists to reject, and
+      # nothing further down catches it: validate_immutable_ref, whose first
+      # branch rejects an empty ref, runs only when a tag is present. Without
+      # this, pressing Enter would skip verify_local_source_ref and silently
+      # become --keep-image-tag.
       if [ -z "$PARAM_IMAGE_TAG" ]; then
         print_error "--image-tag is required; use a validated release tag or full commit SHA. To upgrade everything except the images, pass --keep-image-tag."
         exit 1
@@ -669,9 +670,8 @@ main() {
     # reaches terraform.tfvars and the composition, so an install that happens
     # to be serving a mutable ref — `:latest` from a hand-rolled redeploy —
     # must not have that ref written into the configuration by an unattended
-    # run. The guard was unconditional before --plan and --keep-image-tag
-    # existed; reading the tag from the cluster rather than the flag is not a
-    # reason to drop it.
+    # run. Reading the tag off the cluster rather than off a flag is not a
+    # reason to trust it any further.
     validate_immutable_ref "$PARAM_IMAGE_TAG"
     print_success "Using the tag this install is running: ${PARAM_IMAGE_TAG}"
   fi

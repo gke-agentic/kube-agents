@@ -58,7 +58,7 @@ class NightlyPipelineWiringTest(unittest.TestCase):
         """A job pointed at the wrong environment deploys to, or destroys, that one.
 
         Everything that touches the NIGHTLY cluster has to say `nightly`; the
-        reconcile jobs added for #1117 are the only exceptions and each names the
+        two reconcile jobs are the only exceptions, and each names the
         long-lived environment it converges. Listing them here rather than
         loosening the rule is the point: a new `uses:` job that targets anything
         but `nightly` fails this test until somebody writes down why.
@@ -76,7 +76,7 @@ class NightlyPipelineWiringTest(unittest.TestCase):
                 )
 
     def test_the_reconciles_run_only_after_a_green_matrix(self):
-        """#1117's ordering constraint, and the one worth pinning.
+        """Nothing is applied to a live-tested environment on an unproven composition.
 
         Applying a composition to an environment agents live-test against, before
         the matrix has proved that composition builds an install from nothing, is
@@ -105,11 +105,11 @@ class NightlyPipelineWiringTest(unittest.TestCase):
 
         The implicit success() on `needs` would make any non-zero exit from the
         reconcile skip the promotion — so no tag, and the three
-        staging-redeploy workflows that tag starts never run. Promotion worked
-        before this pipeline reconciled anything, and the reconcile goes red for
-        reasons wider than a bad composition: a missing GitHub variable, an
-        unreadable lease, a rotated minter key. Coupling them means every
-        nightly quietly dropping a promotion that used to happen.
+        staging-redeploy workflows that tag starts never run. The reconcile goes
+        red for reasons wider than a bad composition: a missing GitHub variable,
+        an unreadable lease, a rotated minter key. None of those says anything
+        about the candidate, so coupling them means every nightly quietly
+        dropping a promotion the matrix had just earned.
         """
         condition = self.jobs["step-5-promote-to-staging"]["if"]
         self.assertIn("always()", condition)

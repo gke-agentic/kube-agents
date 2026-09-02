@@ -14,9 +14,9 @@
 # builds an `install.sh` flag list from the same GitHub variables for the
 # destroy-and-rebuild path, and carries its own copy of the MEMORY_PROVIDER
 # translation below. The two agree today and are checked against each other by
-# tests/test_render_install_env.py and tests/test_provision_environment.py;
-# collapsing them into one is worth doing and is deliberately not part of
-# #1117, which is about environments that are never rebuilt at all.
+# tests/test_render_install_env.py and tests/test_provision_environment.py,
+# which is the only thing holding them together: collapsing them into one is
+# worth doing and has not been done.
 #
 # Usage:
 #   render_install_env.sh <output-path> [--strict]
@@ -218,8 +218,8 @@ fi
 # Settings that need translating rather than copying
 # ---------------------------------------------------------------------------
 # MEMORY_PROVIDER is the CI-side name and carries CI-side values; install.env
-# records MEMORY, whose vocabulary is file/hindsight/off. The same three-way
-# mapping deploy-environment.yml's provisioning step used to do inline.
+# records MEMORY, whose vocabulary is file/hindsight/off. provision_environment.sh
+# makes the same three-way translation for the destroy-and-rebuild path.
 case "${MEMORY_PROVIDER:-}" in
   kube_agents_memory|hindsight) MEMORY="hindsight" ;;
   none|off)                     MEMORY="off" ;;

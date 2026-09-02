@@ -1,11 +1,12 @@
 """The reconcile and drift-detection path for the long-lived environments.
 
-#1117: `autopush` and `staging` were updated by image tag only. Nothing ever ran
-Terraform against them, so a month of infrastructure changes on `main` — IAM,
-Pub/Sub, node pools, the chart values the composition renders — was invisible in
-both while a green redeploy reported "main is deployed".
+`autopush` and `staging` are updated by image tag; nothing else runs Terraform
+against them. Left at that, a month of infrastructure changes on `main` — IAM,
+Pub/Sub, node pools, the chart values the composition renders — is invisible in
+both while a green redeploy reports "main is deployed", which is what #1117
+found.
 
-Every assertion here is a way that fix goes silently wrong: a plan that mutates,
+Every assertion here is a way the fix goes silently wrong: a plan that mutates,
 a plan that leaks a credential into a public artifact, an apply that starts
 while somebody is live-testing, a reconcile that races the redeploy workflows
 for the same Helm release.
@@ -47,12 +48,12 @@ def _load_report_drift():
 
 
 class PubSubIamBindingTest(unittest.TestCase):
-    """#1059. GCP purges a topic's IAM policy when the topic is recreated.
+    """GCP purges a topic's IAM policy when the topic is recreated.
 
     A binding keyed on `.name` is known at plan time, so it is excluded from the
     plan that replaces its parent — the apply goes green and the live policy is
     empty. `.id` is computed, so a replacement renders it unknown and pulls the
-    binding into the plan with it.
+    binding into the plan with it. That is #1059.
     """
 
     def test_no_pubsub_iam_member_binds_to_a_name(self):
@@ -183,7 +184,7 @@ class LifecyclePlanTest(unittest.TestCase):
         self.assertNotIn("-detailed-exitcode", self.branch)
 
     def test_apply_adopts_pre_existing_pubsub_resources(self):
-        """#1061: creating a topic that exists is a 409, not a no-op."""
+        """Creating a topic that already exists is a 409, not a no-op (#1061)."""
         apply_branch = re.search(r"^  apply\)$(.*?)^  destroy\)$", self.text,
                                  re.MULTILINE | re.DOTALL).group(1)
         self.assertIn("adopt_pubsub", apply_branch)
@@ -256,11 +257,11 @@ class ReconcileWorkflowTest(unittest.TestCase):
 
         The nightly promotes a candidate older than the commit it was dispatched
         from, so a checkout at the caller's ref makes every staging reconcile
-        exit 1 on a version mismatch. And because step 5 is decoupled from this
-        job's outcome, the promotion tag goes out anyway: staging's images move
-        and its infrastructure stays stale, which is the state this whole change
-        exists to end. Empty falls back to the caller's ref, which is what the
-        tagless autopush reconcile and every plan want.
+        exit 1 on a version mismatch. And because the promotion job is decoupled
+        from this job's outcome, the promotion tag goes out anyway: staging's
+        images move and its infrastructure stays stale, which is the exact
+        split this path exists to close. Empty falls back to the caller's ref,
+        which is what the tagless autopush reconcile and every plan want.
         """
         checkout = next(step for step in self.job["steps"]
                         if str(step.get("uses", "")).startswith("actions/checkout@"))
@@ -304,7 +305,7 @@ class DriftWorkflowTest(unittest.TestCase):
         self.assertEqual(self.doc["jobs"]["plan"]["with"]["mode"], "plan")
 
     def test_it_covers_both_long_lived_environments(self):
-        """§9: fixing autopush alone leaves staging exactly as stale."""
+        """Reporting on autopush alone leaves staging exactly as stale."""
         matrix = self.doc["jobs"]["plan"]["strategy"]["matrix"]["environment"]
         self.assertEqual(sorted(matrix), sorted(_LONG_LIVED))
 
@@ -327,7 +328,12 @@ class DriftWorkflowTest(unittest.TestCase):
 
 
 class DeployEnvironmentGuardTest(unittest.TestCase):
-    """Option B: the same workflow now also destroys a long-lived environment."""
+    """The teardown-and-rebuild workflow can target a long-lived environment.
+
+    Which makes it the one path that can destroy `autopush` or `staging`, so
+    the guards in front of it are the only thing between a dropdown selection
+    and a cluster somebody is working on.
+    """
 
     def setUp(self):
         self.doc = _doc(_DEPLOY_WF)
@@ -465,7 +471,7 @@ class ReconcileScriptTest(unittest.TestCase):
         self.assertIn("scripts/installer/installer_common.sh", self.text)
 
     def test_a_failed_plan_does_not_report_itself_as_planned(self):
-        """`result` is the caller's contract; only `drift` carried this before."""
+        """`result` is the caller's contract, so it has to carry this itself."""
         self.assertIn('output "result" "failed"', self.text)
 
 

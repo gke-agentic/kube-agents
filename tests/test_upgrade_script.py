@@ -214,9 +214,9 @@ class DirtyCheckoutRefusalTest(unittest.TestCase):
 
     `--image-tag` makes three refusals possible at once, and only the middle one
     — does HEAD match the requested ref — actually needs a tag. Gating the whole
-    function on the tag's presence let `--keep-image-tag` carry uncommitted edits
-    to `terraform/` or `charts/` into a real `terraform apply`, which is the
-    invisible drift this pull request exists to end.
+    set on the tag's presence would let `--keep-image-tag` carry uncommitted
+    edits to `terraform/` or `charts/` into a real `terraform apply`: an install
+    running a composition that exists in no commit and that nobody can diff.
     """
 
     def _run(self, func_call, env=None, cwd=None):
@@ -283,13 +283,13 @@ class DirtyCheckoutRefusalTest(unittest.TestCase):
 
 
 class InteractiveImageTagPromptTest(unittest.TestCase):
-    """A bare Enter at the tag prompt has to stay the hard error it always was.
+    """A bare Enter at the tag prompt has to be a hard error.
 
-    It used to abort inside `validate_immutable_ref`, whose first branch rejects
-    an empty ref. `--plan` and `--keep-image-tag` made the tag optional, so that
-    call now runs only when a tag is present — and without an explicit check the
-    empty answer would instead skip `verify_local_source_ref` (the dirty-checkout
-    refusal) and silently become `--keep-image-tag`.
+    `--plan` and `--keep-image-tag` make the tag optional, so
+    `validate_immutable_ref` — whose first branch rejects an empty ref — runs
+    only when a tag is present. Nothing else catches an empty answer: without an
+    explicit check it skips `verify_local_source_ref` (the dirty-checkout
+    refusal) and silently becomes `--keep-image-tag`.
 
     Driven through a pty rather than asserted against the source, because the
     prompt reads from /dev/tty specifically so that it cannot be fed on stdin.

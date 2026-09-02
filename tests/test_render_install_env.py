@@ -5,8 +5,8 @@ job that drives the installer renders one from the environment's variables. What
 that renderer gets wrong is not visible in its own output: an omitted setting
 becomes a default, the default becomes a `terraform.tfvars` value, and
 `terraform apply` plans the destruction of whatever the default did not mention.
-That is #1060, and against a scheduled unattended apply on a long-lived
-environment it is #1117's hardest blocker.
+That is #1060, and a scheduled unattended apply against a long-lived environment
+is where it does the damage: nobody is watching the plan go by.
 
 So these pin the two halves that keep it from happening: what --strict refuses,
 and that an unset setting is left OUT of the file rather than written empty.
@@ -235,9 +235,9 @@ class MemoryMappingAgreementTest(unittest.TestCase):
 
     `provision_environment.sh` builds an `install.sh` flag list for the
     destroy-and-rebuild path and carries its own copy of this translation.
-    Collapsing the two is deliberately out of #1117's scope, so this is what
-    keeps the copies from drifting: an environment would otherwise get a
-    Hindsight store from one path and a Markdown file from the other.
+    Collapsing the two into one is worth doing and has not been done, so this
+    is all that keeps the copies from drifting: an environment would otherwise
+    get a Hindsight store from one path and a Markdown file from the other.
     """
 
     def test_both_paths_recognise_the_same_provider_values(self):

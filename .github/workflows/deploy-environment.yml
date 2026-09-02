@@ -14,11 +14,12 @@ on:
         options:
           - "rc"
           - "nightly"
-          # autopush and staging are #1117's Option B: the escape hatch for
-          # when an in-place reconcile cannot converge. They are long-lived and
-          # this workflow DESTROYS what it finds, so they are dispatch-only and
-          # guarded by confirm_destroy below. `Shared: Reconcile Environment`
-          # is the routine way to move these two, and the nightly runs it.
+          # autopush and staging are here as the escape hatch for when an
+          # in-place reconcile cannot converge — #1117's Option B. They are
+          # long-lived and this workflow DESTROYS what it finds, so they are
+          # dispatch-only and guarded by confirm_destroy below.
+          # `Shared: Reconcile Environment` is the routine way to move these
+          # two, and the nightly runs it.
           - "autopush"
           - "staging"
       rc_tag:

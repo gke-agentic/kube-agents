@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Turns a `terraform plan` for a long-lived environment into a tracked issue.
 
-#1117's §8 is the reason this exists: autopush ran a month behind the
-composition on main and nothing anywhere said so. A green redeploy reported
-that the images rolled, which reads as "main is deployed", and the
-infrastructure half of that sentence was false the whole time. The failure mode
-was not that drift happened -- it is that drift was invisible.
+Drift itself is not the failure mode; drift nobody can see is. autopush ran a
+month behind the composition on main and nothing anywhere said so: a green
+redeploy reported that the images rolled, which reads as "main is deployed",
+and the infrastructure half of that sentence was false the whole time. That is
+#1117 §8.
 
 So: one issue per environment, opened when a plan is non-empty, updated while it
 stays non-empty, and closed the moment a plan comes back clean. One issue rather
