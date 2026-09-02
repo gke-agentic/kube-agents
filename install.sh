@@ -728,15 +728,50 @@ write_secret_env_var() {
 # substitution, `set -E` propagates the ERR trap into that subshell, and the
 # trap fires on the non-zero return before the caller's `||` is ever consulted
 # -- printing an abort banner per absent key. Callers test presence separately.
+#
+# The value is unquoted the way sourcing the file would unquote it, because
+# both things that write install.env quote it. write_env_var here and
+# save_env_var in scripts/installer/installer_common.sh both serialise with
+# `printf '%s=%q\n'`, and %q renders the empty string as the two-character
+# literal '' and escapes anything the shell would treat specially -- so
+# `#gke-alerts` is written `\#gke-alerts`. Returning either verbatim made every
+# comparison in warn_unrecorded_interview_answers below unequal: the seven keys
+# bootstrap_install_env_file writes empty on a stock install were reported as
+# drifted on every interactive run, and the line the banner printed for each
+# (`KEY=`) changed nothing, so the next run reported them again. That buried the
+# one case the warning exists for.
+#
+# A hand-authored file is the other half of the same problem and the reason
+# this cannot simply re-quote the current value and compare the quoted forms:
+# an operator writes `SLACK_HOME_CHANNEL="#gke-alerts"`, which %q would render
+# `\#gke-alerts`, and the two spellings of one value would not match.
+unquote_shell_value() {
+  local raw="${1:-}"
+  case "$raw" in
+    # Single quotes are literal all the way through, which is also how %q
+    # spells the empty string.
+    "'"*"'")
+      raw="${raw#\'}"
+      printf '%s' "${raw%\'}"
+      return 0
+      ;;
+    '"'*'"')
+      raw="${raw#\"}"
+      raw="${raw%\"}"
+      ;;
+  esac
+  # Outside single quotes a backslash escapes the next character. That is how
+  # %q writes '#', a space, and every other metacharacter.
+  printf '%s' "$raw" | sed 's/\\\(.\)/\1/g'
+}
+
 recorded_install_env_value() {
   local file="${1:-}" key="${2:-}" line=""
   [ -n "$file" ] && [ -f "$file" ] || return 0
   line="$(grep -E "^[[:space:]]*${key}=" "$file" 2>/dev/null | tail -1 || true)"
   [ -n "$line" ] || return 0
   line="${line#*=}"
-  line="${line%\"}"
-  line="${line#\"}"
-  printf '%s' "$line"
+  unquote_shell_value "$line"
 }
 
 # Say so when an interactive answer changed something the file still records

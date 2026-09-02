@@ -1662,6 +1662,74 @@ class UnrecordedInterviewAnswersAreReportedTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertNotIn("does not record", proc.stdout + proc.stderr)
 
+    def test_a_quoted_empty_value_is_not_drift(self):
+        """`write_env_var` serialises with `%q`, which spells the empty string
+        as the two-character literal `''`.
+
+        `bootstrap_install_env_file` writes seven keys unconditionally, and on a
+        stock install — no Slack, no GitOps app — all seven are empty. Comparing
+        the recorded `''` against an empty environment value found drift in
+        every one of them, on every interactive run, and the line the banner
+        printed for each (`KEY=`) changed nothing, so the next run said it
+        again. That buries the genuinely changed MEMORY this warning exists for.
+        """
+        recorded = "".join(
+            f"{key}=''\n"
+            for key in (
+                "ALLOWED_USERS", "SLACK_ALLOWED_USERS", "SLACK_HOME_CHANNEL",
+                "SLACK_HOME_CHANNEL_NAME", "GITOPS_ORG", "GITHUB_APP_ID",
+                "GITHUB_PEM_PATH",
+            )
+        )
+        proc = self._warn(recorded, {})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("does not record", proc.stdout + proc.stderr)
+
+    def test_a_percent_q_escaped_value_is_not_drift(self):
+        """`%q` writes `#gke-alerts` as `\\#gke-alerts` and `a b` as `a\\ b`.
+
+        Stripping only a surrounding pair of double quotes returned the escaped
+        spelling, which never equals the value the interview holds.
+        """
+        proc = self._warn(
+            "SLACK_HOME_CHANNEL=\\#gke-alerts\n"
+            "SLACK_HOME_CHANNEL_NAME=alerts\\ channel\n",
+            {
+                "SLACK_HOME_CHANNEL": "#gke-alerts",
+                "SLACK_HOME_CHANNEL_NAME": "alerts channel",
+            },
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("does not record", proc.stdout + proc.stderr)
+
+    def test_a_hand_authored_quoted_value_is_not_drift(self):
+        """The other half: an operator writes `"#gke-alerts"`, not `\\#gke-alerts`.
+
+        Both spellings mean one value, which is why this unquotes rather than
+        re-quoting the current value and comparing the quoted forms.
+        """
+        proc = self._warn(
+            'SLACK_HOME_CHANNEL="#gke-alerts"\n'
+            "SLACK_ALLOWED_USERS='someone@example.com'\n",
+            {
+                "SLACK_HOME_CHANNEL": "#gke-alerts",
+                "SLACK_ALLOWED_USERS": "someone@example.com",
+            },
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("does not record", proc.stdout + proc.stderr)
+
+    def test_a_quoted_value_that_really_changed_is_still_named(self):
+        """Unquoting must not have made the warning unable to fire."""
+        proc = self._warn(
+            "SLACK_HOME_CHANNEL=\\#gke-alerts\n",
+            {"SLACK_HOME_CHANNEL": "#gke-incidents"},
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        combined = proc.stdout + proc.stderr
+        self.assertIn("does not record", combined)
+        self.assertIn("SLACK_HOME_CHANNEL=#gke-incidents", combined)
+
     def test_a_changed_memory_answer_is_named(self):
         """The case the whole warning matters most for, and the one an entry
         that reads `$MEMORY` cannot see.
