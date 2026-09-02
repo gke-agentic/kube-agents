@@ -35,8 +35,14 @@ LABEL = "infra-drift"
 # report a reader needs; the rest of a plan is attribute-level detail that
 # belongs in the artifact.
 PLAN_TOTALS_RE = re.compile(r"^Plan: .*$", re.MULTILINE)
+# Three shapes, not one. A tainted resource is announced as
+# `# addr is tainted, so must be replaced`, so an alternation anchored
+# immediately after the address misses it — and a plan whose only changes are
+# tainted replacements would then render an issue with no resource list and no
+# destroy warning, which is the opposite of what it is reporting.
 RESOURCE_ACTION_RE = re.compile(
-    r"^\s*# (\S+) (?:will be|must be) (.+?)\s*$", re.MULTILINE)
+    r"^\s*# (\S+) (?:is tainted, so )?(?:will be|must be) (.+?)\s*$",
+    re.MULTILINE)
 
 # A destroy in a plan against a long-lived environment is the dangerous case and
 # the one #1060 was about, so it is called out rather than left for the reader
@@ -110,6 +116,22 @@ def body_for(env, run_url, totals, actions, destructive):
     return "\n".join(lines)
 
 
+def ensure_label(repo):
+    """The label has to exist before an issue can carry it.
+
+    `gh issue create --label` fails outright on a label the repository does not
+    have, so without this the first morning that finds drift ends with a red
+    job and no report -- and repeats that every night, since the issue this
+    would have opened is also the thing `find_issue` looks for. Creating it is
+    idempotent (`--force` updates an existing one rather than failing), so this
+    is a no-op from the second run onwards.
+    """
+    run(["gh", "label", "create", LABEL, "--repo", repo, "--force",
+         "--color", "B60205",
+         "--description", "A long-lived environment has drifted from the "
+                          "composition on main"], check=False)
+
+
 def find_issue(repo, env):
     marker = MARKER_TEMPLATE.format(env=env)
     proc = run(["gh", "issue", "list", "--repo", repo, "--state", "open",
@@ -177,6 +199,7 @@ def main():
              "--body", body])
         print("Updated #%d." % existing)
     else:
+        ensure_label(args.repo)
         proc = run(["gh", "issue", "create", "--repo", args.repo,
                     "--title", title, "--label", LABEL, "--body", body])
         print(proc.stdout.strip())

@@ -305,29 +305,40 @@ adopt_pubsub() {
   topic=$(tfvar chat_topic_name)
   sub=$(tfvar chat_subscription_name)
 
-  # The subscription is listed after the topic on purpose. Importing a
-  # subscription whose topic Terraform is about to create leaves the plan
-  # wanting to replace it (its `topic` attribute would change), so the topic
-  # goes first and the subscription's own adoption is skipped when the import
-  # above did not happen.
+  # The subscription is listed after the topic on purpose, and is skipped
+  # unless the topic is in state by the time its turn comes. A subscription
+  # whose topic Terraform is about to CREATE has a `topic` attribute that is
+  # about to change, so importing it produces a plan that immediately replaces
+  # it — which is the outcome adopting was meant to avoid. That happens
+  # whenever the topic is absent from GCP while the subscription is not: a
+  # half-finished console setup, or a destroy that stopped partway.
   #
-  # address <TAB> gcloud-kind <TAB> resource id
+  # address <TAB> gcloud-kind <TAB> resource id <TAB> requires-in-state
+  local topic_address="module.chat_pubsub[0].google_pubsub_topic.chat_events"
   local -a targets=(
-    "module.chat_pubsub[0].google_pubsub_topic.chat_events	topics	projects/$project/topics/$topic"
-    "module.chat_pubsub[0].google_pubsub_subscription.chat_events	subscriptions	projects/$project/subscriptions/$sub"
+    "$topic_address	topics	projects/$project/topics/$topic	"
+    "module.chat_pubsub[0].google_pubsub_subscription.chat_events	subscriptions	projects/$project/subscriptions/$sub	$topic_address"
   )
 
-  local adopted=0 address kind id
+  local adopted=0 address kind id requires
   for target in "${targets[@]}"; do
-    IFS=$'\t' read -r address kind id <<<"$target"
+    IFS=$'\t' read -r address kind id requires <<<"$target"
 
     in_state "$address" && continue
+    if [[ -n "$requires" ]] && ! in_state "$requires"; then
+      log "not adopting $id: its topic is not under management, so importing it would plan a replacement"
+      continue
+    fi
     gcloud pubsub "$kind" describe "${id##*/}" --project "$project" >/dev/null 2>&1 || continue
 
     log "adopting existing Pub/Sub resource: $id"
     [[ -f "$OVERRIDE_FILE" ]] || with_override
     if terraform import -input=false "$address" "$id" >/dev/null 2>&1; then
       adopted=$((adopted + 1))
+      # STATE_LIST is a snapshot taken by load_state above, so the
+      # subscription's check below would not see the topic this import just
+      # added without re-reading it.
+      load_state
     else
       warn "could not import $address ($id); the apply will fail with a 409"
     fi

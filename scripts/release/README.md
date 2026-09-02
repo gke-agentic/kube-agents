@@ -122,12 +122,22 @@ Setting an optional `GH_APP_PRIVATE_KEY` secret to the `.pem` contents is the al
 ## The nightly environment
 
 `nightly-pipeline.yml` resolves the newest `rc_*_validated` candidate, builds a whole environment
-at that commit, runs the `nightly` matrix on it, tags the commit `staging_<ts>_<sha>` if the
-matrix passes, and destroys the environment. The staging tag is the deploy trigger: pushing it
-starts `staging-redeploy-{agent,controller,integrations}.yml`.
+at that commit, and runs the `nightly` matrix on it. If the matrix passes it then reconciles
+`staging` and `autopush` against the same composition, tags the commit `staging_<ts>_<sha>`, and
+destroys the nightly environment. The staging tag is the deploy trigger: pushing it starts
+`staging-redeploy-{agent,controller,integrations}.yml`.
 
-It reuses the RC pipeline's machinery unchanged. `deploy-environment.yml`,
-`teardown-environment.yml` and `e2e-run.yml` each take a `github_environment` input that renders
+The two reconciles are #1117, and their placement is the substance of it. They run only after the
+matrix, because applying a composition nobody has built from scratch to an environment people
+live-test against is worse than leaving it stale; and staging's runs _before_ the tag is pushed,
+because that tag starts three `helm upgrade`s on the release `helm_release.kube_agents` owns.
+autopush's passes no image tag at all — it tracks main's tip, so pinning this pipeline's older
+candidate would roll its images backwards.
+[`environment-reconcile.md`](../../docs/site/src/content/docs/deploy/environment-reconcile.md) is
+the canonical page for that whole path.
+
+It reuses the RC pipeline's machinery unchanged. `deploy-environment.yml`, `teardown-environment.yml`,
+`e2e-run.yml` and `reconcile-environment.yml` each take a `github_environment` input that renders
 into the job's `environment:` key and into its concurrency group, so `rc` yields `rc-environment`
 and `nightly` yields `nightly-environment` and the two pipelines never contend for a cluster. The
 input is required and has no default, because a nightly caller that omitted it would tear down and
@@ -327,7 +337,7 @@ These modular scripts back the corresponding child workflows in `.github/workflo
 | `e2e-run.yml`               | Step 3 - GKE Readiness & E2E Validation     | `install_e2e_deps.sh`, `install_pubsub_platform.sh`, `wait_for_gke_readiness.sh`, `execute_e2e_tests.sh`, `run_optional_e2e_suites.sh`                                                                                                                   |
 | `rc-tag-validated.yml`      | Step 4 - Validate Candidate Commit          | `resolve_rc_tag.sh`, `tag_validated_release.sh`                                                                                                                                                                                                          |
 | `teardown-environment.yml`  | Step 5 - Tear Down Environment              | `resolve_rc_tag.sh`, `teardown_environment.sh`                                                                                                                                                                                                           |
-| `nightly-pipeline.yml`      | Nightly promotion to staging                | `resolve_promotion_candidate.sh`, `verify_candidate_images.sh`, `record_nightly_candidate_summary.sh`, `tag_staging_promotion.sh`, plus the four shared workflows above                                                                                  |
+| `nightly-pipeline.yml`      | Nightly promotion to staging                | `resolve_promotion_candidate.sh`, `verify_candidate_images.sh`, `record_nightly_candidate_summary.sh`, `tag_staging_promotion.sh`, plus the shared workflows listed elsewhere in this table                                                              |
 | `rc-scheduler.yml`          | Three-hourly RC trigger                     | `resolve_rc_tag.sh`, `record_rc_scheduler_skip.sh`, `dispatch_rc_pipeline.sh`                                                                                                                                                                            |
 | `staging-redeploy-*.yml`    | Staging deploy on a promotion tag           | `peel_tag_commit.sh`                                                                                                                                                                                                                                     |
 | `reconcile-environment.yml` | Reconcile a long-lived environment in place | `render_install_env.sh`, `reconcile_environment.sh`                                                                                                                                                                                                      |

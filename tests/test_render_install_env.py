@@ -105,6 +105,66 @@ class RequiredInputsTest(unittest.TestCase):
         self.assertEqual(parse(text)["PLATFORM_AGENT_PERMISSION_SET"], "custom")
 
 
+class MinterGuardTest(unittest.TestCase):
+    """The one setting the installer reads as a unit rather than one at a time.
+
+    `write_tfvars_from_state` enables the minter only when GITOPS_ORG,
+    GITOPS_REPO and GITHUB_APP_ID are all non-empty, and renders
+    `enable_github_minter = false` without a word when any is missing. On a
+    fresh install that is an install without a minter; on one that already has
+    a minter it is an apply that destroys it. #1117 found autopush configured
+    with exactly the broken combination — GH_APP_ID and neither variable.
+    """
+
+    def test_a_half_configured_minter_is_refused_under_strict(self):
+        rc, log, _ = render(
+            {**_COORDS, **_STRICT_SETTINGS, "GITHUB_APP_ID": "12345"},
+            strict=True)
+        self.assertEqual(rc, 1)
+        self.assertIn("half-configured", log)
+        self.assertIn("GITOPS_ORG", log)
+        self.assertIn("GITOPS_REPO", log)
+
+    def test_all_three_together_are_accepted(self):
+        rc, log, text = render(
+            {**_COORDS, **_STRICT_SETTINGS, "GITHUB_APP_ID": "12345",
+             "GITOPS_ORG": "gke-agentic", "GITOPS_REPO": "gke-fleet-iac"},
+            strict=True)
+        self.assertEqual(rc, 0, log)
+        self.assertEqual(parse(text)["GITHUB_APP_ID"], "12345")
+
+    def test_none_of_the_three_is_an_install_without_a_minter(self):
+        rc, log, _ = render({**_COORDS, **_STRICT_SETTINGS}, strict=True)
+        self.assertEqual(rc, 0, log)
+
+    def test_the_coordinates_are_reported_before_the_minter(self):
+        """A run missing everything should be told about the basics first."""
+        rc, log, _ = render({"GITHUB_APP_ID": "12345"}, strict=True)
+        self.assertEqual(rc, 1)
+        self.assertIn("Install configuration is incomplete", log)
+        self.assertNotIn("half-configured", log)
+
+
+class MemoryMappingAgreementTest(unittest.TestCase):
+    """Two live mappings from the same GitHub variables, so they must agree.
+
+    `provision_environment.sh` builds an `install.sh` flag list for the
+    destroy-and-rebuild path and carries its own copy of this translation.
+    Collapsing the two is deliberately out of #1117's scope, so this is what
+    keeps the copies from drifting: an environment would otherwise get a
+    Hindsight store from one path and a Markdown file from the other.
+    """
+
+    def test_both_paths_recognise_the_same_provider_values(self):
+        provision = (_REPO_ROOT / "scripts" / "release"
+                     / "provision_environment.sh").read_text()
+        renderer = _SCRIPT.read_text()
+        for token in ("kube_agents_memory", "hindsight", "none", "off"):
+            with self.subTest(token=token):
+                self.assertIn(token, provision)
+                self.assertIn(token, renderer)
+
+
 class RenderingTest(unittest.TestCase):
     def test_an_unset_setting_is_omitted_rather_than_written_empty(self):
         """`KEY=` in install.env beats install.defaults.env and means "nothing".

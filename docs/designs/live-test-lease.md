@@ -120,7 +120,9 @@ running install:
   the `make` targets that redeploy. The root installers **ignore your current kubectl context
   entirely** and act on the install its `install.env` names, so the checkout is
   what resolves their target when nothing more direct is on the line. Asking one of them for
-  `--help` or a `--dry-run` is not running it. An `agentplugins/*/install.sh` shares that basename
+  `--help`, a `--dry-run` or a `--plan` is not running it — `upgrade.sh --plan` reads the install's
+  Terraform state but takes no lock and changes nothing on the cluster, and what it does write
+  (`terraform.tfvars`, `backend_override.tf`) is local to the checkout. An `agentplugins/*/install.sh` shares that basename
   and nothing else: it applies an AgentPlugin CR through your current context and reads no
   install configuration, so it resolves the way a `kubectl` does.
 - **`gcloud`** cluster mutations, and `pubsub publish`, which drives a real agent turn. The match

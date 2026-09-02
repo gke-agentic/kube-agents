@@ -139,8 +139,13 @@ EOF
 # blob. The Deployment reports what is running.
 running_image_tag() {
   local namespace="$1" image=""
+  # Selected by name, not by index. The operator builds this list and appends
+  # the dashboard and fluent-bit after the agent, so a positional read is one
+  # reordering away from pinning the composition's image_tag to a sidecar's
+  # version — on a scheduled apply, silently.
   image="$(kubectl get deployment platform-agent-gateway -n "$namespace" \
-    -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
+    -o jsonpath='{.spec.template.spec.containers[?(@.name=="platform-agent")].image}' \
+    2>/dev/null || true)"
   [ -n "$image" ] || return 0
   # Everything after the last colon, unless that colon belongs to a registry
   # port (no slash may follow it).
@@ -552,6 +557,14 @@ main() {
       print_info "Pass --image-tag to name one instead."
       exit 1
     fi
+    # Validated like any other, because this one is applied like any other. It
+    # reaches terraform.tfvars and the composition, so an install that happens
+    # to be serving a mutable ref — `:latest` from a hand-rolled redeploy —
+    # must not have that ref written into the configuration by an unattended
+    # run. The guard was unconditional before --plan and --keep-image-tag
+    # existed; reading the tag from the cluster rather than the flag is not a
+    # reason to drop it.
+    validate_immutable_ref "$PARAM_IMAGE_TAG"
     print_success "Using the tag this install is running: ${PARAM_IMAGE_TAG}"
   fi
 

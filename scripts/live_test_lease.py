@@ -854,7 +854,14 @@ MAKE_TARGET_PREFIXES = ("deploy-", "undeploy-", "docker-push-")
 # Installer flags that print and exit without touching the install. Taking an
 # hour-long lease on a shared cluster for `./install.sh --help` is the same
 # false positive as classifying `cat install.sh` as a run.
-INSTALLER_NOOP_FLAGS = {"-h", "--help", "-?", "--dry-run"}
+#
+# `--plan` belongs here for the same reason `--dry-run` does, and is the one
+# that needs saying out loud: it reads the install's real Terraform state and
+# so looks like the mutating path, but it takes no state lock, creates no state
+# bucket, runs none of the adoption imports, and skips the Session KV backfill.
+# What it does write is local to the checkout -- terraform.tfvars and
+# backend_override.tf -- which the lease does not govern.
+INSTALLER_NOOP_FLAGS = {"-h", "--help", "-?", "--dry-run", "--plan"}
 
 # Prefixes that wrap a command without changing what it runs. Stripping them is
 # what lets the classifier look at the command word rather than at every token

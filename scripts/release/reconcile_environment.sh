@@ -64,8 +64,39 @@ echo "==> Rendering the install configuration for '${ENV_NAME}'."
 # difference. render_install_env.sh names every missing one at once and stops.
 "${REPO_ROOT}/scripts/release/render_install_env.sh" "${INSTALL_ENV}" --strict
 
+# The coordinates the steps below need, read back from the file that was just
+# rendered so there is one answer rather than two.
+# shellcheck disable=SC1090
+set -a && . "${INSTALL_ENV}" && set +a
+
 # ---------------------------------------------------------------------------
-# 2. Wait out any image redeploy already in flight
+# 2. kubectl credentials
+# ---------------------------------------------------------------------------
+# Before the lease, not after. The lease is a ConfigMap read with `kubectl
+# --context gke_<project>_<region>_<cluster>`, so without credentials that
+# context does not exist, the read raises, and `acquire` exits non-zero --
+# indistinguishable, to the caller, from somebody else holding it. A scheduled
+# reconcile would then defer on every single run, exit 0, and report green
+# having applied nothing: the same "green means deployed" failure this whole
+# change exists to end.
+#
+# upgrade.sh fetches credentials too, but it does so long after the lease has
+# been taken.
+echo "==> Connecting kubectl to '${CLUSTER_NAME}' (${REGION})."
+GKE_DNS_ENDPOINT_FLAG=""
+if [ -f "${REPO_ROOT}/scripts/installer/gke_dns_endpoint.sh" ]; then
+  # shellcheck source=scripts/installer/gke_dns_endpoint.sh
+  # shellcheck disable=SC1091
+  . "${REPO_ROOT}/scripts/installer/gke_dns_endpoint.sh"
+  gke_dns_endpoint_flag "${CLUSTER_NAME}" "${REGION}" "${PROJECT_ID}"
+fi
+# Unquoted on purpose: empty must contribute no argument at all.
+# shellcheck disable=SC2086
+gcloud container clusters get-credentials "${CLUSTER_NAME}" \
+  --location="${REGION}" --project="${PROJECT_ID}" $GKE_DNS_ENDPOINT_FLAG
+
+# ---------------------------------------------------------------------------
+# 3. Wait out any image redeploy already in flight
 # ---------------------------------------------------------------------------
 # The redeploy workflows run `helm upgrade` on the `kube-agents` release, and
 # the composition's helm_release.kube_agents owns that same release. Both at
@@ -88,10 +119,17 @@ await_redeploys() {
       # `gh run list` on a workflow this repository does not have exits
       # non-zero; an environment with no redeploy workflows simply has nothing
       # to wait for.
+      # queued and waiting count, not just in_progress. Each redeploy sits in
+      # its own concurrency group, so a second one queued behind the first is
+      # invisible to an in_progress-only query -- and autopush's redeploys
+      # start on every push to main, so one dequeuing into a `helm upgrade`
+      # halfway through the apply is the collision this loop exists to avoid.
+      # `--status` takes one value, so the filtering is done in jq instead.
       local n
       n="$(gh run list --repo "${GITHUB_REPOSITORY:-gke-labs/kube-agents}" \
-        --workflow "$wf" --status in_progress --json databaseId \
-        --jq 'length' 2>/dev/null || echo 0)"
+        --workflow "$wf" --limit 20 --json status \
+        --jq '[.[] | select(.status == "in_progress" or .status == "queued" or .status == "waiting")] | length' \
+        2>/dev/null || echo 0)"
       [ "$n" = "0" ] || running="${running} ${wf}(${n})"
     done
     [ -n "$running" ] || return 0
@@ -114,7 +152,7 @@ if [ "$MODE" = "apply" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 3. The live-test lease
+# 4. The live-test lease
 # ---------------------------------------------------------------------------
 # AGENTS.md requires every pull request to be validated against a running
 # install, and autopush is that install for most of this repository's agents.
@@ -144,6 +182,19 @@ if [ "$MODE" = "apply" ] && [ "$LEASE_POLICY" != "ignore" ]; then
     LEASE_HELD="true"
   else
     holder="$(python3 "${REPO_ROOT}/scripts/live_test_lease.py" status --json 2>/dev/null || echo '[]')"
+    # A cluster that could not be asked has not answered "no". `acquire` exits
+    # non-zero for both, so deferring on the strength of that alone would turn
+    # every kind of breakage -- a bad kubeconfig, an API server mid-upgrade, a
+    # renamed namespace -- into a green run that applied nothing. Only a lease
+    # somebody genuinely holds is a deferral; anything else is a failure.
+    if ! printf '%s' "${holder}" | grep -q '"state": "held"'; then
+      echo "::error title=Live-test lease could not be read::Could not determine whether '${ENV_NAME}' is in use, so this reconcile stopped rather than assuming either answer. ${holder}"
+      summary "### Reconcile failed — \`${ENV_NAME}\`"
+      summary ""
+      summary "The live-test lease could not be read, so nothing was applied."
+      output "result" "failed"
+      exit 1
+    fi
     if [ "$LEASE_POLICY" = "fail" ]; then
       echo "::error title=Live-test lease is held::Somebody is live-testing against '${ENV_NAME}'. Refusing to apply. ${holder}"
       exit 1
@@ -162,7 +213,37 @@ if [ "$MODE" = "apply" ] && [ "$LEASE_POLICY" != "ignore" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Plan, or apply
+# 5. Refuse to apply a configuration that would un-provision the minter
+# ---------------------------------------------------------------------------
+# render_install_env.sh --strict catches a setting that arrives empty. This
+# catches the one that does not go through a variable at all: the minter is
+# enabled only when its KMS signing key has an ENABLED version OR a readable
+# App private key PEM is at hand, and an unattended reconcile has no PEM. So a
+# key that has been rotated, disabled, or scheduled for destruction silently
+# flips `enable_github_minter` to false, and the apply destroys the minter with
+# a warning in a log nobody reads.
+#
+# Same destroy-by-omission class as the strict list, so it gets the same
+# treatment: stop, and say which of the two ways out to take.
+if [ "$MODE" = "apply" ] && [ -n "${GITHUB_APP_ID:-}" ]; then
+  kms_location="${REGION%-[a-z]}"
+  minter_key_version="$({ gcloud kms keys versions list \
+    --key "${KMS_KEY:-github-token-minter-key}" \
+    --keyring "${KMS_KEYRING:-github-token-minter-keyring}" \
+    --location "${kms_location}" --project "${PROJECT_ID}" \
+    --filter='state=ENABLED' --format='value(name)' 2>/dev/null || true; } | head -1)"
+  if [ -z "${minter_key_version}" ]; then
+    echo "::error title=The minter's signing key has no ENABLED version::GITHUB_APP_ID is set on '${ENV_NAME}', but the KMS key the token minter signs with has no enabled version — so this apply would render enable_github_minter = false and DESTROY the minter. Re-import the App key (k8s-operator/config/integrations/github/README.md), or unset the GH_APP_ID secret on this environment to reconcile without a minter."
+    summary "### Reconcile refused — \`${ENV_NAME}\`"
+    summary ""
+    summary "The token minter's KMS signing key has no enabled version, so applying would destroy the minter."
+    output "result" "failed"
+    exit 1
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 6. Plan, or apply
 # ---------------------------------------------------------------------------
 UPGRADE_ARGS=(--non-interactive)
 if [ -n "${IMAGE_TAG:-}" ]; then
@@ -210,8 +291,13 @@ if [ "$MODE" = "plan" ]; then
     *)
       summary "### The plan for \`${ENV_NAME}\` failed"
       output "drift" "unknown"
+      # `failed`, not `planned`. A caller branching on `result` has to be able
+      # to tell a plan that ran from one that broke, and only `drift` carried
+      # that before.
+      output "result" "failed"
       ;;
   esac
+  [ "$status" = "0" ] || exit "$status"
   output "result" "planned"
 else
   echo "==> Reconciling '${ENV_NAME}' in place."

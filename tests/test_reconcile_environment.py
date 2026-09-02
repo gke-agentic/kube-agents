@@ -232,12 +232,19 @@ class DeployEnvironmentGuardTest(unittest.TestCase):
         names = [s.get("name", "") for s in self.steps]
         self.assertEqual(names[0], "Confirm a long-lived environment teardown")
 
-    def test_it_refuses_while_the_live_test_lease_is_held(self):
-        """The lease ConfigMap lives in the cluster this is about to destroy."""
+    def test_it_refuses_unless_the_live_test_lease_is_positively_free(self):
+        """The lease ConfigMap lives in the cluster this is about to destroy.
+
+        Matching "free" rather than negating "held" is what keeps an
+        unreachable cluster — a transient API-server error, an expired auth
+        plugin — from reading as an idle one. `status --json` reports that as
+        its own state precisely so a caller can tell the two apart.
+        """
         step = next(s for s in self.steps
                     if s["name"] == "Refuse while somebody is live-testing")
         self.assertIn("live_test_lease.py status --json", step["run"])
-        self.assertIn('"state": "held"', step["run"])
+        self.assertIn('grep -q \'"state": "free"\'', step["run"])
+        self.assertNotIn('grep -q \'"state": "held"\'', step["run"])
 
 
 class ReconcileScriptTest(unittest.TestCase):
@@ -267,6 +274,50 @@ class ReconcileScriptTest(unittest.TestCase):
         """Both drive `helm upgrade` on the release the composition owns."""
         self.assertIn("await_redeploys", self.text)
         self.assertIn("redeploy-${component}.yml", self.text)
+
+    def test_the_redeploy_wait_counts_queued_runs_too(self):
+        """Each redeploy has its own concurrency group, so one can sit queued.
+
+        autopush's redeploys start on every push to main. A queued one that
+        dequeues halfway through the apply is the collision the wait exists to
+        avoid, and an `--status in_progress` query cannot see it.
+        """
+        self.assertIn('select(.status == "in_progress"', self.text)
+        self.assertIn('"queued"', self.text)
+        self.assertIn('"waiting"', self.text)
+
+    def test_credentials_are_fetched_before_the_lease_is_taken(self):
+        """The lease is a ConfigMap read; without a kubeconfig it cannot be read.
+
+        `acquire` exits non-zero either way, so credentials fetched after it
+        would make every scheduled reconcile defer, exit 0, and report green
+        having applied nothing — the "green means deployed" failure this whole
+        change exists to end.
+        """
+        # The invocation, not the first mention: the header comment names the
+        # script several paragraphs above the code that runs it.
+        creds = self.text.index("gcloud container clusters get-credentials")
+        lease = self.text.index('live_test_lease.py" acquire')
+        self.assertLess(creds, lease,
+                        "get-credentials has to come before the lease is taken")
+
+    def test_an_unreadable_lease_fails_rather_than_deferring(self):
+        """A cluster that could not be asked has not answered "no"."""
+        self.assertIn('grep -q \'"state": "held"\'', self.text)
+        self.assertIn("Live-test lease could not be read", self.text)
+
+    def test_an_apply_refuses_to_un_provision_the_minter(self):
+        """enable_github_minter flips to false on a key with no ENABLED version.
+
+        No variable expresses it, so REQUIRED_STRICT cannot cover it, and the
+        installer's only signal is a warning in a log nobody reads.
+        """
+        self.assertIn("state=ENABLED", self.text)
+        self.assertIn("DESTROY the minter", self.text)
+
+    def test_a_failed_plan_does_not_report_itself_as_planned(self):
+        """`result` is the caller's contract; only `drift` carried this before."""
+        self.assertIn('output "result" "failed"', self.text)
 
 
 class UpgradePlanFlagTest(unittest.TestCase):
@@ -328,6 +379,30 @@ class ReportDriftTest(unittest.TestCase):
         """A nightly that opens a new issue every night teaches everyone to mute it."""
         body = self.module.body_for("autopush", "http://run", "", [], False)
         self.assertIn(self.module.MARKER_TEMPLATE.format(env="autopush"), body)
+
+    def test_a_tainted_replacement_is_not_dropped(self):
+        """Terraform announces those as `is tainted, so must be replaced`.
+
+        Missed by the regex, a plan whose only change is a tainted replacement
+        renders an issue with no resource list and no destroy warning — the
+        opposite of what it is reporting.
+        """
+        plan = (
+            "  # module.gke_cluster.google_container_cluster.autopilot[0] is tainted,"
+            " so must be replaced\n"
+            "Plan: 1 to add, 0 to change, 1 to destroy.\n"
+        )
+        _, actions, destructive = self.module.summarise(plan)
+        self.assertEqual(len(actions), 1)
+        self.assertTrue(destructive)
+
+    def test_the_label_is_created_before_the_first_issue(self):
+        """`gh issue create --label` fails outright on a label that does not exist."""
+        source = (_REPO_ROOT / "scripts" / "release" / "report_drift.py").read_text()
+        self.assertIn("gh\", \"label\", \"create\"", source)
+        create = source.index('"issue", "create"')
+        ensure = source.index("ensure_label(args.repo)")
+        self.assertLess(ensure, create)
 
     def test_an_empty_plan_yields_no_actions(self):
         totals, actions, destructive = self.module.summarise(

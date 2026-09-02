@@ -6,13 +6,17 @@
 # runner is ephemeral and has no such file, so every job that drives the
 # installer renders one here first and points KUBE_AGENTS_INSTALL_ENV at it.
 #
-# This is the single mapping from `vars.*`/`secrets.*` to install configuration.
-# Before it there were two: deploy-environment.yml built a flag list for
-# install.sh, and nothing at all existed for the long-lived environments, which
-# is how autopush and staging came to run last month's composition with today's
-# images (#1117). One mapping means one answer to "what is this environment
-# configured as", and it is the same answer whether the caller is provisioning
-# from nothing, reconciling in place, or planning a drift report.
+# This is the mapping from `vars.*`/`secrets.*` to install configuration for
+# every path that reconciles an environment in place -- the nightly reconcile,
+# the drift plan, and a manual dispatch of either.
+#
+# It is NOT the only such mapping in the repository. provision_environment.sh
+# builds an `install.sh` flag list from the same GitHub variables for the
+# destroy-and-rebuild path, and carries its own copy of the MEMORY_PROVIDER
+# translation below. The two agree today and are checked against each other by
+# tests/test_render_install_env.py and tests/test_provision_environment.py;
+# collapsing them into one is worth doing and is deliberately not part of
+# #1117, which is about environments that are never rebuilt at all.
 #
 # Usage:
 #   render_install_env.sh <output-path> [--strict]
@@ -132,11 +136,40 @@ fi
 
 if [ -n "$missing" ]; then
   # One annotation naming every missing variable at once. Failing on the first
-  # one costs a full run per variable, and there are eleven of them on an
-  # environment that has never been configured.
+  # one costs a full run per variable, and a strict render of an environment
+  # that has never been configured is missing every one of them.
   echo "::error title=Install configuration is incomplete::Set these on the GitHub environment this job binds to:${missing}. Each one is a setting the composition provisions; running without it would apply a default over the value this environment is already installed with, and terraform would plan to destroy the difference. docs/site/src/content/docs/deploy/environment-reconcile.md lists what each one should be."
   echo "==> Missing install configuration:${missing}" >&2
   exit 1
+fi
+
+# The token minter is configured by three settings at once, and the installer
+# reads them as a unit: all three non-empty provisions it, and ANY of them empty
+# renders `enable_github_minter = false` without a word. On a fresh install that
+# is an install without a minter, which is the ordinary default. On an
+# environment that already has one, it is an apply that destroys it.
+#
+# autopush is the live example and the reason this is here: #1117 found it
+# carrying GH_APP_ID as a secret with neither GitOps variable set. A strict
+# render of that configuration is exactly the silent un-provisioning above.
+#
+# All three empty stays allowed. provision_environment.sh makes the same check
+# for the rebuild path, above its teardown, for the same reason.
+if [ "$STRICT" = "true" ]; then
+  minter_set=""
+  minter_missing=""
+  for var in GITOPS_ORG GITOPS_REPO GITHUB_APP_ID; do
+    if [ -n "${!var:-}" ]; then
+      minter_set="${minter_set} ${var}"
+    else
+      minter_missing="${minter_missing} ${var}"
+    fi
+  done
+  if [ -n "$minter_set" ] && [ -n "$minter_missing" ]; then
+    echo "::error title=GitHub token minter is half-configured::Set:${minter_set}; empty:${minter_missing}. The installer provisions the minter only when all three are set, so this configuration would render enable_github_minter = false and destroy a minter this environment already has. Set the missing ones, or clear the ones that are set to reconcile without a minter."
+    echo "==> GitHub token minter half-configured — set:${minter_set}; empty:${minter_missing}." >&2
+    exit 1
+  fi
 fi
 
 # ---------------------------------------------------------------------------

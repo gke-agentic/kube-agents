@@ -10,15 +10,14 @@ running, and people live-test pull requests against them. `rc` and `nightly` are
 the opposite — every pipeline run destroys them and builds them again from
 `terraform/examples/full-install`, so they always run today's composition.
 
-That difference used to mean the two long-lived environments never ran Terraform
-at all. The redeploy workflows are `helm upgrade` on a pre-existing release and
-nothing more, so every infrastructure change that landed on `main` — IAM
-bindings, Pub/Sub topics, node pools, cluster settings, and the chart values the
-composition renders — was invisible in both until somebody re-applied by hand.
-Both were found a month behind while a green redeploy reported that `main` was
-deployed.
+The redeploy workflows that move them are `helm upgrade` on a pre-existing
+release and nothing more, so on their own they carry images and no
+infrastructure: IAM bindings, Pub/Sub topics, node pools, cluster settings and
+the chart values the composition renders all stay where the last apply left
+them. A green redeploy says the images rolled, which reads as "main is
+deployed" and is only half of it.
 
-Three things now keep them in step.
+Three things close that gap.
 
 ## The scheduled drift report
 
@@ -66,11 +65,11 @@ would change.
 
 ## The rebuild button
 
-When an in-place apply cannot converge, `Shared: Deploy Environment` now accepts
+When an in-place apply cannot converge, `Shared: Deploy Environment` takes
 `autopush` and `staging` as well as `rc` and `nightly`. It **destroys the
 cluster** and builds it again, so it asks you to type the environment's name
-into `confirm_destroy`, and it refuses outright while the live-test lease is
-held.
+into `confirm_destroy`, and it refuses unless the live-test lease reads back
+as free.
 
 Read [what a teardown does not preserve](#what-a-rebuild-does-not-preserve)
 before using it.
@@ -78,8 +77,11 @@ before using it.
 ## What each environment has to be configured with
 
 The reconcile renders an `install.env` from the environment's GitHub variables
-and secrets — `scripts/release/render_install_env.sh` is the only mapping
-between the two, and `install.env.example` documents what each key means.
+and secrets with `scripts/release/render_install_env.sh`, and
+`install.env.example` documents what each key means. The rebuild button takes a
+different route to the same settings — `provision_environment.sh` turns them
+into `install.sh` flags — so the two are kept in agreement by a test rather than
+by being one function.
 
 Every setting below is **required** on a long-lived environment, and the
 reconcile fails naming all the missing ones at once rather than starting. This
@@ -122,11 +124,19 @@ Two naming details that are easy to trip over:
   the minter's pair to the release repository scopes a live GitHub App token at
   this repository, which is why `rc` points at a throwaway repo instead.
 
-`GITOPS_ORG`, `GITOPS_REPO` and `GH_APP_ID` are checked together: all three set
+`GITOPS_ORG`, `GITOPS_REPO` and `GH_APP_ID` are read as a unit: all three set
 provisions the token minter, none set installs without it, and any other
-combination is refused before anything is torn down. An environment carrying
-`GH_APP_ID` alone — which is how `autopush` was configured — has to either gain
-the other two or drop the secret.
+combination renders `enable_github_minter = false` — which on an environment
+that already has a minter is an apply that destroys it. Both paths refuse that
+rather than proceeding: the strict render stops the reconcile, and
+`provision_environment.sh` stops the rebuild above its teardown. An environment
+carrying `GH_APP_ID` alone, which is how `autopush` was configured, has to
+either gain the other two or drop the secret.
+
+The reconcile additionally checks that the minter's KMS signing key has an
+enabled version, because that is the other way `enable_github_minter` flips to
+false and no variable expresses it. A key that has been rotated or scheduled for
+destruction stops the apply instead of taking the minter with it.
 
 ## What a rebuild does not preserve
 
@@ -147,18 +157,18 @@ cluster and everything on it.
 
 ## Applying repeatedly against an environment that exists
 
-Two fixes landed with the reconcile because a scheduled apply is the first thing
-in this project to run `terraform apply` against the same environment over and
-over — `rc` and `nightly` dodge both by destroying first.
+A scheduled reconcile is the only thing in this project that applies to the same
+environment over and over; `rc` and `nightly` destroy theirs first and so never
+exercise it. Two properties of the composition matter only on that path, and
+both are covered by comments in the source rather than restated here:
 
-`lifecycle.sh apply` now adopts a pre-existing Pub/Sub topic and subscription
-instead of failing with `Error 409: Resource already exists`, the same way it
-already adopted KMS key rings. Configuring the Google Chat app in the Cloud
-console creates the topic before the installer ever runs, so this was reachable
-on a first install too.
-
-And every Pub/Sub IAM binding is now keyed on its parent's `.id` rather than its
-`.name`. GCP purges a topic's or subscription's IAM policy when the resource is
-replaced; a binding keyed on the plan-time-known `.name` was excluded from the
-very plan that replaced its parent, so the apply went green over an empty policy
-and the credential proxy started answering chat pulls with HTTP 503.
+- `lifecycle.sh apply` adopts a pre-existing Pub/Sub topic and subscription
+  rather than failing with `Error 409: Resource already exists`, the way it
+  already adopts KMS key rings. Configuring the Google Chat app in the Cloud
+  console creates the topic before the installer runs, so this is reachable on a
+  first install too. See `adopt_pubsub` in
+  [`lifecycle.sh`](https://github.com/gke-labs/kube-agents/blob/main/terraform/examples/full-install/lifecycle.sh).
+- Every Pub/Sub IAM binding is keyed on its parent's `.id`, never its `.name`,
+  so a replaced topic takes its bindings into the plan with it instead of
+  leaving a green apply over an empty policy. See
+  [`terraform/modules/chat-pubsub/main.tf`](https://github.com/gke-labs/kube-agents/blob/main/terraform/modules/chat-pubsub/main.tf).

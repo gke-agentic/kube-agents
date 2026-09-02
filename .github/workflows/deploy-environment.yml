@@ -84,9 +84,12 @@ jobs:
       # about picking an environment from a dropdown communicates that, so the
       # confirmation is a second, deliberate act.
       - name: Confirm a long-lived environment teardown
-        if: |
-          github.event_name == 'workflow_dispatch' &&
-          (inputs.github_environment == 'autopush' || inputs.github_environment == 'staging')
+        # Keyed on the input, not on github.event_name. Inside a called
+        # workflow that context reports the ORIGINATING event, so a future
+        # workflow_call from a scheduled parent that targeted a long-lived
+        # environment would skip both guards and destroy it unannounced. No
+        # caller passes these two today; the gate is what keeps that true.
+        if: inputs.github_environment == 'autopush' || inputs.github_environment == 'staging'
         env:
           TARGET: ${{ inputs.github_environment }}
           CONFIRM: ${{ inputs.confirm_destroy }}
@@ -166,9 +169,7 @@ jobs:
       # Only the long-lived environments. `rc` and `nightly` are rebuilt every
       # pipeline run and nobody live-tests against them.
       - name: Refuse while somebody is live-testing
-        if: |
-          github.event_name == 'workflow_dispatch' &&
-          (inputs.github_environment == 'autopush' || inputs.github_environment == 'staging')
+        if: inputs.github_environment == 'autopush' || inputs.github_environment == 'staging'
         env:
           TARGET: ${{ inputs.github_environment }}
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
@@ -185,8 +186,13 @@ jobs:
             --location "${GCP_REGION}" --project "${GCP_PROJECT_ID}"
           status="$(python3 scripts/live_test_lease.py status --json)"
           echo "${status}"
-          if printf '%s' "${status}" | grep -q '"state": "held"'; then
-            echo "::error title=Live-test lease is held::Somebody is live-testing against '${TARGET}'. Tearing it down now would destroy their evidence mid-run. Ask them to release the lease (scripts/live_test_lease.py release), or wait for it to expire."
+          # Proceed only on a positive "free". `status --json` reports
+          # `unreachable` as its own state precisely because a cluster that
+          # could not be asked has not answered "no" — and refusing to grep for
+          # "held" is what keeps a transient API-server error from reading as
+          # an idle cluster and destroying somebody's live validation.
+          if ! printf '%s' "${status}" | grep -q '"state": "free"'; then
+            echo "::error title=The live-test lease is held, or could not be read::Refusing to tear down '${TARGET}'. A held lease means somebody is live-testing against it and a teardown destroys their evidence mid-run; an unreadable one means this job cannot tell. Ask the holder to release it (scripts/live_test_lease.py release), wait for it to expire, or fix the cluster access this job reported above."
             exit 1
           fi
 
