@@ -30,6 +30,14 @@ import sys
 MARKER_TEMPLATE = "<!-- kube-agents-drift-report: {env} -->"
 LABEL = "infra-drift"
 
+# How many resource actions the issue body lists before truncating. A plan that
+# replaces a cluster runs to hundreds, and an issue body has a hard size limit;
+# the artifact carries the whole plan either way.
+MAX_LISTED_ACTIONS = 100
+# `gh issue list --limit`. One page is enough because the search is by label and
+# this reporter opens at most one issue per environment.
+ISSUE_LIST_LIMIT = 100
+
 # `Plan: 1 to add, 3 to change, 0 to destroy.` and the per-resource action
 # headers terraform prints above each block. Together these are the whole
 # report a reader needs; the rest of a plan is attribute-level detail that
@@ -97,9 +105,10 @@ def body_for(env, run_url, totals, actions, destructive):
     if actions:
         lines += ["<details><summary>Resources the plan would change</summary>",
                   "", "```"]
-        lines += ["%s: %s" % (addr, action) for addr, action in actions[:100]]
-        if len(actions) > 100:
-            lines.append("... and %d more" % (len(actions) - 100))
+        lines += ["%s: %s" % (addr, action)
+                  for addr, action in actions[:MAX_LISTED_ACTIONS]]
+        if len(actions) > MAX_LISTED_ACTIONS:
+            lines.append("... and %d more" % (len(actions) - MAX_LISTED_ACTIONS))
         lines += ["```", "", "</details>", ""]
     lines += [
         "The full plan is attached to the run below as an artifact.",
@@ -135,7 +144,7 @@ def ensure_label(repo):
 def find_issue(repo, env):
     marker = MARKER_TEMPLATE.format(env=env)
     proc = run(["gh", "issue", "list", "--repo", repo, "--state", "open",
-                "--label", LABEL, "--limit", "100",
+                "--label", LABEL, "--limit", str(ISSUE_LIST_LIMIT),
                 "--json", "number,body"], check=False)
     if proc.returncode != 0:
         return None

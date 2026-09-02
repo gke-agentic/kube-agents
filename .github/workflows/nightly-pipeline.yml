@@ -212,15 +212,29 @@ jobs:
         step-3-run-e2e-matrix,
         step-4-reconcile-staging,
       ]
-    # The implicit success() on `needs` is the gate: a red matrix promotes
-    # nothing and leaves staging where it is.
+    # step-4 is in `needs` for ORDER, not for outcome. The reconcile has to
+    # finish before the tag is pushed — that tag starts three `helm upgrade`s on
+    # the release `helm_release.kube_agents` owns, and applying into them races —
+    # but a reconcile that FAILS must not take the image promotion with it.
+    # Promotion worked before this pipeline reconciled anything, and the ways the
+    # reconcile can go red are wider than "the composition is bad": a missing
+    # GitHub variable, an unreadable lease, a rotated minter key. Coupling them
+    # would mean every nightly silently dropping a promotion that used to happen.
+    #
+    # `always() && !cancelled()` is what decouples it, and it removes the
+    # implicit success() on every other `needs` along with it — so the matrix and
+    # candidate gates are restated explicitly below rather than inherited. A red
+    # matrix still promotes nothing.
     #
     # skip_promotion — the candidate already carries a staging tag — is checked on
-    # the STEPS below rather than here, so the job always runs and always
-    # succeeds. Gating the job would skip it, and a skipped job skips everything
+    # the STEPS below rather than here, so the job runs and succeeds whenever its
+    # gates pass. Gating the job would skip it, and a skipped job skips everything
     # that `needs` it.
     if: |
+      always() && !cancelled() &&
       github.repository == 'gke-labs/kube-agents' &&
+      needs.step-1-resolve-candidate.result == 'success' &&
+      needs.step-3-run-e2e-matrix.result == 'success' &&
       needs.step-1-resolve-candidate.outputs.skip_pipeline != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15

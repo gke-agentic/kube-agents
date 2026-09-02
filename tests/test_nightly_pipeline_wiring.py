@@ -100,6 +100,36 @@ class NightlyPipelineWiringTest(unittest.TestCase):
         promotion = self.jobs["step-5-promote-to-staging"]
         self.assertIn("step-4-reconcile-staging", promotion["needs"])
 
+    def test_a_failed_staging_reconcile_does_not_block_the_promotion(self):
+        """step-4 is in `needs` for order, not for outcome.
+
+        The implicit success() on `needs` would make any non-zero exit from the
+        reconcile skip the promotion — so no tag, and the three
+        staging-redeploy workflows that tag starts never run. Promotion worked
+        before this pipeline reconciled anything, and the reconcile goes red for
+        reasons wider than a bad composition: a missing GitHub variable, an
+        unreadable lease, a rotated minter key. Coupling them means every
+        nightly quietly dropping a promotion that used to happen.
+        """
+        condition = self.jobs["step-5-promote-to-staging"]["if"]
+        self.assertIn("always()", condition)
+        self.assertIn("!cancelled()", condition)
+        self.assertNotIn("step-4-reconcile-staging.result", condition,
+                         "step-4's outcome must not gate the promotion")
+
+    def test_decoupling_the_reconcile_did_not_drop_the_matrix_gate(self):
+        """`always()` removes the implicit success() from EVERY need at once.
+
+        So the two gates that were being inherited — a green matrix and a
+        resolved candidate — have to be restated, or a red matrix promotes.
+        """
+        condition = self.jobs["step-5-promote-to-staging"]["if"]
+        for need in ("step-3-run-e2e-matrix", "step-1-resolve-candidate"):
+            with self.subTest(need=need):
+                self.assertIn("needs.%s.result == 'success'" % need, condition)
+        # And the fork guard, which `always()` would otherwise let through.
+        self.assertIn("github.repository == 'gke-labs/kube-agents'", condition)
+
     def test_autopush_reconciles_without_pinning_an_image_tag(self):
         """autopush tracks main's tip; the candidate is older than that.
 
