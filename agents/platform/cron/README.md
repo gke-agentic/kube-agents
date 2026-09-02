@@ -186,4 +186,3 @@ across pod restarts by `profile_scaffold.py::merge_cron_store` (an image-owned k
 - `"high"`: Jobs with broad operational authority or untrusted input sources (such as
   `github-repo-watcher`). Escalates effective approval mode to `deny` under `cron_risk_gate.py`,
   routing commands into strict pattern and policy evaluation.
-
