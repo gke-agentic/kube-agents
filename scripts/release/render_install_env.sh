@@ -189,12 +189,21 @@ fi
 # *_ALLOW_ALL_USERS variable to `true`. It is deliberately NOT mapped into
 # install.env — the empty allowlist is already what produces it — so its only
 # job is to make the intent explicit here.
+#
+# "Enabled" has to mean here exactly what it means to the installer, so the
+# test is the installer's own `is_truthy` rather than a list of spellings
+# written out again: `GOOGLE_CHAT_ENABLED=on` provisions the integration, and a
+# guard that did not recognise it would wave through the configuration it
+# exists to stop.
 if [ "$STRICT" = "true" ]; then
+  # shellcheck source=scripts/installer/installer_common.sh
+  # shellcheck disable=SC1091
+  . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/installer/installer_common.sh"
   check_allowlist() {
     local enabled_var="$1" list_var="$2" allow_all_var="$3" platform="$4"
-    case "${!enabled_var:-}" in true|TRUE|True|1|yes) ;; *) return 0 ;; esac
+    is_truthy "${!enabled_var:-}" || return 0
     [ -z "${!list_var:-}" ] || return 0
-    case "${!allow_all_var:-}" in true|TRUE|True|1|yes) return 0 ;; esac
+    ! is_truthy "${!allow_all_var:-}" || return 0
     echo "::error title=${platform} is enabled with no allowlist::${list_var} is empty on this environment, and an empty allowlist means EVERY user is admitted — the operator turns an absent list into allow-all for ${platform}. Set ${list_var} to the users this install should admit, or set ${allow_all_var}=true to say the open allowlist is intended."
     echo "==> ${platform} enabled with an empty ${list_var} and no ${allow_all_var}=true." >&2
     return 1

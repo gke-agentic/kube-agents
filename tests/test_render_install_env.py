@@ -202,6 +202,22 @@ class AllowlistGuardTest(unittest.TestCase):
         self.assertIn("Google Chat is enabled with no allowlist", log)
         self.assertIn("Slack is enabled with no allowlist", log)
 
+    def test_enabled_means_what_it_means_to_the_installer(self):
+        """A guard with its own vocabulary is a guard with its own blind spot.
+
+        `is_truthy` accepts true/yes/y/1/on in any case, and it is what decides
+        whether the composition provisions the integration at all — so a
+        spelling it accepts and the guard does not is a configuration that
+        installs Google Chat wide open and renders without complaint.
+        """
+        for spelling in ("true", "TRUE", "True", "yes", "y", "1", "on", "ON"):
+            with self.subTest(spelling=spelling):
+                rc, log, _ = render(
+                    {**_COORDS, **_STRICT_SETTINGS,
+                     "GOOGLE_CHAT_ENABLED": spelling}, strict=True)
+                self.assertEqual(rc, 1, f"{spelling!r} was not read as enabled")
+                self.assertIn("ALLOWED_USERS", log)
+
     def test_an_integration_that_is_off_needs_no_allowlist(self):
         rc, log, _ = render(
             {**_COORDS, **_STRICT_SETTINGS, "GOOGLE_CHAT_ENABLED": "false"},
