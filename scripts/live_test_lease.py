@@ -208,7 +208,50 @@ def _install_from_context(context, **overrides):
                    registry=registry, label=label, project=project, **overrides)
 
 
-def _parse_install_state(text):
+_ASSIGNMENT = re.compile(
+    r"^[ \t]*(?:export[ \t]+)?(%s)=(.*)$" % "|".join(VARS_KEYS)
+)
+
+_REFERENCE = re.compile(
+    r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))"
+)
+
+
+def _expand(value, scope):
+    """Substitute `$VAR` and `${VAR}` from keys the file has already set.
+
+    The installers load these files with `set -a; . install.env; set +a`, and
+    install.env.example advertises shell syntax -- so `CLUSTER_NAME=${PROJECT_ID}-host`
+    is legal and the installers resolve it. Reading it literally instead is the
+    silent failure this guard exists to prevent: the context below becomes
+    `gke_myproj_us-central1_${PROJECT_ID}-host`, which matches no kubeconfig
+    entry, and since context outranks markers the lease falls back to matching
+    on PROJECT_ID alone -- so two installs in one project stop being told apart
+    and each is free to take the other's lease.
+
+    `scope` is the allowlisted keys resolved so far, in file order, so only
+    those can be referenced. That is narrower than the shell, which would also
+    expand from its own environment and from any other assignment in the file;
+    both are deliberate. Reading the environment would make protection depend on
+    the shell a command happened to run in, and keeping non-allowlisted values
+    out of `scope` keeps the API keys and tokens these files also hold out of
+    this function entirely.
+
+    A reference `scope` cannot resolve is left as written rather than dropped:
+    the literal is the pre-expansion behaviour, whereas dropping it would fail
+    the `project and cluster and location` check below and turn a protected
+    install into an undiscovered one -- trading a degraded match for no
+    protection at all.
+
+    `admin_console/project_config.py` carries the same expansion for the same
+    files; change both together.
+    """
+    return _REFERENCE.sub(
+        lambda m: scope.get(m.group(1) or m.group(2), m.group(0)), value
+    )
+
+
+def _parse_install_state(text, scope=None):
     """The allowlisted coordinates out of an install configuration, unquoted.
 
     Accepts both spellings, because the two files differ: vars.sh is generated
@@ -219,20 +262,33 @@ def _parse_install_state(text):
 
     A plain identifier arrives bare and anything else arrives quoted. shlex
     unquotes both; a value it cannot parse is dropped rather than guessed at.
+
+    Lines are read in order and a later assignment to the same key wins, as it
+    would when the shell sources the file. `scope` accumulates across the call
+    so a later assignment can reference an earlier one; pass the same dict for
+    vars.sh and install.env to let the second reference the first, matching the
+    order the front doors source them in.
     """
     found = {}
-    for key in VARS_KEYS:
-        match = re.search(
-            r"^[ \t]*(?:export[ \t]+)?%s=(.*)$" % key, text, re.MULTILINE
-        )
+    if scope is None:
+        scope = {}
+    for line in text.splitlines():
+        match = _ASSIGNMENT.match(line)
         if not match:
             continue
         try:
-            parts = shlex.split(match.group(1).strip())
+            raw = match.group(2).strip()
+            parts = shlex.split(raw)
         except ValueError:
             continue
-        if parts:
-            found[key] = parts[0]
+        if not parts:
+            continue
+        # Single quotes suppress expansion in the shell, so they suppress it
+        # here. Testing the raw value rather than the parsed one is what keeps
+        # that true: shlex has already removed the quotes by now.
+        value = parts[0] if "'" in raw else _expand(parts[0], scope)
+        found[match.group(1)] = value
+        scope[match.group(1)] = value
     return found
 
 
@@ -281,12 +337,12 @@ def find_vars_sh(cwd):
     return install_env or vars_sh
 
 
-def _read_install_state(path):
+def _read_install_state(path, scope=None):
     if not path:
         return {}
     try:
         with open(path) as fh:
-            return _parse_install_state(fh.read())
+            return _parse_install_state(fh.read(), scope)
     except OSError:
         return {}
 
@@ -295,10 +351,13 @@ def _install_from_state(install_env, vars_sh):
     """One Install merged from whichever of the two files exist.
 
     vars.sh first, install.env over the top: the hand-authored input wins,
-    matching the order every shell front door loads them in.
+    matching the order every shell front door loads them in. The two share one
+    expansion scope for the same reason, so a `$VAR` in install.env can name a
+    key vars.sh set.
     """
-    fields = _read_install_state(vars_sh)
-    fields.update(_read_install_state(install_env))
+    scope = {}
+    fields = _read_install_state(vars_sh, scope)
+    fields.update(_read_install_state(install_env, scope))
     if not fields:
         return None
     project = fields.get("PROJECT_ID")

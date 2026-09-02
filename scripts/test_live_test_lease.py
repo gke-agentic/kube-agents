@@ -229,6 +229,123 @@ class InstallEnvDiscovery(unittest.TestCase):
             self.assertIsNone(vars_sh)
 
 
+class VariableReferences(unittest.TestCase):
+    """The front doors source these files, so `${VAR}` resolves in them.
+
+    Reading it literally instead is the guard's own failure mode: the context
+    becomes `gke_acme-prod_us-central1_${PROJECT_ID}-cluster`, which matches no
+    kubeconfig entry, and since context outranks markers the lease falls back to
+    matching on PROJECT_ID alone -- so two installs in one project stop being
+    told apart and each is free to take the other's lease.
+    """
+
+    def test_a_reference_to_an_earlier_key_resolves(self):
+        fields = lease._parse_install_state(
+            "PROJECT_ID=acme-prod\nCLUSTER_NAME=${PROJECT_ID}-cluster\n"
+        )
+        self.assertEqual(fields["CLUSTER_NAME"], "acme-prod-cluster")
+
+    def test_the_braceless_spelling_resolves_too(self):
+        fields = lease._parse_install_state(
+            "PROJECT_ID=acme-prod\nCLUSTER_NAME=$PROJECT_ID-cluster\n"
+        )
+        self.assertEqual(fields["CLUSTER_NAME"], "acme-prod-cluster")
+
+    def test_the_derived_context_matches_the_kubeconfig(self):
+        """The end the expansion exists for: an install written with a
+        reference is the same install as one written out longhand."""
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp, "install.env")
+            path.write_text(
+                "PROJECT_ID=acme-prod\n"
+                "REGION=us-central1\n"
+                "CLUSTER_NAME=agents-cluster\n",
+                encoding="utf-8",
+            )
+            longhand = lease._install_from_state(str(path), None)
+            path.write_text(
+                "PROJECT_ID=acme-prod\n"
+                "REGION=us-central1\n"
+                "CLUSTER_NAME=agents-${REGION}\n",
+                encoding="utf-8",
+            )
+            referenced = lease._install_from_state(str(path), None)
+        self.assertEqual(longhand.context, CTX)
+        self.assertEqual(
+            referenced.context, "gke_acme-prod_us-central1_agents-us-central1"
+        )
+        self.assertIn("agents-us-central1", referenced.markers)
+
+    def test_single_quotes_suppress_expansion_as_the_shell_does(self):
+        """Sourcing the file would leave this literal, so the guard must agree
+        -- protecting a cluster the installers never provisioned protects
+        nothing."""
+        fields = lease._parse_install_state(
+            "PROJECT_ID=acme-prod\nCLUSTER_NAME='${PROJECT_ID}-cluster'\n"
+        )
+        self.assertEqual(fields["CLUSTER_NAME"], "${PROJECT_ID}-cluster")
+
+    def test_an_unresolvable_reference_stays_literal_and_still_protects(self):
+        """Dropping it would fail the completeness check in
+        `_install_from_state` and leave the install undiscovered -- trading a
+        degraded match for no protection at all, which is strictly worse."""
+        fields = lease._parse_install_state(
+            "PROJECT_ID=acme-prod\n"
+            "REGION=us-central1\n"
+            "CLUSTER_NAME=${SOMETHING_ELSE}-cluster\n"
+        )
+        self.assertEqual(fields["CLUSTER_NAME"], "${SOMETHING_ELSE}-cluster")
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp, "install.env")
+            path.write_text(
+                "PROJECT_ID=acme-prod\n"
+                "REGION=us-central1\n"
+                "CLUSTER_NAME=${SOMETHING_ELSE}-cluster\n",
+                encoding="utf-8",
+            )
+            install = lease._install_from_state(str(path), None)
+        self.assertIsNotNone(install)
+        self.assertIn("acme-prod", install.markers)
+
+    def test_a_reference_to_a_non_allowlisted_key_is_not_resolved(self):
+        """Only allowlisted keys enter the scope, so the tokens and API keys
+        these files also hold never reach the expansion."""
+        fields = lease._parse_install_state(
+            "SLACK_BOT_TOKEN=xoxb-must-not-be-read\n"
+            "CLUSTER_NAME=${SLACK_BOT_TOKEN}\n"
+        )
+        self.assertEqual(fields["CLUSTER_NAME"], "${SLACK_BOT_TOKEN}")
+        self.assertNotIn("SLACK_BOT_TOKEN", fields)
+
+    def test_install_env_can_reference_a_key_from_the_legacy_state_file(self):
+        """vars.sh is sourced first, so install.env can name what it set."""
+        with TemporaryDirectory() as tmp:
+            _write_vars_sh(tmp, project="acme-prod", cluster="stale-cluster")
+            Path(tmp, "install.env").write_text(
+                "CLUSTER_NAME=${PROJECT_ID}-cluster\n", encoding="utf-8"
+            )
+            install_env, vars_sh = lease.find_install_state(tmp)
+            install = lease._install_from_state(install_env, vars_sh)
+        self.assertEqual(install.context, "gke_acme-prod_us-central1_acme-prod-cluster")
+
+    def test_a_later_assignment_wins_as_it_would_when_sourced(self):
+        """Sourcing runs every line, so the last one decides. Taking the first
+        match would guard whichever cluster the file mentioned earliest."""
+        fields = lease._parse_install_state(
+            "CLUSTER_NAME=first-cluster\nCLUSTER_NAME=second-cluster\n"
+        )
+        self.assertEqual(fields["CLUSTER_NAME"], "second-cluster")
+
+    def test_command_substitution_is_still_never_expanded(self):
+        """Expanding `$VAR` must not have opened the door to `$(...)`."""
+        fields = lease._parse_install_state(
+            "PROJECT_ID=acme-prod\n"
+            "CLUSTER_NAME=$(touch /tmp/lease-must-not-execute)\n"
+        )
+        self.assertEqual(fields["CLUSTER_NAME"], "$(touch")
+        self.assertFalse(Path("/tmp/lease-must-not-execute").exists())
+
+
 class ConfigFile(unittest.TestCase):
     def test_adds_installs_and_defers_to_the_checkout(self):
         with TemporaryDirectory() as tmp:
