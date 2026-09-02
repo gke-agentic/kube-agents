@@ -55,6 +55,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
 from datetime import datetime
@@ -72,13 +73,18 @@ import pr_triggers  # noqa: E402
 
 SCRATCH_DIR = "/opt/data/scratch"
 
-# How much of a thread travels with the requests. Both caps are generous enough
-# that no ordinary review conversation meets them, and both report what they
-# dropped — `omitted_earlier` on the thread, `truncated_chars` on the comment —
-# because a silently shortened transcript reads as a complete one, and the
-# worker would answer confidently from a conversation it only half saw.
+BARE_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+# How much of a thread travels with the requests. All caps are generous enough
+# that no ordinary review conversation meets them, and all report what they
+# dropped — `omitted_earlier` and `omitted_requests` on the thread, `truncated_chars`
+# on the comment / request — because a silently shortened transcript reads as a
+# complete one, and the worker would answer confidently from a conversation it only
+# half saw.
 CONTEXT_MAX_COMMENTS = 40
 CONTEXT_MAX_BODY_CHARS = 4000
+CONTEXT_MAX_REQUEST_CHARS = pr_triggers.MAX_REQUEST_CHARS
+CONTEXT_MAX_REQUESTS = 10
 
 
 def _fail(message: str):
@@ -86,14 +92,26 @@ def _fail(message: str):
     sys.exit(1)
 
 
-def _resolve_repo() -> str:
-    try:
-        repo = forge.target_repo()
-    except forge.ForgeError as error:
-        _fail(f"{error.reason}: {error.value}")
-    if not repo:
-        _fail("No target repository configured in SETTINGS.md.")
+def validate_repo(repo: str) -> str:
+    """Ensure repo is formatted as owner/name and is in the managed repos allowlist if configured."""
+    from gitops_workspace import get_managed_github_repos, is_valid_repo_slug
+    if not repo or not is_valid_repo_slug(repo):
+        raise ValueError(f"Invalid repository format: {repo!r}. Expected 'owner/name'.")
+    managed = get_managed_github_repos()
+    if managed and repo not in managed:
+        raise ValueError(
+            f"Repository {repo!r} is not in the managed repositories list: {managed}"
+        )
     return repo
+
+
+def _resolve_repo(args=None) -> str:
+    if args and getattr(args, "repo", None):
+        try:
+            return validate_repo(args.repo)
+        except ValueError as error:
+            _fail(str(error))
+    _fail("No target repository specified; pass --repo <owner/repo>.")
 
 
 def _find_pr(provider, repo: str, number: int, viewer: str):
@@ -125,6 +143,14 @@ def _find_pr(provider, repo: str, number: int, viewer: str):
     _fail(f"{repo}#{number} is not an open pull request.")
 
 
+def _context_request(request: str) -> tuple[str, int]:
+    """A request text as the model should see it, and how much was cut."""
+    text = request or ""
+    if len(text) <= CONTEXT_MAX_REQUEST_CHARS:
+        return text, 0
+    return text[:CONTEXT_MAX_REQUEST_CHARS], len(text) - CONTEXT_MAX_REQUEST_CHARS
+
+
 def _requests_on(provider, repo: str, pr, viewer: str) -> tuple[list, list]:
     """Every comment on one pull request, and the unanswered requests among them.
 
@@ -148,21 +174,23 @@ def _requests_on(provider, repo: str, pr, viewer: str) -> tuple[list, list]:
         )
         if trigger is None:
             continue
-        requests.append(
-            {
-                "pr": pr.number,
-                "head_ref": pr.head_ref,
-                "comment_id": comment.node_id,
-                "author": comment.author,
-                "can_write": comment.can_write,
-                "can_write_known": comment.can_write_known,
-                "kind": trigger.kind,
-                "request": trigger.request,
-                "created_at": comment.created_at,
-                "path": comment.path,
-                "line": comment.line,
-            }
-        )
+        req_text, truncated = _context_request(trigger.request)
+        row = {
+            "pr": pr.number,
+            "head_ref": pr.head_ref,
+            "comment_id": comment.node_id,
+            "author": comment.author,
+            "can_write": comment.can_write,
+            "can_write_known": comment.can_write_known,
+            "kind": trigger.kind,
+            "request": req_text,
+            "created_at": comment.created_at,
+            "path": comment.path,
+            "line": comment.line,
+        }
+        if truncated:
+            row["truncated_chars"] = truncated
+        requests.append(row)
     return comments, requests
 
 
@@ -211,7 +239,9 @@ def _context_body(body: str) -> tuple[str, int]:
     return text[:CONTEXT_MAX_BODY_CHARS], len(text) - CONTEXT_MAX_BODY_CHARS
 
 
-def _conversation(comments, self_login: str, request_ids) -> tuple[list, int]:
+def _conversation(
+    comments, self_login: str, request_ids, all_request_ids=None
+) -> tuple[list, int]:
     """The thread one pull request's requests arrived in, oldest first.
 
     Sorted here as well as in the provider: ordering is part of this payload's
@@ -228,13 +258,14 @@ def _conversation(comments, self_login: str, request_ids) -> tuple[list, int]:
     point opposite ways: the sweep hands the worker the *oldest* unanswered
     trigger, and the cap drops the *oldest* comments — so on a thread past the
     cap the comment being answered is the first thing thrown away. For a
-    `mention` trigger `Trigger.request` is empty by construction, so the card
+    `@mention` trigger `Trigger.request` is empty by construction, so the card
     carries no copy of it either, and the worker would be asked to answer a
     request whose text appears nowhere in its context. Pinning costs at most
-    `PR_AGENT_MAX_PER_TICK` extra rows.
+    `CONTEXT_MAX_REQUESTS` extra rows.
     """
     ordered = sorted(comments, key=lambda c: (c.created_at, c.node_id))
     wanted = set(request_ids or ())
+    is_req_ids = set(all_request_ids if all_request_ids is not None else wanted)
     recent = ordered[max(0, len(ordered) - CONTEXT_MAX_COMMENTS) :]
     kept_ids = {c.node_id for c in recent} | wanted
     kept = [c for c in ordered if c.node_id in kept_ids]
@@ -249,7 +280,7 @@ def _conversation(comments, self_login: str, request_ids) -> tuple[list, int]:
             "kind": comment.kind,
             "can_write": comment.can_write,
             "is_self": forge.normalise_login(comment.author) == self_login,
-            "is_request": comment.node_id in request_ids,
+            "is_request": comment.node_id in is_req_ids,
             "body": body,
         }
         if comment.path:
@@ -269,33 +300,43 @@ def handle_poll(args) -> int:
     operator-facing glossary covers both halves of the watcher.
     """
     try:
-        repo = forge.target_repo()
+        from gitops_workspace import get_managed_github_repos
+        if getattr(args, "repo", None):
+            repos = [validate_repo(args.repo)]
+        else:
+            repos = get_managed_github_repos()
+    except ValueError as error:
+        print(json.dumps({"status": "ERROR", "reason": "INVALID_REPOSITORY", "value": str(error)}))
+        return 0
     except forge.ForgeError as error:
         print(json.dumps({"status": "ERROR", "reason": error.reason, "value": error.value}))
         return 0
-    if not repo:
+    except Exception as error:
+        print(json.dumps({"status": "ERROR", "reason": "DISCOVERY_FAILED", "value": str(error)}))
+        return 0
+    if not repos:
         print(json.dumps({"status": "NOT_CONFIGURED"}))
         return 0
 
-    provider = forge.provider_for()
+    provider = forge.provider_for(repo=repos[0] if repos else None)
     try:
         provider.preflight()
         viewer = provider.viewer_login()
         if not viewer:
             print(json.dumps({"status": "ERROR", "reason": "VIEWER_UNKNOWN", "value": ""}))
             return 0
-        prs = [
-            pr
-            for pr in provider.list_open_prs(repo)
-            if forge.is_agent_pull_request(pr, repo, viewer) and not pr.is_ignored
-        ]
-        if args.pr:
-            prs = [pr for pr in prs if pr.number == args.pr]
+        prs: list[tuple[str, forge.PullRequest]] = []
+        for r in repos:
+            for pr in provider.list_open_prs(r):
+                if forge.is_agent_pull_request(pr, r, viewer) and not pr.is_ignored:
+                    if not args.pr or pr.number == args.pr:
+                        prs.append((r, pr))
 
         found = []
         threads = []
         over_budget = 0
-        for pr in prs:
+        deferred_requests = 0
+        for repo, pr in prs:
             comments, pr_requests = _requests_on(provider, repo, pr, viewer)
             # Untrusted requests past this pull request's refusal budget are not
             # offered at all. The sweep already stopped refusing them, on
@@ -314,6 +355,29 @@ def handle_poll(args) -> int:
                 ]
                 over_budget += len(pr_requests) - len(kept)
                 pr_requests = kept
+
+            # After the budget filter: cap-deferred rows keep is_request,
+            # budget-buried rows stay unflagged.
+            all_unanswered_ids = {row["comment_id"] for row in pr_requests}
+
+            # Prioritize trusted requests over untrusted ones so an untrusted burst
+            # before refusal budget exhaustion cannot starve maintainer requests.
+            trusted_requests = [
+                r for r in pr_requests if r.get("can_write") or not r.get("can_write_known")
+            ]
+            untrusted_requests = [
+                r for r in pr_requests if not r.get("can_write") and r.get("can_write_known")
+            ]
+            ordered_requests = trusted_requests + untrusted_requests
+
+            deferred_count = 0
+            if len(ordered_requests) > CONTEXT_MAX_REQUESTS:
+                deferred_count = len(ordered_requests) - CONTEXT_MAX_REQUESTS
+                deferred_requests += deferred_count
+                pr_requests = ordered_requests[:CONTEXT_MAX_REQUESTS]
+            else:
+                pr_requests = ordered_requests
+
             if not pr_requests:
                 # No thread without a request in it: the worker is answering
                 # something, and a transcript of a pull request nobody addressed
@@ -321,11 +385,16 @@ def handle_poll(args) -> int:
                 continue
             found.extend(pr_requests)
             rows, omitted_earlier = _conversation(
-                comments, viewer, {row["comment_id"] for row in pr_requests}
+                comments,
+                viewer,
+                request_ids={row["comment_id"] for row in pr_requests},
+                all_request_ids=all_unanswered_ids,
             )
-            thread = {"pr": pr.number, "head_ref": pr.head_ref, "comments": rows}
+            thread = {"repo": repo, "pr": pr.number, "head_ref": pr.head_ref, "comments": rows}
             if omitted_earlier:
                 thread["omitted_earlier"] = omitted_earlier
+            if deferred_count:
+                thread["omitted_requests"] = deferred_count
             threads.append(thread)
     except forge.ForgeError as error:
         print(json.dumps({"status": "ERROR", "reason": error.reason, "value": error.value}))
@@ -339,24 +408,23 @@ def handle_poll(args) -> int:
             f"pr_conversation: {over_budget} untrusted request(s) not offered — "
             "the pull request's refusal budget is spent\n"
         )
+    if deferred_requests:
+        sys.stderr.write(
+            f"pr_conversation: {deferred_requests} request(s) deferred — "
+            f"poll offers at most {CONTEXT_MAX_REQUESTS} per pull request\n"
+        )
 
     if not found:
-        print(json.dumps({"status": "NO_REQUESTS", "repository": repo}))
+        print(json.dumps({"status": "NO_REQUESTS"}))
         return 0
-    # Every request, not just the trusted ones: the worker is told about a
-    # request it must not act on so it can say so, rather than appearing to
-    # have missed it. `can_write` is on each row and the SKILL.md is explicit
-    # that a false one is refused.
-    print(
-        json.dumps(
-            {
-                "status": "FOUND",
-                "repository": repo,
-                "requests": found,
-                "conversations": threads,
-            }
-        )
-    )
+
+    payload = {"status": "FOUND", "requests": found, "conversations": threads}
+    if over_budget:
+        payload["warnings"] = [
+            f"pr_conversation: {over_budget} untrusted request(s) not offered — "
+            "the per-pull-request refusal budget is exhausted"
+        ]
+    print(json.dumps(payload))
     return 0
 
 
@@ -558,8 +626,8 @@ def _check_claim(provider, repo: str, pr, sha: str, no_change: bool, requested_a
 
 
 def _post(args, marker_kind: str) -> int:
-    repo = _resolve_repo()
-    provider = forge.provider_for()
+    repo = _resolve_repo(args)
+    provider = forge.provider_for(repo=repo)
 
     # Everything that talks to the forge before the post, inside one guard.
     # `handle_poll` turns a `ForgeError` into a reason code the SKILL tells the
@@ -673,6 +741,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     poll = sub.add_parser("poll", help="list unanswered requests as JSON")
+    poll.add_argument("--repo", default=None, help="target repository (owner/repo)")
     poll.add_argument("--pr", type=int, default=0, help="limit to one pull request")
     poll.set_defaults(func=handle_poll)
 
@@ -681,6 +750,11 @@ def build_parser() -> argparse.ArgumentParser:
         ("refuse", handle_refuse, "post a refusal and mark the request refused"),
     ):
         cmd = sub.add_parser(name, help=help_text)
+        cmd.add_argument(
+            "--repo",
+            required=True,
+            help="the target repository (owner/repo)",
+        )
         cmd.add_argument("--pr", type=int, required=True)
         cmd.add_argument(
             "--comment-id",

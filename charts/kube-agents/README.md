@@ -326,8 +326,10 @@ Use `telemetry.otlpEndpoint` instead when you do have a collector to point at.
   `tenantId`, and user authorization is configured via `allowedUsers` (or
   `allowAllUsers: true`). Supports Microsoft Adaptive Cards v1.5 with markdown
   fallback.
-- **GitHub** — `platformAgent.integration.github.gitRepo` sets the agent's
-  GitOps target repository.
+- **GitHub** — `platformAgent.integration.github.org` sets the GitHub
+  Organization where the GitHub App is installed, and optional
+  `platformAgent.integration.github.gitRepo` sets the initial GitOps repository.
+  GitOps repositories can also be registered in the ConfigMap by cluster administrators.
 
 Chat, Slack, and Teams each need a one-time manual registration that no install
 automation can perform (the Chat app on the Chat API console page pointed at
@@ -458,7 +460,7 @@ other third-party images, so a mirrored install needs nothing extra; set
 entirely — any image with `kubectl` and `/bin/sh` works.
 
 > **Breaking:** `platformAgent.cleanupHook.image` was a single string
-> (`alpine/k8s:1.34.9`) and is now a `{repository, tag}` map, because the
+> (`alpine/k8s:<tag>`) and is now a `{repository, tag}` map, because the
 > registry rewrite needs the two halves separately. A values file that still
 > sets the string form fails the render rather than installing something wrong:
 >
@@ -475,14 +477,15 @@ entirely — any image with `kubectl` and `/bin/sh` works.
 > platformAgent:
 >   cleanupHook:
 >     image:
->       repository: docker.io/alpine/k8s # was: image: alpine/k8s:1.34.9
->       tag: "1.34.9"
+>       repository: docker.io/alpine/k8s # was: image: alpine/k8s:<tag>
+>       tag: "<tag>" # or drop both lines to take the chart default
 > ```
 >
-> The default reference also gained its registry — `alpine/k8s:1.34.9` is now
-> spelled `docker.io/alpine/k8s:1.34.9`. That resolves to the same image on a
+> The default reference also gained its registry — the implied `alpine/k8s` is
+> now spelled `docker.io/alpine/k8s`. That resolves to the same image on a
 > default install; it is written out because a prefix cannot be prepended to a
-> reference whose registry is implied.
+> reference whose registry is implied. The default tag itself is in
+> `values.yaml`, mirrored from `images.json`.
 
 With `platformAgent.cleanupHook.enabled=false`, the ordering is yours to keep:
 
