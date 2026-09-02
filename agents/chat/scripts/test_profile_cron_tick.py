@@ -653,8 +653,8 @@ class ShippedRosterTest(unittest.TestCase):
         self.assertTrue(checked, "no no_agent job on either roster — the test found nothing")
 
     def test_every_job_on_both_rosters_declares_valid_risk(self):
-        """SKILL-002: every cron job must declare risk in {low, medium, high}."""
-        allowed = {"low", "medium", "high"}
+        """SKILL-002: every cron job must declare risk in {low, high}."""
+        allowed = {"low", "high"}
         rosters = {
             "chat": json.loads(ROOT_ROSTER.read_text(encoding="utf-8"))["jobs"],
             "platform": json.loads(PLATFORM_ROSTER.read_text(encoding="utf-8"))["jobs"],

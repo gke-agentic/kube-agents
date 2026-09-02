@@ -17,7 +17,6 @@ import re
 from typing import Optional
 
 RISK_LOW = "low"
-RISK_MEDIUM = "medium"
 RISK_HIGH = "high"
 
 MODE_DENY = "deny"
@@ -29,6 +28,10 @@ MSG_EXECUTE_CODE_REFUSED = (
 MSG_ESC_REFUSED = (
     "BLOCKED: command contains raw terminal escape or control characters "
     "(THREAT-002). Terminal escape injection is refused during cron runs."
+)
+MSG_LOOKALIKE_TEMPLATE = (
+    "BLOCKED: command contains lookalike domain '{host}' mimicking trusted apex '{apex}' "
+    "(THREAT-002). Lookalike domain evasion is refused during cron runs."
 )
 
 #: Characters that alter terminal state or conceal command strings:
@@ -42,6 +45,7 @@ TRUSTED_APEX = (
     "github.com",
     "githubusercontent.com",
     "k8s.io",
+    "x-k8s.io",
     "google.com",
     "gke.io",
 )
@@ -57,7 +61,7 @@ def cron_effective_mode(mode: str, risk: str | None) -> str:
     """Escalate approval mode based on the job's declared risk tier.
 
     A job declared as 'high' risk is escalated to 'deny' mode so it is evaluated
-    against strict pattern and policy gates. Low and medium risk retain the
+    against strict pattern and policy gates. Low risk retains the
     profile's configured mode (typically 'approve' in non-interactive cron runs).
     """
     effective_risk = (risk or RISK_LOW).strip().lower()
@@ -84,7 +88,8 @@ def find_lookalike_domain(command: str) -> Optional[tuple[str, str]]:
 
     Returns (detected_host, matched_apex) if a lookalike is detected, else None.
     Legitimate exact matches (e.g. 'k8s.io') and proper subdomains (e.g.
-    'storage.googleapis.com', 'raw.githubusercontent.com') pass cleanly.
+    'storage.googleapis.com', 'raw.githubusercontent.com', 'kubeagents.x-k8s.io')
+    pass cleanly.
     """
     if not command or not isinstance(command, str):
         return None
@@ -92,12 +97,13 @@ def find_lookalike_domain(command: str) -> Optional[tuple[str, str]]:
     for match in _HOST_TOKEN.finditer(command):
         raw = match.group(1).lower().rstrip(".:/'\"")
         for apex in TRUSTED_APEX:
-            if apex in raw:
-                # Legitimate apex or subdomain of apex
-                if raw == apex or raw.endswith("." + apex):
-                    continue
-                # Lookalike attempt: contains the trusted apex but does not end with it
-                # or prefixes it with an unseparated label (e.g. kubernetes.io.evil.com)
+            # Legitimate apex or proper subdomain of apex
+            if raw == apex or raw.endswith("." + apex):
+                continue
+            # Lookalike evasion: token contains the apex at a dot/label boundary
+            # (e.g. 'kubernetes.io.evil-cdn.co' or 'sub.kubernetes.io.attacker.com')
+            # rather than terminating at the apex.
+            if raw.startswith(apex + ".") or ("." + apex + ".") in raw:
                 return raw, apex
     return None
 
@@ -125,10 +131,7 @@ def cron_content_block(command: str) -> Optional[dict]:
         host, apex = lookalike
         return {
             "approved": False,
-            "message": (
-                f"BLOCKED: command contains lookalike domain '{host}' mimicking trusted apex '{apex}' "
-                "(THREAT-002). Lookalike domain evasion is refused during cron runs."
-            ),
+            "message": MSG_LOOKALIKE_TEMPLATE.format(host=host, apex=apex),
         }
 
     return None

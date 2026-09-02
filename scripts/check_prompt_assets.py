@@ -702,7 +702,7 @@ def check_cron_assets() -> list[Finding]:
     return findings
 
 
-ALLOWED_CRON_RISK = {"low", "medium", "high"}
+ALLOWED_CRON_RISK = {"low", "high"}
 
 
 def check_cron_risk() -> list[Finding]:
