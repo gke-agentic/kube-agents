@@ -394,7 +394,7 @@ class CallSeamTest(unittest.TestCase):
     def test_retry_transient_recovers_on_second_attempt(self):
         calls = []
 
-        def run(argv):
+        def run(argv, **_kwargs):
             calls.append(argv)
             if len(calls) == 1:
                 return subprocess.CompletedProcess(argv, 1, "", "transient error")
@@ -408,7 +408,7 @@ class CallSeamTest(unittest.TestCase):
     def test_retry_transient_disabled_by_default(self):
         calls = []
 
-        def run(argv):
+        def run(argv, **_kwargs):
             calls.append(argv)
             return subprocess.CompletedProcess(argv, 1, "", "error")
 
@@ -422,7 +422,7 @@ class CallSeamTest(unittest.TestCase):
             with self.subTest(status_err=status_err):
                 calls = []
 
-                def run(argv):
+                def run(argv, **_kwargs):
                     calls.append(argv)
                     return subprocess.CompletedProcess(argv, 1, "", status_err)
 
@@ -434,7 +434,7 @@ class CallSeamTest(unittest.TestCase):
     def test_retry_transient_skips_sidecar_timeout(self):
         calls = []
 
-        def run(argv):
+        def run(argv, **_kwargs):
             calls.append(argv)
             return subprocess.CompletedProcess(argv, github_token_refresh.GH_TIMEOUT_RC, "", "timeout")
 
@@ -446,7 +446,7 @@ class CallSeamTest(unittest.TestCase):
     def test_retry_transient_skips_missing_binary(self):
         calls = []
 
-        def run(argv):
+        def run(argv, **_kwargs):
             calls.append(argv)
             return subprocess.CompletedProcess(argv, github_token_refresh.GH_MISSING_RC, "", "missing")
 
@@ -454,6 +454,15 @@ class CallSeamTest(unittest.TestCase):
         with self.assertRaises(forge.ForgeError):
             provider._call(["api", "repos/a/b"], retry_transient=True)
         self.assertEqual(len(calls), 1)
+
+    def test_type_error_in_runner_propagates(self):
+        def bad_runner(argv, repo=None):
+            raise TypeError("something inside runner broke")
+
+        provider = forge.GitHubProvider(run=bad_runner)
+        with self.assertRaises(TypeError) as ctx:
+            provider._call(["api", "repos/a/b"])
+        self.assertEqual(str(ctx.exception), "something inside runner broke")
 
 
 PRS_JSON = json.dumps(

@@ -446,6 +446,12 @@ class GitHubProvider:
     name = "github"
 
     def __init__(self, run: Optional[Callable] = None):
+        """Initialize the GitHub provider.
+
+        Args:
+            run: Runner callable matching `run(argv, repo=None)`. Defaults to
+                `run_gh`, which passes `repo` to credential refresh on auth failure.
+        """
         self._run = run or run_gh
         # One entry per distinct commenter per provider instance, which the
         # gate builds fresh each tick. A busy thread is usually three or four
@@ -472,24 +478,21 @@ class GitHubProvider:
         a `gh` failure that survived the preflight: the credential works
         somewhere, just not here.
 
+        When `repo` is provided, it is passed to the runner for credential refresh
+        context on authentication failure.
+
         When `retry_transient=True` (for read-only queries), a non-zero exit gets
         a single bounded retry before raising `REPO_UNREACHABLE`. Mutating calls
         (e.g., post_comment, acknowledge) must leave `retry_transient=False` to
         avoid double-posting on a sidecar timeout.
         """
-        try:
-            result = self._run(list(argv), repo=repo)
-        except TypeError:
-            result = self._run(list(argv))
+        result = self._run(list(argv), repo=repo)
         if (
             result.returncode != 0
             and retry_transient
             and _should_retry_transient(result)
         ):
-            try:
-                result = self._run(list(argv), repo=repo)
-            except TypeError:
-                result = self._run(list(argv))
+            result = self._run(list(argv), repo=repo)
         if result.returncode != 0:
             raise ForgeError("REPO_UNREACHABLE", (result.stderr or "").strip()[:200])
         if not expect_json:

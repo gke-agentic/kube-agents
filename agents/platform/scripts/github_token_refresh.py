@@ -115,6 +115,13 @@ def refresh_credentials_once(
     its own invocation, so one invocation makes one mint however many gh calls
     it makes, and a credential broken for a reason no token fixes cannot turn a
     single poll into a mint per call.
+
+    Note: In multi-org deployments, if an un-scoped preflight check (e.g. `auth
+    status`) triggers token refresh, it mints for the first managed repository.
+    Subsequent 401s for a repository in a different organization within the same
+    process will not trigger a second mint due to the process-wide at-most-once
+    guard. Full multi-org refresh across different organizations requires lifting
+    the guard to once-per-organization.
     """
     global _refresh_attempted, _refresh_failed
     if _refresh_attempted:
