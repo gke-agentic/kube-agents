@@ -3159,13 +3159,13 @@ func TestBuildDeployment_AgentPlugins_ImageVolumeUnsupported(t *testing.T) {
 	// 2. InitContainer must stage the plugin
 	var stageInit *corev1.Container
 	for i := range dep.Spec.Template.Spec.InitContainers {
-		if dep.Spec.Template.Spec.InitContainers[i].Name == "stage-plugin-myplugin" {
+		if dep.Spec.Template.Spec.InitContainers[i].Name == "stage-myplugin" {
 			stageInit = &dep.Spec.Template.Spec.InitContainers[i]
 			break
 		}
 	}
 	if stageInit == nil {
-		t.Fatalf("expected stage-plugin-myplugin init container to be present")
+		t.Fatalf("expected stage-myplugin init container to be present")
 	}
 	if stageInit.Image != "gcr.io/my-plugin:v1" {
 		t.Errorf("expected init container image 'gcr.io/my-plugin:v1', got %q", stageInit.Image)
@@ -5353,7 +5353,7 @@ func TestEveryContainerHasAHardenedSecurityContext(t *testing.T) {
 					Spec:       agentv1alpha1.AgentPluginSpec{Image: "example.com/plugin:v1"},
 				},
 			},
-			extraContainers: []string{"stage-plugin-myplugin"},
+			extraContainers: []string{"stage-myplugin"},
 			renderOpts:      renderOptions{imageVolumeSupported: false},
 		},
 	} {
@@ -5428,3 +5428,29 @@ func TestCRSuppliedSidecarsAreNotHardenedByTheOperator(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildPluginStagingContainerName(t *testing.T) {
+	cases := []struct {
+		pluginName string
+	}{
+		{"myplugin"},
+		{"gkestockoutinvestigator"},
+		{"pubsubplatform"},
+		{"verylongpluginnameexceedingthelimitbyalot"},
+	}
+
+	for _, tc := range cases {
+		got := buildPluginStagingContainerName(tc.pluginName)
+		if len(got) > maxAutopilotContainerNameLen {
+			t.Errorf("buildPluginStagingContainerName(%q) = %q (len %d), exceeds max length %d",
+				tc.pluginName, got, len(got), maxAutopilotContainerNameLen)
+		}
+		// Verify that GKE Autopilot gVisor annotation key will not exceed 63 bytes
+		gvisorAnnotation := "dev.gvisor.internal.seccomp." + got
+		if len(gvisorAnnotation) > 63 {
+			t.Errorf("gVisor annotation %q for %q exceeds 63 bytes (len %d)",
+				gvisorAnnotation, tc.pluginName, len(gvisorAnnotation))
+		}
+	}
+}
+

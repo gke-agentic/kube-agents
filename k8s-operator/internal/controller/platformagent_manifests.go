@@ -80,6 +80,11 @@ const (
 	// entrypoints run with umask 0002 so files created after mount stay
 	// group-writable.
 	agentFSGroup = int64(10000)
+
+	// maxAutopilotContainerNameLen is the maximum container name length that avoids
+	// exceeding Kubernetes 63-byte annotation key limits when GKE Autopilot / gVisor injects
+	// "dev.gvisor.internal.seccomp.<container-name>" (28-byte prefix without slash).
+	maxAutopilotContainerNameLen = 35
 )
 
 // Shared-state ownership. Step 1.5 of deploy/shared/docker-entrypoint.sh reads this
@@ -983,7 +988,7 @@ func buildPluginStagingInitContainer(homeDir string, plugin *agentv1alpha1.Agent
 		mountPath, mountPath, mountPath)
 
 	return corev1.Container{
-		Name:            fmt.Sprintf("stage-plugin-%s", plugin.Name),
+		Name:            buildPluginStagingContainerName(plugin.Name),
 		Image:           plugin.Spec.Image,
 		ImagePullPolicy: pullPolicy,
 		SecurityContext: hardenedSecurityContext(),
@@ -4455,3 +4460,17 @@ func buildPluginVolumeName(pluginName string) string {
 	}
 	return name
 }
+
+// buildPluginStagingContainerName generates the container name for the plugin staging initContainer.
+// GKE Autopilot / gVisor injects the annotation "dev.gvisor.internal.seccomp.<container-name>" (28 bytes)
+// into pod metadata without a slash prefix. The Kubernetes annotation name length limit is 63 bytes,
+// so any container name longer than 35 bytes causes admission rejection.
+func buildPluginStagingContainerName(pluginName string) string {
+	name := "stage-" + pluginName
+	if len(name) > maxAutopilotContainerNameLen {
+		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(pluginName)))[:8]
+		name = name[:maxAutopilotContainerNameLen-9] + "-" + hash
+	}
+	return name
+}
+
