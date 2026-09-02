@@ -67,16 +67,21 @@ STATIC_NETWORK_POLICIES: tuple[str, ...] = (
 
 # Manifests containing kind: NetworkPolicy that are deliberately excluded from the
 # static DNS parity roster. Every entry must carry its reviewed reason.
-EXCLUDED_NETPOL_MANIFESTS: dict[str, str] = {
-    # Operator reconciliation test fixtures; golden expected outputs verified by Go controller tests.
-    "k8s-operator/internal/testing/testdata/platform/expected/platformagent.yaml": "operator golden test fixture",
-    "k8s-operator/internal/testing/testdata/platform/expected/platformagent-tagged.yaml": "operator golden test fixture",
-    "k8s-operator/internal/testing/testdata/platform/expected/platformagent-telemetry.yaml": "operator golden test fixture",
-    "k8s-operator/internal/testing/testdata/platform/expected/platformagent-split-broker.yaml": "operator golden test fixture",
-}
+# Note: Go test fixtures under testdata/ are ignored systematically via IGNORED_DIRS.
+EXCLUDED_NETPOL_MANIFESTS: dict[str, str] = {}
 
 IGNORED_DIRS: frozenset[str] = frozenset(
-    {".venv", "node_modules", "__pycache__", ".git", ".coverage-data", ".terraform", ".claude", "docs/site"}
+    {
+        ".venv",
+        "node_modules",
+        "__pycache__",
+        ".git",
+        ".coverage-data",
+        ".terraform",
+        ".claude",
+        "docs/site",
+        "testdata",
+    }
 )
 
 REQUIRED_DNS_LITERAL = "10.96.0.10/32"
