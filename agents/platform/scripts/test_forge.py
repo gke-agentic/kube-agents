@@ -38,6 +38,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import forge  # noqa: E402
+import github_token_refresh  # noqa: E402
 
 
 def _completed(argv, returncode=0, stdout="", stderr=""):
@@ -273,6 +274,31 @@ class RunGhTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("404", result.stderr)
 
+    def test_auth_failure_retries_after_credential_refresh(self):
+        github_token_refresh.reset_refresh_state()
+        with mock.patch(
+            "forge.run_gh_once",
+            side_effect=[
+                _completed(["auth", "status"], 1, "", "HTTP 401: Bad credentials"),
+                _completed(["auth", "status"], 0, "Logged in", ""),
+            ],
+        ) as mock_once, mock.patch("forge.refresh_credentials_once", return_value=True) as mock_refresh:
+            result = forge.run_gh(["auth", "status"])
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(mock_once.call_count, 2)
+            mock_refresh.assert_called_once()
+
+    def test_non_auth_failure_does_not_retry(self):
+        github_token_refresh.reset_refresh_state()
+        with mock.patch(
+            "forge.run_gh_once",
+            return_value=_completed(["api"], 1, "", "HTTP 404: Not Found"),
+        ) as mock_once, mock.patch("forge.refresh_credentials_once") as mock_refresh:
+            result = forge.run_gh(["api", "repos/a/b"])
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(mock_once.call_count, 1)
+            mock_refresh.assert_not_called()
+
 
 class PreflightTest(unittest.TestCase):
     def test_authenticated_passes(self):
@@ -312,6 +338,32 @@ class CallSeamTest(unittest.TestCase):
         with self.assertRaises(forge.ForgeError) as ctx:
             provider._call(["api", "repos/a/b"])
         self.assertLessEqual(len(ctx.exception.value), 200)
+
+    def test_retry_transient_recovers_on_second_attempt(self):
+        calls = []
+
+        def run(argv):
+            calls.append(argv)
+            if len(calls) == 1:
+                return subprocess.CompletedProcess(argv, 1, "", "transient error")
+            return subprocess.CompletedProcess(argv, 0, '[{"id": 1}]', "")
+
+        provider = forge.GitHubProvider(run=run)
+        result = provider._call(["api", "repos/a/b"], retry_transient=True)
+        self.assertEqual(result, [{"id": 1}])
+        self.assertEqual(len(calls), 2)
+
+    def test_retry_transient_disabled_by_default(self):
+        calls = []
+
+        def run(argv):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 1, "", "error")
+
+        provider = forge.GitHubProvider(run=run)
+        with self.assertRaises(forge.ForgeError):
+            provider._call(["api", "repos/a/b"], retry_transient=False)
+        self.assertEqual(len(calls), 1)
 
 
 PRS_JSON = json.dumps(

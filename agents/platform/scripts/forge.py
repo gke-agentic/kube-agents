@@ -87,10 +87,6 @@ LOGGER = logging.getLogger(__name__)
 
 SETTINGS_PATH = "/opt/data/SETTINGS.md"
 
-#: Shell convention for "command not found". Kept distinguishable from a `gh`
-#: command that ran and failed, because the two need different operators.
-GH_MISSING_RC = 127
-
 #: How long any single `gh` call may take. A hung proxy must not hold the cron
 #: tick's per-job lock open indefinitely.
 GH_TIMEOUT_S = 60
@@ -355,15 +351,15 @@ def _parse_repo(configured: str) -> str:
     return repo
 
 
-def run_gh(argv: Sequence[str]) -> subprocess.CompletedProcess:
-    """One `gh` invocation, never raising for a non-zero exit.
+from github_token_refresh import (
+    GH_MISSING_RC,
+    looks_like_auth_failure,
+    refresh_credentials_once,
+)
 
-    Callers here always need the reason code more than the exception: a token
-    without scope for this repository and a repository that 404s both exit
-    non-zero with usable stderr, and turning that into a traceback loses it.
-    A missing binary is reported as `GH_MISSING_RC` so it stays distinguishable
-    from a command that ran and failed.
-    """
+
+def run_gh_once(argv: Sequence[str]) -> subprocess.CompletedProcess:
+    """Run one gh command without retry, mapping a missing binary onto a return code."""
     try:
         return subprocess.run(
             ["gh", *argv],
@@ -383,6 +379,22 @@ def run_gh(argv: Sequence[str]) -> subprocess.CompletedProcess:
             stdout="",
             stderr=f"'gh' timed out after {GH_TIMEOUT_S}s.",
         )
+
+
+def run_gh(argv: Sequence[str]) -> subprocess.CompletedProcess:
+    """One `gh` invocation, never raising for a non-zero exit.
+
+    A failed call gets one retry behind a freshly minted token on auth failures.
+    Callers here always need the reason code more than the exception: a token
+    without scope for this repository and a repository that 404s both exit
+    non-zero with usable stderr, and turning that into a traceback loses it.
+    A missing binary is reported as `GH_MISSING_RC` so it stays distinguishable
+    from a command that ran and failed.
+    """
+    result = run_gh_once(argv)
+    if looks_like_auth_failure(argv, result) and refresh_credentials_once(argv):
+        result = run_gh_once(argv)
+    return result
 
 
 def gh_preflight(run: Callable[[Sequence[str]], subprocess.CompletedProcess] = run_gh):
@@ -420,15 +432,28 @@ class GitHubProvider:
         self._viewer: Optional[str] = None
 
     # -- the seam ---------------------------------------------------------
-    def _call(self, argv: Sequence[str], *, expect_json: bool = True):
+    def _call(
+        self,
+        argv: Sequence[str],
+        *,
+        expect_json: bool = True,
+        retry_transient: bool = False,
+    ):
         """Every forge round trip goes through here. See the module docstring.
 
         Returns parsed JSON, or None for a call made only for its effect. A
         non-zero exit raises `REPO_UNREACHABLE`, which is the honest reading of
         a `gh` failure that survived the preflight: the credential works
         somewhere, just not here.
+
+        When `retry_transient=True` (for read-only queries), a non-zero exit gets
+        a single bounded retry before raising `REPO_UNREACHABLE`. Mutating calls
+        (e.g., post_comment, acknowledge) must leave `retry_transient=False` to
+        avoid double-posting on a sidecar timeout.
         """
         result = self._run(list(argv))
+        if result.returncode != 0 and retry_transient:
+            result = self._run(list(argv))
         if result.returncode != 0:
             raise ForgeError("REPO_UNREACHABLE", (result.stderr or "").strip()[:200])
         if not expect_json:
@@ -494,7 +519,8 @@ class GitHubProvider:
                 "api",
                 f"repos/{repo}/pulls?state=open&per_page={PR_PAGE_SIZE}",
                 "--paginate",
-            ]
+            ],
+            retry_transient=True,
         )
         return [
             PullRequest(
@@ -613,7 +639,7 @@ class GitHubProvider:
         return allowed
 
     def _collect(self, path: str, *, kind: str, repo: str) -> Iterable[Comment]:
-        rows = self._call(["api", path, "--paginate"]) or []
+        rows = self._call(["api", path, "--paginate"], retry_transient=True) or []
         for row in rows:
             body = str(row.get("body") or "")
             # A review with no summary body is an approval or a state change,
@@ -698,7 +724,8 @@ class GitHubProvider:
                 "api",
                 f"repos/{repo}/pulls/{pr.number}/commits?per_page={PR_PAGE_SIZE}",
                 "--paginate",
-            ]
+            ],
+            retry_transient=True,
         )
         commits = []
         for row in rows or []:
