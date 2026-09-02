@@ -27,7 +27,7 @@ on:
         required: true
         type: string
       image_tag:
-        description: "Image tag to reconcile to. Empty keeps the tag the install is already running."
+        description: "Image tag to reconcile to. Empty holds the images where they are: a plan uses the tag Terraform state records, an apply keeps the one the install is running."
         required: false
         default: ""
         type: string

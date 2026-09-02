@@ -52,9 +52,16 @@ jobs:
     with:
       github_environment: ${{ matrix.environment }}
       mode: "plan"
-      # No image_tag: the plan reads the tag the install is running, which is
-      # what separates "the infrastructure is behind" from "the images are
-      # behind". The second is expected between redeploys and is not drift.
+      # No image_tag: the plan holds the tag at whatever the last apply
+      # RECORDED, read out of Terraform state. That is what separates "the
+      # infrastructure is behind" from "the images are behind" -- the second is
+      # expected between redeploys and is not drift.
+      #
+      # State, not the cluster. The two differ by design here: the redeploy
+      # workflows move the running tag with `helm upgrade` and never run
+      # Terraform, so planning at the RUNNING tag would show every out-of-band
+      # redeploy as a pending change to helm_release.kube_agents and open this
+      # report on image lag every day main has moved.
       image_tag: ""
     # `inherit` because the called job declares an `environment:` and reads that
     # environment's secrets. A `uses:` job cannot declare one itself, so an

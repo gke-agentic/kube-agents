@@ -12,9 +12,11 @@ for the same Helm release.
 """
 
 import importlib.util
+import os
 import pathlib
 import re
 import subprocess
+import tempfile
 import unittest
 
 import yaml
@@ -66,6 +68,84 @@ class PubSubIamBindingTest(unittest.TestCase):
                 self.assertEqual(
                     pattern.findall(text), [],
                     "bind IAM members to the parent's .id, not .name — see #1059")
+
+
+class DriftPlanReferenceTagTest(unittest.TestCase):
+    """A plan's reference point is Terraform state, so its tag must be too.
+
+    Reading the tag off the CLUSTER looks right and is not: the redeploy
+    workflows move the running tag with `helm upgrade --reset-then-reuse-values`
+    and never run Terraform, so autopush's cluster advances with every push to
+    main while state stays where the last apply left it. Planning at the running
+    tag renders an image_tag state does not have, helm_release.kube_agents plans
+    an in-place update, and the daily report opens on image lag every day main
+    has moved -- an infra-drift issue that never reaches the clean plan that
+    closes it.
+    """
+
+    def _tf_state_image_tag(self, state_json, cat_rc=0):
+        """Runs the helper against a stubbed `gcloud storage cat`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            stub = pathlib.Path(tmp) / "gcloud"
+            stub.write_text(
+                "#!/usr/bin/env bash\n"
+                "cat <<'STATE'\n%s\nSTATE\n"
+                "exit %d\n" % (state_json, cat_rc))
+            stub.chmod(0o755)
+            script = (
+                'set -euo pipefail\n'
+                'PROJECT_ID=p; CLUSTER_NAME=c\n'
+                '. "%s/scripts/installer/installer_common.sh"\n'
+                'tf_state_image_tag\n' % _REPO_ROOT)
+            proc = subprocess.run(
+                ["bash", "-c", script], capture_output=True, text=True,
+                env={"PATH": "%s:%s" % (tmp, os.environ.get("PATH", "/usr/bin:/bin")),
+                     "HOME": os.environ.get("HOME", "/tmp")},
+            )
+        return proc
+
+    def test_it_reads_the_recorded_tag_out_of_state(self):
+        proc = self._tf_state_image_tag(
+            '{"outputs": {"image_tag": {"value": "0.4.2"}}, "resources": []}')
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "0.4.2")
+
+    def test_state_without_the_output_yields_nothing_rather_than_failing(self):
+        """State written before the composition had the output. The caller
+        falls back to the cluster, so this must not abort the run."""
+        proc = self._tf_state_image_tag('{"outputs": {}, "resources": []}')
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "")
+
+    def test_unreadable_or_corrupt_state_yields_nothing(self):
+        for label, payload, rc in (
+            ("no state object", "", 1),
+            ("not json", "<html>403</html>", 0),
+        ):
+            with self.subTest(label=label):
+                proc = self._tf_state_image_tag(payload, cat_rc=rc)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(proc.stdout, "")
+
+    def test_the_composition_publishes_the_output_it_reads(self):
+        """Nothing else puts the tag in state: Terraform does not record inputs."""
+        outputs = (_REPO_ROOT / "terraform" / "examples" / "full-install"
+                   / "outputs.tf").read_text()
+        self.assertRegex(outputs, r'output "image_tag" \{')
+        self.assertIn("value       = var.image_tag", outputs)
+
+    def test_a_tagless_plan_prefers_state_over_the_cluster(self):
+        """Order matters: the cluster read is the fallback, not the default."""
+        text = (_REPO_ROOT / "upgrade.sh").read_text()
+        guard = text.index(
+            'if [ -z "$PARAM_IMAGE_TAG" ] && [ "$PARAM_PLAN" = "true" ]; then')
+        state_read = text.index("tf_state_image_tag)")
+        cluster_read = text.index('running_image_tag "$target_namespace"')
+        # The guard opens the branch, the state read is inside it, and the
+        # cluster read is the fallback after it — so an APPLY still moves the
+        # images and only a plan holds them where state has them.
+        self.assertLess(guard, state_read)
+        self.assertLess(state_read, cluster_read)
 
 
 class LifecyclePlanTest(unittest.TestCase):

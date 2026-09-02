@@ -42,9 +42,18 @@ automatically by the first clean plan. A plan that fails to run leaves whatever
 is open exactly as it is — a failure is not evidence either way, and the red job
 is the signal.
 
-The plan pins no image tag. It reads the tag the install is already serving, so
-the report is about infrastructure rather than about images being a few commits
-behind between redeploys.
+The plan pins no image tag. It holds the tag at whatever the last apply
+recorded, read out of Terraform state, so the report is about infrastructure
+rather than about images being a few commits behind between redeploys.
+
+State rather than the cluster, and the difference matters: the redeploy
+workflows move the running tag with `helm upgrade` and never run Terraform, so
+planning at the tag the cluster is _serving_ would show every redeploy since the
+last apply as a pending change to `helm_release.kube_agents` — a drift issue
+opening on image lag every day `main` has moved, which never reaches the clean
+plan that would close it. An install whose state predates this (it is published
+as an `image_tag` output) falls back to the running tag and says so in the job
+log; the first reconcile records it and later plans are clean.
 
 ## The nightly reconcile
 

@@ -632,6 +632,32 @@ main() {
 
   local target_namespace="${NAMESPACE:-kubeagents-system}"
 
+  if [ -z "$PARAM_IMAGE_TAG" ] && [ "$PARAM_PLAN" = "true" ]; then
+    # A PLAN's reference point is Terraform state, not the cluster, so the tag
+    # it plans at has to be the one the last apply RECORDED. The two differ by
+    # design on these environments: the redeploy workflows move the running tag
+    # with `helm upgrade --reset-then-reuse-values` and never run Terraform, so
+    # autopush's cluster advances with every push to main while state stays
+    # where the last reconcile left it.
+    #
+    # Planning at the running tag would therefore render an image_tag into
+    # terraform.tfvars that state does not have, helm_release.kube_agents would
+    # plan an in-place update, and the daily drift report would open on image
+    # lag every day main has moved — the exact thing reading the tag off the
+    # cluster was meant to keep OUT of the report, and an issue that never
+    # reaches the clean plan that closes it.
+    PARAM_IMAGE_TAG="$(tf_state_image_tag)"
+    if [ -n "$PARAM_IMAGE_TAG" ]; then
+      print_success "Planning at the tag this install's Terraform state records: ${PARAM_IMAGE_TAG}"
+    else
+      # No state, or state written before this composition had the output.
+      # Falling back to the cluster keeps the plan possible; it just cannot
+      # promise the image tag is out of it, so say so rather than let a reader
+      # take an image-lag diff for infrastructure drift.
+      print_warning "This install's Terraform state records no image tag, so the plan falls back to the tag the cluster is running. Any difference between the two will appear in the plan as a change to helm_release.kube_agents. The first apply records it and later plans are clean."
+    fi
+  fi
+
   if [ -z "$PARAM_IMAGE_TAG" ]; then
     PARAM_IMAGE_TAG="$(running_image_tag "$target_namespace")"
     if [ -z "$PARAM_IMAGE_TAG" ]; then

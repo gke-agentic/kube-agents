@@ -352,7 +352,7 @@ only what the title does not say.
 | `install/manual.md` | Site page | Installing the Platform Agent workspace into an existing Hermes-compatible harness by hand. | Copy workspace, register, wire infra | — |
 | `install/helm-and-kind.md` | Site page | Points to the canonical Helm chart and Terraform modules in `main` (published from the first `X.Y.Z` tag) and states Kind is unsupported. | Chart/module pointers, no Kind | — |
 | `install/uninstall.md` | Site page | Removing the agent, operator, and provisioned GCP resources; agent-only vs full teardown. | Teardown | — |
-| `deploy/index.md` | Site page | Hub for the deploy section: Docker, Kustomize, Minty, release versioning, telemetry, GitOps. | Navigation | — |
+| `deploy/index.md` | Site page | Hub for the deploy section: Docker, Kustomize, Minty, release versioning, telemetry, GitOps, CI pool projects, environment reconcile. | Navigation | — |
 | `deploy/kustomize.md` | Site page | What ships in `deploy/kustomize/` and what the operator lays down on top of it. | Base vs operator-created objects | — |
 | `deploy/release-versioning.md` | Site page | Release lifecycle, automated SemVer 2.0 governance, clean promotion, GA release execution, and emergency hotfix runbook. | SemVer calculation, staging promotion gate, clean promotion, CLI dispatch, emergency runbook | SREs and maintainers |
 | `deploy/docker-images.md` | Site page | The images shipped from this repo and how tags are managed. | Image list, base pin, registry overrides, CI | — |
