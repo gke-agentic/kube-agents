@@ -268,8 +268,31 @@ bootstrap_install_env() {
   # file to exercise one. It is a diagnostic either way, not data.
   print_success "Loaded install configuration from: ${file}" >&2
 }
-load_legacy_vars_file "$LEGACY_VARS_FILE"
-bootstrap_install_env "$INSTALL_ENV_FILE"
+# --help needs nothing either of these loads, and both have side effects a
+# request for the flag list should not pay for: bootstrap_install_env chmods a
+# group-readable install.env, and it exits 1 when KUBE_AGENTS_INSTALL_ENV names
+# a path that is gone -- so a shell still carrying that variable from an earlier
+# run answers `./install.sh --help` with an error about a file nobody asked
+# about. .agents/skills/install-kube-agents/SKILL.md calls this output the
+# authoritative list of flags, so it has to survive a stale environment.
+#
+# Scanned here rather than in parse_args because the loads run at source time,
+# before it. An exact match only: --help-me is not --help, and a value that
+# merely contains the word (--project-id=help-desk) is not the flag.
+wants_help_only() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      -h | --help | -\?) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+if ! wants_help_only "$@"; then
+  load_legacy_vars_file "$LEGACY_VARS_FILE"
+  bootstrap_install_env "$INSTALL_ENV_FILE"
+fi
 
 # ─── Agentic & Automation Parameter States ────────────────────────────────────
 PARAM_NON_INTERACTIVE="${NONINTERACTIVE:-false}"
@@ -380,7 +403,7 @@ Flags for AI Agents & Automation:
                                 Ignored when installing onto a cluster that already
                                 exists — its live shape wins.
   --model-provider=PROVIDER     Model provider: gemini | vertex_ai | anthropic | openai
-                                (default: gemini)
+                                (default: DEFAULT_MODEL_PROVIDER, currently gemini)
   --model-default-name=NAME     Default model name for the provider
   --vertex-project-id=ID        GCP project serving Vertex AI models (default: --project-id)
   --vertex-location=LOCATION    Vertex AI serving location, a region or "global"
@@ -389,15 +412,20 @@ Flags for AI Agents & Automation:
   --openai-api-key=KEY          OpenAI API Key
   --anthropic-api-key=KEY       Anthropic API Key
   --gitops-org=ORG              GitHub Org/Username for GitOps repo
-  --gitops-repo=REPO            GitOps IaC Repository Name (default: gke-fleet-iac)
+  --gitops-repo=REPO            GitOps IaC Repository Name (default: DEFAULT_GITOPS_REPO,
+                                currently gke-fleet-iac)
   --permission-set=SET          Agent GCP IAM permission set: read-only | custom
-                                (default: read-only)
+                                (default: DEFAULT_PERMISSION_SET, currently read-only)
   --custom-roles=ROLES          Roles for --permission-set=custom (space- or comma-separated)
-  --gvisor=true|false           Enable GKE Sandbox (gVisor) runtime isolation (default: true)
-  --enable-web-ui=true|false    Enable Hermes Web UI port 9119 dashboard (default: false)
-  --user-profile-enabled=BOOL   Enable user profile persona extensions (default: false)
+  --gvisor=true|false           Enable GKE Sandbox (gVisor) runtime isolation
+                                (default: DEFAULT_ENABLE_GVISOR, currently true)
+  --enable-web-ui=true|false    Enable Hermes Web UI port 9119 dashboard
+                                (default: DEFAULT_ENABLE_WEBUI, currently false)
+  --user-profile-enabled=BOOL   Enable user profile persona extensions
+                                (default: DEFAULT_USER_PROFILE_ENABLED,
+                                currently false)
   --memory=MODE                 Long-term agent memory: file | hindsight | off
-                                (default: file)
+                                (default: DEFAULT_MEMORY, currently file)
                                   file      SMALL / PERSONAL deployments, and the default —
                                             it is what every install got before the searchable
                                             store existed, so an upgrade that says nothing
@@ -428,16 +456,21 @@ Flags for AI Agents & Automation:
   --enable-google-chat          Enable Google Chat integration
   --allowed-users=EMAILS        Comma-separated user emails allowed to talk to the
                                 agent over Google Chat. Empty allows all users
-  --chat-topic-name=TOPIC       Pub/Sub topic name for Google Chat (default: platform-agent-chat-events)
-  --google-chat-mode=MODE       Google Chat output mode: default | debug (default: default)
+  --chat-topic-name=TOPIC       Pub/Sub topic name for Google Chat
+                                (default: DEFAULT_CHAT_TOPIC_NAME,
+                                currently platform-agent-chat-events)
+  --google-chat-mode=MODE       Google Chat output mode: default | debug
+                                (default: DEFAULT_GOOGLE_CHAT_MODE, currently default)
   --menu, --config              Launch interactive Day-2 Control Panel Menu (raspi-config style)
   -h, --help, -?                Show this help message
 
 Configuration file:
   install.env beside this script (override with KUBE_AGENTS_INSTALL_ENV) is
-  loaded first, and a flag beats it. Start from install.env.example. Anything
-  it sets is inherited by later runs, so a re-run that omits a flag keeps the
-  value rather than reverting it to the default above.
+  loaded first, and a flag beats it. It is sourced with 'set -a', so a key it
+  carries also beats an exported variable of the same name -- a flag is what
+  overrides a recorded value for one run. Start from install.env.example.
+  Anything it sets is inherited by later runs, so a re-run that omits a flag
+  keeps the value rather than reverting it to the default above.
 EOF
 }
 
@@ -1856,7 +1889,7 @@ run_menu_system() {
   local gemini_api_key="${GEMINI_API_KEY:-}"
   local openai_api_key="${OPENAI_API_KEY:-}"
   local anthropic_api_key="${ANTHROPIC_API_KEY:-}"
-  local google_chat_enabled="${GOOGLE_CHAT_ENABLED:-false}"
+  local google_chat_enabled="${GOOGLE_CHAT_ENABLED:-$DEFAULT_GOOGLE_CHAT_ENABLED}"
   local slack_enabled="${SLACK_ENABLED:-$DEFAULT_SLACK_ENABLED}"
   local allowed_users="${ALLOWED_USERS:-}"
   local chat_topic_name="${CHAT_TOPIC_NAME:-$DEFAULT_CHAT_TOPIC_NAME}"
@@ -2899,11 +2932,13 @@ main() {
   # and `file` is what an install that says nothing about memory gets — the same
   # store those installs already had before the searchable one existed.
   local memory_enabled="false"
-  local memory_provider="multiuser_memory"
-  case "$memory_mode" in
-    hindsight) memory_provider="kube_agents_memory" ;;
-    off) memory_provider="none" ;;
-  esac
+  # memory_provider_from_mode (installer_common.sh) owns the mode → provider
+  # table; upgrade.sh and the Day-2 menu resolve the same pair through it, and a
+  # second copy here is how the three drift. It returns empty for a mode it does
+  # not recognise, which is what the fallback covers.
+  local memory_provider
+  memory_provider="$(memory_provider_from_mode "$memory_mode")"
+  [ -n "$memory_provider" ] || memory_provider="$DEFAULT_MEMORY_PROVIDER"
 
   print_step "10. Resolving Install Configuration"
   local registry_prefix="${PARAM_REGISTRY_PREFIX%/}"

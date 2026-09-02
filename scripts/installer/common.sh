@@ -341,7 +341,7 @@ init_var_model_provider() {
 }
 
 init_var_platform_agent_permission_set() {
-  init_var "PLATFORM_AGENT_PERMISSION_SET" "read-only" "Enter Platform Agent Permission Set (read-only, custom)"
+  init_var "PLATFORM_AGENT_PERMISSION_SET" "$DEFAULT_PERMISSION_SET" "Enter Platform Agent Permission Set (read-only, custom)"
 
   PLATFORM_AGENT_PERMISSION_SET=$(echo "$PLATFORM_AGENT_PERMISSION_SET" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
   # require_supported_permission_set (installer_common.sh) owns the vocabulary
@@ -381,7 +381,7 @@ init_var_platform_agent_permission_set() {
 MEMORY_PROVIDER_CHOICES="none kube_agents_memory multiuser_memory hindsight mem0 openviking holographic retaindb byterover"
 
 init_var_memory_provider() {
-  init_var "MEMORY_PROVIDER" "multiuser_memory" \
+  init_var "MEMORY_PROVIDER" "$DEFAULT_MEMORY_PROVIDER" \
     "Enter agent memory provider (${MEMORY_PROVIDER_CHOICES// /, })"
 
   MEMORY_PROVIDER=$(echo "$MEMORY_PROVIDER" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
@@ -592,7 +592,7 @@ ensure_teardown_state() {
       read -r INPUT_REGION
       export REGION="${INPUT_REGION:-$REGION}"
 
-      export CLUSTER_NAME="${CLUSTER_NAME:-platform-agent-host}"
+      export CLUSTER_NAME="${CLUSTER_NAME:-$DEFAULT_CLUSTER_NAME}"
       echo -ne "  ${C_CYAN}Enter GKE Cluster Name [${C_WHITE}${CLUSTER_NAME}${C_CYAN}]: ${C_RESET}"
       read -r INPUT_CLUSTER_NAME
       export CLUSTER_NAME="${INPUT_CLUSTER_NAME:-$CLUSTER_NAME}"
@@ -602,8 +602,8 @@ ensure_teardown_state() {
     export GKE_DB_KMS_KEY="${GKE_DB_KMS_KEY:-}"
     export GCP_ARTIFACT_REGISTRY_REPO_NAME="${GCP_ARTIFACT_REGISTRY_REPO_NAME:-${REPO_NAME:-kube-agents}}"
     export DEV_ARTIFACT_REGISTRY_CREATED="${DEV_ARTIFACT_REGISTRY_CREATED:-false}"
-    if [ "${GOOGLE_CHAT_ENABLED:-false}" = "true" ]; then
-      export CHAT_TOPIC_NAME="${CHAT_TOPIC_NAME:-platform-agent-chat-events}"
+    if [ "${GOOGLE_CHAT_ENABLED:-$DEFAULT_GOOGLE_CHAT_ENABLED}" = "true" ]; then
+      export CHAT_TOPIC_NAME="${CHAT_TOPIC_NAME:-$DEFAULT_CHAT_TOPIC_NAME}"
       export CHAT_SUB_NAME="${CHAT_SUB_NAME:-$DEFAULT_CHAT_SUB_NAME}"
     else
       export CHAT_TOPIC_NAME="${CHAT_TOPIC_NAME:-}"

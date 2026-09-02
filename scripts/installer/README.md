@@ -41,7 +41,10 @@ nothing else: every default an install gets for saying nothing, and no configura
 Change a default there and every front door follows. Do **not** restate one in
 `install.sh`, in a chart, in a `${VAR:-value}` at a point of use, or in prose — link to
 this table instead. A second copy of a default is how the installer's permission-set
-default once disagreed with the provisioner's.
+default once disagreed with the provisioner's. One case is not a copy and stays: a
+fallback that deliberately differs from the fresh-install default because it reads an
+install that already exists, as `${ENABLE_GVISOR:-false}` does in the control panel and
+in `write_tfvars_from_state`. Those carry the argument beside them.
 
 It is sourced **without** `set -a`, unlike `install.env`: these are the project's
 defaults, not the install's configuration, so they stay shell variables rather than
@@ -57,7 +60,9 @@ between them is the whole model.
 parameter block, `upgrade.sh` and `uninstall.sh` through `load_install_env`, the Day-2
 menu, and `common.sh`'s `load_state` for the dev scripts — with `set -a` so the values
 reach `write_tfvars_from_state` and the `TF_VAR_*` handoff, both of which read the
-environment. Order of authority is **flag, then file, then the defaults above**.
+environment. Order of authority is **flag, then file, then an exported variable, then
+the defaults above** — `set -a` sourcing means a key the file carries overwrites an
+export of the same name, so a flag is what overrides a recorded value for one run.
 `KUBE_AGENTS_INSTALL_ENV` points at a different path, which is how CI renders one from
 its own variables rather than keeping install state on an ephemeral runner.
 
@@ -75,7 +80,7 @@ is not configuration and not something an operator edits per install; it is wher
 project decides what an install gets for saying nothing. Full precedence:
 
 ```
-install.defaults.env  →  install.env  →  a command-line flag
+install.defaults.env  →  an exported environment variable  →  install.env  →  a command-line flag
 ```
 
 Loading the input first is also what fixes non-interactive re-runs (#1060). Every

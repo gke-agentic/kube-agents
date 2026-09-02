@@ -658,7 +658,7 @@ class InstallEnvInputTest(unittest.TestCase):
     how to inherit from the environment, and loading the file into the
     environment first is what makes inheritance the default path rather than
     something each flag has to remember. That is what closes #1060 as a class
-    instead of patching its seven instances, so these tests are about the
+    instead of patching its eight instances, so these tests are about the
     inheritance itself, not about any one flag.
     """
 

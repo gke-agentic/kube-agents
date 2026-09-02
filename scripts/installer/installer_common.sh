@@ -14,8 +14,13 @@
 # ─── Shared Installer Defaults ────────────────────────────────────────────────
 # Every default an install gets for saying nothing lives in install.defaults.env
 # at the repository root, beside install.env. One file, one job: this one has
-# none of them inline, and neither does any point of use. Precedence is
-# install.defaults.env → install.env → a flag.
+# none of them inline, and a point of use reads its DEFAULT_* key rather than
+# repeating the value. The exception is a fallback that deliberately differs
+# from the fresh-install default because it describes an install that already
+# exists -- `${ENABLE_GVISOR:-false}` here and in install.sh's control panel,
+# each with the argument beside it. Precedence is
+# install.defaults.env → an exported environment variable → install.env → a flag.
+# install.env is sourced with `set -a`, which is what puts it above the export.
 #
 # Sourced WITHOUT `set -a`, unlike install.env. These stay shell variables: they
 # are this project's defaults, not the install's configuration, and exporting
