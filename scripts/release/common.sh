@@ -460,12 +460,22 @@ get_existing_staging_tag() {
 # validated. Naming one by hand is a supported thing to do and stays wrong for
 # the same reason it is wrong today.
 #
-# The two markers probe one epoch boundary — the shared-pipeline restructure —
-# and not the general question of whether a tree can be driven by these
-# workflows. Nine scripts run out of the candidate's checkout; these sample two.
-# That is sound for the boundary they were chosen for, because both arrived in
-# the commit that created it. A later restructure that adds a seam needs its own
-# marker here; this function will not notice on its own.
+# The markers probe epoch boundaries — points at which the workflows started
+# driving the candidate's tree in a way an older tree cannot answer — and not
+# the general question of whether a tree can be driven by these workflows. Ten
+# scripts run out of the candidate's checkout; these sample three. That is sound
+# for the boundaries they were chosen for, because each arrived in the commit
+# that created one. A later restructure that adds a seam needs its own marker
+# here; this function will not notice on its own.
+#
+# Boundary 1, the shared-pipeline restructure: run_optional_e2e_suites.sh and
+# the E2E_SUITE selector. Boundary 2, the in-place reconcile: the nightly checks
+# the candidate OUT to reconcile staging at it, so a tree without
+# reconcile_environment.sh aborts the reconcile step on a missing file. That
+# failure is not self-announcing, because the promotion is deliberately
+# decoupled from the reconcile's outcome — the staging tag would still be
+# pushed, staging's images would move, and its infrastructure would stay exactly
+# as stale as before.
 candidate_supports_shared_pipeline() {
   local sha="${1:-}"
 
@@ -487,6 +497,8 @@ candidate_supports_shared_pipeline() {
   # safe direction: the cost is a skipped night, and the alternative is testing a
   # candidate whose tree we could not read.
   git grep -q "E2E_SUITE" "${sha}" -- scripts/release/execute_e2e_tests.py 2>/dev/null || return 1
+
+  git cat-file -e "${sha}:scripts/release/reconcile_environment.sh" 2>/dev/null || return 1
 
   return 0
 }
