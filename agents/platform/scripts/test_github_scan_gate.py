@@ -1311,6 +1311,17 @@ class ResolverPathTest(unittest.TestCase):
                  mock.patch.object(gate, "PLATFORM_TEMPLATE_DIR", str(template_root)):
                 self.assertEqual(gate._resolver_path(), target)
 
+    def test_fallback_returns_home_resolver_rel(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir) / "profiles" / "platform"
+            home.mkdir(parents=True, exist_ok=True)
+            expected = home / gate.RESOLVER_REL
+            nonexistent = str(Path(tmpdir) / "nonexistent" / "github_scan_gate.py")
+            with mock.patch("github_scan_gate.hermes_home", return_value=home), \
+                 mock.patch.object(gate, "PLATFORM_TEMPLATE_DIR", str(Path(tmpdir) / "nonexistent")), \
+                 mock.patch.object(gate, "__file__", nonexistent):
+                self.assertEqual(gate._resolver_path(), expected)
+
 
 if __name__ == "__main__":
     unittest.main()

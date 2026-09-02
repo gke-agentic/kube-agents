@@ -207,7 +207,7 @@ def _resolver_path() -> Path:
     for candidate in candidates:
         if candidate.is_file():
             return candidate
-    return home / PLATFORM_PROFILE_DIR / RESOLVER_REL
+    return home / RESOLVER_REL
 
 
 def run_resolver_poll() -> dict:

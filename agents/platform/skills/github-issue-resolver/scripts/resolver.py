@@ -16,17 +16,11 @@ from pathlib import Path
 
 # The shared scripts dir holds github_token_refresh (docker-entrypoint.sh keeps
 # executable scripts shared across profiles rather than copying them into each
-# one). The import itself is lazy, in refresh_credentials below, so this module
-# still imports on a dev machine with nothing staged under /opt. The third entry
-# is the same directory in a source checkout. Mirrors fleet-audit's audit_report,
-# which needs the same module for the same reason.
+# one). The third entry is the same directory in a source checkout. Mirrors
+# fleet-audit's audit_report, which needs the same module for the same reason.
 sys.path.append("/opt/defaults/scripts")
 sys.path.append("/opt/data/scripts")
 sys.path.append(str(Path(__file__).resolve().parents[3] / "scripts"))
-
-from gitops_workspace import get_managed_github_repos, is_valid_repo_slug
-
-SCRATCH_DIR = "/opt/data/scratch"
 
 from github_token_refresh import (
     GH_MISSING_RC,
@@ -34,6 +28,9 @@ from github_token_refresh import (
     looks_like_auth_failure,
     refresh_credentials_once,
 )
+from gitops_workspace import get_managed_github_repos, is_valid_repo_slug
+
+SCRATCH_DIR = "/opt/data/scratch"
 
 # The operator accepts a bare "owner/repo" shorthand as a valid gitRepo and
 # writes it through to SETTINGS.md verbatim, so it reaches us hostless. This
