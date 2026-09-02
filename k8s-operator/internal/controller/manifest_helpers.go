@@ -50,7 +50,7 @@ func fallbackPlatformAgentImage() string {
 }
 
 const (
-	fallbackFluentBitImage = "fluent/fluent-bit:5.1.0"
+	fallbackFluentBitImage = "fluent/fluent-bit:5.1.1"
 
 	// Operator-level image overrides for installs that mirror images into a
 	// private registry. Set on the controller-manager Deployment; a CR's
@@ -216,11 +216,12 @@ func otelTelemetryEnvVars(agentType, name, namespace, endpoint string, disabled 
 // platform-agent manifest, so it falls back to a tag if present before the digest (e.g. :v1@sha256:...)
 // or :latest.
 // E.g.:
-//   "ghcr.io/gke-labs/kube-agents/k8s-operator:0.2.0"                -> "ghcr.io/gke-labs/kube-agents/platform-agent:0.2.0"
-//   "ghcr.io/gke-labs/kube-agents/k8s-operator:rc_2608201147_1c06e1a" -> "ghcr.io/gke-labs/kube-agents/platform-agent:rc_2608201147_1c06e1a"
-//   "ghcr.io/gke-labs/kube-agents/k8s-operator@sha256:111111..."    -> "ghcr.io/gke-labs/kube-agents/platform-agent:latest"
-//   "mirror.corp.internal:5000/kube-agents/k8s-operator:0.2.0"       -> "mirror.corp.internal:5000/kube-agents/platform-agent:0.2.0"
-//   "k8s-operator:1c06e1ab71fdeea55e6100e61c0394206188a5ba"          -> "platform-agent:1c06e1ab71fdeea55e6100e61c0394206188a5ba"
+//
+//	"ghcr.io/gke-labs/kube-agents/k8s-operator:0.2.0"                -> "ghcr.io/gke-labs/kube-agents/platform-agent:0.2.0"
+//	"ghcr.io/gke-labs/kube-agents/k8s-operator:rc_2608201147_1c06e1a" -> "ghcr.io/gke-labs/kube-agents/platform-agent:rc_2608201147_1c06e1a"
+//	"ghcr.io/gke-labs/kube-agents/k8s-operator@sha256:111111..."    -> "ghcr.io/gke-labs/kube-agents/platform-agent:latest"
+//	"mirror.corp.internal:5000/kube-agents/k8s-operator:0.2.0"       -> "mirror.corp.internal:5000/kube-agents/platform-agent:0.2.0"
+//	"k8s-operator:1c06e1ab71fdeea55e6100e61c0394206188a5ba"          -> "platform-agent:1c06e1ab71fdeea55e6100e61c0394206188a5ba"
 func deriveAgentImageFromOperator(operatorImage string) string {
 	lastSlash := strings.LastIndex(operatorImage, "/")
 	prefix := ""
@@ -265,7 +266,7 @@ func fluentBitImage() string {
 
 // resolveAgentImage determines the full image reference using the optional deployment spec and a fallback default.
 //
-// qualify_image_ref() in k8s-operator/scripts/common.sh is the provisioning-time
+// qualify_image_ref() in scripts/installer/common.sh is the provisioning-time
 // twin of this rule and must agree on how a reference is split. The no-tag
 // fallback deliberately differs: this path is serving a live CR and settles for
 // "latest", while the shell helper can still abort the run and does.

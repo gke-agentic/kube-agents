@@ -15,10 +15,10 @@ already been answered — is harness policy that does not change between forges.
 
 Splitting the two here is what makes a second forge a new class rather than a
 second copy of the sweep. It is *not* a claim that a second forge is cheap:
-`docs/designs/pr-comment-conversation.md` §3 lists the four places under this
-module — token brokering, the credential sidecar's executable allowlist, git
-credential shape, and the CRD — that would each need work first. The seam is
-here so that when that work happens it lands in one place.
+`docs/designs/multi-forge-support.md` §5 covers the layers under this module —
+token brokering, the credential sidecar's executable allowlist, git credential
+shape, the egress policy — and §6 the CRD, each of which would need work first.
+The seam is here so that when that work happens it lands in one place.
 
 Why `_call` exists
 ------------------
@@ -65,6 +65,12 @@ The looser parser in `gitops_workspace.repo_from_settings` is deliberately not
 reused. It strips a `github.com/` prefix and otherwise takes the last two path
 segments, so `https://evil.com/github.com/attacker/repo` resolves to
 `attacker/repo`. That is out of scope here and noted rather than fixed.
+
+A third parser, `github_token_refresh.github_repo_from_remote`, reads the git
+remote rather than a configured value and rejects a non-GitHub host outright.
+Its host set carries `ssh.github.com` — GitHub's SSH-over-443 endpoint, which
+appears in a clone URL but not in a `SETTINGS.md` repository line — so a remote
+of that form resolves there and not here.
 """
 
 from __future__ import annotations
@@ -347,31 +353,6 @@ def _parse_repo(configured: str) -> str:
     if not _valid_repo_component(owner) or not _valid_repo_component(name):
         raise RepoUnparseable(configured)
     return repo
-
-
-def target_repo(settings_path: Optional[str] = None) -> Optional[str]:
-    """The configured repository as `owner/name`, or None when there is none.
-
-    None means "nothing configured", which is a supported install. A configured
-    value that cannot be read raises instead, because those two must never
-    reach an operator as the same silence.
-    """
-    path = settings_path or SETTINGS_PATH
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            lines = handle.readlines()
-    except OSError:
-        return None
-
-    configured = None
-    for line in lines:
-        if "Git Repo:" in line:
-            configured = line.split("Git Repo:", 1)[1].replace("*", "").strip()
-            break
-
-    if not configured or configured.lower() == SETTINGS_REPO_UNSET:
-        return None
-    return _parse_repo(configured)
 
 
 def run_gh(argv: Sequence[str]) -> subprocess.CompletedProcess:
@@ -734,20 +715,14 @@ class GitHubProvider:
 PROVIDERS: dict[str, type] = {"github.com": GitHubProvider}
 
 
-def provider_for(settings_path: Optional[str] = None, **kwargs) -> ForgeProvider:
-    """Pick a provider from the host in SETTINGS.md's `Git Repo:` line.
+def provider_for(repo: Optional[str] = None, **kwargs) -> ForgeProvider:
+    """Pick a provider from the host in repo or default to GitHub.
 
     A bare `owner/repo` — which the operator accepts and writes through
     verbatim — names no host, so it means GitHub: that shorthand is `gh -R`'s
     own form and no other forge shares it.
     """
-    path = settings_path or SETTINGS_PATH
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            text = handle.read()
-    except OSError:
-        text = ""
-    lowered = text.lower()
+    lowered = (repo or "").lower()
     for host, cls in PROVIDERS.items():
         if host in lowered:
             return cls(**kwargs)

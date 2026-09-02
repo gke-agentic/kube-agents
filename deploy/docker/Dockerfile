@@ -35,8 +35,8 @@
 # trailing name only, so gcr.io/distroless/static lands as <prefix>/distroless
 # -static and no amount of prefix-splicing reproduces the original path.
 #
-# HERMES_AGENT_TAG has no default — the release workflows read the one pin from
-# tags.env, and the root Makefile `include`s it — so a direct docker build has
+# HERMES_AGENT_TAG has no default — the image-build workflows read the one pin
+# from tags.env, and the root Makefile `include`s it — so a direct docker build has
 # to pass it too, or the agent-base stage resolves to a reference with an empty
 # tag:
 #
@@ -49,10 +49,16 @@
 # The defaults are the upstream references, so an ordinary build is unchanged.
 ARG HERMES_AGENT_TAG
 ARG HERMES_AGENT_IMAGE=nousresearch/hermes-agent
-ARG ENVOY_VERSION=v1.39.0
+ARG ENVOY_VERSION=v1.39.1
 ARG ENVOY_IMAGE=envoyproxy/envoy
 ARG GOLANG_IMAGE=golang
-ARG GOLANG_VERSION=1.26-alpine
+ARG GOLANG_VERSION=1.27-alpine
+# Declared here as well as in the `platform` stage that consumes it, so the
+# credential-proxy build -- which shares deploy/docker/cloudbuild.yaml and is
+# therefore handed the same --build-arg -- does not warn about an argument no
+# stage declares. The value and what it is for are documented where the ENV is
+# set, at the end of the `platform` stage.
+ARG KUBE_AGENTS_VERSION=dev
 FROM ${ENVOY_IMAGE}:${ENVOY_VERSION} AS envoy-bin
 
 # Every binary in the final image must match the architecture the image ships
@@ -187,7 +193,7 @@ RUN /opt/hermes/.venv/bin/python3 /tmp/kanban-progress/apply_kanban_progress_lin
 # Hotfix: make a dispatched cron run report back, and stop it closing the
 # kanban card of the caller that dispatched it. Upstream discards the run's
 # final response and lets the run inherit HERMES_KANBAN_TASK, which is how
-# three fleet-audit streams published wrong ledgers on 2026-08-04. Ten edits
+# three fleet-audit streams published wrong ledgers on 2026-08-04. Twelve edits
 # across three files, so the surgery lives in an applier script rather than
 # inline; it fails the build on any anchor that no longer matches.
 # verify_cron_run_scope.py then exercises the patched code. The applier only
@@ -233,7 +239,7 @@ exit(1) if ('https://' in clipped or not 3000 < len(clipped) <= 4000) else None"
 # The platform profile has no ticker thread -- it is ticked once a minute by
 # spawning `hermes cron tick`, whose body is verbatim `tick(verbose=True)` --
 # so everything Hermes hangs off the ticker's lifetime is absent or wrong there.
-# Three consequences, all fixed by the eleven anchored edits in the applier:
+# Three consequences, all fixed by the fourteen anchored edits in the applier:
 #   * `tick()` defaults to sync=True and held <HERMES_HOME>/cron/.tick.lock
 #     across the whole `as_completed` wait, so a fleet audit starved every other
 #     job for its full runtime. Measured over 17h: 3 of 35
@@ -1620,6 +1626,24 @@ RUN set -eu; \
     chmod 644 /opt/build-info.json
 
 USER 10000:10000
+
+# The build this image came from, for the `User-Agent` that remote MCP calls
+# carry. Hermes resolves `${KUBE_AGENTS_VERSION}` in an `mcp_servers` entry's
+# `args` from the agent process environment, so the value has to be on the
+# container rather than only in the config -- see the `--header` argument on the
+# mcp-remote entries in deploy/shared/defaults/config.yaml.
+#
+# Last instruction in the stage, not beside the ARGs at the top: the value
+# changes on every commit, and an ENV that early would invalidate the whole
+# `platform` chain's cache on every build. ENV writes no filesystem diff, so it
+# costs nothing against the layer budget.
+#
+# `dev` is the default (declared with the other build args above) because an
+# unset build arg must still produce a well-formed header. The publish workflows
+# pass the commit SHA the image is tagged with, so a User-Agent on the wire
+# names the exact image.
+ARG KUBE_AGENTS_VERSION
+ENV KUBE_AGENTS_VERSION=${KUBE_AGENTS_VERSION}
 
 # --- CREDENTIAL PROXY TOOLING ---
 # Everything the sidecar needs that is not agent source: the credential-aware

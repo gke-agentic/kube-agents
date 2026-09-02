@@ -222,8 +222,13 @@ adopt_kms() {
     )
   fi
 
+  # Skipping both halves — cluster KMS (create_cluster or database encryption
+  # off) and the minter — leaves targets empty, and macOS's bash 3.2 treats an
+  # empty array expansion as unbound under `set -u`. The ${arr[@]+...} form
+  # expands to nothing instead, so the loop runs zero times and the tail below
+  # still clears any stale provider override and logs what happened.
   local adopted=0 address kind id
-  for target in "${targets[@]}"; do
+  for target in ${targets[@]+"${targets[@]}"}; do
     IFS=$'\t' read -r address kind id <<<"$target"
 
     if in_state "$address"; then

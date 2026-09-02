@@ -74,14 +74,18 @@ jobs:
           # `main` -- so an unstamped publish makes the feature permanently inert
           # on every install that pulls from here. IMAGE_SOURCE is the OCI source
           # label ghcr follows to link the package to a repository; it comes from
-          # the workflow's own repository so a fork's images name the fork. Both
-          # ARGs sit at the end of the Dockerfile, so a changing SHA invalidates
-          # one ~100-byte layer and nothing above it.
+          # the workflow's own repository so a fork's images name the fork.
+          # KUBE_AGENTS_VERSION is the commit SHA the image is tagged with: it
+          # becomes the version in the User-Agent the agent's remote MCP calls
+          # carry, so a request in a Google API log names the exact image. All
+          # three ARGs sit at the end of the Dockerfile, so a changing SHA
+          # invalidates one ~100-byte layer and nothing above it.
           # Keep these lines free of `#`: the action parses the block verbatim.
           build-args: |
             HERMES_AGENT_TAG=${{ env.HERMES_AGENT_TAG }}
             GIT_SHA=${{ github.sha }}
             IMAGE_SOURCE=${{ github.server_url }}/${{ github.repository }}
+            KUBE_AGENTS_VERSION=${{ github.sha }}
 
       - name: Detect a missing revision stamp (after publish)
         # Named for what it is. The build step above has `push: true`, so by the
@@ -90,7 +94,7 @@ jobs:
         # needs a revert and a republish. Making it a real gate means building
         # without pushing, verifying, then pushing, and the GCP workflow beside
         # it cannot follow: that path publishes through `images:` in
-        # deploy/docker/cloudbuild.yaml, which k8s-operator/scripts/dev/
+        # deploy/docker/cloudbuild.yaml, which scripts/dev/
         # dev_rebuild_agent.sh also drives. Splitting the tag there changes the
         # dev rebuild too, which is more blast radius than this branch should
         # carry for a check that has caught nothing yet.

@@ -37,7 +37,7 @@ AGENTS := platform
 
 # The revision baked into /opt/build-info.json, so a running pod can say which
 # commit it is. Computed by the shared helper rather than inline, because this
-# line and k8s-operator/scripts/dev/dev_rebuild_agent.sh had drifted to two
+# line and scripts/dev/dev_rebuild_agent.sh had drifted to two
 # different answers and the drift was a silent bug -- the helper's header says
 # which answer is right and why an abbreviation or a `describe --dirty` is not.
 GIT_SHA ?= $(shell ./scripts/git_revision_stamp.sh)
@@ -79,7 +79,8 @@ docker-push-credential-proxy: docker-build-credential-proxy ## Build and push th
 	docker push $(REPO)/credential-proxy:latest
 
 dev-rebuild-agent: ## Fast local iteration: rebuild and redeploy an agent image (e.g. make dev-rebuild-agent ARGS="platform").
-	@$(MAKE) -C k8s-operator dev-rebuild-agent ARGS="$(ARGS)"
+	@chmod +x scripts/installer/*.sh scripts/dev/*.sh 2>/dev/null || true
+	@./scripts/dev/dev_rebuild_agent.sh $(ARGS)
 
 # Read-only. Run `./scripts/selfimprove_ledger_view.py --help` for the filters,
 # and pass them through here as ARGS (e.g. ARGS="--detail 3").

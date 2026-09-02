@@ -86,7 +86,7 @@ where a new one belongs, `docs/testing-map.md` maps the nine test homes to their
 
 The checks above tell you the code compiles, the docs resolve, and the unit tests agree with themselves. None of them tell you whether the operator reconciled your change or the agent pod picked it up — this project's failure mode is a green build that configures nothing. So every pull request fills in the template's **Testing → Live validation** section with how the change was exercised against a real, running kube-agents installation. If you don't have one, [INSTALL.md](https://github.com/gke-labs/kube-agents/blob/main/INSTALL.md) stands one up.
 
-[`AGENTS.md`](https://github.com/gke-labs/kube-agents/blob/main/AGENTS.md) states this requirement in full and is canonical; what follows summarises it, so trust it over this page if the two ever differ.
+[`AGENTS.md`](https://github.com/gke-labs/kube-agents/blob/main/AGENTS.md) states this requirement and [`.agents/rules/pre_pr_review.md`](https://github.com/gke-labs/kube-agents/blob/main/.agents/rules/pre_pr_review.md) holds its mechanics; together they are canonical. What follows summarises the pair, so trust them over this page if they ever differ.
 
 What that section should say:
 
@@ -99,7 +99,7 @@ What that section should say:
 
 Some changes can't reach a running installation — docs-only edits, CI workflow changes, code paths that need infrastructure you don't have. Write "Not live-tested" and say why. An empty section is not an answer.
 
-If your team shares one installation, take the lease before you mutate it: `scripts/live_test_lease.py` holds it as a ConfigMap in the install's own namespace. Copy `.claude/settings.json.example` to `.claude/settings.json` once per checkout, and its `PreToolUse` hook claims the lease on your first mutating command and blocks the command while another agent holds it. Read-only commands are never blocked, and nothing is protected until a checkout has a `vars.sh` or you configure an install. The hook is not committed — it would be branch content Claude Code runs unprompted — and it is Claude Code-specific, so from any other harness, or a plain shell, run `acquire` and `release` yourself:
+If your team shares one installation, take the lease before you mutate it: `scripts/live_test_lease.py` holds it as a ConfigMap in the install's own namespace. Copy `.claude/settings.json.example` to `.claude/settings.json` once per checkout, and its `PreToolUse` hook claims the lease on your first mutating command and blocks the command while another agent holds it. Read-only commands are never blocked, and nothing is protected until a checkout has an `install.env` (or a legacy `vars.sh`) or you configure an install. The hook is not committed — it would be branch content Claude Code runs unprompted — and it is Claude Code-specific, so from any other harness, or a plain shell, run `acquire` and `release` yourself:
 
 ```bash
 cp .claude/settings.json.example .claude/settings.json   # opt into the hook
@@ -115,7 +115,7 @@ there; `status` reports all of them either way. [`docs/designs/live-test-lease.m
 
 Nobody reads a change as cheaply as the person who wrote it, and right now the first hostile reader of most pull requests here is a reviewer who has never seen the code. So every pull request is reviewed by its author first, and the template's **Self-Review** section carries what those passes found — merged into one list, since more than one pass is required.
 
-[`AGENTS.md`](https://github.com/gke-labs/kube-agents/blob/main/AGENTS.md) states this requirement in full and is canonical; what follows summarises it, so trust it over this page if the two ever differ.
+[`AGENTS.md`](https://github.com/gke-labs/kube-agents/blob/main/AGENTS.md) states this requirement and [`.agents/rules/pre_pr_review.md`](https://github.com/gke-labs/kube-agents/blob/main/.agents/rules/pre_pr_review.md) holds its mechanics; together they are canonical. What follows summarises the pair, so trust them over this page if they ever differ.
 
 The method is the repository's own review skill, [`.agents/skills/review-adversarial/SKILL.md`](https://github.com/gke-labs/kube-agents/blob/main/.agents/skills/review-adversarial/SKILL.md) — run it against your branch diff with whatever agent you use. It works ten angles over the change, then re-derives each candidate from the source as a hostile second reader and throws out what it cannot defend.
 
@@ -137,6 +137,8 @@ Re-running the pass folds into the section rather than stacking a round beneath 
 ## Code review
 
 All submissions, including from project members, require review through GitHub pull requests. See [GitHub Help — About pull requests](https://help.github.com/articles/about-pull-requests/).
+
+Nobody merges by hand. This is a Prow repository: `google-oss-prow` squash-merges a pull request once it carries both the `lgtm` label — which a reviewer's "Approve" sets, and which Prow will not take from the author — and the `approved` label, which comes from an approver in the `OWNERS` file covering the changed paths. GitHub's own branch protection requires zero approving reviews, so the settings page is not where the review requirement lives. [`docs/pull-request-workflow.md`](https://github.com/gke-labs/kube-agents/blob/main/docs/pull-request-workflow.md) is canonical for this and has the rest: the labels that block a merge, `/hold`, which checks are required, and how to read what Tide is waiting for — including why `mergeStateStatus` cannot tell you.
 
 ### Automated review
 

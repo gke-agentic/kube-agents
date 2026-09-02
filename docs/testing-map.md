@@ -8,10 +8,10 @@ misplaced test look fine.
 
 | What you are testing                                                                       | Where it goes                                                                                    | What runs it                                                                                                                                    | On a pull request                                                                                                 |
 | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| A Python module's own logic                                                                | beside the module; the exact directory set is the `PYTHON_TEST_DIRS` globs at `Makefile:129-142` | `make test-python`                                                                                                                              | runs, unconditionally                                                                                             |
+| A Python module's own logic                                                                | beside the module; the exact directory set is the `PYTHON_TEST_DIRS` globs at `Makefile:129-144` | `make test-python`                                                                                                                              | runs, unconditionally                                                                                             |
 | A shell script, a rendered manifest, an installer — something with no module to sit beside | `tests/test_*.py`, and `tests/memory/` for the memory provider                                   | `make test-python`, and `agent-startup-test.yml` for the startup subset                                                                         | runs, unconditionally                                                                                             |
 | Two components across a seam, no model call                                                | `tests/integration/test_seam_*.py`                                                               | `make test-python`                                                                                                                              | runs, unconditionally                                                                                             |
-| The bench harness itself — verifiers, parsing                                              | `bench/tests/`                                                                                   | `make test-bench`                                                                                                                               | runs, unconditionally                                                                                             |
+| The bench harness itself — verifiers, parsing — plus contract tests needing its imports    | `bench/tests/`                                                                                   | `make test-bench`                                                                                                                               | runs, unconditionally                                                                                             |
 | The Go operator                                                                            | `k8s-operator/`                                                                                  | `make -C k8s-operator test`                                                                                                                     | paths-filtered: runs only when the change touches `k8s-operator/**` or `agents/platform/scripts/**`               |
 | An agent plugin                                                                            | `agentplugins/*/tests/test_*.py`                                                                 | `agentplugins-test.yml`                                                                                                                         | paths-filtered: runs only when the change touches `agentplugins/**`                                               |
 | Whether the agent diagnoses a defect you planted for it                                    | `bench/tasks/<name>/task.yaml`                                                                   | `hack/ci-eval-pr.sh`, as the Prow presubmit                                                                                                     | runs as a presubmit and reports on the pull request; whether it blocks is Prow config this repository cannot read |
@@ -75,8 +75,11 @@ needs a Pub/Sub topic that CI does not have.
 
 The last column says what a trigger and its `if:` conditions support, which is a weaker claim than
 "blocks the merge". Which checks are actually required lives in branch protection on
-`gke-labs/kube-agents` and in Prow config in `GoogleCloudPlatform/oss-test-infra`; neither is
-readable from this repository, so neither is asserted here. `make verify` (`Makefile:161`) is the
+`gke-labs/kube-agents` and in Prow config in `GoogleCloudPlatform/oss-test-infra`; neither is a file
+in this repository, so this table asserts nothing about either.
+[`pull-request-workflow.md`](pull-request-workflow.md#how-a-change-merges) names the required
+contexts as they stand, gives the command to read them back, and says why that command sees only
+the branch-protection half of the set. `make verify` (`Makefile:173`) is the
 local answer to the same question — everything a pull request must pass offline, in one target —
 and [`site/src/content/docs/contributing.md`](site/src/content/docs/contributing.md) lists the
 individual targets to run when you have touched a given area.
@@ -98,7 +101,7 @@ and `python-tests.yml`. Read the contract before writing a case;
 ## The trap that spans every tier
 
 **A new test directory that no wildcard reaches never runs.** `make test-python` discovers from
-`PYTHON_TEST_DIRS`, a list of thirteen globs at `Makefile:129-142`. A directory the globs miss fails
+`PYTHON_TEST_DIRS`, a list of fifteen globs at `Makefile:129-144`. A directory the globs miss fails
 nothing — it sits unexecuted and the suite reports green around it, which is how eight test files
 stayed unrun for months. Adding a directory means adding its glob in the same change.
 `scripts/test_test_discovery.py` fails the build if you forget, and its `EXCLUDED` dict is where a

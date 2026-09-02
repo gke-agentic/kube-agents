@@ -19,6 +19,7 @@ engine it does not carry.
 """
 
 import pathlib
+import re
 import shlex
 import shutil
 import stat
@@ -30,7 +31,8 @@ from tests.testing.common import create_minimal_tools_bin, get_isolated_test_env
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _UNINSTALL_SH = _REPO_ROOT / "uninstall.sh"
-_INSTALLER_COMMON = _REPO_ROOT / "k8s-operator" / "scripts" / "installer_common.sh"
+_INSTALLER_COMMON = _REPO_ROOT / "scripts" / "installer" / "installer_common.sh"
+_INSTALL_DEFAULTS = _REPO_ROOT / "install.defaults.env"
 
 
 class ResolveStateLocationTest(unittest.TestCase):
@@ -244,11 +246,16 @@ bash -c "exit 3"
         """
         root = pathlib.Path(tmp) / "repo"
         (root / "terraform" / "examples" / "full-install").mkdir(parents=True)
-        (root / "k8s-operator" / "scripts").mkdir(parents=True)
+        (root / "scripts" / "installer").mkdir(parents=True)
         # Only its existence is tested before the exits under test.
         (root / "terraform" / "examples" / "full-install" / "lifecycle.sh").touch()
         shutil.copy(_UNINSTALL_SH, root / "uninstall.sh")
-        shutil.copy(_INSTALLER_COMMON, root / "k8s-operator" / "scripts" / "installer_common.sh")
+        shutil.copy(_INSTALLER_COMMON, root / "scripts" / "installer" / "installer_common.sh")
+        # installer_common.sh sources the defaults from the repository root and
+        # refuses to run without them, so a fake repo needs the real file. A
+        # checkout genuinely missing it cannot decide anything about an install,
+        # which is why that is a hard failure rather than a fallback.
+        shutil.copy(_INSTALL_DEFAULTS, root / "install.defaults.env")
         return root
 
     def _run_whole_script(self, tmp, gcloud_body):
@@ -410,6 +417,45 @@ class SourceRefDispatchTest(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("REF=", proc.stdout)
             self.assertNotIn("REF=0.2.0", proc.stdout)
+
+
+class GvisorFloorCannotBlockTheTeardownTest(unittest.TestCase):
+    """A destroy is not refusable on the sandbox's account.
+
+    `write_tfvars_from_state` runs the Autopilot version-floor check whenever
+    ENABLE_GVISOR is truthy, and returns 1 below the floor. uninstall.sh loads the
+    checkout's install.env, and since the installer default
+    flipped that file says "true" on every new install -- so the ordinary
+    teardown, from the checkout that installed, is the case the floor can abort.
+    The `false` fallback inside write_tfvars_from_state does not cover it; only
+    the export in uninstall.sh does.
+
+    Asserted against the script's text rather than by running it, because the
+    call sits inside the teardown's confirmation and lock machinery. What makes
+    the assertion meaningful is the ordering: an export placed after the call
+    would read as a fix and change nothing.
+    """
+
+    def test_uninstall_forces_gvisor_off_before_generating_tfvars(self):
+        text = _UNINSTALL_SH.read_text()
+        export_at = text.find('export ENABLE_GVISOR="false"')
+        self.assertNotEqual(
+            export_at,
+            -1,
+            "uninstall.sh must export ENABLE_GVISOR=false; without it a "
+            "sub-floor Autopilot cluster cannot be torn down from the checkout "
+            "that installed it.",
+        )
+        # The invocation, not the two comments that name the function.
+        call = re.search(r"^\s*write_tfvars_from_state \"", text, re.MULTILINE)
+        self.assertIsNotNone(call, "write_tfvars_from_state call not found")
+        call_at = call.start()
+        self.assertLess(
+            export_at,
+            call_at,
+            "the ENABLE_GVISOR export must come before write_tfvars_from_state, "
+            "which is what runs the floor check.",
+        )
 
 
 if __name__ == "__main__":

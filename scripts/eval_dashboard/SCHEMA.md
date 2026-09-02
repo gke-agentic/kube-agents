@@ -109,6 +109,31 @@ below).
 - `ov_history` — `{build_id, value}` per run that recorded an
   OutcomeValidity, oldest first.
 
+### Optional top-level fields
+
+Additive, optional, and safe to omit — consumers must default them.
+
+- `stale_after_s` — seconds after `generated_at` beyond which the rendered
+  page labels itself `STALE`. No collector version emits it yet; the
+  renderer defaults to `7200` when it is absent.
+
+### Optional run and task fields
+
+Additive, optional, and safe to omit — consumers must default them. No
+collector version in this tree emits them yet; the renderer already reads
+both.
+
+- `runs[].pr_merged` — `true` | `false` | `null`: whether the run's PR has
+  merged. The renderer's "agent" band charts only runs where it is `true`
+  (the final such run per PR); absent or `null` keeps a run out of that
+  cohort without any other effect.
+- `runs[].tasks[].reps` — the task's individual repetitions, in order:
+  `[{"n": 1, "result": "pass"|"fail"|"infra", "reason": "<string>"|null}]`.
+  `reason` is free-form log text (renderers must escape it). `infra` reps
+  are excluded from every pass-fraction denominator, exactly like `infra`
+  task results. When `reps` is absent the task's single `result` stands in
+  for one rep.
+
 ### `coverage` — from `docs/designs/domains.yaml`
 
 - `domains_total` — number of entries under `domains:`.
