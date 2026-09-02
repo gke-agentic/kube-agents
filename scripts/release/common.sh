@@ -42,6 +42,8 @@ export RELEASE_BUNDLE_ROOT_FILES=(
   "install.sh"
   "uninstall.sh"
   "upgrade.sh"
+  "install.defaults.env"
+  "install.env.example"
   "images.json"
   "README.md"
   "LICENSE"

@@ -170,6 +170,8 @@ class PackageReleaseBundleTest(unittest.TestCase):
             # Verify terraform/ directory exists in bundle and preserves tfvars examples
             self.assertTrue((bundle_root / "terraform").is_dir(), "terraform/ should be in bundle")
             self.assertTrue((bundle_root / "images.json").is_file(), "images.json should be in bundle")
+            self.assertTrue((bundle_root / "install.defaults.env").is_file(), "install.defaults.env should be in bundle")
+            self.assertTrue((bundle_root / "install.env.example").is_file(), "install.env.example should be in bundle")
             self.assertTrue(
                 (bundle_root / "terraform" / "examples" / "full-install" / "terraform.tfvars.example").is_file(),
                 "terraform.tfvars.example should be preserved in bundle",

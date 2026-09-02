@@ -120,6 +120,7 @@ stage_bundle_files() {
   # Defense-in-depth: Sanitize sensitive configs, tokens, temporary files, and local caches
   find "${target_bundle_dir}" -type f \( \
     \( -name ".env*" ! -name "tags.env" \) -o \
+    \( -name "install.env*" ! -name "install.env.example" \) -o \
     -name "vars.sh" -o \
     -name "*credentials*.json" -o \
     -name "service-account*.json" -o \
