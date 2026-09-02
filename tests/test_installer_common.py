@@ -645,6 +645,33 @@ class InstallerCommonTest(unittest.TestCase):
         self.assertEqual(vertex_location, "global")
         self.assertNotEqual(region, vertex_location)
 
+    def test_tfvars_generation_includes_plugin_enablement(self):
+        with tempfile.TemporaryDirectory() as out_dir:
+            dest = pathlib.Path(out_dir) / "terraform.tfvars"
+            # Unset defaults to false
+            proc = self._run(
+                f'write_tfvars_from_state "{dest}"; echo "rc=$?"',
+                env={"API_SERVER_KEY": "k"},
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            content = dest.read_text()
+            self.assertIn("enable_pubsub_platform       = false", content)
+            self.assertIn("enable_stockout_investigator = false", content)
+
+            # Explicit true
+            proc = self._run(
+                f'write_tfvars_from_state "{dest}"; echo "rc=$?"',
+                env={
+                    "API_SERVER_KEY": "k",
+                    "ENABLE_PUBSUB_PLATFORM": "true",
+                    "ENABLE_STOCKOUT_INVESTIGATOR": "true",
+                },
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            content = dest.read_text()
+            self.assertIn("enable_pubsub_platform       = true", content)
+            self.assertIn("enable_stockout_investigator = true", content)
+
 
 class InstallDefaultsFileTest(unittest.TestCase):
     """install.defaults.env holds every default, and only defaults.

@@ -80,6 +80,11 @@ const (
 	// entrypoints run with umask 0002 so files created after mount stay
 	// group-writable.
 	agentFSGroup = int64(10000)
+
+	// maxAutopilotContainerNameLen is the maximum container name length that avoids
+	// exceeding Kubernetes 63-byte annotation key limits when GKE Autopilot / gVisor injects
+	// "dev.gvisor.internal.seccomp.<container-name>" (28-byte prefix without slash).
+	maxAutopilotContainerNameLen = 35
 )
 
 // Shared-state ownership. Step 1.5 of deploy/shared/docker-entrypoint.sh reads this
@@ -994,6 +999,36 @@ func pluginMountPath(homeDir string, plugin *agentv1alpha1.AgentPlugin) string {
 	return fmt.Sprintf("%s/plugins/%s", homeDir, plugin.Name)
 }
 
+// buildPluginStagingInitContainer builds an init container that extracts a plugin's container image
+// into an emptyDir volume on clusters where ImageVolumeSource is unsupported or restricted (e.g. GKE Autopilot).
+func buildPluginStagingInitContainer(homeDir string, plugin *agentv1alpha1.AgentPlugin) corev1.Container {
+	mountPath := pluginMountPath(homeDir, plugin)
+	pullPolicy := corev1.PullIfNotPresent
+	if plugin.Spec.ImagePullPolicy != nil {
+		pullPolicy = *plugin.Spec.ImagePullPolicy
+	}
+	stageScript := fmt.Sprintf("mkdir -p %s && (if [ -d /files ]; then cp -a /files/. %s/; else for item in /*; do case \"$item\" in /bin|/boot|/dev|/etc|/home|/lib*|/media|/mnt|/opt|/proc|/root|/run|/sbin|/srv|/sys|/tmp|/usr|/var) ;; *) cp -a \"$item\" %s/ ;; esac; done; fi) && [ -n \"$(ls -A %s)\" ]",
+		mountPath, mountPath, mountPath, mountPath)
+
+	return corev1.Container{
+		Name:            buildPluginStagingContainerName(plugin.Name),
+		Image:           plugin.Spec.Image,
+		ImagePullPolicy: pullPolicy,
+		SecurityContext: hardenedSecurityContext(),
+		Command: []string{
+			"/bin/sh",
+			"-c",
+			stageScript,
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			{
+				Name:      buildPluginVolumeName(plugin.Name),
+				MountPath: mountPath,
+			},
+		},
+	}
+}
+
 // partitionPluginsByProfile splits plugins into those belonging to the default profile
 // and those targeting a named profile, keyed by profile name. Order is preserved so the
 // rendered config is stable across reconciles.
@@ -1731,6 +1766,12 @@ func buildPodTemplateSpec(agent *agentv1alpha1.PlatformAgent, configHash, fluent
 	// credentialed deployments before the agent sandbox can mount the PVC.
 	initContainers = append([]corev1.Container{buildSandboxCredentialCleanup(image, pullPolicy)}, initContainers...)
 
+	if !opts.imageVolumeSupported {
+		for _, plugin := range agentPlugins {
+			initContainers = append(initContainers, buildPluginStagingInitContainer(homeDir, plugin))
+		}
+	}
+
 	pluginsDebugVal := "0"
 	if agent.Spec.Harness != nil && agent.Spec.Harness.Hermes != nil && agent.Spec.Harness.Hermes.PluginsDebug != nil {
 		if *agent.Spec.Harness.Hermes.PluginsDebug {
@@ -2125,10 +2166,12 @@ func buildPodTemplateSpec(agent *agentv1alpha1.PlatformAgent, configHash, fluent
 				},
 			})
 		} else {
-			manifestsLog.Error(fmt.Errorf("ImageVolumeSource unsupported on Kubernetes < 1.35"),
-				"skipping plugin OCI image volume mount to prevent deployment pod validation failure",
-				"plugin", plugin.Name,
-				"platformagent", agent.Name)
+			volumes = append(volumes, corev1.Volume{
+				Name: buildPluginVolumeName(plugin.Name),
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
+				},
+			})
 		}
 	}
 	volumes = append(volumes, buildCustomStorageVolumes(agent)...)
@@ -3167,13 +3210,11 @@ func buildBaseContainers(agent *agentv1alpha1.PlatformAgent, image string, envVa
 		args = []string{"hermes", "--profile", platformProfileName, "gateway", "run"}
 	}
 
-	if isImageVolumeSupported {
-		for _, plugin := range agentPlugins {
-			volumeMounts = append(volumeMounts, corev1.VolumeMount{
-				Name:      buildPluginVolumeName(plugin.Name),
-				MountPath: pluginMountPath(homeDir, plugin),
-			})
-		}
+	for _, plugin := range agentPlugins {
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      buildPluginVolumeName(plugin.Name),
+			MountPath: pluginMountPath(homeDir, plugin),
+		})
 	}
 
 	// APPENDED LAST, and that position is the guard, not a style choice. It is not routed
@@ -4531,3 +4572,17 @@ func buildPluginVolumeName(pluginName string) string {
 	}
 	return name
 }
+
+// buildPluginStagingContainerName generates the container name for the plugin staging initContainer.
+// GKE Autopilot / gVisor injects the annotation "dev.gvisor.internal.seccomp.<container-name>" (28 bytes)
+// into pod metadata without a slash prefix. The Kubernetes annotation name length limit is 63 bytes,
+// so any container name longer than 35 bytes causes admission rejection.
+func buildPluginStagingContainerName(pluginName string) string {
+	name := "stage-" + pluginName
+	if len(name) > maxAutopilotContainerNameLen {
+		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(pluginName)))[:8]
+		name = name[:maxAutopilotContainerNameLen-9] + "-" + hash
+	}
+	return name
+}
+

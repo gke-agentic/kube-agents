@@ -435,6 +435,18 @@ platformAgent:
       enabled: null # CRD default: false
       provider: "" # CRD default: multiuser_memory
       userProfileEnabled: null # CRD default: false
+    # Execution limits per agent persona. Empty omits the field so CRD/Hermes
+    # defaults apply. When plugins.stockoutInvestigator.enabled=true, the chart
+    # automatically applies tuning (maxInProgress: 3, platform.maxTurns: 200,
+    # cluster.maxTurns: 150) unless overridden here.
+    tuning: {}
+      # maxInProgress: 3
+      # platform:
+      #   apiMaxRetries: 8
+      #   maxTurns: 200
+      # cluster:
+      #   apiMaxRetries: 8
+      #   maxTurns: 150
   deployment:
     image:
       repository: ghcr.io/gke-labs/kube-agents/platform-agent
@@ -1123,3 +1135,35 @@ selfImprovement:
     limits:
       cpu: "2"
       memory: 4Gi
+
+# AgentPlugins deployed into the cluster.
+plugins:
+  # Pub/Sub platform adapter AgentPlugin: opens the event listener for Cloud Pub/Sub subscriptions.
+  pubsubPlatform:
+    enabled: false
+    name: pubsubplatform
+    agentRef: "" # defaults to platformAgent.name
+    image:
+      repository: ghcr.io/gke-labs/kube-agents/pubsub-platform
+      tag: "" # defaults to Chart.appVersion
+      pullPolicy: IfNotPresent
+
+  # GKE Stockout Investigator AgentPlugin: diagnoses autoscaler scale-up failures and opens GitOps PRs.
+  # Requires plugins.pubsubPlatform.enabled=true for alert ingress.
+  stockoutInvestigator:
+    enabled: false
+    name: gkestockoutinvestigator
+    agentRef: "" # defaults to platformAgent.name
+    targetProfile: platform
+    # Target cluster name. Required when enabled (defaults to platformAgent.harness.clusterName if empty).
+    clusterName: ""
+    image:
+      repository: ghcr.io/gke-labs/kube-agents/gke-stockout-investigator
+      tag: "" # defaults to Chart.appVersion
+      pullPolicy: IfNotPresent
+    pubsub:
+      topic: gke-stockout-alerts-topic
+      subscription: gke-stockout-alerts-sub
+      sink: gke-stockout-alerts-sink
+      thresholdCount: 1
+      thresholdWindowSeconds: 300

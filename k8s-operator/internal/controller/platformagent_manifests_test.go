@@ -3080,17 +3080,50 @@ func TestBuildDeployment_AgentPlugins_ImageVolumeUnsupported(t *testing.T) {
 	// Pass isImageVolumeSupported = false
 	dep := buildDeployment(agent, "h1", "h2", "h3", "h4", plugins, renderOptions{})
 
-	for _, vol := range dep.Spec.Template.Spec.Volumes {
-		if vol.Name == "plugin-myplugin" {
-			t.Errorf("expected plugin-myplugin volume to NOT be attached when isImageVolumeSupported is false")
+	// 1. Volume must be attached as EmptyDir
+	var pluginVol *corev1.Volume
+	for i := range dep.Spec.Template.Spec.Volumes {
+		if dep.Spec.Template.Spec.Volumes[i].Name == "plugin-myplugin" {
+			pluginVol = &dep.Spec.Template.Spec.Volumes[i]
+			break
 		}
 	}
+	if pluginVol == nil {
+		t.Fatalf("expected plugin-myplugin volume to be attached as EmptyDir when isImageVolumeSupported is false")
+	}
+	if pluginVol.EmptyDir == nil {
+		t.Errorf("expected plugin-myplugin volume source to be EmptyDir, got %+v", pluginVol)
+	}
 
-	container := dep.Spec.Template.Spec.Containers[0]
-	for _, m := range container.VolumeMounts {
-		if m.Name == "plugin-myplugin" {
-			t.Errorf("expected plugin-myplugin volume mount to NOT be attached when isImageVolumeSupported is false")
+	// 2. InitContainer must stage the plugin
+	var stageInit *corev1.Container
+	for i := range dep.Spec.Template.Spec.InitContainers {
+		if dep.Spec.Template.Spec.InitContainers[i].Name == "stage-myplugin" {
+			stageInit = &dep.Spec.Template.Spec.InitContainers[i]
+			break
 		}
+	}
+	if stageInit == nil {
+		t.Fatalf("expected stage-myplugin init container to be present")
+	}
+	if stageInit.Image != "gcr.io/my-plugin:v1" {
+		t.Errorf("expected init container image 'gcr.io/my-plugin:v1', got %q", stageInit.Image)
+	}
+
+	// 3. Main container must mount the volume
+	container := dep.Spec.Template.Spec.Containers[0]
+	var pluginMount *corev1.VolumeMount
+	for i := range container.VolumeMounts {
+		if container.VolumeMounts[i].Name == "plugin-myplugin" {
+			pluginMount = &container.VolumeMounts[i]
+			break
+		}
+	}
+	if pluginMount == nil {
+		t.Fatalf("expected plugin-myplugin volume mount in platform-agent container")
+	}
+	if pluginMount.MountPath != "/opt/data/plugins/myplugin" {
+		t.Errorf("expected mount path /opt/data/plugins/myplugin, got %q", pluginMount.MountPath)
 	}
 }
 
@@ -5306,8 +5339,11 @@ var operatorBuiltContainers = []string{
 // the author forgot to harden arrives as an unknown name, not as a silent pass.
 func TestEveryContainerHasAHardenedSecurityContext(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		agent *agentv1alpha1.PlatformAgent
+		name            string
+		agent           *agentv1alpha1.PlatformAgent
+		plugins         []*agentv1alpha1.AgentPlugin
+		extraContainers []string
+		renderOpts      renderOptions
 		// The dashboard is the one operator-built container a CR can switch off.
 		absent string
 	}{
@@ -5323,15 +5359,30 @@ func TestEveryContainerHasAHardenedSecurityContext(t *testing.T) {
 			}(),
 			absent: "platform-agent-dashboard",
 		},
+		{
+			name:  "with staging plugin",
+			agent: newTestPlatformAgent(),
+			plugins: []*agentv1alpha1.AgentPlugin{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "myplugin", Namespace: "default"},
+					Spec:       agentv1alpha1.AgentPluginSpec{Image: "example.com/plugin:v1"},
+				},
+			},
+			extraContainers: []string{"stage-myplugin"},
+			renderOpts:      renderOptions{imageVolumeSupported: false},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pod := buildPodTemplateSpec(tc.agent, "h", "h", "h", "h", nil, renderOptions{})
+			pod := buildPodTemplateSpec(tc.agent, "h", "h", "h", "h", tc.plugins, tc.renderOpts)
 
-			want := make(map[string]bool, len(operatorBuiltContainers))
+			want := make(map[string]bool, len(operatorBuiltContainers)+len(tc.extraContainers))
 			for _, n := range operatorBuiltContainers {
 				if n != tc.absent {
 					want[n] = true
 				}
+			}
+			for _, n := range tc.extraContainers {
+				want[n] = true
 			}
 
 			all := append(append([]corev1.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...)
@@ -5393,6 +5444,31 @@ func TestCRSuppliedSidecarsAreNotHardenedByTheOperator(t *testing.T) {
 	}
 }
 
+func TestBuildPluginStagingContainerName(t *testing.T) {
+	cases := []struct {
+		pluginName string
+	}{
+		{"myplugin"},
+		{"gkestockoutinvestigator"},
+		{"pubsubplatform"},
+		{"verylongpluginnameexceedingthelimitbyalot"},
+	}
+
+	for _, tc := range cases {
+		got := buildPluginStagingContainerName(tc.pluginName)
+		if len(got) > maxAutopilotContainerNameLen {
+			t.Errorf("buildPluginStagingContainerName(%q) = %q (len %d), exceeds max length %d",
+				tc.pluginName, got, len(got), maxAutopilotContainerNameLen)
+		}
+		// Verify that GKE Autopilot gVisor annotation key will not exceed 63 bytes
+		gvisorAnnotation := "dev.gvisor.internal.seccomp." + got
+		if len(gvisorAnnotation) > 63 {
+			t.Errorf("gVisor annotation %q for %q exceeds 63 bytes (len %d)",
+				gvisorAnnotation, tc.pluginName, len(gvisorAnnotation))
+		}
+	}
+}
+
 // TestGitOpsStateVolumeIsMountedAsDirectory verifies that the GitOps state ConfigMap
 // is mounted as a directory (never subPath) so kubelet live updates work without pod restart,
 // and is propagated to both the agent and credential proxy containers.
@@ -5450,6 +5526,27 @@ func TestGitOpsStateVolumeIsMountedAsDirectory(t *testing.T) {
 		} else if gotPath != filepath.Join(gitopsStateDir, "managed_repos") {
 			t.Errorf("[%s] expected GITOPS_STATE_PATH %s, got %s", containerName, filepath.Join(gitopsStateDir, "managed_repos"), gotPath)
 		}
+	}
+}
+
+func TestBuildPluginStagingInitContainer_AssertsNonEmptyAndFailsOnErrors(t *testing.T) {
+	plugin := &agentv1alpha1.AgentPlugin{
+		ObjectMeta: metav1.ObjectMeta{Name: "myplugin"},
+		Spec: agentv1alpha1.AgentPluginSpec{
+			Image: "busybox:musl",
+		},
+	}
+	c := buildPluginStagingInitContainer("/home/agent", plugin)
+	if len(c.Command) != 3 || c.Command[0] != "/bin/sh" || c.Command[1] != "-c" {
+		t.Fatalf("unexpected command: %v", c.Command)
+	}
+	script := c.Command[2]
+	if strings.HasSuffix(strings.TrimSpace(script), "; true") {
+		t.Errorf("script must not swallow errors with trailing '; true', got: %s", script)
+	}
+	expectedAssertion := `[ -n "$(ls -A /home/agent/plugins/myplugin)" ]`
+	if !strings.Contains(script, expectedAssertion) {
+		t.Errorf("script must assert non-empty mount with %q, got: %s", expectedAssertion, script)
 	}
 }
 
