@@ -37,6 +37,22 @@
       "description": "Record/replay proxy for model traffic."
     },
     {
+      "name": "pubsub-platform",
+      "origin": "first-party",
+      "repository": "ghcr.io/gke-labs/kube-agents/pubsub-platform",
+      "tagPolicy": "release",
+      "pulledBy": "The pubsub-platform AgentPlugin.",
+      "description": "Pub/Sub ingress adapter plugin opening event listeners for Cloud Pub/Sub subscriptions."
+    },
+    {
+      "name": "gke-stockout-investigator",
+      "origin": "first-party",
+      "repository": "ghcr.io/gke-labs/kube-agents/gke-stockout-investigator",
+      "tagPolicy": "release",
+      "pulledBy": "The gke-stockout-investigator AgentPlugin.",
+      "description": "Autonomous diagnostic and remediation skill for GKE compute stockouts."
+    },
+    {
       "name": "litellm",
       "origin": "third-party",
       "repository": "ghcr.io/berriai/litellm",
@@ -49,7 +65,7 @@
       "name": "fluent-bit",
       "origin": "third-party",
       "repository": "docker.io/fluent/fluent-bit",
-      "tag": "5.1.0",
+      "tag": "5.1.1",
       "override": "FLUENT_BIT_IMAGE",
       "pulledBy": "The logging sidecar the operator injects into every agent pod.",
       "description": "Ships agent container logs off the pod."
@@ -176,6 +192,14 @@
       "buildArg": "DISTROLESS_IMAGE",
       "pulledBy": "k8s-operator/Dockerfile runtime stage.",
       "description": "Runtime base for the operator image."
+    },
+    {
+      "name": "busybox",
+      "origin": "build-time",
+      "repository": "docker.io/library/busybox",
+      "tag": "musl@sha256:32b5cdad7cce41dfd53d0ae06baebcf8357a147ee7694dc706911c373bc30c37",
+      "pulledBy": "agentplugins/*/Dockerfile base images.",
+      "description": "Minimal userland (sh, cp, ls) base image for plugin images to support staging init containers."
     }
   ]
 }

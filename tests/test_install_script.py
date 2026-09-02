@@ -290,8 +290,7 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
         `cluster_mode="${cluster_mode:-standard}"` it replaced left every
         installer test green, so the headline behaviour of this change was
         unpinned. main() is the whole interview and is not drivable from a
-        unit test, so this asserts on the source the way
-        tests/test_install_pubsub_platform.py asserts on workflow YAML.
+        unit test, so this asserts on the source directly.
         """
         source = _INSTALL_SH.read_text()
         self.assertIn(
@@ -408,6 +407,16 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
         proc = self._run_install_func(cmd)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("CHAT=true", proc.stdout)
+
+    def test_parse_args_plugin_flags(self):
+        """Verifies parse_args captures plugin enablement flags."""
+        cmd = (
+            'parse_args --enable-pubsub-platform --enable-stockout-investigator; '
+            'echo "PUBSUB=$PARAM_ENABLE_PUBSUB_PLATFORM STOCKOUT=$PARAM_ENABLE_STOCKOUT_INVESTIGATOR"'
+        )
+        proc = self._run_install_func(cmd)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("PUBSUB=true STOCKOUT=true", proc.stdout)
 
     def test_parse_args_vertex_location_overrides_the_default(self):
         """An explicit --vertex-location still wins over DEFAULT_VERTEX_LOCATION."""

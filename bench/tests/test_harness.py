@@ -622,7 +622,8 @@ def _one_call_response(output: Any, status: str | None = None) -> dict[str, Any]
     [
         ("Error executing tool 'terminal': boom", "error"),  # tool_executor.py
         ("Error executing tool: boom", "error"),  # conversation_loop.py
-        # mcp_tool.py on CallToolResult.isError, and registry.py tool_error()
+        # mcp_tool.py on CallToolResult.is_error (isError before mcp 2.0, and
+        # it still reads both), and registry.py tool_error()
         (json.dumps({"error": "MCP tool returned an error"}), "error"),
         (json.dumps({"error": "bad input", "success": False}), "error"),
         (json.dumps({"success": False, "transcript": ""}), "error"),
@@ -1537,7 +1538,13 @@ def test_an_agent_error_without_the_marker_is_still_graded(results_json: Any) ->
 
 
 def test_a_scoreless_record_still_blocks(results_json: Any) -> None:
-    """The blocking branch must survive the marker check being inserted above it."""
+    """The blocking branch must survive the checks inserted above it.
+
+    Not the provisioning-death shape: this record has no ``status="failed"``,
+    no ``verification_status``, and no error naming the deployer's command,
+    so even on an infra deployer it blocks. ``test_scoring.py``'s
+    ``fail_the_provision`` tests own the carve-out.
+    """
     path = results_json(AgentResult(output="", trajectory=[]), scores={})
 
     rep = _classify(path, "opentofu")

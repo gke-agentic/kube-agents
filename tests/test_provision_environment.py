@@ -89,6 +89,8 @@ exit 0
                     "REGISTRY_PREFIX": MOCK_REGISTRY_PREFIX,
                     "MEMORY_PROVIDER": "kube_agents_memory",
                     "USER_PROFILE_ENABLED": MOCK_USER_PROFILE_ENABLED,
+                    "ENABLE_PUBSUB_PLATFORM": "true",
+                    "ENABLE_STOCKOUT_INVESTIGATOR": "true",
                 }
             )
 
@@ -124,9 +126,47 @@ exit 0
                 f"--permission-set={MOCK_PERMISSION_SET} "
                 f"--registry-prefix={MOCK_REGISTRY_PREFIX} "
                 f"--user-profile-enabled={MOCK_USER_PROFILE_ENABLED} "
+                f"--enable-pubsub-platform "
+                f"--enable-stockout-investigator "
                 f"--memory=hindsight"
             )
             self.assertEqual(calls[1], expected_install_call)
+
+    def test_plugins_disabled_by_default_in_provision_environment(self):
+        """Verifies plugin flags are omitted when env vars are unset."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = pathlib.Path(tmp)
+
+            recorded_calls = tmp_dir / MOCK_CALLS_LOG
+            mock_uninstall = tmp_dir / MOCK_UNINSTALL_SCRIPT
+            mock_uninstall.write_text("#!/usr/bin/env bash\nexit 0\n")
+            mock_uninstall.chmod(0o755)
+
+            mock_install = tmp_dir / MOCK_INSTALL_SCRIPT
+            mock_install.write_text(f'#!/usr/bin/env bash\necho "install: $*" >> "{recorded_calls}"\nexit 0\n')
+            mock_install.chmod(0o755)
+
+            env = get_isolated_test_env(
+                overrides={
+                    "GCP_PROJECT_ID": MOCK_GCP_PROJECT_ID,
+                    "GCP_REGION": MOCK_GCP_REGION,
+                    "GKE_CLUSTER_NAME": MOCK_GKE_CLUSTER_NAME,
+                    "IMAGE_TAG": MOCK_IMAGE_TAG_SHA,
+                }
+            )
+
+            proc = subprocess.run(
+                ["bash", str(_PROVISION_SCRIPT)],
+                capture_output=True,
+                text=True,
+                env=env,
+                cwd=str(tmp_dir),
+            )
+
+            self.assertEqual(proc.returncode, 0, f"Script failed: {proc.stderr}")
+            calls = recorded_calls.read_text().splitlines()
+            self.assertNotIn("--enable-pubsub-platform", calls[0])
+            self.assertNotIn("--enable-stockout-investigator", calls[0])
 
     def test_memory_provider_mappings(self):
         """Verifies memory mode resolution for hindsight, file, and off."""
