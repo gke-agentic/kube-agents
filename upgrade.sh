@@ -32,6 +32,13 @@ BAKED_RELEASE_VERSION=""
 PARAM_UPGRADE_MODE="full"
 PARAM_NON_INTERACTIVE="false"
 PARAM_DRY_RUN="false"
+# --plan and --dry-run are both previews and are deliberately not the same one.
+# --dry-run answers offline, from configuration alone, and never contacts the
+# install. --plan answers from the install's real Terraform state, so it needs
+# credentials and it is the only one of the two that can tell you an
+# environment has drifted from the composition on main.
+PARAM_PLAN="false"
+PARAM_KEEP_IMAGE_TAG="false"
 PARAM_PROJECT_ID=""
 PARAM_CLUSTER_NAME=""
 PARAM_REGION=""
@@ -98,11 +105,17 @@ Usage: ./upgrade.sh [OPTIONS]
 Options:
   --upgrade-mode, -m MODE  Upgrade mode: full, harness, operator (Default: full)
   --non-interactive, -y    Automated execution mode (no interactive prompts)
+  --plan                   Report what a full upgrade would change, against the
+                           install's real Terraform state. Changes nothing.
+                           Exit 0 = in sync, 2 = there are changes, 1 = error.
   --dry-run                Preview upgrade plan and configuration state without touching cloud resources
   --project-id ID          GCP Target Project ID
   --cluster-name NAME      GKE Target Cluster Name
   --region REGION          GKE GCP Region
   --image-tag TAG          Validated immutable release tag or full commit SHA (required)
+  --keep-image-tag         Upgrade everything except the images, leaving them on
+                           the tag the install already serves. Use instead of
+                           --image-tag, not alongside it.
   --help, -h               Show this help message
 
 Examples:
@@ -111,7 +124,30 @@ Examples:
 
   # Dry-run upgrade preview
   ./upgrade.sh --dry-run --upgrade-mode=full
+
+  # What has this install drifted from? Reads the running image tag from the
+  # cluster, so the report is composition drift rather than image lag.
+  ./upgrade.sh --plan
 EOF
+}
+
+# The image tag an install is currently serving, read off the agent Deployment.
+#
+# The Deployment rather than the Helm release: `helm get values` reports what
+# the last upgrade was ASKED for, and on these environments the last upgrade was
+# a `--reset-then-reuse-values` re-tag whose recorded values are the install-day
+# blob. The Deployment reports what is running.
+running_image_tag() {
+  local namespace="$1" image=""
+  image="$(kubectl get deployment platform-agent-gateway -n "$namespace" \
+    -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
+  [ -n "$image" ] || return 0
+  # Everything after the last colon, unless that colon belongs to a registry
+  # port (no slash may follow it).
+  case "${image##*:}" in
+    */*) return 0 ;;
+    *) printf '%s\n' "${image##*:}" ;;
+  esac
 }
 
 validate_immutable_ref() {
@@ -262,6 +298,8 @@ parse_args() {
       --upgrade-mode=*|-m=*) PARAM_UPGRADE_MODE="${1#*=}"; shift ;;
       --upgrade-mode|-m) PARAM_UPGRADE_MODE="$2"; shift 2 ;;
       --non-interactive|-y) PARAM_NON_INTERACTIVE="true"; shift ;;
+      --plan) PARAM_PLAN="true"; shift ;;
+      --keep-image-tag) PARAM_KEEP_IMAGE_TAG="true"; shift ;;
       --dry-run) PARAM_DRY_RUN="true"; shift ;;
       --project-id=*) PARAM_PROJECT_ID="${1#*=}"; shift ;;
       --project-id) PARAM_PROJECT_ID="$2"; shift 2 ;;
@@ -297,7 +335,26 @@ main() {
   parse_args "$@"
   print_banner
 
-  if [ -z "$PARAM_IMAGE_TAG" ]; then
+  # --image-tag may be omitted, and for a plan it usually should be. The tag is
+  # then read off the running install further down, which separates the two
+  # things a run could be about: an install whose IMAGES are behind main
+  # (visible, expected, and what the redeploy workflows exist to fix) and one
+  # whose INFRASTRUCTURE is behind main (invisible — #1117).
+  #
+  # An UPGRADE can ask for the same thing, but only by saying so:
+  # --keep-image-tag means "converge everything except the images". That is
+  # what a scheduled reconcile of autopush wants, because autopush tracks
+  # main's tip through GHCR publishes and pinning it to whichever commit the
+  # reconcile ran from would roll its images BACKWARDS to that commit.
+  #
+  # A flag rather than "empty means keep", because empty already means
+  # something: it is the shape of a CI job whose IMAGE_TAG variable did not
+  # resolve, and that has to stay the hard error it has always been.
+  if [ -z "$PARAM_IMAGE_TAG" ] && [ "$PARAM_KEEP_IMAGE_TAG" = "true" ]; then
+    print_info "--keep-image-tag: this run keeps the tag the install is already serving."
+  elif [ -z "$PARAM_IMAGE_TAG" ] && [ "$PARAM_PLAN" = "true" ]; then
+    print_info "No --image-tag given; the plan will use the tag this install is already running."
+  elif [ -z "$PARAM_IMAGE_TAG" ]; then
     if [ "$PARAM_NON_INTERACTIVE" = "true" ]; then
       print_error "--image-tag is required; use a validated release tag or full commit SHA."
       exit 1
@@ -310,21 +367,33 @@ main() {
       exit 1
     fi
   fi
-  validate_immutable_ref "$PARAM_IMAGE_TAG"
+  if [ -n "$PARAM_IMAGE_TAG" ] && [ "$PARAM_KEEP_IMAGE_TAG" = "true" ]; then
+    print_error "--keep-image-tag and --image-tag ask for opposite things. Pass one."
+    exit 1
+  fi
+  if [ -n "$PARAM_IMAGE_TAG" ]; then
+    validate_immutable_ref "$PARAM_IMAGE_TAG"
+  fi
 
   case "$PARAM_UPGRADE_MODE" in
     full|harness|operator) ;;
     *) print_error "Unsupported upgrade mode '$PARAM_UPGRADE_MODE'. Use full, harness, or operator."; exit 1 ;;
   esac
 
+  # A tagless run cannot fetch its own engine — there is no tag to fetch — and
+  # cannot verify the checkout against a ref it was not given. Both are things
+  # the tag makes possible rather than things the run needs.
   local script_dir repo_dir
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   if [ -f "${script_dir}/scripts/installer/installer_common.sh" ]; then
     repo_dir="$script_dir"
-    verify_local_source_ref "$repo_dir" "$PARAM_IMAGE_TAG"
+    [ -z "$PARAM_IMAGE_TAG" ] || verify_local_source_ref "$repo_dir" "$PARAM_IMAGE_TAG"
   elif [ -f "$(pwd)/scripts/installer/installer_common.sh" ]; then
     repo_dir="$(pwd)"
-    verify_local_source_ref "$repo_dir" "$PARAM_IMAGE_TAG"
+    [ -z "$PARAM_IMAGE_TAG" ] || verify_local_source_ref "$repo_dir" "$PARAM_IMAGE_TAG"
+  elif [ -z "$PARAM_IMAGE_TAG" ]; then
+    print_error "--plan and --keep-image-tag have to run from a kube-agents checkout: without --image-tag there is no ref to fetch the engine at."
+    exit 1
   else
     TEMP_REPO_DIR="$(mktemp -d)"
     repo_dir="${TEMP_REPO_DIR}/kube-agents"
@@ -405,6 +474,11 @@ main() {
   print_info "GCP Target Project: ${C_BOLD}${target_project}${C_RESET}"
   print_info "GKE Target Cluster: ${C_BOLD}${target_cluster}${C_RESET} (${target_region})"
 
+  if [ "$PARAM_DRY_RUN" = "true" ] && [ "$PARAM_PLAN" = "true" ]; then
+    print_error "--dry-run and --plan are different previews and cannot be combined: --dry-run answers offline from configuration, --plan answers from the install's Terraform state."
+    exit 1
+  fi
+
   if [ "$PARAM_DRY_RUN" = "true" ]; then
     print_step "2. Dry-Run Upgrade Plan Preview"
     echo -e "  • ${C_CYAN}Action:${C_RESET} Perform ${PARAM_UPGRADE_MODE} upgrade on cluster '${target_cluster}'"
@@ -470,8 +544,26 @@ main() {
   gcloud container clusters get-credentials "$target_cluster" --location="$target_region" --project="$target_project" $GKE_DNS_ENDPOINT_FLAG
 
   local target_namespace="${NAMESPACE:-kubeagents-system}"
-  print_step "3. Reconciling Pod-Scoped Session Keys"
-  backfill_session_kv_keys "$target_namespace"
+
+  if [ -z "$PARAM_IMAGE_TAG" ]; then
+    PARAM_IMAGE_TAG="$(running_image_tag "$target_namespace")"
+    if [ -z "$PARAM_IMAGE_TAG" ]; then
+      print_error "Could not read the running image tag from deployment/platform-agent-gateway in '${target_namespace}'."
+      print_info "Pass --image-tag to name one instead."
+      exit 1
+    fi
+    print_success "Using the tag this install is running: ${PARAM_IMAGE_TAG}"
+  fi
+
+  if [ "$PARAM_PLAN" = "true" ]; then
+    # backfill_session_kv_keys PATCHES the live Secret when a key is absent,
+    # which a plan may not do. Skipping it costs the plan nothing: the keys it
+    # would add are not Terraform-managed and so appear in no plan either way.
+    print_info "Plan mode: skipping the Session KV backfill, which would patch the live Secret."
+  else
+    print_step "3. Reconciling Pod-Scoped Session Keys"
+    backfill_session_kv_keys "$target_namespace"
+  fi
 
   # Helm never touches the crds/ directory on upgrade — that is Helm's own
   # documented behaviour, and the Terraform helm provider inherits it — so CRD
@@ -508,6 +600,39 @@ main() {
   # credentials when PERSIST_SECRETS_ON_DISK=false; the live Secret has them).
   NAMESPACE="$target_namespace" \
     write_tfvars_from_state "${repo_dir}/terraform/examples/full-install/terraform.tfvars" "$PARAM_IMAGE_TAG"
+
+  if [ "$PARAM_PLAN" = "true" ]; then
+    print_step "4. Planning (read-only)"
+    print_info "Comparing this checkout's composition against the install's Terraform state."
+    local plan_status=0
+    (
+      cd "${repo_dir}/terraform/examples/full-install"
+      export KUBE_AGENTS_STATE_BUCKET="${KUBE_AGENTS_STATE_BUCKET:-auto}"
+      export KUBE_AGENTS_STATE_PREFIX
+      KUBE_AGENTS_STATE_PREFIX="$(tf_state_prefix)"
+      ./lifecycle.sh plan -detailed-exitcode
+    ) || plan_status=$?
+
+    # terraform's -detailed-exitcode contract: 0 no changes, 1 error, 2 changes.
+    # It is passed through as this script's own exit code so a caller can act on
+    # it without parsing the plan text.
+    case "$plan_status" in
+      0)
+        print_success "In sync: a full upgrade at ${PARAM_IMAGE_TAG} would change nothing."
+        write_report "PLAN_IN_SYNC"
+        ;;
+      2)
+        print_warning "Drift: this install differs from the composition in this checkout."
+        print_info "The plan above lists every difference. 'terraform apply' is what closes them; ./upgrade.sh --upgrade-mode=full is the supported way to run one."
+        write_report "PLAN_DRIFT"
+        ;;
+      *)
+        print_error "The plan could not be produced (exit ${plan_status})."
+        write_report "PLAN_FAILED"
+        ;;
+    esac
+    exit "$plan_status"
+  fi
 
   case "$PARAM_UPGRADE_MODE" in
     operator)
