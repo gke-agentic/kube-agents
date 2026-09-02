@@ -82,6 +82,10 @@ const (
 	AnnotationEnableFQDNNetworkPolicy = "kubeagents.x-k8s.io/enable-fqdn-network-policy"
 	AnnotationManagedMinterKeys       = "kubeagents.x-k8s.io/managed-minter-keys"
 
+	// GKE Autopilot API groups used to detect Autopilot clusters where Warden restricts Image volumes.
+	gkeAutopilotAPIGroup = "auto.gke.io"
+	gkeWardenAPIGroup    = "warden.gke.io"
+
 	// The condition reporting that cluster event ingestion has been switched off
 	// on the spec. It is written only in that state — see updateStatusReady.
 	eventWatcherConditionType  = "EventWatcher"
@@ -2228,6 +2232,26 @@ func isImageVolumeSupported(dc discovery.DiscoveryInterface, agent *agentv1alpha
 	return supported
 }
 
+// isGKEAutopilot probes the API server for GKE Autopilot specific API groups.
+func isGKEAutopilot(dc discovery.DiscoveryInterface) bool {
+	if dc == nil {
+		return false
+	}
+	defer func() {
+		_ = recover()
+	}()
+	groups, err := dc.ServerGroups()
+	if err != nil || groups == nil {
+		return false
+	}
+	for _, g := range groups.Groups {
+		if g.Name == gkeAutopilotAPIGroup || g.Name == gkeWardenAPIGroup {
+			return true
+		}
+	}
+	return false
+}
+
 // clusterImageVolumeSupport probes the API server for ImageVolume support.
 //
 // determined reports whether the answer is authoritative. When the capability cannot be
@@ -2257,12 +2281,11 @@ func clusterImageVolumeSupport(dc discovery.DiscoveryInterface) (supported bool,
 		return false, false
 	}
 
-	// GKE clusters (GitVersion containing "-gke") enforce admission policies (such as GKE Warden's
-	// autopilot-volume-type-limitation on Autopilot) that reject the Image volume type.
-	// We default to the fallback initContainer/emptyDir staging mechanism on GKE clusters unless
-	// explicitly enabled via annotation.
-	if strings.Contains(ver.GitVersion, "-gke") {
-		log.Info("GKE cluster detected; using initContainer plugin staging fallback. " + override)
+	// GKE Autopilot clusters enforce GKE Warden admission policies (autopilot-volume-type-limitation)
+	// that reject the Image volume type. On Autopilot, fall back to initContainer/emptyDir staging.
+	// On GKE Standard (and non-GKE clusters), ImageVolumeSource is supported natively on Kubernetes 1.35+.
+	if isGKEAutopilot(dc) {
+		log.Info("GKE Autopilot cluster detected; using initContainer plugin staging fallback. " + override)
 		return false, true
 	}
 

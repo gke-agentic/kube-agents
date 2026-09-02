@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Image plumbing shared by the plugin installers. Source it; running it does nothing.
 #
-# Every plugin image in this directory is `FROM scratch` plus a COPY of one tree, so the
-# entire build is a single tar layer. That is what makes a local build practical, and a
-# local build is the point:
+# Plugin images in this directory use `FROM busybox:musl` (or a single tar layer)
+# plus a COPY of the plugin tree, so the image can either be mounted via native Kubernetes
+# ImageVolumeSource (on GKE Standard) or staged via an init container on platforms that
+# restrict image volumes (such as GKE Autopilot). That is what makes a local build practical,
+# and a local build is the point:
 #
 #   docker  builds the plugin's own Dockerfile and pushes it. Validates the Dockerfile.
 #   crane   assembles the same layer and pushes it. No daemon, no Dockerfile.

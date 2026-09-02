@@ -1974,11 +1974,19 @@ func TestUpdatePluginStatuses_DuplicatePluginName(t *testing.T) {
 
 type fakeVersionDiscovery struct {
 	discovery.DiscoveryInterface
-	ver *version.Info
+	ver    *version.Info
+	groups *metav1.APIGroupList
 }
 
 func (f *fakeVersionDiscovery) ServerVersion() (*version.Info, error) {
 	return f.ver, nil
+}
+
+func (f *fakeVersionDiscovery) ServerGroups() (*metav1.APIGroupList, error) {
+	if f.groups != nil {
+		return f.groups, nil
+	}
+	return &metav1.APIGroupList{}, nil
 }
 
 func TestIsImageVolumeSupported_DiscoveryVersion(t *testing.T) {
@@ -2032,15 +2040,26 @@ func TestIsImageVolumeSupported_DiscoveryVersion(t *testing.T) {
 		t.Errorf("expected annotation override 'false' to force isImageVolumeSupported to false even on K8s 1.35")
 	}
 
-	// 5. Server version >= 1.35 on GKE returns false (defaults to fallback initContainer staging)
-	dcGKE := &fakeVersionDiscovery{ver: &version.Info{Major: "1", Minor: "35", GitVersion: "v1.35.7-gke.1027000"}}
-	if isImageVolumeSupported(dcGKE, agent) {
-		t.Errorf("expected isImageVolumeSupported to return false on GKE (falls back to initContainer staging)")
+	// 5. Server version >= 1.35 on GKE Standard returns true (natively supported)
+	dcGKEStandard := &fakeVersionDiscovery{ver: &version.Info{Major: "1", Minor: "35", GitVersion: "v1.35.7-gke.1027000"}}
+	if !isImageVolumeSupported(dcGKEStandard, agent) {
+		t.Errorf("expected isImageVolumeSupported to return true on GKE Standard >= 1.35")
 	}
 
-	// 6. Annotation override "true" on GKE forces isImageVolumeSupported to true
-	if !isImageVolumeSupported(dcGKE, agentEnableAnnot) {
-		t.Errorf("expected annotation override 'true' to force isImageVolumeSupported to true on GKE")
+	// 6. GKE Autopilot returns false (falls back to initContainer staging)
+	dcGKEAutopilot := &fakeVersionDiscovery{
+		ver: &version.Info{Major: "1", Minor: "35", GitVersion: "v1.35.7-gke.1027000"},
+		groups: &metav1.APIGroupList{
+			Groups: []metav1.APIGroup{{Name: "auto.gke.io"}},
+		},
+	}
+	if isImageVolumeSupported(dcGKEAutopilot, agent) {
+		t.Errorf("expected isImageVolumeSupported to return false on GKE Autopilot (falls back to initContainer staging)")
+	}
+
+	// 7. Annotation override "true" on GKE Autopilot forces isImageVolumeSupported to true
+	if !isImageVolumeSupported(dcGKEAutopilot, agentEnableAnnot) {
+		t.Errorf("expected annotation override 'true' to force isImageVolumeSupported to true on GKE Autopilot")
 	}
 }
 
