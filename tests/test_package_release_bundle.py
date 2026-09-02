@@ -260,11 +260,20 @@ class PackageReleaseBundleTest(unittest.TestCase):
         """Verifies release bundle extracts strictly from git commit tree and ignores untracked files."""
         untracked_root_file = _REPO_ROOT / "test_untracked_leak.tmp"
         untracked_tf_file = _REPO_ROOT / "terraform" / "test_lifecycle_override.tf"
-        untracked_root_file.write_text("LEAK")
-        untracked_tf_file.write_text("LEAK")
+
+        def _cleanup():
+            if untracked_root_file.exists():
+                untracked_root_file.unlink()
+            if untracked_tf_file.exists():
+                untracked_tf_file.unlink()
+
+        self.addCleanup(_cleanup)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             try:
+                untracked_root_file.write_text("LEAK")
+                untracked_tf_file.write_text("LEAK")
+
                 temp_path = pathlib.Path(temp_dir)
                 bin_dir = create_minimal_tools_bin(temp_dir)
                 dist_dir = temp_path / "dist"
@@ -301,10 +310,7 @@ class PackageReleaseBundleTest(unittest.TestCase):
                 self.assertFalse((bundle_root / "terraform" / "test_lifecycle_override.tf").exists(), "Override must NOT be in bundle")
                 self.assertTrue((bundle_root / "install.sh").exists(), "Tracked install.sh must be in bundle")
             finally:
-                if untracked_root_file.exists():
-                    untracked_root_file.unlink()
-                if untracked_tf_file.exists():
-                    untracked_tf_file.unlink()
+                _cleanup()
 
     def test_packager_script_uses_bash_32_guarded_array_syntax(self):
         """Verifies package_release_bundle.sh uses ${archive_paths[@]+"${archive_paths[@]}"} for macOS bash 3.2 safety."""
