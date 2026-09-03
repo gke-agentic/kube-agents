@@ -209,14 +209,12 @@ fi
 # apply. A plan takes nothing, because it changes nothing.
 LEASE_HELD="false"
 release_lease() {
-  local exit_code=$?
   if [ "$LEASE_HELD" = "true" ]; then
     if ! python3 "${REPO_ROOT}/scripts/live_test_lease.py" release >/dev/null 2>&1; then
       echo "⚠️ Warning: Failed to release live-test lease." >&2
     fi
     LEASE_HELD="false"
   fi
-  exit "${exit_code}"
 }
 trap release_lease EXIT INT TERM HUP
 
@@ -371,5 +369,4 @@ else
   fi
 fi
 
-release_lease
 exit "$status"
