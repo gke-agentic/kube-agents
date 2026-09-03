@@ -44,6 +44,16 @@ else
   return 1 2>/dev/null || exit 1
 fi
 
+# ─── Helm Release Management Defaults ─────────────────────────────────────────
+# Operation timeout for an in-flight Helm install/upgrade across deploy workflows (10m).
+readonly HELM_OPERATION_TIMEOUT_DEFAULT=600
+# Maximum wait budget capped when waiting out an active in-flight operation (5m).
+readonly HELM_PENDING_WAIT_MAX_DEFAULT=300
+# Polling interval while waiting for an in-flight Helm operation to finish.
+readonly HELM_LOCK_POLL_INTERVAL_DEFAULT=10
+# Timeout for rolling back a stuck pending release to the last healthy revision.
+readonly HELM_ROLLBACK_TIMEOUT_DEFAULT="2m"
+
 # Memory mode (the input spelling, recorded in install.env as MEMORY) → the
 # provider name everything downstream reads. The inverse of install.sh's
 # memory_mode_from_provider, and needed here because install.env records the
@@ -732,7 +742,7 @@ ensure_clean_helm_release() {
   # Determine if this operation was started recently and could be an active,
   # in-flight deployment rather than a wedged zombie lock.
   # Helm's standard release timeout across deploy workflows is 10m (600s).
-  local operation_timeout="${HELM_OPERATION_TIMEOUT:-600}"
+  local operation_timeout="${HELM_OPERATION_TIMEOUT:-$HELM_OPERATION_TIMEOUT_DEFAULT}"
   local pending_age=""
   if command -v kubectl >/dev/null 2>&1; then
     local creation_ts
@@ -754,7 +764,7 @@ ensure_clean_helm_release() {
     wait_budget="${HELM_LOCK_WAIT_TIMEOUT}"
   elif [ -n "${pending_age}" ] && [ "${pending_age}" -ge 0 ] && [ "${pending_age}" -lt "${operation_timeout}" ]; then
     wait_budget=$(( operation_timeout - pending_age ))
-    local max_wait="${HELM_PENDING_WAIT_MAX:-300}"
+    local max_wait="${HELM_PENDING_WAIT_MAX:-$HELM_PENDING_WAIT_MAX_DEFAULT}"
     if [ "${wait_budget}" -gt "${max_wait}" ]; then
       wait_budget="${max_wait}"
     fi
@@ -772,7 +782,7 @@ ensure_clean_helm_release() {
     fi
 
     local deadline=$(( SECONDS + wait_budget ))
-    local poll_interval="${HELM_LOCK_POLL_INTERVAL:-10}"
+    local poll_interval="${HELM_LOCK_POLL_INTERVAL:-$HELM_LOCK_POLL_INTERVAL_DEFAULT}"
     while [ "${SECONDS}" -lt "${deadline}" ]; do
       sleep "${poll_interval}"
       release_status="$(helm_release_status "${release_name}" "${namespace}")"
@@ -857,7 +867,7 @@ ensure_clean_helm_release() {
 
       if [ -n "${last_good_rev}" ]; then
         echo "==> Rolling back '${release_name}' to revision ${last_good_rev}..." >&2
-        if helm rollback "${release_name}" "${last_good_rev}" -n "${namespace}" --wait --timeout 2m; then
+        if helm rollback "${release_name}" "${last_good_rev}" -n "${namespace}" --wait --timeout "${HELM_ROLLBACK_TIMEOUT:-$HELM_ROLLBACK_TIMEOUT_DEFAULT}"; then
           if type print_success >/dev/null 2>&1; then
             print_success "Successfully rolled back Helm release '${release_name}' to revision ${last_good_rev}."
           else

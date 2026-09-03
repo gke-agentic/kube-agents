@@ -55,28 +55,17 @@ plan that would close it. An install whose state predates this (it is published
 as an `image_tag` output) falls back to the running tag and says so in the job
 log; the first reconcile records it and later plans are clean.
 
-## The nightly reconcile
+## Deploying and reconciling long-lived environments
 
-The nightly pipeline applies the composition to both environments once its E2E
-matrix is green — steps 4 and 6 of `nightly-pipeline.yml`. The ordering is the
-point: a composition that has not been proved to build an install from nothing
-does not get applied to an environment people work in.
+Long-lived environments are reconciled and deployed atomically using `./upgrade.sh --upgrade-mode=full`:
 
-The two are reconciled differently, and the difference is deliberate:
+- **staging** is deployed by `Staging: Deploy` (`staging-deploy.yml`), which triggers when the nightly pipeline pushes a `staging_*` tag after its full E2E test matrix passes on a fresh nightly cluster. The workflow reconciles the Terraform composition, Helm release, and container images together atomically from that validated candidate commit.
+- **autopush** is deployed by `Autopush: Deploy` (`autopush-deploy.yml`), which triggers whenever candidate container images are successfully published to GHCR from `main`.
 
-- **staging** is reconciled to the candidate the pipeline is promoting, and
-  **before** the `staging_*` tag is pushed. That tag starts three
-  `helm upgrade`s on the same release `helm_release.kube_agents` owns, so
-  applying afterwards would race them.
-- **autopush** is reconciled with no image tag at all. It tracks `main`'s tip
-  through GHCR publishes, and the pipeline's candidate is older than that;
-  pinning it would roll autopush's images backwards.
-
-A reconcile takes the live-test lease before it applies anything (see
-[`docs/designs/live-test-lease.md`](https://github.com/gke-labs/kube-agents/blob/main/docs/designs/live-test-lease.md)),
-and defers to the next night if somebody else holds it. It
-also waits out any redeploy already in flight, for the same release-lock reason
-as the ordering above.
+A deploy takes the live-test lease before it applies anything (see
+[`docs/designs/live-test-lease.md`](https://github.com/gke-labs/kube-agents/blob/main/docs/designs/live-test-lease.md)).
+Because automated deploys do not run on a recurring retry schedule, lease contention fails loudly (`lease_policy: fail`)
+rather than silently reporting success without applying.
 
 Run one by hand with `Shared: Reconcile Environment` (`mode: apply`), or locally
 against your own install with `./upgrade.sh --plan` to see what a reconcile

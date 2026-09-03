@@ -39,7 +39,7 @@ class ResolveAutopushDeployTest(unittest.TestCase):
         })
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("commit_sha=a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", out)
-        self.assertIn("lease_policy=defer", out)
+        self.assertIn("lease_policy=fail", out)
         self.assertIn("force_reconcile=false", out)
 
     def test_workflow_run_resolves_head_sha(self):
@@ -61,11 +61,11 @@ class ResolveAutopushDeployTest(unittest.TestCase):
     def test_custom_lease_policy_and_force_reconcile(self):
         proc, out = self._run({
             "INPUT_TAG": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
-            "INPUT_LEASE_POLICY": "fail",
+            "INPUT_LEASE_POLICY": "defer",
             "INPUT_FORCE_RECONCILE": "true",
         })
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("lease_policy=fail", out)
+        self.assertIn("lease_policy=defer", out)
         self.assertIn("force_reconcile=true", out)
 
     def test_legacy_input_force_backwards_compatibility(self):
@@ -131,7 +131,7 @@ class ResolveStagingDeployTest(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             out = out_file.read_text()
             self.assertIn(f"commit_sha={head}", out)
-            self.assertIn("lease_policy=defer", out)
+            self.assertIn("lease_policy=fail", out)
             self.assertIn("force_reconcile=false", out)
 
     def test_missing_tag_and_sha_fails(self):
