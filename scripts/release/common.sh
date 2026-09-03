@@ -41,14 +41,21 @@ export RELEASE_BUNDLE_DIRECTORIES=(
   "examples"
 )
 
+export RELEASE_INSTALLER_SCRIPTS=(
+  "install.sh"
+  "uninstall.sh"
+  "upgrade.sh"
+)
+
 export RELEASE_HELM_CHARTS=(
   "charts/kube-agents"
 )
 
+export RELEASE_TERRAFORM_EXAMPLE_VARS="terraform/examples/full-install/variables.tf"
+export RELEASE_TERRAFORM_EXAMPLE_TFVARS="terraform/examples/full-install/terraform.tfvars.example"
+
 export RELEASE_BUNDLE_ROOT_FILES=(
-  "install.sh"
-  "uninstall.sh"
-  "upgrade.sh"
+  "${RELEASE_INSTALLER_SCRIPTS[@]}"
   "install.defaults.env"
   "install.env.example"
   "images.json"
@@ -837,7 +844,7 @@ stamp_baked_release_version() {
     return 1
   fi
 
-  for script_name in install.sh uninstall.sh upgrade.sh; do
+  for script_name in "${RELEASE_INSTALLER_SCRIPTS[@]}"; do
     local script_path="${repo_dir}/${script_name}"
     if [ -f "${script_path}" ]; then
       sed -i.bak -E "s/^BAKED_RELEASE_VERSION=[\"'].*[\"']/BAKED_RELEASE_VERSION=\"${version}\"/" "${script_path}" && rm -f "${script_path}.bak"
@@ -889,7 +896,7 @@ stamp_terraform_release_versions() {
     return 1
   fi
 
-  local var_file="${repo_dir}/terraform/examples/full-install/variables.tf"
+  local var_file="${repo_dir}/${RELEASE_TERRAFORM_EXAMPLE_VARS}"
   if [ -f "${var_file}" ]; then
     sed -i.bak -E "/variable \"image_tag\"/,/^[[:space:]]*\}/ s/([[:space:]]*default[[:space:]]*=[[:space:]]*)\"[^\"]*\"/\1\"${version}\"/" "${var_file}" && rm -f "${var_file}.bak"
 
@@ -899,7 +906,7 @@ stamp_terraform_release_versions() {
     fi
   fi
 
-  local tfvars_file="${repo_dir}/terraform/examples/full-install/terraform.tfvars.example"
+  local tfvars_file="${repo_dir}/${RELEASE_TERRAFORM_EXAMPLE_TFVARS}"
   if [ -f "${tfvars_file}" ]; then
     sed -i.bak -E "s/^#([[:space:]]*image_tag[[:space:]]*=[[:space:]]*)\"[^\"]*\"/#\1\"${version}\"/" "${tfvars_file}" && rm -f "${tfvars_file}.bak"
     if ! grep -q -E "^#[[:space:]]*image_tag[[:space:]]*=[[:space:]]*\"${version}\"" "${tfvars_file}"; then
@@ -1013,12 +1020,14 @@ create_stamped_release_commit() {
 
   # 3. If files were modified, create release commit on detached HEAD (does NOT touch main branch)
   local candidate_files=(
-    "install.sh"
-    "uninstall.sh"
-    "upgrade.sh"
-    "charts/kube-agents/Chart.yaml"
-    "terraform/examples/full-install/variables.tf"
-    "terraform/examples/full-install/terraform.tfvars.example"
+    "${RELEASE_INSTALLER_SCRIPTS[@]}"
+  )
+  for chart_rel_path in "${RELEASE_HELM_CHARTS[@]}"; do
+    candidate_files+=("${chart_rel_path}/Chart.yaml")
+  done
+  candidate_files+=(
+    "${RELEASE_TERRAFORM_EXAMPLE_VARS}"
+    "${RELEASE_TERRAFORM_EXAMPLE_TFVARS}"
   )
   local modified_files=()
   for file_rel in "${candidate_files[@]}"; do
