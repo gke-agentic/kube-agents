@@ -44,6 +44,7 @@ shared either way.
 ## Security and prompt sanitization
 
 Memory entries undergo best-effort sanitization before being rendered into prompts:
+
 - Strips C0/C1 control characters, zero-width spaces, and bidirectional overrides (`sanitize_memory_entry`).
 - Neutralizes storage delimiter smuggling (`\n§\n` sequences).
 - Defuses common tag-based delimiter framing (`<system>`, `<prompt>`, `<admin>`, etc.), markdown heading injections, and LLM special tokens (`sanitize_for_prompt`).
