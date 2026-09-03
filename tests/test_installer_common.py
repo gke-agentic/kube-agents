@@ -847,15 +847,22 @@ class NormalizeMemoryVarsTest(unittest.TestCase):
 
 
 class HelmReleaseSelfHealingTest(unittest.TestCase):
-    def _run_helm_test(self, script, helm_script):
+    def _run_helm_test(self, script, helm_script, env_overrides=None):
         with tempfile.TemporaryDirectory() as tmp:
             bin_dir = pathlib.Path(tmp) / "bin"
             bin_dir.mkdir()
             helm = bin_dir / "helm"
             helm.write_text(helm_script)
             helm.chmod(helm.stat().st_mode | stat.S_IEXEC)
-            full_env = get_isolated_test_env(bin_dir=str(bin_dir))
-            body = f'set -u\n{_PRINT_STUBS}\nprint_warning() {{ echo "WARNING: $*" >&2; }}\nsource "{_INSTALLER_COMMON}"\n{script}'
+            full_env = get_isolated_test_env(overrides=env_overrides or {}, bin_dir=str(bin_dir))
+            body = (
+                f'set -u\n'
+                f'{_PRINT_STUBS}\n'
+                f'print_warning() {{ echo "WARNING: $*" >&2; }}\n'
+                f'print_success() {{ echo "SUCCESS: $*" >&2; }}\n'
+                f'source "{_INSTALLER_COMMON}"\n'
+                f'{script}'
+            )
             return subprocess.run(
                 ["bash", "-c", body],
                 capture_output=True,
@@ -878,7 +885,21 @@ class HelmReleaseSelfHealingTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertNotIn("Rolling back", proc.stderr)
 
-    def test_pending_install_cleans_up_failed_initial_install(self):
+    def test_pending_install_refuses_uninstall_by_default(self):
+        helm_script = (
+            '#!/usr/bin/env bash\n'
+            'case "$*" in\n'
+            '  *"status kube-agents"*) echo \'{"name": "kube-agents", "info": {"status": "pending-install"}}\'; exit 0 ;;\n'
+            '  *"uninstall kube-agents"*) echo "UNINSTALL EXECUTED" >&2; exit 0 ;;\n'
+            '  *) echo "unexpected helm call: $*" >&2; exit 1 ;;\n'
+            'esac\n'
+        )
+        proc = self._run_helm_test('ensure_clean_helm_release kube-agents kubeagents-system', helm_script)
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn("Automatic uninstall is blocked", proc.stderr)
+        self.assertNotIn("UNINSTALL EXECUTED", proc.stderr)
+
+    def test_pending_install_uninstalls_when_opted_in(self):
         helm_script = (
             '#!/usr/bin/env bash\n'
             'case "$*" in\n'
@@ -887,9 +908,13 @@ class HelmReleaseSelfHealingTest(unittest.TestCase):
             '  *) echo "unexpected helm call: $*" >&2; exit 1 ;;\n'
             'esac\n'
         )
-        proc = self._run_helm_test('ensure_clean_helm_release kube-agents kubeagents-system', helm_script)
+        proc = self._run_helm_test(
+            'ensure_clean_helm_release kube-agents kubeagents-system',
+            helm_script,
+            env_overrides={"ALLOW_UNINSTALL_PENDING_RELEASE": "true"},
+        )
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("Clearing failed release", proc.stderr)
+        self.assertIn("Successfully cleaned up stuck pending-install release", proc.stderr)
 
     def test_pending_upgrade_recovers_to_last_good_revision(self):
         helm_script = (
@@ -905,7 +930,22 @@ class HelmReleaseSelfHealingTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("Rolling back 'kube-agents' to revision 2", proc.stderr)
 
-    def test_pending_upgrade_without_prior_good_revision_uninstalls(self):
+    def test_pending_upgrade_without_prior_good_revision_refuses_uninstall_by_default(self):
+        helm_script = (
+            '#!/usr/bin/env bash\n'
+            'case "$*" in\n'
+            '  *"status kube-agents"*) echo \'{"name": "kube-agents", "info": {"status": "pending-upgrade"}}\'; exit 0 ;;\n'
+            '  *"history kube-agents"*) echo \'[{"revision": 1, "status": "failed"}]\'; exit 0 ;;\n'
+            '  *"uninstall kube-agents"*) echo "UNINSTALL EXECUTED" >&2; exit 0 ;;\n'
+            '  *) echo "unexpected helm call: $*" >&2; exit 1 ;;\n'
+            'esac\n'
+        )
+        proc = self._run_helm_test('ensure_clean_helm_release kube-agents kubeagents-system', helm_script)
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn("Automatic uninstall is blocked", proc.stderr)
+        self.assertNotIn("UNINSTALL EXECUTED", proc.stderr)
+
+    def test_pending_upgrade_without_prior_good_revision_uninstalls_when_opted_in(self):
         helm_script = (
             '#!/usr/bin/env bash\n'
             'case "$*" in\n'
@@ -915,9 +955,42 @@ class HelmReleaseSelfHealingTest(unittest.TestCase):
             '  *) echo "unexpected helm call: $*" >&2; exit 1 ;;\n'
             'esac\n'
         )
-        proc = self._run_helm_test('ensure_clean_helm_release kube-agents kubeagents-system', helm_script)
+        proc = self._run_helm_test(
+            'ensure_clean_helm_release kube-agents kubeagents-system',
+            helm_script,
+            env_overrides={"ALLOW_UNINSTALL_PENDING_RELEASE": "true"},
+        )
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("no previous deployed revision exists", proc.stderr)
+
+    def test_pending_upgrade_in_flight_waits_and_succeeds_when_deployed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = pathlib.Path(tmp) / "pending_stage"
+            helm_script = (
+                f'#!/usr/bin/env bash\n'
+                f'case "$*" in\n'
+                f'  *"status kube-agents"*)\n'
+                f'    if [ ! -f "{marker}" ]; then\n'
+                f'      touch "{marker}"\n'
+                f'      echo \'{{"name": "kube-agents", "info": {{"status": "pending-upgrade"}}}}\'\n'
+                f'    else\n'
+                f'      echo \'{{"name": "kube-agents", "info": {{"status": "deployed"}}}}\'\n'
+                f'    fi\n'
+                f'    exit 0 ;;\n'
+                f'  *) echo "unexpected helm call: $*" >&2; exit 1 ;;\n'
+                f'esac\n'
+            )
+            proc = self._run_helm_test(
+                'ensure_clean_helm_release kube-agents kubeagents-system',
+                helm_script,
+                env_overrides={
+                    "HELM_LOCK_WAIT_TIMEOUT": "5",
+                    "HELM_LOCK_POLL_INTERVAL": "1",
+                },
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("In-flight Helm operation completed successfully", proc.stderr)
+
+
 
     def test_helm_release_status_reports_correctly(self):
         helm_script = (
