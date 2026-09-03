@@ -14,6 +14,7 @@ on:
       - "Publish Images to GHCR"
     types:
       - completed
+  #checkov:skip=CKV_GHA_7:Standalone launch requires optional image tag, lease policy and force reconcile inputs
   workflow_dispatch:
     inputs:
       image_tag:

@@ -13,6 +13,7 @@ on:
       # Pushed by nightly-pipeline.yml (Step 4) after green E2E matrix
       # Format: staging_<timestamp>_<commit_sha>
       - "staging_*"
+  #checkov:skip=CKV_GHA_7:Standalone launch requires optional image tag, lease policy and force reconcile inputs
   workflow_dispatch:
     inputs:
       image_tag:
