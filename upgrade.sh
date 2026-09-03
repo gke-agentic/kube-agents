@@ -738,7 +738,17 @@ main() {
     print_info "This install predates the Terraform + Helm engine. Upgrade it with the release that installed it (curl the matching versioned upgrade.sh), or re-install with install.sh to adopt the new engine."
     exit 1
   fi
-
+  # Recover from zombie locks left behind by interrupted or timed-out Helm runs
+  if [ "$PARAM_PLAN" != "true" ]; then
+    ensure_clean_helm_release kube-agents "$target_namespace"
+  else
+    # In plan mode, do not mutate state with a rollback, but warn if release is stuck
+    local current_helm_status
+    current_helm_status="$(helm_release_status kube-agents "$target_namespace")"
+    if [[ "$current_helm_status" =~ ^pending- ]]; then
+      print_warning "Helm release 'kube-agents' is currently in '${current_helm_status}'. Note: rollback is skipped in plan mode."
+    fi
+  fi
   # NAMESPACE steers the generator's Secret-recovery reads (install.env omits
   # credentials when PERSIST_SECRETS_ON_DISK=false; the live Secret has them).
   NAMESPACE="$target_namespace" \
@@ -838,8 +848,11 @@ main() {
     # operator Deployment with the release name.
     kubectl rollout status deployment/kube-agents-controller-manager -n kubeagents-system --timeout=120s
   fi
+  if [ -n "$PARAM_IMAGE_TAG" ] && [ -f "${repo_dir}/scripts/confirm_agent_image.sh" ]; then
+    "${repo_dir}/scripts/confirm_agent_image.sh" "$target_namespace" platform-agent-gateway "$PARAM_IMAGE_TAG"
+  fi
   if [ "$PARAM_UPGRADE_MODE" = "harness" ] || [ "$PARAM_UPGRADE_MODE" = "full" ] || [ "$restarted_agent" = "true" ]; then
-    kubectl rollout status deployment/platform-agent-gateway -n kubeagents-system --timeout=120s
+    kubectl rollout status deployment/platform-agent-gateway -n kubeagents-system --timeout=900s
   fi
   print_success "Upgraded deployments verified healthy."
 

@@ -384,6 +384,16 @@ class InteractiveImageTagPromptTest(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, out)
 
+    def test_upgrade_invokes_ensure_clean_helm_release(self):
+        text = (_REPO_ROOT / "upgrade.sh").read_text()
+        self.assertIn('ensure_clean_helm_release kube-agents "$target_namespace"', text)
+
+    def test_upgrade_confirms_agent_image_before_rollout_status(self):
+        text = (_REPO_ROOT / "upgrade.sh").read_text()
+        confirm_idx = text.index('confirm_agent_image.sh" "$target_namespace" platform-agent-gateway')
+        rollout_idx = text.index('rollout status deployment/platform-agent-gateway')
+        self.assertLess(confirm_idx, rollout_idx)
+
 
 if __name__ == "__main__":
     unittest.main()
