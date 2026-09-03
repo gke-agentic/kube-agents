@@ -399,6 +399,9 @@ func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if err := r.reconcileNetworkPolicy(ctx, instance, netpolProf, otlpEndpoint, otlpDisabled); err != nil {
 		return ctrl.Result{}, err
 	}
+	if err := r.reconcileLiteLLMNetworkPolicy(ctx, instance, netpolProf, otlpEndpoint, otlpDisabled); err != nil {
+		return ctrl.Result{}, err
+	}
 	if err := r.deleteLegacyCredentialIsolationResources(ctx, instance); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -469,6 +472,18 @@ func (r *PlatformAgentReconciler) handleDeletion(ctx context.Context, agent *age
 		}
 		if err := r.cleanupAgentRBAC(ctx, agent, true); err != nil {
 			return ctrl.Result{}, err
+		}
+
+		// litellm-policy is an unowned resource so that deleting a PlatformAgent does not
+		// immediately drop LiteLLM's egress while LiteLLM is still running and serving.
+		// However, if the LiteLLM deployment is absent or also being deleted (e.g. helm uninstall),
+		// clean up the operator-managed litellm-policy so it is not orphaned.
+		var litellmDep appsv1.Deployment
+		depErr := r.Get(ctx, types.NamespacedName{Namespace: agent.Namespace, Name: litellmDeploymentName}, &litellmDep)
+		if errors.IsNotFound(depErr) || (depErr == nil && litellmDep.DeletionTimestamp != nil) {
+			if err := r.deleteManagedLiteLLMPolicy(ctx, agent); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 
 		// Resource is deleted. Safe to remove finalizer and update.
@@ -1245,6 +1260,9 @@ func (r *PlatformAgentReconciler) reconcileAgentNetworkGuardrails(ctx context.Co
 	otlpEndpoint, otlpSource := r.resolveOTLPEndpoint(ctx, agent)
 	netpolProf := r.resolveNetpolProfile(ctx, agent)
 	if err := r.reconcileNetworkPolicy(ctx, agent, netpolProf, otlpEndpoint, otlpSource == otlpSourceNone); err != nil {
+		return err
+	}
+	if err := r.reconcileLiteLLMNetworkPolicy(ctx, agent, netpolProf, otlpEndpoint, otlpSource == otlpSourceNone); err != nil {
 		return err
 	}
 	if !refusalStillRendersTheGuardrail(reason) {
@@ -2085,6 +2103,20 @@ func (r *PlatformAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&networkingv1.NetworkPolicy{}).
 		Owns(&policyv1.PodDisruptionBudget{})
 
+	enqueueAgentsInNamespace := func(ctx context.Context, namespace string) []reconcile.Request {
+		var list agentv1alpha1.PlatformAgentList
+		if err := mgr.GetClient().List(ctx, &list, client.InNamespace(namespace)); err != nil {
+			return nil
+		}
+		var reqs []reconcile.Request
+		for _, agent := range list.Items {
+			reqs = append(reqs, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: agent.Namespace, Name: agent.Name},
+			})
+		}
+		return reqs
+	}
+
 	// Only register AgentPlugin watch if CRD exists in cluster RESTMapper
 	gvk := agentv1alpha1.GroupVersion.WithKind("AgentPlugin")
 	if mgr != nil && mgr.GetRESTMapper() != nil {
@@ -2101,17 +2133,7 @@ func (r *PlatformAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 							{NamespacedName: types.NamespacedName{Namespace: ext.Namespace, Name: ext.Spec.AgentRef}},
 						}
 					}
-					var list agentv1alpha1.PlatformAgentList
-					if err := mgr.GetClient().List(ctx, &list, client.InNamespace(ext.Namespace)); err != nil {
-						return nil
-					}
-					var reqs []reconcile.Request
-					for _, agent := range list.Items {
-						reqs = append(reqs, reconcile.Request{
-							NamespacedName: types.NamespacedName{Namespace: agent.Namespace, Name: agent.Name},
-						})
-					}
-					return reqs
+					return enqueueAgentsInNamespace(ctx, ext.Namespace)
 				}),
 				// Status writes on AgentPlugin come from this controller. Without a
 				// generation filter each of those writes would re-enqueue the agent that
@@ -2164,6 +2186,24 @@ func (r *PlatformAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 					return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: parts[2], Name: parts[3]}}}
 				}
 				return nil
+			}),
+		).
+		Watches(
+			&networkingv1.NetworkPolicy{},
+			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+				if obj.GetName() != litellmNetworkPolicyName {
+					return nil
+				}
+				return enqueueAgentsInNamespace(ctx, obj.GetNamespace())
+			}),
+		).
+		Watches(
+			&appsv1.Deployment{},
+			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+				if obj.GetName() != litellmDeploymentName {
+					return nil
+				}
+				return enqueueAgentsInNamespace(ctx, obj.GetNamespace())
 			}),
 		).
 		Named("platformagent").

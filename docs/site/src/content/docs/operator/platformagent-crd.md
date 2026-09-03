@@ -422,10 +422,10 @@ Optional, and omitting it is the point: with the field absent the operator disco
 Configures the operator-generated egress `NetworkPolicy`.
 
 - `enabled` (bool, optional) — toggle operator-managed NetworkPolicy generation. Default `true` (unset
-  means on). Setting `false` stops generation and deletes the two policies the operator owns for this
-  agent, `<name>-gateway-netpol` and the `<name>-fqdn-netpol` `FQDNNetworkPolicy`. Both deletions
-  check the owner reference first, so a policy of the same name that the operator did not create
-  survives.
+  means on). Setting `false` stops generation and deletes the policies the operator manages for this
+  agent: `<name>-gateway-netpol`, the `<name>-fqdn-netpol` `FQDNNetworkPolicy`, and the shared
+  `litellm-policy` (if LiteLLM is present). Deletions check ownership / managed labels first, so a
+  policy that the operator did not create survives.
 - `dnsClusterIPs` ([]string, optional, max 8 items) — pins the cluster DNS Service ClusterIPs in
   rule 1, suppressing dynamic discovery from `kube-system/kube-dns`. Each entry is a bare IPv4 or
   IPv6 address with no prefix. Admission bounds the IPv4 octets and rejects the leading-zero form
