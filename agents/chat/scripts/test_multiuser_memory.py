@@ -333,6 +333,28 @@ class TestInputValidationAndSanitization(MultiUserMemoryTestCase):
         multi_line = "Set <prompt\ntimeout to 30s and confirm cpu > 2 cores\nthen restart"
         self.assertEqual(mum.sanitize_for_prompt(multi_line), multi_line)
 
+        # 5. Repeated unclosed tag candidates on a single line (bounded {0,256} scan guarantees O(n) total work)
+        evil_repeated = "<system " * 250 + "."
+        t0 = time.perf_counter()
+        sanitized_rep = mum.sanitize_for_prompt(evil_repeated)
+        dt_rep = (time.perf_counter() - t0) * 1000
+        self.assertLess(dt_rep, 50.0, f"Repeated candidate tag regex took too long: {dt_rep:.2f}ms")
+        self.assertEqual(sanitized_rep, evil_repeated)
+
+        evil_spaced_repeated = "< system " * 220 + "."
+        t0 = time.perf_counter()
+        sanitized_sp_rep = mum.sanitize_for_prompt(evil_spaced_repeated)
+        dt_sp_rep = (time.perf_counter() - t0) * 1000
+        self.assertLess(dt_sp_rep, 50.0, f"Repeated spaced candidate regex took too long: {dt_sp_rep:.2f}ms")
+        self.assertEqual(sanitized_sp_rep, evil_spaced_repeated)
+
+        # 6. Spaced tag with immediate attribute is neutralized, while inequality text is preserved
+        self.assertEqual(mum.sanitize_for_prompt('< system role="admin">'), "[system_tag_neutralized]")
+        self.assertEqual(
+            mum.sanitize_for_prompt("CPU < system limit; set threshold=90 if usage > 80%"),
+            "CPU < system limit; set threshold=90 if usage > 80%",
+        )
+
     def test_sop_commands_and_inequalities_preserved(self):
         p = self.provider(chat_type="dm")
         sop_cases = [
@@ -340,6 +362,7 @@ class TestInputValidationAndSanitization(MultiUserMemoryTestCase):
             "--context <context of the cluster running the agent>",
             "Pod priority: <system-node-critical>",
             "Alert when CPU < system reserved; page if utilization > 90%",
+            "CPU < system limit; set threshold=90 if usage > 80%",
             "CPU < system reserved and mem > 4Gi",
             "if load < prompt latency then page > oncall",
             "value < system max > threshold",
@@ -361,8 +384,10 @@ class TestInputValidationAndSanitization(MultiUserMemoryTestCase):
         self.assertIn("<context of the cluster running the agent>", prompt)
         self.assertIn("<system-node-critical>", prompt)
         self.assertIn("Alert when CPU < system reserved; page if utilization > 90%", prompt)
+        self.assertIn("CPU < system limit; set threshold=90 if usage > 80%", prompt)
         self.assertNotIn("[context_tag_neutralized]", prompt)
         self.assertNotIn("[system_tag_neutralized] 90%", prompt)
+        self.assertNotIn("[system_tag_neutralized] 80%", prompt)
 
     def test_delimiter_smuggling_prevented(self):
         p = self.provider(chat_type="dm")

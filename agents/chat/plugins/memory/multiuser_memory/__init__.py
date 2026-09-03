@@ -99,17 +99,20 @@ def _neutralize_prompt_injection(text: str) -> str:
     # 1. Closing/spaced-closing (</ system>, < / system>), self-closing (<system/>, <system />),
     #    and standard tags (<system>, <system extra="1">). Uses (?=[ \t>/]) lookahead to defuse
     #    self-closing tags without mangling SOP hyphenated names (<system-node-critical>).
+    #    Bounded to {0,256} chars so per-candidate work is constant time.
     text = re.sub(
-        r"<(?:[ \t]*/[ \t]*|/?)(system|instruction|prompt|admin|untrusted_[a-z0-9_-]+)(?=[ \t>/])[^>\n]*>",
+        r"<(?:[ \t]*/[ \t]*|/?)(system|instruction|prompt|admin|untrusted_[a-z0-9_-]+)(?=[ \t>/])[^>\n]{0,256}>",
         r"[\1_tag_neutralized]",
         text,
         flags=re.IGNORECASE,
     )
     # 2. Spaced opening tags without attributes (< system>, < system/>) or with attributes
-    #    (< system role="admin">), gated on an '=' before '>' to prevent colliding with
-    #    threshold inequalities like 'CPU < system reserved; page if utilization > 90%'.
+    #    (< system role="admin">), requiring an immediate attribute ([a-z_][a-z0-9_-]*[ \t]*=)
+    #    to prevent colliding with threshold inequalities like
+    #    'CPU < system limit; set threshold=90 if usage > 80%'.
+    #    Bounded to {0,256} chars so per-candidate work is constant time.
     text = re.sub(
-        r"<[ \t]+(system|instruction|prompt|admin|untrusted_[a-z0-9_-]+)(?:[ \t]*(?:/[ \t]*)?>|(?=[ \t])(?=[^>\n]*=)[^>\n]*>)",
+        r"<[ \t]+(system|instruction|prompt|admin|untrusted_[a-z0-9_-]+)(?:[ \t]*(?:/[ \t]*)?>|(?=[ \t]+[a-z_][a-z0-9_-]*[ \t]*=)[^>\n]{0,256}>)",
         r"[\1_tag_neutralized]",
         text,
         flags=re.IGNORECASE,
@@ -177,6 +180,9 @@ def sanitize_for_prompt(text: str) -> str:
     """Sanitize a memory entry specifically for injection-safe system prompt rendering.
 
     Runs in-memory during prompt construction without modifying stored data on disk.
+    Best-effort defense-in-depth against accidental or naive prompt framing; not an
+    impermeable security boundary (multiline tag syntax like <system\\n> and natural-language
+    instructions intentionally pass through to prevent corrupting legitimate SOP text).
     """
     if not text or not isinstance(text, str):
         return ""
