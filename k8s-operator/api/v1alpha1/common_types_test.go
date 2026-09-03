@@ -86,6 +86,7 @@ func TestCleanRepoSlug(t *testing.T) {
 	}{
 		{"gke-labs/kube-agents", "gke-labs/kube-agents", false},
 		{"https://github.com/gke-labs/kube-agents", "gke-labs/kube-agents", false},
+		{"HTTPS://github.com/gke-labs/kube-agents", "gke-labs/kube-agents", false},
 		{"https://github.com/gke-labs/kube-agents.git", "gke-labs/kube-agents", false},
 		{"http://github.com/gke-labs/kube-agents", "gke-labs/kube-agents", false},
 		{"git@github.com:gke-labs/kube-agents.git", "gke-labs/kube-agents", false},
@@ -93,6 +94,11 @@ func TestCleanRepoSlug(t *testing.T) {
 		{"ssh://git@github.com:gke-labs/kube-agents.git", "gke-labs/kube-agents", false},
 		{"git://github.com/gke-labs/kube-agents.git", "gke-labs/kube-agents", false},
 		{"github.com/gke-labs/kube-agents", "gke-labs/kube-agents", false},
+		{"git@gitlab.com:gke-labs/kube-agents.git", "", true},
+		{"https://gitlab.com/gke-labs/kube-agents.git", "", true},
+		{"gke-labs/repo?tab=readme", "", true},
+		{"gke-labs/re'po", "", true},
+		{"gke-labs/..", "", true},
 		{"file:///etc/passwd", "", true},
 		{"ftp://github.com/gke-labs/kube-agents", "", true},
 		{"invalid-single-slug", "", true},
@@ -197,7 +203,7 @@ func TestCleanRepoURLWithOrg(t *testing.T) {
 		{"kube-agents", "gke-labs", "https://github.com/gke-labs/kube-agents", false},
 		{"gke-labs/kube-agents", "", "https://github.com/gke-labs/kube-agents", false},
 		{"https://github.com/gke-labs/kube-agents", "", "https://github.com/gke-labs/kube-agents", false},
-		{"https://gitlab.com/gke-labs/kube-agents.git", "", "https://gitlab.com/gke-labs/kube-agents", false},
+		{"https://gitlab.com/gke-labs/kube-agents.git", "", "", true},
 		{"invalid", "", "", true},
 	}
 

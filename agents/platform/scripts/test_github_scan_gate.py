@@ -169,6 +169,13 @@ class IssuesSweepTest(unittest.TestCase):
             result = gate.sweep_issues()
         self.assertIn("not a url", result.warnings[0])
 
+    def test_error_with_unreachable_repos_carries_unreachable_details(self):
+        with mock.patch("gitops_workspace.get_managed_github_repos", return_value=["org/r1", "org/r2"]):
+            with self._poll({"status": "ERROR", "reason": "PARTIAL_FAILURE", "unreachable_repos": ["org/r2"]}):
+                result = gate.sweep_issues()
+        self.assertEqual(result.cards, [])
+        self.assertIn("unreachable repositories: org/r2", result.warnings[0])
+
     def test_unrecognised_status_is_a_warning_not_silence(self):
         """A resolver that grows a new status must not be read as "nothing to do"."""
         with self._poll({"status": "SOMETHING_NEW"}):

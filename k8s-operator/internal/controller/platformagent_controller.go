@@ -676,6 +676,7 @@ func parseManagedRepos(raw string) ([]string, error) {
 // If the repository to be removed was declared in spec.integration.github.gitRepo on the CR, clear or
 // update gitRepo on the CR as well so the reconciler does not re-append it on subsequent passes.
 func (r *PlatformAgentReconciler) reconcileGitopsStateConfigMap(ctx context.Context, agent *agentv1alpha1.PlatformAgent) error {
+	logger := logf.FromContext(ctx)
 	cm := buildGitopsStateConfigMap(agent)
 	if err := ctrl.SetControllerReference(agent, cm, r.Scheme); err != nil {
 		return err
@@ -710,11 +711,13 @@ func (r *PlatformAgentReconciler) reconcileGitopsStateConfigMap(ctx context.Cont
 		}
 		specEntries, err := parseManagedRepoEntries(cmRepo)
 		if err != nil {
-			return fmt.Errorf("failed to parse spec repository JSON: %w", err)
+			logger.Info("skipping gitops state reconcile due to unparseable spec repository JSON", "error", err)
+			return r.syncGithubTokenMinterConfigMap(ctx, agent, found.Data["managed_repos"])
 		}
 		existingEntries, err := parseManagedRepoEntries(existing)
 		if err != nil {
-			return fmt.Errorf("failed to parse existing managed_repos in ConfigMap %s: %w", found.Name, err)
+			logger.Info("skipping gitops state reconcile due to unparseable existing managed_repos in ConfigMap", "configMap", found.Name, "error", err)
+			return r.syncGithubTokenMinterConfigMap(ctx, agent, found.Data["managed_repos"])
 		}
 		updated := false
 		for _, se := range specEntries {
@@ -852,7 +855,8 @@ func (r *PlatformAgentReconciler) syncGithubTokenMinterConfigMap(ctx context.Con
 
 	repos, err := parseManagedRepos(managedReposStr)
 	if err != nil {
-		return fmt.Errorf("failed to parse managed_repos for minter policy sync: %w", err)
+		logger.Info("skipping minter policy sync due to unparseable managed_repos in ConfigMap", "error", err)
+		return nil
 	}
 	var allBareRepos []string
 	activeKeys := make(map[string]string, len(repos))
@@ -890,12 +894,9 @@ func (r *PlatformAgentReconciler) syncGithubTokenMinterConfigMap(ctx context.Con
 	for key := range activeKeys {
 		currentVal, exists := minterCM.Data[key]
 		_, managed := operatorManagedKeys[key]
-		if !exists {
+		if !exists || !managed || currentVal != expectedContent {
 			minterCM.Data[key] = expectedContent
 			operatorManagedKeys[key] = struct{}{}
-			updated = true
-		} else if managed && currentVal != expectedContent {
-			minterCM.Data[key] = expectedContent
 			updated = true
 		}
 	}

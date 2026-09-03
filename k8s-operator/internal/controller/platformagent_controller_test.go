@@ -2843,15 +2843,15 @@ func TestReconcileGitopsStateConfigMap(t *testing.T) {
 		t.Errorf("expected ConfigMap to contain merged repos, but got %v", verifyCM.Data["managed_repos"])
 	}
 
-	// 5. Unparseable managed_repos in ConfigMap should return an error and preserve existing data without overwriting
+	// 5. Unparseable managed_repos in ConfigMap should log warning and degrade gracefully without erroring out
 	verifyCM.Data["managed_repos"] = `[invalid-json-text`
 	if err := fakeClient.Update(ctx, &verifyCM); err != nil {
 		t.Fatalf("failed to update ConfigMap with unparseable data: %v", err)
 	}
 
 	err = r.reconcileGitopsStateConfigMap(ctx, agent)
-	if err == nil {
-		t.Errorf("expected error when managed_repos contains unparseable JSON, got nil")
+	if err != nil {
+		t.Errorf("expected graceful degradation (nil error) when managed_repos contains unparseable JSON, got: %v", err)
 	}
 
 	var unparseableVerifyCM corev1.ConfigMap
@@ -4489,6 +4489,61 @@ func TestSyncGithubTokenMinterConfigMap(t *testing.T) {
 
 	if _, exists := updatedCM.Data["forbidden-repo.yaml"]; exists {
 		t.Errorf("expected cross-org forbidden-repo.yaml to be skipped when primaryOrg is inferred from GitRepo")
+	}
+}
+
+func TestSyncGithubTokenMinterConfigMap_AdoptsPreRenderedKeys(t *testing.T) {
+	scheme := setupScheme()
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "test-ns"},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
+				IntegrationSpec: agentv1alpha1.IntegrationSpec{
+					GitHub: &agentv1alpha1.GitHubSpec{
+						Org: "test-org",
+					},
+				},
+			},
+		},
+	}
+
+	// Pre-rendered ConfigMap as shipped by Helm chart / Kustomize template: contains default.yaml AND repo-1.yaml
+	minterCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "github-token-minter-config",
+			Namespace: "test-ns",
+		},
+		Data: map[string]string{
+			"default.yaml": "version: 'minty.abcxyz.dev/v2'\nscope:\n  platform-agent-scope:\n    repositories:\n      - 'repo-1'\n",
+			"repo-1.yaml":  "version: 'minty.abcxyz.dev/v2'\nscope:\n  platform-agent-scope:\n    repositories:\n      - 'repo-1'\n",
+		},
+	}
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(agent, minterCM).Build()
+	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
+	ctx := context.Background()
+
+	// Reconcile with managed_repos containing repo-1 and repo-2
+	err := r.syncGithubTokenMinterConfigMap(ctx, agent, `[{"type":"github","url":"https://github.com/test-org/repo-1"},{"type":"github","url":"https://github.com/test-org/repo-2"}]`)
+	if err != nil {
+		t.Fatalf("syncGithubTokenMinterConfigMap failed: %v", err)
+	}
+
+	updatedCM := &corev1.ConfigMap{}
+	if err := cl.Get(ctx, client.ObjectKey{Name: "github-token-minter-config", Namespace: "test-ns"}, updatedCM); err != nil {
+		t.Fatalf("failed to get updated ConfigMap: %v", err)
+	}
+
+	// Verify repo-1.yaml was adopted and updated to include both repos
+	expectedRepo1 := "version: 'minty.abcxyz.dev/v2'\nscope:\n  platform-agent-scope:\n    repositories:\n      - 'repo-1'\n      - 'repo-2'\n"
+	if updatedCM.Data["repo-1.yaml"] != expectedRepo1 {
+		t.Errorf("expected pre-rendered repo-1.yaml to be updated with all repos, got %q", updatedCM.Data["repo-1.yaml"])
+	}
+
+	// Verify managed keys annotation includes both repo-1.yaml and repo-2.yaml
+	expectedAnn := "repo-1.yaml,repo-2.yaml"
+	if ann := updatedCM.Annotations[AnnotationManagedMinterKeys]; ann != expectedAnn {
+		t.Errorf("expected annotation %q, got %q", expectedAnn, ann)
 	}
 }
 
