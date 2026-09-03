@@ -171,6 +171,137 @@ class TagGAReleaseScriptTest(unittest.TestCase):
         finally:
             temp_dir.cleanup()
 
+    def test_stamps_helm_and_terraform_versions_on_detached_head(self):
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            repo_path = pathlib.Path(repo_dir)
+
+            for script in ["install.sh", "uninstall.sh", "upgrade.sh"]:
+                (repo_path / script).write_text('#!/bin/bash\nBAKED_RELEASE_VERSION=""\n')
+
+            chart_dir = repo_path / "charts" / "kube-agents"
+            chart_dir.mkdir(parents=True, exist_ok=True)
+            chart_yaml = chart_dir / "Chart.yaml"
+            chart_yaml.write_text(
+                'apiVersion: v2\n'
+                'name: kube-agents\n'
+                'version: 0.1.0\n'
+                'appVersion: "0.1.0"\n'
+            )
+
+            tf_dir = repo_path / "terraform" / "examples" / "full-install"
+            tf_dir.mkdir(parents=True, exist_ok=True)
+            variables_tf = tf_dir / "variables.tf"
+            variables_tf.write_text(
+                'variable "project_id" {\n'
+                '  description = "GCP Project ID"\n'
+                '  type        = string\n'
+                '}\n\n'
+                'variable "image_tag" {\n'
+                '  description = "Release image tag"\n'
+                '  type        = string\n'
+                '  default     = "0.1.0"\n'
+                '}\n'
+            )
+            tfvars_example = tf_dir / "terraform.tfvars.example"
+            tfvars_example.write_text(
+                'project_id = "my-project"\n'
+                '# image_tag = "0.1.0"\n'
+            )
+
+            git("add", ".")
+            git("commit", "-m", "feat: initial project structure with scripts, helm and terraform")
+            main_commit = git("rev-parse", "HEAD").stdout.strip()
+
+            proc = self._run_script(
+                [MOCK_TARGET_RELEASE_TAG, main_commit],
+                cwd=repo_dir,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+
+            # 1. Main branch remains untouched and clean
+            current_main = git("rev-parse", "main").stdout.strip()
+            self.assertEqual(current_main, main_commit)
+            current_branch = git("symbolic-ref", "--short", "HEAD").stdout.strip()
+            self.assertEqual(current_branch, "main")
+
+            # Verify files on main still have original values
+            main_chart = chart_yaml.read_text()
+            self.assertIn("version: 0.1.0", main_chart)
+            self.assertIn('appVersion: "0.1.0"', main_chart)
+            main_var = variables_tf.read_text()
+            self.assertIn('default     = "0.1.0"', main_var)
+            main_tfvars = tfvars_example.read_text()
+            self.assertIn('# image_tag = "0.1.0"', main_tfvars)
+
+            # 2. Release tag points to stamped commit
+            tag_commit = git("rev-parse", f"{MOCK_TARGET_RELEASE_TAG}^{{commit}}").stdout.strip()
+            self.assertNotEqual(tag_commit, main_commit)
+
+            # 3. All files stamped at the tag ref
+            for script in ["install.sh", "uninstall.sh", "upgrade.sh"]:
+                content = git("show", f"{MOCK_TARGET_RELEASE_TAG}:{script}").stdout
+                self.assertIn(f'BAKED_RELEASE_VERSION="{MOCK_TARGET_RELEASE_TAG}"', content)
+
+            tagged_chart = git("show", f"{MOCK_TARGET_RELEASE_TAG}:charts/kube-agents/Chart.yaml").stdout
+            self.assertIn(f"version: {MOCK_TARGET_RELEASE_TAG}", tagged_chart)
+            self.assertIn(f'appVersion: "{MOCK_TARGET_RELEASE_TAG}"', tagged_chart)
+
+            tagged_vars = git("show", f"{MOCK_TARGET_RELEASE_TAG}:terraform/examples/full-install/variables.tf").stdout
+            self.assertIn(f'default     = "{MOCK_TARGET_RELEASE_TAG}"', tagged_vars)
+
+            tagged_tfvars = git("show", f"{MOCK_TARGET_RELEASE_TAG}:terraform/examples/full-install/terraform.tfvars.example").stdout
+            self.assertIn(f'# image_tag = "{MOCK_TARGET_RELEASE_TAG}"', tagged_tfvars)
+
+            # 4. Idempotency test: re-running with existing tag succeeds and skips cleanly
+            proc2 = self._run_script([MOCK_TARGET_RELEASE_TAG, main_commit], cwd=repo_dir)
+            self.assertEqual(proc2.returncode, 0, proc2.stderr)
+            self.assertIn("Idempotent skip", proc2.stdout)
+        finally:
+            temp_dir.cleanup()
+
+    def test_fails_loudly_when_helm_chart_lacks_version_field(self):
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            repo_path = pathlib.Path(repo_dir)
+            (repo_path / "install.sh").write_text('#!/bin/bash\nBAKED_RELEASE_VERSION=""\n')
+            chart_dir = repo_path / "charts" / "kube-agents"
+            chart_dir.mkdir(parents=True, exist_ok=True)
+            (chart_dir / "Chart.yaml").write_text('apiVersion: v2\nname: kube-agents\n')
+            git("add", ".")
+            git("commit", "-m", "feat: malformed Chart.yaml")
+            main_commit = git("rev-parse", "HEAD").stdout.strip()
+
+            proc = self._run_script([MOCK_TARGET_RELEASE_TAG, main_commit], cwd=repo_dir)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Failed to stamp version in", proc.stderr)
+
+            tag_check = git("tag", "-l", MOCK_TARGET_RELEASE_TAG).stdout.strip()
+            self.assertEqual(tag_check, "")
+        finally:
+            temp_dir.cleanup()
+
+    def test_fails_loudly_when_terraform_variables_lacks_image_tag_default(self):
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            repo_path = pathlib.Path(repo_dir)
+            (repo_path / "install.sh").write_text('#!/bin/bash\nBAKED_RELEASE_VERSION=""\n')
+            tf_dir = repo_path / "terraform" / "examples" / "full-install"
+            tf_dir.mkdir(parents=True, exist_ok=True)
+            (tf_dir / "variables.tf").write_text('variable "project_id" { type = string }\n')
+            git("add", ".")
+            git("commit", "-m", "feat: variables.tf without image_tag")
+            main_commit = git("rev-parse", "HEAD").stdout.strip()
+
+            proc = self._run_script([MOCK_TARGET_RELEASE_TAG, main_commit], cwd=repo_dir)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Failed to stamp image_tag default in", proc.stderr)
+
+            tag_check = git("tag", "-l", MOCK_TARGET_RELEASE_TAG).stdout.strip()
+            self.assertEqual(tag_check, "")
+        finally:
+            temp_dir.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()

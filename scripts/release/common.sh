@@ -843,11 +843,85 @@ stamp_baked_release_version() {
       sed -i.bak -E "s/^BAKED_RELEASE_VERSION=[\"'].*[\"']/BAKED_RELEASE_VERSION=\"${version}\"/" "${script_path}" && rm -f "${script_path}.bak"
       if ! grep -q "^BAKED_RELEASE_VERSION=\"${version}\"" "${script_path}"; then
         echo "❌ ERROR: Failed to stamp BAKED_RELEASE_VERSION in ${script_name} (placeholder line '^BAKED_RELEASE_VERSION=...' not found)." >&2
-        git -C "${repo_dir}" checkout -- install.sh uninstall.sh upgrade.sh >/dev/null 2>&1 || true
         return 1
       fi
     fi
   done
+}
+
+# Stamps version and appVersion into Helm Chart.yaml for each chart in RELEASE_HELM_CHARTS
+stamp_helm_chart_versions() {
+  local version="${1:-}"
+  local repo_dir="${2:-${REPO_ROOT}}"
+
+  if [ -z "${version}" ]; then
+    echo "❌ ERROR: version is required for stamp_helm_chart_versions." >&2
+    return 1
+  fi
+
+  for chart_rel_path in "${RELEASE_HELM_CHARTS[@]}"; do
+    local chart_yaml="${repo_dir}/${chart_rel_path}/Chart.yaml"
+    if [ -f "${chart_yaml}" ]; then
+      sed -i.bak -E \
+        -e "s/^version:[[:space:]].*/version: ${version}/" \
+        -e "s/^appVersion:[[:space:]].*/appVersion: \"${version}\"/" \
+        "${chart_yaml}" && rm -f "${chart_yaml}.bak"
+
+      if ! grep -q -E "^version:[[:space:]]+${version}$" "${chart_yaml}"; then
+        echo "❌ ERROR: Failed to stamp version in ${chart_yaml}!" >&2
+        return 1
+      fi
+      if ! grep -q -E "^appVersion:[[:space:]]+\"${version}\"$" "${chart_yaml}"; then
+        echo "❌ ERROR: Failed to stamp appVersion in ${chart_yaml}!" >&2
+        return 1
+      fi
+    fi
+  done
+}
+
+# Stamps release image tag into Terraform defaults (variables.tf and terraform.tfvars.example)
+stamp_terraform_release_versions() {
+  local version="${1:-}"
+  local repo_dir="${2:-${REPO_ROOT}}"
+
+  if [ -z "${version}" ]; then
+    echo "❌ ERROR: version is required for stamp_terraform_release_versions." >&2
+    return 1
+  fi
+
+  local var_file="${repo_dir}/terraform/examples/full-install/variables.tf"
+  if [ -f "${var_file}" ]; then
+    sed -i.bak -E "/variable \"image_tag\"/,/^[[:space:]]*\}/ s/([[:space:]]*default[[:space:]]*=[[:space:]]*)\"[^\"]*\"/\1\"${version}\"/" "${var_file}" && rm -f "${var_file}.bak"
+
+    if ! grep -q -E "default[[:space:]]*=[[:space:]]*\"${version}\"" "${var_file}"; then
+      echo "❌ ERROR: Failed to stamp image_tag default in ${var_file}!" >&2
+      return 1
+    fi
+  fi
+
+  local tfvars_file="${repo_dir}/terraform/examples/full-install/terraform.tfvars.example"
+  if [ -f "${tfvars_file}" ]; then
+    sed -i.bak -E "s/^#([[:space:]]*image_tag[[:space:]]*=[[:space:]]*)\"[^\"]*\"/#\1\"${version}\"/" "${tfvars_file}" && rm -f "${tfvars_file}.bak"
+    if ! grep -q -E "^#[[:space:]]*image_tag[[:space:]]*=[[:space:]]*\"${version}\"" "${tfvars_file}"; then
+      echo "❌ ERROR: Failed to stamp image_tag example in ${tfvars_file}!" >&2
+      return 1
+    fi
+  fi
+}
+
+# Stamps all release version touchpoints: installer scripts, Helm Chart.yaml, and Terraform defaults
+stamp_release_versions() {
+  local version="${1:-}"
+  local repo_dir="${2:-${REPO_ROOT}}"
+
+  if [ -z "${version}" ]; then
+    echo "❌ ERROR: version is required for stamp_release_versions." >&2
+    return 1
+  fi
+
+  stamp_baked_release_version "${version}" "${repo_dir}" || return 1
+  stamp_helm_chart_versions "${version}" "${repo_dir}" || return 1
+  stamp_terraform_release_versions "${version}" "${repo_dir}" || return 1
 }
 
 # Validates if a release tag commit is either directly the candidate commit
@@ -896,7 +970,7 @@ is_valid_stamped_or_direct_release_commit() {
   return 0
 }
 
-# Creates a release commit on detached HEAD with stamped BAKED_RELEASE_VERSION
+# Creates a release commit on detached HEAD with stamped release versions
 create_stamped_release_commit() {
   local version="${1:-}"
   local target_sha="${2:-}"
@@ -912,7 +986,7 @@ create_stamped_release_commit() {
   orig_ref="$(git -C "${repo_dir}" symbolic-ref --short -q HEAD 2>/dev/null || git -C "${repo_dir}" rev-parse HEAD 2>/dev/null || echo "")"
   if [ -n "${orig_ref}" ]; then
     # shellcheck disable=SC2064
-    trap "git -C '${repo_dir}' checkout -- install.sh uninstall.sh upgrade.sh >/dev/null 2>&1 || true; git -C '${repo_dir}' checkout '${orig_ref}' >/dev/null 2>&1 || true" RETURN
+    trap "git -C '${repo_dir}' reset --hard HEAD >/dev/null 2>&1 || true; git -C '${repo_dir}' checkout -f '${orig_ref}' >/dev/null 2>&1 || true" RETURN
   fi
 
   # Idempotency check: if release tag already exists and is a valid release commit for target_sha, reuse it
@@ -931,22 +1005,30 @@ create_stamped_release_commit() {
     return 1
   fi
 
-  # 2. Stamp BAKED_RELEASE_VERSION in root installer scripts
-  if ! stamp_baked_release_version "${version}" "${repo_dir}"; then
-    echo "❌ ERROR: Failed to stamp baked release version into installer scripts." >&2
+  # 2. Stamp release versions across installer scripts, Helm Chart.yaml, and Terraform defaults
+  if ! stamp_release_versions "${version}" "${repo_dir}"; then
+    echo "❌ ERROR: Failed to stamp release versions." >&2
     return 1
   fi
 
   # 3. If files were modified, create release commit on detached HEAD (does NOT touch main branch)
+  local candidate_files=(
+    "install.sh"
+    "uninstall.sh"
+    "upgrade.sh"
+    "charts/kube-agents/Chart.yaml"
+    "terraform/examples/full-install/variables.tf"
+    "terraform/examples/full-install/terraform.tfvars.example"
+  )
   local modified_files=()
-  for script_name in install.sh uninstall.sh upgrade.sh; do
-    if [ -f "${repo_dir}/${script_name}" ] && [ -n "$(git -C "${repo_dir}" status --porcelain "${script_name}" 2>/dev/null || true)" ]; then
-      modified_files+=("${script_name}")
+  for file_rel in "${candidate_files[@]}"; do
+    if [ -f "${repo_dir}/${file_rel}" ] && [ -n "$(git -C "${repo_dir}" status --porcelain "${file_rel}" 2>/dev/null || true)" ]; then
+      modified_files+=("${file_rel}")
     fi
   done
 
   if [ ${#modified_files[@]} -gt 0 ]; then
-    echo "📝 Stamping baked release version '${version}' in release tag commit..." >&2
+    echo "📝 Stamping release version '${version}' in release tag commit..." >&2
     setup_git_bot_user
     git -C "${repo_dir}" add "${modified_files[@]}"
     git -C "${repo_dir}" commit -m "chore(release): stamp release version ${version}" >/dev/null
