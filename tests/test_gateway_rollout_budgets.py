@@ -1,7 +1,7 @@
 """Tests for the platform-agent-gateway rollout budgets.
 
-The companion to test_hindsight_probes.py, for the Deployment the redeploy
-workflows actually gate on -- and for scripts/release/wait_for_gke_readiness.sh,
+The companion to test_hindsight_probes.py, for the Deployment upgrade.sh
+actually gates on -- and for scripts/release/wait_for_gke_readiness.sh,
 which waits on the same Deployments after the RC environment is provisioned and
 is bound by the same rule. The same three numbers have to stay in the same
 order:
@@ -39,7 +39,7 @@ _READINESS_SCRIPT = _ROOT / "scripts" / "release" / "wait_for_gke_readiness.sh"
 _PULL_ALLOWANCE_SECONDS = 240
 
 # Kubernetes' default when a Deployment does not set progressDeadlineSeconds.
-# The integrations Deployments below rely on it rather than setting their own.
+# Deployments with no explicit progressDeadlineSeconds rely on this default.
 _DEFAULT_PROGRESS_DEADLINE_SECONDS = 600
 
 
