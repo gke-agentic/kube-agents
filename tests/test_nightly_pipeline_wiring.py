@@ -215,6 +215,22 @@ class StagingTagContractTest(unittest.TestCase):
             "resolve-commit must verify candidate images in GHCR",
         )
 
+    def test_staging_deploy_workflow_dispatch_defaults_lease_policy_to_fail(self):
+        doc = _doc(_WORKFLOWS / _STAGING_DEPLOY)
+        inputs = doc[True]["workflow_dispatch"]["inputs"]
+        self.assertEqual(inputs["lease_policy"]["default"], "fail")
+
+    def test_staging_deploy_has_verify_deploy_job_asserting_applied(self):
+        doc = _doc(_WORKFLOWS / _STAGING_DEPLOY)
+        self.assertIn("verify-deploy", doc["jobs"])
+        verify = doc["jobs"]["verify-deploy"]
+        self.assertEqual(set(verify["needs"]), {"resolve-commit", "deploy"})
+        steps = verify["steps"]
+        self.assertTrue(
+            any("verify_deploy_result.sh" in s.get("run", "") for s in steps),
+            "verify-deploy must invoke verify_deploy_result.sh",
+        )
+
 
 _AUTOPUSH_DEPLOY = "autopush-deploy.yml"
 
@@ -256,6 +272,20 @@ class AutopushDeployWiringTest(unittest.TestCase):
         self.assertTrue(
             any("verify_candidate_images.sh" in step.get("run", "") for step in steps),
             "resolve-candidate must verify candidate images in GHCR",
+        )
+
+    def test_autopush_deploy_workflow_dispatch_defaults_lease_policy_to_fail(self):
+        inputs = self.doc[True]["workflow_dispatch"]["inputs"]
+        self.assertEqual(inputs["lease_policy"]["default"], "fail")
+
+    def test_autopush_deploy_has_verify_deploy_job_asserting_applied(self):
+        self.assertIn("verify-deploy", self.jobs)
+        verify = self.jobs["verify-deploy"]
+        self.assertEqual(set(verify["needs"]), {"resolve-candidate", "deploy"})
+        steps = verify["steps"]
+        self.assertTrue(
+            any("verify_deploy_result.sh" in s.get("run", "") for s in steps),
+            "verify-deploy must invoke verify_deploy_result.sh",
         )
 
     def test_deploy_job_calls_reconcile_environment_for_autopush(self):

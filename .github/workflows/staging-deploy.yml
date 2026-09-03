@@ -24,12 +24,12 @@ on:
       lease_policy:
         description: "What to do when somebody is live-testing against staging"
         required: false
-        default: "defer"
+        default: "fail"
         type: choice
         options:
-          - "defer"
           - "fail"
           - "ignore"
+          - "defer"
       force_reconcile:
         description: "Force apply even if staging is already running the candidate commit"
         required: false
@@ -90,3 +90,22 @@ jobs:
       lease_policy: ${{ needs.resolve-commit.outputs.lease_policy }}
       force_reconcile: ${{ needs.resolve-commit.outputs.force_reconcile == 'true' }}
     secrets: inherit
+
+  verify-deploy:
+    name: Verify Deploy Applied
+    needs: [resolve-commit, deploy]
+    if: github.repository == 'gke-labs/kube-agents'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify Staging Deploy Result
+        env:
+          TARGET_ENVIRONMENT: "staging"
+          DEPLOY_RESULT: ${{ needs.deploy.outputs.result }}
+        run: ./scripts/release/verify_deploy_result.sh

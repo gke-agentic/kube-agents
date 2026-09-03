@@ -125,18 +125,14 @@ Setting an optional `GH_APP_PRIVATE_KEY` secret to the `.pem` contents is the al
 ## The nightly environment
 
 `nightly-pipeline.yml` resolves the newest `rc_*_validated` candidate, builds a whole environment
-at that commit, and runs the `nightly` matrix on it. If the matrix passes it reconciles `staging`
-against the same composition, tags the commit `staging_<ts>_<sha>`, reconciles `autopush`, and
-destroys the nightly environment. The staging tag is the deploy trigger: pushing it starts
-`staging-redeploy-{agent,controller,integrations}.yml` — which is why staging's reconcile goes
-before it and autopush's, which no tag starts, goes after.
+at that commit, and runs the `nightly` matrix on it. If the matrix passes it promotes the candidate
+by creating and pushing `staging_<ts>_<sha>`, and destroys the nightly environment. The staging tag
+is the deploy trigger: pushing it starts `staging-deploy.yml`, which atomically reconciles
+the composition, Helm release, and images together via `upgrade.sh --upgrade-mode=full`.
 
-The two reconciles are #1117, and their placement is the substance of it. They run only after the
-matrix, because applying a composition nobody has built from scratch to an environment people
-live-test against is worse than leaving it stale; and staging's runs _before_ the tag is pushed,
-because that tag starts three `helm upgrade`s on the release `helm_release.kube_agents` owns.
-autopush's passes no image tag at all — it tracks main's tip, so pinning this pipeline's older
-candidate would roll its images backwards.
+Similarly, `autopush` receives atomic deploys through `autopush-deploy.yml` whenever container images
+are published to GHCR. Both workflows enforce atomic full upgrades, preventing image drift and
+contention.
 [`environment-reconcile.md`](../../docs/site/src/content/docs/deploy/environment-reconcile.md) is
 the canonical page for that whole path.
 

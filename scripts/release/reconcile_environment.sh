@@ -154,9 +154,17 @@ if [ "$MODE" = "apply" ] && [ "$LEASE_POLICY" != "ignore" ]; then
     fi
     if [ "$LEASE_POLICY" = "fail" ]; then
       echo "::error title=Live-test lease is held::Somebody is live-testing against '${ENV_NAME}'. Refusing to apply. ${holder}"
+      summary "### Reconcile failed — \`${ENV_NAME}\`"
+      summary ""
+      summary "The live-test lease was held, so nothing was applied."
+      summary ""
+      summary '```json'
+      summary "${holder}"
+      summary '```'
+      output "result" "failed"
       exit 1
     fi
-    echo "::warning title=Live-test lease is held::Somebody is live-testing against '${ENV_NAME}'; skipping this reconcile. It will run again on the next schedule. ${holder}"
+    echo "::warning title=Live-test lease is held::Somebody is live-testing against '${ENV_NAME}'; skipping this reconcile. ${holder}"
     summary "### Reconcile deferred — \`${ENV_NAME}\`"
     summary ""
     summary "The live-test lease was held, so nothing was applied."

@@ -1,26 +1,21 @@
 name: "Nightly: Pipeline"
 
 # Builds a nightly environment from nothing, runs the full E2E matrix on it,
-# and — if the matrix passes — applies that same composition to the two
-# long-lived environments and promotes the candidate to staging, before
-# destroying the nightly environment again.
+# and — if the matrix passes — promotes the candidate to staging by creating
+# and pushing a staging tag (`staging_<ts>_<sha>`), before destroying the
+# nightly environment again.
 #
-# The two reconcile steps are what keeps the long-lived environments current.
-# `rc` and `nightly` are rebuilt from terraform/examples/full-install every run
-# and so always match main; `autopush` and `staging` are never rebuilt, so
-# without a reconcile they receive image tags and nothing else and end up
-# running last month's infrastructure while reporting themselves as main —
-# #1117 found both of them a month behind. They reconcile HERE, after the
-# matrix, rather than on their own schedule: applying
-# a composition that has not been proved from scratch to an environment people
-# live-test against is worse than leaving it stale.
+# Pushing the staging tag triggers `Staging: Deploy` (staging-deploy.yml), which
+# atomically reconciles the Terraform composition, Helm release, and container
+# images together from that single validated commit. Autopush is similarly
+# kept current through atomic deploys in autopush-deploy.yml when images are
+# published to GHCR.
 #
 # Nothing in it touches the RC environment. The three jobs that touch the
 # nightly cluster — deploy, the matrix, teardown — bind `nightly` and take the
 # `nightly-environment` lock, so none of them queues behind or races the
 # three-hourly RC pipeline. Step 1 binds `nightly` for its variables without
-# taking the lock; the promotion only pushes a Git tag, so it does neither; and
-# the reconciles take their own environments' locks.
+# taking the lock; the promotion only pushes a Git tag, so it does neither.
 #
 # Dispatch-only on purpose: turning the schedule on is its own decision and its
 # own reviewable change. Exercise it by hand against the nightly project until it

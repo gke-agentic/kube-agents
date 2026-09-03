@@ -65,7 +65,10 @@ fi
 
 lease_policy="${INPUT_LEASE_POLICY:-}"
 if [ -z "${lease_policy}" ]; then
-  lease_policy="defer"
+  # Automated deploy triggers (such as tag pushes for staging or GHCR publishes for autopush)
+  # do not run on a recurring schedule. Silently deferring with exit 0 would drop the release
+  # while falsely reporting success. If a live-test lease is held, refuse to apply and fail loudly.
+  lease_policy="fail"
 fi
 
 case "${lease_policy}" in
