@@ -28,17 +28,6 @@
 #   plus every install setting render_install_env.sh maps.
 set -euo pipefail
 
-# How long to wait for an in-flight redeploy of this environment, and how often
-# to look. A `terraform apply` running concurrently with the `helm upgrade` a
-# redeploy performs contends for the same release, so the reconcile waits;
-# past the deadline it gives up and runs again tomorrow rather than blocking a
-# nightly on a stuck deploy.
-readonly REDEPLOY_WAIT_SECONDS=900
-readonly REDEPLOY_POLL_SECONDS=30
-# `gh run list` page size. Only the in-flight states are counted, and a
-# redeploy workflow with more than this many runs already queued is a problem
-# no wait will fix.
-readonly REDEPLOY_RUN_QUERY_LIMIT=20
 # Long enough to cover a full apply, short enough that a crashed run does not
 # lock the environment out for a working day.
 readonly LEASE_TTL_MINUTES=90
@@ -117,84 +106,7 @@ gcloud container clusters get-credentials "${CLUSTER_NAME}" \
   --location="${REGION}" --project="${PROJECT_ID}" $GKE_DNS_ENDPOINT_FLAG
 
 # ---------------------------------------------------------------------------
-# 2b. Fast no-op exit if the cluster already serves the candidate
-# ---------------------------------------------------------------------------
-# When an apply specifies an image tag, check whether the running Deployment
-# already serves that exact tag. If so, and force is not set, exit cleanly as a
-# no-op in ~5s rather than paying a 10-minute redundant apply and GCS state lock.
-if [ "$MODE" = "apply" ] && [ -n "${IMAGE_TAG:-}" ] && [ "${FORCE_RECONCILE:-false}" != "true" ]; then
-  running_tag=""
-  if [ -f "${REPO_ROOT}/scripts/installer/installer_common.sh" ]; then
-    # shellcheck source=scripts/installer/installer_common.sh
-    # shellcheck disable=SC1091
-    . "${REPO_ROOT}/scripts/installer/installer_common.sh"
-    running_tag="$(running_image_tag "${NAMESPACE:-kubeagents-system}")"
-  fi
-
-  if [ -n "${running_tag}" ] && [ "${running_tag}" = "${IMAGE_TAG}" ]; then
-    echo "==> '${ENV_NAME}' is already running ${IMAGE_TAG}. No changes to apply."
-    summary "### No-op — \`${ENV_NAME}\`"
-    summary ""
-    summary "\`${ENV_NAME}\` is already running \`${IMAGE_TAG}\`. No deployment required."
-    output "result" "noop"
-    exit 0
-  fi
-fi
-
-# ---------------------------------------------------------------------------
-# 3. Wait out any image redeploy already in flight
-# ---------------------------------------------------------------------------
-# The redeploy workflows run `helm upgrade` on the `kube-agents` release, and
-# the composition's helm_release.kube_agents owns that same release. Both at
-# once is either a failed apply or a lost deploy, depending on which one gets
-# the release lock. They are not scheduled against each other — autopush's
-# redeploys start from a GHCR publish, which is every push to main — so the
-# overlap is real and this waits it out rather than racing it.
-#
-# Bounded, and a timeout is a deferral rather than a failure: the reconcile runs
-# again tomorrow, and blocking a nightly on a stuck deploy helps nobody.
-await_redeploys() {
-  command -v gh >/dev/null 2>&1 || { echo "==> gh not available; skipping the redeploy check."; return 0; }
-  [ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ] || { echo "==> No token for the redeploy check; skipping."; return 0; }
-
-  local deadline=$((SECONDS + REDEPLOY_WAIT_SECONDS)) running
-  while [ "$SECONDS" -lt "$deadline" ]; do
-    running=""
-    local workflows_to_check=("${ENV_NAME}-deploy.yml")
-    for wf in "${workflows_to_check[@]}"; do
-      local n=0
-      local query_out=""
-      if query_out="$(gh run list --repo "${GITHUB_REPOSITORY:-gke-labs/kube-agents}" \
-        --workflow "$wf" --limit "$REDEPLOY_RUN_QUERY_LIMIT" --json status,databaseId 2>/dev/null | \
-        jq --arg current_id "${GITHUB_RUN_ID:-}" \
-        '[.[] | select(.status == "in_progress" or .status == "queued" or .status == "waiting") | select((.databaseId | tostring) != $current_id)] | length' 2>/dev/null)"; then
-        n="${query_out:-0}"
-      fi
-      if [ -n "$n" ] && [ "$n" != "0" ]; then
-        running="${running} ${wf}(${n})"
-      fi
-    done
-    [ -n "$running" ] || return 0
-    echo "==> Waiting for in-flight redeploys:${running}"
-    sleep "$REDEPLOY_POLL_SECONDS"
-  done
-
-  echo "::warning title=Redeploy still running::A redeploy of '${ENV_NAME}' was still in flight after $((REDEPLOY_WAIT_SECONDS / 60)) minutes; skipping this reconcile rather than running a terraform apply concurrently with a helm upgrade on the same release."
-  return 1
-}
-
-if [ "$MODE" = "apply" ]; then
-  if ! await_redeploys; then
-    summary "### Reconcile deferred — \`${ENV_NAME}\`"
-    summary ""
-    summary "An image redeploy was still running. Nothing was applied."
-    output "result" "deferred"
-    exit 0
-  fi
-fi
-
-# ---------------------------------------------------------------------------
-# 4. The live-test lease
+# 3. The live-test lease
 # ---------------------------------------------------------------------------
 # AGENTS.md requires every pull request to be validated against a running
 # install, and autopush is that install for most of this repository's agents.
