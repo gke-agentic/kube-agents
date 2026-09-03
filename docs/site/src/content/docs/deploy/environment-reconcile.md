@@ -118,7 +118,7 @@ takes the gVisor node pool, the Hindsight database, or the Pub/Sub topic behind
 Google Chat with it.
 
 Required for a **plan** as much as for an apply: the reconcile renders `--strict`
-before it branches on the mode, so until an environment carries all ten the daily
+before it branches on the mode, so until an environment carries all twelve the daily
 drift report goes red on it rather than reporting no drift.
 
 | GitHub variable                 | install.env key                 | Notes                                                       |
@@ -133,6 +133,8 @@ drift report goes red on it rather than reporting no drift.
 | `MEMORY_PROVIDER`               | `MEMORY`                        | Absent destroys the Hindsight API and its Postgres          |
 | `USER_PROFILE_ENABLED`          | `USER_PROFILE_ENABLED`          | Absent resets it                                            |
 | `ENABLE_GKE_BACKUP_PLAN`        | `ENABLE_GKE_BACKUP_PLAN`        | Absent destroys the backup plan                             |
+| `ENABLE_PUBSUB_PLATFORM`        | `ENABLE_PUBSUB_PLATFORM`        | Absent destroys Pub/Sub topic, subscription, and IAM grants |
+| `ENABLE_STOCKOUT_INVESTIGATOR`  | `ENABLE_STOCKOUT_INVESTIGATOR`  | Absent destroys log sink and stockout alerts topic/sub      |
 
 Required when the integration they belong to is switched on, because an empty
 allowlist is not "no opinion" — the operator reads an absent list as allow-all,
