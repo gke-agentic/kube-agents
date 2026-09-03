@@ -93,6 +93,8 @@ const (
 		"The k8s-event-watcher is not started, so no cluster warning reaches the agent and no autonomous triage " +
 		"session is created from one; the pod stays Ready regardless. Nothing restores this automatically — set " +
 		"spec.harness.eventWatcher.enabled=true (or remove the field) to start watching again."
+
+	reasonRuntimeClassNotFound = "RuntimeClassNotFound"
 )
 
 // PlatformAgentReconciler reconciles a PlatformAgent object
@@ -271,7 +273,10 @@ func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			rcName := *instance.Spec.Deployment.Availability.RuntimeClassName
 			msg := fmt.Sprintf("RuntimeClass '%s' is not configured in this cluster. For GKE Standard, enable GKE Sandbox by provisioning a gVisor node pool first. In GKE Autopilot, gVisor is supported automatically.", rcName)
 			log.Info(msg)
-			if statusErr := r.updateStatusDegraded(ctx, instance, "RuntimeClassNotFound", msg); statusErr != nil {
+			if err := r.reconcileAgentNetworkGuardrails(ctx, instance, reasonRuntimeClassNotFound); err != nil {
+				return ctrl.Result{}, err
+			}
+			if statusErr := r.updateStatusDegraded(ctx, instance, reasonRuntimeClassNotFound, msg); statusErr != nil {
 				return ctrl.Result{}, statusErr
 			}
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
@@ -287,6 +292,9 @@ func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// validateCredentialBrokerSplit.
 	if reason, msg := validateCredentialBrokerSplit(instance); reason != "" {
 		log.Info(msg)
+		if err := r.reconcileAgentNetworkGuardrails(ctx, instance, reason); err != nil {
+			return ctrl.Result{}, err
+		}
 		if statusErr := r.updateStatusDegraded(ctx, instance, reason, msg); statusErr != nil {
 			return ctrl.Result{}, statusErr
 		}
@@ -359,12 +367,11 @@ func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		// policy is unconditional because it has nothing to do with either
 		// refusal; it is the Pod's baseline and it predates this field.
 		//
-		// This closes the hazard at the two egress refusals only — this one
-		// and step 10c's. The two refusals above them — step 10's
-		// RuntimeClassNotFound and step 10b's SplitBrokerStrandsEventWatcher —
-		// return without reconciling the gateway policy and still have it.
-		// Issue #964 tracks that; do not read the rule stated here as one the
-		// whole function keeps yet.
+		// All four refusals — step 10's RuntimeClassNotFound, step 10b's
+		// SplitBrokerStrandsEventWatcher, step 10c's layout refusal, and this
+		// one — reconcile network guardrails via reconcileAgentNetworkGuardrails,
+		// ensuring neither the agent gateway policy nor the litellm policy is
+		// stranded when reconciliation pauses at Degraded.
 		if err := r.reconcileAgentNetworkGuardrails(ctx, instance, reason); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -480,6 +487,9 @@ func (r *PlatformAgentReconciler) handleDeletion(ctx context.Context, agent *age
 		// clean up the operator-managed litellm-policy so it is not orphaned.
 		var litellmDep appsv1.Deployment
 		depErr := r.Get(ctx, types.NamespacedName{Namespace: agent.Namespace, Name: litellmDeploymentName}, &litellmDep)
+		if depErr != nil && !errors.IsNotFound(depErr) {
+			return ctrl.Result{}, fmt.Errorf("failed to get LiteLLM deployment during deletion cleanup: %w", depErr)
+		}
 		if errors.IsNotFound(depErr) || (depErr == nil && litellmDep.DeletionTimestamp != nil) {
 			if err := r.deleteManagedLiteLLMPolicy(ctx, agent); err != nil {
 				return ctrl.Result{}, err

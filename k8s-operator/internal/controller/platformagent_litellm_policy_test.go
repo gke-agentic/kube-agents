@@ -20,12 +20,17 @@ import (
 	"context"
 	"reflect"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	agentv1alpha1 "github.com/gke-labs/kube-agents/k8s-operator/api/v1alpha1"
@@ -877,3 +882,187 @@ func TestHandleDeletion_LiteLLM_DeploymentActive_PreservesPolicy(t *testing.T) {
 		t.Fatalf("managed litellm-policy should be preserved when litellm Deployment is still active, got err: %v", err)
 	}
 }
+
+func TestReconcile_Refusal_RuntimeClassNotFound_MaintainsNetworkGuardrails(t *testing.T) {
+	scheme := setupScheme()
+
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent-rc-missing",
+			Namespace: "test-ns",
+		},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			AgentSpec: agentv1alpha1.AgentSpec{
+				Deployment: &agentv1alpha1.DeploymentSpec{
+					Availability: &agentv1alpha1.AvailabilitySpec{
+						RuntimeClassName: ptr.To("gvisor"),
+					},
+				},
+			},
+		},
+	}
+
+	litellmDep := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "litellm",
+			Namespace: "test-ns",
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(agent, litellmDep).
+		WithStatusSubresource(&agentv1alpha1.PlatformAgent{}).
+		WithInterceptorFuncs(fakeServerSideApplyInterceptors()).
+		Build()
+
+	r := &PlatformAgentReconciler{
+		Client: cl,
+		Scheme: scheme,
+	}
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      "test-agent-rc-missing",
+			Namespace: "test-ns",
+		},
+	}
+	ctx := context.Background()
+
+	// 1st Reconcile: adds finalizer
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("Reconcile 1 failed: %v", err)
+	}
+
+	// 2nd Reconcile: encounters missing RuntimeClass, refuses workload but maintains guardrails
+	res, err := r.Reconcile(ctx, req)
+	if err != nil {
+		t.Fatalf("Reconcile 2 failed: %v", err)
+	}
+	if res.RequeueAfter != 30*time.Second {
+		t.Errorf("expected RequeueAfter 30s, got %v", res.RequeueAfter)
+	}
+
+	updated := &agentv1alpha1.PlatformAgent{}
+	if err := cl.Get(ctx, req.NamespacedName, updated); err != nil {
+		t.Fatalf("failed to get agent: %v", err)
+	}
+	if updated.Status.Phase != "Degraded" {
+		t.Errorf("expected phase Degraded, got %q", updated.Status.Phase)
+	}
+	cond := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
+	if cond == nil || cond.Reason != reasonRuntimeClassNotFound {
+		t.Errorf("expected Ready condition reason %s, got %v", reasonRuntimeClassNotFound, cond)
+	}
+
+	// Workload deployment must NOT be created
+	dep := &appsv1.Deployment{}
+	if err := cl.Get(ctx, types.NamespacedName{Name: "test-agent-rc-missing-gateway", Namespace: "test-ns"}, dep); !errors.IsNotFound(err) {
+		t.Errorf("expected agent deployment to not be created, got err: %v", err)
+	}
+
+	// Network guardrails MUST be created/maintained
+	var litellmNetpol networkingv1.NetworkPolicy
+	if err := cl.Get(ctx, types.NamespacedName{Name: "litellm-policy", Namespace: "test-ns"}, &litellmNetpol); err != nil {
+		t.Errorf("expected litellm-policy to be reconciled and present on RuntimeClassNotFound refusal, got err: %v", err)
+	}
+
+	var gatewayNetpol networkingv1.NetworkPolicy
+	if err := cl.Get(ctx, types.NamespacedName{Name: "test-agent-rc-missing-gateway-netpol", Namespace: "test-ns"}, &gatewayNetpol); err != nil {
+		t.Errorf("expected gateway-netpol to be reconciled and present on RuntimeClassNotFound refusal, got err: %v", err)
+	}
+}
+
+func TestReconcile_Refusal_BrokerSplitStrandsEventWatcher_MaintainsNetworkGuardrails(t *testing.T) {
+	scheme := setupScheme()
+
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent-split-refused",
+			Namespace: "test-ns",
+		},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			Security: &agentv1alpha1.SecuritySpec{
+				SplitCredentialBrokerPod: ptr.To(true),
+			},
+			Harness: &agentv1alpha1.HarnessSpec{
+				EventWatcher: nil, // stock CR: event watcher is enabled by default
+			},
+		},
+	}
+
+	litellmDep := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "litellm",
+			Namespace: "test-ns",
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(agent, litellmDep).
+		WithStatusSubresource(&agentv1alpha1.PlatformAgent{}).
+		WithInterceptorFuncs(fakeServerSideApplyInterceptors()).
+		Build()
+
+	r := &PlatformAgentReconciler{
+		Client: cl,
+		Scheme: scheme,
+	}
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      "test-agent-split-refused",
+			Namespace: "test-ns",
+		},
+	}
+	ctx := context.Background()
+
+	// 1st Reconcile: adds finalizer
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("Reconcile 1 failed: %v", err)
+	}
+
+	// 2nd Reconcile: encounters split broker refusing event watcher, refuses workload but maintains guardrails
+	res, err := r.Reconcile(ctx, req)
+	if err != nil {
+		t.Fatalf("Reconcile 2 failed: %v", err)
+	}
+	if res.RequeueAfter != 30*time.Second {
+		t.Errorf("expected RequeueAfter 30s, got %v", res.RequeueAfter)
+	}
+
+	updated := &agentv1alpha1.PlatformAgent{}
+	if err := cl.Get(ctx, req.NamespacedName, updated); err != nil {
+		t.Fatalf("failed to get agent: %v", err)
+	}
+	if updated.Status.Phase != "Degraded" {
+		t.Errorf("expected phase Degraded, got %q", updated.Status.Phase)
+	}
+	cond := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
+	if cond == nil || cond.Reason != reasonSplitBrokerStrandsEventWatcher {
+		t.Errorf("expected Ready condition reason %s, got %v", reasonSplitBrokerStrandsEventWatcher, cond)
+	}
+
+	// Broker and agent deployments must NOT be created
+	dep := &appsv1.Deployment{}
+	if err := cl.Get(ctx, types.NamespacedName{Name: "test-agent-split-refused-gateway", Namespace: "test-ns"}, dep); !errors.IsNotFound(err) {
+		t.Errorf("expected agent deployment to not be created, got err: %v", err)
+	}
+	brokerDep := &appsv1.Deployment{}
+	if err := cl.Get(ctx, types.NamespacedName{Name: "test-agent-split-refused-credential-proxy", Namespace: "test-ns"}, brokerDep); !errors.IsNotFound(err) {
+		t.Errorf("expected broker deployment to not be created, got err: %v", err)
+	}
+
+	// Network guardrails MUST be created/maintained
+	var litellmNetpol networkingv1.NetworkPolicy
+	if err := cl.Get(ctx, types.NamespacedName{Name: "litellm-policy", Namespace: "test-ns"}, &litellmNetpol); err != nil {
+		t.Errorf("expected litellm-policy to be reconciled and present on broker split refusal, got err: %v", err)
+	}
+
+	var gatewayNetpol networkingv1.NetworkPolicy
+	if err := cl.Get(ctx, types.NamespacedName{Name: "test-agent-split-refused-gateway-netpol", Namespace: "test-ns"}, &gatewayNetpol); err != nil {
+		t.Errorf("expected gateway-netpol to be reconciled and present on broker split refusal, got err: %v", err)
+	}
+}
+

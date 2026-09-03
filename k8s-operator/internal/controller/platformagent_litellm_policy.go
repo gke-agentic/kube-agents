@@ -50,7 +50,7 @@ const (
 	labelMetadataName    = "kubernetes.io/metadata.name"
 
 	dnsNodeLocalLinkLocalCIDR = "169.254.20.10/32"
-	metadataLinkLocalCIDR     = "169.254.169.254/32"
+	metadataLinkLocalCIDR     = metadataLinkLocalIP + "/32"
 	internetAnywhereCIDR      = "0.0.0.0/0"
 	rfc1918Block10            = "10.0.0.0/8"
 	rfc1918Block172           = "172.16.0.0/12"
@@ -276,6 +276,8 @@ func canAdoptLiteLLMPolicy(netpol *networkingv1.NetworkPolicy) bool {
 	if managedBy == fieldOwner {
 		return true
 	}
+	// An empty managed-by label alongside part-of: kube-agents is treated as project-owned
+	// (legacy static manifests without explicit managed-by tool attribution).
 	if netpol.Labels[labelPartOf] == partOfKubeAgents && (managedBy == managedByHelm || managedBy == managedByKustomize || managedBy == "") {
 		return true
 	}
