@@ -231,9 +231,9 @@ class AutopushDeployWiringTest(unittest.TestCase):
         self.assertEqual(on["workflow_run"]["workflows"], ["Publish Images to GHCR"])
         self.assertIn("workflow_dispatch", on)
 
-    def test_concurrency_group_locks_autopush_environment_without_cancelling(self):
+    def test_concurrency_group_locks_autopush_deploy_without_cancelling(self):
         concurrency = self.doc.get("concurrency", {})
-        self.assertEqual(concurrency.get("group"), "autopush-environment")
+        self.assertEqual(concurrency.get("group"), "autopush-deploy")
         self.assertFalse(concurrency.get("cancel-in-progress"), "running deploys must not be cancelled mid-flight")
 
     def test_upstream_repository_guard_present(self):

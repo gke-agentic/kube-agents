@@ -41,7 +41,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: autopush-environment
+  group: autopush-deploy
   cancel-in-progress: false
 
 jobs:
