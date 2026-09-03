@@ -619,6 +619,45 @@ spec:
         self.assertEqual(rules, 1)
         self.assertEqual(errors, [])
 
+    def test_ingress_only_with_empty_egress_skipped(self):
+        """Verify that Ingress-only policies with explicit egress: [] are skipped."""
+        manifest = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ingress-only
+spec:
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector: {}
+  egress: []
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: valid-egress
+spec:
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: 53
+      to:
+        - ipBlock:
+            cidr: 10.96.0.10/32
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+"""
+        p = self._write_manifest("ingress_empty_egress.yaml", manifest)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 1)
+        self.assertEqual(errors, [])
+
     def test_main_success_default(self):
         self.assertEqual(main([]), 0)
 
