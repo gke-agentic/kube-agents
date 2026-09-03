@@ -351,8 +351,13 @@ def check_network_policy_file(path: Path, root: Path | None = None) -> tuple[int
         policy_types = spec.get("policyTypes") or []
         egress_rules = spec.get("egress")
 
-        # Skip Ingress-only policies that do not govern egress traffic.
-        if "Egress" not in policy_types and egress_rules is None:
+        # Skip policies that do not govern egress traffic.
+        # When policyTypes is explicitly specified, Egress must be listed for the policy to govern egress.
+        # When policyTypes is omitted, Kubernetes enables Egress only if egress rules are present.
+        if spec.get("policyTypes") is not None:
+            if "Egress" not in policy_types:
+                continue
+        elif egress_rules is None:
             continue
 
         checked_policies += 1
