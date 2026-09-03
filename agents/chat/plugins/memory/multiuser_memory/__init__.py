@@ -99,9 +99,10 @@ def _neutralize_prompt_injection(text: str) -> str:
     # 1. Closing/spaced-closing (</ system>, < / system>), self-closing (<system/>, <system />),
     #    and standard tags (<system>, <system extra="1">). Uses (?=[ \t>/]) lookahead to defuse
     #    self-closing tags without mangling SOP hyphenated names (<system-node-critical>).
-    #    Bounded to {0,256} chars so per-candidate work is constant time.
+    #    Scan class excludes '<' so each candidate stops at the next one, which
+    #    keeps total work linear across the line without bounding tag length.
     text = re.sub(
-        r"<(?:[ \t]*/[ \t]*|/?)(system|instruction|prompt|admin|untrusted_[a-z0-9_-]+)(?=[ \t>/])[^>\n]{0,256}>",
+        r"<(?:[ \t]*/[ \t]*|/?)(system|instruction|prompt|admin|untrusted_[a-z0-9_-]+)(?=[ \t>/])[^><\n]*>",
         r"[\1_tag_neutralized]",
         text,
         flags=re.IGNORECASE,
@@ -110,9 +111,10 @@ def _neutralize_prompt_injection(text: str) -> str:
     #    (< system role="admin">), requiring an immediate attribute ([a-z_][a-z0-9_-]*[ \t]*=)
     #    to prevent colliding with threshold inequalities like
     #    'CPU < system limit; set threshold=90 if usage > 80%'.
-    #    Bounded to {0,256} chars so per-candidate work is constant time.
+    #    Scan class excludes '<' so each candidate stops at the next one, which
+    #    keeps total work linear without bounding tag length.
     text = re.sub(
-        r"<[ \t]+(system|instruction|prompt|admin|untrusted_[a-z0-9_-]+)(?:[ \t]*(?:/[ \t]*)?>|(?=[ \t]+[a-z_][a-z0-9_-]*[ \t]*=)[^>\n]{0,256}>)",
+        r"<[ \t]+(system|instruction|prompt|admin|untrusted_[a-z0-9_-]+)(?:[ \t]*(?:/[ \t]*)?>|(?=[ \t]+[a-z_][a-z0-9_-]*[ \t]*=)[^><\n]*>)",
         r"[\1_tag_neutralized]",
         text,
         flags=re.IGNORECASE,
