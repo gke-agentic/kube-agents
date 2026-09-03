@@ -31,7 +31,11 @@ MEMORY_TOOL_SCHEMA = {
                 "enum": ["memory", "user"],
                 "description": "'memory' for shared system-wide SOPs; 'user' for personal preferences specific to this user."
             },
-            "content": {"type": "string", "description": "The text entry to add (for 'add')."},
+            "index": {
+                "type": "integer",
+                "description": "0-based index of the entry to replace or remove (alternative to matching old_content)."
+            },
+            "content": {"type": "string", "description": "The text entry to add (for 'add') or remove (for 'remove')."},
             "old_content": {"type": "string", "description": "The exact old text entry to replace (for 'replace')."},
             "new_content": {"type": "string", "description": "The new text entry (for 'replace')."},
         },
@@ -98,7 +102,8 @@ def _neutralize_prompt_injection(text: str) -> str:
     # Delimiter tags (<system...>, </system...>, < system>, <system/>, < /system>, etc.)
     # 1. Closing/spaced-closing (</ system>, < / system>), self-closing (<system/>, <system />),
     #    and standard tags (<system>, <system extra="1">). Uses (?=[ \t>/]) lookahead to defuse
-    #    self-closing tags without mangling SOP hyphenated names (<system-node-critical>).
+    #    self-closing tags without mangling SOP hyphenated names (<system-node-critical>)
+    #    or CLI placeholders without attributes (<system namespace>).
     #    Scan class excludes '<' so each candidate stops at the next one, which
     #    keeps total work linear across the line without bounding tag length.
     text = re.sub(
@@ -178,10 +183,10 @@ def sanitize_memory_entry(text: str) -> str:
     return cleaned.strip()
 
 
-def sanitize_for_prompt(text: str) -> str:
-    """Sanitize a memory entry specifically for injection-safe system prompt rendering.
+def sanitize_for_prompt(text: str, strip_headings: bool = True) -> str:
+    """Sanitize a memory entry specifically for injection-safe prompt rendering.
 
-    Runs in-memory during prompt construction without modifying stored data on disk.
+    Runs in-memory during prompt construction or tool read actions without modifying stored data on disk.
     Best-effort defense-in-depth against accidental or naive prompt framing; not an
     impermeable security boundary (multiline tag syntax like <system\\n> and natural-language
     instructions intentionally pass through to prevent corrupting legitimate SOP text).
@@ -191,12 +196,13 @@ def sanitize_for_prompt(text: str) -> str:
 
     cleaned = _strip_unsafe_chars(text)
     cleaned = _neutralize_prompt_injection(cleaned)
-    # Neutralize lines starting with '#' so entries cannot create new root-level markdown prompt sections.
-    # Consumes all leading hash runs and spaces/tabs (e.g. '# ## Heading' or '  # # # Heading')
-    # so subsequent hashes cannot become un-neutralized headings. Uses [^\S\n]* rather than \s*
-    # to avoid quadratic backtracking across lines of newlines.
-    cleaned = re.sub(r"(?m)^([^\S\n]*)#+[# \t]*", r"\1", cleaned)
-    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    if strip_headings:
+        # Neutralize lines starting with '#' so entries cannot create new root-level markdown prompt sections.
+        # Consumes all leading hash runs and spaces/tabs (e.g. '# ## Heading' or '  # # # Heading')
+        # so subsequent hashes cannot become un-neutralized headings. Uses [^\S\n]* rather than \s*
+        # to avoid quadratic backtracking across lines of newlines.
+        cleaned = re.sub(r"(?m)^([^\S\n]*)#+[# \t]*", r"\1", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
 
@@ -211,7 +217,7 @@ def validate_memory_entry(content: Any, max_length: int = MAX_ENTRY_LENGTH) -> T
         return None, f"Memory entry exceeds maximum length of {max_length} characters (got {len(raw)})."
 
     sanitized = sanitize_memory_entry(raw)
-    if not sanitized or not sanitize_for_prompt(sanitized):
+    if not sanitized or not sanitize_for_prompt(sanitized, strip_headings=True):
         return None, "Memory entry is empty or contains only invalid/control characters."
 
     return sanitized, None
@@ -334,7 +340,7 @@ class MultiUserFileMemoryProvider(MemoryProvider):
         ]
         mem_entries = self._read_entries("memory")
         if mem_entries:
-            rendered = [sanitize_for_prompt(e) for e in mem_entries]
+            rendered = [sanitize_for_prompt(e, strip_headings=True) for e in mem_entries]
             content = "\n".join(f"- {e}" for e in rendered if e)
             if content:
                 blocks.append(f"## System & Environment Memory (Shared SOPs)\n{content}")
@@ -345,7 +351,7 @@ class MultiUserFileMemoryProvider(MemoryProvider):
 
         user_entries = self._read_entries("user")
         if user_entries:
-            rendered = [sanitize_for_prompt(e) for e in user_entries]
+            rendered = [sanitize_for_prompt(e, strip_headings=True) for e in user_entries]
             content = "\n".join(f"- {e}" for e in rendered if e)
             if content:
                 blocks.append(f"## User Profile Memory (Private to {self._user_id})\n{content}")
@@ -371,7 +377,7 @@ class MultiUserFileMemoryProvider(MemoryProvider):
         entries = self._read_entries(target)
 
         if action == "read":
-            sanitized_view = [sanitize_for_prompt(e) for e in entries]
+            sanitized_view = [sanitize_for_prompt(e, strip_headings=False) for e in entries]
             rendered_entries = [e for e in sanitized_view if e]
             return json.dumps(
                 {
@@ -398,28 +404,49 @@ class MultiUserFileMemoryProvider(MemoryProvider):
             return json.dumps({"success": True, "message": f"Added to {target} memory."})
 
         elif action == "replace":
+            index_val = args.get("index")
             old_val = args.get("old_content") or args.get("old_text")
             new_val = args.get("new_content") or args.get("content")
-            if not old_val or not isinstance(old_val, str) or not old_val.strip():
-                return tool_error("old_content and new_content required for 'replace'.")
+            if not new_val or not isinstance(new_val, str) or not new_val.strip():
+                return tool_error("new_content required for 'replace'.")
             sanitized_new, err = validate_memory_entry(new_val)
             if err:
                 return tool_error(err)
 
-            old_c = old_val.strip()
-            old_sanitized = sanitize_memory_entry(old_c)
-            old_rendered = sanitize_for_prompt(old_c)
-
             target_idx = None
-            for idx, entry in enumerate(entries):
-                if entry == old_c or entry == old_sanitized:
-                    target_idx = idx
-                    break
-            if target_idx is None:
+            if index_val is not None:
+                if isinstance(index_val, bool):
+                    return tool_error(f"Invalid index: {index_val}. Must be an integer.")
+                try:
+                    index_val = int(index_val)
+                except (ValueError, TypeError):
+                    return tool_error(f"Invalid index: {index_val}. Must be an integer.")
+                if not entries:
+                    return tool_error(f"Cannot replace in {target} memory: store is empty.")
+                if not (0 <= index_val < len(entries)):
+                    return tool_error(f"Index {index_val} out of range (0 to {len(entries) - 1}) for {target} memory.")
+                target_idx = index_val
+            else:
+                if not old_val or not isinstance(old_val, str) or not old_val.strip():
+                    return tool_error("old_content and new_content required for 'replace'.")
+
+                old_c = old_val.strip()
+                old_sanitized = sanitize_memory_entry(old_c)
+                old_rendered_read = sanitize_for_prompt(old_c, strip_headings=False)
+                old_rendered_prompt = sanitize_for_prompt(old_c, strip_headings=True)
+
                 for idx, entry in enumerate(entries):
-                    if sanitize_for_prompt(entry) in (old_c, old_rendered):
+                    if entry == old_c or entry == old_sanitized:
                         target_idx = idx
                         break
+                if target_idx is None:
+                    for idx, entry in enumerate(entries):
+                        if (
+                            sanitize_for_prompt(entry, strip_headings=False) in (old_c, old_rendered_read)
+                            or sanitize_for_prompt(entry, strip_headings=True) in (old_c, old_rendered_prompt)
+                        ):
+                            target_idx = idx
+                            break
 
             if target_idx is not None:
                 entries[target_idx] = sanitized_new
@@ -428,23 +455,42 @@ class MultiUserFileMemoryProvider(MemoryProvider):
             return tool_error(f"Old content exact match not found in {target} memory.")
 
         elif action == "remove":
+            index_val = args.get("index")
             old_val = args.get("old_content") or args.get("content")
-            if not old_val or not isinstance(old_val, str) or not old_val.strip():
-                return tool_error("Content to remove is required.")
-            old_c = old_val.strip()
-            old_sanitized = sanitize_memory_entry(old_c)
-            old_rendered = sanitize_for_prompt(old_c)
-
             target_idx = None
-            for idx, entry in enumerate(entries):
-                if entry == old_c or entry == old_sanitized:
-                    target_idx = idx
-                    break
-            if target_idx is None:
+            if index_val is not None:
+                if isinstance(index_val, bool):
+                    return tool_error(f"Invalid index: {index_val}. Must be an integer.")
+                try:
+                    index_val = int(index_val)
+                except (ValueError, TypeError):
+                    return tool_error(f"Invalid index: {index_val}. Must be an integer.")
+                if not entries:
+                    return tool_error(f"Cannot remove from {target} memory: store is empty.")
+                if not (0 <= index_val < len(entries)):
+                    return tool_error(f"Index {index_val} out of range (0 to {len(entries) - 1}) for {target} memory.")
+                target_idx = index_val
+            else:
+                if not old_val or not isinstance(old_val, str) or not old_val.strip():
+                    return tool_error("Content to remove is required.")
+
+                old_c = old_val.strip()
+                old_sanitized = sanitize_memory_entry(old_c)
+                old_rendered_read = sanitize_for_prompt(old_c, strip_headings=False)
+                old_rendered_prompt = sanitize_for_prompt(old_c, strip_headings=True)
+
                 for idx, entry in enumerate(entries):
-                    if sanitize_for_prompt(entry) in (old_c, old_rendered):
+                    if entry == old_c or entry == old_sanitized:
                         target_idx = idx
                         break
+                if target_idx is None:
+                    for idx, entry in enumerate(entries):
+                        if (
+                            sanitize_for_prompt(entry, strip_headings=False) in (old_c, old_rendered_read)
+                            or sanitize_for_prompt(entry, strip_headings=True) in (old_c, old_rendered_prompt)
+                        ):
+                            target_idx = idx
+                            break
 
             if target_idx is not None:
                 entries.pop(target_idx)
