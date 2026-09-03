@@ -541,7 +541,7 @@ chart-sync: ## Sync the Helm chart's CRD copies and operator ClusterRole rules f
 chart-check: ## Verify the chart's CRD/RBAC copies match k8s-operator/config (CI runs this).
 	@./hack/sync-chart-manifests.sh --check
 
-iac-parity-check: ## Verify DNS egress rule parity across static NetworkPolicy copies (CI runs this).
+iac-parity-check: ## Verify DNS egress rule parity across static NetworkPolicy copies (CI runs this via scripts/test_check_iac_parity.py).
 	@python3 -c "import yaml" 2>/dev/null || { \
 		echo "iac-parity-check needs PyYAML: python3 -m pip install pyyaml (or make test-python-deps)"; \
 		exit 1; \

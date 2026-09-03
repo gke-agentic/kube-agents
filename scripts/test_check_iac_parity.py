@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from scripts.check_iac_parity import (
     EXCLUDED_NETPOL_MANIFESTS,
     HOUSE_SHAPE_EXCEPT,
+    REPO_ROOT,
     REQUIRED_DNS_LITERAL,
     REQUIRED_EXCEPT_MINIMUM,
     REQUIRED_WILDCARD_CIDR,
@@ -22,6 +24,7 @@ from scripts.check_iac_parity import (
     load_network_policies,
     main,
     sanitize_helm_template,
+    validate_exclusions,
 )
 
 
@@ -48,6 +51,13 @@ class CheckIacParityProductionTest(unittest.TestCase):
         containing a port-53 egress rule must either be in STATIC_NETWORK_POLICIES
         or explicitly listed in EXCLUDED_NETPOL_MANIFESTS with a reviewed reason.
         """
+        exclusion_errors = validate_exclusions(root=REPO_ROOT)
+        self.assertEqual(
+            exclusion_errors,
+            [],
+            f"EXCLUDED_NETPOL_MANIFESTS failed contract validation: {exclusion_errors}",
+        )
+
         discovered = discover_dns_network_policies()
         roster = set(STATIC_NETWORK_POLICIES)
 
@@ -64,6 +74,15 @@ class CheckIacParityProductionTest(unittest.TestCase):
             stale,
             set(),
             f"STATIC_NETWORK_POLICIES contains files that no longer contain DNS egress rules: {sorted(stale)}",
+        )
+
+    def test_excluded_manifests_contract(self):
+        """Verify that EXCLUDED_NETPOL_MANIFESTS entries have non-empty reasons, point to existing files, and are disjoint from STATIC_NETWORK_POLICIES."""
+        errors = validate_exclusions(root=REPO_ROOT)
+        self.assertEqual(
+            errors,
+            [],
+            f"EXCLUDED_NETPOL_MANIFESTS failed contract validation: {errors}",
         )
 
 
@@ -102,6 +121,128 @@ spec:
         self._write_manifest("examples/new-service/networkpolicy.yaml", manifest)
         discovered = discover_dns_network_policies(root=self.root)
         self.assertIn("examples/new-service/networkpolicy.yaml", discovered)
+
+    def test_ignored_dirs_in_ancestor_path_does_not_break_discovery(self):
+        """Verify that an ancestor path containing an ignored dirname (e.g. .claude/worktrees) does not suppress discovery."""
+        worktree_root = self.root / ".claude" / "worktree"
+        manifest = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-netpol
+spec:
+  egress:
+    - ports:
+        - port: 53
+      to:
+        - ipBlock:
+            cidr: 10.96.0.10/32
+"""
+        manifest_path = worktree_root / "manifest.yaml"
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(manifest, encoding="utf-8")
+
+        # An ignored directory within the root should still be skipped
+        ignored_path = worktree_root / ".venv" / "manifest.yaml"
+        ignored_path.parent.mkdir(parents=True, exist_ok=True)
+        ignored_path.write_text(manifest, encoding="utf-8")
+
+        discovered = discover_dns_network_policies(root=worktree_root)
+        self.assertIn("manifest.yaml", discovered)
+        self.assertNotIn(".venv/manifest.yaml", discovered)
+
+    def test_ignored_prefixes_docs_site(self):
+        """Verify that manifests under docs/site are ignored by prefix."""
+        manifest = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: doc-netpol
+spec:
+  egress:
+    - ports:
+        - port: 53
+      to:
+        - ipBlock:
+            cidr: 10.96.0.10/32
+"""
+        self._write_manifest("docs/site/manifest.yaml", manifest)
+        discovered = discover_dns_network_policies(root=self.root)
+        self.assertNotIn("docs/site/manifest.yaml", discovered)
+
+    def test_discovery_raises_on_malformed_network_policy(self):
+        """Verify that malformed YAML containing NetworkPolicy and 53 raises rather than being silently swallowed."""
+        bad_yaml = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+spec: [unclosed json syntax with 53
+"""
+        self._write_manifest("invalid.yaml", bad_yaml)
+        with self.assertRaises(ValueError):
+            discover_dns_network_policies(root=self.root)
+
+    def test_validate_exclusions_contract(self):
+        """Verify that validate_exclusions flags empty reasons, missing files, and roster collisions."""
+        self._write_manifest("valid.yaml", "dummy")
+        # 1. Valid exclusion passes
+        errors = validate_exclusions(
+            exclusions={"valid.yaml": "reviewed test reason"},
+            roster=set(),
+            root=self.root,
+        )
+        self.assertEqual(errors, [])
+
+        # 2. Empty or whitespace reason fails
+        errors = validate_exclusions(
+            exclusions={"valid.yaml": "   "},
+            roster=set(),
+            root=self.root,
+        )
+        self.assertTrue(any("non-empty reviewed reason" in err for err in errors))
+
+        # 3. Missing file fails
+        errors = validate_exclusions(
+            exclusions={"nonexistent.yaml": "valid reason"},
+            roster=set(),
+            root=self.root,
+        )
+        self.assertTrue(any("does not exist on disk" in err for err in errors))
+
+        # 4. Roster collision fails
+        errors = validate_exclusions(
+            exclusions={"valid.yaml": "valid reason"},
+            roster={"valid.yaml"},
+            root=self.root,
+        )
+        self.assertTrue(any("cannot also be in STATIC_NETWORK_POLICIES" in err for err in errors))
+
+    def test_discovery_respects_excluded_netpol_manifests(self):
+        """Verify that discover_dns_network_policies ignores entries listed in EXCLUDED_NETPOL_MANIFESTS."""
+        manifest = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-netpol
+spec:
+  egress:
+    - ports:
+        - port: 53
+      to:
+        - ipBlock:
+            cidr: 10.96.0.10/32
+"""
+        self._write_manifest("excluded.yaml", manifest)
+        with unittest.mock.patch.dict(
+            "scripts.check_iac_parity.EXCLUDED_NETPOL_MANIFESTS",
+            {"excluded.yaml": "reviewed test reason"},
+        ):
+            discovered = discover_dns_network_policies(root=self.root)
+            self.assertNotIn("excluded.yaml", discovered)
+
+    def test_discovery_raises_on_unreadable_file(self):
+        """Verify that read errors during discovery raise RuntimeError."""
+        self._write_manifest("unreadable.yaml", "dummy")
+        with unittest.mock.patch.object(
+            Path, "read_text", side_effect=OSError("simulated permission error")
+        ):
+            with self.assertRaises(RuntimeError):
+                discover_dns_network_policies(root=self.root)
 
     def test_missing_dns_literal_fails(self):
         manifest = """apiVersion: networking.k8s.io/v1

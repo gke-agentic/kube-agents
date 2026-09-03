@@ -34,6 +34,16 @@ deploy/kustomize/platform/networkpolicy-core-egress.yaml carries the 5-entry hou
 shape (adding 100.64.0.0/10 and 169.254.0.0/16, which is more contained and
 mirrors the operator-generated external egress policy). This script enforces the
 required-peer shape across all copies so drift is caught before merge.
+
+Scope:
+This check audits deployable Infrastructure-as-Code manifest files (*.yaml,
+*.yml, *.yaml.template, *.yml.template) across Helm templates, Kustomize bases,
+and integration examples. It does not scan Markdown documentation or agent skill
+prompts (*.md).
+
+Template semantics:
+For Helm templates, this check asserts that the static source definition carries
+the required peer shape, without evaluating dynamic Helm value permutations.
 """
 
 from __future__ import annotations
@@ -70,6 +80,7 @@ STATIC_NETWORK_POLICIES: tuple[str, ...] = (
 # Note: Go test fixtures under testdata/ are ignored systematically via IGNORED_DIRS.
 EXCLUDED_NETPOL_MANIFESTS: dict[str, str] = {}
 
+# Directory names to skip anywhere in the repo-relative path
 IGNORED_DIRS: frozenset[str] = frozenset(
     {
         ".venv",
@@ -79,9 +90,13 @@ IGNORED_DIRS: frozenset[str] = frozenset(
         ".coverage-data",
         ".terraform",
         ".claude",
-        "docs/site",
         "testdata",
     }
+)
+
+# Relative directory prefixes to skip
+IGNORED_PREFIXES: tuple[str, ...] = (
+    "docs/site",
 )
 
 REQUIRED_DNS_LITERAL = "10.96.0.10/32"
@@ -147,11 +162,29 @@ def load_network_policies(path: Path) -> list[dict]:
     return policies
 
 
+def validate_exclusions(
+    exclusions: dict[str, str] = EXCLUDED_NETPOL_MANIFESTS,
+    roster: Iterable[str] = STATIC_NETWORK_POLICIES,
+    root: Path = REPO_ROOT,
+) -> list[str]:
+    """Validate that every exclusion carries a non-empty reason, points to a file on disk, and is disjoint from the roster."""
+    errors: list[str] = []
+    roster_set = set(roster)
+    for path_str, reason in exclusions.items():
+        if not reason or not reason.strip():
+            errors.append(f"Exclusion for {path_str} must carry a non-empty reviewed reason")
+        if not (root / path_str).is_file():
+            errors.append(f"Excluded manifest does not exist on disk: {path_str}")
+        if path_str in roster_set:
+            errors.append(f"Excluded manifest {path_str} cannot also be in STATIC_NETWORK_POLICIES roster")
+    return errors
+
+
 def discover_dns_network_policies(root: Path = REPO_ROOT) -> set[str]:
     """Scan the repository tree for all manifest files defining a port-53 DNS egress rule.
 
-    Mirroring scripts/test_test_discovery.py, this discovery scan prevents any unlisted
-    DNS-bearing NetworkPolicy from escaping the static parity guard.
+    Scans deployed manifest files (*.yaml, *.yml, *.yaml.template, *.yml.template)
+    across the repository. Markdown documents and skill prompt files are excluded.
 
     Returns:
         set[str]: set of repo-relative POSIX file paths.
@@ -160,22 +193,25 @@ def discover_dns_network_policies(root: Path = REPO_ROOT) -> set[str]:
     patterns = ("*.yaml", "*.yml", "*.yaml.template", "*.yml.template")
     for pattern in patterns:
         for path in root.rglob(pattern):
-            if any(part in IGNORED_DIRS for part in path.parts):
+            rel = path.relative_to(root)
+            if any(part in IGNORED_DIRS for part in rel.parts):
                 continue
-            rel = path.relative_to(root).as_posix()
-            if rel in EXCLUDED_NETPOL_MANIFESTS:
+            rel_posix = rel.as_posix()
+            if any(rel_posix == prefix or rel_posix.startswith(prefix + "/") for prefix in IGNORED_PREFIXES):
+                continue
+            if rel_posix in EXCLUDED_NETPOL_MANIFESTS:
                 continue
             try:
                 raw = path.read_text(encoding="utf-8")
-            except Exception:
-                continue
+            except Exception as exc:
+                raise RuntimeError(f"failed to read {rel_posix} during DNS policy discovery: {exc}") from exc
             # Fast check before parsing
             if "NetworkPolicy" not in raw or "53" not in raw:
                 continue
             try:
                 policies = load_network_policies(path)
-            except Exception:
-                continue
+            except Exception as exc:
+                raise ValueError(f"failed to parse NetworkPolicy in {rel_posix} during DNS policy discovery: {exc}") from exc
             for pol in policies:
                 spec = pol.get("spec") or {}
                 for rule in spec.get("egress") or []:
@@ -183,7 +219,7 @@ def discover_dns_network_policies(root: Path = REPO_ROOT) -> set[str]:
                         continue
                     ports = rule.get("ports") or []
                     if any(isinstance(p, dict) and p.get("port") in (53, "53") for p in ports):
-                        discovered.add(rel)
+                        discovered.add(rel_posix)
                         break
     return discovered
 
@@ -301,6 +337,12 @@ def check_all(
     """Check all specified files for DNS egress parity."""
     total_rules = 0
     all_errors: list[str] = []
+
+    exclusion_errors = validate_exclusions(root=root)
+    all_errors.extend(exclusion_errors)
+    if verbose and exclusion_errors:
+        for err in exclusion_errors:
+            print(f"  FAIL: exclusion contract: {err}")
 
     for item in files:
         path = root / item if not Path(item).is_absolute() else Path(item)
