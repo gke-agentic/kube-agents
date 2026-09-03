@@ -287,9 +287,11 @@ func canAdoptLiteLLMPolicy(netpol *networkingv1.NetworkPolicy) bool {
 // reconcileLiteLLMNetworkPolicy manages the litellm-policy NetworkPolicy when LiteLLM is
 // present in the agent namespace and networkPolicy generation is enabled.
 //
-// Anti-GC design: litellm-policy is applied with applyManaged but WITHOUT setting an OwnerReference
-// to the PlatformAgent. This ensures that when a PlatformAgent is deleted, LiteLLM (a shared model gateway)
-// continues serving traffic without its egress policy being garbage-collected.
+// Lifecycle design: litellm-policy is applied with applyManaged without setting an OwnerReference
+// to the PlatformAgent to decouple its runtime object identity from the agent CR. When PlatformAgent
+// is finalized, handleDeletion explicitly cleans up the operator-managed policy via deleteManagedLiteLLMPolicy
+// so that litellm-policy is not orphaned during Helm teardown (where Helm's pre-delete hook removes
+// PlatformAgent before release workloads).
 //
 // Safe deletion: If network policy generation is disabled (spec.networkPolicy.enabled == false or
 // kubeagents.x-k8s.io/enable-litellm-network-policy == "false") or the LiteLLM deployment is not

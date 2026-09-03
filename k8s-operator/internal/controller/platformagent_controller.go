@@ -2209,6 +2209,7 @@ func (r *PlatformAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				}
 				return enqueueAgentsInNamespace(ctx, obj.GetNamespace())
 			}),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
 		Named("platformagent").
 		Complete(r)

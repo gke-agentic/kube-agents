@@ -32,6 +32,8 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	agentv1alpha1 "github.com/gke-labs/kube-agents/k8s-operator/api/v1alpha1"
 )
@@ -371,9 +373,9 @@ func TestReconcileLiteLLMNetworkPolicy_LiteLLMPresent(t *testing.T) {
 		t.Fatalf("expected litellm-policy to exist, got error: %v", err)
 	}
 
-	// Anti-GC check: verify litellm-policy has NO OwnerReference to PlatformAgent
+	// Runtime decoupling check: verify litellm-policy has NO OwnerReference to PlatformAgent
 	if len(netpol.OwnerReferences) != 0 {
-		t.Errorf("expected 0 OwnerReferences on litellm-policy for Anti-GC guarantee, got %d (%+v)",
+		t.Errorf("expected 0 OwnerReferences on litellm-policy for runtime decoupling, got %d (%+v)",
 			len(netpol.OwnerReferences), netpol.OwnerReferences)
 	}
 
@@ -1108,4 +1110,42 @@ func TestReconcile_Refusal_BrokerSplitStrandsEventWatcher_MaintainsNetworkGuardr
 		t.Errorf("expected gateway-netpol to be reconciled and present on broker split refusal, got err: %v", err)
 	}
 }
+
+func TestSetupWithManager_LiteLLMDeploymentWatchPredicate(t *testing.T) {
+	pred := predicate.GenerationChangedPredicate{}
+
+	oldDep := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       litellmDeploymentName,
+			Namespace:  "test-ns",
+			Generation: 1,
+		},
+		Status: appsv1.DeploymentStatus{
+			ReadyReplicas: 1,
+		},
+	}
+
+	// Status update without spec change (same generation) must be filtered out
+	statusUpdateDep := oldDep.DeepCopy()
+	statusUpdateDep.Status.ReadyReplicas = 2
+	evStatus := event.UpdateEvent{
+		ObjectOld: oldDep,
+		ObjectNew: statusUpdateDep,
+	}
+	if pred.Update(evStatus) {
+		t.Errorf("expected GenerationChangedPredicate to reject status-only update (same generation), but it admitted it")
+	}
+
+	// Spec change (different generation) must be admitted
+	specUpdateDep := oldDep.DeepCopy()
+	specUpdateDep.Generation = 2
+	evSpec := event.UpdateEvent{
+		ObjectOld: oldDep,
+		ObjectNew: specUpdateDep,
+	}
+	if !pred.Update(evSpec) {
+		t.Errorf("expected GenerationChangedPredicate to admit spec update (different generation), but it rejected it")
+	}
+}
+
 
