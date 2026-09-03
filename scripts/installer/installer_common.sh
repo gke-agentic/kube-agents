@@ -669,6 +669,134 @@ if isinstance(value, str) and value:
 '
 }
 
+# The image tag an install is currently serving, read off the agent Deployment.
+running_image_tag() {
+  local namespace="${1:-kubeagents-system}" image=""
+  command -v kubectl >/dev/null 2>&1 || return 0
+  if ! image="$(kubectl get deployment platform-agent-gateway -n "${namespace}" \
+    -o jsonpath='{.spec.template.spec.containers[?(@.name=="platform-agent")].image}' 2>/dev/null)"; then
+    return 0
+  fi
+  [ -n "${image}" ] || return 0
+  case "${image##*:}" in
+    */*) return 0 ;;
+    *) printf '%s\n' "${image##*:}" ;;
+  esac
+}
+
+# Returns the status of a Helm release (e.g., 'deployed', 'pending-upgrade', etc.),
+# or empty string if the release does not exist or helm is not installed.
+helm_release_status() {
+  local release_name="${1:-kube-agents}"
+  local namespace="${2:-kubeagents-system}"
+
+  command -v helm >/dev/null 2>&1 || return 0
+
+  local status_json
+  if ! status_json="$(helm status "${release_name}" -n "${namespace}" -o json 2>/dev/null)"; then
+    return 0
+  fi
+
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s' "${status_json}" | jq -r '.info.status // empty'
+  else
+    printf '%s' "${status_json}" | sed -n 's/.*"status": *"\([^"]*\)".*/\1/p' | head -n 1
+  fi
+}
+
+# Checks whether a Helm release is stuck in a pending-* state (pending-install,
+# pending-upgrade, pending-rollback), and recovers by rolling back to the last
+# successfully deployed revision or uninstalling a failed initial install.
+ensure_clean_helm_release() {
+  local release_name="${1:-kube-agents}"
+  local namespace="${2:-kubeagents-system}"
+
+  command -v helm >/dev/null 2>&1 || return 0
+
+  local release_status
+  release_status="$(helm_release_status "${release_name}" "${namespace}")"
+  [ -n "${release_status}" ] || return 0
+
+  case "${release_status}" in
+    pending-install)
+      if type print_warning >/dev/null 2>&1; then
+        print_warning "Helm release '${release_name}' in namespace '${namespace}' is stuck in 'pending-install' (failed initial installation). Clearing failed release..."
+      else
+        echo "⚠️ WARNING: Helm release '${release_name}' in namespace '${namespace}' is stuck in 'pending-install' (failed initial installation). Clearing failed release..." >&2
+      fi
+
+      if helm uninstall "${release_name}" -n "${namespace}" --wait; then
+        if type print_success >/dev/null 2>&1; then
+          print_success "Successfully cleaned up stuck pending-install release '${release_name}'."
+        else
+          echo "✅ Successfully cleaned up stuck pending-install release '${release_name}'." >&2
+        fi
+        return 0
+      else
+        if type print_error >/dev/null 2>&1; then
+          print_error "Failed to uninstall stuck pending-install release '${release_name}'."
+        else
+          echo "❌ ERROR: Failed to uninstall stuck pending-install release '${release_name}'." >&2
+        fi
+        return 1
+      fi
+      ;;
+    pending-upgrade|pending-rollback)
+      if type print_warning >/dev/null 2>&1; then
+        print_warning "Helm release '${release_name}' in namespace '${namespace}' is stuck in '${release_status}'. Attempting automatic rollback..."
+      else
+        echo "⚠️ WARNING: Helm release '${release_name}' in namespace '${namespace}' is stuck in '${release_status}'. Attempting automatic rollback..." >&2
+      fi
+
+      local history_json
+      if ! history_json="$(helm history "${release_name}" -n "${namespace}" -o json 2>/dev/null)"; then
+        if type print_error >/dev/null 2>&1; then
+          print_error "Failed to retrieve Helm history for release '${release_name}' in namespace '${namespace}'."
+        else
+          echo "❌ ERROR: Failed to retrieve Helm history for release '${release_name}' in namespace '${namespace}'." >&2
+        fi
+        return 1
+      fi
+
+      local last_good_rev=""
+      if command -v jq >/dev/null 2>&1; then
+        last_good_rev="$(printf '%s' "${history_json}" | jq -r '[.[] | select(.status == "deployed" or .status == "superseded") | .revision] | max // empty' 2>/dev/null)" || last_good_rev=""
+      fi
+
+      if [ -n "${last_good_rev}" ]; then
+        echo "==> Rolling back '${release_name}' to revision ${last_good_rev}..." >&2
+        if helm rollback "${release_name}" "${last_good_rev}" -n "${namespace}" --wait --timeout 2m; then
+          if type print_success >/dev/null 2>&1; then
+            print_success "Successfully rolled back Helm release '${release_name}' to revision ${last_good_rev}."
+          else
+            echo "✅ Successfully rolled back Helm release '${release_name}' to revision ${last_good_rev}." >&2
+          fi
+          return 0
+        else
+          if type print_error >/dev/null 2>&1; then
+            print_error "Failed to roll back Helm release '${release_name}' to revision ${last_good_rev}."
+          else
+            echo "❌ ERROR: Failed to roll back Helm release '${release_name}' to revision ${last_good_rev}." >&2
+          fi
+          return 1
+        fi
+      else
+        if type print_warning >/dev/null 2>&1; then
+          print_warning "Helm release '${release_name}' is in '${release_status}', but no previous deployed revision exists in history. Uninstalling to recover..."
+        else
+          echo "⚠️ WARNING: Helm release '${release_name}' is in '${release_status}', but no previous deployed revision exists in history. Uninstalling to recover..." >&2
+        fi
+        helm uninstall "${release_name}" -n "${namespace}" --wait
+        return 0
+      fi
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
+
 # Writes the terraform.tfvars the full-install composition consumes, from the
 # install.env variable set in the environment (load it first). The same
 # generator runs from install.sh, upgrade.sh, and uninstall.sh, so the three

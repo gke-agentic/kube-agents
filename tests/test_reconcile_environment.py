@@ -398,7 +398,7 @@ class ReconcileScriptTest(unittest.TestCase):
     def test_an_apply_waits_out_an_in_flight_redeploy(self):
         """Both drive `helm upgrade` on the release the composition owns."""
         self.assertIn("await_redeploys", self.text)
-        self.assertIn("redeploy-${component}.yml", self.text)
+        self.assertIn("${ENV_NAME}-deploy.yml", self.text)
 
     def test_the_redeploy_wait_counts_queued_runs_too(self):
         """Each redeploy has its own concurrency group, so one can sit queued.

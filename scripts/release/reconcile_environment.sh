@@ -117,6 +117,31 @@ gcloud container clusters get-credentials "${CLUSTER_NAME}" \
   --location="${REGION}" --project="${PROJECT_ID}" $GKE_DNS_ENDPOINT_FLAG
 
 # ---------------------------------------------------------------------------
+# 2b. Fast no-op exit if the cluster already serves the candidate
+# ---------------------------------------------------------------------------
+# When an apply specifies an image tag, check whether the running Deployment
+# already serves that exact tag. If so, and force is not set, exit cleanly as a
+# no-op in ~5s rather than paying a 10-minute redundant apply and GCS state lock.
+if [ "$MODE" = "apply" ] && [ -n "${IMAGE_TAG:-}" ] && [ "${FORCE_RECONCILE:-false}" != "true" ]; then
+  running_tag=""
+  if [ -f "${REPO_ROOT}/scripts/installer/installer_common.sh" ]; then
+    # shellcheck source=scripts/installer/installer_common.sh
+    # shellcheck disable=SC1091
+    . "${REPO_ROOT}/scripts/installer/installer_common.sh"
+    running_tag="$(running_image_tag "${NAMESPACE:-kubeagents-system}")"
+  fi
+
+  if [ -n "${running_tag}" ] && [ "${running_tag}" = "${IMAGE_TAG}" ]; then
+    echo "==> '${ENV_NAME}' is already running ${IMAGE_TAG}. No changes to apply."
+    summary "### No-op — \`${ENV_NAME}\`"
+    summary ""
+    summary "\`${ENV_NAME}\` is already running \`${IMAGE_TAG}\`. No deployment required."
+    output "result" "noop"
+    exit 0
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # 3. Wait out any image redeploy already in flight
 # ---------------------------------------------------------------------------
 # The redeploy workflows run `helm upgrade` on the `kube-agents` release, and
@@ -135,23 +160,19 @@ await_redeploys() {
   local deadline=$((SECONDS + REDEPLOY_WAIT_SECONDS)) running
   while [ "$SECONDS" -lt "$deadline" ]; do
     running=""
-    for component in agent controller integrations; do
-      local wf="${ENV_NAME}-redeploy-${component}.yml"
-      # `gh run list` on a workflow this repository does not have exits
-      # non-zero; an environment with no redeploy workflows simply has nothing
-      # to wait for.
-      # queued and waiting count, not just in_progress. Each redeploy sits in
-      # its own concurrency group, so a second one queued behind the first is
-      # invisible to an in_progress-only query -- and autopush's redeploys
-      # start on every push to main, so one dequeuing into a `helm upgrade`
-      # halfway through the apply is the collision this loop exists to avoid.
-      # `--status` takes one value, so the filtering is done in jq instead.
-      local n
-      n="$(gh run list --repo "${GITHUB_REPOSITORY:-gke-labs/kube-agents}" \
-        --workflow "$wf" --limit "$REDEPLOY_RUN_QUERY_LIMIT" --json status \
-        --jq '[.[] | select(.status == "in_progress" or .status == "queued" or .status == "waiting")] | length' \
-        2>/dev/null || echo 0)"
-      [ "$n" = "0" ] || running="${running} ${wf}(${n})"
+    local workflows_to_check=("${ENV_NAME}-deploy.yml")
+    for wf in "${workflows_to_check[@]}"; do
+      local n=0
+      local query_out=""
+      if query_out="$(gh run list --repo "${GITHUB_REPOSITORY:-gke-labs/kube-agents}" \
+        --workflow "$wf" --limit "$REDEPLOY_RUN_QUERY_LIMIT" --json status,databaseId 2>/dev/null | \
+        jq --arg current_id "${GITHUB_RUN_ID:-}" \
+        '[.[] | select(.status == "in_progress" or .status == "queued" or .status == "waiting") | select((.databaseId | tostring) != $current_id)] | length' 2>/dev/null)"; then
+        n="${query_out:-0}"
+      fi
+      if [ -n "$n" ] && [ "$n" != "0" ]; then
+        running="${running} ${wf}(${n})"
+      fi
     done
     [ -n "$running" ] || return 0
     echo "==> Waiting for in-flight redeploys:${running}"
@@ -188,11 +209,16 @@ fi
 # apply. A plan takes nothing, because it changes nothing.
 LEASE_HELD="false"
 release_lease() {
-  [ "$LEASE_HELD" = "true" ] || return 0
-  python3 "${REPO_ROOT}/scripts/live_test_lease.py" release >/dev/null 2>&1 || true
-  LEASE_HELD="false"
+  local exit_code=$?
+  if [ "$LEASE_HELD" = "true" ]; then
+    if ! python3 "${REPO_ROOT}/scripts/live_test_lease.py" release >/dev/null 2>&1; then
+      echo "⚠️ Warning: Failed to release live-test lease." >&2
+    fi
+    LEASE_HELD="false"
+  fi
+  exit "${exit_code}"
 }
-trap release_lease EXIT
+trap release_lease EXIT INT TERM HUP
 
 if [ "$MODE" = "apply" ] && [ "$LEASE_POLICY" != "ignore" ]; then
   # A run id rather than a pid: the lease keys holder identity on the session,
@@ -202,7 +228,7 @@ if [ "$MODE" = "apply" ] && [ "$LEASE_POLICY" != "ignore" ]; then
     --note "scheduled reconcile of ${ENV_NAME}" --ttl "$LEASE_TTL_MINUTES"; then
     LEASE_HELD="true"
   else
-    holder="$(python3 "${REPO_ROOT}/scripts/live_test_lease.py" status --json 2>/dev/null || echo '[]')"
+    holder="$(python3 "${REPO_ROOT}/scripts/live_test_lease.py" status --json 2>/dev/null)" || holder="[]"
     # A cluster that could not be asked has not answered "no". `acquire` exits
     # non-zero for both, so deferring on the strength of that alone would turn
     # every kind of breakage -- a bad kubeconfig, an API server mid-upgrade, a
