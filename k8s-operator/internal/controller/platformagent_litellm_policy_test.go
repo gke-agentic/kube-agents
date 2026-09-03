@@ -833,7 +833,7 @@ func TestHandleDeletion_LiteLLMCleanup_DeploymentDeleting(t *testing.T) {
 	}
 }
 
-func TestHandleDeletion_LiteLLM_DeploymentActive_PreservesPolicy(t *testing.T) {
+func TestHandleDeletion_LiteLLMCleanup_DeploymentActive(t *testing.T) {
 	scheme := setupScheme()
 
 	agent := &agentv1alpha1.PlatformAgent{
@@ -878,8 +878,51 @@ func TestHandleDeletion_LiteLLM_DeploymentActive_PreservesPolicy(t *testing.T) {
 	}
 
 	var netpol networkingv1.NetworkPolicy
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: "test-ns", Name: "litellm-policy"}, &netpol); err == nil {
+		t.Fatalf("expected managed litellm-policy to be deleted on PlatformAgent teardown even when litellm Deployment is still active (helm uninstall pre-delete hook order)")
+	}
+}
+
+func TestHandleDeletion_UnmanagedPolicy_Preserved(t *testing.T) {
+	scheme := setupScheme()
+
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-agent",
+			Namespace:  "test-ns",
+			Finalizers: []string{platformAgentFinalizer},
+		},
+	}
+
+	unmanagedPolicy := &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "litellm-policy",
+			Namespace: "test-ns",
+			Labels: map[string]string{
+				labelManagedBy: managedByHelm,
+			},
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(agent, unmanagedPolicy).
+		WithInterceptorFuncs(fakeServerSideApplyInterceptors()).
+		Build()
+
+	r := &PlatformAgentReconciler{
+		Client: cl,
+		Scheme: scheme,
+	}
+
+	ctx := context.Background()
+	if _, err := r.handleDeletion(ctx, agent); err != nil {
+		t.Fatalf("handleDeletion failed: %v", err)
+	}
+
+	var netpol networkingv1.NetworkPolicy
 	if err := cl.Get(ctx, types.NamespacedName{Namespace: "test-ns", Name: "litellm-policy"}, &netpol); err != nil {
-		t.Fatalf("managed litellm-policy should be preserved when litellm Deployment is still active, got err: %v", err)
+		t.Fatalf("unmanaged litellm-policy should be preserved on PlatformAgent teardown, got err: %v", err)
 	}
 }
 

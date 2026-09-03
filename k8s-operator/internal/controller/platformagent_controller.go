@@ -481,19 +481,13 @@ func (r *PlatformAgentReconciler) handleDeletion(ctx context.Context, agent *age
 			return ctrl.Result{}, err
 		}
 
-		// litellm-policy is an unowned resource so that deleting a PlatformAgent does not
-		// immediately drop LiteLLM's egress while LiteLLM is still running and serving.
-		// However, if the LiteLLM deployment is absent or also being deleted (e.g. helm uninstall),
-		// clean up the operator-managed litellm-policy so it is not orphaned.
-		var litellmDep appsv1.Deployment
-		depErr := r.Get(ctx, types.NamespacedName{Namespace: agent.Namespace, Name: litellmDeploymentName}, &litellmDep)
-		if depErr != nil && !errors.IsNotFound(depErr) {
-			return ctrl.Result{}, fmt.Errorf("failed to get LiteLLM deployment during deletion cleanup: %w", depErr)
-		}
-		if errors.IsNotFound(depErr) || (depErr == nil && litellmDep.DeletionTimestamp != nil) {
-			if err := r.deleteManagedLiteLLMPolicy(ctx, agent); err != nil {
-				return ctrl.Result{}, err
-			}
+		// Delete managed litellm-policy if present so it is not orphaned.
+		// litellm-policy is managed without an OwnerReference (to avoid premature GC while
+		// the agent is running). When PlatformAgent is finalized (including during helm uninstall's
+		// pre-delete hook), clean up the policy. deleteManagedLiteLLMPolicy only deletes policies
+		// bearing app.kubernetes.io/managed-by: platformagent-controller, preserving user-managed policies.
+		if err := r.deleteManagedLiteLLMPolicy(ctx, agent); err != nil {
+			return ctrl.Result{}, err
 		}
 
 		// Resource is deleted. Safe to remove finalizer and update.
