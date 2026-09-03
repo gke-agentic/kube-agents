@@ -41,16 +41,16 @@ class CronRunScopeTest(unittest.TestCase):
 
     def test_the_marker_is_set_during_the_run_and_cleared_after(self):
         self.assertEqual(current_cron_job(), "")
-        self.assertEqual(current_cron_risk(), "low")
-        with cron_run_scope(JOB_ID, risk="high"):
+        self.assertEqual(current_cron_risk(), "high")
+        with cron_run_scope(JOB_ID, risk="low"):
             self.assertEqual(current_cron_job(), JOB_ID)
-            self.assertEqual(current_cron_risk(), "high")
-        self.assertEqual(current_cron_job(), "")
-        self.assertEqual(current_cron_risk(), "low")
-
-    def test_default_risk_is_low(self):
-        with cron_run_scope(JOB_ID):
             self.assertEqual(current_cron_risk(), "low")
+        self.assertEqual(current_cron_job(), "")
+        self.assertEqual(current_cron_risk(), "high")
+
+    def test_default_risk_is_high(self):
+        with cron_run_scope(JOB_ID):
+            self.assertEqual(current_cron_risk(), "high")
 
     def test_the_marker_is_cleared_when_the_run_raises(self):
         with self.assertRaises(RuntimeError):

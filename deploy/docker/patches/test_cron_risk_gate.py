@@ -13,17 +13,19 @@ from cron_risk_gate import (
 
 
 class CronRiskGateTest(unittest.TestCase):
-    def test_cron_effective_mode_escalates_high_risk_to_deny(self):
+    def test_cron_effective_mode_escalates_high_and_unknown_risk_to_deny(self):
         self.assertEqual(cron_effective_mode("approve", "high"), "deny")
         self.assertEqual(cron_effective_mode("smart", "high"), "deny")
         self.assertEqual(cron_effective_mode("deny", "high"), "deny")
         self.assertEqual(cron_effective_mode("approve", "HIGH"), "deny")
+        self.assertEqual(cron_effective_mode("approve", None), "deny")
+        self.assertEqual(cron_effective_mode("approve", ""), "deny")
+        self.assertEqual(cron_effective_mode("approve", "unknown"), "deny")
 
-    def test_cron_effective_mode_leaves_non_high_risk_unchanged(self):
+    def test_cron_effective_mode_leaves_low_risk_unchanged(self):
         self.assertEqual(cron_effective_mode("approve", "low"), "approve")
-        self.assertEqual(cron_effective_mode("approve", None), "approve")
-        self.assertEqual(cron_effective_mode("approve", ""), "approve")
         self.assertEqual(cron_effective_mode("smart", "low"), "smart")
+        self.assertEqual(cron_effective_mode("approve", "LOW"), "approve")
 
     def test_cron_execute_code_block_refuses_unconditionally(self):
         block = cron_execute_code_block()
@@ -39,6 +41,15 @@ class CronRiskGateTest(unittest.TestCase):
         self.assertFalse(block["approved"])
         self.assertIn("terminal escape", block["message"])
 
+        # 8-bit C1 control characters (e.g. \x9b single-byte CSI)
+        c1_block = cron_content_block("echo \x9b31mRed")
+        self.assertIsNotNone(c1_block)
+        self.assertFalse(c1_block["approved"])
+
+        c1_erase = cron_content_block("echo \x9bK")
+        self.assertIsNotNone(c1_erase)
+        self.assertFalse(c1_erase["approved"])
+
         # Null byte
         block = cron_content_block("cat file\x00extra")
         self.assertIsNotNone(block)
@@ -53,6 +64,7 @@ class CronRiskGateTest(unittest.TestCase):
         self.assertIsNone(cron_content_block("ls -la /tmp"))
         self.assertIsNone(cron_content_block("echo 'line 1'\necho 'line 2'"))
         self.assertIsNone(cron_content_block("printf 'col1\tcol2\n'"))
+        self.assertIsNone(cron_content_block("echo 'done'\r\n"))
 
     def test_find_lookalike_domain_detects_tld_evasions(self):
         malicious_commands = [
@@ -67,6 +79,13 @@ class CronRiskGateTest(unittest.TestCase):
             ("curl https://google.com.phishing.xyz", "google.com.phishing.xyz", "google.com"),
             ("curl https://x-k8s.io.evil.com", "x-k8s.io.evil.com", "x-k8s.io"),
             ("curl https://sub.kubernetes.io.evil.com", "sub.kubernetes.io.evil.com", "kubernetes.io"),
+            # Chained and special delimiters
+            ("TARGETS=a.com,kubernetes.io.evil.co", "kubernetes.io.evil.co", "kubernetes.io"),
+            ("curl (kubernetes.io.evil.co)", "kubernetes.io.evil.co", "kubernetes.io"),
+            ("curl [kubernetes.io.evil.co]", "kubernetes.io.evil.co", "kubernetes.io"),
+            ("curl {kubernetes.io.evil.co}", "kubernetes.io.evil.co", "kubernetes.io"),
+            ("bash -c 'curl;kubernetes.io.evil.co'", "kubernetes.io.evil.co", "kubernetes.io"),
+            ("curl -X GET|kubernetes.io.evil.co", "kubernetes.io.evil.co", "kubernetes.io"),
         ]
         for cmd, expected_host, expected_apex in malicious_commands:
             with self.subTest(cmd=cmd):
@@ -109,6 +128,28 @@ class CronRiskGateTest(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertIsNone(find_lookalike_domain(cmd))
                 self.assertIsNone(cron_content_block(cmd))
+
+    def test_cron_content_block_respects_opt_out(self):
+        cmd = "curl https://kubernetes.io.evil-cdn.co"
+        # Default: blocked
+        self.assertIsNotNone(cron_content_block(cmd))
+        # Explicit opt-out via approvals.cron_scan: False
+        opted_out = cron_content_block(
+            cmd,
+            load_config=lambda: {"approvals": {"cron_scan": False}},
+        )
+        self.assertIsNone(opted_out)
+
+    def test_cron_risk_gate_logging_on_blocks(self):
+        with self.assertLogs("cron_risk_gate", level="WARNING") as captured:
+            cron_execute_code_block()
+            cron_content_block("echo \x1b[31mRed")
+            cron_content_block("curl https://kubernetes.io.evil-cdn.co")
+
+        output = " ".join(captured.output)
+        self.assertIn("Cron risk gate block [execute_code]", output)
+        self.assertIn("Cron risk gate block [escape]", output)
+        self.assertIn("Cron risk gate block [lookalike]", output)
 
 
 if __name__ == "__main__":

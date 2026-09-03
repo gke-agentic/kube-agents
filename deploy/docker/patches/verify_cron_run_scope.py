@@ -50,7 +50,7 @@ def main() -> int:
 
     # --- outside a cron run: the worker keeps its ambient card --------------
     check("worker default task", kt._default_task_id(None), CALLER_CARD)
-    check("worker default risk", current_cron_risk(), "low")
+    check("worker default risk", current_cron_risk(), "high")
     check("worker owns its card", kt._enforce_worker_task_ownership(CALLER_CARD), None)
     check(
         "worker refused a foreign card",
@@ -80,7 +80,7 @@ def main() -> int:
     # _default_task_id when it did — so this is the one place left that would
     # notice if that mechanism went away underneath us.
     with cron_run_scope(JOB_ID), non_dispatcher_owned_context():
-        check("cron run risk default", current_cron_risk(), "low")
+        check("cron run risk default", current_cron_risk(), "high")
         check("cron run has no ambient card", kt._default_task_id(None), None)
         denied = kt._enforce_worker_task_ownership(CALLER_CARD)
         check("cron run refused the caller's card", bool(denied), True)
@@ -99,9 +99,10 @@ def main() -> int:
     import inspect
     import cron.scheduler as sched
 
-    sched_src = inspect.getsource(sched.run_one_job)
+    target_fn = getattr(sched, "_run_one_job_body", sched.run_one_job)
+    sched_src = inspect.getsource(target_fn)
     check(
-        "run_one_job wraps run_job in cron_run_scope",
+        f"{target_fn.__name__} wraps run_job in cron_run_scope",
         "with cron_run_scope(" in sched_src,
         True,
     )

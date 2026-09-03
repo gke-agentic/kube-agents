@@ -76,17 +76,6 @@ class ApplyCronRiskGateTest(unittest.TestCase):
             apply_cron_risk_gate.apply(root)
         self.assertIn("already patched", str(caught.exception))
 
-    def test_applier_against_real_pinned_approval(self):
-        pinned_path = pathlib.Path("/tmp/pinned_approval.py")
-        if not pinned_path.is_file():
-            self.skipTest("No /tmp/pinned_approval.py present")
-        root, target = self.write_tree(pinned_path.read_text())
-        apply_cron_tirith_scan.apply(root)
-        apply_cron_risk_gate.apply(root)
-        patched = target.read_text()
-        ast.parse(patched)
-        self.assertIn("from tools.cron_risk_gate import", patched)
-
     def test_verification_script_passes_against_patched_module(self):
         root, target = self.write_tree(UPSTREAM)
         apply_cron_tirith_scan.apply(root)

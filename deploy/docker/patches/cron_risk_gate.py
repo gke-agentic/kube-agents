@@ -13,13 +13,21 @@ and Issue #993 (THREAT-002):
 
 from __future__ import annotations
 
+import logging
 import re
-from typing import Optional
+from typing import Callable, Optional
+
+logger = logging.getLogger(__name__)
 
 RISK_LOW = "low"
 RISK_HIGH = "high"
 
 MODE_DENY = "deny"
+
+CRON_SCAN_KEY = "cron_scan"
+APPROVALS_KEY = "approvals"
+
+MAX_LOG_COMMAND_LEN = 200
 
 MSG_EXECUTE_CODE_REFUSED = (
     "BLOCKED: execute_code is refused during autonomous cron runs "
@@ -35,8 +43,9 @@ MSG_LOOKALIKE_TEMPLATE = (
 )
 
 #: Characters that alter terminal state or conceal command strings:
-#: ESC (\x1b), C0/C1 control characters (excluding newline \n and tab \t).
-_ESC = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x1b]")
+#: C0 control characters (excluding newline \n, tab \t, carriage return \r),
+#: DEL (\x7f), and C1 control characters (\x80-\x9f, including 8-bit CSI \x9b).
+_ESC = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x80-\x9f]")
 
 #: Apex domains trusted for Kubernetes and GKE platform operations.
 TRUSTED_APEX = (
@@ -51,21 +60,49 @@ TRUSTED_APEX = (
 )
 
 #: Extracts hostname candidates from URLs, CLI flags (--server=...), @hosts, quotes, or tokens.
+#: Uses fixed-width lookbehinds so chained delimiters (e.g. comma, semicolon, pipes, brackets)
+#: are recognized without prematurely consuming the separator.
 _HOST_TOKEN = re.compile(
-    r"(?:https?://|--[a-z0-9_-]+=|[@'\"=\s]|^)([a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+)",
+    r"(?:https?://|--[a-z0-9_-]+=|(?<=^)|(?<=[\s@'\"=,;|([{`]))([a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+)",
     re.IGNORECASE,
 )
+
+
+def _load_config_readonly() -> dict:
+    """Read config.yaml without taking a write lock, or ``{}``.
+
+    Deferred import so importing approval.py at startup does not load configuration early.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        return load_config_readonly() or {}
+    except Exception:
+        return {}
+
+
+def cron_scan_enabled(config: Optional[dict]) -> bool:
+    """Whether ``approvals.cron_scan`` leaves the scan on. Default: yes.
+
+    Anything other than an explicit false-y value keeps the scan, matching the
+    opt-out contract in cron_tirith_scan.py.
+    """
+    approvals = (config or {}).get(APPROVALS_KEY)
+    if not isinstance(approvals, dict):
+        return True
+    return bool(approvals.get(CRON_SCAN_KEY, True))
 
 
 def cron_effective_mode(mode: str, risk: str | None) -> str:
     """Escalate approval mode based on the job's declared risk tier.
 
-    A job declared as 'high' risk is escalated to 'deny' mode so it is evaluated
-    against strict pattern and policy gates. Low risk retains the
-    profile's configured mode (typically 'approve' in non-interactive cron runs).
+    A job declared as 'high' risk (or unannotated, defaulting fail-closed to 'high') is
+    escalated to 'deny' mode so it is evaluated against strict pattern and policy gates.
+    Explicit 'low' risk retains the profile's configured mode (typically 'approve' in
+    non-interactive cron runs).
     """
-    effective_risk = (risk or RISK_LOW).strip().lower()
-    if effective_risk == RISK_HIGH:
+    effective_risk = (risk or RISK_HIGH).strip().lower()
+    if effective_risk != RISK_LOW:
         return MODE_DENY
     return mode
 
@@ -77,6 +114,7 @@ def cron_execute_code_block() -> Optional[dict]:
     actions using declared tools and read-only commands rather than running
     arbitrary embedded scripts.
     """
+    logger.warning("Cron risk gate block [execute_code]: %s", MSG_EXECUTE_CODE_REFUSED)
     return {
         "approved": False,
         "message": MSG_EXECUTE_CODE_REFUSED,
@@ -108,7 +146,11 @@ def find_lookalike_domain(command: str) -> Optional[tuple[str, str]]:
     return None
 
 
-def cron_content_block(command: str) -> Optional[dict]:
+def cron_content_block(
+    command: str,
+    *,
+    load_config: Optional[Callable[[], dict]] = None,
+) -> Optional[dict]:
     """Scan a cron command for content-level evasions not caught by standard pattern filters.
 
     Checks:
@@ -120,7 +162,20 @@ def cron_content_block(command: str) -> Optional[dict]:
     if not command or not isinstance(command, str):
         return None
 
+    config: dict = {}
+    try:
+        config = (load_config or _load_config_readonly)() or {}
+    except Exception as exc:
+        logger.debug("cron risk gate: config unreadable (%s); using defaults", exc)
+
+    if not cron_scan_enabled(config):
+        return None
+
     if _ESC.search(command):
+        logger.warning(
+            "Cron risk gate block [escape]: command contains raw control/escape characters (command: %s)",
+            command[:MAX_LOG_COMMAND_LEN],
+        )
         return {
             "approved": False,
             "message": MSG_ESC_REFUSED,
@@ -129,6 +184,12 @@ def cron_content_block(command: str) -> Optional[dict]:
     lookalike = find_lookalike_domain(command)
     if lookalike is not None:
         host, apex = lookalike
+        logger.warning(
+            "Cron risk gate block [lookalike]: command contains lookalike domain '%s' mimicking apex '%s' (command: %s)",
+            host,
+            apex,
+            command[:MAX_LOG_COMMAND_LEN],
+        )
         return {
             "approved": False,
             "message": MSG_LOOKALIKE_TEMPLATE.format(host=host, apex=apex),

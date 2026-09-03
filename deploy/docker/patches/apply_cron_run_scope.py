@@ -60,7 +60,7 @@ SCHEDULER_RUN_JOB_PATCHED = (
     "            # enforce risk-keyed approval gates and execute_code blocks.\n"
     "            # See tools/cron_run_scope.py and tools/cron_risk_gate.py.\n"
     "            from tools.cron_run_scope import cron_run_scope\n"
-    '            with cron_run_scope(job["id"], risk=str(job.get("risk") or "low")):\n'
+    '            with cron_run_scope(job["id"], risk=str(job.get("risk") or "high")):\n'
     "                success, output, final_response, error = run_job(\n"
     "                    job, defer_agent_teardown=_deferred_agents,\n"
     "                    extra_prompt=extra_prompt,\n"
@@ -147,7 +147,7 @@ CRONJOB_EXECUTE_PATCHED = (
     "            # it away.\n"
     "            outcome: Dict[str, Any] = {}\n"
     "            try:\n"
-    '                with cron_run_scope(job_id, risk=str(job.get("risk") or "low")):\n'
+    '                with cron_run_scope(job_id, risk=str(job.get("risk") or "high")):\n'
     "                    processed = run_one_job(\n"
     "                        job, adapters=adapters, loop=gateway_loop,\n"
     "                        extra_prompt=extra_prompt, outcome=outcome,\n"
