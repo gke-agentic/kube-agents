@@ -49,6 +49,7 @@ the required peer shape, without evaluating dynamic Helm value permutations.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from pathlib import Path
@@ -63,6 +64,17 @@ except ImportError:
     )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+DNS_PORT: int = 53
+DNS_PORT_STR: str = "53"
+DNS_PORTS: tuple[int | str, ...] = (DNS_PORT, DNS_PORT_STR)
+
+DISCOVERY_FILE_PATTERNS: tuple[str, ...] = (
+    "*.yaml",
+    "*.yml",
+    "*.yaml.template",
+    "*.yml.template",
+)
 
 STATIC_NETWORK_POLICIES: tuple[str, ...] = (
     "charts/kube-agents/templates/litellm.yaml",
@@ -120,14 +132,16 @@ def sanitize_helm_template(text: str) -> str:
     text = re.sub(r"\{\{-?\s*/\*.*?\*/\s*-?\}\}", "", text, flags=re.DOTALL)
     lines: list[str] = []
     for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("{{") and stripped.endswith("}}"):
-            # Whole line is a template control statement
+        # Check if the line consists entirely of template control tags (ignoring trailing comments)
+        line_without_tags = re.sub(r"\{\{.*?\}\}", "", line)
+        if line_without_tags.split("#", 1)[0].strip() == "":
             lines.append("# " + line)
-        else:
-            # Replace inline template expressions like {{ .Release.Namespace }}
-            cleaned = re.sub(r"\{\{.*?\}\}", "placeholder", line)
-            lines.append(cleaned)
+            continue
+        # For lines with mixed content, strip control directives (if, else, end, with, range)
+        cleaned = re.sub(r"\{\{-?\s*(?:if\b|else\b|end\b|range\b|with\b).*?-?\}\}", "", line)
+        # Any remaining template expressions are value interpolations
+        cleaned = re.sub(r"\{\{.*?\}\}", "placeholder", cleaned)
+        lines.append(cleaned)
     return "\n".join(lines)
 
 
@@ -163,24 +177,28 @@ def load_network_policies(path: Path) -> list[dict]:
 
 
 def validate_exclusions(
-    exclusions: dict[str, str] = EXCLUDED_NETPOL_MANIFESTS,
-    roster: Iterable[str] = STATIC_NETWORK_POLICIES,
-    root: Path = REPO_ROOT,
+    exclusions: dict[str, str] | None = None,
+    roster: Iterable[str] | None = None,
+    root: Path | None = None,
 ) -> list[str]:
     """Validate that every exclusion carries a non-empty reason, points to a file on disk, and is disjoint from the roster."""
+    resolved_exclusions = EXCLUDED_NETPOL_MANIFESTS if exclusions is None else exclusions
+    resolved_roster = STATIC_NETWORK_POLICIES if roster is None else roster
+    resolved_root = REPO_ROOT if root is None else root
+
     errors: list[str] = []
-    roster_set = set(roster)
-    for path_str, reason in exclusions.items():
+    roster_set = set(resolved_roster)
+    for path_str, reason in resolved_exclusions.items():
         if not reason or not reason.strip():
             errors.append(f"Exclusion for {path_str} must carry a non-empty reviewed reason")
-        if not (root / path_str).is_file():
+        if not (resolved_root / path_str).is_file():
             errors.append(f"Excluded manifest does not exist on disk: {path_str}")
         if path_str in roster_set:
             errors.append(f"Excluded manifest {path_str} cannot also be in STATIC_NETWORK_POLICIES roster")
     return errors
 
 
-def discover_dns_network_policies(root: Path = REPO_ROOT) -> set[str]:
+def discover_dns_network_policies(root: Path | None = None) -> set[str]:
     """Scan the repository tree for all manifest files defining a port-53 DNS egress rule.
 
     Scans deployed manifest files (*.yaml, *.yml, *.yaml.template, *.yml.template)
@@ -189,38 +207,68 @@ def discover_dns_network_policies(root: Path = REPO_ROOT) -> set[str]:
     Returns:
         set[str]: set of repo-relative POSIX file paths.
     """
+    resolved_root = REPO_ROOT if root is None else root
     discovered: set[str] = set()
-    patterns = ("*.yaml", "*.yml", "*.yaml.template", "*.yml.template")
-    for pattern in patterns:
-        for path in root.rglob(pattern):
-            rel = path.relative_to(root)
-            if any(part in IGNORED_DIRS for part in rel.parts):
+
+    for dirpath, dirnames, filenames in os.walk(resolved_root):
+        # Prune ignored directories in place to avoid entering them
+        dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS]
+        rel_dir = Path(dirpath).relative_to(resolved_root)
+        if any(part in IGNORED_DIRS for part in rel_dir.parts):
+            continue
+        rel_dir_posix = rel_dir.as_posix()
+        if any(
+            rel_dir_posix == prefix or rel_dir_posix.startswith(prefix + "/")
+            for prefix in IGNORED_PREFIXES
+        ):
+            dirnames.clear()
+            continue
+
+        for filename in filenames:
+            if not any(
+                filename.endswith(ext.lstrip("*"))
+                for ext in DISCOVERY_FILE_PATTERNS
+            ):
                 continue
+
+            path = Path(dirpath) / filename
+            rel = path.relative_to(resolved_root)
             rel_posix = rel.as_posix()
-            if any(rel_posix == prefix or rel_posix.startswith(prefix + "/") for prefix in IGNORED_PREFIXES):
-                continue
+
             if rel_posix in EXCLUDED_NETPOL_MANIFESTS:
                 continue
+
             try:
                 raw = path.read_text(encoding="utf-8")
             except Exception as exc:
-                raise RuntimeError(f"failed to read {rel_posix} during DNS policy discovery: {exc}") from exc
+                raise RuntimeError(
+                    f"failed to read {rel_posix} during DNS policy discovery: {exc}"
+                ) from exc
+
             # Fast check before parsing
-            if "NetworkPolicy" not in raw or "53" not in raw:
+            if "NetworkPolicy" not in raw or DNS_PORT_STR not in raw:
                 continue
+
             try:
                 policies = load_network_policies(path)
             except Exception as exc:
-                raise ValueError(f"failed to parse NetworkPolicy in {rel_posix} during DNS policy discovery: {exc}") from exc
+                raise ValueError(
+                    f"failed to parse NetworkPolicy in {rel_posix} during DNS policy discovery: {exc}"
+                ) from exc
+
             for pol in policies:
                 spec = pol.get("spec") or {}
                 for rule in spec.get("egress") or []:
                     if not isinstance(rule, dict):
                         continue
                     ports = rule.get("ports") or []
-                    if any(isinstance(p, dict) and p.get("port") in (53, "53") for p in ports):
+                    if any(
+                        isinstance(p, dict) and p.get("port") in DNS_PORTS
+                        for p in ports
+                    ):
                         discovered.add(rel_posix)
                         break
+
     return discovered
 
 
@@ -235,7 +283,8 @@ def check_dns_egress_rule(
     to_peers = rule.get("to") or []
     has_dns_literal = False
     has_wildcard = False
-    wildcard_excepts: set[str] = set()
+    wildcard_peers: list[dict] = []
+    rule_desc = f"{path_display} (policy '{policy_name}', DNS rule #{rule_idx})"
 
     for peer in to_peers:
         if not isinstance(peer, dict) or "ipBlock" not in peer:
@@ -248,11 +297,18 @@ def check_dns_egress_rule(
             has_dns_literal = True
         elif cidr == REQUIRED_WILDCARD_CIDR:
             has_wildcard = True
+            wildcard_peers.append(peer)
+            peer_excepts: set[str] = set()
             except_list = ip_block.get("except")
             if isinstance(except_list, list):
-                wildcard_excepts.update(str(x) for x in except_list)
+                peer_excepts = {str(x) for x in except_list}
+            missing = REQUIRED_EXCEPT_MINIMUM - peer_excepts
+            if missing:
+                errors.append(
+                    f"{rule_desc}: '{REQUIRED_WILDCARD_CIDR}' peer except list is missing required private CIDRs: "
+                    f"{sorted(missing)}"
+                )
 
-    rule_desc = f"{path_display} (policy '{policy_name}', DNS rule #{rule_idx})"
     if not has_dns_literal:
         errors.append(
             f"{rule_desc}: missing required ipBlock literal '{REQUIRED_DNS_LITERAL}' for classic ClusterIP DNS"
@@ -261,24 +317,22 @@ def check_dns_egress_rule(
         errors.append(
             f"{rule_desc}: missing required '{REQUIRED_WILDCARD_CIDR}' peer with except list for dynamic/public DNS VIPs"
         )
-    else:
-        missing_except = REQUIRED_EXCEPT_MINIMUM - wildcard_excepts
-        if missing_except:
-            errors.append(
-                f"{rule_desc}: '{REQUIRED_WILDCARD_CIDR}' except list is missing required private CIDRs: "
-                f"{sorted(missing_except)}"
-            )
+    elif len(wildcard_peers) > 1:
+        errors.append(
+            f"{rule_desc}: expected at most one '{REQUIRED_WILDCARD_CIDR}' peer"
+        )
 
     return errors
 
 
-def check_network_policy_file(path: Path, root: Path = REPO_ROOT) -> tuple[int, list[str]]:
+def check_network_policy_file(path: Path, root: Path | None = None) -> tuple[int, list[str]]:
     """Check all Egress NetworkPolicy resources in a file for DNS egress parity.
 
     Returns:
         tuple[int, list[str]]: (number of DNS rules checked, list of error messages)
     """
-    rel_path = str(path.relative_to(root)) if path.is_relative_to(root) else str(path)
+    resolved_root = REPO_ROOT if root is None else root
+    rel_path = str(path.relative_to(resolved_root)) if path.is_relative_to(resolved_root) else str(path)
     try:
         policies = load_network_policies(path)
     except Exception as exc:
@@ -307,7 +361,7 @@ def check_network_policy_file(path: Path, root: Path = REPO_ROOT) -> tuple[int, 
             for r in (egress_rules or [])
             if isinstance(r, dict)
             and any(
-                isinstance(p, dict) and p.get("port") in (53, "53")
+                isinstance(p, dict) and p.get("port") in DNS_PORTS
                 for p in (r.get("ports") or [])
             )
         ]
@@ -330,27 +384,30 @@ def check_network_policy_file(path: Path, root: Path = REPO_ROOT) -> tuple[int, 
 
 
 def check_all(
-    files: Iterable[Path | str] = STATIC_NETWORK_POLICIES,
-    root: Path = REPO_ROOT,
+    files: Iterable[Path | str] | None = None,
+    root: Path | None = None,
     verbose: bool = False,
 ) -> tuple[int, list[str]]:
     """Check all specified files for DNS egress parity."""
+    resolved_files = STATIC_NETWORK_POLICIES if files is None else files
+    resolved_root = REPO_ROOT if root is None else root
+
     total_rules = 0
     all_errors: list[str] = []
 
-    exclusion_errors = validate_exclusions(root=root)
+    exclusion_errors = validate_exclusions(root=resolved_root)
     all_errors.extend(exclusion_errors)
     if verbose and exclusion_errors:
         for err in exclusion_errors:
             print(f"  FAIL: exclusion contract: {err}")
 
-    for item in files:
-        path = root / item if not Path(item).is_absolute() else Path(item)
-        rules_checked, file_errors = check_network_policy_file(path, root)
+    for item in resolved_files:
+        path = resolved_root / item if not Path(item).is_absolute() else Path(item)
+        rules_checked, file_errors = check_network_policy_file(path, resolved_root)
         total_rules += rules_checked
         all_errors.extend(file_errors)
         if verbose:
-            rel = str(path.relative_to(root)) if path.is_relative_to(root) else str(path)
+            rel = str(path.relative_to(resolved_root)) if path.is_relative_to(resolved_root) else str(path)
             if file_errors:
                 print(f"  FAIL: {rel} ({len(file_errors)} errors)")
             else:
@@ -376,9 +433,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    files = args.files if args.files else STATIC_NETWORK_POLICIES
+    files = args.files if args.files else None
+    display_count = len(files) if files else len(STATIC_NETWORK_POLICIES)
     if args.verbose:
-        print(f"Checking {len(files)} static NetworkPolicy copies for DNS egress parity...")
+        print(f"Checking {display_count} static NetworkPolicy copies for DNS egress parity...")
 
     rules_checked, errors = check_all(files=files, root=REPO_ROOT, verbose=args.verbose)
 
@@ -387,15 +445,15 @@ def main(argv: list[str] | None = None) -> int:
         for err in errors:
             print(f"  * {err}", file=sys.stderr)
         print(
-            f"\n{len(errors)} error(s) found across {len(files)} static policy copies.",
+            f"\n{len(errors)} error(s) found across {display_count} static policy copies.",
             file=sys.stderr,
         )
         return 1
 
     if not args.verbose:
-        print(f"OK: Verified DNS egress rule parity across {len(files)} static copies ({rules_checked} rules checked).")
+        print(f"OK: Verified DNS egress rule parity across {display_count} static copies ({rules_checked} rules checked).")
     else:
-        print(f"\nAll {len(files)} static policy copies passed parity check ({rules_checked} rules).")
+        print(f"\nAll {display_count} static policy copies passed parity check ({rules_checked} rules).")
     return 0
 
 

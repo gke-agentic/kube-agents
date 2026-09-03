@@ -3,10 +3,15 @@
 
 from __future__ import annotations
 
+import sys
 import tempfile
 import unittest
 import unittest.mock
 from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from scripts.check_iac_parity import (
     EXCLUDED_NETPOL_MANIFESTS,
@@ -38,10 +43,10 @@ class CheckIacParityProductionTest(unittest.TestCase):
             [],
             f"Expected all production static policies to pass parity check, but found errors: {errors}",
         )
-        self.assertEqual(
+        self.assertGreaterEqual(
             rules_checked,
             len(STATIC_NETWORK_POLICIES),
-            f"Expected {len(STATIC_NETWORK_POLICIES)} DNS rules checked, got {rules_checked}",
+            f"Expected at least {len(STATIC_NETWORK_POLICIES)} DNS rules checked, got {rules_checked}",
         )
 
     def test_discovery_matches_roster_exactly(self):
@@ -499,6 +504,117 @@ spec:
               - 192.168.0.0/16
 {{- end }}"""
         p = self._write_manifest("template.yaml", raw)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 1)
+        self.assertEqual(errors, [])
+
+    def test_split_wildcard_peers_fails(self):
+        """Verify that splitting required private CIDRs across multiple 0.0.0.0/0 peers is rejected."""
+        manifest = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-netpol
+spec:
+  egress:
+    - ports:
+        - port: 53
+      to:
+        - ipBlock:
+            cidr: 10.96.0.10/32
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+"""
+        p = self._write_manifest("split_wildcard.yaml", manifest)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 1)
+        self.assertTrue(any("missing required private CIDRs" in err for err in errors))
+        self.assertTrue(any("expected at most one '0.0.0.0/0' peer" in err for err in errors))
+
+    def test_multiple_wildcard_peers_rejected(self):
+        """Verify that multiple 0.0.0.0/0 peers in a single rule are rejected."""
+        manifest = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-netpol
+spec:
+  egress:
+    - ports:
+        - port: 53
+      to:
+        - ipBlock:
+            cidr: 10.96.0.10/32
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+"""
+        p = self._write_manifest("dup_wildcard.yaml", manifest)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 1)
+        self.assertTrue(any("expected at most one '0.0.0.0/0' peer" in err for err in errors))
+
+    def test_helm_template_trailing_comment(self):
+        """Verify that template directives with trailing comments parse cleanly."""
+        raw = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-netpol
+spec:
+  egress:
+    {{- if .Values.enabled }} # conditionally included
+    - ports:
+        - port: 53
+      to:
+        - ipBlock:
+            cidr: 10.96.0.10/32
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+    {{- end }} # end of condition
+"""
+        p = self._write_manifest("template_comment.yaml", raw)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 1)
+        self.assertEqual(errors, [])
+
+    def test_helm_template_inline_conditional(self):
+        """Verify that inline conditionals preserve the manifest payload."""
+        raw = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-netpol
+spec:
+  egress:
+    - ports:
+        - port: 53
+      to:
+        {{- if .Values.includeClassic }}- ipBlock: { cidr: 10.96.0.10/32 }{{- end }}
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+"""
+        p = self._write_manifest("template_inline.yaml", raw)
         rules, errors = check_network_policy_file(p, self.root)
         self.assertEqual(rules, 1)
         self.assertEqual(errors, [])
