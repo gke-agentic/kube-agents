@@ -16,14 +16,22 @@ UPSTREAM = """\
 def _format_tirith_description(result):
     return "tirith finding"
 
+def _is_single_query_approval_context():
+    return False
+
 def check_all_command_guards(command, env_type, approval_callback=None, has_host_access=False):
     is_cli = _is_interactive_cli()
     is_gateway = _is_gateway_approval_context()
     is_ask = False
     if not is_cli and not is_gateway and not is_ask:
+        if _is_single_query_approval_context():
+            if _get_single_query_approval_mode() == "deny":
+                return {"approved": False, "message": "single-query denied"}
+            # single_query_mode: approve — fall through to auto-approve below.
         # Cron sessions: respect cron_mode config
         if _is_cron_approval_context():
             if _get_cron_approval_mode() == "deny":
+                # Run detection to get a description for the block message
                 is_dangerous, _pk, description = detect_dangerous_command(command)
                 if is_dangerous:
                     return {"approved": False, "message": "dangerous: cron jobs run without a user present"}
