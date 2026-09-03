@@ -227,4 +227,3 @@ jobs:
     with:
       github_environment: "nightly"
       rc_tag: ${{ needs.step-1-resolve-candidate.outputs.commit_sha }}
-
