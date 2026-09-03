@@ -705,8 +705,11 @@ helm_release_status() {
 }
 
 # Checks whether a Helm release is stuck in a pending-* state (pending-install,
-# pending-upgrade, pending-rollback), and recovers by rolling back to the last
-# successfully deployed revision or uninstalling a failed initial install.
+# pending-upgrade, pending-rollback), waits out live in-flight operations, and
+# recovers from wedged releases by rolling back to the last successfully
+# deployed revision. Never automatically uninstalls an existing release unless
+# explicitly permitted via ALLOW_UNINSTALL_PENDING_RELEASE=true, protecting
+# credentials and secrets (such as platform-agent-secrets).
 ensure_clean_helm_release() {
   local release_name="${1:-kube-agents}"
   local namespace="${2:-kubeagents-system}"
@@ -717,26 +720,115 @@ ensure_clean_helm_release() {
   release_status="$(helm_release_status "${release_name}" "${namespace}")"
   [ -n "${release_status}" ] || return 0
 
+  # Only pending-* states represent locks or in-flight operations
   case "${release_status}" in
-    pending-install)
-      if type print_warning >/dev/null 2>&1; then
-        print_warning "Helm release '${release_name}' in namespace '${namespace}' is stuck in 'pending-install' (failed initial installation). Clearing failed release..."
-      else
-        echo "⚠️ WARNING: Helm release '${release_name}' in namespace '${namespace}' is stuck in 'pending-install' (failed initial installation). Clearing failed release..." >&2
-      fi
+    pending-install|pending-upgrade|pending-rollback)
+      ;;
+    *)
+      return 0
+      ;;
+  esac
 
-      if helm uninstall "${release_name}" -n "${namespace}" --wait; then
+  # Determine if this operation was started recently and could be an active,
+  # in-flight deployment rather than a wedged zombie lock.
+  # Helm's standard release timeout across deploy workflows is 10m (600s).
+  local operation_timeout="${HELM_OPERATION_TIMEOUT:-600}"
+  local pending_age=""
+  if command -v kubectl >/dev/null 2>&1; then
+    local creation_ts
+    creation_ts="$(kubectl get secret -n "${namespace}" -l "owner=helm,name=${release_name},status=${release_status}" --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1].metadata.creationTimestamp}' 2>/dev/null || true)"
+    if [ -n "${creation_ts}" ]; then
+      local created_epoch
+      created_epoch="$(date -d "${creation_ts}" +%s 2>/dev/null || echo "")"
+      if [ -n "${created_epoch}" ] && [ "${created_epoch}" -gt 0 ]; then
+        local now_epoch
+        now_epoch="$(date +%s)"
+        pending_age=$(( now_epoch - created_epoch ))
+      fi
+    fi
+  fi
+
+  # Calculate wait budget if an in-flight operation might still be running
+  local wait_budget=0
+  if [ -n "${HELM_LOCK_WAIT_TIMEOUT:-}" ]; then
+    wait_budget="${HELM_LOCK_WAIT_TIMEOUT}"
+  elif [ -n "${pending_age}" ] && [ "${pending_age}" -ge 0 ] && [ "${pending_age}" -lt "${operation_timeout}" ]; then
+    wait_budget=$(( operation_timeout - pending_age ))
+    local max_wait="${HELM_PENDING_WAIT_MAX:-300}"
+    if [ "${wait_budget}" -gt "${max_wait}" ]; then
+      wait_budget="${max_wait}"
+    fi
+  fi
+
+  if [ "${wait_budget}" -gt 0 ]; then
+    local age_msg=""
+    if [ -n "${pending_age}" ]; then
+      age_msg=" (started ${pending_age}s ago)"
+    fi
+    if type print_warning >/dev/null 2>&1; then
+      print_warning "Helm release '${release_name}' in namespace '${namespace}' is in '${release_status}'${age_msg}. Waiting up to ${wait_budget}s for in-flight operation to complete..."
+    else
+      echo "⚠️ WARNING: Helm release '${release_name}' in namespace '${namespace}' is in '${release_status}'${age_msg}. Waiting up to ${wait_budget}s for in-flight operation to complete..." >&2
+    fi
+
+    local deadline=$(( SECONDS + wait_budget ))
+    local poll_interval="${HELM_LOCK_POLL_INTERVAL:-10}"
+    while [ "${SECONDS}" -lt "${deadline}" ]; do
+      sleep "${poll_interval}"
+      release_status="$(helm_release_status "${release_name}" "${namespace}")"
+      if [ "${release_status}" = "deployed" ]; then
         if type print_success >/dev/null 2>&1; then
-          print_success "Successfully cleaned up stuck pending-install release '${release_name}'."
+          print_success "In-flight Helm operation completed successfully (status: deployed)."
         else
-          echo "✅ Successfully cleaned up stuck pending-install release '${release_name}'." >&2
+          echo "✅ In-flight Helm operation completed successfully (status: deployed)." >&2
         fi
         return 0
+      elif [ "${release_status}" = "failed" ] || [ -z "${release_status}" ]; then
+        if type print_info >/dev/null 2>&1; then
+          print_info "In-flight Helm operation finished (status: ${release_status:-cleared}). Lock released."
+        else
+          echo "ℹ️ In-flight Helm operation finished (status: ${release_status:-cleared}). Lock released." >&2
+        fi
+        return 0
+      fi
+    done
+
+    if type print_warning >/dev/null 2>&1; then
+      print_warning "Timed out waiting for in-flight Helm operation. Release '${release_name}' remains in '${release_status}'."
+    else
+      echo "⚠️ WARNING: Timed out waiting for in-flight Helm operation. Release '${release_name}' remains in '${release_status}'." >&2
+    fi
+  fi
+
+  case "${release_status}" in
+    pending-install)
+      if [ "${ALLOW_UNINSTALL_PENDING_RELEASE:-false}" = "true" ]; then
+        if type print_warning >/dev/null 2>&1; then
+          print_warning "Helm release '${release_name}' in namespace '${namespace}' is stuck in 'pending-install'. ALLOW_UNINSTALL_PENDING_RELEASE=true: clearing failed initial release..."
+        else
+          echo "⚠️ WARNING: Helm release '${release_name}' in namespace '${namespace}' is stuck in 'pending-install'. ALLOW_UNINSTALL_PENDING_RELEASE=true: clearing failed initial release..." >&2
+        fi
+
+        if helm uninstall "${release_name}" -n "${namespace}" --wait; then
+          if type print_success >/dev/null 2>&1; then
+            print_success "Successfully cleaned up stuck pending-install release '${release_name}'."
+          else
+            echo "✅ Successfully cleaned up stuck pending-install release '${release_name}'." >&2
+          fi
+          return 0
+        else
+          if type print_error >/dev/null 2>&1; then
+            print_error "Failed to uninstall stuck pending-install release '${release_name}'."
+          else
+            echo "❌ ERROR: Failed to uninstall stuck pending-install release '${release_name}'." >&2
+          fi
+          return 1
+        fi
       else
         if type print_error >/dev/null 2>&1; then
-          print_error "Failed to uninstall stuck pending-install release '${release_name}'."
+          print_error "Helm release '${release_name}' in namespace '${namespace}' is stuck in 'pending-install'. Automatic uninstall is blocked to prevent data and secret loss. Set ALLOW_UNINSTALL_PENDING_RELEASE=true to permit uninstall."
         else
-          echo "❌ ERROR: Failed to uninstall stuck pending-install release '${release_name}'." >&2
+          echo "❌ ERROR: Helm release '${release_name}' in namespace '${namespace}' is stuck in 'pending-install'. Automatic uninstall is blocked to prevent data and secret loss. Set ALLOW_UNINSTALL_PENDING_RELEASE=true to permit uninstall." >&2
         fi
         return 1
       fi
@@ -781,13 +873,22 @@ ensure_clean_helm_release() {
           return 1
         fi
       else
-        if type print_warning >/dev/null 2>&1; then
-          print_warning "Helm release '${release_name}' is in '${release_status}', but no previous deployed revision exists in history. Uninstalling to recover..."
+        if [ "${ALLOW_UNINSTALL_PENDING_RELEASE:-false}" = "true" ]; then
+          if type print_warning >/dev/null 2>&1; then
+            print_warning "Helm release '${release_name}' is in '${release_status}', but no previous deployed revision exists in history. ALLOW_UNINSTALL_PENDING_RELEASE=true: uninstalling to recover..."
+          else
+            echo "⚠️ WARNING: Helm release '${release_name}' is in '${release_status}', but no previous deployed revision exists in history. ALLOW_UNINSTALL_PENDING_RELEASE=true: uninstalling to recover..." >&2
+          fi
+          helm uninstall "${release_name}" -n "${namespace}" --wait
+          return 0
         else
-          echo "⚠️ WARNING: Helm release '${release_name}' is in '${release_status}', but no previous deployed revision exists in history. Uninstalling to recover..." >&2
+          if type print_error >/dev/null 2>&1; then
+            print_error "Helm release '${release_name}' is in '${release_status}', but no previous deployed revision exists in history. Automatic uninstall is blocked to prevent credential and secret destruction (platform-agent-secrets). Set ALLOW_UNINSTALL_PENDING_RELEASE=true to permit uninstall."
+          else
+            echo "❌ ERROR: Helm release '${release_name}' is in '${release_status}', but no previous deployed revision exists in history. Automatic uninstall is blocked to prevent credential and secret destruction (platform-agent-secrets). Set ALLOW_UNINSTALL_PENDING_RELEASE=true to permit uninstall." >&2
+          fi
+          return 1
         fi
-        helm uninstall "${release_name}" -n "${namespace}" --wait
-        return 0
       fi
       ;;
     *)
