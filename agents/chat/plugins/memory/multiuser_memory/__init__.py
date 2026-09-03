@@ -211,7 +211,7 @@ def validate_memory_entry(content: Any, max_length: int = MAX_ENTRY_LENGTH) -> T
         return None, f"Memory entry exceeds maximum length of {max_length} characters (got {len(raw)})."
 
     sanitized = sanitize_memory_entry(raw)
-    if not sanitized:
+    if not sanitized or not sanitize_for_prompt(sanitized):
         return None, "Memory entry is empty or contains only invalid/control characters."
 
     return sanitized, None
@@ -372,11 +372,14 @@ class MultiUserFileMemoryProvider(MemoryProvider):
 
         if action == "read":
             sanitized_view = [sanitize_for_prompt(e) for e in entries]
+            rendered_entries = [e for e in sanitized_view if e]
             return json.dumps(
                 {
                     "success": True,
                     "target": target,
-                    "entries": [e for e in sanitized_view if e],
+                    "entries": rendered_entries,
+                    "count": len(rendered_entries),
+                    "total_entries": len(entries),
                 },
                 ensure_ascii=False,
             )
@@ -386,8 +389,9 @@ class MultiUserFileMemoryProvider(MemoryProvider):
             sanitized_content, err = validate_memory_entry(content_val)
             if err:
                 return tool_error(err)
+            store_desc = "shared memory" if target == "memory" else "user memory"
             if len(entries) >= MAX_ENTRIES_PER_TARGET and sanitized_content not in entries:
-                return tool_error(f"Maximum memory entries ({MAX_ENTRIES_PER_TARGET}) reached for {target} memory.")
+                return tool_error(f"Maximum memory entries ({MAX_ENTRIES_PER_TARGET}) reached for {store_desc}.")
             if sanitized_content not in entries:
                 entries.append(sanitized_content)
                 self._write_entries(target, entries)

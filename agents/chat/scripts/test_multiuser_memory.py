@@ -531,7 +531,7 @@ class TestInputValidationAndSanitization(MultiUserMemoryTestCase):
 
     def test_empty_or_invalid_character_entry_rejected(self):
         p = self.provider(chat_type="dm")
-        for empty_case in ["", "   ", None, "\x00\x01\x1b[31m\x1b[0m\u200b\ufeff"]:
+        for empty_case in ["", "   ", None, "\x00\x01\x1b[31m\x1b[0m\u200b\ufeff", "#", "###", "# ## #", "  #  "]:
             with self.subTest(empty_case=empty_case):
                 res = p.handle_tool_call("multiuser_memory", {"action": "add", "target": "user", "content": empty_case})
                 self.assertTrue(self.failed(res), res)
@@ -674,16 +674,40 @@ class TestInputValidationAndSanitization(MultiUserMemoryTestCase):
                 res = p.handle_tool_call("multiuser_memory", {"action": "add", "target": "user", "content": f"Fact {i}"})
                 self.assertTrue(json.loads(res)["success"])
 
-            # 4th unique entry should be rejected
+            # 4th unique entry should be rejected with correct store description
             res_4 = p.handle_tool_call("multiuser_memory", {"action": "add", "target": "user", "content": "Fact 4"})
             self.assertTrue(self.failed(res_4), res_4)
-            self.assertIn("Maximum memory entries", json.loads(res_4)["error"])
+            self.assertIn("Maximum memory entries (3) reached for user memory.", json.loads(res_4)["error"])
+
+            # Test target="memory" error string (must say 'shared memory', not 'memory memory')
+            for i in range(3):
+                p.handle_tool_call("multiuser_memory", {"action": "add", "target": "memory", "content": f"SOP {i}"})
+            res_mem_4 = p.handle_tool_call("multiuser_memory", {"action": "add", "target": "memory", "content": "SOP 4"})
+            self.assertTrue(self.failed(res_mem_4), res_mem_4)
+            self.assertIn("Maximum memory entries (3) reached for shared memory.", json.loads(res_mem_4)["error"])
+            self.assertNotIn("memory memory", json.loads(res_mem_4)["error"])
 
             # Duplicate entry does not exceed limit
             res_dup = p.handle_tool_call("multiuser_memory", {"action": "add", "target": "user", "content": "Fact 0"})
             self.assertTrue(json.loads(res_dup)["success"])
         finally:
             mum.MAX_ENTRIES_PER_TARGET = original_limit
+
+    def test_hash_only_entry_rejected_preventing_invisible_lockout(self):
+        p = self.provider(chat_type="dm")
+        # Entries with only '#' characters must be rejected so they cannot consume store capacity invisibly
+        res = p.handle_tool_call("multiuser_memory", {"action": "add", "target": "memory", "content": "###"})
+        self.assertTrue(self.failed(res), res)
+        self.assertIn("empty or contains only invalid/control characters", json.loads(res)["error"])
+
+        # Disk store remains empty
+        self.assertEqual(p._read_entries("memory"), [])
+
+        # Read action returns count and total_entries
+        read_res = p.handle_tool_call("multiuser_memory", {"action": "read", "target": "memory"})
+        read_data = json.loads(read_res)
+        self.assertEqual(read_data["count"], 0)
+        self.assertEqual(read_data["total_entries"], 0)
 
 
 if __name__ == "__main__":
