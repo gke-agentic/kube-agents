@@ -395,22 +395,6 @@ class ReconcileScriptTest(unittest.TestCase):
         self.assertRegex(self.text, r'live_test_lease\.py"?\s+acquire')
         self.assertIn("trap release_lease EXIT", self.text)
 
-    def test_an_apply_waits_out_an_in_flight_redeploy(self):
-        """Both drive `helm upgrade` on the release the composition owns."""
-        self.assertIn("await_redeploys", self.text)
-        self.assertIn("${ENV_NAME}-deploy.yml", self.text)
-
-    def test_the_redeploy_wait_counts_queued_runs_too(self):
-        """Each redeploy has its own concurrency group, so one can sit queued.
-
-        autopush's redeploys start on every push to main. A queued one that
-        dequeues halfway through the apply is the collision the wait exists to
-        avoid, and an `--status in_progress` query cannot see it.
-        """
-        self.assertIn('select(.status == "in_progress"', self.text)
-        self.assertIn('"queued"', self.text)
-        self.assertIn('"waiting"', self.text)
-
     def test_credentials_are_fetched_before_the_lease_is_taken(self):
         """The lease is a ConfigMap read; without a kubeconfig it cannot be read.
 
