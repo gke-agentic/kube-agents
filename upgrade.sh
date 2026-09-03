@@ -848,8 +848,11 @@ main() {
     # operator Deployment with the release name.
     kubectl rollout status deployment/kube-agents-controller-manager -n kubeagents-system --timeout=120s
   fi
-  if [ -n "$PARAM_IMAGE_TAG" ] && [ -f "${repo_dir}/scripts/confirm_agent_image.sh" ]; then
-    "${repo_dir}/scripts/confirm_agent_image.sh" "$target_namespace" platform-agent-gateway "$PARAM_IMAGE_TAG"
+  if { [ "$PARAM_UPGRADE_MODE" = "harness" ] || [ "$PARAM_UPGRADE_MODE" = "full" ]; } && \
+     [ -n "$PARAM_IMAGE_TAG" ] && [ -f "${repo_dir}/scripts/confirm_agent_image.sh" ]; then
+    if kubectl get deployment platform-agent-gateway -n "$target_namespace" >/dev/null 2>&1; then
+      "${repo_dir}/scripts/confirm_agent_image.sh" "$target_namespace" platform-agent-gateway "$PARAM_IMAGE_TAG"
+    fi
   fi
   if [ "$PARAM_UPGRADE_MODE" = "harness" ] || [ "$PARAM_UPGRADE_MODE" = "full" ] || [ "$restarted_agent" = "true" ]; then
     kubectl rollout status deployment/platform-agent-gateway -n kubeagents-system --timeout=900s

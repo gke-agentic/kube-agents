@@ -394,6 +394,12 @@ class InteractiveImageTagPromptTest(unittest.TestCase):
         rollout_idx = text.index('rollout status deployment/platform-agent-gateway')
         self.assertLess(confirm_idx, rollout_idx)
 
+    def test_upgrade_confirms_agent_image_scoped_to_harness_and_full_modes(self):
+        text = (_REPO_ROOT / "upgrade.sh").read_text()
+        self.assertIn('[ "$PARAM_UPGRADE_MODE" = "harness" ] || [ "$PARAM_UPGRADE_MODE" = "full" ]', text)
+        self.assertIn('kubectl get deployment platform-agent-gateway -n "$target_namespace"', text)
+
+
 
 if __name__ == "__main__":
     unittest.main()
