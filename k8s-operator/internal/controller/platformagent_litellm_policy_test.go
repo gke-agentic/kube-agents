@@ -147,17 +147,27 @@ func TestBuildLiteLLMNetworkPolicy(t *testing.T) {
 		}
 	}
 
-	// Egress 2: HTTPS 443 with 0.0.0.0/0 except RFC 1918
+	// Egress 2: HTTPS 443 with 0.0.0.0/0 and ::/0 except private/link-local/multicast space
 	httpsRule := netpol.Spec.Egress[1]
 	if len(httpsRule.Ports) != 1 || httpsRule.Ports[0].Port.IntVal != 443 {
 		t.Errorf("expected HTTPS rule port 443, got %v", httpsRule.Ports)
 	}
-	if len(httpsRule.To) != 1 || httpsRule.To[0].IPBlock == nil || httpsRule.To[0].IPBlock.CIDR != "0.0.0.0/0" {
-		t.Errorf("expected HTTPS rule CIDR 0.0.0.0/0, got %v", httpsRule.To)
+	if len(httpsRule.To) != 2 {
+		t.Fatalf("expected HTTPS rule to have 2 peers (IPv4 and IPv6), got %d", len(httpsRule.To))
 	}
-	expectedExcept := []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}
-	if !reflect.DeepEqual(httpsRule.To[0].IPBlock.Except, expectedExcept) {
-		t.Errorf("expected HTTPS except %v, got %v", expectedExcept, httpsRule.To[0].IPBlock.Except)
+	if httpsRule.To[0].IPBlock == nil || httpsRule.To[0].IPBlock.CIDR != "0.0.0.0/0" {
+		t.Errorf("expected HTTPS rule peer 0 CIDR 0.0.0.0/0, got %v", httpsRule.To[0])
+	}
+	expectedIPv4Except := []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16"}
+	if !reflect.DeepEqual(httpsRule.To[0].IPBlock.Except, expectedIPv4Except) {
+		t.Errorf("expected HTTPS IPv4 except %v, got %v", expectedIPv4Except, httpsRule.To[0].IPBlock.Except)
+	}
+	if httpsRule.To[1].IPBlock == nil || httpsRule.To[1].IPBlock.CIDR != "::/0" {
+		t.Errorf("expected HTTPS rule peer 1 CIDR ::/0, got %v", httpsRule.To[1])
+	}
+	expectedIPv6Except := []string{"fc00::/7", "fe80::/10", "ff00::/8"}
+	if !reflect.DeepEqual(httpsRule.To[1].IPBlock.Except, expectedIPv6Except) {
+		t.Errorf("expected HTTPS IPv6 except %v, got %v", expectedIPv6Except, httpsRule.To[1].IPBlock.Except)
 	}
 
 	// Egress 3: GCP Metadata Server (pre-NAT port 80 to 169.254.169.254/32)
@@ -273,6 +283,22 @@ func TestBuildLiteLLMNetworkPolicy_DualStack(t *testing.T) {
 	}
 	if !hasIPv4 || !hasIPv6 {
 		t.Errorf("expected dual-stack DNS peers 10.96.0.10/32 and 2001:db8::10/128, got %v", cidrs)
+	}
+
+	// Verify HTTPS rule includes IPv6 ::/0 peer
+	httpsRule := netpol.Spec.Egress[1]
+	hasIPv6HTTPS := false
+	for _, peer := range httpsRule.To {
+		if peer.IPBlock != nil && peer.IPBlock.CIDR == "::/0" {
+			hasIPv6HTTPS = true
+			expectedIPv6Except := []string{"fc00::/7", "fe80::/10", "ff00::/8"}
+			if !reflect.DeepEqual(peer.IPBlock.Except, expectedIPv6Except) {
+				t.Errorf("expected HTTPS IPv6 except %v, got %v", expectedIPv6Except, peer.IPBlock.Except)
+			}
+		}
+	}
+	if !hasIPv6HTTPS {
+		t.Errorf("expected HTTPS rule to include ::/0 IPv6 peer")
 	}
 }
 
@@ -552,58 +578,72 @@ func TestReconcileLiteLLMNetworkPolicy_SafeDeletion_PreservesUnmanaged(t *testin
 }
 
 func TestReconcileLiteLLMNetworkPolicy_AnnotationDisabled(t *testing.T) {
-	scheme := setupScheme()
-
-	agent := &agentv1alpha1.PlatformAgent{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-agent",
-			Namespace: "test-ns",
-			Annotations: map[string]string{
-				AnnotationEnableLiteLLMNetworkPolicy: "false",
-			},
-		},
+	testCases := []struct {
+		name            string
+		annotationValue string
+	}{
+		{name: "lowercase", annotationValue: "false"},
+		{name: "titlecase", annotationValue: "False"},
+		{name: "uppercase", annotationValue: "FALSE"},
+		{name: "whitespace", annotationValue: " False "},
 	}
 
-	litellmDep := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "litellm",
-			Namespace: "test-ns",
-		},
-	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			scheme := setupScheme()
 
-	existingManaged := &networkingv1.NetworkPolicy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "litellm-policy",
-			Namespace: "test-ns",
-			Labels: map[string]string{
-				labelManagedBy: fieldOwner,
-			},
-		},
-	}
+			agent := &agentv1alpha1.PlatformAgent{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-agent",
+					Namespace: "test-ns",
+					Annotations: map[string]string{
+						AnnotationEnableLiteLLMNetworkPolicy: tc.annotationValue,
+					},
+				},
+			}
 
-	cl := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(agent, litellmDep, existingManaged).
-		WithInterceptorFuncs(fakeServerSideApplyInterceptors()).
-		Build()
+			litellmDep := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "litellm",
+					Namespace: "test-ns",
+				},
+			}
 
-	r := &PlatformAgentReconciler{
-		Client: cl,
-		Scheme: scheme,
-	}
+			existingManaged := &networkingv1.NetworkPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "litellm-policy",
+					Namespace: "test-ns",
+					Labels: map[string]string{
+						labelManagedBy: fieldOwner,
+					},
+				},
+			}
 
-	profile := netpolProfile{
-		Generated: true,
-	}
+			cl := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(agent, litellmDep, existingManaged).
+				WithInterceptorFuncs(fakeServerSideApplyInterceptors()).
+				Build()
 
-	ctx := context.Background()
-	if err := r.reconcileLiteLLMNetworkPolicy(ctx, agent, profile, "", true); err != nil {
-		t.Fatalf("reconcileLiteLLMNetworkPolicy failed: %v", err)
-	}
+			r := &PlatformAgentReconciler{
+				Client: cl,
+				Scheme: scheme,
+			}
 
-	var netpol networkingv1.NetworkPolicy
-	if err := cl.Get(ctx, types.NamespacedName{Namespace: "test-ns", Name: "litellm-policy"}, &netpol); err == nil {
-		t.Fatalf("managed litellm-policy should have been deleted when annotation is false")
+			profile := netpolProfile{
+				Generated: true,
+			}
+
+			ctx := context.Background()
+			if err := r.reconcileLiteLLMNetworkPolicy(ctx, agent, profile, "", true); err != nil {
+				t.Fatalf("reconcileLiteLLMNetworkPolicy failed: %v", err)
+			}
+
+			var netpol networkingv1.NetworkPolicy
+			if err := cl.Get(ctx, types.NamespacedName{Namespace: "test-ns", Name: "litellm-policy"}, &netpol); err == nil {
+				t.Fatalf("managed litellm-policy should have been deleted when annotation is %q", tc.annotationValue)
+			}
+		})
 	}
 }
 
@@ -736,6 +776,103 @@ func TestReconcileLiteLLMNetworkPolicy_Adoption_LegacyKubeAgents(t *testing.T) {
 	}
 	if !hasDNSVIP {
 		t.Errorf("expected adopted litellm-policy to have discovered DNS VIP 172.20.0.10/32")
+	}
+}
+
+func TestCanAdoptLiteLLMPolicy(t *testing.T) {
+	tests := []struct {
+		name     string
+		labels   map[string]string
+		expected bool
+	}{
+		{
+			name:     "nil labels",
+			labels:   nil,
+			expected: false,
+		},
+		{
+			name: "operator managed",
+			labels: map[string]string{
+				labelManagedBy: fieldOwner,
+			},
+			expected: true,
+		},
+		{
+			name: "helm exact",
+			labels: map[string]string{
+				labelPartOf:    partOfKubeAgents,
+				labelManagedBy: "Helm",
+			},
+			expected: true,
+		},
+		{
+			name: "helm lowercase",
+			labels: map[string]string{
+				labelPartOf:    partOfKubeAgents,
+				labelManagedBy: "helm",
+			},
+			expected: true,
+		},
+		{
+			name: "kustomize exact",
+			labels: map[string]string{
+				labelPartOf:    partOfKubeAgents,
+				labelManagedBy: "kustomize",
+			},
+			expected: true,
+		},
+		{
+			name: "kustomize uppercase",
+			labels: map[string]string{
+				labelPartOf:    partOfKubeAgents,
+				labelManagedBy: "Kustomize",
+			},
+			expected: true,
+		},
+		{
+			name: "empty managed-by with part-of kube-agents",
+			labels: map[string]string{
+				labelPartOf: partOfKubeAgents,
+			},
+			expected: true,
+		},
+		{
+			name: "external tool with part-of kube-agents",
+			labels: map[string]string{
+				labelPartOf:    partOfKubeAgents,
+				labelManagedBy: "terraform",
+			},
+			expected: false,
+		},
+		{
+			name: "helm without part-of kube-agents",
+			labels: map[string]string{
+				labelManagedBy: "Helm",
+			},
+			expected: false,
+		},
+		{
+			name: "unrelated labels",
+			labels: map[string]string{
+				"app": "custom",
+			},
+			expected: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			netpol := &networkingv1.NetworkPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "litellm-policy",
+					Labels: tc.labels,
+				},
+			}
+			got := canAdoptLiteLLMPolicy(netpol)
+			if got != tc.expected {
+				t.Errorf("canAdoptLiteLLMPolicy() = %v, want %v", got, tc.expected)
+			}
+		})
 	}
 }
 

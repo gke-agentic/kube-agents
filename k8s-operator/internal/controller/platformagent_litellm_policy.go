@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -52,9 +53,15 @@ const (
 	dnsNodeLocalLinkLocalCIDR = "169.254.20.10/32"
 	metadataLinkLocalCIDR     = metadataLinkLocalIP + "/32"
 	internetAnywhereCIDR      = "0.0.0.0/0"
+	internetAnywhereIPv6CIDR  = "::/0"
 	rfc1918Block10            = "10.0.0.0/8"
 	rfc1918Block172           = "172.16.0.0/12"
 	rfc1918Block192           = "192.168.0.0/16"
+	rfc6598CGNAT              = "100.64.0.0/10"
+	linkLocalIPv4Block        = "169.254.0.0/16"
+	ipv6ULA                   = "fc00::/7"
+	ipv6LinkLocal             = "fe80::/10"
+	ipv6Multicast             = "ff00::/8"
 
 	netpolAPIVersion = "networking.k8s.io/v1"
 	netpolKind       = "NetworkPolicy"
@@ -76,7 +83,7 @@ const (
 // Egress:
 //   - Port 53 (UDP/TCP) to kube-dns, node-local-dns, 169.254.20.10/32, 169.254.169.254/32,
 //     and discovered cluster DNS VIPs (profile.DNSClusterIPs)
-//   - Port 443 (TCP) to 0.0.0.0/0 except RFC 1918 space (outbound model provider APIs)
+//   - Port 443 (TCP) to 0.0.0.0/0 and ::/0 except private/link-local/multicast space (outbound model provider APIs)
 //   - Port 80 (TCP) to 169.254.169.254/32 (GCP metadata server pre-NAT / eBPF)
 //   - Port 988 (or profile.MetadataDaemonPort) (TCP) to 169.254.169.254/32 and profile.MetadataDaemonIP/32
 //     (GKE Workload Identity host-network daemon post-NAT / iptables, if profile.MetadataDaemonIP != "")
@@ -143,7 +150,7 @@ func buildLiteLLMNetworkPolicy(agent *agentv1alpha1.PlatformAgent, profile netpo
 			},
 			To: dnsPeers,
 		},
-		// 2. HTTPS to external model APIs (OpenAI, Anthropic, Vertex, etc.), excluding RFC 1918 private space
+		// 2. HTTPS to external model APIs (OpenAI, Anthropic, Vertex, etc.), excluding RFC 1918 private space, CGNAT, and link-local
 		{
 			Ports: []networkingv1.NetworkPolicyPort{
 				tcpPort(httpsPort),
@@ -156,6 +163,18 @@ func buildLiteLLMNetworkPolicy(agent *agentv1alpha1.PlatformAgent, profile netpo
 							rfc1918Block10,
 							rfc1918Block172,
 							rfc1918Block192,
+							rfc6598CGNAT,
+							linkLocalIPv4Block,
+						},
+					},
+				},
+				{
+					IPBlock: &networkingv1.IPBlock{
+						CIDR: internetAnywhereIPv6CIDR,
+						Except: []string{
+							ipv6ULA,
+							ipv6LinkLocal,
+							ipv6Multicast,
 						},
 					},
 				},
@@ -278,7 +297,7 @@ func canAdoptLiteLLMPolicy(netpol *networkingv1.NetworkPolicy) bool {
 	}
 	// An empty managed-by label alongside part-of: kube-agents is treated as project-owned
 	// (legacy static manifests without explicit managed-by tool attribution).
-	if netpol.Labels[labelPartOf] == partOfKubeAgents && (managedBy == managedByHelm || managedBy == managedByKustomize || managedBy == "") {
+	if netpol.Labels[labelPartOf] == partOfKubeAgents && (strings.EqualFold(managedBy, managedByHelm) || strings.EqualFold(managedBy, managedByKustomize) || managedBy == "") {
 		return true
 	}
 	return false
@@ -299,7 +318,7 @@ func canAdoptLiteLLMPolicy(netpol *networkingv1.NetworkPolicy) bool {
 // it bears app.kubernetes.io/managed-by: platformagent-controller. Hand-authored
 // or unmanaged policies are never deleted.
 func (r *PlatformAgentReconciler) reconcileLiteLLMNetworkPolicy(ctx context.Context, agent *agentv1alpha1.PlatformAgent, profile netpolProfile, otlpEndpoint string, otlpDisabled bool) error {
-	if !profile.Generated || trimmedAnnotation(agent, AnnotationEnableLiteLLMNetworkPolicy) == disabledValue {
+	if !profile.Generated || strings.EqualFold(trimmedAnnotation(agent, AnnotationEnableLiteLLMNetworkPolicy), disabledValue) {
 		return r.deleteManagedLiteLLMPolicy(ctx, agent)
 	}
 

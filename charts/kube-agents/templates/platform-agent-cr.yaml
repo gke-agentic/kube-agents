@@ -11,7 +11,7 @@ metadata:
   {{- with .Values.platformAgent.annotations }}
   {{- $annotations = deepCopy . }}
   {{- end }}
-  {{- if not .Values.litellm.networkPolicy }}
+  {{- if and .Values.litellm (not .Values.litellm.networkPolicy) }}
   {{- $_ := set $annotations "kubeagents.x-k8s.io/enable-litellm-network-policy" "false" }}
   {{- end }}
   {{- with $annotations }}
