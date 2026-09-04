@@ -65,9 +65,12 @@ fi
 
 lease_policy="${INPUT_LEASE_POLICY:-}"
 if [ -z "${lease_policy}" ]; then
-  # Automated deploy triggers (such as tag pushes for staging or GHCR publishes for autopush)
-  # do not run on a recurring schedule. Silently deferring with exit 0 would drop the release
-  # while falsely reporting success. If a live-test lease is held, refuse to apply and fail loudly.
+  # Automated deployment triggers:
+  # - staging is driven by a one-shot `staging_*` tag push that does not auto-retry.
+  # - autopush is triggered on every GHCR publish from pushes to main; while frequent,
+  #   automated release pipelines must fail loudly when lease contention blocks an apply
+  #   rather than silently dropping or reporting success on an unapplied candidate.
+  # Manual workflow_dispatch invocations can explicitly pass 'defer' or 'ignore' when needed.
   lease_policy="fail"
 fi
 
