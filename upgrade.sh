@@ -131,30 +131,6 @@ Examples:
 EOF
 }
 
-# The image tag an install is currently serving, read off the agent Deployment.
-#
-# The Deployment rather than the Helm release: `helm get values` reports what
-# the last upgrade was ASKED for, and on these environments the last upgrade was
-# a `--reset-then-reuse-values` re-tag whose recorded values are the install-day
-# blob. The Deployment reports what is running.
-running_image_tag() {
-  local namespace="$1" image=""
-  # Selected by name, not by index. The operator builds this list and appends
-  # the dashboard and fluent-bit after the agent, so a positional read is one
-  # reordering away from pinning the composition's image_tag to a sidecar's
-  # version — on a scheduled apply, silently.
-  image="$(kubectl get deployment platform-agent-gateway -n "$namespace" \
-    -o jsonpath='{.spec.template.spec.containers[?(@.name=="platform-agent")].image}' \
-    2>/dev/null || true)"
-  [ -n "$image" ] || return 0
-  # Everything after the last colon, unless that colon belongs to a registry
-  # port (no slash may follow it).
-  case "${image##*:}" in
-    */*) return 0 ;;
-    *) printf '%s\n' "${image##*:}" ;;
-  esac
-}
-
 validate_immutable_ref() {
   local ref="${1:-}"
   if [ -z "$ref" ]; then

@@ -1145,6 +1145,35 @@ class HelmReleaseSelfHealingTest(unittest.TestCase):
         self.assertIn("Refusing to recover active operation", proc.stderr)
         self.assertNotIn("ROLLBACK CALLED", proc.stderr)
 
+    def test_running_image_tag_extracts_container_tag(self):
+        kubectl_script = (
+            '#!/usr/bin/env bash\n'
+            'case "$*" in\n'
+            '  *"get deployment platform-agent-gateway"*) echo "ghcr.io/gke-labs/kube-agents/platform-agent:0.2.0" ; exit 0 ;;\n'
+            '  *) exit 1 ;;\n'
+            'esac\n'
+        )
+        proc = self._run_helm_test(
+            'running_image_tag kubeagents-system',
+            '#!/usr/bin/env bash\nexit 0\n',
+            extra_bins={"kubectl": kubectl_script},
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "0.2.0")
+
+    def test_running_image_tag_handles_missing_deployment(self):
+        kubectl_script = (
+            '#!/usr/bin/env bash\n'
+            'exit 1\n'
+        )
+        proc = self._run_helm_test(
+            'running_image_tag kubeagents-system',
+            '#!/usr/bin/env bash\nexit 0\n',
+            extra_bins={"kubectl": kubectl_script},
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "")
+
 
 if __name__ == "__main__":
     unittest.main()
