@@ -171,15 +171,24 @@ jobs:
     permissions:
       contents: write
     steps:
-      # RELEASE_BOT_TOKEN, not GITHUB_TOKEN. A tag pushed with the default token
-      # triggers no workflow, so staging-deploy.yml would never start and
-      # the promotion would go green having deployed nothing.
+      # Dedicated GitHub App token (kube-agents-release-bot), not GITHUB_TOKEN.
+      # A tag pushed with the default token triggers no workflow, so staging-deploy.yml
+      # would never start and the promotion would go green having deployed nothing.
+      # The App token also bypasses repository tag-protection rulesets.
+      - name: Generate Release Bot Token
+        if: needs.step-1-resolve-candidate.outputs.skip_promotion != 'true'
+        id: release-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1.12.0
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_APP_PRIVATE_KEY }}
+
       - name: Checkout repository
         if: needs.step-1-resolve-candidate.outputs.skip_promotion != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          token: ${{ secrets.RELEASE_BOT_TOKEN }}
+          token: ${{ steps.release-token.outputs.token }}
 
       - name: Tag the candidate for staging
         if: needs.step-1-resolve-candidate.outputs.skip_promotion != 'true'
@@ -205,7 +214,7 @@ jobs:
     # remove it and start destroying the environments this exists to preserve.
     #
     # `step-4-create-staging-tag` is deliberately absent from the list. Its only
-    # failure modes are credential ones — an expired RELEASE_BOT_TOKEN, a rejected
+    # failure modes are credential ones — an invalid GitHub App key or ID, a rejected
     # push — which leave nothing on the cluster worth looking at, and depending on
     # it would strand a GKE cluster that nothing else reclaims: this pipeline has
     # no schedule, so there is no next run to clean up after it. Running the two

@@ -7,9 +7,9 @@
 # derived from a real validated candidate rather than composed by hand, and it must
 # carry the staging_ prefix exactly.
 #
-# It must also be pushed with a PAT (RELEASE_BOT_TOKEN). A tag pushed with the
-# default GITHUB_TOKEN triggers no workflow, so the promotion would go green and
-# deploy nothing.
+# It must also be pushed with the dedicated GitHub App token (kube-agents-release-bot).
+# A tag pushed with the default GITHUB_TOKEN triggers no workflow, so the promotion
+# would go green and deploy nothing. The App token also bypasses tag protection rulesets.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
