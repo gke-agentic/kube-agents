@@ -20,6 +20,7 @@ from tests.testing.common import (
 from tests.testing.release import (
     MOCK_EXPLICIT_RELEASE_VERSION_NEXT,
     MOCK_TARGET_RELEASE_TAG,
+    populate_mock_release_files,
 )
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -38,36 +39,7 @@ class TagGAReleaseScriptTest(unittest.TestCase):
         )
 
     def _populate_valid_release_files(self, repo_dir):
-        repo_path = pathlib.Path(repo_dir)
-        for script in ["install.sh", "uninstall.sh", "upgrade.sh"]:
-            (repo_path / script).write_text('#!/bin/bash\nBAKED_RELEASE_VERSION=""\n')
-
-        chart_dir = repo_path / "charts" / "kube-agents"
-        chart_dir.mkdir(parents=True, exist_ok=True)
-        (chart_dir / "Chart.yaml").write_text(
-            'apiVersion: v2\n'
-            'name: kube-agents\n'
-            'version: 0.1.0\n'
-            'appVersion: "0.1.0"\n'
-        )
-
-        tf_dir = repo_path / "terraform" / "examples" / "full-install"
-        tf_dir.mkdir(parents=True, exist_ok=True)
-        (tf_dir / "variables.tf").write_text(
-            'variable "project_id" {\n'
-            '  description = "GCP Project ID"\n'
-            '  type        = string\n'
-            '}\n\n'
-            'variable "image_tag" {\n'
-            '  description = "Release image tag"\n'
-            '  type        = string\n'
-            '  default     = "0.1.0"\n'
-            '}\n'
-        )
-        (tf_dir / "terraform.tfvars.example").write_text(
-            'project_id = "my-project"\n'
-            '# image_tag = "0.1.0"\n'
-        )
+        populate_mock_release_files(repo_dir)
 
     def test_missing_arguments(self):
         proc = self._run_script([])
