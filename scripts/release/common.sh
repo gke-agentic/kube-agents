@@ -846,12 +846,14 @@ stamp_baked_release_version() {
 
   for script_name in "${RELEASE_INSTALLER_SCRIPTS[@]}"; do
     local script_path="${repo_dir}/${script_name}"
-    if [ -f "${script_path}" ]; then
-      sed -i.bak -E "s/^BAKED_RELEASE_VERSION=[\"'].*[\"']/BAKED_RELEASE_VERSION=\"${version}\"/" "${script_path}" && rm -f "${script_path}.bak"
-      if ! grep -q "^BAKED_RELEASE_VERSION=\"${version}\"" "${script_path}"; then
-        echo "❌ ERROR: Failed to stamp BAKED_RELEASE_VERSION in ${script_name} (placeholder line '^BAKED_RELEASE_VERSION=...' not found)." >&2
-        return 1
-      fi
+    if [ ! -f "${script_path}" ]; then
+      echo "❌ ERROR: Target installer script not found at ${script_path}!" >&2
+      return 1
+    fi
+    sed -i.bak -E "s/^BAKED_RELEASE_VERSION=[\"'].*[\"']/BAKED_RELEASE_VERSION=\"${version}\"/" "${script_path}" && rm -f "${script_path}.bak"
+    if ! grep -q "^BAKED_RELEASE_VERSION=\"${version}\"" "${script_path}"; then
+      echo "❌ ERROR: Failed to stamp BAKED_RELEASE_VERSION in ${script_name} (placeholder line '^BAKED_RELEASE_VERSION=...' not found)." >&2
+      return 1
     fi
   done
 }
@@ -868,20 +870,22 @@ stamp_helm_chart_versions() {
 
   for chart_rel_path in "${RELEASE_HELM_CHARTS[@]}"; do
     local chart_yaml="${repo_dir}/${chart_rel_path}/Chart.yaml"
-    if [ -f "${chart_yaml}" ]; then
-      sed -i.bak -E \
-        -e "s/^version:[[:space:]].*/version: ${version}/" \
-        -e "s/^appVersion:[[:space:]].*/appVersion: \"${version}\"/" \
-        "${chart_yaml}" && rm -f "${chart_yaml}.bak"
+    if [ ! -f "${chart_yaml}" ]; then
+      echo "❌ ERROR: Helm chart file not found at ${chart_yaml}!" >&2
+      return 1
+    fi
+    sed -i.bak -E \
+      -e "s/^version:[[:space:]].*/version: ${version}/" \
+      -e "s/^appVersion:[[:space:]].*/appVersion: \"${version}\"/" \
+      "${chart_yaml}" && rm -f "${chart_yaml}.bak"
 
-      if ! grep -q -E "^version:[[:space:]]+${version}$" "${chart_yaml}"; then
-        echo "❌ ERROR: Failed to stamp version in ${chart_yaml}!" >&2
-        return 1
-      fi
-      if ! grep -q -E "^appVersion:[[:space:]]+\"${version}\"$" "${chart_yaml}"; then
-        echo "❌ ERROR: Failed to stamp appVersion in ${chart_yaml}!" >&2
-        return 1
-      fi
+    if ! grep -q -E "^version:[[:space:]]+${version}$" "${chart_yaml}"; then
+      echo "❌ ERROR: Failed to stamp version in ${chart_yaml}!" >&2
+      return 1
+    fi
+    if ! grep -q -E "^appVersion:[[:space:]]+\"${version}\"$" "${chart_yaml}"; then
+      echo "❌ ERROR: Failed to stamp appVersion in ${chart_yaml}!" >&2
+      return 1
     fi
   done
 }
@@ -897,22 +901,26 @@ stamp_terraform_release_versions() {
   fi
 
   local var_file="${repo_dir}/${RELEASE_TERRAFORM_EXAMPLE_VARS}"
-  if [ -f "${var_file}" ]; then
-    sed -i.bak -E "/variable \"image_tag\"/,/^[[:space:]]*\}/ s/([[:space:]]*default[[:space:]]*=[[:space:]]*)\"[^\"]*\"/\1\"${version}\"/" "${var_file}" && rm -f "${var_file}.bak"
+  if [ ! -f "${var_file}" ]; then
+    echo "❌ ERROR: Terraform variables file not found at ${var_file}!" >&2
+    return 1
+  fi
+  sed -i.bak -E "/variable \"image_tag\"/,/^[[:space:]]*\}/ s/([[:space:]]*default[[:space:]]*=[[:space:]]*)\"[^\"]*\"/\1\"${version}\"/" "${var_file}" && rm -f "${var_file}.bak"
 
-    if ! grep -q -E "default[[:space:]]*=[[:space:]]*\"${version}\"" "${var_file}"; then
-      echo "❌ ERROR: Failed to stamp image_tag default in ${var_file}!" >&2
-      return 1
-    fi
+  if ! grep -q -E "default[[:space:]]*=[[:space:]]*\"${version}\"" "${var_file}"; then
+    echo "❌ ERROR: Failed to stamp image_tag default in ${var_file}!" >&2
+    return 1
   fi
 
   local tfvars_file="${repo_dir}/${RELEASE_TERRAFORM_EXAMPLE_TFVARS}"
-  if [ -f "${tfvars_file}" ]; then
-    sed -i.bak -E "s/^#([[:space:]]*image_tag[[:space:]]*=[[:space:]]*)\"[^\"]*\"/#\1\"${version}\"/" "${tfvars_file}" && rm -f "${tfvars_file}.bak"
-    if ! grep -q -E "^#[[:space:]]*image_tag[[:space:]]*=[[:space:]]*\"${version}\"" "${tfvars_file}"; then
-      echo "❌ ERROR: Failed to stamp image_tag example in ${tfvars_file}!" >&2
-      return 1
-    fi
+  if [ ! -f "${tfvars_file}" ]; then
+    echo "❌ ERROR: Terraform example tfvars file not found at ${tfvars_file}!" >&2
+    return 1
+  fi
+  sed -i.bak -E "s/^#([[:space:]]*image_tag[[:space:]]*=[[:space:]]*)\"[^\"]*\"/#\1\"${version}\"/" "${tfvars_file}" && rm -f "${tfvars_file}.bak"
+  if ! grep -q -E "^#[[:space:]]*image_tag[[:space:]]*=[[:space:]]*\"${version}\"" "${tfvars_file}"; then
+    echo "❌ ERROR: Failed to stamp image_tag example in ${tfvars_file}!" >&2
+    return 1
   fi
 }
 

@@ -868,6 +868,29 @@ echo "FILES:${RELEASE_BUNDLE_ROOT_FILES[*]}"
             self.assertTrue(extracted_file.exists())
             self.assertEqual(extracted_file.read_text(), (_REPO_ROOT / "README.md").read_text())
 
+    def test_stamp_baked_release_version_fails_when_script_missing(self):
+        """Verifies stamp_baked_release_version fails loudly if an installer script is missing."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = pathlib.Path(temp_dir)
+            (temp_path / "install.sh").write_text('BAKED_RELEASE_VERSION=""\n')
+            proc = self._run_common_func(f'stamp_baked_release_version "1.2.3" "{temp_dir}"')
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Target installer script not found", proc.stderr)
+
+    def test_stamp_helm_chart_versions_fails_when_chart_missing(self):
+        """Verifies stamp_helm_chart_versions fails loudly if Chart.yaml is missing."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proc = self._run_common_func(f'stamp_helm_chart_versions "1.2.3" "{temp_dir}"')
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Helm chart file not found", proc.stderr)
+
+    def test_stamp_terraform_release_versions_fails_when_file_missing(self):
+        """Verifies stamp_terraform_release_versions fails loudly if variables.tf or tfvars is missing."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proc = self._run_common_func(f'stamp_terraform_release_versions "1.2.3" "{temp_dir}"')
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Terraform variables file not found", proc.stderr)
+
 
 class RegistryImageProbeTest(unittest.TestCase):
     """`registry_image_exists` must not read "no docker" as "no image".

@@ -37,6 +37,38 @@ class TagGAReleaseScriptTest(unittest.TestCase):
             cwd=cwd or str(_REPO_ROOT),
         )
 
+    def _populate_valid_release_files(self, repo_dir):
+        repo_path = pathlib.Path(repo_dir)
+        for script in ["install.sh", "uninstall.sh", "upgrade.sh"]:
+            (repo_path / script).write_text('#!/bin/bash\nBAKED_RELEASE_VERSION=""\n')
+
+        chart_dir = repo_path / "charts" / "kube-agents"
+        chart_dir.mkdir(parents=True, exist_ok=True)
+        (chart_dir / "Chart.yaml").write_text(
+            'apiVersion: v2\n'
+            'name: kube-agents\n'
+            'version: 0.1.0\n'
+            'appVersion: "0.1.0"\n'
+        )
+
+        tf_dir = repo_path / "terraform" / "examples" / "full-install"
+        tf_dir.mkdir(parents=True, exist_ok=True)
+        (tf_dir / "variables.tf").write_text(
+            'variable "project_id" {\n'
+            '  description = "GCP Project ID"\n'
+            '  type        = string\n'
+            '}\n\n'
+            'variable "image_tag" {\n'
+            '  description = "Release image tag"\n'
+            '  type        = string\n'
+            '  default     = "0.1.0"\n'
+            '}\n'
+        )
+        (tf_dir / "terraform.tfvars.example").write_text(
+            'project_id = "my-project"\n'
+            '# image_tag = "0.1.0"\n'
+        )
+
     def test_missing_arguments(self):
         proc = self._run_script([])
         self.assertNotEqual(proc.returncode, 0)
@@ -52,20 +84,25 @@ class TagGAReleaseScriptTest(unittest.TestCase):
     def test_tag_creation_and_idempotency(self):
         temp_dir, repo_dir, git = create_mock_git_repo()
         try:
+            self._populate_valid_release_files(repo_dir)
+            git("add", ".")
+            git("commit", "-m", "feat: populate release files")
             head_commit = git("rev-parse", "HEAD").stdout.strip()
 
             # First tag creation
             proc = self._run_script([MOCK_TARGET_RELEASE_TAG, head_commit], cwd=repo_dir)
-            self.assertEqual(proc.returncode, 0)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("CREATING AND PUSHING GA RELEASE GIT TAG", proc.stdout)
 
-            # Verify tag exists in repo
+            # Verify tag exists in repo and points to stamped release commit
             tag_commit = git("rev-parse", f"{MOCK_TARGET_RELEASE_TAG}^{{commit}}").stdout.strip()
-            self.assertEqual(tag_commit, head_commit)
+            self.assertNotEqual(tag_commit, head_commit)
+            parent_sha = git("rev-parse", f"{tag_commit}^1").stdout.strip()
+            self.assertEqual(parent_sha, head_commit)
 
             # Second execution: Idempotent skip
             proc2 = self._run_script([MOCK_TARGET_RELEASE_TAG, head_commit], cwd=repo_dir)
-            self.assertEqual(proc2.returncode, 0)
+            self.assertEqual(proc2.returncode, 0, proc2.stderr)
             self.assertIn("Idempotent skip", proc2.stdout)
         finally:
             temp_dir.cleanup()
@@ -73,6 +110,9 @@ class TagGAReleaseScriptTest(unittest.TestCase):
     def test_env_vars_invocation_without_args(self):
         temp_dir, repo_dir, git = create_mock_git_repo()
         try:
+            self._populate_valid_release_files(repo_dir)
+            git("add", ".")
+            git("commit", "-m", "feat: populate release files")
             head_commit = git("rev-parse", "HEAD").stdout.strip()
 
             proc = self._run_script(
@@ -82,7 +122,8 @@ class TagGAReleaseScriptTest(unittest.TestCase):
             )
             self.assertEqual(proc.returncode, 0, proc.stderr)
             tag_commit = git("rev-parse", f"{MOCK_EXPLICIT_RELEASE_VERSION_NEXT}^{{commit}}").stdout.strip()
-            self.assertEqual(tag_commit, head_commit)
+            parent_sha = git("rev-parse", f"{tag_commit}^1").stdout.strip()
+            self.assertEqual(parent_sha, head_commit)
         finally:
             temp_dir.cleanup()
 
@@ -104,11 +145,9 @@ class TagGAReleaseScriptTest(unittest.TestCase):
     def test_stamps_baked_release_version_on_detached_head(self):
         temp_dir, repo_dir, git = create_mock_git_repo()
         try:
-            # Create root installer script with empty baked version placeholder
-            install_sh = pathlib.Path(repo_dir) / "install.sh"
-            install_sh.write_text('#!/bin/bash\nBAKED_RELEASE_VERSION=""\necho "tag=$BAKED_RELEASE_VERSION"\n')
-            git("add", "install.sh")
-            git("commit", "-m", "feat: add installer")
+            self._populate_valid_release_files(repo_dir)
+            git("add", ".")
+            git("commit", "-m", "feat: populate release files")
             main_commit = git("rev-parse", "HEAD").stdout.strip()
 
             proc = self._run_script(
@@ -154,10 +193,11 @@ class TagGAReleaseScriptTest(unittest.TestCase):
     def test_fails_loudly_when_installer_lacks_baked_version_placeholder(self):
         temp_dir, repo_dir, git = create_mock_git_repo()
         try:
+            self._populate_valid_release_files(repo_dir)
             # Create installer script WITHOUT BAKED_RELEASE_VERSION placeholder
             install_sh = pathlib.Path(repo_dir) / "install.sh"
             install_sh.write_text('#!/bin/bash\necho "no baked placeholder here"\n')
-            git("add", "install.sh")
+            git("add", ".")
             git("commit", "-m", "feat: legacy installer without placeholder")
             main_commit = git("rev-parse", "HEAD").stdout.strip()
 
@@ -174,41 +214,7 @@ class TagGAReleaseScriptTest(unittest.TestCase):
     def test_stamps_helm_and_terraform_versions_on_detached_head(self):
         temp_dir, repo_dir, git = create_mock_git_repo()
         try:
-            repo_path = pathlib.Path(repo_dir)
-
-            for script in ["install.sh", "uninstall.sh", "upgrade.sh"]:
-                (repo_path / script).write_text('#!/bin/bash\nBAKED_RELEASE_VERSION=""\n')
-
-            chart_dir = repo_path / "charts" / "kube-agents"
-            chart_dir.mkdir(parents=True, exist_ok=True)
-            chart_yaml = chart_dir / "Chart.yaml"
-            chart_yaml.write_text(
-                'apiVersion: v2\n'
-                'name: kube-agents\n'
-                'version: 0.1.0\n'
-                'appVersion: "0.1.0"\n'
-            )
-
-            tf_dir = repo_path / "terraform" / "examples" / "full-install"
-            tf_dir.mkdir(parents=True, exist_ok=True)
-            variables_tf = tf_dir / "variables.tf"
-            variables_tf.write_text(
-                'variable "project_id" {\n'
-                '  description = "GCP Project ID"\n'
-                '  type        = string\n'
-                '}\n\n'
-                'variable "image_tag" {\n'
-                '  description = "Release image tag"\n'
-                '  type        = string\n'
-                '  default     = "0.1.0"\n'
-                '}\n'
-            )
-            tfvars_example = tf_dir / "terraform.tfvars.example"
-            tfvars_example.write_text(
-                'project_id = "my-project"\n'
-                '# image_tag = "0.1.0"\n'
-            )
-
+            self._populate_valid_release_files(repo_dir)
             git("add", ".")
             git("commit", "-m", "feat: initial project structure with scripts, helm and terraform")
             main_commit = git("rev-parse", "HEAD").stdout.strip()
@@ -226,6 +232,9 @@ class TagGAReleaseScriptTest(unittest.TestCase):
             self.assertEqual(current_branch, "main")
 
             # Verify files on main still have original values
+            chart_yaml = pathlib.Path(repo_dir) / "charts" / "kube-agents" / "Chart.yaml"
+            variables_tf = pathlib.Path(repo_dir) / "terraform" / "examples" / "full-install" / "variables.tf"
+            tfvars_example = pathlib.Path(repo_dir) / "terraform" / "examples" / "full-install" / "terraform.tfvars.example"
             main_chart = chart_yaml.read_text()
             self.assertIn("version: 0.1.0", main_chart)
             self.assertIn('appVersion: "0.1.0"', main_chart)
@@ -263,11 +272,9 @@ class TagGAReleaseScriptTest(unittest.TestCase):
     def test_fails_loudly_when_helm_chart_lacks_version_field(self):
         temp_dir, repo_dir, git = create_mock_git_repo()
         try:
-            repo_path = pathlib.Path(repo_dir)
-            (repo_path / "install.sh").write_text('#!/bin/bash\nBAKED_RELEASE_VERSION=""\n')
-            chart_dir = repo_path / "charts" / "kube-agents"
-            chart_dir.mkdir(parents=True, exist_ok=True)
-            (chart_dir / "Chart.yaml").write_text('apiVersion: v2\nname: kube-agents\n')
+            self._populate_valid_release_files(repo_dir)
+            chart_yaml = pathlib.Path(repo_dir) / "charts" / "kube-agents" / "Chart.yaml"
+            chart_yaml.write_text('apiVersion: v2\nname: kube-agents\n')
             git("add", ".")
             git("commit", "-m", "feat: malformed Chart.yaml")
             main_commit = git("rev-parse", "HEAD").stdout.strip()
@@ -284,10 +291,8 @@ class TagGAReleaseScriptTest(unittest.TestCase):
     def test_fails_loudly_when_terraform_variables_lacks_image_tag_default(self):
         temp_dir, repo_dir, git = create_mock_git_repo()
         try:
-            repo_path = pathlib.Path(repo_dir)
-            (repo_path / "install.sh").write_text('#!/bin/bash\nBAKED_RELEASE_VERSION=""\n')
-            tf_dir = repo_path / "terraform" / "examples" / "full-install"
-            tf_dir.mkdir(parents=True, exist_ok=True)
+            self._populate_valid_release_files(repo_dir)
+            tf_dir = pathlib.Path(repo_dir) / "terraform" / "examples" / "full-install"
             (tf_dir / "variables.tf").write_text('variable "project_id" { type = string }\n')
             git("add", ".")
             git("commit", "-m", "feat: variables.tf without image_tag")
@@ -302,35 +307,71 @@ class TagGAReleaseScriptTest(unittest.TestCase):
         finally:
             temp_dir.cleanup()
 
+    def test_fails_loudly_when_installer_script_missing(self):
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            self._populate_valid_release_files(repo_dir)
+            (pathlib.Path(repo_dir) / "uninstall.sh").unlink()
+            git("add", ".")
+            git("commit", "-m", "feat: missing uninstall.sh")
+            main_commit = git("rev-parse", "HEAD").stdout.strip()
+
+            proc = self._run_script([MOCK_TARGET_RELEASE_TAG, main_commit], cwd=repo_dir)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Target installer script not found at", proc.stderr)
+        finally:
+            temp_dir.cleanup()
+
+    def test_fails_loudly_when_helm_chart_missing(self):
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            self._populate_valid_release_files(repo_dir)
+            (pathlib.Path(repo_dir) / "charts" / "kube-agents" / "Chart.yaml").unlink()
+            git("add", ".")
+            git("commit", "-m", "feat: missing Chart.yaml")
+            main_commit = git("rev-parse", "HEAD").stdout.strip()
+
+            proc = self._run_script([MOCK_TARGET_RELEASE_TAG, main_commit], cwd=repo_dir)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Helm chart file not found at", proc.stderr)
+        finally:
+            temp_dir.cleanup()
+
+    def test_fails_loudly_when_terraform_file_missing(self):
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            self._populate_valid_release_files(repo_dir)
+            (pathlib.Path(repo_dir) / "terraform" / "examples" / "full-install" / "variables.tf").unlink()
+            git("add", ".")
+            git("commit", "-m", "feat: missing variables.tf")
+            main_commit = git("rev-parse", "HEAD").stdout.strip()
+
+            proc = self._run_script([MOCK_TARGET_RELEASE_TAG, main_commit], cwd=repo_dir)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Terraform variables file not found at", proc.stderr)
+        finally:
+            temp_dir.cleanup()
+
+        temp_dir2, repo_dir2, git2 = create_mock_git_repo()
+        try:
+            self._populate_valid_release_files(repo_dir2)
+            (pathlib.Path(repo_dir2) / "terraform" / "examples" / "full-install" / "terraform.tfvars.example").unlink()
+            git2("add", ".")
+            git2("commit", "-m", "feat: missing terraform.tfvars.example")
+            main_commit2 = git2("rev-parse", "HEAD").stdout.strip()
+
+            proc = self._run_script([MOCK_TARGET_RELEASE_TAG, main_commit2], cwd=repo_dir2)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Terraform example tfvars file not found at", proc.stderr)
+        finally:
+            temp_dir2.cleanup()
+
     def test_preserves_unrelated_uncommitted_files_on_stamping_and_idempotent_skip(self):
         """Verifies create_stamped_release_commit does not destroy uncommitted caller work."""
         temp_dir, repo_dir, git = create_mock_git_repo()
         try:
+            self._populate_valid_release_files(repo_dir)
             repo_path = pathlib.Path(repo_dir)
-
-            for script in ["install.sh", "uninstall.sh", "upgrade.sh"]:
-                (repo_path / script).write_text('#!/bin/bash\nBAKED_RELEASE_VERSION=""\n')
-
-            chart_dir = repo_path / "charts" / "kube-agents"
-            chart_dir.mkdir(parents=True, exist_ok=True)
-            (chart_dir / "Chart.yaml").write_text(
-                'apiVersion: v2\n'
-                'name: kube-agents\n'
-                'version: 0.1.0\n'
-                'appVersion: "0.1.0"\n'
-            )
-
-            tf_dir = repo_path / "terraform" / "examples" / "full-install"
-            tf_dir.mkdir(parents=True, exist_ok=True)
-            (tf_dir / "variables.tf").write_text(
-                'variable "image_tag" {\n'
-                '  type    = string\n'
-                '  default = "0.1.0"\n'
-                '}\n'
-            )
-            (tf_dir / "terraform.tfvars.example").write_text(
-                '# image_tag = "0.1.0"\n'
-            )
 
             # Create an unrelated tracked file with initial content
             unrelated_file = repo_path / "mywork.txt"
