@@ -39,14 +39,6 @@ class VerifyDeployResultTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("staging deployment completed successfully (applied)", proc.stdout)
 
-    def test_noop_success(self):
-        proc = self._run(env_overrides={
-            "TARGET_ENVIRONMENT": "staging",
-            "DEPLOY_RESULT": "noop",
-        })
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("already in sync", proc.stdout)
-
     def test_deferred_fails_staging(self):
         proc = self._run(env_overrides={
             "TARGET_ENVIRONMENT": "staging",

@@ -31,11 +31,6 @@ on:
           - "fail"
           - "ignore"
           - "defer"
-      force_reconcile:
-        description: "Force apply even if autopush is already running the candidate commit"
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -61,7 +56,6 @@ jobs:
     outputs:
       commit_sha: ${{ steps.resolve.outputs.commit_sha }}
       lease_policy: ${{ steps.resolve.outputs.lease_policy }}
-      force_reconcile: ${{ steps.resolve.outputs.force_reconcile }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -75,7 +69,6 @@ jobs:
           TARGET_ENVIRONMENT: "autopush"
           INPUT_TAG: ${{ inputs.image_tag }}
           INPUT_LEASE_POLICY: ${{ inputs.lease_policy }}
-          INPUT_FORCE_RECONCILE: ${{ inputs.force_reconcile }}
           EVENT_NAME: ${{ github.event_name }}
           RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: ./scripts/release/resolve_deploy.sh
@@ -99,7 +92,6 @@ jobs:
       mode: "apply"
       image_tag: ${{ needs.resolve-candidate.outputs.commit_sha }}
       lease_policy: ${{ needs.resolve-candidate.outputs.lease_policy }}
-      force_reconcile: ${{ needs.resolve-candidate.outputs.force_reconcile == 'true' }}
     secrets: inherit
 
   verify-deploy:
