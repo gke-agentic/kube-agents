@@ -231,6 +231,11 @@ class StagingTagContractTest(unittest.TestCase):
             "verify-deploy must invoke verify_deploy_result.sh",
         )
 
+    def test_the_resolve_job_binds_the_staging_environment(self):
+        """It reads vars.REGISTRY_PREFIX; unbound, that resolves to empty in silence."""
+        doc = _doc(_WORKFLOWS / _STAGING_DEPLOY)
+        self.assertEqual(doc["jobs"]["resolve-commit"].get("environment"), "staging")
+
 
 _AUTOPUSH_DEPLOY = "autopush-deploy.yml"
 
@@ -239,6 +244,10 @@ class AutopushDeployWiringTest(unittest.TestCase):
     def setUp(self):
         self.doc = _doc(_WORKFLOWS / _AUTOPUSH_DEPLOY)
         self.jobs = self.doc["jobs"]
+
+    def test_the_resolve_job_binds_the_autopush_environment(self):
+        """It reads vars.REGISTRY_PREFIX; unbound, that resolves to empty in silence."""
+        self.assertEqual(self.jobs["resolve-candidate"].get("environment"), "autopush")
 
     def test_triggers_include_workflow_run_and_dispatch(self):
         on = self.doc[True]

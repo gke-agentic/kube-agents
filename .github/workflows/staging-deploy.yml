@@ -47,6 +47,7 @@ jobs:
   resolve-commit:
     if: github.repository == 'gke-labs/kube-agents'
     runs-on: ubuntu-latest
+    environment: staging
     permissions:
       contents: read
     outputs:
