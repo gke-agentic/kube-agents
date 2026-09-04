@@ -55,6 +55,7 @@ jobs:
         github.event.workflow_run.head_branch == 'main'
       ))
     runs-on: ubuntu-latest
+    environment: autopush
     permissions:
       contents: read
     outputs:
