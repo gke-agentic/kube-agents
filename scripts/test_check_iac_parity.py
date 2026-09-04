@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import sys
 import tempfile
 import unittest
@@ -25,6 +27,7 @@ from scripts.check_iac_parity import (
     check_dns_egress_rule,
     check_network_policy_file,
     discover_dns_network_policies,
+    governs_egress,
     is_house_shape,
     load_network_policies,
     main,
@@ -47,6 +50,25 @@ class CheckIacParityProductionTest(unittest.TestCase):
             rules_checked,
             len(STATIC_NETWORK_POLICIES),
             f"Expected at least {len(STATIC_NETWORK_POLICIES)} DNS rules checked, got {rules_checked}",
+        )
+
+    def test_core_egress_satisfies_house_shape(self):
+        """Verify that deploy/kustomize/platform/networkpolicy-core-egress.yaml satisfies the 5-entry house shape (#747 B5)."""
+        manifest_path = REPO_ROOT / "deploy/kustomize/platform/networkpolicy-core-egress.yaml"
+        policies = load_network_policies(manifest_path)
+        self.assertTrue(len(policies) > 0)
+        found_house_shape = False
+        for pol in policies:
+            for rule in (pol.get("spec") or {}).get("egress") or []:
+                for peer in rule.get("to") or []:
+                    ip_block = peer.get("ipBlock") if isinstance(peer, dict) else None
+                    if isinstance(ip_block, dict) and ip_block.get("cidr") == REQUIRED_WILDCARD_CIDR:
+                        except_list = ip_block.get("except") or []
+                        if is_house_shape(except_list):
+                            found_house_shape = True
+        self.assertTrue(
+            found_house_shape,
+            "deploy/kustomize/platform/networkpolicy-core-egress.yaml must satisfy the 5-entry house shape",
         )
 
     def test_discovery_matches_roster_exactly(self):
@@ -505,6 +527,35 @@ spec:
         self.assertEqual(rules, 0)
         self.assertTrue(any("failed to load NetworkPolicy" in err for err in errors))
 
+    def test_no_network_policies_in_file_fails(self):
+        manifest = """apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: non-policy
+spec:
+  replicas: 1
+"""
+        p = self._write_manifest("deployment_only.yaml", manifest)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 0)
+        self.assertEqual(errors, ["deployment_only.yaml: no NetworkPolicy resources found"])
+
+    def test_ingress_only_policy_fails_egress_check(self):
+        manifest = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ingress-only
+spec:
+  policyTypes:
+    - Ingress
+  ingress:
+    - from: []
+"""
+        p = self._write_manifest("ingress_only.yaml", manifest)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 0)
+        self.assertEqual(errors, ["ingress_only.yaml: no Egress NetworkPolicy resources found"])
+
     def test_helm_template_sanitization(self):
         raw = """{{- /* Multi-line comment
 that should be
@@ -743,11 +794,501 @@ spec:
         self.assertEqual(rules, 0)
         self.assertTrue(any("has no egress rule for port 53" in err for err in errors))
 
+    def test_governs_egress_contract(self):
+        """Verify governs_egress correctly identifies when a NetworkPolicy governs egress."""
+        # Explicit Ingress-only policies do not govern egress
+        self.assertFalse(governs_egress({"policyTypes": ["Ingress"]}))
+        self.assertFalse(governs_egress({"policyTypes": ["Ingress"], "egress": []}))
+        self.assertFalse(
+            governs_egress({"policyTypes": ["Ingress"], "egress": [{"ports": [{"port": 53}]}]})
+        )
+
+        # Explicit Egress policies govern egress
+        self.assertTrue(governs_egress({"policyTypes": ["Egress"]}))
+        self.assertTrue(governs_egress({"policyTypes": ["Egress"], "egress": []}))
+        self.assertTrue(governs_egress({"policyTypes": ["Ingress", "Egress"]}))
+
+        # When policyTypes is omitted, Kubernetes enables Egress only if egress is present
+        self.assertTrue(governs_egress({"egress": []}))
+        self.assertTrue(governs_egress({"egress": [{"ports": [{"port": 53}]}]}))
+        self.assertFalse(governs_egress({"ingress": []}))
+        self.assertFalse(governs_egress({}))
+
+        # Non-dict or malformed specs do not govern egress
+        self.assertFalse(governs_egress(None))
+        self.assertFalse(governs_egress("scalar"))
+        self.assertFalse(governs_egress(True))
+        self.assertFalse(governs_egress({"policyTypes": "not-a-list"}))
+
+    def test_discovery_skips_ingress_only_with_port_53_egress(self):
+        """Verify discover_dns_network_policies ignores policies whose policyTypes explicitly excludes Egress."""
+        manifest = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ingress-only
+spec:
+  policyTypes:
+    - Ingress
+  ingress:
+    - from: []
+  egress:
+    - ports:
+        - port: 53
+"""
+        self._write_manifest("ingress_with_dns.yaml", manifest)
+        discovered = discover_dns_network_policies(root=self.root)
+        self.assertNotIn("ingress_with_dns.yaml", discovered)
+
+    def test_discovery_skips_malformed_egress_and_ports(self):
+        """Verify discovery safely ignores scalar egress, scalar rule items, and non-list ports."""
+        self._write_manifest("scalar_egress.yaml", """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: p1
+spec:
+  # mentions 53 in comment
+  egress: invalid_scalar
+""")
+        self._write_manifest("scalar_rule.yaml", """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: p2
+spec:
+  egress:
+    - not_a_dict_53
+""")
+        self._write_manifest("scalar_ports.yaml", """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: p3
+spec:
+  egress:
+    - ports: 53
+""")
+        discovered = discover_dns_network_policies(root=self.root)
+        self.assertNotIn("scalar_egress.yaml", discovered)
+        self.assertNotIn("scalar_rule.yaml", discovered)
+        self.assertNotIn("scalar_ports.yaml", discovered)
+
+    def test_helm_template_multiline_if_and(self):
+        """Verify that multiline {{- if and ... }} directives parse cleanly."""
+        raw = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-netpol
+spec:
+  {{- if and
+      .Values.enabled
+      .Values.networkPolicy.enabled }} # conditionally included
+  egress:
+    - ports:
+        - port: 53
+      to:
+        - ipBlock:
+            cidr: 10.96.0.10/32
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+  {{- end }}
+"""
+        p = self._write_manifest("multiline_if_and.yaml", raw)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 1)
+        self.assertEqual(errors, [])
+
+    def test_helm_template_multiline_with(self):
+        """Verify that multiline {{- with ... }} directives parse cleanly."""
+        raw = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-netpol
+spec:
+  {{- with
+      .Values.spec }}
+  egress:
+    - ports:
+        - port: 53
+      to:
+        - ipBlock:
+            cidr: 10.96.0.10/32
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+  {{- end }}
+"""
+        p = self._write_manifest("multiline_with.yaml", raw)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 1)
+        self.assertEqual(errors, [])
+
+    def test_helm_template_multiline_range(self):
+        """Verify that multiline {{- range ... }} directives parse cleanly."""
+        raw = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-netpol
+spec:
+  {{- range
+      .Values.configs }}
+  egress:
+    - ports:
+        - port: 53
+      to:
+        - ipBlock:
+            cidr: 10.96.0.10/32
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+  {{- end }}
+"""
+        p = self._write_manifest("multiline_range.yaml", raw)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 1)
+        self.assertEqual(errors, [])
+
+    def test_helm_template_multiline_value_interpolation(self):
+        """Verify that multiline value interpolations parse cleanly."""
+        raw = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ printf "%s-%s"
+      .Release.Name
+      .Values.component }}
+spec:
+  egress:
+    - ports:
+        - port: 53
+      to:
+        - ipBlock:
+            cidr: 10.96.0.10/32
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+"""
+        p = self._write_manifest("multiline_interp.yaml", raw)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 1)
+        self.assertEqual(errors, [])
+
+    def test_helm_template_multiline_comment(self):
+        """Verify that multiline Go template comments parse cleanly."""
+        raw = """{{- /*
+Multi-line
+template comment
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-netpol
+spec:
+  egress:
+    - ports:
+        - port: 53
+      to:
+        - ipBlock:
+            cidr: 10.96.0.10/32
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+"""
+        p = self._write_manifest("multiline_comment.yaml", raw)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 1)
+        self.assertEqual(errors, [])
+
+    def test_helm_template_multiline_directive_with_inline_yaml(self):
+        """Verify that multiline directives with inline YAML content on the same line parse cleanly."""
+        raw = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-netpol
+spec:
+  egress:
+    - ports:
+        - port: 53
+      to:
+        {{- if or
+            .Values.includeClassic
+            .Values.legacy }}- ipBlock: { cidr: 10.96.0.10/32 }{{- end }}
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+"""
+        p = self._write_manifest("multiline_inline_yaml.yaml", raw)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 1)
+        self.assertEqual(errors, [])
+
+    def test_helm_template_if_else_branches_treated_as_additive(self):
+        """Verify that mutually exclusive if/else branches in static source are treated as additive peers per documented limitation."""
+        raw = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-netpol
+spec:
+  egress:
+    - ports:
+        - port: 53
+      to:
+        - ipBlock:
+            cidr: 10.96.0.10/32
+        {{- if .Values.useHouseShape }}
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 100.64.0.0/10
+              - 169.254.0.0/16
+        {{- else }}
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+        {{- end }}
+"""
+        p = self._write_manifest("if_else_limitation.yaml", raw)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 1)
+        self.assertTrue(any("expected at most one '0.0.0.0/0' peer" in err for err in errors))
+
+    def test_malformed_spec_scalar_fails_cleanly(self):
+        """Verify that a scalar spec field (e.g. spec: true) reports a clean error without traceback."""
+        raw = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-netpol
+spec: true
+"""
+        p = self._write_manifest("scalar_spec.yaml", raw)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 0)
+        self.assertTrue(any("spec must be a mapping" in err for err in errors))
+
+    def test_malformed_metadata_scalar_fails_cleanly(self):
+        """Verify that a scalar metadata field reports a clean error without traceback."""
+        raw = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: "text"
+spec:
+  egress:
+    - ports:
+        - port: 53
+      to:
+        - ipBlock:
+            cidr: 10.96.0.10/32
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+"""
+        p = self._write_manifest("scalar_metadata.yaml", raw)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 1)
+        self.assertTrue(any("metadata must be a mapping" in err for err in errors))
+
+    def test_malformed_policy_types_scalar_fails_cleanly(self):
+        """Verify that a scalar policyTypes field reports a clean error without traceback."""
+        raw = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-netpol
+spec:
+  policyTypes: 123
+  egress:
+    - ports:
+        - port: 53
+      to:
+        - ipBlock:
+            cidr: 10.96.0.10/32
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+"""
+        p = self._write_manifest("scalar_policy_types.yaml", raw)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertTrue(any("policyTypes must be a list" in err for err in errors))
+
+    def test_malformed_egress_scalar_fails_cleanly(self):
+        """Verify that a scalar egress field reports a clean error without traceback."""
+        raw = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-netpol
+spec:
+  policyTypes:
+    - Egress
+  egress: "text"
+"""
+        p = self._write_manifest("scalar_egress.yaml", raw)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 0)
+        self.assertTrue(any("egress must be a list" in err for err in errors))
+
+    def test_malformed_egress_rule_scalar_fails_cleanly(self):
+        """Verify that a non-mapping egress rule item reports a clean error without traceback."""
+        raw = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-netpol
+spec:
+  policyTypes:
+    - Egress
+  egress:
+    - true
+"""
+        p = self._write_manifest("scalar_egress_rule.yaml", raw)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 0)
+        self.assertTrue(any("egress rule must be a mapping" in err for err in errors))
+
+    def test_malformed_ports_scalar_fails_cleanly(self):
+        """Verify that a scalar ports field reports a clean error without traceback."""
+        raw = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-netpol
+spec:
+  policyTypes:
+    - Egress
+  egress:
+    - ports: 53
+      to:
+        - ipBlock:
+            cidr: 10.96.0.10/32
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+"""
+        p = self._write_manifest("scalar_ports.yaml", raw)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertTrue(any("rule ports must be a list" in err for err in errors))
+
+    def test_malformed_ports_items_scalar_fails_cleanly(self):
+        """Verify that scalar ports items (e.g. ports: ["53"]) report missing DNS rule cleanly."""
+        raw = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-netpol
+spec:
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - "53"
+"""
+        p = self._write_manifest("scalar_port_items.yaml", raw)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 0)
+        self.assertTrue(any("has no egress rule for port 53" in err for err in errors))
+
+    def test_malformed_to_peers_scalar_fails_cleanly(self):
+        """Verify that a scalar 'to' field reports a clean error without traceback."""
+        raw = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-netpol
+spec:
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: 53
+      to: "all"
+"""
+        p = self._write_manifest("scalar_to.yaml", raw)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 1)
+        self.assertTrue(any("'to' field must be a list" in err for err in errors))
+
+    def test_malformed_ipblock_scalar_fails_cleanly(self):
+        """Verify that a scalar ipBlock field reports a clean error without traceback."""
+        raw = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-netpol
+spec:
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: 53
+      to:
+        - ipBlock: true
+"""
+        p = self._write_manifest("scalar_ipblock.yaml", raw)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 1)
+        self.assertTrue(any("ipBlock must be a mapping" in err for err in errors))
+
+    def test_malformed_except_scalar_fails_cleanly(self):
+        """Verify that a scalar except field reports a clean error without traceback."""
+        raw = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-netpol
+spec:
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: 53
+      to:
+        - ipBlock:
+            cidr: 10.96.0.10/32
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: "10.0.0.0/8"
+"""
+        p = self._write_manifest("scalar_except.yaml", raw)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 1)
+        self.assertTrue(any("'0.0.0.0/0' peer except must be a list" in err for err in errors))
+
     def test_main_success_default(self):
-        self.assertEqual(main([]), 0)
+        buf_out = io.StringIO()
+        buf_err = io.StringIO()
+        with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
+            rc = main([])
+        self.assertEqual(rc, 0)
+        self.assertIn("OK: Verified DNS egress", buf_out.getvalue())
 
     def test_main_verbose(self):
-        self.assertEqual(main(["-v"]), 0)
+        buf_out = io.StringIO()
+        buf_err = io.StringIO()
+        with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
+            rc = main(["-v"])
+        self.assertEqual(rc, 0)
+        self.assertIn("All 8 static policy copies passed", buf_out.getvalue())
 
     def test_main_failure(self):
         manifest = """apiVersion: networking.k8s.io/v1
@@ -763,7 +1304,50 @@ spec:
             cidr: 0.0.0.0/0
 """
         p = self._write_manifest("failing.yaml", manifest)
-        self.assertEqual(main([str(p)]), 1)
+        buf_out = io.StringIO()
+        buf_err = io.StringIO()
+        with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
+            rc = main([str(p)])
+        self.assertEqual(rc, 1)
+        self.assertIn("ERROR: Static NetworkPolicy DNS egress parity check failed", buf_err.getvalue())
+
+    def test_check_all_verbose_file_failure(self):
+        p = self._write_manifest("verbose_bad.yaml", """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: bad
+spec:
+  egress: []
+""")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rules, errors = check_all([p], root=self.root, verbose=True)
+        self.assertTrue(errors)
+        self.assertIn("FAIL: verbose_bad.yaml", buf.getvalue())
+
+    @unittest.mock.patch.dict("scripts.check_iac_parity.EXCLUDED_NETPOL_MANIFESTS", {"nonexistent.yaml": "test"})
+    def test_check_all_verbose_exclusion_failure(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rules, errors = check_all([], root=self.root, verbose=True)
+        self.assertTrue(errors)
+        self.assertIn("FAIL: exclusion contract:", buf.getvalue())
+
+    def test_main_verbose_failure(self):
+        p = self._write_manifest("main_verbose_bad.yaml", """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: bad
+spec:
+  egress: []
+""")
+        buf_out = io.StringIO()
+        buf_err = io.StringIO()
+        with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
+            rc = main(["-v", str(p)])
+        self.assertEqual(rc, 1)
+        self.assertIn(f"FAIL: {p}", buf_out.getvalue())
+        self.assertIn("ERROR: Static NetworkPolicy DNS egress parity check failed", buf_err.getvalue())
 
 
 if __name__ == "__main__":

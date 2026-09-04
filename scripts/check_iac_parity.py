@@ -44,6 +44,11 @@ prompts (*.md).
 Template semantics:
 For Helm templates, this check asserts that the static source definition carries
 the required peer shape, without evaluating dynamic Helm value permutations.
+Mutually exclusive Helm branches ({{- else }}) are not evaluated conditionally;
+all branches in the static template source are retained. A required peer must
+appear in the sanitized source in a form that satisfies peer parity when retained,
+and multiple mutually exclusive wildcard peers will be rejected as duplicate
+additive peers.
 """
 
 from __future__ import annotations
@@ -120,27 +125,59 @@ HOUSE_SHAPE_EXCEPT: frozenset[str] = frozenset(
     {"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16"}
 )
 
+KIND_NETWORK_POLICY = "NetworkPolicy"
+TEMPLATE_PLACEHOLDER = "placeholder"
+
+HELM_COMMENT_RE = re.compile(r"\{\{-?\s*/\*.*?\*/\s*-?\}\}", flags=re.DOTALL)
+HELM_TAG_MULTILINE_RE = re.compile(r"\{\{.*?\}\}", flags=re.DOTALL)
+HELM_TAG_LINE_RE = re.compile(r"\{\{.*?\}\}")
+HELM_CONTROL_DIRECTIVE_RE = re.compile(
+    r"\{\{-?\s*(?:if\b|else\b|end\b|range\b|with\b).*?-?\}\}"
+)
+YAML_DOC_SEPARATOR_RE = re.compile(r"^---(?:\s.*)?$", flags=re.MULTILINE)
+NETWORK_POLICY_KIND_RE = re.compile(
+    r"^\s*kind:\s*['\"]?NetworkPolicy['\"]?", flags=re.MULTILINE
+)
+
 
 def is_house_shape(except_list: Iterable[str]) -> bool:
     """Return True if the except list satisfies the 5-entry house shape."""
     return HOUSE_SHAPE_EXCEPT.issubset(set(except_list))
 
 
+def governs_egress(spec: object) -> bool:
+    """Return True if a NetworkPolicy spec governs egress traffic.
+
+    When policyTypes is explicitly specified, Egress must be included.
+    When policyTypes is omitted, Kubernetes enables Egress only if egress rules are present.
+    """
+    if not isinstance(spec, dict):
+        return False
+    policy_types = spec.get("policyTypes")
+    if isinstance(policy_types, list):
+        return "Egress" in policy_types
+    if spec.get("policyTypes") is not None:
+        return False
+    return spec.get("egress") is not None
+
+
 def sanitize_helm_template(text: str) -> str:
     """Sanitize Go/Helm template tags so that YAML parsers can load the manifests."""
     # Strip multi-line comments: {{- /* ... */ -}} or {{/* ... */}}
-    text = re.sub(r"\{\{-?\s*/\*.*?\*/\s*-?\}\}", "", text, flags=re.DOTALL)
+    text = HELM_COMMENT_RE.sub("", text)
+    # Replace internal newlines within template tags so every directive is single-line
+    text = HELM_TAG_MULTILINE_RE.sub(lambda m: m.group(0).replace("\n", " "), text)
     lines: list[str] = []
     for line in text.splitlines():
         # Check if the line consists entirely of template control tags (ignoring trailing comments)
-        line_without_tags = re.sub(r"\{\{.*?\}\}", "", line)
+        line_without_tags = HELM_TAG_LINE_RE.sub("", line)
         if line_without_tags.split("#", 1)[0].strip() == "":
             lines.append("# " + line)
             continue
         # For lines with mixed content, strip control directives (if, else, end, with, range)
-        cleaned = re.sub(r"\{\{-?\s*(?:if\b|else\b|end\b|range\b|with\b).*?-?\}\}", "", line)
+        cleaned = HELM_CONTROL_DIRECTIVE_RE.sub("", line)
         # Any remaining template expressions are value interpolations
-        cleaned = re.sub(r"\{\{.*?\}\}", "placeholder", cleaned)
+        cleaned = HELM_TAG_LINE_RE.sub(TEMPLATE_PLACEHOLDER, cleaned)
         lines.append(cleaned)
     return "\n".join(lines)
 
@@ -159,16 +196,16 @@ def load_network_policies(path: Path) -> list[dict]:
     policies: list[dict] = []
 
     # Split documents on YAML boundary '---'
-    for chunk in re.split(r"^---(?:\s.*)?$", sanitized, flags=re.MULTILINE):
+    for chunk in YAML_DOC_SEPARATOR_RE.split(sanitized):
         chunk_stripped = chunk.strip()
         if not chunk_stripped:
             continue
         # Only parse chunks that declare kind: NetworkPolicy
-        if not re.search(r"^\s*kind:\s*['\"]?NetworkPolicy['\"]?", chunk_stripped, flags=re.MULTILINE):
+        if not NETWORK_POLICY_KIND_RE.search(chunk_stripped):
             continue
         try:
             doc = yaml.safe_load(chunk_stripped)
-            if isinstance(doc, dict) and doc.get("kind") == "NetworkPolicy":
+            if isinstance(doc, dict) and doc.get("kind") == KIND_NETWORK_POLICY:
                 policies.append(doc)
         except Exception as exc:
             raise ValueError(f"malformed NetworkPolicy document in {path}: {exc}") from exc
@@ -246,7 +283,7 @@ def discover_dns_network_policies(root: Path | None = None) -> set[str]:
                 ) from exc
 
             # Fast check before parsing
-            if "NetworkPolicy" not in raw or DNS_PORT_STR not in raw:
+            if KIND_NETWORK_POLICY not in raw or DNS_PORT_STR not in raw:
                 continue
 
             try:
@@ -257,11 +294,18 @@ def discover_dns_network_policies(root: Path | None = None) -> set[str]:
                 ) from exc
 
             for pol in policies:
-                spec = pol.get("spec") or {}
-                for rule in spec.get("egress") or []:
+                spec = pol.get("spec")
+                if not governs_egress(spec):
+                    continue
+                egress_rules = spec.get("egress") if isinstance(spec, dict) else []
+                if not isinstance(egress_rules, list):
+                    continue
+                for rule in egress_rules:
                     if not isinstance(rule, dict):
                         continue
-                    ports = rule.get("ports") or []
+                    ports = rule.get("ports")
+                    if not isinstance(ports, list):
+                        continue
                     if any(
                         isinstance(p, dict) and p.get("port") in DNS_PORTS
                         for p in ports
@@ -280,17 +324,23 @@ def check_dns_egress_rule(
 ) -> list[str]:
     """Verify that a single port-53 egress rule satisfies the required peer shape."""
     errors: list[str] = []
-    to_peers = rule.get("to") or []
+    to_peers = rule.get("to")
+    rule_desc = f"{path_display} (policy '{policy_name}', DNS rule #{rule_idx})"
+
+    if to_peers is not None and not isinstance(to_peers, list):
+        errors.append(f"{rule_desc}: 'to' field must be a list")
+        return errors
+
     has_dns_literal = False
     has_wildcard = False
     wildcard_peers: list[dict] = []
-    rule_desc = f"{path_display} (policy '{policy_name}', DNS rule #{rule_idx})"
 
-    for peer in to_peers:
+    for peer in (to_peers or []):
         if not isinstance(peer, dict) or "ipBlock" not in peer:
             continue
-        ip_block = peer["ipBlock"]
+        ip_block = peer.get("ipBlock")
         if not isinstance(ip_block, dict):
+            errors.append(f"{rule_desc}: ipBlock must be a mapping")
             continue
         cidr = ip_block.get("cidr")
         if cidr == REQUIRED_DNS_LITERAL:
@@ -298,10 +348,14 @@ def check_dns_egress_rule(
         elif cidr == REQUIRED_WILDCARD_CIDR:
             has_wildcard = True
             wildcard_peers.append(peer)
+            except_val = ip_block.get("except")
             peer_excepts: set[str] = set()
-            except_list = ip_block.get("except")
-            if isinstance(except_list, list):
-                peer_excepts = {str(x) for x in except_list}
+            if isinstance(except_val, list):
+                peer_excepts = {str(x) for x in except_val}
+            elif except_val is not None:
+                errors.append(
+                    f"{rule_desc}: '{REQUIRED_WILDCARD_CIDR}' peer except must be a list"
+                )
             missing = REQUIRED_EXCEPT_MINIMUM - peer_excepts
             if missing:
                 errors.append(
@@ -346,30 +400,48 @@ def check_network_policy_file(path: Path, root: Path | None = None) -> tuple[int
     checked_policies = 0
 
     for policy in policies:
-        policy_name = (policy.get("metadata") or {}).get("name") or "<unnamed>"
-        spec = policy.get("spec") or {}
-        policy_types = spec.get("policyTypes") or []
-        egress_rules = spec.get("egress")
+        metadata = policy.get("metadata")
+        if metadata is not None and not isinstance(metadata, dict):
+            errors.append(f"{rel_path}: metadata must be a mapping")
+            policy_name = "<unnamed>"
+        elif isinstance(metadata, dict):
+            name_val = metadata.get("name")
+            policy_name = name_val if isinstance(name_val, str) else "<unnamed>"
+        else:
+            policy_name = "<unnamed>"
 
-        # Skip policies that do not govern egress traffic.
-        # When policyTypes is explicitly specified, Egress must be listed for the policy to govern egress.
-        # When policyTypes is omitted, Kubernetes enables Egress only if egress rules are present.
-        if spec.get("policyTypes") is not None:
-            if "Egress" not in policy_types:
-                continue
-        elif egress_rules is None:
+        spec = policy.get("spec")
+        if not isinstance(spec, dict):
+            errors.append(f"{rel_path}: NetworkPolicy '{policy_name}' spec must be a mapping")
+            continue
+
+        policy_types = spec.get("policyTypes")
+        if policy_types is not None and not isinstance(policy_types, list):
+            errors.append(f"{rel_path}: NetworkPolicy '{policy_name}' policyTypes must be a list")
+
+        egress_rules = spec.get("egress")
+        if egress_rules is not None and not isinstance(egress_rules, list):
+            errors.append(f"{rel_path}: NetworkPolicy '{policy_name}' egress must be a list")
+            continue
+
+        if not governs_egress(spec):
             continue
 
         checked_policies += 1
-        dns_rules = [
-            r
-            for r in (egress_rules or [])
-            if isinstance(r, dict)
-            and any(
+        dns_rules: list[dict] = []
+        for r in (egress_rules or []):
+            if not isinstance(r, dict):
+                errors.append(f"{rel_path}: NetworkPolicy '{policy_name}' egress rule must be a mapping")
+                continue
+            ports = r.get("ports")
+            if ports is not None and not isinstance(ports, list):
+                errors.append(f"{rel_path}: NetworkPolicy '{policy_name}' rule ports must be a list")
+                continue
+            if any(
                 isinstance(p, dict) and p.get("port") in DNS_PORTS
-                for p in (r.get("ports") or [])
-            )
-        ]
+                for p in (ports or [])
+            ):
+                dns_rules.append(r)
 
         if not dns_rules:
             errors.append(
