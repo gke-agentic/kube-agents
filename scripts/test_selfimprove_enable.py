@@ -862,6 +862,19 @@ class TestJSONOutput(unittest.TestCase):
         self.assertFalse(doc["failed"])
         self.assertEqual(doc["checks"][0]["status"], "skip")
 
+    def test_verify_json_still_parses_when_the_cronjob_is_absent(self):
+        """The state a caller polls until the upgrade lands, and the one place
+        verify returns before reaching its emitter. Printing the table there
+        made `json.loads` raise on exactly the install `--json` exists for."""
+        rc, doc, _ = self.run_json(
+            ["verify", "--json"],
+            mock.Mock(side_effect=AssertionError("must not call GitHub")),
+        )
+        self.assertEqual(rc, 1)
+        self.assertTrue(doc["failed"])
+        self.assertEqual(doc["checks"][0]["check"], "cronjob")
+        self.assertIn("does not exist", doc["checks"][0]["detail"])
+
     def test_every_json_capable_subcommand_emits_the_same_two_keys(self):
         """One reader for all of them, or the flag is not worth having."""
         parser = enable.build_parser()
@@ -911,6 +924,36 @@ class TestPromotionGap(unittest.TestCase):
         enable.report_promotion_gap(rep, ledger, 1, 0, "")
         self.assertEqual(rep.rows[0][0], enable.WARN)
         self.assertEqual(rep.rows[0][1], "last run filed nothing new")
+
+    def test_findings_the_gate_is_still_holding_are_not_counted_against_the_gap(self):
+        """A row still accumulating sightings carries the empty `promotions`
+        list `record_finding` gave it and was never promoted, so it cannot be a
+        promotion nobody filed. Counting it as one warned on every ledger
+        holding more findings than it has filed -- the live install's 18
+        findings and 8 promotions among them."""
+        rep = enable.Report(colour=False)
+        findings = {
+            "pr%d" % i: {"promotions": [{"url": "https://github.com/o/r/pull/%d" % i}]}
+            for i in range(8)
+        }
+        findings.update({"held%d" % i: {"promotions": []} for i in range(10)})
+        enable.report_promotion_gap(rep, {"findings": findings}, 8, 0, "")
+        self.assertEqual(rep.rows[0][0], enable.OK)
+        self.assertIn("8 already carry a pull request", rep.rows[0][2])
+
+    def test_a_promotion_beyond_what_the_ledger_explains_is_still_the_warning(self):
+        """The fault the check exists for, on a ledger that also holds filed
+        findings: nine promotions against eight pull requests leaves one the
+        filing turn neither filed nor refused."""
+        rep = enable.Report(colour=False)
+        findings = {
+            "pr%d" % i: {"promotions": [{"url": "https://github.com/o/r/pull/%d" % i}]}
+            for i in range(8)
+        }
+        findings.update({"held%d" % i: {"promotions": []} for i in range(10)})
+        enable.report_promotion_gap(rep, {"findings": findings}, 9, 0, "")
+        self.assertEqual(rep.rows[0][0], enable.WARN)
+        self.assertIn("1 promotion(s)", rep.rows[0][3])
 
 
 class TestPreflightOrder(unittest.TestCase):
@@ -1035,6 +1078,15 @@ class TestVerify(unittest.TestCase):
         self.assertEqual(len(matches), 1, "expected one %r row, got %d" % (name, len(matches)))
         return matches[0]
 
+    def ledger_cm(self, promoted, filed):
+        """A ledger ConfigMap whose last run promoted more than it filed, with
+        one finding still behind the gate and none carrying a pull request."""
+        doc = {
+            "runs": [{"at": "t", "outcome": "ok", "promoted": promoted, "filed": filed}],
+            "findings": {"held": {"promotions": []}},
+        }
+        return {"data": {"ledger.json": json.dumps(doc)}}
+
     def test_the_secret_checked_is_the_one_the_cronjob_mounts(self):
         """Not the one `--pat-secret` defaults to. An operator who set
         `patSecret` got a green row about a Secret nothing mounts, while the pod
@@ -1074,6 +1126,25 @@ class TestVerify(unittest.TestCase):
         self.assertEqual(self.row(rep, "revision in source repo")[0], enable.OK)
         # The base is still the fork -- this fix moves the source, not the base.
         self.assertEqual(self.row(rep, "base contains the revision")[0], enable.OK)
+
+    def test_report_only_does_not_warn_that_it_filed_nothing(self):
+        """That mode files nothing by design, so `promoted > filed` is its
+        steady state and the row was a standing warning on the chart's own
+        default. The check exists to catch a GitHub write path failing
+        silently, which is a path this mode does not have."""
+        rep, _, _ = self.run_verify(
+            {("configmap", enable.DEFAULT_LEDGER_CONFIGMAP): self.ledger_cm(3, 0)},
+            cron=self.cron(mode="report-only"),
+        )
+        self.assertEqual([r for r in rep.rows if r[1] == "last run filed nothing new"], [])
+
+    def test_a_writing_mode_still_warns_that_it_filed_nothing(self):
+        """The control for the test above: same ledger, a mode that files."""
+        rep, _, _ = self.run_verify(
+            {("configmap", enable.DEFAULT_LEDGER_CONFIGMAP): self.ledger_cm(3, 0)},
+            cron=self.cron(mode="fork"),
+        )
+        self.assertEqual(self.row(rep, "last run filed nothing new")[0], enable.WARN)
 
     def test_an_unreadable_kube_dns_does_not_read_as_reachable(self):
         """`discovered_endpoints` turns a failed read into an empty list, and an

@@ -82,6 +82,16 @@ VENV_PYTHON = "/opt/hermes/.venv/bin/python3"
 #: side and this silently stops removing anything.
 PROXY_SHIM_DIR = "/opt/credential-proxy/bin"
 
+#: Startup-context filenames Hermes reads from the home root that this profile
+#: does not ship. `restore_profile_assets` cannot restore them -- there is
+#: nothing in the template to copy back -- so it removes them instead, the way
+#: it removes the skills tree rather than merging it. `AGENTS.md` and
+#: `CAPABILITIES.md` are what the platform, cluster and chat profiles keep at
+#: exactly this path, so a file by either name reads as the image's own
+#: instructions; `CLAUDE.md` is the same convention for a coding harness, and
+#: `run_agent` runs every turn with this directory as its cwd.
+UNSHIPPED_PROMPT_FILES = ("AGENTS.md", "CAPABILITIES.md", "CLAUDE.md")
+
 # How much of a turn's final response reaches the Job log. `hermes -z` prints
 # only that text, so this is generous rather than a truncation anyone will hit
 # often -- and the run it exists for is the one where the text is all there is.
@@ -1212,7 +1222,9 @@ def restore_profile_assets(home: str) -> None:
     boundary the trust boundary it is documented to be.
 
     The skills tree is removed rather than merged, so a directory the previous
-    turn *added* goes too; `copytree(dirs_exist_ok=True)` would leave it.
+    turn *added* goes too; `copytree(dirs_exist_ok=True)` would leave it. A file
+    the turn added at the home root goes the same way when Hermes would read it
+    as startup context -- see `UNSHIPPED_PROMPT_FILES`.
     """
     # No AGENTS.md, unlike the platform, cluster and chat profiles. Those hold
     # operating rules for an agent working in a user's repository; this profile
@@ -1223,6 +1235,12 @@ def restore_profile_assets(home: str) -> None:
         src = os.path.join(TEMPLATE_DIR, name)
         if os.path.exists(src):
             shutil.copy2(src, os.path.join(home, name))
+    # The copy puts back what the template ships; this takes away what it does
+    # not. A name the image never had is a name no copy above overwrites.
+    for name in UNSHIPPED_PROMPT_FILES:
+        planted = os.path.join(home, name)
+        if os.path.isfile(planted):
+            os.remove(planted)
     skills_src = os.path.join(TEMPLATE_DIR, "skills")
     if os.path.isdir(skills_src):
         shutil.rmtree(os.path.join(home, "skills"), ignore_errors=True)

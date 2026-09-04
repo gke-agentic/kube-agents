@@ -968,16 +968,22 @@ _FREE_TEXT_FLAGS = frozenset(
 # buried in a cluster, so this is the whole table rather than pflag's arity for
 # four upstream CLIs.
 #
-# `github.api-mutation` is the only rule that reads a value: `-X PUT` has to be
-# adjacent. Everything else keys on the flag being present at all, which is why
-# the split is worth making -- see `_cluster_readings`, where it is the
-# difference between one remainder and one per letter.
+# Two rules read a value beside the flag. `github.api-mutation` needs `-X PUT`
+# adjacent, and `selfimprove.gh-target-allowlist` reads the repository slug
+# after `-R` -- so the cluster has to carry the remainder out with the flag, or
+# `gh pr create -dR attacker/kube-agents` reaches that rule as a bare word `R`
+# and the loop's credential is pointed at a repository nobody configured.
+# Everything else keys on the flag being present at all, which is why the split
+# is worth making -- see `_cluster_readings`, where it is the difference
+# between one remainder and one per letter.
 #
 # It is a copy of something that lives in the operator, so it is pinned:
 # `test_every_shorthand_a_rule_keys_on_is_covered` reads the shipped policy and
 # fails if a rule keys on a shorthand missing here. Add the rule, run the
-# tests, and that test tells you to come back.
-_VALUE_TAKING_SHORTHANDS = frozenset({"-X", "-f", "-F"})
+# tests, and that test tells you to come back. It reads the operator's policy
+# and only that one, though, so it never saw `-R`: the rule that keys on it is
+# rendered by the chart, and `test_selfimprove_policy.py` is what covers it.
+_VALUE_TAKING_SHORTHANDS = frozenset({"-X", "-f", "-F", "-R"})
 _KEYED_SHORTHANDS = _VALUE_TAKING_SHORTHANDS | frozenset({"-t", "-a"})
 
 

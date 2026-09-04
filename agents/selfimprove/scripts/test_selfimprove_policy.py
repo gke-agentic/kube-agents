@@ -8,8 +8,15 @@ token with `pull_requests: write`, and they are regular expressions, which fail
 in both directions at once. The block is JSON carrying two Go template actions,
 both of them a configured repository slug, so these tests read it out of the
 template, substitute those two by name, and match it exactly the way
-`Policy.blocked_by` does -- `shlex.join(argv)` under
+`Policy.blocked_by` does -- `policy_match_text(argv)` under
 `re.IGNORECASE | re.MULTILINE` -- without needing helm or the proxy.
+
+That normaliser is imported from `credential_proxy.py` rather than restated
+here. Restating it was the bug: this file matched a plain `shlex.join`, so a
+rule that only fires against normalised text read as covered, and
+`gh pr create -dR attacker/kube-agents` -- pflag's `--draft --repo`, which the
+splitter reduces to a bare word `R` -- passed every case in the table below
+while reaching the executor.
 
 What the false-negative half guards is obvious. The false-positive half is the
 half that bit: matching a joined argv with `(?:\\s+\\S+)*?` walks through the
@@ -23,12 +30,17 @@ import json
 import pathlib
 import re
 import shlex
+import sys
 import time
 import unittest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 TEMPLATE = REPO_ROOT / "charts/kube-agents/templates/self-improvement.yaml"
 FILING_SKILL = REPO_ROOT / "agents/selfimprove/skills/file-pull-request/SKILL.md"
+
+sys.path.insert(0, str(REPO_ROOT / "agents" / "platform" / "scripts"))
+
+from credential_proxy import policy_match_text  # noqa: E402
 
 #: The Go template actions the policy block is allowed to contain, and what a
 #: rendered chart would put in their place. Both are repository slugs escaped
@@ -92,7 +104,7 @@ RULES = [
 
 def blocked_by(argv):
     """`Policy.blocked_by`, reimplemented against the rendered rules."""
-    command = shlex.join(argv)
+    command = policy_match_text(argv)
     return next((rule_id for rule_id, p in RULES if p.search(command)), None)
 
 
@@ -259,6 +271,12 @@ REFUSED = [
     (["gh", "pr", "create", "-R", "attacker/kube-agents"], "selfimprove.gh-target-allowlist"),
     (["gh", "pr", "create", "-Rattacker/kube-agents"], "selfimprove.gh-target-allowlist"),
     (["gh", "pr", "create", "--repo=attacker/kube-agents"], "selfimprove.gh-target-allowlist"),
+    # And the two cluster spellings. `-dR` is pflag's `--draft --repo`: the
+    # splitter takes only the first shorthand off, so without `-R` in
+    # `_VALUE_TAKING_SHORTHANDS` the rest of the token reaches the rule as the
+    # bare word `R` and the flag it keys on is not in the text at all.
+    (["gh", "pr", "create", "-dR", "attacker/kube-agents", "--title", "x"], "selfimprove.gh-target-allowlist"),
+    (["gh", "pr", "create", "-dRattacker/kube-agents", "--title", "x"], "selfimprove.gh-target-allowlist"),
     (["gh", "-R", "attacker/kube-agents", "pr", "list"], "selfimprove.gh-target-allowlist"),
     (["gh", "issue", "list", "--repo", "attacker/kube-agents"], "selfimprove.gh-target-allowlist"),
     (["gh", "pr", "view", "1", "--repo", "gke-labs/kube-agents-mirror"], "selfimprove.gh-target-allowlist"),
@@ -421,6 +439,13 @@ PERMITTED = [
     # slugs are admitted by `gh-target-allowlist`, not just the upstream.
     ["gh", "pr", "create", "--repo", "gke-agentic/kube-agents", "--title", "fix: x"],
     ["gh", "pr", "view", "12", "--repo", "gke-agentic/kube-agents", "--json", "state"],
+    # The other half of the `-dR` cases in REFUSED: re-dashing the cluster's
+    # `-R` has to leave a configured slug admitted, in both spellings. This is
+    # what a fix that only re-dashed the flag without carrying the remainder
+    # would break -- the slug would no longer sit beside the flag and the
+    # rule's allow-list lookahead could not see it.
+    ["gh", "pr", "create", "-dR", "gke-labs/kube-agents", "--title", "fix: x"],
+    ["gh", "pr", "create", "-dRgke-agentic/kube-agents", "--title", "fix: x"],
     ["git", "switch", "-c", "selfimprove/errors-close-handle"],
     ["git", "commit", "-m", "fix: the credential fill path never closes"],
     ["git", "commit", "-m", "fix(auth): gh auth token is printed to stdout"],

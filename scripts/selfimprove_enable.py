@@ -1159,21 +1159,38 @@ def report_promotion_gap(
     it decided it could not write a safe fix and said so, permanently. A
     promotion with no refusal and no pull request is the GitHub path failing
     silently, which is the thing this whole tool exists to surface. So read the
-    findings rather than guessing from the counts.
+    findings for what could explain the gap, and warn only on what is left over
+    once they have.
     """
     findings = ledger.get("findings") or {}
     entries = list(findings.values()) if isinstance(findings, dict) else list(findings)
     refused = [e for e in entries if isinstance(e.get("refused"), dict)]
-    unfiled = [
+    carrying = [
         e
         for e in entries
         if not e.get("refused")
-        and not [p for p in (e.get("promotions") or []) if p and p.get("url")]
+        and [p for p in (e.get("promotions") or []) if p and p.get("url")]
     ]
+    # Measured against the gap, not against the ledger. A finding the gate is
+    # still holding carries the empty `promotions` list `record_finding` gave
+    # it and was never promoted at all, so reading every such row as a
+    # promotion nobody filed warned on any ledger holding more findings than it
+    # has filed -- which is every working one. The run promoted `promoted` and
+    # filed `filed`; the rest have to be findings that already carry a pull
+    # request or that the filing turn refused, and a gap those two cannot cover
+    # is the GitHub path failing silently.
+    #
+    # The explainers are counted over the whole ledger rather than attributed
+    # to this run, because no record maps a run to the fingerprints it
+    # promoted. So a genuinely lost promotion can hide behind an older finding
+    # that already carries a pull request: the check fires when the gap exceeds
+    # what the ledger can explain, not on every one. Exact attribution wants
+    # `record_run` to store the promoted fingerprints.
+    unexplained = (promoted - filed) - len(refused) - len(carrying)
     detail = "promoted %d, filed %d" % (promoted, filed)
     if note:
         detail += " -- %s" % note.splitlines()[0][:80]
-    if not unfiled:
+    if unexplained <= 0:
         # No unexplained finding is the healthy case, and it is also the common
         # one: a finding that already carries an open pull request is promoted
         # again on every later run and deliberately not re-filed, so
@@ -1183,9 +1200,8 @@ def report_promotion_gap(
         why = []
         if refused:
             why.append("%d carry a recorded refusal" % len(refused))
-        explained = len(entries) - len(unfiled) - len(refused)
-        if explained > 0:
-            why.append("%d already carry a pull request" % explained)
+        if carrying:
+            why.append("%d already carry a pull request" % len(carrying))
         rep.ok(
             "promotion gap explained",
             "%s; every promoted finding is accounted for%s"
@@ -1197,8 +1213,9 @@ def report_promotion_gap(
         detail,
         "Not necessarily a fault: a finding already carrying an open pull request is\n"
         "promoted again and deliberately not re-filed, and so is one the filing turn\n"
-        "refused. It is a fault when neither holds. %d finding(s) have no pull request\n"
-        "and no refusal -- `make selfimprove-ledger` names them." % len(unfiled),
+        "refused. It is a fault when neither holds. %d promotion(s) from this run are\n"
+        "covered by neither -- `make selfimprove-ledger` shows what each finding\n"
+        "carries." % unexplained,
     )
 
 
@@ -1562,7 +1579,14 @@ def cmd_verify(args: argparse.Namespace) -> int:
             "%s/%s does not exist" % (args.namespace, args.cronjob),
             "selfImprovement.enabled is false, or the upgrade has not been applied.",
         )
-        print("\n".join(rep.render()))
+        # Same two branches as the command's tail. This is the one early return
+        # in `verify`, and it is the state a caller polls `--json` for while it
+        # waits for the upgrade to land -- printing the table here handed
+        # `json.loads` a document it cannot parse.
+        if args.json:
+            emit_json(rep)
+        else:
+            print("\n".join(rep.render()))
         return 1
 
     spec = cron.get("spec", {})
@@ -1792,7 +1816,17 @@ def cmd_verify(args: argparse.Namespace) -> int:
                 ),
             )
             promoted, filed = last.get("promoted"), last.get("filed")
-            if isinstance(promoted, int) and isinstance(filed, int) and promoted > filed:
+            # Not under report-only, where the loop files nothing by design:
+            # `promoted > filed` is that mode's steady state, and the check
+            # exists to catch a GitHub write path failing silently, which is a
+            # path that mode does not have. Reporting it there is a warning on
+            # the chart's own default.
+            if (
+                mode != "report-only"
+                and isinstance(promoted, int)
+                and isinstance(filed, int)
+                and promoted > filed
+            ):
                 report_promotion_gap(rep, doc, promoted, filed, last.get("note", ""))
 
     check_ksa(rep, args)
