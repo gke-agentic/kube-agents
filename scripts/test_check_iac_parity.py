@@ -18,9 +18,14 @@ if str(_REPO_ROOT) not in sys.path:
 from scripts.check_iac_parity import (
     EXCLUDED_NETPOL_MANIFESTS,
     HOUSE_SHAPE_EXCEPT,
+    LINK_LOCAL_CIDR,
     REPO_ROOT,
     REQUIRED_DNS_LITERAL,
+    REQUIRED_DNS_PROTOCOLS,
     REQUIRED_EXCEPT_MINIMUM,
+    REQUIRED_LINK_LOCAL_CLOUDDNS,
+    REQUIRED_LINK_LOCAL_DNSCACHE,
+    REQUIRED_LINK_LOCAL_LITERALS,
     REQUIRED_WILDCARD_CIDR,
     STATIC_NETWORK_POLICIES,
     check_all,
@@ -415,6 +420,10 @@ spec:
           protocol: TCP
       to:
         - ipBlock:
+            cidr: 169.254.20.10/32
+        - ipBlock:
+            cidr: 169.254.169.254/32
+        - ipBlock:
             cidr: 10.96.0.10/32
         - ipBlock:
             cidr: 0.0.0.0/0
@@ -437,6 +446,156 @@ spec:
     - ports:
         - port: "53"
           protocol: UDP
+        - port: "53"
+          protocol: TCP
+      to:
+        - ipBlock:
+            cidr: 10.96.0.10/32
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+"""
+        p = self._write_manifest("netpol.yaml", manifest)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 1)
+        self.assertEqual(errors, [])
+
+    def test_missing_udp_protocol_fails(self):
+        """Verify that a port-53 egress rule missing protocol UDP fails."""
+        manifest = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-netpol
+spec:
+  egress:
+    - ports:
+        - port: 53
+          protocol: TCP
+      to:
+        - ipBlock:
+            cidr: 10.96.0.10/32
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+"""
+        p = self._write_manifest("netpol.yaml", manifest)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 1)
+        self.assertTrue(any("missing required protocol(s): ['UDP']" in err for err in errors))
+
+    def test_missing_tcp_protocol_fails(self):
+        """Verify that a port-53 egress rule missing protocol TCP fails."""
+        manifest = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-netpol
+spec:
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+      to:
+        - ipBlock:
+            cidr: 10.96.0.10/32
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+"""
+        p = self._write_manifest("netpol.yaml", manifest)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 1)
+        self.assertTrue(any("missing required protocol(s): ['TCP']" in err for err in errors))
+
+    def test_house_shape_missing_cloud_dns_literal_fails(self):
+        """Verify that house shape (excepting 169.254.0.0/16) missing Cloud DNS literal fails (#1169)."""
+        manifest = f"""apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-netpol
+spec:
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+      to:
+        - ipBlock:
+            cidr: {REQUIRED_LINK_LOCAL_DNSCACHE}
+        - ipBlock:
+            cidr: 10.96.0.10/32
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+{chr(10).join(f"              - {cidr}" for cidr in sorted(HOUSE_SHAPE_EXCEPT))}
+"""
+        p = self._write_manifest("netpol.yaml", manifest)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 1)
+        self.assertTrue(
+            any(
+                "requiring explicit ipBlock literal(s) for NodeLocal DNSCache and Cloud DNS for GKE" in err
+                and REQUIRED_LINK_LOCAL_CLOUDDNS in err
+                for err in errors
+            )
+        )
+
+    def test_house_shape_missing_node_local_dns_literal_fails(self):
+        """Verify that house shape (excepting 169.254.0.0/16) missing NodeLocal DNSCache literal fails."""
+        manifest = f"""apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-netpol
+spec:
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+      to:
+        - ipBlock:
+            cidr: {REQUIRED_LINK_LOCAL_CLOUDDNS}
+        - ipBlock:
+            cidr: 10.96.0.10/32
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+{chr(10).join(f"              - {cidr}" for cidr in sorted(HOUSE_SHAPE_EXCEPT))}
+"""
+        p = self._write_manifest("netpol.yaml", manifest)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 1)
+        self.assertTrue(
+            any(
+                "requiring explicit ipBlock literal(s) for NodeLocal DNSCache and Cloud DNS for GKE" in err
+                and REQUIRED_LINK_LOCAL_DNSCACHE in err
+                for err in errors
+            )
+        )
+
+    def test_rfc1918_without_link_local_literals_passes(self):
+        """Verify that policies with RFC1918-only except list do not require explicit link-local literals."""
+        manifest = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-netpol
+spec:
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
       to:
         - ipBlock:
             cidr: 10.96.0.10/32
@@ -474,6 +633,9 @@ spec:
   egress:
     - ports:
         - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
       to:
         - ipBlock:
             cidr: 10.96.0.10/32
@@ -504,6 +666,9 @@ spec:
   egress:
     - ports:
         - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
       to:
         - ipBlock:
             cidr: 10.96.0.10/32
@@ -587,6 +752,9 @@ spec:
   egress:
     - ports:
         - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
       to:
         - ipBlock:
             cidr: 10.96.0.10/32
@@ -673,6 +841,9 @@ spec:
     {{- if .Values.enabled }} # conditionally included
     - ports:
         - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
       to:
         - ipBlock:
             cidr: 10.96.0.10/32
@@ -699,6 +870,9 @@ spec:
   egress:
     - ports:
         - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
       to:
         {{- if .Values.includeClassic }}- ipBlock: { cidr: 10.96.0.10/32 }{{- end }}
         - ipBlock:
@@ -737,6 +911,9 @@ spec:
   egress:
     - ports:
         - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
       to:
         - ipBlock:
             cidr: 10.96.0.10/32
@@ -778,6 +955,9 @@ spec:
   egress:
     - ports:
         - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
       to:
         - ipBlock:
             cidr: 10.96.0.10/32
@@ -900,6 +1080,9 @@ spec:
   egress:
     - ports:
         - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
       to:
         - ipBlock:
             cidr: 10.96.0.10/32
@@ -918,7 +1101,7 @@ spec:
 
     def test_helm_template_crlf_multiline_directive(self):
         """Verify that multiline Go template directives with CRLF line endings parse cleanly."""
-        raw = "apiVersion: networking.k8s.io/v1\r\nkind: NetworkPolicy\r\nmetadata:\r\n  name: test-netpol\r\nspec:\r\n  {{- if and\r\n      .Values.enabled\r\n      .Values.networkPolicy.enabled }}\r\n  egress:\r\n    - ports:\r\n        - port: 53\r\n      to:\r\n        - ipBlock:\r\n            cidr: 10.96.0.10/32\r\n        - ipBlock:\r\n            cidr: 0.0.0.0/0\r\n            except:\r\n              - 10.0.0.0/8\r\n              - 172.16.0.0/12\r\n              - 192.168.0.0/16\r\n  {{- end }}\r\n"
+        raw = "apiVersion: networking.k8s.io/v1\r\nkind: NetworkPolicy\r\nmetadata:\r\n  name: test-netpol\r\nspec:\r\n  {{- if and\r\n      .Values.enabled\r\n      .Values.networkPolicy.enabled }}\r\n  egress:\r\n    - ports:\r\n        - port: 53\r\n          protocol: UDP\r\n        - port: 53\r\n          protocol: TCP\r\n      to:\r\n        - ipBlock:\r\n            cidr: 10.96.0.10/32\r\n        - ipBlock:\r\n            cidr: 0.0.0.0/0\r\n            except:\r\n              - 10.0.0.0/8\r\n              - 172.16.0.0/12\r\n              - 192.168.0.0/16\r\n  {{- end }}\r\n"
         p = self._write_manifest("crlf_multiline.yaml", raw)
         rules, errors = check_network_policy_file(p, self.root)
         self.assertEqual(rules, 1)
@@ -936,6 +1119,9 @@ spec:
   egress:
     - ports:
         - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
       to:
         - ipBlock:
             cidr: 10.96.0.10/32
@@ -964,6 +1150,9 @@ spec:
   egress:
     - ports:
         - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
       to:
         - ipBlock:
             cidr: 10.96.0.10/32
@@ -992,6 +1181,9 @@ spec:
   egress:
     - ports:
         - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
       to:
         - ipBlock:
             cidr: 10.96.0.10/32
@@ -1021,6 +1213,9 @@ spec:
   egress:
     - ports:
         - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
       to:
         - ipBlock:
             cidr: 10.96.0.10/32
@@ -1046,6 +1241,9 @@ spec:
   egress:
     - ports:
         - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
       to:
         {{- if or
             .Values.includeClassic

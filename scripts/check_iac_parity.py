@@ -22,33 +22,58 @@ manifest cannot predict: it is 10.96.0.10 on classic service ranges and allocate
 from public space (e.g. 34.118.224.0/20) on newer GKE clusters. NetworkPolicy
 matches that VIP rather than the backend pods, so selectors alone do not cover it.
 To avoid DNS outages, every static DNS rule must provide:
-1. The 10.96.0.10/32 literal for the classic service range.
-2. An 0.0.0.0/0 peer carrying an except list for any ClusterIP outside private space.
-3. The except list must block at least RFC 1918 private subnets (10.0.0.0/8,
+1. Both UDP and TCP protocols on port 53.
+2. The 10.96.0.10/32 literal for the classic service range.
+3. An 0.0.0.0/0 peer carrying an except list for any ClusterIP outside private space.
+4. The except list must block at least RFC 1918 private subnets (10.0.0.0/8,
    172.16.0.0/12, 192.168.0.0/16) to prevent internal lateral movement.
+5. If the except list excludes link-local space (169.254.0.0/16), explicit
+   169.254.20.10/32 (NodeLocal DNSCache) and 169.254.169.254/32 (Cloud DNS for GKE)
+   literals are required because the wildcard peer no longer reaches those resolvers.
 
 Note on peer sets and house shape (#747 B5):
 Do not assert strict byte-identity across all files. Today, seven copies carry a
 three-entry except list (RFC 1918) and include 169.254.169.254/32, while
 deploy/kustomize/platform/networkpolicy-core-egress.yaml carries the 5-entry house
 shape (adding 100.64.0.0/10 and 169.254.0.0/16, which is more contained and
-mirrors the operator-generated external egress policy). This script enforces the
-required-peer shape across all copies so drift is caught before merge.
+mirrors the operator-generated external egress policy). When 169.254.0.0/16 is
+excepted, the link-local resolver literals become mandatory. Pod selector peers
+(k8s-app: kube-dns, k8s-app: node-local-dns) are present in all copies for in-cluster
+pod-backed DNS, but this script enforces the required IP blocks and protocols.
 
 Scope:
-This check audits deployable Infrastructure-as-Code manifest files (*.yaml,
-*.yml, *.yaml.template, *.yml.template, *.yaml.tmpl, *.yml.tmpl) across Helm
-templates, Kustomize bases, and integration examples. It does not scan Markdown
-documentation or agent skill prompts (*.md).
+This check audits deployable Infrastructure-as-Code manifest files matching
+DISCOVERY_FILE_PATTERNS (*.yaml, *.yml, *.yaml.template, *.yml.template,
+*.yaml.tmpl, *.yml.tmpl) across Helm templates, Kustomize bases, and integration
+examples. It does not scan:
+* Markdown files or agent skill prompts (*.md, e.g. embedded snippets in SKILL.md)
+* Files with extensions outside DISCOVERY_FILE_PATTERNS (e.g. plain *.tpl)
+* Directories pruned by IGNORED_DIRS anywhere in their path (including testdata/
+  at any depth repository-wide, build caches, and virtualenvs) or IGNORED_PREFIXES
+  (docs/site/)
 
-Template semantics:
-For Helm templates, this check asserts that the static source definition carries
-the required peer shape, without evaluating dynamic Helm value permutations.
-Mutually exclusive Helm branches ({{- else }}) are not evaluated conditionally;
-all branches in the static template source are retained. A required peer must
-appear in the sanitized source in a form that satisfies peer parity when retained,
-and multiple mutually exclusive wildcard peers will be rejected as duplicate
-additive peers.
+Template semantics and #747 D1 requirement:
+Issue #747 D1 requested an assertion rendering manifests via `helm template` and
+`kubectl kustomize`. This check is intentionally delivered as a static source-level
+audit rather than engine rendering for three reasons:
+1. Heterogeneity: the static copies include raw examples and deployment.yaml.template
+   with shell variables that neither Helm nor Kustomize can render.
+2. Portability: the check runs offline under standard Python unit tests without
+   requiring external helm/kubectl binaries or cluster access.
+3. Baseline authoring guard: it ensures every static copy checked into the repository
+   maintains the required peer shape in source.
+
+Trade-offs and limitations against D1:
+* Conditional presence: Go/Helm control directives ({{- if }}, {{- with }}) are
+  stripped during sanitization. A peer or entire policy guarded behind a Helm value
+  is evaluated as present if it exists in the source text, even if a specific
+  values configuration renders it out. Mutually exclusive Helm branches ({{- else }})
+  are retained additively.
+* Dynamic Go policies: NetworkPolicies generated in Go controller code (such as
+  the operator's platform-agent policy generation) are outside this source scanner's
+  view and are tested via Go unit tests instead.
+Dynamic rendering under specific Helm value permutations remains the responsibility
+of CI chart validation (e.g. validate.yml).
 """
 
 from __future__ import annotations
@@ -96,7 +121,7 @@ STATIC_NETWORK_POLICIES: tuple[str, ...] = (
 
 # Manifests containing kind: NetworkPolicy that are deliberately excluded from the
 # static DNS parity roster. Every entry must carry its reviewed reason.
-# Note: Go test fixtures under testdata/ are ignored systematically via IGNORED_DIRS.
+# Note: Any directory named testdata/ is ignored systematically at any depth via IGNORED_DIRS.
 EXCLUDED_NETPOL_MANIFESTS: dict[str, str] = {}
 
 # Directory names to skip anywhere in the repo-relative path
@@ -125,6 +150,17 @@ REQUIRED_EXCEPT_MINIMUM: frozenset[str] = frozenset(
 )
 HOUSE_SHAPE_EXCEPT: frozenset[str] = frozenset(
     {"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16"}
+)
+
+PROTOCOL_TCP: str = "TCP"
+PROTOCOL_UDP: str = "UDP"
+REQUIRED_DNS_PROTOCOLS: frozenset[str] = frozenset({PROTOCOL_UDP, PROTOCOL_TCP})
+
+LINK_LOCAL_CIDR = "169.254.0.0/16"
+REQUIRED_LINK_LOCAL_DNSCACHE = "169.254.20.10/32"
+REQUIRED_LINK_LOCAL_CLOUDDNS = "169.254.169.254/32"
+REQUIRED_LINK_LOCAL_LITERALS: frozenset[str] = frozenset(
+    {REQUIRED_LINK_LOCAL_DNSCACHE, REQUIRED_LINK_LOCAL_CLOUDDNS}
 )
 
 KIND_NETWORK_POLICY = "NetworkPolicy"
@@ -331,11 +367,30 @@ def check_dns_egress_rule(
     rule: dict,
     rule_idx: int,
 ) -> list[str]:
-    """Verify that a single port-53 egress rule satisfies the required peer shape."""
+    """Verify that a single port-53 egress rule satisfies the required peer and protocol shape."""
     errors: list[str] = []
-    to_peers = rule.get("to")
     rule_desc = f"{path_display} (policy '{policy_name}', DNS rule #{rule_idx})"
 
+    ports = rule.get("ports")
+    if ports is not None and not isinstance(ports, list):
+        errors.append(f"{rule_desc}: 'ports' field must be a list")
+    else:
+        rule_protocols: set[str] = set()
+        for p in (ports or []):
+            if isinstance(p, dict) and p.get("port") in DNS_PORTS:
+                proto = p.get("protocol")
+                if isinstance(proto, str):
+                    rule_protocols.add(proto.upper())
+                elif proto is None:
+                    # In Kubernetes NetworkPolicyPort, protocol defaults to TCP when omitted
+                    rule_protocols.add(PROTOCOL_TCP)
+        missing_protos = REQUIRED_DNS_PROTOCOLS - rule_protocols
+        if missing_protos:
+            errors.append(
+                f"{rule_desc}: port 53 egress rule is missing required protocol(s): {sorted(missing_protos)}"
+            )
+
+    to_peers = rule.get("to")
     if to_peers is not None and not isinstance(to_peers, list):
         errors.append(f"{rule_desc}: 'to' field must be a list")
         return errors
@@ -343,6 +398,7 @@ def check_dns_egress_rule(
     has_dns_literal = False
     has_wildcard = False
     wildcard_peers: list[dict] = []
+    peer_cidrs: set[str] = set()
 
     for peer in (to_peers or []):
         if not isinstance(peer, dict) or "ipBlock" not in peer:
@@ -352,6 +408,8 @@ def check_dns_egress_rule(
             errors.append(f"{rule_desc}: ipBlock must be a mapping")
             continue
         cidr = ip_block.get("cidr")
+        if isinstance(cidr, str):
+            peer_cidrs.add(cidr)
         if cidr == REQUIRED_DNS_LITERAL:
             has_dns_literal = True
         elif cidr == REQUIRED_WILDCARD_CIDR:
@@ -384,6 +442,23 @@ def check_dns_egress_rule(
         errors.append(
             f"{rule_desc}: expected at most one '{REQUIRED_WILDCARD_CIDR}' peer"
         )
+    else:
+        wildcard_ipblock = wildcard_peers[0].get("ipBlock")
+        if isinstance(wildcard_ipblock, dict):
+            except_val = wildcard_ipblock.get("except")
+            peer_excepts = (
+                {str(x) for x in except_val}
+                if isinstance(except_val, list)
+                else set()
+            )
+            if LINK_LOCAL_CIDR in peer_excepts:
+                missing_link_local = REQUIRED_LINK_LOCAL_LITERALS - peer_cidrs
+                if missing_link_local:
+                    errors.append(
+                        f"{rule_desc}: '{REQUIRED_WILDCARD_CIDR}' except list excludes '{LINK_LOCAL_CIDR}', "
+                        f"requiring explicit ipBlock literal(s) for NodeLocal DNSCache and Cloud DNS for GKE: "
+                        f"{sorted(missing_link_local)}"
+                    )
 
     return errors
 
