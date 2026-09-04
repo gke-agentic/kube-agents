@@ -309,10 +309,19 @@ def _run_one_job_body(
     try:
         _deferred_agents: list = []
         try:
-            success, output, final_response, error = run_job(
-                job, defer_agent_teardown=_deferred_agents,
-                extra_prompt=extra_prompt,
-            )
+            if fire_claim_lost is None:
+                success, output, final_response, error = run_job(
+                    job,
+                    defer_agent_teardown=_deferred_agents,
+                    extra_prompt=extra_prompt,
+                )
+            else:
+                success, output, final_response, error = run_job(
+                    job,
+                    defer_agent_teardown=_deferred_agents,
+                    extra_prompt=extra_prompt,
+                    cancel_event=fire_claim_lost,
+                )
         finally:
             pass
         if output:
@@ -436,6 +445,11 @@ class ApplierTest(unittest.TestCase):
         body = scheduler[scheduler.index("def _run_one_job_body(") :]
         self.assertIn('outcome["response"] = final_response', body)
         self.assertIn('outcome["output_file"] = str(output_file)', body)
+
+    def test_the_scoped_run_job_lands_in_the_body(self):
+        scheduler = self._apply()
+        body = scheduler[scheduler.index("def _run_one_job_body(") :]
+        self.assertIn('with cron_run_scope(job["id"], risk=str(job.get("risk") or "high")):', body)
 
     def test_a_wrapper_that_stopped_delegating_is_fatal_not_silent(self):
         """The shape that shipped the NameError: no lambda to forward through."""

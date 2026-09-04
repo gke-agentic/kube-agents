@@ -2,7 +2,7 @@
 """Wire tools/cron_run_scope.py into the Hermes source tree.
 
 Run by ``deploy/docker/Dockerfile`` against ``/opt/hermes``. Two AST locators
-and ten anchored string replacements across three files is past the point
+and eleven anchored string replacements across three files is past the point
 where an inline ``python3 -c`` stays readable, so the edits live here — but the
 guarantee is the same as the other patches in the Dockerfile: every anchor must
 be found the number of times expected, every edited file must still parse, and
@@ -72,10 +72,19 @@ SCHEDULER_PATCHED_MARKER = 'outcome["response"] = final_response'
 SCHEDULER_RUN_JOB = (
     "        _deferred_agents: list = []\n"
     "        try:\n"
-    "            success, output, final_response, error = run_job(\n"
-    "                job, defer_agent_teardown=_deferred_agents,\n"
-    "                extra_prompt=extra_prompt,\n"
-    "            )\n"
+    "            if fire_claim_lost is None:\n"
+    "                success, output, final_response, error = run_job(\n"
+    "                    job,\n"
+    "                    defer_agent_teardown=_deferred_agents,\n"
+    "                    extra_prompt=extra_prompt,\n"
+    "                )\n"
+    "            else:\n"
+    "                success, output, final_response, error = run_job(\n"
+    "                    job,\n"
+    "                    defer_agent_teardown=_deferred_agents,\n"
+    "                    extra_prompt=extra_prompt,\n"
+    "                    cancel_event=fire_claim_lost,\n"
+    "                )\n"
 )
 
 SCHEDULER_RUN_JOB_PATCHED = (
@@ -86,10 +95,19 @@ SCHEDULER_RUN_JOB_PATCHED = (
     "            # See tools/cron_run_scope.py and tools/cron_risk_gate.py.\n"
     "            from tools.cron_run_scope import cron_run_scope\n"
     '            with cron_run_scope(job["id"], risk=str(job.get("risk") or "high")):\n'
-    "                success, output, final_response, error = run_job(\n"
-    "                    job, defer_agent_teardown=_deferred_agents,\n"
-    "                    extra_prompt=extra_prompt,\n"
-    "                )\n"
+    "                if fire_claim_lost is None:\n"
+    "                    success, output, final_response, error = run_job(\n"
+    "                        job,\n"
+    "                        defer_agent_teardown=_deferred_agents,\n"
+    "                        extra_prompt=extra_prompt,\n"
+    "                    )\n"
+    "                else:\n"
+    "                    success, output, final_response, error = run_job(\n"
+    "                        job,\n"
+    "                        defer_agent_teardown=_deferred_agents,\n"
+    "                        extra_prompt=extra_prompt,\n"
+    "                        cancel_event=fire_claim_lost,\n"
+    "                    )\n"
 )
 
 SCHEDULER_SAVE_OUTPUT = '            output_file = save_job_output(job["id"], output)\n'
