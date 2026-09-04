@@ -127,6 +127,32 @@ spec:
         discovered = discover_dns_network_policies(root=self.root)
         self.assertIn("examples/new-service/networkpolicy.yaml", discovered)
 
+    def test_discovery_supports_all_target_file_extensions(self):
+        """Verify that discover_dns_network_policies recognizes all target file extensions."""
+        manifest = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dns-policy
+spec:
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: 53
+      to:
+        - ipBlock:
+            cidr: 10.96.0.10/32
+"""
+        extensions = [".yaml", ".yml", ".yaml.template", ".yml.template"]
+        for ext in extensions:
+            rel_name = f"sub/policy_{ext.replace('.', '_')}{ext}"
+            self._write_manifest(rel_name, manifest)
+
+        discovered = discover_dns_network_policies(root=self.root)
+        for ext in extensions:
+            rel_name = f"sub/policy_{ext.replace('.', '_')}{ext}"
+            self.assertIn(rel_name, discovered, f"Expected {ext} file to be discovered")
+
     def test_ignored_dirs_in_ancestor_path_does_not_break_discovery(self):
         """Verify that an ancestor path containing an ignored dirname (e.g. .claude/worktrees) does not suppress discovery."""
         worktree_root = self.root / ".claude" / "worktree"
@@ -657,6 +683,65 @@ spec:
         rules, errors = check_network_policy_file(p, self.root)
         self.assertEqual(rules, 1)
         self.assertEqual(errors, [])
+
+    def test_ingress_only_with_non_empty_egress_skipped(self):
+        """Verify that Ingress-only policies with a non-empty egress list are skipped."""
+        manifest = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ingress-only
+spec:
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector: {}
+  egress:
+    - ports:
+        - port: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: valid-egress
+spec:
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: 53
+      to:
+        - ipBlock:
+            cidr: 10.96.0.10/32
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+"""
+        p = self._write_manifest("ingress_non_empty_egress.yaml", manifest)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 1)
+        self.assertEqual(errors, [])
+
+    def test_explicit_egress_policy_type_missing_dns_fails(self):
+        """Verify that explicit policyTypes: [Egress] with no port-53 rule fails."""
+        manifest = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-netpol
+spec:
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: 443
+"""
+        p = self._write_manifest("egress_no_dns.yaml", manifest)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 0)
+        self.assertTrue(any("has no egress rule for port 53" in err for err in errors))
 
     def test_main_success_default(self):
         self.assertEqual(main([]), 0)
