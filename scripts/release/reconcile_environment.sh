@@ -128,7 +128,13 @@ release_lease() {
     LEASE_HELD="false"
   fi
 }
-trap release_lease EXIT INT TERM HUP
+
+# Release lease on normal or error exit, and terminate immediately on signals
+# so execution does not resume after cancellation.
+trap release_lease EXIT
+trap 'release_lease; exit 130' INT
+trap 'release_lease; exit 143' TERM
+trap 'release_lease; exit 129' HUP
 
 if [ "$MODE" = "apply" ] && [ "$LEASE_POLICY" != "ignore" ]; then
   # A run id rather than a pid: the lease keys holder identity on the session,
