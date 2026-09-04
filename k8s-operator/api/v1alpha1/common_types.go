@@ -1247,8 +1247,10 @@ func CleanRepoSlugWithOrg(rawURL, org string) (string, error) {
 	}
 
 	owner, repo := parts[0], parts[1]
-	if owner == "" || repo == "" || repo == "." || repo == ".." {
-		return "", fmt.Errorf("invalid repository slug %q", cleaned)
+	for _, part := range []string{owner, repo} {
+		if part == "" || part == "." || part == ".." || strings.HasPrefix(part, "-") {
+			return "", fmt.Errorf("invalid repository slug %q", cleaned)
+		}
 	}
 	if !validRepoSlugPart.MatchString(owner) || !validRepoSlugPart.MatchString(repo) {
 		return "", fmt.Errorf("invalid characters in repository slug %q", cleaned)
@@ -1258,6 +1260,7 @@ func CleanRepoSlugWithOrg(rawURL, org string) (string, error) {
 }
 
 // CleanRepoURLWithOrg cleans up git URLs, SSH endpoints, or shorthands into a full HTTPS URL format (e.g. "https://github.com/owner/repo").
+// It rejects non-GitHub repository hosts.
 func CleanRepoURLWithOrg(rawURL, org string) (string, error) {
 	trimmed := strings.TrimSpace(rawURL)
 	if trimmed == "" || trimmed == "None" {
@@ -1270,14 +1273,14 @@ func CleanRepoURLWithOrg(rawURL, org string) (string, error) {
 	return "https://github.com/" + cleanedSlug, nil
 }
 
-// ValidateGitRepoURL verifies that a Git repository URL or shorthand is structurally valid
-// and contains no whitespace or non-graphic character injections.
+// ValidateGitRepoURL verifies that a Git repository URL or shorthand is structurally valid,
+// contains no whitespace or non-graphic character injections, and targets github.com.
 func ValidateGitRepoURL(gitRepo string) error {
 	return ValidateGitRepoURLWithOrg(gitRepo, "")
 }
 
 // ValidateGitRepoURLWithOrg verifies that a Git repository URL or shorthand (with optional org context)
-// is structurally valid and contains no whitespace or non-graphic character injections.
+// is structurally valid, contains no whitespace or non-graphic character injections, and targets github.com.
 func ValidateGitRepoURLWithOrg(gitRepo, org string) error {
 	trimmed := strings.TrimSpace(gitRepo)
 	if trimmed == "" || trimmed == "None" {

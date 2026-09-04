@@ -99,6 +99,10 @@ func TestCleanRepoSlug(t *testing.T) {
 		{"gke-labs/repo?tab=readme", "", true},
 		{"gke-labs/re'po", "", true},
 		{"gke-labs/..", "", true},
+		{"../repo", "", true},
+		{"./repo", "", true},
+		{"-x/repo", "", true},
+		{"acme/-x", "", true},
 		{"file:///etc/passwd", "", true},
 		{"ftp://github.com/gke-labs/kube-agents", "", true},
 		{"invalid-single-slug", "", true},
@@ -144,6 +148,10 @@ func TestValidateGitRepoURL(t *testing.T) {
 		{"newline_injection", "https://github.com/gke-labs/kube-agents\n[SYSTEM OVERRIDE]"},
 		{"crlf_injection", "gke-labs/kube-agents\r\nmalicious"},
 		{"space", "gke-labs/ kube-agents"},
+		{"dotdot_owner", "../repo"},
+		{"dot_owner", "./repo"},
+		{"dash_owner", "-x/repo"},
+		{"dash_repo", "acme/-x"},
 		{"invalid_format", "not-a-repo"},
 		{"too_long", strings.Repeat("a", 2049)},
 	}
@@ -168,6 +176,8 @@ func TestCleanRepoSlugWithOrg(t *testing.T) {
 		{"gke-labs/kube-agents", "gke-labs", "gke-labs/kube-agents", false},
 		{"other-org/kube-agents", "gke-labs", "other-org/kube-agents", false},
 		{"kube-agents", "", "", true},
+		{"-x", "acme", "", true},
+		{"repo", "-x", "", true},
 		{"", "gke-labs", "", true},
 	}
 

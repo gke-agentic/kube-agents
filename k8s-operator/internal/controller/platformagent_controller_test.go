@@ -833,6 +833,81 @@ func TestPlatformAgentReconciler_Reconcile_InvalidGitRepo(t *testing.T) {
 	if degradedCond == nil || degradedCond.Status != metav1.ConditionTrue || degradedCond.Reason != "InvalidGitRepoURL" {
 		t.Errorf("expected Degraded condition True with reason InvalidGitRepoURL, got %v", degradedCond)
 	}
+	if !strings.Contains(degradedCond.Message, "Admission webhook will reject updates to this resource until corrected") {
+		t.Errorf("expected Degraded condition message to mention admission webhook rejection, got %q", degradedCond.Message)
+	}
+}
+
+func TestPlatformAgentReconciler_Reconcile_NonGitHubRepo(t *testing.T) {
+	scheme := setupScheme()
+
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent-nongithub-repo",
+			Namespace: "test-ns",
+		},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
+				IntegrationSpec: agentv1alpha1.IntegrationSpec{
+					GitHub: &agentv1alpha1.GitHubSpec{
+						GitRepo: "https://gitlab.com/gke-labs/kube-agents.git",
+					},
+				},
+			},
+			Harness: &agentv1alpha1.HarnessSpec{
+				ProjectID:   "test-project",
+				Location:    "us-central1",
+				ClusterName: "test-cluster",
+			},
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(agent).
+		WithStatusSubresource(&agentv1alpha1.PlatformAgent{}).
+		WithInterceptorFuncs(fakeServerSideApplyInterceptors()).
+		Build()
+
+	r := &PlatformAgentReconciler{
+		Client: cl,
+		Scheme: scheme,
+	}
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      "test-agent-nongithub-repo",
+			Namespace: "test-ns",
+		},
+	}
+	ctx := context.Background()
+
+	// 1st Reconcile: Adds finalizer
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("Reconcile 1 failed: %v", err)
+	}
+
+	// 2nd Reconcile: Updates status with Degraded condition due to non-GitHub repo
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("Reconcile 2 failed: %v", err)
+	}
+
+	updatedAgent := &agentv1alpha1.PlatformAgent{}
+	if err := cl.Get(ctx, req.NamespacedName, updatedAgent); err != nil {
+		t.Fatalf("failed to get agent: %v", err)
+	}
+
+	if updatedAgent.Status.Phase != "Degraded" {
+		t.Errorf("expected Status.Phase Degraded when gitRepo host is non-GitHub, got %q", updatedAgent.Status.Phase)
+	}
+
+	degradedCond := meta.FindStatusCondition(updatedAgent.Status.Conditions, "Degraded")
+	if degradedCond == nil || degradedCond.Status != metav1.ConditionTrue || degradedCond.Reason != "InvalidGitRepoURL" {
+		t.Errorf("expected Degraded condition True with reason InvalidGitRepoURL, got %v", degradedCond)
+	}
+	if !strings.Contains(degradedCond.Message, "Admission webhook will reject updates to this resource until corrected") {
+		t.Errorf("expected Degraded condition message to mention admission webhook rejection, got %q", degradedCond.Message)
+	}
 }
 
 func TestPlatformAgentReconciler_Reconcile_InvalidGitHubOrg(t *testing.T) {
@@ -902,6 +977,120 @@ func TestPlatformAgentReconciler_Reconcile_InvalidGitHubOrg(t *testing.T) {
 	degradedCond := meta.FindStatusCondition(updatedAgent.Status.Conditions, "Degraded")
 	if degradedCond == nil || degradedCond.Status != metav1.ConditionTrue || degradedCond.Reason != "InvalidGitRepoURL" {
 		t.Errorf("expected Degraded condition True with reason InvalidGitRepoURL, got %v", degradedCond)
+	}
+}
+
+func TestPlatformAgentReconciler_Reconcile_CorruptManagedRepos(t *testing.T) {
+	scheme := setupScheme()
+
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent-corrupt-repos",
+			Namespace: "test-ns",
+		},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
+				IntegrationSpec: agentv1alpha1.IntegrationSpec{
+					GitHub: &agentv1alpha1.GitHubSpec{
+						GitRepo: "https://github.com/gke-labs/kube-agents.git",
+					},
+				},
+			},
+			Harness: &agentv1alpha1.HarnessSpec{
+				ProjectID:   "test-project",
+				Location:    "us-central1",
+				ClusterName: "test-cluster",
+			},
+		},
+	}
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent-corrupt-repos-gitops-state",
+			Namespace: "test-ns",
+		},
+		Data: map[string]string{
+			"managed_repos": `[{"type":"github","url":"https://github.com/foo/bar"},]`,
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(agent, cm).
+		WithStatusSubresource(&agentv1alpha1.PlatformAgent{}).
+		WithInterceptorFuncs(fakeServerSideApplyInterceptors()).
+		Build()
+
+	r := &PlatformAgentReconciler{
+		Client: cl,
+		Scheme: scheme,
+	}
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      "test-agent-corrupt-repos",
+			Namespace: "test-ns",
+		},
+	}
+	ctx := context.Background()
+
+	// 1st Reconcile: Adds finalizer
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("Reconcile 1 failed: %v", err)
+	}
+
+	// 2nd Reconcile: Updates status with Degraded condition due to corrupt managed_repos
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("Reconcile 2 failed: %v", err)
+	}
+
+	updatedAgent := &agentv1alpha1.PlatformAgent{}
+	if err := cl.Get(ctx, req.NamespacedName, updatedAgent); err != nil {
+		t.Fatalf("failed to get agent: %v", err)
+	}
+
+	if updatedAgent.Status.Phase != "Degraded" {
+		t.Errorf("expected Status.Phase Degraded when managed_repos is corrupt, got %q", updatedAgent.Status.Phase)
+	}
+
+	readyCond := meta.FindStatusCondition(updatedAgent.Status.Conditions, "Ready")
+	if readyCond == nil || readyCond.Status != metav1.ConditionFalse || readyCond.Reason != "CorruptManagedRepos" {
+		t.Errorf("expected Ready condition False with reason CorruptManagedRepos, got %v", readyCond)
+	}
+
+	degradedCond := meta.FindStatusCondition(updatedAgent.Status.Conditions, "Degraded")
+	if degradedCond == nil || degradedCond.Status != metav1.ConditionTrue || degradedCond.Reason != "CorruptManagedRepos" {
+		t.Errorf("expected Degraded condition True with reason CorruptManagedRepos, got %v", degradedCond)
+	}
+	if !strings.Contains(degradedCond.Message, "Corrupt managed_repos in ConfigMap") {
+		t.Errorf("expected Degraded condition message to mention corrupt managed_repos, got %q", degradedCond.Message)
+	}
+
+	// Verify recovery: correct the ConfigMap and reconcile again
+	cmToUpdate := &corev1.ConfigMap{}
+	if err := cl.Get(ctx, types.NamespacedName{Name: cm.Name, Namespace: cm.Namespace}, cmToUpdate); err != nil {
+		t.Fatalf("failed to get cm: %v", err)
+	}
+	cmToUpdate.Data["managed_repos"] = `[{"type":"github","url":"https://github.com/foo/bar"}]`
+	if err := cl.Update(ctx, cmToUpdate); err != nil {
+		t.Fatalf("failed to update cm: %v", err)
+	}
+
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("Reconcile after fix failed: %v", err)
+	}
+
+	recoveredAgent := &agentv1alpha1.PlatformAgent{}
+	if err := cl.Get(ctx, req.NamespacedName, recoveredAgent); err != nil {
+		t.Fatalf("failed to get recovered agent: %v", err)
+	}
+
+	if recoveredAgent.Status.Phase == "Degraded" {
+		t.Errorf("expected Status.Phase not to be Degraded after fixing managed_repos, got %q", recoveredAgent.Status.Phase)
+	}
+	recoveredDegradedCond := meta.FindStatusCondition(recoveredAgent.Status.Conditions, "Degraded")
+	if recoveredDegradedCond != nil {
+		t.Errorf("expected Degraded condition to be cleared, got %v", recoveredDegradedCond)
 	}
 }
 

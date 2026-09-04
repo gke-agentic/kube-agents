@@ -93,8 +93,9 @@ PLATFORM_TEMPLATE_DIR = "/opt/platform-template"
 # `resolver.py` and `audit_report.py` pin the same path for the same reason.
 SCRATCH_DIR = "/opt/data/scratch"
 
-# `resolver.py poll` sweeps stale issues before it queries, so it is not a
-# read-only call and its runtime is not bounded by a single request.
+# `resolver.py poll` sweeps stale issues before querying for each repository,
+# so its runtime is not bounded by a single request. Budgeted per managed repository
+# (at least one) so multi-repository sweeps have adequate budget to finish.
 RESOLVER_TIMEOUT_S = 300
 
 # Most worker cards — and most refusals — one tick will produce. A reviewer who
@@ -231,7 +232,7 @@ def run_resolver_poll() -> dict:
         managed_count = len(gitops_workspace.get_managed_github_repos())
     except Exception:
         managed_count = 1
-    timeout = max(RESOLVER_TIMEOUT_S, managed_count * 180)
+    timeout = max(1, managed_count) * RESOLVER_TIMEOUT_S
 
     proc = subprocess.run(
         [sys.executable, str(script), "poll"],
