@@ -678,6 +678,16 @@ if isinstance(value, str) and value:
 }
 
 # The image tag an install is currently serving, read off the agent Deployment.
+#
+# The Deployment rather than the Helm release: `helm get values` reports what
+# the last upgrade was ASKED for, and on these environments the last upgrade was
+# a `--reset-then-reuse-values` re-tag whose recorded values are the install-day
+# blob. The Deployment reports what is running.
+#
+# Selected by name, not by index. The operator builds this list and appends
+# the dashboard and fluent-bit after the agent, so a positional read is one
+# reordering away from pinning the composition's image_tag to a sidecar's
+# version — on a scheduled apply, silently.
 running_image_tag() {
   local namespace="${1:-kubeagents-system}" image=""
   command -v kubectl >/dev/null 2>&1 || return 0
@@ -686,6 +696,8 @@ running_image_tag() {
     return 0
   fi
   [ -n "${image}" ] || return 0
+  # Everything after the last colon, unless that colon belongs to a registry
+  # port (no slash may follow it).
   case "${image##*:}" in
     */*) return 0 ;;
     *) printf '%s\n' "${image##*:}" ;;
