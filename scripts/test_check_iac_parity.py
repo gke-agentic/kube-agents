@@ -233,6 +233,46 @@ spec:
         discovered = discover_dns_network_policies(root=self.root)
         self.assertNotIn("docs/site/manifest.yaml", discovered)
 
+    def test_discovery_ignores_testdata_at_any_depth(self):
+        """Verify that any directory named testdata is ignored repository-wide at any depth."""
+        manifest = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: testdata-netpol
+spec:
+  egress:
+    - ports:
+        - port: 53
+      to:
+        - ipBlock:
+            cidr: 10.96.0.10/32
+"""
+        self._write_manifest("k8s-operator/internal/testing/testdata/netpol.yaml", manifest)
+        self._write_manifest("deep/nested/path/testdata/manifest.yaml", manifest)
+        discovered = discover_dns_network_policies(root=self.root)
+        self.assertNotIn("k8s-operator/internal/testing/testdata/netpol.yaml", discovered)
+        self.assertNotIn("deep/nested/path/testdata/manifest.yaml", discovered)
+
+    def test_discovery_ignores_unmatched_extensions(self):
+        """Verify that files with extensions outside DISCOVERY_FILE_PATTERNS (e.g. .tpl, .md) are ignored."""
+        manifest = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: helper-netpol
+spec:
+  egress:
+    - ports:
+        - port: 53
+      to:
+        - ipBlock:
+            cidr: 10.96.0.10/32
+"""
+        self._write_manifest("charts/kube-agents/templates/_helpers.tpl", manifest)
+        self._write_manifest("agents/platform/skills/gke-multitenancy/SKILL.md", manifest)
+        discovered = discover_dns_network_policies(root=self.root)
+        self.assertNotIn("charts/kube-agents/templates/_helpers.tpl", discovered)
+        self.assertNotIn("agents/platform/skills/gke-multitenancy/SKILL.md", discovered)
+
     def test_discovery_raises_on_malformed_network_policy(self):
         """Verify that malformed YAML containing NetworkPolicy and 53 raises rather than being silently swallowed."""
         bad_yaml = """apiVersion: networking.k8s.io/v1
