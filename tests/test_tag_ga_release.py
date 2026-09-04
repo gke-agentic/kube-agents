@@ -302,6 +302,74 @@ class TagGAReleaseScriptTest(unittest.TestCase):
         finally:
             temp_dir.cleanup()
 
+    def test_preserves_unrelated_uncommitted_files_on_stamping_and_idempotent_skip(self):
+        """Verifies create_stamped_release_commit does not destroy uncommitted caller work."""
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            repo_path = pathlib.Path(repo_dir)
+
+            for script in ["install.sh", "uninstall.sh", "upgrade.sh"]:
+                (repo_path / script).write_text('#!/bin/bash\nBAKED_RELEASE_VERSION=""\n')
+
+            chart_dir = repo_path / "charts" / "kube-agents"
+            chart_dir.mkdir(parents=True, exist_ok=True)
+            (chart_dir / "Chart.yaml").write_text(
+                'apiVersion: v2\n'
+                'name: kube-agents\n'
+                'version: 0.1.0\n'
+                'appVersion: "0.1.0"\n'
+            )
+
+            tf_dir = repo_path / "terraform" / "examples" / "full-install"
+            tf_dir.mkdir(parents=True, exist_ok=True)
+            (tf_dir / "variables.tf").write_text(
+                'variable "image_tag" {\n'
+                '  type    = string\n'
+                '  default = "0.1.0"\n'
+                '}\n'
+            )
+            (tf_dir / "terraform.tfvars.example").write_text(
+                '# image_tag = "0.1.0"\n'
+            )
+
+            # Create an unrelated tracked file with initial content
+            unrelated_file = repo_path / "mywork.txt"
+            unrelated_file.write_text("INITIAL WORK\n")
+
+            git("add", ".")
+            git("commit", "-m", "feat: initial commit with files")
+            main_commit = git("rev-parse", "HEAD").stdout.strip()
+
+            # Caller has uncommitted edits in the unrelated tracked file
+            uncommitted_content = "INITIAL WORK\nMY PRECIOUS UNCOMMITTED EDITS\n"
+            unrelated_file.write_text(uncommitted_content)
+
+            # 1. First execution: stamping path creates stamped release tag
+            proc = self._run_script([MOCK_TARGET_RELEASE_TAG, main_commit], cwd=repo_dir)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+
+            # Verify unrelated file was NOT destroyed or reset
+            self.assertEqual(unrelated_file.read_text(), uncommitted_content)
+            status_out = git("status", "--porcelain", "mywork.txt").stdout.strip()
+            self.assertEqual(status_out, "M mywork.txt")
+
+            # Verify tag was created and points to stamped commit
+            tag_commit = git("rev-parse", f"{MOCK_TARGET_RELEASE_TAG}^{{commit}}").stdout.strip()
+            self.assertNotEqual(tag_commit, main_commit)
+
+            # 2. Second execution: idempotent early-return path
+            proc2 = self._run_script([MOCK_TARGET_RELEASE_TAG, main_commit], cwd=repo_dir)
+            self.assertEqual(proc2.returncode, 0, proc2.stderr)
+            self.assertIn("Idempotent skip", proc2.stdout)
+
+            # Verify unrelated file is STILL untouched after idempotent return
+            self.assertEqual(unrelated_file.read_text(), uncommitted_content)
+            status_out2 = git("status", "--porcelain", "mywork.txt").stdout.strip()
+            self.assertEqual(status_out2, "M mywork.txt")
+        finally:
+            temp_dir.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()
+

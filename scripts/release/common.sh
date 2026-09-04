@@ -988,14 +988,6 @@ create_stamped_release_commit() {
     return 1
   fi
 
-  # Preserve caller's current branch / ref and restore on function return
-  local orig_ref
-  orig_ref="$(git -C "${repo_dir}" symbolic-ref --short -q HEAD 2>/dev/null || git -C "${repo_dir}" rev-parse HEAD 2>/dev/null || echo "")"
-  if [ -n "${orig_ref}" ]; then
-    # shellcheck disable=SC2064
-    trap "git -C '${repo_dir}' reset --hard HEAD >/dev/null 2>&1 || true; git -C '${repo_dir}' checkout -f '${orig_ref}' >/dev/null 2>&1 || true" RETURN
-  fi
-
   # Idempotency check: if release tag already exists and is a valid release commit for target_sha, reuse it
   local existing_tag_sha
   if existing_tag_sha="$(git -C "${repo_dir}" rev-parse --verify "refs/tags/${version}^{commit}" 2>/dev/null)"; then
@@ -1006,8 +998,27 @@ create_stamped_release_commit() {
     fi
   fi
 
+  local candidate_files=(
+    "${RELEASE_INSTALLER_SCRIPTS[@]}"
+  )
+  for chart_rel_path in "${RELEASE_HELM_CHARTS[@]}"; do
+    candidate_files+=("${chart_rel_path}/Chart.yaml")
+  done
+  candidate_files+=(
+    "${RELEASE_TERRAFORM_EXAMPLE_VARS}"
+    "${RELEASE_TERRAFORM_EXAMPLE_TFVARS}"
+  )
+
+  # Preserve caller's current branch / ref and restore on function return
+  local orig_ref
+  orig_ref="$(git -C "${repo_dir}" symbolic-ref --short -q HEAD 2>/dev/null || git -C "${repo_dir}" rev-parse HEAD 2>/dev/null || echo "")"
+  if [ -n "${orig_ref}" ]; then
+    # shellcheck disable=SC2064
+    trap "for f in \"\${candidate_files[@]}\"; do git -C '${repo_dir}' checkout -- \"\$f\" >/dev/null 2>&1 || true; done; git -C '${repo_dir}' checkout '${orig_ref}' >/dev/null 2>&1 || true" RETURN
+  fi
+
   # 1. Checkout detached HEAD at candidate commit
-  if ! git -C "${repo_dir}" checkout --detach "${target_sha}"; then
+  if ! git -C "${repo_dir}" checkout --detach "${target_sha}" >/dev/null; then
     echo "❌ ERROR: Failed to checkout candidate commit '${target_sha}' on detached HEAD." >&2
     return 1
   fi
@@ -1019,16 +1030,6 @@ create_stamped_release_commit() {
   fi
 
   # 3. If files were modified, create release commit on detached HEAD (does NOT touch main branch)
-  local candidate_files=(
-    "${RELEASE_INSTALLER_SCRIPTS[@]}"
-  )
-  for chart_rel_path in "${RELEASE_HELM_CHARTS[@]}"; do
-    candidate_files+=("${chart_rel_path}/Chart.yaml")
-  done
-  candidate_files+=(
-    "${RELEASE_TERRAFORM_EXAMPLE_VARS}"
-    "${RELEASE_TERRAFORM_EXAMPLE_TFVARS}"
-  )
   local modified_files=()
   for file_rel in "${candidate_files[@]}"; do
     if [ -f "${repo_dir}/${file_rel}" ] && [ -n "$(git -C "${repo_dir}" status --porcelain "${file_rel}" 2>/dev/null || true)" ]; then
