@@ -24,16 +24,22 @@ MEMORY_TOOL_SCHEMA = {
             "action": {
                 "type": "string",
                 "enum": ["read", "add", "replace", "remove"],
-                "description": "What to do: 'read' entries, 'add' a new entry, 'replace' an entry, or 'remove' an entry."
+                "description": (
+                    "What to do: 'read' entries (returns on-disk index, raw content, and rendered view for each entry), "
+                    "'add' a new entry, 'replace' an entry, or 'remove' an entry."
+                ),
             },
             "target": {
                 "type": "string",
                 "enum": ["memory", "user"],
-                "description": "'memory' for shared system-wide SOPs; 'user' for personal preferences specific to this user."
+                "description": "'memory' for shared system-wide SOPs; 'user' for personal preferences specific to this user.",
             },
             "index": {
                 "type": "integer",
-                "description": "0-based index of the entry to replace or remove (alternative to matching old_content)."
+                "description": (
+                    "0-based on-disk index of the entry to replace or remove (as reported by 'read' in the 'index' field; "
+                    "alternative to matching old_content)."
+                ),
             },
             "content": {"type": "string", "description": "The text entry to add (for 'add') or remove (for 'remove')."},
             "old_content": {"type": "string", "description": "The exact old text entry to replace (for 'replace')."},
@@ -101,25 +107,29 @@ def _neutralize_prompt_injection(text: str) -> str:
 
     # Delimiter tags (<system...>, </system...>, < system>, <system/>, < /system>, etc.)
     # 1. Closing/spaced-closing (</ system>, < / system>), self-closing (<system/>, <system />),
-    #    and standard tags (<system>, <system extra="1">). Uses (?=[ \t>/]) lookahead to defuse
-    #    self-closing tags without mangling SOP hyphenated names (<system-node-critical>)
-    #    or CLI placeholders without attributes (<system namespace>).
-    #    Scan class excludes '<' so each candidate stops at the next one, which
-    #    keeps total work linear across the line without bounding tag length.
+    #    and standard tags (<system>, <system extra="1">). Uses (?=[^\S\n]|[>/]) lookahead to defuse
+    #    standard and self-closing tags (and CLI placeholders like <system namespace>) without
+    #    mangling SOP hyphenated names (<system-node-critical>).
+    #    Scan class consumes '<' unless it starts another tag candidate, which keeps total work
+    #    linear across the line without bounding tag length or failing when '<' appears in attributes.
     text = re.sub(
-        r"<(?:[ \t]*/[ \t]*|/?)(system|instruction|prompt|admin|untrusted_[a-z0-9_-]+)(?=[ \t>/])[^><\n]*>",
+        r"<(?:[^\S\n]*/[^\S\n]*|/?)(system|instruction|prompt|admin|untrusted_[a-z0-9_-]+)"
+        r"(?=[^\S\n]|[>/])"
+        r"(?:[^><\n]|<(?![^\S\n]*/?[^\S\n]*(?:system|instruction|prompt|admin|untrusted_)))*>",
         r"[\1_tag_neutralized]",
         text,
         flags=re.IGNORECASE,
     )
     # 2. Spaced opening tags without attributes (< system>, < system/>) or with attributes
-    #    (< system role="admin">), requiring an immediate attribute ([a-z_][a-z0-9_-]*[ \t]*=)
+    #    (< system role="admin">), requiring an immediate attribute ([a-z_][a-z0-9_-]*[^\S\n]*=)
     #    to prevent colliding with threshold inequalities like
     #    'CPU < system limit; set threshold=90 if usage > 80%'.
-    #    Scan class excludes '<' so each candidate stops at the next one, which
-    #    keeps total work linear without bounding tag length.
+    #    Scan class consumes '<' unless it starts another tag candidate, keeping work linear.
     text = re.sub(
-        r"<[ \t]+(system|instruction|prompt|admin|untrusted_[a-z0-9_-]+)(?:[ \t]*(?:/[ \t]*)?>|(?=[ \t]+[a-z_][a-z0-9_-]*[ \t]*=)[^><\n]*>)",
+        r"<[^\S\n]+(system|instruction|prompt|admin|untrusted_[a-z0-9_-]+)"
+        r"(?:[^\S\n]*(?:/[^\S\n]*)?>"
+        r"|(?=[^\S\n]+[a-z_][a-z0-9_-]*[^\S\n]*=)"
+        r"(?:[^><\n]|<(?![^\S\n]*/?[^\S\n]*(?:system|instruction|prompt|admin|untrusted_)))*>)",
         r"[\1_tag_neutralized]",
         text,
         flags=re.IGNORECASE,
@@ -377,14 +387,25 @@ class MultiUserFileMemoryProvider(MemoryProvider):
         entries = self._read_entries(target)
 
         if action == "read":
-            sanitized_view = [sanitize_for_prompt(e, strip_headings=False) for e in entries]
-            rendered_entries = [e for e in sanitized_view if e]
+            items = []
+            non_empty_count = 0
+            for idx, raw in enumerate(entries):
+                rendered = sanitize_for_prompt(raw, strip_headings=False)
+                if rendered:
+                    non_empty_count += 1
+                items.append(
+                    {
+                        "index": idx,
+                        "content": raw,
+                        "rendered": rendered if rendered else "[empty entry]",
+                    }
+                )
             return json.dumps(
                 {
                     "success": True,
                     "target": target,
-                    "entries": rendered_entries,
-                    "count": len(rendered_entries),
+                    "entries": items,
+                    "count": non_empty_count,
                     "total_entries": len(entries),
                 },
                 ensure_ascii=False,
