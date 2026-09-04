@@ -369,6 +369,22 @@ class TestInputValidationAndSanitization(MultiUserMemoryTestCase):
             with self.subTest(injected=injected[:30]):
                 self.assertEqual(mum.sanitize_for_prompt(injected), expected)
 
+        # 8. Quadratic backtracking check on tag scan with embedded '<' and long whitespace runs
+        # Lookahead must use non-overlapping whitespace quantifiers so evaluation remains strictly linear.
+        evil_lookahead_run1 = "<system <" + " " * 1989 + "x"
+        t0 = time.perf_counter()
+        sanitized_lh1 = mum.sanitize_for_prompt(evil_lookahead_run1)
+        dt_lh1 = (time.perf_counter() - t0) * 1000
+        self.assertLess(dt_lh1, 50.0, f"Tag lookahead with whitespace run took too long: {dt_lh1:.2f}ms")
+        self.assertEqual(sanitized_lh1, evil_lookahead_run1)
+
+        evil_lookahead_run2 = "< system a=1 <" + " " * 1983 + "x"
+        t0 = time.perf_counter()
+        sanitized_lh2 = mum.sanitize_for_prompt(evil_lookahead_run2)
+        dt_lh2 = (time.perf_counter() - t0) * 1000
+        self.assertLess(dt_lh2, 50.0, f"Spaced tag lookahead with whitespace run took too long: {dt_lh2:.2f}ms")
+        self.assertEqual(sanitized_lh2, evil_lookahead_run2)
+
     def test_sop_commands_and_inequalities_preserved(self):
         p = self.provider(chat_type="dm")
         sop_cases = [

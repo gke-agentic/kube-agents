@@ -110,12 +110,12 @@ def _neutralize_prompt_injection(text: str) -> str:
     #    and standard tags (<system>, <system extra="1">). Uses (?=[^\S\n]|[>/]) lookahead to defuse
     #    standard and self-closing tags (and CLI placeholders like <system namespace>) without
     #    mangling SOP hyphenated names (<system-node-critical>).
-    #    Scan class consumes '<' unless it starts another tag candidate, which keeps total work
-    #    linear across the line without bounding tag length or failing when '<' appears in attributes.
+    #    Scan class consumes '<' unless it starts another tag candidate, using non-overlapping
+    #    whitespace quantifiers ([^\S\n]*(?:/[^\S\n]*)?) to maintain strictly linear evaluation.
     text = re.sub(
         r"<(?:[^\S\n]*/[^\S\n]*|/?)(system|instruction|prompt|admin|untrusted_[a-z0-9_-]+)"
         r"(?=[^\S\n]|[>/])"
-        r"(?:[^><\n]|<(?![^\S\n]*/?[^\S\n]*(?:system|instruction|prompt|admin|untrusted_)))*>",
+        r"(?:[^><\n]|<(?![^\S\n]*(?:/[^\S\n]*)?(?:system|instruction|prompt|admin|untrusted_)))*>",
         r"[\1_tag_neutralized]",
         text,
         flags=re.IGNORECASE,
@@ -129,7 +129,7 @@ def _neutralize_prompt_injection(text: str) -> str:
         r"<[^\S\n]+(system|instruction|prompt|admin|untrusted_[a-z0-9_-]+)"
         r"(?:[^\S\n]*(?:/[^\S\n]*)?>"
         r"|(?=[^\S\n]+[a-z_][a-z0-9_-]*[^\S\n]*=)"
-        r"(?:[^><\n]|<(?![^\S\n]*/?[^\S\n]*(?:system|instruction|prompt|admin|untrusted_)))*>)",
+        r"(?:[^><\n]|<(?![^\S\n]*(?:/[^\S\n]*)?(?:system|instruction|prompt|admin|untrusted_)))*>)",
         r"[\1_tag_neutralized]",
         text,
         flags=re.IGNORECASE,
