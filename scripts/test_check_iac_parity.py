@@ -165,7 +165,14 @@ spec:
         - ipBlock:
             cidr: 10.96.0.10/32
 """
-        extensions = [".yaml", ".yml", ".yaml.template", ".yml.template"]
+        extensions = [
+            ".yaml",
+            ".yml",
+            ".yaml.template",
+            ".yml.template",
+            ".yaml.tmpl",
+            ".yml.tmpl",
+        ]
         for ext in extensions:
             rel_name = f"sub/policy_{ext.replace('.', '_')}{ext}"
             self._write_manifest(rel_name, manifest)
@@ -265,6 +272,16 @@ spec: [unclosed json syntax with 53
             root=self.root,
         )
         self.assertTrue(any("cannot also be in STATIC_NETWORK_POLICIES" in err for err in errors))
+
+        # 5. Absolute path or path with leading slash fails
+        errors = validate_exclusions(
+            exclusions={"/valid.yaml": "valid reason"},
+            roster=set(),
+            root=self.root,
+        )
+        self.assertTrue(
+            any("must be repository-relative without a leading slash" in err for err in errors)
+        )
 
     def test_discovery_respects_excluded_netpol_manifests(self):
         """Verify that discover_dns_network_policies ignores entries listed in EXCLUDED_NETPOL_MANIFESTS."""
@@ -895,6 +912,14 @@ spec:
   {{- end }}
 """
         p = self._write_manifest("multiline_if_and.yaml", raw)
+        rules, errors = check_network_policy_file(p, self.root)
+        self.assertEqual(rules, 1)
+        self.assertEqual(errors, [])
+
+    def test_helm_template_crlf_multiline_directive(self):
+        """Verify that multiline Go template directives with CRLF line endings parse cleanly."""
+        raw = "apiVersion: networking.k8s.io/v1\r\nkind: NetworkPolicy\r\nmetadata:\r\n  name: test-netpol\r\nspec:\r\n  {{- if and\r\n      .Values.enabled\r\n      .Values.networkPolicy.enabled }}\r\n  egress:\r\n    - ports:\r\n        - port: 53\r\n      to:\r\n        - ipBlock:\r\n            cidr: 10.96.0.10/32\r\n        - ipBlock:\r\n            cidr: 0.0.0.0/0\r\n            except:\r\n              - 10.0.0.0/8\r\n              - 172.16.0.0/12\r\n              - 192.168.0.0/16\r\n  {{- end }}\r\n"
+        p = self._write_manifest("crlf_multiline.yaml", raw)
         rules, errors = check_network_policy_file(p, self.root)
         self.assertEqual(rules, 1)
         self.assertEqual(errors, [])

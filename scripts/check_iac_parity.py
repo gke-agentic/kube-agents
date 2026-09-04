@@ -37,9 +37,9 @@ required-peer shape across all copies so drift is caught before merge.
 
 Scope:
 This check audits deployable Infrastructure-as-Code manifest files (*.yaml,
-*.yml, *.yaml.template, *.yml.template) across Helm templates, Kustomize bases,
-and integration examples. It does not scan Markdown documentation or agent skill
-prompts (*.md).
+*.yml, *.yaml.template, *.yml.template, *.yaml.tmpl, *.yml.tmpl) across Helm
+templates, Kustomize bases, and integration examples. It does not scan Markdown
+documentation or agent skill prompts (*.md).
 
 Template semantics:
 For Helm templates, this check asserts that the static source definition carries
@@ -79,6 +79,8 @@ DISCOVERY_FILE_PATTERNS: tuple[str, ...] = (
     "*.yml",
     "*.yaml.template",
     "*.yml.template",
+    "*.yaml.tmpl",
+    "*.yml.tmpl",
 )
 
 STATIC_NETWORK_POLICIES: tuple[str, ...] = (
@@ -163,6 +165,8 @@ def governs_egress(spec: object) -> bool:
 
 def sanitize_helm_template(text: str) -> str:
     """Sanitize Go/Helm template tags so that YAML parsers can load the manifests."""
+    # Normalize CRLF and CR line endings to LF before tag processing
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     # Strip multi-line comments: {{- /* ... */ -}} or {{/* ... */}}
     text = HELM_COMMENT_RE.sub("", text)
     # Replace internal newlines within template tags so every directive is single-line
@@ -228,7 +232,11 @@ def validate_exclusions(
     for path_str, reason in resolved_exclusions.items():
         if not reason or not reason.strip():
             errors.append(f"Exclusion for {path_str} must carry a non-empty reviewed reason")
-        if not (resolved_root / path_str).is_file():
+        if Path(path_str).is_absolute() or path_str.startswith("/"):
+            errors.append(
+                f"Exclusion path must be repository-relative without a leading slash: {path_str}"
+            )
+        elif not (resolved_root / path_str).is_file():
             errors.append(f"Excluded manifest does not exist on disk: {path_str}")
         if path_str in roster_set:
             errors.append(f"Excluded manifest {path_str} cannot also be in STATIC_NETWORK_POLICIES roster")
@@ -238,8 +246,9 @@ def validate_exclusions(
 def discover_dns_network_policies(root: Path | None = None) -> set[str]:
     """Scan the repository tree for all manifest files defining a port-53 DNS egress rule.
 
-    Scans deployed manifest files (*.yaml, *.yml, *.yaml.template, *.yml.template)
-    across the repository. Markdown documents and skill prompt files are excluded.
+    Scans deployed manifest files (*.yaml, *.yml, *.yaml.template, *.yml.template,
+    *.yaml.tmpl, *.yml.tmpl) across the repository. Markdown documents and skill
+    prompt files are excluded.
 
     Returns:
         set[str]: set of repo-relative POSIX file paths.
