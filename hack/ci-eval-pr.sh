@@ -953,7 +953,11 @@ TASKS=(
   # this array calls a case that can only fail.
   # Uncomment when the agent can diagnose a capped pool, not before.
   # "./tasks/cluster-agent-pending-replicas-capped-pool/task.yaml"
-  "./tasks/gpu-stress-test-diagnosis/task.yaml"
+  # Removed from presubmit 2026-09-03 for wall clock: tofu provisioning
+  # serializes on the infra lock (~20 min/rep x 3 reps ~= 61 min serialized; #1202
+  # trim addendum). Re-enters via NIGHTLY_TASKS when the nightly tier
+  # (#1175) lands.
+  # "./tasks/gpu-stress-test-diagnosis/task.yaml"
   "./tasks/agent-kanban-smoke/task.yaml"
   # Last, because it is the only entry that pays twice. Its stack plants an
   # OOM-killed workload on the host cluster and blocks until the event
@@ -965,8 +969,12 @@ TASKS=(
   # It provisions no cluster despite being deployer: tofu -- see the header of
   # bench/tf/prebuilt/autoops-incident/main.tf for why it cannot, and why it
   # is the host cluster and not the per-run one that gets the incident.
-  "./tasks/autoops-warning-event-triage/task.yaml"
-  # Ten registered scenarios stay commented out. The task-registration lint
+  # Removed from presubmit 2026-09-03 for wall clock (tofu serialization,
+  # ~15 min/rep x 3 reps; #1202 trim addendum). Held out of BOOTSTRAP_ADMITTED
+  # anyway (#1101); its admission record accrues via the nightly tier
+  # (#1175) once that runs.
+  # "./tasks/autoops-warning-event-triage/task.yaml"
+  # Twelve registered scenarios stay commented out. The task-registration lint
   # counts a commented entry as registered, so a line here is a promise the
   # scenario exists, not that it runs; the domain-coverage lint counts only
   # an UNCOMMENTED one, so activating a scenario also deletes its domain from
@@ -1221,10 +1229,10 @@ print(m.group(1).strip('\'\"') if m else '')
 # nothing to main's side of the aggregate. Screening replaces it.
 #
 # This roster is what blocks a pull request once the Prow job stops being
-# optional. Twelve of the twenty active cases are admitted: the ones
+# optional. Ten of the eighteen active cases are admitted: the ones
 # whose recent record shows failures only on their own regressions or on
 # infra classes the harness already excludes from the verdict. The rest
-# cannot red one on a GRADED failure: five are held out below with named
+# cannot red one on a GRADED failure: four are held out below with named
 # exits, and the three obtainability activations (#1049) simply run
 # unadmitted while they earn a record. Held-out cases still run and
 # report on every pull request. The scope of that promise is rungs
@@ -1247,7 +1255,10 @@ print(m.group(1).strip('\'\"') if m else '')
 #     the reason for the hold is not. Still main's own trait, so a
 #     collapse would tax an innocent PR. Enters when #1010's fix merges
 #     or when rung-6 screening can compare against main.
-#   autoops-warning-event-triage          -- #1101: 0/5 graded repetitions
+#   autoops-warning-event-triage          -- #1101; NOTE 2026-09-03: no
+#     longer in presubmit TASKS at all (tofu wall clock, #1218) -- it
+#     runs and accrues record via the nightly tier once that exists.
+#     Original hold-out rationale: 0/5 graded repetitions
 #     on record; admitting it reds every pull request today. Enters when
 #     the lettered-options bar is settled and it has a clean record.
 #   compliance-rbac-overgrant             -- #1171: demoted 2026-09-02
@@ -1281,7 +1292,7 @@ print(m.group(1).strip('\'\"') if m else '')
 # agent-kanban-smoke earned its seat back after the 08-27 redesign (a real
 # SRE question graded on kanban_create plus cluster names); the reds that
 # once argued for un-arming it belonged to the old vocabulary check.
-export BOOTSTRAP_ADMITTED="${BOOTSTRAP_ADMITTED:-reliability-pdb-probe,security-overgrant-probe,upgrades-lagging-master-probe,consistency-authorized-networks-probe,cost-idle-pool-probe,obtainability-remediation-proposal,cluster-agent-crashloop-debug,cluster-agent-crashloop-misleading-symptom,cluster-agent-crashloop-evidence-chain,gpu-stress-test-diagnosis,agent-kanban-smoke}"
+export BOOTSTRAP_ADMITTED="${BOOTSTRAP_ADMITTED:-reliability-pdb-probe,security-overgrant-probe,upgrades-lagging-master-probe,consistency-authorized-networks-probe,cost-idle-pool-probe,obtainability-remediation-proposal,cluster-agent-crashloop-debug,cluster-agent-crashloop-misleading-symptom,cluster-agent-crashloop-evidence-chain,agent-kanban-smoke}"
 
 # Where the evidence itself lives. Unset means bench/baselines/ in the
 # checkout: hermetic, no credential, no network -- and no way for this job to
@@ -1337,6 +1348,8 @@ fi
 # A wrong hint costs packing efficiency, never correctness.
 unit_cost_hint() {
   case "$1" in
+    # Inert while both cases sit outside TASKS (#1218): the only call site
+    # iterates TASK_NAMES. Kept for their NIGHTLY_TASKS re-entry (#1175).
     gpu-stress-test-diagnosis | autoops-warning-event-triage) echo 900 ;;
     compliance-rbac-overgrant | rca-remediation-pr) echo 700 ;;
     consistency-authorized-networks-probe) echo 300 ;;
