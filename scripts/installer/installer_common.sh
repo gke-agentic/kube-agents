@@ -47,8 +47,6 @@ fi
 # ─── Helm Release Management Defaults ─────────────────────────────────────────
 # Operation timeout for an in-flight Helm install/upgrade across deploy workflows (10m).
 readonly HELM_OPERATION_TIMEOUT_DEFAULT=600
-# Maximum wait budget capped when waiting out an active in-flight operation (5m).
-readonly HELM_PENDING_WAIT_MAX_DEFAULT=300
 # Polling interval while waiting for an in-flight Helm operation to finish.
 readonly HELM_LOCK_POLL_INTERVAL_DEFAULT=10
 # Timeout for rolling back a stuck pending release to the last healthy revision.
@@ -760,11 +758,11 @@ ensure_clean_helm_release() {
   # Helm's standard release timeout across deploy workflows is 10m (600s).
   local operation_timeout="${HELM_OPERATION_TIMEOUT:-$HELM_OPERATION_TIMEOUT_DEFAULT}"
   local pending_age=""
+  local created_epoch=""
   if command -v kubectl >/dev/null 2>&1; then
     local creation_ts
     creation_ts="$(kubectl get secret -n "${namespace}" -l "owner=helm,name=${release_name},status=${release_status}" --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1].metadata.creationTimestamp}' 2>/dev/null || true)"
     if [ -n "${creation_ts}" ]; then
-      local created_epoch
       created_epoch="$(parse_rfc3339_epoch "${creation_ts}" 2>/dev/null || echo "")"
       if [ -n "${created_epoch}" ] && [ "${created_epoch}" -gt 0 ]; then
         local now_epoch
@@ -787,9 +785,8 @@ ensure_clean_helm_release() {
     wait_budget="${HELM_LOCK_WAIT_TIMEOUT}"
   elif [ -n "${pending_age}" ] && [ "${pending_age}" -ge 0 ] && [ "${pending_age}" -lt "${operation_timeout}" ]; then
     wait_budget=$(( operation_timeout - pending_age ))
-    local max_wait="${HELM_PENDING_WAIT_MAX:-$HELM_PENDING_WAIT_MAX_DEFAULT}"
-    if [ "${wait_budget}" -gt "${max_wait}" ]; then
-      wait_budget="${max_wait}"
+    if [ -n "${HELM_PENDING_WAIT_MAX:-}" ] && [ "${wait_budget}" -gt "${HELM_PENDING_WAIT_MAX}" ]; then
+      wait_budget="${HELM_PENDING_WAIT_MAX}"
     fi
   fi
 
@@ -826,10 +823,24 @@ ensure_clean_helm_release() {
       fi
     done
 
+    # If the wait timed out and the operation is still in a pending state:
+    # verify whether the full operation_timeout has actually elapsed.
+    # Never attempt recovery (rollback or uninstall) on an operation that is
+    # still within its legitimate operation_timeout budget!
+    now_epoch="$(date +%s)"
+    if [ -n "${created_epoch:-}" ] && [ $(( now_epoch - created_epoch )) -lt "${operation_timeout}" ]; then
+      if type print_error >/dev/null 2>&1; then
+        print_error "Timed out waiting for in-flight Helm operation (${wait_budget}s), but release '${release_name}' is still within its ${operation_timeout}s timeout window. Refusing to recover active operation."
+      else
+        echo "❌ ERROR: Timed out waiting for in-flight Helm operation (${wait_budget}s), but release '${release_name}' is still within its ${operation_timeout}s timeout window. Refusing to recover active operation." >&2
+      fi
+      return 1
+    fi
+
     if type print_warning >/dev/null 2>&1; then
-      print_warning "Timed out waiting for in-flight Helm operation. Release '${release_name}' remains in '${release_status}'."
+      print_warning "Timed out waiting for in-flight Helm operation. Release '${release_name}' exceeded ${operation_timeout}s operation timeout and remains in '${release_status}'."
     else
-      echo "⚠️ WARNING: Timed out waiting for in-flight Helm operation. Release '${release_name}' remains in '${release_status}'." >&2
+      echo "⚠️ WARNING: Timed out waiting for in-flight Helm operation. Release '${release_name}' exceeded ${operation_timeout}s operation timeout and remains in '${release_status}'." >&2
     fi
   fi
 
