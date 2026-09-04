@@ -54,8 +54,21 @@ class DeployWorkflowWiringTest(unittest.TestCase):
 
     def test_the_confirmation_can_still_fail_the_job(self):
         # A guard whose failure is swallowed is worse than no guard.
-        self.assertNotIn(f"{_SCRIPT.name}\" || true", self.text)
-        self.assertNotIn(f"{_SCRIPT.name}\" ; exit 0", self.text)
+        matching_lines = [
+            line.strip()
+            for line in self.text.splitlines()
+            if _SCRIPT.name in line and not line.strip().startswith("#")
+        ]
+        self.assertTrue(
+            matching_lines,
+            f"no active invocation of {_SCRIPT.name} found in {_UPGRADE_SCRIPT.name}",
+        )
+        for line in matching_lines:
+            self.assertNotRegex(
+                line,
+                r"(\|\|\s*(true|:|exit\s+0)|;\s*exit\s+0)\s*$",
+                f"the confirmation's exit status must reach the caller and not be swallowed: {line}",
+            )
 
 
 class ReleaseReadinessDelegatesTest(unittest.TestCase):
