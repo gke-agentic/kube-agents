@@ -1017,6 +1017,16 @@ create_stamped_release_commit() {
     "${RELEASE_TERRAFORM_EXAMPLE_TFVARS}"
   )
 
+  # Refuse to proceed if any release candidate files have uncommitted changes
+  local dirty_release_files
+  dirty_release_files="$(git -C "${repo_dir}" status --porcelain -- "${candidate_files[@]}" 2>/dev/null || true)"
+  if [ -n "${dirty_release_files}" ]; then
+    echo "❌ ERROR: Cannot create stamped release commit with uncommitted changes in release files:" >&2
+    echo "${dirty_release_files}" >&2
+    echo "Please commit, stash, or revert changes in release files before releasing." >&2
+    return 1
+  fi
+
   # Preserve caller's current branch / ref and restore on function return
   local orig_ref
   orig_ref="$(git -C "${repo_dir}" symbolic-ref --short -q HEAD 2>/dev/null || git -C "${repo_dir}" rev-parse HEAD 2>/dev/null || echo "")"

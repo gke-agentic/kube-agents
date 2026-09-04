@@ -382,6 +382,37 @@ class TagGAReleaseScriptTest(unittest.TestCase):
         finally:
             temp_dir.cleanup()
 
+    def test_fails_loudly_when_candidate_release_files_are_dirty(self):
+        """Verifies tag_ga_release.sh fails and aborts without touching tree if candidate files are dirty."""
+        temp_dir, repo_dir, git = create_mock_git_repo()
+        try:
+            self._populate_valid_release_files(repo_dir)
+            repo_path = pathlib.Path(repo_dir)
+            git("add", ".")
+            git("commit", "-m", "feat: initial commit with valid release files")
+            main_commit = git("rev-parse", "HEAD").stdout.strip()
+
+            # Introduce an uncommitted scratch edit to a candidate release file (Chart.yaml)
+            chart_file = repo_path / "charts" / "kube-agents" / "Chart.yaml"
+            original_content = chart_file.read_text()
+            dirty_content = original_content + "\ndescription: MY LOCAL SCRATCH EDIT\n"
+            chart_file.write_text(dirty_content)
+
+            # tag_ga_release.sh MUST fail loudly and refuse to create stamped release commit
+            proc = self._run_script([MOCK_TARGET_RELEASE_TAG, main_commit], cwd=repo_dir)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Cannot create stamped release commit with uncommitted changes in release files", proc.stderr)
+            self.assertIn("charts/kube-agents/Chart.yaml", proc.stderr)
+
+            # Verify no release tag was created
+            tags = git("tag").stdout.splitlines()
+            self.assertNotIn(MOCK_TARGET_RELEASE_TAG, tags)
+
+            # Verify the caller's scratch edit was preserved and not wiped by any trap
+            self.assertEqual(chart_file.read_text(), dirty_content)
+        finally:
+            temp_dir.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()
