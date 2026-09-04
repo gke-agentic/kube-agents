@@ -20,14 +20,14 @@ running, and people live-test pull requests against them. `rc` and `nightly` are
 the opposite — every pipeline run destroys them and builds them again from
 `terraform/examples/full-install`, so they always run today's composition.
 
-The redeploy workflows that move them are `helm upgrade` on a pre-existing
-release and nothing more, so on their own they carry images and no
-infrastructure: IAM bindings, Pub/Sub topics, node pools, cluster settings and
-the chart values the composition renders all stay where the last apply left
-them. A green redeploy says the images rolled, which reads as "main is
-deployed" and is only half of it.
+Automated deployments to long-lived environments do not use isolated `helm upgrade`
+shortcuts. Instead, `Autopush: Deploy` (`autopush-deploy.yml`) and `Staging: Deploy`
+(`staging-deploy.yml`) drive unified, atomic reconciliations via `reconcile-environment.yml`
+(`upgrade.sh --upgrade-mode=full`). Each deployment updates the Terraform composition,
+IAM bindings, Pub/Sub topics, and Helm release together from the candidate commit, and
+records the deployed image tag directly in Terraform state.
 
-Three things close that gap.
+Three mechanisms keep these environments aligned, verified, and manageable:
 
 ## The scheduled drift report
 
@@ -43,17 +43,17 @@ is open exactly as it is — a failure is not evidence either way, and the red j
 is the signal.
 
 The plan pins no image tag. It holds the tag at whatever the last apply
-recorded, read out of Terraform state, so the report is about infrastructure
-rather than about images being a few commits behind between redeploys.
+recorded, read out of Terraform state (`image_tag: ""`), so the daily report
+detects genuine infrastructure drift (IAM policies, Pub/Sub resources, node pool
+settings, or module inputs) rather than flagging transient container image
+differences between candidate promotion cycles.
 
-State rather than the cluster, and the difference matters: the redeploy
-workflows move the running tag with `helm upgrade` and never run Terraform, so
-planning at the tag the cluster is _serving_ would show every redeploy since the
-last apply as a pending change to `helm_release.kube_agents` — a drift issue
-opening on image lag every day `main` has moved, which never reaches the clean
-plan that would close it. An install whose state predates this (it is published
-as an `image_tag` output) falls back to the running tag and says so in the job
-log; the first reconcile records it and later plans are clean.
+Reading the expected tag from Terraform state rather than live cluster introspection
+ensures the drift report focuses on out-of-band changes to infrastructure.
+An install whose state predates this capability (it is published as an `image_tag`
+Terraform output) falls back to the running cluster tag and notes this in the job log;
+the first subsequent atomic reconcile records the tag into state, after which all plans
+are clean.
 
 ## Deploying and reconciling long-lived environments
 
@@ -64,8 +64,9 @@ Long-lived environments are reconciled and deployed atomically using `./upgrade.
 
 A deploy takes the live-test lease before it applies anything (see
 [`docs/designs/live-test-lease.md`](https://github.com/gke-labs/kube-agents/blob/main/docs/designs/live-test-lease.md)).
-Because automated deploys do not run on a recurring retry schedule, lease contention fails loudly (`lease_policy: fail`)
-rather than silently reporting success without applying.
+Because automated release deploys must not silently drop candidate releases or report
+success on an unapplied commit, lease contention fails loudly (`lease_policy: fail`)
+rather than deferring silently.
 
 Run one by hand with `Shared: Reconcile Environment` (`mode: apply`), or locally
 against your own install with `./upgrade.sh --plan` to see what a reconcile
@@ -182,7 +183,7 @@ destruction stops the apply instead of taking the minter with it.
 
 ## What a rebuild does not preserve
 
-Only relevant to `Shared: Deploy Environment`; the nightly reconcile keeps the
+Only relevant to `Shared: Deploy Environment`; an in-place reconcile keeps the
 cluster and everything on it.
 
 - **KMS key rings survive.** GCP cannot delete them, and `lifecycle.sh adopt-kms`
