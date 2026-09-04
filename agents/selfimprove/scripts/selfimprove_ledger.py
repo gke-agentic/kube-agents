@@ -1690,10 +1690,14 @@ def _union(base: Any, incoming: Any, key) -> List[Dict[str, Any]]:
 def merge(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
     """Fold this run's ledger into one another writer moved underneath it.
 
-    Only reached on a 409, so `base` is what is in the ConfigMap now and
-    `incoming` is what this run built from an older read of it. Almost
-    everything the ledger holds is append-only and timestamped, which is what
-    makes a merge well defined rather than a guess:
+    Two callers, and both arrive with the same shape: `base` is what is in the
+    ConfigMap now and `incoming` is what this run built from an older read of
+    it. `save` gets here on a 409. `refresh_ledger` gets here before each
+    filing turn, on purpose -- another writer's promotion or refusal has to be
+    in the document before the gate is asked again, or two runs file the same
+    finding at a maintainer. Almost everything the ledger holds is append-only
+    and timestamped, which is what makes a merge well defined rather than a
+    guess:
 
     - `runs`, `sightings` and `promotions` are unions keyed on their timestamps.
       Neither writer's rows are dropped, which is the whole point -- a lost
@@ -1712,9 +1716,13 @@ def merge(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
       the scalars, so the losing side's grading decided the next run's gate.
 
     Rows only `base` has are carried through untouched. That does resurrect a
-    finding this run's `prune` had just dropped, and the alternative is worse:
-    telling the two apart needs a record of what was pruned, while a resurrected
-    row is pruned again by the next run on the same criterion, an hour later.
+    finding this run's `prune` had just dropped, and on the `refresh_ledger`
+    path the resurrected row lives until this run's own `save`, because the
+    prune it undoes already happened. The alternative is worse: telling the two
+    apart needs a record of what was pruned, while a resurrected row is pruned
+    again by the next run on the same criterion, an hour later. It is not what
+    keeps the ledger writable either -- `_ledger_json` bounds whatever `save`
+    is handed, whether or not a merge grew it.
     """
     out = {
         "version": incoming.get("version") or base.get("version") or LEDGER_VERSION,
