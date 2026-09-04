@@ -110,30 +110,35 @@ def _neutralize_prompt_injection(text: str) -> str:
     #    and standard tags (<system>, <system extra="1">). Uses (?=[^\S\n]|[>/]) lookahead to defuse
     #    standard and self-closing tags (and CLI placeholders like <system namespace>) without
     #    mangling SOP hyphenated names (<system-node-critical>).
-    #    Scan class consumes '<' unless it starts another tag candidate, using non-overlapping
+    #    Scan class consumes '<' unless it starts a complete tag candidate, using non-overlapping
     #    whitespace quantifiers ([^\S\n]*(?:/[^\S\n]*)?) to maintain strictly linear evaluation.
-    text = re.sub(
-        r"<(?:[^\S\n]*/[^\S\n]*|/?)(system|instruction|prompt|admin|untrusted_[a-z0-9_-]+)"
-        r"(?=[^\S\n]|[>/])"
-        r"(?:[^><\n]|<(?![^\S\n]*(?:/[^\S\n]*)?(?:system|instruction|prompt|admin|untrusted_)))*>",
-        r"[\1_tag_neutralized]",
-        text,
-        flags=re.IGNORECASE,
-    )
-    # 2. Spaced opening tags without attributes (< system>, < system/>) or with attributes
-    #    (< system role="admin">), requiring an immediate attribute ([a-z_][a-z0-9_-]*[^\S\n]*=)
-    #    to prevent colliding with threshold inequalities like
-    #    'CPU < system limit; set threshold=90 if usage > 80%'.
-    #    Scan class consumes '<' unless it starts another tag candidate, keeping work linear.
-    text = re.sub(
-        r"<[^\S\n]+(system|instruction|prompt|admin|untrusted_[a-z0-9_-]+)"
-        r"(?:[^\S\n]*(?:/[^\S\n]*)?>"
-        r"|(?=[^\S\n]+[a-z_][a-z0-9_-]*[^\S\n]*=)"
-        r"(?:[^><\n]|<(?![^\S\n]*(?:/[^\S\n]*)?(?:system|instruction|prompt|admin|untrusted_)))*>)",
-        r"[\1_tag_neutralized]",
-        text,
-        flags=re.IGNORECASE,
-    )
+    #    Iterates to a fixed point to defuse nested candidates (<system <system>foo>).
+    for _ in range(10):
+        prev = text
+        text = re.sub(
+            r"<(?:[^\S\n]*/[^\S\n]*|/?)(system|instruction|prompt|admin|untrusted_[a-z0-9_-]+)"
+            r"(?=[^\S\n]|[>/])"
+            r"(?:[^><\n]|<(?![^\S\n]*(?:/[^\S\n]*)?(?:system|instruction|prompt|admin|untrusted_[a-z0-9_-]+)(?=[^\S\n]|[>/])))*>",
+            r"[\1_tag_neutralized]",
+            text,
+            flags=re.IGNORECASE,
+        )
+        # 2. Spaced opening tags without attributes (< system>, < system/>) or with attributes
+        #    (< system role="admin">), requiring an immediate attribute ([a-z_][a-z0-9_-]*[^\S\n]*=)
+        #    to prevent colliding with threshold inequalities like
+        #    'CPU < system limit; set threshold=90 if usage > 80%'.
+        #    Scan class consumes '<' unless it starts another tag candidate, keeping work linear.
+        text = re.sub(
+            r"<[^\S\n]+(system|instruction|prompt|admin|untrusted_[a-z0-9_-]+)"
+            r"(?:[^\S\n]*(?:/[^\S\n]*)?>"
+            r"|(?=[^\S\n]+[a-z_][a-z0-9_-]*[^\S\n]*=)"
+            r"(?:[^><\n]|<(?![^\S\n]*(?:/[^\S\n]*)?(?:system|instruction|prompt|admin|untrusted_[a-z0-9_-]+)(?=[^\S\n]|[>/])))*>)",
+            r"[\1_tag_neutralized]",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if text == prev:
+            break
 
     # Markdown code fence injection attempting to frame system/instruction blocks
     text = re.sub(
