@@ -714,6 +714,22 @@ helm_release_status() {
   fi
 }
 
+# Parses an RFC3339 / ISO-8601 UTC timestamp (e.g. 2026-09-04T12:00:00Z) into
+# Unix epoch seconds portably across GNU date (Linux) and BSD date (macOS).
+parse_rfc3339_epoch() {
+  local ts="${1:-}"
+  [ -n "${ts}" ] || return 1
+
+  # 1. GNU date (-d) on Linux
+  date -d "${ts}" +%s 2>/dev/null && return 0
+
+  # 2. BSD date (-j -f) on macOS
+  date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "${ts}" +%s 2>/dev/null && return 0
+  date -u -j -f "%Y-%m-%dT%H:%M:%S" "${ts%Z}" +%s 2>/dev/null && return 0
+
+  return 1
+}
+
 # Checks whether a Helm release is stuck in a pending-* state (pending-install,
 # pending-upgrade, pending-rollback), waits out live in-flight operations, and
 # recovers from wedged releases by rolling back to the last successfully
@@ -749,11 +765,18 @@ ensure_clean_helm_release() {
     creation_ts="$(kubectl get secret -n "${namespace}" -l "owner=helm,name=${release_name},status=${release_status}" --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1].metadata.creationTimestamp}' 2>/dev/null || true)"
     if [ -n "${creation_ts}" ]; then
       local created_epoch
-      created_epoch="$(date -d "${creation_ts}" +%s 2>/dev/null || echo "")"
+      created_epoch="$(parse_rfc3339_epoch "${creation_ts}" 2>/dev/null || echo "")"
       if [ -n "${created_epoch}" ] && [ "${created_epoch}" -gt 0 ]; then
         local now_epoch
         now_epoch="$(date +%s)"
         pending_age=$(( now_epoch - created_epoch ))
+      else
+        if type print_error >/dev/null 2>&1; then
+          print_error "Failed to parse creation timestamp '${creation_ts}' for Helm release '${release_name}' in namespace '${namespace}'"
+        else
+          echo "❌ ERROR: Failed to parse creation timestamp '${creation_ts}' for Helm release '${release_name}' in namespace '${namespace}'" >&2
+        fi
+        return 1
       fi
     fi
   fi

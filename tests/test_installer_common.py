@@ -847,13 +847,18 @@ class NormalizeMemoryVarsTest(unittest.TestCase):
 
 
 class HelmReleaseSelfHealingTest(unittest.TestCase):
-    def _run_helm_test(self, script, helm_script, env_overrides=None):
+    def _run_helm_test(self, script, helm_script, env_overrides=None, extra_bins=None):
         with tempfile.TemporaryDirectory() as tmp:
             bin_dir = pathlib.Path(tmp) / "bin"
             bin_dir.mkdir()
             helm = bin_dir / "helm"
             helm.write_text(helm_script)
             helm.chmod(helm.stat().st_mode | stat.S_IEXEC)
+            if extra_bins:
+                for name, content in extra_bins.items():
+                    target = bin_dir / name
+                    target.write_text(content)
+                    target.chmod(target.stat().st_mode | stat.S_IEXEC)
             full_env = get_isolated_test_env(overrides=env_overrides or {}, bin_dir=str(bin_dir))
             body = (
                 f'set -u\n'
@@ -1009,6 +1014,100 @@ class HelmReleaseSelfHealingTest(unittest.TestCase):
         helm_script = '#!/usr/bin/env bash\nexit 1\n'
         proc = self._run_helm_test('ensure_clean_helm_release kube-agents kubeagents-system', helm_script)
         self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_parse_rfc3339_epoch_formats(self):
+        proc = self._run_helm_test(
+            'parse_rfc3339_epoch "2026-09-04T12:00:00Z"',
+            '#!/usr/bin/env bash\nexit 0\n',
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "1788523200")
+
+        proc_inv = self._run_helm_test(
+            'parse_rfc3339_epoch "not-a-valid-timestamp"',
+            '#!/usr/bin/env bash\nexit 0\n',
+        )
+        self.assertNotEqual(proc_inv.returncode, 0)
+
+    def test_parse_rfc3339_epoch_bsd_fallback(self):
+        bsd_date_mock = (
+            '#!/usr/bin/env bash\n'
+            'if [ "${1:-}" = "-d" ]; then\n'
+            '  echo "date: illegal option -- d" >&2\n'
+            '  exit 1\n'
+            'elif [ "${1:-}" = "-u" ] && [ "${2:-}" = "-j" ] && [ "${3:-}" = "-f" ]; then\n'
+            '  echo "1788523200"\n'
+            '  exit 0\n'
+            'fi\n'
+            'exec /bin/date "$@"\n'
+        )
+        proc = self._run_helm_test(
+            'parse_rfc3339_epoch "2026-09-04T12:00:00Z"',
+            '#!/usr/bin/env bash\nexit 0\n',
+            extra_bins={"date": bsd_date_mock},
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "1788523200")
+
+    def test_pending_upgrade_computes_age_and_waits_with_kubectl_secret(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = pathlib.Path(tmp) / "pending_stage"
+            helm_script = (
+                f'#!/usr/bin/env bash\n'
+                f'case "$*" in\n'
+                f'  *"status kube-agents"*)\n'
+                f'    if [ ! -f "{marker}" ]; then\n'
+                f'      touch "{marker}"\n'
+                f'      echo \'{{"name": "kube-agents", "info": {{"status": "pending-upgrade"}}}}\'\n'
+                f'    else\n'
+                f'      echo \'{{"name": "kube-agents", "info": {{"status": "deployed"}}}}\'\n'
+                f'    fi\n'
+                f'    exit 0 ;;\n'
+                f'  *) echo "unexpected helm call: $*" >&2; exit 1 ;;\n'
+                f'esac\n'
+            )
+            kubectl_script = (
+                '#!/usr/bin/env bash\n'
+                'case "$*" in\n'
+                '  *"get secret"*) date -u -d "30 seconds ago" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +"%Y-%m-%dT%H:%M:%SZ" ; exit 0 ;;\n'
+                '  *) echo "unexpected kubectl call: $*" >&2; exit 1 ;;\n'
+                'esac\n'
+            )
+            proc = self._run_helm_test(
+                'ensure_clean_helm_release kube-agents kubeagents-system',
+                helm_script,
+                env_overrides={
+                    "HELM_LOCK_POLL_INTERVAL": "1",
+                },
+                extra_bins={"kubectl": kubectl_script},
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("Waiting up to", proc.stderr)
+            self.assertIn("In-flight Helm operation completed successfully", proc.stderr)
+
+    def test_pending_upgrade_fails_when_creation_timestamp_unparseable(self):
+        helm_script = (
+            '#!/usr/bin/env bash\n'
+            'if [[ "$*" == *"status kube-agents"* ]]; then\n'
+            '  echo \'{"name": "kube-agents", "info": {"status": "pending-upgrade"}}\'\n'
+            '  exit 0\n'
+            'fi\n'
+            'exit 0\n'
+        )
+        kubectl_script = (
+            '#!/usr/bin/env bash\n'
+            'case "$*" in\n'
+            '  *"get secret"*) echo "corrupted-unparseable-timestamp" ; exit 0 ;;\n'
+            '  *) exit 1 ;;\n'
+            'esac\n'
+        )
+        proc = self._run_helm_test(
+            'ensure_clean_helm_release kube-agents kubeagents-system',
+            helm_script,
+            extra_bins={"kubectl": kubectl_script},
+        )
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn("Failed to parse creation timestamp 'corrupted-unparseable-timestamp'", proc.stderr)
 
 
 if __name__ == "__main__":
