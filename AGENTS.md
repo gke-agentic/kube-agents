@@ -13,6 +13,7 @@ This repository contains the Kubernetes Agentic Harness (`kube-agents`). It is a
   - `selfimprove/`: The self-improvement loop's profile _template_ and the modules its hourly CronJob runs ([design](docs/designs/self-improvement.md)). Looks inward at kube-agents itself, not the fleet under management; off by default.
 - `.agents/skills/`: Repository-level skills, not shipped in the agent images — review skills (adversarial change review, security audits, docs-drift, skill quality) run against pull requests and clusters, with `review-preflight` running the pre-PR set of them in a context that did not write the change, plus the `install-kube-agents`/`uninstall-kube-agents`/`upgrade-kube-agents` lifecycle skills that drive the repository's installer scripts.
 - `.agents/rules/`: Repository-level rules an agent follows, one file per family and none shipped in the agent images — `core_engineering.md` for the code itself, `github_actions.md` for workflow authoring, `pre_pr_review.md` for the mechanics of the two pre-PR passes. This file states each rule and links there for the form it takes; the split keeps `AGENTS.md` inside the context budget `scripts/check_context_budget.py` enforces.
+- `a2a/`: Go module for the agent-to-agent bus — wire-protocol library and `a2a` topics CLI per `docs/designs/spec-a2a-payloads.md`, plus agent profiles. Nothing imports it yet.
 - `charts/`: Canonical Helm charts (`kube-agents`) for deploying the Kube-Agents operator and profiles.
 - `terraform/`: Companion reusable Terraform modules (`gke-cluster`, `kube-agents-iam`, `chat-pubsub`, `github-minter`, `gke-backup-plan`, `drift-pubsub`, `kube-agents-selfimprove`) for infrastructure provisioning, plus `examples/full-install/`, the single-apply composition that installs the Helm chart on top. `drift-pubsub` and `kube-agents-selfimprove` are not yet part of that composition.
 - `deploy/`: Deployment infrastructure code (Dockerfile, Kustomize bases, shared runtime assets).
@@ -33,7 +34,7 @@ This repository contains the Kubernetes Agentic Harness (`kube-agents`). It is a
 
 ## Where Tests Go
 
-Tests live in nine places here, with different runners and different answers to "does this catch a
+Tests live in ten places here, with different runners and different answers to "does this catch a
 regression before merge". Choosing the wrong one rarely fails loudly — the test runs somewhere you
 did not expect, or nowhere at all, and the suite reports green around it.
 
@@ -61,12 +62,12 @@ One rule holds wherever it lands: a new test directory only runs if a `PYTHON_TE
 `Makefile` reaches it, and a directory the globs miss fails nothing — it sits unexecuted while the
 suite reports green around it. Add the glob in the same change.
 
-The nine homes, what runs each, and how far "runs on a pull request" is from "gates a merge" are in
+The ten homes, what runs each, and how far "runs on a pull request" is from "gates a merge" are in
 [`docs/testing-map.md`](docs/testing-map.md).
 
 ## Agent Setup & Integration
 
-This repository is primarily a configuration and documentation repository for AI agents. The main exception is the Go-based Kubernetes operator in `k8s-operator/`, which requires compilation (see Local Validation Checks below).
+This repository is primarily configuration and documentation for AI agents. The main exceptions are the Go modules — the operator in `k8s-operator/` and the A2A bus in `a2a/` — which require compilation (see Local Validation Checks below).
 
 To use these agents:
 
@@ -339,11 +340,43 @@ map (`docs/README.md`), and this file plus `CLAUDE.md` stay inside the context b
   required.
 - **Local Validation Checks:** Before committing, run what your change touches — `prettier --write`
   on changed Markdown and YAML, a local Docker build of the agent runner, the image-layer budget if
-  you added a `RUN` or `COPY` to `deploy/docker/Dockerfile`, and `go build` inside `k8s-operator/`.
+  you added a `RUN` or `COPY` to `deploy/docker/Dockerfile`, and `go build` inside whichever Go
+  module you touched (`k8s-operator/`, `a2a/`).
   Each has a constraint that costs a CI run to rediscover — the pinned prettier version, the
   mandatory `--platform linux/amd64`, the layer ceiling that only fails after merge. The
   commands and those reasons are in
   [`docs/pull-request-workflow.md`](docs/pull-request-workflow.md#local-validation-before-committing).
+
+### The behavioural presubmit gate
+
+`pull-kube-agents-smoke-test` runs the eval matrix in `hack/ci-eval-pr.sh` — every active case,
+three repetitions each — and has been merge-blocking since 2026-09-02
+(GoogleCloudPlatform/oss-test-infra#2677). It is slow — recent green runs took 1.5 to 3.5 hours
+against a 360-minute ceiling — and a new push restarts it, so open the pull request early and
+batch changes rather than stacking pushes. Another pull request merging usually does not — the
+green status is re-pinned to `main`'s new head
+([how a change merges](docs/pull-request-workflow.md#how-a-change-merges)).
+
+Two things red it. A case on the `BOOTSTRAP_ADMITTED` roster in `hack/ci-eval-pr.sh` fails **all**
+of its repetitions — one failed repetition out of three does nothing on its own. Or any case,
+admitted or not, trips an absolute rung: a forbidden cluster mutation, a verifier that errored
+instead of running, or a record whose liveness signals are inconsistent (one showing no run at
+all is excluded as infrastructure instead, #1184). Repetitions classified as
+infrastructure failures are excluded from the verdict automatically, unless every case hits one —
+a suite that evaluated nothing reds rather than reporting green. The roster is the source of truth
+for what is admitted, the comment above it for how a flaky case is demoted, and
+[`docs/designs/testing-strategy.md`](docs/designs/testing-strategy.md) §4.2 for the full verdict
+ladder.
+
+On a red, ask whether your diff explains it. If yes, fix it. If no, file an issue with the
+`presubmit-gate` label; if the cause is evident and the fix is quick, fixing it yourself is
+welcome — otherwise keep working while the eval crew classifies it. One `/retest` is reasonable
+for a suspected transient; repeated blind retests are noise. Never merge around a red gate, and
+never instruct anyone to.
+
+`/override` (admin-only) is only for a red the eval crew classified as not the pull request's;
+the rest of the override mechanics, and why an approved, green pull request can sit unmerged,
+are in [how a change merges](docs/pull-request-workflow.md#how-a-change-merges) (#1202).
 
 ## Automated Review After Opening a Pull Request
 

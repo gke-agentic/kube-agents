@@ -245,6 +245,10 @@ publish_eval_dashboard() {
     echo "eval-dashboard publish skipped: PULL_NUMBER=${PULL_NUMBER} is set: a pull request never writes the dashboard"
     return 0
   fi
+  if [ -n "${RC_COMMIT_SHA:-}" ]; then
+    echo "eval-dashboard publish skipped: RC_COMMIT_SHA=${RC_COMMIT_SHA} is set: a release-candidate run measures a candidate, it does not report main's history"
+    return 0
+  fi
   if [ -z "${EVAL_DASHBOARD_TARGET:-}" ]; then
     echo "eval-dashboard publish skipped: EVAL_DASHBOARD_TARGET is not set (the Prow job config arms this later)"
     return 0
@@ -1217,16 +1221,18 @@ print(m.group(1).strip('\'\"') if m else '')
 # nothing to main's side of the aggregate. Screening replaces it.
 #
 # This roster is what blocks a pull request once the Prow job stops being
-# optional. Thirteen of the seventeen active cases are admitted: the ones
+# optional. Twelve of the twenty active cases are admitted: the ones
 # whose recent record shows failures only on their own regressions or on
-# infra classes the harness already excludes from the verdict. Four are
-# held out -- they still run and report on every pull request, and they
-# cannot red one on a GRADED failure. The scope of that promise is rungs
+# infra classes the harness already excludes from the verdict. The rest
+# cannot red one on a GRADED failure: five are held out below with named
+# exits, and the three obtainability activations (#1049) simply run
+# unadmitted while they earn a record. Held-out cases still run and
+# report on every pull request. The scope of that promise is rungs
 # 4 and 6: rungs 1-3 (a forbidden mutation, an erroring check, a record
 # that is not a real run) stay blocking for every case by design,
 # admitted or not -- see grade_case, which evaluates them before it reads
 # admission. security-overgrant-remediation-proposal (#1066) is simply
-# new: it earns its record like any case, then enters. The other three
+# new: it earns its record like any case, then enters. The other four
 # each have a filed issue naming the exit condition:
 #
 #   capacity-pinned-pool-probe            -- #1010: worker completes its
@@ -1234,13 +1240,33 @@ print(m.group(1).strip('\'\"') if m else '')
 #     failure is correlated across repetitions when the agent chooses to
 #     fan out, so the collapse rule does not absorb it. Enters when the
 #     fix merges.
-#   cluster-agent-healthy-workload-no-finding -- #1100: the agent invents
-#     a finding on a healthy workload ~1 run in 8. Main's own trait, so a
-#     collapse would tax an innocent PR. Enters when the false-positive
-#     rate drops or when rung-6 screening can compare against main.
+#   cluster-agent-healthy-workload-no-finding -- #1010: the delegation
+#     receipt is graded as the answer, 51 of 156 recorded repetitions.
+#     #1100 held this seat until its own sweep closed it: the agent
+#     invents nothing here, so the false-positive premise is gone and
+#     the reason for the hold is not. Still main's own trait, so a
+#     collapse would tax an innocent PR. Enters when #1010's fix merges
+#     or when rung-6 screening can compare against main.
 #   autoops-warning-event-triage          -- #1101: 0/5 graded repetitions
 #     on record; admitting it reds every pull request today. Enters when
 #     the lettered-options bar is settled and it has a clean record.
+#   compliance-rbac-overgrant             -- #1171: demoted 2026-09-02
+#     after rung-4 collapses on unrelated pull requests (#1153 was red on
+#     this case alone). The fleet-audit delegation chain is degraded:
+#     audits go partial on what the agent reports as "access
+#     limitations", skipping check 2.4 (the cluster-admin-binding check
+#     this case grades), and some runs publish no ledger at all -- so the
+#     collapse is the environment's, not the diff's. Enters when #1171's
+#     re-admission bar holds: delegation fixed and a clean 3-day graded
+#     record.
+#   rca-remediation-pr                    -- #1189: demoted 2026-09-02
+#     evening after rung-4 collapses on six unrelated pull requests in
+#     one day. The suite's longest delegation chain, so it integrates
+#     over every environment fault in its window: the #1097 429 storms,
+#     the #1144 proxy EACCES (fix #1183), and #1184's gap (infra-blocked
+#     repetitions graded rather than classified) turn one dirty window
+#     into a correlated collapse. Its own record was 12/13 clean before
+#     the storms. Enters when #1189's re-admission bar holds.
 #
 # If an admitted case reds a pull request its diff cannot explain on a
 # graded failure, demote it here and reference its issue. Demotion is a
@@ -1255,7 +1281,7 @@ print(m.group(1).strip('\'\"') if m else '')
 # agent-kanban-smoke earned its seat back after the 08-27 redesign (a real
 # SRE question graded on kanban_create plus cluster names); the reds that
 # once argued for un-arming it belonged to the old vocabulary check.
-export BOOTSTRAP_ADMITTED="${BOOTSTRAP_ADMITTED:-reliability-pdb-probe,security-overgrant-probe,upgrades-lagging-master-probe,consistency-authorized-networks-probe,cost-idle-pool-probe,obtainability-remediation-proposal,rca-remediation-pr,compliance-rbac-overgrant,cluster-agent-crashloop-debug,cluster-agent-crashloop-misleading-symptom,cluster-agent-crashloop-evidence-chain,gpu-stress-test-diagnosis,agent-kanban-smoke}"
+export BOOTSTRAP_ADMITTED="${BOOTSTRAP_ADMITTED:-reliability-pdb-probe,security-overgrant-probe,upgrades-lagging-master-probe,consistency-authorized-networks-probe,cost-idle-pool-probe,obtainability-remediation-proposal,cluster-agent-crashloop-debug,cluster-agent-crashloop-misleading-symptom,cluster-agent-crashloop-evidence-chain,gpu-stress-test-diagnosis,agent-kanban-smoke}"
 
 # Where the evidence itself lives. Unset means bench/baselines/ in the
 # checkout: hermetic, no credential, no network -- and no way for this job to
@@ -1542,10 +1568,23 @@ profile_begin "record + final gate"
 # closes. Unset, the store is the git checkout and this job has no push
 # credential, so the append dies with the workspace; --lines-out is what
 # survives, as a Prow artefact somebody lands by hand in the meantime.
+#
+# RC_COMMIT_SHA is the third condition and the one that is not about pull
+# requests. A release-candidate eval is a periodic with no PULL_NUMBER, so it
+# satisfies the two conditions above exactly, and without this it would file the
+# candidate's results as main's. That is not a mistake anybody can undo later:
+# VersionKey in bench/kube_agents_bench/baselines.py is setup_id,
+# scoring_version, judge_model, fleet and verifiers, with no field naming the
+# build a sample came from, so an RC record and a main record are the same
+# record once written. The candidate would then be measured for non-inferiority
+# against a window it had just moved.
 case "${JOB_TYPE:-}" in
   postsubmit | periodic) EVAL_IS_MAIN_RUN="true" ;;
   *) EVAL_IS_MAIN_RUN="false" ;;
 esac
+if [ -n "${RC_COMMIT_SHA:-}" ]; then
+  EVAL_IS_MAIN_RUN="false"
+fi
 if [ "${EVAL_IS_MAIN_RUN}" = "true" ] && [ -z "${PULL_NUMBER:-}" ]; then
   echo ">>> [$(date -u +'%Y-%m-%dT%H:%M:%SZ')] Recording baseline evidence from main <<<"
   # Never fatal. Bookkeeping must not be the reason a merge to main reds.
@@ -1553,6 +1592,8 @@ if [ "${EVAL_IS_MAIN_RUN}" = "true" ] && [ -z "${PULL_NUMBER:-}" ]; then
     "${CASE_RESULTS[@]}" \
     --lines-out "${ARTIFACT_DIR}/baseline-append.jsonl") || \
     echo "WARNING: recording baseline evidence failed; the verdict below is unaffected."
+elif [ -n "${RC_COMMIT_SHA:-}" ]; then
+  echo "Release-candidate run (RC_COMMIT_SHA=${RC_COMMIT_SHA}): the baseline store is read, never written — the candidate is judged against main's window, not added to it."
 else
   echo "Not a main-branch recorder run (JOB_TYPE=${JOB_TYPE:-unset}): the baseline store is read, never written."
 fi
