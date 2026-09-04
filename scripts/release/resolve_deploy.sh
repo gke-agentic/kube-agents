@@ -79,22 +79,8 @@ case "${lease_policy}" in
     ;;
 esac
 
-force="${INPUT_FORCE_RECONCILE:-${INPUT_FORCE:-}}"
-if [ -z "${force}" ]; then
-  force="false"
-fi
-
-case "${force}" in
-  true|false) ;;
-  *)
-    echo "❌ ERROR: Invalid force_reconcile flag: '${force}'. Must be true or false." >&2
-    exit 1
-    ;;
-esac
-
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
   echo "lease_policy=${lease_policy}" >> "${GITHUB_OUTPUT}"
-  echo "force_reconcile=${force}" >> "${GITHUB_OUTPUT}"
 fi
 
-echo "==> ${env_target} deploy resolved: target=${target}, lease_policy=${lease_policy}, force_reconcile=${force}"
+echo "==> ${env_target} deploy resolved: target=${target}, lease_policy=${lease_policy}"

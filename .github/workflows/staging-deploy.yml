@@ -30,11 +30,6 @@ on:
           - "fail"
           - "ignore"
           - "defer"
-      force_reconcile:
-        description: "Force apply even if staging is already running the candidate commit"
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -53,7 +48,6 @@ jobs:
     outputs:
       commit_sha: ${{ steps.peel.outputs.commit_sha }}
       lease_policy: ${{ steps.peel.outputs.lease_policy }}
-      force_reconcile: ${{ steps.peel.outputs.force_reconcile }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -67,7 +61,6 @@ jobs:
           TARGET_ENVIRONMENT: "staging"
           INPUT_TAG: ${{ inputs.image_tag }}
           INPUT_LEASE_POLICY: ${{ inputs.lease_policy }}
-          INPUT_FORCE_RECONCILE: ${{ inputs.force_reconcile }}
         run: ./scripts/release/resolve_deploy.sh
 
       - name: Verify candidate images exist in GHCR
@@ -89,7 +82,6 @@ jobs:
       mode: "apply"
       image_tag: ${{ needs.resolve-commit.outputs.commit_sha }}
       lease_policy: ${{ needs.resolve-commit.outputs.lease_policy }}
-      force_reconcile: ${{ needs.resolve-commit.outputs.force_reconcile == 'true' }}
     secrets: inherit
 
   verify-deploy:

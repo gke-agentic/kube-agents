@@ -34,9 +34,6 @@ case "${deploy_result}" in
   applied)
     echo "✅ ${env_target} deployment completed successfully (applied)."
     ;;
-  noop)
-    echo "✅ ${env_target} deployment is already in sync with candidate (noop)."
-    ;;
   deferred)
     echo "::error title=Deployment deferred::${env_target} deployment was deferred because the live-test lease was held. Deferrals are not permitted for automated release deployments." >&2
     echo "❌ ERROR: ${env_target} deployment deferred due to held live-test lease. Refusing silent drop." >&2

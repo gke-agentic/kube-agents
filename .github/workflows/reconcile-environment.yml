@@ -36,14 +36,9 @@ on:
         required: false
         default: "defer"
         type: string
-      force_reconcile:
-        description: "Force apply even if the running image already matches image_tag"
-        required: false
-        default: false
-        type: boolean
     outputs:
       result:
-        description: "planned, applied, deferred, noop or failed"
+        description: "planned, applied, deferred or failed"
         value: ${{ jobs.reconcile.outputs.result }}
       drift:
         description: "true, false or unknown — only meaningful for mode: plan"
@@ -82,11 +77,6 @@ on:
           - "fail"
           - "defer"
           - "ignore"
-      force_reconcile:
-        description: "Force apply even if the running image matches image_tag"
-        required: false
-        default: false
-        type: boolean
 
 jobs:
   reconcile:
@@ -173,7 +163,6 @@ jobs:
           GITHUB_ENVIRONMENT: ${{ inputs.github_environment }}
           IMAGE_TAG: ${{ inputs.image_tag }}
           LEASE_POLICY: ${{ inputs.lease_policy }}
-          FORCE_RECONCILE: ${{ inputs.force_reconcile }}
           GH_TOKEN: ${{ github.token }}
           # Every install setting, under the names render_install_env.sh maps.
           # An environment missing one of the required ones fails there, naming
