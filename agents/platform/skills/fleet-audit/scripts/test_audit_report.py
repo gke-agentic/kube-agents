@@ -121,6 +121,13 @@ SHARED_RULES = (
         "the id is derived from check/cluster/namespace/object, so an object "
         "that moves is reported as fixed and re-reported as new",
     ),
+    (
+        "autopilot node-pools qualification or checks_not_applicable clause",
+        "body",
+        r"Autopilot|checks_not_applicable",
+        "an SOP that queries node-pools or runs fleet checks must include an Autopilot / "
+        "checks_not_applicable clause so that Autopilot fleets do not fail or degrade silently",
+    ),
 )
 
 # What GitHub enforces on an issue body, a comment and a pull request body,
