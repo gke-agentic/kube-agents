@@ -45,12 +45,15 @@ Scope:
 This check audits deployable Infrastructure-as-Code manifest files matching
 DISCOVERY_FILE_PATTERNS (*.yaml, *.yml, *.yaml.template, *.yml.template,
 *.yaml.tmpl, *.yml.tmpl) across Helm templates, Kustomize bases, and integration
-examples. It does not scan:
-* Markdown files or agent skill prompts (*.md, e.g. embedded snippets in SKILL.md)
-* Files with extensions outside DISCOVERY_FILE_PATTERNS (e.g. plain *.tpl)
-* Directories pruned by IGNORED_DIRS anywhere in their path (including testdata/
-  at any depth repository-wide, build caches, and virtualenvs) or IGNORED_PREFIXES
-  (docs/site/)
+examples. Repository-wide discovery deliberately escapes four file classes:
+1. Markdown documentation and agent skill prompts (*.md, e.g. embedded NetworkPolicies
+   in SKILL.md files like agents/platform/skills/gke-multitenancy/SKILL.md, which is
+   a separate defect tracked independently).
+2. Extensions outside DISCOVERY_FILE_PATTERNS (e.g. plain *.tpl helper templates
+   inside charts/kube-agents/templates/).
+3. Any directory named testdata/ at any depth repository-wide (pruned by directory
+   name via IGNORED_DIRS, alongside virtualenvs and build caches).
+4. Documentation trees pruned by prefix (docs/site/** via IGNORED_PREFIXES).
 
 Template semantics and #747 D1 requirement:
 Issue #747 D1 requested an assertion rendering manifests via `helm template` and
@@ -121,10 +124,11 @@ STATIC_NETWORK_POLICIES: tuple[str, ...] = (
 
 # Manifests containing kind: NetworkPolicy that are deliberately excluded from the
 # static DNS parity roster. Every entry must carry its reviewed reason.
-# Note: Any directory named testdata/ is ignored systematically at any depth via IGNORED_DIRS.
+# Note: Any directory named testdata/ is ignored systematically at any depth repository-wide
+# via IGNORED_DIRS.
 EXCLUDED_NETPOL_MANIFESTS: dict[str, str] = {}
 
-# Directory names to skip anywhere in the repo-relative path
+# Directory names to skip anywhere in the repo-relative path (applied at any depth)
 IGNORED_DIRS: frozenset[str] = frozenset(
     {
         ".venv",
