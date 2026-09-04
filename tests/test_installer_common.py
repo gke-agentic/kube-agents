@@ -6,6 +6,7 @@ unparseable or unreadable state fails safe), the comma-or-space splitting
 behind --custom-roles, and the API_SERVER_KEY guard in the tfvars generator.
 """
 
+import datetime
 import json
 import pathlib
 import re
@@ -1066,10 +1067,13 @@ class HelmReleaseSelfHealingTest(unittest.TestCase):
                 f'  *) echo "unexpected helm call: $*" >&2; exit 1 ;;\n'
                 f'esac\n'
             )
+            recent_ts = (
+                datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=30)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
             kubectl_script = (
                 '#!/usr/bin/env bash\n'
                 'case "$*" in\n'
-                '  *"get secret"*) date -u -d "30 seconds ago" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +"%Y-%m-%dT%H:%M:%SZ" ; exit 0 ;;\n'
+                f'  *"get secret"*) echo "{recent_ts}" ; exit 0 ;;\n'
                 '  *) echo "unexpected kubectl call: $*" >&2; exit 1 ;;\n'
                 'esac\n'
             )
@@ -1108,6 +1112,38 @@ class HelmReleaseSelfHealingTest(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 1, proc.stderr)
         self.assertIn("Failed to parse creation timestamp 'corrupted-unparseable-timestamp'", proc.stderr)
+
+    def test_pending_upgrade_refuses_recovery_if_wait_times_out_within_operation_window(self):
+        helm_script = (
+            '#!/usr/bin/env bash\n'
+            'case "$*" in\n'
+            '  *"status kube-agents"*) echo \'{"name": "kube-agents", "info": {"status": "pending-upgrade"}}\' ; exit 0 ;;\n'
+            '  *"rollback kube-agents"*) echo "ROLLBACK CALLED" >&2; exit 0 ;;\n'
+            '  *) exit 0 ;;\n'
+            'esac\n'
+        )
+        recent_ts = (
+            datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=30)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        kubectl_script = (
+            '#!/usr/bin/env bash\n'
+            'case "$*" in\n'
+            f'  *"get secret"*) echo "{recent_ts}" ; exit 0 ;;\n'
+            '  *) exit 1 ;;\n'
+            'esac\n'
+        )
+        proc = self._run_helm_test(
+            'ensure_clean_helm_release kube-agents kubeagents-system',
+            helm_script,
+            env_overrides={
+                "HELM_PENDING_WAIT_MAX": "1",
+                "HELM_LOCK_POLL_INTERVAL": "1",
+            },
+            extra_bins={"kubectl": kubectl_script},
+        )
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn("Refusing to recover active operation", proc.stderr)
+        self.assertNotIn("ROLLBACK CALLED", proc.stderr)
 
 
 if __name__ == "__main__":
