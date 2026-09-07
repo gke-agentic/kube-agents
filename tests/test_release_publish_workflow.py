@@ -187,6 +187,18 @@ class ReleasePublishWorkflowTest(unittest.TestCase):
         )
         self.assertIn(token_step.get("id", "release-token"), checkout["with"]["token"])
 
+    def test_the_helm_chart_is_published_with_github_token_packages_credential(self):
+        """Helm chart push to GHCR requires package write permissions, held by GITHUB_TOKEN."""
+        step = self._step(_PUBLISH_JOB, "Package, Publish and Sign Helm Chart")
+        self.assertEqual(step["env"]["GH_TOKEN"], "${{ secrets.GITHUB_TOKEN }}")
+
+    def test_the_release_tag_and_github_release_use_release_bot_token(self):
+        """Git tag and GitHub release creation require the release bot token to bypass rulesets."""
+        tag_step = self._step(_PUBLISH_JOB, "Create Git Tag")
+        self.assertIn("steps.release-token.outputs.token", tag_step["env"]["GH_TOKEN"])
+        release_step = self._step(_PUBLISH_JOB, "Publish GitHub Release")
+        self.assertIn("steps.release-token.outputs.token", release_step["env"]["GH_TOKEN"])
+
     def _step(self, job, name):
         for step in self.jobs[job]["steps"]:
             if step.get("name") == name:
