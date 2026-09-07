@@ -121,13 +121,6 @@ SHARED_RULES = (
         "the id is derived from check/cluster/namespace/object, so an object "
         "that moves is reported as fixed and re-reported as new",
     ),
-    (
-        "autopilot node-pools qualification or checks_not_applicable clause",
-        "body",
-        r"node-pools[^\n]*(Standard|Autopilot)|(Standard|Autopilot)[^\n]*node-pools|\"reason\":\s*\"[^\"]*Autopilot|Autopilot adjustments",
-        "GKE streams must qualify node-pool operations for Standard clusters or "
-        "declare Autopilot in checks_not_applicable",
-    ),
 )
 
 # What GitHub enforces on an issue body, a comment and a pull request body,
@@ -2228,11 +2221,6 @@ class TestAuditCatalogue(unittest.TestCase):
                 sep, f"{spec.sop} has no Red Lines section to check against"
             )
             for label, scope, pattern, why in SHARED_RULES:
-                if "autopilot" in label and audit_id in (
-                    "gcp-networking-fabric-audit",
-                    "gce-compute-fleet-audit",
-                ):
-                    continue
                 haystack = red_lines if scope == "red-lines" else body
                 with self.subTest(audit=audit_id, rule=label):
                     self.assertRegex(
@@ -2355,6 +2343,59 @@ class TestAuditCatalogue(unittest.TestCase):
         self.assertIn("reads as complete at ten of ten", text)
         self.assertIn("intra-node-visibility", text)
         self.assertIn("managed-prometheus", text)
+
+    def test_gke_sops_declare_autopilot_inapplicable_checks(self):
+        """Every GKE SOP whose checks cannot run on Autopilot must declare them in checks_not_applicable.
+
+        Guards against regression of Autopilot inapplicability clauses across the GKE streams.
+        """
+        sop_dir = self.sop_dir()
+        expected_na_checks = {
+            "compliance-audit": [
+                "privileged-container",
+                "host-namespace",
+                "hostpath-mount",
+                "legacy-metadata",
+            ],
+            "security-patch-orchestrator": [
+                "pool-skew",
+                "no-autoupgrade",
+                "no-autorepair",
+                "stale-image-type",
+            ],
+            "stockout-prevention": [
+                "single-zone-nodepool",
+            ],
+            "fleet-wide-cost-analysis": [
+                "idle-nodepool",
+            ],
+            "fleet-consistency-drift": [
+                "shielded-nodes",
+                "secure-boot",
+                "integrity-monitoring",
+                "private-nodes",
+                "node-autoprovisioning",
+                "pool-autoscaling",
+                "intra-node-visibility",
+                "datapath-provider",
+                "image-type",
+            ],
+        }
+        for audit_id, checks in expected_na_checks.items():
+            sop = sop_dir / audit_report.AUDITS[audit_id].sop
+            text = sop.read_text(encoding="utf-8")
+            self.assertIn(
+                "checks_not_applicable",
+                text,
+                f"{sop.name} missing checks_not_applicable specification",
+            )
+            for check in checks:
+                with self.subTest(audit=audit_id, check=check):
+                    self.assertIn(
+                        check,
+                        text,
+                        f"{sop.name} does not declare {check!r} in its Autopilot checks_not_applicable",
+                    )
 
 
 # --------------------------------------------------------------------------- #
