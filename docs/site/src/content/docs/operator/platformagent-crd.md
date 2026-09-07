@@ -444,6 +444,7 @@ Configures the operator-generated egress `NetworkPolicy`.
   **Upgrade note:** when upgrading from a chart version that shipped the static `litellm-policy`, Helm
   prunes the static policy on the first upgrade and the operator recreates it on reconcile. LiteLLM is
   unselected for ~1s between those operations (fail-open); ensure the operator is Running before upgrading.
+
 - `dnsClusterIPs` ([]string, optional, max 8 items) — pins the cluster DNS Service ClusterIPs in
   rule 1, suppressing dynamic discovery from `kube-system/kube-dns`. Each entry is a bare IPv4 or
   IPv6 address with no prefix. Admission bounds the IPv4 octets and rejects the leading-zero form
