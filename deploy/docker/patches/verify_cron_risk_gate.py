@@ -117,13 +117,29 @@ def main() -> int:
         check("high allows client dry-run",
               ap.check_all_command_guards("kubectl create -f x.yaml --dry-run=client -o yaml", "local").get("approved"), True)
         check("high allows quoted-pipe read",
-              ap.check_all_command_guards("kubectl get pods | awk '{n++; print n}'", "local").get("approved"), True)
+              ap.check_all_command_guards("kubectl get pods | tr -s ' '", "local").get("approved"), True)
+        check("high allows comparison in filter",
+              ap.check_all_command_guards('gcloud compute instances list --filter="creationTimestamp > 2026"', "local").get("approved"), True)
+        check("high allows redirect to dev null",
+              ap.check_all_command_guards("kubectl get pods &>/dev/null", "local").get("approved"), True)
         check("high allows jsonpath with quoted pipe",
               ap.check_all_command_guards("kubectl get x -o jsonpath='{.items[*]}|{end}'", "local").get("approved"), True)
         check("high allows k alias",
               ap.check_all_command_guards("k get nodes", "local").get("approved"), True)
         check("high refuses mutation",
               ap.check_all_command_guards("kubectl delete ns prod", "local").get("approved"), False)
+        check("high refuses unsafe awk",
+              ap.check_all_command_guards("awk 'BEGIN{system(\"id\")}'", "local").get("approved"), False)
+        check("high refuses mixed punctuation break",
+              ap.check_all_command_guards("kubectl get pods ;(helm uninstall prod-release)", "local").get("approved"), False)
+        check("high refuses mixed punctuation redirect",
+              ap.check_all_command_guards("kubectl get pods ;>/dev/null bash -c id", "local").get("approved"), False)
+        check("high refuses dry-run after double-dash",
+              ap.check_all_command_guards("kubectl exec -n prod deploy/api -- bash -c id --dry-run=client", "local").get("approved"), False)
+        check("high refuses dry-run none",
+              ap.check_all_command_guards("kubectl delete ns prod --dry-run=client --dry-run=none", "local").get("approved"), False)
+        check("high refuses non-null file redirect",
+              ap.check_all_command_guards("echo evil &> /opt/data/jobs.json", "local").get("approved"), False)
         check("high refuses chained mutation",
               ap.check_all_command_guards("kubectl get x && kubectl delete y", "local").get("approved"), False)
         check("high refuses background smuggling",

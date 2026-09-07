@@ -77,7 +77,7 @@ _HOST_TOKEN = re.compile(
 
 #: Executables that are read-only in every invocation (text/inspection utils).
 _READ_ONLY_TOOLS = frozenset({
-    "grep", "egrep", "fgrep", "awk", "jq", "yq", "cut", "sort", "uniq", "head",
+    "grep", "egrep", "fgrep", "jq", "cut", "uniq", "head",
     "tail", "wc", "cat", "tr", "column", "nl", "comm", "join", "paste", "fold",
     "rev", "echo", "printf", "date", "hostname", "pwd", "true", "test",
 })
@@ -87,6 +87,7 @@ _INDIRECTION = frozenset({
     "sh", "bash", "zsh", "ash", "dash", "ksh", "python", "python3", "perl",
     "ruby", "node", "eval", "exec", "env", "xargs", "watch", "timeout", "nohup",
     "nice", "ssh", "sudo", "su", "find", "flock", "setsid", "stdbuf", "script",
+    "awk", "gawk", "mawk", "nawk", "yq",
 })
 
 #: Subcommand tools: any mutating verb refuses; else a read verb is required.
@@ -131,21 +132,48 @@ _REDIR_OK_TARGETS = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr"})
 #: Command / process substitution — refused wholesale (executes even inside "double quotes").
 _SUBST = re.compile(r"\$\(|`|<\(|>\(")
 
-#: Operators that split commands or control flow (pipe, background, sequence, newline).
-_BREAK_OPERATORS = ";|&\n"
-
 #: Punctuation characters recognized by shlex. Emits shell control operators as discrete tokens.
 _SHLEX_PUNCTUATION_CHARS = "();<>|&\n"
+
+#: Multi-character punctuation operators recognized in shell syntax.
+_VALID_MULTI_PUNCT = frozenset({"&&", "||", ";;", ">>", ">&", "&>", "&>>", "<<", "<&"})
+
+#: Decomposition regex to separate glued punctuation tokens emitted by shlex.
+_PUNCT_SPLIT_RE = re.compile(r"&&|\|\||;;|&>>|>>|>&|&>|<<|<&|[();<>|&\n]")
+
+#: Operators that end a segment or start a new command / pipeline.
+_BREAK_OPERATORS = frozenset({";", "|", "&", "\n", "&&", "||", ";;"})
+
+#: Shell redirection operators.
+_REDIRECT_OPERATORS = frozenset({">", ">>", "<", "<<", ">&", "<&", "&>", "&>>"})
+_FD_REDIRECT_RE = re.compile(r"^\d+(?:>>?|>&|<&)$")
+
+#: Mutating operations that must never be bypassed by dry-run flags.
+_NEVER_DRY_RUN_VERBS = frozenset({"exec", "cp", "attach", "port-forward", "proxy"})
+
+#: Permitted dry-run flag values/prefixes for declarative kubectl commands.
+_DRY_RUN_PREFIX = "--dry-run="
+_DRY_RUN_VALID_PREFIXES = ("--dry-run=c", "--dry-run=s")
+_DOUBLE_DASH = "--"
+
+
+def _split_punct_token(tok: str) -> list[str]:
+    """Decompose mixed punctuation tokens (e.g. ';(' -> [';', '(']) into distinct operators."""
+    if tok and all(c in _SHLEX_PUNCTUATION_CHARS for c in tok):
+        if tok in _VALID_MULTI_PUNCT or len(tok) == 1:
+            return [tok]
+        return _PUNCT_SPLIT_RE.findall(tok)
+    return [tok]
 
 
 #: A pure control-operator token (pipe, background, sequence, newline) ends a segment.
 def _is_break(tok: str) -> bool:
-    return tok != "" and all(c in _BREAK_OPERATORS for c in tok)
+    return tok in _BREAK_OPERATORS
 
 
-#: A redirect operator token carries a '<' or '>' (e.g. '>', '>>', '2>', '>&').
+#: A redirect operator token (e.g. '>', '>>', '2>', '>&', '&>').
 def _is_redirect(tok: str) -> bool:
-    return "<" in tok or ">" in tok
+    return tok in _REDIRECT_OPERATORS or bool(_FD_REDIRECT_RE.match(tok))
 
 
 def _load_config_readonly() -> dict:
@@ -179,16 +207,20 @@ def _lex_segments(command: str) -> Optional[list[list[str]]]:
     Uses a single ``shlex`` pass with ``punctuation_chars`` so pipes, ``&``,
     ``&&``, ``;`` and newlines are emitted as their own tokens (and so cannot
     hide a second command), while ``|``/``;`` inside quotes stay part of the
-    argument they belong to. Returns None if the command cannot be lexed.
+    argument they belong to. Mixed punctuation tokens (e.g. ';(') are decomposed
+    so break operators cannot be masked. Returns None if unlexable.
     """
     lex = shlex.shlex(command, posix=True, punctuation_chars=_SHLEX_PUNCTUATION_CHARS)
     lex.whitespace_split = True
     lex.commenters = ""                       # '#' is data here, never a comment
     lex.whitespace = " \t\r"                  # newline is an operator, not whitespace
     try:
-        tokens = list(lex)
+        raw_tokens = list(lex)
     except ValueError:
         return None
+    tokens: list[str] = []
+    for t in raw_tokens:
+        tokens.extend(_split_punct_token(t))
     segments: list[list[str]] = []
     current: list[str] = []
     for tok in tokens:
@@ -207,9 +239,14 @@ def _segment_is_read_only(tokens: list[str]) -> bool:
     i = 0
     while i < len(tokens):
         tok = tokens[i]
+        # Consume leading fd digit if adjacent to redirect (e.g. '2', '>', '/dev/null')
+        if tok.isdigit() and i + 1 < len(tokens) and _is_redirect(tokens[i + 1]):
+            tok = tokens[i + 1]
+            i += 1
         if _is_redirect(tok):
-            if "&" in tok:                    # fd dup (>&2, 2>&1): no filesystem write
-                i += 2 if i + 1 < len(tokens) else 1
+            # fd dup: >&2, 2>&1, <&0, >&- (target is digit or '-')
+            if (tok.endswith(">&") or tok.endswith("<&")) and i + 1 < len(tokens) and (tokens[i + 1].isdigit() or tokens[i + 1] == "-"):
+                i += 2
                 continue
             target = tokens[i + 1] if i + 1 < len(tokens) else ""
             if target not in _REDIR_OK_TARGETS:
@@ -239,11 +276,19 @@ def _segment_is_read_only(tokens: list[str]) -> bool:
         return False
 
     rest = cleaned[1:]
-    if exe in ("kubectl", "oc") and any(
-        t.startswith("--dry-run=c") or t.startswith("--dry-run=s") for t in rest
-    ):
-        return True
+    dashdash_idx = rest.index(_DOUBLE_DASH) if _DOUBLE_DASH in rest else len(rest)
+    flags = rest[:dashdash_idx]
     positionals = [t for t in rest if not t.startswith("-") and "=" not in t]
+
+    if exe in ("kubectl", "oc"):
+        if any(t in _NEVER_DRY_RUN_VERBS for t in positionals):
+            return False
+        dry_run_flags = [t for t in flags if t.startswith(_DRY_RUN_PREFIX)]
+        if dry_run_flags:
+            last_dry_run = dry_run_flags[-1]
+            if last_dry_run.startswith(_DRY_RUN_VALID_PREFIXES):
+                return True
+
     if any(t in mutate for t in positionals):
         return False
     if any(t in read for t in positionals):

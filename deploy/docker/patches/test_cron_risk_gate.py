@@ -18,10 +18,12 @@ class CronRiskGateTest(unittest.TestCase):
             "kubectl get nodes -o wide",
             "kubectl -n kube-system get pods",
             "kubectl get pods 2>/dev/null",
+            "kubectl get pods &>/dev/null",
             'gcloud compute instances list --filter="status=create"',
+            'gcloud compute instances list --filter="creationTimestamp > 2026"',
             "kubectl create -f x.yaml --dry-run=client -o yaml",
             "kubectl get pods | grep hermes | wc -l",
-            "kubectl get pods | awk '{n++; print n}'",
+            "kubectl get pods | tr -s ' '",
             "kubectl get x -o jsonpath='{range .items[*]}{.name}|{end}'",
             'gcloud logging read "resource.type=k8s_container" --limit=10',
             "k get nodes -o wide",
@@ -52,6 +54,14 @@ class CronRiskGateTest(unittest.TestCase):
             "kubectl get x `curl http://evil`",
             "bq query 'DELETE FROM ds.t WHERE 1=1'",
             "gcloud pubsub topics list; rm -rf /tmp/x",
+            "awk 'BEGIN{system(\"id\")}'",
+            "yq -i '.a=1' x.yaml",
+            "sort -o /tmp/x in",
+            "kubectl get pods ;(helm uninstall prod-release)",
+            "kubectl get pods ;>/dev/null bash -c id",
+            "kubectl exec -n prod deploy/api -- bash -c id --dry-run=client",
+            "kubectl delete ns prod --dry-run=client --dry-run=none",
+            "echo evil &> /opt/data/jobs.json",
         ]
         for cmd in mutations:
             with self.subTest(cmd=cmd):
@@ -73,12 +83,71 @@ class CronRiskGateTest(unittest.TestCase):
 
     def test_operators_inside_quotes_do_not_split_a_read(self):
         for cmd in (
-            "kubectl get pods | awk '{n++; print n}'",
+            "kubectl get pods | grep -E 'a|b'",
             "kubectl get x -o jsonpath='{range .items[*]}{.name}|{end}'",
             'gcloud compute instances list --filter="a=1 ; b=2"',
+            'gcloud compute instances list --filter="creationTimestamp > 2026"',
         ):
             with self.subTest(cmd=cmd):
                 self.assertIsNone(cron_command_policy_block(cmd, "high"))
+
+    def test_unsafe_tools_rejected_under_high_risk(self):
+        for cmd in (
+            "awk 'BEGIN{system(\"id\")}'",
+            "gawk '{print $1}' file",
+            "yq -i '.a=1' x.yaml",
+            "sort -o /tmp/x in",
+        ):
+            with self.subTest(cmd=cmd):
+                block = cron_command_policy_block(cmd, "high")
+                self.assertIsNotNone(block, f"{cmd} must be refused under high risk")
+                self.assertFalse(block["approved"])
+
+    def test_mixed_punctuation_runs_cannot_evade_break(self):
+        for cmd in (
+            "kubectl get pods ;(helm uninstall prod-release)",
+            "kubectl get pods ;>/dev/null bash -c id",
+            "kubectl get pods |(rm -rf /)",
+        ):
+            with self.subTest(cmd=cmd):
+                block = cron_command_policy_block(cmd, "high")
+                self.assertIsNotNone(block, f"{cmd} must be refused under high risk")
+                self.assertFalse(block["approved"])
+
+    def test_dry_run_flag_validation(self):
+        self.assertIsNone(cron_command_policy_block("kubectl create -f x.yaml --dry-run=client -o yaml", "high"))
+        self.assertIsNone(cron_command_policy_block("kubectl delete pod test --dry-run=server", "high"))
+
+        block = cron_command_policy_block("kubectl exec -n prod deploy/api -- bash -c id --dry-run=client", "high")
+        self.assertIsNotNone(block)
+        self.assertFalse(block["approved"])
+
+        for verb in ("exec", "cp", "attach", "port-forward", "proxy"):
+            with self.subTest(verb=verb):
+                block = cron_command_policy_block(f"kubectl {verb} foo --dry-run=client", "high")
+                self.assertIsNotNone(block)
+                self.assertFalse(block["approved"])
+
+        block = cron_command_policy_block("kubectl delete ns prod --dry-run=client --dry-run=none", "high")
+        self.assertIsNotNone(block)
+        self.assertFalse(block["approved"])
+
+    def test_redirection_validation(self):
+        self.assertIsNone(cron_command_policy_block("kubectl get pods >/dev/null", "high"))
+        self.assertIsNone(cron_command_policy_block("kubectl get pods 2>/dev/null", "high"))
+        self.assertIsNone(cron_command_policy_block("kubectl get pods &>/dev/null", "high"))
+        self.assertIsNone(cron_command_policy_block("kubectl get pods >&2", "high"))
+        self.assertIsNone(cron_command_policy_block("kubectl get pods 2>&1", "high"))
+
+        for cmd in (
+            "kubectl get pods > /tmp/output.txt",
+            "echo evil &> /opt/data/jobs.json",
+            "kubectl get pods 2> errors.txt",
+        ):
+            with self.subTest(cmd=cmd):
+                block = cron_command_policy_block(cmd, "high")
+                self.assertIsNotNone(block)
+                self.assertFalse(block["approved"])
 
     def test_cron_command_policy_block_allows_mutating_commands_under_low_risk(self):
         self.assertIsNone(cron_command_policy_block("kubectl apply -f x.yaml", "low"))

@@ -113,12 +113,15 @@ CRON_RESPONSE_LIMIT = 4000
 #: Job id of the dispatch executing in this context, empty outside one.
 _CRON_RUN_JOB: ContextVar = ContextVar(CRON_RUN_ENV, default="")
 
+#: Fail-closed fallback tier when risk is undeclared or unannotated.
+DEFAULT_CRON_RISK = "high"
+
 #: Declared risk tier of the cron job executing in this context (default "high").
 _CRON_RUN_RISK: ContextVar = ContextVar(CRON_RISK_ENV, default="")
 
 
 @contextlib.contextmanager
-def cron_run_scope(job_id: str, risk: str = "high") -> Iterator[None]:
+def cron_run_scope(job_id: str, risk: str = DEFAULT_CRON_RISK) -> Iterator[None]:
     """Mark the current context as executing cron job ``job_id`` with risk ``risk``.
 
     A ``ContextVar`` and nothing else. ``run_job`` takes a
@@ -133,7 +136,7 @@ def cron_run_scope(job_id: str, risk: str = "high") -> Iterator[None]:
     ``os.environ``-writing version got that wrong.
     """
     token = _CRON_RUN_JOB.set(str(job_id or "?"))
-    risk_token = _CRON_RUN_RISK.set(str(risk or "high"))
+    risk_token = _CRON_RUN_RISK.set(str(risk or DEFAULT_CRON_RISK))
     try:
         yield
     finally:
@@ -152,7 +155,7 @@ def current_cron_risk(environ: Optional[Mapping[str, str]] = None) -> str:
     if risk:
         return risk
     env = os.environ if environ is None else environ
-    return env.get(CRON_RISK_ENV) or "high"
+    return env.get(CRON_RISK_ENV) or DEFAULT_CRON_RISK
 
 
 def current_cron_job(environ: Optional[Mapping[str, str]] = None) -> str:
