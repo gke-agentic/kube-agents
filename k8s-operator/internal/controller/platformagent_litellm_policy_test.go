@@ -32,8 +32,6 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"sigs.k8s.io/controller-runtime/pkg/event"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	agentv1alpha1 "github.com/gke-labs/kube-agents/k8s-operator/api/v1alpha1"
 )
@@ -370,6 +368,7 @@ func TestReconcileLiteLLMNetworkPolicy_LiteLLMPresent(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "litellm",
 			Namespace: "test-ns",
+			UID:       types.UID("litellm-test-uid"),
 		},
 	}
 
@@ -399,10 +398,17 @@ func TestReconcileLiteLLMNetworkPolicy_LiteLLMPresent(t *testing.T) {
 		t.Fatalf("expected litellm-policy to exist, got error: %v", err)
 	}
 
-	// Runtime decoupling check: verify litellm-policy has NO OwnerReference to PlatformAgent
-	if len(netpol.OwnerReferences) != 0 {
-		t.Errorf("expected 0 OwnerReferences on litellm-policy for runtime decoupling, got %d (%+v)",
+	// Verify litellm-policy is owned by Deployment/litellm and has NO OwnerReference to PlatformAgent
+	if len(netpol.OwnerReferences) != 1 {
+		t.Fatalf("expected 1 OwnerReference on litellm-policy pointing to Deployment/litellm, got %d (%+v)",
 			len(netpol.OwnerReferences), netpol.OwnerReferences)
+	}
+	ownerRef := netpol.OwnerReferences[0]
+	if ownerRef.Kind != "Deployment" || ownerRef.Name != "litellm" {
+		t.Errorf("expected OwnerReference to Deployment/litellm, got %+v", ownerRef)
+	}
+	if ownerRef.UID != litellmDep.UID {
+		t.Errorf("expected OwnerReference UID %q, got %q", litellmDep.UID, ownerRef.UID)
 	}
 
 	// Verify labels stamped by applyManaged
@@ -972,7 +978,7 @@ func TestHandleDeletion_LiteLLMCleanup_DeploymentDeleting(t *testing.T) {
 	}
 }
 
-func TestHandleDeletion_LiteLLMCleanup_DeploymentActive(t *testing.T) {
+func TestHandleDeletion_LiteLLMPolicy_PreservedWhenDeploymentActive(t *testing.T) {
 	scheme := setupScheme()
 
 	agent := &agentv1alpha1.PlatformAgent{
@@ -1017,8 +1023,8 @@ func TestHandleDeletion_LiteLLMCleanup_DeploymentActive(t *testing.T) {
 	}
 
 	var netpol networkingv1.NetworkPolicy
-	if err := cl.Get(ctx, types.NamespacedName{Namespace: "test-ns", Name: "litellm-policy"}, &netpol); err == nil {
-		t.Fatalf("expected managed litellm-policy to be deleted on PlatformAgent teardown even when litellm Deployment is still active (helm uninstall pre-delete hook order)")
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: "test-ns", Name: "litellm-policy"}, &netpol); err != nil {
+		t.Fatalf("expected litellm-policy to be preserved when litellm Deployment is still active, got error: %v", err)
 	}
 }
 
@@ -1155,40 +1161,53 @@ func TestReconcile_Refusal_RuntimeClassNotFound_MaintainsNetworkGuardrails(t *te
 	}
 }
 
-func TestSetupWithManager_LiteLLMDeploymentWatchPredicate(t *testing.T) {
-	pred := predicate.GenerationChangedPredicate{}
+func TestBuildLiteLLMNetworkPolicy_CollectorNamespaceAnnotation(t *testing.T) {
+	profile := netpolProfile{
+		Generated:     true,
+		DNSClusterIPs: []string{"10.96.0.10"},
+	}
 
-	oldDep := &appsv1.Deployment{
+	vendorEndpoint := "https://otel.vendor.example:4318"
+	customNS := "custom-collector-ns"
+
+	// Case 1: Vendor endpoint with AnnotationOTLPCollectorNamespace set -> rule emitted for custom namespace
+	agentWithAnnotation := &agentv1alpha1.PlatformAgent{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:       litellmDeploymentName,
-			Namespace:  "test-ns",
-			Generation: 1,
+			Name:      "test-agent",
+			Namespace: "test-ns",
+			Annotations: map[string]string{
+				AnnotationOTLPCollectorNamespace: customNS,
+			},
 		},
-		Status: appsv1.DeploymentStatus{
-			ReadyReplicas: 1,
-		},
+	}
+	netpol := buildLiteLLMNetworkPolicy(agentWithAnnotation, profile, vendorEndpoint, false)
+	foundRule := false
+	for _, rule := range netpol.Spec.Egress {
+		for _, peer := range rule.To {
+			if peer.NamespaceSelector != nil && peer.NamespaceSelector.MatchLabels[labelMetadataName] == customNS {
+				foundRule = true
+				break
+			}
+		}
+	}
+	if !foundRule {
+		t.Fatalf("expected OTLP egress rule with namespace %s when AnnotationOTLPCollectorNamespace is set, but got none", customNS)
 	}
 
-	// Status update without spec change (same generation) must be filtered out
-	statusUpdateDep := oldDep.DeepCopy()
-	statusUpdateDep.Status.ReadyReplicas = 2
-	evStatus := event.UpdateEvent{
-		ObjectOld: oldDep,
-		ObjectNew: statusUpdateDep,
+	// Case 2: Vendor endpoint without annotation -> rule omitted
+	agentWithoutAnnotation := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+		},
 	}
-	if pred.Update(evStatus) {
-		t.Errorf("expected GenerationChangedPredicate to reject status-only update (same generation), but it admitted it")
-	}
-
-	// Spec change (different generation) must be admitted
-	specUpdateDep := oldDep.DeepCopy()
-	specUpdateDep.Generation = 2
-	evSpec := event.UpdateEvent{
-		ObjectOld: oldDep,
-		ObjectNew: specUpdateDep,
-	}
-	if !pred.Update(evSpec) {
-		t.Errorf("expected GenerationChangedPredicate to admit spec update (different generation), but it rejected it")
+	netpolNoAnnotation := buildLiteLLMNetworkPolicy(agentWithoutAnnotation, profile, vendorEndpoint, false)
+	for _, rule := range netpolNoAnnotation.Spec.Egress {
+		for _, p := range rule.Ports {
+			if p.Port != nil && (p.Port.IntVal == 4317 || p.Port.IntVal == 4318) {
+				t.Errorf("expected no OTLP egress rule for unresolvable vendor endpoint without annotation, but found port %d", p.Port.IntVal)
+			}
+		}
 	}
 }
 

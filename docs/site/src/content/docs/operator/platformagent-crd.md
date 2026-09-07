@@ -442,8 +442,10 @@ Configures the operator-generated egress `NetworkPolicy`.
   `kubeagents.x-k8s.io/enable-litellm-network-policy: "false"` on the `PlatformAgent`.
 
   **Upgrade note:** when upgrading from a chart version that shipped the static `litellm-policy`, Helm
-  prunes the static policy on the first upgrade and the operator recreates it on reconcile. LiteLLM is
-  unselected for ~1s between those operations (fail-open); ensure the operator is Running before upgrading.
+  prunes the static policy on the first upgrade. The operator recreates it once the new operator pod
+  rolls out, acquires leader election, and reconciles. LiteLLM is unselected (fail-open) during this
+  operator rollout window; pre-roll the new operator image before running `helm upgrade`, or manage the
+  policy out-of-band during the transition via `litellm.networkPolicy=false`.
 
 - `dnsClusterIPs` ([]string, optional, max 8 items) — pins the cluster DNS Service ClusterIPs in
   rule 1, suppressing dynamic discovery from `kube-system/kube-dns`. Each entry is a bare IPv4 or

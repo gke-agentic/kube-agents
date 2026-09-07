@@ -628,13 +628,20 @@ func (r *PlatformAgentReconciler) handleDeletion(ctx context.Context, agent *age
 			return ctrl.Result{}, err
 		}
 
-		// Delete managed litellm-policy if present so it is not orphaned.
-		// litellm-policy is managed without an OwnerReference (to avoid premature GC while
-		// the agent is running). When PlatformAgent is finalized (including during helm uninstall's
-		// pre-delete hook), clean up the policy. deleteManagedLiteLLMPolicy only deletes policies
-		// bearing app.kubernetes.io/managed-by: platformagent-controller, preserving user-managed policies.
-		if err := r.deleteManagedLiteLLMPolicy(ctx, agent); err != nil {
-			return ctrl.Result{}, err
+		// Delete managed litellm-policy during finalizer teardown only if Deployment/litellm
+		// is absent or terminating. litellm-policy is owned by Deployment/litellm (via OwnerReference)
+		// so that deleting PlatformAgent does not strip NetworkPolicy protection while LiteLLM
+		// is still running. When Deployment/litellm is deleted (e.g. helm uninstall), Kubernetes
+		// garbage collection cleans up litellm-policy automatically.
+		var litellmDep appsv1.Deployment
+		depErr := r.Get(ctx, types.NamespacedName{Namespace: agent.Namespace, Name: litellmDeploymentName}, &litellmDep)
+		if depErr != nil && !errors.IsNotFound(depErr) {
+			return ctrl.Result{}, fmt.Errorf("failed to get LiteLLM deployment during deletion cleanup: %w", depErr)
+		}
+		if errors.IsNotFound(depErr) || (depErr == nil && litellmDep.DeletionTimestamp != nil) {
+			if err := r.deleteManagedLiteLLMPolicy(ctx, agent); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 
 		// The NATS StatefulSet's volumeClaimTemplate PVC has no owner
@@ -1631,7 +1638,11 @@ func (r *PlatformAgentReconciler) reconcileAgentEgressPolicy(ctx context.Context
 	// path that skipped validation. Log it rather than assume: the drop is what
 	// keeps the rendered object safe, and a silent drop is the failure mode
 	// this guard exists for.
-	policy, dropped := buildAgentEgressNetworkPolicy(agent, dnsClusterIPs, otlpCollectorNamespace(otlpEndpoint))
+	collectorNs := otlpCollectorNamespace(otlpEndpoint)
+	if collectorNs == "" && agent != nil && agent.Annotations != nil {
+		collectorNs = agent.Annotations[AnnotationOTLPCollectorNamespace]
+	}
+	policy, dropped := buildAgentEgressNetworkPolicy(agent, dnsClusterIPs, collectorNs)
 	for _, reason := range dropped {
 		log.Info("WARNING: dropped an egressAllowlist destination that would widen the policy onto the "+
 			"metadata server or the open internet. It was dropped, not narrowed: an ipBlock \"except\" "+

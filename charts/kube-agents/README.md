@@ -261,7 +261,7 @@ but that variable only exists when `litellm.otel=true` — off by default, and n
 turned on by naming a collector.
 
 The egress namespace is read off the endpoint host when it names an in-cluster
-Service. When `platformAgent.enabled=false`, an external endpoint has none to read:
+Service. An external endpoint or bare hostname has no namespace to read:
 with `litellm.otel=true` that fails the render, so set `telemetry.collectorNamespace`
 (or `litellm.networkPolicy=false`); with the callback off the rule keeps
 `gke-managed-otel`, since nothing exports through it. Full precedence
@@ -269,7 +269,7 @@ ladder and discovery rules: [Deploy → Telemetry](https://gke-labs.github.io/ku
 
 ### Upgrade notes
 
-**Upgrading from a chart version that shipped the static `litellm-policy`:** on the first `helm upgrade` after `platformAgent.enabled` takes effect, Helm prunes the static `litellm-policy` and the operator recreates it on its next reconcile. Between those two events LiteLLM is selected by no NetworkPolicy and its egress is unrestricted (fail-open). Observed window: **~1s** on a healthy operator. To avoid it entirely, ensure the operator is Running before the upgrade; to revert operator management at any time set the annotation `kubeagents.x-k8s.io/enable-litellm-network-policy: "false"`.
+**Upgrading from a chart version that shipped the static `litellm-policy`:** on the first `helm upgrade` after dynamic management takes effect, Helm prunes the static `litellm-policy`. The operator recreates it once the new operator pod rolls out, acquires leader election, and reconciles. During this operator rollout window LiteLLM is selected by no NetworkPolicy and its egress is unrestricted (fail-open). To eliminate this window, pre-roll the new operator image (`kubectl set image deployment/kube-agents-operator ...`) before running `helm upgrade`, or set `litellm.networkPolicy=false` and manage `litellm-policy` out-of-band during the transition. To opt out of operator management permanently, set the annotation `kubeagents.x-k8s.io/enable-litellm-network-policy: "false"` on the `PlatformAgent`.
 
 #### Vertex AI (`litellm.modelProvider=vertex_ai`)
 

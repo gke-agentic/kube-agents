@@ -60,8 +60,14 @@
 {{- if empty $vertexProject }}
 {{- fail "litellm.modelProvider 'vertex_ai' needs litellm.vertex.projectId (or platformAgent.harness.projectId): Vertex AI is addressed as projects/<project>/locations/<location> and the project has no usable default." }}
 {{- end }}
-{{- end }}
 {{- $callbacks := ternary `["otel", "prometheus"]` `["prometheus"]` .Values.litellm.otel }}
+{{- /*
+  LiteLLM OTLP collector validation: ensure collector namespace can be determined
+  when otel and network policy are active, failing the render early if unresolvable.
+*/}}
+{{- if and .Values.litellm.otel .Values.litellm.networkPolicy }}
+{{- $null := include "kube-agents.otlpCollectorNamespace" . }}
+{{- end }}
 {{- /*
   Rendered once here and used twice below — as the ConfigMap body and as the
   input to the Deployment's checksum. Three aliases for one upstream model,
@@ -245,7 +251,7 @@ spec:
       port: 80
       targetPort: 8080
   type: ClusterIP
-{{- if and .Values.litellm.networkPolicy (not .Values.platformAgent.enabled) }}
+{{- if and .Values.litellm.networkPolicy (not (and .Values.platformAgent.enabled .Values.operator.enabled)) }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

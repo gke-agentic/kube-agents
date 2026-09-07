@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	agentv1alpha1 "github.com/gke-labs/kube-agents/k8s-operator/api/v1alpha1"
@@ -69,7 +70,10 @@ const (
 	// AnnotationEnableLiteLLMNetworkPolicy toggles operator management of litellm-policy.
 	// When set to "false", the operator stops generating litellm-policy and deletes any managed copy.
 	AnnotationEnableLiteLLMNetworkPolicy = "kubeagents.x-k8s.io/enable-litellm-network-policy"
-	disabledValue                        = "false"
+	// AnnotationOTLPCollectorNamespace specifies the namespace of the OpenTelemetry collector
+	// when it cannot be derived from the endpoint host.
+	AnnotationOTLPCollectorNamespace = "kubeagents.x-k8s.io/otlp-collector-namespace"
+	disabledValue                    = "false"
 
 	managedByHelm      = "Helm"
 	managedByKustomize = "kustomize"
@@ -215,7 +219,11 @@ func buildLiteLLMNetworkPolicy(agent *agentv1alpha1.PlatformAgent, profile netpo
 
 	// 5. OpenTelemetry Collector (conditional)
 	if !otlpDisabled {
-		if ns := otlpCollectorNamespace(otlpEndpoint); ns != "" {
+		ns := otlpCollectorNamespace(otlpEndpoint)
+		if ns == "" && agent != nil && agent.Annotations != nil {
+			ns = agent.Annotations[AnnotationOTLPCollectorNamespace]
+		}
+		if ns != "" {
 			egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{
 				Ports: []networkingv1.NetworkPolicyPort{
 					tcpPort(otlpGRPCPort),
@@ -309,11 +317,11 @@ func canAdoptLiteLLMPolicy(netpol *networkingv1.NetworkPolicy) bool {
 // reconcileLiteLLMNetworkPolicy manages the litellm-policy NetworkPolicy when LiteLLM is
 // present in the agent namespace and networkPolicy generation is enabled.
 //
-// Lifecycle design: litellm-policy is applied with applyManaged without setting an OwnerReference
-// to the PlatformAgent to decouple its runtime object identity from the agent CR. When PlatformAgent
-// is finalized, handleDeletion explicitly cleans up the operator-managed policy via deleteManagedLiteLLMPolicy
-// so that litellm-policy is not orphaned during Helm teardown (where Helm's pre-delete hook removes
-// PlatformAgent before release workloads).
+// Lifecycle design: litellm-policy is owned by Deployment/litellm via an OwnerReference (and has
+// NO OwnerReference to PlatformAgent), decoupling its runtime object identity from the agent CR.
+// When PlatformAgent is deleted while LiteLLM is still running, litellm-policy is preserved to prevent
+// fail-open credential exposure. When Deployment/litellm is deleted (e.g. during helm uninstall),
+// Kubernetes garbage collection cleans up litellm-policy automatically.
 //
 // Safe deletion: If network policy generation is disabled (spec.networkPolicy.enabled == false or
 // kubeagents.x-k8s.io/enable-litellm-network-policy == "false") or the LiteLLM deployment is not
@@ -351,6 +359,15 @@ func (r *PlatformAgentReconciler) reconcileLiteLLMNetworkPolicy(ctx context.Cont
 	}
 
 	netpol := buildLiteLLMNetworkPolicy(agent, profile, otlpEndpoint, otlpDisabled)
+	if !otlpDisabled && otlpEndpoint != "" && otlpCollectorNamespace(otlpEndpoint) == "" {
+		if agent == nil || agent.Annotations == nil || agent.Annotations[AnnotationOTLPCollectorNamespace] == "" {
+			logf.FromContext(ctx).Info("WARNING: LiteLLM OTLP endpoint does not name an in-cluster Service and no collector namespace is configured; omitting OTLP egress rule",
+				"namespace", agent.Namespace, "endpoint", otlpEndpoint)
+		}
+	}
+	if err := controllerutil.SetOwnerReference(&litellmDep, netpol, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set owner reference on LiteLLM NetworkPolicy: %w", err)
+	}
 	if err := r.applyManaged(ctx, agent, netpol); err != nil {
 		return fmt.Errorf("failed to apply NetworkPolicy %s/%s: %w", netpol.Namespace, netpol.Name, err)
 	}
