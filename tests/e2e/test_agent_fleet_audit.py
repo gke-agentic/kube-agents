@@ -46,14 +46,13 @@ def test_github_token_minting_and_connectivity(
     if not gke_cluster_name or not github_repo:
         pytest.fail("GKE cluster name and GITHUB_REPO are required for live GitHub connectivity probe.")
 
-    # Find running platform-agent pod with availability wait
+    # 1. Wait for running shell sandbox pod (StatefulSet app=<name>-shell, container: shell)
     deadline = time.time() + _POD_WAIT_TIMEOUT_SECONDS
     pod_name = ""
     container_name = "shell"
     agent_name = os.environ.get("AGENT_SERVICE_NAME", "platform-agent")
 
     while time.time() < deadline:
-        # 1. Shell sandbox pod (StatefulSet app=<name>-shell, container: shell)
         proc_pod = subprocess.run(
             [
                 "kubectl",
@@ -74,38 +73,11 @@ def test_github_token_minting_and_connectivity(
             pod_name = proc_pod.stdout.strip()
             container_name = "shell"
             break
+        time.sleep(_POD_POLL_INTERVAL_SECONDS)
 
-        # 2. Search for any pod running the 'shell' container
-        proc_all = subprocess.run(
-            [
-                "kubectl",
-                "get",
-                "pods",
-                "-n",
-                agent_namespace,
-                "--field-selector=status.phase=Running",
-                "-o",
-                "json",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if proc_all.returncode == 0 and proc_all.stdout.strip():
-            try:
-                items = json.loads(proc_all.stdout).get("items", [])
-                for item in items:
-                    c_names = [c.get("name") for c in item.get("spec", {}).get("containers", [])]
-                    if "shell" in c_names:
-                        pod_name = item.get("metadata", {}).get("name", "")
-                        container_name = "shell"
-                        break
-            except Exception:
-                pass
-        if pod_name:
-            break
-
-        # 3. Fallback for legacy single-pod layout: gateway pod with container platform-agent
-        proc_pod = subprocess.run(
+    # 2. Fallback for legacy single-pod layout: gateway pod with container platform-agent
+    if not pod_name:
+        proc_gw = subprocess.run(
             [
                 "kubectl",
                 "get",
@@ -121,40 +93,13 @@ def test_github_token_minting_and_connectivity(
             capture_output=True,
             text=True,
         )
-        if proc_pod.returncode == 0 and proc_pod.stdout.strip():
-            pod_name = proc_pod.stdout.strip()
+        if proc_gw.returncode == 0 and proc_gw.stdout.strip():
+            pod_name = proc_gw.stdout.strip()
             container_name = "platform-agent"
-            break
-
-        # Fallback to checking any running pod in agent namespace with 'agent' or 'gateway' in name
-        proc_pod_all = subprocess.run(
-            [
-                "kubectl",
-                "get",
-                "pod",
-                "-n",
-                agent_namespace,
-                "--field-selector=status.phase=Running",
-                "-o",
-                "jsonpath={.items[*].metadata.name}",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if proc_pod_all.returncode == 0 and proc_pod_all.stdout.strip():
-            candidate_pods = [
-                p for p in proc_pod_all.stdout.split()
-                if ("agent" in p or "gateway" in p) and not any(k in p for k in ("minter", "minty", "operator", "hindsight"))
-            ]
-            if candidate_pods:
-                pod_name = candidate_pods[0]
-                container_name = "platform-agent"
-                break
-        time.sleep(_POD_POLL_INTERVAL_SECONDS)
 
     if not pod_name:
         pytest.fail(
-            f"No running agent shell or gateway pod found in namespace '{agent_namespace}' within {_POD_WAIT_TIMEOUT_SECONDS}s."
+            f"No running agent shell or legacy gateway pod found in namespace '{agent_namespace}' within {_POD_WAIT_TIMEOUT_SECONDS}s."
         )
 
     # Refresh credentials via broker and query repository via read-only GET API
