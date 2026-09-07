@@ -2327,8 +2327,10 @@ class TestAuditCatalogue(unittest.TestCase):
         """Drift SOP must instruct declaring non-configurable facets in checks_not_applicable."""
         sop = self.sop_dir() / audit_report.AUDITS["fleet-consistency-drift"].sop
         text = sop.read_text(encoding="utf-8")
-        self.assertIn("nine §4 facets marked _Standard cohorts only_", text)
-        self.assertIn("reads as complete at ten of ten", text)
+        self.assertIn("eleven §4 facets marked _Standard cohorts only_", text)
+        self.assertIn("reads as complete at eight of eight", text)
+        self.assertIn("logging-components", text)
+        self.assertIn("monitoring-components", text)
         self.assertIn("intra-node-visibility", text)
         self.assertIn("managed-prometheus", text)
 
@@ -2358,15 +2360,17 @@ class TestAuditCatalogue(unittest.TestCase):
                 "idle-nodepool",
             ],
             "fleet-consistency-drift": [
-                "shielded-nodes",
                 "secure-boot",
                 "integrity-monitoring",
-                "private-nodes",
-                "node-autoprovisioning",
                 "pool-autoscaling",
-                "intra-node-visibility",
-                "datapath-provider",
+                "node-autoprovisioning",
                 "image-type",
+                "shielded-nodes",
+                "datapath-provider",
+                "intra-node-visibility",
+                "managed-prometheus",
+                "logging-components",
+                "monitoring-components",
             ],
         }
         for audit_id, checks in expected_na_checks.items():
@@ -2379,11 +2383,34 @@ class TestAuditCatalogue(unittest.TestCase):
             )
             for check in checks:
                 with self.subTest(audit=audit_id, check=check):
-                    self.assertIn(
-                        check,
-                        text,
-                        f"{sop.name} does not declare {check!r} in its Autopilot checks_not_applicable",
-                    )
+                    if audit_id == "fleet-consistency-drift":
+                        # Must be declared in the Autopilot inapplicability list in scope/suppression
+                        self.assertTrue(
+                            re.search(rf"checks_not_applicable[^\n]*?`{re.escape(check)}`", text) or
+                            re.search(rf"`{re.escape(check)}`[^\n]*?checks_not_applicable", text),
+                            f"{sop.name} does not declare {check!r} in its Autopilot checks_not_applicable list",
+                        )
+                        # And facet section in §4 must contain 'Standard cohorts only' or 'checks_not_applicable'
+                        pattern = rf"###+\s+[^\n]*`{re.escape(check)}`[^\n]*\n(.*?)(?=\n###|\Z)"
+                        m = re.search(pattern, text, re.DOTALL)
+                        self.assertIsNotNone(m, f"{sop.name} missing section for check {check!r}")
+                        sec = m.group(1)
+                        has_clause = bool(re.search(r"Standard cohorts only|checks_not_applicable", sec))
+                        self.assertTrue(
+                            has_clause,
+                            f"{sop.name} section for {check!r} missing Standard-only / checks_not_applicable clause",
+                        )
+                    else:
+                        # Must appear as a JSON entry or explicit checks_not_applicable declaration
+                        self.assertTrue(
+                            re.search(rf'["`]?check["`]?\s*:\s*["`]{re.escape(check)}["`]', text),
+                            f"{sop.name} missing checks_not_applicable entry for {check!r}",
+                        )
+                        self.assertTrue(
+                            re.search(rf'["`]{re.escape(check)}["`].*?Autopilot', text, re.DOTALL) or
+                            re.search(rf'Autopilot.*?["`]{re.escape(check)}["`]', text, re.DOTALL),
+                            f"{sop.name} does not associate {check!r} with Autopilot inapplicability",
+                        )
 
 
 # --------------------------------------------------------------------------- #
