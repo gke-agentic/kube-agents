@@ -96,8 +96,9 @@ _TOOL_MUTATE_VERBS = {
         "create", "apply", "delete", "patch", "edit", "replace", "scale",
         "autoscale", "annotate", "label", "set", "rollout", "drain", "cordon",
         "uncordon", "taint", "exec", "cp", "attach", "port-forward", "proxy",
-        "run", "expose", "rollback", "wait", "debug", "set-context",
-        "set-cluster", "set-credentials", "use-context",
+        "run", "expose", "rollback", "wait", "debug", "reconcile", "set-context",
+        "set-cluster", "set-credentials", "use-context", "delete-context",
+        "delete-cluster", "delete-user", "unset", "rename-context",
     },
     "oc": {"create", "apply", "delete", "patch", "edit", "replace", "scale",
            "rollout", "set", "adm"},
@@ -110,10 +111,76 @@ _TOOL_MUTATE_VERBS = {
     "helm": {"install", "upgrade", "uninstall", "rollback", "delete"},
     "bq": {"insert", "mk", "rm", "update", "cp", "load"},
 }
+#: Standalone read commands permitted for kubectl without subcommand qualification.
+_KUBECTL_STANDALONE_READ_VERBS = frozenset({
+    "get", "describe", "logs", "top", "explain", "version",
+    "api-resources", "api-versions", "cluster-info", "events", "diff",
+})
+
+#: Subcommand-qualified read commands permitted for kubectl.
+_KUBECTL_SUBCOMMAND_READ_VERBS = {
+    "auth": frozenset({"can-i", "whoami"}),
+    "config": frozenset({"view", "get-contexts", "get-clusters", "get-users", "current-context"}),
+    "rollout": frozenset({"status", "history"}),
+}
+
+#: Flags known to consume the subsequent token as an argument value.
+_TOOL_FLAGS_WITH_VALUE = {
+    "kubectl": frozenset({
+        "-n", "--namespace",
+        "--context", "--kubeconfig",
+        "-s", "--server",
+        "--cluster", "--user",
+        "-l", "--selector",
+        "-o", "--output",
+        "-f", "--filename",
+        "-k", "--kustomize",
+        "-c", "--container",
+        "--as", "--as-group", "--as-uid",
+        "--certificate-authority", "--client-certificate", "--client-key",
+        "--token", "--tls-server-name",
+        "--request-timeout", "--cache-dir",
+        "--field-selector",
+        "-v", "--v",
+        "--sort-by", "--chunk-size",
+        "--template",
+        "--since", "--since-time", "--tail",
+        "--timeout",
+    }),
+    "oc": frozenset({
+        "-n", "--namespace",
+        "--context", "--kubeconfig",
+        "-s", "--server",
+        "--cluster", "--user",
+        "-l", "--selector",
+        "-o", "--output",
+        "-f", "--filename",
+        "-c", "--container",
+    }),
+    "gcloud": frozenset({
+        "--project", "--account", "--billing-project",
+        "--configuration", "--format", "--filter",
+        "--verbosity", "--zone", "--region",
+    }),
+    "gh": frozenset({
+        "-R", "--repo",
+        "-L", "--limit",
+    }),
+    "helm": frozenset({
+        "-n", "--namespace",
+        "--kube-context", "--kubeconfig",
+        "--kube-apiserver", "--kube-token",
+    }),
+    "gsutil": frozenset({
+        "-o",
+    }),
+    "bq": frozenset({
+        "--project_id", "--dataset_id", "--location",
+    }),
+}
+
 _TOOL_READ_VERBS = {
-    "kubectl": {"get", "describe", "logs", "top", "explain", "version",
-                "api-resources", "api-versions", "cluster-info", "events",
-                "diff", "auth", "config", "can-i", "whoami"},
+    "kubectl": _KUBECTL_STANDALONE_READ_VERBS,
     "oc": {"get", "describe", "logs", "status", "whoami"},
     "gcloud": {"list", "describe", "info", "version", "get-iam-policy", "search", "read"},
     "gsutil": {"ls", "stat", "cat", "du", "hash", "ver", "version"},
@@ -233,6 +300,37 @@ def _lex_segments(command: str) -> Optional[list[list[str]]]:
     return segments
 
 
+def _extract_command_and_subcommand(
+    tokens: list[str],
+    flags_with_value: frozenset[str],
+) -> tuple[str, str, list[str], list[str]]:
+    """Extract (command, subcommand, flags, positionals) taking into account flag values."""
+    dashdash_idx = tokens.index(_DOUBLE_DASH) if _DOUBLE_DASH in tokens else len(tokens)
+    pre_dash = tokens[:dashdash_idx]
+
+    flags: list[str] = []
+    positionals: list[str] = []
+    i = 0
+    while i < len(pre_dash):
+        tok = pre_dash[i]
+        if tok.startswith("-"):
+            flags.append(tok)
+            if "=" in tok:
+                i += 1
+            elif tok in flags_with_value and i + 1 < len(pre_dash):
+                flags.append(pre_dash[i + 1])
+                i += 2
+            else:
+                i += 1
+        else:
+            positionals.append(tok)
+            i += 1
+
+    cmd = positionals[0] if positionals else ""
+    subcmd = positionals[1] if len(positionals) > 1 else ""
+    return cmd, subcmd, flags, positionals
+
+
 def _segment_is_read_only(tokens: list[str]) -> bool:
     """Classify one already-tokenized segment. Unknown/unanalyzable -> False."""
     cleaned: list[str] = []
@@ -256,9 +354,10 @@ def _segment_is_read_only(tokens: list[str]) -> bool:
         cleaned.append(tok)
         i += 1
 
-    while cleaned and "=" in cleaned[0] and not cleaned[0].startswith(("-", "/")):
-        cleaned = cleaned[1:]                 # strip leading VAR=value assignments
     if not cleaned:
+        return False
+    # Refuse any leading VAR=value assignment (e.g. LD_PRELOAD=..., PATH=..., KUBECONFIG=...)
+    if "=" in cleaned[0] and not cleaned[0].startswith(("-", "/")):
         return False
 
     exe = cleaned[0].rsplit("/", 1)[-1]
@@ -276,18 +375,34 @@ def _segment_is_read_only(tokens: list[str]) -> bool:
         return False
 
     rest = cleaned[1:]
-    dashdash_idx = rest.index(_DOUBLE_DASH) if _DOUBLE_DASH in rest else len(rest)
-    flags = rest[:dashdash_idx]
-    positionals = [t for t in rest if not t.startswith("-") and "=" not in t]
+    flags_with_val = _TOOL_FLAGS_WITH_VALUE.get(exe, frozenset())
+    cmd, subcmd, flags, positionals = _extract_command_and_subcommand(rest, flags_with_val)
 
     if exe in ("kubectl", "oc"):
-        if any(t in _NEVER_DRY_RUN_VERBS for t in positionals):
+        if not cmd:
             return False
-        dry_run_flags = [t for t in flags if t.startswith(_DRY_RUN_PREFIX)]
-        if dry_run_flags:
-            last_dry_run = dry_run_flags[-1]
-            if last_dry_run.startswith(_DRY_RUN_VALID_PREFIXES):
-                return True
+
+        # Subcommand-gated read tools (e.g. 'kubectl auth can-i', 'kubectl config view')
+        if cmd in _KUBECTL_SUBCOMMAND_READ_VERBS:
+            return subcmd in _KUBECTL_SUBCOMMAND_READ_VERBS[cmd]
+
+        # Standalone read commands (e.g. 'kubectl get pods', 'kubectl describe ns')
+        if cmd in _KUBECTL_STANDALONE_READ_VERBS:
+            return True
+
+        if exe == "oc" and cmd in _TOOL_READ_VERBS["oc"]:
+            return True
+
+        # Mutating commands with valid dry-run (e.g. 'kubectl delete ns foo --dry-run=client')
+        # _NEVER_DRY_RUN_VERBS must never be approved via dry-run flags.
+        if cmd in mutate and cmd not in _NEVER_DRY_RUN_VERBS:
+            dry_run_flags = [t for t in flags if t.startswith(_DRY_RUN_PREFIX)]
+            if dry_run_flags:
+                last_dry_run = dry_run_flags[-1]
+                if last_dry_run.startswith(_DRY_RUN_VALID_PREFIXES):
+                    return True
+
+        return False
 
     if any(t in mutate for t in positionals):
         return False

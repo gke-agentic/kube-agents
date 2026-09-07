@@ -142,6 +142,28 @@ def main() -> int:
         True,
     )
 
+    # --- newly created cron jobs get default risk stamped --------------------
+    import cron.jobs as cj
+
+    cj_create_params = inspect.signature(cj.create_job).parameters
+    check(
+        "cron.jobs.create_job accepts risk",
+        "risk" in cj_create_params,
+        True,
+    )
+    cj_create_src = inspect.getsource(cj.create_job)
+    check(
+        "cron.jobs.create_job stamps default risk",
+        'job.setdefault("risk", "low")' in cj_create_src,
+        True,
+    )
+    ct_cronjob_params = inspect.signature(ct.cronjob).parameters
+    check(
+        "tools.cronjob_tools.cronjob accepts risk",
+        "risk" in ct_cronjob_params,
+        True,
+    )
+
     # --- the run's report reaches the caller --------------------------------
     seen = {}
 

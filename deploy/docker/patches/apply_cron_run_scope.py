@@ -2,7 +2,7 @@
 """Wire tools/cron_run_scope.py into the Hermes source tree.
 
 Run by ``deploy/docker/Dockerfile`` against ``/opt/hermes``. Two AST locators
-and eleven anchored string replacements across three files is past the point
+and fifteen anchored string replacements across four files is past the point
 where an inline ``python3 -c`` stays readable, so the edits live here — but the
 guarantee is the same as the other patches in the Dockerfile: every anchor must
 be found the number of times expected, every edited file must still parse, and
@@ -245,6 +245,65 @@ CRONJOB_RESULT_PATCHED = (
     '            return json.dumps({"success": True, "job": result}, indent=2)\n'
 )
 
+# Allow runtime cronjob create to accept an explicit or default risk tier.
+CRONJOB_CREATE_PARAM_ANCHOR = (
+    "    reasoning_effort: Optional[str] = None,\n"
+    "    task_id: str = None,\n"
+)
+
+CRONJOB_CREATE_PARAM_PATCHED = (
+    "    reasoning_effort: Optional[str] = None,\n"
+    "    risk: Optional[str] = None,\n"
+    "    task_id: str = None,\n"
+)
+
+CRONJOB_CREATE_CALL_ANCHOR = (
+    "                    reasoning_effort=reasoning_effort,\n"
+    "                )\n"
+)
+
+CRONJOB_CREATE_CALL_PATCHED = (
+    "                    reasoning_effort=reasoning_effort,\n"
+    "                    risk=risk,\n"
+    "                )\n"
+)
+
+# --- cron/jobs.py: stamp default risk on newly created jobs -----------------
+
+JOBS_DEF_ANCHOR = (
+    "    monitor_url: Optional[str] = None,\n"
+    "    reasoning_effort: Optional[str] = None,\n"
+    ") -> Dict[str, Any]:\n"
+)
+
+JOBS_DEF_PATCHED = (
+    "    monitor_url: Optional[str] = None,\n"
+    "    reasoning_effort: Optional[str] = None,\n"
+    "    risk: Optional[str] = None,\n"
+    ") -> Dict[str, Any]:\n"
+)
+
+JOBS_APPEND_ANCHOR = (
+    "    with _jobs_lock():\n"
+    "        jobs = load_jobs()\n"
+    "        jobs.append(job)\n"
+    "        save_jobs(jobs)\n"
+)
+
+JOBS_APPEND_PATCHED = (
+    "    # kube-agents patch: stamp risk tier on newly created cron jobs\n"
+    "    # so runtime-created jobs run consistently across pod restarts.\n"
+    '    if risk is not None:\n'
+    '        job["risk"] = str(risk).strip().lower()\n'
+    '    else:\n'
+    '        job.setdefault("risk", "low")\n'
+    "\n"
+    "    with _jobs_lock():\n"
+    "        jobs = load_jobs()\n"
+    "        jobs.append(job)\n"
+    "        save_jobs(jobs)\n"
+)
+
 # --- tools/kanban_tools.py: a cron run owns no card -------------------------
 
 KANBAN_IMPORT_ANCHOR = "from hermes_cli.config import cfg_get, load_config"
@@ -334,7 +393,30 @@ def apply(root: Path) -> None:
     cronjob.substitute(CRONJOB_EXECUTE, CRONJOB_EXECUTE_PATCHED, label="scoped run")
     cronjob.substitute(CRONJOB_RETURN, CRONJOB_RETURN_PATCHED, label="run report")
     cronjob.substitute(CRONJOB_RESULT, CRONJOB_RESULT_PATCHED, label="tool result")
-    cronjob.commit("4 anchors")
+    cronjob.substitute(
+        CRONJOB_CREATE_PARAM_ANCHOR,
+        CRONJOB_CREATE_PARAM_PATCHED,
+        label="create param",
+    )
+    cronjob.substitute(
+        CRONJOB_CREATE_CALL_ANCHOR,
+        CRONJOB_CREATE_CALL_PATCHED,
+        label="create call",
+    )
+    cronjob.commit("6 anchors")
+
+    jobs = patchlib.Patch(root, "cron/jobs.py", prefix=PREFIX)
+    jobs.substitute(
+        JOBS_DEF_ANCHOR,
+        JOBS_DEF_PATCHED,
+        label="create_job def risk param",
+    )
+    jobs.substitute(
+        JOBS_APPEND_ANCHOR,
+        JOBS_APPEND_PATCHED,
+        label="create_job stamp default risk",
+    )
+    jobs.commit("2 anchors")
 
     kanban = patchlib.Patch(root, "tools/kanban_tools.py", prefix=PREFIX)
     kanban.substitute(

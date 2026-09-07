@@ -140,6 +140,30 @@ def main() -> int:
               ap.check_all_command_guards("kubectl delete ns prod --dry-run=client --dry-run=none", "local").get("approved"), False)
         check("high refuses non-null file redirect",
               ap.check_all_command_guards("echo evil &> /opt/data/jobs.json", "local").get("approved"), False)
+        check("high refuses auth reconcile pipe",
+              ap.check_all_command_guards("echo 'kind: ClusterRoleBinding' | kubectl auth reconcile -f -", "local").get("approved"), False)
+        check("high refuses auth reconcile",
+              ap.check_all_command_guards("kubectl auth reconcile -f /tmp/rbac.yaml", "local").get("approved"), False)
+        check("high refuses config delete-context",
+              ap.check_all_command_guards("kubectl config delete-context prod", "local").get("approved"), False)
+        check("high allows config view",
+              ap.check_all_command_guards("kubectl config view", "local").get("approved"), True)
+        check("high allows auth can-i",
+              ap.check_all_command_guards("kubectl auth can-i --list", "local").get("approved"), True)
+        check("high allows auth whoami",
+              ap.check_all_command_guards("kubectl auth whoami", "local").get("approved"), True)
+        check("high allows ns named proxy read",
+              ap.check_all_command_guards("kubectl -n proxy get pods", "local").get("approved"), True)
+        check("high allows pod named attach read",
+              ap.check_all_command_guards("kubectl get pod attach -o yaml", "local").get("approved"), True)
+        check("high allows ns named port-forward describe",
+              ap.check_all_command_guards("kubectl describe ns port-forward", "local").get("approved"), True)
+        check("high refuses ns named proxy mutate",
+              ap.check_all_command_guards("kubectl -n proxy delete pods mypod", "local").get("approved"), False)
+        check("high refuses leading LD_PRELOAD",
+              ap.check_all_command_guards("LD_PRELOAD=/opt/data/x.so kubectl get pods", "local").get("approved"), False)
+        check("high refuses leading PATH",
+              ap.check_all_command_guards("PATH=/opt/data/bin kubectl get pods", "local").get("approved"), False)
         check("high refuses chained mutation",
               ap.check_all_command_guards("kubectl get x && kubectl delete y", "local").get("approved"), False)
         check("high refuses background smuggling",

@@ -339,7 +339,7 @@ def _run_one_job_body(
 '''
 
 CRONJOB_STUB = '''import json
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 
 def _notify_provider_jobs_changed_safe() -> None:
@@ -367,7 +367,21 @@ def _run_claimed_job(job, job_id, adapters, gateway_loop, extra_prompt):
         }
 
 
-def cronjob(action, result, exec_result):
+def cronjob(
+    action: str,
+    result: Optional[dict] = None,
+    exec_result: Optional[dict] = None,
+    reasoning_effort: Optional[str] = None,
+    task_id: str = None,
+):
+    if action == "create":
+        if True:
+            try:
+                create_job_with_scheduler_registration(
+                    reasoning_effort=reasoning_effort,
+                )
+            except Exception:
+                pass
     if action == "run":
         if exec_result is not None:
             if exec_result.get("skipped"):
@@ -375,6 +389,24 @@ def cronjob(action, result, exec_result):
             elif exec_result.get("error"):
                 result["execution_error"] = exec_result["error"]
             return json.dumps({"success": True, "job": result}, indent=2)
+'''
+
+JOBS_STUB = '''from typing import Any, Dict, Optional
+
+
+def create_job(
+    name: str,
+    schedule: str,
+    prompt: str,
+    monitor_url: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
+) -> Dict[str, Any]:
+    job = {"name": name, "schedule": schedule, "prompt": prompt}
+    with _jobs_lock():
+        jobs = load_jobs()
+        jobs.append(job)
+        save_jobs(jobs)
+    return job
 '''
 
 KANBAN_STUB = '''import os
@@ -404,15 +436,19 @@ def kanban_block(task_id=None):
 class ApplierTest(unittest.TestCase):
     """The applier against the v2026.8.19 wrapper/body shape."""
 
-    def _apply(self):
+    def _apply_all(self) -> Path:
         root = Path(tempfile.mkdtemp())
         (root / "cron").mkdir()
         (root / "tools").mkdir()
         (root / "cron" / "scheduler.py").write_text(SCHEDULER_STUB)
+        (root / "cron" / "jobs.py").write_text(JOBS_STUB)
         (root / "tools" / "cronjob_tools.py").write_text(CRONJOB_STUB)
         (root / "tools" / "kanban_tools.py").write_text(KANBAN_STUB)
         apply_cron_run_scope.apply(root)
-        return (root / "cron" / "scheduler.py").read_text()
+        return root
+
+    def _apply(self) -> str:
+        return (self._apply_all() / "cron" / "scheduler.py").read_text()
 
     @staticmethod
     def _keyword_only(source, name):
@@ -451,6 +487,20 @@ class ApplierTest(unittest.TestCase):
         body = scheduler[scheduler.index("def _run_one_job_body(") :]
         self.assertIn('with cron_run_scope(job["id"], risk=str(job.get("risk") or "high")):', body)
 
+    def test_cronjob_create_accepts_risk_param(self):
+        root = self._apply_all()
+        cronjob = (root / "tools" / "cronjob_tools.py").read_text()
+        ast.parse(cronjob)
+        self.assertIn("risk: Optional[str] = None,", cronjob)
+        self.assertIn("risk=risk,", cronjob)
+
+    def test_jobs_create_job_stamps_default_risk(self):
+        root = self._apply_all()
+        jobs = (root / "cron" / "jobs.py").read_text()
+        ast.parse(jobs)
+        self.assertIn("risk: Optional[str] = None,", jobs)
+        self.assertIn('job.setdefault("risk", "low")', jobs)
+
     def test_a_wrapper_that_stopped_delegating_is_fatal_not_silent(self):
         """The shape that shipped the NameError: no lambda to forward through."""
         root = Path(tempfile.mkdtemp())
@@ -461,6 +511,7 @@ class ApplierTest(unittest.TestCase):
                 "lambda lost_ownership: _run_one_job_body(", "_run_one_job_body("
             )
         )
+        (root / "cron" / "jobs.py").write_text(JOBS_STUB)
         (root / "tools" / "cronjob_tools.py").write_text(CRONJOB_STUB)
         (root / "tools" / "kanban_tools.py").write_text(KANBAN_STUB)
         with self.assertRaises(SystemExit) as ctx:
@@ -474,6 +525,7 @@ class ApplierTest(unittest.TestCase):
         (root / "cron").mkdir()
         (root / "tools").mkdir()
         (root / "cron" / "scheduler.py").write_text(SCHEDULER_STUB)
+        (root / "cron" / "jobs.py").write_text(JOBS_STUB)
         (root / "tools" / "cronjob_tools.py").write_text(CRONJOB_STUB)
         (root / "tools" / "kanban_tools.py").write_text(KANBAN_STUB)
         apply_cron_run_scope.apply(root)
