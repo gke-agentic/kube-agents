@@ -188,7 +188,7 @@ if full_name.lower() != '{github_repo}'.lower():
 print(f"Successfully authenticated and queried repository: {{full_name}}")
 """
 
-    cmd = [
+    base_exec = [
         "kubectl",
         "exec",
         "-n",
@@ -197,10 +197,12 @@ print(f"Successfully authenticated and queried repository: {{full_name}}")
         "-c",
         container_name,
         "--",
-        "python3",
-        "-c",
-        script,
     ]
+    if container_name == "shell":
+        cmd = base_exec + ["runuser", "-u", "agent", "--", "python3", "-c", script]
+    else:
+        cmd = base_exec + ["python3", "-c", script]
+
     try:
         proc_start = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
         assert proc_start.returncode == 0, (
