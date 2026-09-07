@@ -164,6 +164,22 @@ def main() -> int:
               ap.check_all_command_guards("LD_PRELOAD=/opt/data/x.so kubectl get pods", "local").get("approved"), False)
         check("high refuses leading PATH",
               ap.check_all_command_guards("PATH=/opt/data/bin kubectl get pods", "local").get("approved"), False)
+        check("high refuses smuggled dry-run in flag value",
+              ap.check_all_command_guards("kubectl delete ns prod --cache-dir --dry-run=client", "local").get("approved"), False)
+        check("high refuses smuggled dry-run in namespace",
+              ap.check_all_command_guards("kubectl delete ns prod -n --dry-run=client", "local").get("approved"), False)
+        check("high allows legitimate dry-run with value flag",
+              ap.check_all_command_guards("kubectl delete ns prod --cache-dir /tmp --dry-run=client", "local").get("approved"), True)
+        check("high refuses profile-output shift",
+              ap.check_all_command_guards("kubectl --profile-output get delete ns prod", "local").get("approved"), False)
+        check("high refuses oc profile-output shift",
+              ap.check_all_command_guards("oc --profile-output get delete project prod", "local").get("approved"), False)
+        check("high allows profile-output with value",
+              ap.check_all_command_guards("kubectl --profile-output /tmp/prof get pods", "local").get("approved"), True)
+        check("high refuses gh api delete with view query",
+              ap.check_all_command_guards("gh api --method DELETE repos/OWNER/REPO/issues/comments/123 -q view", "local").get("approved"), False)
+        check("high refuses bq query with format show",
+              ap.check_all_command_guards('bq --format show query "DELETE FROM ds.t WHERE true"', "local").get("approved"), False)
         check("high refuses chained mutation",
               ap.check_all_command_guards("kubectl get x && kubectl delete y", "local").get("approved"), False)
         check("high refuses background smuggling",

@@ -499,7 +499,47 @@ class ApplierTest(unittest.TestCase):
         jobs = (root / "cron" / "jobs.py").read_text()
         ast.parse(jobs)
         self.assertIn("risk: Optional[str] = None,", jobs)
-        self.assertIn('job.setdefault("risk", "low")', jobs)
+        self.assertIn('job["risk"] = _eff_risk', jobs)
+
+    def test_jobs_create_job_clamps_and_validates_risk(self):
+        import contextlib
+        from typing import Any, Dict, Optional
+        root = self._apply_all()
+        jobs_code = (root / "cron" / "jobs.py").read_text()
+        stored_jobs = []
+        ns = {
+            "load_jobs": lambda: stored_jobs,
+            "save_jobs": lambda js: None,
+            "_jobs_lock": contextlib.nullcontext,
+            "Optional": Optional,
+            "Dict": Dict,
+            "Any": Any,
+        }
+        exec(jobs_code, ns)
+        create_job = ns["create_job"]
+
+        # Default is low
+        j1 = create_job("test1", "* * * * *", "echo 1")
+        self.assertEqual(j1["risk"], "low")
+
+        # Explicit low is low
+        j2 = create_job("test2", "* * * * *", "echo 2", risk="low")
+        self.assertEqual(j2["risk"], "low")
+
+        # Explicit high is high
+        j3 = create_job("test3", "* * * * *", "echo 3", risk="high")
+        self.assertEqual(j3["risk"], "high")
+
+        # Invalid string normalizes to low
+        j4 = create_job("test4", "* * * * *", "echo 4", risk="banana")
+        self.assertEqual(j4["risk"], "low")
+
+        # Inside high-risk cron run, low and invalid risk are clamped to high
+        with cron_run_scope("watchdog-1", risk="high"):
+            j5 = create_job("test5", "* * * * *", "echo 5", risk="low")
+            self.assertEqual(j5["risk"], "high")
+            j6 = create_job("test6", "* * * * *", "echo 6", risk="banana")
+            self.assertEqual(j6["risk"], "high")
 
     def test_a_wrapper_that_stopped_delegating_is_fatal_not_silent(self):
         """The shape that shipped the NameError: no lambda to forward through."""

@@ -175,6 +175,86 @@ class CronRiskGateTest(unittest.TestCase):
         self.assertIsNotNone(block)
         self.assertFalse(block["approved"])
 
+        # Smuggled --dry-run as a flag value to a value-taking flag must NOT approve mutations
+        for flag in ("--cache-dir", "-n", "--context", "--user", "--request-timeout"):
+            with self.subTest(flag=flag):
+                block = cron_command_policy_block(f"kubectl delete ns prod {flag} --dry-run=client", "high")
+                self.assertIsNotNone(block, f"Flag value after {flag} must not satisfy dry-run allowance")
+                self.assertFalse(block["approved"])
+
+        # Legitimate dry-run flags alongside value-taking flags must still be approved
+        self.assertIsNone(cron_command_policy_block("kubectl delete ns prod --cache-dir /tmp --dry-run=client", "high"))
+        self.assertIsNone(cron_command_policy_block("kubectl delete ns prod -n default --dry-run=client", "high"))
+        self.assertIsNone(cron_command_policy_block("kubectl delete ns prod --dry-run=client -n default", "high"))
+
+    def test_kubectl_global_flag_verb_shift_refused(self):
+        # Global flags with values or ambiguous flags shifting verb positions must be refused
+        for cmd in (
+            "kubectl --profile-output get delete ns prod",
+            "kubectl --profile-output get patch deploy x -p {}",
+            "kubectl get delete ns prod",
+            "oc --profile-output get delete project prod",
+            "kubectl --some-unknown-flag get delete ns prod",
+            "kubectl --profile get delete ns prod",
+        ):
+            with self.subTest(cmd=cmd):
+                block = cron_command_policy_block(cmd, "high")
+                self.assertIsNotNone(block, f"{cmd} must be refused under high risk")
+                self.assertFalse(block["approved"])
+
+        # Legitimate read commands with global flags must be approved
+        for cmd in (
+            "kubectl --profile-output /tmp/prof get pods",
+            "kubectl --profile-output=/tmp/prof get pods",
+            "oc --profile-output /tmp/prof get pods",
+            "kubectl --all-namespaces get pods",
+            "kubectl -A get pods",
+        ):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(cron_command_policy_block(cmd, "high"), f"{cmd} should be approved")
+
+    def test_non_kubectl_tool_verb_anchoring_and_case_folding(self):
+        # Flag values and unpositioned read verbs must not whitelist mutations
+        for cmd in (
+            "gh api --method DELETE repos/OWNER/REPO/issues/comments/123 -q view",
+            "gh api --method PUT repos/O/R/collaborators/attacker -f permission=admin -q view",
+            "gh api repos/OWNER/REPO/issues",
+            "gh pr close 123",
+            "gh issue close 123",
+            "bq --format show query 'DELETE FROM ds.t WHERE true'",
+            'bq --format show query "DELETE FROM ds.t WHERE true"',
+            "bq query 'DELETE FROM ds.t WHERE true'",
+            "helm uninstall my-release",
+            "helm uninstall list",
+            "helm --post-renderer list uninstall my-release",
+            "gsutil rm gs://bucket/obj",
+            "gsutil cp gs://bucket/obj /tmp/",
+            "gcloud compute instances delete prod",
+            "gcloud compute instances DELETE prod",
+            'gcloud compute instances delete foo --filter="status=list"',
+        ):
+            with self.subTest(cmd=cmd):
+                block = cron_command_policy_block(cmd, "high")
+                self.assertIsNotNone(block, f"{cmd} must be refused under high risk")
+                self.assertFalse(block["approved"])
+
+        # Legitimate reads for each tool must be approved
+        for cmd in (
+            "gh pr view 123",
+            "gh issue list --state open",
+            "gh search issues bug",
+            "bq show ds.t",
+            "bq ls",
+            "helm list",
+            "helm get values my-release",
+            "gsutil ls gs://bucket",
+            "gsutil stat gs://bucket/obj",
+            "gcloud compute instances list",
+            "gcloud container clusters describe prod",
+        ):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(cron_command_policy_block(cmd, "high"), f"{cmd} should be approved")
+
     def test_redirection_validation(self):
         self.assertIsNone(cron_command_policy_block("kubectl get pods >/dev/null", "high"))
         self.assertIsNone(cron_command_policy_block("kubectl get pods 2>/dev/null", "high"))

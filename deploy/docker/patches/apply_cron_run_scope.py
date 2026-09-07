@@ -293,10 +293,20 @@ JOBS_APPEND_ANCHOR = (
 JOBS_APPEND_PATCHED = (
     "    # kube-agents patch: stamp risk tier on newly created cron jobs\n"
     "    # so runtime-created jobs run consistently across pod restarts.\n"
-    '    if risk is not None:\n'
-    '        job["risk"] = str(risk).strip().lower()\n'
-    '    else:\n'
-    '        job.setdefault("risk", "low")\n'
+    "    # Clamp to high if created from inside a high-risk cron run (no privilege escalation).\n"
+    "    try:\n"
+    "        try:\n"
+    "            from tools.cron_run_scope import current_cron_job, current_cron_risk\n"
+    "        except ImportError:\n"
+    "            from cron_run_scope import current_cron_job, current_cron_risk\n"
+    '        _in_high_cron = bool(current_cron_job() and current_cron_risk() == "high")\n'
+    "    except Exception:\n"
+    "        _in_high_cron = False\n"
+    '    _raw_risk = str(risk).strip().lower() if risk is not None else "low"\n'
+    '    _eff_risk = _raw_risk if _raw_risk in ("low", "high") else "low"\n'
+    "    if _in_high_cron:\n"
+    '        _eff_risk = "high"\n'
+    '    job["risk"] = _eff_risk\n'
     "\n"
     "    with _jobs_lock():\n"
     "        jobs = load_jobs()\n"

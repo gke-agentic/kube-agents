@@ -136,16 +136,19 @@ _TOOL_FLAGS_WITH_VALUE = {
         "-f", "--filename",
         "-k", "--kustomize",
         "-c", "--container",
-        "--as", "--as-group", "--as-uid",
+        "--as", "--as-group", "--as-uid", "--as-user-extra",
         "--certificate-authority", "--client-certificate", "--client-key",
         "--token", "--tls-server-name",
         "--request-timeout", "--cache-dir",
         "--field-selector",
-        "-v", "--v",
+        "-v", "--v", "--vmodule",
         "--sort-by", "--chunk-size",
         "--template",
         "--since", "--since-time", "--tail",
         "--timeout",
+        "--profile", "--profile-output",
+        "--password", "--username",
+        "--log-flush-frequency", "--kuberc",
     }),
     "oc": frozenset({
         "-n", "--namespace",
@@ -156,35 +159,104 @@ _TOOL_FLAGS_WITH_VALUE = {
         "-o", "--output",
         "-f", "--filename",
         "-c", "--container",
+        "--as", "--as-group", "--as-uid", "--as-user-extra",
+        "--certificate-authority", "--client-certificate", "--client-key",
+        "--token", "--tls-server-name",
+        "--request-timeout", "--cache-dir",
+        "--profile", "--profile-output",
+        "--password", "--username",
+        "--log-flush-frequency", "--kuberc",
     }),
     "gcloud": frozenset({
         "--project", "--account", "--billing-project",
         "--configuration", "--format", "--filter",
         "--verbosity", "--zone", "--region",
+        "--cluster", "--location", "--limit", "--sort-by",
     }),
     "gh": frozenset({
         "-R", "--repo",
         "-L", "--limit",
+        "-X", "--method",
+        "-q", "--jq",
+        "-t", "--template",
+        "-f", "-F", "--field", "--raw-field",
+        "--input",
+        "-H", "--header",
+        "-s", "--state",
+        "-a", "--assignee",
+        "-A", "--author",
+        "-l", "--label",
+        "-m", "--milestone",
+        "-S", "--search",
+        "--order",
+        "--json",
     }),
     "helm": frozenset({
         "-n", "--namespace",
         "--kube-context", "--kubeconfig",
         "--kube-apiserver", "--kube-token",
+        "--kube-as-user", "--kube-as-group",
+        "--kube-ca-file",
+        "--registry-config", "--repository-cache", "--repository-config",
+        "--post-renderer",
+        "-o", "--output",
+        "-f", "--values",
+        "--revision",
     }),
     "gsutil": frozenset({
-        "-o",
+        "-o", "-h", "-b",
     }),
     "bq": frozenset({
         "--project_id", "--dataset_id", "--location",
+        "--format",
+        "--application_default_credential_file",
+        "--api", "--job_id", "--fingerprint_job_id",
+        "--max_rows", "-n",
     }),
 }
+
+#: Long and short flags known to take no argument (boolean flags), preventing
+#: ambiguity when determining whether the subsequent token is a flag value.
+_KNOWN_BOOLEAN_FLAGS = frozenset({
+    "-h", "--help",
+    "--version",
+    "-A", "--all-namespaces",
+    "--all",
+    "--show-labels",
+    "-w", "--watch",
+    "--raw",
+    "-R", "--recursive",
+    "--ignore-not-found",
+    "--disable-compression",
+    "--insecure-skip-tls-verify",
+    "--match-server-version",
+    "--warnings-as-errors",
+    "--no-headers",
+    "-q", "--quiet",
+    "--paginate",
+    "--web",
+    "--debug",
+    "--force",
+})
+
+#: Nouns accepted as the primary command target for gh CLI before verb inspection.
+_GH_NOUNS = frozenset({
+    "pr", "issue", "repo", "release", "run", "workflow", "cache",
+    "ruleset", "secret", "variable",
+})
+
+#: Pure mutating verbs that must never appear as a resource type in kubectl read commands.
+_STANDALONE_READ_MUTATE_TYPE_BLOCK = frozenset({
+    "delete", "patch", "apply", "create", "edit", "replace", "scale",
+    "drain", "cordon", "taint",
+})
 
 _TOOL_READ_VERBS = {
     "kubectl": _KUBECTL_STANDALONE_READ_VERBS,
     "oc": {"get", "describe", "logs", "status", "whoami"},
     "gcloud": {"list", "describe", "info", "version", "get-iam-policy", "search", "read"},
     "gsutil": {"ls", "stat", "cat", "du", "hash", "ver", "version"},
-    "gh": {"view", "list", "status"},
+    "gh": {"view", "list", "status", "diff"},
     "helm": {"list", "get", "status", "history", "show", "search", "version"},
     # 'query' omitted deliberately: `bq query` executes DML (DELETE/UPDATE/MERGE).
     "bq": {"ls", "show", "head"},
@@ -303,13 +375,14 @@ def _lex_segments(command: str) -> Optional[list[list[str]]]:
 def _extract_command_and_subcommand(
     tokens: list[str],
     flags_with_value: frozenset[str],
-) -> tuple[str, str, list[str], list[str]]:
-    """Extract (command, subcommand, flags, positionals) taking into account flag values."""
+) -> tuple[str, str, list[str], list[str], bool]:
+    """Extract (command, subcommand, flags, positionals, has_ambiguous_flag)."""
     dashdash_idx = tokens.index(_DOUBLE_DASH) if _DOUBLE_DASH in tokens else len(tokens)
     pre_dash = tokens[:dashdash_idx]
 
     flags: list[str] = []
     positionals: list[str] = []
+    has_ambiguous_flag = False
     i = 0
     while i < len(pre_dash):
         tok = pre_dash[i]
@@ -318,8 +391,15 @@ def _extract_command_and_subcommand(
             if "=" in tok:
                 i += 1
             elif tok in flags_with_value and i + 1 < len(pre_dash):
-                flags.append(pre_dash[i + 1])
                 i += 2
+            elif tok in _KNOWN_BOOLEAN_FLAGS:
+                i += 1
+            elif tok.startswith("--"):
+                # Unrecognised long flag without '=' followed by a non-flag token:
+                # Ambiguous whether the next token is an argument or a subcommand.
+                if i + 1 < len(pre_dash) and not pre_dash[i + 1].startswith("-"):
+                    has_ambiguous_flag = True
+                i += 1
             else:
                 i += 1
         else:
@@ -328,7 +408,7 @@ def _extract_command_and_subcommand(
 
     cmd = positionals[0] if positionals else ""
     subcmd = positionals[1] if len(positionals) > 1 else ""
-    return cmd, subcmd, flags, positionals
+    return cmd, subcmd, flags, positionals, has_ambiguous_flag
 
 
 def _segment_is_read_only(tokens: list[str]) -> bool:
@@ -376,7 +456,9 @@ def _segment_is_read_only(tokens: list[str]) -> bool:
 
     rest = cleaned[1:]
     flags_with_val = _TOOL_FLAGS_WITH_VALUE.get(exe, frozenset())
-    cmd, subcmd, flags, positionals = _extract_command_and_subcommand(rest, flags_with_val)
+    cmd, subcmd, flags, positionals, has_ambiguous_flag = _extract_command_and_subcommand(rest, flags_with_val)
+    if has_ambiguous_flag:
+        return False
 
     if exe in ("kubectl", "oc"):
         if not cmd:
@@ -388,6 +470,8 @@ def _segment_is_read_only(tokens: list[str]) -> bool:
 
         # Standalone read commands (e.g. 'kubectl get pods', 'kubectl describe ns')
         if cmd in _KUBECTL_STANDALONE_READ_VERBS:
+            if cmd in ("get", "describe", "explain") and len(positionals) > 1 and positionals[1].lower() in _STANDALONE_READ_MUTATE_TYPE_BLOCK:
+                return False
             return True
 
         if exe == "oc" and cmd in _TOOL_READ_VERBS["oc"]:
@@ -404,10 +488,60 @@ def _segment_is_read_only(tokens: list[str]) -> bool:
 
         return False
 
-    if any(t in mutate for t in positionals):
+    pos_lower = [p.lower() for p in positionals]
+
+    if exe == "bq":
+        if not cmd:
+            return False
+        cmd_lower = cmd.lower()
+        if cmd_lower in _TOOL_READ_VERBS["bq"]:
+            if any(p in _TOOL_MUTATE_VERBS["bq"] or p == "query" for p in pos_lower):
+                return False
+            return True
         return False
-    if any(t in read for t in positionals):
-        return True
+
+    if exe == "helm":
+        if not cmd:
+            return False
+        cmd_lower = cmd.lower()
+        if cmd_lower in _TOOL_READ_VERBS["helm"]:
+            if any(p in _TOOL_MUTATE_VERBS["helm"] for p in pos_lower):
+                return False
+            return True
+        return False
+
+    if exe == "gsutil":
+        if not cmd:
+            return False
+        cmd_lower = cmd.lower()
+        if cmd_lower in _TOOL_READ_VERBS["gsutil"]:
+            if any(p in _TOOL_MUTATE_VERBS["gsutil"] for p in pos_lower):
+                return False
+            return True
+        return False
+
+    if exe == "gh":
+        if not cmd:
+            return False
+        cmd_lower = cmd.lower()
+        subcmd_lower = subcmd.lower()
+        if cmd_lower in _GH_NOUNS and subcmd_lower in _TOOL_READ_VERBS["gh"]:
+            if any(p in _TOOL_MUTATE_VERBS["gh"] for p in pos_lower):
+                return False
+            return True
+        if cmd_lower == "search":
+            if any(p in _TOOL_MUTATE_VERBS["gh"] for p in pos_lower):
+                return False
+            return True
+        return False
+
+    if exe == "gcloud":
+        if any(p in _TOOL_MUTATE_VERBS["gcloud"] for p in pos_lower):
+            return False
+        if any(p in _TOOL_READ_VERBS["gcloud"] for p in pos_lower):
+            return True
+        return False
+
     return False
 
 
