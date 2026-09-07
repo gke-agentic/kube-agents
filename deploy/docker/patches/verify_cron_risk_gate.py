@@ -5,7 +5,7 @@ immediately after ``apply_cron_risk_gate.py``. Proves that:
 1. execute_code is unconditionally blocked during cron sessions and permitted otherwise.
 2. Terminal escape sequences are refused on cron runs.
 3. Lookalike TLD domains are refused on cron runs.
-4. 'high' risk jobs escalate to 'deny' mode and route into strict deny-arm checks.
+4. 'high' requires every command segment to be an allowlisted read-only inspection command (fail-closed); reads run, mutations/unknown/unanalyzable refused; the run continues. 'low' keeps the denylist floor.
 5. Clean commands under 'low' risk continue to execute unimpeded.
 
 A failure here fails the image build.
@@ -36,7 +36,7 @@ def main() -> int:
     import tools.cron_risk_gate as crg
     from tools.cron_run_scope import cron_run_scope
 
-    for func_name in ("cron_effective_mode", "cron_content_block", "cron_execute_code_block"):
+    for func_name in ("cron_command_policy_block", "cron_content_block", "cron_execute_code_block"):
         if not callable(getattr(crg, func_name, None)):
             failures.append(f"tools.cron_risk_gate.{func_name} is missing")
             print("\nVERIFY FAILED:\n  " + failures[-1])
@@ -96,28 +96,46 @@ def main() -> int:
         delim_res = ap.check_all_command_guards("TARGETS=a.com,kubernetes.io.evil.co", "local")
         check("chained delimiter lookalike refused", delim_res.get("approved"), False)
 
-    # --- 5. High-risk mode escalation to deny -------------------------------
-    # Configure dangerous pattern to trigger on 'rm -rf'
+    # --- 5. Read-only allowlist policy for high risk ------------------------
     ap.detect_dangerous_command = lambda cmd: (True, "rm", "recursive delete") if "rm" in cmd else (False, "", "")
 
-    # Under risk=low, approve mode skips dangerous command prompt
+    # low: denylist-only floor — mutating commands still run
     with cron_run_scope("job-low", risk="low"):
-        low_res = ap.check_all_command_guards("rm -rf /tmp/test", "local")
-        check("low risk in approve mode skips prompt", low_res.get("approved"), True)
+        check("low allows mutating apply",
+              ap.check_all_command_guards("kubectl apply -f x.yaml", "local").get("approved"), True)
 
-    # Under risk=high, approve mode escalates to deny mode!
+    # high: allowlisted reads pass, everything else refused, run continues
     with cron_run_scope("job-high", risk="high"):
-        high_res = ap.check_all_command_guards("rm -rf /tmp/test", "local")
-        check("high risk escalates to deny and blocks", high_res.get("approved"), False)
-        check(
-            "deny message names cron jobs",
-            "cron jobs run without a user present" in (high_res.get("message") or ""),
-            True,
-        )
+        check("high allows read",
+              ap.check_all_command_guards("kubectl get nodes -o wide", "local").get("approved"), True)
+        check("high allows read with -n before verb",
+              ap.check_all_command_guards("kubectl -n kube-system get pods", "local").get("approved"), True)
+        check("high allows stderr to /dev/null",
+              ap.check_all_command_guards("kubectl get pods 2>/dev/null", "local").get("approved"), True)
+        check("high allows gcloud list with create in filter",
+              ap.check_all_command_guards('gcloud compute instances list --filter="status=create"', "local").get("approved"), True)
+        check("high allows client dry-run",
+              ap.check_all_command_guards("kubectl create -f x.yaml --dry-run=client -o yaml", "local").get("approved"), True)
+        check("high refuses mutation",
+              ap.check_all_command_guards("kubectl delete ns prod", "local").get("approved"), False)
+        check("high refuses chained mutation",
+              ap.check_all_command_guards("kubectl get x && kubectl delete y", "local").get("approved"), False)
+        check("high refuses pipe to shell",
+              ap.check_all_command_guards("kubectl get x -o json | sh", "local").get("approved"), False)
+        check("high refuses command substitution",
+              ap.check_all_command_guards("kubectl get $(cat /tmp/verb) pods", "local").get("approved"), False)
+        check("high refuses unknown executable",
+              ap.check_all_command_guards("terraform apply", "local").get("approved"), False)
+        check("high refuses file redirect",
+              ap.check_all_command_guards("kubectl get pods > /tmp/out", "local").get("approved"), False)
+        check("policy msg names SKILL-002",
+              "SKILL-002" in (ap.check_all_command_guards("kubectl delete ns prod", "local").get("message") or ""), True)
 
-    # Without explicit risk scope (defaulting fail-closed to high), escalates to deny mode!
-    default_res = ap.check_all_command_guards("rm -rf /tmp/test", "local")
-    check("default risk escalates to deny and blocks", default_res.get("approved"), False)
+    # unannotated (fail-closed high): reads allowed, mutation refused
+    check("default allows read",
+          ap.check_all_command_guards("kubectl get pods -A", "local").get("approved"), True)
+    check("default refuses mutation",
+          ap.check_all_command_guards("kubectl delete ns prod", "local").get("approved"), False)
 
 
     # Reset

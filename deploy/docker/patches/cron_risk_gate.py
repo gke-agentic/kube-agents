@@ -1,28 +1,31 @@
-"""Security gates for cron runs: risk escalation, code execution refuse, and content checks.
+"""Security gates for cron runs: read-only policy, code execution refuse, and
+content checks.
 
 Installed into the image at ``/opt/hermes/tools/cron_risk_gate.py`` and wired
 into ``tools/approval.py`` by ``deploy/docker/Dockerfile``.
 
-Addresses the three documented residues in ``deploy/docker/patches/cron_tirith_scan.py``
-and Issue #993 (THREAT-002):
+Addresses Issue #993 (THREAT-002, SKILL-002):
 1. Terminal escape and control character injection (_ESC pattern).
 2. Pure-ASCII lookalike TLD / domain evasion (e.g. kubernetes.io.evil-cdn.co).
 3. Unconditional block on execute_code in autonomous cron runs.
-4. Risk-keyed mode escalation mapping 'high' risk to 'deny' approval mode.
+4. Per-job risk tiers: 'high' applies a fail-closed read-only command policy
+   (allowlist of inspection verbs); 'low' retains the denylist-only floor.
+
+Gates 1-3 are unconditional on every cron run. ``approvals.cron_scan`` opts out
+of the Tirith content scan only (see cron_tirith_scan.py), never these.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+import shlex
 from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
 RISK_LOW = "low"
 RISK_HIGH = "high"
-
-MODE_DENY = "deny"
 
 CRON_SCAN_KEY = "cron_scan"
 APPROVALS_KEY = "approvals"
@@ -40,6 +43,11 @@ MSG_ESC_REFUSED = (
 MSG_LOOKALIKE_TEMPLATE = (
     "BLOCKED: command contains lookalike domain '{host}' mimicking trusted apex '{apex}' "
     "(THREAT-002). Lookalike domain evasion is refused during cron runs."
+)
+MSG_MUTATION_REFUSED = (
+    "BLOCKED: command is not a recognized read-only inspection command and this "
+    "cron job is classified read-only (risk=high, SKILL-002). Only allowlisted "
+    "read commands run; the audit continues."
 )
 
 #: Characters that alter terminal state or conceal command strings:
@@ -67,6 +75,59 @@ _HOST_TOKEN = re.compile(
     re.IGNORECASE,
 )
 
+#: Executables that are read-only in every invocation (text/inspection utils).
+_READ_ONLY_TOOLS = frozenset({
+    "grep", "egrep", "fgrep", "awk", "jq", "yq", "cut", "sort", "uniq", "head",
+    "tail", "wc", "cat", "tr", "column", "nl", "comm", "join", "paste", "fold",
+    "rev", "echo", "printf", "date", "hostname", "pwd", "true", "test",
+})
+
+#: Wrappers / interpreters whose presence makes a segment unanalyzable -> refuse.
+_INDIRECTION = frozenset({
+    "sh", "bash", "zsh", "ash", "dash", "ksh", "python", "python3", "perl",
+    "ruby", "node", "eval", "exec", "env", "xargs", "watch", "timeout", "nohup",
+    "nice", "ssh", "sudo", "su", "find", "flock", "setsid", "stdbuf", "script",
+})
+
+#: Subcommand tools: any mutating verb refuses; else a read verb is required.
+_TOOL_MUTATE_VERBS = {
+    "kubectl": {
+        "create", "apply", "delete", "patch", "edit", "replace", "scale",
+        "autoscale", "annotate", "label", "set", "rollout", "drain", "cordon",
+        "uncordon", "taint", "exec", "cp", "attach", "port-forward", "proxy",
+        "run", "expose", "rollback", "wait", "debug", "set-context",
+        "set-cluster", "set-credentials", "use-context",
+    },
+    "oc": {"create", "apply", "delete", "patch", "edit", "replace", "scale",
+           "rollout", "set", "adm"},
+    "gcloud": {"create", "delete", "update", "set", "add", "remove", "enable",
+               "disable", "reset", "resize", "patch", "import", "deploy",
+               "rollback", "restart", "attach", "detach", "clear", "replace",
+               "abandon", "cancel", "start", "stop", "suspend", "resume"},
+    "gsutil": {"cp", "mv", "rm", "rsync", "mb", "rb", "setmeta", "acl", "iam"},
+    "gh": {"create", "delete", "edit", "close", "merge", "comment", "clone"},
+    "helm": {"install", "upgrade", "uninstall", "rollback", "delete"},
+    "bq": {"insert", "mk", "rm", "update", "cp", "load"},
+}
+_TOOL_READ_VERBS = {
+    "kubectl": {"get", "describe", "logs", "top", "explain", "version",
+                "api-resources", "api-versions", "cluster-info", "events",
+                "diff", "auth", "config", "can-i", "whoami"},
+    "oc": {"get", "describe", "logs", "status", "whoami"},
+    "gcloud": {"list", "describe", "info", "version", "get-iam-policy", "search"},
+    "gsutil": {"ls", "stat", "cat", "du", "hash", "ver", "version"},
+    "gh": {"view", "list", "status"},
+    "helm": {"list", "get", "status", "history", "show", "search", "version"},
+    "bq": {"ls", "show", "head", "query"},
+}
+
+#: Read-only local writes tolerated in a read-only run.
+_REDIR_OK_TARGETS = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr"})
+
+_SEP = re.compile(r"\|\||&&|[;\n|]")           # segment separators
+_SUBST = re.compile(r"\$\(|`|<\(|>\(")          # command / process substitution
+_REDIR = re.compile(r"^(\d*)>>?(&?)(.*)$")      # 1>foo, 2>>bar, 2>&1, >&2
+
 
 def _load_config_readonly() -> dict:
     """Read config.yaml without taking a write lock, or ``{}``.
@@ -93,18 +154,86 @@ def cron_scan_enabled(config: Optional[dict]) -> bool:
     return bool(approvals.get(CRON_SCAN_KEY, True))
 
 
-def cron_effective_mode(mode: str, risk: str | None) -> str:
-    """Escalate approval mode based on the job's declared risk tier.
+def _redirect_ok(tokens: list[str]) -> bool:
+    """True unless a segment writes anywhere but /dev/null or an fd dup."""
+    for i, tok in enumerate(tokens):
+        m = _REDIR.match(tok)
+        if not m or (not m.group(2) and not tok[:1].isdigit() and ">" not in tok):
+            continue
+        if not (">" in tok or tok.endswith(">")):
+            continue
+        if m.group(2) == "&":                    # 2>&1, >&2
+            continue
+        target = m.group(3) or (tokens[i + 1] if i + 1 < len(tokens) else "")
+        if target not in _REDIR_OK_TARGETS:
+            return False
+    return True
 
-    A job declared as 'high' risk (or unannotated, defaulting fail-closed to 'high') is
-    escalated to 'deny' mode so it is evaluated against strict pattern and policy gates.
-    Explicit 'low' risk retains the profile's configured mode (typically 'approve' in
-    non-interactive cron runs).
+
+def _segment_is_read_only(segment: str) -> bool:
+    """Classify one shell segment. Unknown or unanalyzable -> False (fail closed)."""
+    if _SUBST.search(segment):
+        return False
+    try:
+        tokens = shlex.split(segment, comments=False, posix=True)
+    except ValueError:
+        return False                             # unbalanced quotes -> refuse
+    if not tokens:
+        return True                              # empty segment (e.g. trailing sep)
+    while tokens and "=" in tokens[0] and not tokens[0].startswith(("-", "/")):
+        tokens = tokens[1:]                       # strip leading VAR=value assignments
+    if not tokens:
+        return False
+    if not _redirect_ok(tokens):
+        return False
+
+    exe = tokens[0].rsplit("/", 1)[-1]
+    if "$" in exe or exe.startswith("-"):
+        return False
+    if exe in _INDIRECTION:
+        return False
+    if exe in _READ_ONLY_TOOLS:
+        return True
+
+    read = _TOOL_READ_VERBS.get(exe)
+    mutate = _TOOL_MUTATE_VERBS.get(exe)
+    if read is None:
+        return False                             # unknown executable -> refuse
+
+    rest = tokens[1:]
+    if exe in ("kubectl", "oc") and any(
+        t == "--dry-run=client" or t == "--dry-run=server" or t.startswith("--dry-run=c")
+        or t.startswith("--dry-run=s") for t in rest
+    ):
+        return True                              # server/client dry-run is read-only
+    positionals = [t for t in rest if not t.startswith("-") and "=" not in t]
+    if any(t in mutate for t in positionals):
+        return False
+    if any(t in read for t in positionals):
+        return True
+    return False                                 # no recognized read verb -> refuse
+
+
+def cron_command_policy_block(command: str, risk: str | None) -> Optional[dict]:
+    """Refuse anything not provably read-only when the job is 'high' risk.
+
+    'low' keeps the denylist-only floor (returns None). 'high' (and the
+    fail-closed unannotated default) requires every shell segment to be an
+    allowlisted read-only command; unknown, mutating, or unanalyzable commands
+    are refused while the run continues.
     """
-    effective_risk = (risk or RISK_HIGH).strip().lower()
-    if effective_risk != RISK_LOW:
-        return MODE_DENY
-    return mode
+    if (risk or RISK_HIGH).strip().lower() == RISK_LOW:
+        return None
+    if not command or not isinstance(command, str):
+        return None
+    for segment in _SEP.split(command):
+        if segment.strip() and not _segment_is_read_only(segment):
+            logger.warning(
+                "Cron risk gate block [read-only]: refused non-read segment (command: %s)",
+                command[:MAX_LOG_COMMAND_LEN],
+            )
+            return {"approved": False, "message": MSG_MUTATION_REFUSED}
+    return None
 
 
 def cron_execute_code_block() -> Optional[dict]:
@@ -151,24 +280,13 @@ def cron_content_block(
     *,
     load_config: Optional[Callable[[], dict]] = None,
 ) -> Optional[dict]:
-    """Scan a cron command for content-level evasions not caught by standard pattern filters.
+    """Refuse escape/control-char injection and lookalike-domain evasion.
 
-    Checks:
-    1. Terminal escape sequences and raw control characters (ANSI / C0 / C1).
-    2. Pure-ASCII lookalike TLDs mimicking trusted infrastructure domains.
-
-    Returns a refusal dictionary matching check_all_command_guards contract, or None.
+    Unconditional on every cron run: ``approvals.cron_scan`` gates the Tirith
+    content scan only, not these THREAT-002 evasion classes. ``load_config`` is
+    accepted for backward-compatible call sites and ignored.
     """
     if not command or not isinstance(command, str):
-        return None
-
-    config: dict = {}
-    try:
-        config = (load_config or _load_config_readonly)() or {}
-    except Exception as exc:
-        logger.debug("cron risk gate: config unreadable (%s); using defaults", exc)
-
-    if not cron_scan_enabled(config):
         return None
 
     if _ESC.search(command):

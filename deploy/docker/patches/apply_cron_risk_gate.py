@@ -6,8 +6,8 @@ Must run AFTER ``apply_cron_tirith_scan.py``: anchors into ``tools/approval.py``
 where ``apply_cron_tirith_scan.py`` introduced ``_cron_mode = _get_cron_approval_mode()``.
 
 Two edits to ``tools/approval.py``:
-1. In ``check_all_command_guards``: escalates mode for high-risk cron jobs and runs
-   content checks (terminal escapes and lookalike TLDs).
+1. In ``check_all_command_guards``: enforces read-only command policy for high-risk
+   cron jobs and runs content checks (terminal escapes and lookalike TLDs).
 2. In ``check_execute_code_guard``: unconditionally refuses execute_code on cron runs.
 
 Usage::
@@ -33,14 +33,17 @@ COMMAND_CRON_ARM_PATCHED = (
     "            _cron_mode = _get_cron_approval_mode()\n"
     "            # kube-agents patch: see tools/cron_risk_gate.py\n"
     "            from tools.cron_risk_gate import (\n"
+    "                cron_command_policy_block,\n"
     "                cron_content_block,\n"
-    "                cron_effective_mode,\n"
     "            )\n"
     "            from tools.cron_run_scope import current_cron_risk\n"
-    "            _cron_mode = cron_effective_mode(_cron_mode, current_cron_risk())\n"
+    "            _cron_risk = current_cron_risk()\n"
     "            _risk_block = cron_content_block(command)\n"
     "            if _risk_block is not None:\n"
     "                return _risk_block\n"
+    "            _policy_block = cron_command_policy_block(command, _cron_risk)\n"
+    "            if _policy_block is not None:\n"
+    "                return _policy_block\n"
 )
 
 # --- tools/approval.py: check_execute_code_guard ----------------------------

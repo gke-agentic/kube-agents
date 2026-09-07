@@ -73,7 +73,7 @@ class ApplyCronRiskGateTest(unittest.TestCase):
         ast.parse(patched)
 
         self.assertIn("from tools.cron_risk_gate import", patched)
-        self.assertIn("cron_effective_mode(_cron_mode, current_cron_risk())", patched)
+        self.assertIn("cron_command_policy_block(command, _cron_risk)", patched)
         self.assertIn("cron_execute_code_block()", patched)
 
     def test_the_patch_is_not_applied_twice(self):

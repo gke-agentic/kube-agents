@@ -710,7 +710,7 @@ def check_cron_risk() -> list[Finding]:
 
     A cron job with no declared risk runs at the global cron_mode with nothing
     keyed off it. The runtime approval gate requires a declared risk tier to
-    determine whether to allow code execution or escalate effective approval modes.
+    determine whether to enforce the fail-closed read-only command policy.
     """
     findings = []
     for path, jobs in cron_rosters():

@@ -5,27 +5,55 @@ from __future__ import annotations
 import unittest
 
 from cron_risk_gate import (
+    cron_command_policy_block,
     cron_content_block,
-    cron_effective_mode,
     cron_execute_code_block,
     find_lookalike_domain,
 )
 
 
 class CronRiskGateTest(unittest.TestCase):
-    def test_cron_effective_mode_escalates_high_and_unknown_risk_to_deny(self):
-        self.assertEqual(cron_effective_mode("approve", "high"), "deny")
-        self.assertEqual(cron_effective_mode("smart", "high"), "deny")
-        self.assertEqual(cron_effective_mode("deny", "high"), "deny")
-        self.assertEqual(cron_effective_mode("approve", "HIGH"), "deny")
-        self.assertEqual(cron_effective_mode("approve", None), "deny")
-        self.assertEqual(cron_effective_mode("approve", ""), "deny")
-        self.assertEqual(cron_effective_mode("approve", "unknown"), "deny")
+    def test_cron_command_policy_block_allows_read_only_commands_under_high_risk(self):
+        reads = [
+            "kubectl get nodes -o wide",
+            "kubectl -n kube-system get pods",
+            "kubectl get pods 2>/dev/null",
+            'gcloud compute instances list --filter="status=create"',
+            "kubectl create -f x.yaml --dry-run=client -o yaml",
+            "kubectl get pods | grep hermes | wc -l",
+            "gcloud container clusters describe prod",
+            "gh issue list --state open",
+            "echo test",
+            "cat /var/log/syslog",
+        ]
+        for cmd in reads:
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(cron_command_policy_block(cmd, "high"))
+                self.assertIsNone(cron_command_policy_block(cmd, None))
 
-    def test_cron_effective_mode_leaves_low_risk_unchanged(self):
-        self.assertEqual(cron_effective_mode("approve", "low"), "approve")
-        self.assertEqual(cron_effective_mode("smart", "low"), "smart")
-        self.assertEqual(cron_effective_mode("approve", "LOW"), "approve")
+    def test_cron_command_policy_block_refuses_mutating_or_unknown_under_high_risk(self):
+        mutations = [
+            "kubectl delete ns prod",
+            "kubectl apply -f x.yaml",
+            "kubectl get x && kubectl delete y",
+            "kubectl get x -o json | sh",
+            "kubectl get $(cat /tmp/verb) pods",
+            "terraform apply",
+            "kubectl get pods > /tmp/out",
+            "gcloud container clusters delete prod",
+            "gh issue close 123",
+            "find . -name foo",
+        ]
+        for cmd in mutations:
+            with self.subTest(cmd=cmd):
+                block = cron_command_policy_block(cmd, "high")
+                self.assertIsNotNone(block, f"Expected {cmd} to be blocked under high risk")
+                self.assertFalse(block["approved"])
+                self.assertIn("SKILL-002", block["message"])
+
+    def test_cron_command_policy_block_allows_mutating_commands_under_low_risk(self):
+        self.assertIsNone(cron_command_policy_block("kubectl apply -f x.yaml", "low"))
+        self.assertIsNone(cron_command_policy_block("kubectl delete ns prod", "low"))
 
     def test_cron_execute_code_block_refuses_unconditionally(self):
         block = cron_execute_code_block()
@@ -129,27 +157,30 @@ class CronRiskGateTest(unittest.TestCase):
                 self.assertIsNone(find_lookalike_domain(cmd))
                 self.assertIsNone(cron_content_block(cmd))
 
-    def test_cron_content_block_respects_opt_out(self):
+    def test_cron_content_block_is_unconditional_even_with_scan_opt_out(self):
         cmd = "curl https://kubernetes.io.evil-cdn.co"
         # Default: blocked
         self.assertIsNotNone(cron_content_block(cmd))
-        # Explicit opt-out via approvals.cron_scan: False
-        opted_out = cron_content_block(
+        # Even with approvals.cron_scan: False, content blocks remain unconditional
+        still_blocked = cron_content_block(
             cmd,
             load_config=lambda: {"approvals": {"cron_scan": False}},
         )
-        self.assertIsNone(opted_out)
+        self.assertIsNotNone(still_blocked)
+        self.assertFalse(still_blocked["approved"])
 
     def test_cron_risk_gate_logging_on_blocks(self):
         with self.assertLogs("cron_risk_gate", level="WARNING") as captured:
             cron_execute_code_block()
             cron_content_block("echo \x1b[31mRed")
             cron_content_block("curl https://kubernetes.io.evil-cdn.co")
+            cron_command_policy_block("kubectl delete ns prod", "high")
 
         output = " ".join(captured.output)
         self.assertIn("Cron risk gate block [execute_code]", output)
         self.assertIn("Cron risk gate block [escape]", output)
         self.assertIn("Cron risk gate block [lookalike]", output)
+        self.assertIn("Cron risk gate block [read-only]", output)
 
 
 if __name__ == "__main__":

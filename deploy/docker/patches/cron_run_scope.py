@@ -145,7 +145,8 @@ def current_cron_risk(environ: Optional[Mapping[str, str]] = None) -> str:
     """Return the risk tier of the dispatch running in this context, or ``"high"``.
 
     Context variable first, environment second. Falls back to fail-closed
-    ``"high"`` when unset so unannotated dispatches run in deny mode.
+    ``"high"`` when unset so unannotated dispatches run under the read-only
+    command policy (cron_command_policy_block), not blocked outright.
     """
     risk = _CRON_RUN_RISK.get()
     if risk:

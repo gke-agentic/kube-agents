@@ -185,11 +185,15 @@ backfills `"risk": "low"` onto unannotated volume entries during upgrade migrati
 existing custom jobs.
 
 - `"low"`: Read-only governance watchdogs, audits, and internal scheduler plumbing. Runs under
-  the configured `cron_mode` (typically `approve`), protected by Tirith POSIX shell content
-  scans, terminal escape rejection, and lookalike TLD blocks.
+  the configured `cron_mode` (typically `approve`), protected by the denylist floor (hardline +
+  `approvals.deny` + Tirith POSIX shell content scan), terminal escape rejection, lookalike TLD
+  blocks, and `execute_code` blocks.
 - `"high"`: Workloads with broad operational authority or untrusted input sources (such as
   `github-repo-watcher`), as well as unannotated dispatches. For agentic (prompt-driven) jobs,
-  this escalates effective approval mode to `deny` under `cron_risk_gate.py`, routing commands
-  into strict pattern and policy evaluation. For `no_agent: true` jobs like `github-repo-watcher`,
-  `"high"` documents the threat posture of processing untrusted repository and issue data, while
-  command execution boundaries are enforced by dedicated script isolation rather than the agent tool gate.
+  this applies a fail-closed read-only command policy (`cron_command_policy_block`): every command
+  segment must be an allowlisted inspection command (`kubectl get/describe/logs/top`, `gcloud … list/describe`,
+  read-only text utilities, `--dry-run` validations); mutating, unknown, or unanalyzable commands
+  are refused while the run continues. For `no_agent: true` jobs like `github-repo-watcher`, there is
+  no agent loop and therefore no tool-approval surface to gate; `"high"` is a threat classification of
+  the untrusted input the subprocess ingests (runtime isolation is tracked in #913; today the tier is
+  metadata only for those jobs).
