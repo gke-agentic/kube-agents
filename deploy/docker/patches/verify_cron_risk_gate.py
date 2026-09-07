@@ -116,10 +116,24 @@ def main() -> int:
               ap.check_all_command_guards('gcloud compute instances list --filter="status=create"', "local").get("approved"), True)
         check("high allows client dry-run",
               ap.check_all_command_guards("kubectl create -f x.yaml --dry-run=client -o yaml", "local").get("approved"), True)
+        check("high allows quoted-pipe read",
+              ap.check_all_command_guards("kubectl get pods | awk '{n++; print n}'", "local").get("approved"), True)
+        check("high allows jsonpath with quoted pipe",
+              ap.check_all_command_guards("kubectl get x -o jsonpath='{.items[*]}|{end}'", "local").get("approved"), True)
+        check("high allows k alias",
+              ap.check_all_command_guards("k get nodes", "local").get("approved"), True)
         check("high refuses mutation",
               ap.check_all_command_guards("kubectl delete ns prod", "local").get("approved"), False)
         check("high refuses chained mutation",
               ap.check_all_command_guards("kubectl get x && kubectl delete y", "local").get("approved"), False)
+        check("high refuses background smuggling",
+              ap.check_all_command_guards("kubectl get x & bash -c id", "local").get("approved"), False)
+        check("high refuses newline smuggling",
+              ap.check_all_command_guards("kubectl get x\nterraform apply", "local").get("approved"), False)
+        check("high refuses bq query DML",
+              ap.check_all_command_guards("bq query 'DELETE FROM d.t'", "local").get("approved"), False)
+        check("high refuses command substitution backtick",
+              ap.check_all_command_guards("kubectl get `id`", "local").get("approved"), False)
         check("high refuses pipe to shell",
               ap.check_all_command_guards("kubectl get x -o json | sh", "local").get("approved"), False)
         check("high refuses command substitution",

@@ -114,19 +114,38 @@ _TOOL_READ_VERBS = {
                 "api-resources", "api-versions", "cluster-info", "events",
                 "diff", "auth", "config", "can-i", "whoami"},
     "oc": {"get", "describe", "logs", "status", "whoami"},
-    "gcloud": {"list", "describe", "info", "version", "get-iam-policy", "search"},
+    "gcloud": {"list", "describe", "info", "version", "get-iam-policy", "search", "read"},
     "gsutil": {"ls", "stat", "cat", "du", "hash", "ver", "version"},
     "gh": {"view", "list", "status"},
     "helm": {"list", "get", "status", "history", "show", "search", "version"},
-    "bq": {"ls", "show", "head", "query"},
+    # 'query' omitted deliberately: `bq query` executes DML (DELETE/UPDATE/MERGE).
+    "bq": {"ls", "show", "head"},
 }
+
+#: Common command aliases normalized before verb classification.
+_ALIAS = {"k": "kubectl", "kubectl.exe": "kubectl", "gcloud.cmd": "gcloud"}
 
 #: Read-only local writes tolerated in a read-only run.
 _REDIR_OK_TARGETS = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr"})
 
-_SEP = re.compile(r"\|\||&&|[;\n|]")           # segment separators
-_SUBST = re.compile(r"\$\(|`|<\(|>\(")          # command / process substitution
-_REDIR = re.compile(r"^(\d*)>>?(&?)(.*)$")      # 1>foo, 2>>bar, 2>&1, >&2
+#: Command / process substitution — refused wholesale (executes even inside "double quotes").
+_SUBST = re.compile(r"\$\(|`|<\(|>\(")
+
+#: Operators that split commands or control flow (pipe, background, sequence, newline).
+_BREAK_OPERATORS = ";|&\n"
+
+#: Punctuation characters recognized by shlex. Emits shell control operators as discrete tokens.
+_SHLEX_PUNCTUATION_CHARS = "();<>|&\n"
+
+
+#: A pure control-operator token (pipe, background, sequence, newline) ends a segment.
+def _is_break(tok: str) -> bool:
+    return tok != "" and all(c in _BREAK_OPERATORS for c in tok)
+
+
+#: A redirect operator token carries a '<' or '>' (e.g. '>', '>>', '2>', '>&').
+def _is_redirect(tok: str) -> bool:
+    return "<" in tok or ">" in tok
 
 
 def _load_config_readonly() -> dict:
@@ -154,40 +173,59 @@ def cron_scan_enabled(config: Optional[dict]) -> bool:
     return bool(approvals.get(CRON_SCAN_KEY, True))
 
 
-def _redirect_ok(tokens: list[str]) -> bool:
-    """True unless a segment writes anywhere but /dev/null or an fd dup."""
-    for i, tok in enumerate(tokens):
-        m = _REDIR.match(tok)
-        if not m or (not m.group(2) and not tok[:1].isdigit() and ">" not in tok):
-            continue
-        if not (">" in tok or tok.endswith(">")):
-            continue
-        if m.group(2) == "&":                    # 2>&1, >&2
-            continue
-        target = m.group(3) or (tokens[i + 1] if i + 1 < len(tokens) else "")
-        if target not in _REDIR_OK_TARGETS:
-            return False
-    return True
+def _lex_segments(command: str) -> Optional[list[list[str]]]:
+    """Tokenize a command into segments, honoring quotes and shell operators.
 
-
-def _segment_is_read_only(segment: str) -> bool:
-    """Classify one shell segment. Unknown or unanalyzable -> False (fail closed)."""
-    if _SUBST.search(segment):
-        return False
+    Uses a single ``shlex`` pass with ``punctuation_chars`` so pipes, ``&``,
+    ``&&``, ``;`` and newlines are emitted as their own tokens (and so cannot
+    hide a second command), while ``|``/``;`` inside quotes stay part of the
+    argument they belong to. Returns None if the command cannot be lexed.
+    """
+    lex = shlex.shlex(command, posix=True, punctuation_chars=_SHLEX_PUNCTUATION_CHARS)
+    lex.whitespace_split = True
+    lex.commenters = ""                       # '#' is data here, never a comment
+    lex.whitespace = " \t\r"                  # newline is an operator, not whitespace
     try:
-        tokens = shlex.split(segment, comments=False, posix=True)
+        tokens = list(lex)
     except ValueError:
-        return False                             # unbalanced quotes -> refuse
-    if not tokens:
-        return True                              # empty segment (e.g. trailing sep)
-    while tokens and "=" in tokens[0] and not tokens[0].startswith(("-", "/")):
-        tokens = tokens[1:]                       # strip leading VAR=value assignments
-    if not tokens:
-        return False
-    if not _redirect_ok(tokens):
+        return None
+    segments: list[list[str]] = []
+    current: list[str] = []
+    for tok in tokens:
+        if _is_break(tok):
+            segments.append(current)
+            current = []
+        else:
+            current.append(tok)
+    segments.append(current)
+    return segments
+
+
+def _segment_is_read_only(tokens: list[str]) -> bool:
+    """Classify one already-tokenized segment. Unknown/unanalyzable -> False."""
+    cleaned: list[str] = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if _is_redirect(tok):
+            if "&" in tok:                    # fd dup (>&2, 2>&1): no filesystem write
+                i += 2 if i + 1 < len(tokens) else 1
+                continue
+            target = tokens[i + 1] if i + 1 < len(tokens) else ""
+            if target not in _REDIR_OK_TARGETS:
+                return False
+            i += 2
+            continue
+        cleaned.append(tok)
+        i += 1
+
+    while cleaned and "=" in cleaned[0] and not cleaned[0].startswith(("-", "/")):
+        cleaned = cleaned[1:]                 # strip leading VAR=value assignments
+    if not cleaned:
         return False
 
-    exe = tokens[0].rsplit("/", 1)[-1]
+    exe = cleaned[0].rsplit("/", 1)[-1]
+    exe = _ALIAS.get(exe, exe)
     if "$" in exe or exe.startswith("-"):
         return False
     if exe in _INDIRECTION:
@@ -198,20 +236,19 @@ def _segment_is_read_only(segment: str) -> bool:
     read = _TOOL_READ_VERBS.get(exe)
     mutate = _TOOL_MUTATE_VERBS.get(exe)
     if read is None:
-        return False                             # unknown executable -> refuse
+        return False
 
-    rest = tokens[1:]
+    rest = cleaned[1:]
     if exe in ("kubectl", "oc") and any(
-        t == "--dry-run=client" or t == "--dry-run=server" or t.startswith("--dry-run=c")
-        or t.startswith("--dry-run=s") for t in rest
+        t.startswith("--dry-run=c") or t.startswith("--dry-run=s") for t in rest
     ):
-        return True                              # server/client dry-run is read-only
+        return True
     positionals = [t for t in rest if not t.startswith("-") and "=" not in t]
     if any(t in mutate for t in positionals):
         return False
     if any(t in read for t in positionals):
         return True
-    return False                                 # no recognized read verb -> refuse
+    return False
 
 
 def cron_command_policy_block(command: str, risk: str | None) -> Optional[dict]:
@@ -226,13 +263,17 @@ def cron_command_policy_block(command: str, risk: str | None) -> Optional[dict]:
         return None
     if not command or not isinstance(command, str):
         return None
-    for segment in _SEP.split(command):
-        if segment.strip() and not _segment_is_read_only(segment):
-            logger.warning(
-                "Cron risk gate block [read-only]: refused non-read segment (command: %s)",
-                command[:MAX_LOG_COMMAND_LEN],
-            )
-            return {"approved": False, "message": MSG_MUTATION_REFUSED}
+
+    segments = None if _SUBST.search(command) else _lex_segments(command)
+    refused = segments is None or not all(
+        _segment_is_read_only(seg) for seg in segments if seg
+    )
+    if refused:
+        logger.warning(
+            "Cron risk gate block [read-only]: refused non-read command (command: %s)",
+            command[:MAX_LOG_COMMAND_LEN],
+        )
+        return {"approved": False, "message": MSG_MUTATION_REFUSED}
     return None
 
 
