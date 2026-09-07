@@ -273,11 +273,12 @@ func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			rcName := *instance.Spec.Deployment.Availability.RuntimeClassName
 			msg := fmt.Sprintf("RuntimeClass '%s' is not configured in this cluster. For GKE Standard, enable GKE Sandbox by provisioning a gVisor node pool first. In GKE Autopilot, gVisor is supported automatically.", rcName)
 			log.Info(msg)
-			if err := r.reconcileAgentNetworkGuardrails(ctx, instance, reasonRuntimeClassNotFound); err != nil {
-				return ctrl.Result{}, err
-			}
+			guardrailErr := r.reconcileAgentNetworkGuardrails(ctx, instance, reasonRuntimeClassNotFound)
 			if statusErr := r.updateStatusDegraded(ctx, instance, reasonRuntimeClassNotFound, msg); statusErr != nil {
 				return ctrl.Result{}, statusErr
+			}
+			if guardrailErr != nil {
+				return ctrl.Result{}, guardrailErr
 			}
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
@@ -292,11 +293,12 @@ func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// validateCredentialBrokerSplit.
 	if reason, msg := validateCredentialBrokerSplit(instance); reason != "" {
 		log.Info(msg)
-		if err := r.reconcileAgentNetworkGuardrails(ctx, instance, reason); err != nil {
-			return ctrl.Result{}, err
-		}
+		guardrailErr := r.reconcileAgentNetworkGuardrails(ctx, instance, reason)
 		if statusErr := r.updateStatusDegraded(ctx, instance, reason, msg); statusErr != nil {
 			return ctrl.Result{}, statusErr
+		}
+		if guardrailErr != nil {
+			return ctrl.Result{}, guardrailErr
 		}
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
@@ -321,11 +323,12 @@ func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// this path reconciles the same two policies before returning.
 	if reason, msg := validateEgressPolicyLayout(instance); reason != "" {
 		log.Info(msg)
-		if err := r.reconcileAgentNetworkGuardrails(ctx, instance, reason); err != nil {
-			return ctrl.Result{}, err
-		}
+		guardrailErr := r.reconcileAgentNetworkGuardrails(ctx, instance, reason)
 		if statusErr := r.updateStatusDegraded(ctx, instance, reason, msg); statusErr != nil {
 			return ctrl.Result{}, statusErr
+		}
+		if guardrailErr != nil {
+			return ctrl.Result{}, guardrailErr
 		}
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
@@ -372,11 +375,12 @@ func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		// one — reconcile network guardrails via reconcileAgentNetworkGuardrails,
 		// ensuring neither the agent gateway policy nor the litellm policy is
 		// stranded when reconciliation pauses at Degraded.
-		if err := r.reconcileAgentNetworkGuardrails(ctx, instance, reason); err != nil {
-			return ctrl.Result{}, err
-		}
+		guardrailErr := r.reconcileAgentNetworkGuardrails(ctx, instance, reason)
 		if statusErr := r.updateStatusDegraded(ctx, instance, reason, msg); statusErr != nil {
 			return ctrl.Result{}, statusErr
+		}
+		if guardrailErr != nil {
+			return ctrl.Result{}, guardrailErr
 		}
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
@@ -1167,8 +1171,12 @@ const (
 // value leaves a perfectly good policy to render — the builder has already
 // dropped the offending destination — and withholding it would mean the
 // operator's mistake in one field silently removes the whole control.
+// The one refusal that must not render the egress guardrail is
+// reasonEgressPolicyRequiresSplitBroker, because rendering it without the broker
+// split into its own Pod denies the in-pod broker the metadata server it needs
+// to mint cloud tokens.
 func refusalStillRendersTheGuardrail(reason string) bool {
-	return reason == reasonEgressAllowlistRefused
+	return reason != reasonEgressPolicyRequiresSplitBroker
 }
 
 // validateEgressPolicy returns a Degraded reason and message when

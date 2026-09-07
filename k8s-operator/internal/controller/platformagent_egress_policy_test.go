@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"strings"
 	"testing"
@@ -33,6 +34,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	agentv1alpha1 "github.com/gke-labs/kube-agents/k8s-operator/api/v1alpha1"
 )
@@ -765,6 +767,12 @@ func TestTheSplitBrokerRefusalStillRendersNothing(t *testing.T) {
 	if !refusalStillRendersTheGuardrail(reasonEgressAllowlistRefused) {
 		t.Error("a refused allowlist value must still leave the guardrail rendered")
 	}
+	if !refusalStillRendersTheGuardrail(reasonRuntimeClassNotFound) {
+		t.Error("a missing runtimeclass must still leave the guardrail rendered")
+	}
+	if !refusalStillRendersTheGuardrail(reasonSplitBrokerStrandsEventWatcher) {
+		t.Error("a stranded event watcher refusal must still leave the guardrail rendered")
+	}
 }
 
 // TestExtraRulesCannotReopenTheMetadataServer is the escape hatch's own guard.
@@ -1121,6 +1129,26 @@ func TestARefusalDoesNotSuspendTheGatewayNetworkPolicy(t *testing.T) {
 				a.Spec.Security.SplitCredentialBrokerPod = nil
 			},
 		},
+		{
+			name:    "RuntimeClassNotFound",
+			reason:  reasonRuntimeClassNotFound,
+			guarded: true,
+			mutate: func(a *agentv1alpha1.PlatformAgent) {
+				a.Spec.Deployment = &agentv1alpha1.DeploymentSpec{
+					Availability: &agentv1alpha1.AvailabilitySpec{
+						RuntimeClassName: ptr.To("non-existent-runtime"),
+					},
+				}
+			},
+		},
+		{
+			name:    "SplitBrokerStrandsEventWatcher",
+			reason:  reasonSplitBrokerStrandsEventWatcher,
+			guarded: true,
+			mutate: func(a *agentv1alpha1.PlatformAgent) {
+				a.Spec.Harness.EventWatcher.Enabled = ptr.To(true)
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			scheme := setupScheme()
@@ -1184,6 +1212,65 @@ func TestARefusalDoesNotSuspendTheGatewayNetworkPolicy(t *testing.T) {
 				t.Error("the split-broker refusal rendered the egress policy, which is the outage it exists to prevent")
 			}
 		})
+	}
+}
+
+// TestRefusalStillUpdatesStatusWhenGuardrailReconcileFails covers the failure mode
+// where reconciling network guardrails errors on a refusal path: the status must still
+// record Degraded with the refusal reason rather than returning early without updating status.
+func TestRefusalStillUpdatesStatusWhenGuardrailReconcileFails(t *testing.T) {
+	scheme := setupScheme()
+	agent := egressPolicyAgent(func(a *agentv1alpha1.PlatformAgent) {
+		a.Spec.Security.EgressAllowlist = &agentv1alpha1.EgressAllowlistSpec{
+			ControlPlaneCIDRs: []string{"0.0.0.0/0"},
+		}
+	})
+
+	injectedErr := errors.New("injected networkpolicy apply error")
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(agent).
+		WithStatusSubresource(&agentv1alpha1.PlatformAgent{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, client client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if _, ok := obj.(*networkingv1.NetworkPolicy); ok {
+					return injectedErr
+				}
+				return client.Create(ctx, obj, opts...)
+			},
+			Patch: func(ctx context.Context, client client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+				if _, ok := obj.(*networkingv1.NetworkPolicy); ok {
+					return injectedErr
+				}
+				return client.Patch(ctx, obj, patch, opts...)
+			},
+		}).
+		Build()
+
+	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name, Namespace: agent.Namespace}}
+	ctx := context.Background()
+
+	_, err := r.Reconcile(ctx, req)
+	if err == nil {
+		t.Fatal("expected Reconcile to return the guardrail error, got nil")
+	}
+
+	stored := &agentv1alpha1.PlatformAgent{}
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(agent), stored); err != nil {
+		t.Fatalf("failed to re-read the agent: %v", err)
+	}
+	if stored.Status.Phase != "Degraded" {
+		t.Errorf("expected Status.Phase to be Degraded despite guardrail error, got %q", stored.Status.Phase)
+	}
+	var gotReason string
+	for _, condition := range stored.Status.Conditions {
+		if condition.Type == "Ready" {
+			gotReason = condition.Reason
+		}
+	}
+	if gotReason != reasonEgressAllowlistRefused {
+		t.Errorf("expected Ready condition reason %q, got %q", reasonEgressAllowlistRefused, gotReason)
 	}
 }
 
