@@ -1248,22 +1248,29 @@ func TestRefusalStillUpdatesStatusWhenGuardrailReconcileFails(t *testing.T) {
 	})
 
 	injectedErr := errors.New("injected networkpolicy apply error")
+	ssa := ssaApplyInterceptor()
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(agent).
 		WithStatusSubresource(&agentv1alpha1.PlatformAgent{}).
 		WithInterceptorFuncs(interceptor.Funcs{
-			Create: func(ctx context.Context, client client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
-				if _, ok := obj.(*networkingv1.NetworkPolicy); ok {
+			Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if np, ok := obj.(*networkingv1.NetworkPolicy); ok && np.Name == agent.Name+"-gateway-netpol" {
 					return injectedErr
 				}
-				return client.Create(ctx, obj, opts...)
+				if ssa.Create != nil {
+					return ssa.Create(ctx, cl, obj, opts...)
+				}
+				return cl.Create(ctx, obj, opts...)
 			},
-			Patch: func(ctx context.Context, client client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
-				if _, ok := obj.(*networkingv1.NetworkPolicy); ok {
+			Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+				if np, ok := obj.(*networkingv1.NetworkPolicy); ok && np.Name == agent.Name+"-gateway-netpol" {
 					return injectedErr
 				}
-				return client.Patch(ctx, obj, patch, opts...)
+				if ssa.Patch != nil {
+					return ssa.Patch(ctx, cl, obj, patch, opts...)
+				}
+				return cl.Patch(ctx, obj, patch, opts...)
 			},
 		}).
 		Build()
