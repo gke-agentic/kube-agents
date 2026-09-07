@@ -123,6 +123,7 @@ class NightlyPipelineWiringTest(unittest.TestCase):
         )
         self.assertIn("RELEASE_BOT_APP_ID", token_step["with"]["app-id"])
         self.assertIn("RELEASE_BOT_APP_PRIVATE_KEY", token_step["with"]["private-key"])
+        self.assertEqual(token_step["with"].get("permission-contents"), "write")
         checkout = next(
             step
             for step in steps
