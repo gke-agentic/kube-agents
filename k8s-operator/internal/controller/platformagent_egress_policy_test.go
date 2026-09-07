@@ -1240,65 +1240,110 @@ func TestARefusalDoesNotSuspendTheGatewayNetworkPolicy(t *testing.T) {
 // where reconciling network guardrails errors on a refusal path: the status must still
 // record Degraded with the refusal reason rather than returning early without updating status.
 func TestRefusalStillUpdatesStatusWhenGuardrailReconcileFails(t *testing.T) {
-	scheme := setupScheme()
-	agent := egressPolicyAgent(func(a *agentv1alpha1.PlatformAgent) {
-		a.Spec.Security.EgressAllowlist = &agentv1alpha1.EgressAllowlistSpec{
-			ControlPlaneCIDRs: []string{"0.0.0.0/0"},
-		}
-	})
-
-	injectedErr := errors.New("injected networkpolicy apply error")
-	ssa := ssaApplyInterceptor()
-	cl := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(agent).
-		WithStatusSubresource(&agentv1alpha1.PlatformAgent{}).
-		WithInterceptorFuncs(interceptor.Funcs{
-			Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
-				if np, ok := obj.(*networkingv1.NetworkPolicy); ok && np.Name == agent.Name+"-gateway-netpol" {
-					return injectedErr
+	for _, tc := range []struct {
+		name   string
+		mutate func(*agentv1alpha1.PlatformAgent)
+		reason string
+	}{
+		{
+			name:   "EgressAllowlistRefused",
+			reason: reasonEgressAllowlistRefused,
+			mutate: func(a *agentv1alpha1.PlatformAgent) {
+				a.Spec.Security.EgressAllowlist = &agentv1alpha1.EgressAllowlistSpec{
+					ControlPlaneCIDRs: []string{"0.0.0.0/0"},
 				}
-				if ssa.Create != nil {
-					return ssa.Create(ctx, cl, obj, opts...)
-				}
-				return cl.Create(ctx, obj, opts...)
 			},
-			Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
-				if np, ok := obj.(*networkingv1.NetworkPolicy); ok && np.Name == agent.Name+"-gateway-netpol" {
-					return injectedErr
+		},
+		{
+			name:   "ForbiddenVolumeMount",
+			reason: reasonForbiddenVolumeMount,
+			mutate: func(a *agentv1alpha1.PlatformAgent) {
+				a.Spec.Deployment = &agentv1alpha1.DeploymentSpec{
+					ExtraVolumeMounts: []corev1.VolumeMount{
+						{Name: "credential-proxy-state", MountPath: "/var/lib/credential-proxy"},
+					},
 				}
-				if ssa.Patch != nil {
-					return ssa.Patch(ctx, cl, obj, patch, opts...)
-				}
-				return cl.Patch(ctx, obj, patch, opts...)
 			},
-		}).
-		Build()
+		},
+		{
+			name:   "ShellSandboxCannotBeDisabled",
+			reason: reasonShellSandboxCannotBeDisabled,
+			mutate: func(a *agentv1alpha1.PlatformAgent) {
+				a.Spec.Harness.Experimental = &agentv1alpha1.ExperimentalSpec{
+					ShellSandbox: &agentv1alpha1.ShellSandboxSpec{Enabled: ptr.To(false)},
+				}
+			},
+		},
+		{
+			name:   "RuntimeClassNotFound",
+			reason: reasonRuntimeClassNotFound,
+			mutate: func(a *agentv1alpha1.PlatformAgent) {
+				a.Spec.Deployment = &agentv1alpha1.DeploymentSpec{
+					Availability: &agentv1alpha1.AvailabilitySpec{
+						RuntimeClassName: ptr.To("non-existent-runtime"),
+					},
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			scheme := setupScheme()
+			agent := egressPolicyAgent(tc.mutate)
 
-	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name, Namespace: agent.Namespace}}
-	ctx := context.Background()
+			injectedErr := errors.New("injected networkpolicy apply error")
+			ssa := ssaApplyInterceptor()
+			cl := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(agent).
+				WithStatusSubresource(&agentv1alpha1.PlatformAgent{}).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+						if np, ok := obj.(*networkingv1.NetworkPolicy); ok && np.Name == agent.Name+"-gateway-netpol" {
+							return injectedErr
+						}
+						if ssa.Create != nil {
+							return ssa.Create(ctx, cl, obj, opts...)
+						}
+						return cl.Create(ctx, obj, opts...)
+					},
+					Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+						if np, ok := obj.(*networkingv1.NetworkPolicy); ok && np.Name == agent.Name+"-gateway-netpol" {
+							return injectedErr
+						}
+						if ssa.Patch != nil {
+							return ssa.Patch(ctx, cl, obj, patch, opts...)
+						}
+						return cl.Patch(ctx, obj, patch, opts...)
+					},
+				}).
+				Build()
 
-	_, err := r.Reconcile(ctx, req)
-	if err == nil {
-		t.Fatal("expected Reconcile to return the guardrail error, got nil")
-	}
+			r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
+			req := ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name, Namespace: agent.Namespace}}
+			ctx := context.Background()
 
-	stored := &agentv1alpha1.PlatformAgent{}
-	if err := cl.Get(ctx, client.ObjectKeyFromObject(agent), stored); err != nil {
-		t.Fatalf("failed to re-read the agent: %v", err)
-	}
-	if stored.Status.Phase != "Degraded" {
-		t.Errorf("expected Status.Phase to be Degraded despite guardrail error, got %q", stored.Status.Phase)
-	}
-	var gotReason string
-	for _, condition := range stored.Status.Conditions {
-		if condition.Type == "Ready" {
-			gotReason = condition.Reason
-		}
-	}
-	if gotReason != reasonEgressAllowlistRefused {
-		t.Errorf("expected Ready condition reason %q, got %q", reasonEgressAllowlistRefused, gotReason)
+			_, err := r.Reconcile(ctx, req)
+			if err == nil {
+				t.Fatal("expected Reconcile to return the guardrail error, got nil")
+			}
+
+			stored := &agentv1alpha1.PlatformAgent{}
+			if err := cl.Get(ctx, client.ObjectKeyFromObject(agent), stored); err != nil {
+				t.Fatalf("failed to re-read the agent: %v", err)
+			}
+			if stored.Status.Phase != "Degraded" {
+				t.Errorf("expected Status.Phase to be Degraded despite guardrail error, got %q", stored.Status.Phase)
+			}
+			var gotReason string
+			for _, condition := range stored.Status.Conditions {
+				if condition.Type == "Ready" {
+					gotReason = condition.Reason
+				}
+			}
+			if gotReason != tc.reason {
+				t.Errorf("expected Ready condition reason %q, got %q", tc.reason, gotReason)
+			}
+		})
 	}
 }
 

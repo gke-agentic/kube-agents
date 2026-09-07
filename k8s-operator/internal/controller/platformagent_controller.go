@@ -120,6 +120,7 @@ const (
 		"spec.harness.eventWatcher.enabled=true (or remove the field) to start watching again."
 
 	reasonRuntimeClassNotFound = "RuntimeClassNotFound"
+	reasonForbiddenVolumeMount = "ForbiddenVolumeMount"
 )
 
 // PlatformAgentReconciler reconciles a PlatformAgent object
@@ -346,11 +347,12 @@ func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// the same hazard and take the same rescue.
 	if msg := validateExtraVolumeMounts(instance); msg != "" {
 		log.Info(msg)
-		if err := r.reconcileAgentNetworkGuardrails(ctx, instance); err != nil {
-			return ctrl.Result{}, err
-		}
-		if statusErr := r.updateStatusDegraded(ctx, instance, "ForbiddenVolumeMount", msg); statusErr != nil {
+		guardrailErr := r.reconcileAgentNetworkGuardrails(ctx, instance)
+		if statusErr := r.updateStatusDegraded(ctx, instance, reasonForbiddenVolumeMount, msg); statusErr != nil {
 			return ctrl.Result{}, statusErr
+		}
+		if guardrailErr != nil {
+			return ctrl.Result{}, guardrailErr
 		}
 		return ctrl.Result{}, nil
 	}
@@ -364,11 +366,12 @@ func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// whatever it is already running rather than being half-reconfigured.
 	if reason, msg := validateShellSandbox(instance); reason != "" {
 		log.Info(msg)
-		if err := r.reconcileAgentNetworkGuardrails(ctx, instance); err != nil {
-			return ctrl.Result{}, err
-		}
+		guardrailErr := r.reconcileAgentNetworkGuardrails(ctx, instance)
 		if statusErr := r.updateStatusDegraded(ctx, instance, reason, msg); statusErr != nil {
 			return ctrl.Result{}, statusErr
+		}
+		if guardrailErr != nil {
+			return ctrl.Result{}, guardrailErr
 		}
 		return ctrl.Result{}, nil
 	}
@@ -440,9 +443,9 @@ func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		// refusal; it is the Pod's baseline and it predates this field.
 		//
 		// Steps 9b, 9c, 10, and this one take the same rescue: reconcile network
-		// guardrails via reconcileAgentNetworkGuardrails, ensuring neither the agent
-		// gateway policy nor the litellm policy is stranded when reconciliation pauses
-		// at Degraded.
+		// guardrails via reconcileAgentNetworkGuardrails, recording Degraded status
+		// before returning any guardrail error so neither the agent gateway policy
+		// nor the litellm policy is stranded when reconciliation pauses at Degraded.
 		guardrailErr := r.reconcileAgentNetworkGuardrails(ctx, instance)
 		if statusErr := r.updateStatusDegraded(ctx, instance, reason, msg); statusErr != nil {
 			return ctrl.Result{}, statusErr
