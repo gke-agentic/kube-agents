@@ -38,7 +38,7 @@ const (
 	podLabelApp              = "app"
 
 	litellmPort  int32 = 8080
-	dnsPort      int32 = 53
+	dnsPort            = 53
 	httpsPort    int32 = 443
 	httpPort     int32 = 80
 	otlpGRPCPort int32 = 4317

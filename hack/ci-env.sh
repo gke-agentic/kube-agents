@@ -6,10 +6,10 @@
 # ==============================================================================
 
 # gke_dns_endpoint_flag, so every CI get-credentials picks the same endpoint the
-# installer would. Only this helper is pulled in, not k8s-operator/scripts/common.sh,
+# installer would. Only this helper is pulled in, not scripts/installer/common.sh,
 # whose state file and print_* helpers CI has no use for.
-# shellcheck source=k8s-operator/scripts/gke_dns_endpoint.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../k8s-operator/scripts" && pwd)/gke_dns_endpoint.sh"
+# shellcheck source=scripts/installer/gke_dns_endpoint.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../scripts/installer" && pwd)/gke_dns_endpoint.sh"
 
 # TODO(boskos): Once oss-test-infra#2655 merges and deploys Boskos project leasing,
 # consider failing closed if JOB_NAME is set and PROJECT_ID is unset.
@@ -114,6 +114,10 @@ dump_prow_artifacts_on_failure() {
     kubectl logs deployment/platform-agent-gateway -n "${ns}" --tail=2000 > "${artifact_dir}/platform-agent-gateway.log" 2>&1 || true
     kubectl logs deployment/platform-agent-gateway -n "${ns}" --previous --tail=1000 > "${artifact_dir}/platform-agent-gateway-previous-crash.log" 2>&1 || true
     kubectl logs deployment/kube-agents-controller-manager -n "${ns}" --tail=1000 > "${artifact_dir}/controller-manager.log" 2>&1 || true
+    # The model path runs through LiteLLM, and with vertex_ai its failure
+    # domain (Workload Identity token fetch, aiplatform 403s, model 404s)
+    # is visible only in this pod's log -- the gateway just relays the text.
+    kubectl logs deployment/litellm -n "${ns}" --tail=1000 > "${artifact_dir}/litellm.log" 2>&1 || true
     # The gateway capture above reads the pod's default container (platform-agent);
     # a dropped port-forward stream is only visible from the envoy sidecar's side.
     kubectl logs deployment/platform-agent-gateway -c envoy-credential-proxy -n "${ns}" --tail=2000 > "${artifact_dir}/envoy-credential-proxy.log" 2>&1 || true

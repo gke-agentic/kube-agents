@@ -8,8 +8,8 @@ This comprehensive, step-by-step guide explains how to install, configure, deplo
 >
 > For the explanatory material — why each component exists, architecture, troubleshooting in depth,
 > and the concept guides — see **<https://gke-labs.github.io/kube-agents/>**. For the shared
-> installer defaults and the `vars.sh` state model, see
-> [`k8s-operator/scripts/README.md`](k8s-operator/scripts/README.md).
+> installer defaults and the `install.env` configuration model, see
+> [`scripts/installer/README.md`](scripts/installer/README.md).
 
 ---
 
@@ -20,16 +20,17 @@ This comprehensive, step-by-step guide explains how to install, configure, deplo
 3. [Method 0: Zero-Friction One-Liner Installation (Fastest)](#method-0-zero-friction-one-liner-installation-fastest)
 4. [Method 1: The Install Engine — Terraform + Helm](#method-1-the-install-engine--terraform--helm)
    - [Step-by-Step Execution](#step-by-step-execution)
-5. [Method 2: Manual Kubernetes Cluster Deployment](#method-2-manual-kubernetes-cluster-deployment)
+5. [The Shell Sandbox](#the-shell-sandbox)
+6. [Method 2: Manual Kubernetes Cluster Deployment](#method-2-manual-kubernetes-cluster-deployment)
    - [Step 1: Install cert-manager](#step-1-install-cert-manager)
    - [Step 2: Create API Key & Access Secrets](#step-2-create-api-key--access-secrets)
    - [Step 3: Build & Push the Operator Image](#step-3-build--push-the-operator-image)
    - [Step 4: Deploy the Operator & CRDs](#step-4-deploy-the-operator--crds)
    - [Step 5: Deploy Integrations (LiteLLM & GitHub)](#step-5-deploy-integrations-litellm--github)
    - [Step 6: Apply Custom Resources](#step-6-apply-custom-resources)
-6. [Method 3: Local Development & Fast Iteration](#method-3-local-development--fast-iteration)
-7. [Teardown & Cleanup](#teardown--cleanup)
-8. [Troubleshooting & Common FAQ](#troubleshooting--common-faq)
+7. [Method 3: Local Development & Fast Iteration](#method-3-local-development--fast-iteration)
+8. [Teardown & Cleanup](#teardown--cleanup)
+9. [Troubleshooting & Common FAQ](#troubleshooting--common-faq)
 
 ---
 
@@ -58,7 +59,7 @@ When running the release-pinned installer (`<RELEASE_VERSION>/install.sh`), the 
 - **Chat Integrations**: Configures Google Chat and/or Slack when selected.
 - **AI Model Credentials**: Prompts for Gemini, OpenAI, or Anthropic credentials, or selects Vertex AI (no key — Workload Identity).
 - **Long-Term Memory**: Asks whether the agents should remember anything between conversations, and if so which store (`--memory=file|hindsight|off`, default `file`). The default is **on**, and it is the store this repository shipped before the searchable one existed, so an upgrade that says nothing about memory keeps what it already has: per-user Markdown inside the pod (`multiuser_memory`), no extra services, suited to **small or personal** deployments — but the whole store is loaded into the model's context every turn, so it stops scaling past a few pages. Pick `hindsight` for **enterprise** deployments — ranked recall that stays affordable as the store grows, at the cost of an API server and a Postgres database in the cluster; it selects the `kube_agents_memory` provider. Pick `off` to retain nothing and run no database. The measurements behind that split, and how to change it later, are in [`docs/designs/memory.md`](docs/designs/memory.md).
-- **Automated Engine Execution**: Writes `k8s-operator/scripts/vars.sh` (the install's machine-readable record), generates `terraform/examples/full-install/terraform.tfvars` from it, and launches `lifecycle.sh apply` — a single `terraform apply` that provisions every GCP resource and installs the Helm chart, with the Terraform state kept in a versioned GCS bucket (`<project>-kube-agents-tfstate`).
+- **Automated Engine Execution**: Generates `terraform/examples/full-install/terraform.tfvars` from the loaded configuration, records that configuration in `install.env` when a first install has none, and launches `lifecycle.sh apply` — a single `terraform apply` that provisions every GCP resource and installs the Helm chart, with the Terraform state kept in a versioned GCS bucket (`<project>-kube-agents-tfstate`).
 
 The installer's engine is [Method 1](#method-1-the-install-engine--terraform--helm): the
 [`terraform/examples/full-install`](terraform/examples/full-install/README.md) composition, which is
@@ -66,9 +67,10 @@ the canonical description of what gets created. Three things stay outside Terraf
 installer itself: CMEK database encryption on a **pre-existing** cluster (a `gcloud` pre-step), the
 managed-OTel collection scope (no Terraform field exists), and the GitHub App private-key import
 into KMS (the PEM must not enter Terraform state). The installer sources
-`k8s-operator/scripts/installer_common.sh`, so its defaults (region, cluster name, model provider,
-registry prefix) and its accepted values live in exactly one place; see
-[Shared defaults live in `installer_common.sh`](k8s-operator/scripts/README.md#shared-defaults-live-in-installer_commonsh).
+`scripts/installer/installer_common.sh`, which reads `install.defaults.env`, so its defaults
+(region, cluster name, model provider, registry prefix) and its accepted values live in exactly
+one place; see
+[Shared defaults live in `installer_common.sh`](scripts/installer/README.md#shared-defaults-live-in-installer_commonsh).
 
 Three behaviours worth knowing before the first run:
 
@@ -101,7 +103,7 @@ curl -fsSL https://gke-labs.github.io/kube-agents/install.sh | bash -s -- \
   --permission-set="read-only"
 ```
 
-To run pre-flight checks and output configuration state (`vars.sh`, `terraform.tfvars`, and
+To run pre-flight checks and output configuration state (`terraform.tfvars` and
 `/tmp/kube-agents-install-report.json`) without creating cloud resources — the dry run also
 validates the Terraform configuration, and previews the full resource plan when Application
 Default Credentials are available:
@@ -157,8 +159,10 @@ and GitHub minter workloads).
 
 - **Canonical guide (self-contained):** [`terraform/examples/full-install/README.md`](terraform/examples/full-install/README.md)
 - Drive it through [`lifecycle.sh`](terraform/examples/full-install/lifecycle.sh) rather than bare
-  `terraform` commands: `apply` adopts the Cloud KMS resources GCP refuses to delete, and `destroy`
-  handles the four teardown asymmetries a bare `terraform destroy` trips over.
+  `terraform` commands: `apply` adopts the Cloud KMS resources GCP refuses to delete and any Pub/Sub
+  topic or subscription that already exists, `destroy` handles the four teardown asymmetries a bare
+  `terraform destroy` trips over, and `plan` reports what an apply would change while creating
+  nothing.
 - The composition installs `cert-manager` automatically (`enable_cert_manager`, default true), so
   you do **not** need to install it yourself on this path. (You do for
   [Method 2](#method-2-manual-kubernetes-cluster-deployment).)
@@ -195,18 +199,14 @@ KUBE_AGENTS_STATE_BUCKET=auto ./lifecycle.sh apply
   for local state — fine for a hand-driven evaluation, wrong for anything `uninstall.sh` or
   `upgrade.sh` should later find. The state contains every secret the install was given; the
   bucket's IAM is its protection.
-- `install.sh` re-runs rebuild `k8s-operator/scripts/vars.sh` from that run's flags and environment
-  rather than reading the previous one, then regenerate `terraform.tfvars` from it and let
-  `terraform apply` reconcile whatever changed. Anything you do not re-supply falls back to its
-  default — including `--gvisor`, which defaults to `true`, so a bare re-run moves an unsandboxed
-  install onto the sandbox. `./install.sh --menu` is the re-run that carries the previous choices:
-  it reads the existing state, and Save & Apply re-applies through the same engine. Sourcing
-  `k8s-operator/scripts/vars.sh` before a flag-driven re-run gets most of the way — its entries are
-  `export`ed, so a child `./install.sh` sees them — but not all of it. The file records the memory
-  choice as `MEMORY_PROVIDER` and the dashboard as `HERMES_DASHBOARD_ENABLED`, while `install.sh`
-  reads `MEMORY` and `ENABLE_WEBUI`, so both revert to their defaults (file-backed memory, dashboard
-  off) unless you also pass `--memory` and `--enable-web-ui`. For a hand-driven install, edit your
-  tfvars and re-apply.
+- `install.sh` re-runs are idempotent: it loads `install.env` from the first run, regenerates
+  `terraform.tfvars` from it, and `terraform apply` reconciles whatever changed. Flags you omit
+  keep the value the file records rather than reverting to a default, so bumping `--image-tag`
+  alone changes only the image tag. To change configuration, edit `install.env` (copy
+  `install.env.example` and `chmod 600` it if the first install has not written one yet — the
+  example is tracked world-readable and the file it becomes holds your API keys) and re-run, use
+  `./install.sh --menu` (Save & Apply re-applies through the same engine), or edit your
+  hand-written tfvars and re-apply.
 
 - **Private Container Registry**: If your GKE clusters may only pull from an approved registry, see
   [Private container registry](#private-container-registry) below for the full recipe. Mirroring
@@ -225,10 +225,10 @@ KUBE_AGENTS_STATE_BUCKET=auto ./lifecycle.sh apply
 
 The automated installer includes local state hardening and Cloud KMS (CMEK) etcd database encryption:
 
-- **Local State Security**: Configuration state saved in `k8s-operator/scripts/vars.sh` — and the `terraform.tfvars` generated from it — is protected with strict file permissions (`umask 077`, `chmod 600`). The Terraform **state** additionally holds every secret in plaintext; it lives in the versioned GCS state bucket, whose IAM is its protection.
+- **Local State Security**: The `install.env` configuration — and the `terraform.tfvars` generated from it — is protected with strict file permissions (`umask 077`, `chmod 600`). An `install.env` the installer wrote is 0600 from the start; one you created by copying `install.env.example` is whatever your umask made it, so `chmod 600` it yourself. `install.sh` tightens a group- or world-readable one when it loads it and prints what it did. The Terraform **state** additionally holds every secret in plaintext; it lives in the versioned GCS state bucket, whose IAM is its protection.
 - **GKE Database Encryption (CMEK)**: GKE etcd database encryption is configured automatically using Cloud KMS (`kms_keyring_name` / `kms_key_name`, default `platform-agent-keyring` / `k8s-secret-encryption-key`). On a **pre-existing** cluster Terraform cannot enable it, so `install.sh` does that as a `gcloud` pre-step before the apply.
 - **`ALLOW_UNENCRYPTED_SECRETS`**: Set `ALLOW_UNENCRYPTED_SECRETS=true` before running `install.sh` against an existing unencrypted cluster to skip that CMEK pre-step (testing environments only).
-- **`PERSIST_SECRETS_ON_DISK`**: By default (`PERSIST_SECRETS_ON_DISK=true`), credentials (API keys, Slack tokens) are saved to `vars.sh`. Set `PERSIST_SECRETS_ON_DISK=false` to prevent writing sensitive credentials to disk.
+- **`PERSIST_SECRETS_ON_DISK`**: By default (`PERSIST_SECRETS_ON_DISK=true`), credentials (API keys, Slack tokens) are saved to `install.env`. Set `PERSIST_SECRETS_ON_DISK=false` to keep them out of every file the installer writes; they travel to Terraform as `TF_VAR_*` and later runs recover them from the live `platform-agent-secrets` Secret.
 
 #### Private container registry
 
@@ -302,17 +302,18 @@ If you enabled Google Chat or Slack during the install, perform the following re
      ```bash
      kubectl exec -it deploy/platform-agent-gateway -n kubeagents-system -- hermes pairing approve google_chat <PAIRING_CODE>
      ```
-   - Re-display these instructions at any time from the `k8s-operator` directory:
+   - Re-display these instructions at any time from the repository root:
      ```bash
-     ./scripts/print_instructions_gchat.sh
+     ./scripts/installer/print_instructions_gchat.sh
      ```
 
 ##### 2. Slack Configuration (`SLACK_ENABLED=true`)
 
 1. **Verify Slack App Settings**:
    - Ensure **Socket Mode** is enabled in your Slack App console.
-   - Verify that your Bot Token (`SLACK_BOT_TOKEN`) has the required scopes: `app_mentions:read`, `channels:history`, `chat:write`, `channels:read`, `groups:read`, `im:read`, `mpim:read`, `files:write`.
+   - Verify that your Bot Token (`SLACK_BOT_TOKEN`) has the required scopes: `app_mentions:read`, `channels:history`, `chat:write`, `channels:read`, `groups:read`, `im:read`, `mpim:read`, `files:write`, `reactions:write`.
    - `files:write` is the one that is easy to miss, because omitting it looks like nothing is wrong. A card whose answer is text is delivered normally; a card that produces a **file** has its upload rejected with `missing_scope`, which the artifact delivery path catches and logs as a warning. The user is told the task completed and never sees the artifact. Add the scope and reinstall the app.
+   - `reactions:write` fails more quietly still. The agent puts 👀 on a message when it picks the work up and swaps it for ✅ or ❌ when the turn ends; without the scope Slack rejects each of those with `missing_scope`, the adapter logs it at debug and carries on, and the answer still arrives. The only symptom is that no reaction ever appears. Add the scope and reinstall.
 2. **Test Bot Connection**:
    - Invite the bot to a channel or send a direct message: `"Hi Platform Agent"`.
 3. **Approve Pairing Code (Optional / First-time setup)**:
@@ -330,10 +331,61 @@ If you enabled Google Chat or Slack during the install, perform the following re
 5. **Set the Home Channel (if you left `SLACK_HOME_CHANNEL` empty)**:
    - Scheduled audits have nowhere to post until one is set. From the Slack channel you want, run `/sethome` (or `/hermes sethome`). It takes effect immediately and persists across restarts.
 
-- Re-display these instructions at any time from the `k8s-operator` directory:
+- Re-display these instructions at any time from the repository root:
   ```bash
-  ./scripts/print_instructions_slack.sh
+  ./scripts/installer/print_instructions_slack.sh
   ```
+
+---
+
+## The Shell Sandbox
+
+Every command the model writes runs in `platform-agent-shell-0`, a pod of its own that holds no
+credentials and is reached over SSH. It is not optional and there is nothing to turn on: the
+operator refuses `shellSandbox.enabled: false` with `Degraded`/`ShellSandboxCannotBeDisabled`, and
+the chart fails the render rather than installing something that would sit `Degraded`. The SSH
+keypair it needs is minted for you by `install.sh`, by the Terraform composition, and by
+`upgrade.sh` on an install that predates it, so there is no key ceremony.
+
+The one thing left to choose is the container runtime. `gvisor` puts a user-space kernel under the
+sandbox pod and needs a GKE Sandbox node pool; on Standard clusters `enable_gvisor_node_pool = true`
+builds one, and Autopilot ships the `gvisor` RuntimeClass with no pool to manage. Leave it empty to
+run on the node's standard runtime.
+
+Set it on a new install by adding this to `terraform.tfvars` before the first apply
+([Method 1](#method-1-the-install-engine--terraform--helm), Step 2):
+
+```hcl
+cluster_mode            = "standard" # omit both lines on Autopilot, which
+enable_gvisor_node_pool = true       # provides the gvisor RuntimeClass natively
+
+extra_helm_values = {
+  platformAgent = { harness = { experimental = { shellSandbox = {
+    runtimeClassName = "gvisor"
+  } } } }
+}
+```
+
+Or on an existing one:
+
+```bash
+helm upgrade kube-agents ./charts/kube-agents \
+  --namespace kubeagents-system --reuse-values \
+  --set platformAgent.harness.experimental.shellSandbox.runtimeClassName=gvisor \
+  --wait --timeout 10m
+```
+
+Confirm it took: `kubectl get pod platform-agent-shell-0 -n kubeagents-system -o jsonpath='{.spec.runtimeClassName}'`.
+
+On an install that came from `install.sh`, put the same value in `extra_helm_values` in
+`terraform/examples/full-install/terraform.tfvars` as well. The next `upgrade.sh` or `install.sh`
+re-run regenerates that file from `install.env`, which does not record this setting, and reverts a
+value set only on the Helm release.
+
+Installing the chart directly with `helm install` gives you a sandbox the agent cannot log into: the
+chart cannot generate an `authorized_keys`-form public key, so `platform-agent-shell-authorized-keys`
+renders empty. Supply the keypair yourself in `platformAgent.credentials.data`
+(`SANDBOX_SSH_PRIVATE_KEY`, `SANDBOX_SSH_PUBLIC_KEY`) or use Method 1.
 
 ---
 
@@ -419,7 +471,10 @@ Set your registry destination and build the container image:
 ```bash
 cd k8s-operator
 
-export IMG=us-central1-docker.pkg.dev/<YOUR_PROJECT>/<YOUR_REPO>/kube-agents-operator:latest
+# An immutable tag: `make deploy` refuses a floating tag such as `latest`, because it
+# lets a pod reschedule upgrade the controller past the RBAC applied with it.
+# Set ALLOW_MUTABLE_IMG=1 only for a cluster you will discard.
+export IMG=us-central1-docker.pkg.dev/<YOUR_PROJECT>/<YOUR_REPO>/kube-agents-operator:$(git rev-parse HEAD)
 
 make docker-build IMG=$IMG
 make docker-push IMG=$IMG
@@ -458,7 +513,7 @@ injects into every agent pod — so nothing else sets them:
 ```bash
 kubectl set env deployment/kubeagents-controller-manager -n kubeagents-system \
   PLATFORM_AGENT_IMAGE=registry.example.com/kube-agents/platform-agent:latest \
-  FLUENT_BIT_IMAGE=registry.example.com/kube-agents/fluent-bit:5.1.0
+  FLUENT_BIT_IMAGE=registry.example.com/kube-agents/fluent-bit:5.1.1
 ```
 
 The Helm chart does this for you when a registry prefix
@@ -478,6 +533,8 @@ kubectl rollout status deployment -n kubeagents-system
 To optionally deploy the LiteLLM Gateway or GitHub Token Minter:
 
 `GITHUB_ORG` must be a GitHub **organization**. The Token Minter looks App installations up at `/orgs/{org}/installation`, which does not exist for personal accounts, so a user-owned GitOps repo deploys cleanly and then fails every token request with a 404. This manual path skips the installer's preflight check — see [`k8s-operator/config/integrations/github/README.md`](k8s-operator/config/integrations/github/README.md).
+
+`GITHUB_ORG`/`GITHUB_REPO` here, not the `GITOPS_ORG`/`GITOPS_REPO` the installer takes: this is the hand-driven `make deploy-github` path, whose envsubst allowlist in `k8s-operator/Makefile` passes the `GITHUB_*` names. The rename is scoped to the installer's own inputs.
 
 ```bash
 # Deploy LiteLLM Gateway
@@ -610,8 +667,8 @@ make uninstall
 
 ### 4. Agent Pod Crashlooping, or CLIs Reporting `credential proxy unavailable`
 
-- The `platform-agent` Pod runs four containers, and `gcloud`/`kubectl` inside the sandbox are wrappers around the credential sidecar, so a failed sidecar looks like broken tooling rather than a failed container. Read the sidecar's log first:
+- `gcloud`/`kubectl` in the shell sandbox are wrappers around the credential proxy, which runs in a Pod of its own, so a failed proxy looks like broken tooling rather than a failed container. Read the proxy's log first:
   ```bash
-  kubectl logs -n kubeagents-system deploy/platform-agent-gateway -c envoy-credential-proxy
+  kubectl logs -n kubeagents-system deploy/platform-agent-credential-proxy
   ```
 - For the symptoms, what they mean, and how to check the Pod's identity from outside the sandbox, see the [credential isolation troubleshooting section](docs/site/src/content/docs/reference/credential-isolation.md#troubleshooting).

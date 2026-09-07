@@ -195,7 +195,7 @@ variable "model_provider" {
 }
 
 variable "vertex_project_id" {
-  description = "Project serving the Vertex AI models when model_provider = \"vertex_ai\". Empty uses project_id. The gateway's service account is granted roles/aiplatform.user here, which works cross-project."
+  description = "Project serving the Vertex AI models when model_provider = \"vertex_ai\". Empty uses project_id. The gateway's service account is granted roles/aiplatform.user here, which works cross-project, unless vertex_manage_serving_project is false."
   type        = string
   default     = ""
 }
@@ -204,6 +204,12 @@ variable "vertex_location" {
   description = "Vertex AI serving location when model_provider = \"vertex_ai\" (e.g. us-east4). Empty uses \"global\", which serves the first-party Gemini models from wherever has capacity. Set a region when you have a data-residency requirement, or when the model is a Model Garden partner model served only from specific regions."
   type        = string
   default     = ""
+}
+
+variable "vertex_manage_serving_project" {
+  description = "Whether this composition enables aiplatform.googleapis.com in vertex_project_id and grants the gateway's service account roles/aiplatform.user there. Set false when vertex_project_id is a project the applying identity cannot administer; the operator then enables the API and makes that grant by hand, and the composition still creates the gateway's service account and Workload Identity binding in project_id. Meant to be chosen at the first apply: turning it off on an install whose earlier apply created the two resources destroys them on the next apply, which revokes the grant — `terraform state rm` both first to hand them over."
+  type        = bool
+  default     = true
 }
 
 variable "model_default_name" {
@@ -439,6 +445,36 @@ variable "enable_webhooks" {
   description = "Enable the operator's PlatformAgent admission webhooks (defaulting, validation, delete protection). Requires cert-manager in the cluster — either enable_cert_manager or a pre-existing install."
   type        = bool
   default     = true
+}
+
+variable "enable_pubsub_platform" {
+  description = "Enable the Pub/Sub platform adapter AgentPlugin (opens event listeners for Cloud Pub/Sub subscriptions)."
+  type        = bool
+  default     = false
+}
+
+variable "enable_stockout_investigator" {
+  description = "Enable the GKE Stockout Investigator AgentPlugin (diagnoses autoscaler capacity failures and proposes GitOps PRs). Automatically enables pubsub_platform for alert ingress."
+  type        = bool
+  default     = false
+}
+
+variable "stockout_pubsub_topic" {
+  description = "Pub/Sub topic for GKE stockout alerts. Only used when enable_stockout_investigator is true."
+  type        = string
+  default     = "gke-stockout-alerts-topic"
+}
+
+variable "stockout_pubsub_subscription" {
+  description = "Pub/Sub subscription for GKE stockout alerts. Only used when enable_stockout_investigator is true."
+  type        = string
+  default     = "gke-stockout-alerts-sub"
+}
+
+variable "stockout_pubsub_sink" {
+  description = "Log sink name for GKE stockout alerts. Only used when enable_stockout_investigator is true."
+  type        = string
+  default     = "gke-stockout-alerts-sink"
 }
 
 variable "extra_helm_values" {

@@ -15,8 +15,17 @@
       "repository": "ghcr.io/gke-labs/kube-agents/credential-proxy",
       "tagPolicy": "release",
       "override": "CREDENTIAL_PROXY_IMAGE",
-      "pulledBy": "The credential-proxy sidecar in the agent pod.",
-      "description": "The platform-agent image plus the Envoy-based credential proxy runtime."
+      "pulledBy": "The credential-proxy Deployment, and the agent-api-auth sidecar in the agent pod.",
+      "description": "Envoy, the credential runtime, and the CLIs it wraps — the only image holding real credentials."
+    },
+    {
+      "name": "agent-sandbox",
+      "origin": "first-party",
+      "repository": "ghcr.io/gke-labs/kube-agents/agent-sandbox",
+      "tagPolicy": "release",
+      "override": "AGENT_SANDBOX_IMAGE",
+      "pulledBy": "The shell sandbox StatefulSet the operator renders beside every agent pod.",
+      "description": "SSH-reachable shell sandbox: Python, an SSH server, and the credential-proxy CLI wrappers, with no credentials and no path back into the agent pod."
     },
     {
       "name": "k8s-operator",
@@ -37,10 +46,26 @@
       "description": "Record/replay proxy for model traffic."
     },
     {
+      "name": "pubsub-platform",
+      "origin": "first-party",
+      "repository": "ghcr.io/gke-labs/kube-agents/pubsub-platform",
+      "tagPolicy": "release",
+      "pulledBy": "The pubsub-platform AgentPlugin.",
+      "description": "Pub/Sub ingress adapter plugin opening event listeners for Cloud Pub/Sub subscriptions."
+    },
+    {
+      "name": "gke-stockout-investigator",
+      "origin": "first-party",
+      "repository": "ghcr.io/gke-labs/kube-agents/gke-stockout-investigator",
+      "tagPolicy": "release",
+      "pulledBy": "The gke-stockout-investigator AgentPlugin.",
+      "description": "Autonomous diagnostic and remediation skill for GKE compute stockouts."
+    },
+    {
       "name": "litellm",
       "origin": "third-party",
       "repository": "ghcr.io/berriai/litellm",
-      "tag": "v1.96.2",
+      "tag": "v1.98.0",
       "override": "LITELLM_IMAGE",
       "pulledBy": "The LiteLLM gateway, from either the chart or the kustomize integration.",
       "description": "The model gateway the agent's baked default endpoint points at."
@@ -49,7 +74,7 @@
       "name": "fluent-bit",
       "origin": "third-party",
       "repository": "docker.io/fluent/fluent-bit",
-      "tag": "5.1.0",
+      "tag": "5.1.1",
       "override": "FLUENT_BIT_IMAGE",
       "pulledBy": "The logging sidecar the operator injects into every agent pod.",
       "description": "Ships agent container logs off the pod."
@@ -83,11 +108,11 @@
     {
       "name": "hindsight-postgresql",
       "origin": "third-party",
-      "repository": "docker.io/ankane/pgvector",
-      "tag": "latest@sha256:956744bd14e9cbdf639c61c2a2a7c7c2c48a9c8cdd42f7de4ac034f4e96b90f8",
+      "repository": "docker.io/pgvector/pgvector",
+      "tag": "0.8.6-pg15@sha256:a947c45cdc5906a1bc951f20a8709e321256343ee0f251e4ae00b5e7def4e6da",
       "override": "HINDSIGHT_POSTGRES_IMAGE",
       "pulledBy": "The chart, alongside the Hindsight API.",
-      "description": "Postgres with the pgvector extension, the store behind the Hindsight API. Upstream publishes only a floating 'latest', so the digest is the real pin."
+      "description": "Postgres with the pgvector extension, the store behind the Hindsight API. The pg15 line, not a newer one: the StatefulSet keeps its data on a PVC, and Postgres refuses a data directory written by another major, so moving off pg15 is a pg_upgrade rather than a tag change. Postgres 15 is supported upstream until November 2027, though Hindsight's own floor is Postgres 15 too, so this sits at the oldest major it supports and a release that raises that floor forces the pg_upgrade sooner. Upstream also rebuilds a version tag in place when the Postgres base is patched, which is what the digest half of the pin holds still."
     },
     {
       "name": "cert-manager-controller",
@@ -165,8 +190,8 @@
       "repository": "docker.io/library/python",
       "tag": "3.14-slim",
       "buildArg": "PYTHON_IMAGE",
-      "pulledBy": "examples/inference-replay/replay-proxy/Dockerfile.",
-      "description": "Runtime base for the replay proxy."
+      "pulledBy": "examples/inference-replay/replay-proxy/Dockerfile and deploy/sandbox/Dockerfile.",
+      "description": "Runtime base for the replay proxy, and for the agent sandbox — which needs a python3 on PATH because that is what execute_code invokes."
     },
     {
       "name": "distroless-static",
@@ -176,6 +201,14 @@
       "buildArg": "DISTROLESS_IMAGE",
       "pulledBy": "k8s-operator/Dockerfile runtime stage.",
       "description": "Runtime base for the operator image."
+    },
+    {
+      "name": "busybox",
+      "origin": "build-time",
+      "repository": "docker.io/library/busybox",
+      "tag": "musl@sha256:32b5cdad7cce41dfd53d0ae06baebcf8357a147ee7694dc706911c373bc30c37",
+      "pulledBy": "agentplugins/*/Dockerfile base images.",
+      "description": "Minimal userland (sh, cp, ls) base image for plugin images to support staging init containers."
     }
   ]
 }

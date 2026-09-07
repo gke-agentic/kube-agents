@@ -97,11 +97,16 @@ def _gh_stub(
     return run
 
 
+import github_token_refresh
+
+
 @contextlib.contextmanager
 def _fresh_refresh_state():
-    with mock.patch.object(resolver, "_refresh_attempted", False):
-        with mock.patch.object(resolver, "_refresh_failed", False):
-            yield
+    github_token_refresh.reset_refresh_state()
+    try:
+        yield
+    finally:
+        github_token_refresh.reset_refresh_state()
 
 
 class GetManagedReposTest(unittest.TestCase):
@@ -155,9 +160,10 @@ class HandlePollRoutingTest(unittest.TestCase):
         with contextlib.ExitStack() as stack:
             stack.enter_context(contextlib.redirect_stdout(buf))
             stack.enter_context(contextlib.redirect_stderr(err))
+            stack.enter_context(mock.patch("gitops_workspace.get_managed_github_repos", return_value=repos))
             stack.enter_context(mock.patch.object(resolver, "get_managed_github_repos", return_value=repos))
             stack.enter_context(mock.patch.object(subprocess, "run", _gh_stub(**stub)))
-            stack.enter_context(mock.patch.object(resolver, "refresh_credentials", _refresh))
+            stack.enter_context(mock.patch("github_token_refresh.refresh_git_credentials", _refresh))
             stack.enter_context(_fresh_refresh_state())
             resolver.handle_poll(argparse.Namespace())
         self.stderr = err.getvalue()
@@ -468,8 +474,9 @@ class ReportFilePathGuardTest(unittest.TestCase):
             stack.enter_context(contextlib.redirect_stdout(buf))
             stack.enter_context(contextlib.redirect_stderr(err))
             stack.enter_context(mock.patch.object(subprocess, "run", _gh_stub(record=calls, **stub)))
-            stack.enter_context(mock.patch.object(resolver, "refresh_credentials", lambda repo: self.refresh_calls.append(repo)))
+            stack.enter_context(mock.patch("github_token_refresh.refresh_git_credentials", lambda repo: self.refresh_calls.append(repo)))
             if mock_repos is not None:
+                stack.enter_context(mock.patch("gitops_workspace.get_managed_github_repos", return_value=mock_repos))
                 stack.enter_context(mock.patch.object(resolver, "get_managed_github_repos", return_value=mock_repos))
             stack.enter_context(_fresh_refresh_state())
             try:
@@ -555,7 +562,8 @@ class RunGhRetryTest(unittest.TestCase):
     def _run(self, argv, check, **stub):
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(subprocess, "run", _gh_stub(**stub)))
-            stack.enter_context(mock.patch.object(resolver, "refresh_credentials", lambda repo: self.refresh_calls.append(repo)))
+            stack.enter_context(mock.patch("github_token_refresh.refresh_git_credentials", lambda repo: self.refresh_calls.append(repo)))
+            stack.enter_context(mock.patch("gitops_workspace.get_managed_github_repos", return_value=["acme/toolkit"]))
             stack.enter_context(mock.patch.object(resolver, "get_managed_github_repos", return_value=["acme/toolkit"]))
             stack.enter_context(_fresh_refresh_state())
             return resolver.run_gh(argv, check=check)
@@ -580,7 +588,7 @@ class RunGhRetryTest(unittest.TestCase):
     def test_a_missing_binary_never_reaches_the_broker(self):
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(subprocess, "run", side_effect=FileNotFoundError))
-            stack.enter_context(mock.patch.object(resolver, "refresh_credentials", lambda repo: self.refresh_calls.append(repo)))
+            stack.enter_context(mock.patch("github_token_refresh.refresh_git_credentials", lambda repo: self.refresh_calls.append(repo)))
             stack.enter_context(_fresh_refresh_state())
             result = resolver.run_gh(["auth", "status"], check=False)
         self.assertEqual(result.returncode, 127)
@@ -589,7 +597,7 @@ class RunGhRetryTest(unittest.TestCase):
     def test_one_mint_covers_a_whole_invocation(self):
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(subprocess, "run", _gh_stub(write_rcs=[1], write_stderr=GH_AUTH_STDERR)))
-            stack.enter_context(mock.patch.object(resolver, "refresh_credentials", lambda repo: self.refresh_calls.append(repo)))
+            stack.enter_context(mock.patch("github_token_refresh.refresh_git_credentials", lambda repo: self.refresh_calls.append(repo)))
             stack.enter_context(_fresh_refresh_state())
             resolver.ensure_labels_exist("acme/toolkit")
         self.assertEqual(self.refresh_calls, ["acme/toolkit"])
@@ -612,12 +620,41 @@ class RunGhRetryTest(unittest.TestCase):
     def test_an_unconfigured_repo_is_not_a_mint(self):
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(subprocess, "run", _gh_stub(list_rc=1)))
-            stack.enter_context(mock.patch.object(resolver, "refresh_credentials", lambda repo: self.refresh_calls.append(repo)))
+            stack.enter_context(mock.patch("github_token_refresh.refresh_git_credentials", lambda repo: self.refresh_calls.append(repo)))
+            stack.enter_context(mock.patch("gitops_workspace.get_managed_github_repos", return_value=[]))
             stack.enter_context(mock.patch.object(resolver, "get_managed_github_repos", return_value=[]))
             stack.enter_context(_fresh_refresh_state())
             result = resolver.run_gh(["issue", "list"], check=False)
         self.assertEqual(result.returncode, 1)
         self.assertEqual(self.refresh_calls, [])
+
+
+class GhRoutingTest(unittest.TestCase):
+    """`gh` is reached through the sandbox, because `poll` runs in the agent pod.
+
+    Every other test in this file passes with either wiring: `sandbox_exec.run`
+    falls back to `subprocess.run` when no managed config names a sandbox, and
+    a test machine has none. These two are what would notice the call being
+    reverted to a direct `subprocess.run(["gh", ...])`.
+    """
+
+    def test_the_call_goes_through_sandbox_exec(self):
+        with mock.patch.object(
+            resolver.sandbox_exec, "run",
+            return_value=subprocess.CompletedProcess(["gh"], 0, "ok", ""),
+        ) as ran:
+            result = resolver._run_gh_once(["auth", "status"])
+        self.assertEqual(result.stdout, "ok")
+        self.assertEqual(ran.call_args.args[0], ["gh", "auth", "status"])
+
+    def test_an_unreachable_sandbox_is_not_an_empty_poll(self):
+        """The transport failing must not read as a repository with no work."""
+        with mock.patch.object(
+            resolver.sandbox_exec, "run",
+            side_effect=resolver.sandbox_exec.SandboxUnavailable("no route"),
+        ):
+            with self.assertRaises(resolver.sandbox_exec.SandboxUnavailable):
+                resolver._run_gh_once(["issue", "list"])
 
 
 class RunGhTest(unittest.TestCase):
@@ -641,7 +678,8 @@ class RunGhTest(unittest.TestCase):
             stack.enter_context(contextlib.redirect_stdout(buf))
             stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
             stack.enter_context(mock.patch.object(subprocess, "run", side_effect=FileNotFoundError))
-            stack.enter_context(mock.patch.object(resolver, "refresh_credentials", lambda repo: refreshed.append(repo)))
+            stack.enter_context(mock.patch("github_token_refresh.refresh_git_credentials", lambda repo: refreshed.append(repo)))
+            stack.enter_context(mock.patch("gitops_workspace.get_managed_github_repos", return_value=["acme/toolkit"]))
             stack.enter_context(mock.patch.object(resolver, "get_managed_github_repos", return_value=["acme/toolkit"]))
             stack.enter_context(_fresh_refresh_state())
             resolver.handle_poll(argparse.Namespace())
@@ -911,7 +949,7 @@ class SanitizerMirrorDriftTest(unittest.TestCase):
 
         `platform_mcp_server.py` holds the canonical copy; this script mirrors
         it because importing that module means importing `mcp`,
-        `agent_common_server` and `gke_endpoint` and constructing a FastMCP
+        `agent_common_server` and `gke_endpoint` and constructing an MCP
         server as a side effect. A mirror nobody checks is how the two drift,
         and a character class stripped on one path but not the other is a hole
         in whichever side forgot. The Unicode tag block is the standard

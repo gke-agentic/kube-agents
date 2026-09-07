@@ -80,6 +80,9 @@ api_server_key = "REPLACE_WITH_A_STRONG_RANDOM_KEY"
 # model_default_name = "gemini-3.5-flash"
 # vertex_project_id  = ""
 # vertex_location    = ""
+# false when vertex_project_id is a project you cannot administer: you enable the
+# API and grant the gateway's service account roles/aiplatform.user by hand.
+# vertex_manage_serving_project = true
 
 
 # Optional GitHub integration and token minter backend (GSA + KMS signing key).
@@ -95,6 +98,10 @@ api_server_key = "REPLACE_WITH_A_STRONG_RANDOM_KEY"
 # slack_allowed_users     = ["U01234567"]
 # slack_home_channel      = "C01234567"
 # slack_home_channel_name = "#kube-agents"
+
+# Optional AgentPlugins.
+# enable_pubsub_platform       = true
+# enable_stockout_investigator = true
 
 # IAM. "read-only" (default) selects the bundle the composition grants;
 # "custom" requires project_roles. An explicit project_roles list overrides

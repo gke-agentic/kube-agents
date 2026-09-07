@@ -28,8 +28,14 @@ package controller
 // allowlist, it adds the entire internet to it. There is no deny rule in
 // NetworkPolicy at all. Denying is what you get by not allowing.
 //
-// So there is one policy, it is default-deny, and the metadata server is denied
-// because it does not appear on the list.
+// So there is one policy, it is default-deny, and the metadata server's
+// credential API is denied because it does not appear on the list.
+//
+// "Credential API" and not "the metadata address": the DNS rule names
+// 169.254.169.254 on port 53, because that is the resolver on a Cloud DNS for
+// GKE cluster and withholding it is a total outage rather than a control. The
+// ports the token is minted on — 80 pre-NAT, 988 post-NAT — appear nowhere.
+// buildAgentEgressNetworkPolicy's dnsPeers comment argues that split in full.
 //
 // # Why not the "0.0.0.0/0 except 169.254.169.254/32" form
 //
@@ -58,11 +64,6 @@ package controller
 // It is a real control in exactly one configuration and the operator says so
 // out loud rather than rendering something that looks protective:
 //
-//   - It requires spec.security.splitCredentialBrokerPod. The broker mints the
-//     cloud token from the metadata server — that is its function — and a
-//     Pod-level policy cannot tell two containers in one network namespace
-//     apart. validateEgressPolicy refuses the reconcile in the sidecar layout
-//     and reports Degraded, and nothing is rendered.
 //   - It does nothing whatsoever on a cluster whose CNI does not enforce
 //     NetworkPolicy. The operator cannot detect that: an unenforced policy is
 //     accepted by the API server, stored, and returned by kubectl get exactly
@@ -76,10 +77,9 @@ package controller
 //     the private ranges), and platform-agent-core-egress from
 //     deploy/kustomize/platform, on installs that apply it. So the policy
 //     below denies the metadata server, and the Pod it selects can still
-//     reach it. Narrowing the gateway policy is not done here: Workload
-//     Identity needs that path and, in the sidecar layout, the broker sharing
-//     the Pod is what needs it. Scoping it to the broker Pod once the broker
-//     has left is the follow-up.
+//     reach it. Narrowing the gateway policy is not done here: the metadata
+//     path is still what Workload Identity uses, and the broker Pod is the one
+//     that needs it. Scoping the allowance to that Pod alone is the follow-up.
 
 import (
 	"fmt"
@@ -131,10 +131,27 @@ const (
 	// alongside the CNI-enforcement caveat in the credential-isolation
 	// reference page.
 	nodeLocalDNSCacheIP = "169.254.20.10/32"
+
+	// metadataResolverCIDR is the metadata address in the one role this policy
+	// grants it: the DNS resolver a Cloud DNS for GKE cluster puts in every
+	// Pod's resolv.conf. It is the same host as metadataLinkLocalIP, spelled as
+	// a CIDR because that is what an ipBlock takes, and kept separate from that
+	// constant so a reader of the DNS rule sees which role is meant. The
+	// credential ports on this host are permitted nowhere in this file; the
+	// dnsPeers comment in buildAgentEgressNetworkPolicy says why 53 is safe.
+	metadataResolverCIDR = metadataLinkLocalIP + "/32"
 )
 
 // metadataServerAddresses are every address a request for cloud credentials
-// can arrive at, and none of them may appear in a rendered egress rule.
+// can arrive at, and none of them may be permitted on a credential port by a
+// rendered egress rule.
+//
+// "On a credential port" and not "at all": the DNS rule in
+// buildAgentEgressNetworkPolicy names 169.254.169.254 on port 53, because that
+// is the resolver under Cloud DNS for GKE. Its comment argues why 53 reaches no
+// token, and permitsBeyondDNS in the tests is what holds the invariant at that
+// scope. The addresses below still may not appear anywhere else, and
+// egressRuleReachesMetadata refuses them in extraRules on every port.
 //
 //   - 169.254.169.254 is the documented GCE metadata address, and the one a
 //     Pod's own code connects to.
@@ -222,7 +239,12 @@ func ptrIntOrString(port int32) *intstr.IntOrString {
 // the selector peers below never fire and the VIP peer is what keeps DNS
 // alive. Empty falls back to the documented default, exactly as the gateway
 // policy does.
-func buildAgentEgressNetworkPolicy(agent *agentv1alpha1.PlatformAgent, dnsClusterIPs []string) (*networkingv1.NetworkPolicy, []string) {
+//
+// otlpCollectorNS is the namespace of the collector the agent exports to,
+// read off the resolved OTLP endpoint by otlpCollectorNamespace the same way
+// buildNetworkPolicy reads it for the gateway policy. Empty means the endpoint
+// names nothing in-cluster, and the OTel rule is not rendered.
+func buildAgentEgressNetworkPolicy(agent *agentv1alpha1.PlatformAgent, dnsClusterIPs []string, otlpCollectorNS string) (*networkingv1.NetworkPolicy, []string) {
 	labels := commonLabels(agent)
 	labels["kubeagents.x-k8s.io/component"] = "agent-egress"
 
@@ -235,13 +257,36 @@ func buildAgentEgressNetworkPolicy(agent *agentv1alpha1.PlatformAgent, dnsCluste
 	// same two peers appear in charts/kube-agents/templates/litellm.yaml and in
 	// deploy/kustomize/platform/networkpolicy-core-egress.yaml, and the
 	// resolved ClusterIP peers join them for the VIP-matching dataplanes.
-	// A resolved IP that is a metadata address is dropped rather than
-	// rendered: the annotation rung of the ladder is operator input, and this
-	// policy's one invariant is that no rule permits those addresses.
+	//
+	// The metadata address is on this rule, and on port 53 only. Under Cloud DNS
+	// for GKE the node answers DNS at 169.254.169.254:53 and a Pod's resolv.conf
+	// names it, so barring it there is not a narrower credential path — it is no
+	// name resolution, and this allowlist reaches every one of its destinations
+	// by name. Port 53 is not a way in: a TCP connection to :53 reaches the
+	// resolver, and the credential API this policy exists to withhold is on :80
+	// pre-NAT and :988 post-NAT. No rule below permits this address on either —
+	// the only rule naming 80 is LiteLLM's, whose peer is a Pod selector that no
+	// link-local address matches, and extraRules refuses a metadata address
+	// outright on every port. Nor is it a new exfiltration channel wherever
+	// CoreDNS forwards externally, as the stock configuration does: the kube-dns
+	// peers above already resolve arbitrary external names. The exception is a
+	// cluster that has removed that forwarding, where this peer does hand the
+	// sandbox a recursive resolver CoreDNS was withholding.
+	//
+	// So the invariant this policy holds is that no rule permits a metadata
+	// address on a *credential* port, and it is machine-checked at that scope by
+	// TestTheRenderedPolicyDeniesEveryMetadataAddress.
+	//
+	// A resolved IP that is a metadata address is still dropped below rather
+	// than rendered. That filter is no longer load-bearing for 169.254.169.254,
+	// which is granted here unconditionally, but 169.254.169.252 and fd20:ce::254
+	// are credential listeners that answer no DNS, and the annotation rung of the
+	// ladder is operator input that can name them.
 	dnsPeers := []networkingv1.NetworkPolicyPeer{
 		namespacedPodPeer("kube-system", map[string]string{"k8s-app": "kube-dns"}),
 		namespacedPodPeer("kube-system", map[string]string{"k8s-app": "node-local-dns"}),
 		{IPBlock: &networkingv1.IPBlock{CIDR: nodeLocalDNSCacheIP}},
+		{IPBlock: &networkingv1.IPBlock{CIDR: metadataResolverCIDR}},
 	}
 	safeDNSIPs := make([]string, 0, len(dnsClusterIPs))
 	for _, ip := range dnsClusterIPs {
@@ -254,9 +299,14 @@ func buildAgentEgressNetworkPolicy(agent *agentv1alpha1.PlatformAgent, dnsCluste
 	if len(dnsIPPeers) == 0 {
 		dnsIPPeers = formatCIDRPeers([]string{defaultDNSClusterIP}, false)
 	}
+	// formatCIDRPeers dedupes within one call, not against the fixed peers above.
+	// The metadata address cannot collide, having been filtered out already, but
+	// nodeLocalDNSCacheIP can: a cluster running NodeLocal DNSCache puts
+	// 169.254.20.10 in kubelet's --cluster-dns, so an operator naming the value
+	// their nodes use lands on the peer this rule already carries.
 	rules = append(rules, networkingv1.NetworkPolicyEgressRule{
 		Ports: []networkingv1.NetworkPolicyPort{udpPort(53), tcpPort(53)},
-		To:    append(dnsPeers, dnsIPPeers...),
+		To:    append(dnsPeers, peersNotAlreadyPresent(dnsPeers, dnsIPPeers)...),
 	})
 
 	// The credential broker. This is the agent's route to every credentialed
@@ -271,6 +321,22 @@ func buildAgentEgressNetworkPolicy(agent *agentv1alpha1.PlatformAgent, dnsCluste
 		Ports: []networkingv1.NetworkPolicyPort{tcpPort(credentialProxyPort)},
 		To: []networkingv1.NetworkPolicyPeer{
 			namespacedPodPeer(agent.Namespace, map[string]string{"app": credentialBrokerName(agent)}),
+		},
+	})
+
+	// The shell sandbox's sshd. Every command the model runs executes there, so
+	// this rule is the difference between an agent that can act and one whose
+	// every tool call times out. It duplicates rule 11 of buildNetworkPolicy
+	// because the two policies are rendered independently and either can be the
+	// only one present: spec.networkPolicy.enabled: false with
+	// spec.security.egressPolicy: Allowlist deletes the gateway policy and leaves
+	// this one standing alone. That combination is also the one that fails
+	// silently — the CR reads Ready, the sandbox Pod is Running, and the ssh dial
+	// just never completes.
+	rules = append(rules, networkingv1.NetworkPolicyEgressRule{
+		Ports: []networkingv1.NetworkPolicyPort{tcpPort(shellSandboxPort)},
+		To: []networkingv1.NetworkPolicyPeer{
+			namespacedPodPeer(agent.Namespace, shellSandboxSelector(agent)),
 		},
 	})
 
@@ -294,19 +360,35 @@ func buildAgentEgressNetworkPolicy(agent *agentv1alpha1.PlatformAgent, dnsCluste
 	})
 
 	// Traces and metrics. OTEL_EXPORTER_OTLP_ENDPOINT is set on every agent
-	// container by otelTelemetryEnvVars and addresses the GKE Managed
-	// OpenTelemetry collector. Blocking it loses telemetry rather than
-	// function, but a silently trace-less agent is its own kind of security
-	// problem. 4317 accompanies 4318 because the endpoint's protocol is
-	// configurable through spec.deployment.env.
-	rules = append(rules, networkingv1.NetworkPolicyEgressRule{
-		Ports: []networkingv1.NetworkPolicyPort{tcpPort(4317), tcpPort(4318)},
-		To: []networkingv1.NetworkPolicyPeer{{
-			NamespaceSelector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{"kubernetes.io/metadata.name": "gke-managed-otel"},
-			},
-		}},
-	})
+	// container by otelTelemetryEnvVars, and the peer is the namespace of
+	// whatever collector resolveOTLPEndpoint settled on — the managed
+	// collector by default, but a discovered or configured collector lives
+	// wherever it lives, and a rule naming gke-managed-otel on such an install
+	// permits traffic the agent never sends while blocking the export it does
+	// (#1080). Blocking it loses telemetry rather than function, but a
+	// silently trace-less agent is its own kind of security problem. 4317
+	// accompanies 4318 because the endpoint's protocol is configurable
+	// through spec.deployment.env.
+	//
+	// Unlike the gateway policy's rule 8, this one is kept when the agent
+	// resolves to no collector at all: otlpCollectorNamespace("") is the
+	// managed namespace, and the caller passes that through rather than
+	// dropping the rule, because the hermes_otel plugin does not read
+	// OTEL_EXPORTER_OTLP_ENDPOINT and keeps its baked gke-managed-otel backend
+	// on exactly that cluster (#933). Dropping the rule would turn that
+	// cosmetic gap into a blocked export the moment a collector appears there.
+	// A vendor endpoint or a bare hostname has no in-cluster namespace to
+	// name, so nothing is rendered for it, as for the gateway policy.
+	if otlpCollectorNS != "" {
+		rules = append(rules, networkingv1.NetworkPolicyEgressRule{
+			Ports: []networkingv1.NetworkPolicyPort{tcpPort(4317), tcpPort(4318)},
+			To: []networkingv1.NetworkPolicyPeer{{
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"kubernetes.io/metadata.name": otlpCollectorNS},
+				},
+			}},
+		})
+	}
 
 	// The Hindsight memory API. buildPodEnv sets HINDSIGHT_API_URL to
 	// http://hindsight-api.<ns>.svc.cluster.local:8888 on every agent
@@ -317,13 +399,12 @@ func buildAgentEgressNetworkPolicy(agent *agentv1alpha1.PlatformAgent, dnsCluste
 	// is the one where the policy enforces. The component label keeps it off
 	// the Postgres Pod, which carries the same name label.
 	//
-	// Deliberately absent, and why: github-token-minter, because in the split
-	// layout this field requires, gh and git run in the broker Pod and the
-	// minter call is the broker's egress, not the agent's; gemma-server and
-	// standalone-replay, because buildAgentConfig pins the agent's model
-	// base_url to LiteLLM unconditionally, so those backends are LiteLLM's
-	// egress. The gateway policy names all three because it also serves the
-	// sidecar layout, where the broker's traffic is the agent Pod's.
+	// Deliberately absent, and why: github-token-minter, because gh and git run
+	// in the broker Pod and the minter call is the broker's egress, not the
+	// agent's; gemma-server and standalone-replay, because buildAgentConfig pins
+	// the agent's model base_url to LiteLLM unconditionally, so those backends
+	// are LiteLLM's egress. The gateway policy names all three anyway; narrowing
+	// it is the work that turns this field into a control.
 	rules = append(rules, networkingv1.NetworkPolicyEgressRule{
 		Ports: []networkingv1.NetworkPolicyPort{tcpPort(8888)},
 		To: []networkingv1.NetworkPolicyPeer{{
@@ -346,10 +427,6 @@ func buildAgentEgressNetworkPolicy(agent *agentv1alpha1.PlatformAgent, dnsCluste
 	// Lease, and to any sidecar or plugin the operator added. That is a
 	// deliberate under-allow: inventing a range here would mean permitting a
 	// guess.
-	//
-	// The event-watcher is not on that list, because the split this policy
-	// requires already refuses to render while the watcher is enabled — see
-	// validateCredentialBrokerSplit.
 	//
 	// The supplied ranges go through the same refusal check extraRules gets.
 	// The field is named for the control plane, but nothing stops it being

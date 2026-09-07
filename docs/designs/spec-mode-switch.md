@@ -2,7 +2,7 @@
 
 - **Author:** [@bnaylor]
 - **Date:** 2026-08-24
-- **Status:** draft - stage 0.6, unblocks stage 1 packaging
+- **Status:** merged design of record; the switch itself (enum, helper pair, skew path, managed-`.env` pin) is implemented in the operator, and the NATS/gateway render it gates is implemented at playground posture - session-pod spawning and the agent-side bus surface are not yet
 
 ## Purpose
 

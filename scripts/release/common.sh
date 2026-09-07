@@ -6,21 +6,90 @@ export REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 # gke_dns_endpoint_flag, so release automation reaches a cluster over the same
 # endpoint the installer would.
-# shellcheck source=k8s-operator/scripts/gke_dns_endpoint.sh
-source "${REPO_ROOT}/k8s-operator/scripts/gke_dns_endpoint.sh"
+# shellcheck source=scripts/installer/gke_dns_endpoint.sh
+source "${REPO_ROOT}/scripts/installer/gke_dns_endpoint.sh"
 
 # Centralized definition of required container images and registry defaults
 export DEFAULT_REGISTRY_PREFIX="ghcr.io/gke-labs/kube-agents"
 export DEFAULT_RELEASE_REPO="gke-labs/kube-agents"
 export DEFAULT_INITIAL_VERSION="0.1.0"
 
-# Declarative registry of all 4 required container images
+# The registry the docker-free existence probe below knows how to query, and the
+# manifest media types that probe must accept. Omitting the OCI types gets a
+# MANIFEST_UNKNOWN carrying "Accept header does not support OCI manifests" — a
+# 404 that reads as a missing image rather than as a wrong header.
+export GHCR_REGISTRY_HOST="ghcr.io"
+export GHCR_MANIFEST_ACCEPT="application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json"
+
+# Declarative registry of all required release container images
 export REQUIRED_RELEASE_IMAGES=(
   "k8s-operator"
   "platform-agent"
   "credential-proxy"
+  "agent-sandbox"
   "replay-proxy"
+  "pubsub-platform"
+  "gke-stockout-investigator"
 )
+
+# Declarative registry of release bundle directories, root files, and Helm charts
+export RELEASE_BUNDLE_DIRECTORIES=(
+  "terraform"
+  "k8s-operator"
+  "deploy"
+  "charts"
+  "scripts"
+  "examples"
+)
+
+export RELEASE_INSTALLER_SCRIPTS=(
+  "install.sh"
+  "uninstall.sh"
+  "upgrade.sh"
+)
+
+export RELEASE_HELM_CHARTS=(
+  "charts/kube-agents"
+)
+
+export RELEASE_TERRAFORM_EXAMPLE_VARS="terraform/examples/full-install/variables.tf"
+export RELEASE_TERRAFORM_EXAMPLE_TFVARS="terraform/examples/full-install/terraform.tfvars.example"
+
+export RELEASE_BUNDLE_ROOT_FILES=(
+  "${RELEASE_INSTALLER_SCRIPTS[@]}"
+  "install.defaults.env"
+  "install.env.example"
+  "images.json"
+  "Makefile"
+  "INSTALL.md"
+  "README.md"
+  "LICENSE"
+)
+
+# ─── Git Commit Extraction ───────────────────────────────────────────────────
+# Extracts specific paths (or the full tree) from a Git commit directly into a
+# target directory using git archive. Ensures extraction reflects only tracked
+# files at the target commit SHA, excluding dirty working-tree state or ignored files.
+extract_commit_tree() {
+  local commit_sha="$1"
+  local target_dir="$2"
+  shift 2
+  local paths=("$@")
+
+  mkdir -p "${target_dir}"
+
+  if [ "${#paths[@]}" -gt 0 ]; then
+    if ! git -C "${REPO_ROOT}" archive "${commit_sha}" "${paths[@]}" | tar -x -C "${target_dir}"; then
+      echo "❌ ERROR: Failed to extract ${paths[*]} from commit ${commit_sha:0:7}!" >&2
+      return 1
+    fi
+  else
+    if ! git -C "${REPO_ROOT}" archive "${commit_sha}" | tar -x -C "${target_dir}"; then
+      echo "❌ ERROR: Failed to extract git archive from commit ${commit_sha:0:7}!" >&2
+      return 1
+    fi
+  fi
+}
 
 # ─── Boolean Parsing ──────────────────────────────────────────────────────────
 # Interpret a value as a boolean toggle. Returns 0 (success) for common
@@ -42,14 +111,12 @@ is_ci_pipeline() {
 }
 
 # ─── Cluster connection ───────────────────────────────────────────────────────
-# Two scripts in this directory point kubectl at the RC cluster before doing
-# anything to it — install_pubsub_platform.sh and wait_for_gke_readiness.sh — and
-# a workflow runs them as separate steps, so each starts from a fresh shell and
-# has to resolve the target itself. The pair lives here rather than being
-# duplicated, because the resolution order below is a contract with the
-# workflows: GKE_CLUSTER_NAME/GCP_REGION/GCP_PROJECT_ID are what the `env:` blocks
-# set, and CLUSTER_NAME/REGION/PROJECT_ID are the installer's own names, which a
-# developer running these by hand after install.sh already has exported.
+# Release scripts point kubectl at the RC cluster before doing anything to it,
+# such as wait_for_gke_readiness.sh, resolving the target itself. The helpers live
+# here rather than being duplicated, because the resolution order below is a
+# contract with the workflows: GKE_CLUSTER_NAME/GCP_REGION/GCP_PROJECT_ID are what
+# the `env:` blocks set, and CLUSTER_NAME/REGION/PROJECT_ID are the installer's own
+# names, which a developer running these by hand after install.sh already has exported.
 #
 # Assigns to globals rather than echoing: a caller reading an echo would need
 # command substitution, and a `set -u` abort inside a subshell would leave the
@@ -283,6 +350,69 @@ get_registry_prefix() {
   fi
 }
 
+# Checks whether one fully-qualified image reference exists in its registry.
+#
+# `docker manifest inspect` is the preferred probe and the only one here that
+# works against every registry. It is guarded because not every caller has
+# docker: the Prow job image has none — hack/ci-deploy.sh builds through
+# `gcloud builds submit` for exactly that reason — and an unguarded call there
+# fails for every image, so the caller reports a publish outage when the real
+# problem is a missing binary. The fallback is the GHCR registry API, which
+# needs only curl and answers anonymously for a public package.
+registry_image_exists() {
+  local img="$1"
+
+  if command -v docker >/dev/null 2>&1; then
+    # Spelled out rather than `docker manifest inspect ...; return`, which
+    # propagates $? correctly but only survives errexit while every caller keeps
+    # this function in a condition context. They all do today; the next one
+    # written as a plain statement would kill the script on a missing image
+    # instead of getting a 1 back.
+    if docker manifest inspect "${img}" >/dev/null 2>&1; then
+      return 0
+    fi
+    return 1
+  fi
+
+  case "${img}" in
+    "${GHCR_REGISTRY_HOST}"/*) ;;
+    *)
+      echo "⚠️ Warning: cannot probe ${img}: no docker on PATH and no API fallback for this registry." >&2
+      return 1
+      ;;
+  esac
+
+  # Split the reference the way the registry API does, so this branch accepts
+  # what the docker branch above accepts. A digest reference separates on `@`,
+  # a tag on the last `:` — but only when that colon comes after the last `/`,
+  # since a registry host may carry a port. Anything else is the whole path with
+  # no reference, which the API spells `latest`.
+  local path="${img#"${GHCR_REGISTRY_HOST}"/}"
+  local last_segment="${path##*/}"
+  local repo reference
+  if [ "${path}" != "${path#*@}" ]; then
+    repo="${path%%@*}"
+    reference="${path#*@}"
+  elif [ "${last_segment}" != "${last_segment%:*}" ]; then
+    repo="${path%:*}"
+    reference="${path##*:}"
+  else
+    repo="${path}"
+    reference="latest"
+  fi
+
+  local token
+  token="$(curl -fsSL "https://${GHCR_REGISTRY_HOST}/token?scope=repository:${repo}:pull&service=${GHCR_REGISTRY_HOST}" 2>/dev/null |
+    sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
+  if [ -z "${token}" ]; then
+    return 1
+  fi
+  curl -fsSL -o /dev/null -I \
+    -H "Authorization: Bearer ${token}" \
+    -H "Accept: ${GHCR_MANIFEST_ACCEPT}" \
+    "https://${GHCR_REGISTRY_HOST}/v2/${repo}/manifests/${reference}" >/dev/null 2>&1
+}
+
 # Checks if all required candidate container images exist in GHCR for a specific commit SHA
 check_commit_images_exist() {
   local sha="$1"
@@ -291,7 +421,7 @@ check_commit_images_exist() {
 
   for img in "${REQUIRED_RELEASE_IMAGES[@]}"; do
     local target_img="${registry_prefix}/${img}:${sha}"
-    if ! docker manifest inspect "${target_img}" >/dev/null 2>&1; then
+    if ! registry_image_exists "${target_img}"; then
       return 1
     fi
   done
@@ -460,12 +590,22 @@ get_existing_staging_tag() {
 # validated. Naming one by hand is a supported thing to do and stays wrong for
 # the same reason it is wrong today.
 #
-# The two markers probe one epoch boundary — the shared-pipeline restructure —
-# and not the general question of whether a tree can be driven by these
-# workflows. Nine scripts run out of the candidate's checkout; these sample two.
-# That is sound for the boundary they were chosen for, because both arrived in
-# the commit that created it. A later restructure that adds a seam needs its own
-# marker here; this function will not notice on its own.
+# The markers probe epoch boundaries — points at which the workflows started
+# driving the candidate's tree in a way an older tree cannot answer — and not
+# the general question of whether a tree can be driven by these workflows. Ten
+# scripts run out of the candidate's checkout; these sample three. That is sound
+# for the boundaries they were chosen for, because each arrived in the commit
+# that created one. A later restructure that adds a seam needs its own marker
+# here; this function will not notice on its own.
+#
+# Boundary 1, the shared-pipeline restructure: run_optional_e2e_suites.sh and
+# the E2E_SUITE selector. Boundary 2, the in-place reconcile: the nightly checks
+# the candidate OUT to reconcile staging at it, so a tree without
+# reconcile_environment.sh aborts the reconcile step on a missing file. That
+# failure is not self-announcing, because the promotion is deliberately
+# decoupled from the reconcile's outcome — the staging tag would still be
+# pushed, staging's images would move, and its infrastructure would stay exactly
+# as stale as before.
 candidate_supports_shared_pipeline() {
   local sha="${1:-}"
 
@@ -487,6 +627,8 @@ candidate_supports_shared_pipeline() {
   # safe direction: the cost is a skipped night, and the alternative is testing a
   # candidate whose tree we could not read.
   git grep -q "E2E_SUITE" "${sha}" -- scripts/release/execute_e2e_tests.py 2>/dev/null || return 1
+
+  git cat-file -e "${sha}:scripts/release/reconcile_environment.sh" 2>/dev/null || return 1
 
   return 0
 }
@@ -703,17 +845,99 @@ stamp_baked_release_version() {
     return 1
   fi
 
-  for script_name in install.sh uninstall.sh upgrade.sh; do
+  for script_name in "${RELEASE_INSTALLER_SCRIPTS[@]}"; do
     local script_path="${repo_dir}/${script_name}"
-    if [ -f "${script_path}" ]; then
-      sed -i.bak -E "s/^BAKED_RELEASE_VERSION=[\"'].*[\"']/BAKED_RELEASE_VERSION=\"${version}\"/" "${script_path}" && rm -f "${script_path}.bak"
-      if ! grep -q "^BAKED_RELEASE_VERSION=\"${version}\"" "${script_path}"; then
-        echo "❌ ERROR: Failed to stamp BAKED_RELEASE_VERSION in ${script_name} (placeholder line '^BAKED_RELEASE_VERSION=...' not found)." >&2
-        git -C "${repo_dir}" checkout -- install.sh uninstall.sh upgrade.sh >/dev/null 2>&1 || true
-        return 1
-      fi
+    if [ ! -f "${script_path}" ]; then
+      echo "❌ ERROR: Target installer script not found at ${script_path}!" >&2
+      return 1
+    fi
+    sed -i.bak -E "s/^BAKED_RELEASE_VERSION=[\"'].*[\"']/BAKED_RELEASE_VERSION=\"${version}\"/" "${script_path}" && rm -f "${script_path}.bak"
+    if ! grep -q "^BAKED_RELEASE_VERSION=\"${version}\"" "${script_path}"; then
+      echo "❌ ERROR: Failed to stamp BAKED_RELEASE_VERSION in ${script_name} (placeholder line '^BAKED_RELEASE_VERSION=...' not found)." >&2
+      return 1
     fi
   done
+}
+
+# Stamps version and appVersion into Helm Chart.yaml for each chart in RELEASE_HELM_CHARTS
+stamp_helm_chart_versions() {
+  local version="${1:-}"
+  local repo_dir="${2:-${REPO_ROOT}}"
+
+  if [ -z "${version}" ]; then
+    echo "❌ ERROR: version is required for stamp_helm_chart_versions." >&2
+    return 1
+  fi
+
+  for chart_rel_path in "${RELEASE_HELM_CHARTS[@]}"; do
+    local chart_yaml="${repo_dir}/${chart_rel_path}/Chart.yaml"
+    if [ ! -f "${chart_yaml}" ]; then
+      echo "❌ ERROR: Helm chart file not found at ${chart_yaml}!" >&2
+      return 1
+    fi
+    sed -i.bak -E \
+      -e "s/^version:[[:space:]].*/version: ${version}/" \
+      -e "s/^appVersion:[[:space:]].*/appVersion: \"${version}\"/" \
+      "${chart_yaml}" && rm -f "${chart_yaml}.bak"
+
+    if ! grep -q -E "^version:[[:space:]]+${version}$" "${chart_yaml}"; then
+      echo "❌ ERROR: Failed to stamp version in ${chart_yaml}!" >&2
+      return 1
+    fi
+    if ! grep -q -E "^appVersion:[[:space:]]+\"${version}\"$" "${chart_yaml}"; then
+      echo "❌ ERROR: Failed to stamp appVersion in ${chart_yaml}!" >&2
+      return 1
+    fi
+  done
+}
+
+# Stamps release image tag into Terraform defaults (variables.tf and terraform.tfvars.example)
+stamp_terraform_release_versions() {
+  local version="${1:-}"
+  local repo_dir="${2:-${REPO_ROOT}}"
+
+  if [ -z "${version}" ]; then
+    echo "❌ ERROR: version is required for stamp_terraform_release_versions." >&2
+    return 1
+  fi
+
+  local var_file="${repo_dir}/${RELEASE_TERRAFORM_EXAMPLE_VARS}"
+  if [ ! -f "${var_file}" ]; then
+    echo "❌ ERROR: Terraform variables file not found at ${var_file}!" >&2
+    return 1
+  fi
+  sed -i.bak -E "/variable \"image_tag\"/,/^[[:space:]]*\}/ s/([[:space:]]*default[[:space:]]*=[[:space:]]*)\"[^\"]*\"/\1\"${version}\"/" "${var_file}" && rm -f "${var_file}.bak"
+
+  if ! grep -q -E "default[[:space:]]*=[[:space:]]*\"${version}\"" "${var_file}"; then
+    echo "❌ ERROR: Failed to stamp image_tag default in ${var_file}!" >&2
+    return 1
+  fi
+
+  local tfvars_file="${repo_dir}/${RELEASE_TERRAFORM_EXAMPLE_TFVARS}"
+  if [ ! -f "${tfvars_file}" ]; then
+    echo "❌ ERROR: Terraform example tfvars file not found at ${tfvars_file}!" >&2
+    return 1
+  fi
+  sed -i.bak -E "s/^#([[:space:]]*image_tag[[:space:]]*=[[:space:]]*)\"[^\"]*\"/#\1\"${version}\"/" "${tfvars_file}" && rm -f "${tfvars_file}.bak"
+  if ! grep -q -E "^#[[:space:]]*image_tag[[:space:]]*=[[:space:]]*\"${version}\"" "${tfvars_file}"; then
+    echo "❌ ERROR: Failed to stamp image_tag example in ${tfvars_file}!" >&2
+    return 1
+  fi
+}
+
+# Stamps all release version touchpoints: installer scripts, Helm Chart.yaml, and Terraform defaults
+stamp_release_versions() {
+  local version="${1:-}"
+  local repo_dir="${2:-${REPO_ROOT}}"
+
+  if [ -z "${version}" ]; then
+    echo "❌ ERROR: version is required for stamp_release_versions." >&2
+    return 1
+  fi
+
+  stamp_baked_release_version "${version}" "${repo_dir}" || return 1
+  stamp_helm_chart_versions "${version}" "${repo_dir}" || return 1
+  stamp_terraform_release_versions "${version}" "${repo_dir}" || return 1
 }
 
 # Validates if a release tag commit is either directly the candidate commit
@@ -762,7 +986,7 @@ is_valid_stamped_or_direct_release_commit() {
   return 0
 }
 
-# Creates a release commit on detached HEAD with stamped BAKED_RELEASE_VERSION
+# Creates a release commit on detached HEAD with stamped release versions
 create_stamped_release_commit() {
   local version="${1:-}"
   local target_sha="${2:-}"
@@ -771,14 +995,6 @@ create_stamped_release_commit() {
   if [ -z "${version}" ] || [ -z "${target_sha}" ]; then
     echo "❌ ERROR: version and target_sha are required for create_stamped_release_commit." >&2
     return 1
-  fi
-
-  # Preserve caller's current branch / ref and restore on function return
-  local orig_ref
-  orig_ref="$(git -C "${repo_dir}" symbolic-ref --short -q HEAD 2>/dev/null || git -C "${repo_dir}" rev-parse HEAD 2>/dev/null || echo "")"
-  if [ -n "${orig_ref}" ]; then
-    # shellcheck disable=SC2064
-    trap "git -C '${repo_dir}' checkout -- install.sh uninstall.sh upgrade.sh >/dev/null 2>&1 || true; git -C '${repo_dir}' checkout '${orig_ref}' >/dev/null 2>&1 || true" RETURN
   fi
 
   # Idempotency check: if release tag already exists and is a valid release commit for target_sha, reuse it
@@ -791,28 +1007,57 @@ create_stamped_release_commit() {
     fi
   fi
 
+  local candidate_files=(
+    "${RELEASE_INSTALLER_SCRIPTS[@]}"
+  )
+  for chart_rel_path in "${RELEASE_HELM_CHARTS[@]}"; do
+    candidate_files+=("${chart_rel_path}/Chart.yaml")
+  done
+  candidate_files+=(
+    "${RELEASE_TERRAFORM_EXAMPLE_VARS}"
+    "${RELEASE_TERRAFORM_EXAMPLE_TFVARS}"
+  )
+
+  # Refuse to proceed if any release candidate files have uncommitted changes
+  local dirty_release_files
+  dirty_release_files="$(git -C "${repo_dir}" status --porcelain -- "${candidate_files[@]}" 2>/dev/null || true)"
+  if [ -n "${dirty_release_files}" ]; then
+    echo "❌ ERROR: Cannot create stamped release commit with uncommitted changes in release files:" >&2
+    echo "${dirty_release_files}" >&2
+    echo "Please commit, stash, or revert changes in release files before releasing." >&2
+    return 1
+  fi
+
+  # Preserve caller's current branch / ref and restore on function return
+  local orig_ref
+  orig_ref="$(git -C "${repo_dir}" symbolic-ref --short -q HEAD 2>/dev/null || git -C "${repo_dir}" rev-parse HEAD 2>/dev/null || echo "")"
+  if [ -n "${orig_ref}" ]; then
+    # shellcheck disable=SC2064
+    trap "for f in \"\${candidate_files[@]}\"; do git -C '${repo_dir}' checkout -- \"\$f\" >/dev/null 2>&1 || true; done; git -C '${repo_dir}' checkout '${orig_ref}' >/dev/null 2>&1 || true" RETURN
+  fi
+
   # 1. Checkout detached HEAD at candidate commit
-  if ! git -C "${repo_dir}" checkout --detach "${target_sha}"; then
+  if ! git -C "${repo_dir}" checkout --detach "${target_sha}" >/dev/null; then
     echo "❌ ERROR: Failed to checkout candidate commit '${target_sha}' on detached HEAD." >&2
     return 1
   fi
 
-  # 2. Stamp BAKED_RELEASE_VERSION in root installer scripts
-  if ! stamp_baked_release_version "${version}" "${repo_dir}"; then
-    echo "❌ ERROR: Failed to stamp baked release version into installer scripts." >&2
+  # 2. Stamp release versions across installer scripts, Helm Chart.yaml, and Terraform defaults
+  if ! stamp_release_versions "${version}" "${repo_dir}"; then
+    echo "❌ ERROR: Failed to stamp release versions." >&2
     return 1
   fi
 
   # 3. If files were modified, create release commit on detached HEAD (does NOT touch main branch)
   local modified_files=()
-  for script_name in install.sh uninstall.sh upgrade.sh; do
-    if [ -f "${repo_dir}/${script_name}" ] && [ -n "$(git -C "${repo_dir}" status --porcelain "${script_name}" 2>/dev/null || true)" ]; then
-      modified_files+=("${script_name}")
+  for file_rel in "${candidate_files[@]}"; do
+    if [ -f "${repo_dir}/${file_rel}" ] && [ -n "$(git -C "${repo_dir}" status --porcelain "${file_rel}" 2>/dev/null || true)" ]; then
+      modified_files+=("${file_rel}")
     fi
   done
 
   if [ ${#modified_files[@]} -gt 0 ]; then
-    echo "📝 Stamping baked release version '${version}' in release tag commit..." >&2
+    echo "📝 Stamping release version '${version}' in release tag commit..." >&2
     setup_git_bot_user
     git -C "${repo_dir}" add "${modified_files[@]}"
     git -C "${repo_dir}" commit -m "chore(release): stamp release version ${version}" >/dev/null
