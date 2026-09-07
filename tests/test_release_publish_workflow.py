@@ -154,7 +154,12 @@ class ReleasePublishWorkflowTest(unittest.TestCase):
         gated = [
             step
             for step in self.jobs[_PUBLISH_JOB]["steps"]
-            if step.get("name") not in ("Checkout repository", "Calculate Next Release Version", "Verify Release Eligibility")
+            if step.get("name") not in (
+                "Generate Release Bot Token",
+                "Checkout repository",
+                "Calculate Next Release Version",
+                "Verify Release Eligibility",
+            )
         ]
         self.assertTrue(gated, "publish job has no steps after eligibility")
         for step in gated:
@@ -163,6 +168,23 @@ class ReleasePublishWorkflowTest(unittest.TestCase):
                 step.get("if", ""),
                 f"step {step.get('name')!r} is not behind the eligibility skip",
             )
+
+    def test_the_release_is_published_with_the_release_bot_token(self):
+        """The release tag and assets must be pushed with the GitHub App release bot token."""
+        steps = self.jobs[_PUBLISH_JOB]["steps"]
+        token_step = next(
+            step
+            for step in steps
+            if str(step.get("uses", "")).startswith("actions/create-github-app-token@")
+        )
+        self.assertIn("RELEASE_BOT_APP_ID", token_step["with"]["app-id"])
+        self.assertIn("RELEASE_BOT_APP_PRIVATE_KEY", token_step["with"]["private-key"])
+        checkout = next(
+            step
+            for step in steps
+            if str(step.get("uses", "")).startswith("actions/checkout@")
+        )
+        self.assertIn(token_step.get("id", "release-token"), checkout["with"]["token"])
 
     def _step(self, job, name):
         for step in self.jobs[job]["steps"]:
