@@ -121,6 +121,13 @@ SHARED_RULES = (
         "the id is derived from check/cluster/namespace/object, so an object "
         "that moves is reported as fixed and re-reported as new",
     ),
+    (
+        "autopilot node-pools qualification or checks_not_applicable clause",
+        "body",
+        r"node-pools[^\n]*(Standard|Autopilot)|(Standard|Autopilot)[^\n]*node-pools|\"reason\":\s*\"[^\"]*Autopilot|Autopilot adjustments",
+        "GKE streams must qualify node-pool operations for Standard clusters or "
+        "declare Autopilot in checks_not_applicable",
+    ),
 )
 
 # What GitHub enforces on an issue body, a comment and a pull request body,
@@ -2221,6 +2228,11 @@ class TestAuditCatalogue(unittest.TestCase):
                 sep, f"{spec.sop} has no Red Lines section to check against"
             )
             for label, scope, pattern, why in SHARED_RULES:
+                if "autopilot" in label and audit_id in (
+                    "gcp-networking-fabric-audit",
+                    "gce-compute-fleet-audit",
+                ):
+                    continue
                 haystack = red_lines if scope == "red-lines" else body
                 with self.subTest(audit=audit_id, rule=label):
                     self.assertRegex(
@@ -2295,6 +2307,54 @@ class TestAuditCatalogue(unittest.TestCase):
                     "back up; it belongs in the SOP's closing section, where "
                     "it is stated in full",
                 )
+
+    def test_node_pools_data_sources_qualify_for_standard_or_autopilot(self):
+        """Every node-pools data-collection query must carry an Autopilot qualification.
+
+        Running `node-pools list` or `describe` on an Autopilot cluster errors or
+        returns empty. SOPs that collect node-pool state must qualify the command
+        for Standard clusters only or instruct skipping on Autopilot.
+        """
+        sop_dir = self.sop_dir()
+        node_pools_cmd = re.compile(r"node-pools\s+(list|describe|list[/|]describe)")
+        qualifier = re.compile(r"Standard|Autopilot")
+        for audit_id in (
+            "fleet-wide-cost-analysis",
+            "fleet-consistency-drift",
+            "ai-security-audit",
+        ):
+            sop = sop_dir / audit_report.AUDITS[audit_id].sop
+            # Scope to data sources / Step 2 collection before individual checks (section 3)
+            data_section = sop.read_text(encoding="utf-8").split("\n### 3")[0]
+            lines = [
+                (n, line)
+                for n, line in enumerate(data_section.splitlines(), start=1)
+                if node_pools_cmd.search(line)
+            ]
+            self.assertTrue(lines, f"{sop.name} has no node-pools query lines in data sources")
+            for n, line in lines:
+                with self.subTest(audit=audit_id, line=n):
+                    self.assertRegex(
+                        line,
+                        qualifier,
+                        f"{sop.name}:{n} runs node-pools query without qualifying "
+                        "for Standard/Autopilot",
+                    )
+
+    def test_cost_sop_check_3_8_handles_autopilot_when_3_7_skipped(self):
+        """Check 3.8 must specify evaluation for Autopilot where 3.7 is skipped."""
+        sop = self.sop_dir() / audit_report.AUDITS["fleet-wide-cost-analysis"].sop
+        text = sop.read_text(encoding="utf-8")
+        self.assertIn("Autopilot clusters where 3.7 is skipped", text)
+
+    def test_drift_sop_declares_autopilot_non_configurable_facets_inapplicable(self):
+        """Drift SOP must instruct declaring non-configurable facets in checks_not_applicable."""
+        sop = self.sop_dir() / audit_report.AUDITS["fleet-consistency-drift"].sop
+        text = sop.read_text(encoding="utf-8")
+        self.assertIn("nine §4 facets marked _Standard cohorts only_", text)
+        self.assertIn("reads as complete at ten of ten", text)
+        self.assertIn("intra-node-visibility", text)
+        self.assertIn("managed-prometheus", text)
 
 
 # --------------------------------------------------------------------------- #
