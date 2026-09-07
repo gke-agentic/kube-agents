@@ -294,6 +294,7 @@ JOBS_APPEND_PATCHED = (
     "    # kube-agents patch: stamp risk tier on newly created cron jobs\n"
     "    # so runtime-created jobs run consistently across pod restarts.\n"
     "    # Clamp to high if created from inside a high-risk cron run (no privilege escalation).\n"
+    '    job.setdefault("risk", "low")\n'
     "    try:\n"
     "        try:\n"
     "            from tools.cron_run_scope import current_cron_job, current_cron_risk\n"

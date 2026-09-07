@@ -499,6 +499,7 @@ class ApplierTest(unittest.TestCase):
         jobs = (root / "cron" / "jobs.py").read_text()
         ast.parse(jobs)
         self.assertIn("risk: Optional[str] = None,", jobs)
+        self.assertIn('job.setdefault("risk", "low")', jobs)
         self.assertIn('job["risk"] = _eff_risk', jobs)
 
     def test_jobs_create_job_clamps_and_validates_risk(self):
