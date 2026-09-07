@@ -220,7 +220,7 @@ def _resolve_github_org() -> Optional[str]:
 def _qualify_repo(repo: Optional[str]) -> Optional[str]:
     """Prefixes a bare repository name with the owner.
 
-    GH_REPO is bare by repository convention -- reusable-deploy-integrations.yml passes
+    GH_REPO is bare by repository convention -- the install configuration passes
     the org and the repo to the GitHub Token Minter as separate values -- while every
     consumer of this fixture wants 'owner/repo': test_github_target_repository_configuration
     asserts the shape, and github_token_refresh.py rejects anything else.
@@ -254,20 +254,23 @@ def github_repo(agent_namespace: str) -> Optional[str]:
     if val:
         return _qualify_repo(val)
 
-    # Try reading from platform-agent-settings in the cluster
+    # Try reading from platform-agent-gitops-state in the cluster
     try:
         cmd = [
-            "kubectl", "get", "cm", "platform-agent-settings",
+            "kubectl", "get", "cm", "platform-agent-gitops-state",
             "-n", agent_namespace,
-            "-o", "jsonpath={.data.SETTINGS\\.md}",
+            "-o", "jsonpath={.data.managed_repos}",
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
-        if result.returncode == 0:
-            for line in result.stdout.splitlines():
-                if "Git Repo:" in line:
-                    repo_cand = line.split("Git Repo:", 1)[1].strip().strip("*` ")
-                    if repo_cand and repo_cand.lower() != "none":
-                        return _qualify_repo(repo_cand)
+        if result.returncode == 0 and result.stdout.strip():
+            try:
+                entries = json.loads(result.stdout)
+                if isinstance(entries, list):
+                    for item in entries:
+                        if isinstance(item, dict) and item.get("url"):
+                            return _qualify_repo(item["url"])
+            except Exception:
+                pass
     except Exception:
         pass
 

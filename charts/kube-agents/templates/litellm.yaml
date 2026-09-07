@@ -60,6 +60,7 @@
 {{- if empty $vertexProject }}
 {{- fail "litellm.modelProvider 'vertex_ai' needs litellm.vertex.projectId (or platformAgent.harness.projectId): Vertex AI is addressed as projects/<project>/locations/<location> and the project has no usable default." }}
 {{- end }}
+{{- end }}
 {{- $callbacks := ternary `["otel", "prometheus"]` `["prometheus"]` .Values.litellm.otel }}
 {{- /*
   LiteLLM OTLP collector validation: ensure collector namespace can be determined
