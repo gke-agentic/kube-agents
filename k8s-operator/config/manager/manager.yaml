@@ -22,6 +22,11 @@ spec:
       control-plane: controller-manager
       app.kubernetes.io/name: kube-agents-operator
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
   template:
     metadata:
       annotations:

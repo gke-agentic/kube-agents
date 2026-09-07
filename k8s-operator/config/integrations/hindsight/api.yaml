@@ -32,6 +32,11 @@ metadata:
     app.kubernetes.io/component: api
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
   # 15 minutes, above the default 600s, because this pod's own budget is not
   # the whole story: a cold roll pulls 1.4 GB before the container starts and
   # only then spends the startupProbe budget below loading models. At the

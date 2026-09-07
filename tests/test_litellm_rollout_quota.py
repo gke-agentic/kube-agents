@@ -37,11 +37,9 @@ The gateway Deployment reaches the same trap through a percentage that rounds
 down; that side is the operator's and is covered by the Go table test in
 `k8s-operator/internal/controller/manifest_helpers_test.go`.
 
-Scope this suite does NOT cover, deliberately: every other Deployment the
-install ships omits `strategy` entirely and runs at one replica, which resolves
-to the same maxUnavailable 0 and stalls the same way — the operator's own
-controller-manager among them. That is a wider change than this one and is
-tracked in #975; do not read a green run here as the install being clear of it.
+Scope this suite covers specifically: the LiteLLM Deployment family. Other
+Deployments the install ships are tested by `test_deployments_rollout_quota.py`
+(#975).
 """
 
 import math
