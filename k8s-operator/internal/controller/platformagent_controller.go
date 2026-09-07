@@ -2208,6 +2208,7 @@ func (r *PlatformAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				}
 				return enqueueAgentsInNamespace(ctx, obj.GetNamespace())
 			}),
+			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
 		).
 		Watches(
 			&appsv1.Deployment{},

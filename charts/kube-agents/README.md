@@ -250,6 +250,10 @@ with `litellm.otel=true` that fails the render, so set `telemetry.collectorNames
 `gke-managed-otel`, since nothing exports through it. Full precedence
 ladder and discovery rules: [Deploy → Telemetry](https://gke-labs.github.io/kube-agents/deploy/telemetry/#pointing-at-your-own-collector).
 
+### Upgrade notes
+
+**Upgrading from a chart version that shipped the static `litellm-policy`:** on the first `helm upgrade` after `platformAgent.enabled` takes effect, Helm prunes the static `litellm-policy` and the operator recreates it on its next reconcile. Between those two events LiteLLM is selected by no NetworkPolicy and its egress is unrestricted (fail-open). Observed window: **~1s** on a healthy operator. To avoid it entirely, ensure the operator is Running before the upgrade; to revert operator management at any time set the annotation `kubeagents.x-k8s.io/enable-litellm-network-policy: "false"`.
+
 #### Vertex AI (`litellm.modelProvider=vertex_ai`)
 
 Vertex AI has no API key. The gateway calls

@@ -80,6 +80,7 @@ const (
 // Ingress:
 //   - Port 8080 from pods in the same namespace (the agent and sidecars)
 //   - Port 8080 from gke-gmp-system namespace (Prometheus scraping)
+//
 // Egress:
 //   - Port 53 (UDP/TCP) to kube-dns, node-local-dns, 169.254.20.10/32, 169.254.169.254/32,
 //     and discovered cluster DNS VIPs (profile.DNSClusterIPs)
@@ -133,6 +134,8 @@ func buildLiteLLMNetworkPolicy(agent *agentv1alpha1.PlatformAgent, profile netpo
 
 	dnsIPs := profile.DNSClusterIPs
 	if len(dnsIPs) == 0 {
+		// Deliberately narrower than the static copy: it relies on the discovered VIP
+		// instead of a 0.0.0.0/0-except-RFC1918 fallback, which is the residual gap Part C closes.
 		dnsIPs = []string{defaultDNSClusterIP}
 	}
 	dnsIPPeers := formatCIDRPeers(dnsIPs, false)
