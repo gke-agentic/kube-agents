@@ -560,6 +560,30 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout.strip(), "0.3.0")
 
+    def test_resolve_effective_image_tag_fails_when_non_interactive_and_no_default(self):
+        """Verifies resolve_effective_image_tag errors when non-interactive and no default tag exists."""
+        with tempfile.TemporaryDirectory() as empty_dir:
+            cmd = f'PARAM_NON_INTERACTIVE="true"; resolve_effective_image_tag "{empty_dir}" ""'
+            proc = self._run_install_func(cmd)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("--image-tag is required", proc.stderr)
+
+    def test_resolve_effective_image_tag_fails_headless_without_tty_and_no_default(self):
+        """Verifies resolve_effective_image_tag errors cleanly in headless environments without TTY."""
+        with tempfile.TemporaryDirectory() as empty_dir:
+            cmd = f'PARAM_NON_INTERACTIVE="false"; has_controlling_tty() {{ return 1; }}; tag="$(resolve_effective_image_tag "{empty_dir}" "")" || rc=$?; echo "RC=$rc TAG=$tag"'
+            proc = self._run_install_func(cmd)
+            self.assertIn("RC=1 TAG=", proc.stdout)
+            self.assertIn("--image-tag is required", proc.stderr)
+
+    def test_resolve_effective_image_tag_resolves_from_external_cwd(self):
+        """Verifies resolve_effective_image_tag discovers repo root even when cwd is external."""
+        with tempfile.TemporaryDirectory() as outside_dir:
+            cmd = 'resolve_effective_image_tag "" ""'
+            proc = self._run_install_func(cmd, cwd=outside_dir)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertRegex(proc.stdout.strip(), r"^[0-9a-fA-F]{40}$")
+
     def test_verify_local_source_ref_accepts_baked_release_in_non_git_dir(self):
         """Verifies verify_local_source_ref succeeds for unpacked release archive without Git repository."""
         with tempfile.TemporaryDirectory(prefix="unpacked-release-") as outer_dir:

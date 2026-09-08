@@ -455,7 +455,7 @@ Flags for AI Agents & Automation:
                                   off       nothing is retained between sessions. No memory
                                             provider, and no database to run.
   --image-tag=TAG               Validated immutable release tag or full commit SHA
-                                (default: this checkout's HEAD; required via curl | bash)
+                                (default: inferred from baked release, release bundle, or local HEAD)
   --registry-prefix=PATH        Container registry path without a URL scheme, for the images
                                 this project builds (operator, agent, credential proxy, replay
                                 proxy)
@@ -731,8 +731,17 @@ default_image_tag_label() {
 # Resolves the image tag to use: honors explicit requested tag first, falls back
 # to the checkout/bundle default without prompting if found, or prompts interactively.
 resolve_effective_image_tag() {
-  local repo_dir="${1:-.}"
+  local repo_dir="${1:-}"
   local requested_tag="${2:-}"
+  if [ -z "$repo_dir" ] || [ "$repo_dir" = "." ]; then
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || echo "")"
+    if [ -n "$script_dir" ] && [ -f "${script_dir}/scripts/installer/installer_common.sh" ]; then
+      repo_dir="$script_dir"
+    else
+      repo_dir="."
+    fi
+  fi
   if [ -n "$requested_tag" ]; then
     echo "$requested_tag"
     return 0
@@ -744,13 +753,18 @@ resolve_effective_image_tag() {
     echo "$default_tag"
     return 0
   fi
-  if [ "$PARAM_NON_INTERACTIVE" = "true" ]; then
+  if [ "$PARAM_NON_INTERACTIVE" = "true" ] || ! has_controlling_tty; then
     print_error "--image-tag is required; use a validated release tag or full commit SHA." >&2
     return 1
   fi
   local prompted_tag=""
-  prompt_read "Container image tag (validated release tag or full commit SHA)" \
-    prompted_tag "" false ""
+  while true; do
+    prompt_read "Container image tag (validated release tag or full commit SHA)" \
+      prompted_tag "" false ""
+    if validate_immutable_ref "$prompted_tag" >&2; then
+      break
+    fi
+  done
   echo "$prompted_tag"
 }
 
