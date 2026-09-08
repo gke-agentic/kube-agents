@@ -95,9 +95,21 @@ traffic is allowed.
 
 **Enable Network Policy Enforcement:**
 
+Enabling network policy enforcement on clusters without Dataplane V2 requires
+two sequential commands in this order: first enable the Calico addon on the
+control plane, then enable network policy enforcement on the nodes. GKE rejects
+`--enable-network-policy` with HTTP 400 until the addon is enabled, and `gcloud`
+rejects both flags in a single invocation.
+
 ```bash
+# Step 1: Enable the NetworkPolicy addon on the control plane
 gcloud container clusters update <cluster-name> \
     --update-addons=NetworkPolicy=ENABLED \
+    --region <region>
+
+# Step 2: Enable NetworkPolicy enforcement on the nodes (restarts cluster networking addons)
+gcloud container clusters update <cluster-name> \
+    --enable-network-policy \
     --region <region>
 ```
 
