@@ -8,7 +8,11 @@ spec:
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 1
+      # Why maxUnavailable is 0 here: pulling and loading Gemma model weights
+      # takes minutes (with a 10-minute startupProbe budget). At replicas: 1,
+      # maxUnavailable: 1 terminates the serving Pod immediately, causing minutes
+      # of inference outage during rollouts. maxUnavailable: 0 ensures continuous serving.
+      maxUnavailable: 0
       maxSurge: 1
   selector:
     matchLabels:

@@ -1,4 +1,4 @@
-"""Tests that all Deployments can finish a rollout under a full namespace quota (#975).
+"""Tests that Deployments can finish a rollout under a full namespace quota (#975).
 
     python3 -m unittest discover -s tests -p 'test_*.py'
 
@@ -13,8 +13,14 @@ Pod cannot be scaled down (`maxUnavailable: 0`).
 `maxUnavailable` of at least 1 (or `strategy.type: Recreate`) allows the rollout
 to replace pods in place under a full quota.
 
-This suite asserts that all Deployments shipped by the repository define an
-explicit rollout strategy meeting this requirement (#975).
+Workloads without webhook serving or heavy cold starts (`inference-replay`, `github-minter`)
+define explicit rollout strategies resolving `maxUnavailable >= 1` (#975).
+
+Single-replica workloads with admission webhooks or multi-minute model loading cold starts
+(`operator`, `hindsight-api`, `vllm-gemma`) are deliberately surge-first (`maxUnavailable: 0`
+in Kustomize/examples, configurable in Helm defaulting to 0): at `replicas: 1`, `maxUnavailable: 1`
+sets `minAvailable = 0` and terminates the old Pod before the replacement is Ready, causing
+admission outages or minutes of memory recall / inference downtime during upgrades.
 """
 
 import math
@@ -26,6 +32,7 @@ import yaml
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 
+_VALUES = _ROOT / "charts" / "kube-agents" / "values.yaml"
 _OPERATOR_CHART_TEMPLATE = (
     _ROOT / "charts" / "kube-agents" / "templates" / "operator-deployment.yaml"
 )
@@ -114,42 +121,68 @@ def _has_chart_rolling_update_strategy(template_text):
 
 
 class DeploymentsRolloutSurvivesAFullQuota(unittest.TestCase):
-    def test_operator_chart_template_sets_rollout_strategy(self):
-        text = _OPERATOR_CHART_TEMPLATE.read_text()
-        self.assertTrue(
-            _has_chart_rolling_update_strategy(text),
-            f"{_OPERATOR_CHART_TEMPLATE.relative_to(_ROOT)} must define a RollingUpdate "
-            "strategy with maxUnavailable >= 1 to allow replacing pods under full quota",
-        )
-
-    def test_operator_kustomize_sets_rollout_strategy(self):
+    def test_operator_kustomize_preserves_surge_first_webhook_strategy(self):
         docs = list(_extract_deployments(_OPERATOR_KUSTOMIZE))
         self.assertEqual(len(docs), 1, f"expected 1 Deployment in {_OPERATOR_KUSTOMIZE}")
         max_unavail = _resolve_max_unavailable(docs[0])
-        self.assertIsNotNone(max_unavail)
-        self.assertGreaterEqual(
+        self.assertEqual(
             max_unavail,
+            0,
+            f"{_OPERATOR_KUSTOMIZE.relative_to(_ROOT)} must resolve maxUnavailable to 0 "
+            "to prevent admission webhook outages during upgrades under failurePolicy: Fail",
+        )
+
+    def test_operator_values_yaml_defaults_surge_first(self):
+        values = yaml.safe_load(_VALUES.read_text())
+        ru = values.get("operator", {}).get("rollingUpdate", {})
+        self.assertEqual(
+            ru.get("maxUnavailable"),
+            0,
+            "charts/kube-agents/values.yaml: operator.rollingUpdate.maxUnavailable must "
+            "default to 0 to preserve admission webhook availability during upgrades",
+        )
+        self.assertEqual(
+            ru.get("maxSurge"),
             1,
-            f"{_OPERATOR_KUSTOMIZE.relative_to(_ROOT)} must resolve maxUnavailable >= 1",
+            "charts/kube-agents/values.yaml: operator.rollingUpdate.maxSurge must default to 1",
         )
 
-    def test_hindsight_chart_template_sets_rollout_strategy(self):
+    def test_operator_chart_template_renders_configurable_strategy(self):
+        text = _OPERATOR_CHART_TEMPLATE.read_text()
+        self.assertIn(".Values.operator.rollingUpdate", text)
+        self.assertIn(".maxSurge", text)
+        self.assertIn(".maxUnavailable", text)
+
+    def test_hindsight_chart_template_renders_configurable_strategy(self):
         text = _HINDSIGHT_CHART_TEMPLATE.read_text()
-        self.assertTrue(
-            _has_chart_rolling_update_strategy(text),
-            f"{_HINDSIGHT_CHART_TEMPLATE.relative_to(_ROOT)} must define a RollingUpdate "
-            "strategy with maxUnavailable >= 1 to allow replacing pods under full quota",
+        self.assertIn(".Values.hindsight.api.rollingUpdate", text)
+        self.assertIn(".maxSurge", text)
+        self.assertIn(".maxUnavailable", text)
+
+    def test_hindsight_values_yaml_defaults_surge_first(self):
+        values = yaml.safe_load(_VALUES.read_text())
+        ru = values.get("hindsight", {}).get("api", {}).get("rollingUpdate", {})
+        self.assertEqual(
+            ru.get("maxUnavailable"),
+            0,
+            "charts/kube-agents/values.yaml: hindsight.api.rollingUpdate.maxUnavailable must "
+            "default to 0 to prevent memory store downtime during cold start rollouts",
+        )
+        self.assertEqual(
+            ru.get("maxSurge"),
+            1,
+            "charts/kube-agents/values.yaml: hindsight.api.rollingUpdate.maxSurge must default to 1",
         )
 
-    def test_hindsight_kustomize_sets_rollout_strategy(self):
+    def test_hindsight_kustomize_preserves_surge_first_strategy(self):
         docs = list(_extract_deployments(_HINDSIGHT_KUSTOMIZE))
         self.assertEqual(len(docs), 1, f"expected 1 Deployment in {_HINDSIGHT_KUSTOMIZE}")
         max_unavail = _resolve_max_unavailable(docs[0])
-        self.assertIsNotNone(max_unavail)
-        self.assertGreaterEqual(
+        self.assertEqual(
             max_unavail,
-            1,
-            f"{_HINDSIGHT_KUSTOMIZE.relative_to(_ROOT)} must resolve maxUnavailable >= 1",
+            0,
+            f"{_HINDSIGHT_KUSTOMIZE.relative_to(_ROOT)} must resolve maxUnavailable to 0 "
+            "to prevent taking the long-term memory store offline during model loading cold starts",
         )
 
     def test_replay_kustomize_sets_rollout_strategy(self):
@@ -174,17 +207,17 @@ class DeploymentsRolloutSurvivesAFullQuota(unittest.TestCase):
             f"{_REPLAY_EXAMPLE.relative_to(_ROOT)} must resolve maxUnavailable >= 1",
         )
 
-    def test_vllm_gemma_example_sets_rollout_strategy(self):
+    def test_vllm_gemma_example_preserves_surge_first_strategy(self):
         docs = list(_extract_deployments(_VLLM_GEMMA_EXAMPLE))
         self.assertEqual(
             len(docs), 1, f"expected 1 Deployment in {_VLLM_GEMMA_EXAMPLE}"
         )
         max_unavail = _resolve_max_unavailable(docs[0])
-        self.assertIsNotNone(max_unavail)
-        self.assertGreaterEqual(
+        self.assertEqual(
             max_unavail,
-            1,
-            f"{_VLLM_GEMMA_EXAMPLE.relative_to(_ROOT)} must resolve maxUnavailable >= 1",
+            0,
+            f"{_VLLM_GEMMA_EXAMPLE.relative_to(_ROOT)} must resolve maxUnavailable to 0 "
+            "to prevent multi-minute inference outages while pulling and loading Gemma models",
         )
 
     def test_github_minter_chart_template_sets_rollout_strategy(self):
@@ -195,11 +228,17 @@ class DeploymentsRolloutSurvivesAFullQuota(unittest.TestCase):
             "strategy with maxUnavailable >= 1 to allow replacing pods under full quota",
         )
 
-    def test_no_deployment_manifest_resolves_zero_max_unavailable(self):
+    def test_no_generic_workload_deployment_manifest_resolves_zero_max_unavailable(self):
         offenders = []
         for root in _SCAN_ROOTS:
             for path in sorted(root.rglob("*.yaml")):
                 for doc in _extract_deployments(path):
+                    # Exclude single-replica workloads that deliberately surge-first:
+                    # - operator controller-manager (admission webhook backend)
+                    # - hindsight-api (1.4 GB image + 5m model loading cold start)
+                    # - vllm-gemma (multi-minute Gemma weight loading)
+                    if path in (_OPERATOR_KUSTOMIZE, _HINDSIGHT_KUSTOMIZE, _VLLM_GEMMA_EXAMPLE):
+                        continue
                     resolved = _resolve_max_unavailable(doc)
                     if resolved is not None and resolved < 1:
                         name = (doc.get("metadata") or {}).get("name")
@@ -209,9 +248,8 @@ class DeploymentsRolloutSurvivesAFullQuota(unittest.TestCase):
         self.assertEqual(
             [],
             offenders,
-            "these Deployments resolve maxUnavailable to 0, so they cannot roll "
-            "under a full namespace quota. An absent strategy block counts: it "
-            "defaults to 25%, which rounds down to 0 at 1-3 replicas.",
+            "generic workload Deployments must resolve maxUnavailable to at least 1, "
+            "so they can roll under a full namespace quota (#975).",
         )
 
 

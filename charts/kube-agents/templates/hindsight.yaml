@@ -50,11 +50,13 @@ metadata:
     {{- include "kube-agents.labels" . | nindent 4 }}
 spec:
   replicas: 1
+  {{- with .Values.hindsight.api.rollingUpdate }}
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 1
-      maxSurge: 1
+      maxSurge: {{ .maxSurge }}
+      maxUnavailable: {{ .maxUnavailable }}
+  {{- end }}
   # 15 minutes, above the default 600s: a cold roll pulls 1.4 GB before the
   # container starts and only then spends the startupProbe budget loading
   # models. k8s-operator/config/integrations/hindsight/api.yaml carries the
