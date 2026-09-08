@@ -38,8 +38,7 @@ down; that side is the operator's and is covered by the Go table test in
 `k8s-operator/internal/controller/manifest_helpers_test.go`.
 
 Scope this suite covers specifically: the LiteLLM Deployment family. Other
-Deployments the install ships are tested by `test_deployments_rollout_quota.py`
-(#975).
+Deployments the install ships are tested by `test_deployments_rollout_quota.py`.
 """
 
 import math

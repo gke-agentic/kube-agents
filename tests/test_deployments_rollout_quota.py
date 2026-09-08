@@ -1,4 +1,4 @@
-"""Tests that Deployments can finish a rollout under a full namespace quota (#975).
+"""Tests Deployment rollout strategies and quota trade-offs (#975).
 
     python3 -m unittest discover -s tests -p 'test_*.py'
 
@@ -10,17 +10,19 @@ Where a namespace `ResourceQuota` has no room for one more Pod, the surge Pod is
 refused with `FailedCreate` and the rollout stalls indefinitely because the old
 Pod cannot be scaled down (`maxUnavailable: 0`).
 
-`maxUnavailable` of at least 1 (or `strategy.type: Recreate`) allows the rollout
-to replace pods in place under a full quota.
-
 Workloads without webhook serving or heavy cold starts (`inference-replay`, `github-minter`)
-define explicit rollout strategies resolving `maxUnavailable >= 1` (#975).
+define explicit rollout strategies resolving `maxUnavailable >= 1` to replace in place under quota (#975).
 
 Single-replica workloads with admission webhooks or multi-minute model loading cold starts
-(`operator`, `hindsight-api`, `vllm-gemma`) are deliberately surge-first (`maxUnavailable: 0`
+(`operator`, `hindsight-api`, `vllm-gemma`) deliberately default to surge-first (`maxUnavailable: 0`
 in Kustomize/examples, configurable in Helm defaulting to 0): at `replicas: 1`, `maxUnavailable: 1`
 sets `minAvailable = 0` and terminates the old Pod before the replacement is Ready, causing
 admission outages or minutes of memory recall / inference downtime during upgrades.
+
+Consequently, `operator`, `hindsight-api`, and `vllm-gemma` will still stall under a zero-headroom
+ResourceQuota by default. For the Helm chart workloads, `operator.rollingUpdate.maxUnavailable` and
+`hindsight.api.rollingUpdate.maxUnavailable` provide the override knob to unblock rollouts under quota
+when the transient outage is acceptable.
 """
 
 import math
