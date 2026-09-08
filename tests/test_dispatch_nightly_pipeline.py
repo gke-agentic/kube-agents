@@ -183,12 +183,14 @@ class RecordNightlySchedulerSkipTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("### No nightly promotion required", summary)
         self.assertIn(reason, summary)
+        self.assertIn("says nothing about the last pipeline run's result", summary)
 
     def test_renders_fallback_when_no_tag_or_reason_provided(self):
         proc, summary = self._run(overrides={"RC_TAG": "", "COMMIT_SHA": "", "SKIP_REASON": ""})
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("### No nightly promotion required", summary)
         self.assertIn("No eligible validated candidate exists to promote", summary)
+        self.assertIn("says nothing about the last pipeline run's result", summary)
 
     def test_runs_outside_actions_without_a_summary_file(self):
         proc, _ = self._run(with_summary_file=False)

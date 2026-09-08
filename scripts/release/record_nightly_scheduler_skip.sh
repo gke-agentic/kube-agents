@@ -17,12 +17,12 @@ render_summary() {
   if [ -n "${SKIP_REASON}" ]; then
     echo "${SKIP_REASON}"
   elif [ -n "${RC_TAG}" ]; then
-    echo "The newest validated candidate (\`${RC_TAG}\` / \`${COMMIT_SHA}\`) does not require staging promotion. This is the normal quiet-tick outcome and says nothing about the last pipeline run's result."
+    echo "The newest validated candidate (\`${RC_TAG}\` / \`${COMMIT_SHA}\`) does not require staging promotion."
   else
-    echo "No eligible validated candidate exists to promote. This is the normal quiet-tick outcome and says nothing about the last pipeline run's result."
+    echo "No eligible validated candidate exists to promote."
   fi
   echo ""
-  echo "No pipeline run was started."
+  echo "No pipeline run was started. This is the normal quiet-tick outcome and says nothing about the last pipeline run's result."
 }
 
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
