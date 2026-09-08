@@ -24,20 +24,20 @@ Prefer declarative IaC over the interview? Apply the same composition by hand wi
   or AI Agent without cloning the repository manually.
 </Aside>
 
-Run the installer for the latest official release (currently `0.4.0`):
+Run the release-pinned installer (substituting `<RELEASE_VERSION>` with the desired release tag from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases), for example `0.4.0`):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/0.4.0/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSION>/install.sh | bash
 ```
 
 The interactive installer is strongly recommended for initial installation: it detects context from your `gcloud` session and guides you through project selection, cluster options, and model provider credentials with minimal typing.
 
-When running the release-pinned installer, the baked release version is used automatically. When running the generic installer (`curl -fsSL https://gke-labs.github.io/kube-agents/install.sh | bash`), the interactive prompt asks you to enter the target SemVer release tag. Mutable refs such as `latest` and `main` are rejected so the Terraform configuration and container images stay strictly aligned.
+When running the release-pinned installer, the baked release version is used automatically.
 
-For headless environments, AI Agents, or CI/CD automated deployments where an interactive TTY is unavailable, use `--non-interactive` with explicit parameter flags:
+For headless environments, AI Agents, or CI/CD automated deployments where an interactive TTY is unavailable, use `--non-interactive` with parameter flags:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/0.4.0/install.sh | bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSION>/install.sh | bash -s -- \
   --non-interactive \
   --project-id="my-gcp-project" \
   --cluster-name="platform-agent-host" \
@@ -51,18 +51,18 @@ curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/0.4.0/install.
 
 1. **Clone the repo at the release tag.**
 
-   Clone pinned to the latest official release tag (currently `0.4.0`):
+   Clone pinned to an official release tag (for example, `0.4.0`):
 
    ```bash
-   git clone --branch 0.4.0 https://github.com/gke-labs/kube-agents.git
+   git clone --branch <RELEASE_VERSION> https://github.com/gke-labs/kube-agents.git
    cd kube-agents
    ```
 
-   Alternatively, download and extract the self-contained release archive from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases/tag/0.4.0) without cloning:
+   Alternatively, download and extract the self-contained release archive from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases) without cloning:
 
    ```bash
-   curl -fsSL https://github.com/gke-labs/kube-agents/releases/download/0.4.0/kube-agents-0.4.0.tar.gz | tar -xz
-   cd kube-agents-0.4.0
+   curl -fsSL https://github.com/gke-labs/kube-agents/releases/download/<RELEASE_VERSION>/kube-agents-<RELEASE_VERSION>.tar.gz | tar -xz
+   cd kube-agents-<RELEASE_VERSION>
    ```
 
 2. **Run the installer.**
@@ -77,12 +77,11 @@ curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/0.4.0/install.
      **Working on `main` (Developers only):** If you clone the repository from
      `main` without `--branch`, `install.sh` defaults to your local `HEAD`
      commit SHA and requires candidate images built from that commit in GHCR. Do
-     not pass `--image-tag=0.4.0` (or older release tags) from a `main`
-     checkout: manifests and CRD schemas on `main` evolve continuously and are
-     incompatible with older release images. The installer's
-     `verify_local_source_ref` checks revision alignment and blocks mismatched
-     combinations. For local script development with uncommitted or unverified
-     changes, pass `--allow-unverified-source`.
+     not install an older release from a `main` checkout: manifests and CRD
+     schemas on `main` evolve continuously and are incompatible with older
+     release images. The installer's `verify_local_source_ref` checks revision
+     alignment and blocks mismatched combinations. For local script development
+     with uncommitted or unverified changes, pass `--allow-unverified-source`.
    </Aside>
 
 3. **Configure Google Chat** (only if you enabled the Google Chat integration). In the [Chat API console](https://console.cloud.google.com/apis/api/chat.googleapis.com), point the bot's Pub/Sub connection at the created topic (`projects/<PROJECT_ID>/topics/<CHAT_TOPIC_NAME>`). The installer prints the exact topic name and step-by-step instructions when it finishes.

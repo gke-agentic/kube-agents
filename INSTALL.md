@@ -39,12 +39,12 @@ This comprehensive, step-by-step guide explains how to install, configure, deplo
 Run the interactive one-liner installer directly in **Google Cloud Shell** or any authenticated bash terminal:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/0.4.0/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSION>/install.sh | bash
 ```
 
-_Installs the latest official release (currently `0.4.0`). To use another release, substitute `0.4.0` with the desired version tag from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases). You can also run the generic installer `curl -fsSL https://gke-labs.github.io/kube-agents/install.sh | bash`, which prompts for the target release tag._
+_Substitute `<RELEASE_VERSION>` with the desired release tag from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases) (for example, `0.4.0`)._
 
-When running the release-pinned installer (`<RELEASE_VERSION>/install.sh`), the baked release version is offered as the default, so pressing Enter accepts it; `--non-interactive` uses it without prompting at all. When running the generic installer (`gke-labs.github.io/kube-agents/install.sh`), the interactive prompt asks you to enter the target SemVer release tag or full 40-character commit SHA (from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases)), and `--non-interactive` requires `--image-tag`. The installer rejects mutable refs such as `latest` and `main` to ensure install sources and container images stay strictly aligned.
+When running the release-pinned installer (`<RELEASE_VERSION>/install.sh`), the baked release version is used automatically. The installer rejects mutable refs such as `latest` and `main` to ensure install sources and container images stay strictly aligned.
 
 ### What `install.sh` Automatically Handles:
 
@@ -70,7 +70,7 @@ one place; see
 
 Three behaviours worth knowing before the first run:
 
-- **The image/source ref defaults to the release version (in release checkouts and bundles) or the checkout's `HEAD` commit SHA (on `main`)**, and must be a SemVer release tag or a full 40-character commit SHA. Provisioning refuses to start from a dirty or mismatched checkout so the scripts and the container image stay on one revision; pass `--allow-unverified-source` to override that while iterating on the installer itself. Never pass `--image-tag=<RELEASE>` (such as `--image-tag=0.4.0`) from a `main` checkout: manifests and CRD schemas on `main` diverge from older releases, and `verify_local_source_ref` blocks mismatched revisions to prevent broken installations.
+- **The image/source ref defaults to the release version (in release checkouts and bundles) or the checkout's `HEAD` commit SHA (on `main`)**, and must be a SemVer release tag or a full 40-character commit SHA. Provisioning refuses to start from a dirty or mismatched checkout so the scripts and the container image stay on one revision; pass `--allow-unverified-source` to override that while iterating on the installer itself. Do not install from a `main` checkout when targeting an official release: manifests and CRD schemas on `main` diverge from older releases, and `verify_local_source_ref` blocks mismatched revisions to prevent broken installations.
 - **The agent's GCP IAM permission set defaults to `read-only`**, matching the provisioner. It
   controls cloud-plane writes only — Kubernetes RBAC is read-only in every set, and the GitOps
   pull-request path works in every set. See the site's
@@ -86,10 +86,10 @@ Three behaviours worth knowing before the first run:
 
 For human operators, running the installer interactively (Method 0 above or `./install.sh`) is strongly recommended on initial setup: it detects sensible defaults from your active `gcloud` session, prompts for mandatory cloud project and LLM provider credentials, and records configuration to `install.env`.
 
-For headless environments, automated CI scripts, and AI Agent harnesses where no interactive TTY is available, execute `install.sh` non-interactively by supplying explicit CLI flags:
+For headless environments, automated CI scripts, and AI Agent harnesses where no interactive TTY is available, execute the release-pinned installer non-interactively by supplying explicit CLI flags:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/0.4.0/install.sh | bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSION>/install.sh | bash -s -- \
   --non-interactive \
   --project-id="my-gcp-project" \
   --cluster-name="platform-agent-host" \
@@ -100,7 +100,7 @@ curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/0.4.0/install.
 To run pre-flight checks and output configuration state (`terraform.tfvars` and
 `/tmp/kube-agents-install-report.json`) without creating cloud resources — the dry run also
 validates the Terraform configuration, and previews the full resource plan when Application
-Default Credentials are available. When run inside an official release checkout or unpacked release bundle, `--image-tag` is inferred automatically:
+Default Credentials are available. When run inside an official release checkout or unpacked release bundle, the release version is inferred automatically:
 
 ```bash
 ./install.sh --dry-run --non-interactive \
@@ -115,7 +115,7 @@ When dry-running on `main` (development only), `--image-tag` defaults to the loc
   --image-tag="<COMMIT_SHA_WITH_CANDIDATE_IMAGES>"
 ```
 
-_Guidance for AI Agents:_ For production deployments, deploy or test from the latest official release (currently `0.4.0`) using the release one-liner above, `git clone --branch 0.4.0`, or the published release tarball. Do not pass `--image-tag=0.4.0` from a `main` checkout: manifests and CRD schemas on `main` diverge from older releases, and `verify_local_source_ref` blocks mismatched revisions.
+_Guidance for AI Agents:_ For production deployments, deploy or test from an official release using the release installer (`<RELEASE_VERSION>/install.sh`), `git clone --branch <RELEASE_VERSION>`, or the published release tarball (where `<RELEASE_VERSION>` is the target release tag from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases), e.g. `0.4.0`). Do not deploy from a `main` checkout: manifests and CRD schemas on `main` diverge from released versions, and `verify_local_source_ref` blocks mismatched revisions.
 
 ---
 
@@ -219,7 +219,7 @@ KUBE_AGENTS_STATE_BUCKET=auto ./lifecycle.sh apply
 
 - **Dry-run check**: To preview actions without modifying cloud infrastructure:
   ```bash
-  ./install.sh --dry-run -y --project-id=<PROJECT> --image-tag=<TAG>   # validate + terraform plan
+  ./install.sh --dry-run -y --project-id=<PROJECT>   # validate + terraform plan
   # or, hand-driven, plain:  terraform plan
   ```
 

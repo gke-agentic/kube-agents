@@ -34,10 +34,10 @@ Day-2 panel's Save & Apply) reconciles every change through one `terraform apply
 
 ## Quick Execution for AI Agents
 
-For production installations, AI Agents and automated pipelines should target the latest official release (currently `0.4.0`):
+For production installations, AI Agents and automated pipelines must target an official release version (substituting `<RELEASE_VERSION>` with the desired release tag from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases), e.g. `0.4.0`):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/0.4.0/install.sh | bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSION>/install.sh | bash -s -- \
   --non-interactive \
   --project-id="YOUR_GCP_PROJECT_ID" \
   --cluster-name="platform-agent-host" \
@@ -46,12 +46,10 @@ curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/0.4.0/install.
   --permission-set="read-only"
 ```
 
-When running the official release installer (`0.4.0/install.sh`) or executing inside an unpacked release bundle, the release version is baked in (`BAKED_RELEASE_VERSION="0.4.0"`), so `--image-tag` is not needed.
-
-If cloning the repository instead of using the release one-liner, AI Agents must check out the target release tag (currently `0.4.0`):
+If cloning the repository instead of using curl, AI Agents must check out the target release tag:
 
 ```bash
-git clone --branch 0.4.0 https://github.com/gke-labs/kube-agents.git
+git clone --branch <RELEASE_VERSION> https://github.com/gke-labs/kube-agents.git
 cd kube-agents
 ./install.sh --non-interactive \
   --project-id="YOUR_GCP_PROJECT_ID" \
@@ -61,12 +59,12 @@ cd kube-agents
   --permission-set="read-only"
 ```
 
-Do not clone `main` to deploy an official release image. Manifests and CRD schemas on `main` evolve continuously and diverge from released container images. Running `./install.sh --image-tag=0.4.0` from a `main` checkout will fail `verify_local_source_ref` to prevent deploying incompatible manifests.
+Do not clone `main` to deploy an official release: manifests and CRD schemas on `main` evolve continuously and diverge from released container images. Running install scripts against a mismatched checkout will fail `verify_local_source_ref` to prevent deploying incompatible manifests.
 
 ## Dry-Run Inspection
 
 To validate prerequisites and preview the install without creating GCP resources, use `--dry-run`.
-When executed inside an official release checkout or bundle, `--image-tag` is automatically inferred:
+When executed inside an official release checkout or bundle, the release version is automatically inferred:
 
 ```bash
 ./install.sh --dry-run --non-interactive \

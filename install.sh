@@ -43,12 +43,12 @@ define_print_helpers() {
 define_print_helpers
 
 # ─── Process Lock File & Error Trap Handling ────────────────────────────────
-LOCK_FILE="/tmp/kube-agents-install.lock"
+LOCK_FILE="${KUBE_AGENTS_LOCK_FILE:-/tmp/kube-agents-install.lock}"
 # The gateway's service account id when the kustomize path's LITELLM_GSA_NAME is
 # not in the environment; must agree with module.litellm_vertex_iam in
 # terraform/examples/full-install/main.tf.
 LITELLM_GSA_DEFAULT_NAME="kubeagents-litellm-gsa"
-if command -v flock >/dev/null 2>&1; then
+if [ "${KUBE_AGENTS_SOURCE_ONLY:-false}" != "true" ] && command -v flock >/dev/null 2>&1; then
   if ( : >"$LOCK_FILE" ) 2>/dev/null && exec 200>"$LOCK_FILE"; then
     if ! flock -n 200 2>/dev/null; then
       echo -e "  \033[93m⚠ Another instance of kube-agents installer is currently running. Exiting.\033[0m" >&2
@@ -2086,8 +2086,15 @@ run_menu_system() {
       6)
         print_step "Saving & Re-applying Configuration State"
         if [ -z "$image_tag" ]; then
-          prompt_read "Container image tag (validated release tag or full commit SHA)" \
-            image_tag "$(default_image_tag "$repo_dir")" false "$(default_image_tag_label "$repo_dir")"
+          local default_tag
+          default_tag="$(default_image_tag "$repo_dir")"
+          if [ -n "$default_tag" ]; then
+            image_tag="$default_tag"
+            print_info "Using container image tag ($(default_image_tag_label "$repo_dir")): ${C_BOLD}${image_tag}${C_RESET}"
+          else
+            prompt_read "Container image tag (validated release tag or full commit SHA)" \
+              image_tag "" false ""
+          fi
         fi
         validate_immutable_ref "$image_tag"
         verify_local_source_ref "$repo_dir" "$image_tag"
@@ -2181,16 +2188,16 @@ main() {
   if [ -z "$image_tag" ]; then
     local head_sha=""
     head_sha="$(default_image_tag)"
-    if [ "$PARAM_NON_INTERACTIVE" = "true" ]; then
-      if [ -z "$head_sha" ]; then
+    if [ -n "$head_sha" ]; then
+      image_tag="$head_sha"
+      print_info "Using container image tag ($(default_image_tag_label)): ${C_BOLD}${image_tag}${C_RESET}"
+    else
+      if [ "$PARAM_NON_INTERACTIVE" = "true" ]; then
         print_error "--image-tag is required; use a validated release tag or full commit SHA."
         exit 1
       fi
-      image_tag="$head_sha"
-      print_info "Defaulting image tag to $(default_image_tag_label): ${C_BOLD}${image_tag}${C_RESET}"
-    else
       prompt_read "Container image tag (validated release tag or full commit SHA)" \
-        image_tag "$head_sha" false "$(default_image_tag_label)"
+        image_tag "" false ""
     fi
   fi
   validate_immutable_ref "$image_tag"

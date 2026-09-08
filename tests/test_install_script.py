@@ -541,6 +541,27 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertEqual(proc.stdout.strip(), "0.2.0")
 
+    def test_default_image_tag_is_used_without_prompt(self):
+        """Verifies resolved default image tag is adopted directly without interactive prompt."""
+        cmd = '''
+PARAM_IMAGE_TAG=""
+PARAM_NON_INTERACTIVE="false"
+BAKED_RELEASE_VERSION="0.4.0"
+image_tag="${PARAM_IMAGE_TAG:-}"
+if [ -z "$image_tag" ]; then
+  head_sha="$(default_image_tag)"
+  if [ -n "$head_sha" ]; then
+    image_tag="$head_sha"
+  else
+    image_tag="FAILED_PROMPT"
+  fi
+fi
+echo "RESOLVED_TAG=$image_tag"
+'''
+        proc = self._run_install_func(cmd)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("RESOLVED_TAG=0.4.0", proc.stdout)
+
     def test_verify_local_source_ref_accepts_baked_release_in_non_git_dir(self):
         """Verifies verify_local_source_ref succeeds for unpacked release archive without Git repository."""
         with tempfile.TemporaryDirectory(prefix="unpacked-release-") as outer_dir:

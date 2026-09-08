@@ -122,19 +122,23 @@ Full walkthrough on the [Architecture](/kube-agents/overview/architecture/) page
 
 ## Install
 
-The recommended way to install `kube-agents` in production is from the latest official release (currently `0.4.0`):
+The fastest way to install `kube-agents` is from an official release:
 
 ```bash
-git clone --branch 0.4.0 https://github.com/gke-labs/kube-agents.git
+curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSION>/install.sh | bash
+```
+
+_Substitute `<RELEASE_VERSION>` with the desired version tag from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases) (for example, `0.4.0`)._
+
+To install via git clone, clone pinned to an official release tag:
+
+```bash
+git clone --branch <RELEASE_VERSION> https://github.com/gke-labs/kube-agents.git
 cd kube-agents
 ./install.sh
 ```
 
-Alternatively, download and extract the self-contained release archive from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases/tag/0.4.0), or run the release one-liner:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/0.4.0/install.sh | bash
-```
+Alternatively, download and extract the self-contained release archive from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases).
 
 The installer bootstraps a GKE cluster, the operator CRDs, IAM bindings, Google Chat Pub/Sub, Kubernetes secrets, and the Platform Agent itself — one `terraform apply` through `terraform/examples/full-install`. See the [Quick start](/kube-agents/install/quickstart-gke/) for a step-by-step breakdown.
 
