@@ -3,11 +3,11 @@
 # 🤖 Kubernetes Agentic Harness (kube-agents) Zero-Friction Installer
 # ==============================================================================
 # Usage (Interactive):
-#   curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSION>/install.sh | bash
 #
 # Usage (AI Agents & Non-Interactive Automation):
-#   curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/main/install.sh | bash -s -- \
-#     --non-interactive --project-id="my-gcp-project" --cluster-name="platform-agent"
+#   curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSION>/install.sh | bash -s -- \
+#     --non-interactive --project-id="my-gcp-project" --cluster-name="platform-agent-host"
 #
 # Designed for Google Cloud Shell, Linux, macOS, and AI Agent harnesses.
 # ==============================================================================
