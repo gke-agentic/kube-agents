@@ -24,7 +24,7 @@ Prefer declarative IaC over the interview? Apply the same composition by hand wi
   or AI Agent without cloning the repository manually.
 </Aside>
 
-Run the release-pinned installer (currently `0.4.0`):
+Run the installer for the latest official release (currently `0.4.0`):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/0.4.0/install.sh | bash
@@ -49,7 +49,7 @@ curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/0.4.0/install.
 
 1. **Clone the repo at the release tag.**
 
-   Clone pinned to an official release tag (currently `0.4.0`):
+   Clone pinned to the latest official release tag (currently `0.4.0`):
 
    ```bash
    git clone --branch 0.4.0 https://github.com/gke-labs/kube-agents.git
@@ -71,16 +71,17 @@ curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/0.4.0/install.
 
    The run is interactive: it prompts for the values it needs (project ID, region, new or existing cluster, the new cluster's shape, image tag, chat integrations, model provider and API key, GitOps repo, agent permission set, gVisor, web UI, and memory). When run from an official release checkout or bundle, `install.sh` automatically defaults to that release version and verifies that local files match the container images. Answers are saved to `install.env` (git-ignored, `chmod 600`), the install's configuration; `terraform/examples/full-install/terraform.tfvars` is regenerated from it on every run, so the two stay in step. A re-run loads `install.env` first, so a flag you omit keeps the value it records instead of reverting to a default. The installer then runs the composition's `lifecycle.sh apply`, and a re-run reconciles every change through one `terraform apply` — safe to Ctrl-C and run again.
 
-<Aside type="caution">
-  **Working on `main` (Developers only):** If you clone the repository from
-  `main` without `--branch`, `install.sh` defaults to your local `HEAD` commit
-  SHA and requires candidate images built from that commit in GHCR. Do not pass
-  `--image-tag=0.4.0` (or older release tags) from a `main` checkout: manifests
-  and CRD schemas on `main` evolve continuously and are incompatible with older
-  release images. The installer's `verify_local_source_ref` checks revision
-  alignment and blocks mismatched combinations. For local script development
-  with uncommitted or unverified changes, pass `--allow-unverified-source`.
-</Aside>
+   <Aside type="caution">
+     **Working on `main` (Developers only):** If you clone the repository from
+     `main` without `--branch`, `install.sh` defaults to your local `HEAD`
+     commit SHA and requires candidate images built from that commit in GHCR. Do
+     not pass `--image-tag=0.4.0` (or older release tags) from a `main`
+     checkout: manifests and CRD schemas on `main` evolve continuously and are
+     incompatible with older release images. The installer's
+     `verify_local_source_ref` checks revision alignment and blocks mismatched
+     combinations. For local script development with uncommitted or unverified
+     changes, pass `--allow-unverified-source`.
+   </Aside>
 
 3. **Configure Google Chat** (only if you enabled the Google Chat integration). In the [Chat API console](https://console.cloud.google.com/apis/api/chat.googleapis.com), point the bot's Pub/Sub connection at the created topic (`projects/<PROJECT_ID>/topics/<CHAT_TOPIC_NAME>`). The installer prints the exact topic name and step-by-step instructions when it finishes.
 

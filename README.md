@@ -28,7 +28,7 @@ The fastest, zero-friction way to install `kube-agents` in **Google Cloud Shell*
 curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/0.4.0/install.sh | bash
 ```
 
-_To use another release, substitute `0.4.0` with the desired version tag from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases). You can also run the generic installer `curl -fsSL https://gke-labs.github.io/kube-agents/install.sh | bash`, which prompts for the target release tag._
+_Installs the latest official release (currently `0.4.0`). To use another release, substitute `0.4.0` with the desired version tag from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases). You can also run the generic installer `curl -fsSL https://gke-labs.github.io/kube-agents/install.sh | bash`, which prompts for the target release tag._
 
 This interactive installer guides you through GCP authentication, project selection, GKE cluster setup (Autopilot or Standard), chat integrations (Google Chat & Slack), and LLM model provider credentials.
 
@@ -40,7 +40,7 @@ AI Agents and CI/CD pipelines can invoke `install.sh` non-interactively using CL
 curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/0.4.0/install.sh | bash -s -- \
   --non-interactive \
   --project-id="my-gcp-project" \
-  --cluster-name="platform-agent" \
+  --cluster-name="platform-agent-host" \
   --model-provider="gemini" \
   --permission-set="read-only"
 ```
@@ -48,15 +48,18 @@ curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/0.4.0/install.
 Or delegate setup directly to your AI coding agent:
 
 ```text
-"Using kube-agents/INSTALL.md provision k8s agentic harness and create platform agent"
+"Using kube-agents/INSTALL.md provision the latest official release (currently 0.4.0) of k8s agentic harness"
 ```
 
-Prefer to drive the engine by hand? Clone the repository at an official release tag (or unpack `kube-agents-0.4.0.tar.gz` from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases)):
+Prefer to drive the engine by hand? Clone the repository at the latest official release tag (currently `0.4.0`), or unpack `kube-agents-0.4.0.tar.gz` from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases):
 
 ```bash
 git clone --branch 0.4.0 https://github.com/gke-labs/kube-agents.git
 cd kube-agents
 ./install.sh                                              # the interview, then one terraform apply
+# or, if unpacking the release archive:
+# curl -fsSL https://github.com/gke-labs/kube-agents/releases/download/0.4.0/kube-agents-0.4.0.tar.gz | tar -xz
+# cd kube-agents-0.4.0 && ./install.sh
 # or, with your own terraform.tfvars:
 cd terraform/examples/full-install && ./lifecycle.sh apply
 ```

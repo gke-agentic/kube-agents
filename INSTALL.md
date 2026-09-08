@@ -42,7 +42,7 @@ Run the interactive one-liner installer directly in **Google Cloud Shell** or an
 curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/0.4.0/install.sh | bash
 ```
 
-_To use another release, substitute `0.4.0` with the desired version tag from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases). You can also run the generic installer `curl -fsSL https://gke-labs.github.io/kube-agents/install.sh | bash`, which prompts for the target release tag._
+_Installs the latest official release (currently `0.4.0`). To use another release, substitute `0.4.0` with the desired version tag from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases). You can also run the generic installer `curl -fsSL https://gke-labs.github.io/kube-agents/install.sh | bash`, which prompts for the target release tag._
 
 When running the release-pinned installer (`<RELEASE_VERSION>/install.sh`), the baked release version is offered as the default, so pressing Enter accepts it; `--non-interactive` uses it without prompting at all. When running the generic installer (`gke-labs.github.io/kube-agents/install.sh`), the interactive prompt asks you to enter the target SemVer release tag or full 40-character commit SHA (from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases)), and `--non-interactive` requires `--image-tag`. The installer rejects mutable refs such as `latest` and `main` to ensure install sources and container images stay strictly aligned.
 
@@ -98,13 +98,22 @@ curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/0.4.0/install.
 To run pre-flight checks and output configuration state (`terraform.tfvars` and
 `/tmp/kube-agents-install-report.json`) without creating cloud resources — the dry run also
 validates the Terraform configuration, and previews the full resource plan when Application
-Default Credentials are available:
+Default Credentials are available. When run inside an official release checkout or unpacked release bundle, `--image-tag` is inferred automatically:
+
+```bash
+./install.sh --dry-run --non-interactive \
+  --project-id="my-gcp-project"
+```
+
+When dry-running on `main` (development only), `--image-tag` defaults to the local `HEAD` commit SHA and requires candidate images built for that commit in GHCR:
 
 ```bash
 ./install.sh --dry-run --non-interactive \
   --project-id="my-gcp-project" \
-  --image-tag="<SEMVER_TAG_OR_FULL_COMMIT_SHA>"
+  --image-tag="<COMMIT_SHA_WITH_CANDIDATE_IMAGES>"
 ```
+
+_Guidance for AI Agents:_ For production deployments, deploy or test from the latest official release (currently `0.4.0`) using the release one-liner above, `git clone --branch 0.4.0`, or the published release tarball. Do not pass `--image-tag=0.4.0` from a `main` checkout: manifests and CRD schemas on `main` diverge from older releases, and `verify_local_source_ref` blocks mismatched revisions.
 
 ---
 
@@ -161,7 +170,7 @@ and GitHub minter workloads).
 - The manual Chat/Slack registrations in
   [Step 4 of this method](#step-4-enable-google-chat--slack-integrations-manual-required-steps)
   apply however the engine is driven.
-- The Terraform composition defaults to the released container image version (see the composition README).
+- The Terraform composition defaults `image_tag` to `"latest"` in Git checkouts (or the released container image version in unpacked release bundles; see the composition README).
 
 ### Step-by-Step Execution
 
