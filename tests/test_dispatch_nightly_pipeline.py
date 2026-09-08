@@ -99,6 +99,53 @@ exit {gh_exit}
         self.assertEqual(recorded, "")
         self.assertIn("RC_TAG", proc.stderr)
 
+    def test_missing_github_repository_aborts_before_calling_gh(self):
+        proc, recorded, _ = self._run(omit=("GITHUB_REPOSITORY",))
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(recorded, "")
+        self.assertIn("GITHUB_REPOSITORY", proc.stderr)
+
+    def test_missing_github_ref_name_aborts_before_calling_gh(self):
+        proc, recorded, _ = self._run(omit=("GITHUB_REF_NAME",))
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(recorded, "")
+        self.assertIn("GITHUB_REF_NAME", proc.stderr)
+
+    def test_missing_gh_cli_aborts_with_error(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        tmp_dir = pathlib.Path(tmp.name)
+        # Sterile PATH with standard tools but NO gh
+        bin_dir = create_minimal_tools_bin(tmp_dir)
+        env = get_isolated_test_env(
+            overrides={
+                "PATH": str(bin_dir),
+                "COMMIT_SHA": _COMMIT,
+                "RC_TAG": _RC_TAG,
+                "GITHUB_REPOSITORY": "gke-labs/kube-agents",
+                "GITHUB_REF_NAME": "main",
+            },
+        )
+        proc = subprocess.run(
+            ["bash", str(_DISPATCH_SCRIPT)],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(tmp_dir),
+        )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("gh CLI is required", proc.stderr)
+
+    def test_dispatches_with_overridden_workflow_file(self):
+        proc, recorded, _ = self._run(overrides={"WORKFLOW_FILE": "custom-nightly.yml"})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("workflow run custom-nightly.yml", recorded)
+
+    def test_runs_outside_actions_without_step_summary_file(self):
+        proc, recorded, _ = self._run(omit=("GITHUB_STEP_SUMMARY",))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("workflow run nightly-pipeline.yml", recorded)
+
 
 class RecordNightlySchedulerSkipTest(unittest.TestCase):
     def _run(self, with_summary_file=True, overrides=None):
@@ -136,6 +183,12 @@ class RecordNightlySchedulerSkipTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("### No nightly promotion required", summary)
         self.assertIn(reason, summary)
+
+    def test_renders_fallback_when_no_tag_or_reason_provided(self):
+        proc, summary = self._run(overrides={"RC_TAG": "", "COMMIT_SHA": "", "SKIP_REASON": ""})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("### No nightly promotion required", summary)
+        self.assertIn("No eligible validated candidate exists to promote", summary)
 
     def test_runs_outside_actions_without_a_summary_file(self):
         proc, _ = self._run(with_summary_file=False)

@@ -108,7 +108,7 @@ else
     existing_staging_tag="$(get_existing_staging_tag "${COMMIT_SHA}")"
     if [ -n "${existing_staging_tag}" ]; then
       SKIP_PROMOTION="true"
-      SKIP_REASON="Commit ${COMMIT_SHA:0:7} is already promoted as '${existing_staging_tag}'; the matrix still runs, nothing is tagged."
+      SKIP_REASON="Commit ${COMMIT_SHA:0:7} is already promoted as '${existing_staging_tag}'."
       echo "ℹ️ ${SKIP_REASON}" >&2
     fi
   fi

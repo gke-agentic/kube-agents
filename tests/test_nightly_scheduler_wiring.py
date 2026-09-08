@@ -26,6 +26,7 @@ _NIGHTLY_CRON = "17 2 * * *"
 _DISPATCH_SCRIPT_NAME = "dispatch_nightly_pipeline.sh"
 _DISPATCH_SCRIPT = _REPO_ROOT / "scripts" / "release" / _DISPATCH_SCRIPT_NAME
 _DISPATCH_SOURCE = _DISPATCH_SCRIPT.read_text()
+_SKIP_SCRIPT_NAME = "record_nightly_scheduler_skip.sh"
 
 
 def _dispatch_step(doc: dict) -> dict:
@@ -34,6 +35,14 @@ def _dispatch_step(doc: dict) -> dict:
         if _DISPATCH_SCRIPT_NAME in (step.get("run") or ""):
             return step
     raise AssertionError(f"no step runs {_DISPATCH_SCRIPT_NAME}")
+
+
+def _skip_step(doc: dict) -> dict:
+    """The step that runs the skip recording script, or fails the calling test."""
+    for step in _steps(doc):
+        if _SKIP_SCRIPT_NAME in (step.get("run") or ""):
+            return step
+    raise AssertionError(f"no step runs {_SKIP_SCRIPT_NAME}")
 
 
 def _workflow(name: str) -> dict:
@@ -87,9 +96,9 @@ class SchedulerDispatchWiring(unittest.TestCase):
     def test_it_binds_the_nightly_environment(self) -> None:
         """`vars.*` resolve to empty in an unbound job, and silently.
 
-        REGISTRY_PREFIX decides where candidate images are looked for, so
-        an unbound job would find no candidate and dispatch nothing, every tick,
-        with a green conclusion.
+        GH_ORG and GH_REPO are required for release_fetch_tags to query the
+        target repository's tag graph, so an unbound job would resolve no candidate
+        and dispatch nothing.
         """
         self.assertEqual(self.job["environment"], "nightly")
 
@@ -121,8 +130,19 @@ class SchedulerDispatchWiring(unittest.TestCase):
 
     def test_the_dispatch_is_gated_on_there_being_work(self) -> None:
         dispatch_cond = _dispatch_step(self.doc)["if"]
-        self.assertIn("skip_pipeline", dispatch_cond)
-        self.assertIn("skip_promotion", dispatch_cond)
+        self.assertEqual(
+            dispatch_cond.strip(),
+            "steps.resolve.outputs.skip_pipeline != 'true' && steps.resolve.outputs.skip_promotion != 'true'",
+        )
+
+    def test_the_skip_step_is_wired_to_record_script(self) -> None:
+        skip_step = _skip_step(self.doc)
+        self.assertEqual(
+            skip_step.get("if", "").strip(),
+            "steps.resolve.outputs.skip_pipeline == 'true' || steps.resolve.outputs.skip_promotion == 'true'",
+        )
+        exported = set(skip_step.get("env", {}))
+        self.assertLessEqual({"COMMIT_SHA", "RC_TAG", "SKIP_REASON"}, exported)
 
     def test_the_dispatch_step_supplies_what_the_script_requires(self) -> None:
         exported = set(_dispatch_step(self.doc).get("env", {}))

@@ -35,10 +35,8 @@ jobs:
     # workflow here.
     if: github.repository == 'gke-labs/kube-agents'
     runs-on: ubuntu-latest
-    # `nightly` for GH_ORG, GH_REPO and REGISTRY_PREFIX, which is what decides where
-    # candidate images are looked for. Reading them from a different scope than the
-    # pipeline does would let this job resolve a candidate against one registry and
-    # the pipeline install from another.
+    # `nightly` for GH_ORG and GH_REPO (used by release_fetch_tags to query the
+    # target repository's tag graph), matching the scope the pipeline runs in.
     environment: nightly
     timeout-minutes: 15
     permissions:

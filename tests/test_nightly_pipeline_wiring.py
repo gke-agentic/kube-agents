@@ -40,12 +40,9 @@ class NightlyPipelineWiringTest(unittest.TestCase):
         self.doc = _doc(_NIGHTLY)
         self.jobs = self.doc["jobs"]
 
-    def test_it_lands_without_a_schedule(self):
-        """Dispatch-only until it has been exercised by hand.
-
-        A cron here would point an untested pipeline at a GCP project on the
-        night it merges. Turning the schedule on is its own reviewable change;
-        delete this test in that change.
+    def test_the_pipeline_has_no_schedule(self):
+        """nightly-pipeline.yml must be dispatch-only; nightly-scheduler.yml owns
+        the cron so that a tick with nothing to promote produces no run at all.
         """
         self.assertNotIn("schedule", self.doc[True])
         self.assertIn("workflow_dispatch", self.doc[True])
