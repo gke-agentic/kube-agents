@@ -158,6 +158,14 @@ def main() -> int:
               ap.check_all_command_guards("kubectl get pod attach -o yaml", "local").get("approved"), True)
         check("high allows ns named port-forward describe",
               ap.check_all_command_guards("kubectl describe ns port-forward", "local").get("approved"), True)
+        check("high allows logs previous",
+              ap.check_all_command_guards("kubectl logs --previous payments-api-abc -n x", "local").get("approved"), True)
+        check("high refuses gcloud logging write list",
+              ap.check_all_command_guards("gcloud logging write list mymessage", "local").get("approved"), False)
+        check("high refuses gcloud pubsub topics publish list",
+              ap.check_all_command_guards("gcloud pubsub topics publish list --message=hello", "local").get("approved"), False)
+        check("high refuses gcloud container clusters get-credentials list",
+              ap.check_all_command_guards("gcloud container clusters get-credentials list", "local").get("approved"), False)
         check("high refuses ns named proxy mutate",
               ap.check_all_command_guards("kubectl -n proxy delete pods mypod", "local").get("approved"), False)
         check("high refuses leading LD_PRELOAD",

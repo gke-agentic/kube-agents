@@ -154,7 +154,7 @@ def main() -> int:
     cj_create_src = inspect.getsource(cj.create_job)
     check(
         "cron.jobs.create_job stamps default risk",
-        'job.setdefault("risk", "low")' in cj_create_src,
+        'job["risk"] = _eff_risk' in cj_create_src,
         True,
     )
     ct_cronjob_params = inspect.signature(ct.cronjob).parameters

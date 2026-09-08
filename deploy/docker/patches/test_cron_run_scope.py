@@ -499,7 +499,6 @@ class ApplierTest(unittest.TestCase):
         jobs = (root / "cron" / "jobs.py").read_text()
         ast.parse(jobs)
         self.assertIn("risk: Optional[str] = None,", jobs)
-        self.assertIn('job.setdefault("risk", "low")', jobs)
         self.assertIn('job["risk"] = _eff_risk', jobs)
 
     def test_jobs_create_job_clamps_and_validates_risk(self):
@@ -531,9 +530,9 @@ class ApplierTest(unittest.TestCase):
         j3 = create_job("test3", "* * * * *", "echo 3", risk="high")
         self.assertEqual(j3["risk"], "high")
 
-        # Invalid string normalizes to low
+        # Invalid string fails closed to high
         j4 = create_job("test4", "* * * * *", "echo 4", risk="banana")
-        self.assertEqual(j4["risk"], "low")
+        self.assertEqual(j4["risk"], "high")
 
         # Inside high-risk cron run, low and invalid risk are clamped to high
         with cron_run_scope("watchdog-1", risk="high"):

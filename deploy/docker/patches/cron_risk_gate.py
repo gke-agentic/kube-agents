@@ -31,6 +31,7 @@ CRON_SCAN_KEY = "cron_scan"
 APPROVALS_KEY = "approvals"
 
 MAX_LOG_COMMAND_LEN = 200
+DEFAULT_MAX_GCLOUD_COMMAND_LEN = 5
 
 MSG_EXECUTE_CODE_REFUSED = (
     "BLOCKED: execute_code is refused during autonomous cron runs "
@@ -98,14 +99,16 @@ _TOOL_MUTATE_VERBS = {
         "uncordon", "taint", "exec", "cp", "attach", "port-forward", "proxy",
         "run", "expose", "rollback", "wait", "debug", "reconcile", "set-context",
         "set-cluster", "set-credentials", "use-context", "delete-context",
-        "delete-cluster", "delete-user", "unset", "rename-context",
+        "delete-cluster", "delete-user", "unset", "rename-context", "dump",
     },
     "oc": {"create", "apply", "delete", "patch", "edit", "replace", "scale",
            "rollout", "set", "adm"},
     "gcloud": {"create", "delete", "update", "set", "add", "remove", "enable",
                "disable", "reset", "resize", "patch", "import", "deploy",
                "rollback", "restart", "attach", "detach", "clear", "replace",
-               "abandon", "cancel", "start", "stop", "suspend", "resume"},
+               "abandon", "cancel", "start", "stop", "suspend", "resume",
+               "write", "publish", "cp", "rm", "mv", "call", "untag",
+               "add-metadata", "add-iam-policy-binding", "get-credentials"},
     "gsutil": {"cp", "mv", "rm", "rsync", "mb", "rb", "setmeta", "acl", "iam"},
     "gh": {"create", "delete", "edit", "close", "merge", "comment", "clone"},
     "helm": {"install", "upgrade", "uninstall", "rollback", "delete"},
@@ -123,6 +126,9 @@ _KUBECTL_SUBCOMMAND_READ_VERBS = {
     "config": frozenset({"view", "get-contexts", "get-clusters", "get-users", "current-context"}),
     "rollout": frozenset({"status", "history"}),
 }
+
+#: Subcommand combinations that are explicitly refused even if parent verb is in read list.
+_KUBECTL_REFUSED_SUBCOMMANDS = frozenset({("cluster-info", "dump")})
 
 #: Flags known to consume the subsequent token as an argument value.
 _TOOL_FLAGS_WITH_VALUE = {
@@ -172,6 +178,8 @@ _TOOL_FLAGS_WITH_VALUE = {
         "--configuration", "--format", "--filter",
         "--verbosity", "--zone", "--region",
         "--cluster", "--location", "--limit", "--sort-by",
+        "--billing-account", "--order", "--start-time", "--end-time",
+        "--zones", "--page-size",
     }),
     "gh": frozenset({
         "-R", "--repo",
@@ -237,6 +245,17 @@ _KNOWN_BOOLEAN_FLAGS = frozenset({
     "--web",
     "--debug",
     "--force",
+    "--previous",
+    "--timestamps",
+    "--all-containers",
+    "--prefix",
+    "--containers",
+    "--show-events",
+    "--show-kind",
+    "--show-managed-fields",
+    "--uri",
+    "--server-print",
+    "--allow-missing-template-keys",
 })
 
 #: Nouns accepted as the primary command target for gh CLI before verb inspection.
@@ -248,19 +267,49 @@ _GH_NOUNS = frozenset({
 #: Pure mutating verbs that must never appear as a resource type in kubectl read commands.
 _STANDALONE_READ_MUTATE_TYPE_BLOCK = frozenset({
     "delete", "patch", "apply", "create", "edit", "replace", "scale",
-    "drain", "cordon", "taint",
+    "drain", "cordon", "taint", "dump",
 })
 
 _TOOL_READ_VERBS = {
     "kubectl": _KUBECTL_STANDALONE_READ_VERBS,
     "oc": {"get", "describe", "logs", "status", "whoami"},
-    "gcloud": {"list", "describe", "info", "version", "get-iam-policy", "search", "read"},
+    "gcloud": {
+        "list", "describe", "info", "version", "get-iam-policy", "search", "read",
+        "list-usable", "get-nat-mapping-info", "get-server-config",
+    },
     "gsutil": {"ls", "stat", "cat", "du", "hash", "ver", "version"},
     "gh": {"view", "list", "status", "diff"},
     "helm": {"list", "get", "status", "history", "show", "search", "version"},
     # 'query' omitted deliberately: `bq query` executes DML (DELETE/UPDATE/MERGE).
     "bq": {"ls", "show", "head"},
 }
+
+try:
+    from tools.command_policy import GCLOUD_READ_COMMANDS
+except ImportError:
+    try:
+        from command_policy import GCLOUD_READ_COMMANDS
+    except ImportError:
+        import sys
+        from pathlib import Path
+        for _p in (
+            Path(__file__).resolve().parents[3] / "agents" / "platform" / "scripts",
+            Path("/opt/defaults/scripts"),
+            Path("/opt/hermes/tools"),
+        ):
+            if _p.is_dir() and str(_p) not in sys.path:
+                sys.path.insert(0, str(_p))
+        try:
+            from command_policy import GCLOUD_READ_COMMANDS
+        except ImportError:
+            GCLOUD_READ_COMMANDS = frozenset()
+
+# Include compute instances reads if not already present in GCLOUD_READ_COMMANDS
+_CRON_GCLOUD_READ_COMMANDS = GCLOUD_READ_COMMANDS | frozenset({
+    ("compute", "instances", "list"),
+    ("compute", "instances", "describe"),
+})
+_LONGEST_GCLOUD_COMMAND = max((len(cmd) for cmd in _CRON_GCLOUD_READ_COMMANDS), default=DEFAULT_MAX_GCLOUD_COMMAND_LEN)
 
 #: Common command aliases normalized before verb classification.
 _ALIAS = {"k": "kubectl", "kubectl.exe": "kubectl", "gcloud.cmd": "gcloud"}
@@ -375,14 +424,15 @@ def _lex_segments(command: str) -> Optional[list[list[str]]]:
 def _extract_command_and_subcommand(
     tokens: list[str],
     flags_with_value: frozenset[str],
-) -> tuple[str, str, list[str], list[str], bool]:
-    """Extract (command, subcommand, flags, positionals, has_ambiguous_flag)."""
+    known_boolean_flags: frozenset[str] = _KNOWN_BOOLEAN_FLAGS,
+) -> tuple[str, str, list[str], list[str], Optional[str]]:
+    """Extract (command, subcommand, flags, positionals, ambiguous_flag)."""
     dashdash_idx = tokens.index(_DOUBLE_DASH) if _DOUBLE_DASH in tokens else len(tokens)
     pre_dash = tokens[:dashdash_idx]
 
     flags: list[str] = []
     positionals: list[str] = []
-    has_ambiguous_flag = False
+    ambiguous_flag: Optional[str] = None
     i = 0
     while i < len(pre_dash):
         tok = pre_dash[i]
@@ -392,13 +442,14 @@ def _extract_command_and_subcommand(
                 i += 1
             elif tok in flags_with_value and i + 1 < len(pre_dash):
                 i += 2
-            elif tok in _KNOWN_BOOLEAN_FLAGS:
+            elif tok in known_boolean_flags:
                 i += 1
             elif tok.startswith("--"):
                 # Unrecognised long flag without '=' followed by a non-flag token:
                 # Ambiguous whether the next token is an argument or a subcommand.
                 if i + 1 < len(pre_dash) and not pre_dash[i + 1].startswith("-"):
-                    has_ambiguous_flag = True
+                    if ambiguous_flag is None:
+                        ambiguous_flag = tok
                 i += 1
             else:
                 i += 1
@@ -408,60 +459,28 @@ def _extract_command_and_subcommand(
 
     cmd = positionals[0] if positionals else ""
     subcmd = positionals[1] if len(positionals) > 1 else ""
-    return cmd, subcmd, flags, positionals, has_ambiguous_flag
+    return cmd, subcmd, flags, positionals, ambiguous_flag
 
 
-def _segment_is_read_only(tokens: list[str]) -> bool:
-    """Classify one already-tokenized segment. Unknown/unanalyzable -> False."""
-    cleaned: list[str] = []
-    i = 0
-    while i < len(tokens):
-        tok = tokens[i]
-        # Consume leading fd digit if adjacent to redirect (e.g. '2', '>', '/dev/null')
-        if tok.isdigit() and i + 1 < len(tokens) and _is_redirect(tokens[i + 1]):
-            tok = tokens[i + 1]
-            i += 1
-        if _is_redirect(tok):
-            # fd dup: >&2, 2>&1, <&0, >&- (target is digit or '-')
-            if (tok.endswith(">&") or tok.endswith("<&")) and i + 1 < len(tokens) and (tokens[i + 1].isdigit() or tokens[i + 1] == "-"):
-                i += 2
-                continue
-            target = tokens[i + 1] if i + 1 < len(tokens) else ""
-            if target not in _REDIR_OK_TARGETS:
-                return False
-            i += 2
-            continue
-        cleaned.append(tok)
-        i += 1
-
-    if not cleaned:
-        return False
-    # Refuse any leading VAR=value assignment (e.g. LD_PRELOAD=..., PATH=..., KUBECONFIG=...)
-    if "=" in cleaned[0] and not cleaned[0].startswith(("-", "/")):
-        return False
-
-    exe = cleaned[0].rsplit("/", 1)[-1]
-    exe = _ALIAS.get(exe, exe)
-    if "$" in exe or exe.startswith("-"):
-        return False
-    if exe in _INDIRECTION:
-        return False
-    if exe in _READ_ONLY_TOOLS:
-        return True
-
+def _evaluate_command_tokens(
+    exe: str,
+    cmd: str,
+    subcmd: str,
+    flags: list[str],
+    positionals: list[str],
+) -> bool:
+    """Classify extracted command, subcommand, flags, positionals for executable."""
+    pos_lower = [p.lower() for p in positionals]
     read = _TOOL_READ_VERBS.get(exe)
     mutate = _TOOL_MUTATE_VERBS.get(exe)
     if read is None:
         return False
 
-    rest = cleaned[1:]
-    flags_with_val = _TOOL_FLAGS_WITH_VALUE.get(exe, frozenset())
-    cmd, subcmd, flags, positionals, has_ambiguous_flag = _extract_command_and_subcommand(rest, flags_with_val)
-    if has_ambiguous_flag:
-        return False
-
     if exe in ("kubectl", "oc"):
         if not cmd:
+            return False
+
+        if (cmd, subcmd) in _KUBECTL_REFUSED_SUBCOMMANDS:
             return False
 
         # Subcommand-gated read tools (e.g. 'kubectl auth can-i', 'kubectl config view')
@@ -487,8 +506,6 @@ def _segment_is_read_only(tokens: list[str]) -> bool:
                     return True
 
         return False
-
-    pos_lower = [p.lower() for p in positionals]
 
     if exe == "bq":
         if not cmd:
@@ -536,13 +553,90 @@ def _segment_is_read_only(tokens: list[str]) -> bool:
         return False
 
     if exe == "gcloud":
+        if not pos_lower:
+            return False
         if any(p in _TOOL_MUTATE_VERBS["gcloud"] for p in pos_lower):
             return False
-        if any(p in _TOOL_READ_VERBS["gcloud"] for p in pos_lower):
-            return True
-        return False
+        longest = min(len(pos_lower), _LONGEST_GCLOUD_COMMAND)
+        matched_path = None
+        for length in range(1, longest + 1):
+            cand = tuple(pos_lower[:length])
+            if cand in _CRON_GCLOUD_READ_COMMANDS:
+                matched_path = cand
+                break
+        if matched_path is None:
+            return False
+        if matched_path[-1] not in _TOOL_READ_VERBS["gcloud"]:
+            return False
+        return True
 
     return False
+
+
+def _segment_is_read_only(tokens: list[str]) -> bool:
+    """Classify one already-tokenized segment. Unknown/unanalyzable -> False."""
+    cleaned: list[str] = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        # Consume leading fd digit if adjacent to redirect (e.g. '2', '>', '/dev/null')
+        if tok.isdigit() and i + 1 < len(tokens) and _is_redirect(tokens[i + 1]):
+            tok = tokens[i + 1]
+            i += 1
+        if _is_redirect(tok):
+            # fd dup: >&2, 2>&1, <&0, >&- (target is digit or '-')
+            if (tok.endswith(">&") or tok.endswith("<&")) and i + 1 < len(tokens) and (tokens[i + 1].isdigit() or tokens[i + 1] == "-"):
+                i += 2
+                continue
+            target = tokens[i + 1] if i + 1 < len(tokens) else ""
+            if target not in _REDIR_OK_TARGETS:
+                return False
+            i += 2
+            continue
+        cleaned.append(tok)
+        i += 1
+
+    if not cleaned:
+        return False
+    # Refuse any leading VAR=value assignment (e.g. LD_PRELOAD=..., PATH=..., KUBECONFIG=...)
+    if "=" in cleaned[0] and not cleaned[0].startswith(("-", "/")):
+        return False
+
+    exe = cleaned[0].rsplit("/", 1)[-1]
+    exe = _ALIAS.get(exe, exe)
+    if "$" in exe or exe.startswith("-"):
+        return False
+    if exe in _INDIRECTION:
+        return False
+    if exe in _READ_ONLY_TOOLS:
+        return True
+
+    read = _TOOL_READ_VERBS.get(exe)
+    if read is None:
+        return False
+
+    rest = cleaned[1:]
+    flags_with_val = _TOOL_FLAGS_WITH_VALUE.get(exe, frozenset())
+    cmd, subcmd, flags, positionals, amb_flag = _extract_command_and_subcommand(rest, flags_with_val)
+
+    if amb_flag is None:
+        return _evaluate_command_tokens(exe, cmd, subcmd, flags, positionals)
+
+    # Dual-hypothesis evaluation: test ambiguous flag as value-taking and as boolean
+    cmd_v, subcmd_v, flags_v, pos_v, amb_v = _extract_command_and_subcommand(
+        rest, flags_with_val | {amb_flag}
+    )
+    cmd_b, subcmd_b, flags_b, pos_b, amb_b = _extract_command_and_subcommand(
+        rest, flags_with_val, _KNOWN_BOOLEAN_FLAGS | {amb_flag}
+    )
+    if amb_v is not None or amb_b is not None:
+        # Multiple cascading ambiguous flags: fail closed
+        return False
+
+    res_value = _evaluate_command_tokens(exe, cmd_v, subcmd_v, flags_v, pos_v)
+    res_bool = _evaluate_command_tokens(exe, cmd_b, subcmd_b, flags_b, pos_b)
+    # Refuse unless both hypotheses agree that the command is read-only
+    return res_value and res_bool
 
 
 def cron_command_policy_block(command: str, risk: str | None) -> Optional[dict]:
