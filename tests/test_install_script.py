@@ -587,6 +587,28 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
                 r"^([0-9a-fA-F]{40}|[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?)$",
             )
 
+    def test_resolve_effective_image_tag_prompts_and_retries_on_invalid_ref(self):
+        """Verifies resolve_effective_image_tag prompts interactively and loops until valid ref is entered."""
+        with tempfile.TemporaryDirectory() as empty_dir:
+            count_file = pathlib.Path(empty_dir) / "calls.txt"
+            cmd = (
+                'BAKED_RELEASE_VERSION=""; PARAM_NON_INTERACTIVE="false"; '
+                'has_controlling_tty() { return 0; }; '
+                f'CALL_FILE="{count_file}"; '
+                'prompt_read() { '
+                '  echo 1 >> "$CALL_FILE"; '
+                '  local count; count="$(wc -l < "$CALL_FILE" | tr -d "[:space:]")"; '
+                '  if [ "$count" -eq 1 ]; then printf -v "$2" "%s" "invalid_tag"; '
+                '  else printf -v "$2" "%s" "0.4.0"; fi; '
+                '}; '
+                f'tag="$(resolve_effective_image_tag "{empty_dir}" "")"; '
+                'echo "TAG=$tag CALLS=$(wc -l < "$CALL_FILE" | tr -d "[:space:]")"'
+            )
+            proc = self._run_install_func(cmd)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("TAG=0.4.0 CALLS=2", proc.stdout)
+            self.assertIn("Image/source ref must be a full 40-character commit SHA", proc.stderr)
+
     def test_verify_local_source_ref_accepts_baked_release_in_non_git_dir(self):
         """Verifies verify_local_source_ref succeeds for unpacked release archive without Git repository."""
         with tempfile.TemporaryDirectory(prefix="unpacked-release-") as outer_dir:

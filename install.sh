@@ -733,6 +733,10 @@ default_image_tag_label() {
 resolve_effective_image_tag() {
   local repo_dir="${1:-}"
   local requested_tag="${2:-}"
+  if [ -n "$requested_tag" ]; then
+    echo "$requested_tag"
+    return 0
+  fi
   if [ -z "$repo_dir" ] || [ "$repo_dir" = "." ]; then
     local script_dir
     script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || echo "")"
@@ -741,10 +745,6 @@ resolve_effective_image_tag() {
     else
       repo_dir="."
     fi
-  fi
-  if [ -n "$requested_tag" ]; then
-    echo "$requested_tag"
-    return 0
   fi
   local default_tag=""
   default_tag="$(default_image_tag "$repo_dir")"
