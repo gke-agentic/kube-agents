@@ -216,9 +216,10 @@ jobs:
     #
     # `step-4-create-staging-tag` is deliberately absent from the list. Its only
     # failure modes are credential ones — an invalid GitHub App key or ID, a rejected
-    # it would strand a GKE cluster until the next scheduled nightly run reclaims
-    # it: running the two concurrently is safe, because step 4 touches no GCP
-    # resource and this job holds the nightly-environment lock.
+    # push — which leave nothing on the cluster worth looking at, and depending on
+    # it would needlessly strand a GKE cluster until the next run reclaims it:
+    # running the two concurrently is safe, because step 4 touches no GCP resource
+    # and this job holds the nightly-environment lock.
     needs: [step-1-resolve-candidate, step-2-deploy-env, step-3-run-e2e-matrix]
     if: |
       github.repository == 'gke-labs/kube-agents' &&
