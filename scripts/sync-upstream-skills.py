@@ -46,7 +46,7 @@ is already active or provided natively by Dataplane V2:
 
 ```bash
 gcloud container clusters describe <cluster-name> \\
-    --region <region> \\
+    --location <location> \\
     --format='value(networkConfig.datapathProvider,networkPolicy.enabled)'
 ```
 
@@ -71,7 +71,7 @@ gcloud container clusters update <cluster-name> \\
     --update-addons=NetworkPolicy=ENABLED \\
     --region <region>
 
-# Step 2: Enable NetworkPolicy enforcement on the nodes (restarts cluster networking addons)
+# Step 2: Enable NetworkPolicy enforcement on the nodes (node pools may be recreated; this can take several minutes)
 gcloud container clusters update <cluster-name> \\
     --enable-network-policy \\
     --region <region>

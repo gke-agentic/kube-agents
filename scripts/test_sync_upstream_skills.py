@@ -109,6 +109,8 @@ class ApplySubstitutionsTest(unittest.TestCase):
             self.assertIn("--enable-network-policy", content)
             self.assertIn("--update-addons=NetworkPolicy=ENABLED", content)
             self.assertIn("networkConfig.datapathProvider", content)
+            self.assertIn("--location <location>", content)
+            self.assertIn("node pools may be recreated; this can take several minutes", content)
             self.assertNotIn(sync.GKE_WORKLOAD_SECURITY_OLD_NETPOL_SNIPPET, content)
             self.assertIn(sync.GKE_WORKLOAD_SECURITY_NEW_NETPOL_SNIPPET, content)
 
