@@ -121,12 +121,13 @@ gh workflow run release-publish.yml --repo gke-labs/kube-agents \
   -f explicit_release_version="1.0.0"
 ```
 
-Every release is started by hand: the workflow has no `schedule:`. It carries the gate an
-unattended run would need — release only a staging-promoted candidate, skip quietly when nothing
-new has landed since the last GA tag, and stop for a human when a breaking change is waiting to
-ship — behind a `schedule_gate` input that defaults to `bypass`, so a dispatch publishes exactly as
-it did before. `dry-run` reports the verdict in the job summary and publishes nothing; `evaluate`
-acts on it, as a cron tick would.
+Scheduled releases are automated weekly on Thursdays at 05:17 UTC via
+`.github/workflows/release-scheduler.yml` using the decoupled trigger pattern.
+The publishing workflow itself (`release-publish.yml`) has no `schedule:` and is dispatch-only:
+when the scheduler finds an eligible staging-promoted candidate, it dispatches the workflow with
+`schedule_gate=evaluate`. Manual releases and emergency bypasses remain supported on `release-publish.yml`
+using `schedule_gate=bypass` (the default). `dry-run` reports the verdict in the job summary and
+publishes nothing.
 [`scripts/release/README.md`](https://github.com/gke-labs/kube-agents/tree/main/scripts/release) is
 canonical for that gate; [Release cadence](#release-cadence) above states when each step runs.
 

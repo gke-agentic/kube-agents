@@ -14,12 +14,10 @@ name: Release & Publish (GA)
 # value and the reasoning behind it — do not restate either here.
 
 on:
-  # No `schedule:` yet, and the reason is upstream of this workflow: the gate now
-  # reads the staging tag, and nightly-pipeline.yml — the only thing that pushes
-  # one — is itself dispatch-only. A weekly cron over a tag family nothing
-  # produces on a schedule would skip green every Thursday and prove nothing.
-  # Turn the nightly cron on first; scripts/release/README.md has the value and
-  # the ordering.
+  # No `schedule:` on this workflow: scheduled execution is owned by
+  # release-scheduler.yml via the decoupled trigger pattern, so a weekly tick
+  # with nothing to publish produces no pipeline run at all. Explicit overrides
+  # and manual dispatches remain supported here via workflow_dispatch.
   #checkov:skip=CKV_GHA_7:GA release publish workflow requires explicit version override, target commit, emergency bypass and schedule-gate parameters
   workflow_dispatch:
     inputs:
