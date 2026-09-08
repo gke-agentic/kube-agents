@@ -3227,6 +3227,7 @@ func safeSandboxEnvOverrides(custom []corev1.EnvVar) []corev1.EnvVar {
 		"ALERT_DAILY_LIMIT_INFO":      {},
 		"ALERT_DAILY_LIMIT_WARNING":   {},
 		"EOD_EXCLUDE_NAMESPACES":      {},
+		"HERMES_OTEL_ENABLED":         {},
 		"OTEL_EXPORTER_OTLP_ENDPOINT": {},
 		"OTEL_EXPORTER_OTLP_PROTOCOL": {},
 		"OTEL_RESOURCE_ATTRIBUTES":    {},

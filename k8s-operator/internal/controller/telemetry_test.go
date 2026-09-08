@@ -101,6 +101,7 @@ func TestBuildDeploymentDisabledTelemetryIsOverridable(t *testing.T) {
 					Env: []corev1.EnvVar{
 						{Name: "OTEL_SDK_DISABLED", Value: "false"},
 						{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: "http://insisted-on:4318"},
+						{Name: "HERMES_OTEL_ENABLED", Value: "true"},
 					},
 				},
 			},
@@ -116,6 +117,9 @@ func TestBuildDeploymentDisabledTelemetryIsOverridable(t *testing.T) {
 	}
 	if got := m["OTEL_EXPORTER_OTLP_ENDPOINT"].Value; got != "http://insisted-on:4318" {
 		t.Errorf("expected the pinned endpoint, got %q", got)
+	}
+	if got := m["HERMES_OTEL_ENABLED"].Value; got != "true" {
+		t.Errorf("expected HERMES_OTEL_ENABLED to be overridable, got %q", got)
 	}
 }
 
