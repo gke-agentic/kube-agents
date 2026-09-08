@@ -96,11 +96,15 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
     def test_piped_stdin_executes_main(self):
         """Ensures piped curl | bash invocations execute main and do not exit early."""
         install_script_content = _INSTALL_SH.read_text()
+        test_env = get_isolated_test_env(
+            overrides={"KUBE_AGENTS_LOCK_FILE": str(self._empty_install_env.parent / "test.lock")}
+        )
         proc = subprocess.run(
             ["bash", "-s", "--", "--help"],
             input=install_script_content,
             capture_output=True,
             text=True,
+            env=test_env,
             cwd=str(_REPO_ROOT),
         )
         self.assertEqual(proc.returncode, 0, f"Piped execution failed: {proc.stderr}")
@@ -541,26 +545,20 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertEqual(proc.stdout.strip(), "0.2.0")
 
-    def test_default_image_tag_is_used_without_prompt(self):
-        """Verifies resolved default image tag is adopted directly without interactive prompt."""
-        cmd = '''
-PARAM_IMAGE_TAG=""
-PARAM_NON_INTERACTIVE="false"
-BAKED_RELEASE_VERSION="0.4.0"
-image_tag="${PARAM_IMAGE_TAG:-}"
-if [ -z "$image_tag" ]; then
-  head_sha="$(default_image_tag)"
-  if [ -n "$head_sha" ]; then
-    image_tag="$head_sha"
-  else
-    image_tag="FAILED_PROMPT"
-  fi
-fi
-echo "RESOLVED_TAG=$image_tag"
-'''
+    def test_resolve_effective_image_tag_adopts_baked_release_without_prompt(self):
+        """Verifies resolve_effective_image_tag adopts baked release version without prompting."""
+        cmd = 'BAKED_RELEASE_VERSION="0.4.0"; resolve_effective_image_tag "." ""'
         proc = self._run_install_func(cmd)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("RESOLVED_TAG=0.4.0", proc.stdout)
+        self.assertEqual(proc.stdout.strip(), "0.4.0")
+        self.assertIn("Using container image tag (official release 0.4.0)", proc.stderr)
+
+    def test_resolve_effective_image_tag_preserves_explicit_requested_tag(self):
+        """Verifies resolve_effective_image_tag honors explicitly passed tag over default."""
+        cmd = 'BAKED_RELEASE_VERSION="0.4.0"; resolve_effective_image_tag "." "0.3.0"'
+        proc = self._run_install_func(cmd)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "0.3.0")
 
     def test_verify_local_source_ref_accepts_baked_release_in_non_git_dir(self):
         """Verifies verify_local_source_ref succeeds for unpacked release archive without Git repository."""

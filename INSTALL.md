@@ -93,6 +93,7 @@ curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSI
   --non-interactive \
   --project-id="my-gcp-project" \
   --cluster-name="platform-agent-host" \
+  --region="us-central1" \
   --model-provider="gemini" \
   --permission-set="read-only"
 ```
@@ -107,12 +108,12 @@ Default Credentials are available. When run inside an official release checkout 
   --project-id="my-gcp-project"
 ```
 
-When dry-running on `main` (development only), `--image-tag` defaults to the local `HEAD` commit SHA and requires candidate images built for that commit in GHCR:
+When dry-running on `main` (development only), `--image-tag` defaults to the local `HEAD` commit SHA. You can also pass an explicit candidate commit SHA:
 
 ```bash
 ./install.sh --dry-run --non-interactive \
   --project-id="my-gcp-project" \
-  --image-tag="<COMMIT_SHA_WITH_CANDIDATE_IMAGES>"
+  --image-tag="<COMMIT_SHA>"
 ```
 
 _Guidance for AI Agents:_ For production deployments, deploy or test from an official release using the release installer (`<RELEASE_VERSION>/install.sh`), `git clone --branch <RELEASE_VERSION>`, or the published release tarball (where `<RELEASE_VERSION>` is the target release tag from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases), e.g. `0.4.0`). Do not deploy from a `main` checkout: manifests and CRD schemas on `main` diverge from released versions, and `verify_local_source_ref` blocks mismatched revisions.
@@ -239,11 +240,11 @@ there first, then export both registry prefixes before provisioning:
 
 ```bash
 # Exported before the mirror step so the mirror and the install use one tag.
-export IMAGE_TAG=v0.1.0
+export IMAGE_TAG=0.1.0
 
 make mirror-images MIRROR_PREFIX=registry.example.com/kube-agents
 
-./install.sh -y --image-tag=v0.1.0 \
+./install.sh -y --image-tag=0.1.0 \
   --registry-prefix=registry.example.com/kube-agents \
   --third-party-registry-prefix=registry.example.com/kube-agents
 ```

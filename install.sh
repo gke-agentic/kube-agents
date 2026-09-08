@@ -728,6 +728,32 @@ default_image_tag_label() {
   fi
 }
 
+# Resolves the image tag to use: honors explicit requested tag first, falls back
+# to the checkout/bundle default without prompting if found, or prompts interactively.
+resolve_effective_image_tag() {
+  local repo_dir="${1:-.}"
+  local requested_tag="${2:-}"
+  if [ -n "$requested_tag" ]; then
+    echo "$requested_tag"
+    return 0
+  fi
+  local default_tag=""
+  default_tag="$(default_image_tag "$repo_dir")"
+  if [ -n "$default_tag" ]; then
+    print_info "Using container image tag ($(default_image_tag_label "$repo_dir")): ${C_BOLD}${default_tag}${C_RESET}" >&2
+    echo "$default_tag"
+    return 0
+  fi
+  if [ "$PARAM_NON_INTERACTIVE" = "true" ]; then
+    print_error "--image-tag is required; use a validated release tag or full commit SHA." >&2
+    return 1
+  fi
+  local prompted_tag=""
+  prompt_read "Container image tag (validated release tag or full commit SHA)" \
+    prompted_tag "" false ""
+  echo "$prompted_tag"
+}
+
 json_escape() {
   local value="${1:-}"
   value=${value//\\/\\\\}
@@ -1963,7 +1989,7 @@ run_menu_system() {
   local kms_keyring="${KMS_KEYRING:-}"
   local kms_key="${KMS_KEY:-}"
   local github_pem_path="${GITHUB_PEM_PATH:-}"
-  local image_tag="${IMAGE_TAG:-}"
+  local image_tag="${PARAM_IMAGE_TAG:-${IMAGE_TAG:-}}"
 
   while true; do
     echo -e "\n${C_CYAN}${C_BOLD}"
@@ -2085,17 +2111,7 @@ run_menu_system() {
         ;;
       6)
         print_step "Saving & Re-applying Configuration State"
-        if [ -z "$image_tag" ]; then
-          local default_tag
-          default_tag="$(default_image_tag "$repo_dir")"
-          if [ -n "$default_tag" ]; then
-            image_tag="$default_tag"
-            print_info "Using container image tag ($(default_image_tag_label "$repo_dir")): ${C_BOLD}${image_tag}${C_RESET}"
-          else
-            prompt_read "Container image tag (validated release tag or full commit SHA)" \
-              image_tag "" false ""
-          fi
-        fi
+        image_tag="$(resolve_effective_image_tag "$repo_dir" "$image_tag")" || return 1
         validate_immutable_ref "$image_tag"
         verify_local_source_ref "$repo_dir" "$image_tag"
         export PARAM_PROJECT_ID="$project_id" PARAM_CLUSTER_NAME="$cluster_name" PARAM_REGION="$region"
@@ -2184,22 +2200,8 @@ main() {
     print_info "Execution Mode: ${C_BOLD}Non-Interactive / AI Agent Automated Mode${C_RESET} 🤖"
   fi
 
-  local image_tag="${PARAM_IMAGE_TAG:-}"
-  if [ -z "$image_tag" ]; then
-    local head_sha=""
-    head_sha="$(default_image_tag)"
-    if [ -n "$head_sha" ]; then
-      image_tag="$head_sha"
-      print_info "Using container image tag ($(default_image_tag_label)): ${C_BOLD}${image_tag}${C_RESET}"
-    else
-      if [ "$PARAM_NON_INTERACTIVE" = "true" ]; then
-        print_error "--image-tag is required; use a validated release tag or full commit SHA."
-        exit 1
-      fi
-      prompt_read "Container image tag (validated release tag or full commit SHA)" \
-        image_tag "" false ""
-    fi
-  fi
+  local image_tag=""
+  image_tag="$(resolve_effective_image_tag "." "${PARAM_IMAGE_TAG:-}")" || exit 1
   validate_immutable_ref "$image_tag"
 
   # 2. Prerequisite CLI Tools Check & Auto-Installation
