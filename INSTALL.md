@@ -39,14 +39,10 @@ This comprehensive, step-by-step guide explains how to install, configure, deplo
 Run the interactive one-liner installer directly in **Google Cloud Shell** or any authenticated bash terminal:
 
 ```bash
-curl -fsSL https://gke-labs.github.io/kube-agents/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/0.4.0/install.sh | bash
 ```
 
-_To pin to a specific official release, substitute `<RELEASE_VERSION>` with the desired version tag from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases):_
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSION>/install.sh | bash
-```
+_To use another release, substitute `0.4.0` with the desired version tag from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases). You can also run the generic installer `curl -fsSL https://gke-labs.github.io/kube-agents/install.sh | bash`, which prompts for the target release tag._
 
 When running the release-pinned installer (`<RELEASE_VERSION>/install.sh`), the baked release version is offered as the default, so pressing Enter accepts it; `--non-interactive` uses it without prompting at all. When running the generic installer (`gke-labs.github.io/kube-agents/install.sh`), the interactive prompt asks you to enter the target SemVer release tag or full 40-character commit SHA (from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases)), and `--non-interactive` requires `--image-tag`. The installer rejects mutable refs such as `latest` and `main` to ensure install sources and container images stay strictly aligned.
 
@@ -74,10 +70,7 @@ one place; see
 
 Three behaviours worth knowing before the first run:
 
-- **The image/source ref defaults to the checkout's `HEAD`** and must be a SemVer release tag or a
-  full 40-character commit SHA. Provisioning refuses to start from a dirty or mismatched checkout so
-  the scripts and the container image stay on one revision; pass `--allow-unverified-source` to
-  override that while iterating on the installer itself.
+- **The image/source ref defaults to the release version (in release checkouts and bundles) or the checkout's `HEAD` commit SHA (on `main`)**, and must be a SemVer release tag or a full 40-character commit SHA. Provisioning refuses to start from a dirty or mismatched checkout so the scripts and the container image stay on one revision; pass `--allow-unverified-source` to override that while iterating on the installer itself. Never pass `--image-tag=<RELEASE>` (such as `--image-tag=0.4.0`) from a `main` checkout: manifests and CRD schemas on `main` diverge from older releases, and `verify_local_source_ref` blocks mismatched revisions to prevent broken installations.
 - **The agent's GCP IAM permission set defaults to `read-only`**, matching the provisioner. It
   controls cloud-plane writes only — Kubernetes RBAC is read-only in every set, and the GitOps
   pull-request path works in every set. See the site's
@@ -94,11 +87,10 @@ Three behaviours worth knowing before the first run:
 AI Agent harnesses and automated CI scripts can execute `install.sh` without interactive prompts:
 
 ```bash
-curl -fsSL https://gke-labs.github.io/kube-agents/install.sh | bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/0.4.0/install.sh | bash -s -- \
   --non-interactive \
   --project-id="my-gcp-project" \
   --cluster-name="platform-agent-host" \
-  --image-tag="<SEMVER_TAG_OR_FULL_COMMIT_SHA>" \
   --model-provider="gemini" \
   --permission-set="read-only"
 ```
@@ -169,8 +161,7 @@ and GitHub minter workloads).
 - The manual Chat/Slack registrations in
   [Step 4 of this method](#step-4-enable-google-chat--slack-integrations-manual-required-steps)
   apply however the engine is driven.
-- Until the first `X.Y.Z` release tag exists, keep the default `image_tag = "latest"`
-  (see the guide's image-tag note).
+- The Terraform composition defaults to the released container image version (see the composition README).
 
 ### Step-by-Step Execution
 
