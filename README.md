@@ -30,11 +30,11 @@ curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/0.4.0/install.
 
 _Installs the latest official release (currently `0.4.0`). To use another release, substitute `0.4.0` with the desired version tag from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases). You can also run the generic installer `curl -fsSL https://gke-labs.github.io/kube-agents/install.sh | bash`, which prompts for the target release tag._
 
-This interactive installer guides you through GCP authentication, project selection, GKE cluster setup (Autopilot or Standard), chat integrations (Google Chat & Slack), and LLM model provider credentials.
+This interactive installer (recommended for initial setup) guides you through GCP authentication, project selection, GKE cluster setup (Autopilot or Standard), chat integrations (Google Chat & Slack), and LLM model provider credentials. Sensible defaults are detected from your `gcloud` context, requiring minimal input.
 
 ### 🤖 AI Agent & Automation Usage
 
-AI Agents and CI/CD pipelines can invoke `install.sh` non-interactively using CLI flags or `--dry-run` inspection:
+For automated environments, CI/CD pipelines, and AI Agents where no interactive TTY is available, invoke `install.sh` with `--non-interactive` and explicit CLI flags (or `--dry-run` inspection):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/0.4.0/install.sh | bash -s -- \

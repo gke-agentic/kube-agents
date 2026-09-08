@@ -84,7 +84,9 @@ Three behaviours worth knowing before the first run:
 
 ### Non-Interactive & AI Agent Execution Mode
 
-AI Agent harnesses and automated CI scripts can execute `install.sh` without interactive prompts:
+For human operators, running the installer interactively (Method 0 above or `./install.sh`) is strongly recommended on initial setup: it detects sensible defaults from your active `gcloud` session, prompts for mandatory cloud project and LLM provider credentials, and records configuration to `install.env`.
+
+For headless environments, automated CI scripts, and AI Agent harnesses where no interactive TTY is available, execute `install.sh` non-interactively by supplying explicit CLI flags:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/0.4.0/install.sh | bash -s -- \

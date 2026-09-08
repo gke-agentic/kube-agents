@@ -30,9 +30,11 @@ Run the installer for the latest official release (currently `0.4.0`):
 curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/0.4.0/install.sh | bash
 ```
 
+The interactive installer is strongly recommended for initial installation: it detects context from your `gcloud` session and guides you through project selection, cluster options, and model provider credentials with minimal typing.
+
 When running the release-pinned installer, the baked release version is used automatically. When running the generic installer (`curl -fsSL https://gke-labs.github.io/kube-agents/install.sh | bash`), the interactive prompt asks you to enter the target SemVer release tag. Mutable refs such as `latest` and `main` are rejected so the Terraform configuration and container images stay strictly aligned.
 
-For non-interactive AI Agent or CI/CD automated deployments:
+For headless environments, AI Agents, or CI/CD automated deployments where an interactive TTY is unavailable, use `--non-interactive` with explicit parameter flags:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/0.4.0/install.sh | bash -s -- \
