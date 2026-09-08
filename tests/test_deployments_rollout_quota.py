@@ -43,6 +43,7 @@ _OPERATOR_KUSTOMIZE = _ROOT / "k8s-operator" / "config" / "manager" / "manager.y
 _HINDSIGHT_CHART_TEMPLATE = (
     _ROOT / "charts" / "kube-agents" / "templates" / "hindsight.yaml"
 )
+_HELPERS = _ROOT / "charts" / "kube-agents" / "templates" / "_helpers.tpl"
 _HINDSIGHT_KUSTOMIZE = (
     _ROOT / "k8s-operator" / "config" / "integrations" / "hindsight" / "api.yaml"
 )
@@ -122,6 +123,25 @@ def _has_chart_rolling_update_strategy(template_text):
     return has_strategy and has_rolling and has_max_unavail
 
 
+def _unconditional_reassignments(template, variable):
+    """`{{ $var = ... }}` lines that are not guarded by an `if` on the same line.
+
+    The template reassigns a fencepost on purpose, to substitute the chart
+    default when the value is unusable, and every such reassignment sits inside
+    a single-line `{{- if ... }}...{{- end }}`. One that does not is a value
+    pinned for every install regardless of values.yaml — which is the #749
+    defect wearing the shape of a fix, and it is invisible to a check that only
+    reads the declaration.
+    """
+    return [
+        line.strip()
+        for line in template.splitlines()
+        if re.search(rf"{re.escape(variable)}\s*=[^=]", line)
+        and ":=" not in line
+        and not re.search(r"\{\{-?\s*if\b", line)
+    ]
+
+
 class DeploymentsRolloutSurvivesAFullQuota(unittest.TestCase):
     def test_operator_kustomize_preserves_surge_first_webhook_strategy(self):
         docs = list(_extract_deployments(_OPERATOR_KUSTOMIZE))
@@ -152,14 +172,31 @@ class DeploymentsRolloutSurvivesAFullQuota(unittest.TestCase):
     def test_operator_chart_template_renders_configurable_strategy(self):
         text = _OPERATOR_CHART_TEMPLATE.read_text()
         self.assertIn(".Values.operator.rollingUpdate", text)
-        self.assertIn(".maxSurge", text)
-        self.assertIn(".maxUnavailable", text)
+        self.assertIn('include "kube-agents.rollingUpdateFenceposts"', text)
+        self.assertIn("maxSurge: {{ $rollingUpdate.maxSurge }}", text)
+        self.assertIn("maxUnavailable: {{ $rollingUpdate.maxUnavailable }}", text)
 
     def test_hindsight_chart_template_renders_configurable_strategy(self):
         text = _HINDSIGHT_CHART_TEMPLATE.read_text()
         self.assertIn(".Values.hindsight.api.rollingUpdate", text)
-        self.assertIn(".maxSurge", text)
-        self.assertIn(".maxUnavailable", text)
+        self.assertIn('include "kube-agents.rollingUpdateFenceposts"', text)
+        self.assertIn("maxSurge: {{ $rollingUpdate.maxSurge }}", text)
+        self.assertIn("maxUnavailable: {{ $rollingUpdate.maxUnavailable }}", text)
+
+    def test_helpers_define_shared_rolling_update_guard(self):
+        text = _HELPERS.read_text()
+        self.assertIn('define "kube-agents.rollingUpdateFenceposts"', text)
+        self.assertIn(
+            "maxSurge (%v) and maxUnavailable (%v) may not both be zero", text
+        )
+        for variable in ("$surge", "$unavail"):
+            self.assertEqual(
+                [],
+                _unconditional_reassignments(text, variable),
+                f"charts/kube-agents/templates/_helpers.tpl reassigns {variable} outside a "
+                "conditional, which pins the fencepost for every install regardless of "
+                "values.yaml — the substitution of a default has to stay guarded",
+            )
 
     def test_hindsight_values_yaml_defaults_surge_first(self):
         values = yaml.safe_load(_VALUES.read_text())
