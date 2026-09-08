@@ -108,7 +108,9 @@ class ApplySubstitutionsTest(unittest.TestCase):
             content = skill_md.read_text(encoding="utf-8")
             self.assertIn("--enable-network-policy", content)
             self.assertIn("--update-addons=NetworkPolicy=ENABLED", content)
+            self.assertIn("networkConfig.datapathProvider", content)
             self.assertNotIn(sync.GKE_WORKLOAD_SECURITY_OLD_NETPOL_SNIPPET, content)
+            self.assertIn(sync.GKE_WORKLOAD_SECURITY_NEW_NETPOL_SNIPPET, content)
 
 
 if __name__ == "__main__":
