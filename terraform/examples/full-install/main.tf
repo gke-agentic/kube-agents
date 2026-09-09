@@ -637,21 +637,31 @@ resource "helm_release" "kube_agents" {
     # module.github_minter above. The App private key still has to be imported
     # into the module's KMS key before the Deployment goes Ready — see the
     # github-minter module README.
-    githubMinter = {
-      enabled = var.enable_github_minter
-      org     = local.github_org
-      repo    = local.github_repo_name
-      appId   = var.github_app_id
-      # The minty rule's only gate on platform-agent-scope is assertion.email
-      # against this value; left unset the chart falls back to the fixed
-      # kubeagents-platform-gsa name, so an install that overrides
-      # agent_service_account_id would annotate one GSA and allowlist another.
-      allowedServiceAccount = module.kube_agents_iam.service_account_email
-      kms = {
-        keyring = var.github_minter_kms_keyring
-        key     = var.github_minter_kms_key
-      }
-    }
+    githubMinter = merge(
+      {
+        enabled = var.enable_github_minter
+        org     = local.github_org
+        repo    = local.github_repo_name
+        appId   = var.github_app_id
+        # The minty rule's only gate on platform-agent-scope is assertion.email
+        # against this value; left unset the chart falls back to the fixed
+        # kubeagents-platform-gsa name, so an install that overrides
+        # agent_service_account_id would annotate one GSA and allowlist another.
+        allowedServiceAccount = module.kube_agents_iam.service_account_email
+        kms = {
+          keyring = var.github_minter_kms_keyring
+          key     = var.github_minter_kms_key
+        }
+      },
+      # The chart annotates the minter KSA with gsaName and otherwise falls back
+      # to the fixed kubeagents-github-minter-gsa, so an install that sets
+      # github_minter_service_account_id would create one GSA and have the pod
+      # impersonate another. Only when the module exists: a null here would
+      # be a Helm null, which deletes the chart default instead of keeping it.
+      var.enable_github_minter ? {
+        gsaName = module.github_minter[0].service_account_id
+      } : {}
+    )
     plugins = {
       pubsubPlatform = merge(
         {
