@@ -17,6 +17,7 @@ Google Chat is the reference channel. Setup is automated by the install: the [`c
 
 - A **Pub/Sub topic** and **subscription** are created in the target GCP project.
 - Your Google Chat app (configured separately in the [Chat API console](https://console.cloud.google.com/apis/api/chat.googleapis.com)) publishes events to the topic.
+  A GCP project holds only one Chat app, so a project already running one cannot also run this — see [Prerequisites](/kube-agents/install/prerequisites/).
 - The Planning Agent (the pod's `default` Hermes profile) consumes the subscription through Hermes' bundled Google Chat adapter, configured by the `platforms.google_chat` block of [`agents/chat/config.yaml`](https://github.com/gke-labs/kube-agents/blob/main/agents/chat/config.yaml).
 - Environment variables `GOOGLE_CHAT_PROJECT_ID` and `GOOGLE_CHAT_SUBSCRIPTION_NAME` are wired into the pod by the operator.
 

@@ -294,12 +294,15 @@ neither means what it looks like:
 
 ### The `image_tag` rule
 
-`image_tag` (default `latest`) overrides both the operator and platform-agent
-image tags. It exists because the chart is installed from this checkout, and a
-checkout's `Chart.yaml` carries an `appVersion` placeholder that never matches
-a published image tag — so the chart's usual tag defaulting cannot work here
-(see the [chart README](../../../charts/kube-agents/README.md)). `latest` is
-fine for evaluation; pin an `X.Y.Z` release tag for production.
+`image_tag` (default `latest` on `main`) overrides both the operator and platform-agent
+image tags. In CI/CD pipelines and automated testing, it is passed explicitly with the
+commit SHA on which container images were built for testing, ensuring the deployment pulls
+the exact matching artifacts. In official release bundles and release-tag checkouts, release
+automation stamps this default directly with the released SemVer version (e.g. `0.4.0`).
+It exists because the chart is installed from this checkout, and a checkout's `Chart.yaml`
+carries an `appVersion` placeholder that never matches a published image tag — so the
+chart's usual tag defaulting cannot work here (see the [chart README](../../../charts/kube-agents/README.md)).
+For production, always pin a validated numeric SemVer release tag or full commit SHA.
 
 ### Installing from a mirrored registry
 
@@ -481,7 +484,7 @@ uninstall its standalone release before setting these variables (`helm uninstall
 (`meta.helm.sh/release-name`) and refuses to adopt existing resources owned by another release.
 
 **Manual steps that no IaC can perform** — canonical walkthrough:
-[INSTALL.md § Enable Google Chat & Slack Integrations](../../../INSTALL.md#step-4-enable-google-chat--slack-integrations-manual-required-steps):
+[INSTALL.md § Enable Google Chat & Slack Integrations](../../../INSTALL.md#step-5-enable-google-chat--slack-integrations-manual-required-steps):
 
 - **Google Chat:** register the Chat app on the Chat API configuration page —
   select Cloud Pub/Sub and enter the created topic (the `chat_topic_name`

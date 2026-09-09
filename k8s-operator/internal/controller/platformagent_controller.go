@@ -466,7 +466,6 @@ func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		// behind a Degraded status that names only the allowlist. The gateway
 		// policy is unconditional because it has nothing to do with either
 		// refusal; it is the Pod's baseline and it predates this field.
-		//
 		// Steps 9b, 9c, 10, and this one take the same rescue: reconcile network
 		// guardrails via reconcileAgentNetworkGuardrails, recording Degraded status
 		// before returning any guardrail error so neither the agent gateway policy
@@ -1598,9 +1597,9 @@ func validateEgressAllowlist(agent *agentv1alpha1.PlatformAgent) (string, string
 // egress. That the CR reads Degraded at the time makes it worse rather than
 // better: the status names one bad CIDR while the Pod's egress is wide open.
 //
-// Both policies are reconciled whatever the refusal was. <name>-gateway-netpol
-// is the Pod's baseline, it predates spec.security.egressPolicy, and no refusal
-// is an objection to it; <name>-sandbox-metadata-deny is the refused policy
+// Both policies are reconciled whatever the refusal was (steps 9b, 9c, 10, 11e).
+// <name>-gateway-netpol is the Pod's baseline, it predates spec.security.egressPolicy,
+// and no refusal is an objection to it; <name>-sandbox-metadata-deny is the refused policy
 // itself, and the builder has already dropped the offending destination, so
 // what is left to render is a good policy minus one rule.
 func (r *PlatformAgentReconciler) reconcileAgentNetworkGuardrails(ctx context.Context, agent *agentv1alpha1.PlatformAgent) error {

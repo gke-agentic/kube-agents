@@ -1163,11 +1163,13 @@ func TestARefusalDoesNotSuspendTheGatewayNetworkPolicy(t *testing.T) {
 			reason:  reasonRuntimeClassNotFound,
 			guarded: true,
 			mutate: func(a *agentv1alpha1.PlatformAgent) {
-				a.Spec.Deployment = &agentv1alpha1.DeploymentSpec{
-					Availability: &agentv1alpha1.AvailabilitySpec{
-						RuntimeClassName: ptr.To("non-existent-runtime"),
-					},
+				if a.Spec.Deployment == nil {
+					a.Spec.Deployment = &agentv1alpha1.DeploymentSpec{}
 				}
+				if a.Spec.Deployment.Availability == nil {
+					a.Spec.Deployment.Availability = &agentv1alpha1.AvailabilitySpec{}
+				}
+				a.Spec.Deployment.Availability.RuntimeClassName = ptr.To("nonexistent-runtime-class")
 			},
 		},
 	} {
