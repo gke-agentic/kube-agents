@@ -301,9 +301,10 @@ staging tag; `nightly-pipeline.yml` (dispatched by `nightly-scheduler.yml`) is t
 A weekly cron over a tag family nothing produces on a schedule would skip green every Thursday and
 demonstrate nothing about the gate. So, in order:
 
-1. **Get `nightly-pipeline.yml` green.** Dispatch it against a validated candidate and let it push
-   a real `staging_<ts>_<sha>` tag. Everything below is unreachable until one exists, and so is a
-   GA release. Its own cron goes on once that is boring.
+1. **Nightly promotion is green and scheduled.** `nightly-pipeline.yml` has successfully promoted
+   candidates (producing real `staging_<ts>_<sha>` tags), and its automated daily dispatch is
+   established via `nightly-scheduler.yml` (`17 2 * * *`). Everything below is reachable now that
+   staging tags exist.
 2. `workflow_dispatch` on `release-publish.yml` with `schedule_gate: dry-run` — the resolver runs
    against the real tag graph and reports what a cron tick would decide. Nothing is published. Note
    that a dry run still goes **red** if the verdict is a halt: it reports what the cron would do,
@@ -321,10 +322,11 @@ demonstrate nothing about the gate. So, in order:
 
 4. Add `schedule: - cron: "17 5 * * 4"` to the workflow. Thursday leaves a working day to react to
    a bad release, which Friday does not. 05:17 UTC is meant to sit after the nightly pipeline has
-   finished, but that is an estimate rather than a measured margin — its proposed 02:00 start gives
-   a little over three hours for a run that budgets 60 minutes on the deploy alone. Being wrong
-   about it costs latency and never correctness, because the gate is a poll: a candidate promoted
-   later is simply picked up the following week. Pick a later slot if the two turn out to overlap.
+   finished, but that is an estimate rather than a measured margin — its 02:17 start gives three
+   hours for a run that budgets 60 minutes on the deploy plus `timeout_minutes: 120` on the
+   matrix. Being wrong about it costs latency and never correctness, because the gate is a poll: a
+   candidate promoted later is simply picked up the following week. Pick a later slot if the two
+   turn out to overlap.
 
 Two things to know about a weekly cadence, neither of them a reason to change it. A Thursday that
 produces nothing costs a full week, because there is no rate limiter inside the resolver to buy the
