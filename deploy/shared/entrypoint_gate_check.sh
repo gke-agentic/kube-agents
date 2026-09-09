@@ -33,8 +33,9 @@
 #     that rather than asserting it.
 #
 # The environment is cleared with `env -u` per case rather than assumed empty for the same
-# family of reasons: under the operator AGENT_SHARED_STATE_SETUP is already set in the
-# container, and inheriting it would silently test something other than what is named.
+# family of reasons: under the operator AGENT_SHARED_STATE_SETUP and HERMES_OTEL_ENABLED
+# are already set in the container, and inheriting them would silently test something
+# other than what is named.
 set -eu
 
 ENTRYPOINT="${ENTRYPOINT:-/usr/local/bin/agent-entrypoint}"
@@ -104,11 +105,12 @@ run_entrypoint() {
     shift 4
 
     if [ -n "$envval" ]; then
-        env -u AGENT_SHARED_STATE_SETUP AGENT_SHARED_STATE_SETUP="$envval" \
+        env -u AGENT_SHARED_STATE_SETUP -u HERMES_OTEL_ENABLED \
+            AGENT_SHARED_STATE_SETUP="$envval" \
             PLATFORM_AGENT_HOME="$scratch" HOME="$scratch/home" \
             "$ENTRYPOINT" "$@" >"$out" 2>"$err" || true
     else
-        env -u AGENT_SHARED_STATE_SETUP \
+        env -u AGENT_SHARED_STATE_SETUP -u HERMES_OTEL_ENABLED \
             PLATFORM_AGENT_HOME="$scratch" HOME="$scratch/home" \
             "$ENTRYPOINT" "$@" >"$out" 2>"$err" || true
     fi
