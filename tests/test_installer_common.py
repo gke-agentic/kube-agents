@@ -61,6 +61,26 @@ OTHER_CLUSTER_STATE = _state_doc(
 )
 
 
+# The composition's own cert-manager release, as an apply that got past it
+# records it: a root-module managed entry with an instance.
+CERT_MANAGER_RELEASE_STATE = _state_doc(
+    [{"mode": "managed", "type": "helm_release", "name": "cert_manager",
+      "instances": [{"index_key": 0, "attributes": {"id": "cert-manager", "name": "cert-manager"}}]}]
+)
+
+# A kubectl that finds a cert-manager Deployment and nothing else; the
+# current-context read answers with a name that is not this install's, so the
+# generator's credential recovery stays out of the way.
+_CERT_MANAGER_PRESENT_KUBECTL = (
+    "#!/usr/bin/env bash\n"
+    'case "$*" in\n'
+    '  *"get deployment cert-manager"*) exit 0 ;;\n'
+    '  *"current-context"*) echo "some-other-context"; exit 0 ;;\n'
+    "esac\n"
+    "exit 1\n"
+)
+
+
 def _service_account_state(*account_ids):
     return _state_doc([
         {"mode": "managed", "type": "google_service_account", "name": "agent",
@@ -207,6 +227,116 @@ class InstallerCommonTest(unittest.TestCase):
             gcloud_exit=1,
         )
         self.assertIn("rc=1", proc.stdout, proc.stderr)
+
+    # ── tf_state_manages_resource: whose release is this? ────────────────────
+
+    def test_managed_root_resource_with_an_instance_is_ours(self):
+        proc = self._run(
+            'tf_state_manages_resource helm_release cert_manager; echo "rc=$?"',
+            gcloud_stdout=CERT_MANAGER_RELEASE_STATE,
+        )
+        self.assertIn("rc=0", proc.stdout, proc.stderr)
+
+    def test_managed_resource_without_instances_is_not_ours(self):
+        proc = self._run(
+            'tf_state_manages_resource helm_release cert_manager; echo "rc=$?"',
+            gcloud_stdout=_state_doc([{"mode": "managed", "type": "helm_release",
+                                       "name": "cert_manager", "instances": []}]),
+        )
+        self.assertIn("rc=1\n", proc.stdout, proc.stderr)
+
+    def test_a_module_resource_of_the_same_name_is_not_the_root_one(self):
+        proc = self._run(
+            'tf_state_manages_resource helm_release cert_manager; echo "rc=$?"',
+            gcloud_stdout=_state_doc([{"module": "module.other", "mode": "managed",
+                                       "type": "helm_release", "name": "cert_manager",
+                                       "instances": [{"attributes": {"id": "cert-manager"}}]}]),
+        )
+        self.assertIn("rc=1\n", proc.stdout, proc.stderr)
+
+    def test_a_different_resource_name_is_not_ours(self):
+        proc = self._run(
+            'tf_state_manages_resource helm_release kube_agents; echo "rc=$?"',
+            gcloud_stdout=CERT_MANAGER_RELEASE_STATE,
+        )
+        self.assertIn("rc=1\n", proc.stdout, proc.stderr)
+
+    def test_absent_state_manages_nothing(self):
+        proc = self._run(
+            'tf_state_manages_resource helm_release cert_manager; echo "rc=$?"',
+            gcloud_exit=1,
+        )
+        self.assertIn("rc=1\n", proc.stdout, proc.stderr)
+
+    def test_unreadable_state_is_reported_as_unreadable_not_as_not_ours(self):
+        # "Not ours" is the destructive direction for both callers, so a
+        # state that could not be read must not read as it.
+        proc = self._run(
+            'tf_state_manages_resource helm_release cert_manager; echo "rc=$?"',
+            gcloud_exit=1,
+            gcloud_stderr="ERROR: (gcloud.storage.cat) HTTPError 503: Service Unavailable",
+        )
+        self.assertIn("rc=2\n", proc.stdout, proc.stderr)
+
+    def test_unparseable_state_is_reported_as_unreadable(self):
+        proc = self._run(
+            'tf_state_manages_resource helm_release cert_manager; echo "rc=$?"',
+            gcloud_stdout="this is not JSON {",
+        )
+        self.assertIn("rc=2\n", proc.stdout, proc.stderr)
+
+    # ── the cert-manager probe: a Deployment alone cannot say whose it is ────
+
+    def test_tfvars_keeps_cert_manager_when_the_state_manages_the_release(self):
+        # A retry after an apply that died past the cert-manager release, or
+        # an upgrade.sh regeneration of an existing-cluster install: the
+        # Deployment the probe finds is the composition's own. Turning the
+        # flag off had Terraform destroy it, webhooks and all.
+        with tempfile.TemporaryDirectory() as out_dir:
+            dest = pathlib.Path(out_dir) / "terraform.tfvars"
+            proc = self._run(
+                f'write_tfvars_from_state "{dest}"; echo "rc=$?"',
+                env={"API_SERVER_KEY": "k"},
+                describe_stub=_autopilot_describe_stub(),
+                kubectl_script=_CERT_MANAGER_PRESENT_KUBECTL,
+                gcloud_stdout=CERT_MANAGER_RELEASE_STATE,
+            )
+            self.assertIn("rc=0", proc.stdout, proc.stderr)
+            content = dest.read_text()
+            self.assertIn("create_cluster             = false", content)
+            self.assertIn("enable_cert_manager        = true", content)
+
+    def test_tfvars_skips_cert_manager_when_the_state_does_not_manage_it(self):
+        # The existing behaviour, kept: somebody else's cert-manager makes the
+        # composition's own release fail on the existing CRDs.
+        with tempfile.TemporaryDirectory() as out_dir:
+            dest = pathlib.Path(out_dir) / "terraform.tfvars"
+            proc = self._run(
+                f'write_tfvars_from_state "{dest}"; echo "rc=$?"',
+                env={"API_SERVER_KEY": "k"},
+                describe_stub=_autopilot_describe_stub(),
+                kubectl_script=_CERT_MANAGER_PRESENT_KUBECTL,
+                gcloud_exit=1,
+            )
+            self.assertIn("rc=0", proc.stdout, proc.stderr)
+            self.assertIn("enable_cert_manager        = false", dest.read_text())
+
+    def test_tfvars_keeps_cert_manager_when_the_state_cannot_be_read(self):
+        # The two wrong answers are not symmetric: a wrong true fails the
+        # apply on the existing CRDs, a wrong false destroys the install's
+        # own cert-manager under -auto-approve.
+        with tempfile.TemporaryDirectory() as out_dir:
+            dest = pathlib.Path(out_dir) / "terraform.tfvars"
+            proc = self._run(
+                f'write_tfvars_from_state "{dest}"; echo "rc=$?"',
+                env={"API_SERVER_KEY": "k"},
+                describe_stub=_autopilot_describe_stub(),
+                kubectl_script=_CERT_MANAGER_PRESENT_KUBECTL,
+                gcloud_exit=1,
+                gcloud_stderr="ERROR: (gcloud.storage.cat) HTTPError 503: Service Unavailable",
+            )
+            self.assertIn("rc=0", proc.stdout, proc.stderr)
+            self.assertIn("enable_cert_manager        = true", dest.read_text())
 
     # ── check_service_account_ownership: the 409 a second install hits (#1294) ─
 
@@ -1168,6 +1298,114 @@ class HelmReleaseSelfHealingTest(unittest.TestCase):
         proc = self._run_helm_test('ensure_clean_helm_release kube-agents kubeagents-system', helm_script)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertNotIn("Rolling back", proc.stderr)
+
+    # ── clear_failed_initial_helm_release: the retry after a first apply died ─
+
+    # The state coordinates the function reads through tf_state_read; the
+    # gcloud stub decides what the state says, and the kubectl stub which
+    # cluster the current context names.
+    _STATE_ENV = {"PROJECT_ID": "test-project", "CLUSTER_NAME": "test-cluster", "REGION": "us-central1"}
+    _NO_STATE_GCLOUD = (
+        "#!/usr/bin/env bash\n"
+        "echo 'ERROR: (gcloud.storage.cat) The following URLs matched no objects or files' >&2\n"
+        "exit 1\n"
+    )
+    _UNREADABLE_STATE_GCLOUD = (
+        "#!/usr/bin/env bash\n"
+        "echo 'ERROR: (gcloud.storage.cat) HTTPError 503: Service Unavailable' >&2\n"
+        "exit 1\n"
+    )
+    _THIS_CLUSTER_KUBECTL = (
+        "#!/usr/bin/env bash\n"
+        "echo gke_test-project_us-central1_test-cluster\n"
+    )
+    _OTHER_CLUSTER_KUBECTL = (
+        "#!/usr/bin/env bash\n"
+        "echo gke_someone-else_europe-west1_their-cluster\n"
+    )
+
+    @staticmethod
+    def _failed_release_helm(history, uninstall='echo "UNINSTALL EXECUTED" >&2; exit 0'):
+        return (
+            '#!/usr/bin/env bash\n'
+            'case "$*" in\n'
+            '  *"status kube-agents"*) echo \'{"name": "kube-agents", "info": {"status": "failed"}}\'; exit 0 ;;\n'
+            f'  *"history kube-agents"*) echo \'{history}\'; exit 0 ;;\n'
+            f'  *"uninstall kube-agents"*) {uninstall} ;;\n'
+            '  *) echo "unexpected helm call: $*" >&2; exit 1 ;;\n'
+            'esac\n'
+        )
+
+    def _run_clear(self, helm_script, gcloud=None, kubectl=None):
+        return self._run_helm_test(
+            'clear_failed_initial_helm_release kube-agents kubeagents-system; echo "rc=$?"',
+            helm_script,
+            env_overrides=self._STATE_ENV,
+            extra_bins={"gcloud": gcloud or self._NO_STATE_GCLOUD,
+                        "kubectl": kubectl or self._THIS_CLUSTER_KUBECTL},
+        )
+
+    def test_failed_release_that_never_deployed_is_uninstalled(self):
+        proc = self._run_clear(self._failed_release_helm('[{"revision": 1, "status": "failed"}]'))
+        self.assertIn("rc=0\n", proc.stdout, proc.stderr)
+        self.assertIn("UNINSTALL EXECUTED", proc.stderr)
+        self.assertIn("no revision of it ever deployed", proc.stderr)
+
+    def test_failed_release_that_served_before_is_left_alone(self):
+        proc = self._run_clear(self._failed_release_helm(
+            '[{"revision": 1, "status": "superseded"}, {"revision": 2, "status": "failed"}]'))
+        self.assertIn("rc=0\n", proc.stdout, proc.stderr)
+        self.assertNotIn("UNINSTALL EXECUTED", proc.stderr)
+        self.assertIn("served before", proc.stderr)
+
+    def test_failed_release_the_state_manages_is_left_to_terraform(self):
+        kube_agents_state = _state_doc([
+            {"mode": "managed", "type": "helm_release", "name": "kube_agents",
+             "instances": [{"attributes": {"id": "kube-agents"}}]},
+        ])
+        state_gcloud = (
+            "#!/usr/bin/env bash\n"
+            f"printf '%s' '{kube_agents_state}'\n"
+            "exit 0\n"
+        )
+        proc = self._run_clear(self._failed_release_helm('[{"revision": 1, "status": "failed"}]'),
+                               gcloud=state_gcloud)
+        self.assertIn("rc=0\n", proc.stdout, proc.stderr)
+        self.assertNotIn("UNINSTALL EXECUTED", proc.stderr)
+
+    def test_failed_release_is_left_alone_when_the_state_cannot_be_read(self):
+        proc = self._run_clear(self._failed_release_helm('[{"revision": 1, "status": "failed"}]'),
+                               gcloud=self._UNREADABLE_STATE_GCLOUD)
+        self.assertIn("rc=0\n", proc.stdout, proc.stderr)
+        self.assertNotIn("UNINSTALL EXECUTED", proc.stderr)
+        self.assertIn("could not be read", proc.stderr)
+
+    def test_another_clusters_context_is_never_inspected(self):
+        # The one destructive step here must not run against whatever
+        # cluster the operator's kubeconfig last pointed at.
+        proc = self._run_clear(self._failed_release_helm('[{"revision": 1, "status": "failed"}]'),
+                               kubectl=self._OTHER_CLUSTER_KUBECTL)
+        self.assertIn("rc=0\n", proc.stdout, proc.stderr)
+        self.assertNotIn("UNINSTALL EXECUTED", proc.stderr)
+        self.assertNotIn("status kube-agents", proc.stderr)
+
+    def test_deployed_release_is_not_touched(self):
+        helm_script = (
+            '#!/usr/bin/env bash\n'
+            'case "$*" in\n'
+            '  *"status kube-agents"*) echo \'{"name": "kube-agents", "info": {"status": "deployed"}}\'; exit 0 ;;\n'
+            '  *) echo "unexpected helm call: $*" >&2; exit 1 ;;\n'
+            'esac\n'
+        )
+        proc = self._run_clear(helm_script)
+        self.assertIn("rc=0\n", proc.stdout, proc.stderr)
+        self.assertNotIn("unexpected helm call", proc.stderr)
+
+    def test_a_failed_uninstall_stops_the_run(self):
+        proc = self._run_clear(self._failed_release_helm('[{"revision": 1, "status": "failed"}]',
+                                                         uninstall='echo "boom" >&2; exit 1'))
+        self.assertIn("rc=1\n", proc.stdout, proc.stderr)
+        self.assertIn("Could not uninstall", proc.stderr)
 
     def test_pending_install_refuses_uninstall_by_default(self):
         helm_script = (

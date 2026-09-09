@@ -1567,6 +1567,40 @@ class ServiceAccountOwnershipIsCheckedOnEveryApplyDoorTest(unittest.TestCase):
         self.assertLess(check, apply)
 
 
+class FailedInitialReleaseIsClearedBeforeTheApplyTest(unittest.TestCase):
+    """A retry after an apply that died inside the kube-agents release.
+
+    Helm refuses to create a release whose name a failed one still holds, so
+    the main path clears that one case -- on an existing cluster only, right
+    before the apply -- and treats a failure to clear it as a stop.
+    """
+
+    def setUp(self):
+        self.source = (_REPO_ROOT / "install.sh").read_text()
+
+    def test_the_main_path_clears_it_after_the_cluster_steps_and_before_the_apply(self):
+        cmek = self.source.index('ensure_existing_cluster_cmek "$project_id" "$cluster_name" "$region"')
+        clear = self.source.index(
+            'clear_failed_initial_helm_release "$KUBE_AGENTS_HELM_RELEASE" '
+            '"${NAMESPACE:-$DEFAULT_NAMESPACE}" || exit 1', cmek)
+        apply = self.source.index('run_lifecycle_apply "$repo_dir" "$provisioning_log"', cmek)
+        self.assertLess(cmek, clear)
+        self.assertLess(clear, apply)
+
+    def test_it_is_gated_on_the_cluster_existing_and_fetches_its_credentials(self):
+        # Existing, not adopted: a cluster this state created on the attempt
+        # that died exists with create_cluster = true, and its retry hits the
+        # same Helm refusal. The generator fetched credentials on the adoption
+        # path alone, so this branch fetches them itself.
+        clear = self.source.index('clear_failed_initial_helm_release "$KUBE_AGENTS_HELM_RELEASE"')
+        gate = self.source.rfind('if [ "${TFVARS_CLUSTER_EXISTS:-false}" = "true" ]; then', 0, clear)
+        self.assertGreater(gate, 0)
+        credentials = self.source.index('gcloud container clusters get-credentials "$cluster_name"', gate)
+        self.assertLess(credentials, clear)
+        # Nothing else opens between the gate and the call.
+        self.assertNotIn("\n  fi\n", self.source[gate:clear])
+
+
 class ShellNamespaceNeverReachesTheGeneratorTest(unittest.TestCase):
     """NAMESPACE is a name kubectl tooling exports; only install.env may set it."""
 

@@ -73,6 +73,18 @@ readonly LITELLM_DEPLOYMENT="litellm"
 readonly PLATFORM_AGENT_SHELL_STATEFULSET="platform-agent-shell"
 # shellcheck disable=SC2034
 readonly PLATFORM_AGENT_CREDENTIAL_PROXY_DEPLOYMENT="platform-agent-credential-proxy"
+# The composition's two Helm releases, by their Terraform type and name: the
+# front doors ask the state whether it manages one before deciding what a
+# cert-manager or kube-agents release already on the cluster means.
+readonly TF_HELM_RELEASE_TYPE="helm_release"
+readonly TF_CERT_MANAGER_RELEASE_NAME="cert_manager"
+readonly TF_KUBE_AGENTS_RELEASE_NAME="kube_agents"
+# The Helm status of a release whose last operation failed, and the statuses
+# `helm history` gives a revision that served at some point.
+readonly HELM_STATUS_FAILED="failed"
+readonly HELM_SERVED_REVISION_STATUSES="deployed superseded"
+# Timeout for uninstalling a failed release no revision of which ever served.
+readonly HELM_FAILED_RELEASE_UNINSTALL_TIMEOUT="5m"
 # shellcheck disable=SC2034
 readonly PLATFORM_AGENT_SHELL_AUTHORIZED_KEYS_SECRET="platform-agent-shell-authorized-keys"
 
@@ -777,6 +789,35 @@ sys.exit(0 if managed else 1)
 ' "${PROJECT_ID}" "${REGION}" "${CLUSTER_NAME}"
 }
 
+# Whether this install's Terraform state manages a root-module resource of
+# type $1 and name $2 -- managed mode, with at least one instance, for the
+# reasons tf_state_has_cluster gives. Returns 1 when it does not, and
+# TF_STATE_RC_UNREADABLE when the state could not be read or parsed: for both
+# callers "not ours" is the direction that destroys something (the
+# composition's cert-manager, a Helm release), so an unreadable state must
+# not read as it.
+tf_state_manages_resource() {
+  local state
+  state=$(tf_state_read) || return $?
+  printf '%s' "$state" | python3 -c '
+import json, sys
+rtype, rname, unreadable = sys.argv[1], sys.argv[2], int(sys.argv[3])
+try:
+    doc = json.load(sys.stdin)
+except Exception:
+    sys.exit(unreadable)
+managed = any(
+    r.get("type") == rtype
+    and r.get("name") == rname
+    and r.get("mode") == "managed"
+    and not r.get("module")
+    and len(r.get("instances", [])) > 0
+    for r in doc.get("resources", [])
+)
+sys.exit(0 if managed else 1)
+' "$1" "$2" "$TF_STATE_RC_UNREADABLE"
+}
+
 # The account ids of every google_service_account this install's state
 # manages, one per line. Empty when there is no state; tf_state_read's return
 # code when there is none or it could not be read, so a caller can tell
@@ -1169,6 +1210,80 @@ ensure_clean_helm_release() {
   esac
 }
 
+# Clears the one Helm leftover a first apply's failure leaves that no retry
+# can get past: the kube-agents release in `failed`, with no revision that
+# ever served, and absent from Terraform state because the provider never
+# recorded the create it lost (a webhook the fresh cluster could not reach
+# yet, a pod that never came up). Helm then answers the retry's create with
+# "cannot re-use a name that is still in use", and the identical command
+# that #1296 says must work fails for a new reason.
+#
+# Narrower than ensure_clean_helm_release on purpose. That function protects a
+# release that once served -- its Secret may be the only copy of the
+# credentials -- and asks for ALLOW_UNINSTALL_PENDING_RELEASE. Nothing here
+# served: a release with a deployed or superseded revision in its history is
+# left alone, and so is one the state manages, which Terraform will upgrade or
+# replace itself. On install.sh's path the credentials the release's Secret
+# would hold are already in terraform.tfvars (the generator recovered them
+# before this runs), so the re-create writes the same values back.
+clear_failed_initial_helm_release() {
+  local release_name="${1:-$KUBE_AGENTS_HELM_RELEASE}"
+  local namespace="${2:-$DEFAULT_NAMESPACE}"
+  command -v helm >/dev/null 2>&1 || return 0
+
+  # Only when kubectl's current context is this install's cluster, the same
+  # gate the generator's credential recovery uses: an uninstall is the one
+  # destructive step here, and a stale context would point it at whatever
+  # cluster the operator last looked at.
+  local expected_ctx="gke_${PROJECT_ID}_${REGION}_${CLUSTER_NAME}"
+  if ! command -v kubectl >/dev/null 2>&1 ||
+    [ "$(kubectl config current-context 2>/dev/null || true)" != "$expected_ctx" ]; then
+    print_info "Skipping the failed-release check: kubectl's current context is not this cluster's (${expected_ctx})."
+    return 0
+  fi
+
+  local release_status
+  release_status="$(helm_release_status "${release_name}" "${namespace}")"
+  [ "${release_status}" = "$HELM_STATUS_FAILED" ] || return 0
+
+  local state_rc=0
+  tf_state_manages_resource "$TF_HELM_RELEASE_TYPE" "$TF_KUBE_AGENTS_RELEASE_NAME" || state_rc=$?
+  if [ "$state_rc" -eq 0 ]; then
+    print_info "Helm release '${release_name}' in namespace '${namespace}' is '${release_status}' and in this install's Terraform state; the apply reconciles it."
+    return 0
+  fi
+  if [ "$state_rc" -eq "$TF_STATE_RC_UNREADABLE" ]; then
+    print_warning "Helm release '${release_name}' in namespace '${namespace}' is '${release_status}', and whether this install's Terraform state owns it could not be decided because the state could not be read (see above); leaving it. If the apply stops on 'cannot re-use a name that is still in use', re-run once the state is readable."
+    return 0
+  fi
+
+  local history_json
+  if ! history_json="$(helm history "${release_name}" -n "${namespace}" -o json 2>/dev/null)"; then
+    print_warning "Helm release '${release_name}' in namespace '${namespace}' is '${release_status}' and its history could not be read; leaving it. If the apply stops on 'cannot re-use a name that is still in use', inspect it with: helm history ${release_name} -n ${namespace}"
+    return 0
+  fi
+  if printf '%s' "${history_json}" | python3 -c '
+import json, sys
+served = set(sys.argv[1].split())
+try:
+    revisions = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+sys.exit(0 if any(r.get("status") in served for r in revisions) else 1)
+' "$HELM_SERVED_REVISION_STATUSES"; then
+    print_warning "Helm release '${release_name}' in namespace '${namespace}' is '${release_status}' but a revision of it served before; leaving it. Roll it back or uninstall it yourself before re-running: helm history ${release_name} -n ${namespace}"
+    return 0
+  fi
+
+  print_warning "Helm release '${release_name}' in namespace '${namespace}' is '${release_status}' and no revision of it ever deployed: an earlier apply died inside it. Uninstalling it so the apply can create it again (Helm refuses to reuse the name otherwise); its ${PLATFORM_AGENT_SECRET} is written back from terraform.tfvars."
+  if helm uninstall "${release_name}" -n "${namespace}" --wait --timeout "$HELM_FAILED_RELEASE_UNINSTALL_TIMEOUT"; then
+    print_success "Cleared the failed initial release '${release_name}'."
+    return 0
+  fi
+  print_error "Could not uninstall the failed release '${release_name}' in namespace '${namespace}'. Inspect it with: helm status ${release_name} -n ${namespace}"
+  return 1
+}
+
 
 # Writes the terraform.tfvars the full-install composition consumes, from the
 # install.env variable set in the environment (load it first). The same
@@ -1277,6 +1392,11 @@ write_tfvars_from_state() {
   # cluster this install created, never on an adopted one it does not own.
   TFVARS_CREATE_CLUSTER="$create_cluster"
   export TFVARS_CREATE_CLUSTER
+  # Whether a cluster is there at all, which is not the same question: a
+  # cluster this state created and still manages exists with
+  # create_cluster = true. install.sh's pre-apply Helm check needs the first.
+  TFVARS_CLUSTER_EXISTS="$cluster_exists"
+  export TFVARS_CLUSTER_EXISTS
   # The shape the apply will actually use — probed when a cluster exists, the
   # requested one only on a fresh create. install.sh reports this rather than
   # the flag, so an adoption never claims to have built what it did not.
@@ -1370,8 +1490,25 @@ write_tfvars_from_state() {
   elif [ "$create_cluster" = "false" ] && command -v kubectl >/dev/null 2>&1; then
     # Credentials were fetched above, on the same adoption branch.
     if kubectl get deployment cert-manager -n cert-manager >/dev/null 2>&1; then
-      enable_cert_manager="false"
-      print_info "cert-manager already runs on '${CLUSTER_NAME}'; the composition will not install its own."
+      # The Deployment alone cannot say whose it is. On a retry after an
+      # apply that died past the cert-manager release, and on every
+      # upgrade.sh regeneration of an existing-cluster install, the
+      # cert-manager it finds is the composition's own; turning the flag
+      # off then has Terraform destroy that release and the operator's
+      # webhooks with it. The state settles it: a managed entry means ours.
+      # A state that could not be read settles nothing, and the two wrong
+      # answers are not symmetric -- a wrong "true" fails the apply on the
+      # existing CRDs, a wrong "false" destroys silently -- so it keeps true.
+      local cert_manager_rc=0
+      tf_state_manages_resource "$TF_HELM_RELEASE_TYPE" "$TF_CERT_MANAGER_RELEASE_NAME" || cert_manager_rc=$?
+      if [ "$cert_manager_rc" -eq 0 ]; then
+        print_info "cert-manager on '${CLUSTER_NAME}' is this install's own release (it is in the Terraform state); keeping it."
+      elif [ "$cert_manager_rc" -eq "$TF_STATE_RC_UNREADABLE" ]; then
+        print_warning "cert-manager runs on '${CLUSTER_NAME}', and whether it is this install's own could not be decided because the Terraform state could not be read (see above). Keeping enable_cert_manager = true: if it is somebody else's, the apply fails on its CRDs and can be re-run with SKIP_CERT_MANAGER=true; turning it off wrongly would destroy this install's own."
+      else
+        enable_cert_manager="false"
+        print_info "cert-manager already runs on '${CLUSTER_NAME}'; the composition will not install its own."
+      fi
     fi
   fi
 

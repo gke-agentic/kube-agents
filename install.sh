@@ -3300,6 +3300,19 @@ main() {
     exit 1
   fi
 
+  # A retry after an apply that died inside the kube-agents release: Helm
+  # refuses to create a release whose name a failed one still holds, and
+  # Terraform, which never recorded it, plans a create. Whenever the cluster
+  # is already there -- adopted, or created by this state on the attempt that
+  # died -- and only for a release no revision of which ever served. The
+  # generator fetched credentials on the adoption path alone, so fetch them
+  # here for the other; the check itself refuses to look at any other context.
+  if [ "${TFVARS_CLUSTER_EXISTS:-false}" = "true" ]; then
+    gcloud container clusters get-credentials "$cluster_name" --location "$region" \
+      --project "$project_id" >/dev/null 2>&1 || true
+    clear_failed_initial_helm_release "$KUBE_AGENTS_HELM_RELEASE" "${NAMESPACE:-$DEFAULT_NAMESPACE}" || exit 1
+  fi
+
   local provisioning_log
   provisioning_log="/tmp/kube-agents-provision-$(date -u +%Y%m%dT%H%M%SZ).log"
   print_info "Provisioning output is also being saved to: ${C_BOLD}${provisioning_log}${C_RESET}"

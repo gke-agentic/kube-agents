@@ -160,7 +160,20 @@ once, when the configuration carries none and none can be recovered — not on e
 which used to replace the Secret and restart every pod holding it.
 
 `SKIP_CERT_MANAGER=true` makes the generator emit `enable_cert_manager = false`, for a
-cluster whose cert-manager comes from somewhere else.
+cluster whose cert-manager comes from somewhere else. Without it, the generator probes an
+existing cluster for a `cert-manager` Deployment and emits `false` when it finds one that
+is not the composition's own; one whose release is in this install's Terraform state keeps
+`true`, so a retry after a failed apply, or an `upgrade.sh` run, does not have Terraform
+destroy the cert-manager it installed. A state that cannot be read also keeps `true`: the
+wrong `true` fails the apply on the existing CRDs, the wrong `false` destroys silently.
+
+A retry has one more leftover to clear. An apply that dies inside the kube-agents release
+leaves it in Helm's `failed` status, with no revision that ever served and no entry in
+Terraform state, and Helm refuses the retry's create with "cannot re-use a name that is
+still in use". When the cluster already exists, `install.sh` uninstalls exactly that
+release before the apply (`clear_failed_initial_helm_release`), and only while kubectl's
+current context is that cluster's; a failed release that served before, one the state
+manages, or one whose state cannot be read is left as it is.
 
 ### The predecessor: `vars.sh`
 
