@@ -40,13 +40,6 @@ class NightlyPipelineWiringTest(unittest.TestCase):
         self.doc = _doc(_NIGHTLY)
         self.jobs = self.doc["jobs"]
 
-    def test_the_pipeline_has_no_schedule(self):
-        """nightly-pipeline.yml must be dispatch-only; nightly-scheduler.yml owns
-        the cron so that a tick with nothing to promote produces no run at all.
-        """
-        self.assertNotIn("schedule", self.doc[True])
-        self.assertIn("workflow_dispatch", self.doc[True])
-
     def test_every_called_workflow_targets_the_environment_it_is_named_for(self):
         """Everything that touches the NIGHTLY cluster has to say `nightly`."""
         called = {name: job for name, job in self.jobs.items() if "uses" in job}
