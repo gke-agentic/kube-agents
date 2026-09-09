@@ -190,12 +190,12 @@ if [ -z "${RELEASE_RANGE_SUBJECTS}" ]; then
   emit_and_exit
 fi
 
-# ── 3. Is any of it a breaking change? ───────────────────────────────────────
+# ── 3. Is any of it a major breaking change? ────────────────────────────────
 #
-# Spelled as "breaking" rather than "MAJOR" deliberately. calculate_next_version.sh
-# implements SemVer clause 4, so while the repository is on 0.y.z a breaking
-# change bumps MINOR and the MAJOR digit never moves — a guard written against
-# MAJOR would pass every breaking release straight through until 1.0.0.
+# Under SemVer 2.0 Clause 4, in 0.y.z initial development (MAJOR == 0), breaking
+# changes bump MINOR (0.4.0 -> 0.5.0) and are permitted for automated scheduled
+# releases. Once a 1.0.0 GA release has been cut (MAJOR != 0), any breaking change
+# triggers a true MAJOR version bump, which halts for human review and manual dispatch.
 #
 # The definition is common.sh's, shared with calculate_next_version.sh, because a
 # second copy here is how the bump and the halt come to disagree about what
@@ -206,9 +206,12 @@ fi
 # all of history it would match some long-shipped `feat!:` and then never stop
 # matching it, since there is no range to shrink: one permanent halt, every run.
 if commit_messages_have_breaking_change "${RELEASE_RANGE_SUBJECTS}" "${RELEASE_RANGE_BODIES}"; then
-  HALTED_FOR_HUMAN="true"
-  SKIP_REASON="A breaking change is waiting to ship. Releases carrying one are published by a human: run release-publish.yml manually against ${RELEASE_COMMIT:0:7}."
-  emit_and_exit
+  IFS='.' read -r MAJOR _ _ <<< "${LATEST_GA_TAG}"
+  if [ "${MAJOR}" -ne 0 ]; then
+    HALTED_FOR_HUMAN="true"
+    SKIP_REASON="A major breaking change is waiting to ship on stable GA (${LATEST_GA_TAG}). Major releases are published by a human: run release-publish.yml manually against ${RELEASE_COMMIT:0:7}."
+    emit_and_exit
+  fi
 fi
 
 SHOULD_RELEASE="true"

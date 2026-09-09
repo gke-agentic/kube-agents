@@ -9,9 +9,10 @@ name: "Release: Scheduler"
 # work is required, quietly recording skips to Job Summary when no candidate
 # exists or when no commits have merged since the last release.
 #
-# If a breaking change is waiting to ship, resolve_scheduled_release.sh halts
+# If a major breaking change (>= 1.0.0) is waiting to ship, resolve_scheduled_release.sh halts
 # with exit 1 and an error annotation, turning this scheduler run red so maintainers
-# are notified to publish the breaking release by hand.
+# are notified to publish the major release by hand. Pre-1.0 breaking changes bump minor
+# under SemVer Clause 4 and release unattended.
 
 permissions:
   contents: read
