@@ -84,8 +84,12 @@ The end-to-end pipeline (`.github/workflows/rc-release-pipeline.yml`) is dispatc
   - Automatically resolves the latest validated candidate (`rc_*_validated`) using `resolve_promotion_candidate.sh`.
   - **Redundant Run Skipping**: If no eligible validated candidate exists, the scheduler dispatches nothing and records the reason in its job summary via `record_nightly_scheduler_skip.sh`.
   - Dispatches `nightly-pipeline.yml` using `dispatch_nightly_pipeline.sh` with the default `GITHUB_TOKEN` and `actions: write`.
+- **Weekly GA Scheduled Cadence (`release-scheduler.yml`, weekly on Thursdays at `17 5 * * 4`, best-effort)**:
+  - Automatically resolves whether an eligible candidate exists using `resolve_scheduled_release.sh` (requiring a valid `staging_<ts>_<sha>` tag and unreleased commits since the last GA tag, while halting on breaking changes).
+  - **Redundant Run Skipping**: If no eligible candidate exists or no new commits have merged, the scheduler dispatches nothing and records why in its job summary via `record_release_scheduler_skip.sh`.
+  - Dispatches `release-publish.yml` using `dispatch_release_pipeline.sh` (`-f schedule_gate=evaluate`) with the default `GITHUB_TOKEN` and `actions: write`.
 - **Manual Trigger (`workflow_dispatch`)**:
-  - Both schedulers and pipelines support manual trigger via `workflow_dispatch`. For manual dispatches, the RC pipeline requires `commit_sha` (mandatory), whereas the nightly pipeline accepts an optional `rc_tag` candidate override (defaulting to the newest eligible validated candidate when omitted).
+  - Schedulers and pipelines support manual trigger via `workflow_dispatch`. For manual dispatches, the RC pipeline requires `commit_sha` (mandatory), the nightly pipeline accepts an optional `rc_tag` candidate override (defaulting to the newest eligible validated candidate when omitted), and `release-publish.yml` accepts `schedule_gate` (`bypass` by default, `dry-run`, or `evaluate`), `explicit_release_version`, `target_commit`, and emergency override flags. Schedulers take no inputs (evaluating live state).
 
 ## What Happens to the RC Cluster
 
@@ -296,12 +300,12 @@ designed rather than a bug, but it is a release outage until step 1 below is don
 is step 1; `skip_staging_validation` with an audit reason also passes, and is the emergency
 override for hotfixes rather than a way to cut an ordinary release.
 
-### Turning it on
+### Scheduled execution & testing the gate
 
-**It ships without a `schedule:`, and the reason is one rung down the ladder.** The gate reads the
-staging tag; `nightly-pipeline.yml` (dispatched by `nightly-scheduler.yml`) is the only thing that pushes one.
-A weekly cron over a tag family nothing produces on a schedule would skip green every Thursday and
-demonstrate nothing about the gate. So, in order:
+**Scheduled execution is owned by `.github/workflows/release-scheduler.yml` via the decoupled
+trigger pattern (`cron: "17 5 * * 4"`), while `release-publish.yml` remains dispatch-only.** The gate
+reads the staging tag produced nightly by `nightly-pipeline.yml` (dispatched by `nightly-scheduler.yml`).
+To exercise or test the gate manually:
 
 1. **Nightly promotion is green and scheduled.** `nightly-pipeline.yml` has successfully promoted
    candidates (producing real `staging_<ts>_<sha>` tags), and its automated daily dispatch is
@@ -335,11 +339,10 @@ produces nothing costs a full week, because there is no rate limiter inside the 
 week back — the cron is the cadence, which is what keeps wall-clock arithmetic out of the decision
 entirely. Against the staging gate that is a real risk rather than a rarity: a release needs a
 staging tag newer than the last GA tag, which needs a fresh validated candidate _and_ a green
-matrix on the same night, so the interval will sometimes be a fortnight. And a green skip and a
-green pass are both `success` to
-GitHub, so "the release workflow is green" does not distinguish a week that shipped from a week
-that had nothing to ship. Reading the job summary is how you tell, until scheduled work here grows
-an out-of-band signal.
+matrix on the same night, so the interval will sometimes be a fortnight. And because
+`release-scheduler.yml` dispatches `release-publish.yml` only when `should_release=true`, a quiet
+week leaves no `release-publish.yml` run behind at all. On the scheduler itself, a green run can mean
+either a successful dispatch or a quiet skip; reading the scheduler's job summary is how you tell.
 
 ## Workflow Mapping
 

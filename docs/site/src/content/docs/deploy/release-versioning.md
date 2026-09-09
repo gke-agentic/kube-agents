@@ -19,7 +19,7 @@ Every commit and build progresses through five distinct lifecycle tiers:
 | **Release Candidate (RC)** | `rc_YYMMDDHHMM_<SHORT_SHA>`           | 3-hour cron / manual dispatch | Candidate build selected for live cluster testing.                                                                     |
 | **RC Validated**           | `rc_YYMMDDHHMM_<SHORT_SHA>_validated` | Successful GKE E2E suite      | Quality gate: proof that `install.sh` succeeded on a real GKE cluster.                                                 |
 | **Staging Promoted**       | `staging_YYMMDDHHMM_<SHORT_SHA>`      | Successful nightly matrix     | Quality gate for GA: the full nightly E2E matrix passed on the commit. Also the deploy trigger for the staging estate. |
-| **GA Stable**              | `X.Y.Z` (pure numeric SemVer)         | Release publish workflow      | Official production release tagged on a stamped commit parented by the target commit (staging-promoted by default).    |
+| **GA Stable**              | `X.Y.Z` (pure numeric SemVer)         | Weekly cron / manual dispatch | Official production release tagged on a stamped commit parented by the target commit (staging-promoted by default).    |
 
 Only a staging-promoted commit is releasable. An `rc_*_validated` tag records the narrow
 three-hourly suite; the GA gate reads the `staging_<ts>_<sha>` tag that `nightly-pipeline.yml`

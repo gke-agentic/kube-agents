@@ -65,8 +65,8 @@ jobs:
   evaluate-schedule:
     name: Decide Whether To Release
     runs-on: ubuntu-latest
-    # A fork inherits workflow_dispatch — and will inherit the cron — but none
-    # of the release credentials. The guard repeats on both jobs rather than
+    # A fork inherits workflow_dispatch but none of the release credentials.
+    # The guard repeats on both jobs rather than
     # relying on the skip cascading through `needs`: an `always()` added to the
     # publish job later would silently un-guard it.
     if: github.repository == 'gke-labs/kube-agents' && github.ref == 'refs/heads/main'
@@ -116,8 +116,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: evaluate-schedule
     # The same repository and branch guard as the gate job, plus its verdict.
-    # On a `schedule` event `github.ref` is the default branch, so the second
-    # clause holds for a cron tick and pins a manual dispatch to `main`.
+    # Pins execution to the main branch on gke-labs/kube-agents and requires the
+    # evaluate-schedule gate to pass.
     if: |
       github.repository == 'gke-labs/kube-agents' &&
       github.ref == 'refs/heads/main' &&
