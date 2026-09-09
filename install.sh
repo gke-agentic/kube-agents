@@ -390,6 +390,8 @@ memory_mode_from_provider() {
 PARAM_MEMORY="${MEMORY:-$(memory_mode_from_provider "${MEMORY_PROVIDER:-}")}"
 PARAM_ALLOWED_USERS="${ALLOWED_USERS:-}"
 PARAM_IMAGE_TAG="${IMAGE_TAG:-}"
+PARAM_MIGRATE_NODE_POOLS="${MIGRATE_NODE_POOLS:-}"
+PARAM_ENABLE_NETWORK_POLICY="${ENABLE_NETWORK_POLICY:-}"
 PARAM_ALLOW_UNVERIFIED_SOURCE="${ALLOW_UNVERIFIED_SOURCE:-false}"
 # "<repo_dir>@<ref>" already checked by verify_local_source_ref, so the pre-flight
 # check and the one at the workspace step do not report the same verdict twice.
@@ -507,6 +509,11 @@ Flags for AI Agents & Automation:
                                 (default: DEFAULT_GOOGLE_CHAT_MODE, currently default)
   --google-chat-home-channel=SPACE_ID
                                 Google Chat space ID for unsolicited alerts/messages (e.g. spaces/AAAA...)
+  --migrate-node-pools          Opt in to migrating legacy node pools to GKE_METADATA on an existing
+                                cluster (recreates nodes and restarts workloads)
+  --enable-network-policy       Opt in to enabling legacy Calico NetworkPolicy addon and enforcement
+                                on an existing GKE Standard cluster without Dataplane V2 (may recreate
+                                nodes and restart workloads)
   --menu, --config              Launch interactive Day-2 Control Panel Menu (raspi-config style)
   -h, --help, -?                Show this help message
 
@@ -560,6 +567,10 @@ parse_args() {
       --chat-topic-name=*) PARAM_CHAT_TOPIC_NAME="${1#*=}"; shift ;;
       --google-chat-mode=*) PARAM_GOOGLE_CHAT_MODE="${1#*=}"; shift ;;
       --google-chat-home-channel=*) PARAM_GOOGLE_CHAT_HOME_CHANNEL="${1#*=}"; shift ;;
+      --migrate-node-pools=*) PARAM_MIGRATE_NODE_POOLS="${1#*=}"; shift ;;
+      --migrate-node-pools) PARAM_MIGRATE_NODE_POOLS="true"; shift ;;
+      --enable-network-policy=*) PARAM_ENABLE_NETWORK_POLICY="${1#*=}"; shift ;;
+      --enable-network-policy) PARAM_ENABLE_NETWORK_POLICY="true"; shift ;;
       -h|--help|-\?|help) show_help; exit 0 ;;
       *) print_error "Unknown parameter: $1"; show_help >&2; return 2 ;;
     esac
@@ -1798,18 +1809,45 @@ ensure_existing_cluster_workload_identity() {
   # Enabling the pool does not migrate node pools off the legacy GCE metadata
   # server, and pods on such pools still get the node's service account.
   # Standard-cluster concern: Autopilot pools are managed onto GKE_METADATA
-  # already.
+  # already. Migrating a node pool recreates its nodes and restarts workloads,
+  # so explicit opt-in is required.
   local legacy_pool
+  local legacy_pools=()
   while IFS= read -r legacy_pool; do
     [ -n "$legacy_pool" ] || continue
-    print_warning "Node pool '${legacy_pool}' uses the legacy GCE metadata server; migrating to GKE_METADATA (this recreates the pool's nodes)..."
-    gcloud container node-pools update "$legacy_pool" \
-      --cluster="$cluster_name" --location="$region" --project="$project_id" \
-      --workload-metadata=GKE_METADATA --quiet
+    legacy_pools+=("$legacy_pool")
   done < <(trap - ERR; gcloud container node-pools list --cluster="$cluster_name" \
       --location="$region" --project="$project_id" \
       --format="csv[no-heading](name,config.workloadMetadataConfig.mode)" 2>/dev/null \
     | awk -F',' '$2 != "GKE_METADATA" {print $1}' || true)
+
+  if [ "${#legacy_pools[@]}" -gt 0 ]; then
+    if [ -z "${PARAM_MIGRATE_NODE_POOLS:-${MIGRATE_NODE_POOLS:-}}" ]; then
+      if [ "$PARAM_NON_INTERACTIVE" = "true" ] || ! has_controlling_tty; then
+        PARAM_MIGRATE_NODE_POOLS="false"
+      else
+        local migrate_choice=""
+        prompt_read "Node pool(s) '${legacy_pools[*]}' use the legacy GCE metadata server; migrating to GKE_METADATA recreates nodes and restarts workloads. Migrate now? (y/N)" migrate_choice "n"
+        if is_truthy "$migrate_choice"; then
+          PARAM_MIGRATE_NODE_POOLS="true"
+        else
+          PARAM_MIGRATE_NODE_POOLS="false"
+        fi
+      fi
+    fi
+
+    if ! is_truthy "${PARAM_MIGRATE_NODE_POOLS:-${MIGRATE_NODE_POOLS:-false}}"; then
+      print_warning "Skipping node pool migration for '${legacy_pools[*]}' (explicit opt-in via --migrate-node-pools or MIGRATE_NODE_POOLS=true was not provided)."
+      print_info "Pods on these pools will continue using the legacy GCE metadata server and cannot use Workload Identity."
+    else
+      for legacy_pool in "${legacy_pools[@]}"; do
+        print_warning "Node pool '${legacy_pool}' uses the legacy GCE metadata server; migrating to GKE_METADATA (this recreates the pool's nodes)..."
+        gcloud container node-pools update "$legacy_pool" \
+          --cluster="$cluster_name" --location="$region" --project="$project_id" \
+          --workload-metadata=GKE_METADATA --quiet
+      done
+    fi
+  fi
 }
 
 # NetworkPolicy enforcement on a pre-existing cluster is the third such
@@ -1817,9 +1855,11 @@ ensure_existing_cluster_workload_identity() {
 # minter's, Hindsight's, and the ones the operator generates around the
 # agent — is accepted and silently inert on a cluster with neither Dataplane
 # V2 nor the legacy Calico addon, which is GKE Standard's default shape.
-# Terraform-created clusters always have Dataplane V2; adopted ones get the
-# legacy addon enabled here. The gke-cluster module's postcondition backstops
-# bare-Terraform installs.
+# Clusters created by this repository's gke-cluster module have Dataplane V2;
+# clusters created by other Terraform configurations or pre-existing Standard
+# clusters may have neither Dataplane V2 nor Calico, requiring explicit opt-in
+# to enable the legacy Calico addon. The gke-cluster module's postcondition
+# backstops bare-Terraform installs.
 ensure_existing_cluster_network_policy() {
   local project_id="$1" cluster_name="$2" region="$3"
   local dp_provider
@@ -1827,7 +1867,7 @@ ensure_existing_cluster_network_policy() {
   # Identity probe above.
   dp_provider=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
     --location="$region" --project="$project_id" \
-    --format="value(networkConfig.datapathProvider)" 2>/dev/null) || return 0
+    --format="value(networkConfig.datapathProvider)" 2>/dev/null || echo "")
   if [ "$dp_provider" = "ADVANCED_DATAPATH" ]; then
     print_success "Existing cluster '$cluster_name' runs Dataplane V2; NetworkPolicy enforcement is built in."
     return 0
@@ -1840,6 +1880,29 @@ ensure_existing_cluster_network_policy() {
     print_success "Existing cluster '$cluster_name' already enforces NetworkPolicy (legacy Calico addon)."
     return 0
   fi
+
+  if [ -z "${PARAM_ENABLE_NETWORK_POLICY:-${ENABLE_NETWORK_POLICY:-}}" ]; then
+    if [ "$PARAM_NON_INTERACTIVE" = "true" ] || ! has_controlling_tty; then
+      PARAM_ENABLE_NETWORK_POLICY="false"
+    else
+      local np_choice=""
+      prompt_read "Existing cluster '$cluster_name' does not enforce NetworkPolicy. Enabling Calico may recreate nodes and restart workloads. Enable Calico NetworkPolicy now? (y/N)" np_choice "n"
+      if is_truthy "$np_choice"; then
+        PARAM_ENABLE_NETWORK_POLICY="true"
+      else
+        PARAM_ENABLE_NETWORK_POLICY="false"
+      fi
+    fi
+  fi
+
+  if ! is_truthy "${PARAM_ENABLE_NETWORK_POLICY:-${ENABLE_NETWORK_POLICY:-false}}"; then
+    print_warning "Existing cluster '$cluster_name' has neither Dataplane V2 nor legacy Calico NetworkPolicy."
+    print_warning "Enabling Calico may recreate nodes and restart workloads. Explicit opt-in was not provided."
+    print_info "Skipping Calico NetworkPolicy enablement (pass --enable-network-policy or set ENABLE_NETWORK_POLICY=true to authorize)."
+    print_info "Note: The Terraform apply will refuse an existing cluster without Dataplane V2 or NetworkPolicy enforcement."
+    return 0
+  fi
+
   # Two calls, in this order. GKE rejects --enable-network-policy with "The
   # network policy addon must be enabled before updating the nodes" (HTTP 400)
   # until the Calico addon is on the control plane, and gcloud puts
@@ -1862,14 +1925,158 @@ ensure_existing_cluster_network_policy() {
   gcloud container clusters update "$cluster_name" --location "$region" \
     --enable-network-policy --project "$project_id" --quiet
   local active_op
-  active_op=$(gcloud container operations list --location="$region" --project="$project_id" \
-    --filter="targetLink:$cluster_name AND status=RUNNING" --format="value(name)" 2>/dev/null | head -n1)
+  active_op=$({ gcloud container operations list --location="$region" --project="$project_id" \
+    --filter="targetLink ~ /clusters/${cluster_name}$ AND status=RUNNING" --format="value(name)" 2>/dev/null || true; } | head -n1)
   if [ -n "$active_op" ]; then
     print_info "Waiting for operation $active_op to complete..."
     gcloud container operations wait "$active_op" --location="$region" --project="$project_id" ||
       print_warning "Operation wait returned non-zero (it may have finished between list and wait); proceeding..."
   fi
   print_warning "Legacy Network Policy enabled. FQDN-based NetworkPolicies stay unsupported without Dataplane V2."
+}
+
+# Interactively prompts for existing-cluster opt-in mutations before the Step 11 summary
+prompt_existing_cluster_opt_ins() {
+  local project_id="$1" cluster_name="$2" region="$3"
+  [ "$PARAM_NON_INTERACTIVE" != "true" ] && [ "$PARAM_DRY_RUN" != "true" ] && has_controlling_tty || return 0
+
+  local is_autopilot
+  is_autopilot=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
+    --location="$region" --project="$project_id" \
+    --format="value(autopilot.enabled)" 2>/dev/null || echo "false")
+  [ "$is_autopilot" != "True" ] || return 0
+
+  # Node pool migration opt-in prompt
+  if [ -z "${PARAM_MIGRATE_NODE_POOLS:-${MIGRATE_NODE_POOLS:-}}" ]; then
+    local legacy_pools=() legacy_pool
+    while IFS= read -r legacy_pool; do
+      [ -n "$legacy_pool" ] || continue
+      legacy_pools+=("$legacy_pool")
+    done < <(trap - ERR; gcloud container node-pools list --cluster="$cluster_name" \
+        --location="$region" --project="$project_id" \
+        --format="csv[no-heading](name,config.workloadMetadataConfig.mode)" 2>/dev/null \
+      | awk -F',' '$2 != "GKE_METADATA" {print $1}' || true)
+
+    if [ "${#legacy_pools[@]}" -gt 0 ]; then
+      local migrate_choice=""
+      prompt_read "Node pool(s) '${legacy_pools[*]}' use the legacy GCE metadata server; migrating to GKE_METADATA recreates nodes and restarts workloads. Migrate now? (y/N)" migrate_choice "n"
+      if is_truthy "$migrate_choice"; then
+        PARAM_MIGRATE_NODE_POOLS="true"
+      else
+        PARAM_MIGRATE_NODE_POOLS="false"
+      fi
+    fi
+  fi
+
+  # Calico NetworkPolicy opt-in prompt
+  if [ -z "${PARAM_ENABLE_NETWORK_POLICY:-${ENABLE_NETWORK_POLICY:-}}" ]; then
+    local dp_provider legacy_np
+    dp_provider=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
+      --location="$region" --project="$project_id" \
+      --format="value(networkConfig.datapathProvider)" 2>/dev/null || echo "")
+    if [ "$dp_provider" != "ADVANCED_DATAPATH" ]; then
+      legacy_np=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
+        --location="$region" --project="$project_id" \
+        --format="value(networkPolicy.enabled)" 2>/dev/null || echo "")
+      if [ "$legacy_np" != "True" ] && [ "$legacy_np" != "true" ]; then
+        local np_choice=""
+        prompt_read "Existing cluster '$cluster_name' does not enforce NetworkPolicy. Enabling Calico may recreate nodes and restart workloads. Enable Calico NetworkPolicy now? (y/N)" np_choice "n"
+        if is_truthy "$np_choice"; then
+          PARAM_ENABLE_NETWORK_POLICY="true"
+        else
+          PARAM_ENABLE_NETWORK_POLICY="false"
+        fi
+      fi
+    fi
+  fi
+}
+
+# Enumerates pending existing-cluster mutations for the pre-flight summary
+summarize_existing_cluster_mutations() {
+  local project_id="$1" cluster_name="$2" region="$3" enable_gvisor="${4:-false}"
+
+  # 1. CMEK database encryption
+  local enc_state
+  enc_state=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
+    --location="$region" --project="$project_id" \
+    --format="value(databaseEncryption.state)" 2>/dev/null || echo "")
+  if is_valid_cmek_encryption_state "$enc_state"; then
+    echo -e "    • ${C_CYAN}CMEK Database Encryption:${C_RESET} ${C_GREEN}Already enabled${C_RESET} ($enc_state)"
+  elif is_truthy "${ALLOW_UNENCRYPTED_SECRETS:-false}"; then
+    echo -e "    • ${C_CYAN}CMEK Database Encryption:${C_RESET} ${C_YELLOW}Skipped${C_RESET} (ALLOW_UNENCRYPTED_SECRETS=true)"
+  elif [ -z "$enc_state" ]; then
+    echo -e "    • ${C_CYAN}CMEK Database Encryption:${C_RESET} ${C_YELLOW}Skipped${C_RESET} (could not query cluster encryption state)"
+  else
+    local keyring="${GKE_DB_KMS_KEYRING:-platform-agent-keyring}" key="${GKE_DB_KMS_KEY:-k8s-secret-encryption-key}"
+    echo -e "    • ${C_CYAN}CMEK Database Encryption:${C_RESET} ${C_YELLOW}Will enable${C_RESET} Cloud KMS encryption on control plane (${keyring}/${key}; non-revertible)"
+  fi
+
+  # 2. Workload Identity & 3. Node pool metadata
+  local is_autopilot pool
+  is_autopilot=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
+    --location="$region" --project="$project_id" \
+    --format="value(autopilot.enabled)" 2>/dev/null || echo "false")
+  if [ "$is_autopilot" = "True" ]; then
+    echo -e "    • ${C_CYAN}Workload Identity Pool:${C_RESET} ${C_GREEN}Native${C_RESET} (GKE Autopilot)"
+    echo -e "    • ${C_CYAN}Node Pool Metadata:${C_RESET} ${C_GREEN}Managed${C_RESET} (GKE Autopilot)"
+  else
+    pool=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
+      --location="$region" --project="$project_id" \
+      --format="value(workloadIdentityConfig.workloadPool)" 2>/dev/null || echo "")
+    if [ "$pool" = "${project_id}.svc.id.goog" ]; then
+      echo -e "    • ${C_CYAN}Workload Identity Pool:${C_RESET} ${C_GREEN}Already enabled${C_RESET} ($pool)"
+    else
+      echo -e "    • ${C_CYAN}Workload Identity Pool:${C_RESET} ${C_YELLOW}Will enable${C_RESET} ${project_id}.svc.id.goog on control plane (non-revertible)"
+    fi
+
+    local legacy_pools=() legacy_pool
+    while IFS= read -r legacy_pool; do
+      [ -n "$legacy_pool" ] || continue
+      legacy_pools+=("$legacy_pool")
+    done < <(trap - ERR; gcloud container node-pools list --cluster="$cluster_name" \
+        --location="$region" --project="$project_id" \
+        --format="csv[no-heading](name,config.workloadMetadataConfig.mode)" 2>/dev/null \
+      | awk -F',' '$2 != "GKE_METADATA" {print $1}' || true)
+
+    if [ "${#legacy_pools[@]}" -eq 0 ]; then
+      echo -e "    • ${C_CYAN}Node Pool Metadata:${C_RESET} ${C_GREEN}All node pools use GKE_METADATA${C_RESET}"
+    else
+      if is_truthy "${PARAM_MIGRATE_NODE_POOLS:-${MIGRATE_NODE_POOLS:-false}}"; then
+        echo -e "    • ${C_CYAN}Node Pool Metadata Migration:${C_RESET} ${C_RED}Will migrate${C_RESET} '${legacy_pools[*]}' to GKE_METADATA (${C_RED}recreates nodes, restarts workloads${C_RESET})"
+      else
+        echo -e "    • ${C_CYAN}Node Pool Metadata Migration:${C_RESET} ${C_YELLOW}Skipped${C_RESET} for '${legacy_pools[*]}' (opt-in not provided; pass --migrate-node-pools)"
+      fi
+    fi
+  fi
+
+  # 4. NetworkPolicy
+  local dp_provider legacy_np
+  dp_provider=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
+    --location="$region" --project="$project_id" \
+    --format="value(networkConfig.datapathProvider)" 2>/dev/null || echo "")
+  if [ "$dp_provider" = "ADVANCED_DATAPATH" ]; then
+    echo -e "    • ${C_CYAN}NetworkPolicy Enforcement:${C_RESET} ${C_GREEN}Built-in${C_RESET} (Dataplane V2)"
+  else
+    legacy_np=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
+      --location="$region" --project="$project_id" \
+      --format="value(networkPolicy.enabled)" 2>/dev/null || echo "")
+    if [ "$legacy_np" = "True" ] || [ "$legacy_np" = "true" ]; then
+      echo -e "    • ${C_CYAN}NetworkPolicy Enforcement:${C_RESET} ${C_GREEN}Already enabled${C_RESET} (legacy Calico addon)"
+    else
+      if is_truthy "${PARAM_ENABLE_NETWORK_POLICY:-${ENABLE_NETWORK_POLICY:-false}}"; then
+        echo -e "    • ${C_CYAN}NetworkPolicy Enforcement:${C_RESET} ${C_YELLOW}Will enable${C_RESET} legacy Calico addon & enforcement (${C_YELLOW}may recreate nodes, restart workloads${C_RESET})"
+      else
+        echo -e "    • ${C_CYAN}NetworkPolicy Enforcement:${C_RESET} ${C_YELLOW}Skipped${C_RESET} (opt-in not provided; pass --enable-network-policy; Terraform apply will fail)"
+      fi
+    fi
+  fi
+
+  # 5. gVisor pool
+  if [ "$is_autopilot" != "True" ] && is_truthy "$enable_gvisor"; then
+    echo -e "    • ${C_CYAN}gVisor Sandbox Node Pool:${C_RESET} ${C_YELLOW}Will create${C_RESET} 'gvisor-pool' (1 e2-standard-4 per zone; new billable capacity)"
+  else
+    echo -e "    • ${C_CYAN}gVisor Sandbox Node Pool:${C_RESET} None (not requested or native on Autopilot)"
+  fi
 }
 
 # Neither google provider has a field for --managed-otel-scope, so it is set
@@ -3232,6 +3439,11 @@ main() {
   # cluster's replacement.
   bootstrap_install_env_file "$INSTALL_ENV_FILE" "$image_tag"
 
+  # Prompt for opt-ins on existing cluster mutations before the summary checkpoint
+  if [ "${TFVARS_CREATE_CLUSTER:-true}" = "false" ]; then
+    prompt_existing_cluster_opt_ins "$project_id" "$cluster_name" "$region"
+  fi
+
   # Pre-Flight Summary & Final Confirmation Checkpoint
   print_step "11. Pre-Flight Configuration Summary"
   echo -e "${C_CYAN}${C_BOLD}"
@@ -3241,6 +3453,10 @@ main() {
   # The generator's answer, not the interview's: on an existing cluster it
   # probed the live shape and the flag had no say.
   echo -e "  • ${C_CYAN}GKE Cluster:${C_RESET} ${C_BOLD}${cluster_name}${C_RESET} (${region}, GKE $(cluster_mode_label "${TFVARS_CLUSTER_MODE:-$cluster_mode}"))"
+  if [ "${TFVARS_CREATE_CLUSTER:-true}" = "false" ]; then
+    echo -e "  • ${C_CYAN}Existing Cluster Mutations (Adoption):${C_RESET}"
+    summarize_existing_cluster_mutations "$project_id" "$cluster_name" "$region" "$enable_gvisor"
+  fi
   echo -e "  • ${C_CYAN}gVisor Sandbox Isolation:${C_RESET} ${enable_gvisor}"
   echo -e "  • ${C_CYAN}AI Model Provider:${C_RESET} ${model_provider} (${model_default_name})"
   if [ "$model_provider" = "vertex_ai" ]; then
@@ -3312,11 +3528,13 @@ main() {
 
   # The three script behaviours a data source cannot express: CMEK, the
   # Workload Identity pool, and NetworkPolicy enforcement on a cluster that
-  # already exists. All are no-ops when the cluster does not exist yet or is
-  # already configured.
-  ensure_existing_cluster_cmek "$project_id" "$cluster_name" "$region"
-  ensure_existing_cluster_workload_identity "$project_id" "$cluster_name" "$region"
-  ensure_existing_cluster_network_policy "$project_id" "$cluster_name" "$region"
+  # already exists. Only run when adopting an existing cluster; a cluster
+  # created by this install already has them configured via Terraform.
+  if [ "${TFVARS_CREATE_CLUSTER:-true}" = "false" ]; then
+    ensure_existing_cluster_cmek "$project_id" "$cluster_name" "$region"
+    ensure_existing_cluster_workload_identity "$project_id" "$cluster_name" "$region"
+    ensure_existing_cluster_network_policy "$project_id" "$cluster_name" "$region"
+  fi
 
   # The App key import sits here — after the dry-run exit and the operator's
   # confirmation (it enables the KMS API, creates permanent key rings, and
