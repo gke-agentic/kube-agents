@@ -8,18 +8,18 @@ The shipping install path targets GKE. You'll need one working GCP project plus 
 ## Local tooling
 
 - **Google Cloud SDK** (`gcloud`) — **576.0.0 or newer**, [install](https://cloud.google.com/sdk/docs/install), authenticated: `gcloud auth login && gcloud auth application-default login`. The installer sets Managed OpenTelemetry with `--managed-otel-scope`, which reached GA in gcloud 576.0.0 (2026-07-14); on an older SDK the flag exists only on the alpha and beta tracks. The installer checks this before it touches any cloud resource — `gcloud components update` if it complains.
-- **Terraform** — the install engine is the [`terraform/examples/full-install`](https://github.com/gke-labs/kube-agents/tree/main/terraform/examples/full-install) composition; `./install.sh` pre-flights `terraform` and offers to install it from HashiCorp's tap (Homebrew) or apt repository. It is equally the _teardown_ engine, and `./uninstall.sh` installs nothing on your behalf — with an install to tear down and no terraform, it refuses with exit 1, so a machine that has only ever run the installer's auto-install cannot tear the install down. (Against a target with no Terraform state there is nothing to destroy, so it exits 3 without needing terraform at all.)
+- **Terraform** — the install engine is the [`terraform/examples/full-install`](https://github.com/gke-labs/kube-agents/tree/main/terraform/examples/full-install) composition; the installer (`install.sh`) pre-flights `terraform` and offers to install it from HashiCorp's tap (Homebrew) or apt repository. It is equally the _teardown_ engine, and `./uninstall.sh` installs nothing on your behalf — with an install to tear down and no terraform, it refuses with exit 1, so a machine that has only ever run the installer's auto-install cannot tear the install down. (Against a target with no Terraform state there is nothing to destroy, so it exits 3 without needing terraform at all.)
 - **`kubectl`** — [install](https://kubernetes.io/docs/tasks/tools/). The installer points it at the GKE cluster it creates.
 - **Docker or Podman** — required by the operator dev workflow (`make docker-build`) if you rebuild images locally. Not required for a stock install.
 - **Bash** — the installer scripts are bash (including the `/bin/bash` macOS ships).
-- **`jq`, `gh`, `helm`, `git`** — the rest of the CLI set `./install.sh` pre-flights up front and offers to install when missing.
+- **`jq`, `gh`, `helm`, `git`** — the rest of the CLI set the installer pre-flights up front and offers to install when missing.
 - **`envsubst`** — only for the development Kustomize path (`make -C k8s-operator deploy-*`); usually shipped with `gettext`.
 
 ## GCP project
 
 - A GCP project you can enable APIs on and where you can create GKE clusters, Pub/Sub topics, KMS keyrings, and IAM service accounts.
 - Billing enabled on that project.
-- The `Editor` or `Owner` role for the user running `./install.sh` (or a scoped set covering the resources above).
+- The `Editor` or `Owner` role for the user running the installer (or a scoped set covering the resources above).
 
 The installer will enable APIs and create all resources itself; you don't need to pre-provision the cluster.
 
@@ -36,7 +36,7 @@ leaves the API server dialing a port nothing is listening on; see
 
 The operator's admission webhooks need TLS certificates managed by [cert-manager](https://cert-manager.io) (v1.13.0+).
 
-**You usually do not need to install this yourself.** The Terraform composition `terraform/examples/full-install` installs cert-manager as its own `helm_release`, pinned in its `cert_manager_version` variable, including the leader-election relocation Autopilot needs. On an existing cluster that already runs cert-manager, set `enable_cert_manager = false` — the composition does not detect an existing install and the apply fails on the existing CRDs. `./install.sh` probes for a `cert-manager` Deployment on the existing-cluster path and writes that variable for you. (An existing cert-manager installed under a different namespace or release name is not detected.)
+**You usually do not need to install this yourself.** The Terraform composition `terraform/examples/full-install` installs cert-manager as its own `helm_release`, pinned in its `cert_manager_version` variable, including the leader-election relocation Autopilot needs. On an existing cluster that already runs cert-manager, set `enable_cert_manager = false` — the composition does not detect an existing install and the apply fails on the existing CRDs. The installer (`install.sh`) probes for a `cert-manager` Deployment on the existing-cluster path and writes that variable for you. (An existing cert-manager installed under a different namespace or release name is not detected.)
 
 Install it by hand only if you are:
 
@@ -102,11 +102,11 @@ The declarative workflow needs a GitHub repo to file PRs against.
 
 - A GitHub repo **owned by an organization**. Minty looks the installation up under `/orgs/{org}/`, so a repo owned by a personal account cannot be used — see [token minter](/kube-agents/deploy/token-minter/). A free organization is enough.
 - A GitHub App with `contents:write`, `pull_requests:write`, and `issues:write` permissions, installed on that repo. The App itself may be owned by the organization or by your personal account.
-- The App's private key wrapped in a GCP KMS key — the [`github-minter` Terraform module](https://github.com/gke-labs/kube-agents/tree/main/terraform/modules/github-minter) creates the keyring and an import-only signing key, and `./install.sh` imports the downloaded `.pem` into it via the Minty CLI (a one-shot step, so the key material never enters Terraform state).
+- The App's private key wrapped in a GCP KMS key — the [`github-minter` Terraform module](https://github.com/gke-labs/kube-agents/tree/main/terraform/modules/github-minter) creates the keyring and an import-only signing key, and the installer (`install.sh`) imports the downloaded `.pem` into it via the Minty CLI (a one-shot step, so the key material never enters Terraform state).
 
 See [`k8s-operator/config/integrations/github/README.md`](https://github.com/gke-labs/kube-agents/blob/main/k8s-operator/config/integrations/github/README.md) for the full Minty setup.
 
 ## Ready to install
 
-- [Quick start (GKE)](/kube-agents/install/quickstart-gke/) — `./install.sh` end-to-end.
+- [Quick start (GKE)](/kube-agents/install/quickstart-gke/) — run the installer end-to-end.
 - [Manual install](/kube-agents/install/manual/) — step-by-step, no wrapper script.

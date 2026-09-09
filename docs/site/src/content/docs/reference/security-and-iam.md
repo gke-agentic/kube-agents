@@ -176,7 +176,8 @@ With `MODEL_PROVIDER=vertex_ai` the LiteLLM gateway gets its own KSA (`kubeagent
 - **With the installer (recommended)** — accept the default option in its permission-set menu, or pass it explicitly (a re-run reconciles the change through one `terraform apply`):
 
   ```bash
-  ./install.sh --permission-set=read-only
+  curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSION>/install.sh | bash -s -- \
+    --permission-set=read-only
   ```
 
 - **With a hand-driven Terraform composition** — set `permission_set = "read-only"` in `terraform.tfvars` and apply.
@@ -261,7 +262,7 @@ The agent never has direct write access to running infrastructure — see [Decla
 The install enforces Customer-Managed Encryption Keys (CMEK) for GKE database encryption:
 
 - **Automated Cloud KMS Setup**: On a cluster the install creates, the [`gke-cluster` module](https://github.com/gke-labs/kube-agents/tree/main/terraform/modules/gke-cluster)'s `enable_database_encryption` (default `true`) creates a dedicated Cloud KMS keyring and crypto key, grants the GKE service agent `roles/cloudkms.cryptoKeyEncrypterDecrypter`, and creates the cluster encrypted.
-- **Existing clusters**: Terraform cannot mutate a cluster it did not create, so `./install.sh` runs a `gcloud` pre-step before the apply: it ensures the keyring, key, and service-agent binding exist and updates the live cluster's database encryption. Clusters that are already encrypted are left alone.
+- **Existing clusters**: Terraform cannot mutate a cluster it did not create, so the installer (`install.sh`) runs a `gcloud` pre-step before the apply: it ensures the keyring, key, and service-agent binding exist and updates the live cluster's database encryption. Clusters that are already encrypted are left alone.
 - **`ALLOW_UNENCRYPTED_SECRETS` Override**: When installing onto an existing cluster or local test environment where CMEK must stay off, export `ALLOW_UNENCRYPTED_SECRETS=true` to skip that pre-step.
 
 ### Local State Security (`install.env`)

@@ -84,7 +84,7 @@ Three behaviours worth knowing before the first run:
 
 ### Non-Interactive & AI Agent Execution Mode
 
-For human operators, running the installer interactively (Method 0 above or `./install.sh`) is strongly recommended on initial setup: it detects sensible defaults from your active `gcloud` session, prompts for mandatory cloud project and LLM provider credentials, and records configuration to `install.env`.
+For human operators, running the official release installer interactively (Method 0 above, or `./install.sh` inside an official release checkout or bundle) is strongly recommended on initial setup: it detects sensible defaults from your active `gcloud` session, prompts for mandatory cloud project and LLM provider credentials, and records configuration to `install.env`.
 
 For headless environments, automated CI scripts, and AI Agent harnesses where no interactive TTY is available, execute the release-pinned installer non-interactively by supplying explicit CLI flags:
 
@@ -182,7 +182,7 @@ gcloud auth application-default login
 
 #### Step 2: Apply the Composition
 
-The interactive way is `./install.sh` from the repository root (Method 0), which writes the
+The interactive way is running the official release installer (Method 0 above, or `./install.sh` from an official release checkout or unpacked bundle), which writes the
 `terraform.tfvars` for you. Hand-driven:
 
 ```bash
@@ -201,8 +201,9 @@ KUBE_AGENTS_STATE_BUCKET=auto ./lifecycle.sh apply
   keep the value the file records rather than reverting to a default, so bumping `--image-tag`
   alone changes only the image tag. To change configuration, edit `install.env` (copy
   `install.env.example` and `chmod 600` it if the first install has not written one yet — the
-  example is tracked world-readable and the file it becomes holds your API keys) and re-run, use
-  `./install.sh --menu` (Save & Apply re-applies through the same engine), or edit your
+  example is tracked world-readable and the file it becomes holds your API keys) and re-run, run
+  the installer with `--menu` (e.g. `./install.sh --menu` or `$HOME/kube-agents/install.sh --menu`)
+  where Save & Apply re-applies through the same engine, or edit your
   hand-written tfvars and re-apply.
 
 - **Private Container Registry**: If your GKE clusters may only pull from an approved registry, see
@@ -214,8 +215,11 @@ KUBE_AGENTS_STATE_BUCKET=auto ./lifecycle.sh apply
 
 - **Dry-run check**: To preview actions without modifying cloud infrastructure:
   ```bash
-  ./install.sh --dry-run -y --project-id=<PROJECT>   # validate + terraform plan
-  # or, hand-driven, plain:  terraform plan
+  curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSION>/install.sh | bash -s -- \
+    --dry-run \
+    --non-interactive \
+    --project-id=<PROJECT_ID>
+  # or, hand-driven from repo, plain:  terraform plan
   ```
 
 #### Security & CMEK Encryption
@@ -233,12 +237,13 @@ If your clusters may only pull from an approved registry, copy every image the i
 there first, then export both registry prefixes before provisioning:
 
 ```bash
-# Exported before the mirror step so the mirror and the install use one tag.
-export IMAGE_TAG=0.1.0
+# Set to the target release tag (e.g. 0.4.0) matching your release installation
+export IMAGE_TAG=<RELEASE_VERSION>
 
 make mirror-images MIRROR_PREFIX=registry.example.com/kube-agents
 
-./install.sh -y --image-tag=0.1.0 \
+curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSION>/install.sh | bash -s -- \
+  -y \
   --registry-prefix=registry.example.com/kube-agents \
   --third-party-registry-prefix=registry.example.com/kube-agents
 ```
@@ -246,12 +251,7 @@ make mirror-images MIRROR_PREFIX=registry.example.com/kube-agents
 `make mirror-images` reads `images.json` at the repository root — the inventory of every image
 an install pulls — and copies each one, keeping the trailing image name only.
 
-`IMAGE_TAG` is not optional here. The mirror holds only the tag it was told to copy — `latest`
-if it was told nothing — while the install asks for whatever `--image-tag` says. Set the two to
-different values and the four first-party images name a reference the mirror was never given:
-the apply reports success and the pods sit in ImagePullBackOff, after the cluster and
-cert-manager already exist. Export it once, as above, so the mirror and the install cannot
-disagree.
+When using the official release installer (`<RELEASE_VERSION>/install.sh`), the image tag is baked in and matches the release version automatically. Ensure `IMAGE_TAG` used during mirroring matches that exact release version so the mirrored images and install sources stay aligned.
 
 The two flags are separate because the images fall into two groups. `--registry-prefix`
 (`image_registry` in tfvars) replaces `ghcr.io/gke-labs/kube-agents` for the images this project

@@ -5,7 +5,7 @@ description: Bootstrap a GKE cluster, the kube-agents operator, and the Platform
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
-The `./install.sh` installer bootstraps everything you need for a running Platform Agent on GKE: cluster, CRDs, IAM, secrets, Chat integration, inference gateway, and the token minter. It is a front door, not a second provisioner — the engine underneath is the Terraform composition [`terraform/examples/full-install`](https://github.com/gke-labs/kube-agents/tree/main/terraform/examples/full-install), which owns every GCP resource and installs the [`kube-agents` Helm chart](https://github.com/gke-labs/kube-agents/tree/main/charts/kube-agents), which owns every Kubernetes resource.
+The installer (`install.sh`) bootstraps everything you need for a running Platform Agent on GKE: cluster, CRDs, IAM, secrets, Chat integration, inference gateway, and the token minter. It is a front door, not a second provisioner — the engine underneath is the Terraform composition [`terraform/examples/full-install`](https://github.com/gke-labs/kube-agents/tree/main/terraform/examples/full-install), which owns every GCP resource and installs the [`kube-agents` Helm chart](https://github.com/gke-labs/kube-agents/tree/main/charts/kube-agents), which owns every Kubernetes resource.
 
 Prefer declarative IaC over the interview? Apply the same composition by hand with your own `terraform.tfvars` — see [the composition README](https://github.com/gke-labs/kube-agents/tree/main/terraform/examples/full-install) for the hand-driven path. Both paths run the same Terraform, so they create the same resources.
 
@@ -102,11 +102,11 @@ curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSI
 
 ## What just happened
 
-`./install.sh` collected your answers, wrote `install.env` and `terraform.tfvars`, and ran one `terraform apply` through the composition's [`lifecycle.sh`](https://github.com/gke-labs/kube-agents/blob/main/terraform/examples/full-install/lifecycle.sh) — GCP APIs, the GKE cluster (CMEK, Workload Identity, the host-discovery label), IAM and Workload Identity bindings, cert-manager, and the Helm chart carrying the operator, the `PlatformAgent` CR, the credentials Secret, and the LiteLLM gateway. Terraform state lives in a versioned GCS bucket (`<project>-kube-agents-tfstate`, prefix `kube-agents/<cluster>`), so `uninstall.sh` and `upgrade.sh` can find the install from a fresh clone.
+The installer collected your answers, wrote `install.env` and `terraform.tfvars`, and ran one `terraform apply` through the composition's [`lifecycle.sh`](https://github.com/gke-labs/kube-agents/blob/main/terraform/examples/full-install/lifecycle.sh) — GCP APIs, the GKE cluster (CMEK, Workload Identity, the host-discovery label), IAM and Workload Identity bindings, cert-manager, and the Helm chart carrying the operator, the `PlatformAgent` CR, the credentials Secret, and the LiteLLM gateway. Terraform state lives in a versioned GCS bucket (`<project>-kube-agents-tfstate`, prefix `kube-agents/<cluster>`), so `uninstall.sh` and `upgrade.sh` can find the install from a fresh clone.
 
 Two steps stay `gcloud` calls because Terraform cannot express them: the managed OpenTelemetry collection scope, and CMEK on a cluster that already existed before the install. The one-shot GitHub App key import into KMS also runs outside Terraform, so the PEM never enters state.
 
-Changing your mind later is the same engine: `./install.sh --menu` opens a Day-2 control panel whose **Save & Apply** regenerates `terraform.tfvars` and re-applies.
+Changing your mind later is the same engine: running the installer with `--menu` (e.g. `./install.sh --menu` or `$HOME/kube-agents/install.sh --menu`) opens a Day-2 control panel whose **Save & Apply** regenerates `terraform.tfvars` and re-applies.
 
 ## Common flags and toggles
 
@@ -116,7 +116,7 @@ Changing your mind later is the same engine: `./install.sh --menu` opens a Day-2
 - `--enable-google-chat` — provisions the Google Chat Pub/Sub backend and enables the CR's `googleChat` integration.
 - `--memory=file|hindsight|off` — the agent's long-term memory store; `hindsight` deploys the Hindsight API and Postgres into the cluster.
 
-Run `./install.sh --help` for the full list.
+Run the installer with `--help` (e.g. `./install.sh --help`) for the full list.
 
 ## Uninstall
 
