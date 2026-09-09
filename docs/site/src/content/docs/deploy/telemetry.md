@@ -79,7 +79,7 @@ Nothing here overrides configuration: an operator who sets rung 1 or 2 gets that
 
 ### Helm
 
-Discovery only covers the agents. LiteLLM's exporter and the LiteLLM NetworkPolicy are rendered by Helm, before any reconcile has happened, so one chart value drives all three:
+Discovery only covers the agents. LiteLLM's exporter is rendered by Helm, while its NetworkPolicy is managed by the operator on default installs (or rendered by Helm when either is false), so one chart value drives all three:
 
 ```yaml
 telemetry:
