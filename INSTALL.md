@@ -173,7 +173,7 @@ and GitHub minter workloads).
 - The manual Chat/Slack registrations in
   [Step 4 of this method](#step-4-enable-google-chat--slack-integrations-manual-required-steps)
   apply however the engine is driven.
-- The Terraform composition defaults `image_tag` to `"latest"` on `main` (or the stamped release version when on a release tag checkout or in unpacked release bundles; see the composition README).
+- The Terraform composition defaults `image_tag` to `"latest"` on `main` (in CI/CD pipelines it is passed explicitly with the test build commit SHA, and on release checkouts or unpacked release bundles it is automatically stamped with the released SemVer version; see the [composition README](terraform/examples/full-install/README.md#the-image_tag-rule)).
 
 ### Step-by-Step Execution
 
