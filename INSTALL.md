@@ -110,7 +110,7 @@ curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSI
   --project-id="my-gcp-project"
 ```
 
-_Guidance for AI Agents:_ For production deployments, deploy or test from an official release using the release installer (`<RELEASE_VERSION>/install.sh`), `git clone --branch <RELEASE_VERSION>`, or the published release tarball (where `<RELEASE_VERSION>` is the target release tag from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases), e.g. `0.4.0`). Do not deploy from a `main` checkout: manifests and CRD schemas on `main` diverge from released versions, and `verify_local_source_ref` blocks mismatched revisions.
+_Guidance for AI Agents:_ For production deployments, deploy or test from an official release using the release installer (`<RELEASE_VERSION>/install.sh`), the published release tarball (`kube-agents-<RELEASE_VERSION>.tar.gz` from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases), e.g. `0.4.0`), or `git clone --branch <RELEASE_VERSION>` if a Git checkout is specifically needed. Do not deploy from a `main` checkout: manifests and CRD schemas on `main` diverge from released versions, and `verify_local_source_ref` blocks mismatched revisions.
 
 ---
 
@@ -165,13 +165,32 @@ and GitHub minter workloads).
   you do **not** need to install it yourself on this path. (You do for
   [Method 2](#method-2-manual-kubernetes-cluster-deployment).)
 - The manual Chat/Slack registrations in
-  [Step 4 of this method](#step-4-enable-google-chat--slack-integrations-manual-required-steps)
+  [Step 5 of this method](#step-5-enable-google-chat--slack-integrations-manual-required-steps)
   apply however the engine is driven.
 - The Terraform composition defaults `image_tag` to `"latest"` on `main` (in CI/CD pipelines it is passed explicitly with the test build commit SHA, and on release checkouts or unpacked release bundles it is automatically stamped with the released SemVer version; see the [composition README](terraform/examples/full-install/README.md#the-image_tag-rule)).
 
 ### Step-by-Step Execution
 
-#### Step 1: Authenticate with Google Cloud
+#### Step 1: Obtain the Release Sources
+
+Download and extract the self-contained release archive from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases) (recommended):
+
+```bash
+curl -fsSL https://github.com/gke-labs/kube-agents/releases/download/<RELEASE_VERSION>/kube-agents-<RELEASE_VERSION>.tar.gz | tar -xz
+cd kube-agents-<RELEASE_VERSION>
+```
+
+Alternatively, if you require a Git repository checkout, clone pinned to an official release tag (for example, `0.4.0`):
+
+```bash
+git clone --branch <RELEASE_VERSION> https://github.com/gke-labs/kube-agents.git
+cd kube-agents
+```
+
+> [!CAUTION]
+> Do not clone `main` to deploy an official release: manifests and CRD schemas on `main` diverge from released container images. A mismatched checkout will fail `verify_local_source_ref` to prevent broken deployments.
+
+#### Step 2: Authenticate with Google Cloud
 
 Authenticate your `gcloud` CLI and set Application Default Credentials:
 
@@ -180,9 +199,9 @@ gcloud auth login
 gcloud auth application-default login
 ```
 
-#### Step 2: Apply the Composition
+#### Step 3: Apply the Composition
 
-The interactive way is running the official release installer (Method 0 above, or `./install.sh` from an official release checkout or unpacked bundle), which writes the
+The interactive way is running the official release installer (Method 0 above, or `./install.sh` from this release checkout or unpacked bundle), which writes the
 `terraform.tfvars` for you. Hand-driven:
 
 ```bash
@@ -267,7 +286,7 @@ See the [Docker images guide](docs/site/src/content/docs/deploy/docker-images.md
 inventory, the mirror script's options, the Helm and Terraform equivalents, and how to rebuild
 from mirrored base images rather than copying.
 
-#### Step 3: Verify Running Components
+#### Step 4: Verify Running Components
 
 Verify that the operator, LiteLLM gateway, and custom resources are healthy:
 
@@ -277,7 +296,7 @@ kubectl get pods -n kubeagents-system
 kubectl get platformagents --all-namespaces
 ```
 
-#### Step 4: Enable Google Chat & Slack Integrations (Manual Required Steps)
+#### Step 5: Enable Google Chat & Slack Integrations (Manual Required Steps)
 
 If you enabled Google Chat or Slack during the install, perform the following required manual steps after the apply completes:
 

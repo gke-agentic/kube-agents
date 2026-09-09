@@ -46,7 +46,20 @@ curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSI
   --permission-set="read-only"
 ```
 
-If cloning the repository instead of using curl, AI Agents must check out the target release tag:
+If deploying from local sources instead of piping the script via curl, AI Agents should unpack the official release bundle (recommended):
+
+```bash
+curl -fsSL https://github.com/gke-labs/kube-agents/releases/download/<RELEASE_VERSION>/kube-agents-<RELEASE_VERSION>.tar.gz | tar -xz
+cd kube-agents-<RELEASE_VERSION>
+./install.sh --non-interactive \
+  --project-id="YOUR_GCP_PROJECT_ID" \
+  --cluster-name="platform-agent-host" \
+  --region="us-central1" \
+  --model-provider="gemini" \
+  --permission-set="read-only"
+```
+
+Alternatively, if a Git checkout is specifically required, clone pinned to the target release tag:
 
 ```bash
 git clone --branch <RELEASE_VERSION> https://github.com/gke-labs/kube-agents.git

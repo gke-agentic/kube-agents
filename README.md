@@ -52,15 +52,15 @@ Or delegate setup directly to your AI coding agent:
 "Using kube-agents/INSTALL.md provision the latest official release of k8s agentic harness"
 ```
 
-Prefer to drive the engine by hand? Clone the repository at an official release tag, or unpack `kube-agents-<RELEASE_VERSION>.tar.gz` from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases):
+Prefer to drive the engine by hand? Unpack `kube-agents-<RELEASE_VERSION>.tar.gz` from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases) (recommended), or clone the repository at an official release tag if a Git checkout is needed:
 
 ```bash
-git clone --branch <RELEASE_VERSION> https://github.com/gke-labs/kube-agents.git
-cd kube-agents
+curl -fsSL https://github.com/gke-labs/kube-agents/releases/download/<RELEASE_VERSION>/kube-agents-<RELEASE_VERSION>.tar.gz | tar -xz
+cd kube-agents-<RELEASE_VERSION>
 ./install.sh                                              # the interview, then one terraform apply
-# or, if unpacking the release archive:
-# curl -fsSL https://github.com/gke-labs/kube-agents/releases/download/<RELEASE_VERSION>/kube-agents-<RELEASE_VERSION>.tar.gz | tar -xz
-# cd kube-agents-<RELEASE_VERSION> && ./install.sh
+# or, if a Git checkout is needed instead:
+# git clone --branch <RELEASE_VERSION> https://github.com/gke-labs/kube-agents.git
+# cd kube-agents && ./install.sh
 # or, with your own terraform.tfvars:
 cd terraform/examples/full-install && ./lifecycle.sh apply
 ```

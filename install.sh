@@ -1154,7 +1154,11 @@ verify_local_source_ref() {
 
   SOURCE_REF_VERIFIED="${repo_dir}@${expected_ref}"
   if [ "$unverified" = "true" ]; then
-    print_warning "Continuing with unverified install sources: the cluster will get this checkout's configuration plus the image built from ${expected_ref}."
+    if [ "$PARAM_DRY_RUN" = "true" ]; then
+      print_warning "Continuing dry run with unverified install sources: a real installation would refuse this checkout, but preview is continuing."
+    else
+      print_warning "Continuing with unverified install sources: the cluster will get this checkout's configuration plus the image built from ${expected_ref}."
+    fi
     return 0
   fi
   print_success "Verified install sources and image ref resolve to commit ${expected_commit}."

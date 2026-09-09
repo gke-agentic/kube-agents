@@ -198,6 +198,36 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
         finally:
             temp_dir.cleanup()
 
+    def test_verify_local_source_ref_dry_run_warning_does_not_claim_cluster_mutation(self):
+        """Under --dry-run, an unverified mismatched checkout warns about dry-run continuing without claiming cluster mutation."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_dir = pathlib.Path(temp_dir) / "repo"
+            repo_dir.mkdir()
+            subprocess.run(["git", "init"], cwd=str(repo_dir), check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=str(repo_dir), check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(repo_dir), check=True)
+            (repo_dir / "file.txt").write_text("initial\n")
+            subprocess.run(["git", "add", "file.txt"], cwd=str(repo_dir), check=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=str(repo_dir), check=True)
+            head_commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(repo_dir), check=True, capture_output=True, text=True).stdout.strip()
+            (repo_dir / "file.txt").write_text("second\n")
+            subprocess.run(["git", "commit", "-am", "second"], cwd=str(repo_dir), check=True)
+            subprocess.run(["git", "tag", "0.2.0"], cwd=str(repo_dir), check=True)
+            subprocess.run(["git", "checkout", head_commit], cwd=str(repo_dir), check=True, capture_output=True)
+
+            cmd = f'PARAM_DRY_RUN=true verify_local_source_ref "{repo_dir}" "0.2.0"'
+            proc = self._run_install_func(cmd)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("Continuing dry run with unverified install sources", proc.stdout)
+            self.assertIn("preview is continuing", proc.stdout)
+            self.assertNotIn("the cluster will get", proc.stdout)
+
+            cmd_real = f'PARAM_DRY_RUN=false PARAM_ALLOW_UNVERIFIED_SOURCE=true verify_local_source_ref "{repo_dir}" "0.2.0"'
+            proc_real = self._run_install_func(cmd_real)
+            self.assertEqual(proc_real.returncode, 0, proc_real.stderr)
+            self.assertIn("Continuing with unverified install sources", proc_real.stdout)
+            self.assertIn("the cluster will get this checkout's configuration", proc_real.stdout)
+
     def test_parse_args_google_chat_mode(self):
         """Verifies parse_args captures --google-chat-mode."""
         cmd = f'parse_args --google-chat-mode={MOCK_GOOGLE_CHAT_MODE}; echo "MODE=$PARAM_GOOGLE_CHAT_MODE"'

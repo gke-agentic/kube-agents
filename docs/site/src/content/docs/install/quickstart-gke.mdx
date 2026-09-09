@@ -50,20 +50,20 @@ curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSI
 
 <Steps>
 
-1. **Clone the repo at the release tag.**
+1. **Obtain the release sources.**
 
-   Clone pinned to an official release tag (for example, `0.4.0`):
-
-   ```bash
-   git clone --branch <RELEASE_VERSION> https://github.com/gke-labs/kube-agents.git
-   cd kube-agents
-   ```
-
-   Alternatively, download and extract the self-contained release archive from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases) without cloning:
+   Download and extract the self-contained release archive from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases) (recommended):
 
    ```bash
    curl -fsSL https://github.com/gke-labs/kube-agents/releases/download/<RELEASE_VERSION>/kube-agents-<RELEASE_VERSION>.tar.gz | tar -xz
    cd kube-agents-<RELEASE_VERSION>
+   ```
+
+   Alternatively, if you require a Git checkout, clone pinned to an official release tag (for example, `0.4.0`):
+
+   ```bash
+   git clone --branch <RELEASE_VERSION> https://github.com/gke-labs/kube-agents.git
+   cd kube-agents
    ```
 
 2. **Run the installer.**
