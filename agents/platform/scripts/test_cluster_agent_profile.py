@@ -510,6 +510,18 @@ class CreateProfileTest(unittest.TestCase):
         self.assertTrue(cfg.get("enabled", True))
         self.assertEqual(cfg["backends"][0]["endpoint"], self.CUSTOM + "/v1/traces")
 
+    def test_disabled_telemetry_handles_mixed_case(self):
+        self.bake_shared_plugin()
+        with mock.patch.dict(
+            os.environ,
+            {"OTEL_SDK_DISABLED": "TRUE", "OTEL_SERVICE_NAME": "agent-gateway"},
+        ):
+            self.create()
+
+        cfg = self.plugin_config()
+        self.assertFalse(cfg["enabled"])
+        self.assertEqual(cfg["backends"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

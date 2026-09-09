@@ -111,6 +111,32 @@ class ApplyTest(unittest.TestCase):
         self.assertTrue(cfg["enabled"])
         self.assertEqual(cfg["backends"][0]["endpoint"], CUSTOM + "/v1/traces")
 
+    def test_re_enabling_with_source_path_restores_enabled_true(self):
+        pristine = self.write_baked(self.tmp / "defaults" / "hermes_otel" / "config.yaml")
+        # Ensure pristine has no 'enabled' field (matches image default)
+        cfg = yaml.safe_load(pristine.read_text())
+        cfg.pop("enabled", None)
+        pristine.write_text(yaml.safe_dump(cfg))
+
+        # Disable on disk
+        oc.apply(self.config, disabled=True)
+        self.assertFalse(self.load()["enabled"])
+
+        # Re-enable using pristine source_path
+        self.assertTrue(oc.apply(self.config, service_name="agent-gateway", source_path=pristine, disabled=False))
+        cfg = self.load()
+        self.assertTrue(cfg["enabled"])
+        self.assertEqual(cfg["backends"][0]["endpoint"], BAKED)
+
+    def test_pristine_disabled_template_is_not_forced_true(self):
+        pristine = self.tmp / "defaults" / "hermes_otel" / "config.yaml"
+        pristine.parent.mkdir(parents=True, exist_ok=True)
+        pristine.write_text(yaml.safe_dump({"enabled": False, "backends": []}))
+
+        self.assertTrue(oc.apply(self.config, source_path=pristine, disabled=False))
+        cfg = self.load()
+        self.assertFalse(cfg["enabled"])
+
     def test_disabled_takes_precedence_over_endpoint(self):
         self.assertTrue(oc.apply(self.config, endpoint=CUSTOM, disabled=True))
         cfg = self.load()
@@ -139,7 +165,17 @@ class ApplyTest(unittest.TestCase):
         with redirect_stderr(err):
             self.assertFalse(oc.apply(self.config, endpoint=CUSTOM))
         self.assertIn("WARN", err.getvalue())
+        self.assertIn(str(self.config), err.getvalue())
         self.assertEqual(self.config.read_text(), before)
+
+    def test_bad_yaml_in_source_path_warns_and_leaves_file(self):
+        pristine = self.tmp / "defaults" / "hermes_otel" / "config.yaml"
+        pristine.parent.mkdir(parents=True, exist_ok=True)
+        pristine.write_text("backends: [ not valid yaml")
+        err = io.StringIO()
+        with redirect_stderr(err):
+            self.assertFalse(oc.apply(self.config, source_path=pristine))
+        self.assertIn(str(pristine), err.getvalue())
 
     def test_unwritable_file_warns_rather_than_raising(self):
         self.config.chmod(0o444)

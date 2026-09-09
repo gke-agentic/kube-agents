@@ -204,7 +204,7 @@ def _pin_otel_endpoint(home: Path, name: str) -> None:
             disabled=disabled,
         )
     except Exception as e:  # noqa: BLE001 - telemetry must not fail the scaffold
-        log(f"{name}: pinning the OpenTelemetry endpoint failed ({e}); traces go to the image default")
+        log(f"{name}: configuring OpenTelemetry failed ({e}); telemetry config unchanged")
 
 
 def kubeconfig_landed(kubeconfig: Path) -> bool:

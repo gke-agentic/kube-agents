@@ -107,6 +107,7 @@ const (
 	sharedStateSetupEnvVar = "AGENT_SHARED_STATE_SETUP"
 	sharedStateSetupOwner  = "owner"
 	sharedStateSetupSkip   = "skip"
+	envHermesOtelEnabled   = "HERMES_OTEL_ENABLED"
 )
 
 // Which Hermes profile the gateway runs as, when it is not the default one.
@@ -3227,7 +3228,7 @@ func safeSandboxEnvOverrides(custom []corev1.EnvVar) []corev1.EnvVar {
 		"ALERT_DAILY_LIMIT_INFO":      {},
 		"ALERT_DAILY_LIMIT_WARNING":   {},
 		"EOD_EXCLUDE_NAMESPACES":      {},
-		"HERMES_OTEL_ENABLED":         {},
+		envHermesOtelEnabled:          {},
 		"OTEL_EXPORTER_OTLP_ENDPOINT": {},
 		"OTEL_EXPORTER_OTLP_PROTOCOL": {},
 		"OTEL_RESOURCE_ATTRIBUTES":    {},
@@ -3243,6 +3244,19 @@ func safeSandboxEnvOverrides(custom []corev1.EnvVar) []corev1.EnvVar {
 		}
 	}
 	return result
+}
+
+// isHermesOtelForced checks whether spec.deployment.env explicitly force-enables the hermes_otel plugin.
+func isHermesOtelForced(agent *agentv1alpha1.PlatformAgent) bool {
+	if agent == nil || agent.Spec.Deployment == nil {
+		return false
+	}
+	for _, env := range agent.Spec.Deployment.Env {
+		if env.Name == envHermesOtelEnabled && strings.EqualFold(strings.TrimSpace(env.Value), "true") {
+			return true
+		}
+	}
+	return false
 }
 
 // buildEventWatcherKubeconfigVolume is the kubeconfig the broker writes for the
@@ -4738,7 +4752,12 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, p
 	// either, though not always — a collector Service exposing only gRPC 4317 is rejected
 	// by otlpHTTPEndpointForService and also resolves to None, and there the namespace is
 	// real. The rule is dropped in both cases, because neither one exports.
-	if ns := otlpCollectorNamespace(otlpEndpoint); ns != "" && !otlpDisabled {
+	//
+	// Exception: when HERMES_OTEL_ENABLED=true is set in spec.deployment.env (#933),
+	// the plugin force-exports traces to the baked collector fallback even if the
+	// SDK metric exporter was disabled by otlpSourceNone, so egress must be admitted.
+	hermesForced := isHermesOtelForced(agent)
+	if ns := otlpCollectorNamespace(otlpEndpoint); ns != "" && (!otlpDisabled || hermesForced) {
 		egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(4317))},

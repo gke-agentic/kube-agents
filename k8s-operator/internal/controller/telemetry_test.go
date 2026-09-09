@@ -160,6 +160,26 @@ func TestBuildNetworkPolicyOmitsCollectorEgressWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestBuildNetworkPolicyAllowsCollectorEgressWhenHermesOtelForced(t *testing.T) {
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-agent", Namespace: "my-ns"},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			AgentSpec: agentv1alpha1.AgentSpec{
+				Deployment: &agentv1alpha1.DeploymentSpec{
+					Env: []corev1.EnvVar{
+						{Name: "HERMES_OTEL_ENABLED", Value: "true"},
+					},
+				},
+			},
+		},
+	}
+
+	netpol := buildNetworkPolicy(agent, nil, defaultTestNetpolProfile(), false, "", true)
+	if !hasCollectorEgress(netpol, "gke-managed-otel") {
+		t.Error("expected collector egress rule when HERMES_OTEL_ENABLED=true even if otlpDisabled=true")
+	}
+}
+
 // hasCollectorEgress reports whether np allows egress to ns on an OTLP receiver port.
 func hasCollectorEgress(np *networkingv1.NetworkPolicy, ns string) bool {
 	for _, rule := range np.Spec.Egress {

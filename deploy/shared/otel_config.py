@@ -120,6 +120,11 @@ def apply(
 
     try:
         current = _load(config_path) if config_path.exists() else {}
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        log(f"WARN: cannot read {config_path}: {exc}; leaving the plugin config alone")
+        return False
+
+    try:
         config = _load(origin) if origin != config_path else copy.deepcopy(current)
     except (OSError, ValueError, yaml.YAMLError) as exc:
         log(f"WARN: cannot read {origin}: {exc}; leaving the plugin config alone")
@@ -138,7 +143,10 @@ def apply(
         config[FIELD_ENABLED] = False
         config[FIELD_BACKENDS] = []
     else:
-        if config.get(FIELD_ENABLED) is False:
+        # Re-enable if previously disabled on disk, unless the pristine template
+        # explicitly configured enabled: false.
+        pristine_disabled = origin != config_path and config.get(FIELD_ENABLED) is False
+        if current.get(FIELD_ENABLED) is False and not pristine_disabled:
             config[FIELD_ENABLED] = True
 
         if endpoint:

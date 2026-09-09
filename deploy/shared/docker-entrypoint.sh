@@ -1420,7 +1420,9 @@ fi
 # keeps a non-primary owner (an HA replica) from repeating the damage.
 if [ "$IS_BOOTSTRAP_PRIMARY" = "1" ] && [ -f "$TARGET_DIR/scripts/otel_config.py" ]; then
     OTEL_EXTRA_ARGS=""
-    if [ "${HERMES_OTEL_ENABLED:-}" = "false" ] || { [ -z "${HERMES_OTEL_ENABLED:-}" ] && [ "${OTEL_SDK_DISABLED:-}" = "true" ]; }; then
+    hermes_otel_val=$(printf '%s' "${HERMES_OTEL_ENABLED:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+    otel_sdk_val=$(printf '%s' "${OTEL_SDK_DISABLED:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+    if [ "$hermes_otel_val" = "false" ] || { [ "$hermes_otel_val" != "true" ] && [ "$otel_sdk_val" = "true" ]; }; then
         OTEL_EXTRA_ARGS="$OTEL_FLAG_DISABLED"
     fi
     PYTHONPATH="$TARGET_DIR/scripts" "$INSTALL_DIR/.venv/bin/python3" "$TARGET_DIR/scripts/otel_config.py" \

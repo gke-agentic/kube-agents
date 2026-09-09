@@ -290,6 +290,29 @@ else
 fi
 rm -rf "$home" "$home.out" "$home.err"
 
+# Step 4's disabled sweep. When OTEL_SDK_DISABLED=true or HERMES_OTEL_ENABLED=false,
+# hermes_otel must be disabled (enabled: false) and backends emptied.
+checks=$((checks + 1))
+home=$(mktemp -d "${SCRATCH_PREFIX}otel_dis.XXXXXX")
+OTEL_SDK_DISABLED=true
+export OTEL_SDK_DISABLED
+run_entrypoint "$home" owner "$home.out" "$home.err" /bin/echo hermes gateway run
+unset OTEL_SDK_DISABLED
+
+otel_dis_missed=""
+for cfg in "$home/plugins/hermes_otel/config.yaml" "$home/profiles/platform/plugins/hermes_otel/config.yaml"; do
+    [ -f "$cfg" ] || { otel_dis_missed="$otel_dis_missed $cfg(absent)"; continue; }
+    grep -q "enabled: false" "$cfg" || otel_dis_missed="$otel_dis_missed $cfg(not-disabled)"
+    grep -q "backends: \[\]" "$cfg" || otel_dis_missed="$otel_dis_missed $cfg(backends-not-empty)"
+done
+if [ -n "$otel_dis_missed" ]; then
+    echo "FAIL  step 4 did not disable hermes_otel configs:$otel_dis_missed"
+    failures=$((failures + 1))
+else
+    printf 'ok    %-44s %s\n' "otel disabled disables root + platform profile" "enabled=false, backends=[]"
+fi
+rm -rf "$home" "$home.out" "$home.err"
+
 # The two ways a run escapes its scratch tree, checked instead of promised. Both matter
 # most in the place the header recommends running this — a live pod — and neither is
 # visible from the decision table above.
