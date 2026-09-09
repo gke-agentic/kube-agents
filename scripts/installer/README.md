@@ -104,7 +104,7 @@ the defaults above** — `set -a` sourcing means a key the file carries overwrit
 export of the same name, so a flag is what overrides a recorded value for one run.
 One key is file-only: the front doors clear a shell-exported `NAMESPACE` before reading
 the file, because kubectl tooling exports that name and the value now reaches the Helm
-release's namespace. The dev tooling's `load_state` does not clear it.
+release's namespace. The dev tooling's `load_state` clears it the same way.
 `KUBE_AGENTS_INSTALL_ENV` points at a different path, which is how CI renders one from
 its own variables rather than keeping install state on an ephemeral runner.
 

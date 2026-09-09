@@ -238,8 +238,19 @@ tfvar() {
 # `grep -q` looks equivalent but is not: grep exits at the first match, terraform
 # dies of SIGPIPE, and `set -o pipefail` reports the whole pipeline as failed — so
 # an address that IS in state reads as absent purely because it sorts early.
+#
+# Read once per run and reused: every guard calls load_state, and a state list
+# is a backend round-trip each time. Anything that writes state -- import,
+# state rm, the targeted apply -- calls state_changed first, so the next
+# load_state reads again rather than trusting a snapshot it just invalidated.
 STATE_LIST=""
-load_state() { STATE_LIST=$(terraform state list 2>/dev/null || true); }
+STATE_LIST_FRESH=false
+load_state() {
+  [[ "$STATE_LIST_FRESH" == "true" ]] && return 0
+  STATE_LIST=$(terraform state list 2>/dev/null || true)
+  STATE_LIST_FRESH=true
+}
+state_changed() { STATE_LIST_FRESH=false; }
 in_state() { grep -Fxq "$1" <<<"$STATE_LIST"; }
 
 # terraform import configures every provider, and the helm provider here is built
@@ -371,6 +382,7 @@ adopt_kms() {
 
     log "adopting pre-existing resource: $id"
     [[ -f "$OVERRIDE_FILE" ]] || with_override
+    state_changed
     if terraform import -input=false "$address" "$id" >/dev/null 2>&1; then
       adopted=$((adopted + 1))
       if [[ "$kind" == "key" ]]; then
@@ -441,6 +453,7 @@ adopt_pubsub() {
 
     log "adopting existing Pub/Sub resource: $id"
     [[ -f "$OVERRIDE_FILE" ]] || with_override
+    state_changed
     if terraform import -input=false "$address" "$id" >/dev/null 2>&1; then
       adopted=$((adopted + 1))
       # STATE_LIST is a snapshot taken by load_state above, so the
@@ -481,6 +494,19 @@ guard_cluster_ownership() {
 
   if [[ "$(tfvar create_cluster)" == "false" ]]; then
     [[ "$managed" == "true" ]] || return 0
+    # Which cluster the entry names decides the remedy. Under a shared custom
+    # KUBE_AGENTS_STATE_PREFIX the state can manage some OTHER cluster, and
+    # "set create_cluster = true" would then plan that one's replacement.
+    local recorded cluster
+    recorded=$(terraform state show -no-color "$addr" 2>/dev/null |
+      sed -n 's/^ *name *= *"\([^"]*\)".*/\1/p' | head -1)
+    cluster=$(tfvar cluster_name)
+    if [[ -n "$recorded" && -n "$cluster" && "$recorded" != "$cluster" ]]; then
+      warn "create_cluster is false, and this state manages a DIFFERENT cluster, '$recorded' ($addr), not '$cluster'."
+      warn "Applying now would plan the replacement of '$recorded'. Two installs are sharing one state prefix"
+      warn "($(state_prefix)); give this install its own KUBE_AGENTS_STATE_PREFIX, or unset it to take the per-cluster default."
+      exit 1
+    fi
     warn "create_cluster is false, but this state already manages the cluster ($addr)."
     warn "Applying now would plan the cluster's DESTRUCTION. Set create_cluster = true"
     warn "in terraform.tfvars — this state created the cluster, so it is Terraform's to keep."
@@ -623,6 +649,7 @@ forget_unmanaged_cluster_kms() {
   for address in "${CLUSTER_KMS_ADDRESSES[@]}"; do
     in_state "$address" || continue
     log "forgetting $address (create_cluster = false; kept in GCP, re-adopted when this state creates a cluster)"
+    state_changed
     terraform state rm "$address" >/dev/null 2>&1 ||
       warn "could not forget $address; the apply may schedule its key versions for destruction"
     forgot=true
@@ -745,6 +772,7 @@ disable_deletion_protection() {
   [[ "$recorded" == "true" ]] || return 0
 
   log "clearing deletion_protection so the cluster can be destroyed"
+  state_changed
   terraform apply -input=false -auto-approve \
     -var="deletion_protection=false" -target="$address" >/dev/null
 }
@@ -764,6 +792,7 @@ forget_kms() {
     "$MINTER_KMS_KEYRING_ADDRESS"; do
     in_state "$address" || continue
     log "forgetting $address (kept in GCP; re-adopted on the next apply)"
+    state_changed
     terraform state rm "$address" >/dev/null 2>&1 ||
       warn "could not forget $address; its key versions may be scheduled for destruction"
   done

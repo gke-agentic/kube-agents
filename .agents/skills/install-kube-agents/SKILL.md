@@ -127,6 +127,10 @@ Upon completion, `install.sh` generates a machine-readable JSON status report at
 }
 ```
 
+The full report also carries `gvisor_enabled` and `memory_mode`. A report written before the
+interview decided them (a run that failed early) says so: `gvisor_enabled` is `null` and
+`memory_mode` is empty, rather than restating a default the run never applied.
+
 ## Supported Command-Line Flags
 
 Defaults marked "`installer_common.sh`" reach the installer through

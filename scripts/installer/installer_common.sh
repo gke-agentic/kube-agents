@@ -860,7 +860,7 @@ check_service_account_ownership() {
   for line in ${foreign[@]+"${foreign[@]}"}; do
     IFS=$'\t' read -r label key account_id email <<<"$line"
     print_error "Service account '${account_id}' (${label}) already exists in project '${PROJECT_ID}' and is not managed by this install's Terraform state (gs://$(tf_state_bucket)/$(tf_state_prefix))."
-    print_info "Applying would stop on a 409 creating it. If another kube-agents install in this project owns it, give this install its own name: set ${key}=<a-different-name> in install.env. If it is left over from an install removed without uninstall.sh, delete it first: gcloud iam service-accounts delete ${email} --project ${PROJECT_ID}"
+    print_info "Applying would stop on a 409 creating it. If another kube-agents install in this project owns it, give this install its own name: set ${key}=<a-different-name> in install.env, or on a first install, which has no install.env yet, run ${key}=<a-different-name> ./install.sh ... and the name is recorded in the install.env it creates. If it is left over from an install removed without uninstall.sh, delete it first: gcloud iam service-accounts delete ${email} --project ${PROJECT_ID}"
   done
   return 1
 }

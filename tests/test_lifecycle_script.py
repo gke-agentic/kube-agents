@@ -27,7 +27,8 @@ class LifecycleScriptGuardTest(unittest.TestCase):
                    tfvar_create_cluster="true", gcloud_stub="exit 1",
                    tfvar_namespace='"kubeagents-system"',
                    tfvar_kms_keyring='"platform-agent-keyring"',
-                   tfvar_kms_key='"k8s-secret-encryption-key"'):
+                   tfvar_kms_key='"k8s-secret-encryption-key"',
+                   tfvar_cluster_name="null"):
         """Run a lifecycle.sh function against stubbed terraform and gcloud commands.
 
         `gcloud_stub` answers every gcloud call; the default says the cluster
@@ -48,6 +49,8 @@ class LifecycleScriptGuardTest(unittest.TestCase):
 set -e
 cmd="${{1:-}}"
 if [[ "$cmd" == "state" && "${{2:-}}" == "list" ]]; then
+    # One line per read, for the test that counts them.
+    echo "state list" >> "${{TF_STUB_LOG:-/dev/null}}"
     cat << 'EOF'
 {state_list}
 EOF
@@ -73,6 +76,9 @@ elif [[ "$cmd" == "console" ]]; then
         exit 0
     elif [[ "$expr" == *"kms_key_name"* ]]; then
         echo '{tfvar_kms_key}'
+        exit 0
+    elif [[ "$expr" == *"cluster_name"* ]]; then
+        echo '{tfvar_cluster_name}'
         exit 0
     fi
     echo 'null'
@@ -239,6 +245,36 @@ resource "google_service_account" "agent" {
         self.assertEqual(proc.returncode, 1)
         self.assertIn("create_cluster is false, but this state already manages the cluster", proc.stderr)
         self.assertIn("Applying now would plan the cluster's DESTRUCTION", proc.stderr)
+
+    def test_guard_cluster_ownership_names_a_shared_prefix_when_the_state_holds_another_cluster(self):
+        """Under a shared custom KUBE_AGENTS_STATE_PREFIX the managed entry can be
+        some other cluster; "set create_cluster = true" would then plan that
+        one's replacement, so the remedy is the prefix, not the variable."""
+        proc = self._run_guard(
+            "guard_cluster_ownership",
+            state_list="module.gke_cluster.google_container_cluster.autopilot[0]",
+            state_show='resource "google_container_cluster" "autopilot" {\n    name = "other-cluster"\n}',
+            tfvar_create_cluster='"false"',
+            tfvar_cluster_name='"this-cluster"',
+        )
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("manages a DIFFERENT cluster, 'other-cluster'", proc.stderr)
+        self.assertIn("KUBE_AGENTS_STATE_PREFIX", proc.stderr)
+        self.assertNotIn("Set create_cluster = true", proc.stderr)
+
+    def test_the_state_list_is_read_once_until_something_writes_state(self):
+        with tempfile.NamedTemporaryFile(delete=False) as log:
+            log_path = log.name
+        try:
+            proc = self._run_guard(
+                f'export TF_STUB_LOG="{log_path}"; load_state; load_state; in_state x || true; '
+                'state_changed; load_state'
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            reads = pathlib.Path(log_path).read_text().count("state list")
+        finally:
+            os.unlink(log_path)
+        self.assertEqual(reads, 2, "two reads: the first, and the one after state_changed")
 
     def test_guard_cluster_ownership_passes_a_create_when_no_cluster_exists(self):
         proc = self._run_guard("guard_cluster_ownership", state_list="", tfvar_create_cluster="true")
