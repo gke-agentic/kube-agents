@@ -14,6 +14,25 @@
 
 set -Eeuo pipefail
 
+# ─── Install sources ──────────────────────────────────────────────────────────
+# Where the sources come from when this script runs alone (curl | bash) and
+# where it puts them. upgrade.sh and uninstall.sh carry the same URL for the
+# same reason -- each front door needs it before it has a checkout to read it
+# from -- and tests/test_install_script.py pins the three equal.
+KUBE_AGENTS_REPO_URL="https://github.com/gke-labs/kube-agents.git"
+# A function rather than a constant so that HOME expands only when a clone is
+# needed: a run from a checkout never clones, and HOME is unset in some
+# service environments (a systemd system unit, a container with no passwd
+# entry), where `set -u` would otherwise stop the script on this line.
+kube_agents_clone_dir() { printf '%s/kube-agents' "${HOME:?the installer clones its sources under HOME when it does not run from a checkout}"; }
+# The github-token-minter release whose CLI imports the App key
+# (import_github_pem): the repository the CLI is cloned from, its tag, and the
+# directory the manual recipe names. A git tag, not an image, so it is not in
+# images.json.
+MINTY_CLI_REPO_URL="https://github.com/abcxyz/github-token-minter.git"
+MINTY_CLI_GIT_TAG="v2.7.1"
+MINTY_CLI_MANUAL_CLONE_DIR="/tmp/minty"
+
 # ─── ANSI Colors & Terminal Responsive Helpers ─────────────────────────────────
 # A function because scripts/installer/common.sh defines the same variables
 # unconditionally: sourcing it would re-enable colour under NO_COLOR or in a pipe,
@@ -41,17 +60,6 @@ define_print_helpers() {
   print_error() { echo -e "  ${C_RED}✗ $1${C_RESET}"; }
 }
 define_print_helpers
-
-# ─── Install sources ──────────────────────────────────────────────────────────
-# Where the sources come from when this script runs alone (curl | bash) and
-# where it puts them. upgrade.sh and uninstall.sh carry the same URL for the
-# same reason -- each front door needs it before it has a checkout to read it
-# from -- and tests/test_install_script.py pins the three equal.
-KUBE_AGENTS_REPO_URL="https://github.com/gke-labs/kube-agents.git"
-KUBE_AGENTS_CLONE_DIR="${HOME}/kube-agents"
-# The github-token-minter release whose CLI imports the App key
-# (import_github_pem). A git tag, not an image, so it is not in images.json.
-MINTY_CLI_GIT_TAG="v2.7.1"
 
 # ─── Process Lock File & Error Trap Handling ────────────────────────────────
 LOCK_FILE="${KUBE_AGENTS_LOCK_FILE:-/tmp/kube-agents-install.lock}"
@@ -150,7 +158,7 @@ _resolve_repo_dir_for_state() {
   elif [ -f "scripts/installer/installer_common.sh" ]; then
     pwd
   else
-    printf '%s' "$KUBE_AGENTS_CLONE_DIR"
+    kube_agents_clone_dir
   fi
 }
 _state_repo_dir="$(_resolve_repo_dir_for_state)"
@@ -1219,7 +1227,7 @@ acquire_source_repo() {
     resolved_dir="$(pwd)"
     print_success "Using current repository directory: $resolved_dir"
   else
-    resolved_dir="$KUBE_AGENTS_CLONE_DIR"
+    resolved_dir="$(kube_agents_clone_dir)"
     if [ -d "$resolved_dir" ]; then
       print_info "Using existing repository at $resolved_dir without modifying local changes."
     else
@@ -1888,7 +1896,7 @@ import_github_pem() {
   # its v2 tags require, so Go rejects the version with or without /v2 in the
   # path. The gcloud-only recovery recipe lives in
   # k8s-operator/config/integrations/github/README.md.
-  local import_cmd="git clone --depth 1 --branch ${MINTY_CLI_GIT_TAG} https://github.com/abcxyz/github-token-minter.git /tmp/minty && cd /tmp/minty && go run ./cmd/minty tools import-pk -project-id=${project_id} -location=${kms_location} -key-ring=${keyring} -key=${key} -private-key=@<path-to-pem>"
+  local import_cmd="git clone --depth 1 --branch ${MINTY_CLI_GIT_TAG} ${MINTY_CLI_REPO_URL} ${MINTY_CLI_MANUAL_CLONE_DIR} && cd ${MINTY_CLI_MANUAL_CLONE_DIR} && go run ./cmd/minty tools import-pk -project-id=${project_id} -location=${kms_location} -key-ring=${keyring} -key=${key} -private-key=@<path-to-pem>"
   if [ -z "$pem_path" ] || [ ! -f "$pem_path" ]; then
     print_warning "No GitHub App private key PEM available (GITHUB_PEM_PATH='${pem_path}')."
     print_info "The minter deployment stays unready until the key is imported: ${import_cmd}"
@@ -1965,7 +1973,7 @@ import_github_pem() {
   minty_dir="$(mktemp -d "${TMPDIR:-/tmp}/minty-XXXXXX")"
   pem_abs="$(realpath "$pem_path" 2>/dev/null || echo "$pem_path")"
   if git clone --quiet --depth 1 --branch "$MINTY_CLI_GIT_TAG" \
-      https://github.com/abcxyz/github-token-minter.git "$minty_dir" &&
+      "$MINTY_CLI_REPO_URL" "$minty_dir" &&
     (cd "$minty_dir" && retry 6 5 go run ./cmd/minty tools import-pk \
       -project-id="$project_id" -location="$kms_location" -key-ring="$keyring" -key="$key" \
       -private-key=@"$pem_abs"); then
@@ -3308,8 +3316,14 @@ main() {
   # generator fetched credentials on the adoption path alone, so fetch them
   # here for the other; the check itself refuses to look at any other context.
   if [ "${TFVARS_CLUSTER_EXISTS:-false}" = "true" ]; then
+    # With the DNS-endpoint flag step 13 passes: without it the fetch fails on
+    # a DNS-endpoint-only cluster, the context gate below does not match, and
+    # the check skips exactly the retry it exists for.
+    GKE_DNS_ENDPOINT_FLAG=""
+    gke_dns_endpoint_flag "$cluster_name" "$region" "$project_id" || true
+    # shellcheck disable=SC2086
     gcloud container clusters get-credentials "$cluster_name" --location "$region" \
-      --project "$project_id" >/dev/null 2>&1 || true
+      --project "$project_id" $GKE_DNS_ENDPOINT_FLAG >/dev/null 2>&1 || true
     clear_failed_initial_helm_release "$KUBE_AGENTS_HELM_RELEASE" "${NAMESPACE:-$DEFAULT_NAMESPACE}" || exit 1
   fi
 

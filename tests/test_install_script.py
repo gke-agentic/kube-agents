@@ -1599,6 +1599,66 @@ class FailedInitialReleaseIsClearedBeforeTheApplyTest(unittest.TestCase):
         self.assertLess(credentials, clear)
         # Nothing else opens between the gate and the call.
         self.assertNotIn("\n  fi\n", self.source[gate:clear])
+        # The fetch reaches a DNS-endpoint-only cluster the way step 13's does;
+        # a plain one fails there, and the context gate then skips the check.
+        flag = self.source.index('gke_dns_endpoint_flag "$cluster_name" "$region" "$project_id"', gate)
+        self.assertLess(flag, credentials)
+        self.assertIn("$GKE_DNS_ENDPOINT_FLAG", self.source[credentials:clear])
+
+
+class TheCloneDirectoryNeedsHomeOnlyWhenCloningTest(unittest.TestCase):
+    """HOME is unset in some service environments (a systemd system unit, a
+    container with no passwd entry). A run from a checkout never clones, so it
+    must not need HOME at all under `set -u`; a run that does clone says what
+    it needed."""
+
+    def _run_without_home(self, tail):
+        with tempfile.TemporaryDirectory() as tmp:
+            empty_env = pathlib.Path(tmp) / "install.env"
+            empty_env.write_text("")
+            env = get_isolated_test_env(overrides={"KUBE_AGENTS_INSTALL_ENV": str(empty_env)})
+            env.pop("HOME", None)
+            return subprocess.run(
+                ["bash", "-c", f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n{tail}'],
+                capture_output=True, text=True, env=env, cwd=str(_REPO_ROOT),
+            )
+
+    def test_a_checkout_run_sources_without_home(self):
+        proc = self._run_without_home('echo sourced')
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("sourced", proc.stdout)
+        self.assertNotIn("HOME", proc.stderr)
+
+    def test_the_clone_directory_names_home_when_it_is_missing(self):
+        proc = self._run_without_home('kube_agents_clone_dir')
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("HOME", proc.stderr)
+
+    def test_the_clone_directory_is_under_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            empty_env = pathlib.Path(tmp) / "install.env"
+            empty_env.write_text("")
+            env = get_isolated_test_env(overrides={"KUBE_AGENTS_INSTALL_ENV": str(empty_env), "HOME": "/h"})
+            proc = subprocess.run(
+                ["bash", "-c", f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\nkube_agents_clone_dir'],
+                capture_output=True, text=True, env=env, cwd=str(_REPO_ROOT),
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "/h/kube-agents")
+
+
+class TheMinterCliSourceIsSpelledOnceTest(unittest.TestCase):
+    """The Minty CLI's repository and the manual recipe's clone directory are
+    named at the top of install.sh; the two lines that use them read the names."""
+
+    def test_the_repository_and_clone_directory_appear_only_as_constants(self):
+        text = (_REPO_ROOT / "install.sh").read_text()
+        for literal, constant in (("abcxyz/github-token-minter.git", "MINTY_CLI_REPO_URL="),
+                                  ("/tmp/minty", "MINTY_CLI_MANUAL_CLONE_DIR=")):
+            with self.subTest(literal=literal):
+                inline = [line for line in text.splitlines()
+                          if literal in line and not line.startswith(constant)]
+                self.assertEqual(inline, [], f"name {literal} through {constant}")
 
 
 class ShellNamespaceNeverReachesTheGeneratorTest(unittest.TestCase):
