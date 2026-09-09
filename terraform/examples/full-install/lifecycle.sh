@@ -253,6 +253,16 @@ load_state() {
 state_changed() { STATE_LIST_FRESH=false; }
 in_state() { grep -Fxq "$1" <<<"$STATE_LIST"; }
 
+# The recorded value of a string attribute of a resource in state, for the
+# guards that compare it against the configuration. `head -1` keeps the
+# resource's own attribute when a nested block repeats the name (a key's
+# `name` before its `primary` version's): terraform state show prints the
+# top-level attributes first.
+state_attr() {
+  terraform state show -no-color "$1" 2>/dev/null |
+    sed -n "s/^ *$2 *= *\"\([^\"]*\)\".*/\1/p" | head -1
+}
+
 # terraform import configures every provider, and the helm provider here is built
 # from module.gke_cluster.cluster_endpoint — unknown until the cluster exists. On
 # a fresh apply that makes import impossible ("configuration ... depends on values
@@ -498,8 +508,7 @@ guard_cluster_ownership() {
     # KUBE_AGENTS_STATE_PREFIX the state can manage some OTHER cluster, and
     # "set create_cluster = true" would then plan that one's replacement.
     local recorded cluster
-    recorded=$(terraform state show -no-color "$addr" 2>/dev/null |
-      sed -n 's/^ *name *= *"\([^"]*\)".*/\1/p' | head -1)
+    recorded=$(state_attr "$addr" name)
     cluster=$(tfvar cluster_name)
     if [[ -n "$recorded" && -n "$cluster" && "$recorded" != "$cluster" ]]; then
       warn "create_cluster is false, and this state manages a DIFFERENT cluster, '$recorded' ($addr), not '$cluster'."
@@ -543,8 +552,7 @@ guard_release_namespace() {
   in_state "$addr" || return 0
 
   local recorded
-  recorded=$(terraform state show -no-color "$addr" 2>/dev/null |
-    sed -n 's/^ *namespace *= *"\([^"]*\)".*/\1/p' | head -1)
+  recorded=$(state_attr "$addr" namespace)
   [[ -n "$recorded" ]] || return 0
 
   local desired
@@ -573,8 +581,7 @@ guard_gsa_identity() {
   in_state "$addr" || return 0
 
   local recorded
-  recorded=$(terraform state show -no-color "$addr" 2>/dev/null |
-    sed -n 's/^ *account_id *= *"\([^"]*\)".*/\1/p' | head -1)
+  recorded=$(state_attr "$addr" account_id)
   [[ -n "$recorded" ]] || return 0
 
   # The front doors always write agent_service_account_id, so empty here is a
@@ -618,8 +625,7 @@ guard_kms_identity() {
   for check in "${checks[@]}"; do
     IFS=$'\t' read -r addr variable key <<<"$check"
     in_state "$addr" || continue
-    recorded=$(terraform state show -no-color "$addr" 2>/dev/null |
-      sed -n 's/^ *name *= *"\([^"]*\)".*/\1/p' | head -1)
+    recorded=$(state_attr "$addr" name)
     [[ -n "$recorded" ]] || continue
     desired=$(tfvar "$variable")
     [[ "$recorded" != "$desired" ]] || continue

@@ -79,9 +79,11 @@ readonly PLATFORM_AGENT_CREDENTIAL_PROXY_DEPLOYMENT="platform-agent-credential-p
 readonly TF_HELM_RELEASE_TYPE="helm_release"
 readonly TF_CERT_MANAGER_RELEASE_NAME="cert_manager"
 readonly TF_KUBE_AGENTS_RELEASE_NAME="kube_agents"
-# The Helm status of a release whose last operation failed, and the statuses
-# `helm history` gives a revision that served at some point.
+# The Helm status of a release whose last operation failed, the one of a first
+# install still in flight or interrupted, and the statuses `helm history`
+# gives a revision that served at some point.
 readonly HELM_STATUS_FAILED="failed"
+readonly HELM_STATUS_PENDING_INSTALL="pending-install"
 readonly HELM_SERVED_REVISION_STATUSES="deployed superseded"
 # Timeout for uninstalling a failed release no revision of which ever served.
 readonly HELM_FAILED_RELEASE_UNINSTALL_TIMEOUT="5m"
@@ -1210,6 +1212,11 @@ ensure_clean_helm_release() {
   esac
 }
 
+# The kubeconfig context name `gcloud container clusters get-credentials`
+# writes for this install's cluster. Every kubectl read in this file that
+# could touch another cluster checks the current context against it first.
+gke_context_name() { printf 'gke_%s_%s_%s' "$PROJECT_ID" "$REGION" "$CLUSTER_NAME"; }
+
 # Clears the one Helm leftover a first apply's failure leaves that no retry
 # can get past: the kube-agents release in `failed`, with no revision that
 # ever served, and absent from Terraform state because the provider never
@@ -1235,7 +1242,8 @@ clear_failed_initial_helm_release() {
   # gate the generator's credential recovery uses: an uninstall is the one
   # destructive step here, and a stale context would point it at whatever
   # cluster the operator last looked at.
-  local expected_ctx="gke_${PROJECT_ID}_${REGION}_${CLUSTER_NAME}"
+  local expected_ctx
+  expected_ctx="$(gke_context_name)"
   if ! command -v kubectl >/dev/null 2>&1 ||
     [ "$(kubectl config current-context 2>/dev/null || true)" != "$expected_ctx" ]; then
     print_info "Skipping the failed-release check: kubectl's current context is not this cluster's (${expected_ctx})."
@@ -1244,7 +1252,17 @@ clear_failed_initial_helm_release() {
 
   local release_status
   release_status="$(helm_release_status "${release_name}" "${namespace}")"
-  [ "${release_status}" = "$HELM_STATUS_FAILED" ] || return 0
+  case "${release_status}" in
+    "$HELM_STATUS_FAILED") ;;
+    "$HELM_STATUS_PENDING_INSTALL")
+      # Helm refuses the name in this state too, but an install running
+      # right now looks the same from here as one that was interrupted, so
+      # the operator decides.
+      print_warning "Helm release '${release_name}' in namespace '${namespace}' is '${release_status}': a first install of it is either still running or was interrupted, and Helm refuses the name either way. Leaving it. If no other install is running, clear it and re-run: helm uninstall ${release_name} -n ${namespace}"
+      return 0
+      ;;
+    *) return 0 ;;
+  esac
 
   local state_rc=0
   tf_state_manages_resource "$TF_HELM_RELEASE_TYPE" "$TF_KUBE_AGENTS_RELEASE_NAME" || state_rc=$?
@@ -1426,7 +1444,8 @@ write_tfvars_from_state() {
   # other install would otherwise silently donate that environment's
   # credentials to this one.
   local secret_key secret_val
-  local expected_ctx="gke_${PROJECT_ID}_${REGION}_${CLUSTER_NAME}"
+  local expected_ctx
+  expected_ctx="$(gke_context_name)"
   if command -v kubectl >/dev/null 2>&1 &&
     [ "$(kubectl config current-context 2>/dev/null || true)" = "$expected_ctx" ]; then
     for secret_key in API_SERVER_KEY GEMINI_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY SLACK_BOT_TOKEN SLACK_APP_TOKEN SESSION_KV_API_KEY SESSION_KV_SALT; do

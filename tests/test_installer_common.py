@@ -1401,6 +1401,23 @@ class HelmReleaseSelfHealingTest(unittest.TestCase):
         self.assertIn("rc=0\n", proc.stdout, proc.stderr)
         self.assertNotIn("unexpected helm call", proc.stderr)
 
+    def test_pending_install_first_release_is_reported_not_uninstalled(self):
+        # An interrupted first apply leaves pending-install, which Helm refuses
+        # the name for too -- but so does an install running right now, and
+        # the two cannot be told apart here.
+        helm_script = (
+            '#!/usr/bin/env bash\n'
+            'case "$*" in\n'
+            '  *"status kube-agents"*) echo \'{"name": "kube-agents", "info": {"status": "pending-install"}}\'; exit 0 ;;\n'
+            '  *"uninstall kube-agents"*) echo "UNINSTALL EXECUTED" >&2; exit 0 ;;\n'
+            '  *) echo "unexpected helm call: $*" >&2; exit 1 ;;\n'
+            'esac\n'
+        )
+        proc = self._run_clear(helm_script)
+        self.assertIn("rc=0\n", proc.stdout, proc.stderr)
+        self.assertNotIn("UNINSTALL EXECUTED", proc.stderr)
+        self.assertIn("helm uninstall kube-agents -n kubeagents-system", proc.stderr)
+
     def test_a_failed_uninstall_stops_the_run(self):
         proc = self._run_clear(self._failed_release_helm('[{"revision": 1, "status": "failed"}]',
                                                          uninstall='echo "boom" >&2; exit 1'))
