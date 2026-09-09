@@ -547,44 +547,44 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
 
     def test_resolve_effective_image_tag_adopts_baked_release_without_prompt(self):
         """Verifies resolve_effective_image_tag adopts baked release version without prompting."""
-        cmd = 'BAKED_RELEASE_VERSION="0.4.0"; resolve_effective_image_tag "." ""'
+        cmd = 'BAKED_RELEASE_VERSION="0.4.0"; resolve_effective_image_tag tag "." ""; echo "TAG=$tag"'
         proc = self._run_install_func(cmd)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout.strip(), "0.4.0")
-        self.assertIn("Using container image tag (official release 0.4.0)", proc.stderr)
+        self.assertIn("TAG=0.4.0", proc.stdout)
+        self.assertIn("Using container image tag (official release 0.4.0)", proc.stdout)
 
     def test_resolve_effective_image_tag_preserves_explicit_requested_tag(self):
         """Verifies resolve_effective_image_tag honors explicitly passed tag over default."""
-        cmd = 'BAKED_RELEASE_VERSION="0.4.0"; resolve_effective_image_tag "." "0.3.0"'
+        cmd = 'BAKED_RELEASE_VERSION="0.4.0"; resolve_effective_image_tag tag "." "0.3.0"; echo "TAG=$tag"'
         proc = self._run_install_func(cmd)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout.strip(), "0.3.0")
+        self.assertIn("TAG=0.3.0", proc.stdout)
 
     def test_resolve_effective_image_tag_fails_when_non_interactive_and_no_default(self):
         """Verifies resolve_effective_image_tag errors when non-interactive and no default tag exists."""
         with tempfile.TemporaryDirectory() as empty_dir:
-            cmd = f'BAKED_RELEASE_VERSION=""; PARAM_NON_INTERACTIVE="true"; resolve_effective_image_tag "{empty_dir}" ""'
+            cmd = f'BAKED_RELEASE_VERSION=""; PARAM_NON_INTERACTIVE="true"; resolve_effective_image_tag tag "{empty_dir}" ""'
             proc = self._run_install_func(cmd)
             self.assertNotEqual(proc.returncode, 0)
-            self.assertIn("--image-tag is required", proc.stderr)
+            self.assertIn("--image-tag is required", proc.stdout)
 
     def test_resolve_effective_image_tag_fails_headless_without_tty_and_no_default(self):
         """Verifies resolve_effective_image_tag errors cleanly in headless environments without TTY."""
         with tempfile.TemporaryDirectory() as empty_dir:
-            cmd = f'BAKED_RELEASE_VERSION=""; PARAM_NON_INTERACTIVE="false"; has_controlling_tty() {{ return 1; }}; tag="$(resolve_effective_image_tag "{empty_dir}" "")" || rc=$?; echo "RC=$rc TAG=$tag"'
+            cmd = f'BAKED_RELEASE_VERSION=""; PARAM_NON_INTERACTIVE="false"; has_controlling_tty() {{ return 1; }}; resolve_effective_image_tag tag "{empty_dir}" "" || rc=$?; echo "RC=$rc TAG=$tag"'
             proc = self._run_install_func(cmd)
             self.assertIn("RC=1 TAG=", proc.stdout)
-            self.assertIn("--image-tag is required", proc.stderr)
+            self.assertIn("--image-tag is required", proc.stdout)
 
     def test_resolve_effective_image_tag_resolves_from_external_cwd(self):
         """Verifies resolve_effective_image_tag discovers repo root even when cwd is external."""
         with tempfile.TemporaryDirectory() as outside_dir:
-            cmd = 'BAKED_RELEASE_VERSION=""; resolve_effective_image_tag "" ""'
+            cmd = 'BAKED_RELEASE_VERSION=""; resolve_effective_image_tag tag "" ""; echo "TAG=$tag"'
             proc = self._run_install_func(cmd, cwd=outside_dir)
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertRegex(
                 proc.stdout.strip(),
-                r"^([0-9a-fA-F]{40}|[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?)$",
+                r"TAG=([0-9a-fA-F]{40}|[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?)$",
             )
 
     def test_resolve_effective_image_tag_prompts_and_retries_on_invalid_ref(self):
@@ -601,13 +601,41 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
                 '  if [ "$count" -eq 1 ]; then printf -v "$2" "%s" "invalid_tag"; '
                 '  else printf -v "$2" "%s" "0.4.0"; fi; '
                 '}; '
-                f'tag="$(resolve_effective_image_tag "{empty_dir}" "")"; '
+                f'resolve_effective_image_tag tag "{empty_dir}" ""; '
                 'echo "TAG=$tag CALLS=$(wc -l < "$CALL_FILE" | tr -d "[:space:]")"'
             )
             proc = self._run_install_func(cmd)
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("TAG=0.4.0 CALLS=2", proc.stdout)
-            self.assertIn("Image/source ref must be a full 40-character commit SHA", proc.stderr)
+            self.assertIn("Image/source ref must be a full 40-character commit SHA", proc.stdout)
+
+    def test_resolve_effective_image_tag_does_not_fire_err_trap_or_clobber_report(self):
+        """Verifies failure in resolve_effective_image_tag does not trigger ERR trap or overwrite install report."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            report_file = pathlib.Path(temp_dir) / "install-report.json"
+            report_file.write_text('{"status": "PREVIOUS_SUCCESS"}\n')
+            cmd = f'''
+set -Eeuo pipefail
+REPORT_FILE="{report_file}"
+write_json_report() {{
+  echo "{{\\"status\\": \\"$1\\"}}" > "$REPORT_FILE"
+}}
+on_error() {{
+  echo "INTERNAL_ERR_TRAP_FIRED" >&2
+  write_json_report "FAILED"
+}}
+trap 'on_error' ERR
+BAKED_RELEASE_VERSION=""
+PARAM_NON_INTERACTIVE="true"
+local_tag=""
+resolve_effective_image_tag local_tag "{temp_dir}" "" || rc=$?
+echo "RC=$rc"
+'''
+            proc = self._run_install_func(cmd)
+            self.assertIn("RC=1", proc.stdout)
+            self.assertNotIn("INTERNAL_ERR_TRAP_FIRED", proc.stderr)
+            self.assertIn("--image-tag is required", proc.stdout)
+            self.assertEqual(report_file.read_text(), '{"status": "PREVIOUS_SUCCESS"}\n')
 
     def test_verify_local_source_ref_accepts_baked_release_in_non_git_dir(self):
         """Verifies verify_local_source_ref succeeds for unpacked release archive without Git repository."""

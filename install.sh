@@ -730,11 +730,16 @@ default_image_tag_label() {
 
 # Resolves the image tag to use: honors explicit requested tag first, falls back
 # to the checkout/bundle default without prompting if found, or prompts interactively.
+# Stores the resolved tag in the variable named by $1 rather than echoing it:
+# callers run without a subshell, which prevents ERR trap firing on validation errors
+# and keeps informational diagnostics on standard output.
 resolve_effective_image_tag() {
-  local repo_dir="${1:-}"
-  local requested_tag="${2:-}"
+  local dest_var="$1"
+  local repo_dir="${2:-}"
+  local requested_tag="${3:-}"
+  printf -v "$dest_var" '%s' ""
   if [ -n "$requested_tag" ]; then
-    echo "$requested_tag"
+    printf -v "$dest_var" '%s' "$requested_tag"
     return 0
   fi
   if [ -z "$repo_dir" ] || [ "$repo_dir" = "." ]; then
@@ -749,23 +754,23 @@ resolve_effective_image_tag() {
   local default_tag=""
   default_tag="$(default_image_tag "$repo_dir")"
   if [ -n "$default_tag" ]; then
-    print_info "Using container image tag ($(default_image_tag_label "$repo_dir")): ${C_BOLD}${default_tag}${C_RESET}" >&2
-    echo "$default_tag"
+    print_info "Using container image tag ($(default_image_tag_label "$repo_dir")): ${C_BOLD}${default_tag}${C_RESET}"
+    printf -v "$dest_var" '%s' "$default_tag"
     return 0
   fi
   if [ "$PARAM_NON_INTERACTIVE" = "true" ] || ! has_controlling_tty; then
-    print_error "--image-tag is required; use a validated release tag or full commit SHA." >&2
+    print_error "--image-tag is required; use a validated release tag or full commit SHA."
     return 1
   fi
   local prompted_tag=""
   while true; do
     prompt_read "Container image tag (validated release tag or full commit SHA)" \
       prompted_tag "" false ""
-    if validate_immutable_ref "$prompted_tag" >&2; then
+    if validate_immutable_ref "$prompted_tag"; then
       break
     fi
   done
-  echo "$prompted_tag"
+  printf -v "$dest_var" '%s' "$prompted_tag"
 }
 
 json_escape() {
@@ -2125,7 +2130,7 @@ run_menu_system() {
         ;;
       6)
         print_step "Saving & Re-applying Configuration State"
-        image_tag="$(resolve_effective_image_tag "$repo_dir" "$image_tag")" || return 1
+        resolve_effective_image_tag image_tag "$repo_dir" "$image_tag" || return 1
         validate_immutable_ref "$image_tag"
         verify_local_source_ref "$repo_dir" "$image_tag"
         export PARAM_PROJECT_ID="$project_id" PARAM_CLUSTER_NAME="$cluster_name" PARAM_REGION="$region"
@@ -2215,7 +2220,7 @@ main() {
   fi
 
   local image_tag=""
-  image_tag="$(resolve_effective_image_tag "." "${PARAM_IMAGE_TAG:-}")" || exit 1
+  resolve_effective_image_tag image_tag "." "${PARAM_IMAGE_TAG:-}" || exit 1
   validate_immutable_ref "$image_tag"
 
   # 2. Prerequisite CLI Tools Check & Auto-Installation
