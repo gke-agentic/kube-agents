@@ -42,6 +42,17 @@ define_print_helpers() {
 }
 define_print_helpers
 
+# ─── Install sources ──────────────────────────────────────────────────────────
+# Where the sources come from when this script runs alone (curl | bash) and
+# where it puts them. upgrade.sh and uninstall.sh carry the same URL for the
+# same reason -- each front door needs it before it has a checkout to read it
+# from -- and tests/test_install_script.py pins the three equal.
+KUBE_AGENTS_REPO_URL="https://github.com/gke-labs/kube-agents.git"
+KUBE_AGENTS_CLONE_DIR="${HOME}/kube-agents"
+# The github-token-minter release whose CLI imports the App key
+# (import_github_pem). A git tag, not an image, so it is not in images.json.
+MINTY_CLI_GIT_TAG="v2.7.1"
+
 # ─── Process Lock File & Error Trap Handling ────────────────────────────────
 LOCK_FILE="/tmp/kube-agents-install.lock"
 if command -v flock >/dev/null 2>&1; then
@@ -139,7 +150,7 @@ _resolve_repo_dir_for_state() {
   elif [ -f "scripts/installer/installer_common.sh" ]; then
     pwd
   else
-    printf '%s' "$HOME/kube-agents"
+    printf '%s' "$KUBE_AGENTS_CLONE_DIR"
   fi
 }
 _state_repo_dir="$(_resolve_repo_dir_for_state)"
@@ -330,8 +341,10 @@ PARAM_GITOPS_REPO="${GITOPS_REPO:-${GITHUB_REPO:-}}"
 # helpers are sourced, so no default is spelled twice.
 PARAM_PERMISSION_SET="${PLATFORM_AGENT_PERMISSION_SET:-}"
 PARAM_CUSTOM_ROLES="${PLATFORM_AGENT_CUSTOM_ROLES:-}"
-PARAM_ENABLE_PUBSUB_PLATFORM="${ENABLE_PUBSUB_PLATFORM:-false}"
-PARAM_ENABLE_STOCKOUT_INVESTIGATOR="${ENABLE_STOCKOUT_INVESTIGATOR:-false}"
+# Empty means "not chosen", like PARAM_MODEL_PROVIDER above; resolve_shared_defaults
+# fills in install.defaults.env's answer once the helpers are sourced.
+PARAM_ENABLE_PUBSUB_PLATFORM="${ENABLE_PUBSUB_PLATFORM:-}"
+PARAM_ENABLE_STOCKOUT_INVESTIGATOR="${ENABLE_STOCKOUT_INVESTIGATOR:-}"
 # Set-ness, never ${VAR:-...}: `--gvisor=` with no value sets this to the empty
 # string, and that has to survive to the validator in main rather than being
 # silently read back as the default. The default itself comes from
@@ -998,8 +1011,8 @@ bootstrap_install_env_file() {
   write_env_var "$tmp" HERMES_DASHBOARD_ENABLED "${HERMES_DASHBOARD_ENABLED:-$DEFAULT_ENABLE_WEBUI}"
   write_env_var "$tmp" ENABLE_GVISOR "${ENABLE_GVISOR:-$DEFAULT_ENABLE_GVISOR}"
   write_env_var "$tmp" ENABLE_GKE_BACKUP_PLAN "${ENABLE_GKE_BACKUP_PLAN:-$DEFAULT_ENABLE_GKE_BACKUP_PLAN}"
-  write_env_var "$tmp" ENABLE_PUBSUB_PLATFORM "${PARAM_ENABLE_PUBSUB_PLATFORM:-false}"
-  write_env_var "$tmp" ENABLE_STOCKOUT_INVESTIGATOR "${PARAM_ENABLE_STOCKOUT_INVESTIGATOR:-false}"
+  write_env_var "$tmp" ENABLE_PUBSUB_PLATFORM "${PARAM_ENABLE_PUBSUB_PLATFORM:-$DEFAULT_ENABLE_PUBSUB_PLATFORM}"
+  write_env_var "$tmp" ENABLE_STOCKOUT_INVESTIGATOR "${PARAM_ENABLE_STOCKOUT_INVESTIGATOR:-$DEFAULT_ENABLE_STOCKOUT_INVESTIGATOR}"
   
   write_env_var "$tmp" REGISTRY_PREFIX "${REGISTRY_PREFIX:-}"
   if [ -n "${THIRD_PARTY_REGISTRY_PREFIX:-}" ]; then
@@ -1148,16 +1161,16 @@ acquire_source_repo() {
     resolved_dir="$(pwd)"
     print_success "Using current repository directory: $resolved_dir"
   else
-    resolved_dir="$HOME/kube-agents"
+    resolved_dir="$KUBE_AGENTS_CLONE_DIR"
     if [ -d "$resolved_dir" ]; then
       print_info "Using existing repository at $resolved_dir without modifying local changes."
     else
       print_info "Cloning kube-agents install sources at '$expected_ref' into $resolved_dir..."
-      git clone --filter=blob:none --no-checkout https://github.com/gke-labs/kube-agents.git "$resolved_dir"
+      git clone --filter=blob:none --no-checkout "$KUBE_AGENTS_REPO_URL" "$resolved_dir"
       if [[ "$expected_ref" =~ ^[0-9a-fA-F]{40}$ ]]; then
-        git -C "$resolved_dir" fetch --depth=1 https://github.com/gke-labs/kube-agents.git "$expected_ref"
+        git -C "$resolved_dir" fetch --depth=1 "$KUBE_AGENTS_REPO_URL" "$expected_ref"
       else
-        git -C "$resolved_dir" fetch --depth=1 https://github.com/gke-labs/kube-agents.git "+refs/tags/${expected_ref}:refs/tags/${expected_ref}"
+        git -C "$resolved_dir" fetch --depth=1 "$KUBE_AGENTS_REPO_URL" "+refs/tags/${expected_ref}:refs/tags/${expected_ref}"
       fi
       git -C "$resolved_dir" checkout --detach FETCH_HEAD
     fi
@@ -1216,6 +1229,8 @@ resolve_shared_defaults() {
   PARAM_GOOGLE_CHAT_MODE="${PARAM_GOOGLE_CHAT_MODE:-$DEFAULT_GOOGLE_CHAT_MODE}"
   PARAM_CHAT_TOPIC_NAME="${PARAM_CHAT_TOPIC_NAME:-$DEFAULT_CHAT_TOPIC_NAME}"
   PARAM_GITOPS_REPO="${PARAM_GITOPS_REPO:-$DEFAULT_GITOPS_REPO}"
+  PARAM_ENABLE_PUBSUB_PLATFORM="${PARAM_ENABLE_PUBSUB_PLATFORM:-$DEFAULT_ENABLE_PUBSUB_PLATFORM}"
+  PARAM_ENABLE_STOCKOUT_INVESTIGATOR="${PARAM_ENABLE_STOCKOUT_INVESTIGATOR:-$DEFAULT_ENABLE_STOCKOUT_INVESTIGATOR}"
 }
 
 # Wait for one deployment to roll out, animating a spinner with the elapsed time
@@ -1558,7 +1573,9 @@ auto_install_tool() {
   fi
 }
 
-# Generate Machine-Readable JSON Report for AI Agents
+# Generate Machine-Readable JSON Report for AI Agents. A report written before
+# the interview decided a setting says so -- null for gvisor_enabled, empty for
+# memory_mode -- rather than restating a default the run never applied.
 write_json_report() {
   local status="$1"
   local report_file="/tmp/kube-agents-install-report.json"
@@ -1582,8 +1599,8 @@ write_json_report() {
   "region": "$(json_escape "${region:-}")",
   "model_provider": "$(json_escape "${model_provider:-}")",
   "permission_set": "$(json_escape "${permission_set:-}")",
-  "gvisor_enabled": ${enable_gvisor:-false},
-  "memory_mode": "$(json_escape "${memory_mode:-file}")",
+  "gvisor_enabled": ${enable_gvisor:-null},
+  "memory_mode": "$(json_escape "${memory_mode:-}")",
   "gitops_repo": "$(json_escape "$report_gitops_repo")",
   "install_env_file": "$(json_escape "${INSTALL_ENV_FILE:-}")",
   "timestamp": "$(json_escape "$timestamp")"
@@ -1609,7 +1626,7 @@ run_lifecycle_apply() {
   local log_file="$2"
   (
     cd "$(tf_compose_dir "$repo_dir")"
-    export KUBE_AGENTS_STATE_BUCKET="${KUBE_AGENTS_STATE_BUCKET:-auto}"
+    export KUBE_AGENTS_STATE_BUCKET="${KUBE_AGENTS_STATE_BUCKET:-$DEFAULT_KUBE_AGENTS_STATE_BUCKET}"
     export KUBE_AGENTS_STATE_PREFIX
     KUBE_AGENTS_STATE_PREFIX="$(tf_state_prefix)"
     ./lifecycle.sh apply -auto-approve -input=false
@@ -1801,21 +1818,19 @@ import_github_pem() {
   kms_location="$(derive_kms_location "$region")"
 
   local enabled_version
-  enabled_version=$(gcloud kms keys versions list --key "$key" --keyring "$keyring" \
-    --location "$kms_location" --project "$project_id" \
-    --filter='state=ENABLED' --format='value(name.basename())' 2>/dev/null | head -1 || echo "")
+  enabled_version="$(kms_key_enabled_version "$key" "$keyring" "$kms_location" "$project_id")"
   if [ -n "$enabled_version" ]; then
     print_success "GitHub minter KMS key already has an ENABLED version ($enabled_version); skipping PEM import."
     return 0
   fi
 
-  # Clone the tag and run the CLI from the tree:
-  # `go run github.com/abcxyz/github-token-minter/cmd/minty@v2.7.1`
+  # Clone the tag (MINTY_CLI_GIT_TAG) and run the CLI from the tree:
+  # `go run github.com/abcxyz/github-token-minter/cmd/minty@<tag>`
   # cannot work: the upstream go.mod declares the module without the /v2 suffix
   # its v2 tags require, so Go rejects the version with or without /v2 in the
   # path. The gcloud-only recovery recipe lives in
   # k8s-operator/config/integrations/github/README.md.
-  local import_cmd="git clone --depth 1 --branch v2.7.1 https://github.com/abcxyz/github-token-minter.git /tmp/minty && cd /tmp/minty && go run ./cmd/minty tools import-pk -project-id=${project_id} -location=${kms_location} -key-ring=${keyring} -key=${key} -private-key=@<path-to-pem>"
+  local import_cmd="git clone --depth 1 --branch ${MINTY_CLI_GIT_TAG} https://github.com/abcxyz/github-token-minter.git /tmp/minty && cd /tmp/minty && go run ./cmd/minty tools import-pk -project-id=${project_id} -location=${kms_location} -key-ring=${keyring} -key=${key} -private-key=@<path-to-pem>"
   if [ -z "$pem_path" ] || [ ! -f "$pem_path" ]; then
     print_warning "No GitHub App private key PEM available (GITHUB_PEM_PATH='${pem_path}')."
     print_info "The minter deployment stays unready until the key is imported: ${import_cmd}"
@@ -1891,7 +1906,7 @@ import_github_pem() {
   local minty_dir pem_abs
   minty_dir="$(mktemp -d "${TMPDIR:-/tmp}/minty-XXXXXX")"
   pem_abs="$(realpath "$pem_path" 2>/dev/null || echo "$pem_path")"
-  if git clone --quiet --depth 1 --branch v2.7.1 \
+  if git clone --quiet --depth 1 --branch "$MINTY_CLI_GIT_TAG" \
       https://github.com/abcxyz/github-token-minter.git "$minty_dir" &&
     (cd "$minty_dir" && retry 6 5 go run ./cmd/minty tools import-pk \
       -project-id="$project_id" -location="$kms_location" -key-ring="$keyring" -key="$key" \
@@ -2006,7 +2021,7 @@ run_menu_system() {
       "💬 Manage Chat & Messaging Integrations (Google Chat / Slack)" \
       "🔑 Manage AI Model Provider & Credentials (Gemini / Vertex / OpenAI)" \
       "🛡️ Modify Security & Permission Boundaries (gVisor / SRE vs Read-Only)" \
-      "🗄️ Manage GitOps Repository & GitHub Auth (gke-fleet-iac)" \
+      "🗄️ Manage GitOps Repository & GitHub Auth (${DEFAULT_GITOPS_REPO})" \
       "🚀 Save & Apply Configuration Changes (~15s update)" \
       "🚪 Exit Control Panel" \
       menu_choice
@@ -2060,7 +2075,7 @@ run_menu_system() {
             model_provider="vertex_ai"
             prompt_read "Vertex AI Project ID" vertex_project_id "$vertex_project_id"
             prompt_read "Vertex AI Location" vertex_location "$vertex_location"
-            prompt_read "Vertex Model ID (publisher model, e.g. gemini-3.5-flash)" model_default_name "${model_default_name:-$(default_model_for_provider vertex_ai)}"
+            prompt_read "Vertex Model ID (publisher model, e.g. $(default_model_for_provider vertex_ai))" model_default_name "${model_default_name:-$(default_model_for_provider vertex_ai)}"
             # Same notice main() prints on the first-install path: switching a
             # running install to Vertex through this panel lands on the global
             # endpoint too, and must not do so silently.
@@ -2618,7 +2633,7 @@ main() {
 
   local detected_gemini_key="${PARAM_GEMINI_API_KEY:-${GEMINI_API_KEY:-}}"
   if [ -z "$detected_gemini_key" ]; then
-    detected_gemini_key=$(gcloud secrets versions access latest --secret="gemini-api-key" --project="$project_id" 2>/dev/null || echo "")
+    detected_gemini_key=$(gcloud secrets versions access latest --secret="${GEMINI_API_KEY_SECRET_NAME:-$DEFAULT_GEMINI_API_KEY_SECRET_NAME}" --project="$project_id" 2>/dev/null || echo "")
   fi
   local gemini_api_key="${detected_gemini_key:-}"
   local openai_api_key="${PARAM_OPENAI_API_KEY:-}"
@@ -2657,7 +2672,7 @@ main() {
         fi
         local detected_key="${GEMINI_API_KEY:-}"
         if [ -z "$detected_key" ]; then
-          detected_key=$(gcloud secrets versions access latest --secret="gemini-api-key" --project="$project_id" 2>/dev/null || echo "")
+          detected_key=$(gcloud secrets versions access latest --secret="${GEMINI_API_KEY_SECRET_NAME:-$DEFAULT_GEMINI_API_KEY_SECRET_NAME}" --project="$project_id" 2>/dev/null || echo "")
         fi
         prompt_read "Gemini API Key" gemini_api_key "$detected_key" true
         ;;
@@ -2670,7 +2685,7 @@ main() {
         if [ "$model_provider_was" = "vertex_ai" ] && [ -n "$model_name_was" ]; then
           vertex_model_default="$model_name_was"
         fi
-        prompt_read "Vertex Model ID (publisher model, e.g. gemini-3.5-flash)" model_default_name "$vertex_model_default"
+        prompt_read "Vertex Model ID (publisher model, e.g. $(default_model_for_provider vertex_ai))" model_default_name "$vertex_model_default"
         ;;
       3)
         model_provider="openai"
@@ -3105,8 +3120,8 @@ main() {
   export USER_PROFILE_ENABLED="$PARAM_USER_PROFILE_ENABLED"
   export HERMES_DASHBOARD_ENABLED="$PARAM_ENABLE_WEBUI"
   export REGISTRY_PREFIX="$registry_prefix"
-  export ENABLE_PUBSUB_PLATFORM="${PARAM_ENABLE_PUBSUB_PLATFORM:-false}"
-  export ENABLE_STOCKOUT_INVESTIGATOR="${PARAM_ENABLE_STOCKOUT_INVESTIGATOR:-false}"
+  export ENABLE_PUBSUB_PLATFORM="${PARAM_ENABLE_PUBSUB_PLATFORM:-$DEFAULT_ENABLE_PUBSUB_PLATFORM}"
+  export ENABLE_STOCKOUT_INVESTIGATOR="${PARAM_ENABLE_STOCKOUT_INVESTIGATOR:-$DEFAULT_ENABLE_STOCKOUT_INVESTIGATOR}"
   # Exported only when asked for, the way it was only ever persisted when asked
   # for: an empty value here is an override the installer never took a flag
   # for, turning "leave the third-party images upstream" from a default into an
@@ -3203,7 +3218,7 @@ main() {
     prompt_read "\nProceed with automated GKE cluster & Platform Agent provisioning? (Y/n)" confirm_choice "y"
     if [[ ! "$confirm_choice" =~ ^[Yy]$ ]]; then
       print_warning "Provisioning paused by user. Configuration saved to: $INSTALL_ENV_FILE"
-      print_info "To launch provisioning later, run: ${C_BOLD}cd terraform/examples/full-install && KUBE_AGENTS_STATE_BUCKET=auto ./lifecycle.sh apply${C_RESET}"
+      print_info "To launch provisioning later, run: ${C_BOLD}cd terraform/examples/full-install && KUBE_AGENTS_STATE_BUCKET=${DEFAULT_KUBE_AGENTS_STATE_BUCKET} ./lifecycle.sh apply${C_RESET}"
       write_json_report "PAUSED"
       exit 0
     fi
@@ -3236,10 +3251,8 @@ main() {
   # here rather than wedging the apply.
   import_github_pem "$project_id" "$region"
   local minter_enabled_version=""
-  minter_enabled_version="$({ gcloud kms keys versions list --key "${KMS_KEY:-$DEFAULT_KMS_KEY}" \
-    --keyring "${KMS_KEYRING:-$DEFAULT_KMS_KEYRING}" \
-    --location "$(derive_kms_location "$region")" --project "$project_id" \
-    --filter='state=ENABLED' --format='value(name)' 2>/dev/null || true; } | head -1)"
+  minter_enabled_version="$(kms_key_enabled_version "${KMS_KEY:-$DEFAULT_KMS_KEY}" \
+    "${KMS_KEYRING:-$DEFAULT_KMS_KEYRING}" "$(derive_kms_location "$region")" "$project_id")"
   if grep -q '^enable_github_minter = true$' "$tfvars_file" 2>/dev/null && [ -z "$minter_enabled_version" ]; then
     print_error "The GitHub minter is enabled in the generated configuration, but its KMS signing key still has no ENABLED version — the apply would wait on a minter that can never become ready."
     print_info "Fix the App key import (see the messages above) and re-run, or unset GITHUB_APP_ID to install without the minter."
@@ -3277,7 +3290,7 @@ main() {
     exit 1
   fi
   local slow_rollouts=()
-  for deployment in "$KUBE_AGENTS_OPERATOR_DEPLOYMENT" litellm "$PLATFORM_AGENT_DEPLOYMENT"; do
+  for deployment in "$KUBE_AGENTS_OPERATOR_DEPLOYMENT" "$LITELLM_DEPLOYMENT" "$PLATFORM_AGENT_DEPLOYMENT"; do
     if ! wait_for_deployment_object "$deployment" "$namespace" "$DEPLOYMENT_APPEAR_TIMEOUT_SECS"; then
       print_error "Expected deployment '$deployment' was not created within ${DEPLOYMENT_APPEAR_TIMEOUT_SECS}s."
       # platform-agent-gateway is the agent, and the sandbox is the one thing

@@ -213,6 +213,14 @@ class LifecyclePlanTest(unittest.TestCase):
         self.assertLess(apply_branch.index("forget_unmanaged_cluster_kms"),
                         apply_branch.index("adopt_kms"))
 
+    def test_apply_guards_the_kms_names_before_terraform_runs(self):
+        """The CMEK names are ForceNew and now come from install.env, so the
+        guard has to sit with the other identity guards, ahead of the apply."""
+        apply_branch = re.search(r"^  apply\)$(.*?)^  destroy\)$", self.text,
+                                 re.MULTILINE | re.DOTALL).group(1)
+        self.assertLess(apply_branch.index("guard_kms_identity"),
+                        apply_branch.index("terraform apply"))
+
     def test_the_usage_range_still_covers_the_whole_header(self):
         """The fallback branch prints a fixed line range, so a longer header truncates it."""
         printed = re.search(r"sed -n '2,(\d+)p'", self.text)

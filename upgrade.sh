@@ -28,6 +28,12 @@ C_RESET="\033[0m"
 # Release automation stamps this value (e.g. BAKED_RELEASE_VERSION="0.2.0") when publishing a GA release.
 BAKED_RELEASE_VERSION=""
 
+# Where the upgrade engine is fetched from when this script runs outside a
+# checkout. install.sh and uninstall.sh carry the same URL, each needing it
+# before it has a checkout to read it from; tests/test_install_script.py pins
+# the three equal.
+KUBE_AGENTS_REPO_URL="https://github.com/gke-labs/kube-agents.git"
+
 # Default CLI Configuration
 PARAM_UPGRADE_MODE="full"
 PARAM_NON_INTERACTIVE="false"
@@ -467,7 +473,7 @@ run_lifecycle() {
   shift
   (
     cd "$composition_dir" || return 1
-    KUBE_AGENTS_STATE_BUCKET="${KUBE_AGENTS_STATE_BUCKET:-auto}"
+    KUBE_AGENTS_STATE_BUCKET="${KUBE_AGENTS_STATE_BUCKET:-$DEFAULT_KUBE_AGENTS_STATE_BUCKET}"
     KUBE_AGENTS_STATE_PREFIX="$(tf_state_prefix)"
     export KUBE_AGENTS_STATE_BUCKET KUBE_AGENTS_STATE_PREFIX
     ./lifecycle.sh "$@"
@@ -563,7 +569,7 @@ main() {
     TEMP_REPO_DIR="$(mktemp -d)"
     repo_dir="${TEMP_REPO_DIR}/kube-agents"
     print_info "Fetching the upgrade engine for '${PARAM_IMAGE_TAG}'..."
-    git clone --filter=blob:none --no-checkout https://github.com/gke-labs/kube-agents.git "$repo_dir"
+    git clone --filter=blob:none --no-checkout "$KUBE_AGENTS_REPO_URL" "$repo_dir"
     git -C "$repo_dir" fetch --depth=1 origin "$PARAM_IMAGE_TAG"
     git -C "$repo_dir" checkout --detach FETCH_HEAD
     verify_local_source_ref "$repo_dir" "$PARAM_IMAGE_TAG"
@@ -648,8 +654,8 @@ main() {
     print_step "2. Dry-Run Upgrade Plan Preview"
     echo -e "  • ${C_CYAN}Action:${C_RESET} Perform ${PARAM_UPGRADE_MODE} upgrade on cluster '${target_cluster}'"
     echo -e "  • ${C_CYAN}Image Overrides:${C_RESET} ${REGISTRY_PREFIX:-$DEFAULT_REGISTRY_PREFIX}/*:${PARAM_IMAGE_TAG}"
-    echo -e "  • ${C_CYAN}Secrets:${C_RESET} generate SESSION_KV_API_KEY / SESSION_KV_SALT into 'platform-agent-secrets' only if absent (existing values are never rewritten)"
-    echo -e "  • ${C_CYAN}Secrets:${C_RESET} generate the shell sandbox SSH keypair into 'platform-agent-secrets' and 'platform-agent-shell-authorized-keys' only if absent"
+    echo -e "  • ${C_CYAN}Secrets:${C_RESET} generate SESSION_KV_API_KEY / SESSION_KV_SALT into '${PLATFORM_AGENT_SECRET}' only if absent (existing values are never rewritten)"
+    echo -e "  • ${C_CYAN}Secrets:${C_RESET} generate the shell sandbox SSH keypair into '${PLATFORM_AGENT_SECRET}' and '${PLATFORM_AGENT_SHELL_AUTHORIZED_KEYS_SECRET}' only if absent"
     write_report "DRY_RUN_COMPLETE"
     exit 0
   fi
@@ -740,7 +746,7 @@ main() {
   if [ -z "$PARAM_IMAGE_TAG" ]; then
     PARAM_IMAGE_TAG="$(running_image_tag "$target_namespace")"
     if [ -z "$PARAM_IMAGE_TAG" ]; then
-      print_error "Could not read the running image tag from deployment/platform-agent-gateway in '${target_namespace}'."
+      print_error "Could not read the running image tag from deployment/${PLATFORM_AGENT_DEPLOYMENT} in '${target_namespace}'."
       print_info "Pass --image-tag to name one instead."
       exit 1
     fi
@@ -804,7 +810,7 @@ main() {
     for set_key in "$@"; do
       set_args+=(--set "${set_key}=${PARAM_IMAGE_TAG}")
     done
-    helm upgrade kube-agents "${repo_dir}/charts/kube-agents" \
+    helm upgrade "$KUBE_AGENTS_HELM_RELEASE" "${repo_dir}/charts/kube-agents" \
       --namespace "$target_namespace" --reset-then-reuse-values \
       "${set_args[@]}" --wait --timeout 10m
   }
@@ -813,8 +819,8 @@ main() {
   # pre-Terraform install deserves this message, not whatever the generator
   # trips over first (its vars.sh may lack the credentials the generator
   # recovers from the live Secret).
-  if ! helm status kube-agents -n "$target_namespace" >/dev/null 2>&1; then
-    print_error "No Helm release 'kube-agents' in namespace '$target_namespace'."
+  if ! helm status "$KUBE_AGENTS_HELM_RELEASE" -n "$target_namespace" >/dev/null 2>&1; then
+    print_error "No Helm release '${KUBE_AGENTS_HELM_RELEASE}' in namespace '$target_namespace'."
     print_info "This install predates the Terraform + Helm engine. Upgrade it with the release that installed it (curl the matching versioned upgrade.sh), or re-install with install.sh to adopt the new engine."
     exit 1
   fi
@@ -826,7 +832,7 @@ main() {
     local current_helm_status
     current_helm_status="$(helm_release_status "$KUBE_AGENTS_HELM_RELEASE" "$target_namespace")"
     if [[ "$current_helm_status" =~ ^pending- ]]; then
-      print_warning "Helm release 'kube-agents' is currently in '${current_helm_status}'. Note: rollback is skipped in plan mode."
+      print_warning "Helm release '${KUBE_AGENTS_HELM_RELEASE}' is currently in '${current_helm_status}'. Note: rollback is skipped in plan mode."
     fi
   fi
   # NAMESPACE steers the generator's Secret-recovery reads (install.env omits
@@ -890,11 +896,8 @@ main() {
       # Refuse up front instead and name the two ways out.
       if grep -q '^enable_github_minter = true$' \
         "${repo_dir}/terraform/examples/full-install/terraform.tfvars" 2>/dev/null; then
-        minter_enabled_version="$({ gcloud kms keys versions list \
-          --key "${KMS_KEY:-$DEFAULT_KMS_KEY}" \
-          --keyring "${KMS_KEYRING:-$DEFAULT_KMS_KEYRING}" \
-          --location "$(derive_kms_location "${REGION}")" --project "${PROJECT_ID}" \
-          --filter='state=ENABLED' --format='value(name)' 2>/dev/null || true; } | head -1)"
+        minter_enabled_version="$(kms_key_enabled_version "${KMS_KEY:-$DEFAULT_KMS_KEY}" \
+          "${KMS_KEYRING:-$DEFAULT_KMS_KEYRING}" "$(derive_kms_location "${REGION}")" "${PROJECT_ID}")"
         if [ -z "$minter_enabled_version" ]; then
           print_error "The GitHub minter is enabled in the generated configuration, but its KMS signing key has no ENABLED version — the apply would wait on a minter that can never become ready."
           print_info "Import the App key with install.sh (which runs the import before its apply), or unset GITHUB_APP_ID in install.env to upgrade without the minter."
@@ -927,7 +930,7 @@ main() {
       kubectl rollout restart "deployment/${PLATFORM_AGENT_DEPLOYMENT}" -n "$target_namespace"
       restarted_agent="true"
     else
-      print_warning "Secret keys were added but Deployment 'platform-agent-gateway' was not found in '$target_namespace'; restart the agent yourself so it reads them."
+      print_warning "Secret keys were added but Deployment '${PLATFORM_AGENT_DEPLOYMENT}' was not found in '$target_namespace'; restart the agent yourself so it reads them."
     fi
   fi
 
@@ -953,11 +956,11 @@ main() {
   # Guarded on the object existing, because the operator creates both and an
   # operator-mode upgrade can reach here before its PlatformAgent has
   # reconciled. A missing object is that, not a failed rollout.
-  if kubectl get statefulset platform-agent-shell -n "$target_namespace" >/dev/null 2>&1; then
-    kubectl rollout status statefulset/platform-agent-shell -n "$target_namespace" --timeout="$SANDBOX_ROLLOUT_TIMEOUT"
+  if kubectl get statefulset "$PLATFORM_AGENT_SHELL_STATEFULSET" -n "$target_namespace" >/dev/null 2>&1; then
+    kubectl rollout status "statefulset/${PLATFORM_AGENT_SHELL_STATEFULSET}" -n "$target_namespace" --timeout="$SANDBOX_ROLLOUT_TIMEOUT"
   fi
-  if kubectl get deployment platform-agent-credential-proxy -n "$target_namespace" >/dev/null 2>&1; then
-    kubectl rollout status deployment/platform-agent-credential-proxy -n "$target_namespace" --timeout="$SANDBOX_ROLLOUT_TIMEOUT"
+  if kubectl get deployment "$PLATFORM_AGENT_CREDENTIAL_PROXY_DEPLOYMENT" -n "$target_namespace" >/dev/null 2>&1; then
+    kubectl rollout status "deployment/${PLATFORM_AGENT_CREDENTIAL_PROXY_DEPLOYMENT}" -n "$target_namespace" --timeout="$SANDBOX_ROLLOUT_TIMEOUT"
   fi
   print_success "Upgraded deployments verified healthy."
 

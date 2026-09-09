@@ -63,6 +63,24 @@ readonly KUBE_AGENTS_HELM_RELEASE="kube-agents"
 readonly KUBE_AGENTS_OPERATOR_DEPLOYMENT="kube-agents-controller-manager"
 readonly PLATFORM_AGENT_DEPLOYMENT="platform-agent-gateway"
 readonly PLATFORM_AGENT_SECRET="platform-agent-secrets"
+# The chart's LiteLLM Deployment, and the objects the operator composes from
+# the PlatformAgent's name (platform-agent, which the composition leaves at
+# the chart's default): the shell sandbox StatefulSet, the credential proxy
+# Deployment, and the sandbox's authorized-keys Secret.
+# shellcheck disable=SC2034  # read by install.sh and upgrade.sh
+readonly LITELLM_DEPLOYMENT="litellm"
+# shellcheck disable=SC2034
+readonly PLATFORM_AGENT_SHELL_STATEFULSET="platform-agent-shell"
+# shellcheck disable=SC2034
+readonly PLATFORM_AGENT_CREDENTIAL_PROXY_DEPLOYMENT="platform-agent-credential-proxy"
+# shellcheck disable=SC2034
+readonly PLATFORM_AGENT_SHELL_AUTHORIZED_KEYS_SECRET="platform-agent-shell-authorized-keys"
+
+# The image tag the generator and the dev prompt fall back to when none was
+# given. Not an install default: every front door rejects it through
+# validate_immutable_ref, so only a direct caller of the generator or the
+# interactive dev prompt ever reaches it.
+readonly IMAGE_TAG_FALLBACK="latest"
 
 # ─── Terraform state in GCS ───────────────────────────────────────────────────
 # The object the gcs backend writes under the prefix, and how gcloud spells
@@ -126,12 +144,14 @@ normalize_memory_vars() {
   export MEMORY_PROVIDER="$from_mode"
 }
 
-# Model provider → the model the install defaults to for that provider.
+# Model provider → the model the install defaults to for that provider. The
+# names live in install.defaults.env; vertex_ai (and anything unrecognised,
+# which the validator rejects separately) takes the Gemini one.
 default_model_for_provider() {
   case "${1:-}" in
-    openai) echo "gpt-5.4" ;;
-    anthropic) echo "claude-opus-5" ;;
-    *) echo "gemini-3.5-flash" ;;
+    openai) echo "$DEFAULT_MODEL_OPENAI" ;;
+    anthropic) echo "$DEFAULT_MODEL_ANTHROPIC" ;;
+    *) echo "$DEFAULT_MODEL_GEMINI" ;;
   esac
 }
 
@@ -626,15 +646,28 @@ check_github_org_is_organization() {
 # ─── Terraform State Location ─────────────────────────────────────────────────
 # The bucket and prefix are derivable from the install coordinates alone, so a
 # fresh clone (uninstall.sh, upgrade.sh) can find the state without any file
-# from the original install. Keep in step with lifecycle.sh's ensure_backend.
+# from the original install. lifecycle.sh's ensure_backend and state_prefix
+# derive the same two answers from the same install.defaults.env values.
 tf_state_bucket() {
-  local bucket="${KUBE_AGENTS_STATE_BUCKET:-auto}"
-  [ "$bucket" = "auto" ] && bucket="${PROJECT_ID}-kube-agents-tfstate"
+  local bucket="${KUBE_AGENTS_STATE_BUCKET:-$DEFAULT_KUBE_AGENTS_STATE_BUCKET}"
+  [ "$bucket" = "$DEFAULT_KUBE_AGENTS_STATE_BUCKET" ] && bucket="${PROJECT_ID}${DEFAULT_TF_STATE_BUCKET_SUFFIX}"
   echo "$bucket"
 }
 
 tf_state_prefix() {
-  echo "${KUBE_AGENTS_STATE_PREFIX:-kube-agents/${CLUSTER_NAME}}"
+  echo "${KUBE_AGENTS_STATE_PREFIX:-${DEFAULT_TF_STATE_PREFIX_ROOT}/${CLUSTER_NAME}}"
+}
+
+# The basename of the first ENABLED version of a Cloud KMS key, or nothing.
+# The token minter cannot pass readiness without one, so the generator,
+# install.sh and upgrade.sh all ask before enabling it; one pipeline here so
+# the three cannot come to disagree. Every failure -- no key, no API, no
+# permission -- reads as "none", which the callers treat as "do not enable".
+kms_key_enabled_version() {
+  local key="$1" keyring="$2" location="$3" project="$4"
+  { gcloud kms keys versions list --key "$key" --keyring "$keyring" \
+      --location "$location" --project "$project" \
+      --filter='state=ENABLED' --format='value(name.basename())' 2>/dev/null || true; } | head -1
 }
 
 # ─── terraform.tfvars Generation ──────────────────────────────────────────────
@@ -1122,9 +1155,9 @@ ensure_clean_helm_release() {
           return 0
         else
           if type print_error >/dev/null 2>&1; then
-            print_error "Helm release '${release_name}' is in '${release_status}', but no previous deployed revision exists in history. Automatic uninstall is blocked to prevent credential and secret destruction (platform-agent-secrets). Set ALLOW_UNINSTALL_PENDING_RELEASE=true to permit uninstall."
+            print_error "Helm release '${release_name}' is in '${release_status}', but no previous deployed revision exists in history. Automatic uninstall is blocked to prevent credential and secret destruction (${PLATFORM_AGENT_SECRET}). Set ALLOW_UNINSTALL_PENDING_RELEASE=true to permit uninstall."
           else
-            echo "❌ ERROR: Helm release '${release_name}' is in '${release_status}', but no previous deployed revision exists in history. Automatic uninstall is blocked to prevent credential and secret destruction (platform-agent-secrets). Set ALLOW_UNINSTALL_PENDING_RELEASE=true to permit uninstall." >&2
+            echo "❌ ERROR: Helm release '${release_name}' is in '${release_status}', but no previous deployed revision exists in history. Automatic uninstall is blocked to prevent credential and secret destruction (${PLATFORM_AGENT_SECRET}). Set ALLOW_UNINSTALL_PENDING_RELEASE=true to permit uninstall." >&2
           fi
           return 1
         fi
@@ -1150,7 +1183,7 @@ ensure_clean_helm_release() {
 # too).
 write_tfvars_from_state() {
   local dest="$1"
-  local image_tag="${2:-${IMAGE_TAG:-latest}}"
+  local image_tag="${2:-${IMAGE_TAG:-$IMAGE_TAG_FALLBACK}}"
   normalize_identity_vars
 
   # MEMORY_PROVIDER when the caller set it (install.sh's own run exports it),
@@ -1290,7 +1323,7 @@ write_tfvars_from_state() {
         -o jsonpath="{.data.${secret_key}}" 2>/dev/null || true; } | base64 --decode 2>/dev/null || true)"
       if [ -n "$secret_val" ]; then
         export "${secret_key}=${secret_val}"
-        print_info "Recovered ${secret_key} from the live 'platform-agent-secrets' Secret (install.env does not persist it)."
+        print_info "Recovered ${secret_key} from the live '${PLATFORM_AGENT_SECRET}' Secret (install.env does not persist it)."
       fi
     done
   fi
@@ -1320,7 +1353,7 @@ write_tfvars_from_state() {
   # unbound-variable error under set -u.
   if [ -z "${API_SERVER_KEY:-}" ]; then
     print_error "API_SERVER_KEY is not set, the install configuration does not carry it (PERSIST_SECRETS_ON_DISK=false keeps it out), and it could not be recovered from the live Secret."
-    print_info "Recover it and re-run: export API_SERVER_KEY=\"\$(kubectl get secret platform-agent-secrets -n kubeagents-system -o jsonpath='{.data.API_SERVER_KEY}' | base64 --decode)\""
+    print_info "Recover it and re-run: export API_SERVER_KEY=\"\$(kubectl get secret ${PLATFORM_AGENT_SECRET} -n ${NAMESPACE:-$DEFAULT_NAMESPACE} -o jsonpath='{.data.API_SERVER_KEY}' | base64 --decode)\""
     return 1
   fi
 
@@ -1361,12 +1394,8 @@ write_tfvars_from_state() {
   local enable_github_minter="false"
   if [ -n "${GITOPS_ORG:-}" ] && [ -n "${GITOPS_REPO:-}" ] && [ -n "${GITHUB_APP_ID:-}" ]; then
     local minter_key_version=""
-    minter_key_version="$({ gcloud kms keys versions list \
-      --key "${KMS_KEY:-$DEFAULT_KMS_KEY}" \
-      --keyring "${KMS_KEYRING:-$DEFAULT_KMS_KEYRING}" \
-      --location "$(derive_kms_location "${REGION}")" \
-      --project "${PROJECT_ID}" --filter='state=ENABLED' \
-      --format='value(name)' 2>/dev/null || true; } | head -1)"
+    minter_key_version="$(kms_key_enabled_version "${KMS_KEY:-$DEFAULT_KMS_KEY}" \
+      "${KMS_KEYRING:-$DEFAULT_KMS_KEYRING}" "$(derive_kms_location "${REGION}")" "${PROJECT_ID}")"
     if [ -n "$minter_key_version" ] || [ -f "${GITHUB_PEM_PATH:-}" ]; then
       enable_github_minter="true"
     else
@@ -1555,8 +1584,8 @@ write_tfvars_from_state() {
     echo "user_profile_enabled     = $(hcl_bool "${USER_PROFILE_ENABLED:-$DEFAULT_USER_PROFILE_ENABLED}")"
     echo ""
     echo "# Optional AgentPlugins"
-    echo "enable_pubsub_platform       = $(hcl_bool "${ENABLE_PUBSUB_PLATFORM:-false}")"
-    echo "enable_stockout_investigator = $(hcl_bool "${ENABLE_STOCKOUT_INVESTIGATOR:-false}")"
+    echo "enable_pubsub_platform       = $(hcl_bool "${ENABLE_PUBSUB_PLATFORM:-$DEFAULT_ENABLE_PUBSUB_PLATFORM}")"
+    echo "enable_stockout_investigator = $(hcl_bool "${ENABLE_STOCKOUT_INVESTIGATOR:-$DEFAULT_ENABLE_STOCKOUT_INVESTIGATOR}")"
   } > "${dest}.tmp"
   chmod 600 "${dest}.tmp"
   mv -f -- "${dest}.tmp" "$dest"

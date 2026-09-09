@@ -54,17 +54,23 @@ fi
 # Keep this value aligned with the Terraform full-install composition and admin portal.
 KUBE_AGENTS_HOST_LABEL="kube-agents-host"
 
+# The Artifact Registry repository the dev path builds into when the state
+# file names none. Dev scratch state, not an install default, so it lives
+# here rather than in install.defaults.env.
+readonly DEV_ARTIFACT_REGISTRY_REPO_DEFAULT="kube-agents"
+
 # ─── Identity names ───────────────────────────────────────────────────────────
 # The Kubernetes service accounts are the chart's and the operator's to name:
 # nothing the installer configures changes them, so they are constants here,
-# read by the kustomize dev path's envsubst. The GCP service accounts and the
-# namespace are install configuration -- install.env can set them, and their
-# defaults live in install.defaults.env with the rest -- so export_identity_names
-# fills each in only when nothing loaded before it did.
+# read by the kustomize dev path's envsubst (the minter's and LiteLLM's) or by
+# the docs terminology check (the agent's; the controller's is the kustomize
+# namePrefix applied to its base). The GCP service accounts and the namespace
+# are install configuration -- install.env can set them, and their defaults
+# live in install.defaults.env with the rest -- so export_identity_names fills
+# each in only when nothing loaded before it did. No controller GSA: no
+# install path creates one.
 readonly PLATFORM_AGENT_KSA_NAME_FIXED="kubeagents-platform-agent"
-readonly PLATFORM_AGENT_SANDBOX_KSA_NAME_FIXED="platform-agent-sandbox"
 readonly CONTROLLER_KSA_NAME_FIXED="kubeagents-controller"
-readonly CONTROLLER_GSA_NAME_FIXED="kubeagents-controller-gsa"
 readonly GITHUB_MINTER_KSA_NAME_FIXED="kubeagents-github-minter"
 readonly LITELLM_KSA_NAME_FIXED="kubeagents-litellm"
 
@@ -74,9 +80,7 @@ export_identity_names() {
   export GITHUB_MINTER_GSA_NAME="${GITHUB_MINTER_GSA_NAME:-$DEFAULT_GITHUB_MINTER_GSA_NAME}"
   export LITELLM_GSA_NAME="${LITELLM_GSA_NAME:-$DEFAULT_LITELLM_GSA_NAME}"
   export PLATFORM_AGENT_KSA_NAME="$PLATFORM_AGENT_KSA_NAME_FIXED"
-  export PLATFORM_AGENT_SANDBOX_KSA_NAME="$PLATFORM_AGENT_SANDBOX_KSA_NAME_FIXED"
   export CONTROLLER_KSA_NAME="$CONTROLLER_KSA_NAME_FIXED"
-  export CONTROLLER_GSA_NAME="$CONTROLLER_GSA_NAME_FIXED"
   export GITHUB_MINTER_KSA_NAME="$GITHUB_MINTER_KSA_NAME_FIXED"
   export LITELLM_KSA_NAME="$LITELLM_KSA_NAME_FIXED"
 }
@@ -466,7 +470,7 @@ init_var_image_tag() {
       print_error "IMAGE_TAG is required in non-interactive mode. Set it to an immutable release tag or validated commit SHA."
       exit 1
     else
-      local default_tag="latest"
+      local default_tag="$IMAGE_TAG_FALLBACK"
       echo -e "  ${C_CYAN}The base image tag is used for all images built from the kube-agents repo.${C_RESET}"
       echo -ne "  ${C_CYAN}Enter Base Image Tag (a commit SHA; 'latest' = latest commit on main) [${C_WHITE}${default_tag}${C_CYAN}]: ${C_RESET}"
       read -r input_tag
@@ -576,7 +580,7 @@ ensure_teardown_state() {
     export CLUSTER_NAME="${CLUSTER_NAME:-$DEFAULT_CLUSTER_NAME}"
     export GKE_DB_KMS_KEYRING="${GKE_DB_KMS_KEYRING:-}"
     export GKE_DB_KMS_KEY="${GKE_DB_KMS_KEY:-}"
-    export GCP_ARTIFACT_REGISTRY_REPO_NAME="${GCP_ARTIFACT_REGISTRY_REPO_NAME:-${REPO_NAME:-kube-agents}}"
+    export GCP_ARTIFACT_REGISTRY_REPO_NAME="${GCP_ARTIFACT_REGISTRY_REPO_NAME:-${REPO_NAME:-$DEV_ARTIFACT_REGISTRY_REPO_DEFAULT}}"
     export DEV_ARTIFACT_REGISTRY_CREATED="${DEV_ARTIFACT_REGISTRY_CREATED:-false}"
     export_identity_names
   else
@@ -614,7 +618,7 @@ ensure_teardown_state() {
     fi
     export GKE_DB_KMS_KEYRING="${GKE_DB_KMS_KEYRING:-}"
     export GKE_DB_KMS_KEY="${GKE_DB_KMS_KEY:-}"
-    export GCP_ARTIFACT_REGISTRY_REPO_NAME="${GCP_ARTIFACT_REGISTRY_REPO_NAME:-${REPO_NAME:-kube-agents}}"
+    export GCP_ARTIFACT_REGISTRY_REPO_NAME="${GCP_ARTIFACT_REGISTRY_REPO_NAME:-${REPO_NAME:-$DEV_ARTIFACT_REGISTRY_REPO_DEFAULT}}"
     export DEV_ARTIFACT_REGISTRY_CREATED="${DEV_ARTIFACT_REGISTRY_CREATED:-false}"
     if [ "${GOOGLE_CHAT_ENABLED:-$DEFAULT_GOOGLE_CHAT_ENABLED}" = "true" ]; then
       export CHAT_TOPIC_NAME="${CHAT_TOPIC_NAME:-$DEFAULT_CHAT_TOPIC_NAME}"

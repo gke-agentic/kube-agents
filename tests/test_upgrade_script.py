@@ -240,12 +240,17 @@ class PersistStateVarTest(unittest.TestCase):
         arrives later, as an agent that cannot run kubectl.
         """
         source = _UPGRADE_SH.read_text()
-        for target in (
-            "statefulset/platform-agent-shell",
-            "deployment/platform-agent-credential-proxy",
+        # Spelled through installer_common.sh's chart-contract constants, so the
+        # constant's value is checked too: a renamed constant that no longer
+        # holds the object's name would otherwise still pass.
+        common = (_REPO_ROOT / "scripts" / "installer" / "installer_common.sh").read_text()
+        for kind, constant, name in (
+            ("statefulset", "PLATFORM_AGENT_SHELL_STATEFULSET", "platform-agent-shell"),
+            ("deployment", "PLATFORM_AGENT_CREDENTIAL_PROXY_DEPLOYMENT", "platform-agent-credential-proxy"),
         ):
-            with self.subTest(target=target):
-                self.assertIn(f"kubectl rollout status {target}", source)
+            with self.subTest(target=f"{kind}/{name}"):
+                self.assertIn(f'readonly {constant}="{name}"', common)
+                self.assertIn(f'kubectl rollout status "{kind}/${{{constant}}}"', source)
 
     def test_an_install_env_only_install_still_records_the_override(self):
         """The guard must not lose the override, only the file write: the

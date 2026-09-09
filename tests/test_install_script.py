@@ -1445,11 +1445,42 @@ class BootstrapRecordsIdentityKeysOnlyWhenSetTest(unittest.TestCase):
         for key in ("PLATFORM_AGENT_GSA_NAME", "GITHUB_MINTER_GSA_NAME", "LITELLM_GSA_NAME",
                     "GKE_DB_KMS_KEYRING", "GKE_DB_KMS_KEY", "NAMESPACE"):
             with self.subTest(key=key):
-                self.assertNotRegex(out, rf"^{key}=", msg=out)
+                # re.MULTILINE, or `^` anchors at offset 0 only -- which is the
+                # file's comment header, so the assertion could never fail.
+                self.assertNotRegex(out, re.compile(rf"^{key}=", re.MULTILINE), msg=out)
 
     def test_a_shell_exported_namespace_is_not_recorded(self):
         out = self._bootstrap({"NAMESPACE": "stray-from-kubectl-tooling"})
-        self.assertNotRegex(out, r"^NAMESPACE=")
+        self.assertNotRegex(out, re.compile(r"^NAMESPACE=", re.MULTILINE), msg=out)
+
+    def test_the_negative_assertions_can_fail(self):
+        """The guard the two tests above rely on: a key that IS written is
+        seen by the same anchored pattern, so their silence means absence."""
+        out = self._bootstrap({"GKE_DB_KMS_KEY": "key-two"})
+        self.assertRegex(out, re.compile(r"^GKE_DB_KMS_KEY=key-two$", re.MULTILINE))
+
+
+class FrontDoorsAgreeOnTheRepositoryTest(unittest.TestCase):
+    """Each front door clones the install sources before it has a checkout to
+    read the URL from, so each carries the URL; this pins the three equal."""
+
+    def test_every_front_door_names_the_same_clone_url(self):
+        urls = {}
+        for script in ("install.sh", "upgrade.sh", "uninstall.sh"):
+            match = re.search(r'^KUBE_AGENTS_REPO_URL="([^"]+)"$',
+                              (_REPO_ROOT / script).read_text(), re.MULTILINE)
+            self.assertIsNotNone(match, f"{script} declares no KUBE_AGENTS_REPO_URL")
+            urls[script] = match.group(1)
+        self.assertEqual(len(set(urls.values())), 1, urls)
+
+    def test_no_front_door_spells_the_url_inline(self):
+        for script in ("install.sh", "upgrade.sh", "uninstall.sh"):
+            with self.subTest(script=script):
+                text = (_REPO_ROOT / script).read_text()
+                inline = [line for line in text.splitlines()
+                          if "github.com/gke-labs/kube-agents.git" in line
+                          and not line.startswith("KUBE_AGENTS_REPO_URL=")]
+                self.assertEqual(inline, [], "clone through $KUBE_AGENTS_REPO_URL")
 
 
 class InstallEnvPermissionsTest(unittest.TestCase):

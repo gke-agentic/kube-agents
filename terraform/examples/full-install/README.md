@@ -147,7 +147,11 @@ shell and the file is regenerated on every run, and either way the next run
 resolves the name back to the default and plans the GSA's destroy-and-recreate
 under `-auto-approve` — which `lifecycle.sh`'s `guard_gsa_identity` refuses. The
 release namespace (`NAMESPACE` in `install.env`) has the same guard,
-`guard_release_namespace`, because `helm_release` treats it as ForceNew too.
+`guard_release_namespace`, because `helm_release` treats it as ForceNew too, and
+so do the CMEK key ring and key names (`GKE_DB_KMS_KEYRING` / `GKE_DB_KMS_KEY`,
+`guard_kms_identity`): on a cluster this state created, a renamed key would be
+destroyed and recreated, which schedules the live key's versions for destruction.
+A key is rotated in Cloud KMS, not by renaming it here.
 And a distinct name un-collides creation, not identity: the Workload
 Identity principal names a namespace and KSA project-wide, no cluster, so
 both installs bind the same principal and each agent can mint the other's

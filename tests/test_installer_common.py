@@ -1011,6 +1011,42 @@ class InstallDefaultsFileTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout.strip(), "autopilot")
 
+    def test_the_chart_carries_the_same_per_provider_models(self):
+        """charts/kube-agents/templates/litellm.yaml keeps its own copy of the
+        per-provider default models for a hand-driven Helm install, because a
+        chart cannot source this file. The copy is allowed only while it is
+        equal, and this is what makes that true."""
+        proc = subprocess.run(
+            ["bash", "-c",
+             f'set -u; source "{self._INSTALLER_COMMON}"; '
+             'for p in gemini openai anthropic vertex_ai; do '
+             'echo "$p=$(default_model_for_provider "$p")"; done'],
+            capture_output=True, text=True, cwd=str(_REPO_ROOT),
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        defaults = dict(line.split("=", 1) for line in proc.stdout.split())
+        chart = (_REPO_ROOT / "charts" / "kube-agents" / "templates" / "litellm.yaml").read_text()
+        table = re.search(r'\$defaultModels := dict (.*?) \}\}', chart)
+        self.assertIsNotNone(table, "litellm.yaml no longer declares $defaultModels")
+        chart_models = dict(re.findall(r'"(\w+)" "([^"]+)"', table.group(1)))
+        self.assertEqual(chart_models, defaults)
+
+    def test_the_state_location_derives_from_the_defaults(self):
+        """installer_common.sh and lifecycle.sh both derive the bucket and the
+        prefix; both read these values, so the two cannot name different
+        objects. The literal here is the contract every existing install's
+        state already sits under."""
+        proc = subprocess.run(
+            ["bash", "-c",
+             f'set -u; source "{self._INSTALLER_COMMON}"; '
+             'PROJECT_ID=p CLUSTER_NAME=c; echo "$(tf_state_bucket) $(tf_state_prefix)"; '
+             'KUBE_AGENTS_STATE_BUCKET=named; echo "$(tf_state_bucket)"'],
+            capture_output=True, text=True, cwd=str(_REPO_ROOT),
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.split("\n")[:2],
+                         ["p-kube-agents-tfstate kube-agents/c", "named"])
+
 
 class NormalizeMemoryVarsTest(unittest.TestCase):
     """install.env's MEMORY must beat a migrated vars.sh's MEMORY_PROVIDER.
