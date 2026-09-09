@@ -151,6 +151,40 @@ class InstallerCommonTest(unittest.TestCase):
         )
         self.assertIn("rc=1", proc.stdout, proc.stderr)
 
+    def test_missing_state_does_not_fire_err_trap(self):
+        # Under `set -E` (errtrace) with an ERR trap installed (as in install.sh / upgrade.sh),
+        # an absent state object must not trigger the ERR trap inside the $(...) subshell.
+        # On Bash 3.2 (macOS default), the subshell inherits the ERR trap and fires unless
+        # explicitly cleared with `trap - ERR`.
+        source = _INSTALLER_COMMON.read_text(encoding="utf-8")
+        self.assertRegex(
+            source,
+            r"tf_state_has_cluster\(\)\s*\{[^}]*state=\$\(trap - ERR;\s*gcloud storage cat",
+            "tf_state_has_cluster must guard `gcloud storage cat` with `trap - ERR` "
+            "inside its command substitution to prevent spurious ERR traps on Bash 3.2",
+        )
+        self.assertRegex(
+            source,
+            r"tf_state_image_tag\(\)\s*\{[^}]*state=\$\(trap - ERR;\s*gcloud storage cat",
+            "tf_state_image_tag must guard `gcloud storage cat` with `trap - ERR` "
+            "inside its command substitution to prevent spurious ERR traps on Bash 3.2",
+        )
+
+        script = (
+            "set -E\n"
+            "trap 'echo \"ERR_TRAP_FIRED\" >&2' ERR\n"
+            "tf_state_has_cluster || true\n"
+            'tag="$(tf_state_image_tag)"\n'
+            'echo "done"\n'
+        )
+        proc = self._run(
+            script,
+            gcloud_stdout=None,
+            gcloud_exit=1,
+        )
+        self.assertIn("done", proc.stdout, proc.stderr)
+        self.assertNotIn("ERR_TRAP_FIRED", proc.stderr)
+
     # ── hcl_csv_list: --custom-roles documents "space- or comma-separated" ──
 
     def test_csv_list_splits_on_commas(self):

@@ -634,7 +634,11 @@ hcl_csv_list() {
 # lifecycle.sh documents for its own state reads).
 tf_state_has_cluster() {
   local state
-  state=$(gcloud storage cat "gs://$(tf_state_bucket)/$(tf_state_prefix)/default.tfstate" 2>/dev/null) || return 1
+  # `trap - ERR` inside the substitution: under bash 3.2 (macOS default) the
+  # caller's inherited ERR trap fires in this subshell even though the failure
+  # is handled by `|| return 1`, printing a spurious error banner on normal
+  # first-time installs.
+  state=$(trap - ERR; gcloud storage cat "gs://$(tf_state_bucket)/$(tf_state_prefix)/default.tfstate" 2>/dev/null) || return 1
   printf '%s' "$state" | python3 -c '
 import json, sys
 try:
@@ -664,7 +668,10 @@ sys.exit(0 if managed else 1)
 # composition had this output carries no value for it. Callers fall back.
 tf_state_image_tag() {
   local state
-  state=$(gcloud storage cat "gs://$(tf_state_bucket)/$(tf_state_prefix)/default.tfstate" 2>/dev/null) || return 0
+  # `trap - ERR` inside the substitution: under bash 3.2 the caller's inherited
+  # ERR trap fires in this subshell even though failure is handled by
+  # `|| return 0`.
+  state=$(trap - ERR; gcloud storage cat "gs://$(tf_state_bucket)/$(tf_state_prefix)/default.tfstate" 2>/dev/null) || return 0
   printf '%s' "$state" | python3 -c '
 import json, sys
 try:
