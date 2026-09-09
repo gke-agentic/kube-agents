@@ -17,7 +17,11 @@ render_summary() {
   if [ -n "${SKIP_REASON}" ]; then
     echo "${SKIP_REASON}"
   elif [ -n "${GATE_TAG}" ]; then
-    echo "The newest candidate (\`${GATE_TAG}\` / \`${RELEASE_COMMIT:0:7}\`) does not require a GA release."
+    if [ -n "${RELEASE_COMMIT}" ]; then
+      echo "The newest candidate (\`${GATE_TAG}\` / \`${RELEASE_COMMIT:0:7}\`) does not require a GA release."
+    else
+      echo "The newest candidate (\`${GATE_TAG}\`) does not require a GA release."
+    fi
   else
     echo "No eligible staging promotion candidate exists to release."
   fi

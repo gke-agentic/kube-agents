@@ -131,7 +131,18 @@ exit {gh_exit}
             cwd=str(tmp_dir),
         )
         self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("::error title=Missing dependency::", proc.stderr)
         self.assertIn("gh CLI is required", proc.stderr)
+
+    def test_dispatches_cleanly_when_commit_and_tag_are_omitted(self):
+        proc, recorded, summary = self._run(
+            overrides={"RELEASE_COMMIT": "", "GATE_TAG": ""}
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("workflow run release-publish.yml", recorded)
+        self.assertIn("### GA release pipeline dispatched", summary)
+        self.assertNotIn("Commit", summary)
+        self.assertNotIn("Gate tag", summary)
 
     def test_dispatches_with_overridden_workflow_file(self):
         proc, recorded, _ = self._run(
@@ -209,6 +220,18 @@ class RecordReleaseSchedulerSkipTest(unittest.TestCase):
         proc, _ = self._run(with_summary_file=False)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("### No GA release required", proc.stdout)
+
+    def test_renders_tag_fallback_when_commit_is_omitted(self):
+        proc, summary = self._run(
+            overrides={"RELEASE_COMMIT": "", "SKIP_REASON": ""}
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("### No GA release required", summary)
+        self.assertIn(f"`{_GATE_TAG}`", summary)
+        self.assertNotIn(" / ``", summary)
+        self.assertIn(
+            "says nothing about the last pipeline run's result", summary
+        )
 
 
 if __name__ == "__main__":
