@@ -78,7 +78,7 @@ _HOST_TOKEN = re.compile(
 
 #: Executables that are read-only in every invocation (text/inspection utils).
 _READ_ONLY_TOOLS = frozenset({
-    "grep", "egrep", "fgrep", "jq", "cut", "uniq", "head",
+    "grep", "egrep", "fgrep", "jq", "cut", "head",
     "tail", "wc", "cat", "tr", "column", "nl", "comm", "join", "paste", "fold",
     "rev", "echo", "printf", "date", "hostname", "pwd", "true", "test",
 })
@@ -155,6 +155,7 @@ _TOOL_FLAGS_WITH_VALUE = {
         "--profile", "--profile-output",
         "--password", "--username",
         "--log-flush-frequency", "--kuberc",
+        "--raw", "--field-manager", "--cascade", "--resource-version",
     }),
     "oc": frozenset({
         "-n", "--namespace",
@@ -172,6 +173,7 @@ _TOOL_FLAGS_WITH_VALUE = {
         "--profile", "--profile-output",
         "--password", "--username",
         "--log-flush-frequency", "--kuberc",
+        "--raw", "--field-manager", "--cascade", "--resource-version",
     }),
     "gcloud": frozenset({
         "--project", "--account", "--billing-project",
@@ -232,7 +234,6 @@ _KNOWN_BOOLEAN_FLAGS = frozenset({
     "--all",
     "--show-labels",
     "-w", "--watch",
-    "--raw",
     "-R", "--recursive",
     "--ignore-not-found",
     "--disable-compression",
@@ -445,9 +446,10 @@ def _extract_command_and_subcommand(
             elif tok in known_boolean_flags:
                 i += 1
             elif tok.startswith("--"):
-                # Unrecognised long flag without '=' followed by a non-flag token:
-                # Ambiguous whether the next token is an argument or a subcommand.
-                if i + 1 < len(pre_dash) and not pre_dash[i + 1].startswith("-"):
+                # Unrecognised long flag without '=' followed by another token:
+                # Ambiguous whether the next token is consumed as a flag value or is an
+                # independent token (subcommand, argument, or subsequent flag like --dry-run).
+                if i + 1 < len(pre_dash):
                     if ambiguous_flag is None:
                         ambiguous_flag = tok
                 i += 1

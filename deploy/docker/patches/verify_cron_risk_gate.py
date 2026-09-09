@@ -185,6 +185,16 @@ def main() -> int:
               ap.check_all_command_guards("kubectl delete ns prod -n --dry-run=client", "local").get("approved"), False)
         check("high allows legitimate dry-run with value flag",
               ap.check_all_command_guards("kubectl delete ns prod --cache-dir /tmp --dry-run=client", "local").get("approved"), True)
+        check("high refuses unknown flag swallowing dry-run",
+              ap.check_all_command_guards("kubectl annotate ns prod audit=ok --field-manager --dry-run=client", "local").get("approved"), False)
+        check("high refuses raw swallowing dry-run",
+              ap.check_all_command_guards("kubectl delete ns prod --raw --dry-run=client", "local").get("approved"), False)
+        check("high allows raw read",
+              ap.check_all_command_guards("kubectl get --raw /metrics", "local").get("approved"), True)
+        check("high refuses uniq arbitrary write",
+              ap.check_all_command_guards("echo evil | uniq - /opt/data/jobs.json", "local").get("approved"), False)
+        check("high refuses uniq invocation",
+              ap.check_all_command_guards("uniq -c /tmp/sorted.txt", "local").get("approved"), False)
         check("high refuses profile-output shift",
               ap.check_all_command_guards("kubectl --profile-output get delete ns prod", "local").get("approved"), False)
         check("high refuses oc profile-output shift",

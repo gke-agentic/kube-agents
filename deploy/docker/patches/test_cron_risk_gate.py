@@ -72,6 +72,8 @@ class CronRiskGateTest(unittest.TestCase):
             "awk 'BEGIN{system(\"id\")}'",
             "yq -i '.a=1' x.yaml",
             "sort -o /tmp/x in",
+            "uniq in /tmp/x",
+            "echo evil | uniq - /opt/data/jobs.json",
             "kubectl get pods ;(helm uninstall prod-release)",
             "kubectl get pods ;>/dev/null bash -c id",
             "kubectl exec -n prod deploy/api -- bash -c id --dry-run=client",
@@ -642,6 +644,13 @@ class CronRiskGateTest(unittest.TestCase):
             "kubectl get --unknown-flag apply",
             "kubectl --unknown-flag get pods",
             "kubectl --unknown-flag delete pods",
+            # Unknown long flags preceding dry-run flags must fail closed
+            "kubectl annotate ns prod audit=ok --field-manager --dry-run=client",
+            "kubectl annotate ns prod audit=ok --unknown-flag --dry-run=client",
+            "kubectl delete ns prod --cascade --dry-run=client",
+            "kubectl delete ns prod --unknown-flag --dry-run=client",
+            "kubectl delete ns prod --raw --dry-run=client",
+            "kubectl patch deploy web -p '{}' --unknown-option --dry-run=client",
         ]
         for cmd in refused:
             with self.subTest(cmd=cmd):
@@ -656,6 +665,11 @@ class CronRiskGateTest(unittest.TestCase):
             "kubectl get pods --unknown-flag --show-labels",
             "kubectl get pods --output-watch-events",
             "kubectl get --output-watch-events pods",
+            # Unknown long flag with explicit value assignment does not consume subsequent flag
+            "kubectl annotate ns prod audit=ok --field-manager=foo --dry-run=client",
+            "kubectl get --raw /api/v1/nodes",
+            "kubectl get --raw=/api/v1/nodes",
+            "kubectl get pods --unknown-flag --namespace=prod",
         ]
         for cmd in allowed:
             with self.subTest(cmd=cmd):
@@ -968,7 +982,6 @@ class CronRiskGateTest(unittest.TestCase):
             "wc -l /var/log/app.log",
             "cut -d: -f1 /etc/passwd",
             "column -t /tmp/table.txt",
-            "uniq -c /tmp/sorted.txt",
             "date -u",
             "hostname",
             "pwd",
@@ -978,6 +991,10 @@ class CronRiskGateTest(unittest.TestCase):
                 self.assertIsNone(cron_command_policy_block(cmd, "high"), f"{cmd} should be approved")
 
         refused = [
+            "uniq -c /tmp/sorted.txt",
+            "uniq in out",
+            "uniq - /tmp/out",
+            "echo evil | uniq - /opt/data/profiles/platform/cron/jobs.json",
             "sed -i 's/foo/bar/g' file.txt",
             "tee /tmp/out.txt",
             "dd if=/dev/zero of=/dev/sda",
@@ -1086,7 +1103,6 @@ class CronRiskGateTest(unittest.TestCase):
             "/usr/bin/head -n 10 /var/log/syslog",
             "/usr/bin/tail -n 20 /var/log/syslog",
             "/usr/bin/cut -d: -f1 /etc/passwd",
-            "/usr/bin/uniq /tmp/sorted.txt",
             "/bin/date -u",
             "/bin/hostname",
             "/bin/pwd",
@@ -1098,6 +1114,8 @@ class CronRiskGateTest(unittest.TestCase):
                 self.assertIsNone(cron_command_policy_block(cmd, "high"), f"{cmd} should be approved")
 
         refused = [
+            "/usr/bin/uniq /tmp/sorted.txt",
+            "/usr/bin/uniq in out",
             "/usr/bin/kubectl delete ns prod",
             "/usr/bin/kubectl apply -f /tmp/x.yaml",
             "/usr/bin/kubectl exec -it mypod -- bash",
@@ -1290,7 +1308,6 @@ class CronRiskGateTest(unittest.TestCase):
             "fgrep '127.0.0.1' /etc/hosts",
             "jq -r '.items[].name' /tmp/pods.json",
             "cut -d: -f1 /etc/passwd",
-            "uniq -c /tmp/ips.txt",
             "head -n 25 /var/log/messages",
             "tail -n 100 /var/log/audit.log",
             "wc -w /var/log/auth.log",
@@ -1313,7 +1330,7 @@ class CronRiskGateTest(unittest.TestCase):
             "cat /var/log/syslog | grep error | cut -d' ' -f5- | tr 'A-Z' 'a-z' | rev | cut -c1-10 | rev",
             "echo 'a b c' | nl -ba | column -t",
             "paste /tmp/f1 /tmp/f2 | fold -w 80 | head -n 5",
-            "comm -12 /tmp/f1 /tmp/f2 | uniq -d | wc -l",
+            "comm -12 /tmp/f1 /tmp/f2 | wc -l",
             "true && test -f /etc/hosts && echo exists",
             "date -u +%Y-%m-%d | cut -d- -f1",
             "hostname -f | tr 'a-z' 'A-Z'",
@@ -1324,6 +1341,12 @@ class CronRiskGateTest(unittest.TestCase):
                 self.assertIsNone(cron_command_policy_block(cmd, "high"), f"{cmd} should be approved")
 
         refused = [
+            "uniq -c /tmp/ips.txt",
+            "comm -12 /tmp/f1 /tmp/f2 | uniq -d | wc -l",
+            "uniq in -o out",
+            "uniq in out",
+            "uniq /etc/passwd",
+            "echo 'anything' | uniq - /opt/data/profiles/platform/cron/jobs.json",
             "sort in -o out",
             "sort /etc/passwd",
             "awk '{print $1}' in",

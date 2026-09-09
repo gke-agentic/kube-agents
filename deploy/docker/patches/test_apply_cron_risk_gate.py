@@ -94,7 +94,7 @@ class ApplyCronRiskGateTest(unittest.TestCase):
         (tools_dir / "__init__.py").write_text("")
         for mod_name in ("cron_risk_gate.py", "cron_run_scope.py", "cron_tirith_scan.py"):
             (tools_dir / mod_name).write_text((patches_dir / mod_name).read_text())
-        cmd_policy = patches_dir.parent.parent / "agents" / "platform" / "scripts" / "command_policy.py"
+        cmd_policy = patches_dir.parents[2] / "agents" / "platform" / "scripts" / "command_policy.py"
         if cmd_policy.exists():
             (tools_dir / "command_policy.py").write_text(cmd_policy.read_text())
 
