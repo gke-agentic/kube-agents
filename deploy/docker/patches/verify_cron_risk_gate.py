@@ -42,6 +42,11 @@ def main() -> int:
             print("\nVERIFY FAILED:\n  " + failures[-1])
             return 1
 
+    if not getattr(crg, "GCLOUD_READ_COMMANDS", None):
+        failures.append("tools.cron_risk_gate.GCLOUD_READ_COMMANDS is empty or failed to import")
+        print("\nVERIFY FAILED:\n  " + failures[-1])
+        return 1
+
     state = {"cron": True, "mode": "approve"}
 
     # Pin session predicates
@@ -114,6 +119,8 @@ def main() -> int:
               ap.check_all_command_guards("kubectl get pods 2>/dev/null", "local").get("approved"), True)
         check("high allows gcloud list with create in filter",
               ap.check_all_command_guards('gcloud compute instances list --filter="status=create"', "local").get("approved"), True)
+        check("high allows gcloud container clusters describe",
+              ap.check_all_command_guards("gcloud container clusters describe prod", "local").get("approved"), True)
         check("high allows client dry-run",
               ap.check_all_command_guards("kubectl create -f x.yaml --dry-run=client -o yaml", "local").get("approved"), True)
         check("high allows quoted-pipe read",

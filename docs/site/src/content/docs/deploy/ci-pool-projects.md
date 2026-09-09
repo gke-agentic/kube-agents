@@ -171,7 +171,7 @@ gcloud artifacts repositories set-cleanup-policies kube-agents \
 
 ## 5. GitOps repository and GitHub token minter
 
-The evaluation scenarios that exercise the GitOps workflow — the six fleet-audit streams and both remediation cases — write to GitHub. Step 0 of a fleet-audit stream (`audit_report.py start`) mints a repository-scoped GitHub App token and clones the workspace named by the `Git Repo:` line of `/opt/data/SETTINGS.md`; `finish` rewrites a ledger issue and opens remediation pull requests.
+The evaluation scenarios that exercise the GitOps workflow — the six fleet-audit streams and both remediation cases — write to GitHub. Step 0 of a fleet-audit stream (`audit_report.py start`) mints a repository-scoped GitHub App token and clones the workspace resolved from `managed_repos` in the `gitops-state` ConfigMap; `finish` rewrites a ledger issue and opens remediation pull requests.
 
 **Every pool project needs its own private GitOps repository.** Two leases must not share a ledger issue or race on a remediation branch, and a token minted in one lease must not reach another lease's repository.
 
@@ -225,9 +225,9 @@ The repository is kept private: it is throwaway state a bot rewrites on every ru
 
 ### 5.1 How CI resolves it
 
-`hack/ci-deploy.sh` maps the leased project to its repository in `gitops_repo_for_project()` and passes the result as `--set-string platformAgent.integration.github.gitRepo=...`. The operator renders that field into the `platform-agent-settings` ConfigMap as the `Git Repo:` line.
+`hack/ci-deploy.sh` maps the leased project to its repository in `gitops_repo_for_project()` and passes the result as `--set-string platformAgent.integration.github.gitRepo=...`. The operator seeds that field into the `gitops-state` ConfigMap (`managed_repos`).
 
-CI supplies the value rather than relying on the chart default, and that is deliberate. A presubmit builds and deploys the pull request's own chart, operator, and agent, so a pull request that blanks `platformAgent.integration.github.gitRepo` in `values.yaml`, or breaks the CR-to-`SETTINGS.md` rendering, is exactly the regression the eval should surface as a failed scenario — which it can only do if the value the run is supposed to use comes from outside the artefacts under test. (This is a correctness argument, not the containment boundary; see 5.3.)
+CI supplies the value rather than relying on the chart default, and that is deliberate. A presubmit builds and deploys the pull request's own chart, operator, and agent, so a pull request that blanks `platformAgent.integration.github.gitRepo` in `values.yaml`, or breaks the CR-to-ConfigMap seeding, is exactly the regression the eval should surface as a failed scenario — which it can only do if the value the run is supposed to use comes from outside the artefacts under test. (This is a correctness argument, not the containment boundary; see 5.3.)
 
 Adding a project is one line in `gitops_repo_for_project()`, one row in the table above, and one entry in `_EXPECTED_MAPPING` in [`tests/test_ci_gitops_repo.py`](https://github.com/gke-labs/kube-agents/blob/main/tests/test_ci_gitops_repo.py). The test entry is the one that is easy to skip: the suite iterates that dictionary rather than parsing the function for projects it does not know about, so a mapping added without it stays green and stays untested.
 
@@ -309,12 +309,9 @@ A half-finished apply is the case to watch for. The stack's Kubernetes provider 
 
 ### 6.1 A read-only credential for the checks
 
-An eval run reads the fleet to confirm its fixtures survived; it has no business being able to change them, and a safeguard is worth less when the credential that checks it could also have caused what it is checking for. **This is not true today.** The Prow identity holds `roles/container.admin` in every eval project, and there are no in-cluster RoleBindings to narrow — GKE's IAM webhook is the whole authorization path.
+An eval run reads the fleet to confirm its fixtures survived; it has no business being able to change them, and a safeguard is worth less when the credential that checks it could also have caused what it is checking for. The apply above handles this: the fleet stack provisions `seeded-fleet-reader@${PROJECT_ID}.iam.gserviceaccount.com` with `roles/container.viewer` and nothing else, and binds `roles/iam.serviceAccountTokenCreator` on that account to `fleet_reader_token_creators`, which defaults to the Prow identity. `hack/ci-eval-pr.sh` already exports `FLEET_READONLY_SA` pointing at the account, so `hack/fleet-kubeconfigs.sh` writes each kubeconfig with an `exec:` credential naming `hack/fleet-reader-credential.sh`, which impersonates that account whenever `kubectl` asks for a token. It is an exec plugin rather than a token in the file because a minted token lives one hour and a presubmit runs for three.
 
-The seam exists: the fleet stack provisions `seeded-fleet-reader@${PROJECT_ID}.iam.gserviceaccount.com` with `roles/container.viewer` and nothing else. To use it, per project:
-
-1. Add the Prow identity to `fleet_reader_token_creators` and re-apply the stack, which binds it `roles/iam.serviceAccountTokenCreator` on that account alone.
-2. Export `FLEET_READONLY_SA=seeded-fleet-reader@${PROJECT_ID}.iam.gserviceaccount.com` in the Prow job. Unset, `hack/fleet-kubeconfigs.sh` warns on every run and the kubeconfigs carry the runner's own identity.
+That default landed after the pool was provisioned. A project applied before it lacks the binding — and the oldest three lack the account as well, since it postdates them — so `hack/fleet-kubeconfigs.sh` warns per cluster and the kubeconfigs keep the runner's own `roles/container.admin` on a fleet every open pull request shares; there are no in-cluster RoleBindings to narrow, GKE's IAM webhook is the whole authorization path. Section 7's check fails either case, and re-applying the stack against the project is the repair for both.
 
 ## 7. Pre-flight verification
 
