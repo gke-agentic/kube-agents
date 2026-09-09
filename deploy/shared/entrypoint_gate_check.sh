@@ -331,8 +331,8 @@ fi
 rm -rf "$home" "$home.out" "$home.err"
 
 # Step 4's force-override sweep. When OTEL_SDK_DISABLED=true (e.g. None cluster) but
-# HERMES_OTEL_ENABLED=true is configured, hermes_otel must be restored to enabled: true
-# pointing at the baked fallback endpoint.
+# HERMES_OTEL_ENABLED=true is configured, hermes_otel must not be disabled and must keep
+# the baked fallback endpoint.
 checks=$((checks + 1))
 home=$(mktemp -d "${SCRATCH_PREFIX}otel_forced.XXXXXX")
 OTEL_SDK_DISABLED=true
@@ -344,14 +344,15 @@ unset OTEL_SDK_DISABLED HERMES_OTEL_ENABLED
 otel_forced_missed=""
 for cfg in "$home/plugins/hermes_otel/config.yaml" "$home/profiles/platform/plugins/hermes_otel/config.yaml"; do
     [ -f "$cfg" ] || { otel_forced_missed="$otel_forced_missed $cfg(absent)"; continue; }
-    grep -q "enabled: true" "$cfg" || otel_forced_missed="$otel_forced_missed $cfg(not-enabled)"
+    grep -q "enabled: false" "$cfg" && otel_forced_missed="$otel_forced_missed $cfg(still-disabled)"
+    grep -q "backends: \[\]" "$cfg" && otel_forced_missed="$otel_forced_missed $cfg(backends-empty)"
     grep -q "gke-managed-otel" "$cfg" || otel_forced_missed="$otel_forced_missed $cfg(missing-baked-endpoint)"
 done
 if [ -n "$otel_forced_missed" ]; then
     echo "FAIL  step 4 did not restore hermes_otel configs on forced override:$otel_forced_missed"
     failures=$((failures + 1))
 else
-    printf 'ok    %-44s %s\n' "otel force override restores hermes_otel" "enabled=true, baked endpoint"
+    printf 'ok    %-44s %s\n' "otel force override restores hermes_otel" "not-disabled, baked endpoint"
 fi
 rm -rf "$home" "$home.out" "$home.err"
 
