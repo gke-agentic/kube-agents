@@ -64,8 +64,8 @@ reach the suite through the same reusable `e2e-run.yml`; `e2e-gchat-test.yml` an
 `e2e-manual-runner.yml` are the by-hand callers. `tests/e2e/operator/agentplugins_e2e_test.py` is
 the exception inside the exception: it is the whole of the `agent-plugin` suite and is in `nightly`
 too, and the nightly pipeline runs `agent-plugin` as tolerated coverage rather than as its gate — so
-nothing runs it on any automatic trigger until scheduled promotion occurs via `nightly-scheduler.yml`, and nothing fails when it
-does run.
+the scheduler dispatches the pipeline daily when an eligible candidate exists, so it does run
+automatically — and nothing fails when it does.
 
 **A `*_e2e_test.py` suffix opts a plugin test out of CI, and `test_*.py` opts it in.**
 `agentplugins-test.yml` discovers on `test_*.py`, which deliberately does not match the
