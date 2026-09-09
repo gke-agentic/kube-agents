@@ -741,6 +741,9 @@ resolve_effective_image_tag() {
   local requested_tag="${3:-}"
   printf -v "$dest_var" '%s' ""
   if [ -n "$requested_tag" ]; then
+    if ! validate_immutable_ref "$requested_tag"; then
+      return 1
+    fi
     printf -v "$dest_var" '%s' "$requested_tag"
     return 0
   fi
@@ -1155,7 +1158,11 @@ verify_local_source_ref() {
   SOURCE_REF_VERIFIED="${repo_dir}@${expected_ref}"
   if [ "$unverified" = "true" ]; then
     if [ "$PARAM_DRY_RUN" = "true" ]; then
-      print_warning "Continuing dry run with unverified install sources: a real installation would refuse this checkout, but preview is continuing."
+      if [ "$PARAM_ALLOW_UNVERIFIED_SOURCE" = "true" ]; then
+        print_warning "Continuing dry run with unverified install sources: preview is continuing (--allow-unverified-source active)."
+      else
+        print_warning "Continuing dry run with unverified install sources: a real installation would refuse this checkout, but preview is continuing."
+      fi
     else
       print_warning "Continuing with unverified install sources: the cluster will get this checkout's configuration plus the image built from ${expected_ref}."
     fi
@@ -2137,7 +2144,7 @@ run_menu_system() {
       6)
         print_step "Saving & Re-applying Configuration State"
         resolve_effective_image_tag image_tag "$repo_dir" "$image_tag" || return 1
-        validate_immutable_ref "$image_tag"
+        validate_immutable_ref "$image_tag" || return 1
         verify_local_source_ref "$repo_dir" "$image_tag"
         export PARAM_PROJECT_ID="$project_id" PARAM_CLUSTER_NAME="$cluster_name" PARAM_REGION="$region"
         export PARAM_ENABLE_WEBUI="$enable_webui" PARAM_MODEL_PROVIDER="$model_provider"
@@ -2227,7 +2234,7 @@ main() {
 
   local image_tag=""
   resolve_effective_image_tag image_tag "." "${PARAM_IMAGE_TAG:-}" || exit 1
-  validate_immutable_ref "$image_tag"
+  validate_immutable_ref "$image_tag" || exit 1
 
   # 2. Prerequisite CLI Tools Check & Auto-Installation
   print_step "1. Checking Prerequisites & Installing Missing Tools"

@@ -237,7 +237,7 @@ KUBE_AGENTS_STATE_BUCKET=auto ./lifecycle.sh apply
   curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSION>/install.sh | bash -s -- \
     --dry-run \
     --non-interactive \
-    --project-id=<PROJECT_ID>
+    --project-id="my-gcp-project"
   # or, hand-driven from repo, plain:  terraform plan
   ```
 
@@ -257,7 +257,7 @@ there first, then export both registry prefixes before provisioning:
 
 ```bash
 # Set to the target release tag (e.g. 0.4.0) matching your release installation
-export IMAGE_TAG=<RELEASE_VERSION>
+export IMAGE_TAG="<RELEASE_VERSION>"
 
 make mirror-images MIRROR_PREFIX=registry.example.com/kube-agents
 
@@ -369,7 +369,7 @@ builds one, and Autopilot ships the `gvisor` RuntimeClass with no pool to manage
 run on the node's standard runtime.
 
 Set it on a new install by adding this to `terraform.tfvars` before the first apply
-([Method 1](#method-1-the-install-engine--terraform--helm), Step 2):
+([Method 1](#method-1-the-install-engine--terraform--helm), Step 3):
 
 ```hcl
 cluster_mode            = "standard" # omit both lines on Autopilot, which

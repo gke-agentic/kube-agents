@@ -222,6 +222,12 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
             self.assertIn("preview is continuing", proc.stdout)
             self.assertNotIn("the cluster will get", proc.stdout)
 
+            cmd_dry_allow = f'PARAM_DRY_RUN=true PARAM_ALLOW_UNVERIFIED_SOURCE=true verify_local_source_ref "{repo_dir}" "0.2.0"'
+            proc_dry_allow = self._run_install_func(cmd_dry_allow)
+            self.assertEqual(proc_dry_allow.returncode, 0, proc_dry_allow.stderr)
+            self.assertIn("Continuing dry run with unverified install sources", proc_dry_allow.stdout)
+            self.assertIn("--allow-unverified-source active", proc_dry_allow.stdout)
+
             cmd_real = f'PARAM_DRY_RUN=false PARAM_ALLOW_UNVERIFIED_SOURCE=true verify_local_source_ref "{repo_dir}" "0.2.0"'
             proc_real = self._run_install_func(cmd_real)
             self.assertEqual(proc_real.returncode, 0, proc_real.stderr)
@@ -589,6 +595,13 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
         proc = self._run_install_func(cmd)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("TAG=0.3.0", proc.stdout)
+
+    def test_resolve_effective_image_tag_rejects_invalid_requested_tag(self):
+        """Verifies resolve_effective_image_tag validates explicit tag and rejects mutable ref cleanly."""
+        cmd = 'resolve_effective_image_tag tag "." "latest" || rc=$?; echo "RC=${rc:-0} TAG=$tag"'
+        proc = self._run_install_func(cmd)
+        self.assertIn("RC=1 TAG=", proc.stdout)
+        self.assertIn("Mutable image/source ref 'latest' is not supported", proc.stdout)
 
     def test_resolve_effective_image_tag_fails_when_non_interactive_and_no_default(self):
         """Verifies resolve_effective_image_tag errors when non-interactive and no default tag exists."""
