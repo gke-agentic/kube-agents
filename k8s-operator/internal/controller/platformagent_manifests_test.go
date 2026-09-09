@@ -6025,3 +6025,63 @@ func TestManagedEnvValuesCannotSmuggleALine(t *testing.T) {
 		t.Errorf("expected exactly one KUBEAGENTS_MODE line, got %d:\n%s", modeLines, rendered)
 	}
 }
+
+func TestBuildNetworkPolicy_OTLPCollectorNamespaceAnnotation(t *testing.T) {
+	customNS := "custom-collector-ns"
+	agentWithAnnotation := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+			Annotations: map[string]string{
+				AnnotationOTLPCollectorNamespace: customNS,
+			},
+		},
+	}
+
+	// 1. Annotation overrides endpoint host namespace
+	netpol := buildNetworkPolicy(agentWithAnnotation, nil, defaultTestNetpolProfile(), false, "http://otel.other-ns.svc:4318", false)
+	foundAnnotationNS := false
+	for _, rule := range netpol.Spec.Egress {
+		for _, peer := range rule.To {
+			if peer.NamespaceSelector != nil && peer.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] == customNS {
+				foundAnnotationNS = true
+				break
+			}
+		}
+	}
+	if !foundAnnotationNS {
+		t.Fatalf("expected rule 8 to name %q when AnnotationOTLPCollectorNamespace is set, got %+v", customNS, netpol.Spec.Egress)
+	}
+
+	// 2. Without annotation, falls back to endpoint host namespace
+	agentWithoutAnnotation := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+		},
+	}
+	netpolFallback := buildNetworkPolicy(agentWithoutAnnotation, nil, defaultTestNetpolProfile(), false, "http://otel.other-ns.svc:4318", false)
+	foundFallbackNS := false
+	for _, rule := range netpolFallback.Spec.Egress {
+		for _, peer := range rule.To {
+			if peer.NamespaceSelector != nil && peer.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] == "other-ns" {
+				foundFallbackNS = true
+				break
+			}
+		}
+	}
+	if !foundFallbackNS {
+		t.Fatalf("expected rule 8 to name 'other-ns' from endpoint host, got %+v", netpolFallback.Spec.Egress)
+	}
+
+	// 3. Without annotation and otlpDisabled, rule 8 is omitted
+	netpolDisabled := buildNetworkPolicy(agentWithoutAnnotation, nil, defaultTestNetpolProfile(), false, "", true)
+	for _, rule := range netpolDisabled.Spec.Egress {
+		for _, p := range rule.Ports {
+			if p.Port != nil && (p.Port.IntVal == 4317 || p.Port.IntVal == 4318) {
+				t.Errorf("expected no OTel egress rule when otlpDisabled is true, but found port %d", p.Port.IntVal)
+			}
+		}
+	}
+}
+

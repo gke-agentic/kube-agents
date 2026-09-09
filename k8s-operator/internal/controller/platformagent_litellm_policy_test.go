@@ -51,8 +51,7 @@ func TestBuildLiteLLMNetworkPolicy(t *testing.T) {
 		MetadataDaemonPort: 988,
 	}
 
-	otlpEndpoint := "http://otel-collector.gke-managed-otel.svc:4318"
-	netpol := buildLiteLLMNetworkPolicy(agent, profile, otlpEndpoint, false)
+	netpol := buildLiteLLMNetworkPolicy(agent, profile)
 
 	if netpol.Name != "litellm-policy" {
 		t.Errorf("expected name 'litellm-policy', got %q", netpol.Name)
@@ -231,7 +230,7 @@ func TestBuildLiteLLMNetworkPolicy_ResidualGapFix(t *testing.T) {
 		DNSClusterIPs: []string{customDNSVIP},
 	}
 
-	netpol := buildLiteLLMNetworkPolicy(agent, profile, "", true)
+	netpol := buildLiteLLMNetworkPolicy(agent, profile)
 	dnsRule := netpol.Spec.Egress[0]
 
 	foundCustomVIP := false
@@ -259,7 +258,7 @@ func TestBuildLiteLLMNetworkPolicy_DualStack(t *testing.T) {
 		DNSClusterIPs: []string{"10.96.0.10", "2001:db8::10"},
 	}
 
-	netpol := buildLiteLLMNetworkPolicy(agent, profile, "", true)
+	netpol := buildLiteLLMNetworkPolicy(agent, profile)
 	dnsRule := netpol.Spec.Egress[0]
 
 	var cidrs []string
@@ -314,11 +313,11 @@ func TestBuildLiteLLMNetworkPolicy_MetadataDaemonSuppressed(t *testing.T) {
 		MetadataDaemonIP: "", // suppressed
 	}
 
-	netpol := buildLiteLLMNetworkPolicy(agent, profile, "", true)
+	netpol := buildLiteLLMNetworkPolicy(agent, profile)
 
-	// With metadata daemon suppressed and OTel disabled, there should be exactly 3 egress rules (DNS, HTTPS, Metadata-80).
-	if len(netpol.Spec.Egress) != 3 {
-		t.Fatalf("expected 3 egress rules when metadata daemon is suppressed, got %d", len(netpol.Spec.Egress))
+	// With metadata daemon suppressed, there should be exactly 4 egress rules (DNS, HTTPS, Metadata-80, OTel).
+	if len(netpol.Spec.Egress) != 4 {
+		t.Fatalf("expected 4 egress rules when metadata daemon is suppressed (DNS, HTTPS, Metadata-80, OTel), got %d", len(netpol.Spec.Egress))
 	}
 	for _, rule := range netpol.Spec.Egress {
 		for _, p := range rule.Ports {
@@ -329,26 +328,66 @@ func TestBuildLiteLLMNetworkPolicy_MetadataDaemonSuppressed(t *testing.T) {
 	}
 }
 
-func TestBuildLiteLLMNetworkPolicy_OTelDisabled(t *testing.T) {
-	agent := &agentv1alpha1.PlatformAgent{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-agent",
-			Namespace: "test-ns",
-		},
-	}
-
+func TestBuildLiteLLMNetworkPolicy_OTelCollectorNamespace(t *testing.T) {
 	profile := netpolProfile{
 		Generated:        true,
 		DNSClusterIPs:    []string{"10.96.0.10"},
 		MetadataDaemonIP: "169.254.169.252",
 	}
 
-	netpol := buildLiteLLMNetworkPolicy(agent, profile, "http://otel.gke-managed-otel.svc:4318", true)
+	// 1. Default (no telemetry configured) -> defaults to gke-managed-otel
+	defaultAgent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "test-ns"},
+	}
+	defaultNetpol := buildLiteLLMNetworkPolicy(defaultAgent, profile)
+	foundManagedOTel := false
+	for _, rule := range defaultNetpol.Spec.Egress {
+		for _, peer := range rule.To {
+			if peer.NamespaceSelector != nil && peer.NamespaceSelector.MatchLabels[labelMetadataName] == "gke-managed-otel" {
+				foundManagedOTel = true
+			}
+		}
+	}
+	if !foundManagedOTel {
+		t.Errorf("expected default LiteLLM policy to include gke-managed-otel OTel rule")
+	}
 
-	for _, rule := range netpol.Spec.Egress {
+	// 2. Custom in-cluster service -> resolves to custom namespace
+	inClusterAgent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "test-ns"},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			Telemetry: &agentv1alpha1.TelemetrySpec{
+				OTLPEndpoint: "http://otel-collector.custom-monitoring.svc.cluster.local:4318",
+			},
+		},
+	}
+	inClusterNetpol := buildLiteLLMNetworkPolicy(inClusterAgent, profile)
+	foundCustom := false
+	for _, rule := range inClusterNetpol.Spec.Egress {
+		for _, peer := range rule.To {
+			if peer.NamespaceSelector != nil && peer.NamespaceSelector.MatchLabels[labelMetadataName] == "custom-monitoring" {
+				foundCustom = true
+			}
+		}
+	}
+	if !foundCustom {
+		t.Errorf("expected LiteLLM policy to resolve in-cluster collector namespace 'custom-monitoring'")
+	}
+
+	// 3. Unresolvable external endpoint without annotation -> omits OTel rule
+	externalAgent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "test-ns"},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			Telemetry: &agentv1alpha1.TelemetrySpec{
+				OTLPEndpoint: "https://api.honeycomb.io:443",
+			},
+		},
+	}
+	externalNetpol := buildLiteLLMNetworkPolicy(externalAgent, profile)
+	for _, rule := range externalNetpol.Spec.Egress {
 		for _, p := range rule.Ports {
 			if p.Port != nil && (p.Port.IntVal == 4317 || p.Port.IntVal == 4318) {
-				t.Errorf("found OTel port %d when otlpDisabled is true", p.Port.IntVal)
+				t.Errorf("found unexpected OTel port %d for external endpoint", p.Port.IntVal)
 			}
 		}
 	}
@@ -389,7 +428,7 @@ func TestReconcileLiteLLMNetworkPolicy_LiteLLMPresent(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := r.reconcileLiteLLMNetworkPolicy(ctx, agent, profile, "", true); err != nil {
+	if err := r.reconcileLiteLLMNetworkPolicy(ctx, agent, profile); err != nil {
 		t.Fatalf("reconcileLiteLLMNetworkPolicy failed: %v", err)
 	}
 
@@ -448,7 +487,7 @@ func TestReconcileLiteLLMNetworkPolicy_LiteLLMAbsent(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := r.reconcileLiteLLMNetworkPolicy(ctx, agent, profile, "", true); err != nil {
+	if err := r.reconcileLiteLLMNetworkPolicy(ctx, agent, profile); err != nil {
 		t.Fatalf("reconcileLiteLLMNetworkPolicy failed: %v", err)
 	}
 
@@ -472,7 +511,7 @@ func TestReconcileLiteLLMNetworkPolicy_LiteLLMAbsent(t *testing.T) {
 		t.Fatalf("failed to create existing managed policy: %v", err)
 	}
 
-	if err := r.reconcileLiteLLMNetworkPolicy(ctx, agent, profile, "", true); err != nil {
+	if err := r.reconcileLiteLLMNetworkPolicy(ctx, agent, profile); err != nil {
 		t.Fatalf("reconcileLiteLLMNetworkPolicy failed: %v", err)
 	}
 
@@ -525,7 +564,7 @@ func TestReconcileLiteLLMNetworkPolicy_Disabled(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := r.reconcileLiteLLMNetworkPolicy(ctx, agent, profile, "", true); err != nil {
+	if err := r.reconcileLiteLLMNetworkPolicy(ctx, agent, profile); err != nil {
 		t.Fatalf("reconcileLiteLLMNetworkPolicy failed: %v", err)
 	}
 
@@ -573,7 +612,7 @@ func TestReconcileLiteLLMNetworkPolicy_SafeDeletion_PreservesUnmanaged(t *testin
 	}
 
 	ctx := context.Background()
-	if err := r.reconcileLiteLLMNetworkPolicy(ctx, agent, profile, "", true); err != nil {
+	if err := r.reconcileLiteLLMNetworkPolicy(ctx, agent, profile); err != nil {
 		t.Fatalf("reconcileLiteLLMNetworkPolicy failed: %v", err)
 	}
 
@@ -641,7 +680,7 @@ func TestReconcileLiteLLMNetworkPolicy_AnnotationDisabled(t *testing.T) {
 			}
 
 			ctx := context.Background()
-			if err := r.reconcileLiteLLMNetworkPolicy(ctx, agent, profile, "", true); err != nil {
+			if err := r.reconcileLiteLLMNetworkPolicy(ctx, agent, profile); err != nil {
 				t.Fatalf("reconcileLiteLLMNetworkPolicy failed: %v", err)
 			}
 
@@ -702,7 +741,7 @@ func TestReconcileLiteLLMNetworkPolicy_AdoptionSkip_ExternalManaged(t *testing.T
 	}
 
 	ctx := context.Background()
-	if err := r.reconcileLiteLLMNetworkPolicy(ctx, agent, profile, "", true); err != nil {
+	if err := r.reconcileLiteLLMNetworkPolicy(ctx, agent, profile); err != nil {
 		t.Fatalf("reconcileLiteLLMNetworkPolicy failed: %v", err)
 	}
 
@@ -764,7 +803,7 @@ func TestReconcileLiteLLMNetworkPolicy_Adoption_LegacyKubeAgents(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := r.reconcileLiteLLMNetworkPolicy(ctx, agent, profile, "", true); err != nil {
+	if err := r.reconcileLiteLLMNetworkPolicy(ctx, agent, profile); err != nil {
 		t.Fatalf("reconcileLiteLLMNetworkPolicy failed: %v", err)
 	}
 
@@ -1179,8 +1218,13 @@ func TestBuildLiteLLMNetworkPolicy_CollectorNamespaceAnnotation(t *testing.T) {
 				AnnotationOTLPCollectorNamespace: customNS,
 			},
 		},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			Telemetry: &agentv1alpha1.TelemetrySpec{
+				OTLPEndpoint: vendorEndpoint,
+			},
+		},
 	}
-	netpol := buildLiteLLMNetworkPolicy(agentWithAnnotation, profile, vendorEndpoint, false)
+	netpol := buildLiteLLMNetworkPolicy(agentWithAnnotation, profile)
 	foundRule := false
 	for _, rule := range netpol.Spec.Egress {
 		for _, peer := range rule.To {
@@ -1200,14 +1244,48 @@ func TestBuildLiteLLMNetworkPolicy_CollectorNamespaceAnnotation(t *testing.T) {
 			Name:      "test-agent",
 			Namespace: "test-ns",
 		},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			Telemetry: &agentv1alpha1.TelemetrySpec{
+				OTLPEndpoint: vendorEndpoint,
+			},
+		},
 	}
-	netpolNoAnnotation := buildLiteLLMNetworkPolicy(agentWithoutAnnotation, profile, vendorEndpoint, false)
+	netpolNoAnnotation := buildLiteLLMNetworkPolicy(agentWithoutAnnotation, profile)
 	for _, rule := range netpolNoAnnotation.Spec.Egress {
 		for _, p := range rule.Ports {
 			if p.Port != nil && (p.Port.IntVal == 4317 || p.Port.IntVal == 4318) {
 				t.Errorf("expected no OTLP egress rule for unresolvable vendor endpoint without annotation, but found port %d", p.Port.IntVal)
 			}
 		}
+	}
+
+	// Case 3: In-cluster endpoint with annotation override -> annotation wins
+	agentWithOverride := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+			Annotations: map[string]string{
+				AnnotationOTLPCollectorNamespace: customNS,
+			},
+		},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			Telemetry: &agentv1alpha1.TelemetrySpec{
+				OTLPEndpoint: "http://collector.in-cluster-ns.svc:4318",
+			},
+		},
+	}
+	netpolOverride := buildLiteLLMNetworkPolicy(agentWithOverride, profile)
+	foundOverrideRule := false
+	for _, rule := range netpolOverride.Spec.Egress {
+		for _, peer := range rule.To {
+			if peer.NamespaceSelector != nil && peer.NamespaceSelector.MatchLabels[labelMetadataName] == customNS {
+				foundOverrideRule = true
+				break
+			}
+		}
+	}
+	if !foundOverrideRule {
+		t.Fatalf("expected AnnotationOTLPCollectorNamespace to take precedence over in-cluster endpoint namespace")
 	}
 }
 

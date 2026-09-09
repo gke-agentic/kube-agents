@@ -92,8 +92,8 @@ const (
 //   - Port 80 (TCP) to 169.254.169.254/32 (GCP metadata server pre-NAT / eBPF)
 //   - Port 988 (or profile.MetadataDaemonPort) (TCP) to 169.254.169.254/32 and profile.MetadataDaemonIP/32
 //     (GKE Workload Identity host-network daemon post-NAT / iptables, if profile.MetadataDaemonIP != "")
-//   - Ports 4317, 4318 (TCP) to otlpCollectorNamespace(otlpEndpoint) (if !otlpDisabled and ns != "")
-func buildLiteLLMNetworkPolicy(agent *agentv1alpha1.PlatformAgent, profile netpolProfile, otlpEndpoint string, otlpDisabled bool) *networkingv1.NetworkPolicy {
+//   - Ports 4317, 4318 (TCP) to litellmOTLPCollectorNamespace(agent) (if non-empty)
+func buildLiteLLMNetworkPolicy(agent *agentv1alpha1.PlatformAgent, profile netpolProfile) *networkingv1.NetworkPolicy {
 	ingressRules := []networkingv1.NetworkPolicyIngressRule{
 		{
 			Ports: []networkingv1.NetworkPolicyPort{
@@ -218,28 +218,22 @@ func buildLiteLLMNetworkPolicy(agent *agentv1alpha1.PlatformAgent, profile netpo
 	}
 
 	// 5. OpenTelemetry Collector (conditional)
-	if !otlpDisabled {
-		ns := otlpCollectorNamespace(otlpEndpoint)
-		if ns == "" && agent != nil && agent.Annotations != nil {
-			ns = agent.Annotations[AnnotationOTLPCollectorNamespace]
-		}
-		if ns != "" {
-			egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{
-				Ports: []networkingv1.NetworkPolicyPort{
-					tcpPort(otlpGRPCPort),
-					tcpPort(otlpHTTPPort),
-				},
-				To: []networkingv1.NetworkPolicyPeer{
-					{
-						NamespaceSelector: &metav1.LabelSelector{
-							MatchLabels: map[string]string{
-								labelMetadataName: ns,
-							},
+	if collectorNs := litellmOTLPCollectorNamespace(agent); collectorNs != "" {
+		egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{
+			Ports: []networkingv1.NetworkPolicyPort{
+				tcpPort(otlpGRPCPort),
+				tcpPort(otlpHTTPPort),
+			},
+			To: []networkingv1.NetworkPolicyPeer{
+				{
+					NamespaceSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							labelMetadataName: collectorNs,
 						},
 					},
 				},
-			})
-		}
+			},
+		})
 	}
 
 	return &networkingv1.NetworkPolicy{
@@ -268,6 +262,23 @@ func buildLiteLLMNetworkPolicy(agent *agentv1alpha1.PlatformAgent, profile netpo
 			Egress:  egressRules,
 		},
 	}
+}
+
+// litellmOTLPCollectorNamespace resolves the collector namespace for the LiteLLM NetworkPolicy.
+// LiteLLM's OTLP exporter is statically configured by Helm (defaulting to gke-managed-otel)
+// and does not participate in the agent's dynamic runtime discovery.
+// Precedence matches Helm (_helpers.tpl:217-220):
+// 1. AnnotationOTLPCollectorNamespace on the PlatformAgent CR if set.
+// 2. The namespace extracted from agent.Spec.Telemetry.OTLPEndpoint if specified.
+// 3. Fallback to managedOTelCollectorNamespace ("gke-managed-otel").
+func litellmOTLPCollectorNamespace(agent *agentv1alpha1.PlatformAgent) string {
+	if agent != nil && agent.Annotations != nil && agent.Annotations[AnnotationOTLPCollectorNamespace] != "" {
+		return agent.Annotations[AnnotationOTLPCollectorNamespace]
+	}
+	if agent != nil && agent.Spec.Telemetry != nil && agent.Spec.Telemetry.OTLPEndpoint != "" {
+		return otlpCollectorNamespace(agent.Spec.Telemetry.OTLPEndpoint)
+	}
+	return managedOTelCollectorNamespace
 }
 
 // deleteManagedLiteLLMPolicy deletes litellm-policy in agent.Namespace only if it is
@@ -328,7 +339,7 @@ func canAdoptLiteLLMPolicy(netpol *networkingv1.NetworkPolicy) bool {
 // found in the namespace, deleteManagedLiteLLMPolicy is called, which deletes the policy only if
 // it bears app.kubernetes.io/managed-by: platformagent-controller. Hand-authored
 // or unmanaged policies are never deleted.
-func (r *PlatformAgentReconciler) reconcileLiteLLMNetworkPolicy(ctx context.Context, agent *agentv1alpha1.PlatformAgent, profile netpolProfile, otlpEndpoint string, otlpDisabled bool) error {
+func (r *PlatformAgentReconciler) reconcileLiteLLMNetworkPolicy(ctx context.Context, agent *agentv1alpha1.PlatformAgent, profile netpolProfile) error {
 	if !profile.Generated || strings.EqualFold(trimmedAnnotation(agent, AnnotationEnableLiteLLMNetworkPolicy), disabledValue) {
 		return r.deleteManagedLiteLLMPolicy(ctx, agent)
 	}
@@ -358,11 +369,11 @@ func (r *PlatformAgentReconciler) reconcileLiteLLMNetworkPolicy(ctx context.Cont
 		return fmt.Errorf("failed to check existing NetworkPolicy %s/%s: %w", agent.Namespace, litellmNetworkPolicyName, err)
 	}
 
-	netpol := buildLiteLLMNetworkPolicy(agent, profile, otlpEndpoint, otlpDisabled)
-	if !otlpDisabled && otlpEndpoint != "" && otlpCollectorNamespace(otlpEndpoint) == "" {
-		if agent == nil || agent.Annotations == nil || agent.Annotations[AnnotationOTLPCollectorNamespace] == "" {
+	netpol := buildLiteLLMNetworkPolicy(agent, profile)
+	if agent != nil && agent.Spec.Telemetry != nil && agent.Spec.Telemetry.OTLPEndpoint != "" && otlpCollectorNamespace(agent.Spec.Telemetry.OTLPEndpoint) == "" {
+		if agent.Annotations == nil || agent.Annotations[AnnotationOTLPCollectorNamespace] == "" {
 			logf.FromContext(ctx).Info("WARNING: LiteLLM OTLP endpoint does not name an in-cluster Service and no collector namespace is configured; omitting OTLP egress rule",
-				"namespace", agent.Namespace, "endpoint", otlpEndpoint)
+				"namespace", agent.Namespace, "endpoint", agent.Spec.Telemetry.OTLPEndpoint)
 		}
 	}
 	if err := controllerutil.SetOwnerReference(&litellmDep, netpol, r.Scheme); err != nil {

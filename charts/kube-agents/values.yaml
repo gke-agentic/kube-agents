@@ -269,10 +269,9 @@ litellm:
       cpu: 500m
       memory: 2Gi
   # NetworkPolicy and GKE managed-Prometheus PodMonitoring for the gateway;
-  # when platformAgent.enabled is true (the default), litellm-policy is managed
-  # dynamically by the operator with cluster-discovered DNS VIPs. When
-  # platformAgent.enabled is false, setting networkPolicy: true renders the static
-  # template copy.
+  # when platformAgent.enabled and operator.enabled are true (the default), litellm-policy is managed
+  # dynamically by the operator with cluster-discovered DNS VIPs. When either
+  # is false, setting networkPolicy: true renders the static template copy.
   # Disable podMonitoring off-GKE — the PodMonitoring CRD is GKE-managed, and
   # helm template/lint cannot catch its absence: a non-GKE install fails at
   # apply time.

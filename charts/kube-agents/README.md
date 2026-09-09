@@ -251,10 +251,11 @@ Deployment passes its readiness probe.
 ### Telemetry
 
 `telemetry.otlpEndpoint` (default `""`) is the OTLP/HTTP collector base URL.
-Empty means "do not decide here": on default installs (`platformAgent.enabled=true`),
-the operator dynamically discovers an in-cluster collector at reconcile time for
-both agent and LiteLLM NetworkPolicies. When `platformAgent.enabled=false`,
-the LiteLLM exporter and NetworkPolicy keep the GKE Managed OpenTelemetry collector.
+Empty means "do not decide here": on default installs (`platformAgent.enabled=true` and
+`operator.enabled=true`), the operator dynamically discovers an in-cluster collector at
+reconcile time for the agent's NetworkPolicy, while LiteLLM's exporter and NetworkPolicy
+default to the GKE Managed OpenTelemetry collector (`gke-managed-otel`). When either is
+false, the LiteLLM exporter and static NetworkPolicy keep the GKE Managed OpenTelemetry collector.
 Setting it moves the agent and the policy's egress namespace together, and pins
 the agent so a release can't be internally split. It also moves the LiteLLM exporter,
 but that variable only exists when `litellm.otel=true` — off by default, and not
@@ -269,7 +270,7 @@ ladder and discovery rules: [Deploy → Telemetry](https://gke-labs.github.io/ku
 
 ### Upgrade notes
 
-**Upgrading from a chart version that shipped the static `litellm-policy`:** on the first `helm upgrade` after dynamic management takes effect, Helm prunes the static `litellm-policy`. The operator recreates it once the new operator pod rolls out, acquires leader election, and reconciles. During this operator rollout window LiteLLM is selected by no NetworkPolicy and its egress is unrestricted (fail-open). To eliminate this window, pre-roll the new operator image (`kubectl set image deployment/kube-agents-operator ...`) before running `helm upgrade`, or set `litellm.networkPolicy=false` and manage `litellm-policy` out-of-band during the transition. To opt out of operator management permanently, set the annotation `kubeagents.x-k8s.io/enable-litellm-network-policy: "false"` on the `PlatformAgent`.
+**Upgrading from a chart version that shipped the static `litellm-policy`:** on the first `helm upgrade` after dynamic management takes effect, Helm prunes the static `litellm-policy`. The operator recreates it once the new operator pod rolls out, acquires leader election, and reconciles. During this operator rollout window LiteLLM is selected by no NetworkPolicy and its egress is unrestricted (fail-open). To eliminate this window, pre-roll the new operator image (e.g. updating the `<release>-controller-manager` deployment image) before running `helm upgrade`, or set `litellm.networkPolicy=false` and manage `litellm-policy` out-of-band during the transition. To opt out of operator management permanently, set the annotation `kubeagents.x-k8s.io/enable-litellm-network-policy: "false"` on the `PlatformAgent` (and manage `litellm-policy` out-of-band to prevent fail-open egress).
 
 #### Vertex AI (`litellm.modelProvider=vertex_ai`)
 

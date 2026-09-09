@@ -439,7 +439,7 @@ Configures the operator-generated egress `NetworkPolicy`.
   `litellm-policy` (if LiteLLM is present). Deletions check ownership / managed labels first, so a
   policy that the operator did not create survives. To opt only LiteLLM out of operator NetworkPolicy
   management while keeping the agent pod's policies managed, set the annotation
-  `kubeagents.x-k8s.io/enable-litellm-network-policy: "false"` on the `PlatformAgent`.
+  `kubeagents.x-k8s.io/enable-litellm-network-policy: "false"` on the `PlatformAgent`. When opted out, the operator deletes any managed copy of `litellm-policy`, leaving LiteLLM unselected (fail-open) unless a replacement policy is provided and managed out-of-band.
 
   **Upgrade note:** when upgrading from a chart version that shipped the static `litellm-policy`, Helm
   prunes the static policy on the first upgrade. The operator recreates it once the new operator pod
@@ -448,20 +448,22 @@ Configures the operator-generated egress `NetworkPolicy`.
   policy out-of-band during the transition via `litellm.networkPolicy=false`.
 
 - `dnsClusterIPs` ([]string, optional, max 8 items) — pins the cluster DNS Service ClusterIPs in
-  rule 1, suppressing dynamic discovery from `kube-system/kube-dns`. Each entry is a bare IPv4 or
+  rule 1 of both the agent gateway policy (`<name>-gateway-netpol`) and the LiteLLM gateway policy
+  (`litellm-policy`), suppressing dynamic discovery from `kube-system/kube-dns`. Each entry is a bare IPv4 or
   IPv6 address with no prefix. Admission bounds the IPv4 octets and rejects the leading-zero form
   (`010.96.0.10`) that Go's `net.ParseIP` refuses, so the usual typos are apply-time errors; a malformed
   IPv6 literal can still get past it, in which case the operator drops the entry and falls back to
   discovery, and says so in its log.
-- `metadataDaemon` (object, optional) — pins the node-local cloud metadata daemon IP in rule 3. Its
+- `metadataDaemon` (object, optional) — pins the node-local cloud metadata daemon IP in rule 3 of
+  `<name>-gateway-netpol` and rule 4 of `litellm-policy`. Its
   one field, `endpoint`, is required within it, so `metadataDaemon: {}` is rejected; an explicit
-  `endpoint: ""` suppresses rule 3 entirely, for datapaths without a post-NAT daemon. Leave it
+  `endpoint: ""` suppresses the post-NAT metadata rule entirely in both policies, for datapaths without a post-NAT daemon. Leave it
   unspecified to let the operator discover the container port from the `kube-system/gke-metadata-server`
   DaemonSet on port `metadata-server` (promoting `metadataDaemonIPSource` to `Discovered`). If undiscoverable,
   it falls back to `169.254.169.252` on port `988`. Overriding the endpoint explicitly opts out of port
   discovery and uses port `988`.
 - `additionalEgress` ([]EgressRule, optional, max 32 items) — appends custom CIDR and port egress
-  rules to the generated policy. A peer CIDR broader than `/12` (IPv4) or `/48` (IPv6) is rejected at
+  rules to the generated agent gateway policy (`<name>-gateway-netpol`). (Does not apply to `litellm-policy`.) A peer CIDR broader than `/12` (IPv4) or `/48` (IPv6) is rejected at
   admission, so that a caller-supplied range cannot be widened into an unrestricted egress bypass.
   One shape gets past that check and is dropped by the operator instead: an IPv4-mapped IPv6 block
   such as `::ffff:0:0/96` is a 128-bit prefix by every textual measure, so it clears the IPv6 floor,
@@ -481,8 +483,10 @@ Configures the operator-generated egress `NetworkPolicy`.
   prefix, the same as `cidr`. Unlike `cidr` there is no prefix floor on them, because an `except`
   has to be a strict subset of its peer to be kept at all.
 
-Annotations (`kubeagents.x-k8s.io/dns-cluster-ip` and `kubeagents.x-k8s.io/metadata-daemon-ip`) remain
-available as escape hatches and take precedence over `spec.networkPolicy`.
+Annotations (`kubeagents.x-k8s.io/dns-cluster-ip`, `kubeagents.x-k8s.io/metadata-daemon-ip`, and
+`kubeagents.x-k8s.io/otlp-collector-namespace`) remain available as escape hatches and take
+precedence over `spec.networkPolicy` and auto-discovered endpoints across `<name>-gateway-netpol`,
+`<name>-sandbox-metadata-deny`, and `litellm-policy`.
 
 ## `spec.integration`
 
@@ -686,7 +690,7 @@ one reviewable place.
 - On delete, it garbage-collects owned resources.
 - The admission webhook (behind cert-manager) validates the spec before it's persisted; it enforces at most one `PlatformAgent` per project, forbids sensitive environment variable overrides (`API_SERVER_KEY`, `HERMES_HOME`) and privileged containers/volumes (`hostPath`), requires each `imagePullSecrets` entry to name a Secret, and acts as a name-based tripwire against obvious privileged service account names (`cluster-admin`, `system:admin`). Note that full RBAC least-privilege enforcement is handled by controller- and pipeline-level policies rather than the admission webhook.
 - The `kubeagents.x-k8s.io/prevent-deletion: "true"` annotation on a `PlatformAgent` blocks deletion of the resource via the validating webhook (`ValidateDelete`). This serves as an accidental-deletion guardrail rather than an authorization control — `ValidateUpdate` does not block removing the annotation, so any principal with update permissions can patch the annotation off before deleting.
-- The `kubeagents.x-k8s.io/enable-litellm-network-policy: "false"` annotation on a `PlatformAgent` opts the shared `litellm-policy` out of operator reconciliation and deletes any managed copy without affecting the agent pod's own NetworkPolicy.
+- The `kubeagents.x-k8s.io/enable-litellm-network-policy: "false"` annotation on a `PlatformAgent` opts the shared `litellm-policy` out of operator reconciliation and deletes any managed copy without affecting the agent pod's own NetworkPolicy. Note that deleting the managed policy leaves LiteLLM unselected (fail-open) unless a replacement NetworkPolicy is managed out-of-band.
 - The Helm chart renders and applies the CR (the install engine drives it through `terraform apply`); you can also edit it directly with `kubectl edit`.
 
 ## Where to go next

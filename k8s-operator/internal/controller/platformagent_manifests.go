@@ -4737,7 +4737,14 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, p
 	// either, though not always — a collector Service exposing only gRPC 4317 is rejected
 	// by otlpHTTPEndpointForService and also resolves to None, and there the namespace is
 	// real. The rule is dropped in both cases, because neither one exports.
-	if ns := otlpCollectorNamespace(otlpEndpoint); ns != "" && !otlpDisabled {
+	collectorNs := ""
+	if agent != nil && agent.Annotations != nil {
+		collectorNs = agent.Annotations[AnnotationOTLPCollectorNamespace]
+	}
+	if collectorNs == "" && !otlpDisabled {
+		collectorNs = otlpCollectorNamespace(otlpEndpoint)
+	}
+	if collectorNs != "" {
 		egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(4317))},
@@ -4747,7 +4754,7 @@ func buildNetworkPolicy(agent *agentv1alpha1.PlatformAgent, apiCIDRs []string, p
 				{
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
-							"kubernetes.io/metadata.name": ns,
+							"kubernetes.io/metadata.name": collectorNs,
 						},
 					},
 				},

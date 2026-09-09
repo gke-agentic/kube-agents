@@ -506,7 +506,7 @@ func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if err := r.reconcileNetworkPolicy(ctx, instance, netpolProf, otlpEndpoint, otlpDisabled); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := r.reconcileLiteLLMNetworkPolicy(ctx, instance, netpolProf, otlpEndpoint, otlpDisabled); err != nil {
+	if err := r.reconcileLiteLLMNetworkPolicy(ctx, instance, netpolProf); err != nil {
 		return ctrl.Result{}, err
 	}
 	if err := r.deleteLegacyCredentialIsolationResources(ctx, instance); err != nil {
@@ -1609,7 +1609,7 @@ func (r *PlatformAgentReconciler) reconcileAgentNetworkGuardrails(ctx context.Co
 	if err := r.reconcileNetworkPolicy(ctx, agent, netpolProf, otlpEndpoint, otlpSource == otlpSourceNone); err != nil {
 		return err
 	}
-	if err := r.reconcileLiteLLMNetworkPolicy(ctx, agent, netpolProf, otlpEndpoint, otlpSource == otlpSourceNone); err != nil {
+	if err := r.reconcileLiteLLMNetworkPolicy(ctx, agent, netpolProf); err != nil {
 		return err
 	}
 	return r.reconcileAgentEgressPolicy(ctx, agent, r.agentEgressDNSClusterIPs(ctx, agent, netpolProf), otlpEndpoint)
@@ -1673,9 +1673,12 @@ func (r *PlatformAgentReconciler) reconcileAgentEgressPolicy(ctx context.Context
 	// path that skipped validation. Log it rather than assume: the drop is what
 	// keeps the rendered object safe, and a silent drop is the failure mode
 	// this guard exists for.
-	collectorNs := otlpCollectorNamespace(otlpEndpoint)
-	if collectorNs == "" && agent != nil && agent.Annotations != nil {
+	collectorNs := ""
+	if agent != nil && agent.Annotations != nil {
 		collectorNs = agent.Annotations[AnnotationOTLPCollectorNamespace]
+	}
+	if collectorNs == "" {
+		collectorNs = otlpCollectorNamespace(otlpEndpoint)
 	}
 	policy, dropped := buildAgentEgressNetworkPolicy(agent, dnsClusterIPs, collectorNs)
 	for _, reason := range dropped {
