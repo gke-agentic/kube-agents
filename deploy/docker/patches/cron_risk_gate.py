@@ -68,11 +68,12 @@ TRUSTED_APEX = (
     "gke.io",
 )
 
-#: Extracts hostname candidates from URLs, CLI flags (--server=...), @hosts, quotes, or tokens.
-#: Uses fixed-width lookbehinds so chained delimiters (e.g. comma, semicolon, pipes, brackets)
-#: are recognized without prematurely consuming the separator.
+#: Extracts hostname candidates from URLs (any URI scheme), CLI flags (--server=...),
+#: @hosts, headers/colons, quotes, or tokens. Uses fixed-width lookbehinds so chained
+#: delimiters (e.g. comma, semicolon, pipes, brackets, colon) are recognized without
+#: prematurely consuming the separator.
 _HOST_TOKEN = re.compile(
-    r"(?:https?://|--[a-z0-9_-]+=|(?<=^)|(?<=[\s@'\"=,;|([{`]))([a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+)",
+    r"(?:(?:[a-z][a-z0-9+.-]*:)?//|--[a-z0-9_-]+=|(?<=^)|(?<=[\s@'\"=,;|([{`:]))([a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+)",
     re.IGNORECASE,
 )
 
