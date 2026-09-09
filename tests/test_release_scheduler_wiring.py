@@ -129,6 +129,12 @@ class SchedulerDispatchWiring(unittest.TestCase):
             "${{ steps.resolve.outputs.skip_reason }}",
             step.get("env", {}).get("SKIP_REASON", ""),
         )
+        exported = set(step.get("env", {}))
+        self.assertLessEqual({"RELEASE_COMMIT", "GATE_TAG", "SKIP_REASON"}, exported)
+
+    def test_the_dispatch_step_supplies_what_the_script_requires(self) -> None:
+        exported = set(_dispatch_step(self.doc).get("env", {}))
+        self.assertLessEqual({"GH_TOKEN", "RELEASE_COMMIT", "GATE_TAG"}, exported)
 
     def test_the_dispatch_uses_the_default_token(self) -> None:
         step = _dispatch_step(self.doc)
@@ -139,12 +145,24 @@ class SchedulerDispatchWiring(unittest.TestCase):
     def test_the_dispatching_job_can_write_actions(self) -> None:
         self.assertEqual(self.job["permissions"]["actions"], "write")
 
+    def test_the_dispatch_names_the_pipeline_and_passes_schedule_gate(self) -> None:
+        self.assertIn(_PIPELINE, _DISPATCH_SOURCE)
+        self.assertIn("schedule_gate=evaluate", _DISPATCH_SOURCE)
+
     def test_the_pipeline_accepts_what_the_scheduler_sends(self) -> None:
         """dispatch_release_pipeline.sh passes schedule_gate=evaluate; verify pipeline accepts it."""
-        pipeline = _workflow(_PIPELINE)
-        inputs = pipeline["on"]["workflow_dispatch"]["inputs"]
-        self.assertIn("schedule_gate", inputs)
-        options = inputs["schedule_gate"].get("options", [])
+        sent = set()
+        for token in _DISPATCH_SOURCE.split():
+            if (token.startswith('"') or token.startswith("'")) and "=" in token:
+                sent.add(token.strip('"\'\\;').split("=", 1)[0])
+        accepted = set(_workflow(_PIPELINE)["on"]["workflow_dispatch"]["inputs"])
+        self.assertTrue(sent, "the dispatch script passes no inputs")
+        self.assertLessEqual(sent, accepted, f"{sent - accepted} not accepted")
+        options = (
+            _workflow(_PIPELINE)["on"]["workflow_dispatch"]["inputs"][
+                "schedule_gate"
+            ].get("options", [])
+        )
         self.assertIn("evaluate", options)
 
 
