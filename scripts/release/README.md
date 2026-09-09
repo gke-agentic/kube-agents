@@ -80,10 +80,10 @@ The end-to-end pipeline (`.github/workflows/rc-release-pipeline.yml`) is dispatc
   - _Note_: Scheduled runs are scheduled at minute `17` to avoid GitHub Actions peak top-of-the-hour queue congestion; actual start times are best-effort based on GitHub scheduler availability.
 - **Nightly Scheduled Cadence (`nightly-scheduler.yml`, daily at `17 2 * * *`, best-effort)**:
   - Automatically resolves the latest validated candidate (`rc_*_validated`) using `resolve_promotion_candidate.sh`.
-  - **Redundant Run Skipping**: If no candidate exists or if the candidate is already promoted (`staging_<ts>_<sha>` tag already present), the scheduler dispatches nothing and records the reason in its job summary via `record_nightly_scheduler_skip.sh`.
+  - **Redundant Run Skipping**: If no eligible validated candidate exists, the scheduler dispatches nothing and records the reason in its job summary via `record_nightly_scheduler_skip.sh`.
   - Dispatches `nightly-pipeline.yml` using `dispatch_nightly_pipeline.sh` with the default `GITHUB_TOKEN` and `actions: write`.
 - **Manual Trigger (`workflow_dispatch`)**:
-  - Both schedulers and pipelines support manual trigger via `workflow_dispatch`. The pipelines additionally accept candidate overrides (`commit_sha` for RC, `rc_tag` for Nightly).
+  - Both schedulers and pipelines support manual trigger via `workflow_dispatch`. For manual dispatches, the RC pipeline requires `commit_sha` (mandatory), whereas the nightly pipeline accepts an optional `rc_tag` candidate override (defaulting to the newest eligible validated candidate when omitted).
 
 ## What Happens to the RC Cluster
 
