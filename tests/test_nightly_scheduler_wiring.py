@@ -132,14 +132,14 @@ class SchedulerDispatchWiring(unittest.TestCase):
         dispatch_cond = _dispatch_step(self.doc)["if"]
         self.assertEqual(
             dispatch_cond.strip(),
-            "steps.resolve.outputs.skip_pipeline != 'true' && steps.resolve.outputs.skip_promotion != 'true'",
+            "steps.resolve.outputs.skip_pipeline != 'true'",
         )
 
     def test_the_skip_step_is_wired_to_record_script(self) -> None:
         skip_step = _skip_step(self.doc)
         self.assertEqual(
             skip_step.get("if", "").strip(),
-            "steps.resolve.outputs.skip_pipeline == 'true' || steps.resolve.outputs.skip_promotion == 'true'",
+            "steps.resolve.outputs.skip_pipeline == 'true'",
         )
         exported = set(skip_step.get("env", {}))
         self.assertLessEqual({"COMMIT_SHA", "RC_TAG", "SKIP_REASON"}, exported)

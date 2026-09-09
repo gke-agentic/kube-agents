@@ -68,7 +68,7 @@ jobs:
         run: ./scripts/release/resolve_promotion_candidate.sh
 
       - name: Record that there is nothing to do
-        if: steps.resolve.outputs.skip_pipeline == 'true' || steps.resolve.outputs.skip_promotion == 'true'
+        if: steps.resolve.outputs.skip_pipeline == 'true'
         env:
           COMMIT_SHA: ${{ steps.resolve.outputs.commit_sha }}
           RC_TAG: ${{ steps.resolve.outputs.rc_tag }}
@@ -80,7 +80,7 @@ jobs:
       # so whatever it depends on is a single point of failure, and the default token
       # needs no secret to be present and cannot expire.
       - name: Dispatch the nightly pipeline
-        if: steps.resolve.outputs.skip_pipeline != 'true' && steps.resolve.outputs.skip_promotion != 'true'
+        if: steps.resolve.outputs.skip_pipeline != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           COMMIT_SHA: ${{ steps.resolve.outputs.commit_sha }}
