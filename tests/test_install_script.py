@@ -1345,6 +1345,113 @@ class InstallEnvIsCreatedInTheCheckoutTest(unittest.TestCase):
             self.assertIn(f"LEGACY={legacy}/vars.sh", proc.stdout)
 
 
+class ServiceAccountOwnershipIsCheckedOnEveryApplyDoorTest(unittest.TestCase):
+    """The 409 check has to sit between the generator and each apply, and
+    before the dry-run exit and the confirmation on the main path (#1294)."""
+
+    def setUp(self):
+        self.source = _INSTALL_SH.read_text()
+
+    def test_the_main_path_checks_after_the_generator_and_before_the_summary(self):
+        generator = self.source.index('write_tfvars_from_state "$tfvars_file" "$image_tag"')
+        check = self.source.index("check_service_account_ownership || exit 1", generator)
+        summary = self.source.index('print_step "11. Pre-Flight Configuration Summary"')
+        self.assertLess(generator, check)
+        self.assertLess(check, summary)
+
+    def test_the_day2_menu_checks_before_its_re_apply(self):
+        menu_generator = self.source.index(
+            'write_tfvars_from_state "$(tf_compose_dir "$repo_dir")/terraform.tfvars" "$image_tag"')
+        check = self.source.index("check_service_account_ownership || exit 1", menu_generator)
+        apply = self.source.index("run_lifecycle_apply", menu_generator)
+        self.assertLess(menu_generator, check)
+        self.assertLess(check, apply)
+
+
+class ShellNamespaceNeverReachesTheGeneratorTest(unittest.TestCase):
+    """NAMESPACE is a name kubectl tooling exports; only install.env may set it."""
+
+    def _namespace_after_load(self, contents):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = pathlib.Path(tmp) / "install.env"
+            env_file.write_text(contents)
+            env_file.chmod(0o600)
+            proc = subprocess.run(
+                ["bash", "-c",
+                 f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n'
+                 'echo "NS=${NAMESPACE:-unset}"'],
+                capture_output=True, text=True,
+                env=get_isolated_test_env(overrides={
+                    "KUBE_AGENTS_INSTALL_ENV": str(env_file),
+                    "NAMESPACE": "stray-from-kubectl-tooling",
+                }),
+                cwd=str(_REPO_ROOT),
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            return proc.stdout
+
+    def test_a_shell_export_is_dropped(self):
+        self.assertIn("NS=unset", self._namespace_after_load("PROJECT_ID=a-project\n"))
+
+    def test_the_file_still_sets_it(self):
+        self.assertIn("NS=from-the-file",
+                      self._namespace_after_load("PROJECT_ID=a-project\nNAMESPACE=from-the-file\n"))
+
+
+class BootstrapRecordsIdentityKeysOnlyWhenSetTest(unittest.TestCase):
+    """The GSA and CMEK names are recorded in a new install.env only when the
+    run set them. A default copied in would freeze at this release; a custom
+    name dropped would rename -- replace -- the account on the next run. And
+    NAMESPACE is never recorded from the environment: kubectl tooling exports
+    that name, and freezing a stray value would move the release.
+    """
+
+    def _bootstrap(self, env):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = pathlib.Path(tmp) / "new.install.env"
+            # An existing, empty input: install.sh refuses a KUBE_AGENTS_INSTALL_ENV
+            # that names a missing file, and the point here is the file it
+            # CREATES, not the one it loads.
+            loaded = pathlib.Path(tmp) / "loaded.install.env"
+            loaded.write_text("")
+            loaded.chmod(0o600)
+            proc = subprocess.run(
+                ["bash", "-c",
+                 f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n'
+                 'source scripts/installer/installer_common.sh\n'
+                 'resolve_shared_defaults\n'
+                 'PARAM_DRY_RUN=false; PARAM_MEMORY=file\n'
+                 f'bootstrap_install_env_file "{dest}" some-tag >/dev/null\n'
+                 f'cat "{dest}"'],
+                capture_output=True, text=True,
+                env=get_isolated_test_env(overrides={
+                    "KUBE_AGENTS_INSTALL_ENV": str(loaded),
+                    "PROJECT_ID": "p", "CLUSTER_NAME": "c", "REGION": "us-central1",
+                    **env,
+                }),
+                cwd=str(_REPO_ROOT),
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            return proc.stdout
+
+    def test_a_configured_name_is_recorded(self):
+        out = self._bootstrap({"PLATFORM_AGENT_GSA_NAME": "agent-two-gsa",
+                               "GKE_DB_KMS_KEYRING": "ring-two"})
+        self.assertIn("PLATFORM_AGENT_GSA_NAME=agent-two-gsa\n", out)
+        self.assertIn("GKE_DB_KMS_KEYRING=ring-two\n", out)
+
+    def test_an_unset_name_is_not_frozen_as_a_default(self):
+        out = self._bootstrap({})
+        for key in ("PLATFORM_AGENT_GSA_NAME", "GITHUB_MINTER_GSA_NAME", "LITELLM_GSA_NAME",
+                    "GKE_DB_KMS_KEYRING", "GKE_DB_KMS_KEY", "NAMESPACE"):
+            with self.subTest(key=key):
+                self.assertNotRegex(out, rf"^{key}=", msg=out)
+
+    def test_a_shell_exported_namespace_is_not_recorded(self):
+        out = self._bootstrap({"NAMESPACE": "stray-from-kubectl-tooling"})
+        self.assertNotRegex(out, r"^NAMESPACE=")
+
+
 class InstallEnvPermissionsTest(unittest.TestCase):
     """A copied install.env is a credential file at the operator's umask.
 

@@ -20,11 +20,20 @@ _LIFECYCLE_SH = _REPO_ROOT / "terraform" / "examples" / "full-install" / "lifecy
 
 
 class LifecycleScriptGuardTest(unittest.TestCase):
-    def _run_guard(self, func_call, state_list="", state_show="", tfvar_agent_sa="null", tfvar_create_cluster="true"):
-        """Run a lifecycle.sh function against stubbed terraform commands."""
+    def _run_guard(self, func_call, state_list="", state_show="", tfvar_agent_sa="null",
+                   tfvar_create_cluster="true", gcloud_stub="exit 1",
+                   tfvar_namespace='"kubeagents-system"'):
+        """Run a lifecycle.sh function against stubbed terraform and gcloud commands.
+
+        `gcloud_stub` answers every gcloud call; the default says the cluster
+        does not exist, so no test ever reaches a real gcloud on PATH.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             bin_dir = pathlib.Path(tmp) / "bin"
             bin_dir.mkdir()
+            gcloud = bin_dir / "gcloud"
+            gcloud.write_text(f"#!/usr/bin/env bash\n{gcloud_stub}\n")
+            gcloud.chmod(0o755)
 
             # Stub terraform CLI to return configured state list, state show, and console outputs
             terraform_stub = bin_dir / "terraform"
@@ -48,6 +57,9 @@ elif [[ "$cmd" == "console" ]]; then
         exit 0
     elif [[ "$expr" == *"create_cluster"* ]]; then
         echo '{tfvar_create_cluster}'
+        exit 0
+    elif [[ "$expr" == *"namespace"* ]]; then
+        echo '{tfvar_namespace}'
         exit 0
     fi
     echo 'null'
@@ -134,7 +146,7 @@ resource "google_service_account" "agent" {
         self.assertEqual(proc.returncode, 1)
         self.assertIn("agent_service_account_id resolved to 'kubeagents-platform-gsa', but this state manages GSA 'kubeagents-platform-gsa-2'", proc.stderr)
         self.assertIn("Applying now would plan the service account's DESTRUCTION and recreation under -auto-approve.", proc.stderr)
-        self.assertIn('TF_VAR_agent_service_account_id="kubeagents-platform-gsa-2"', proc.stderr)
+        self.assertIn('PLATFORM_AGENT_GSA_NAME="kubeagents-platform-gsa-2"', proc.stderr)
 
     def test_guard_gsa_identity_refuses_when_override_differs_from_state(self):
         """When state has one override GSA and variable resolves to a different override, apply refuses."""
@@ -153,7 +165,7 @@ resource "google_service_account" "agent" {
         )
         self.assertEqual(proc.returncode, 1)
         self.assertIn("agent_service_account_id resolved to 'kubeagents-platform-gsa-2', but this state manages GSA 'kubeagents-platform-gsa-1'", proc.stderr)
-        self.assertIn('TF_VAR_agent_service_account_id="kubeagents-platform-gsa-1"', proc.stderr)
+        self.assertIn('PLATFORM_AGENT_GSA_NAME="kubeagents-platform-gsa-1"', proc.stderr)
 
     def test_guard_cluster_ownership_refuses_when_create_cluster_false_against_managed_cluster(self):
         """When create_cluster is false but state manages cluster, apply refuses destruction."""
@@ -166,6 +178,78 @@ resource "google_service_account" "agent" {
         self.assertEqual(proc.returncode, 1)
         self.assertIn("create_cluster is false, but this state already manages the cluster", proc.stderr)
         self.assertIn("Applying now would plan the cluster's DESTRUCTION", proc.stderr)
+
+    def test_guard_cluster_ownership_passes_a_create_when_no_cluster_exists(self):
+        proc = self._run_guard("guard_cluster_ownership", state_list="", tfvar_create_cluster="true")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stderr, "")
+
+    def test_guard_cluster_ownership_passes_a_create_the_state_already_manages(self):
+        proc = self._run_guard(
+            "guard_cluster_ownership",
+            state_list="module.gke_cluster.google_container_cluster.autopilot[0]",
+            tfvar_create_cluster="true",
+            gcloud_stub="exit 0",
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_guard_cluster_ownership_refuses_a_create_over_a_live_cluster_outside_state(self):
+        """The 409 a retry after an interrupted install hits, refused before the apply (#1296)."""
+        proc = self._run_guard(
+            "guard_cluster_ownership",
+            state_list="",
+            tfvar_create_cluster="true",
+            gcloud_stub="exit 0",
+        )
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("create_cluster is true, but cluster", proc.stderr)
+        self.assertIn("this state does not manage it", proc.stderr)
+        self.assertIn("uninstall.sh", proc.stderr)
+
+    def test_unmanaged_cluster_kms_is_forgotten_before_an_adoption_apply(self):
+        """State an interrupted install leaves holds the adopted CMEK key; with
+        create_cluster = false the module would destroy it (#1296)."""
+        proc = self._run_guard(
+            "forget_unmanaged_cluster_kms",
+            state_list="module.gke_cluster.google_kms_crypto_key.gke_key[0]\nmodule.gke_cluster.google_kms_key_ring.gke_keyring[0]",
+            tfvar_create_cluster='"false"',
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("forgetting module.gke_cluster.google_kms_crypto_key.gke_key[0]", proc.stdout)
+        self.assertIn("forgetting module.gke_cluster.google_kms_key_ring.gke_keyring[0]", proc.stdout)
+
+    def test_cluster_kms_is_kept_when_this_state_creates_the_cluster(self):
+        proc = self._run_guard(
+            "forget_unmanaged_cluster_kms",
+            state_list="module.gke_cluster.google_kms_crypto_key.gke_key[0]",
+            tfvar_create_cluster='"true"',
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("forgetting", proc.stdout)
+
+    def test_guard_release_namespace_no_op_when_release_not_in_state(self):
+        proc = self._run_guard("guard_release_namespace", state_list="")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_guard_release_namespace_passes_when_configuration_matches_state(self):
+        proc = self._run_guard(
+            "guard_release_namespace",
+            state_list="helm_release.kube_agents",
+            state_show='resource "helm_release" "kube_agents" {\n    name      = "kube-agents"\n    namespace = "kubeagents-system"\n}',
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_guard_release_namespace_refuses_a_release_move(self):
+        """helm_release.namespace is ForceNew: a changed NAMESPACE plans destroy-and-recreate."""
+        proc = self._run_guard(
+            "guard_release_namespace",
+            state_list="helm_release.kube_agents",
+            state_show='resource "helm_release" "kube_agents" {\n    name      = "kube-agents"\n    namespace = "kubeagents-system"\n}',
+            tfvar_namespace='"agents-two"',
+        )
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("namespace resolved to 'agents-two', but this state's release runs in 'kubeagents-system'", proc.stderr)
+        self.assertIn('NAMESPACE="kubeagents-system"', proc.stderr)
 
 
 if __name__ == "__main__":

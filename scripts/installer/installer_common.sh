@@ -52,6 +52,29 @@ readonly HELM_LOCK_POLL_INTERVAL_DEFAULT=10
 # Timeout for rolling back a stuck pending release to the last healthy revision.
 readonly HELM_ROLLBACK_TIMEOUT_DEFAULT="2m"
 
+# ─── Chart contract ───────────────────────────────────────────────────────────
+# Names the kube-agents chart fixes and the front doors address by name: the
+# Helm release, the operator and agent Deployments, and the Secret the agent's
+# credentials live in. The chart does not take them as values, so they are not
+# install configuration and do not belong in install.defaults.env; they are
+# named here so that no front door spells one differently from the others.
+readonly KUBE_AGENTS_HELM_RELEASE="kube-agents"
+# shellcheck disable=SC2034  # read by install.sh and upgrade.sh
+readonly KUBE_AGENTS_OPERATOR_DEPLOYMENT="kube-agents-controller-manager"
+readonly PLATFORM_AGENT_DEPLOYMENT="platform-agent-gateway"
+readonly PLATFORM_AGENT_SECRET="platform-agent-secrets"
+
+# ─── Terraform state in GCS ───────────────────────────────────────────────────
+# The object the gcs backend writes under the prefix, and how gcloud spells
+# "there is no such object" -- as opposed to "I could not look", which
+# tf_state_read reports separately with this return code.
+readonly TF_STATE_OBJECT="default.tfstate"
+# gcloud's own phrasings, and not a bare "404": the message echoes the object
+# URL, and a project id containing those digits would read every transient
+# error as absence.
+readonly GCS_OBJECT_ABSENT_PATTERN='matched no objects|NotFoundException|HTTPError 404|not found|does not exist'
+readonly TF_STATE_RC_UNREADABLE=2
+
 # Memory mode (the input spelling, recorded in install.env as MEMORY) → the
 # provider name everything downstream reads. The inverse of install.sh's
 # memory_mode_from_provider, and needed here because install.env records the
@@ -310,6 +333,13 @@ default_install_env_file() {
 # to remove.
 load_install_env() {
   local file="${1:-}"
+  # NAMESPACE reaches terraform.tfvars, and it is a name kubectl tooling
+  # commonly exports. Only install.env may set it: a value inherited from the
+  # shell would put a fresh release into a namespace the agent's fixed gateway
+  # endpoint does not serve, and record nothing that says why. Cleared before
+  # the file is read (and whether or not there is one), so the file's own key
+  # is the only way in.
+  unset NAMESPACE
   [ -n "$file" ] && [ -f "$file" ] || return 1
   # Checked before sourcing: a stray quote would otherwise abort the caller
   # through its ERR trap with a bash parse error naming no file.
@@ -417,6 +447,21 @@ normalize_gitops_repo_vars() {
   # value always comes from GITOPS_*.
   export GITHUB_ORG="${GITOPS_ORG:-}"
   export GITHUB_REPO="${GITOPS_REPO:-}"
+}
+
+# ─── Identity input names ─────────────────────────────────────────────────────
+# PLATFORM_AGENT_GSA_NAME is the install.env key for the agent's service
+# account id. For the one release before it existed, the documented way to
+# name a second install's account was TF_VAR_agent_service_account_id in
+# install.env -- a Terraform variable rather than an installer input, which
+# the generated terraform.tfvars now outranks. Honoured for one release, with
+# a warning, the way GITHUB_ORG was; the generator calls this first so every
+# front door agrees.
+normalize_identity_vars() {
+  if [ -z "${PLATFORM_AGENT_GSA_NAME:-}" ] && [ -n "${TF_VAR_agent_service_account_id:-}" ]; then
+    export PLATFORM_AGENT_GSA_NAME="${TF_VAR_agent_service_account_id}"
+    print_warning "TF_VAR_agent_service_account_id is deprecated as an installer input; rename it to PLATFORM_AGENT_GSA_NAME in install.env (it still works this release)."
+  fi
 }
 
 # ─── vars.sh Persistence (legacy) ─────────────────────────────────────────────
@@ -621,32 +666,170 @@ hcl_csv_list() {
   printf '%s]' "$out"
 }
 
-# Whether this install's Terraform state already MANAGES the cluster. Read
-# straight from the state object in GCS — cheaper and earlier than an init, and
-# it works from a fresh clone. Any read failure means "not ours".
+# The raw state object, as this install keeps it in GCS. Read straight from
+# the bucket rather than through terraform: it is cheaper and earlier than an
+# init, it works from a fresh clone, and it runs BEFORE terraform.tfvars exists
+# -- the answers it gives are inputs to that file. Returns 1 with no output
+# when there is no state, and TF_STATE_RC_UNREADABLE (with a warning) when it
+# could not look: a transient GCS error read as "no state" is how an install
+# gets retargeted, or told to delete its own service account.
+tf_state_read() {
+  # Always called as `$(tf_state_read)`, so this runs in a subshell that
+  # inherits the front doors' ERR trap (set -E). The `return 1` below for a
+  # missing object -- the ordinary fresh-install answer -- would fire that
+  # trap in here, printing an abort banner and writing a FAILED report from a
+  # probe whose miss is expected, while the caller's `|| return` carries on
+  # regardless. Dropping the trap affects this subshell only.
+  trap - ERR
+  local object state err_file err
+  object="gs://$(tf_state_bucket)/$(tf_state_prefix)/${TF_STATE_OBJECT}"
+  err_file="$(mktemp)"
+  if ! state="$(gcloud storage cat "$object" 2>"$err_file")"; then
+    err="$(cat "$err_file" 2>/dev/null)"
+    rm -f "$err_file"
+    if printf '%s' "$err" | grep -qiE "$GCS_OBJECT_ABSENT_PATTERN"; then
+      return 1
+    fi
+    # >&2 because the front doors' print_warning writes to stdout, and this
+    # function's stdout is the state the caller is capturing.
+    print_warning "Could not read the Terraform state at ${object}: ${err:-unknown gcloud failure}. Proceeding as though this install has none; lifecycle.sh refuses the apply if that turns out to be wrong." >&2
+    return "$TF_STATE_RC_UNREADABLE"
+  fi
+  rm -f "$err_file"
+  printf '%s' "$state"
+}
+
+# Whether this install's Terraform state already MANAGES this cluster, which
+# is what decides create_cluster. Three things have to hold, and each one has
+# misled the installer on its own:
 #
-# Parsed, not grepped, for two reasons. An existing-cluster install records a
-# data-mode "google_container_cluster" entry in the same state, and matching on
-# the type alone would flip such an install's create_cluster back to true on
-# every re-run — planning a second cluster over the real one. And a
-# `gcloud | grep -q` pipeline under pipefail can report a cluster that IS in
-# state as absent when grep exits before gcloud finishes writing (the same trap
-# lifecycle.sh documents for its own state reads).
+#   - the entry is managed, not a data source. An existing-cluster install
+#     records a data-mode "google_container_cluster" in the same state, and
+#     matching on type alone flipped such an install's create_cluster back to
+#     true on every re-run -- planning a second cluster over the real one;
+#   - it has an instance. An apply that died before the create finished leaves
+#     a managed entry with an empty instances list, which manages nothing;
+#   - the instance IS this cluster: project, location and name all match. State
+#     accretes across runs that computed different answers (#1296), and an
+#     entry that names some other cluster is not ownership of this one.
+#
+# Parsed, not grepped, for the reasons above and one more: a `gcloud | grep -q`
+# pipeline under pipefail can report a cluster that IS in state as absent when
+# grep exits before gcloud finishes writing (the same trap lifecycle.sh
+# documents for its own state reads).
 tf_state_has_cluster() {
   local state
-  state=$(gcloud storage cat "gs://$(tf_state_bucket)/$(tf_state_prefix)/default.tfstate" 2>/dev/null) || return 1
+  state=$(tf_state_read) || return 1
+  printf '%s' "$state" | python3 -c '
+import json, sys
+project, location, name = sys.argv[1:4]
+try:
+    doc = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+wanted_id = f"projects/{project}/locations/{location}/clusters/{name}"
+def is_this_cluster(attrs):
+    if not isinstance(attrs, dict):
+        return False
+    if attrs.get("id") == wanted_id:
+        return True
+    return (attrs.get("project"), attrs.get("location"), attrs.get("name")) == (project, location, name)
+managed = any(
+    r.get("type") == "google_container_cluster"
+    and r.get("mode") == "managed"
+    and any(is_this_cluster(i.get("attributes")) for i in r.get("instances", []))
+    for r in doc.get("resources", [])
+)
+sys.exit(0 if managed else 1)
+' "${PROJECT_ID}" "${REGION}" "${CLUSTER_NAME}"
+}
+
+# The account ids of every google_service_account this install's state
+# manages, one per line. Empty when there is no state; tf_state_read's return
+# code when there is none or it could not be read, so a caller can tell
+# "manages no accounts" from "could not look". A state that downloaded but
+# does not parse is the second kind, not the first.
+tf_state_service_account_ids() {
+  # Called as `$(tf_state_service_account_ids)`, so the same subshell/ERR-trap
+  # argument as tf_state_read applies to the non-zero return below.
+  trap - ERR
+  local state
+  state=$(tf_state_read) || return $?
   printf '%s' "$state" | python3 -c '
 import json, sys
 try:
     doc = json.load(sys.stdin)
 except Exception:
-    sys.exit(1)
-managed = any(
-    r.get("type") == "google_container_cluster" and r.get("mode") == "managed"
-    for r in doc.get("resources", [])
-)
-sys.exit(0 if managed else 1)
-'
+    sys.exit(int(sys.argv[1]))
+for r in doc.get("resources", []):
+    if r.get("type") != "google_service_account" or r.get("mode") != "managed":
+        continue
+    for i in r.get("instances", []):
+        account_id = (i.get("attributes") or {}).get("account_id")
+        if account_id:
+            print(account_id)
+' "$TF_STATE_RC_UNREADABLE"
+}
+
+# Refuse an apply that would stop on a service account this install does not
+# own. Every GSA the composition creates has ONE fixed name per project while
+# state is kept per cluster, so the second install in a project -- or a
+# re-install after a teardown that never ran uninstall.sh -- reaches the apply
+# with an account that exists in GCP and not in its state, and Terraform 409s
+# on it halfway through (#1294). Caught here, before anything is applied, the
+# failure names the key that un-collides it.
+#
+# Refused rather than adopted, deliberately. An import cannot tell a leftover
+# from another live install's identity, and adopting the second puts that
+# account into THIS install's state -- where this install's uninstall then
+# deletes it out from under the other one, with no message on that side. A
+# 409 is loud; that is silent. Hence the message, and the key to set.
+#
+# Reads the generator's answers (TFVARS_ENABLE_GITHUB_MINTER) and the install
+# coordinates from the environment, so call it after write_tfvars_from_state,
+# and from every door that applies -- install.sh, its Day-2 menu, and
+# upgrade.sh, since a minter or Vertex GSA is first planned on whichever of
+# them enables the feature. A describe that fails for any reason other than
+# absence -- no permission to read IAM, say -- counts as absent here and lets
+# the apply report it, which is no worse than today. State that cannot be READ
+# is different: "not in state" then means nothing, and the remedy below would
+# tell a healthy install to delete its own account, so the check stands down
+# and says so. Caller defines print_error / print_info / print_warning.
+check_service_account_ownership() {
+  local in_state line label key account_id email state_rc=0
+  local -a candidates=() foreign=()
+  candidates+=("the agent	PLATFORM_AGENT_GSA_NAME	${PLATFORM_AGENT_GSA_NAME:-$DEFAULT_PLATFORM_AGENT_GSA_NAME}")
+  if [ "${TFVARS_ENABLE_GITHUB_MINTER:-false}" = "true" ]; then
+    candidates+=("the GitHub token minter	GITHUB_MINTER_GSA_NAME	${GITHUB_MINTER_GSA_NAME:-$DEFAULT_GITHUB_MINTER_GSA_NAME}")
+  fi
+  if [ "${MODEL_PROVIDER:-$DEFAULT_MODEL_PROVIDER}" = "vertex_ai" ]; then
+    candidates+=("the LiteLLM gateway	LITELLM_GSA_NAME	${LITELLM_GSA_NAME:-$DEFAULT_LITELLM_GSA_NAME}")
+  fi
+  in_state="$(tf_state_service_account_ids)" || state_rc=$?
+  if [ "$state_rc" -eq "$TF_STATE_RC_UNREADABLE" ]; then
+    print_warning "Skipping the service-account ownership check: this install's Terraform state could not be read (see above), so nothing can be said about which accounts it owns. If the apply stops on a 409 creating a service account, re-run once the state is readable."
+    return 0
+  fi
+  for line in "${candidates[@]}"; do
+    IFS=$'\t' read -r label key account_id <<<"$line"
+    if printf '%s\n' "$in_state" | grep -Fxq "$account_id"; then
+      continue
+    fi
+    email="${account_id}@${PROJECT_ID}.iam.gserviceaccount.com"
+    # `trap - ERR` for the bash 3.2 reason write_tfvars_from_state gives: the
+    # miss is the ordinary fresh-install answer, not an abort.
+    if (trap - ERR; gcloud iam service-accounts describe "$email" --project "${PROJECT_ID}" >/dev/null 2>&1); then
+      foreign+=("${label}	${key}	${account_id}	${email}")
+    fi
+  done
+  [ "${#foreign[@]}" -eq 0 ] && return 0
+
+  for line in ${foreign[@]+"${foreign[@]}"}; do
+    IFS=$'\t' read -r label key account_id email <<<"$line"
+    print_error "Service account '${account_id}' (${label}) already exists in project '${PROJECT_ID}' and is not managed by this install's Terraform state (gs://$(tf_state_bucket)/$(tf_state_prefix))."
+    print_info "Applying would stop on a 409 creating it. If another kube-agents install in this project owns it, give this install its own name: set ${key}=<a-different-name> in install.env. If it is left over from an install removed without uninstall.sh, delete it first: gcloud iam service-accounts delete ${email} --project ${PROJECT_ID}"
+  done
+  return 1
 }
 
 # The image tag this install's Terraform state RECORDS, which is not the tag
@@ -664,7 +847,7 @@ sys.exit(0 if managed else 1)
 # composition had this output carries no value for it. Callers fall back.
 tf_state_image_tag() {
   local state
-  state=$(gcloud storage cat "gs://$(tf_state_bucket)/$(tf_state_prefix)/default.tfstate" 2>/dev/null) || return 0
+  state=$(tf_state_read) || return 0
   printf '%s' "$state" | python3 -c '
 import json, sys
 try:
@@ -689,9 +872,9 @@ if isinstance(value, str) and value:
 # reordering away from pinning the composition's image_tag to a sidecar's
 # version — on a scheduled apply, silently.
 running_image_tag() {
-  local namespace="${1:-kubeagents-system}" image=""
+  local namespace="${1:-$DEFAULT_NAMESPACE}" image=""
   command -v kubectl >/dev/null 2>&1 || return 0
-  if ! image="$(kubectl get deployment platform-agent-gateway -n "${namespace}" \
+  if ! image="$(kubectl get deployment "${PLATFORM_AGENT_DEPLOYMENT}" -n "${namespace}" \
     -o jsonpath='{.spec.template.spec.containers[?(@.name=="platform-agent")].image}' 2>/dev/null)"; then
     return 0
   fi
@@ -707,8 +890,8 @@ running_image_tag() {
 # Returns the status of a Helm release (e.g., 'deployed', 'pending-upgrade', etc.),
 # or empty string if the release does not exist or helm is not installed.
 helm_release_status() {
-  local release_name="${1:-kube-agents}"
-  local namespace="${2:-kubeagents-system}"
+  local release_name="${1:-$KUBE_AGENTS_HELM_RELEASE}"
+  local namespace="${2:-$DEFAULT_NAMESPACE}"
 
   command -v helm >/dev/null 2>&1 || return 0
 
@@ -747,8 +930,8 @@ parse_rfc3339_epoch() {
 # explicitly permitted via ALLOW_UNINSTALL_PENDING_RELEASE=true, protecting
 # credentials and secrets (such as platform-agent-secrets).
 ensure_clean_helm_release() {
-  local release_name="${1:-kube-agents}"
-  local namespace="${2:-kubeagents-system}"
+  local release_name="${1:-$KUBE_AGENTS_HELM_RELEASE}"
+  local namespace="${2:-$DEFAULT_NAMESPACE}"
 
   command -v helm >/dev/null 2>&1 || return 0
 
@@ -968,6 +1151,7 @@ ensure_clean_helm_release() {
 write_tfvars_from_state() {
   local dest="$1"
   local image_tag="${2:-${IMAGE_TAG:-latest}}"
+  normalize_identity_vars
 
   # MEMORY_PROVIDER when the caller set it (install.sh's own run exports it),
   # otherwise translated from the MEMORY mode install.env records, and only
@@ -1101,7 +1285,7 @@ write_tfvars_from_state() {
       # the other stale-context failure mode: a context whose cluster was
       # just destroyed black-holes TCP instead of refusing, and eight keys
       # times a hung connect stalls the install for minutes.
-      secret_val="$({ kubectl get secret platform-agent-secrets -n "${NAMESPACE:-kubeagents-system}" \
+      secret_val="$({ kubectl get secret "${PLATFORM_AGENT_SECRET}" -n "${NAMESPACE:-$DEFAULT_NAMESPACE}" \
         --request-timeout=10s \
         -o jsonpath="{.data.${secret_key}}" 2>/dev/null || true; } | base64 --decode 2>/dev/null || true)"
       if [ -n "$secret_val" ]; then
@@ -1191,6 +1375,11 @@ write_tfvars_from_state() {
     fi
   fi
 
+  # Exported like TFVARS_CREATE_CLUSTER, for check_service_account_ownership:
+  # the minter's GSA is only planned when the minter is.
+  TFVARS_ENABLE_GITHUB_MINTER="$enable_github_minter"
+  export TFVARS_ENABLE_GITHUB_MINTER
+
   # ENABLE_GVISOR is one intent — run the agent sandboxed — and the two things
   # that satisfy it differ by cluster shape. Standard needs the sandbox node
   # pool AND the RuntimeClass on the pod; Autopilot ships the gvisor
@@ -1272,6 +1461,18 @@ write_tfvars_from_state() {
     echo "project_id   = $(hcl_str "${PROJECT_ID}")"
     echo "cluster_name = $(hcl_str "${CLUSTER_NAME}")"
     echo "location     = $(hcl_str "${REGION}")"
+    echo "namespace    = $(hcl_str "${NAMESPACE:-$DEFAULT_NAMESPACE}")"
+    echo ""
+    echo "# One fixed name per project each, while this state is per cluster: a"
+    echo "# second install in the project names its own in install.env."
+    echo "agent_service_account_id         = $(hcl_str "${PLATFORM_AGENT_GSA_NAME:-$DEFAULT_PLATFORM_AGENT_GSA_NAME}")"
+    echo "github_minter_service_account_id = $(hcl_str "${GITHUB_MINTER_GSA_NAME:-$DEFAULT_GITHUB_MINTER_GSA_NAME}")"
+    echo "litellm_service_account_id       = $(hcl_str "${LITELLM_GSA_NAME:-$DEFAULT_LITELLM_GSA_NAME}")"
+    echo ""
+    echo "# GKE database encryption. install.sh's existing-cluster step reads the"
+    echo "# same two keys, so a create and an adoption encrypt with one key."
+    echo "kms_keyring_name = $(hcl_str "${GKE_DB_KMS_KEYRING:-$DEFAULT_GKE_DB_KMS_KEYRING}")"
+    echo "kms_key_name     = $(hcl_str "${GKE_DB_KMS_KEY:-$DEFAULT_GKE_DB_KMS_KEY}")"
     echo ""
     echo "# The DNS endpoint is open and deletion protection is off. cluster_mode is"
     echo "# the live cluster's own shape whenever there is one to probe, and the"

@@ -293,7 +293,7 @@ module "litellm_vertex_iam" {
   count  = local.use_vertex ? 1 : 0
 
   project_id         = var.project_id
-  service_account_id = "kubeagents-litellm-gsa"
+  service_account_id = var.litellm_service_account_id
   display_name       = "Kube-Agents LiteLLM Vertex AI Service Account"
   namespace          = var.namespace
   ksa_name           = local.litellm_ksa
@@ -343,11 +343,12 @@ module "github_minter" {
   source = "../../modules/github-minter"
   count  = var.enable_github_minter ? 1 : 0
 
-  project_id       = var.project_id
-  location         = var.location
-  namespace        = var.namespace
-  kms_keyring_name = var.github_minter_kms_keyring
-  kms_key_name     = var.github_minter_kms_key
+  project_id         = var.project_id
+  location           = var.location
+  namespace          = var.namespace
+  service_account_id = var.github_minter_service_account_id
+  kms_keyring_name   = var.github_minter_kms_keyring
+  kms_key_name       = var.github_minter_kms_key
 
   depends_on = [google_project_service.required]
 }

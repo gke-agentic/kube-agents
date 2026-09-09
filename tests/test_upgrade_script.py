@@ -401,20 +401,27 @@ class InteractiveImageTagPromptTest(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, out)
 
+    def test_full_upgrade_checks_service_account_ownership_before_the_apply(self):
+        """A minter or Vertex GSA is first planned on the upgrade that enables it (#1294)."""
+        text = (_REPO_ROOT / "upgrade.sh").read_text()
+        check_idx = text.index("check_service_account_ownership || exit 1")
+        apply_idx = text.index("apply -auto-approve -input=false")
+        self.assertLess(check_idx, apply_idx)
+
     def test_upgrade_invokes_ensure_clean_helm_release(self):
         text = (_REPO_ROOT / "upgrade.sh").read_text()
-        self.assertIn('ensure_clean_helm_release kube-agents "$target_namespace"', text)
+        self.assertIn('ensure_clean_helm_release "$KUBE_AGENTS_HELM_RELEASE" "$target_namespace"', text)
 
     def test_upgrade_confirms_agent_image_before_rollout_status(self):
         text = (_REPO_ROOT / "upgrade.sh").read_text()
-        confirm_idx = text.index('confirm_agent_image.sh" "$target_namespace" platform-agent-gateway')
-        rollout_idx = text.index('rollout status deployment/platform-agent-gateway')
+        confirm_idx = text.index('confirm_agent_image.sh" "$target_namespace" "$PLATFORM_AGENT_DEPLOYMENT"')
+        rollout_idx = text.index('rollout status "deployment/${PLATFORM_AGENT_DEPLOYMENT}" -n "$target_namespace" --timeout=900s')
         self.assertLess(confirm_idx, rollout_idx)
 
     def test_upgrade_confirms_agent_image_scoped_to_harness_and_full_modes(self):
         text = (_REPO_ROOT / "upgrade.sh").read_text()
         self.assertIn('[ "$PARAM_UPGRADE_MODE" = "harness" ] || [ "$PARAM_UPGRADE_MODE" = "full" ]', text)
-        self.assertIn('kubectl get deployment platform-agent-gateway -n "$target_namespace"', text)
+        self.assertIn('kubectl get deployment "$PLATFORM_AGENT_DEPLOYMENT" -n "$target_namespace"', text)
 
 
 

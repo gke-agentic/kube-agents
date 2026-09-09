@@ -54,6 +54,33 @@ fi
 # Keep this value aligned with the Terraform full-install composition and admin portal.
 KUBE_AGENTS_HOST_LABEL="kube-agents-host"
 
+# ─── Identity names ───────────────────────────────────────────────────────────
+# The Kubernetes service accounts are the chart's and the operator's to name:
+# nothing the installer configures changes them, so they are constants here,
+# read by the kustomize dev path's envsubst. The GCP service accounts and the
+# namespace are install configuration -- install.env can set them, and their
+# defaults live in install.defaults.env with the rest -- so export_identity_names
+# fills each in only when nothing loaded before it did.
+readonly PLATFORM_AGENT_KSA_NAME_FIXED="kubeagents-platform-agent"
+readonly PLATFORM_AGENT_SANDBOX_KSA_NAME_FIXED="platform-agent-sandbox"
+readonly CONTROLLER_KSA_NAME_FIXED="kubeagents-controller"
+readonly CONTROLLER_GSA_NAME_FIXED="kubeagents-controller-gsa"
+readonly GITHUB_MINTER_KSA_NAME_FIXED="kubeagents-github-minter"
+readonly LITELLM_KSA_NAME_FIXED="kubeagents-litellm"
+
+export_identity_names() {
+  export NAMESPACE="${NAMESPACE:-$DEFAULT_NAMESPACE}"
+  export PLATFORM_AGENT_GSA_NAME="${PLATFORM_AGENT_GSA_NAME:-$DEFAULT_PLATFORM_AGENT_GSA_NAME}"
+  export GITHUB_MINTER_GSA_NAME="${GITHUB_MINTER_GSA_NAME:-$DEFAULT_GITHUB_MINTER_GSA_NAME}"
+  export LITELLM_GSA_NAME="${LITELLM_GSA_NAME:-$DEFAULT_LITELLM_GSA_NAME}"
+  export PLATFORM_AGENT_KSA_NAME="$PLATFORM_AGENT_KSA_NAME_FIXED"
+  export PLATFORM_AGENT_SANDBOX_KSA_NAME="$PLATFORM_AGENT_SANDBOX_KSA_NAME_FIXED"
+  export CONTROLLER_KSA_NAME="$CONTROLLER_KSA_NAME_FIXED"
+  export CONTROLLER_GSA_NAME="$CONTROLLER_GSA_NAME_FIXED"
+  export GITHUB_MINTER_KSA_NAME="$GITHUB_MINTER_KSA_NAME_FIXED"
+  export LITELLM_KSA_NAME="$LITELLM_KSA_NAME_FIXED"
+}
+
 # ─── UI Helpers ───────────────────────────────────────────────────────────────
 print_step() { echo -e "\n${C_MAGENTA}${C_BOLD}>>>  $1  <<<${C_RESET}"; }
 print_success() { echo -e "  ${C_GREEN}✓ $1${C_RESET}"; }
@@ -466,6 +493,9 @@ install_env_file_for_state() {
 load_state() {
   local env_registry_prefix="${REGISTRY_PREFIX:-}"
   local env_third_party_prefix="${THIRD_PARTY_REGISTRY_PREFIX:-}"
+  # Only the files may set NAMESPACE, as in the front doors: kubectl tooling
+  # exports that name, and the value reaches the release namespace.
+  unset NAMESPACE
   # Read if present, never created here. save_var below still appends to
   # VARS_FILE on its own, so a run that records anything creates the file
   # whether or not this block ran; opening it eagerly would only add an empty
@@ -510,19 +540,13 @@ load_state() {
     init_var_image_tag
   fi
   init_var_registry_prefix
-  export NAMESPACE="kubeagents-system"
-  export PLATFORM_AGENT_KSA_NAME="kubeagents-platform-agent"
-  export PLATFORM_AGENT_SANDBOX_KSA_NAME="platform-agent-sandbox"
-  export PLATFORM_AGENT_GSA_NAME="kubeagents-platform-gsa"
-  export CONTROLLER_KSA_NAME="kubeagents-controller"
-  export CONTROLLER_GSA_NAME="kubeagents-controller-gsa"
-  export GITHUB_MINTER_KSA_NAME="kubeagents-github-minter"
-  export GITHUB_MINTER_GSA_NAME="kubeagents-github-minter-gsa"
-  export LITELLM_KSA_NAME="kubeagents-litellm"
-  export LITELLM_GSA_NAME="kubeagents-litellm-gsa"
+  export_identity_names
 }
 
 ensure_teardown_state() {
+  # Only the files may set NAMESPACE, as in the front doors: kubectl tooling
+  # exports that name, and the value reaches the release namespace.
+  unset NAMESPACE
   # Both files, in load_state's order: VARS_FILE first, install.env last so the
   # hand-authored input wins. Reading only VARS_FILE is not enough here --
   # it holds dev scratch state (the artifact-registry repo name, whether this
@@ -554,16 +578,7 @@ ensure_teardown_state() {
     export GKE_DB_KMS_KEY="${GKE_DB_KMS_KEY:-}"
     export GCP_ARTIFACT_REGISTRY_REPO_NAME="${GCP_ARTIFACT_REGISTRY_REPO_NAME:-${REPO_NAME:-kube-agents}}"
     export DEV_ARTIFACT_REGISTRY_CREATED="${DEV_ARTIFACT_REGISTRY_CREATED:-false}"
-    export NAMESPACE="kubeagents-system"
-    export PLATFORM_AGENT_KSA_NAME="kubeagents-platform-agent"
-    export PLATFORM_AGENT_SANDBOX_KSA_NAME="platform-agent-sandbox"
-    export PLATFORM_AGENT_GSA_NAME="kubeagents-platform-gsa"
-    export CONTROLLER_KSA_NAME="kubeagents-controller"
-    export CONTROLLER_GSA_NAME="kubeagents-controller-gsa"
-    export GITHUB_MINTER_KSA_NAME="kubeagents-github-minter"
-    export GITHUB_MINTER_GSA_NAME="kubeagents-github-minter-gsa"
-    export LITELLM_KSA_NAME="kubeagents-litellm"
-    export LITELLM_GSA_NAME="kubeagents-litellm-gsa"
+    export_identity_names
   else
     echo -e "  ${C_YELLOW}⚠ No install coordinates in ${VARS_FILE} or install.env. Prompting for target values...${C_RESET}"
     local ACTIVE_PROJECT
@@ -597,7 +612,6 @@ ensure_teardown_state() {
       read -r INPUT_CLUSTER_NAME
       export CLUSTER_NAME="${INPUT_CLUSTER_NAME:-$CLUSTER_NAME}"
     fi
-    export NAMESPACE="kubeagents-system"
     export GKE_DB_KMS_KEYRING="${GKE_DB_KMS_KEYRING:-}"
     export GKE_DB_KMS_KEY="${GKE_DB_KMS_KEY:-}"
     export GCP_ARTIFACT_REGISTRY_REPO_NAME="${GCP_ARTIFACT_REGISTRY_REPO_NAME:-${REPO_NAME:-kube-agents}}"
@@ -609,15 +623,7 @@ ensure_teardown_state() {
       export CHAT_TOPIC_NAME="${CHAT_TOPIC_NAME:-}"
       export CHAT_SUB_NAME="${CHAT_SUB_NAME:-}"
     fi
-    export PLATFORM_AGENT_KSA_NAME="kubeagents-platform-agent"
-    export PLATFORM_AGENT_SANDBOX_KSA_NAME="platform-agent-sandbox"
-    export PLATFORM_AGENT_GSA_NAME="kubeagents-platform-gsa"
-    export CONTROLLER_KSA_NAME="kubeagents-controller"
-    export CONTROLLER_GSA_NAME="kubeagents-controller-gsa"
-    export GITHUB_MINTER_KSA_NAME="kubeagents-github-minter"
-    export GITHUB_MINTER_GSA_NAME="kubeagents-github-minter-gsa"
-    export LITELLM_KSA_NAME="kubeagents-litellm"
-    export LITELLM_GSA_NAME="kubeagents-litellm-gsa"
+    export_identity_names
   fi
 }
 

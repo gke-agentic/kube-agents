@@ -253,7 +253,7 @@ resolve_state_location() {
     # Remote state where the installer keeps it (or where the caller pointed
     # us): pin the backend for lifecycle.sh.
     export KUBE_AGENTS_STATE_BUCKET="${KUBE_AGENTS_STATE_BUCKET:-auto}"
-  elif ! printf '%s' "$probe_err" | grep -qiE 'matched no objects|not found|404|does not exist'; then
+  elif ! printf '%s' "$probe_err" | grep -qiE "$GCS_OBJECT_ABSENT_PATTERN"; then
     # Anything that is not a clean "absent" — refuse rather than report an
     # empty target. Reaching the local-state branches below on a permission
     # error would be the same mistake one level down.

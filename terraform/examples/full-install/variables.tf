@@ -154,6 +154,18 @@ variable "agent_service_account_id" {
   default     = null
 }
 
+variable "github_minter_service_account_id" {
+  description = "IAM service account ID for the GitHub token minter's GSA. Null selects the module default (kubeagents-github-minter-gsa), which is one fixed name per project like agent_service_account_id, and a second install in the same project that enables the minter must set its own for the same reason."
+  type        = string
+  default     = null
+}
+
+variable "litellm_service_account_id" {
+  description = "IAM service account ID for the LiteLLM gateway's Vertex AI GSA (model_provider = vertex_ai only). One fixed name per project, so a second Vertex install in the same project must set its own. A real default rather than null: the module it reaches (kube-agents-iam) defaults to the AGENT's name, which a null would select."
+  type        = string
+  default     = "kubeagents-litellm-gsa"
+}
+
 variable "image_tag" {
   description = "Image tag for both the operator and the platform agent. Required because a checkout's Chart.yaml carries an appVersion placeholder that never matches a published image tag, so the chart's tag defaulting cannot work from a checkout. `latest` is fine for evaluation; set an `X.Y.Z` release tag for production."
   type        = string

@@ -137,7 +137,8 @@ identifier appears, add its source here.
 <!-- prettier-ignore -->
 | Identifier | Source of truth |
 | --- | --- |
-| Service-account names and namespace | `scripts/installer/common.sh` |
+| Kubernetes service-account names | `scripts/installer/common.sh` |
+| GCP service-account names an install creates, release namespace, GKE CMEK key ring and key | `install.defaults.env` |
 | Defaults an install gets for saying nothing (region, cluster, permission set, registry prefix) | `install.defaults.env` |
 | Go toolchain version | `k8s-operator/go.mod` (and `a2a/go.mod`, kept in step) |
 | A2A wire constants: protocol version, stream names, size thresholds, token grammar | `a2a/lib/envelope.go` and `a2a/lib/topics.go` |

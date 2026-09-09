@@ -33,12 +33,40 @@ def _state_doc(resources):
     return json.dumps({"version": 4, "resources": resources})
 
 
+def _cluster_instance(name="test-cluster", location="us-central1", project="test-project"):
+    return {"attributes": {
+        "id": f"projects/{project}/locations/{location}/clusters/{name}",
+        "name": name, "location": location, "project": project,
+    }}
+
+
+# The coordinates _run exports: PROJECT_ID=test-project, REGION=us-central1,
+# CLUSTER_NAME=test-cluster.
 MANAGED_CLUSTER_STATE = _state_doc(
-    [{"mode": "managed", "type": "google_container_cluster", "name": "standard"}]
+    [{"mode": "managed", "type": "google_container_cluster", "name": "standard",
+      "instances": [_cluster_instance()]}]
 )
 DATA_MODE_STATE = _state_doc(
-    [{"mode": "data", "type": "google_container_cluster", "name": "existing"}]
+    [{"mode": "data", "type": "google_container_cluster", "name": "existing",
+      "instances": [_cluster_instance()]}]
 )
+# What an apply that died before the create finished leaves behind (#1296).
+EMPTY_INSTANCES_STATE = _state_doc(
+    [{"mode": "managed", "type": "google_container_cluster", "name": "standard",
+      "instances": []}]
+)
+OTHER_CLUSTER_STATE = _state_doc(
+    [{"mode": "managed", "type": "google_container_cluster", "name": "standard",
+      "instances": [_cluster_instance(name="some-other-cluster")]}]
+)
+
+
+def _service_account_state(*account_ids):
+    return _state_doc([
+        {"mode": "managed", "type": "google_service_account", "name": "agent",
+         "instances": [{"attributes": {"account_id": account_id}}]}
+        for account_id in account_ids
+    ])
 
 
 def _autopilot_describe_stub(version="1.31.5-gke.1023000"):
@@ -68,6 +96,8 @@ class InstallerCommonTest(unittest.TestCase):
         kubectl_script=None,
         describe_stub='echo "ERROR: (gcloud.container.clusters.describe) NOT_FOUND" >&2; exit 1',
         kms_versions="",
+        sa_describe_stub="exit 1",
+        gcloud_stderr=None,
     ):
         """Source installer_common.sh with print stubs and run `script`.
 
@@ -76,6 +106,14 @@ class InstallerCommonTest(unittest.TestCase):
         `clusters describe` runs `describe_stub` (default: exit 1, meaning
         the cluster does not exist).
         """
+        # A failing `storage cat` with no stderr of its own reads as "absent":
+        # that is what every pre-existing caller meant by gcloud_exit=1, and
+        # the one test about an unreadable state passes a 5xx message instead.
+        if gcloud_stderr is None:
+            gcloud_stderr = (
+                "ERROR: (gcloud.storage.cat) The following URLs matched no objects or files"
+                if gcloud_exit else ""
+            )
         with tempfile.TemporaryDirectory() as tmp:
             bin_dir = pathlib.Path(tmp) / "bin"
             bin_dir.mkdir()
@@ -88,7 +126,9 @@ class InstallerCommonTest(unittest.TestCase):
                 'case "$*" in\n'
                 f"  *\"clusters describe\"*) {describe_stub} ;;\n"
                 f"  *\"keys versions list\"*) printf '%s' '{kms_versions}'; exit 0 ;;\n"
+                f"  *\"service-accounts describe\"*) {sa_describe_stub} ;;\n"
                 "esac\n"
+                f"printf '%s' '{gcloud_stderr}' >&2\n"
                 f"[ -f '{state_file}' ] && cat '{state_file}'\n"
                 f"exit {gcloud_exit}\n"
             )
@@ -136,6 +176,23 @@ class InstallerCommonTest(unittest.TestCase):
         )
         self.assertIn("rc=1", proc.stdout, proc.stderr)
 
+    def test_managed_entry_with_no_instances_is_not_ours(self):
+        # An apply that died before the create finished leaves a managed entry
+        # that manages nothing; reading it as ours planned a create over the
+        # live cluster on the retry (#1296).
+        proc = self._run(
+            'tf_state_has_cluster; echo "rc=$?"',
+            gcloud_stdout=EMPTY_INSTANCES_STATE,
+        )
+        self.assertIn("rc=1", proc.stdout, proc.stderr)
+
+    def test_managed_entry_for_another_cluster_is_not_ours(self):
+        proc = self._run(
+            'tf_state_has_cluster; echo "rc=$?"',
+            gcloud_stdout=OTHER_CLUSTER_STATE,
+        )
+        self.assertIn("rc=1", proc.stdout, proc.stderr)
+
     def test_unparseable_state_fails_safe(self):
         proc = self._run(
             'tf_state_has_cluster; echo "rc=$?"',
@@ -150,6 +207,130 @@ class InstallerCommonTest(unittest.TestCase):
             gcloud_exit=1,
         )
         self.assertIn("rc=1", proc.stdout, proc.stderr)
+
+    # ── check_service_account_ownership: the 409 a second install hits (#1294) ─
+
+    def test_service_account_ownership_passes_when_nothing_exists(self):
+        proc = self._run('check_service_account_ownership; echo "rc=$?"', gcloud_exit=1)
+        self.assertIn("rc=0", proc.stdout, proc.stderr)
+
+    def test_service_account_ownership_passes_when_this_state_owns_it(self):
+        proc = self._run(
+            'check_service_account_ownership; echo "rc=$?"',
+            gcloud_stdout=_service_account_state("kubeagents-platform-gsa"),
+            sa_describe_stub="exit 0",
+        )
+        self.assertIn("rc=0", proc.stdout, proc.stderr)
+
+    _SHOW_REMEDY = 'print_info() { echo "INFO: $*" >&2; }; check_service_account_ownership; echo "rc=$?"'
+
+    def test_service_account_ownership_refuses_an_account_this_state_does_not_own(self):
+        proc = self._run(
+            self._SHOW_REMEDY,
+            gcloud_exit=1,
+            sa_describe_stub="exit 0",
+        )
+        self.assertIn("rc=1", proc.stdout, proc.stderr)
+        self.assertIn("kubeagents-platform-gsa", proc.stderr)
+        self.assertIn("PLATFORM_AGENT_GSA_NAME", proc.stderr)
+
+    def test_service_account_ownership_stands_down_when_state_is_unreadable(self):
+        # A transient GCS failure is not "no state": refusing on it would tell a
+        # healthy install to delete its own account.
+        proc = self._run(
+            'print_warning() { echo "WARN: $*" >&2; }; check_service_account_ownership; echo "rc=$?"',
+            gcloud_exit=1, gcloud_stderr="ERROR: HTTPError 503: backend unavailable",
+            sa_describe_stub="exit 0",
+        )
+        self.assertIn("rc=0", proc.stdout, proc.stderr)
+        self.assertIn("Skipping the service-account ownership check", proc.stderr)
+        self.assertNotIn("ERROR: Service account", proc.stderr)
+
+    def test_service_account_ownership_stands_down_on_an_unparseable_state(self):
+        # A state that downloaded but does not parse says nothing about which
+        # accounts it owns, so the delete-it remedy must not be reachable.
+        proc = self._run(
+            'print_warning() { echo "WARN: $*" >&2; }; check_service_account_ownership; echo "rc=$?"',
+            gcloud_stdout="this is not JSON {",
+            sa_describe_stub="exit 0",
+        )
+        self.assertIn("rc=0", proc.stdout, proc.stderr)
+        self.assertIn("Skipping the service-account ownership check", proc.stderr)
+
+    def test_the_one_release_alias_for_the_agent_gsa_key_still_works(self):
+        with tempfile.TemporaryDirectory() as out_dir:
+            dest = pathlib.Path(out_dir) / "terraform.tfvars"
+            proc = self._run(
+                f'print_warning() {{ echo "WARN: $*" >&2; }}; write_tfvars_from_state "{dest}"; echo "rc=$?"',
+                env={"API_SERVER_KEY": "k", "TF_VAR_agent_service_account_id": "agent-two-gsa"},
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn('agent_service_account_id         = "agent-two-gsa"', dest.read_text())
+            self.assertIn("TF_VAR_agent_service_account_id is deprecated", proc.stderr)
+
+    def test_load_install_env_drops_a_shell_exported_namespace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = pathlib.Path(tmp) / "install.env"
+            env_file.write_text("PROJECT_ID=p\n")
+            proc = self._run(
+                f'load_install_env "{env_file}"; echo "NS=${{NAMESPACE:-unset}}"',
+                env={"NAMESPACE": "stray-from-kubectl-tooling"},
+            )
+            self.assertIn("NS=unset", proc.stdout, proc.stderr)
+            env_file.write_text("PROJECT_ID=p\nNAMESPACE=from-the-file\n")
+            proc = self._run(
+                f'load_install_env "{env_file}"; echo "NS=${{NAMESPACE:-unset}}"',
+                env={"NAMESPACE": "stray-from-kubectl-tooling"},
+            )
+            self.assertIn("NS=from-the-file", proc.stdout, proc.stderr)
+
+    def test_service_account_ownership_still_refuses_on_a_clean_absence(self):
+        proc = self._run(
+            self._SHOW_REMEDY,
+            gcloud_exit=1, gcloud_stderr="ERROR: (gcloud.storage.cat) The following URLs matched no objects or files",
+            sa_describe_stub="exit 0",
+        )
+        self.assertIn("rc=1", proc.stdout, proc.stderr)
+
+    def test_service_account_ownership_checks_the_configured_name(self):
+        proc = self._run(
+            self._SHOW_REMEDY,
+            gcloud_exit=1,
+            sa_describe_stub='[[ "$*" == *"my-own-agent-gsa@"* ]] && exit 0; exit 1',
+            env={"PLATFORM_AGENT_GSA_NAME": "my-own-agent-gsa"},
+        )
+        self.assertIn("rc=1", proc.stdout, proc.stderr)
+        self.assertIn("my-own-agent-gsa", proc.stderr)
+
+    def test_service_account_ownership_covers_the_minter_only_when_enabled(self):
+        stub = '[[ "$*" == *"kubeagents-github-minter-gsa@"* ]] && exit 0; exit 1'
+        proc = self._run(
+            'check_service_account_ownership; echo "rc=$?"',
+            gcloud_exit=1, sa_describe_stub=stub,
+        )
+        self.assertIn("rc=0", proc.stdout, proc.stderr)
+        proc = self._run(
+            self._SHOW_REMEDY,
+            gcloud_exit=1, sa_describe_stub=stub,
+            env={"TFVARS_ENABLE_GITHUB_MINTER": "true"},
+        )
+        self.assertIn("rc=1", proc.stdout, proc.stderr)
+        self.assertIn("GITHUB_MINTER_GSA_NAME", proc.stderr)
+
+    def test_service_account_ownership_covers_the_gateway_only_on_vertex(self):
+        stub = '[[ "$*" == *"kubeagents-litellm-gsa@"* ]] && exit 0; exit 1'
+        proc = self._run(
+            'check_service_account_ownership; echo "rc=$?"',
+            gcloud_exit=1, sa_describe_stub=stub,
+        )
+        self.assertIn("rc=0", proc.stdout, proc.stderr)
+        proc = self._run(
+            self._SHOW_REMEDY,
+            gcloud_exit=1, sa_describe_stub=stub,
+            env={"MODEL_PROVIDER": "vertex_ai"},
+        )
+        self.assertIn("rc=1", proc.stdout, proc.stderr)
+        self.assertIn("LITELLM_GSA_NAME", proc.stderr)
 
     # ── hcl_csv_list: --custom-roles documents "space- or comma-separated" ──
 
@@ -672,6 +853,46 @@ class InstallerCommonTest(unittest.TestCase):
             content = dest.read_text()
             self.assertIn("enable_pubsub_platform       = true", content)
             self.assertIn("enable_stockout_investigator = true", content)
+
+    def test_tfvars_carries_namespace_identity_and_cmek_names(self):
+        # Every one of these used to be a fixed name the generator never wrote,
+        # so install.env's NAMESPACE reached nothing and a second install in a
+        # project had no way to name its own service accounts (#1294).
+        with tempfile.TemporaryDirectory() as out_dir:
+            dest = pathlib.Path(out_dir) / "terraform.tfvars"
+            proc = self._run(
+                f'write_tfvars_from_state "{dest}"; echo "rc=$?"',
+                env={"API_SERVER_KEY": "k"},
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            content = dest.read_text()
+            self.assertIn('namespace    = "kubeagents-system"', content)
+            self.assertIn('agent_service_account_id         = "kubeagents-platform-gsa"', content)
+            self.assertIn('github_minter_service_account_id = "kubeagents-github-minter-gsa"', content)
+            self.assertIn('litellm_service_account_id       = "kubeagents-litellm-gsa"', content)
+            self.assertIn('kms_keyring_name = "platform-agent-keyring"', content)
+            self.assertIn('kms_key_name     = "k8s-secret-encryption-key"', content)
+
+            proc = self._run(
+                f'write_tfvars_from_state "{dest}"; echo "rc=$?"',
+                env={
+                    "API_SERVER_KEY": "k",
+                    "NAMESPACE": "agents-two",
+                    "PLATFORM_AGENT_GSA_NAME": "agent-two-gsa",
+                    "GITHUB_MINTER_GSA_NAME": "minter-two-gsa",
+                    "LITELLM_GSA_NAME": "litellm-two-gsa",
+                    "GKE_DB_KMS_KEYRING": "ring-two",
+                    "GKE_DB_KMS_KEY": "key-two",
+                },
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            content = dest.read_text()
+            self.assertIn('namespace    = "agents-two"', content)
+            self.assertIn('agent_service_account_id         = "agent-two-gsa"', content)
+            self.assertIn('github_minter_service_account_id = "minter-two-gsa"', content)
+            self.assertIn('litellm_service_account_id       = "litellm-two-gsa"', content)
+            self.assertIn('kms_keyring_name = "ring-two"', content)
+            self.assertIn('kms_key_name     = "key-two"', content)
 
     def test_tfvars_generation_carries_vertex_manage_serving_project(self):
         # Default true: the composition keeps enabling the API and granting the

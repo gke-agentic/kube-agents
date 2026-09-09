@@ -44,10 +44,6 @@ define_print_helpers
 
 # ─── Process Lock File & Error Trap Handling ────────────────────────────────
 LOCK_FILE="/tmp/kube-agents-install.lock"
-# The gateway's service account id when the kustomize path's LITELLM_GSA_NAME is
-# not in the environment; must agree with module.litellm_vertex_iam in
-# terraform/examples/full-install/main.tf.
-LITELLM_GSA_DEFAULT_NAME="kubeagents-litellm-gsa"
 if command -v flock >/dev/null 2>&1; then
   if ( : >"$LOCK_FILE" ) 2>/dev/null && exec 200>"$LOCK_FILE"; then
     if ! flock -n 200 2>/dev/null; then
@@ -219,6 +215,13 @@ load_legacy_vars_file() {
 # definition silently replacing this one.
 bootstrap_install_env() {
   local file="${1:-}"
+  # NAMESPACE reaches terraform.tfvars, and it is a name kubectl tooling
+  # commonly exports. Only install.env may set it: a value inherited from the
+  # shell would put a fresh release into a namespace the agent's fixed gateway
+  # endpoint does not serve, and record nothing that says why. Cleared before
+  # the file is read (and whether or not there is one), so the file's own key
+  # is the only way in.
+  unset NAMESPACE
   [ -n "$file" ] || return 0
   if [ ! -f "$file" ]; then
     if [ "$INSTALL_ENV_EXPLICIT" = "true" ]; then
@@ -1002,6 +1005,20 @@ bootstrap_install_env_file() {
   if [ -n "${THIRD_PARTY_REGISTRY_PREFIX:-}" ]; then
     write_env_var "$tmp" THIRD_PARTY_REGISTRY_PREFIX "${THIRD_PARTY_REGISTRY_PREFIX}"
   fi
+  # Recorded only when this run set one. Almost every install takes the
+  # defaults, and a default copied here would freeze at this release; the
+  # install that did set one (a second install in the project) must keep it,
+  # because losing the line renames -- that is, replaces -- the account.
+  # NAMESPACE is deliberately not in the list: it is a variable kubectl
+  # tooling commonly exports, and freezing a stray shell value into the
+  # install's configuration would move the release on the next apply. An
+  # install that means it writes the key into install.env by hand.
+  local identity_key
+  for identity_key in PLATFORM_AGENT_GSA_NAME GITHUB_MINTER_GSA_NAME LITELLM_GSA_NAME GKE_DB_KMS_KEYRING GKE_DB_KMS_KEY; do
+    if [ -n "${!identity_key:-}" ]; then
+      write_env_var "$tmp" "$identity_key" "${!identity_key}"
+    fi
+  done
   if ! is_truthy "${PERSIST_SECRETS_ON_DISK:-$DEFAULT_PERSIST_SECRETS_ON_DISK}"; then
     printf '\n%s\n' "# PERSIST_SECRETS_ON_DISK=false: credentials are deliberately absent." >> "$tmp"
     write_env_var "$tmp" PERSIST_SECRETS_ON_DISK "false"
@@ -1621,7 +1638,10 @@ ensure_existing_cluster_cmek() {
     return 0
   fi
 
-  local kms_location keyring="${GKE_DB_KMS_KEYRING:-platform-agent-keyring}" key="${GKE_DB_KMS_KEY:-k8s-secret-encryption-key}"
+  # The same two keys the generator writes into terraform.tfvars as
+  # kms_keyring_name / kms_key_name, so a cluster this step encrypts and one
+  # the gke-cluster module creates never end up on different keys.
+  local kms_location keyring="${GKE_DB_KMS_KEYRING:-$DEFAULT_GKE_DB_KMS_KEYRING}" key="${GKE_DB_KMS_KEY:-$DEFAULT_GKE_DB_KMS_KEY}"
   kms_location="$(derive_kms_location "$region")"
   local key_resource="projects/${project_id}/locations/${kms_location}/keyRings/${keyring}/cryptoKeys/${key}"
   print_info "Enabling CMEK database encryption on existing cluster '$cluster_name' (key: $key_resource)..."
@@ -2142,6 +2162,9 @@ run_menu_system() {
         # No re-source: save_env_var exports as it writes, so the environment
         # write_tfvars_from_state reads is already current.
         write_tfvars_from_state "$(tf_compose_dir "$repo_dir")/terraform.tfvars" "$image_tag"
+        # A provider or minter switch is where a new fixed-name GSA is first
+        # planned on an existing install, so the 409 check runs here too.
+        check_service_account_ownership || exit 1
         print_info "Re-applying the install to GKE cluster '$cluster_name' (terraform apply)..."
         run_lifecycle_apply "$repo_dir" "/tmp/kube-agents-apply-$(date -u +%Y%m%dT%H%M%SZ).log"
         print_success "Configuration applied!"
@@ -2671,10 +2694,10 @@ main() {
       [ -n "$gemini_api_key" ] || print_warning "No Gemini API key was provided; the agent will require a credential update before model calls can succeed."
       ;;
     vertex_ai)
-      print_info "Vertex AI needs no API key: LiteLLM authenticates as ${LITELLM_GSA_NAME:-kubeagents-litellm-gsa}@${project_id}.iam.gserviceaccount.com via Workload Identity."
+      print_info "Vertex AI needs no API key: LiteLLM authenticates as ${LITELLM_GSA_NAME:-$DEFAULT_LITELLM_GSA_NAME}@${project_id}.iam.gserviceaccount.com via Workload Identity."
       print_info "Serving ${model_default_name} from projects/${vertex_project_id}/locations/${vertex_location}."
       if [ "$vertex_manage_serving_project" != "true" ]; then
-        print_info "The install will not touch project ${vertex_project_id}. Enable aiplatform.googleapis.com there and grant roles/aiplatform.user to ${LITELLM_GSA_NAME:-$LITELLM_GSA_DEFAULT_NAME}@${project_id}.iam.gserviceaccount.com yourself; model calls fail until you do."
+        print_info "The install will not touch project ${vertex_project_id}. Enable aiplatform.googleapis.com there and grant roles/aiplatform.user to ${LITELLM_GSA_NAME:-$DEFAULT_LITELLM_GSA_NAME}@${project_id}.iam.gserviceaccount.com yourself; model calls fail until you do."
         print_info "If an earlier apply of this install created that grant, remove both serving-project resources from Terraform state before continuing, or this apply revokes it — terraform/examples/full-install/README.md names the two addresses."
       fi
       # The literal, not $DEFAULT_VERTEX_LOCATION: this warns about a property
@@ -3105,6 +3128,11 @@ main() {
     write_tfvars_from_state "$tfvars_file" "$image_tag"
   print_success "Terraform input saved to: $tfvars_file"
 
+  # Before the summary, the confirmation and the dry-run exit alike: a
+  # service account the apply would 409 on is something to know before
+  # answering "proceed", and it costs a describe per account. Read-only.
+  check_service_account_ownership || exit 1
+
   # Written once, and only when there is nothing there. The probed cluster
   # shape is deliberately NOT recorded: a file that is read as configuration
   # and also written as findings has two answers for one question. The probe is
@@ -3237,29 +3265,28 @@ main() {
 
   # 12. Workload & Pod Health Verification Checkpoint
   print_step "13. Verifying Workload & Pod Health"
-  print_info "Verifying deployment rollouts in namespace 'kubeagents-system'..."
+  local namespace="${NAMESPACE:-$DEFAULT_NAMESPACE}"
+  print_info "Verifying deployment rollouts in namespace '${namespace}'..."
   GKE_DNS_ENDPOINT_FLAG=""
   gke_dns_endpoint_flag "$cluster_name" "$region" "$project_id" || true
   # shellcheck disable=SC2086
   gcloud container clusters get-credentials "$cluster_name" --location "$region" \
     --project "$project_id" $GKE_DNS_ENDPOINT_FLAG >/dev/null
-  if ! kubectl get ns kubeagents-system >/dev/null 2>&1; then
-    print_error "Namespace 'kubeagents-system' was not created. Installation is incomplete."
+  if ! kubectl get ns "$namespace" >/dev/null 2>&1; then
+    print_error "Namespace '${namespace}' was not created. Installation is incomplete."
     exit 1
   fi
   local slow_rollouts=()
-  # kube-agents-controller-manager, not kubeagents-: the chart prefixes the
-  # operator Deployment with the release name.
-  for deployment in kube-agents-controller-manager litellm platform-agent-gateway; do
-    if ! wait_for_deployment_object "$deployment" kubeagents-system "$DEPLOYMENT_APPEAR_TIMEOUT_SECS"; then
+  for deployment in "$KUBE_AGENTS_OPERATOR_DEPLOYMENT" litellm "$PLATFORM_AGENT_DEPLOYMENT"; do
+    if ! wait_for_deployment_object "$deployment" "$namespace" "$DEPLOYMENT_APPEAR_TIMEOUT_SECS"; then
       print_error "Expected deployment '$deployment' was not created within ${DEPLOYMENT_APPEAR_TIMEOUT_SECS}s."
       # platform-agent-gateway is the agent, and the sandbox is the one thing
       # that stops the operator writing it while leaving everything else
       # healthy: no gvisor RuntimeClass, no Deployment, and the reason is on the
       # CR rather than in any of the logs an operator would reach for first.
-      if [ "$deployment" = "platform-agent-gateway" ] && [ "$enable_gvisor" = "true" ]; then
+      if [ "$deployment" = "$PLATFORM_AGENT_DEPLOYMENT" ] && [ "$enable_gvisor" = "true" ]; then
         print_info "The agent asks for the ${C_BOLD}gvisor${C_RESET} RuntimeClass; the operator will not create its Deployment until that RuntimeClass exists."
-        print_info "Read the reason with: ${C_BOLD}kubectl get platformagent -n kubeagents-system -o jsonpath='{.items[*].status.conditions}'${C_RESET}"
+        print_info "Read the reason with: ${C_BOLD}kubectl get platformagent -n ${namespace} -o jsonpath='{.items[*].status.conditions}'${C_RESET}"
         print_info "Re-run with ${C_BOLD}--gvisor=false${C_RESET} to run the agent on the standard container runtime instead."
       fi
       exit 1
@@ -3268,7 +3295,7 @@ main() {
     # so a couple of minutes is normal. Running past the budget means "still
     # coming up", not "broken": say so and keep the summary below, which carries
     # the chat links and port-forward command.
-    if ! wait_for_rollout "$deployment" kubeagents-system "$ROLLOUT_TIMEOUT_SECS"; then
+    if ! wait_for_rollout "$deployment" "$namespace" "$ROLLOUT_TIMEOUT_SECS"; then
       slow_rollouts+=("$deployment")
       print_warning "$deployment did not report ready within ${ROLLOUT_TIMEOUT_SECS}s."
     fi
@@ -3278,8 +3305,8 @@ main() {
     write_json_report "SUCCESS"
   else
     print_warning "Still waiting on: ${slow_rollouts[*]}"
-    print_info "Keep watching with: ${C_BOLD}kubectl rollout status deployment/${slow_rollouts[0]} -n kubeagents-system${C_RESET}"
-    print_info "Inspect a stuck pod with: ${C_BOLD}kubectl describe pod -l app=${slow_rollouts[0]} -n kubeagents-system${C_RESET}"
+    print_info "Keep watching with: ${C_BOLD}kubectl rollout status deployment/${slow_rollouts[0]} -n ${namespace}${C_RESET}"
+    print_info "Inspect a stuck pod with: ${C_BOLD}kubectl describe pod -l app=${slow_rollouts[0]} -n ${namespace}${C_RESET}"
     write_json_report "SUCCESS_PENDING_ROLLOUT"
   fi
 
@@ -3315,7 +3342,7 @@ main() {
       echo -e "    ${C_YELLOW}Workstation Access Command:${C_RESET} ${repo_dir}/scripts/hermes-dashboard-tunnel.py"
       echo -e "      (the agent is sandboxed under gVisor, which kubectl port-forward cannot reach)"
     else
-      echo -e "    ${C_YELLOW}Workstation Access Command:${C_RESET} kubectl port-forward deploy/platform-agent-gateway -n kubeagents-system 9119:9119"
+      echo -e "    ${C_YELLOW}Workstation Access Command:${C_RESET} kubectl port-forward deploy/${PLATFORM_AGENT_DEPLOYMENT} -n ${namespace} 9119:9119"
     fi
     echo -e "    ${C_YELLOW}Browser Dashboard URL:${C_RESET} ${C_UNDERLINE}http://localhost:9119${C_RESET}"
   fi

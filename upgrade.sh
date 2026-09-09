@@ -206,7 +206,7 @@ random_hex_32() {
 SESSION_KV_KEYS_PATCHED="false"
 backfill_session_kv_keys() {
   local namespace="$1"
-  local secret_name="platform-agent-secrets"
+  local secret_name="$PLATFORM_AGENT_SECRET"
 
   if ! kubectl get secret "$secret_name" -n "$namespace" >/dev/null 2>&1; then
     print_warning "Secret '$secret_name' not found in '$namespace'; skipping the Session KV key backfill."
@@ -264,7 +264,7 @@ SANDBOX_ROLLOUT_TIMEOUT="180s"
 
 backfill_sandbox_ssh_key() {
   local namespace="$1"
-  local secret_name="platform-agent-secrets"
+  local secret_name="$PLATFORM_AGENT_SECRET"
 
   if ! command -v ssh-keygen >/dev/null 2>&1; then
     print_warning "ssh-keygen not found; skipping the shell sandbox keypair backfill."
@@ -709,7 +709,7 @@ main() {
   # shellcheck disable=SC2086
   gcloud container clusters get-credentials "$target_cluster" --location="$target_region" --project="$target_project" $GKE_DNS_ENDPOINT_FLAG
 
-  local target_namespace="${NAMESPACE:-kubeagents-system}"
+  local target_namespace="${NAMESPACE:-$DEFAULT_NAMESPACE}"
 
   if [ -z "$PARAM_IMAGE_TAG" ] && [ "$PARAM_PLAN" = "true" ]; then
     # A PLAN's reference point is Terraform state, not the cluster, so the tag
@@ -820,11 +820,11 @@ main() {
   fi
   # Recover from zombie locks left behind by interrupted or timed-out Helm runs
   if [ "$PARAM_PLAN" != "true" ]; then
-    ensure_clean_helm_release kube-agents "$target_namespace"
+    ensure_clean_helm_release "$KUBE_AGENTS_HELM_RELEASE" "$target_namespace"
   else
     # In plan mode, do not mutate state with a rollback, but warn if release is stuck
     local current_helm_status
-    current_helm_status="$(helm_release_status kube-agents "$target_namespace")"
+    current_helm_status="$(helm_release_status "$KUBE_AGENTS_HELM_RELEASE" "$target_namespace")"
     if [[ "$current_helm_status" =~ ^pending- ]]; then
       print_warning "Helm release 'kube-agents' is currently in '${current_helm_status}'. Note: rollback is skipped in plan mode."
     fi
@@ -901,6 +901,10 @@ main() {
           exit 1
         fi
       fi
+      # Enabling the minter or switching to Vertex through install.env plans a
+      # new fixed-name GSA on an install that has been running without one, so
+      # the 409 check install.sh runs before its apply runs here too.
+      check_service_account_ownership || exit 1
       # A full terraform apply against the regenerated tfvars: both image tags
       # move, and every setting recorded in install.env is re-rendered — the successor
       # of the old path's re-render of the CR from saved state.
@@ -918,9 +922,9 @@ main() {
   local restarted_agent="false"
   if [ "$PARAM_UPGRADE_MODE" = "operator" ] &&
     { [ "$SESSION_KV_KEYS_PATCHED" = "true" ] || [ "$SANDBOX_KEYS_PATCHED" = "true" ]; }; then
-    if kubectl get deployment platform-agent-gateway -n "$target_namespace" >/dev/null 2>&1; then
+    if kubectl get deployment "$PLATFORM_AGENT_DEPLOYMENT" -n "$target_namespace" >/dev/null 2>&1; then
       print_info "Restarting the Platform Agent so it reads the newly added Secret keys..."
-      kubectl rollout restart deployment/platform-agent-gateway -n "$target_namespace"
+      kubectl rollout restart "deployment/${PLATFORM_AGENT_DEPLOYMENT}" -n "$target_namespace"
       restarted_agent="true"
     else
       print_warning "Secret keys were added but Deployment 'platform-agent-gateway' was not found in '$target_namespace'; restart the agent yourself so it reads them."
@@ -928,20 +932,18 @@ main() {
   fi
 
   print_step "5. Post-Upgrade Health Verification"
-  kubectl get ns kubeagents-system >/dev/null
+  kubectl get ns "$target_namespace" >/dev/null
   if [ "$PARAM_UPGRADE_MODE" = "operator" ] || [ "$PARAM_UPGRADE_MODE" = "full" ]; then
-    # kube-agents-controller-manager, not kubeagents-: the chart prefixes the
-    # operator Deployment with the release name.
-    kubectl rollout status deployment/kube-agents-controller-manager -n kubeagents-system --timeout=120s
+    kubectl rollout status "deployment/${KUBE_AGENTS_OPERATOR_DEPLOYMENT}" -n "$target_namespace" --timeout=120s
   fi
   if { [ "$PARAM_UPGRADE_MODE" = "harness" ] || [ "$PARAM_UPGRADE_MODE" = "full" ]; } && \
      [ -n "$PARAM_IMAGE_TAG" ] && [ -f "${repo_dir}/scripts/confirm_agent_image.sh" ]; then
-    if kubectl get deployment platform-agent-gateway -n "$target_namespace" >/dev/null 2>&1; then
-      "${repo_dir}/scripts/confirm_agent_image.sh" "$target_namespace" platform-agent-gateway "$PARAM_IMAGE_TAG"
+    if kubectl get deployment "$PLATFORM_AGENT_DEPLOYMENT" -n "$target_namespace" >/dev/null 2>&1; then
+      "${repo_dir}/scripts/confirm_agent_image.sh" "$target_namespace" "$PLATFORM_AGENT_DEPLOYMENT" "$PARAM_IMAGE_TAG"
     fi
   fi
   if [ "$PARAM_UPGRADE_MODE" = "harness" ] || [ "$PARAM_UPGRADE_MODE" = "full" ] || [ "$restarted_agent" = "true" ]; then
-    kubectl rollout status deployment/platform-agent-gateway -n kubeagents-system --timeout=900s
+    kubectl rollout status "deployment/${PLATFORM_AGENT_DEPLOYMENT}" -n "$target_namespace" --timeout=900s
   fi
   # A healthy gateway is not a working install. The agent runs no command in its
   # own pod: every shell command goes over ssh to the sandbox StatefulSet, and

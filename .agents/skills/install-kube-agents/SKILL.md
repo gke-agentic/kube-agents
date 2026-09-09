@@ -25,7 +25,8 @@ default changes.
 Order of operations: resolve the image/source ref → check CLI prerequisites (including
 `terraform`, which it offers to install; `make` is not needed) → put the repository on disk and
 verify it against that ref → load `install.env` → interview for what is missing → generate
-`terraform.tfvars` → run
+`terraform.tfvars` → refuse a service account another install in the project owns
+(`check_service_account_ownership`, before the summary and the dry-run exit) → run
 `lifecycle.sh apply`. The source check happens **before** the interview, so a bad ref fails in
 seconds rather than after a dozen answers. Two steps stay `gcloud` calls after the apply — the
 managed-OTel scope and CMEK on a pre-existing cluster — and the GitHub App PEM import runs through

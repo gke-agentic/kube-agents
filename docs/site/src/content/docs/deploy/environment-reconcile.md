@@ -161,7 +161,10 @@ Two naming details that are easy to trip over:
 
 - The namespace is `AGENT_NAMESPACE` on `rc` and `nightly` and `NAMESPACE` on
   `staging`. Both are read, so neither has to be renamed while installs are
-  running against it.
+  running against it. On a long-lived environment the value has to match the
+  namespace its release already runs in: the composition treats the release
+  namespace as replace-on-change, and `lifecycle.sh` refuses an apply that
+  would move it.
 - `GITOPS_ORG`/`GITOPS_REPO` name the repository the **agent** opens pull
   requests against. `GH_ORG`/`GH_REPO` name the **release** repository. Setting
   the minter's pair to the release repository scopes a live GitHub App token at

@@ -26,6 +26,12 @@ their own copies:
 | `DEFAULT_VERTEX_LOCATION`                | Vertex AI serving location (`global`)                                                  |
 | `DEFAULT_VERTEX_MANAGE_SERVING_PROJECT`  | Enable the API and grant the gateway's role in the serving project (`true`)            |
 | `DEFAULT_MODEL_PROVIDER`                 | Model provider (`gemini`)                                                              |
+| `DEFAULT_NAMESPACE`                      | Kubernetes namespace of the release (`kubeagents-system`)                              |
+| `DEFAULT_PLATFORM_AGENT_GSA_NAME`        | The agent's GCP service account id (`kubeagents-platform-gsa`); one name per project   |
+| `DEFAULT_GITHUB_MINTER_GSA_NAME`         | The minter's GCP service account id (`kubeagents-github-minter-gsa`); one per project  |
+| `DEFAULT_LITELLM_GSA_NAME`               | The gateway's Vertex AI service account id (`kubeagents-litellm-gsa`); one per project |
+| `DEFAULT_GKE_DB_KMS_KEYRING`             | Cloud KMS key ring for GKE database encryption (`platform-agent-keyring`)              |
+| `DEFAULT_GKE_DB_KMS_KEY`                 | Cloud KMS key for GKE database encryption (`k8s-secret-encryption-key`)                |
 | `DEFAULT_REGISTRY_PREFIX`                | Container registry prefix                                                              |
 | `default_model_for_provider <provider>`  | The default model for a provider                                                       |
 | `is_valid_model_provider <provider>`     | Accepted providers: `gemini`, `vertex_ai`, `anthropic`, `openai`                       |
@@ -34,6 +40,8 @@ their own copies:
 | `is_valid_cluster_mode <mode>`           | Accepted cluster shapes: `autopilot`, `standard`                                       |
 | `derive_kms_location <region>`           | Region for Cloud KMS (strips a zone suffix)                                            |
 | `tf_state_bucket` / `tf_state_prefix`    | Where the install's Terraform state lives in GCS                                       |
+| `tf_state_has_cluster`                   | Whether that state manages THIS cluster (project, location and name all match)         |
+| `check_service_account_ownership`        | Refuses an apply that would 409 on a service account another install owns              |
 | `write_tfvars_from_state <dest> [tag]`   | The `terraform.tfvars` generator (reads the loaded `install.env` variable set)         |
 
 The values themselves live in [`install.defaults.env`](../../install.defaults.env) at the
@@ -51,6 +59,13 @@ It is sourced **without** `set -a`, unlike `install.env`: these are the project'
 defaults, not the install's configuration, so they stay shell variables rather than
 entering the environment Terraform and the agent see.
 
+`installer_common.sh` does declare constants of its own, and the distinction is the
+point: the Helm release name, the operator and agent Deployment names and the
+`platform-agent-secrets` Secret are the chart's fixed names, which no `install.env` key
+can change, so they are `readonly` constants there (`KUBE_AGENTS_HELM_RELEASE`,
+`KUBE_AGENTS_OPERATOR_DEPLOYMENT`, `PLATFORM_AGENT_DEPLOYMENT`, `PLATFORM_AGENT_SECRET`)
+rather than defaults an install could override.
+
 ## The install configuration: `install.env`
 
 An install has one hand-authored input and one derived artifact, and the difference
@@ -64,6 +79,9 @@ reach `write_tfvars_from_state` and the `TF_VAR_*` handoff, both of which read t
 environment. Order of authority is **flag, then file, then an exported variable, then
 the defaults above** — `set -a` sourcing means a key the file carries overwrites an
 export of the same name, so a flag is what overrides a recorded value for one run.
+One key is file-only: the front doors clear a shell-exported `NAMESPACE` before reading
+the file, because kubectl tooling exports that name and the value now reaches the Helm
+release's namespace. The dev tooling's `load_state` does not clear it.
 `KUBE_AGENTS_INSTALL_ENV` points at a different path, which is how CI renders one from
 its own variables rather than keeping install state on an ephemeral runner.
 
@@ -96,7 +114,11 @@ only disagree with the live answer. `PROJECT_NUMBER` comes from `gcloud projects
 describe` and `KMS_LOCATION` from `derive_kms_location`. `create_cluster` and the
 **effective** `CLUSTER_MODE` come from `write_tfvars_from_state`'s own probe of the live
 cluster. `NO_CONFIRM` describes an invocation, not an install, and comes from
-`-y`/`--non-interactive`.
+`-y`/`--non-interactive`. The identity keys (`PLATFORM_AGENT_GSA_NAME`,
+`GITHUB_MINTER_GSA_NAME`, `LITELLM_GSA_NAME`, `GKE_DB_KMS_KEYRING`, `GKE_DB_KMS_KEY`) are
+written into a new `install.env` only when the run set them — a default copied in
+would freeze at that release, and a custom name that went missing would replace the
+account — and `NAMESPACE` is never copied in from the environment.
 
 `CLUSTER_MODE` in `install.env` therefore supplies one thing: the shape of a cluster that
 does not exist yet. Whenever the probe finds a cluster, that cluster's own shape wins and
