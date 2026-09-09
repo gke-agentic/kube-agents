@@ -677,6 +677,26 @@ echo "RC=$rc"
             self.assertIn("--image-tag is required", proc.stdout)
             self.assertEqual(report_file.read_text(), '{"status": "PREVIOUS_SUCCESS"}\n')
 
+    def test_run_menu_system_binds_param_image_tag_to_save_and_apply(self):
+        """Verifies run_menu_system passes PARAM_IMAGE_TAG into option 6 (Save & Apply)."""
+        cmd = """
+has_controlling_tty() { return 0; }
+prompt_menu() {
+  local var="${!#}"
+  printf -v "$var" "%s" "6"
+}
+verify_local_source_ref() {
+  echo "VERIFIED_IMAGE_TAG=$2"
+  exit 0
+}
+PROJECT_ID="test-project"
+PARAM_IMAGE_TAG="0.4.0"
+run_menu_system "."
+"""
+        proc = self._run_install_func(cmd)
+        self.assertEqual(proc.returncode, 0, f"Failed: {proc.stderr}")
+        self.assertIn("VERIFIED_IMAGE_TAG=0.4.0", proc.stdout)
+
     def test_verify_local_source_ref_accepts_baked_release_in_non_git_dir(self):
         """Verifies verify_local_source_ref succeeds for unpacked release archive without Git repository."""
         with tempfile.TemporaryDirectory(prefix="unpacked-release-") as outer_dir:

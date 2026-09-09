@@ -2008,7 +2008,7 @@ run_menu_system() {
   local kms_keyring="${KMS_KEYRING:-}"
   local kms_key="${KMS_KEY:-}"
   local github_pem_path="${GITHUB_PEM_PATH:-}"
-  local image_tag="${PARAM_IMAGE_TAG:-${IMAGE_TAG:-}}"
+  local image_tag="${PARAM_IMAGE_TAG:-}"
 
   while true; do
     echo -e "\n${C_CYAN}${C_BOLD}"
