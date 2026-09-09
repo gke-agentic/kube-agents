@@ -168,6 +168,8 @@ resource "google_service_account" "agent" {
         self.assertEqual(proc.stderr, "")
 
     def test_a_typed_null_still_refuses_a_lost_override(self):
+        """When state has an override GSA but variable resolves to a typed null,
+        the fallback default name still disagrees with state and refuses destruction."""
         state_list = "module.kube_agents_iam.google_service_account.agent"
         state_show = """resource "google_service_account" "agent" {
     account_id   = "kubeagents-platform-gsa-2"
@@ -181,9 +183,23 @@ resource "google_service_account" "agent" {
         )
         self.assertEqual(proc.returncode, 1)
         self.assertIn("agent_service_account_id resolved to 'kubeagents-platform-gsa', but this state manages GSA 'kubeagents-platform-gsa-2'", proc.stderr)
+        self.assertIn("Applying now would plan the service account's DESTRUCTION and recreation under -auto-approve.", proc.stderr)
 
     def test_tfvar_reads_a_typed_null_as_empty(self):
-        proc = self._run_guard('printf "[%s]" "$(tfvar github_minter_service_account_id)"')
+        """tfvar should normalize typed nulls (tostring(null)) to empty string."""
+        proc = self._run_guard(
+            'printf "[%s]" "$(tfvar agent_service_account_id)"',
+            tfvar_agent_sa="tostring(null)",
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "[]")
+
+    def test_tfvar_reads_bare_null_as_empty(self):
+        """tfvar should normalize bare null to empty string."""
+        proc = self._run_guard(
+            'printf "[%s]" "$(tfvar agent_service_account_id)"',
+            tfvar_agent_sa="null",
+        )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout, "[]")
 
