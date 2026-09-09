@@ -743,12 +743,12 @@ resolve_effective_image_tag() {
     return 0
   fi
   if [ -z "$repo_dir" ] || [ "$repo_dir" = "." ]; then
-    local script_dir
-    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || echo "")"
-    if [ -n "$script_dir" ] && [ -f "${script_dir}/scripts/installer/installer_common.sh" ]; then
-      repo_dir="$script_dir"
+    if [ -f "${repo_dir:-.}/scripts/installer/installer_common.sh" ]; then
+      repo_dir="${repo_dir:-.}"
+    elif [ -n "${_state_repo_dir:-}" ]; then
+      repo_dir="$_state_repo_dir"
     else
-      repo_dir="."
+      repo_dir="$(_resolve_repo_dir_for_state)"
     fi
   fi
   local default_tag=""

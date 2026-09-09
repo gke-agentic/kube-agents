@@ -587,6 +587,46 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
                 r"TAG=([0-9a-fA-F]{40}|[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?)$",
             )
 
+    def test_resolve_effective_image_tag_discovers_home_kube_agents_repo(self):
+        """Verifies resolve_effective_image_tag adopts tag from HOME/kube-agents when standalone."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = pathlib.Path(temp_dir)
+            home_dir = temp_path / "home"
+            repo_dir = home_dir / "kube-agents"
+            scripts_dir = repo_dir / "scripts" / "installer"
+            scripts_dir.mkdir(parents=True)
+            (scripts_dir / "installer_common.sh").write_text("# marker\n")
+
+            subprocess.run(["git", "init", "-b", "main"], cwd=str(repo_dir), check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=str(repo_dir), check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(repo_dir), check=True)
+            (repo_dir / "file.txt").write_text("initial\n")
+            subprocess.run(["git", "add", "."], cwd=str(repo_dir), check=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=str(repo_dir), check=True)
+            subprocess.run(["git", "tag", "0.4.0"], cwd=str(repo_dir), check=True)
+
+            outside_dir = temp_path / "outside"
+            outside_dir.mkdir()
+            isolated_install_sh = outside_dir / "install.sh"
+            isolated_install_sh.write_text(_INSTALL_SH.read_text())
+
+            cmd = 'BAKED_RELEASE_VERSION=""; resolve_effective_image_tag tag "." ""; echo "TAG=$tag"'
+            setup = f"""
+KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
+{cmd}
+"""
+            full_env = get_isolated_test_env(overrides={"HOME": str(home_dir), "KUBE_AGENTS_INSTALL_ENV": str(self._empty_install_env)})
+            proc = subprocess.run(
+                ["bash", "-c", setup],
+                capture_output=True,
+                text=True,
+                env=full_env,
+                cwd=str(outside_dir),
+            )
+            self.assertEqual(proc.returncode, 0, f"Failed: {proc.stderr}")
+            self.assertIn("TAG=0.4.0", proc.stdout)
+            self.assertIn("Using container image tag (release tag 0.4.0)", proc.stdout)
+
     def test_resolve_effective_image_tag_prompts_and_retries_on_invalid_ref(self):
         """Verifies resolve_effective_image_tag prompts interactively and loops until valid ref is entered."""
         with tempfile.TemporaryDirectory() as empty_dir:
