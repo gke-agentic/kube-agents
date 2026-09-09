@@ -56,7 +56,7 @@ page under "Why there is no `gke-admin` set".
 - `teardown_environment.sh`: Destroys the environment after a run that passed end to end, so the cluster exists only for the length of a run rather than idling between them. A failure here is always fatal and `TEARDOWN_STRICT` does not apply: nothing runs afterwards, so the alternative to a red job is a GKE cluster billing under a green pipeline. It runs only when every earlier step succeeded, which is what leaves a failed run's environment standing to be examined live — until the next scheduled run reclaims it (up to three hours later on the RC, and on the next daily run for the nightly).
 - `wait_for_gke_readiness.sh`: Connects `kubectl` to the target cluster, configures Artifact Registry credentials, optionally verifies the gateway is running the candidate commit's image — delegated to `scripts/confirm_agent_image.sh`, which the agent redeploy workflow runs for the same purpose — and waits for `litellm` and `platform-agent-gateway` to report ready.
 - `tag_validated_release.sh`: Attaches the `rc_*_validated` marker to a candidate commit upon 100% test pass, by appending `_validated` to its `rc_*` tag.
-- `resolve_scheduled_release.sh`: Decides whether an unattended run of `release-publish.yml` should publish. Three conditions — a candidate carries a shape-valid `staging_<ts>_<sha>` tag, commits exist between the newest GA tag and that candidate, and nothing in the range is a breaking change — emitted as `should_release`, `release_commit`, `gate_tag` and `skip_reason`. The first two failing are skips with exit 0; a breaking change is not a skip, because it recurs until somebody publishes by hand, so it raises an `::error` and exits non-zero. A repository with no GA tag yet skips both remaining conditions rather than evaluating them against all of history, matching what `calculate_next_version.sh` does in that state — checking would halt on some long-shipped `feat!:` with no range left to shrink, permanently. There is no weekday or elapsed-time check in it — the cron is the cadence — and no "already released?" condition either, because a GA tag on the gated commit empties the range and the second condition covers it. It takes the candidate lookup (`get_latest_staging_tag`), the commit-range read (`release_read_commit_range`) and the breaking-change definition (`commit_messages_have_breaking_change`) from `common.sh` rather than re-implementing any of them: the first keeps it agreeing with `verify_release_eligibility.sh` about which candidate has been promoted, and the other two keep it agreeing with `calculate_next_version.sh` about which commits are in the range and which of them count as breaking. See "The weekly GA release" below for what the gate is actually buying over the publishing path's own behaviour.
+- `resolve_scheduled_release.sh`: Decides whether an unattended run of `release-publish.yml` should publish. Three conditions — a candidate carries a shape-valid `staging_<ts>_<sha>` tag, commits exist between the newest GA tag and that candidate, and nothing in the range is a major breaking change on a stable GA release (`>= 1.0.0`) — emitted as `should_release`, `release_commit`, `gate_tag` and `skip_reason`. Under SemVer 2.0 Clause 4, pre-1.0 breaking changes bump minor (`0.4.0 -> 0.5.0`) and release unattended; on stable releases (`>= 1.0.0`), a major breaking change halts with exit 1 and raises an `::error` so a human publishes by hand. The first two failing are skips with exit 0. A repository with no GA tag yet skips both remaining conditions rather than evaluating them against all of history, matching what `calculate_next_version.sh` does in that state — checking would halt on some long-shipped `feat!:` with no range left to shrink, permanently. There is no weekday or elapsed-time check in it — the cron is the cadence — and no "already released?" condition either, because a GA tag on the gated commit empties the range and the second condition covers it. It takes the candidate lookup (`get_latest_staging_tag`), the commit-range read (`release_read_commit_range`) and the breaking-change definition (`commit_messages_have_breaking_change`) from `common.sh` rather than re-implementing any of them: the first keeps it agreeing with `verify_release_eligibility.sh` about which candidate has been promoted, and the other two keep it agreeing with `calculate_next_version.sh` about which commits are in the range and which of them count as breaking. See "The weekly GA release" below for what the gate is actually buying over the publishing path's own behaviour.
 - `decide_release_gate.sh`: Chooses which way into `release-publish.yml` a run is taking and emits the verdict the publish job is gated on. A `schedule` event always evaluates; a dispatch reads the workflow's `schedule_gate` input — `bypass` (the default, and what every dispatch did before the gate existed, emergency path included), `dry-run` (run the resolver, report the verdict, publish nothing) and `evaluate` (act on it, exactly as a cron tick would). An unrecognised mode exits non-zero rather than falling back to publishing, and so does `dry-run` or `evaluate` dispatched alongside a `target_commit`: those two modes let the resolver pick the commit from the tag graph, while the publish job's `TARGET_COMMIT` prefers the input, so honouring both would release a commit whose range the breaking-change halt never scanned. Naming a commit is `bypass`, which is the default.
 - `dispatch_release_pipeline.sh`: Starts `release-publish.yml` with `-f schedule_gate=evaluate` when `release-scheduler.yml` evaluates that candidate conditions are satisfied (`should_release=true`). Verifies `gh` CLI presence defensively, emits error annotations on failure, and records the dispatch event into the Job Summary.
 - `record_release_scheduler_skip.sh`: Records a quiet weekly tick into the Job Summary when `release-scheduler.yml` candidate evaluation determines no GA release should be published (e.g. no staging tag present, or zero commits since the latest GA release tag). Because a quiet tick deliberately leaves no `release-publish.yml` run behind, this summary is its only trace, explicitly clarifying that a green scheduler run reflects a clean evaluation and reports nothing about publishing status.
@@ -85,7 +85,7 @@ The end-to-end pipeline (`.github/workflows/rc-release-pipeline.yml`) is dispatc
   - **Redundant Run Skipping**: If no eligible validated candidate exists, the scheduler dispatches nothing and records the reason in its job summary via `record_nightly_scheduler_skip.sh`.
   - Dispatches `nightly-pipeline.yml` using `dispatch_nightly_pipeline.sh` with the default `GITHUB_TOKEN` and `actions: write`.
 - **Weekly GA Scheduled Cadence (`release-scheduler.yml`, weekly on Thursdays at `17 5 * * 4`, best-effort)**:
-  - Automatically resolves whether an eligible candidate exists using `resolve_scheduled_release.sh` (requiring a valid `staging_<ts>_<sha>` tag and unreleased commits since the last GA tag, while halting on breaking changes).
+  - Automatically resolves whether an eligible candidate exists using `resolve_scheduled_release.sh` (requiring a valid `staging_<ts>_<sha>` tag and unreleased commits since the last GA tag, while halting on major breaking changes on stable `>= 1.0.0` releases).
   - **Redundant Run Skipping**: If no eligible candidate exists or no new commits have merged, the scheduler dispatches nothing and records why in its job summary via `record_release_scheduler_skip.sh`.
   - Dispatches `release-publish.yml` using `dispatch_release_pipeline.sh` (`-f schedule_gate=evaluate`) with the default `GITHUB_TOKEN` and `actions: write`.
 - **Manual Trigger (`workflow_dispatch`)**:
@@ -261,10 +261,11 @@ gates every publishing step and the job finishes green today, with none of this.
 
 Three narrower things are left, and together they are the gate:
 
-- **The halt.** Nothing in the publishing path stops for a breaking change, and an unattended run
-  is exactly where one should not go out unwatched. It will not clear itself either — every
-  following run takes the same branch and GA releases stop — so it fails the job rather than
-  skipping. Publish that one by hand.
+- **The halt.** On stable releases (`>= 1.0.0`), nothing in the publishing path stops for a major
+  breaking change, and an unattended run is exactly where one should not go out unwatched. It will not
+  clear itself either — every following run takes the same branch and GA releases stop — so it fails
+  the job rather than skipping. Publish that one by hand. During initial pre-1.0 development (`0.y.z`),
+  breaking changes bump minor under SemVer 2.0 Clause 4 (`0.4.0 -> 0.5.0`) and release unattended.
 - **Two shapes that do exit 1 with nothing to ship.** No staging tag anywhere in history trips
   `verify_release_eligibility.sh`; and a GA tag sitting on a commit that is not the gated
   candidate's stamped child — what an emergency release leaves behind — trips its "tag already
@@ -305,34 +306,36 @@ override for hotfixes rather than a way to cut an ordinary release.
 **Scheduled execution is owned by `.github/workflows/release-scheduler.yml` via the decoupled
 trigger pattern (`cron: "17 5 * * 4"`), while `release-publish.yml` remains dispatch-only.** The gate
 reads the staging tag produced nightly by `nightly-pipeline.yml` (dispatched by `nightly-scheduler.yml`).
-To exercise or test the gate manually:
+The activation ladder progresses in order:
 
 1. **Nightly promotion is green and scheduled.** `nightly-pipeline.yml` has successfully promoted
    candidates (producing real `staging_<ts>_<sha>` tags), and its automated daily dispatch is
    established via `nightly-scheduler.yml` (`17 2 * * *`). Everything below is reachable now that
    staging tags exist.
-2. `workflow_dispatch` on `release-publish.yml` with `schedule_gate: dry-run` — the resolver runs
-   against the real tag graph and reports what a cron tick would decide. Nothing is published. Note
-   that a dry run still goes **red** if the verdict is a halt: it reports what the cron would do,
-   and going red is part of that.
-3. Same again with `evaluate` — the verdict is honoured, so a `should_release=true` publishes a
-   real GA release. This is a cron tick in every respect except what started it.
+2. **Exercise the gate via `dry-run` dispatch.** `workflow_dispatch` on `release-publish.yml` with
+   `schedule_gate: dry-run` — the resolver runs against the real tag graph and reports what a cron
+   tick would decide. Nothing is published. Note that a dry run still goes **red** if the verdict
+   is a halt on `>= 1.0.0`: it reports what the cron would do, and going red is part of that.
+3. **Validate evaluation end-to-end.** Same again with `evaluate` — the verdict is honoured, so a
+   `should_release=true` publishes a real GA release. This is a cron tick in every respect except
+   what started it.
 
-   **Expect steps 2 and 3 to halt red the first time, and to keep halting until one release goes
-   out by hand.** `feat(install)!: sandbox the agent under gVisor by default` (#865) is already on
-   `main` and inside the range any first staging tag will produce, so condition 3 fires: step 2
-   reports the halt and step 3 publishes nothing. That is the gate doing its job, not a fault in
-   it. The way out is the one the `skip_reason` names — dispatch `release-publish.yml` with
-   `schedule_gate: bypass` and publish that release yourself. The next GA tag empties the range,
-   and steps 2 and 3 then behave as written.
+   **On stable releases (`>= 1.0.0`), major breaking changes halt red until published by hand.**
+   When a breaking change sits between the newest GA tag and the gate tag on a repository with a
+   `>= 1.0.0` GA release, condition 3 halts with exit 1 (`🛑 HALTED — A HUMAN HAS TO PUBLISH THIS ONE`)
+   and step 3 publishes nothing. That is the gate doing its job, not a fault in it. The way out is
+   the one the `skip_reason` names — dispatch `release-publish.yml` with `schedule_gate: bypass`
+   and publish that release yourself. In initial pre-1.0 development (`0.y.z`), breaking changes
+   bump minor under SemVer 2.0 Clause 4 (`0.4.0 -> 0.5.0`) and release unattended.
 
-4. Scheduled execution is owned by `.github/workflows/release-scheduler.yml` via the decoupled
-   trigger pattern (`cron: "17 5 * * 4"`). Thursday leaves a working day to react to a bad release,
-   which Friday does not. 05:17 UTC is meant to sit after the nightly pipeline has finished, but that
-   is an estimate rather than a measured margin — its 02:17 start gives three hours for a run that
-   budgets 60 minutes on the deploy plus `timeout_minutes: 120` on the matrix. Being wrong about it
-   costs latency and never correctness, because the gate is a poll: a candidate promoted later is
-   simply picked up the following week. Pick a later slot if the two turn out to overlap.
+4. **Automate on weekly schedule via dedicated scheduler.** Automated execution is owned by
+   `.github/workflows/release-scheduler.yml` via the decoupled trigger pattern (`cron: "17 5 * * 4"`).
+   Thursday leaves a working day to react to a bad release, which Friday does not. 05:17 UTC is meant
+   to sit after the nightly pipeline has finished, but that is an estimate rather than a measured
+   margin — its 02:17 start gives three hours for a run that budgets 60 minutes on the deploy plus
+   `timeout_minutes: 120` on the matrix. Being wrong about it costs latency and never correctness,
+   because the gate is a poll: a candidate promoted later is simply picked up the following week.
+   Pick a later slot if the two turn out to overlap.
 
 Two things to know about a weekly cadence, neither of them a reason to change it. A Thursday that
 produces nothing costs a full week, because there is no rate limiter inside the resolver to buy the
