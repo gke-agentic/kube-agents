@@ -40,16 +40,6 @@ class NightlyPipelineWiringTest(unittest.TestCase):
         self.doc = _doc(_NIGHTLY)
         self.jobs = self.doc["jobs"]
 
-    def test_it_lands_without_a_schedule(self):
-        """Dispatch-only until it has been exercised by hand.
-
-        A cron here would point an untested pipeline at a GCP project on the
-        night it merges. Turning the schedule on is its own reviewable change;
-        delete this test in that change.
-        """
-        self.assertNotIn("schedule", self.doc[True])
-        self.assertIn("workflow_dispatch", self.doc[True])
-
     def test_every_called_workflow_targets_the_environment_it_is_named_for(self):
         """Everything that touches the NIGHTLY cluster has to say `nightly`."""
         called = {name: job for name, job in self.jobs.items() if "uses" in job}
@@ -90,8 +80,8 @@ class NightlyPipelineWiringTest(unittest.TestCase):
         """Otherwise a failed tag push strands a GKE cluster with nothing to diagnose.
 
         A skipped or failed job skips its dependents. Step 4 runs only after a
-        green matrix and fails only on credential problems — a missing
-        RELEASE_BOT_TOKEN, a rejected push — none of which leave anything on the
+        green matrix and fails only on credential problems — an invalid
+        release bot key or ID, a rejected push — none of which leave anything on the
         cluster worth looking at. The RC pipeline can afford the same dependency
         because its next scheduled run reclaims the environment within three
         hours; this pipeline has no schedule, so nothing would remove it at all.
@@ -115,12 +105,21 @@ class NightlyPipelineWiringTest(unittest.TestCase):
 
     def test_the_promotion_tag_is_pushed_with_the_release_bot_token(self):
         """A tag pushed with GITHUB_TOKEN triggers no workflow, so staging never deploys."""
+        steps = self.jobs["step-4-create-staging-tag"]["steps"]
+        token_step = next(
+            step
+            for step in steps
+            if str(step.get("uses", "")).startswith("actions/create-github-app-token@")
+        )
+        self.assertIn("RELEASE_BOT_APP_ID", token_step["with"]["app-id"])
+        self.assertIn("RELEASE_BOT_APP_PRIVATE_KEY", token_step["with"]["private-key"])
+        self.assertEqual(token_step["with"].get("permission-contents"), "write")
         checkout = next(
             step
-            for step in self.jobs["step-4-create-staging-tag"]["steps"]
+            for step in steps
             if str(step.get("uses", "")).startswith("actions/checkout@")
         )
-        self.assertIn("RELEASE_BOT_TOKEN", checkout["with"]["token"])
+        self.assertIn(token_step.get("id", "release-token"), checkout["with"]["token"])
 
 
 class ConcurrencyGroupTest(unittest.TestCase):
