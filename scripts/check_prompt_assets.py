@@ -221,6 +221,9 @@ FRONTMATTER_DESCRIPTION = re.compile(
     re.MULTILINE,
 )
 
+# The valid risk tiers a cron job can declare (SKILL-002).
+ALLOWED_CRON_RISK = frozenset({"low", "high"})
+
 
 @dataclass(frozen=True)
 class Finding:
@@ -704,9 +707,6 @@ def check_cron_assets() -> list[Finding]:
                     )
                 )
     return findings
-
-
-ALLOWED_CRON_RISK = {"low", "high"}
 
 
 def check_cron_risk() -> list[Finding]:
