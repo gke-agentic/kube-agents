@@ -64,7 +64,6 @@ jobs:
         env:
           GH_ORG: ${{ vars.GH_ORG }}
           GH_REPO: ${{ vars.GH_REPO }}
-          REGISTRY_PREFIX: ${{ vars.REGISTRY_PREFIX }}
         run: ./scripts/release/resolve_promotion_candidate.sh
 
       - name: Record that there is nothing to do
