@@ -44,7 +44,7 @@ curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSI
 
 _Substitute `<RELEASE_VERSION>` with the desired release tag from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases) (for example, `0.4.0`)._
 
-When running the release-pinned installer (`<RELEASE_VERSION>/install.sh`), the baked release version is used automatically. The installer rejects mutable refs such as `latest` and `main` to ensure install sources and container images stay strictly aligned.
+When running the official release installer (`<RELEASE_VERSION>/install.sh`) or executing inside an official release checkout or unpacked release archive, the release version is baked in and used automatically without prompting.
 
 ### What `install.sh` Automatically Handles:
 
@@ -101,19 +101,13 @@ curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSI
 To run pre-flight checks and output configuration state (`terraform.tfvars` and
 `/tmp/kube-agents-install-report.json`) without creating cloud resources — the dry run also
 validates the Terraform configuration, and previews the full resource plan when Application
-Default Credentials are available. When run inside an official release checkout or unpacked release bundle, the release version is inferred automatically:
+Default Credentials are available:
 
 ```bash
-./install.sh --dry-run --non-interactive \
+curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSION>/install.sh | bash -s -- \
+  --dry-run \
+  --non-interactive \
   --project-id="my-gcp-project"
-```
-
-When dry-running on `main` (development only), `--image-tag` defaults to the local `HEAD` commit SHA. You can also pass an explicit candidate commit SHA:
-
-```bash
-./install.sh --dry-run --non-interactive \
-  --project-id="my-gcp-project" \
-  --image-tag="<COMMIT_SHA>"
 ```
 
 _Guidance for AI Agents:_ For production deployments, deploy or test from an official release using the release installer (`<RELEASE_VERSION>/install.sh`), `git clone --branch <RELEASE_VERSION>`, or the published release tarball (where `<RELEASE_VERSION>` is the target release tag from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases), e.g. `0.4.0`). Do not deploy from a `main` checkout: manifests and CRD schemas on `main` diverge from released versions, and `verify_local_source_ref` blocks mismatched revisions.

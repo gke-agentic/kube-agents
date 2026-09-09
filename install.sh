@@ -454,7 +454,9 @@ Flags for AI Agents & Automation:
                                             and a Postgres database into the cluster.
                                   off       nothing is retained between sessions. No memory
                                             provider, and no database to run.
-  --image-tag=TAG               Validated immutable release tag or full commit SHA
+  --image-tag=TAG               Validated immutable release tag or full commit SHA.
+                                Developer and CI/CD testing only; end users should use
+                                official release installations where image tags are baked in
                                 (default: inferred from baked release, release bundle, or local HEAD)
   --registry-prefix=PATH        Container registry path without a URL scheme, for the images
                                 this project builds (operator, agent, credential proxy, replay
