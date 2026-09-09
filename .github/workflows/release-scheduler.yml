@@ -35,8 +35,9 @@ jobs:
   dispatch-if-there-is-work:
     name: Dispatch the GA release pipeline if a candidate is eligible
     # A fork inherits the cron but none of the release credentials. The guard is
-    # on the job rather than trusted to cascade.
-    if: github.repository == 'gke-labs/kube-agents'
+    # on the job rather than trusted to cascade, and scheduled/manual release
+    # evaluation must only run against the canonical main branch.
+    if: github.repository == 'gke-labs/kube-agents' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

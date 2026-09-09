@@ -14,13 +14,15 @@
 #      matched on its shape rather than its prefix. Skip.
 #   2. There is something to release: commits exist between the newest GA tag
 #      and that candidate's commit. Skip.
-#   3. Nothing in the range is a breaking change. HALT.
+#   3. On stable GA (>= 1.0.0), nothing in the range is a breaking change. HALT.
 #
 # Conditions 1 and 2 are green skips: nothing is published, the run stays green,
-# and the next run asks again. Condition 3 is not, and the difference matters. A
-# breaking change does not clear itself — every following run takes the same
-# branch and GA releases stop until somebody publishes by hand — so it fails the
-# job. A skip means "nothing to do this week"; red means "something needs you".
+# and the next run asks again. Condition 3 is not, and the difference matters. On
+# stable GA (>= 1.0.0), a major breaking change does not clear itself — every
+# following run takes the same branch and GA releases stop until somebody publishes
+# by hand — so it fails the job with an error annotation. During pre-1.0 development
+# (0.y.z), breaking changes bump minor under SemVer 2.0 Clause 4 and release unattended.
+# A skip means "nothing to do this week"; red means "something needs you".
 #
 # Why this gate is worth having when the publishing path already skips a quiet
 # week on its own is `scripts/release/README.md`, "The weekly GA release". It is

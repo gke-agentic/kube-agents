@@ -87,6 +87,10 @@ class SchedulerDispatchWiring(unittest.TestCase):
         """A fork inherits the cron and none of the release credentials."""
         self.assertIn("gke-labs/kube-agents", self.job["if"])
 
+    def test_it_is_guarded_to_main_branch(self) -> None:
+        """Scheduled and manual release evaluation must only execute on main."""
+        self.assertIn("github.ref == 'refs/heads/main'", self.job["if"])
+
     def test_concurrency_group_locks_scheduler_without_cancelling(
         self,
     ) -> None:
@@ -131,6 +135,17 @@ class SchedulerDispatchWiring(unittest.TestCase):
         )
         exported = set(step.get("env", {}))
         self.assertLessEqual({"RELEASE_COMMIT", "GATE_TAG", "SKIP_REASON"}, exported)
+
+    def test_the_skip_step_is_not_unconditionally_run(self) -> None:
+        """The skip recording step must not run on error or always."""
+        step = next(
+            s
+            for s in _steps(self.doc)
+            if "record_release_scheduler_skip.sh" in (s.get("run") or "")
+        )
+        condition = step.get("if", "")
+        self.assertNotIn("always()", condition)
+        self.assertNotIn("failure()", condition)
 
     def test_the_dispatch_step_supplies_what_the_script_requires(self) -> None:
         exported = set(_dispatch_step(self.doc).get("env", {}))

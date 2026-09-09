@@ -5,10 +5,11 @@ name: Release & Publish (GA)
 #
 # Whether to release is decided in `evaluate-schedule`; what to publish is
 # decided in `publish-release`. An unattended run needs that split: it adds the
-# halt on a breaking change, which the publishing path has no counterpart for,
-# and it keeps the two shapes that exit 1 with nothing to ship — no staging tag
-# at all, and a GA tag left by an emergency release on a commit that is not the
-# candidate's stamped child — from being a red run nobody reads.
+# halt on a major breaking change on stable GA (>= 1.0.0), which the publishing
+# path has no counterpart for, and it keeps the two shapes that exit 1 with
+# nothing to ship — no staging tag at all, and a GA tag left by an emergency release
+# on a commit that is not the candidate's stamped child — from being a red run
+# nobody reads.
 #
 # `scripts/release/README.md`, "The weekly GA release", is canonical for the cron
 # value and the reasoning behind it — do not restate either here.

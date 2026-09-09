@@ -175,7 +175,7 @@ identifier appears, add its source here.
 | fleet-audit finding-id pattern and rendering caps | `agents/platform/skills/fleet-audit/scripts/audit_report.py` |
 | Helm chart value defaults (KSA/secret names, image repos, tag rules) | `charts/kube-agents/values.yaml` |
 | Release tag families (`rc_*`, `rc_*_validated`, `staging_<ts>_<sha>`, GA `X.Y.Z`) and the shared lookups over them | `scripts/release/common.sh` |
-| GA release gate: its conditions, exit codes, dispatch modes, and step outputs | `scripts/release/resolve_scheduled_release.sh`, `scripts/release/decide_release_gate.sh`, and `.github/workflows/release-publish.yml` |
+| GA release gate: its conditions, exit codes, dispatch modes, and step outputs | `scripts/release/resolve_scheduled_release.sh`, `scripts/release/decide_release_gate.sh`, `.github/workflows/release-publish.yml`, and `.github/workflows/release-scheduler.yml` |
 | Stock `PlatformAgent.metadata.name` used as the admin-console installation ID | `charts/kube-agents/values.yaml` (`platformAgent.name`) |
 | Terraform module defaults (GSA/KSA/namespace, role set, channel) | `terraform/modules/*/variables.tf` |
 | Memory bank name, scope-tag spelling, and provider name | `agents/chat/plugins/memory/kube_agents_memory/config_schema.py` |
