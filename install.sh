@@ -2539,6 +2539,7 @@ main() {
 
   if [ "$PARAM_NON_INTERACTIVE" = "true" ]; then
     print_info "Execution Mode: ${C_BOLD}Non-Interactive / AI Agent Automated Mode${C_RESET} 🤖"
+    export CLOUDSDK_CORE_DISABLE_PROMPTS="1"
   fi
 
   local image_tag=""
@@ -2951,7 +2952,7 @@ main() {
 
   local detected_gemini_key="${PARAM_GEMINI_API_KEY:-${GEMINI_API_KEY:-}}"
   if [ -z "$detected_gemini_key" ]; then
-    detected_gemini_key=$(gcloud secrets versions access latest --secret="${GEMINI_API_KEY_SECRET_NAME:-$DEFAULT_GEMINI_API_KEY_SECRET_NAME}" --project="$project_id" 2>/dev/null || echo "")
+    detected_gemini_key=$(gcloud secrets versions access latest --secret="${GEMINI_API_KEY_SECRET_NAME:-$DEFAULT_GEMINI_API_KEY_SECRET_NAME}" --project="$project_id" --quiet 2>/dev/null || echo "")
   fi
   local gemini_api_key="${detected_gemini_key:-}"
   local openai_api_key="${PARAM_OPENAI_API_KEY:-}"
@@ -2990,7 +2991,7 @@ main() {
         fi
         local detected_key="${GEMINI_API_KEY:-}"
         if [ -z "$detected_key" ]; then
-          detected_key=$(gcloud secrets versions access latest --secret="${GEMINI_API_KEY_SECRET_NAME:-$DEFAULT_GEMINI_API_KEY_SECRET_NAME}" --project="$project_id" 2>/dev/null || echo "")
+          detected_key=$(gcloud secrets versions access latest --secret="${GEMINI_API_KEY_SECRET_NAME:-$DEFAULT_GEMINI_API_KEY_SECRET_NAME}" --project="$project_id" --quiet 2>/dev/null || echo "")
         fi
         prompt_read "Gemini API Key" gemini_api_key "$detected_key" true
         ;;

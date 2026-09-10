@@ -1290,6 +1290,21 @@ class NonInteractiveRerunInheritanceTest(unittest.TestCase):
         self.assertIn("N=true", proc.stdout)
 
 
+class SecretManagerAutoDiscoveryQuietTest(unittest.TestCase):
+    """Verifies gcloud secrets versions access passes --quiet to avoid hangs."""
+
+    def test_gcloud_secrets_versions_access_passes_quiet(self):
+        source = _INSTALL_SH.read_text()
+        matches = re.findall(r"gcloud secrets versions access[^\n]+", source)
+        self.assertTrue(len(matches) >= 2, f"Expected at least 2 calls, found: {matches}")
+        for match in matches:
+            self.assertIn(
+                "--quiet",
+                match,
+                f"gcloud secrets versions access must pass --quiet to avoid interactive prompts on disabled APIs: {match}",
+            )
+
+
 class EnsureExistingClusterNetworkPolicyTest(unittest.TestCase):
     """ensure_existing_cluster_network_policy's two-call enablement sequence.
 
