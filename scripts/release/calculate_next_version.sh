@@ -156,7 +156,7 @@ fi
 
 if [ "${HAS_BREAKING}" = "true" ]; then
   # SemVer 2.0 Clause 4: in 0.y.z initial development, breaking changes bump MINOR (0.1.0 -> 0.2.0)
-  if [ "$MAJOR" -eq 0 ]; then
+  if ga_tag_is_initial_development "${LATEST_GA_TAG}"; then
     BUMP_TYPE="minor-breaking"
     MINOR=$((MINOR + 1))
     PATCH=0

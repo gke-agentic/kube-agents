@@ -208,8 +208,7 @@ fi
 # all of history it would match some long-shipped `feat!:` and then never stop
 # matching it, since there is no range to shrink: one permanent halt, every run.
 if commit_messages_have_breaking_change "${RELEASE_RANGE_SUBJECTS}" "${RELEASE_RANGE_BODIES}"; then
-  IFS='.' read -r MAJOR _ _ <<< "${LATEST_GA_TAG}"
-  if [ "${MAJOR}" -ne 0 ]; then
+  if ! ga_tag_is_initial_development "${LATEST_GA_TAG}"; then
     HALTED_FOR_HUMAN="true"
     SKIP_REASON="A major breaking change is waiting to ship on stable GA (${LATEST_GA_TAG}). Major releases are published by a human: run release-publish.yml manually against ${RELEASE_COMMIT:0:7}."
     emit_and_exit

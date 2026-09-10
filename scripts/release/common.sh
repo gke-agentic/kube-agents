@@ -323,6 +323,25 @@ commit_messages_have_breaking_change() {
   return 1
 }
 
+# Answers "is this GA release version in pre-1.0 initial development under SemVer Clause 4?"
+# That is, does MAJOR == 0?
+#
+# Shared by calculate_next_version.sh (to select minor-breaking vs major bump)
+# and resolve_scheduled_release.sh (to decide whether a breaking change halts for human review).
+# Keeping the predicate in one place ensures the automated release gate and the version calculator
+# agree on what ends initial development.
+#
+# Arguments: $1 = version tag or string (e.g., "0.4.0", "1.0.0").
+ga_tag_is_initial_development() {
+  local tag="${1:-}"
+  local major
+  IFS='.' read -r major _ _ <<< "${tag}"
+  if [[ "${major}" =~ ^[0-9]+$ ]] && [ "${major}" -eq 0 ]; then
+    return 0
+  fi
+  return 1
+}
+
 # Resolves target GitHub repository (e.g. gke-labs/kube-agents)
 get_target_repo() {
   if [ -n "${GH_ORG:-}" ] && [ -n "${GH_REPO:-}" ]; then
