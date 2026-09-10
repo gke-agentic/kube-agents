@@ -41,6 +41,7 @@ import yaml
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 _API_YAML = _ROOT / "k8s-operator" / "config" / "integrations" / "hindsight" / "api.yaml"
 _FULL_INSTALL_MAIN_TF = _ROOT / "terraform" / "examples" / "full-install" / "main.tf"
+_FULL_INSTALL_VARIABLES_TF = _ROOT / "terraform" / "examples" / "full-install" / "variables.tf"
 
 # What the gate must have over the startupProbe budget, in seconds, for the
 # pull that precedes the container starting at all. The pinned image is 1.4 GB
@@ -99,9 +100,18 @@ def _default_gate_seconds():
     asserting against a number no install uses. The helm provider's timeout is
     plain seconds, no unit suffix.
     """
-    match = re.search(r"^\s*timeout\s*=\s*(\d+)\s*$", _kube_agents_release_block(), re.MULTILINE)
-    assert match, "could not find the timeout on helm_release.kube_agents"
-    return int(match.group(1))
+    block = _kube_agents_release_block()
+    match = re.search(r"^\s*timeout\s*=\s*(\d+)\s*$", block, re.MULTILINE)
+    if match:
+        return int(match.group(1))
+    var_match = re.search(r"^\s*timeout\s*=\s*var\.(\w+)\s*$", block, re.MULTILINE)
+    assert var_match, "could not find the timeout on helm_release.kube_agents"
+    var_name = var_match.group(1)
+    var_block = re.search(rf'variable "{var_name}" \{{.*?\n\}}', _FULL_INSTALL_VARIABLES_TF.read_text(), re.DOTALL)
+    assert var_block, f"could not find variable {var_name} in variables.tf"
+    default_match = re.search(r"^\s*default\s*=\s*(\d+)\s*$", var_block.group(0), re.MULTILINE)
+    assert default_match, f"could not find default for variable {var_name} in variables.tf"
+    return int(default_match.group(1))
 
 
 class StartupProbeTest(unittest.TestCase):
@@ -188,7 +198,7 @@ class RolloutBudgetTest(unittest.TestCase):
         )
         self.assertRegex(
             block,
-            r"(?m)^\s*timeout\s*=\s*\d+\s*$",
+            r"(?m)^\s*timeout\s*=\s*(\d+|var\.\w+)\s*$",
             "helm_release.kube_agents needs an explicit timeout; the provider "
             "default (300s) gives up on a cold hindsight-api roll that is "
             "loading normally",
