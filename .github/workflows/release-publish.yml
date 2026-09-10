@@ -148,8 +148,9 @@ jobs:
         env:
           EXPLICIT_RELEASE_VERSION: ${{ inputs.explicit_release_version }}
           # An unattended run releases the exact commit the gate passed, not
-          # whatever the scripts would auto-resolve. `inputs.target_commit` is
-          # empty on a schedule event, so the gate's answer is what is left; on a
+          # whatever the scripts would auto-resolve. On a scheduler dispatch
+          # (dispatched with schedule_gate=evaluate), `inputs.target_commit` is
+          # omitted, so the gate's resolved candidate is what is left; on a
           # bypassing dispatch the gate returns empty and a named commit — or the
           # scripts' own resolution — wins.
           #
