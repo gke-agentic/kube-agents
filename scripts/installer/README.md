@@ -183,7 +183,8 @@ workloads. Without opt-in, migration is skipped.
 
 `ENABLE_NETWORK_POLICY=true` (or `--enable-network-policy`) authorizes enabling the legacy Calico
 NetworkPolicy addon and enforcement on pre-existing GKE Standard clusters lacking Dataplane V2.
-Enabling Calico may recreate nodes and restart workloads. Without opt-in, enablement is skipped.
+Enabling Calico may recreate nodes and restart workloads. Without opt-in, the install aborts before
+making any cluster changes because kube-agents requires NetworkPolicy enforcement.
 
 `ALLOW_UNENCRYPTED_SECRETS=true` skips the out-of-band Cloud KMS CMEK database encryption on
 pre-existing clusters (testing environments only).

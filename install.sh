@@ -510,10 +510,10 @@ Flags for AI Agents & Automation:
   --google-chat-home-channel=SPACE_ID
                                 Google Chat space ID for unsolicited alerts/messages (e.g. spaces/AAAA...)
   --migrate-node-pools          Opt in to migrating legacy node pools to GKE_METADATA on an existing
-                                cluster (recreates nodes and restarts workloads)
+                                cluster (recreates nodes and restarts workloads; skipped when omitted)
   --enable-network-policy       Opt in to enabling legacy Calico NetworkPolicy addon and enforcement
                                 on an existing GKE Standard cluster without Dataplane V2 (may recreate
-                                nodes and restart workloads)
+                                nodes and restart workloads; required on such clusters, else install aborts)
   --menu, --config              Launch interactive Day-2 Control Panel Menu (raspi-config style)
   -h, --help, -?                Show this help message
 
@@ -2102,7 +2102,7 @@ summarize_existing_cluster_mutations() {
       if is_truthy "${PARAM_ENABLE_NETWORK_POLICY:-${ENABLE_NETWORK_POLICY:-false}}"; then
         echo -e "    • ${C_CYAN}NetworkPolicy Enforcement:${C_RESET} ${C_YELLOW}Will enable${C_RESET} legacy Calico addon & enforcement (${C_YELLOW}may recreate nodes, restart workloads${C_RESET})"
       else
-        echo -e "    • ${C_CYAN}NetworkPolicy Enforcement:${C_RESET} ${C_YELLOW}Skipped${C_RESET} (opt-in not provided; pass --enable-network-policy; Terraform apply will fail)"
+        echo -e "    • ${C_CYAN}NetworkPolicy Enforcement:${C_RESET} ${C_RED}Refused${C_RESET} (opt-in not provided; pass --enable-network-policy; install will abort)"
       fi
     fi
   fi

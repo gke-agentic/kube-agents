@@ -1602,6 +1602,13 @@ class SummarizeExistingClusterMutationsTest(unittest.TestCase):
         self.assertIn("NetworkPolicy Enforcement", proc.stdout)
         self.assertIn("gVisor Sandbox Node Pool", proc.stdout)
 
+    def test_summary_reflects_refused_network_policy_when_missing(self):
+        proc = self._run(dp="", legacy_np="False")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("NetworkPolicy Enforcement: Refused", proc.stdout)
+        self.assertIn("install will abort", proc.stdout)
+
+
 
 class ImportGithubPemKmsKeyTest(unittest.TestCase):
     """The KMS signing key import_github_pem creates for the token minter.
