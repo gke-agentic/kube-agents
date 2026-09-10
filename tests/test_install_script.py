@@ -1361,7 +1361,7 @@ class EnsureExistingClusterNetworkPolicyTest(unittest.TestCase):
 
     def test_skipped_without_opt_in(self):
         proc, calls = self._run(opt_in=False)
-        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.returncode, 1, proc.stderr + proc.stdout)
         self.assertEqual(self._updates(calls), [])
         self.assertIn("Explicit opt-in was not provided", proc.stderr + proc.stdout)
 
@@ -1481,8 +1481,59 @@ class EnsureExistingClusterGatedOnCreateClusterTest(unittest.TestCase):
 
     def test_mutations_gated_on_adoption(self):
         text = _INSTALL_SH.read_text()
-        pattern = r'if \[ "\$\{TFVARS_CREATE_CLUSTER:-true\}" = "false" \]; then\s+ensure_existing_cluster_cmek'
+        pattern = r'if \[ "\$\{TFVARS_CREATE_CLUSTER:-true\}" = "false" \]; then\s+ensure_existing_cluster_network_policy'
         self.assertRegex(text, pattern)
+
+
+class CheckExistingClusterNetworkPolicyPreflightTest(unittest.TestCase):
+    """check_existing_cluster_network_policy_preflight tests."""
+
+    def _run(self, dp="", legacy_np="", opt_in=""):
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = pathlib.Path(tmp) / "bin"
+            bin_dir.mkdir()
+            gcloud = bin_dir / "gcloud"
+            gcloud.write_text(
+                "#!/usr/bin/env bash\n"
+                'case "$*" in\n'
+                f"  *datapathProvider*) printf '{dp}\\n' ;;\n"
+                f"  *networkPolicy.enabled*) printf '{legacy_np}\\n' ;;\n"
+                "esac\n"
+                "exit 0\n"
+            )
+            gcloud.chmod(gcloud.stat().st_mode | stat.S_IEXEC)
+            opt_in_line = f'PARAM_ENABLE_NETWORK_POLICY="{opt_in}"\n' if opt_in else ""
+            body = (
+                f'source "{_INSTALLER_COMMON}"\n'
+                f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n'
+                'TFVARS_CREATE_CLUSTER="false"\n'
+                f"{opt_in_line}"
+                "check_existing_cluster_network_policy_preflight p c r\n"
+            )
+            return subprocess.run(
+                ["bash", "-c", body],
+                capture_output=True,
+                text=True,
+                env=get_isolated_test_env(bin_dir=str(bin_dir)),
+                cwd=str(_REPO_ROOT),
+            )
+
+    def test_refuses_when_lacking_both_and_no_opt_in(self):
+        proc = self._run(dp="", legacy_np="False", opt_in="false")
+        self.assertEqual(proc.returncode, 1, proc.stderr + proc.stdout)
+        self.assertIn("enforces no NetworkPolicy", proc.stderr + proc.stdout)
+
+    def test_passes_when_opt_in_provided(self):
+        proc = self._run(dp="", legacy_np="False", opt_in="true")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+
+    def test_passes_when_dataplane_v2(self):
+        proc = self._run(dp="ADVANCED_DATAPATH", legacy_np="False", opt_in="false")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+
+    def test_passes_when_calico_already_enabled(self):
+        proc = self._run(dp="", legacy_np="True", opt_in="false")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
 
 
 class SummarizeExistingClusterMutationsTest(unittest.TestCase):

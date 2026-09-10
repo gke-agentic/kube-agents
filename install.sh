@@ -1896,11 +1896,10 @@ ensure_existing_cluster_network_policy() {
   fi
 
   if ! is_truthy "${PARAM_ENABLE_NETWORK_POLICY:-${ENABLE_NETWORK_POLICY:-false}}"; then
-    print_warning "Existing cluster '$cluster_name' has neither Dataplane V2 nor legacy Calico NetworkPolicy."
-    print_warning "Enabling Calico may recreate nodes and restart workloads. Explicit opt-in was not provided."
-    print_info "Skipping Calico NetworkPolicy enablement (pass --enable-network-policy or set ENABLE_NETWORK_POLICY=true to authorize)."
-    print_info "Note: The Terraform apply will refuse an existing cluster without Dataplane V2 or NetworkPolicy enforcement."
-    return 0
+    print_error "Existing cluster '$cluster_name' has neither Dataplane V2 nor legacy Calico NetworkPolicy."
+    print_info "kube-agents requires NetworkPolicy enforcement. Enabling Calico may recreate nodes and restart workloads."
+    print_info "Explicit opt-in was not provided (--enable-network-policy). Refusing to proceed without NetworkPolicy enforcement."
+    return 1
   fi
 
   # Two calls, in this order. GKE rejects --enable-network-policy with "The
@@ -1980,7 +1979,7 @@ prompt_existing_cluster_opt_ins() {
         --format="value(networkPolicy.enabled)" 2>/dev/null || echo "")
       if [ "$legacy_np" != "True" ] && [ "$legacy_np" != "true" ]; then
         local np_choice=""
-        prompt_read "Existing cluster '$cluster_name' does not enforce NetworkPolicy. Enabling Calico may recreate nodes and restart workloads. Enable Calico NetworkPolicy now? (y/N)" np_choice "n"
+        prompt_read "Existing cluster '$cluster_name' does not enforce NetworkPolicy (kube-agents requires Dataplane V2 or Calico). Enabling Calico may recreate nodes and restart workloads. Authorize enabling Calico NetworkPolicy now? (y/N)" np_choice "n"
         if is_truthy "$np_choice"; then
           PARAM_ENABLE_NETWORK_POLICY="true"
         else
@@ -1988,6 +1987,43 @@ prompt_existing_cluster_opt_ins() {
         fi
       fi
     fi
+  fi
+}
+
+is_existing_cluster_network_policy_satisfied() {
+  local project_id="$1" cluster_name="$2" region="$3"
+  [ "${TFVARS_CREATE_CLUSTER:-true}" = "false" ] || return 0
+
+  local dp_provider
+  dp_provider=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
+    --location="$region" --project="$project_id" \
+    --format="value(networkConfig.datapathProvider)" 2>/dev/null || echo "")
+  [ "$dp_provider" != "ADVANCED_DATAPATH" ] || return 0
+
+  local legacy_np
+  legacy_np=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
+    --location="$region" --project="$project_id" \
+    --format="value(networkPolicy.enabled)" 2>/dev/null || echo "")
+  [ "$legacy_np" = "True" ] || [ "$legacy_np" = "true" ] || return 1
+  return 0
+}
+
+check_existing_cluster_network_policy_preflight() {
+  local project_id="$1" cluster_name="$2" region="$3"
+  [ "${TFVARS_CREATE_CLUSTER:-true}" = "false" ] || return 0
+
+  if is_existing_cluster_network_policy_satisfied "$project_id" "$cluster_name" "$region"; then
+    return 0
+  fi
+
+  if ! is_truthy "${PARAM_ENABLE_NETWORK_POLICY:-${ENABLE_NETWORK_POLICY:-false}}"; then
+    print_error "Existing cluster '$cluster_name' enforces no NetworkPolicy (neither Dataplane V2 nor legacy Calico)."
+    print_info "kube-agents requires NetworkPolicy enforcement to isolate agent execution sandboxes."
+    print_info "The Terraform apply will refuse an existing cluster without Dataplane V2 or NetworkPolicy enforcement."
+    print_info "Enabling Calico may recreate nodes and restart workloads. Because explicit opt-in was not granted, provisioning cannot proceed."
+    print_info "Aborting before making any cluster changes. Pass --enable-network-policy or set ENABLE_NETWORK_POLICY=true to authorize."
+    write_json_report "REFUSED_MISSING_NETWORK_POLICY"
+    exit 1
   fi
 }
 
@@ -3491,11 +3527,20 @@ main() {
     )
     print_success "Terraform configuration is valid."
     if gcloud auth application-default print-access-token >/dev/null 2>&1; then
-      print_info "Previewing the resources a real run would create (terraform plan)..."
-      (
-        cd "$(tf_compose_dir "$repo_dir")"
-        terraform plan -input=false -lock=false
-      )
+      if ! is_existing_cluster_network_policy_satisfied "$project_id" "$cluster_name" "$region"; then
+        if is_truthy "${PARAM_ENABLE_NETWORK_POLICY:-${ENABLE_NETWORK_POLICY:-false}}"; then
+          print_info "Dry-run: skipping terraform plan because Calico has not yet been applied to the live cluster (a real run enables Calico prior to apply)."
+        else
+          print_warning "Dry-run: skipping terraform plan because existing cluster '$cluster_name' enforces no NetworkPolicy (postcondition would fail)."
+          print_info "A real run will abort unless authorized with --enable-network-policy or ENABLE_NETWORK_POLICY=true."
+        fi
+      else
+        print_info "Previewing the resources a real run would create (terraform plan)..."
+        (
+          cd "$(tf_compose_dir "$repo_dir")"
+          terraform plan -input=false -lock=false
+        )
+      fi
     else
       print_warning "No Application Default Credentials; skipping the resource preview (terraform plan)."
       print_info "Run 'gcloud auth application-default login' for a full dry-run preview."
@@ -3504,6 +3549,11 @@ main() {
     write_json_report "DRY_RUN_SUCCESS"
     exit 0
   fi
+
+  # Refuse before the confirmation checkpoint and before any cluster mutations
+  # if adopting an existing cluster lacking Dataplane V2 and Calico NetworkPolicy
+  # without explicit opt-in.
+  check_existing_cluster_network_policy_preflight "$project_id" "$cluster_name" "$region"
 
   if [ "$PARAM_NON_INTERACTIVE" != "true" ]; then
     local confirm_choice=""
@@ -3530,10 +3580,12 @@ main() {
   # Workload Identity pool, and NetworkPolicy enforcement on a cluster that
   # already exists. Only run when adopting an existing cluster; a cluster
   # created by this install already has them configured via Terraform.
+  # NetworkPolicy is verified and applied first so that a refusal or failure
+  # halts before permanent control-plane modifications (Workload Identity, CMEK).
   if [ "${TFVARS_CREATE_CLUSTER:-true}" = "false" ]; then
-    ensure_existing_cluster_cmek "$project_id" "$cluster_name" "$region"
-    ensure_existing_cluster_workload_identity "$project_id" "$cluster_name" "$region"
     ensure_existing_cluster_network_policy "$project_id" "$cluster_name" "$region"
+    ensure_existing_cluster_workload_identity "$project_id" "$cluster_name" "$region"
+    ensure_existing_cluster_cmek "$project_id" "$cluster_name" "$region"
   fi
 
   # The App key import sits here — after the dry-run exit and the operator's
