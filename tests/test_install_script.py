@@ -1348,7 +1348,7 @@ class EnsureExistingClusterNetworkPolicyTest(unittest.TestCase):
     `clusters update` calls is the behaviour under test.
     """
 
-    def _run(self, datapath="", legacy_np="", opt_in=True):
+    def _run(self, datapath="", legacy_np="", opt_in=True, status="RUNNING"):
         """Run the function against a stub gcloud that records every call.
 
         Returns (CompletedProcess, [argv-strings in call order]). The stub
@@ -1364,6 +1364,7 @@ class EnsureExistingClusterNetworkPolicyTest(unittest.TestCase):
                 "#!/usr/bin/env bash\n"
                 f"printf '%s\\n' \"$*\" >> '{log}'\n"
                 'case "$*" in\n'
+                f"  *datapathProvider,networkPolicy.enabled*) printf '{status},{datapath},{legacy_np}\\n' ;;\n"
                 f"  *datapathProvider*) printf '{datapath}\\n' ;;\n"
                 f"  *networkPolicy.enabled*) printf '{legacy_np}\\n' ;;\n"
                 "esac\n"
@@ -1433,6 +1434,13 @@ class EnsureExistingClusterNetworkPolicyTest(unittest.TestCase):
     def test_cluster_already_enforcing_is_left_alone(self):
         _, calls = self._run(legacy_np="True", opt_in=True)
         self.assertEqual(self._updates(calls), [])
+
+    def test_refuses_when_cluster_unreadable(self):
+        proc, calls = self._run(status="", opt_in=True)
+        self.assertEqual(proc.returncode, 1, proc.stderr + proc.stdout)
+        self.assertEqual(self._updates(calls), [])
+        self.assertIn("Could not query NetworkPolicy configuration", proc.stderr + proc.stdout)
+        self.assertIn("Refusing to attempt cluster mutations", proc.stderr + proc.stdout)
 
 
 class EnsureExistingClusterWorkloadIdentityTest(unittest.TestCase):
@@ -1590,7 +1598,7 @@ class CheckExistingClusterNodePoolsPreflightTest(unittest.TestCase):
 class CheckExistingClusterNetworkPolicyPreflightTest(unittest.TestCase):
     """check_existing_cluster_network_policy_preflight tests."""
 
-    def _run(self, dp="", legacy_np="", opt_in=""):
+    def _run(self, dp="", legacy_np="", opt_in="", status="RUNNING"):
         with tempfile.TemporaryDirectory() as tmp:
             bin_dir = pathlib.Path(tmp) / "bin"
             bin_dir.mkdir()
@@ -1598,6 +1606,7 @@ class CheckExistingClusterNetworkPolicyPreflightTest(unittest.TestCase):
             gcloud.write_text(
                 "#!/usr/bin/env bash\n"
                 'case "$*" in\n'
+                f"  *datapathProvider,networkPolicy.enabled*) printf '{status},{dp},{legacy_np}\\n' ;;\n"
                 f"  *datapathProvider*) printf '{dp}\\n' ;;\n"
                 f"  *networkPolicy.enabled*) printf '{legacy_np}\\n' ;;\n"
                 "esac\n"
@@ -1637,6 +1646,18 @@ class CheckExistingClusterNetworkPolicyPreflightTest(unittest.TestCase):
         proc = self._run(dp="", legacy_np="True", opt_in="false")
         self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
 
+    def test_refuses_when_cluster_unreadable(self):
+        proc = self._run(status="", opt_in="false")
+        self.assertEqual(proc.returncode, 1, proc.stderr + proc.stdout)
+        self.assertIn("Could not query NetworkPolicy configuration", proc.stderr + proc.stdout)
+        self.assertNotIn("enforces no NetworkPolicy", proc.stderr + proc.stdout)
+
+    def test_refuses_when_cluster_unreadable_even_with_opt_in(self):
+        proc = self._run(status="", opt_in="true")
+        self.assertEqual(proc.returncode, 1, proc.stderr + proc.stdout)
+        self.assertIn("Could not query NetworkPolicy configuration", proc.stderr + proc.stdout)
+        self.assertNotIn("enforces no NetworkPolicy", proc.stderr + proc.stdout)
+
 
 class SummarizeExistingClusterMutationsTest(unittest.TestCase):
     """summarize_existing_cluster_mutations outputs expected lines for adoption."""
@@ -1649,6 +1670,7 @@ class SummarizeExistingClusterMutationsTest(unittest.TestCase):
         node_pools="p1,GKE_METADATA",
         dp="ADVANCED_DATAPATH",
         legacy_np="False",
+        status="RUNNING",
     ):
         with tempfile.TemporaryDirectory() as tmp:
             bin_dir = pathlib.Path(tmp) / "bin"
@@ -1661,6 +1683,7 @@ class SummarizeExistingClusterMutationsTest(unittest.TestCase):
                 f"  *databaseEncryption.state*) printf '{enc_state}\\n' ;;\n"
                 f"  *workloadIdentityConfig.workloadPool*) printf '{pool}\\n' ;;\n"
                 f"  *node-pools*list*) printf '{node_pools}\\n' ;;\n"
+                f"  *datapathProvider,networkPolicy.enabled*) printf '{status},{dp},{legacy_np}\\n' ;;\n"
                 f"  *datapathProvider*) printf '{dp}\\n' ;;\n"
                 f"  *networkPolicy.enabled*) printf '{legacy_np}\\n' ;;\n"
                 "esac\n"
@@ -1700,6 +1723,11 @@ class SummarizeExistingClusterMutationsTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("Node Pool Metadata Migration: Refused", proc.stdout)
         self.assertIn("install will abort", proc.stdout)
+
+    def test_summary_reflects_unreadable_network_policy(self):
+        proc = self._run(status="")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("NetworkPolicy Enforcement: Skipped (could not query cluster network policy state)", proc.stdout)
 
 
 

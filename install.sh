@@ -1885,20 +1885,26 @@ ensure_existing_cluster_workload_identity() {
 # backstops bare-Terraform installs.
 ensure_existing_cluster_network_policy() {
   local project_id="$1" cluster_name="$2" region="$3"
-  local dp_provider
+  local cluster_info
   # trap - ERR: same bash-3.2 subshell-trap suppression as the Workload
-  # Identity probe above.
-  dp_provider=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
+  # Identity probe above. Query status alongside network fields so an
+  # unreadable cluster fails safely rather than attempting mutations.
+  cluster_info=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
     --location="$region" --project="$project_id" \
-    --format="value(networkConfig.datapathProvider)" 2>/dev/null || echo "")
+    --format="csv[no-heading](status,networkConfig.datapathProvider,networkPolicy.enabled)" 2>/dev/null || echo "")
+  local status="" dp_provider="" legacy_np=""
+  if [ -n "$cluster_info" ]; then
+    IFS=',' read -r status dp_provider legacy_np <<< "$cluster_info" || true
+  fi
+  if [ -z "$status" ]; then
+    print_error "Could not query NetworkPolicy configuration for existing cluster '$cluster_name'."
+    print_info "Refusing to attempt cluster mutations on unread cluster state."
+    return 1
+  fi
   if [ "$dp_provider" = "ADVANCED_DATAPATH" ]; then
     print_success "Existing cluster '$cluster_name' runs Dataplane V2; NetworkPolicy enforcement is built in."
     return 0
   fi
-  local legacy_np
-  legacy_np=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
-    --location="$region" --project="$project_id" \
-    --format="value(networkPolicy.enabled)" 2>/dev/null || echo "")
   if [ "$legacy_np" = "True" ] || [ "$legacy_np" = "true" ]; then
     print_success "Existing cluster '$cluster_name' already enforces NetworkPolicy (legacy Calico addon)."
     return 0
@@ -1909,7 +1915,7 @@ ensure_existing_cluster_network_policy() {
       PARAM_ENABLE_NETWORK_POLICY="false"
     else
       local np_choice=""
-      prompt_read "Existing cluster '$cluster_name' does not enforce NetworkPolicy. Enabling Calico may recreate nodes and restart workloads. Enable Calico NetworkPolicy now? (y/N)" np_choice "n"
+      prompt_read "Existing cluster '$cluster_name' does not enforce NetworkPolicy (kube-agents requires Dataplane V2 or Calico). Enabling Calico may recreate nodes and restart workloads. Declining ends the install (kube-agents requires NetworkPolicy enforcement). Enable Calico NetworkPolicy now? (y/N)" np_choice "n"
       if is_truthy "$np_choice"; then
         PARAM_ENABLE_NETWORK_POLICY="true"
       else
@@ -1992,22 +1998,21 @@ prompt_existing_cluster_opt_ins() {
 
   # Calico NetworkPolicy opt-in prompt
   if [ -z "${PARAM_ENABLE_NETWORK_POLICY:-${ENABLE_NETWORK_POLICY:-}}" ]; then
-    local dp_provider legacy_np
-    dp_provider=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
+    local cluster_info
+    cluster_info=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
       --location="$region" --project="$project_id" \
-      --format="value(networkConfig.datapathProvider)" 2>/dev/null || echo "")
-    if [ "$dp_provider" != "ADVANCED_DATAPATH" ]; then
-      legacy_np=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
-        --location="$region" --project="$project_id" \
-        --format="value(networkPolicy.enabled)" 2>/dev/null || echo "")
-      if [ "$legacy_np" != "True" ] && [ "$legacy_np" != "true" ]; then
-        local np_choice=""
-        prompt_read "Existing cluster '$cluster_name' does not enforce NetworkPolicy (kube-agents requires Dataplane V2 or Calico). Enabling Calico may recreate nodes and restart workloads. Declining ends the install (kube-agents requires NetworkPolicy enforcement). Authorize enabling Calico NetworkPolicy now? (y/N)" np_choice "n"
-        if is_truthy "$np_choice"; then
-          PARAM_ENABLE_NETWORK_POLICY="true"
-        else
-          PARAM_ENABLE_NETWORK_POLICY="false"
-        fi
+      --format="csv[no-heading](status,networkConfig.datapathProvider,networkPolicy.enabled)" 2>/dev/null || echo "")
+    local status="" dp_provider="" legacy_np=""
+    if [ -n "$cluster_info" ]; then
+      IFS=',' read -r status dp_provider legacy_np <<< "$cluster_info" || true
+    fi
+    if [ -n "$status" ] && [ "$dp_provider" != "ADVANCED_DATAPATH" ] && [ "$legacy_np" != "True" ] && [ "$legacy_np" != "true" ]; then
+      local np_choice=""
+      prompt_read "Existing cluster '$cluster_name' does not enforce NetworkPolicy (kube-agents requires Dataplane V2 or Calico). Enabling Calico may recreate nodes and restart workloads. Declining ends the install (kube-agents requires NetworkPolicy enforcement). Authorize enabling Calico NetworkPolicy now? (y/N)" np_choice "n"
+      if is_truthy "$np_choice"; then
+        PARAM_ENABLE_NETWORK_POLICY="true"
+      else
+        PARAM_ENABLE_NETWORK_POLICY="false"
       fi
     fi
   fi
@@ -2072,16 +2077,18 @@ is_existing_cluster_network_policy_satisfied() {
   local project_id="$1" cluster_name="$2" region="$3"
   [ "${TFVARS_CREATE_CLUSTER:-true}" = "false" ] || return 0
 
-  local dp_provider
-  dp_provider=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
+  local cluster_info
+  cluster_info=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
     --location="$region" --project="$project_id" \
-    --format="value(networkConfig.datapathProvider)" 2>/dev/null || echo "")
+    --format="csv[no-heading](status,networkConfig.datapathProvider,networkPolicy.enabled)" 2>/dev/null || echo "")
+  local status="" dp_provider="" legacy_np=""
+  if [ -n "$cluster_info" ]; then
+    IFS=',' read -r status dp_provider legacy_np <<< "$cluster_info" || true
+  fi
+  if [ -z "$status" ]; then
+    return 2
+  fi
   [ "$dp_provider" != "ADVANCED_DATAPATH" ] || return 0
-
-  local legacy_np
-  legacy_np=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
-    --location="$region" --project="$project_id" \
-    --format="value(networkPolicy.enabled)" 2>/dev/null || echo "")
   [ "$legacy_np" = "True" ] || [ "$legacy_np" = "true" ] || return 1
   return 0
 }
@@ -2090,8 +2097,17 @@ check_existing_cluster_network_policy_preflight() {
   local project_id="$1" cluster_name="$2" region="$3"
   [ "${TFVARS_CREATE_CLUSTER:-true}" = "false" ] || return 0
 
-  if is_existing_cluster_network_policy_satisfied "$project_id" "$cluster_name" "$region"; then
+  local np_status=0
+  is_existing_cluster_network_policy_satisfied "$project_id" "$cluster_name" "$region" || np_status=$?
+  if [ "$np_status" -eq 0 ]; then
     return 0
+  fi
+
+  if [ "$np_status" -eq 2 ]; then
+    print_error "Could not query NetworkPolicy configuration for existing cluster '$cluster_name'."
+    print_info "Failed to read cluster details from GCP. Check cluster name, region, permissions, and network connectivity."
+    write_json_report "FAILED_PREFLIGHT_CLUSTER_UNREADABLE"
+    exit 1
   fi
 
   if ! is_truthy "${PARAM_ENABLE_NETWORK_POLICY:-${ENABLE_NETWORK_POLICY:-false}}"; then
@@ -2178,24 +2194,25 @@ summarize_existing_cluster_mutations() {
   fi
 
   # 4. NetworkPolicy
-  local dp_provider legacy_np
-  dp_provider=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
+  local cluster_info
+  cluster_info=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
     --location="$region" --project="$project_id" \
-    --format="value(networkConfig.datapathProvider)" 2>/dev/null || echo "")
-  if [ "$dp_provider" = "ADVANCED_DATAPATH" ]; then
+    --format="csv[no-heading](status,networkConfig.datapathProvider,networkPolicy.enabled)" 2>/dev/null || echo "")
+  local status="" dp_provider="" legacy_np=""
+  if [ -n "$cluster_info" ]; then
+    IFS=',' read -r status dp_provider legacy_np <<< "$cluster_info" || true
+  fi
+  if [ -z "$status" ]; then
+    echo -e "    • ${C_CYAN}NetworkPolicy Enforcement:${C_RESET} ${C_YELLOW}Skipped${C_RESET} (could not query cluster network policy state)"
+  elif [ "$dp_provider" = "ADVANCED_DATAPATH" ]; then
     echo -e "    • ${C_CYAN}NetworkPolicy Enforcement:${C_RESET} ${C_GREEN}Built-in${C_RESET} (Dataplane V2)"
+  elif [ "$legacy_np" = "True" ] || [ "$legacy_np" = "true" ]; then
+    echo -e "    • ${C_CYAN}NetworkPolicy Enforcement:${C_RESET} ${C_GREEN}Already enabled${C_RESET} (legacy Calico addon)"
   else
-    legacy_np=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
-      --location="$region" --project="$project_id" \
-      --format="value(networkPolicy.enabled)" 2>/dev/null || echo "")
-    if [ "$legacy_np" = "True" ] || [ "$legacy_np" = "true" ]; then
-      echo -e "    • ${C_CYAN}NetworkPolicy Enforcement:${C_RESET} ${C_GREEN}Already enabled${C_RESET} (legacy Calico addon)"
+    if is_truthy "${PARAM_ENABLE_NETWORK_POLICY:-${ENABLE_NETWORK_POLICY:-false}}"; then
+      echo -e "    • ${C_CYAN}NetworkPolicy Enforcement:${C_RESET} ${C_YELLOW}Will enable${C_RESET} legacy Calico addon & enforcement (${C_YELLOW}may recreate nodes, restart workloads${C_RESET})"
     else
-      if is_truthy "${PARAM_ENABLE_NETWORK_POLICY:-${ENABLE_NETWORK_POLICY:-false}}"; then
-        echo -e "    • ${C_CYAN}NetworkPolicy Enforcement:${C_RESET} ${C_YELLOW}Will enable${C_RESET} legacy Calico addon & enforcement (${C_YELLOW}may recreate nodes, restart workloads${C_RESET})"
-      else
-        echo -e "    • ${C_CYAN}NetworkPolicy Enforcement:${C_RESET} ${C_RED}Refused${C_RESET} (opt-in not provided; pass --enable-network-policy; install will abort)"
-      fi
+      echo -e "    • ${C_CYAN}NetworkPolicy Enforcement:${C_RESET} ${C_RED}Refused${C_RESET} (opt-in not provided; pass --enable-network-policy; install will abort)"
     fi
   fi
 
@@ -3621,12 +3638,19 @@ main() {
     )
     print_success "Terraform configuration is valid."
     if gcloud auth application-default print-access-token >/dev/null 2>&1; then
-      if ! is_existing_cluster_network_policy_satisfied "$project_id" "$cluster_name" "$region"; then
+      local np_status=0
+      is_existing_cluster_network_policy_satisfied "$project_id" "$cluster_name" "$region" || np_status=$?
+      if [ "$np_status" -eq 2 ]; then
+        print_warning "Dry-run: skipping terraform plan because existing cluster '$cluster_name' could not be queried."
+      elif [ "$np_status" -ne 0 ]; then
         if is_truthy "${PARAM_ENABLE_NETWORK_POLICY:-${ENABLE_NETWORK_POLICY:-false}}"; then
           print_info "Dry-run: skipping terraform plan because Calico has not yet been applied to the live cluster (a real run enables Calico prior to apply)."
         else
           print_warning "Dry-run: skipping terraform plan because existing cluster '$cluster_name' enforces no NetworkPolicy (postcondition would fail)."
           print_info "A real run will abort unless authorized with --enable-network-policy or ENABLE_NETWORK_POLICY=true."
+          print_info "To remediate manually beforehand, run these two commands in this order:"
+          print_info "  gcloud container clusters update $cluster_name --location $region --project $project_id --update-addons=NetworkPolicy=ENABLED"
+          print_info "  gcloud container clusters update $cluster_name --location $region --project $project_id --enable-network-policy"
         fi
       elif ! is_existing_cluster_node_pools_satisfied "$project_id" "$cluster_name" "$region"; then
         if is_truthy "${PARAM_MIGRATE_NODE_POOLS:-${MIGRATE_NODE_POOLS:-false}}"; then
@@ -3634,6 +3658,8 @@ main() {
         else
           print_warning "Dry-run: skipping terraform plan because existing cluster '$cluster_name' has node pool(s) on legacy metadata server."
           print_info "A real run will abort unless authorized with --migrate-node-pools or MIGRATE_NODE_POOLS=true."
+          print_info "To remediate manually beforehand, update each legacy node pool:"
+          print_info "  gcloud container node-pools update <pool-name> --cluster $cluster_name --location $region --project $project_id --workload-metadata=GKE_METADATA"
         fi
       else
         print_info "Previewing the resources a real run would create (terraform plan)..."
