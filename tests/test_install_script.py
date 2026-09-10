@@ -506,6 +506,40 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
         self.assertEqual(proc2.returncode, 0, proc2.stderr)
         self.assertIn("NP=false", proc2.stdout)
 
+    def test_validate_existing_cluster_opt_in_flags_rejects_typos(self):
+        cmd = 'parse_args --enable-network-policy=ture; validate_existing_cluster_opt_in_flags'
+        proc = self._run_install_func(cmd)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("--enable-network-policy must be either true or false.", proc.stderr + proc.stdout)
+
+        cmd2 = 'parse_args --migrate-node-pools=invalid; validate_existing_cluster_opt_in_flags'
+        proc2 = self._run_install_func(cmd2)
+        self.assertNotEqual(proc2.returncode, 0)
+        self.assertIn("--migrate-node-pools must be either true or false.", proc2.stderr + proc2.stdout)
+
+        cmd3 = 'parse_args --enable-network-policy=; validate_existing_cluster_opt_in_flags'
+        proc3 = self._run_install_func(cmd3)
+        self.assertNotEqual(proc3.returncode, 0)
+        self.assertIn("--enable-network-policy must be either true or false.", proc3.stderr + proc3.stdout)
+
+        cmd4 = 'PARAM_MIGRATE_NODE_POOLS="invalid"; validate_existing_cluster_opt_in_flags'
+        proc4 = self._run_install_func(cmd4)
+        self.assertNotEqual(proc4.returncode, 0)
+        self.assertIn("--migrate-node-pools must be either true or false.", proc4.stderr + proc4.stdout)
+
+    def test_validate_existing_cluster_opt_in_flags_accepts_valid_values(self):
+        cmd = 'parse_args --enable-network-policy=true --migrate-node-pools=false; validate_existing_cluster_opt_in_flags'
+        proc = self._run_install_func(cmd)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+        cmd2 = 'parse_args --enable-network-policy --migrate-node-pools; validate_existing_cluster_opt_in_flags'
+        proc2 = self._run_install_func(cmd2)
+        self.assertEqual(proc2.returncode, 0, proc2.stderr)
+
+        cmd3 = 'validate_existing_cluster_opt_in_flags'
+        proc3 = self._run_install_func(cmd3)
+        self.assertEqual(proc3.returncode, 0, proc3.stderr)
+
     def test_default_vertex_location_is_in_scope_for_install_sh(self):
         """install.sh resolves $DEFAULT_VERTEX_LOCATION at its own runtime.
 

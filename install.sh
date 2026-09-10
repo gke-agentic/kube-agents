@@ -391,7 +391,9 @@ PARAM_MEMORY="${MEMORY:-$(memory_mode_from_provider "${MEMORY_PROVIDER:-}")}"
 PARAM_ALLOWED_USERS="${ALLOWED_USERS:-}"
 PARAM_IMAGE_TAG="${IMAGE_TAG:-}"
 PARAM_MIGRATE_NODE_POOLS="${MIGRATE_NODE_POOLS:-}"
+PARAM_MIGRATE_NODE_POOLS_PASSED="false"
 PARAM_ENABLE_NETWORK_POLICY="${ENABLE_NETWORK_POLICY:-}"
+PARAM_ENABLE_NETWORK_POLICY_PASSED="false"
 PARAM_ALLOW_UNVERIFIED_SOURCE="${ALLOW_UNVERIFIED_SOURCE:-false}"
 # "<repo_dir>@<ref>" already checked by verify_local_source_ref, so the pre-flight
 # check and the one at the workspace step do not report the same verdict twice.
@@ -567,10 +569,26 @@ parse_args() {
       --chat-topic-name=*) PARAM_CHAT_TOPIC_NAME="${1#*=}"; shift ;;
       --google-chat-mode=*) PARAM_GOOGLE_CHAT_MODE="${1#*=}"; shift ;;
       --google-chat-home-channel=*) PARAM_GOOGLE_CHAT_HOME_CHANNEL="${1#*=}"; shift ;;
-      --migrate-node-pools=*) PARAM_MIGRATE_NODE_POOLS="${1#*=}"; shift ;;
-      --migrate-node-pools) PARAM_MIGRATE_NODE_POOLS="true"; shift ;;
-      --enable-network-policy=*) PARAM_ENABLE_NETWORK_POLICY="${1#*=}"; shift ;;
-      --enable-network-policy) PARAM_ENABLE_NETWORK_POLICY="true"; shift ;;
+      --migrate-node-pools=*)
+        PARAM_MIGRATE_NODE_POOLS="${1#*=}"
+        PARAM_MIGRATE_NODE_POOLS_PASSED="true"
+        shift
+        ;;
+      --migrate-node-pools)
+        PARAM_MIGRATE_NODE_POOLS="true"
+        PARAM_MIGRATE_NODE_POOLS_PASSED="true"
+        shift
+        ;;
+      --enable-network-policy=*)
+        PARAM_ENABLE_NETWORK_POLICY="${1#*=}"
+        PARAM_ENABLE_NETWORK_POLICY_PASSED="true"
+        shift
+        ;;
+      --enable-network-policy)
+        PARAM_ENABLE_NETWORK_POLICY="true"
+        PARAM_ENABLE_NETWORK_POLICY_PASSED="true"
+        shift
+        ;;
       -h|--help|-\?|help) show_help; exit 0 ;;
       *) print_error "Unknown parameter: $1"; show_help >&2; return 2 ;;
     esac
@@ -2027,6 +2045,20 @@ check_existing_cluster_network_policy_preflight() {
   fi
 }
 
+# Validates explicit values for existing-cluster opt-in flags (loud like --gvisor)
+validate_existing_cluster_opt_in_flags() {
+  if { [ "${PARAM_MIGRATE_NODE_POOLS_PASSED:-false}" = "true" ] || [ -n "${PARAM_MIGRATE_NODE_POOLS:-}" ]; } && \
+     [[ ! "$PARAM_MIGRATE_NODE_POOLS" =~ ^(true|false)$ ]]; then
+    print_error "--migrate-node-pools must be either true or false."
+    exit 1
+  fi
+  if { [ "${PARAM_ENABLE_NETWORK_POLICY_PASSED:-false}" = "true" ] || [ -n "${PARAM_ENABLE_NETWORK_POLICY:-}" ]; } && \
+     [[ ! "$PARAM_ENABLE_NETWORK_POLICY" =~ ^(true|false)$ ]]; then
+    print_error "--enable-network-policy must be either true or false."
+    exit 1
+  fi
+}
+
 # Enumerates pending existing-cluster mutations for the pre-flight summary
 summarize_existing_cluster_mutations() {
   local project_id="$1" cluster_name="$2" region="$3" enable_gvisor="${4:-false}"
@@ -3177,6 +3209,7 @@ main() {
     print_error "--enable-web-ui must be either true or false."
     exit 1
   fi
+  validate_existing_cluster_opt_in_flags
   # An agent that forgets every conversation is the worse default, so memory is
   # on unless it is turned off. The choice decides two things: whether the
   # harness keeps memory at all, and — when it does — whether that costs an
