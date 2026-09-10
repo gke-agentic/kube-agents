@@ -384,6 +384,7 @@ PARAM_THIRD_PARTY_REGISTRY_PREFIX="${THIRD_PARTY_REGISTRY_PREFIX:-}"
 PARAM_ENABLE_GOOGLE_CHAT="${GOOGLE_CHAT_ENABLED:-}"
 PARAM_CHAT_TOPIC_NAME="${CHAT_TOPIC_NAME:-}"
 PARAM_GOOGLE_CHAT_MODE="${GOOGLE_CHAT_MODE:-}"
+PARAM_GOOGLE_CHAT_HOME_CHANNEL="${GOOGLE_CHAT_HOME_CHANNEL:-}"
 PARAM_MODEL_DEFAULT_NAME="${MODEL_DEFAULT_NAME:-}"
 PARAM_USER_PROFILE_ENABLED="${USER_PROFILE_ENABLED:-}"
 
@@ -480,6 +481,8 @@ Flags for AI Agents & Automation:
                                 currently platform-agent-chat-events)
   --google-chat-mode=MODE       Google Chat output mode: default | debug
                                 (default: DEFAULT_GOOGLE_CHAT_MODE, currently default)
+  --google-chat-home-channel=SPACE_ID
+                                Google Chat space ID for unsolicited alerts/messages (e.g. spaces/AAAA...)
   --menu, --config              Launch interactive Day-2 Control Panel Menu (raspi-config style)
   -h, --help, -?                Show this help message
 
@@ -532,6 +535,7 @@ parse_args() {
       --allowed-users=*) PARAM_ALLOWED_USERS="${1#*=}"; shift ;;
       --chat-topic-name=*) PARAM_CHAT_TOPIC_NAME="${1#*=}"; shift ;;
       --google-chat-mode=*) PARAM_GOOGLE_CHAT_MODE="${1#*=}"; shift ;;
+      --google-chat-home-channel=*) PARAM_GOOGLE_CHAT_HOME_CHANNEL="${1#*=}"; shift ;;
       -h|--help|-\?|help) show_help; exit 0 ;;
       *) print_error "Unknown parameter: $1"; show_help >&2; return 2 ;;
     esac
@@ -940,7 +944,7 @@ warn_unrecorded_interview_answers() {
   #      and having the next run derive multiuser_memory from the unchanged file
   #      and tear the Hindsight API and its Postgres back down.
   local key recorded current drifted=""
-  for key in GOOGLE_CHAT_ENABLED SLACK_ENABLED ALLOWED_USERS SLACK_ALLOWED_USERS \
+  for key in GOOGLE_CHAT_ENABLED GOOGLE_CHAT_HOME_CHANNEL SLACK_ENABLED ALLOWED_USERS SLACK_ALLOWED_USERS \
     SLACK_BOT_TOKEN SLACK_APP_TOKEN SLACK_HOME_CHANNEL SLACK_HOME_CHANNEL_NAME \
     CHAT_TOPIC_NAME MODEL_PROVIDER MODEL_DEFAULT_NAME PLATFORM_AGENT_PERMISSION_SET \
     PLATFORM_AGENT_CUSTOM_ROLES ENABLE_GVISOR HERMES_DASHBOARD_ENABLED MEMORY \
@@ -1022,6 +1026,7 @@ bootstrap_install_env_file() {
   write_env_var "$tmp" CHAT_TOPIC_NAME "${CHAT_TOPIC_NAME:-}"
   write_env_var "$tmp" CHAT_SUB_NAME "${CHAT_SUB_NAME:-}"
   write_env_var "$tmp" GOOGLE_CHAT_ENABLED "${GOOGLE_CHAT_ENABLED:-$DEFAULT_GOOGLE_CHAT_ENABLED}"
+  write_env_var "$tmp" GOOGLE_CHAT_HOME_CHANNEL "${GOOGLE_CHAT_HOME_CHANNEL:-}"
   write_env_var "$tmp" GOOGLE_CHAT_MODE "${GOOGLE_CHAT_MODE:-$DEFAULT_GOOGLE_CHAT_MODE}"
   write_env_var "$tmp" SLACK_ENABLED "${SLACK_ENABLED:-$DEFAULT_SLACK_ENABLED}"
   write_secret_env_var "$tmp" SLACK_BOT_TOKEN "${SLACK_BOT_TOKEN:-}"
@@ -2008,6 +2013,7 @@ run_menu_system() {
   local openai_api_key="${OPENAI_API_KEY:-}"
   local anthropic_api_key="${ANTHROPIC_API_KEY:-}"
   local google_chat_enabled="${GOOGLE_CHAT_ENABLED:-$DEFAULT_GOOGLE_CHAT_ENABLED}"
+  local google_chat_home_channel="${GOOGLE_CHAT_HOME_CHANNEL:-}"
   local slack_enabled="${SLACK_ENABLED:-$DEFAULT_SLACK_ENABLED}"
   local allowed_users="${ALLOWED_USERS:-}"
   local chat_topic_name="${CHAT_TOPIC_NAME:-$DEFAULT_CHAT_TOPIC_NAME}"
@@ -2086,6 +2092,8 @@ run_menu_system() {
             fi
             prompt_read "Allowed Google Chat User Emails (comma-separated, empty allows all users)" \
               allowed_users "$allowed_users" false "$gchat_users_hint"
+            prompt_read "Google Chat Home Channel / Space ID (optional, e.g. spaces/AAAA...)" \
+              google_chat_home_channel "$google_chat_home_channel"
             ;;
           2) slack_enabled="true" ;;
           3) google_chat_enabled="false"; slack_enabled="false" ;;
@@ -2185,6 +2193,7 @@ run_menu_system() {
         save_env_var CHAT_TOPIC_NAME "$chat_topic_name"
         save_env_var CHAT_SUB_NAME "$chat_sub_name"
         save_env_var GOOGLE_CHAT_ENABLED "$google_chat_enabled"
+        save_env_var GOOGLE_CHAT_HOME_CHANNEL "$google_chat_home_channel"
         save_env_var SLACK_ENABLED "$slack_enabled"
         save_env_var PLATFORM_AGENT_PERMISSION_SET "$permission_set"
         if [ "$permission_set" = "custom" ]; then
@@ -2549,6 +2558,7 @@ main() {
     print_error "--google-chat-mode must be either 'default' or 'debug'."
     exit 1
   fi
+  local google_chat_home_channel="${PARAM_GOOGLE_CHAT_HOME_CHANNEL:-}"
   # Seeded from the environment so the non-interactive path can carry the
   # Slack settings: prompt_read keeps a non-empty current value there.
   local slack_bot_token="${SLACK_BOT_TOKEN:-}"
@@ -2594,12 +2604,18 @@ main() {
       slack_home_channel_name "$slack_home_channel_name"
   }
 
+  _prompt_google_chat_settings() {
+    prompt_read "Allowed User Email(s) for Google Chat (comma-separated, empty allows all users)" \
+      allowed_users "$allowed_users" false "$allowed_users_hint"
+    prompt_read "Pub/Sub Topic Name for Google Chat" chat_topic_name "$chat_topic_name"
+    prompt_read "Google Chat Home Channel / Space ID (optional, e.g. spaces/AAAA...)" \
+      google_chat_home_channel "$google_chat_home_channel"
+  }
+
   case "$chat_choice" in
     1)
       google_chat_enabled="true"
-      prompt_read "Allowed User Email(s) for Google Chat (comma-separated, empty allows all users)" \
-        allowed_users "$allowed_users" false "$allowed_users_hint"
-      prompt_read "Pub/Sub Topic Name for Google Chat" chat_topic_name "$chat_topic_name"
+      _prompt_google_chat_settings
       ;;
     2)
       slack_enabled="true"
@@ -2608,9 +2624,7 @@ main() {
     3)
       google_chat_enabled="true"
       slack_enabled="true"
-      prompt_read "Allowed User Email(s) for Google Chat (comma-separated, empty allows all users)" \
-        allowed_users "$allowed_users" false "$allowed_users_hint"
-      prompt_read "Pub/Sub Topic Name for Google Chat" chat_topic_name "$chat_topic_name"
+      _prompt_google_chat_settings
       _prompt_slack_settings
       ;;
     4)
@@ -3110,6 +3124,7 @@ main() {
   export CHAT_TOPIC_NAME="$chat_topic_name"
   export CHAT_SUB_NAME="$chat_sub_name"
   export GOOGLE_CHAT_ENABLED="$google_chat_enabled"
+  export GOOGLE_CHAT_HOME_CHANNEL="$google_chat_home_channel"
   export GOOGLE_CHAT_MODE="$google_chat_mode"
   export SLACK_ENABLED="$slack_enabled"
   export SLACK_BOT_TOKEN="$slack_bot_token"

@@ -1155,6 +1155,22 @@ class NonInteractiveRerunInheritanceTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
         self.assertIn("U=from-the-flag@example.com", proc.stdout)
 
+    def test_google_chat_home_channel_has_a_flag_and_inherits(self):
+        proc = self._params(
+            "GOOGLE_CHAT_HOME_CHANNEL=spaces/FROM_FILE",
+            'echo "H=$PARAM_GOOGLE_CHAT_HOME_CHANNEL"',
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("H=spaces/FROM_FILE", proc.stdout)
+
+        proc = self._params(
+            "GOOGLE_CHAT_HOME_CHANNEL=spaces/FROM_FILE",
+            'parse_args --google-chat-home-channel=spaces/FROM_FLAG; '
+            'echo "H=$PARAM_GOOGLE_CHAT_HOME_CHANNEL"',
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("H=spaces/FROM_FLAG", proc.stdout)
+
     def test_the_gitops_repo_names_are_gitops_prefixed(self):
         """GITOPS_ORG / GITOPS_REPO are the installer's input names. (see #1026)
 
@@ -1766,6 +1782,26 @@ class SlackPromptsKeepTheirCurrentValuesTest(unittest.TestCase):
             2, len(re.findall(r'^\s*_prompt_slack_settings\s*$',
                               self._SOURCE, re.MULTILINE)),
             "both the Slack-only and the Both arms must call it",
+        )
+
+    def test_each_google_chat_prompt_defaults_to_its_own_current_value(self):
+        for var in ("allowed_users", "chat_topic_name", "google_chat_home_channel"):
+            with self.subTest(var=var):
+                self.assertRegex(
+                    self._SOURCE,
+                    re.compile(rf'{var} "\${var}"'),
+                    f"{var} must be prompted with itself as the default",
+                )
+
+    def test_both_chat_arms_share_google_chat_definition(self):
+        self.assertEqual(
+            1, self._SOURCE.count("_prompt_google_chat_settings() {"),
+            "the Google Chat prompts must be defined exactly once",
+        )
+        self.assertEqual(
+            2, len(re.findall(r'^\s*_prompt_google_chat_settings\s*$',
+                              self._SOURCE, re.MULTILINE)),
+            "both the Google-Chat-only and the Both arms must call it",
         )
 
 

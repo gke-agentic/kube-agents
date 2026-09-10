@@ -587,6 +587,21 @@ class InstallerCommonTest(unittest.TestCase):
             # The TF_VAR_* channel carries them instead.
             self.assertIn("tfvar=k1", proc.stdout)
 
+    def test_google_chat_home_channel_written_to_tfvars(self):
+        with tempfile.TemporaryDirectory() as out_dir:
+            dest = pathlib.Path(out_dir) / "terraform.tfvars"
+            proc = self._run(
+                f'write_tfvars_from_state "{dest}"; echo "rc=$?"',
+                env={
+                    "API_SERVER_KEY": "k",
+                    "GOOGLE_CHAT_ENABLED": "true",
+                    "GOOGLE_CHAT_HOME_CHANNEL": "spaces/TEST12345",
+                },
+            )
+            self.assertIn("rc=0", proc.stdout, proc.stderr)
+            content = dest.read_text()
+            self.assertIn('google_chat_home_channel  = "spaces/TEST12345"', content)
+
     def test_minter_deferred_without_an_enabled_key_version(self):
         # A minter whose KMS key holds no ENABLED version never passes
         # readiness, and the apply waits on it — the generator defers.
