@@ -179,7 +179,8 @@ manages, or one whose state cannot be read is left as it is.
 
 `MIGRATE_NODE_POOLS=true` (or `--migrate-node-pools`) authorizes migrating existing node pools
 using the legacy GCE metadata server to `GKE_METADATA`, which recreates the pool's nodes and restarts
-workloads. Without opt-in, migration is skipped.
+workloads. Without opt-in, the install aborts before making any cluster changes because kube-agents
+requires Workload Identity (`GKE_METADATA`).
 
 `ENABLE_NETWORK_POLICY=true` (or `--enable-network-policy`) authorizes enabling the legacy Calico
 NetworkPolicy addon and enforcement on pre-existing GKE Standard clusters lacking Dataplane V2.

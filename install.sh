@@ -512,7 +512,8 @@ Flags for AI Agents & Automation:
   --google-chat-home-channel=SPACE_ID
                                 Google Chat space ID for unsolicited alerts/messages (e.g. spaces/AAAA...)
   --migrate-node-pools          Opt in to migrating legacy node pools to GKE_METADATA on an existing
-                                cluster (recreates nodes and restarts workloads; skipped when omitted)
+                                cluster (recreates nodes and restarts workloads; required on clusters
+                                with legacy pools, else install aborts)
   --enable-network-policy       Opt in to enabling legacy Calico NetworkPolicy addon and enforcement
                                 on an existing GKE Standard cluster without Dataplane V2 (may recreate
                                 nodes and restart workloads; required on such clusters, else install aborts)
@@ -1845,7 +1846,7 @@ ensure_existing_cluster_workload_identity() {
         PARAM_MIGRATE_NODE_POOLS="false"
       else
         local migrate_choice=""
-        prompt_read "Node pool(s) '${legacy_pools[*]}' use the legacy GCE metadata server; migrating to GKE_METADATA recreates nodes and restarts workloads. Migrate now? (y/N)" migrate_choice "n"
+        prompt_read "Node pool(s) '${legacy_pools[*]}' use the legacy GCE metadata server; migrating to GKE_METADATA recreates nodes and restarts workloads. Declining ends the install (kube-agents requires Workload Identity). Migrate now? (y/N)" migrate_choice "n"
         if is_truthy "$migrate_choice"; then
           PARAM_MIGRATE_NODE_POOLS="true"
         else
@@ -1855,8 +1856,12 @@ ensure_existing_cluster_workload_identity() {
     fi
 
     if ! is_truthy "${PARAM_MIGRATE_NODE_POOLS:-${MIGRATE_NODE_POOLS:-false}}"; then
-      print_warning "Skipping node pool migration for '${legacy_pools[*]}' (explicit opt-in via --migrate-node-pools or MIGRATE_NODE_POOLS=true was not provided)."
-      print_info "Pods on these pools will continue using the legacy GCE metadata server and cannot use Workload Identity."
+      print_error "Existing cluster '$cluster_name' has node pool(s) '${legacy_pools[*]}' using the legacy GCE metadata server."
+      print_info "kube-agents requires Workload Identity (GKE_METADATA) to authenticate agent and operator pods."
+      print_info "Pods on these pools cannot use Workload Identity and would silently authenticate as the node's default compute service account."
+      print_info "Migrating node pools recreates nodes and restarts workloads. Because explicit opt-in was not granted, provisioning cannot proceed."
+      print_info "Aborting before making any cluster changes. Pass --migrate-node-pools or set MIGRATE_NODE_POOLS=true to authorize."
+      return 1
     else
       for legacy_pool in "${legacy_pools[@]}"; do
         print_warning "Node pool '${legacy_pool}' uses the legacy GCE metadata server; migrating to GKE_METADATA (this recreates the pool's nodes)..."
@@ -1976,7 +1981,7 @@ prompt_existing_cluster_opt_ins() {
 
     if [ "${#legacy_pools[@]}" -gt 0 ]; then
       local migrate_choice=""
-      prompt_read "Node pool(s) '${legacy_pools[*]}' use the legacy GCE metadata server; migrating to GKE_METADATA recreates nodes and restarts workloads. Migrate now? (y/N)" migrate_choice "n"
+      prompt_read "Node pool(s) '${legacy_pools[*]}' use the legacy GCE metadata server; migrating to GKE_METADATA recreates nodes and restarts workloads. Declining ends the install (kube-agents requires Workload Identity). Migrate now? (y/N)" migrate_choice "n"
       if is_truthy "$migrate_choice"; then
         PARAM_MIGRATE_NODE_POOLS="true"
       else
@@ -1997,7 +2002,7 @@ prompt_existing_cluster_opt_ins() {
         --format="value(networkPolicy.enabled)" 2>/dev/null || echo "")
       if [ "$legacy_np" != "True" ] && [ "$legacy_np" != "true" ]; then
         local np_choice=""
-        prompt_read "Existing cluster '$cluster_name' does not enforce NetworkPolicy (kube-agents requires Dataplane V2 or Calico). Enabling Calico may recreate nodes and restart workloads. Authorize enabling Calico NetworkPolicy now? (y/N)" np_choice "n"
+        prompt_read "Existing cluster '$cluster_name' does not enforce NetworkPolicy (kube-agents requires Dataplane V2 or Calico). Enabling Calico may recreate nodes and restart workloads. Declining ends the install (kube-agents requires NetworkPolicy enforcement). Authorize enabling Calico NetworkPolicy now? (y/N)" np_choice "n"
         if is_truthy "$np_choice"; then
           PARAM_ENABLE_NETWORK_POLICY="true"
         else
@@ -2005,6 +2010,61 @@ prompt_existing_cluster_opt_ins() {
         fi
       fi
     fi
+  fi
+}
+
+is_existing_cluster_node_pools_satisfied() {
+  local project_id="$1" cluster_name="$2" region="$3"
+  [ "${TFVARS_CREATE_CLUSTER:-true}" = "false" ] || return 0
+
+  local is_autopilot
+  is_autopilot=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
+    --location="$region" --project="$project_id" \
+    --format="value(autopilot.enabled)" 2>/dev/null || echo "false")
+  [ "$is_autopilot" != "True" ] || return 0
+
+  local legacy_pools=() legacy_pool
+  while IFS= read -r legacy_pool; do
+    [ -n "$legacy_pool" ] || continue
+    legacy_pools+=("$legacy_pool")
+  done < <(trap - ERR; gcloud container node-pools list --cluster="$cluster_name" \
+      --location="$region" --project="$project_id" \
+      --format="csv[no-heading](name,config.workloadMetadataConfig.mode)" 2>/dev/null \
+    | awk -F',' '$2 != "GKE_METADATA" {print $1}' || true)
+
+  [ "${#legacy_pools[@]}" -eq 0 ] || return 1
+  return 0
+}
+
+check_existing_cluster_node_pools_preflight() {
+  local project_id="$1" cluster_name="$2" region="$3"
+  [ "${TFVARS_CREATE_CLUSTER:-true}" = "false" ] || return 0
+
+  local is_autopilot
+  is_autopilot=$(trap - ERR; gcloud container clusters describe "$cluster_name" \
+    --location="$region" --project="$project_id" \
+    --format="value(autopilot.enabled)" 2>/dev/null || echo "false")
+  [ "$is_autopilot" != "True" ] || return 0
+
+  local legacy_pools=() legacy_pool
+  while IFS= read -r legacy_pool; do
+    [ -n "$legacy_pool" ] || continue
+    legacy_pools+=("$legacy_pool")
+  done < <(trap - ERR; gcloud container node-pools list --cluster="$cluster_name" \
+      --location="$region" --project="$project_id" \
+      --format="csv[no-heading](name,config.workloadMetadataConfig.mode)" 2>/dev/null \
+    | awk -F',' '$2 != "GKE_METADATA" {print $1}' || true)
+
+  [ "${#legacy_pools[@]}" -gt 0 ] || return 0
+
+  if ! is_truthy "${PARAM_MIGRATE_NODE_POOLS:-${MIGRATE_NODE_POOLS:-false}}"; then
+    print_error "Existing cluster '$cluster_name' has node pool(s) '${legacy_pools[*]}' using the legacy GCE metadata server."
+    print_info "kube-agents requires Workload Identity (GKE_METADATA) to authenticate agent and operator pods."
+    print_info "Pods on these pools cannot use Workload Identity and would silently authenticate as the node's default compute service account."
+    print_info "Migrating node pools recreates nodes and restarts workloads. Because explicit opt-in was not granted, provisioning cannot proceed."
+    print_info "Aborting before making any cluster changes. Pass --migrate-node-pools or set MIGRATE_NODE_POOLS=true to authorize."
+    write_json_report "REFUSED_MISSING_NODE_POOL_MIGRATION"
+    exit 1
   fi
 }
 
@@ -2112,7 +2172,7 @@ summarize_existing_cluster_mutations() {
       if is_truthy "${PARAM_MIGRATE_NODE_POOLS:-${MIGRATE_NODE_POOLS:-false}}"; then
         echo -e "    • ${C_CYAN}Node Pool Metadata Migration:${C_RESET} ${C_RED}Will migrate${C_RESET} '${legacy_pools[*]}' to GKE_METADATA (${C_RED}recreates nodes, restarts workloads${C_RESET})"
       else
-        echo -e "    • ${C_CYAN}Node Pool Metadata Migration:${C_RESET} ${C_YELLOW}Skipped${C_RESET} for '${legacy_pools[*]}' (opt-in not provided; pass --migrate-node-pools)"
+        echo -e "    • ${C_CYAN}Node Pool Metadata Migration:${C_RESET} ${C_RED}Refused${C_RESET} for '${legacy_pools[*]}' (opt-in not provided; pass --migrate-node-pools; install will abort)"
       fi
     fi
   fi
@@ -3568,6 +3628,13 @@ main() {
           print_warning "Dry-run: skipping terraform plan because existing cluster '$cluster_name' enforces no NetworkPolicy (postcondition would fail)."
           print_info "A real run will abort unless authorized with --enable-network-policy or ENABLE_NETWORK_POLICY=true."
         fi
+      elif ! is_existing_cluster_node_pools_satisfied "$project_id" "$cluster_name" "$region"; then
+        if is_truthy "${PARAM_MIGRATE_NODE_POOLS:-${MIGRATE_NODE_POOLS:-false}}"; then
+          print_info "Dry-run: skipping terraform plan because node pool migration to GKE_METADATA has not yet been applied to the live cluster (a real run migrates pools prior to apply)."
+        else
+          print_warning "Dry-run: skipping terraform plan because existing cluster '$cluster_name' has node pool(s) on legacy metadata server."
+          print_info "A real run will abort unless authorized with --migrate-node-pools or MIGRATE_NODE_POOLS=true."
+        fi
       else
         print_info "Previewing the resources a real run would create (terraform plan)..."
         (
@@ -3585,8 +3652,9 @@ main() {
   fi
 
   # Refuse before the confirmation checkpoint and before any cluster mutations
-  # if adopting an existing cluster lacking Dataplane V2 and Calico NetworkPolicy
+  # if adopting an existing cluster lacking required node pool migration or NetworkPolicy
   # without explicit opt-in.
+  check_existing_cluster_node_pools_preflight "$project_id" "$cluster_name" "$region"
   check_existing_cluster_network_policy_preflight "$project_id" "$cluster_name" "$region"
 
   if [ "$PARAM_NON_INTERACTIVE" != "true" ]; then

@@ -1499,17 +1499,18 @@ class EnsureExistingClusterWorkloadIdentityTest(unittest.TestCase):
         node_updates = [c for c in calls if "node-pools update" in c]
         self.assertEqual(node_updates, [])
 
-    def test_legacy_node_pool_skipped_without_opt_in(self):
+    def test_legacy_node_pool_refused_without_opt_in(self):
         proc, calls = self._run(
             autopilot="false",
             workload_pool="proj.svc.id.goog",
             node_pools="pool-1,GCE_METADATA",
             migrate_opt_in=False,
         )
-        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.returncode, 1, proc.stderr + proc.stdout)
         node_updates = [c for c in calls if "node-pools update" in c]
         self.assertEqual(node_updates, [])
-        self.assertIn("Skipping node pool migration", proc.stderr + proc.stdout)
+        self.assertIn("has node pool(s) 'pool-1' using the legacy GCE metadata server", proc.stderr + proc.stdout)
+        self.assertIn("Aborting before making any cluster changes", proc.stderr + proc.stdout)
 
     def test_legacy_node_pool_migrated_with_opt_in(self):
         proc, calls = self._run(
@@ -1532,6 +1533,58 @@ class EnsureExistingClusterGatedOnCreateClusterTest(unittest.TestCase):
         text = _INSTALL_SH.read_text()
         pattern = r'if \[ "\$\{TFVARS_CREATE_CLUSTER:-true\}" = "false" \]; then\s+ensure_existing_cluster_network_policy'
         self.assertRegex(text, pattern)
+
+
+class CheckExistingClusterNodePoolsPreflightTest(unittest.TestCase):
+    """check_existing_cluster_node_pools_preflight tests."""
+
+    def _run(self, autopilot="false", node_pools="", opt_in=""):
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = pathlib.Path(tmp) / "bin"
+            bin_dir.mkdir()
+            gcloud = bin_dir / "gcloud"
+            gcloud.write_text(
+                "#!/usr/bin/env bash\n"
+                'case "$*" in\n'
+                f"  *autopilot.enabled*) printf '{autopilot}\\n' ;;\n"
+                f"  *node-pools*list*) printf '{node_pools}\\n' ;;\n"
+                "esac\n"
+                "exit 0\n"
+            )
+            gcloud.chmod(gcloud.stat().st_mode | stat.S_IEXEC)
+            opt_in_line = f'PARAM_MIGRATE_NODE_POOLS="{opt_in}"\n' if opt_in else ""
+            body = (
+                f'source "{_INSTALLER_COMMON}"\n'
+                f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n'
+                'TFVARS_CREATE_CLUSTER="false"\n'
+                f"{opt_in_line}"
+                "check_existing_cluster_node_pools_preflight p c r\n"
+            )
+            return subprocess.run(
+                ["bash", "-c", body],
+                capture_output=True,
+                text=True,
+                env=get_isolated_test_env(bin_dir=str(bin_dir)),
+                cwd=str(_REPO_ROOT),
+            )
+
+    def test_refuses_when_legacy_pools_and_no_opt_in(self):
+        proc = self._run(autopilot="false", node_pools="default-pool,GCE_METADATA", opt_in="false")
+        self.assertEqual(proc.returncode, 1, proc.stderr + proc.stdout)
+        self.assertIn("has node pool(s) 'default-pool' using the legacy GCE metadata server", proc.stderr + proc.stdout)
+        self.assertIn("Aborting before making any cluster changes. Pass --migrate-node-pools", proc.stderr + proc.stdout)
+
+    def test_passes_when_opt_in_provided(self):
+        proc = self._run(autopilot="false", node_pools="default-pool,GCE_METADATA", opt_in="true")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+
+    def test_passes_when_all_pools_gke_metadata(self):
+        proc = self._run(autopilot="false", node_pools="default-pool,GKE_METADATA", opt_in="false")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+
+    def test_passes_when_autopilot(self):
+        proc = self._run(autopilot="True", node_pools="default-pool,GCE_METADATA", opt_in="false")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
 
 
 class CheckExistingClusterNetworkPolicyPreflightTest(unittest.TestCase):
@@ -1640,6 +1693,12 @@ class SummarizeExistingClusterMutationsTest(unittest.TestCase):
         proc = self._run(dp="", legacy_np="False")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("NetworkPolicy Enforcement: Refused", proc.stdout)
+        self.assertIn("install will abort", proc.stdout)
+
+    def test_summary_reflects_refused_node_pool_migration_when_missing(self):
+        proc = self._run(node_pools="default-pool,GCE_METADATA")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("Node Pool Metadata Migration: Refused", proc.stdout)
         self.assertIn("install will abort", proc.stdout)
 
 
