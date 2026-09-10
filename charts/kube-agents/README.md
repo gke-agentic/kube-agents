@@ -241,6 +241,12 @@ which carries no redaction. The site's
 owns what is redacted, what is not (responses, on-disk transcripts, chat
 egress) and why a pseudonymised identifier is one the agent cannot act on.
 
+For multi-pool clusters, `litellm.nodeSelector`, `litellm.tolerations`, and
+`litellm.affinity` control proxy pod placement. LiteLLM deliberately does not
+tolerate gVisor (`sandbox.gke.io/runtime=gvisor:NoSchedule`) by default,
+ensuring credential-bearing LLM proxies are isolated from untrusted sandboxed
+workload execution.
+
 #### Vertex AI (`litellm.modelProvider=vertex_ai`)
 
 Vertex AI has no API key. The gateway calls

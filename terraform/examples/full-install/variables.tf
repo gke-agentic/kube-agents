@@ -500,3 +500,9 @@ variable "extra_helm_values" {
   type        = any
   default     = {}
 }
+
+variable "helm_timeout" {
+  description = "Timeout in seconds for Helm rollouts (cert-manager and kube-agents). Defaults to 600s (10 minutes)."
+  type        = number
+  default     = 600
+}
