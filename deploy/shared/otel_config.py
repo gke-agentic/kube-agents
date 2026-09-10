@@ -144,9 +144,9 @@ def apply(
         config[FIELD_BACKENDS] = []
     else:
         # Re-enable if previously disabled on disk, unless the pristine template
-        # explicitly configured enabled: false.
+        # explicitly configured enabled: false. Preserve enabled: true once re-enabled.
         pristine_disabled = origin != config_path and config.get(FIELD_ENABLED) is False
-        if current.get(FIELD_ENABLED) is False and not pristine_disabled:
+        if current.get(FIELD_ENABLED) in (True, False) and not pristine_disabled:
             config[FIELD_ENABLED] = True
 
         if endpoint:

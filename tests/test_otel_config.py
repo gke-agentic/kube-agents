@@ -128,6 +128,27 @@ class ApplyTest(unittest.TestCase):
         self.assertTrue(cfg["enabled"])
         self.assertEqual(cfg["backends"][0]["endpoint"], BAKED)
 
+    def test_re_enabling_is_idempotent_across_multiple_restarts(self):
+        pristine = self.write_baked(self.tmp / "defaults" / "hermes_otel" / "config.yaml")
+        cfg = yaml.safe_load(pristine.read_text())
+        cfg.pop("enabled", None)
+        pristine.write_text(yaml.safe_dump(cfg))
+
+        # Disable on disk
+        oc.apply(self.config, disabled=True)
+        self.assertFalse(self.load()["enabled"])
+
+        # Restart 1: Re-enable using pristine source_path
+        self.assertTrue(oc.apply(self.config, service_name="agent-gateway", source_path=pristine, disabled=False))
+        first_load = self.load()
+        self.assertTrue(first_load["enabled"])
+
+        # Restart 2: Apply again with pristine source_path (must preserve enabled: true without rewriting)
+        self.assertTrue(oc.apply(self.config, service_name="agent-gateway", source_path=pristine, disabled=False))
+        second_load = self.load()
+        self.assertEqual(first_load, second_load)
+        self.assertTrue(second_load["enabled"])
+
     def test_pristine_disabled_template_is_not_forced_true(self):
         pristine = self.tmp / "defaults" / "hermes_otel" / "config.yaml"
         pristine.parent.mkdir(parents=True, exist_ok=True)
