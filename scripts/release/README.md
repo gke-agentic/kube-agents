@@ -285,21 +285,19 @@ into a more legible green outcome. Red is left to mean the machinery is broken.
 
 ### Read this before you dispatch a release
 
-**Until the nightly pipeline has pushed its first `staging_<ts>_<sha>` tag, no GA release can be
-published at all** — not by cron, and not by hand. `bypass` short-circuits the gate job, so the
-dispatch still starts; two steps later `verify_release_eligibility.sh` finds no staging tag on the
-candidate and exits 1:
+**Every candidate selected for GA release must carry a `staging_<ts>_<sha>` tag produced by the
+nightly pipeline** — whether released by cron or dispatched by hand. `bypass` short-circuits the
+gate job, but two steps later `verify_release_eligibility.sh` verifies staging promotion on the
+candidate commit and exits 1 if unpromoted:
 
 ```
 ❌ BLOCKED: Commit <sha> has NOT been promoted to staging!
    No tag matching 'staging_<ts>_<sha>' points to this commit.
 ```
 
-There are no staging tags in this repository yet, so that is the state on the day the retarget
-lands, for the ordinary manual release as much as for a scheduled one. It is the gate working as
-designed rather than a bug, but it is a release outage until step 1 below is done. The way through
-is step 1; `skip_staging_validation` with an audit reason also passes, and is the emergency
-override for hotfixes rather than a way to cut an ordinary release.
+Staging tags exist and are pushed nightly by `nightly-pipeline.yml`. The gate works as designed
+to ensure only thoroughly validated commits reach GA; `skip_staging_validation` with an audit
+reason is strictly the emergency override for hotfixes rather than a way to cut an ordinary release.
 
 ### Scheduled execution & testing the gate
 
