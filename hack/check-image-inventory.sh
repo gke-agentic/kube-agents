@@ -22,6 +22,29 @@ readonly GO_MOD=k8s-operator/go.mod
 readonly GOLANG_IMAGE_ARG=GOLANG_IMAGE
 readonly GOTOOLCHAIN_PIN='ENV GOTOOLCHAIN=local'
 MIRROR=registry.example.invalid/mirror
+
+# githubMinter.org and githubMinter.repo are required when the minter is
+# enabled. Nothing the render produces depends on their values.
+readonly MINTER_ORG=ci-org
+readonly MINTER_REPO=ci-repo
+
+# Which render a check-3 failure came from. Each is the subject of the
+# sentence the failure opens with, because "the chart renders X" is not
+# actionable once more than one configuration renders; check_toggle extends
+# them with the toggle's name.
+readonly LABEL_DEFAULT="a default install"
+readonly LABEL_MIRRORED="a mirrored install"
+
+# The env vars whose values are image references, matched on the variable's
+# name. Matching on the shape of the value instead — a quoted string with a
+# slash and a colon in it — cannot tell an image from any other reference-like
+# value: githubMinter's ISSUER_ALLOWLIST is two https:// URLs joined by a comma
+# and matches that shape exactly, so it was reported as an image rendered
+# outside the mirror (#1139). The chart emits three names the pattern below
+# catches: PLATFORM_AGENT_IMAGE, AGENT_SANDBOX_IMAGE and FLUENT_BIT_IMAGE.
+readonly IMAGE_ENV_NAME_RE='^[[:space:]]*-[[:space:]]+name:[[:space:]]*[A-Z0-9_]*_IMAGE[[:space:]]*$'
+readonly VALUE_FIELD_RE='^[[:space:]]*value:[[:space:]]*'
+
 status=0
 
 fail() {
@@ -202,21 +225,60 @@ REQUIRED_VALUES=(
   --set platformAgent.harness.projectId=ci-project
 )
 
-# Every image the chart renders, from `image:` fields and from the operator's
-# *_IMAGE env vars — the latter are what the operator later stamps onto agent
-# pods, so leaving them public half-mirrors the install.
-#
-# A render failure is fatal rather than an empty list: the loops below iterate
-# this output, and "no images" reads exactly like "no images to object to".
-chart_images() {
-  local rendered
-  rendered="$(helm template test-release charts/kube-agents "${REQUIRED_VALUES[@]}" "$@")" || {
+# What turns the GitHub token minter on, passed to check_toggle below.
+MINTER_VALUES=(
+  --set githubMinter.enabled=true
+  --set "githubMinter.org=$MINTER_ORG"
+  --set "githubMinter.repo=$MINTER_REPO"
+)
+
+# The rendered manifests for one configuration. A render failure is fatal
+# rather than an empty list: the checks below iterate what comes out of it, and
+# "no images" reads exactly like "no images to object to".
+render_chart() {
+  helm template test-release charts/kube-agents "${REQUIRED_VALUES[@]}" "$@" || {
     echo "ERROR: 'helm template' failed for the chart${*:+ with $*} — see the error above." >&2
     return 1
   }
-  sed -n -e 's/^[[:space:]]*image:[[:space:]]*"\?\([^"]*\)"\?[[:space:]]*$/\1/p' \
-    -e 's/^[[:space:]]*value:[[:space:]]*"\([^"]*\/[^"]*:[^"]*\)"[[:space:]]*$/\1/p' <<<"$rendered" |
-    sort -u
+}
+
+# The `image:` fields of a rendered manifest stream on stdin.
+image_field_refs() {
+  sed -n 's/^[[:space:]]*image:[[:space:]]*"\?\([^"]*\)"\?[[:space:]]*$/\1/p'
+}
+
+# The image references the *_IMAGE env vars carry, from the same stream. The
+# pass pairs a name line with the value line under it rather than matching the
+# value alone, because an env var's value is not an image by its shape, only by
+# which variable holds it — IMAGE_ENV_NAME_RE is that test. Anything between
+# the name and its value — a `valueFrom:`, the next list entry — drops the
+# pairing.
+image_env_refs() {
+  awk -v name_re="$IMAGE_ENV_NAME_RE" -v value_re="$VALUE_FIELD_RE" '
+    $0 ~ name_re { pending = 1; next }
+    pending && match($0, value_re) {
+      ref = substr($0, RLENGTH + 1)
+      sub(/[[:space:]]+$/, "", ref)
+      sub(/^"/, "", ref)
+      sub(/"$/, "", ref)
+      if (ref != "") print ref
+      pending = 0
+      next
+    }
+    { pending = 0 }
+  '
+}
+
+# Every image a rendered manifest stream on stdin pulls: the `image:` fields,
+# and the operator's *_IMAGE env vars — the latter are what the operator later
+# stamps onto agent pods, so leaving them public half-mirrors the install.
+image_refs() {
+  local rendered
+  rendered="$(cat)"
+  {
+    image_field_refs <<<"$rendered"
+    image_env_refs <<<"$rendered"
+  } | sort -u
 }
 
 # Split a reference into repository and tag. The digest, if any, goes first;
@@ -224,10 +286,12 @@ chart_images() {
 # registry port (host:5000/name) is not mistaken for one. ref_pin keeps the
 # digest (tag@sha256:...), because that is the form images.json pins a tag and
 # a digest together with and what the chart's default render must match byte for
-# byte. Of the entries this function sees — the ones a chart render emits — that
-# is hindsight-api and hindsight-postgresql; images.json pins two more the same
-# way (busybox and, through tags.env, the Hermes base), but both are build-time
-# and never appear in a render.
+# byte. No render reaches that branch today: images.json pins four entries as
+# tag@digest — hindsight-api, hindsight-postgresql, busybox and, through
+# tags.env, the Hermes base — and the last two are build-time while the
+# Hindsight pair sits behind hindsight.enabled, which no render below turns on.
+# The branch is what keeps the comparison right when one of them does reach a
+# render.
 split_ref() {
   local ref=${1%%@*} digest=""
   case "$1" in
@@ -246,42 +310,43 @@ split_ref() {
   ref_pin="$ref_tag${digest:+@$digest}"
 }
 
-default_images="$(chart_images)" || exit 1
-[ -n "$default_images" ] || {
-  echo "ERROR: the chart rendered no image references at all — the extraction patterns in chart_images no longer match the manifests, so checks 3a, 3b and 3c are inspecting nothing." >&2
-  exit 1
-}
-mirrored_images="$(chart_images --set "global.imageRegistry=$MIRROR")" || exit 1
+inventory_repos="$(jq -r '.images[].repository' "$INVENTORY" | sort -u)"
+inventory_names="$(jq -r '.images[].name' "$INVENTORY" | sort -u)"
 
-# 3a. Default install: every rendered image must be in the inventory, at the
+# 3a. Unmirrored render: every image in it must be in the inventory, at the
 #     pin the inventory carries, so the mirror built from it is complete and
 #     the tags it holds are the tags the install asks for. Matching on the
 #     repository alone would pass through failure mode #1 — the chart on
 #     LiteLLM v1.92.0 while the inventory says v1.95.0 is one entry, one
 #     repository, and an ImagePullBackOff.
-inventory_repos="$(jq -r '.images[].repository' "$INVENTORY" | sort -u)"
-while read -r image; do
-  [ -n "$image" ] || continue
-  split_ref "$image"
-  grep -qxF "$ref_repo" <<<"$inventory_repos" || {
-    fail "the chart renders '$image', which has no entry in $INVENTORY — 'make mirror-images' would not copy it."
-    continue
-  }
-  want_tag="$(pin_of_repo "$ref_repo")"
-  [ -z "$want_tag" ] || [ "$ref_pin" = "$want_tag" ] ||
-    fail "the chart renders '$image', but $INVENTORY pins '$ref_repo' at '$want_tag' — 'make mirror-images' would copy '$want_tag' and the install would ask for '$ref_pin'."
-done <<<"$default_images"
+check_inventory_pins() {
+  local label=$1 images=$2 image want_tag
+  while read -r image; do
+    [ -n "$image" ] || continue
+    split_ref "$image"
+    grep -qxF "$ref_repo" <<<"$inventory_repos" || {
+      fail "$label: the chart renders '$image', which has no entry in $INVENTORY — 'make mirror-images' would not copy it."
+      continue
+    }
+    want_tag="$(pin_of_repo "$ref_repo")"
+    [ -z "$want_tag" ] || [ "$ref_pin" = "$want_tag" ] ||
+      fail "$label: the chart renders '$image', but $INVENTORY pins '$ref_repo' at '$want_tag' — 'make mirror-images' would copy '$want_tag' and the install would ask for '$ref_pin'."
+  done <<<"$images"
+}
 
 # 3b. Mirrored install: nothing may be left on a public registry. This is the
 #     chart-side equivalent of TestNoPublicRegistryWhenMirrored in the
 #     operator, and it covers the env vars a Go test cannot see.
-while read -r image; do
-  [ -n "$image" ] || continue
-  case "$image" in
-  "$MIRROR"/*) ;;
-  *) fail "with global.imageRegistry set, the chart still renders '$image' outside the mirror." ;;
-  esac
-done <<<"$mirrored_images"
+check_mirror_prefix() {
+  local label=$1 images=$2 image
+  while read -r image; do
+    [ -n "$image" ] || continue
+    case "$image" in
+    "$MIRROR"/*) ;;
+    *) fail "$label: with global.imageRegistry set, the chart still renders '$image' outside the mirror." ;;
+    esac
+  done <<<"$images"
+}
 
 # 3c. Mirrored install, continued: the reference has to be in the mirror, not
 #     merely under its prefix. scripts/mirror_images.sh names each destination
@@ -295,18 +360,80 @@ done <<<"$mirrored_images"
 #     inventory carries, or it points at a path 'make mirror-images' never
 #     pushed to and the install fails at pull time on the one path this
 #     feature exists for.
-inventory_names="$(jq -r '.images[].name' "$INVENTORY" | sort -u)"
-while read -r image; do
-  [ -n "$image" ] || continue
-  case "$image" in
-  "$MIRROR"/*) ;;
-  *) continue ;; # not under the prefix is check 3b's finding, not this one
-  esac
-  split_ref "$image"
-  segment="${ref_repo##*/}"
-  grep -qxF "$segment" <<<"$inventory_names" ||
-    fail "with global.imageRegistry set, the chart renders '$image', but no $INVENTORY entry is named '${segment}' — 'make mirror-images' pushes each image to <prefix>/<name>, so nothing ever pushed there. Either rename the entry or pass the real name to kube-agents.thirdPartyImage."
-done <<<"$mirrored_images"
+check_mirror_names() {
+  local label=$1 images=$2 image segment
+  while read -r image; do
+    [ -n "$image" ] || continue
+    case "$image" in
+    "$MIRROR"/*) ;;
+    *) continue ;; # not under the prefix is check 3b's finding, not this one
+    esac
+    split_ref "$image"
+    segment="${ref_repo##*/}"
+    grep -qxF "$segment" <<<"$inventory_names" ||
+      fail "$label: with global.imageRegistry set, the chart renders '$image', but no $INVENTORY entry is named '${segment}' — 'make mirror-images' pushes each image to <prefix>/<name>, so nothing ever pushed there. Either rename the entry or pass the real name to kube-agents.thirdPartyImage."
+  done <<<"$images"
+}
+
+# The images in the first list that the second does not carry. Both come out
+# of image_refs, so both are sorted and deduplicated.
+added_images() {
+  grep -Fxv -f <(printf '%s\n' "$2") <<<"$1" || true
+}
+
+# An off-by-default chart toggle: rendered unmirrored and mirrored on top of
+# REQUIRED_VALUES, and checked against the default pair below. Without this the
+# toggle's images reach no render at all and their pins sit behind every check
+# — the gap #1139 was filed about.
+#
+# Only what the toggle adds is checked. Its render is a superset of the default
+# pair, so passing the whole list would report a drifted LiteLLM pin once per
+# configuration that renders LiteLLM, and the same message printed twice under
+# two labels reads as two problems.
+#
+# Adding nothing is fatal. A toggle that has stopped turning on — a renamed
+# value, a chart that now requires another key — takes its images back out of
+# every check with everything still green, which is the original failure
+# wearing a new coat.
+#
+# Adding the next toggle is one call. Hindsight, behind hindsight.enabled, is
+# the one still uncovered.
+check_toggle() {
+  local name=$1
+  shift
+  local rendered mirrored_rendered added mirrored_added
+  rendered="$(render_chart "$@")" || exit 1
+  mirrored_rendered="$(render_chart "$@" --set "global.imageRegistry=$MIRROR")" || exit 1
+  added="$(added_images "$(image_refs <<<"$rendered")" "$default_images")"
+  mirrored_added="$(added_images "$(image_refs <<<"$mirrored_rendered")" "$mirrored_images")"
+  [ -n "$added" ] || {
+    echo "ERROR: enabling $name added no image the default render already carried, so its renders exercise nothing the default and mirrored pair does not and whatever it guards is unchecked. Check that the values check_toggle passes for $name still turn it on." >&2
+    exit 1
+  }
+  check_inventory_pins "$LABEL_DEFAULT with $name enabled" "$added"
+  check_mirror_prefix "$LABEL_MIRRORED with $name enabled" "$mirrored_added"
+  check_mirror_names "$LABEL_MIRRORED with $name enabled" "$mirrored_added"
+}
+
+default_render="$(render_chart)" || exit 1
+mirrored_render="$(render_chart --set "global.imageRegistry=$MIRROR")" || exit 1
+default_images="$(image_refs <<<"$default_render")"
+mirrored_images="$(image_refs <<<"$mirrored_render")"
+
+[ -n "$default_images" ] || {
+  echo "ERROR: the chart rendered no image references at all — the extraction patterns in image_refs no longer match the manifests, so checks 3a, 3b and 3c are inspecting nothing." >&2
+  exit 1
+}
+[ -n "$(image_env_refs <<<"$default_render")" ] || {
+  echo "ERROR: the chart rendered no *_IMAGE env var that image_env_refs recognises, so the images the operator stamps onto agent pods are unchecked — and the 'image:' fields keep the list above non-empty, which is why the guard above does not catch it. Either the chart stopped emitting them or IMAGE_ENV_NAME_RE no longer matches the shape it emits." >&2
+  exit 1
+}
+
+check_inventory_pins "$LABEL_DEFAULT" "$default_images"
+check_mirror_prefix "$LABEL_MIRRORED" "$mirrored_images"
+check_mirror_names "$LABEL_MIRRORED" "$mirrored_images"
+
+check_toggle githubMinter "${MINTER_VALUES[@]}"
 
 # ---------------------------------------------------------------------------
 # 4. The example manifests. They are applied by hand rather than rendered by

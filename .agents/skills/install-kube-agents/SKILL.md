@@ -25,7 +25,8 @@ default changes.
 Order of operations: resolve the image/source ref → check CLI prerequisites (including
 `terraform`, which it offers to install; `make` is not needed) → put the repository on disk and
 verify it against that ref → load `install.env` → interview for what is missing → generate
-`terraform.tfvars` → run
+`terraform.tfvars` → refuse a service account another install in the project owns
+(`check_service_account_ownership`, before the summary and the dry-run exit) → run
 `lifecycle.sh apply`. The source check happens **before** the interview, so a bad ref fails in
 seconds rather than after a dozen answers. Some steps stay `gcloud` calls outside the apply — before
 it, CMEK, the Workload Identity pool and NetworkPolicy enforcement on a pre-existing cluster; after
@@ -126,6 +127,10 @@ Upon completion, `install.sh` generates a machine-readable JSON status report at
   "timestamp": "2026-08-05T03:35:00Z"
 }
 ```
+
+The full report also carries `gvisor_enabled` and `memory_mode`. A report written before the
+interview decided them (a run that failed early) says so: `gvisor_enabled` is `null` and
+`memory_mode` is empty, rather than restating a default the run never applied.
 
 ## Supported Command-Line Flags
 

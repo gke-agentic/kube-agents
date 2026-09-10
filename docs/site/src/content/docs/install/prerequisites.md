@@ -72,7 +72,7 @@ leaves the API server dialing a port nothing is listening on; see
 
 The operator's admission webhooks need TLS certificates managed by [cert-manager](https://cert-manager.io) (v1.13.0+).
 
-**You usually do not need to install this yourself.** The Terraform composition `terraform/examples/full-install` installs cert-manager as its own `helm_release`, pinned in its `cert_manager_version` variable, including the leader-election relocation Autopilot needs. On an existing cluster that already runs cert-manager, set `enable_cert_manager = false` — the composition does not detect an existing install and the apply fails on the existing CRDs. The installer (`install.sh`) probes for a `cert-manager` Deployment on the existing-cluster path and writes that variable for you. (An existing cert-manager installed under a different namespace or release name is not detected.)
+**You usually do not need to install this yourself.** The Terraform composition `terraform/examples/full-install` installs cert-manager as its own `helm_release`, pinned in its `cert_manager_version` variable, including the leader-election relocation Autopilot needs. On an existing cluster that already runs cert-manager, set `enable_cert_manager = false` — the composition does not detect an existing install and the apply fails on the existing CRDs. The installer (`install.sh`) probes for a `cert-manager` Deployment on the existing-cluster path and writes that variable for you, keeping `true` when the Deployment is the composition's own release recorded in this install's Terraform state. (An existing cert-manager installed under a different namespace or release name is not detected.)
 
 Install it by hand only if you are:
 
