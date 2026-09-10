@@ -1696,18 +1696,38 @@ tf_compose_dir() {
   echo "${1}/terraform/examples/full-install"
 }
 
+# Evaluates PIPESTATUS after a pipeline guarded with `|| ps=("${PIPESTATUS[@]}")`.
+# Dispatches to on_error with the primary command name instead of the trailing tee.
+handle_pipeline_status() {
+  local primary_cmd="$1"
+  local log_file="$2"
+  local rc_primary="${3:-0}"
+  local rc_tee="${4:-0}"
+
+  if [ "$rc_primary" -ne 0 ]; then
+    on_error "$rc_primary" "$LINENO" "$primary_cmd"
+  elif [ "$rc_tee" -ne 0 ]; then
+    on_error "$rc_tee" "$LINENO" "tee \"$log_file\""
+  fi
+}
+
 # Runs lifecycle.sh apply against the generated terraform.tfvars. Reads the
 # install coordinates from the environment (load install.env first).
 run_lifecycle_apply() {
   local repo_dir="$1"
   local log_file="$2"
+  local -a ps=()
   (
     cd "$(tf_compose_dir "$repo_dir")"
     export KUBE_AGENTS_STATE_BUCKET="${KUBE_AGENTS_STATE_BUCKET:-$DEFAULT_KUBE_AGENTS_STATE_BUCKET}"
     export KUBE_AGENTS_STATE_PREFIX
     KUBE_AGENTS_STATE_PREFIX="$(tf_state_prefix)"
     ./lifecycle.sh apply -auto-approve -input=false
-  ) 2>&1 | tee "$log_file"
+  ) 2>&1 | tee "$log_file" || ps=("${PIPESTATUS[@]}")
+
+  # ${ps[@]+"${ps[@]}"}: empty on a clean apply, and macOS's bash 3.2 treats an
+  # empty array expansion as unbound under `set -u`.
+  handle_pipeline_status "./lifecycle.sh apply -auto-approve -input=false" "$log_file" ${ps[@]+"${ps[@]}"}
 }
 
 # CMEK on a pre-existing cluster is the one create-path behaviour Terraform

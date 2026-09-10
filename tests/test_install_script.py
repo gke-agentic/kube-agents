@@ -2493,5 +2493,79 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
             self.assertIn("Tool 'gke-gcloud-auth-plugin' is still missing", proc.stderr + proc.stdout)
 
 
+class RunLifecycleApplyTrapTest(unittest.TestCase):
+    """Verifies that run_lifecycle_apply does not trigger duplicate ERR traps or
+    misleading 'tee' error banners when lifecycle.sh fails (#1298)."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self._tmp_path = pathlib.Path(tmp.name)
+        self._empty_install_env = self._tmp_path / "install.env"
+        self._empty_install_env.write_text("")
+
+    def _run_func(self, func_call, cwd=None):
+        setup = f"""
+source "{_INSTALLER_COMMON}"
+KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
+{func_call}
+"""
+        overrides = {
+            "KUBE_AGENTS_INSTALL_ENV": str(self._empty_install_env),
+            "KUBE_AGENTS_INSTALL_REPORT_FILE": str(self._tmp_path / "report.json"),
+        }
+        full_env = get_isolated_test_env(overrides=overrides)
+        return subprocess.run(
+            ["bash", "-c", setup],
+            capture_output=True,
+            text=True,
+            env=full_env,
+            cwd=str(cwd or _REPO_ROOT),
+        )
+
+    def test_failed_apply_reports_only_command_and_not_tee(self):
+        repo_dir = self._tmp_path / "mock-repo"
+        compose_dir = repo_dir / "terraform" / "examples" / "full-install"
+        compose_dir.mkdir(parents=True)
+        lifecycle_sh = compose_dir / "lifecycle.sh"
+        lifecycle_sh.write_text("#!/bin/bash\necho 'Terraform error' >&2\nexit 1\n")
+        lifecycle_sh.chmod(0o755)
+
+        log_file = self._tmp_path / "provision.log"
+        proc = self._run_func(f'run_lifecycle_apply "{repo_dir}" "{log_file}"')
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("Error encountered at line", proc.stderr)
+        self.assertIn("./lifecycle.sh apply -auto-approve -input=false", proc.stderr)
+        self.assertNotIn('tee "$log_file"', proc.stderr)
+        self.assertNotIn("tee ", proc.stderr)
+
+    def test_successful_apply_writes_log_file_and_succeeds(self):
+        repo_dir = self._tmp_path / "mock-repo"
+        compose_dir = repo_dir / "terraform" / "examples" / "full-install"
+        compose_dir.mkdir(parents=True)
+        lifecycle_sh = compose_dir / "lifecycle.sh"
+        lifecycle_sh.write_text("#!/bin/bash\necho 'Apply complete'\nexit 0\n")
+        lifecycle_sh.chmod(0o755)
+
+        log_file = self._tmp_path / "provision.log"
+        proc = self._run_func(f'run_lifecycle_apply "{repo_dir}" "{log_file}"')
+
+        self.assertEqual(proc.returncode, 0, f"Stderr: {proc.stderr}")
+        self.assertTrue(log_file.exists())
+        self.assertIn("Apply complete", log_file.read_text())
+
+    def test_pipeline_status_handles_empty_array_safely_under_set_u(self):
+        source = _INSTALL_SH.read_text()
+        self.assertIn(
+            'handle_pipeline_status "./lifecycle.sh apply -auto-approve -input=false" "$log_file" ${ps[@]+"${ps[@]}"}',
+            source,
+        )
+        self.assertNotIn(
+            'handle_pipeline_status "./lifecycle.sh apply -auto-approve -input=false" "$log_file" "${ps[@]}"',
+            source,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
