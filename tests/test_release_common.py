@@ -740,8 +740,10 @@ source "{_COMMON_SH}"
     #
     # Shared by calculate_next_version.sh, which reads it to pick the bump, and
     # resolve_scheduled_release.sh, which reads it to decide whether an
-    # unattended release stops for a human. The two disagreeing is silent in the
-    # unsafe direction, so the last test here pins that neither keeps a copy.
+    # unattended release on stable GA (>= 1.0.0) stops for a human (while
+    # pre-1.0 breaking changes bump MINOR and release unattended). The two
+    # disagreeing is silent in the unsafe direction, so the last test here pins
+    # that neither keeps a copy.
 
     def test_commit_messages_have_breaking_change_detects_a_bang_subject(self):
         for subject in ("feat!: drop it", "fix(operator)!: drop the v1alpha1 field"):

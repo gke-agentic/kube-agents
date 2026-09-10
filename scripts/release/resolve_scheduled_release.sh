@@ -202,7 +202,7 @@ fi
 # The definition is common.sh's, shared with calculate_next_version.sh, because a
 # second copy here is how the bump and the halt come to disagree about what
 # "breaking" means — and the direction that fails silently is the gate waving one
-# through into an unattended release.
+# through into an unattended release on stable releases.
 #
 # Reached only with a GA tag in hand, which is what keeps this bounded. Against
 # all of history it would match some long-shipped `feat!:` and then never stop

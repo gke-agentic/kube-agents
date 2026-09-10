@@ -296,11 +296,12 @@ release_read_commit_range() {
 # bang on the type, or a BREAKING CHANGE / BREAKING-CHANGE footer.
 #
 # Both callers take the same answer from here rather than each holding a copy of
-# the regexes. calculate_next_version.sh reads it to pick the bump, and
-# resolve_scheduled_release.sh reads it to decide whether an unattended release
-# has to stop for a human. Two copies drift in a way nothing notices: widen one
-# to catch a footer variant and the gate silently stops halting on that shape,
-# so a breaking change ships unattended with every suite green.
+# the regexes. calculate_next_version.sh reads it to pick the bump (bumping MINOR
+# in 0.y.z under SemVer Clause 4, or MAJOR in >= 1.0.0), and
+# resolve_scheduled_release.sh reads it to decide whether an unattended release on
+# stable GA (>= 1.0.0) has to stop for a human. Two copies drift in a way nothing
+# notices: widen one to catch a footer variant and the gate silently stops
+# halting on that shape on stable releases.
 #
 # Herestrings rather than `echo … | grep -q`. Under `set -o pipefail` grep exits
 # on its first match, the producer then dies on SIGPIPE, and the pipeline reports
