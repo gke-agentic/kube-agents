@@ -1965,9 +1965,9 @@ class UnrecordedInterviewAnswersAreReportedTest(unittest.TestCase):
         recorded = "".join(
             f"{key}=''\n"
             for key in (
-                "ALLOWED_USERS", "SLACK_ALLOWED_USERS", "SLACK_HOME_CHANNEL",
-                "SLACK_HOME_CHANNEL_NAME", "GITOPS_ORG", "GITHUB_APP_ID",
-                "GITHUB_PEM_PATH",
+                "ALLOWED_USERS", "GOOGLE_CHAT_HOME_CHANNEL", "SLACK_ALLOWED_USERS",
+                "SLACK_HOME_CHANNEL", "SLACK_HOME_CHANNEL_NAME", "GITOPS_ORG",
+                "GITHUB_APP_ID", "GITHUB_PEM_PATH",
             )
         )
         proc = self._warn(recorded, {})
