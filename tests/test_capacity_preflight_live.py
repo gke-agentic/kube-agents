@@ -1,10 +1,22 @@
-"""Live cluster validation tests for capacity preflight and rollout visibility (#1297).
+"""Live cluster validation for capacity preflight and rollout visibility (#1297).
 
-These tests run against a real, live GKE/Kubernetes cluster if one is configured
-and reachable via kubectl. If no live cluster is connected or kubectl fails,
-the tests gracefully skip to protect offline CI environments.
+This file sits in `tests/`, which `make test-python` and `make verify` run on
+every pull request, so it is gated on an explicit opt-in rather than on a
+kubeconfig probe: `KUBE_AGENTS_LIVE_CAPACITY_CLUSTER` names the GKE context to
+run against, and without it every test here skips. A probe would have run this
+suite against whichever cluster a developer's shell pointed at — a `kind-*`
+context fails the coordinate match, a small GKE Standard cluster fails the
+sizing matrix on a real deficit, and either way the sweep goes red on code the
+developer did not touch while issuing `kubectl get pods -A` against their
+cluster. `tests/conformance/bucket2/__init__.py` gates the same way and says
+the same thing.
 
-All operations in this suite are 100% READ-ONLY against the cluster.
+Run it with:
+
+    KUBE_AGENTS_LIVE_CAPACITY_CLUSTER=gke_<project>_<location>_<cluster> \\
+        python3 -m unittest tests.test_capacity_preflight_live
+
+All operations in this suite are read-only against the cluster.
 """
 
 import json
@@ -22,9 +34,28 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _INSTALL_SH = _REPO_ROOT / "install.sh"
 _INSTALLER_COMMON = _REPO_ROOT / "scripts" / "installer" / "installer_common.sh"
 
+# The opt-in. Its value is the kubectl context to run against, which must be a
+# GKE one: the preflight derives gke_<project>_<location>_<cluster> from its
+# arguments and skips on a mismatch, so a context of any other shape would
+# leave the suite asserting on a check that never ran.
+_LIVE_CLUSTER_ENV_VAR = "KUBE_AGENTS_LIVE_CAPACITY_CLUSTER"
+_GKE_CONTEXT_PATTERN = re.compile(r"^gke_([^_]+)_([^_]+)_(.+)$")
+
+
+def _requested_context() -> str:
+    return os.environ.get(_LIVE_CLUSTER_ENV_VAR, "").strip()
+
 
 def _is_live_cluster_available() -> tuple[bool, str]:
-    """Checks whether a live cluster is reachable via kubectl in read-only mode."""
+    """Whether the opted-in context is the current one and answers a read."""
+    requested = _requested_context()
+    if not requested:
+        return False, f"{_LIVE_CLUSTER_ENV_VAR} is unset"
+    if not _GKE_CONTEXT_PATTERN.match(requested):
+        return False, (
+            f"{_LIVE_CLUSTER_ENV_VAR}='{requested}' is not a GKE context "
+            "(gke_<project>_<location>_<cluster>)"
+        )
     if not shutil.which("kubectl"):
         return False, "kubectl binary not found"
     try:
@@ -37,6 +68,8 @@ def _is_live_cluster_available() -> tuple[bool, str]:
         if ctx_proc.returncode != 0 or not ctx_proc.stdout.strip():
             return False, "no current kubectl context configured"
         ctx = ctx_proc.stdout.strip()
+        if ctx != requested:
+            return False, f"current context '{ctx}' is not the requested '{requested}'"
         nodes_proc = subprocess.run(
             ["kubectl", "get", "nodes", "--no-headers"],
             capture_output=True,
@@ -59,16 +92,11 @@ class LiveCapacityPreflightTest(unittest.TestCase):
         if not available:
             raise unittest.SkipTest(f"Live cluster not available ({reason}); skipping live test suite.")
         cls.context = reason
-        # Parse GKE coordinates if applicable
-        match = re.match(r"^gke_([^_]+)_([^_]+)_(.+)$", cls.context)
-        if match:
-            cls.project = match.group(1)
-            cls.region = match.group(2)
-            cls.cluster = match.group(3)
-        else:
-            cls.project = os.environ.get("PROJECT_ID", "live-project")
-            cls.region = os.environ.get("REGION", "us-east4")
-            cls.cluster = os.environ.get("CLUSTER_NAME", "live-cluster")
+        # Guaranteed to match: the gate rejected every other shape.
+        match = _GKE_CONTEXT_PATTERN.match(cls.context)
+        cls.project = match.group(1)
+        cls.region = match.group(2)
+        cls.cluster = match.group(3)
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()

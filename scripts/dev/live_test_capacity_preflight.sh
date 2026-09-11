@@ -89,9 +89,13 @@ if [[ "$CURRENT_CTX" =~ ^gke_([^_]+)_([^_]+)_(.+)$ ]]; then
   echo -e "  ℹ Detected GKE coordinates: Project=${PROJECT_ID}, Region=${REGION}, Cluster=${CLUSTER_NAME}"
 fi
 
-CLUSTER_NAME="${CLUSTER_NAME:-${DETECTED_CLUSTER:-live-cluster}}"
-REGION="${REGION:-${DETECTED_REGION:-us-central1}}"
-PROJECT_ID="${PROJECT_ID:-${DETECTED_PROJECT:-live-project}}"
+if [ -z "$CLUSTER_NAME" ] || [ -z "$REGION" ] || [ -z "$PROJECT_ID" ]; then
+  test_fail "Could not derive GKE coordinates from context '${CURRENT_CTX}'. Set PROJECT_ID, REGION and CLUSTER_NAME, or switch to a gke_<project>_<location>_<cluster> context."
+  # Invented coordinates would not fail the run: the preflight compares them
+  # against the current context, finds a mismatch, warns and returns 0 — so
+  # every check below would pass against a check that never executed.
+  exit 1
+fi
 
 NODE_COUNT="$(kubectl get nodes --no-headers 2>/dev/null | wc -l | tr -d ' ')"
 echo -e "  ℹ Live cluster has ${C_BOLD}${NODE_COUNT}${C_RESET} node(s)"
@@ -364,22 +368,32 @@ fi
 # ------------------------------------------------------------------------------
 test_start "7. Flag Validation (--helm-timeout & --skip-capacity-check)"
 
-# Valid timeout flag
-PARAM_HELM_TIMEOUT="900"
-if [[ "$PARAM_HELM_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
-  test_pass "--helm-timeout=900 accepted as valid positive integer"
-else
-  test_fail "--helm-timeout=900 rejected"
-fi
+# install.sh's own validator, in a subshell so a rejection cannot end this run.
+# Re-implementing the regex here would assert this file against itself, and
+# stay green with the check in install.sh deleted.
+run_validate_helm_timeout() {
+  (
+    KUBE_AGENTS_SOURCE_ONLY=true source "${INSTALL_SH}" >/dev/null 2>&1
+    validate_helm_timeout "$1"
+  ) >/dev/null 2>&1
+}
 
-# Invalid timeout values rejected
-invalid_timeouts=("0" "-15" "abc" "10m")
-for inv in "${invalid_timeouts[@]}"; do
-  PARAM_HELM_TIMEOUT="$inv"
-  if [[ ! "$PARAM_HELM_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
-    test_pass "Invalid --helm-timeout='${inv}' correctly rejected"
+for valid in "540" "600" "899"; do
+  if run_validate_helm_timeout "$valid"; then
+    test_pass "--helm-timeout=${valid} accepted by install.sh's validator"
   else
+    test_fail "--helm-timeout=${valid} rejected by install.sh's validator"
+  fi
+done
+
+# Non-integers, and values outside the window hindsight-api's manifest fixes:
+# under 540 the wait ends mid cold start, 900 is its progressDeadlineSeconds.
+invalid_timeouts=("0" "-15" "abc" "10m" "539" "900" "1800")
+for inv in "${invalid_timeouts[@]}"; do
+  if run_validate_helm_timeout "$inv"; then
     test_fail "Invalid --helm-timeout='${inv}' was unexpectedly accepted"
+  else
+    test_pass "Invalid --helm-timeout='${inv}' correctly rejected"
   fi
 done
 
