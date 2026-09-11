@@ -1825,6 +1825,19 @@ check_existing_cluster_capacity_preflight() {
   local gitops_repo="${8:-${GITOPS_REPO:-}}"
   local enable_cert_manager="${9:-${TFVARS_ENABLE_CERT_MANAGER:-true}}"
 
+  if ! type print_info >/dev/null 2>&1; then
+    print_info() { echo "  ℹ $1"; }
+  fi
+  if ! type print_warning >/dev/null 2>&1; then
+    print_warning() { echo "  ⚠ $1" >&2; }
+  fi
+  if ! type print_success >/dev/null 2>&1; then
+    print_success() { echo "  ✓ $1"; }
+  fi
+  if ! type print_error >/dev/null 2>&1; then
+    print_error() { echo "  ✗ $1" >&2; }
+  fi
+
   if is_truthy "${SKIP_CAPACITY_CHECK:-false}"; then
     print_info "Skipping cluster capacity preflight check (SKIP_CAPACITY_CHECK=true)."
     return 0
@@ -1894,23 +1907,23 @@ check_existing_cluster_capacity_preflight() {
     req_mem=$((req_mem + PREFLIGHT_MIN_MEM_MIB_HINDSIGHT))
   fi
 
-  local single_pod_min_cpu=0
-  local single_pod_min_mem=0
+  local single_pods_spec="[{\"name\":\"LiteLLM\",\"cpu\":${PREFLIGHT_MIN_CPU_MILLIS_LITELLM_REPLICA},\"mem\":${PREFLIGHT_MIN_MEM_MIB_LITELLM_REPLICA}}"
+  if is_truthy "$webui_enabled"; then
+    single_pods_spec="${single_pods_spec},{\"name\":\"WebUI\",\"cpu\":${PREFLIGHT_MIN_CPU_MILLIS_WEBUI},\"mem\":${PREFLIGHT_MIN_MEM_MIB_WEBUI}}"
+  fi
+  if [ -n "$gitops_org" ] && [ -n "$gitops_repo" ]; then
+    single_pods_spec="${single_pods_spec},{\"name\":\"Minter\",\"cpu\":${PREFLIGHT_MIN_CPU_MILLIS_MINTER},\"mem\":${PREFLIGHT_MIN_MEM_MIB_MINTER}}"
+  fi
   if ! is_truthy "$gvisor_enabled"; then
     req_cpu=$((req_cpu + PREFLIGHT_MIN_CPU_MILLIS_AGENT_UNSANDBOXED))
     req_mem=$((req_mem + PREFLIGHT_MIN_MEM_MIB_AGENT_UNSANDBOXED))
-    single_pod_min_cpu=$PREFLIGHT_MIN_CPU_MILLIS_AGENT_UNSANDBOXED
-    single_pod_min_mem=$PREFLIGHT_MIN_MEM_MIB_AGENT_UNSANDBOXED
+    single_pods_spec="${single_pods_spec},{\"name\":\"unsandboxed agent\",\"cpu\":${PREFLIGHT_MIN_CPU_MILLIS_AGENT_UNSANDBOXED},\"mem\":${PREFLIGHT_MIN_MEM_MIB_AGENT_UNSANDBOXED}}"
   fi
 
   if [ "$memory_mode" = "hindsight" ]; then
-    if [ "$single_pod_min_cpu" -lt "$PREFLIGHT_MIN_CPU_MILLIS_HINDSIGHT_API" ]; then
-      single_pod_min_cpu=$PREFLIGHT_MIN_CPU_MILLIS_HINDSIGHT_API
-    fi
-    if [ "$single_pod_min_mem" -lt "$PREFLIGHT_MIN_MEM_MIB_HINDSIGHT_API" ]; then
-      single_pod_min_mem=$PREFLIGHT_MIN_MEM_MIB_HINDSIGHT_API
-    fi
+    single_pods_spec="${single_pods_spec},{\"name\":\"hindsight-api\",\"cpu\":${PREFLIGHT_MIN_CPU_MILLIS_HINDSIGHT_API},\"mem\":${PREFLIGHT_MIN_MEM_MIB_HINDSIGHT_API}}"
   fi
+  single_pods_spec="${single_pods_spec}]"
 
   local eval_result
   eval_result="$(python3 -c '
@@ -1944,8 +1957,7 @@ try:
         pods = json.load(f)
     req_cpu = int(sys.argv[3])
     req_mem = int(sys.argv[4])
-    single_cpu = int(sys.argv[5])
-    single_mem = int(sys.argv[6])
+    single_pods = json.loads(sys.argv[5]) if len(sys.argv) > 5 else []
 except Exception as e:
     print(json.dumps({"error": str(e)}))
     sys.exit(0)
@@ -1955,7 +1967,10 @@ for n in nodes.get("items", []):
     name = n["metadata"]["name"]
     taints = n.get("spec", {}).get("taints", [])
     has_nosched = any(t.get("effect") in ("NoSchedule", "NoExecute") for t in taints)
-    if not has_nosched:
+    is_unschedulable = n.get("spec", {}).get("unschedulable", False)
+    conditions = n.get("status", {}).get("conditions", [])
+    is_not_ready = any(c.get("type") == "Ready" and c.get("status") in ("False", "Unknown") for c in conditions)
+    if not has_nosched and not is_unschedulable and not is_not_ready:
         alloc_cpu = parse_cpu(n.get("status", {}).get("allocatable", {}).get("cpu", 0))
         alloc_mem = parse_mem(n.get("status", {}).get("allocatable", {}).get("memory", 0))
         untainted_nodes[name] = {
@@ -1963,6 +1978,8 @@ for n in nodes.get("items", []):
             "alloc_mem": alloc_mem,
             "req_cpu": 0,
             "req_mem": 0,
+            "sched_cpu": 0,
+            "sched_mem": 0,
         }
 
 for p in pods.get("items", []):
@@ -1985,19 +2002,18 @@ for p in pods.get("items", []):
 
 total_sched_cpu = 0
 total_sched_mem = 0
-has_single_node_fit = False
 max_single_cpu = 0
 max_single_mem = 0
 
 for name, data in untainted_nodes.items():
     sched_cpu = max(0, data["alloc_cpu"] - data["req_cpu"])
     sched_mem = max(0, data["alloc_mem"] - data["req_mem"])
+    data["sched_cpu"] = sched_cpu
+    data["sched_mem"] = sched_mem
     total_sched_cpu += sched_cpu
     total_sched_mem += sched_mem
     max_single_cpu = max(max_single_cpu, sched_cpu)
     max_single_mem = max(max_single_mem, sched_mem)
-    if sched_cpu >= single_cpu and sched_mem >= single_mem:
-        has_single_node_fit = True
 
 ok = True
 reason = ""
@@ -2010,9 +2026,17 @@ elif total_sched_cpu < req_cpu:
 elif total_sched_mem < req_mem:
     ok = False
     reason = f"Insufficient schedulable Memory ({total_sched_mem}Mi < {req_mem}Mi)"
-elif (single_cpu > 0 or single_mem > 0) and not has_single_node_fit:
-    ok = False
-    reason = f"No single untainted node has sufficient schedulable capacity for the largest single workload pod (requires {single_cpu}m CPU, {single_mem}Mi Memory; max available on a single node is {max_single_cpu}m CPU, {max_single_mem}Mi Memory)"
+else:
+    for sp in single_pods:
+        p_name = sp.get("name", "workload")
+        p_cpu = int(sp.get("cpu", 0))
+        p_mem = int(sp.get("mem", 0))
+        if p_cpu > 0 or p_mem > 0:
+            fit = any(d["sched_cpu"] >= p_cpu and d["sched_mem"] >= p_mem for d in untainted_nodes.values())
+            if not fit:
+                ok = False
+                reason = f"No single untainted node has sufficient schedulable capacity for {p_name} pod (requires {p_cpu}m CPU, {p_mem}Mi Memory; max available on a single node is {max_single_cpu}m CPU, {max_single_mem}Mi Memory)"
+                break
 
 print(json.dumps({
     "ok": ok,
@@ -2023,7 +2047,7 @@ print(json.dumps({
     "req_mem": req_mem,
     "reason": reason
 }))
-' "${tmp_cap_dir}/nodes.json" "${tmp_cap_dir}/pods.json" "$req_cpu" "$req_mem" "$single_pod_min_cpu" "$single_pod_min_mem" 2>/dev/null || true)"
+' "${tmp_cap_dir}/nodes.json" "${tmp_cap_dir}/pods.json" "$req_cpu" "$req_mem" "$single_pods_spec" 2>/dev/null || true)"
 
   rm -rf "$tmp_cap_dir"
 

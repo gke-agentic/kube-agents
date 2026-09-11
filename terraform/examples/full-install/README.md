@@ -485,6 +485,10 @@ composition's own CR on the first apply. See the
 [chart README](../../../charts/kube-agents/README.md) for switching it to
 `Fail` afterwards.
 
+### Helm rollout timeout (`helm_timeout`)
+
+`helm_timeout` (default `600`, in seconds) controls the wait timeout for both the `cert_manager` and `kube_agents` Helm releases. Increase this value on clusters with constrained node resources or slower container image pull rates to prevent premature `context deadline exceeded` timeouts during rollout.
+
 ### Reaching the control plane (`allow_external_dns_traffic`)
 
 `allow_external_dns_traffic` (default `false`) is passed to the `gke-cluster`

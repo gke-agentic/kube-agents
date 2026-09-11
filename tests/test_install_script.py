@@ -3735,6 +3735,129 @@ TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_
             self.assertEqual(proc.returncode, 0)
             self.assertIn("does not match target cluster", proc.stdout)
 
+    def test_preflight_multidimensional_pods_fit_separate_nodes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = pathlib.Path(tmp) / "bin"
+            bin_dir.mkdir()
+            # Node 1 fits hindsight-api (2000m CPU, 1024Mi mem): has 2500m CPU, 2500Mi mem (< 2560Mi needed for agent)
+            # Node 2 fits unsandboxed agent (1250m CPU, 2560Mi mem): has 1500m CPU (< 2000m needed for hindsight), 3500Mi mem
+            # Neither node fits a synthesized hybrid (2000m CPU AND 2560Mi mem),
+            # but each pod fits on its own node. Total CPU = 4000m >= 3740m, Total Mem = 6000Mi >= 5024Mi.
+            nodes_json = json.dumps({
+                "items": [
+                    {
+                        "metadata": {"name": "node-hindsight-fit"},
+                        "spec": {"taints": []},
+                        "status": {"allocatable": {"cpu": "2500m", "memory": "2500Mi"}},
+                    },
+                    {
+                        "metadata": {"name": "node-agent-fit"},
+                        "spec": {"taints": []},
+                        "status": {"allocatable": {"cpu": "1500m", "memory": "3500Mi"}},
+                    },
+                ]
+            })
+            pods_json = json.dumps({"items": []})
+            kubectl = bin_dir / "kubectl"
+            kubectl.write_text(f"""#!/usr/bin/env bash
+case "$*" in
+  *nodes*-o*json*) cat << 'EOF'
+{nodes_json}
+EOF
+  ;;
+  *pods*-o*json*) cat << 'EOF'
+{pods_json}
+EOF
+  ;;
+esac
+exit 0
+""")
+            kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
+            body = f"""
+{_SOURCE_INSTALLER_COMMON}
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj" "false" "hindsight" "false" "" ""
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+            self.assertIn("Cluster capacity preflight check passed", proc.stdout)
+
+    def test_preflight_default_litellm_single_node_fit_enforced(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = pathlib.Path(tmp) / "bin"
+            bin_dir.mkdir()
+            # 5 nodes with 100m CPU and 400Mi memory each -> total 500m CPU, 2000Mi mem (> 240m CPU, 1184Mi mem total)
+            # But LiteLLM requires 512Mi on a single node!
+            nodes_json = json.dumps({
+                "items": [
+                    {
+                        "metadata": {"name": f"node-{i}"},
+                        "spec": {"taints": []},
+                        "status": {"allocatable": {"cpu": "100m", "memory": "400Mi"}},
+                    } for i in range(5)
+                ]
+            })
+            pods_json = json.dumps({"items": []})
+            kubectl = bin_dir / "kubectl"
+            kubectl.write_text(f"""#!/usr/bin/env bash
+case "$*" in
+  *nodes*-o*json*) cat << 'EOF'
+{nodes_json}
+EOF
+  ;;
+  *pods*-o*json*) cat << 'EOF'
+{pods_json}
+EOF
+  ;;
+esac
+exit 0
+""")
+            kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
+            body = f"""
+{_SOURCE_INSTALLER_COMMON}
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj" "true" "file" "false" "" ""
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 1, f"Expected failure due to LiteLLM 512Mi single-pod requirement, got {proc.returncode}")
+            self.assertIn("No single untainted node has sufficient schedulable capacity for LiteLLM pod", proc.stdout)
+
+    def test_diagnose_rollout_failure_prints_unready_pods_on_timeout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = pathlib.Path(tmp) / "bin"
+            bin_dir.mkdir()
+            kubectl = bin_dir / "kubectl"
+            kubectl.write_text("""#!/usr/bin/env bash
+case "$*" in
+  *status.phase=Pending*) echo "" ;;
+  *status.phase=Running*) cat << 'EOF'
+{"items": [{"metadata": {"name": "agent-gateway-xyz"}, "status": {"containerStatuses": [{"ready": false}]}}]}
+EOF
+  ;;
+  *get*events*) echo "CrashLoopBackOff Back-off 10s restarting failed container" ;;
+esac
+exit 0
+""")
+            kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
+            log_file = pathlib.Path(tmp) / "prov.log"
+            log_file.write_text("Error: timed out waiting for the condition\\n")
+            body = f"""
+diagnose_rollout_failure "{log_file}"
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+            self.assertIn("Helm rollout timed out waiting for Kubernetes workloads", proc.stdout)
+            self.assertIn("Unready / Crashing Pods Detected", proc.stdout)
+            self.assertIn("agent-gateway-xyz", proc.stdout)
+            self.assertIn("CrashLoopBackOff", proc.stdout)
+
+    def test_monitor_lifecycle_rollout_passes_dns_flag_on_context_mismatch(self):
+        source = _INSTALL_SH.read_text()
+        self.assertIn("gke_dns_endpoint_flag", source)
+        self.assertIn(
+            'gcloud container clusters get-credentials "${CLUSTER_NAME:-$DEFAULT_CLUSTER_NAME}" \\\n            --location "${REGION:-$DEFAULT_REGION}" --project "${PROJECT_ID:-}" $gke_dns_flag',
+            source,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
+

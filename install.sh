@@ -34,8 +34,10 @@ MINTY_CLI_GIT_TAG="v2.7.1"
 MINTY_CLI_MANUAL_CLONE_DIR="/tmp/minty"
 SPINNER_INTERVAL_SECS="0.2"
 
-# Polling interval in seconds for background rollout monitoring during terraform apply
+# Polling interval and limits for background rollout monitoring and diagnostics (#1297)
 readonly ROLLOUT_MONITOR_POLL_INTERVAL_SECS=20
+readonly ROLLOUT_DIAGNOSTIC_EVENT_LIMIT=5
+readonly ROLLOUT_MONITOR_KUBECTL_TIMEOUT="5s"
 
 # ─── ANSI Colors & Terminal Responsive Helpers ─────────────────────────────────
 # A function because scripts/installer/common.sh defines the same variables
@@ -1939,8 +1941,15 @@ monitor_lifecycle_rollout() {
       current_ctx="$(kubectl config current-context 2>/dev/null || true)"
       if [ -n "$expected_ctx" ] && [ -n "$current_ctx" ] && [ "$current_ctx" != "$expected_ctx" ]; then
         if command -v gcloud >/dev/null 2>&1 && [ -n "${PROJECT_ID:-}" ]; then
+          local gke_dns_flag=""
+          if type gke_dns_endpoint_flag >/dev/null 2>&1; then
+            GKE_DNS_ENDPOINT_FLAG=""
+            gke_dns_endpoint_flag "${CLUSTER_NAME:-$DEFAULT_CLUSTER_NAME}" "${REGION:-$DEFAULT_REGION}" "${PROJECT_ID:-}" 2>/dev/null || true
+            gke_dns_flag="$GKE_DNS_ENDPOINT_FLAG"
+          fi
+          # shellcheck disable=SC2086
           gcloud container clusters get-credentials "${CLUSTER_NAME:-$DEFAULT_CLUSTER_NAME}" \
-            --location "${REGION:-$DEFAULT_REGION}" --project "${PROJECT_ID:-}" >/dev/null 2>&1 || true
+            --location "${REGION:-$DEFAULT_REGION}" --project "${PROJECT_ID:-}" $gke_dns_flag >/dev/null 2>&1 || true
           current_ctx="$(kubectl config current-context 2>/dev/null || true)"
         fi
         if [ "$current_ctx" != "$expected_ctx" ]; then
@@ -1955,12 +1964,12 @@ monitor_lifecycle_rollout() {
 
       for ns in "${namespaces_to_check[@]}"; do
         local p_names
-        p_names="$(kubectl get pods -n "$ns" --field-selector=status.phase=Pending -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)"
+        p_names="$(kubectl --request-timeout="$ROLLOUT_MONITOR_KUBECTL_TIMEOUT" get pods -n "$ns" --field-selector=status.phase=Pending -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)"
         for p in $p_names; do
           local reason
-          reason="$(kubectl get events -n "$ns" --field-selector "involvedObject.name=${p},type=Warning" --sort-by='.lastTimestamp' -o jsonpath='{.items[-1].message}' 2>/dev/null || true)"
+          reason="$(kubectl --request-timeout="$ROLLOUT_MONITOR_KUBECTL_TIMEOUT" get events -n "$ns" --field-selector "involvedObject.name=${p},type=Warning" --sort-by='.lastTimestamp' -o jsonpath='{.items[-1].message}' 2>/dev/null || true)"
           local node_name
-          node_name="$(kubectl get pod "$p" -n "$ns" -o jsonpath='{.spec.nodeName}' 2>/dev/null || true)"
+          node_name="$(kubectl --request-timeout="$ROLLOUT_MONITOR_KUBECTL_TIMEOUT" get pod "$p" -n "$ns" -o jsonpath='{.spec.nodeName}' 2>/dev/null || true)"
           local ns_label=""
           if [ "$ns" != "$namespace" ]; then
             ns_label=" (${ns})"
@@ -1995,32 +2004,26 @@ diagnose_rollout_failure() {
     return 0
   fi
 
-  local pending_pods
-  pending_pods="$(kubectl get pods -n "$namespace" --field-selector=status.phase=Pending -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)"
-
-  if [ -n "$pending_pods" ]; then
-    echo -e "\n${C_RED}${C_BOLD}Pending Pods Detected:${C_RESET}"
-    for pod in $pending_pods; do
-      echo -e "  • ${C_BOLD}${pod}${C_RESET}"
-      local events
-      events="$(kubectl get events -n "$namespace" --field-selector "involvedObject.name=${pod},type=Warning" --sort-by='.lastTimestamp' -o custom-columns=REASON:.reason,MESSAGE:.message --no-headers 2>/dev/null | tail -n 5 || true)"
-      if [ -n "$events" ]; then
-        echo "$events" | while IFS= read -r ev; do
-          echo -e "      ${C_YELLOW}↳ $ev${C_RESET}"
-        done
-      fi
-    done
+  local namespaces_to_check=("$namespace")
+  if [ "${TFVARS_ENABLE_CERT_MANAGER:-true}" = "true" ]; then
+    namespaces_to_check+=("cert-manager")
   fi
 
-  if [ "${TFVARS_ENABLE_CERT_MANAGER:-true}" = "true" ]; then
-    local cm_pending
-    cm_pending="$(kubectl get pods -n cert-manager --field-selector=status.phase=Pending -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)"
-    if [ -n "$cm_pending" ]; then
-      echo -e "\n${C_RED}${C_BOLD}Pending cert-manager Pods Detected:${C_RESET}"
-      for pod in $cm_pending; do
-        echo -e "  • ${C_BOLD}${pod}${C_RESET} (cert-manager)"
+  for ns in "${namespaces_to_check[@]}"; do
+    local ns_label=""
+    if [ "$ns" != "$namespace" ]; then
+      ns_label=" (${ns})"
+    fi
+
+    local pending_pods
+    pending_pods="$(kubectl get pods -n "$ns" --field-selector=status.phase=Pending -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)"
+
+    if [ -n "$pending_pods" ]; then
+      echo -e "\n${C_RED}${C_BOLD}Pending Pods Detected${ns_label}:${C_RESET}"
+      for pod in $pending_pods; do
+        echo -e "  • ${C_BOLD}${pod}${C_RESET}"
         local events
-        events="$(kubectl get events -n cert-manager --field-selector "involvedObject.name=${pod},type=Warning" --sort-by='.lastTimestamp' -o custom-columns=REASON:.reason,MESSAGE:.message --no-headers 2>/dev/null | tail -n 5 || true)"
+        events="$(kubectl get events -n "$ns" --field-selector "involvedObject.name=${pod},type=Warning" --sort-by='.lastTimestamp' -o custom-columns=REASON:.reason,MESSAGE:.message --no-headers 2>/dev/null | tail -n "$ROLLOUT_DIAGNOSTIC_EVENT_LIMIT" || true)"
         if [ -n "$events" ]; then
           echo "$events" | while IFS= read -r ev; do
             echo -e "      ${C_YELLOW}↳ $ev${C_RESET}"
@@ -2028,7 +2031,35 @@ diagnose_rollout_failure() {
         fi
       done
     fi
-  fi
+
+    local unready_pods
+    unready_pods="$(kubectl get pods -n "$ns" --field-selector=status.phase=Running -o json 2>/dev/null | python3 -c '
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    unready = []
+    for item in data.get("items", []):
+        statuses = item.get("status", {}).get("containerStatuses", [])
+        if statuses and any(not s.get("ready", False) for s in statuses):
+            unready.append(item["metadata"]["name"])
+    print(" ".join(unready))
+except Exception:
+    pass
+' 2>/dev/null || true)"
+    if [ -n "$unready_pods" ]; then
+      echo -e "\n${C_RED}${C_BOLD}Unready / Crashing Pods Detected${ns_label}:${C_RESET}"
+      for pod in $unready_pods; do
+        echo -e "  • ${C_BOLD}${pod}${C_RESET}"
+        local events
+        events="$(kubectl get events -n "$ns" --field-selector "involvedObject.name=${pod},type=Warning" --sort-by='.lastTimestamp' -o custom-columns=REASON:.reason,MESSAGE:.message --no-headers 2>/dev/null | tail -n "$ROLLOUT_DIAGNOSTIC_EVENT_LIMIT" || true)"
+        if [ -n "$events" ]; then
+          echo "$events" | while IFS= read -r ev; do
+            echo -e "      ${C_YELLOW}↳ $ev${C_RESET}"
+          done
+        fi
+      done
+    fi
+  done
 }
 
 # Runs lifecycle.sh apply against the generated terraform.tfvars. Reads the
