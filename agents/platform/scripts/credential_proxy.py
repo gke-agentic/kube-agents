@@ -785,8 +785,14 @@ class AgentAPIProxyHandler(BaseHTTPRequestHandler):
         supplied = self.headers.get("Authorization", "")
         expected = f"Bearer {self.external_key}"
         if not hmac.compare_digest(supplied, expected):
+            self._drain_request_body()
             self.send_error(HTTPStatus.UNAUTHORIZED)
             return
+        # The three refusals below cannot drain -- see _drain_request_body -- so a
+        # caller that sent a body may read the close before the response. They are
+        # answers to a malformed or oversized request, where the framing is already
+        # in doubt; the 401 above is the one a working client hits by holding the
+        # wrong key, and it is the one that has to arrive.
         if self.headers.get("Transfer-Encoding"):
             self.send_error(HTTPStatus.BAD_REQUEST)
             return
@@ -850,6 +856,35 @@ class AgentAPIProxyHandler(BaseHTTPRequestHandler):
             self.close_connection = True
         finally:
             upstream.close()
+
+    def _drain_request_body(self) -> None:
+        """Read the request body so a refusal is not lost to a connection reset.
+
+        Closing a socket that still holds unread request bytes sends a TCP RST,
+        and the peer discards whatever it has not yet handed to the application
+        -- including the response written a moment earlier. A client that POSTed
+        a body with the wrong key therefore read ECONNRESET rather than the 401
+        this handler sent, which is indistinguishable from a dead listener and
+        cost real time during an RC investigation.
+
+        Bounded by max_request_bytes, and declines to drain a body this handler
+        refuses on size or framing: reading an oversized or chunk-framed body to
+        make an error message survive would hand an unauthenticated caller the
+        read loop the size limit exists to deny.
+        """
+        if self.headers.get("Transfer-Encoding"):
+            return
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            return
+        if content_length <= 0 or content_length > self.max_request_bytes:
+            return
+        try:
+            self.rfile.read(content_length)
+        except (ConnectionError, TimeoutError, OSError):
+            # The peer went away mid-body. There is nothing left to protect.
+            LOGGER.debug("PlatformAgent API request body drain failed", exc_info=True)
 
     @staticmethod
     def _sanitize_header(value: str) -> str:

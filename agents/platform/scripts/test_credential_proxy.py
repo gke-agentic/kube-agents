@@ -12,6 +12,7 @@ import sys
 import tempfile
 import textwrap
 import threading
+import time
 import types
 import unittest
 import urllib.error
@@ -41,6 +42,20 @@ from credential_proxy import (
     read_current_context,
 )
 from slack_relay_patch import read_upload
+
+# How long to let a close (or a reset) reach the client before reading the
+# response, in seconds. Loopback needs no more than a few milliseconds; this is
+# padded for a loaded CI runner, and it is only ever waited out once.
+_RESET_SETTLE_SECONDS = 0.5
+
+# A request body that cannot sit entirely in the kernel's socket buffers, and so
+# is still being written when a handler that does not read it closes. Below that
+# threshold the write completes, the close is orderly, and the response arrives
+# whether or not the body was drained -- measured on loopback, 1 MiB passes
+# either way and 4 MiB does not. 8 MiB leaves room for a runner tuned higher
+# while staying under AgentAPIProxyHandler.max_request_bytes, above which the
+# handler refuses the request instead of reading it.
+_BODY_LARGER_THAN_SOCKET_BUFFERS = 8 * 1024 * 1024
 
 
 class AgentAPIProxyTest(unittest.TestCase):
@@ -91,6 +106,37 @@ class AgentAPIProxyTest(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as raised:
             urllib.request.urlopen(request)
         self.assertEqual(401, raised.exception.code)
+        self.assertEqual("", self.received_authorization)
+
+    def test_rejection_reaches_a_client_that_sent_a_body(self):
+        # Raw socket rather than urllib: the defect is at the transport, and a
+        # library that retries or re-raises would hide which of the two happened.
+        body = b"x" * _BODY_LARGER_THAN_SOCKET_BUFFERS
+        request = (
+            b"POST /v1/responses HTTP/1.1\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Authorization: Bearer wrong\r\n"
+            b"Content-Type: application/json\r\n"
+            b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body
+        )
+        received = b""
+        with socket.create_connection(
+            ("127.0.0.1", self.proxy.server_port), timeout=10
+        ) as client:
+            try:
+                client.sendall(request)
+                # Read after the close has landed rather than into the race, so a
+                # client quick enough off the mark cannot read the 401 out of the
+                # buffer before a reset would have discarded it.
+                time.sleep(_RESET_SETTLE_SECONDS)
+                while chunk := client.recv(65536):
+                    received += chunk
+            except OSError as exc:
+                self.fail(
+                    "the proxy abandoned the connection instead of delivering its 401, "
+                    f"which reads to a caller as a dead listener: {exc}"
+                )
+        self.assertIn(b"401", received.split(b"\r\n", 1)[0])
         self.assertEqual("", self.received_authorization)
 
     def test_sanitizes_crlf_in_forwarded_headers(self):
