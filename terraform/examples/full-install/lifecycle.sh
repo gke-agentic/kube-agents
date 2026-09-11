@@ -199,6 +199,7 @@ state_prefix() {
 # when nothing changed, and skipping it is how a routine `git pull` that adds a
 # module turns every subcommand below into a failure.
 ensure_init() {
+  log "initializing Terraform..."
   ensure_backend "${1:-}"
   terraform init -input=false >/dev/null || {
     warn "terraform init failed; run it by hand to see why"
@@ -841,11 +842,13 @@ case "${1:-}" in
   apply)
     shift
     ensure_init
+    log "verifying pre-apply safety guards (cluster, IAM, KMS)..."
     guard_cluster_ownership
     guard_gsa_identity
     guard_kms_identity
     guard_release_namespace
     forget_unmanaged_cluster_kms
+    log "checking pre-existing GCP resources to adopt (KMS, Pub/Sub)..."
     adopt_kms
     adopt_pubsub
     log "terraform apply"
