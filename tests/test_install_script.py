@@ -3264,9 +3264,7 @@ class SpinnerTerminalBranchTest(unittest.TestCase):
     """
 
     _READY_TIMEOUT_SECS = 30
-    _EXIT_TIMEOUT_SECS = 20
     _POLL_INTERVAL_SECS = 0.1
-    _SETTLE_SECS = 0.5
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -3324,34 +3322,6 @@ class SpinnerTerminalBranchTest(unittest.TestCase):
                 return path.read_text().strip()
             time.sleep(self._POLL_INTERVAL_SECS)
         self.fail(f"timed out after {self._READY_TIMEOUT_SECS}s waiting for {what} at {path}")
-
-    @staticmethod
-    def _is_running(pid):
-        """True only for a process that still exists and is not a zombie.
-
-        `os.kill(pid, 0)` is not that test: it succeeds for a zombie, and the
-        worker here is a grandchild whose parent the handler kills at the same
-        time, so it is routinely a zombie for the moment before it is reaped.
-        Reading it as "still running" makes this test fail at a few percent —
-        on a signal race that never happened.
-        """
-        try:
-            os.kill(pid, 0)
-        except (ProcessLookupError, PermissionError):
-            return False
-        ps = subprocess.run(
-            ["ps", "-o", "state=", "-p", str(pid)], capture_output=True, text=True
-        )
-        state = ps.stdout.strip()
-        return bool(state) and not state.startswith("Z")
-
-    def _has_exited(self, pid):
-        deadline = time.monotonic() + self._EXIT_TIMEOUT_SECS
-        while time.monotonic() < deadline:
-            if not self._is_running(pid):
-                return True
-            time.sleep(self._POLL_INTERVAL_SECS)
-        return False
 
     def test_the_spinner_loop_keeps_errexit_out_of_its_interruptible_commands(self):
         """The loop's forked children must not be able to fire the ERR trap.
