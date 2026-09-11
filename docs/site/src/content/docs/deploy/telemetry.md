@@ -79,7 +79,7 @@ Nothing here overrides configuration: an operator who sets rung 1 or 2 gets that
 
 ### Helm
 
-Discovery only covers the agents. LiteLLM's exporter is rendered by Helm, while its NetworkPolicy is managed by the operator on default installs (or rendered by Helm when either is false), so one chart value drives all three:
+Discovery only covers the agents. LiteLLM's exporter is rendered by Helm, while its NetworkPolicy is managed by the operator on default installs (or rendered by Helm when either `platformAgent.enabled` or `operator.enabled` is false), so one chart value drives all three:
 
 ```yaml
 telemetry:
@@ -96,7 +96,7 @@ Empty means "do not decide here". When `platformAgent.enabled: true` and `operat
 
 `litellm.otel` stays a separate switch, and it defaults to **off**. Naming a collector does not turn the LiteLLM otel callback on, because that callback aborts every LLM request on DNS failure — too severe to flip as a side effect. So on a default install `telemetry.otlpEndpoint` moves the agents and the egress rule; the LiteLLM `OTEL_EXPORTER_OTLP_ENDPOINT` variable does not exist until you also set `litellm.otel=true`.
 
-The namespace is read off the endpoint host when it names an in-cluster Service (`<svc>.<ns>` or `<svc>.<ns>.svc…`). A vendor endpoint or a bare hostname has no namespace to read, and what happens then depends on that same switch: with `litellm.otel=true` the Helm render fails, rather than emitting a policy that blocks the export you just configured — set `telemetry.collectorNamespace`, or `litellm.networkPolicy=false` if the policy is managed elsewhere. With the callback off there is no LiteLLM export for the rule to block, so the rule keeps `gke-managed-otel` and the install proceeds.
+The namespace is read off the endpoint host when it names an in-cluster Service (`<svc>.<ns>` or `<svc>.<ns>.svc…`). A vendor endpoint or a bare hostname has no namespace to read, and what happens then depends on that same switch: with `litellm.otel=true` the Helm render fails, rather than emitting a policy that blocks the export you just configured — set `telemetry.collectorNamespace`, or `litellm.networkPolicy=false` if the policy is managed elsewhere. With the callback off there is no LiteLLM export for the rule to block: dynamic operator management omits the OTLP egress rule, while static Helm rendering keeps `gke-managed-otel`, and the install proceeds.
 
 ### Kustomize and examples
 

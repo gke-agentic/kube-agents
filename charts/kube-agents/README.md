@@ -217,12 +217,37 @@ failure.
 `litellm.rollingUpdate.maxUnavailable` defaults to `1` so that a rollout can
 replace a Pod in place. Set it to `0` for a zero-downtime rollout, but only
 where the namespace has quota headroom for one more LiteLLM Pod: at `0` the
-surge Pod is mandatory, and a `ResourceQuota` with no room for it stalls the
-rollout instead of completing it. At the default `litellm.replicaCount` of 2 one
-replica keeps serving either way; at `replicaCount: 1` the default of `1` means
-a rollout drops the only Pod before its replacement is ready, so LiteLLM is
-unreachable for up to the three minutes its `startupProbe` allows. `values.yaml`
-states the trade in full.
+#### Vertex AI (`litellm.modelProvider=vertex_ai`)
+
+Vertex AI has no API key. The gateway calls
+`projects/<litellm.vertex.projectId>/locations/<litellm.vertex.location>`
+as a Google Service Account reached through Workload Identity. `projectId`
+defaults to `platformAgent.harness.projectId`; `location` defaults to `global`
+rather than the harness location, since a model is only callable from a
+location that serves it. Set a region for a data-residency requirement or a
+Model Garden partner model: [Concepts → Inference gateway](https://gke-labs.github.io/kube-agents/concepts/inference-gateway/#vertex-ai-and-model-garden). That GSA, its
+`roles/aiplatform.user` grant, and its binding to the gateway's KSA are not
+chart resources — see
+[Security & IAM](https://gke-labs.github.io/kube-agents/reference/security-and-iam/).
+
+The chart does create the gateway KSA whenever `modelProvider=vertex_ai`, since no
+operator reconciles this one. Pass the Workload Identity annotation so it
+resolves to that GSA:
+
+```bash
+--set litellm.modelProvider=vertex_ai \
+--set litellm.modelDefaultName=<publisher-model-id> \
+--set litellm.vertex.serviceAccountAnnotations."iam\.gke\.io/gcp-service-account"=<LITELLM_GSA>@<PROJECT>.iam.gserviceaccount.com
+```
+
+`terraform/examples/full-install` wires all of this up when
+`model_provider = "vertex_ai"` — the second `kube-agents-iam` module
+instantiation creates the identity and roles, and the chart values above carry
+the annotated KSA.
+
+#### Upgrade notes: static to dynamic NetworkPolicy
+
+**Upgrading from a chart version that shipped the static `litellm-policy`:** on the first `helm upgrade` after dynamic management takes effect, Helm prunes the static `litellm-policy`. The operator recreates it once the new operator pod rolls out, acquires leader election, and reconciles. During this operator rollout window LiteLLM is selected by no NetworkPolicy and its egress is unrestricted (fail-open). To eliminate this window on an existing cluster, annotate the live policy before upgrading: `kubectl annotate netpol litellm-policy helm.sh/resource-policy=keep -n <namespace>`. Helm will retain the policy across the upgrade, and the operator will seamlessly adopt it via Server-Side Apply. Alternatively, pre-roll the new operator image (e.g. updating the `<release>-controller-manager` deployment image) to narrow the window to controller watch latency (~1s), or set `litellm.networkPolicy=false` and manage `litellm-policy` out-of-band during the transition. To opt out of operator management permanently, set the annotation `kubeagents.x-k8s.io/enable-litellm-network-policy: "false"` on the `PlatformAgent` (and manage `litellm-policy` out-of-band to prevent fail-open egress).
 
 ### Hindsight memory store
 
@@ -271,41 +296,10 @@ turned on by naming a collector.
 The egress namespace is read off the endpoint host when it names an in-cluster
 Service. An external endpoint or bare hostname has no namespace to read:
 with `litellm.otel=true` that fails the render, so set `telemetry.collectorNamespace`
-(or `litellm.networkPolicy=false`); with the callback off the rule keeps
-`gke-managed-otel`, since nothing exports through it. Full precedence
+(or `litellm.networkPolicy=false`); with the callback off, dynamic operator management
+omits the OTLP egress rule (while the static Helm fallback keeps `gke-managed-otel`),
+and the install proceeds. Full precedence
 ladder and discovery rules: [Deploy → Telemetry](https://gke-labs.github.io/kube-agents/deploy/telemetry/#pointing-at-your-own-collector).
-
-### Upgrade notes
-
-**Upgrading from a chart version that shipped the static `litellm-policy`:** on the first `helm upgrade` after dynamic management takes effect, Helm prunes the static `litellm-policy`. The operator recreates it once the new operator pod rolls out, acquires leader election, and reconciles. During this operator rollout window LiteLLM is selected by no NetworkPolicy and its egress is unrestricted (fail-open). To eliminate this window, pre-roll the new operator image (e.g. updating the `<release>-controller-manager` deployment image) before running `helm upgrade`, or set `litellm.networkPolicy=false` and manage `litellm-policy` out-of-band during the transition. To opt out of operator management permanently, set the annotation `kubeagents.x-k8s.io/enable-litellm-network-policy: "false"` on the `PlatformAgent` (and manage `litellm-policy` out-of-band to prevent fail-open egress).
-
-#### Vertex AI (`litellm.modelProvider=vertex_ai`)
-
-Vertex AI has no API key. The gateway calls
-`projects/<litellm.vertex.projectId>/locations/<litellm.vertex.location>`
-as a Google Service Account reached through Workload Identity. `projectId`
-defaults to `platformAgent.harness.projectId`; `location` defaults to `global`
-rather than the harness location, since a model is only callable from a
-location that serves it. Set a region for a data-residency requirement or a
-Model Garden partner model: [Concepts → Inference gateway](https://gke-labs.github.io/kube-agents/concepts/inference-gateway/#vertex-ai-and-model-garden). That GSA, its
-`roles/aiplatform.user` grant, and its binding to the gateway's KSA are not
-chart resources — see
-[Security & IAM](https://gke-labs.github.io/kube-agents/reference/security-and-iam/).
-
-The chart does create the gateway KSA whenever `modelProvider=vertex_ai`, since no
-operator reconciles this one. Pass the Workload Identity annotation so it
-resolves to that GSA:
-
-```bash
---set litellm.modelProvider=vertex_ai \
---set litellm.modelDefaultName=<publisher-model-id> \
---set litellm.vertex.serviceAccountAnnotations."iam\.gke\.io/gcp-service-account"=<LITELLM_GSA>@<PROJECT>.iam.gserviceaccount.com
-```
-
-`terraform/examples/full-install` wires all of this up when
-`model_provider = "vertex_ai"` — the second `kube-agents-iam` module
-instantiation creates the identity and roles, and the chart values above carry
-the annotated KSA.
 
 ### Turning telemetry off
 

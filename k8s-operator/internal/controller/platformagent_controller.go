@@ -1685,14 +1685,7 @@ func (r *PlatformAgentReconciler) reconcileAgentEgressPolicy(ctx context.Context
 	// path that skipped validation. Log it rather than assume: the drop is what
 	// keeps the rendered object safe, and a silent drop is the failure mode
 	// this guard exists for.
-	collectorNs := ""
-	if agent != nil && agent.Annotations != nil {
-		collectorNs = agent.Annotations[AnnotationOTLPCollectorNamespace]
-	}
-	if collectorNs == "" {
-		collectorNs = otlpCollectorNamespace(otlpEndpoint)
-	}
-	policy, dropped := buildAgentEgressNetworkPolicy(agent, dnsClusterIPs, collectorNs)
+	policy, dropped := buildAgentEgressNetworkPolicy(agent, dnsClusterIPs, otlpCollectorNamespace(otlpEndpoint))
 	for _, reason := range dropped {
 		log.Info("WARNING: dropped an egressAllowlist destination that would widen the policy onto the "+
 			"metadata server or the open internet. It was dropped, not narrowed: an ipBlock \"except\" "+

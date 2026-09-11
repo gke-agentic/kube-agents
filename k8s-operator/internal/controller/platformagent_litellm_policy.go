@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -146,7 +147,7 @@ func buildLiteLLMNetworkPolicy(agent *agentv1alpha1.PlatformAgent, profile netpo
 	if len(dnsIPPeers) == 0 {
 		dnsIPPeers = formatCIDRPeers([]string{defaultDNSClusterIP}, false)
 	}
-	dnsPeers = append(dnsPeers, dnsIPPeers...)
+	dnsPeers = append(dnsPeers, peersNotAlreadyPresent(dnsPeers, dnsIPPeers)...)
 
 	egressRules := []networkingv1.NetworkPolicyEgressRule{
 		// 1. Cluster DNS
@@ -268,12 +269,15 @@ func buildLiteLLMNetworkPolicy(agent *agentv1alpha1.PlatformAgent, profile netpo
 // LiteLLM's OTLP exporter is statically configured by Helm (defaulting to gke-managed-otel)
 // and does not participate in the agent's dynamic runtime discovery.
 // Precedence matches Helm (_helpers.tpl:217-220):
-// 1. AnnotationOTLPCollectorNamespace on the PlatformAgent CR if set.
+// 1. AnnotationOTLPCollectorNamespace on the PlatformAgent CR if set and valid.
 // 2. The namespace extracted from agent.Spec.Telemetry.OTLPEndpoint if specified.
 // 3. Fallback to managedOTelCollectorNamespace ("gke-managed-otel").
 func litellmOTLPCollectorNamespace(agent *agentv1alpha1.PlatformAgent) string {
-	if agent != nil && agent.Annotations != nil && agent.Annotations[AnnotationOTLPCollectorNamespace] != "" {
-		return agent.Annotations[AnnotationOTLPCollectorNamespace]
+	if ns := trimmedAnnotation(agent, AnnotationOTLPCollectorNamespace); ns != "" {
+		if errs := validation.IsValidLabelValue(ns); len(errs) == 0 {
+			return ns
+		}
+		logf.Log.Info("Ignoring invalid annotation value: must be a valid label value", "annotation", AnnotationOTLPCollectorNamespace, "value", ns)
 	}
 	if agent != nil && agent.Spec.Telemetry != nil && agent.Spec.Telemetry.OTLPEndpoint != "" {
 		return otlpCollectorNamespace(agent.Spec.Telemetry.OTLPEndpoint)
@@ -351,6 +355,9 @@ func (r *PlatformAgentReconciler) reconcileLiteLLMNetworkPolicy(ctx context.Cont
 		}
 		return fmt.Errorf("failed to get LiteLLM deployment in namespace %s: %w", agent.Namespace, err)
 	}
+	if litellmDep.DeletionTimestamp != nil {
+		return r.deleteManagedLiteLLMPolicy(ctx, agent)
+	}
 
 	// Safe adoption: if litellm-policy already exists and is managed by an external entity
 	// (e.g. hand-authored or external tool without part-of: kube-agents), do not overwrite it.
@@ -371,7 +378,7 @@ func (r *PlatformAgentReconciler) reconcileLiteLLMNetworkPolicy(ctx context.Cont
 
 	netpol := buildLiteLLMNetworkPolicy(agent, profile)
 	if agent != nil && agent.Spec.Telemetry != nil && agent.Spec.Telemetry.OTLPEndpoint != "" && otlpCollectorNamespace(agent.Spec.Telemetry.OTLPEndpoint) == "" {
-		if agent.Annotations == nil || agent.Annotations[AnnotationOTLPCollectorNamespace] == "" {
+		if litellmOTLPCollectorNamespace(agent) == "" {
 			logf.FromContext(ctx).Info("WARNING: LiteLLM OTLP endpoint does not name an in-cluster Service and no collector namespace is configured; omitting OTLP egress rule",
 				"namespace", agent.Namespace, "endpoint", agent.Spec.Telemetry.OTLPEndpoint)
 		}

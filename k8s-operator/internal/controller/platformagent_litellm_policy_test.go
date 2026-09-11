@@ -328,6 +328,36 @@ func TestBuildLiteLLMNetworkPolicy_MetadataDaemonSuppressed(t *testing.T) {
 	}
 }
 
+func TestBuildLiteLLMNetworkPolicy_CloudDNSDedup(t *testing.T) {
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+		},
+	}
+
+	// Cloud DNS sets the node metadata address (169.254.169.254) as the cluster DNS IP.
+	// The policy must deduplicate it against the base metadataLinkLocalCIDR peer.
+	profile := netpolProfile{
+		Generated:        true,
+		DNSClusterIPs:    []string{"169.254.169.254"},
+		MetadataDaemonIP: "169.254.169.252",
+	}
+
+	netpol := buildLiteLLMNetworkPolicy(agent, profile)
+	dnsRule := netpol.Spec.Egress[0]
+
+	count254 := 0
+	for _, peer := range dnsRule.To {
+		if peer.IPBlock != nil && peer.IPBlock.CIDR == "169.254.169.254/32" {
+			count254++
+		}
+	}
+	if count254 != 1 {
+		t.Errorf("expected exactly one 169.254.169.254/32 peer under Cloud DNS, got %d", count254)
+	}
+}
+
 func TestBuildLiteLLMNetworkPolicy_OTelCollectorNamespace(t *testing.T) {
 	profile := netpolProfile{
 		Generated:        true,
@@ -517,6 +547,64 @@ func TestReconcileLiteLLMNetworkPolicy_LiteLLMAbsent(t *testing.T) {
 
 	if err := cl.Get(ctx, types.NamespacedName{Namespace: "test-ns", Name: "litellm-policy"}, &netpol); err == nil {
 		t.Fatalf("managed litellm-policy should have been deleted when litellm Deployment is absent")
+	}
+}
+
+func TestReconcileLiteLLMNetworkPolicy_DeploymentTerminating(t *testing.T) {
+	scheme := setupScheme()
+
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+		},
+	}
+
+	now := metav1.Now()
+	terminatingDep := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "litellm",
+			Namespace:         "test-ns",
+			UID:               types.UID("litellm-terminating-uid"),
+			DeletionTimestamp: &now,
+			Finalizers:        []string{"test.finalizer/retaining"},
+		},
+	}
+
+	existingManaged := &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "litellm-policy",
+			Namespace: "test-ns",
+			Labels: map[string]string{
+				labelManagedBy: fieldOwner,
+			},
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(agent, terminatingDep, existingManaged).
+		WithInterceptorFuncs(fakeServerSideApplyInterceptors()).
+		Build()
+
+	r := &PlatformAgentReconciler{
+		Client: cl,
+		Scheme: scheme,
+	}
+
+	profile := netpolProfile{
+		Generated:     true,
+		DNSClusterIPs: []string{"10.96.0.10"},
+	}
+
+	ctx := context.Background()
+	if err := r.reconcileLiteLLMNetworkPolicy(ctx, agent, profile); err != nil {
+		t.Fatalf("reconcileLiteLLMNetworkPolicy failed on terminating deployment: %v", err)
+	}
+
+	var netpol networkingv1.NetworkPolicy
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: "test-ns", Name: "litellm-policy"}, &netpol); err == nil {
+		t.Fatalf("managed litellm-policy should have been deleted when litellm Deployment is terminating")
 	}
 }
 
@@ -1286,6 +1374,59 @@ func TestBuildLiteLLMNetworkPolicy_CollectorNamespaceAnnotation(t *testing.T) {
 	}
 	if !foundOverrideRule {
 		t.Fatalf("expected AnnotationOTLPCollectorNamespace to take precedence over in-cluster endpoint namespace")
+	}
+
+	// Case 4: Annotation with whitespace is trimmed
+	agentWithWhitespace := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+			Annotations: map[string]string{
+				AnnotationOTLPCollectorNamespace: "   " + customNS + "   ",
+			},
+		},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			Telemetry: &agentv1alpha1.TelemetrySpec{
+				OTLPEndpoint: vendorEndpoint,
+			},
+		},
+	}
+	netpolWhitespace := buildLiteLLMNetworkPolicy(agentWithWhitespace, profile)
+	foundTrimmedRule := false
+	for _, rule := range netpolWhitespace.Spec.Egress {
+		for _, peer := range rule.To {
+			if peer.NamespaceSelector != nil && peer.NamespaceSelector.MatchLabels[labelMetadataName] == customNS {
+				foundTrimmedRule = true
+				break
+			}
+		}
+	}
+	if !foundTrimmedRule {
+		t.Fatalf("expected AnnotationOTLPCollectorNamespace with surrounding whitespace to be trimmed and used")
+	}
+
+	// Case 5: Invalid annotation label value is dropped
+	agentWithInvalidAnnotation := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "test-ns",
+			Annotations: map[string]string{
+				AnnotationOTLPCollectorNamespace: "-invalid-label-start",
+			},
+		},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			Telemetry: &agentv1alpha1.TelemetrySpec{
+				OTLPEndpoint: vendorEndpoint,
+			},
+		},
+	}
+	netpolInvalid := buildLiteLLMNetworkPolicy(agentWithInvalidAnnotation, profile)
+	for _, rule := range netpolInvalid.Spec.Egress {
+		for _, p := range rule.Ports {
+			if p.Port != nil && (p.Port.IntVal == 4317 || p.Port.IntVal == 4318) {
+				t.Errorf("expected invalid AnnotationOTLPCollectorNamespace to be dropped, but found OTLP egress port %d", p.Port.IntVal)
+			}
+		}
 	}
 }
 

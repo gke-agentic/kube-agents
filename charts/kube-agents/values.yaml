@@ -709,7 +709,7 @@ platformAgent:
   #
   #   networkPolicy:
   #     enabled: true              # false stops generation and deletes the
-  #                                # operator-owned <name>-gateway-netpol,
+  #                                # operator-managed <name>-gateway-netpol,
   #                                # <name>-fqdn-netpol and litellm-policy
   #     dnsClusterIPs: ["10.96.0.10"]
   #     metadataDaemon:

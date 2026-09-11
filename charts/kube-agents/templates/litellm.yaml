@@ -227,6 +227,11 @@ metadata:
   labels:
     app.kubernetes.io/name: litellm
     {{- include "kube-agents.labels" . | nindent 4 }}
+  annotations:
+    # When static rendering is active (either platformAgent.enabled or operator.enabled is false),
+    # stamp keep so that transitioning to dynamic operator management later causes Helm to retain
+    # the existing policy rather than deleting it and leaving LiteLLM with unrestricted egress.
+    helm.sh/resource-policy: keep
 spec:
   egress:
     - ports:
