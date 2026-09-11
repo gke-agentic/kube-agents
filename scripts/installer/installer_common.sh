@@ -2057,11 +2057,45 @@ print(json.dumps({
   fi
 
   local ok untainted_count total_sched_cpu total_sched_mem reason
-  ok="$(python3 -c "import sys, json; print(json.loads(sys.argv[1]).get('ok', True))" "$eval_result" 2>/dev/null || echo "True")"
-  untainted_count="$(python3 -c "import sys, json; print(json.loads(sys.argv[1]).get('untainted_count', 0))" "$eval_result" 2>/dev/null || echo "0")"
-  total_sched_cpu="$(python3 -c "import sys, json; print(json.loads(sys.argv[1]).get('total_sched_cpu', 0))" "$eval_result" 2>/dev/null || echo "0")"
-  total_sched_mem="$(python3 -c "import sys, json; print(json.loads(sys.argv[1]).get('total_sched_mem', 0))" "$eval_result" 2>/dev/null || echo "0")"
-  reason="$(python3 -c "import sys, json; print(json.loads(sys.argv[1]).get('reason', ''))" "$eval_result" 2>/dev/null || echo "")"
+  # One parse, and a failed one is a failed check rather than a defaulted one.
+  # The evaluator prints {"error": ...} and exits 0 when it cannot read the
+  # node or pod JSON — a truncated `kubectl get nodes` write clears the [ -s ]
+  # guard above — and a document with no "ok" key read with .get('ok', True)
+  # reports a pass over zero nodes, the same shape the working path fails
+  # hard on.
+  local eval_fields
+  eval_fields="$(python3 -c '
+import sys, json
+
+try:
+    result = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(1)
+if "error" in result or "ok" not in result:
+    sys.exit(1)
+print(result["ok"])
+print(result.get("untainted_count", 0))
+print(result.get("total_sched_cpu", 0))
+print(result.get("total_sched_mem", 0))
+print(str(result.get("reason", "")).replace("\n", " "))
+' "$eval_result" 2>/dev/null)" || eval_fields=""
+
+  if [ -z "$eval_fields" ]; then
+    print_warning "Failed to calculate cluster schedulable capacity; continuing."
+    return 0
+  fi
+
+  {
+    read -r ok
+    read -r untainted_count
+    read -r total_sched_cpu
+    read -r total_sched_mem
+    # An empty reason is the passing case, and command substitution strips the
+    # blank line it prints, so this read lands on EOF: tolerated, not fatal.
+    read -r reason || reason=""
+  } <<EOF
+${eval_fields}
+EOF
 
   if [ "$ok" != "True" ]; then
     print_error "Cluster capacity preflight check failed for adopted Standard cluster '${cluster_name}'."

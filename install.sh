@@ -39,6 +39,18 @@ readonly ROLLOUT_MONITOR_POLL_INTERVAL_SECS=20
 readonly ROLLOUT_DIAGNOSTIC_EVENT_LIMIT=5
 readonly ROLLOUT_MONITOR_KUBECTL_TIMEOUT="5s"
 
+# Bounds on --helm-timeout, in seconds, both derived from hindsight-api, the
+# slowest workload the install rolls out. The floor is its 300s startupProbe
+# budget plus 240s for pulling a 1.4 GB image; below it the wait ends on a cold
+# roll that is loading normally. The ceiling is one second under its
+# progressDeadlineSeconds (900): at or above that the Deployment gives up
+# first with "exceeded its progress deadline", so the extra wait buys nothing.
+# terraform/examples/full-install/variables.tf repeats the pair as a variable
+# validation, and tests/test_hindsight_probes.py holds both against the
+# manifest they come from.
+readonly HELM_TIMEOUT_MIN_SECONDS=540
+readonly HELM_TIMEOUT_MAX_SECONDS=899
+
 # ─── ANSI Colors & Terminal Responsive Helpers ─────────────────────────────────
 # A function because scripts/installer/common.sh defines the same variables
 # unconditionally: sourcing it would re-enable colour under NO_COLOR or in a pipe,
@@ -529,9 +541,10 @@ Flags for AI Agents & Automation:
   --enable-network-policy       Opt in to enabling legacy Calico NetworkPolicy addon and enforcement
                                 on an existing GKE Standard cluster without Dataplane V2 (may recreate
                                 nodes and restart workloads; required on such clusters, else install aborts)
-  --helm-timeout=SECONDS        Timeout in seconds for Helm rollouts
+  --helm-timeout=SECONDS        Timeout in seconds for Helm rollouts, 540-899
                                 (default: DEFAULT_HELM_TIMEOUT, currently 600)
-  --skip-capacity-check         Skip schedulable capacity preflight check on adopted Standard clusters
+  --skip-capacity-check         Skip the schedulable capacity preflight check on adopted Standard
+                                clusters, for this run only (never saved to install.env)
   --menu, --config              Launch interactive Day-2 Control Panel Menu (raspi-config style)
   -h, --help, -?                Show this help message
 
@@ -690,6 +703,29 @@ validate_immutable_ref() {
   if [[ ! "$ref" =~ ^[0-9a-fA-F]{40}$ ]] \
     && [[ ! "$ref" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
     print_error "Image/source ref must be a full 40-character commit SHA or a pure numeric SemVer release tag (X.Y.Z, e.g. 0.1.0)."
+    return 1
+  fi
+}
+
+# --helm-timeout, as a named validator rather than a block inside main(): a
+# test can call this, and could not call the block. An empty value is "not
+# passed", where DEFAULT_HELM_TIMEOUT applies. The bounds are the two numbers
+# hindsight-api's manifest fixes; see HELM_TIMEOUT_MIN_SECONDS above.
+validate_helm_timeout() {
+  local seconds="${1:-}"
+  if [ -z "$seconds" ]; then
+    return 0
+  fi
+  if [[ ! "$seconds" =~ ^[1-9][0-9]*$ ]]; then
+    print_error "--helm-timeout must be a positive integer in seconds (got '${seconds}')."
+    return 1
+  fi
+  if [ "$seconds" -lt "$HELM_TIMEOUT_MIN_SECONDS" ]; then
+    print_error "--helm-timeout must be at least ${HELM_TIMEOUT_MIN_SECONDS}s (got '${seconds}'): a shorter wait gives up on a cold hindsight-api roll that is loading normally."
+    return 1
+  fi
+  if [ "$seconds" -gt "$HELM_TIMEOUT_MAX_SECONDS" ]; then
+    print_error "--helm-timeout must be at most ${HELM_TIMEOUT_MAX_SECONDS}s (got '${seconds}'): hindsight-api's Deployment gives up at its 900s progressDeadlineSeconds, so a longer wait ends the same way and no later."
     return 1
   fi
 }
@@ -1125,7 +1161,13 @@ bootstrap_install_env_file() {
   write_env_var "$tmp" ENABLE_PUBSUB_PLATFORM "${PARAM_ENABLE_PUBSUB_PLATFORM:-$DEFAULT_ENABLE_PUBSUB_PLATFORM}"
   write_env_var "$tmp" ENABLE_STOCKOUT_INVESTIGATOR "${PARAM_ENABLE_STOCKOUT_INVESTIGATOR:-$DEFAULT_ENABLE_STOCKOUT_INVESTIGATOR}"
   write_env_var "$tmp" HELM_TIMEOUT "${PARAM_HELM_TIMEOUT:-$DEFAULT_HELM_TIMEOUT}"
-  write_env_var "$tmp" SKIP_CAPACITY_CHECK "${PARAM_SKIP_CAPACITY_CHECK:-false}"
+  # SKIP_CAPACITY_CHECK is deliberately not written. This file is bootstrapped
+  # once and then read by every later run, and every other key in it describes
+  # what the install IS. A bypass describes one run: the install that needed
+  # --skip-capacity-check is the undersized one, and persisting it would skip
+  # the preflight silently for the upgrade that adds hindsight-api's 2000m
+  # single-node requirement. ALLOW_UNVERIFIED_SOURCE and
+  # ALLOW_UNENCRYPTED_SECRETS are kept out of the file for the same reason.
   
   write_env_var "$tmp" REGISTRY_PREFIX "${REGISTRY_PREFIX:-}"
   if [ -n "${THIRD_PARTY_REGISTRY_PREFIX:-}" ]; then
@@ -1930,6 +1972,10 @@ monitor_lifecycle_rollout() {
   fi
   local start_time=$SECONDS
   local sleep_pid=""
+  # The monitor is diagnostic, so it claims the kubeconfig at most once and
+  # never on a run that is still building its cluster; see the comment on the
+  # attempt below.
+  local credentials_attempted="false"
   trap 'if [ -n "$sleep_pid" ]; then kill "$sleep_pid" 2>/dev/null || true; fi; exit 0' TERM INT
   while true; do
     sleep "$ROLLOUT_MONITOR_POLL_INTERVAL_SECS" &
@@ -1940,7 +1986,20 @@ monitor_lifecycle_rollout() {
       local current_ctx
       current_ctx="$(kubectl config current-context 2>/dev/null || true)"
       if [ -n "$expected_ctx" ] && [ -n "$current_ctx" ] && [ "$current_ctx" != "$expected_ctx" ]; then
-        if command -v gcloud >/dev/null 2>&1 && [ -n "${PROJECT_ID:-}" ]; then
+        # One attempt, and only against a cluster that already exists. This is
+        # a background job the operator did not start: fetching credentials
+        # per poll rewrites their kubeconfig every 20 seconds for the length
+        # of the apply, and on a create-cluster run the context cannot match
+        # until Terraform has built the cluster, so all of those calls are
+        # churn ending in one silent context switch. The apply is indifferent
+        # either way — the helm provider gets an explicit host and token from
+        # the module, not the kubeconfig — so what this protects is the
+        # operator's own session. Losing the diagnostics on a run whose
+        # context does not match is the cheaper side of that trade.
+        if [ "$credentials_attempted" = "false" ] \
+          && [ "${TFVARS_CREATE_CLUSTER:-true}" != "true" ] \
+          && command -v gcloud >/dev/null 2>&1 && [ -n "${PROJECT_ID:-}" ]; then
+          credentials_attempted="true"
           local gke_dns_flag=""
           if type gke_dns_endpoint_flag >/dev/null 2>&1; then
             GKE_DNS_ENDPOINT_FLAG=""
@@ -2060,6 +2119,44 @@ except Exception:
       done
     fi
   done
+}
+
+# What the install does when the capacity preflight reports a deficit: a dry
+# run says so and carries on, a non-interactive run stops before Terraform
+# touches anything, and an interactive one asks. A function rather than a
+# block in main() so a test can drive the policy with a stubbed preflight;
+# returns non-zero where the caller exits.
+enforce_capacity_preflight() {
+  local cluster_name="$1"
+  local region="$2"
+  local project_id="$3"
+  local enable_gvisor="$4"
+  local memory_mode="$5"
+  local enable_webui="$6"
+  local github_org="$7"
+  local github_repo="$8"
+
+  if check_existing_cluster_capacity_preflight "$cluster_name" "$region" "$project_id" \
+    "$enable_gvisor" "$memory_mode" "$enable_webui" "$github_org" "$github_repo"; then
+    return 0
+  fi
+
+  if [ "${PARAM_DRY_RUN:-false}" = "true" ]; then
+    print_warning "Capacity check reported a deficit; continuing dry-run validation."
+    return 0
+  fi
+
+  if [ "${PARAM_NON_INTERACTIVE:-false}" = "true" ]; then
+    print_error "Cluster capacity preflight check failed in non-interactive mode. Aborting before Terraform apply."
+    return 1
+  fi
+
+  local proceed_capacity=""
+  prompt_read "\nCapacity check failed. Proceed anyway? (y/N)" proceed_capacity "n"
+  if [[ ! "$proceed_capacity" =~ ^[Yy]$ ]]; then
+    print_warning "Installation paused by user to allow cluster resizing. Configuration saved to: ${INSTALL_ENV_FILE:-install.env}"
+    return 1
+  fi
 }
 
 # Runs lifecycle.sh apply against the generated terraform.tfvars. Reads the
@@ -3931,12 +4028,7 @@ main() {
     export THIRD_PARTY_REGISTRY_PREFIX="$third_party_registry_prefix"
   fi
 
-  if [ -n "${PARAM_HELM_TIMEOUT:-}" ]; then
-    if [[ ! "$PARAM_HELM_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
-      print_error "--helm-timeout must be a positive integer in seconds (got '${PARAM_HELM_TIMEOUT}')."
-      exit 1
-    fi
-  fi
+  validate_helm_timeout "${PARAM_HELM_TIMEOUT:-}" || exit 1
   export HELM_TIMEOUT="${PARAM_HELM_TIMEOUT:-$DEFAULT_HELM_TIMEOUT}"
   export SKIP_CAPACITY_CHECK="${PARAM_SKIP_CAPACITY_CHECK:-false}"
 
@@ -4008,21 +4100,7 @@ main() {
   echo -e "${C_RESET}"
 
   # Preflight schedulable capacity on adopted Standard clusters (#1297)
-  if ! check_existing_cluster_capacity_preflight "$cluster_name" "$region" "$project_id" "$enable_gvisor" "$memory_mode" "$PARAM_ENABLE_WEBUI" "$github_org" "$github_repo"; then
-    if [ "$PARAM_DRY_RUN" = "true" ]; then
-      print_warning "Capacity check reported a deficit; continuing dry-run validation."
-    elif [ "$PARAM_NON_INTERACTIVE" = "true" ]; then
-      print_error "Cluster capacity preflight check failed in non-interactive mode. Aborting before Terraform apply."
-      exit 1
-    else
-      local proceed_capacity=""
-      prompt_read "\nCapacity check failed. Proceed anyway? (y/N)" proceed_capacity "n"
-      if [[ ! "$proceed_capacity" =~ ^[Yy]$ ]]; then
-        print_warning "Installation paused by user to allow cluster resizing. Configuration saved to: $INSTALL_ENV_FILE"
-        exit 1
-      fi
-    fi
-  fi
+  enforce_capacity_preflight "$cluster_name" "$region" "$project_id" "$enable_gvisor" "$memory_mode" "$PARAM_ENABLE_WEBUI" "$github_org" "$github_repo" || exit 1
 
   if [ "$PARAM_DRY_RUN" = "true" ]; then
     # A real resource preview, not just a config write: validate always, and

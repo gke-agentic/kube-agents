@@ -2283,6 +2283,19 @@ class BootstrapRecordsIdentityKeysOnlyWhenSetTest(unittest.TestCase):
         out = self._bootstrap({"GKE_DB_KMS_KEY": "key-two"})
         self.assertRegex(out, re.compile(r"^GKE_DB_KMS_KEY=key-two$", re.MULTILINE))
 
+    def test_the_capacity_bypass_is_not_recorded_but_the_timeout_is(self):
+        """A bypass describes one run, not the install.
+
+        The run that reaches for --skip-capacity-check is the one on an
+        undersized cluster, and this file is written once and read by every
+        run after it: recorded here, the bypass would silently skip the
+        preflight for the upgrade that adds hindsight-api. HELM_TIMEOUT beside
+        it describes what the install IS, and stays.
+        """
+        out = self._bootstrap({"SKIP_CAPACITY_CHECK": "true", "HELM_TIMEOUT": "720"})
+        self.assertNotRegex(out, re.compile(r"^SKIP_CAPACITY_CHECK=", re.MULTILINE), msg=out)
+        self.assertRegex(out, re.compile(r"^HELM_TIMEOUT=720$", re.MULTILINE), msg=out)
+
 
 class FrontDoorsAgreeOnTheRepositoryTest(unittest.TestCase):
     """Each front door clones the install sources before it has a checkout to
@@ -3579,15 +3592,46 @@ TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_
             self.assertIn("Cluster capacity preflight check failed", proc.stdout)
             self.assertIn("1 untainted node(s)", proc.stdout)
 
+    def test_preflight_warns_rather_than_passes_when_the_node_json_is_truncated(self):
+        """A check that could not read its input has not passed.
+
+        The `[ ! -s ]` guard rejects an empty node document, not a partial one,
+        and the evaluator answers a partial one with {"error": ...} and exit 0.
+        Read with a default, that document reports a pass over zero nodes --
+        the same shape the working path fails hard on ("No untainted nodes
+        found in cluster").
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = pathlib.Path(tmp) / "bin"
+            bin_dir.mkdir()
+            kubectl = bin_dir / "kubectl"
+            kubectl.write_text("""#!/usr/bin/env bash
+case "$*" in
+  *nodes*-o*json*) printf '%s' '{"items": [{"metadata": {"nam' ;;
+  *pods*-o*json*) printf '%s' '{"items": []}' ;;
+esac
+exit 0
+""")
+            kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
+            body = f"""
+{_SOURCE_INSTALLER_COMMON}
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj"
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            combined = proc.stdout + proc.stderr
+            self.assertEqual(proc.returncode, 0, combined)
+            self.assertIn("Failed to calculate cluster schedulable capacity", combined)
+            self.assertNotIn("Cluster capacity preflight check passed", combined)
+
     def test_flags_helm_timeout_and_skip_capacity_check(self):
         body = """
-parse_args --helm-timeout=900 --skip-capacity-check
+parse_args --helm-timeout=720 --skip-capacity-check
 echo "TIMEOUT=$PARAM_HELM_TIMEOUT"
 echo "SKIP=$PARAM_SKIP_CAPACITY_CHECK"
 """
         proc = self._run_cmd(body)
         self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
-        self.assertIn("TIMEOUT=900", proc.stdout)
+        self.assertIn("TIMEOUT=720", proc.stdout)
         self.assertIn("SKIP=true", proc.stdout)
 
     def test_diagnose_rollout_failure_prints_pending_pods_on_timeout(self):
@@ -3615,20 +3659,65 @@ diagnose_rollout_failure "{log_file}"
             self.assertIn("Insufficient cpu", proc.stdout)
 
 
-    def test_flags_helm_timeout_invalid_rejected(self):
-        for invalid_val in ["0", "-10", "abc", "12m"]:
-            body = f"""
-PARAM_HELM_TIMEOUT="{invalid_val}"
-if [ -n "${{PARAM_HELM_TIMEOUT:-}}" ]; then
-  if [[ ! "$PARAM_HELM_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
-    echo "INVALID_TIMEOUT" >&2
-    exit 1
-  fi
-fi
+    def test_helm_timeout_rejects_non_positive_integers(self):
+        # Drives install.sh's own validator. The previous version of this test
+        # re-implemented the regex in the bash it ran and asserted on its own
+        # echo, so deleting the check in install.sh left it green.
+        for invalid_val in ["0", "-10", "abc", "12m", "600.5"]:
+            with self.subTest(value=invalid_val):
+                proc = self._run_cmd(f'validate_helm_timeout "{invalid_val}"')
+                self.assertNotEqual(
+                    proc.returncode,
+                    0,
+                    f"install.sh: expected --helm-timeout='{invalid_val}' to be rejected",
+                )
+                self.assertIn("positive integer", proc.stdout + proc.stderr)
+
+    def test_helm_timeout_rejects_values_outside_the_hindsight_window(self):
+        # 539 aborts a cold hindsight-api roll that is loading normally; 900 is
+        # the Deployment's own progressDeadlineSeconds, at which helm stops
+        # waiting whatever it was asked for. tests/test_hindsight_probes.py
+        # holds both numbers against the manifest they come from.
+        for out_of_range in ["1", "300", "539", "900", "1800"]:
+            with self.subTest(value=out_of_range):
+                proc = self._run_cmd(f'validate_helm_timeout "{out_of_range}"')
+                self.assertNotEqual(
+                    proc.returncode,
+                    0,
+                    f"install.sh: expected --helm-timeout='{out_of_range}' to be out of range",
+                )
+
+    def test_helm_timeout_accepts_the_window_and_an_unset_value(self):
+        for valid_val in ["540", "600", "899", ""]:
+            with self.subTest(value=valid_val):
+                proc = self._run_cmd(f'validate_helm_timeout "{valid_val}"')
+                self.assertEqual(
+                    proc.returncode,
+                    0,
+                    f"install.sh: expected --helm-timeout='{valid_val}' to be accepted, "
+                    f"stdout: {proc.stdout} stderr: {proc.stderr}",
+                )
+
+    def test_capacity_preflight_failure_aborts_a_non_interactive_run(self):
+        body = """
+check_existing_cluster_capacity_preflight() { return 1; }
+PARAM_NON_INTERACTIVE=true PARAM_DRY_RUN=false \\
+  enforce_capacity_preflight "cluster" "region" "proj" "true" "file" "false" "" ""
 """
-            proc = self._run_cmd(body)
-            self.assertNotEqual(proc.returncode, 0)
-            self.assertIn("INVALID_TIMEOUT", proc.stderr)
+        proc = self._run_cmd(body)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("Aborting before Terraform apply", proc.stdout + proc.stderr)
+
+    def test_capacity_preflight_failure_only_warns_on_a_dry_run(self):
+        body = """
+check_existing_cluster_capacity_preflight() { return 1; }
+PARAM_NON_INTERACTIVE=true PARAM_DRY_RUN=true \\
+  enforce_capacity_preflight "cluster" "region" "proj" "true" "file" "false" "" ""
+"""
+        proc = self._run_cmd(body)
+        self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+        self.assertIn("continuing dry-run validation", proc.stdout + proc.stderr)
+
 
     def test_preflight_single_node_both_cpu_and_mem_required(self):
         with tempfile.TemporaryDirectory() as tmp:
