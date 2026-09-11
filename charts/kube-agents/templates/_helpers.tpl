@@ -236,12 +236,20 @@ gke-managed-otel
 {{- end }}
 
 {{/*
-The host[:port] of telemetry.otlpEndpoint: scheme and path stripped, lowercased so
-an uppercase scheme still strips and a hostname compares the way DNS does.
+The host[:port] of telemetry.otlpEndpoint: scheme, path, query, and fragment stripped.
+
+Case is kept and the scheme prefixes are matched exactly, because the operator's
+otlpCollectorNamespace (k8s-operator, platformagent_manifests.go) does the same to the
+same value when it builds the dynamic policy, and the two have to reach the same
+verdict about the same endpoint. Lowercasing here would let an uppercase-scheme
+in-cluster endpoint render green while the operator, seeing no in-cluster host, emits
+no OTLP rule.
 */}}
 {{- define "kube-agents.otlpEndpointHostPort" -}}
-{{- $hostport := lower .Values.telemetry.otlpEndpoint | trimPrefix "https://" | trimPrefix "http://" -}}
-{{- splitList "/" $hostport | first -}}
+{{- $hostport := .Values.telemetry.otlpEndpoint | trimPrefix "https://" | trimPrefix "http://" -}}
+{{- $hostport = splitList "/" $hostport | first -}}
+{{- $hostport = splitList "?" $hostport | first -}}
+{{- splitList "#" $hostport | first -}}
 {{- end }}
 
 {{/*
@@ -289,9 +297,18 @@ targetPort, so a Service mapping 9999 to 4318 works and a fail there would be wr
 {{- define "kube-agents.litellmOTLPPortCheck" -}}
 {{- if and .Values.litellm.otel .Values.litellm.networkPolicy .Values.telemetry.otlpEndpoint (not .Values.telemetry.collectorNamespace) (not (include "kube-agents.otlpEndpointIsClusterLocal" .)) -}}
 {{- $endpoint := .Values.telemetry.otlpEndpoint -}}
+{{- /*
+  A scheme this parser does not strip (grpc://, or HTTP:// in capitals) would leave a
+  hostport with no port to read and pass as an implicit 443. LiteLLM's exporter speaks
+  OTLP/HTTP over http:// or https://, so anything else is refused here rather than
+  waved through.
+*/ -}}
+{{- if and (contains "://" $endpoint) (not (or (hasPrefix "http://" $endpoint) (hasPrefix "https://" $endpoint))) -}}
+{{- fail (printf "telemetry.otlpEndpoint %q must start with http:// or https:// (lowercase): the LiteLLM OTLP exporter (litellm.otel=true) speaks OTLP/HTTP, and the NetworkPolicy render cannot read the port off any other scheme." $endpoint) -}}
+{{- end -}}
 {{- $port := include "kube-agents.otlpEndpointHostPort" . | regexFind ":[0-9]+$" | trimPrefix ":" -}}
 {{- if not $port -}}
-{{- $port = ternary "80" "443" (hasPrefix "http://" (lower $endpoint)) -}}
+{{- $port = ternary "80" "443" (hasPrefix "http://" $endpoint) -}}
 {{- end -}}
 {{- if ne $port "443" -}}
 {{- fail (printf "telemetry.otlpEndpoint %q names an external host on port %s, but litellm-policy permits egress to external hosts on port 443 only, so the LiteLLM OTLP exporter (litellm.otel=true) would be blocked. Use a port-443 endpoint, set telemetry.collectorNamespace if the collector is in fact in-cluster, or set litellm.networkPolicy=false if the policy is managed elsewhere." $endpoint $port) -}}

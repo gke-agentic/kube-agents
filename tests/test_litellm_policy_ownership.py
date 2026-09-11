@@ -44,6 +44,8 @@ VENDOR_OTLP_ENDPOINT_NON_443 = "https://otlp.vendor.example:4318"
 VENDOR_OTLP_ENDPOINT_PLAIN_HTTP = "http://otlp.vendor.example/v1/traces"
 VENDOR_OTLP_ENDPOINT_IPV6_NON_443 = "http://[2001:db8::1]:4318"
 VENDOR_OTLP_ENDPOINT_IPV6_443 = "https://[2001:db8::1]:443/v1/traces"
+VENDOR_OTLP_ENDPOINT_QUERY_NON_443 = "https://otlp.vendor.example:4318?x=1"
+VENDOR_OTLP_ENDPOINT_GRPC = "grpc://otlp.vendor.example:4317"
 VENDOR_OTLP_ENDPOINT_UPPERCASE_SCHEME = "HTTPS://otlp.vendor.example"
 IN_CLUSTER_OTLP_ENDPOINT_NON_443 = "http://otel-collector.observability.svc.cluster.local:4318"
 BARE_HOST_OTLP_ENDPOINT_NON_443 = "http://otel-collector:4318"
@@ -55,6 +57,8 @@ OTHER_COLLECTOR_NAMESPACE = "other"
 VENDOR_ENDPOINT_FAIL_FRAGMENT = "does not name an in-cluster Service"
 # The fail message either render emits for an external endpoint the policy cannot reach.
 VENDOR_PORT_FAIL_FRAGMENT = "permits egress to external hosts on port 443 only"
+# The fail message for a scheme the port check cannot read a port off.
+SCHEME_FAIL_FRAGMENT = "must start with http:// or https://"
 # The fail messages the CR template emits for a platformAgent.annotations entry that
 # contradicts the chart value the same key is derived from.
 ANNOTATION_CONFLICT_FRAGMENT = "contradicts"
@@ -191,6 +195,7 @@ class LiteLLMPolicyOwnershipTest(unittest.TestCase):
             VENDOR_OTLP_ENDPOINT_NON_443,
             VENDOR_OTLP_ENDPOINT_PLAIN_HTTP,
             VENDOR_OTLP_ENDPOINT_IPV6_NON_443,
+            VENDOR_OTLP_ENDPOINT_QUERY_NON_443,
         ):
             with self.subTest(endpoint):
                 res = _helm_template(
@@ -205,10 +210,27 @@ class LiteLLMPolicyOwnershipTest(unittest.TestCase):
                 self.assertIn(VENDOR_PORT_FAIL_FRAGMENT, res.stderr)
                 self.assertNotIn("on port ,", res.stderr)
 
+    def test_otlp_scheme_the_port_check_cannot_read_fails_render(self) -> None:
+        # A scheme the parser does not strip would leave no port to read and pass as
+        # an implicit 443; the operator reads the same raw value case-sensitively, so
+        # the chart refuses rather than diverging from it.
+        for endpoint in (VENDOR_OTLP_ENDPOINT_GRPC, VENDOR_OTLP_ENDPOINT_UPPERCASE_SCHEME):
+            with self.subTest(endpoint):
+                res = _helm_template(
+                    "--set",
+                    f"telemetry.otlpEndpoint={endpoint}",
+                    "--set",
+                    "litellm.otel=true",
+                    *HARNESS_ARGS,
+                    check=False,
+                )
+                self.assertNotEqual(res.returncode, 0)
+                self.assertIn(SCHEME_FAIL_FRAGMENT, res.stderr)
+
     def test_otlp_port_check_stays_out_of_the_way(self) -> None:
         # The check is about external hosts off port 443 only. An in-cluster Service
         # host (whatever its port: the URL carries the Service port, the policy sees the
-        # targetPort), an external host on 443 however it is spelled, an explicit
+        # targetPort), an external host on 443 including an IPv6 literal, an explicit
         # collector namespace (the user asserting the collector is in-cluster, in either
         # render), the exporter off, or the policy off leave it nothing to catch.
         cases = [
@@ -219,10 +241,6 @@ class LiteLLMPolicyOwnershipTest(unittest.TestCase):
             (
                 "external IPv6 literal on 443",
                 ["--set", f"telemetry.otlpEndpoint={VENDOR_OTLP_ENDPOINT_IPV6_443}", "--set", "litellm.otel=true"],
-            ),
-            (
-                "external uppercase scheme, implicit 443",
-                ["--set", f"telemetry.otlpEndpoint={VENDOR_OTLP_ENDPOINT_UPPERCASE_SCHEME}", "--set", "litellm.otel=true"],
             ),
             (
                 "collector namespace set, dynamic render",
