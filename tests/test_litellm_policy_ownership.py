@@ -42,6 +42,9 @@ HARNESS_LOCATION = "us-central1"
 VENDOR_OTLP_ENDPOINT = "https://otlp.vendor.example"
 VENDOR_OTLP_ENDPOINT_NON_443 = "https://otlp.vendor.example:4318"
 VENDOR_OTLP_ENDPOINT_PLAIN_HTTP = "http://otlp.vendor.example/v1/traces"
+VENDOR_OTLP_ENDPOINT_IPV6_NON_443 = "http://[2001:db8::1]:4318"
+VENDOR_OTLP_ENDPOINT_IPV6_443 = "https://[2001:db8::1]:443/v1/traces"
+VENDOR_OTLP_ENDPOINT_UPPERCASE_SCHEME = "HTTPS://otlp.vendor.example"
 IN_CLUSTER_OTLP_ENDPOINT_NON_443 = "http://otel-collector.observability.svc.cluster.local:4318"
 BARE_HOST_OTLP_ENDPOINT_NON_443 = "http://otel-collector:4318"
 IP_LITERAL_OTLP_ENDPOINT_NON_443 = "http://10.100.5.7:4318"
@@ -184,7 +187,11 @@ class LiteLLMPolicyOwnershipTest(unittest.TestCase):
     def test_vendor_otlp_endpoint_off_port_443_fails_render(self) -> None:
         # Neither copy of litellm-policy lets LiteLLM reach an external host except on
         # 443, so an exporter pointed anywhere else would be blocked in silence.
-        for endpoint in (VENDOR_OTLP_ENDPOINT_NON_443, VENDOR_OTLP_ENDPOINT_PLAIN_HTTP):
+        for endpoint in (
+            VENDOR_OTLP_ENDPOINT_NON_443,
+            VENDOR_OTLP_ENDPOINT_PLAIN_HTTP,
+            VENDOR_OTLP_ENDPOINT_IPV6_NON_443,
+        ):
             with self.subTest(endpoint):
                 res = _helm_template(
                     "--set",
@@ -196,15 +203,26 @@ class LiteLLMPolicyOwnershipTest(unittest.TestCase):
                 )
                 self.assertNotEqual(res.returncode, 0)
                 self.assertIn(VENDOR_PORT_FAIL_FRAGMENT, res.stderr)
+                self.assertNotIn("on port ,", res.stderr)
 
     def test_otlp_port_check_stays_out_of_the_way(self) -> None:
-        # The check is about external hosts only. An in-cluster Service host, an
-        # explicit collector namespace (the user asserting the collector is in-cluster,
-        # in either render), the exporter off, or the policy off leave it nothing to catch.
+        # The check is about external hosts off port 443 only. An in-cluster Service
+        # host (whatever its port: the URL carries the Service port, the policy sees the
+        # targetPort), an external host on 443 however it is spelled, an explicit
+        # collector namespace (the user asserting the collector is in-cluster, in either
+        # render), the exporter off, or the policy off leave it nothing to catch.
         cases = [
             (
                 "in-cluster non-443",
                 ["--set", f"telemetry.otlpEndpoint={IN_CLUSTER_OTLP_ENDPOINT_NON_443}", "--set", "litellm.otel=true"],
+            ),
+            (
+                "external IPv6 literal on 443",
+                ["--set", f"telemetry.otlpEndpoint={VENDOR_OTLP_ENDPOINT_IPV6_443}", "--set", "litellm.otel=true"],
+            ),
+            (
+                "external uppercase scheme, implicit 443",
+                ["--set", f"telemetry.otlpEndpoint={VENDOR_OTLP_ENDPOINT_UPPERCASE_SCHEME}", "--set", "litellm.otel=true"],
             ),
             (
                 "collector namespace set, dynamic render",

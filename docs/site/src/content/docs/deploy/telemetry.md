@@ -87,10 +87,10 @@ telemetry:
   collectorNamespace: "" # for an in-cluster collector whose host does not name its namespace
 ```
 
-| `telemetry.otlpEndpoint` | PlatformAgent CR              | LiteLLM env (only when `litellm.otel=true`) | NetworkPolicy egress namespace                 |
-| ------------------------ | ----------------------------- | ------------------------------------------- | ---------------------------------------------- |
-| `""` (default)           | field omitted                 | managed collector                           | `gke-managed-otel`                             |
-| set                      | `spec.telemetry.otlpEndpoint` | the value                                   | derived from the host, or `collectorNamespace` |
+| `telemetry.otlpEndpoint` | PlatformAgent CR              | LiteLLM env (only when `litellm.otel=true`) | NetworkPolicy egress namespace                                                        |
+| ------------------------ | ----------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `""` (default)           | field omitted                 | managed collector                           | `gke-managed-otel`                                                                    |
+| set                      | `spec.telemetry.otlpEndpoint` | the value                                   | derived from the host, or `collectorNamespace`; none for an external endpoint (below) |
 
 Empty means "do not decide here". When `platformAgent.enabled: true` and `operator.enabled: true` (the default), the operator dynamically manages the agent's NetworkPolicy using runtime collector discovery, while LiteLLM's exporter and NetworkPolicy default to the GKE Managed OpenTelemetry collector (`gke-managed-otel`). When either is false, Helm renders a static `litellm-policy` with the shipping default. Setting the value explicitly pins both the agent and LiteLLM together — a release can never have the agent discover collector A while LiteLLM exports to B and the policy opens egress only to B's namespace.
 

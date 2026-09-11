@@ -236,12 +236,21 @@ gke-managed-otel
 {{- end }}
 
 {{/*
-The host of telemetry.otlpEndpoint: scheme, port, and path stripped.
+The host[:port] of telemetry.otlpEndpoint: scheme and path stripped, lowercased so
+an uppercase scheme still strips and a hostname compares the way DNS does.
+*/}}
+{{- define "kube-agents.otlpEndpointHostPort" -}}
+{{- $hostport := lower .Values.telemetry.otlpEndpoint | trimPrefix "https://" | trimPrefix "http://" -}}
+{{- splitList "/" $hostport | first -}}
+{{- end }}
+
+{{/*
+The host of telemetry.otlpEndpoint: the port and the brackets of an IPv6 literal
+stripped as well. `:[0-9]*$` rather than a split on ":", which would cut an IPv6
+literal at its first colon.
 */}}
 {{- define "kube-agents.otlpEndpointHost" -}}
-{{- $host := .Values.telemetry.otlpEndpoint | trimPrefix "https://" | trimPrefix "http://" -}}
-{{- $host = (splitList "/" $host | first) -}}
-{{- splitList ":" $host | first -}}
+{{- regexReplaceAll ":[0-9]*$" (include "kube-agents.otlpEndpointHostPort" .) "" | trimPrefix "[" | trimSuffix "]" -}}
 {{- end }}
 
 {{/*
@@ -273,17 +282,16 @@ exporter, which does not exist otherwise — and litellm.networkPolicy is on, si
 it off nothing blocks. An explicit telemetry.collectorNamespace is the user asserting
 the collector is in-cluster whatever its host looks like (an IP literal, a bare Service
 name), and both renders then open 4317/4318 to that namespace, so the check stands
-aside for it.
+aside for it. It also stands aside for an in-cluster host on a port other than
+4317/4318, on purpose: the URL carries the Service port and the policy sees the
+targetPort, so a Service mapping 9999 to 4318 works and a fail there would be wrong.
 */}}
 {{- define "kube-agents.litellmOTLPPortCheck" -}}
 {{- if and .Values.litellm.otel .Values.litellm.networkPolicy .Values.telemetry.otlpEndpoint (not .Values.telemetry.collectorNamespace) (not (include "kube-agents.otlpEndpointIsClusterLocal" .)) -}}
 {{- $endpoint := .Values.telemetry.otlpEndpoint -}}
-{{- $hostport := $endpoint | trimPrefix "https://" | trimPrefix "http://" -}}
-{{- $hostport = (splitList "/" $hostport | first) -}}
-{{- $hostParts := splitList ":" $hostport -}}
-{{- $port := ternary "80" "443" (hasPrefix "http://" $endpoint) -}}
-{{- if gt (len $hostParts) 1 -}}
-{{- $port = index $hostParts 1 -}}
+{{- $port := include "kube-agents.otlpEndpointHostPort" . | regexFind ":[0-9]+$" | trimPrefix ":" -}}
+{{- if not $port -}}
+{{- $port = ternary "80" "443" (hasPrefix "http://" (lower $endpoint)) -}}
 {{- end -}}
 {{- if ne $port "443" -}}
 {{- fail (printf "telemetry.otlpEndpoint %q names an external host on port %s, but litellm-policy permits egress to external hosts on port 443 only, so the LiteLLM OTLP exporter (litellm.otel=true) would be blocked. Use a port-443 endpoint, set telemetry.collectorNamespace if the collector is in fact in-cluster, or set litellm.networkPolicy=false if the policy is managed elsewhere." $endpoint $port) -}}

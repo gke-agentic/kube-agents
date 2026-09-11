@@ -268,8 +268,9 @@ func buildLiteLLMNetworkPolicy(agent *agentv1alpha1.PlatformAgent, profile netpo
 // litellmOTLPCollectorNamespace resolves the collector namespace for the LiteLLM NetworkPolicy.
 // LiteLLM's OTLP exporter is statically configured by Helm (defaulting to gke-managed-otel)
 // and does not participate in the agent's dynamic runtime discovery.
-// The ladder matches the first two rungs of Helm's kube-agents.otlpCollectorNamespace
-// and deliberately differs on the third:
+// The ladder resolves the same inputs the same way as Helm's
+// kube-agents.otlpCollectorNamespace, except for an endpoint that names no
+// in-cluster Service, where it deliberately differs:
 //  1. AnnotationOTLPCollectorNamespace on the PlatformAgent CR if set and valid.
 //  2. The namespace extracted from agent.Spec.Telemetry.OTLPEndpoint if specified.
 //     An endpoint that names no in-cluster Service yields "", and the caller emits

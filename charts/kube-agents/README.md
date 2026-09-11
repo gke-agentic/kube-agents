@@ -287,7 +287,7 @@ kubectl annotate netpol litellm-policy -n <namespace> \
 helm upgrade <release> … --set operator.enabled=false
 ```
 
-Helm adopts the object and rewrites its spec to the static copy in the same upgrade, so LiteLLM is never unselected. If the upgrade keeps the operator (`platformAgent.enabled=false` alone), scale it back up afterwards; with no `PlatformAgent` it leaves the policy alone. That route also deletes the CR while the operator's validating webhook has no backend, which `operator.webhooks.failurePolicy=Fail` rejects; under that policy take the `operator.enabled=false` route, or set the policy to `Ignore` for the upgrade. Go back with `helm upgrade` and the earlier values rather than `helm rollback`: rollback skips Helm's adoption step, so the relabel does nothing for it.
+Helm adopts the object and rewrites its spec to the static copy in the same upgrade, so LiteLLM is never unselected. If the upgrade keeps the operator (`platformAgent.enabled=false` alone), scale it back up afterwards: the deleted CR sits `Terminating` until the operator is back to run its finalizer, and with no `PlatformAgent` it leaves the policy alone. That route also deletes the CR while the operator's validating webhook has no backend, which `operator.webhooks.failurePolicy=Fail` rejects; under that policy take the `operator.enabled=false` route, or set the policy to `Ignore` for the upgrade. Go back with `helm upgrade` and the earlier values rather than `helm rollback`: rollback skips Helm's adoption step, so the relabel does nothing for it.
 
 ### Hindsight memory store
 
@@ -342,11 +342,12 @@ on port 443: with `litellm.otel=true`, an external endpoint on any other port
 fails the render, because the exporter would be blocked. When Helm renders the
 static copy instead (`operator.enabled` or `platformAgent.enabled` false),
 `litellm.otel=true` fails the render for any external endpoint, so set
-`telemetry.collectorNamespace` (or `litellm.networkPolicy=false`); with the
+`litellm.networkPolicy=false` if the policy is managed elsewhere; with the
 callback off the static copy keeps `gke-managed-otel` and the install
-proceeds. Naming a `telemetry.collectorNamespace` tells both renders the
-collector is in-cluster whatever its host looks like, and they open 4317/4318
-to that namespace instead of applying the port-443 rule. Full precedence
+proceeds. `telemetry.collectorNamespace` is for an in-cluster collector whose
+host does not name its namespace: it tells both renders the collector is
+in-cluster whatever the host looks like, and they open 4317/4318 to that
+namespace instead of applying the port-443 rule. Full precedence
 ladder and discovery rules: [Deploy → Telemetry](https://gke-labs.github.io/kube-agents/deploy/telemetry/#pointing-at-your-own-collector).
 
 ### Turning telemetry off
