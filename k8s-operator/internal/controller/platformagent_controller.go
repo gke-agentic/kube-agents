@@ -535,7 +535,7 @@ func (r *PlatformAgentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// bus that a newer CRD's mode legitimately rendered. Skew is a status
 	// problem (below), not a rendering instruction.
 	var a2aState a2aProvisionState
-	a2aNext := modeErr == nil && renderMode(instance, "nats") == ModeNext
+	a2aNext := a2aStackRendering(instance)
 	if a2aNext {
 		if a2aState, err = r.reconcileA2A(ctx, instance); err != nil {
 			return ctrl.Result{}, err
@@ -1284,6 +1284,16 @@ func (r *PlatformAgentReconciler) reconcileShellSandbox(ctx context.Context, age
 // its copy only on a path where spec.networkPolicy is provably set, while this runs
 // on every reconcile, including the common CR that omits the block entirely.
 func (r *PlatformAgentReconciler) shellSandboxDNSClusterIPs(ctx context.Context, agent *agentv1alpha1.PlatformAgent) []string {
+	return r.ungatedDNSClusterIPs(ctx, agent)
+}
+
+// ungatedDNSClusterIPs runs the DNS resolution ladder with
+// spec.networkPolicy.enabled lifted, for the policies that render whatever
+// that flag says. Shared by the sandbox policy and the A2A session fence:
+// both are policies the flag does not withhold, so both need the documented
+// dnsClusterIPs override to survive it, and one copy of that rule is one
+// place to correct it.
+func (r *PlatformAgentReconciler) ungatedDNSClusterIPs(ctx context.Context, agent *agentv1alpha1.PlatformAgent) []string {
 	if agent.Spec.NetworkPolicy == nil || agent.Spec.NetworkPolicy.Enabled == nil {
 		return r.resolveNetpolProfile(ctx, agent).DNSClusterIPs
 	}
@@ -1611,15 +1621,19 @@ func validateEgressAllowlist(agent *agentv1alpha1.PlatformAgent) (string, string
 // egress. That the CR reads Degraded at the time makes it worse rather than
 // better: the status names one bad CIDR while the Pod's egress is wide open.
 //
-// Both of the Pod's policies are reconciled whatever the refusal was (steps 9b, 9c, 10, 11e).
+// All of the policies are reconciled whatever the refusal was (steps 9b, 9c, 10,
+// 11e).
 // <name>-gateway-netpol is the Pod's baseline, it predates spec.security.egressPolicy,
 // and no refusal is an objection to it; <name>-sandbox-metadata-deny is the refused policy
 // itself, and the builder has already dropped the offending destination, so
-// what is left to render is a good policy minus one rule. litellm-policy rides
-// along for the same reason, after them: it selects a different Pod, so a
-// failure on its side (a transient Get on Deployment/litellm, say) must not
-// cost the agent's own guardrails a requeue cycle. Every step runs even when an
-// earlier one fails, and the errors are joined so none of them is hidden.
+// what is left to render is a good policy minus one rule. Under spec.mode: next
+// the A2A fences join them, for the reason reconcileA2ANetworkFences states: they
+// are applied from reconcileA2A, which every path here returns before reaching,
+// and the session fence is the whole of what confines a session pod. litellm-policy
+// rides along too, after the agent's own: it selects a different Pod, so a failure
+// on its side (a transient Get on Deployment/litellm, say) must not cost the
+// agent's guardrails a requeue cycle. Every step runs even when an earlier one
+// fails, and the errors are joined so none of them is hidden.
 func (r *PlatformAgentReconciler) reconcileAgentNetworkGuardrails(ctx context.Context, agent *agentv1alpha1.PlatformAgent) error {
 	otlpEndpoint, otlpSource := r.resolveOTLPEndpoint(ctx, agent)
 	netpolProf := r.resolveNetpolProfile(ctx, agent)
@@ -1630,10 +1644,30 @@ func (r *PlatformAgentReconciler) reconcileAgentNetworkGuardrails(ctx context.Co
 	if err := r.reconcileAgentEgressPolicy(ctx, agent, r.agentEgressDNSClusterIPs(ctx, agent, netpolProf), otlpEndpoint); err != nil {
 		errs = append(errs, err)
 	}
+	if a2aStackRendering(agent) {
+		if err := r.reconcileA2ANetworkFences(ctx, agent); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	if err := r.reconcileLiteLLMNetworkPolicy(ctx, agent, netpolProf); err != nil {
 		errs = append(errs, err)
 	}
 	return goerrors.Join(errs...)
+}
+
+// a2aStackRendering is the gate reconcileA2A sits behind, as a predicate rather
+// than an expression at its one call site, because the refusal paths above have
+// to ask the same question and two spellings of it would be two things to keep
+// true. resolveMode and renderMode are both pure functions of the CR, so asking
+// twice in one reconcile costs nothing and cannot disagree.
+//
+// modeErr is part of the gate, not noise beside it: an unrecognised spec.mode is
+// the version skew described at the call site, and skew deliberately renders
+// neither branch. A refusal during a freeze must not start asserting fences the
+// unfrozen path would not have touched.
+func a2aStackRendering(agent *agentv1alpha1.PlatformAgent) bool {
+	_, modeErr := resolveMode(agent)
+	return modeErr == nil && renderMode(agent, "nats") == ModeNext
 }
 
 // agentEgressDNSClusterIPs is the resolved cluster DNS VIP list for the agent

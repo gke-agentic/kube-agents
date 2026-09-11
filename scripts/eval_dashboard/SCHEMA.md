@@ -170,10 +170,11 @@ Additive, optional, and safe to omit — consumers must default them.
 
 - `stale_after_s` — seconds after `generated_at` beyond which the rendered
   page labels itself `STALE`. Emitted only when the collector is invoked
-  with `--stale-after-s` (the hourly refresh job passes its cadence plus
+  with `--stale-after-s` (the 15-minute refresh job passes its cadence plus
   slack); the renderer defaults to `7200` when it is absent.
 - `pending_builds` — builds the GCS scan listed but could not record: no
-  readable `finished.json` yet (still running, or the upload failed), so
+  readable `finished.json` yet (still running, or the upload failed), or an
+  index pointer that could not be read this scan, so
   they are not in `runs[]` and do not raise the watermark. Entries are
   `{"build_id": "<id>", "first_seen": "<iso8601>"}`, lowest id first;
   `first_seen` is when the collector first listed the build. The next
@@ -265,8 +266,28 @@ what the renderer does with them.
 
 ## Sources
 
-- `--pr-glob <gs glob>` (repeatable) — Prow build dirs, discovered with
-  `gsutil ls`, read with `gsutil cat`. **Read-only.**
+- `--pr-glob <gs glob>` (repeatable) — Prow build dirs, read with
+  `gsutil cat`. **Read-only.** How they are discovered depends on whether
+  there is a watermark (below): a cold sweep lists the glob itself with
+  `gsutil ls`, a walk of every PR directory that grows with the archive and
+  passes the collector's per-call timeout (`GSUTIL_TIMEOUT_S`) at ~1700
+  builds; an incremental scan lists the job's directory index instead.
+- `--index-prefix <gs prefix>` — Prow's per-job directory index,
+  `gs://<bucket>/pr-logs/directory/<job>/`: one `<build_id>.txt` object per
+  build holding the `gs://` path of that build's directory (its
+  `latest-build.txt` is ignored). One `gsutil ls` of the prefix names every
+  build in seconds; the ids above the watermark (plus `pending_builds`) are
+  the only pointers read, and only those builds are then read,
+  `READ_WORKERS` at a time. Defaults to the index derived from each
+  `--pr-glob`'s bucket and job; an empty string disables it and the glob is
+  listed even with a watermark. It changes how a `--pr-glob` scan finds
+  builds, not whether one happens: `--merge-with` alone still recomputes
+  without touching the bucket. A listing that fails or times out is a
+  `warning: gsutil ls ... failed` line and nothing new; a pointer that
+  cannot be read is a `warning: gsutil cat ... failed` line and that one
+  build deferred to `pending_builds`. The refresh workflow greps for either
+  line and does not publish, so a stall is never republished under a fresh
+  `generated_at`.
 - `--from-dir <dir>` — local `<build_id>/` subdirectories with the same
   three files; the offline/testing path.
 - `--rc-glob <gs glob>` (repeatable) / `--rc-from-dir <dir>` — the same two
@@ -292,8 +313,8 @@ what the renderer does with them.
   current checkout. A missing, unreadable, truncated, non-v1 or
   implausible prior file is a **warning that degrades to a fresh sweep
   bounded to `--since-days 14`** — never a crash (the first armed run has
-  no prior file at all). This is what lets an hourly periodic republish in
-  minutes instead of re-reading ~3 objects per archived build.
+  no prior file at all). This is what lets a 15-minute periodic republish
+  in minutes instead of re-reading ~3 objects per archived build.
 - `--since-days <n>` — skip GCS builds whose `started.json` timestamp is
   older than `n` days. Costs one probe read per candidate build and saves
   the other two; builds with an unreadable `started.json` are kept (the
@@ -315,10 +336,26 @@ first two is America/Toronto ("ET"), formatted in the browser with
 | `run.html`    | **The PR view**, `run.html?build=<prow build id>`: one run, each failed gate case tagged `failing on N other PRs` / `only your PR` / `quota storm` / `unexplained` with its check reason, 30-day pass rate, transcript link and a one-line Do; a "what to do" box. |
 | `legacy.html` | The two-band page (agent trend, gate matrix, Pareto, evidence table).                                                                                                                                                                                              |
 
-The Brief and the PR view render in the browser from `brief.json` (below)
-and refetch it and `health.json` every 60 seconds. `classify.py` is the one
-place the "is this red mine?" rule lives; the pages read its answer through
-`brief.json`, and anything else that answers the question imports it.
+The Brief and the PR view render in the browser from `brief.json` (below),
+which `render.py` inlines into each page as
+`<script type="application/json" id="inline-brief">` (the verdict it read,
+the same document as `brief.health`, again as `inline-health`), so a page
+needs no request beyond itself;
+the poll of the published `brief.json` and `health.json` every 60 seconds
+is a best-effort refresh on top, and the legacy page polls `data.json` the
+same way. That matters on `storage.cloud.google.com`, which answers an XHR
+with a login redirect: the pages still render whole there. The header
+badge says `updated <time> · Nm ago`, plus `· regenerated every 15 min`
+while no poll has succeeded (the workflow republishes every page on that
+cron, so that is how old the inlined copy can be); `STALE` is prepended
+only when the data's `generated_at` is older than its `stale_after_s`.
+`render.py --public-url [BASE]` emits `<base href>` so every relative link
+resolves to the published site wherever the browser landed after the
+login redirect; the bare flag means `post_health.DASHBOARD_URL`'s
+directory, and without the flag links stay relative for a local render.
+`classify.py` is the one place the "is this red mine?" rule lives; the
+pages read its answer through `brief.json`, and anything else that answers
+the question imports it.
 
 ### URL contract
 

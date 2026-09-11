@@ -44,8 +44,9 @@ name: CI Health (dashboard refresh + presubmit gate adjudicator)
 # against (#1251's review). The fork guard covers the other axis.
 #
 # Budget: this job runs the INCREMENTAL path only -- the bucket holds
-# data.json, and collect.py's watermark makes a tick cost the archive
-# listing plus the new builds (seconds to a few minutes). A cold sweep does
+# data.json, and collect.py's watermark makes a tick cost one listing of
+# Prow's per-job directory index plus the new builds (seconds to a few
+# minutes). A cold sweep does
 # not fit here and is not attempted: hack/ci-dashboard-refresh.sh prices it
 # at 30-45 minutes, past the 30-minute job, and retrying it every 15 minutes
 # would burn a red run per tick without ever publishing. So a tick that finds
@@ -326,7 +327,10 @@ jobs:
           [ -f work/health.json ] && render_args+=(--health work/health.json)
           [ -f work/health-history.jsonl ] && render_args+=(--health-history work/health-history.jsonl)
           [ -f work/health-history.jsonl ] || echo "::warning::no health-history.jsonl this tick; the Brief renders the current verdict only"
-          python3 scripts/eval_dashboard/render.py --data work/data.json --out-dir work/site "${render_args[@]}"
+          # --public-url (bare) emits <base href> for the published site,
+          # post_health.DASHBOARD_URL's directory, so the pages' links
+          # resolve there whatever URL the console login lands on.
+          python3 scripts/eval_dashboard/render.py --data work/data.json --out-dir work/site "${render_args[@]}" --public-url
           python3 scripts/eval_dashboard/publish.py --out-dir work/site --target "$DASHBOARD_BUCKET/"
 
       - name: Fetch the webhook URL (optional alternative to the Chat API)

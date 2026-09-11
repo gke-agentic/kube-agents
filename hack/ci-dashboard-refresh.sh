@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Eval dashboard hourly refresh (the periodic job's entrypoint)
+# Eval dashboard periodic refresh (the periodic job's entrypoint)
 # ==============================================================================
 # collect -> render -> publish for the live eval dashboard, INCREMENTALLY:
 # download the currently published data.json, hand it to collect.py's
 # --merge-with so the GCS scan only reads builds newer than the newest one on
-# record, then re-render and republish. A cold sweep is ~3 serial gsutil calls
-# per archived build -- 30-45 minutes over two weeks of history -- so the
-# watermark is what makes an hourly cadence possible at all; only the first
+# record, then re-render and republish. A cold sweep is ~3 gsutil calls per
+# archived build -- tens of minutes over two weeks of history -- so the
+# watermark is what makes a 15-minute cadence possible at all; only the first
 # armed run (no data.json published yet) pays a sweep, and even that one is
 # bounded to EVAL_DASHBOARD_SINCE_DAYS (default 14).
 #
@@ -133,7 +133,7 @@ EVAL_DASHBOARD_STALE_AFTER_S="${EVAL_DASHBOARD_STALE_AFTER_S:-2400}"
 # Downloaded here rather than left to collect.py's gs:// --merge-with support
 # so the artifact log shows exactly which prior document this run merged
 # into. A failed or partial download is removed and collect.py degrades to
-# the bounded fresh sweep -- slower, still correct, self-heals next hour.
+# the bounded fresh sweep -- slower, still correct, self-heals next tick.
 PRIOR="${WORK}/prior-data.json"
 PRIOR_SRC="${EVAL_DASHBOARD_TARGET%/}/data.json"
 case "${EVAL_DASHBOARD_TARGET}" in
@@ -214,6 +214,10 @@ if not json.load(open(sys.argv[1], encoding=\"utf-8\")).get(\"runs\"):
   render_args=()
   [ -f "$2/health.json" ] && render_args+=(--health "$2/health.json")
   [ -f "$2/health-history.jsonl" ] && render_args+=(--health-history "$2/health-history.jsonl")
+  # A bucket target is the published site: --public-url (bare) emits
+  # <base href> for post_health.DASHBOARD_URL'"'"'s host, so the pages link
+  # there wherever the browser landed. A local directory keeps relative links.
+  case "$3" in gs://*) render_args+=(--public-url) ;; esac
   python3 "$1/render.py" --data "$2/data.json" --out-dir "$2/site" "${render_args[@]}"
   python3 "$1/publish.py" --out-dir "$2/site" --target "$3"
 ' _ "${DASH_SRC}" "${WORK}" "${EVAL_DASHBOARD_TARGET}" "${EVAL_DASHBOARD_PR_GLOB}" \
