@@ -384,7 +384,10 @@ func (r *PlatformAgentReconciler) reconcileLiteLLMNetworkPolicy(ctx context.Cont
 	netpol := buildLiteLLMNetworkPolicy(agent, profile)
 	if agent.Spec.Telemetry != nil && agent.Spec.Telemetry.OTLPEndpoint != "" && otlpCollectorNamespace(agent.Spec.Telemetry.OTLPEndpoint) == "" {
 		if litellmOTLPCollectorNamespace(agent) == "" {
-			logf.FromContext(ctx).Info("WARNING: LiteLLM OTLP endpoint does not name an in-cluster Service and no collector namespace is configured; omitting OTLP egress rule",
+			// Not a warning: an external endpoint on port 443 is a supported shape, and the
+			// exporter leaves over the policy's 443 rule. A collector namespace is the remedy
+			// only when the collector is in fact in-cluster behind a host that hides it.
+			logf.FromContext(ctx).Info("LiteLLM OTLP endpoint names no in-cluster Service; emitting no OTLP egress rule, the exporter uses the port-443 rule (set the otlp-collector-namespace annotation if the collector is in-cluster)",
 				"namespace", agent.Namespace, "endpoint", agent.Spec.Telemetry.OTLPEndpoint)
 		}
 	}

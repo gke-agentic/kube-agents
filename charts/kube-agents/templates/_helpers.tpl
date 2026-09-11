@@ -290,15 +290,16 @@ targetPort, so a Service mapping 9999 to 4318 works and a fail there would be wr
   The switches that leave LiteLLM unselected, in every render, so that nothing blocks:
   litellm.networkPolicy=false stops both renders; on the operator-owned render the CR's
   spec.networkPolicy.enabled=false and the enable-litellm-network-policy: "false"
-  annotation each delete the managed copy. A collector namespace supplied through
-  platformAgent.annotations counts the same as telemetry.collectorNamespace: the
-  operator opens 4317/4318 to it either way.
+  annotation each delete the managed copy. On that render a collector namespace
+  supplied through platformAgent.annotations counts the same as
+  telemetry.collectorNamespace, because the operator opens 4317/4318 to it; the static
+  render reads only the value, so there the annotation opens nothing and does not count.
 */ -}}
 {{- $crAnnotations := .Values.platformAgent.annotations | default dict -}}
 {{- $crNetworkPolicy := .Values.platformAgent.networkPolicy | default dict -}}
 {{- $operatorOwned := and .Values.platformAgent.enabled .Values.operator.enabled -}}
 {{- $crOptOut := and $operatorOwned (or (and (kindIs "bool" $crNetworkPolicy.enabled) (not $crNetworkPolicy.enabled)) (eq (toString (get $crAnnotations "kubeagents.x-k8s.io/enable-litellm-network-policy")) "false")) -}}
-{{- $collectorNamespace := or .Values.telemetry.collectorNamespace (get $crAnnotations "kubeagents.x-k8s.io/otlp-collector-namespace") -}}
+{{- $collectorNamespace := or .Values.telemetry.collectorNamespace (and $operatorOwned (get $crAnnotations "kubeagents.x-k8s.io/otlp-collector-namespace")) -}}
 {{- if and .Values.litellm.otel .Values.litellm.networkPolicy .Values.telemetry.otlpEndpoint (not $crOptOut) (not $collectorNamespace) (not (include "kube-agents.otlpEndpointIsClusterLocal" .)) -}}
 {{- $endpoint := .Values.telemetry.otlpEndpoint -}}
 {{- /*

@@ -226,6 +226,24 @@ class LiteLLMPolicyOwnershipTest(unittest.TestCase):
                 self.assertIn(VENDOR_PORT_FAIL_FRAGMENT, res.stderr)
                 self.assertNotIn("on port ,", res.stderr)
 
+    def test_collector_namespace_annotation_does_not_cover_the_static_render(self) -> None:
+        # Only the operator reads the CR annotation; the static copy opens nothing for
+        # it, so the port check still has to fire there.
+        res = _helm_template(
+            "--set",
+            "operator.enabled=false",
+            "--set",
+            f"telemetry.otlpEndpoint={IP_LITERAL_OTLP_ENDPOINT_NON_443}",
+            "--set",
+            "litellm.otel=true",
+            "--set",
+            _annotation_set_arg(COLLECTOR_NAMESPACE_ANNOTATION_KEY, COLLECTOR_NAMESPACE),
+            *HARNESS_ARGS,
+            check=False,
+        )
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn(VENDOR_PORT_FAIL_FRAGMENT, res.stderr)
+
     def test_otlp_endpoint_the_port_check_cannot_read_fails_render(self) -> None:
         # A scheme the parser does not strip, or a query string, userinfo, or fragment in
         # the authority, would leave no port to read and pass as an implicit 443; the

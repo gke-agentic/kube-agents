@@ -181,11 +181,9 @@ telemetry:
   otlpEndpoint: ""
   # The namespace the NetworkPolicy opens OTLP egress to. Derived from otlpEndpoint when
   # it names an in-cluster Service (<svc>.<ns>.svc.cluster.local); set it for an
-  # in-cluster collector whose host does not (an IP literal, a bare Service name), and
-  # both renders open 4317/4318 to it. Leave it empty for an external endpoint: with
-  # litellm.otel on, neither render emits an OTLP rule and LiteLLM reaches it over the
-  # port-443 rule, which is why an external endpoint on any other port fails the render
-  # and why the endpoint has to be a public host (the 443 rule excepts private ranges).
+  # in-cluster collector whose host does not (an IP literal, a bare Service name).
+  # Leave it empty for an external endpoint, which then has to be a public host on
+  # port 443 — the chart README's "Telemetry" section says why.
   collectorNamespace: ""
 
 litellm:
