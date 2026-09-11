@@ -274,7 +274,8 @@ func buildLiteLLMNetworkPolicy(agent *agentv1alpha1.PlatformAgent, profile netpo
 //  1. AnnotationOTLPCollectorNamespace on the PlatformAgent CR if set and valid.
 //  2. The namespace extracted from agent.Spec.Telemetry.OTLPEndpoint if specified.
 //     An endpoint that names no in-cluster Service yields "", and the caller emits
-//     no OTLP rule; the static Helm render keeps gke-managed-otel there instead.
+//     no OTLP rule. The static Helm render does the same with litellm.otel on, and
+//     keeps gke-managed-otel there with it off.
 //  3. With no endpoint at all, managedOTelCollectorNamespace ("gke-managed-otel").
 func litellmOTLPCollectorNamespace(agent *agentv1alpha1.PlatformAgent) string {
 	if ns := trimmedAnnotation(agent, AnnotationOTLPCollectorNamespace); ns != "" {

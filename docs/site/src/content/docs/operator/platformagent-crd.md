@@ -454,10 +454,9 @@ Configures the operator-generated egress `NetworkPolicy`.
   rolls out, acquires leader election, and reconciles. LiteLLM is unselected (fail-open) during this
   operator rollout window. To eliminate this window on an existing cluster, annotate the live policy before upgrading (`kubectl annotate netpol litellm-policy helm.sh/resource-policy=keep -n <namespace>`); Helm will retain the policy across the upgrade and the operator will adopt it via Server-Side Apply. Alternatively, pre-roll the new operator image before running `helm upgrade` to narrow the window to controller watch latency (~1s), or manage the
   policy out-of-band during the transition via `litellm.networkPolicy=false`. The same window
-  opens on a fresh default install, where Helm renders no `litellm-policy` and LiteLLM starts
-  before the operator has reconciled; there is no live object to annotate, so cover it with a
-  policy of your own under another name if it matters, and delete that once `litellm-policy`
-  exists. Going the other way,
+  opens on a fresh default install, with no live object to annotate; the chart README's
+  [upgrade notes](https://github.com/gke-labs/kube-agents/blob/main/charts/kube-agents/README.md#upgrade-notes-static-to-dynamic-networkpolicy)
+  say how to cover it. Going the other way,
   from operator-managed back to the static copy, needs a handoff first — see
   [Handing `litellm-policy` back to Helm](https://github.com/gke-labs/kube-agents/blob/main/charts/kube-agents/README.md#handing-litellm-policy-back-to-helm)
   in the chart README.

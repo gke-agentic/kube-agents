@@ -277,7 +277,7 @@ the annotated KSA.
 
 #### Handing `litellm-policy` back to Helm
 
-Once the operator has created or adopted `litellm-policy`, a `helm upgrade` back to the static copy — `operator.enabled=false` or `platformAgent.enabled=false` — fails. The object is in the cluster, absent from the current release manifest, and labelled `app.kubernetes.io/managed-by: platformagent-controller`, so Helm refuses to import it (`rendered manifests contain a resource that already exists … invalid ownership metadata`). Hand it over first, with the operator stopped so its watch does not re-stamp the label between the relabel and the upgrade:
+Once the operator has created or adopted `litellm-policy`, a `helm upgrade` back to the static copy — `operator.enabled=false` or `platformAgent.enabled=false` — fails. The object is in the cluster, absent from the current release manifest, and labelled `app.kubernetes.io/managed-by: platformagent-controller`, so Helm refuses to import it (`NetworkPolicy "litellm-policy" … exists and cannot be imported into the current release: invalid ownership metadata`) and the release stays at its previous revision. Hand it over first, with the operator stopped so its watch does not re-stamp the label between the relabel and the upgrade:
 
 ```bash
 kubectl scale deployment <release>-controller-manager -n <namespace> --replicas=0
@@ -337,11 +337,13 @@ The egress namespace is read off the endpoint host when it names an in-cluster
 Service. An external endpoint or bare hostname has no namespace to read, and
 both renders then do the same thing: with `litellm.otel=true` they emit no OTLP
 egress rule (unless `telemetry.collectorNamespace` names one), so the exporter
-leaves over the policy's port-443 rule, which reaches public addresses only.
-The endpoint therefore has to be a public host on port 443; an external
-endpoint on any other port fails the render, because the exporter would be
-blocked, and a 443 endpoint that resolves to private address space (an internal
-load balancer, say) is blocked without a render error. With the callback off
+leaves over the policy's port-443 rule, which excepts private ranges. The
+endpoint therefore has to be a public host on port 443; an external endpoint on
+any other port fails the render, because the exporter would be blocked (unless
+nothing selects LiteLLM: `litellm.networkPolicy=false`, or on the default
+install the CR's `networkPolicy.enabled=false` or the opt-out annotation), and
+a 443 endpoint that resolves to private address space (an internal load
+balancer, say) is blocked without a render error. With the callback off
 the static copy keeps `gke-managed-otel` and the operator emits no rule.
 `telemetry.collectorNamespace` is for an in-cluster collector whose host does
 not name its namespace: it tells both renders the collector is in-cluster

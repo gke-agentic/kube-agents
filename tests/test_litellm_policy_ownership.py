@@ -253,9 +253,10 @@ class LiteLLMPolicyOwnershipTest(unittest.TestCase):
     def test_otlp_port_check_stays_out_of_the_way(self) -> None:
         # The check is about external hosts off port 443 only. An in-cluster Service
         # host (whatever its port: the URL carries the Service port, the policy sees the
-        # targetPort), an external host on 443 including an IPv6 literal, an explicit
-        # collector namespace (the user asserting the collector is in-cluster, in either
-        # render), the exporter off, or the policy off leave it nothing to catch.
+        # targetPort), an external host on 443 including an IPv6 literal, a collector
+        # namespace given by value or by CR annotation (the user asserting the collector
+        # is in-cluster, in either render), the exporter off, or the policy off by any of
+        # its switches leave it nothing to catch.
         cases = [
             (
                 "in-cluster non-443",
@@ -292,6 +293,39 @@ class LiteLLMPolicyOwnershipTest(unittest.TestCase):
             (
                 "exporter off",
                 ["--set", f"telemetry.otlpEndpoint={VENDOR_OTLP_ENDPOINT_NON_443}"],
+            ),
+            (
+                "CR networkPolicy.enabled=false, dynamic render",
+                [
+                    "--set",
+                    f"telemetry.otlpEndpoint={VENDOR_OTLP_ENDPOINT_NON_443}",
+                    "--set",
+                    "litellm.otel=true",
+                    "--set",
+                    "platformAgent.networkPolicy.enabled=false",
+                ],
+            ),
+            (
+                "CR opt-out annotation, dynamic render",
+                [
+                    "--set",
+                    f"telemetry.otlpEndpoint={VENDOR_OTLP_ENDPOINT_NON_443}",
+                    "--set",
+                    "litellm.otel=true",
+                    "--set-string",
+                    _annotation_set_arg(OPT_OUT_ANNOTATION_KEY, OPT_OUT_ANNOTATION_VALUE),
+                ],
+            ),
+            (
+                "collector namespace through platformAgent.annotations",
+                [
+                    "--set",
+                    f"telemetry.otlpEndpoint={IP_LITERAL_OTLP_ENDPOINT_NON_443}",
+                    "--set",
+                    "litellm.otel=true",
+                    "--set",
+                    _annotation_set_arg(COLLECTOR_NAMESPACE_ANNOTATION_KEY, COLLECTOR_NAMESPACE),
+                ],
             ),
             (
                 "policy off",

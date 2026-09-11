@@ -185,7 +185,7 @@ telemetry:
   # both renders open 4317/4318 to it. Leave it empty for an external endpoint: with
   # litellm.otel on, neither render emits an OTLP rule and LiteLLM reaches it over the
   # port-443 rule, which is why an external endpoint on any other port fails the render
-  # and why the endpoint has to be a public host (the 443 rule excepts private space).
+  # and why the endpoint has to be a public host (the 443 rule excepts private ranges).
   collectorNamespace: ""
 
 litellm:
