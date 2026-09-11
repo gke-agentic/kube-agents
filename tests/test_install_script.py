@@ -242,6 +242,20 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn(f"MODE={MOCK_GOOGLE_CHAT_MODE}", proc.stdout)
 
+    def test_parse_args_generate_only(self):
+        """Verifies parse_args captures --generate-only."""
+        cmd = 'parse_args --generate-only; echo "GEN=$PARAM_GENERATE_ONLY"'
+        proc = self._run_install_func(cmd)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("GEN=true", proc.stdout)
+
+    def test_main_generate_only_and_dry_run_cannot_be_combined(self):
+        """Verifies that combining --dry-run and --generate-only fails."""
+        cmd = 'main --dry-run --generate-only || rc=$?; echo "RC=$rc"'
+        proc = self._run_install_func(cmd)
+        self.assertIn("RC=2", proc.stdout)
+        self.assertIn("--dry-run and --generate-only are different modes and cannot be combined", proc.stdout)
+
     def test_parse_args_cluster_mode(self):
         """Verifies parse_args captures --cluster-mode."""
         cmd = 'parse_args --cluster-mode=autopilot; echo "MODE=$PARAM_CLUSTER_MODE"'
@@ -483,6 +497,62 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_install_sh}"
         proc = self._run_install_func(cmd)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("LOC=us-east4", proc.stdout)
+
+    def test_parse_args_migrate_node_pools(self):
+        cmd = 'parse_args --migrate-node-pools; echo "MIGRATE=$PARAM_MIGRATE_NODE_POOLS"'
+        proc = self._run_install_func(cmd)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("MIGRATE=true", proc.stdout)
+
+        cmd2 = 'parse_args --migrate-node-pools=false; echo "MIGRATE=$PARAM_MIGRATE_NODE_POOLS"'
+        proc2 = self._run_install_func(cmd2)
+        self.assertEqual(proc2.returncode, 0, proc2.stderr)
+        self.assertIn("MIGRATE=false", proc2.stdout)
+
+    def test_parse_args_enable_network_policy(self):
+        cmd = 'parse_args --enable-network-policy; echo "NP=$PARAM_ENABLE_NETWORK_POLICY"'
+        proc = self._run_install_func(cmd)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("NP=true", proc.stdout)
+
+        cmd2 = 'parse_args --enable-network-policy=false; echo "NP=$PARAM_ENABLE_NETWORK_POLICY"'
+        proc2 = self._run_install_func(cmd2)
+        self.assertEqual(proc2.returncode, 0, proc2.stderr)
+        self.assertIn("NP=false", proc2.stdout)
+
+    def test_validate_existing_cluster_opt_in_flags_rejects_typos(self):
+        cmd = 'parse_args --enable-network-policy=ture; validate_existing_cluster_opt_in_flags'
+        proc = self._run_install_func(cmd)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("--enable-network-policy must be either true or false.", proc.stderr + proc.stdout)
+
+        cmd2 = 'parse_args --migrate-node-pools=invalid; validate_existing_cluster_opt_in_flags'
+        proc2 = self._run_install_func(cmd2)
+        self.assertNotEqual(proc2.returncode, 0)
+        self.assertIn("--migrate-node-pools must be either true or false.", proc2.stderr + proc2.stdout)
+
+        cmd3 = 'parse_args --enable-network-policy=; validate_existing_cluster_opt_in_flags'
+        proc3 = self._run_install_func(cmd3)
+        self.assertNotEqual(proc3.returncode, 0)
+        self.assertIn("--enable-network-policy must be either true or false.", proc3.stderr + proc3.stdout)
+
+        cmd4 = 'PARAM_MIGRATE_NODE_POOLS="invalid"; validate_existing_cluster_opt_in_flags'
+        proc4 = self._run_install_func(cmd4)
+        self.assertNotEqual(proc4.returncode, 0)
+        self.assertIn("--migrate-node-pools must be either true or false.", proc4.stderr + proc4.stdout)
+
+    def test_validate_existing_cluster_opt_in_flags_accepts_valid_values(self):
+        cmd = 'parse_args --enable-network-policy=true --migrate-node-pools=false; validate_existing_cluster_opt_in_flags'
+        proc = self._run_install_func(cmd)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+        cmd2 = 'parse_args --enable-network-policy --migrate-node-pools; validate_existing_cluster_opt_in_flags'
+        proc2 = self._run_install_func(cmd2)
+        self.assertEqual(proc2.returncode, 0, proc2.stderr)
+
+        cmd3 = 'validate_existing_cluster_opt_in_flags'
+        proc3 = self._run_install_func(cmd3)
+        self.assertEqual(proc3.returncode, 0, proc3.stderr)
 
     def test_default_vertex_location_is_in_scope_for_install_sh(self):
         """install.sh resolves $DEFAULT_VERTEX_LOCATION at its own runtime.
@@ -896,6 +966,60 @@ run_menu_system "."
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("RC=1", proc.stdout)
 
+    def test_print_generate_only_handoff_renders_required_commands(self):
+        """Verifies print_generate_only_handoff prints all out-of-Terraform and lifecycle commands."""
+        cmd = f"""
+{_SOURCE_INSTALLER_COMMON}
+PROJECT_ID="test-proj"
+CLUSTER_NAME="test-cluster"
+INSTALL_ENV_FILE="/tmp/test/install.env"
+print_generate_only_handoff "/tmp/test-repo" "test-proj" "test-cluster" "us-central1" "/tmp/test-repo/terraform/examples/full-install/terraform.tfvars"
+"""
+        proc = self._run_install_func(cmd)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        out = proc.stdout
+        # Out-of-Terraform prerequisites
+        self.assertIn("CMEK Database Encryption (pre-existing cluster without CMEK):", out)
+        self.assertIn("gcloud services enable cloudkms.googleapis.com --project=test-proj", out)
+        self.assertIn("gcloud beta services identity create --service=container.googleapis.com --project=test-proj", out)
+        self.assertIn("gcloud kms keys add-iam-policy-binding", out)
+        self.assertIn('--member="serviceAccount:service-$(gcloud projects describe test-proj --format=\'value(projectNumber)\')@container-engine-robot.iam.gserviceaccount.com" \\', out)
+        self.assertIn('--role="roles/cloudkms.cryptoKeyEncrypterDecrypter" --project=test-proj --quiet', out)
+        self.assertIn("gcloud container clusters update test-cluster --location us-central1 --database-encryption-key=", out)
+        self.assertIn("Workload Identity Pool (pre-existing Standard cluster):", out)
+        self.assertIn("gcloud container clusters update test-cluster --location us-central1 --project test-proj --workload-pool=test-proj.svc.id.goog", out)
+        self.assertIn("NetworkPolicy Enforcement (pre-existing cluster without Dataplane V2):", out)
+        self.assertIn("gcloud container clusters update test-cluster --location us-central1 --project test-proj --update-addons=NetworkPolicy=ENABLED", out)
+        self.assertIn("gcloud container clusters update test-cluster --location us-central1 --project test-proj --enable-network-policy", out)
+        self.assertIn("GitHub App PEM Import (before apply, when GitOps minter is enabled):", out)
+        self.assertIn("gcloud kms keyrings create github-token-minter-keyring --location=us-central1 --project=test-proj", out)
+        self.assertIn("gcloud kms keys create github-token-minter-key --keyring=github-token-minter-keyring", out)
+        self.assertIn("--purpose=asymmetric-signing", out)
+        self.assertIn("--import-only --skip-initial-version-creation", out)
+        self.assertIn("git clone --depth 1 --branch v2.7.1 https://github.com/abcxyz/github-token-minter.git /tmp/minty", out)
+        self.assertIn("go run ./cmd/minty tools import-pk", out)
+        # Lifecycle commands with bucket/prefix
+        self.assertIn("cd /tmp/test-repo/terraform/examples/full-install", out)
+        self.assertIn('KUBE_AGENTS_STATE_BUCKET="test-proj-kube-agents-tfstate" KUBE_AGENTS_STATE_PREFIX="kube-agents/test-cluster" ./lifecycle.sh apply', out)
+        # Post-apply OTel scope
+        self.assertIn("Managed OpenTelemetry Scope:", out)
+        self.assertIn("gcloud container clusters update test-cluster --location us-central1 --project test-proj --managed-otel-scope=COLLECTION_AND_INSTRUMENTATION_COMPONENTS", out)
+
+    def test_write_json_report_includes_generate_only(self):
+        """Verifies write_json_report outputs generate_only boolean."""
+        cmd = """
+PARAM_DRY_RUN="false"
+PARAM_GENERATE_ONLY="true"
+PARAM_NON_INTERACTIVE="true"
+INSTALL_ENV_FILE="/tmp/install.env"
+write_json_report "GENERATE_ONLY_SUCCESS" >/dev/null
+cat /tmp/kube-agents-install-report.json
+"""
+        proc = self._run_install_func(cmd)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('"status": "GENERATE_ONLY_SUCCESS"', proc.stdout)
+        self.assertIn('"generate_only": true', proc.stdout)
+
 
 class InstallEnvInputTest(unittest.TestCase):
     """install.env is an input, loaded before the parameter block.
@@ -1251,6 +1375,37 @@ class NonInteractiveRerunInheritanceTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
         self.assertIn("K=deadbeefdeadbeef", proc.stdout)
 
+    def test_migrate_node_pools_inherits_from_install_env(self):
+        proc = self._params(
+            "MIGRATE_NODE_POOLS=true\n",
+            'echo "M=$PARAM_MIGRATE_NODE_POOLS"',
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("M=true", proc.stdout)
+
+    def test_enable_network_policy_inherits_from_install_env(self):
+        proc = self._params(
+            "ENABLE_NETWORK_POLICY=true\n",
+            'echo "N=$PARAM_ENABLE_NETWORK_POLICY"',
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("N=true", proc.stdout)
+
+
+class SecretManagerAutoDiscoveryQuietTest(unittest.TestCase):
+    """Verifies gcloud secrets versions access passes --quiet to avoid hangs."""
+
+    def test_gcloud_secrets_versions_access_passes_quiet(self):
+        source = _INSTALL_SH.read_text()
+        matches = re.findall(r"gcloud secrets versions access[^\n]+", source)
+        self.assertTrue(len(matches) >= 2, f"Expected at least 2 calls, found: {matches}")
+        for match in matches:
+            self.assertIn(
+                "--quiet",
+                match,
+                f"gcloud secrets versions access must pass --quiet to avoid interactive prompts on disabled APIs: {match}",
+            )
+
 
 class EnsureExistingClusterNetworkPolicyTest(unittest.TestCase):
     """ensure_existing_cluster_network_policy's two-call enablement sequence.
@@ -1261,7 +1416,7 @@ class EnsureExistingClusterNetworkPolicyTest(unittest.TestCase):
     `clusters update` calls is the behaviour under test.
     """
 
-    def _run(self, datapath="", legacy_np=""):
+    def _run(self, datapath="", legacy_np="", opt_in=True, status="RUNNING"):
         """Run the function against a stub gcloud that records every call.
 
         Returns (CompletedProcess, [argv-strings in call order]). The stub
@@ -1277,14 +1432,20 @@ class EnsureExistingClusterNetworkPolicyTest(unittest.TestCase):
                 "#!/usr/bin/env bash\n"
                 f"printf '%s\\n' \"$*\" >> '{log}'\n"
                 'case "$*" in\n'
+                f"  *datapathProvider,networkPolicy.enabled*) printf '{status},{datapath},{legacy_np}\\n' ;;\n"
                 f"  *datapathProvider*) printf '{datapath}\\n' ;;\n"
                 f"  *networkPolicy.enabled*) printf '{legacy_np}\\n' ;;\n"
                 "esac\n"
                 "exit 0\n"
             )
             gcloud.chmod(gcloud.stat().st_mode | stat.S_IEXEC)
+            opt_in_line = (
+                'PARAM_ENABLE_NETWORK_POLICY="true"\n' if opt_in else ""
+            )
             body = (
+                f'source "{_INSTALLER_COMMON}"\n'
                 f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n'
+                f"{opt_in_line}"
                 "ensure_existing_cluster_network_policy proj cluster region\n"
             )
             proc = subprocess.run(
@@ -1305,7 +1466,7 @@ class EnsureExistingClusterNetworkPolicyTest(unittest.TestCase):
         # The bug: a lone --enable-network-policy against a cluster whose
         # addon is off fails with "The network policy addon must be enabled
         # before updating the nodes" (HTTP 400).
-        proc, calls = self._run()
+        proc, calls = self._run(opt_in=True)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         updates = self._updates(calls)
         self.assertEqual(len(updates), 2, updates)
@@ -1316,6 +1477,12 @@ class EnsureExistingClusterNetworkPolicyTest(unittest.TestCase):
         self.assertNotIn("--enable-network-policy", updates[0])
         self.assertNotIn("--update-addons", updates[1])
 
+    def test_skipped_without_opt_in(self):
+        proc, calls = self._run(opt_in=False)
+        self.assertEqual(proc.returncode, 1, proc.stderr + proc.stdout)
+        self.assertEqual(self._updates(calls), [])
+        self.assertIn("Explicit opt-in was not provided", proc.stderr + proc.stdout)
+
     def test_addon_state_is_not_probed(self):
         # Skipping the addon call when it is already on would be free, but
         # addonsConfig.networkPolicyConfig.disabled cannot say so: GKE omits
@@ -1323,18 +1490,313 @@ class EnsureExistingClusterNetworkPolicyTest(unittest.TestCase):
         # A gate on it either never fires or reintroduces the 400 — hence the
         # unconditional call, and hence this test, which fails if someone
         # reintroduces the probe.
-        _, calls = self._run()
+        _, calls = self._run(opt_in=True)
         self.assertEqual(
             [c for c in calls if "networkPolicyConfig" in c], [], calls
         )
 
     def test_dataplane_v2_cluster_is_left_alone(self):
-        _, calls = self._run(datapath="ADVANCED_DATAPATH")
+        _, calls = self._run(datapath="ADVANCED_DATAPATH", opt_in=True)
         self.assertEqual(self._updates(calls), [])
 
     def test_cluster_already_enforcing_is_left_alone(self):
-        _, calls = self._run(legacy_np="True")
+        _, calls = self._run(legacy_np="True", opt_in=True)
         self.assertEqual(self._updates(calls), [])
+
+    def test_refuses_when_cluster_unreadable(self):
+        proc, calls = self._run(status="", opt_in=True)
+        self.assertEqual(proc.returncode, 1, proc.stderr + proc.stdout)
+        self.assertEqual(self._updates(calls), [])
+        self.assertIn("Could not query NetworkPolicy configuration", proc.stderr + proc.stdout)
+        self.assertIn("Refusing to attempt cluster mutations", proc.stderr + proc.stdout)
+
+
+class EnsureExistingClusterWorkloadIdentityTest(unittest.TestCase):
+    """ensure_existing_cluster_workload_identity tests."""
+
+    def _run(
+        self,
+        autopilot="false",
+        workload_pool="",
+        node_pools="",
+        migrate_opt_in=False,
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = pathlib.Path(tmp) / "bin"
+            bin_dir.mkdir()
+            log = pathlib.Path(tmp) / "gcloud.log"
+            gcloud = bin_dir / "gcloud"
+            gcloud.write_text(
+                "#!/usr/bin/env bash\n"
+                f"printf '%s\\n' \"$*\" >> '{log}'\n"
+                'case "$*" in\n'
+                f"  *autopilot.enabled*) printf '{autopilot}\\n' ;;\n"
+                f"  *workloadIdentityConfig.workloadPool*) printf '{workload_pool}\\n' ;;\n"
+                f"  *node-pools*list*) printf '{node_pools}\\n' ;;\n"
+                "esac\n"
+                "exit 0\n"
+            )
+            gcloud.chmod(gcloud.stat().st_mode | stat.S_IEXEC)
+            opt_in_line = (
+                'PARAM_MIGRATE_NODE_POOLS="true"\n' if migrate_opt_in else ""
+            )
+            body = (
+                f'source "{_INSTALLER_COMMON}"\n'
+                f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n'
+                f"{opt_in_line}"
+                "ensure_existing_cluster_workload_identity proj cluster region\n"
+            )
+            proc = subprocess.run(
+                ["bash", "-c", body],
+                capture_output=True,
+                text=True,
+                env=get_isolated_test_env(bin_dir=str(bin_dir)),
+                cwd=str(_REPO_ROOT),
+            )
+            calls = log.read_text().splitlines() if log.exists() else []
+            return proc, calls
+
+    def test_autopilot_cluster_is_left_alone(self):
+        proc, calls = self._run(autopilot="True")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        updates = [c for c in calls if "update" in c]
+        self.assertEqual(updates, [])
+
+    def test_cluster_without_workload_pool_updates_pool(self):
+        proc, calls = self._run(
+            autopilot="false",
+            workload_pool="",
+            node_pools="default-pool,GKE_METADATA",
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        cluster_updates = [c for c in calls if "clusters update" in c]
+        self.assertEqual(len(cluster_updates), 1)
+        self.assertIn("--workload-pool=proj.svc.id.goog", cluster_updates[0])
+        node_updates = [c for c in calls if "node-pools update" in c]
+        self.assertEqual(node_updates, [])
+
+    def test_legacy_node_pool_refused_without_opt_in(self):
+        proc, calls = self._run(
+            autopilot="false",
+            workload_pool="proj.svc.id.goog",
+            node_pools="pool-1,GCE_METADATA",
+            migrate_opt_in=False,
+        )
+        self.assertEqual(proc.returncode, 1, proc.stderr + proc.stdout)
+        node_updates = [c for c in calls if "node-pools update" in c]
+        self.assertEqual(node_updates, [])
+        self.assertIn("has node pool(s) 'pool-1' using the legacy GCE metadata server", proc.stderr + proc.stdout)
+        self.assertIn("Aborting before making any cluster changes", proc.stderr + proc.stdout)
+
+    def test_legacy_node_pool_migrated_with_opt_in(self):
+        proc, calls = self._run(
+            autopilot="false",
+            workload_pool="proj.svc.id.goog",
+            node_pools="pool-1,GCE_METADATA",
+            migrate_opt_in=True,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        node_updates = [c for c in calls if "node-pools update" in c]
+        self.assertEqual(len(node_updates), 1)
+        self.assertIn("--workload-metadata=GKE_METADATA", node_updates[0])
+        self.assertIn("pool-1", node_updates[0])
+
+
+class EnsureExistingClusterGatedOnCreateClusterTest(unittest.TestCase):
+    """Verifies existing cluster out-of-band mutations are gated on TFVARS_CREATE_CLUSTER=false."""
+
+    def test_mutations_gated_on_adoption(self):
+        text = _INSTALL_SH.read_text()
+        pattern = r'if \[ "\$\{TFVARS_CREATE_CLUSTER:-true\}" = "false" \]; then\s+ensure_existing_cluster_network_policy'
+        self.assertRegex(text, pattern)
+
+
+class CheckExistingClusterNodePoolsPreflightTest(unittest.TestCase):
+    """check_existing_cluster_node_pools_preflight tests."""
+
+    def _run(self, autopilot="false", node_pools="", opt_in=""):
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = pathlib.Path(tmp) / "bin"
+            bin_dir.mkdir()
+            gcloud = bin_dir / "gcloud"
+            gcloud.write_text(
+                "#!/usr/bin/env bash\n"
+                'case "$*" in\n'
+                f"  *autopilot.enabled*) printf '{autopilot}\\n' ;;\n"
+                f"  *node-pools*list*) printf '{node_pools}\\n' ;;\n"
+                "esac\n"
+                "exit 0\n"
+            )
+            gcloud.chmod(gcloud.stat().st_mode | stat.S_IEXEC)
+            opt_in_line = f'PARAM_MIGRATE_NODE_POOLS="{opt_in}"\n' if opt_in else ""
+            body = (
+                f'source "{_INSTALLER_COMMON}"\n'
+                f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n'
+                'TFVARS_CREATE_CLUSTER="false"\n'
+                f"{opt_in_line}"
+                "check_existing_cluster_node_pools_preflight p c r\n"
+            )
+            return subprocess.run(
+                ["bash", "-c", body],
+                capture_output=True,
+                text=True,
+                env=get_isolated_test_env(bin_dir=str(bin_dir)),
+                cwd=str(_REPO_ROOT),
+            )
+
+    def test_refuses_when_legacy_pools_and_no_opt_in(self):
+        proc = self._run(autopilot="false", node_pools="default-pool,GCE_METADATA", opt_in="false")
+        self.assertEqual(proc.returncode, 1, proc.stderr + proc.stdout)
+        self.assertIn("has node pool(s) 'default-pool' using the legacy GCE metadata server", proc.stderr + proc.stdout)
+        self.assertIn("Aborting before making any cluster changes. Pass --migrate-node-pools", proc.stderr + proc.stdout)
+
+    def test_passes_when_opt_in_provided(self):
+        proc = self._run(autopilot="false", node_pools="default-pool,GCE_METADATA", opt_in="true")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+
+    def test_passes_when_all_pools_gke_metadata(self):
+        proc = self._run(autopilot="false", node_pools="default-pool,GKE_METADATA", opt_in="false")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+
+    def test_passes_when_autopilot(self):
+        proc = self._run(autopilot="True", node_pools="default-pool,GCE_METADATA", opt_in="false")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+
+
+class CheckExistingClusterNetworkPolicyPreflightTest(unittest.TestCase):
+    """check_existing_cluster_network_policy_preflight tests."""
+
+    def _run(self, dp="", legacy_np="", opt_in="", status="RUNNING"):
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = pathlib.Path(tmp) / "bin"
+            bin_dir.mkdir()
+            gcloud = bin_dir / "gcloud"
+            gcloud.write_text(
+                "#!/usr/bin/env bash\n"
+                'case "$*" in\n'
+                f"  *datapathProvider,networkPolicy.enabled*) printf '{status},{dp},{legacy_np}\\n' ;;\n"
+                f"  *datapathProvider*) printf '{dp}\\n' ;;\n"
+                f"  *networkPolicy.enabled*) printf '{legacy_np}\\n' ;;\n"
+                "esac\n"
+                "exit 0\n"
+            )
+            gcloud.chmod(gcloud.stat().st_mode | stat.S_IEXEC)
+            opt_in_line = f'PARAM_ENABLE_NETWORK_POLICY="{opt_in}"\n' if opt_in else ""
+            body = (
+                f'source "{_INSTALLER_COMMON}"\n'
+                f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n'
+                'TFVARS_CREATE_CLUSTER="false"\n'
+                f"{opt_in_line}"
+                "check_existing_cluster_network_policy_preflight p c r\n"
+            )
+            return subprocess.run(
+                ["bash", "-c", body],
+                capture_output=True,
+                text=True,
+                env=get_isolated_test_env(bin_dir=str(bin_dir)),
+                cwd=str(_REPO_ROOT),
+            )
+
+    def test_refuses_when_lacking_both_and_no_opt_in(self):
+        proc = self._run(dp="", legacy_np="False", opt_in="false")
+        self.assertEqual(proc.returncode, 1, proc.stderr + proc.stdout)
+        self.assertIn("enforces no NetworkPolicy", proc.stderr + proc.stdout)
+
+    def test_passes_when_opt_in_provided(self):
+        proc = self._run(dp="", legacy_np="False", opt_in="true")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+
+    def test_passes_when_dataplane_v2(self):
+        proc = self._run(dp="ADVANCED_DATAPATH", legacy_np="False", opt_in="false")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+
+    def test_passes_when_calico_already_enabled(self):
+        proc = self._run(dp="", legacy_np="True", opt_in="false")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+
+    def test_refuses_when_cluster_unreadable(self):
+        proc = self._run(status="", opt_in="false")
+        self.assertEqual(proc.returncode, 1, proc.stderr + proc.stdout)
+        self.assertIn("Could not query NetworkPolicy configuration", proc.stderr + proc.stdout)
+        self.assertNotIn("enforces no NetworkPolicy", proc.stderr + proc.stdout)
+
+    def test_refuses_when_cluster_unreadable_even_with_opt_in(self):
+        proc = self._run(status="", opt_in="true")
+        self.assertEqual(proc.returncode, 1, proc.stderr + proc.stdout)
+        self.assertIn("Could not query NetworkPolicy configuration", proc.stderr + proc.stdout)
+        self.assertNotIn("enforces no NetworkPolicy", proc.stderr + proc.stdout)
+
+
+class SummarizeExistingClusterMutationsTest(unittest.TestCase):
+    """summarize_existing_cluster_mutations outputs expected lines for adoption."""
+
+    def _run(
+        self,
+        autopilot="false",
+        enc_state="ENCRYPTED",
+        pool="p.svc.id.goog",
+        node_pools="p1,GKE_METADATA",
+        dp="ADVANCED_DATAPATH",
+        legacy_np="False",
+        status="RUNNING",
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = pathlib.Path(tmp) / "bin"
+            bin_dir.mkdir()
+            gcloud = bin_dir / "gcloud"
+            gcloud.write_text(
+                "#!/usr/bin/env bash\n"
+                'case "$*" in\n'
+                f"  *autopilot.enabled*) printf '{autopilot}\\n' ;;\n"
+                f"  *databaseEncryption.state*) printf '{enc_state}\\n' ;;\n"
+                f"  *workloadIdentityConfig.workloadPool*) printf '{pool}\\n' ;;\n"
+                f"  *node-pools*list*) printf '{node_pools}\\n' ;;\n"
+                f"  *datapathProvider,networkPolicy.enabled*) printf '{status},{dp},{legacy_np}\\n' ;;\n"
+                f"  *datapathProvider*) printf '{dp}\\n' ;;\n"
+                f"  *networkPolicy.enabled*) printf '{legacy_np}\\n' ;;\n"
+                "esac\n"
+                "exit 0\n"
+            )
+            gcloud.chmod(gcloud.stat().st_mode | stat.S_IEXEC)
+            body = (
+                f'source "{_INSTALLER_COMMON}"\n'
+                f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n'
+                "summarize_existing_cluster_mutations p c r true\n"
+            )
+            return subprocess.run(
+                ["bash", "-c", body],
+                capture_output=True,
+                text=True,
+                env=get_isolated_test_env(bin_dir=str(bin_dir)),
+                cwd=str(_REPO_ROOT),
+            )
+
+    def test_summary_reflects_probed_state(self):
+        proc = self._run()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("CMEK Database Encryption", proc.stdout)
+        self.assertIn("Workload Identity Pool", proc.stdout)
+        self.assertIn("Node Pool Metadata", proc.stdout)
+        self.assertIn("NetworkPolicy Enforcement", proc.stdout)
+        self.assertIn("gVisor Sandbox Node Pool", proc.stdout)
+
+    def test_summary_reflects_refused_network_policy_when_missing(self):
+        proc = self._run(dp="", legacy_np="False")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("NetworkPolicy Enforcement: Refused", proc.stdout)
+        self.assertIn("install will abort", proc.stdout)
+
+    def test_summary_reflects_refused_node_pool_migration_when_missing(self):
+        proc = self._run(node_pools="default-pool,GCE_METADATA")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("Node Pool Metadata Migration: Refused", proc.stdout)
+        self.assertIn("install will abort", proc.stdout)
+
+    def test_summary_reflects_unreadable_network_policy(self):
+        proc = self._run(status="")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("NetworkPolicy Enforcement: Skipped (could not query cluster network policy state)", proc.stdout)
+
 
 
 class ImportGithubPemKmsKeyTest(unittest.TestCase):
@@ -2601,6 +3063,137 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
             'handle_pipeline_status "./lifecycle.sh apply -auto-approve -input=false" "$log_file" "${ps[@]}"',
             source,
         )
+
+
+class RunWithSpinnerAndRolloutTest(unittest.TestCase):
+    """Verifies run_with_spinner, wait_for_rollout, and dry-run validation error propagation."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self._tmp_path = pathlib.Path(tmp.name)
+        self._empty_install_env = self._tmp_path / "install.env"
+        self._empty_install_env.write_text("")
+
+    def _run_func(self, func_call, env=None, cwd=None, bin_dir=None):
+        setup = f"""
+source "{_INSTALLER_COMMON}"
+KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
+{func_call}
+"""
+        overrides = {
+            "KUBE_AGENTS_INSTALL_ENV": str(self._empty_install_env),
+            "KUBE_AGENTS_INSTALL_REPORT_FILE": str(self._tmp_path / "report.json"),
+        }
+        overrides.update(env or {})
+        full_env = get_isolated_test_env(overrides=overrides, bin_dir=bin_dir)
+        return subprocess.run(
+            ["bash", "-c", setup],
+            capture_output=True,
+            text=True,
+            env=full_env,
+            cwd=str(cwd or _REPO_ROOT),
+        )
+
+    def test_run_with_spinner_non_tty_streams_output_and_returns_zero(self):
+        log_file = self._tmp_path / "test.log"
+        script = f"""
+mock_cmd() {{
+  echo "streamed line 1"
+  echo "streamed line 2"
+  return 0
+}}
+run_with_spinner "Step A" "{log_file}" mock_cmd
+"""
+        proc = self._run_func(script)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("Step A...", proc.stdout)
+        self.assertIn("streamed line 1", proc.stdout)
+        self.assertIn("streamed line 2", proc.stdout)
+        self.assertTrue(log_file.exists())
+        self.assertIn("streamed line 1\nstreamed line 2", log_file.read_text())
+
+    def test_run_with_spinner_non_tty_propagates_nonzero_exit_code_and_log(self):
+        log_file = self._tmp_path / "test.log"
+        script = f"""
+mock_failing_cmd() {{
+  echo "failing message" >&2
+  return 42
+}}
+rc=0
+run_with_spinner "Step B" "{log_file}" mock_failing_cmd || rc=$?
+echo "RC=$rc"
+"""
+        proc = self._run_func(script)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("RC=42", proc.stdout)
+        self.assertTrue(log_file.exists())
+        self.assertIn("failing message", log_file.read_text())
+
+    def test_wait_for_rollout_succeeds_when_kubectl_succeeds(self):
+        bin_dir = self._tmp_path / "bin"
+        bin_dir.mkdir(parents=True)
+        kubectl = bin_dir / "kubectl"
+        kubectl.write_text("#!/bin/bash\necho 'deployment successfully rolled out'\nexit 0\n")
+        kubectl.chmod(0o755)
+
+        script = 'rc=0; wait_for_rollout test-dep test-ns 5 || rc=$?; echo "RC=$rc"'
+        proc = self._run_func(script, bin_dir=str(bin_dir))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("RC=0", proc.stdout)
+        self.assertIn("test-dep rolled out in", proc.stdout)
+
+    def test_wait_for_rollout_fails_and_echoes_tail_when_kubectl_fails(self):
+        bin_dir = self._tmp_path / "bin"
+        bin_dir.mkdir(parents=True)
+        kubectl = bin_dir / "kubectl"
+        kubectl.write_text("#!/bin/bash\necho 'error: deadline exceeded' >&2\nexit 1\n")
+        kubectl.chmod(0o755)
+
+        script = 'rc=0; wait_for_rollout test-dep test-ns 5 || rc=$?; echo "RC=$rc"'
+        proc = self._run_func(script, bin_dir=str(bin_dir))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("RC=1", proc.stdout)
+        self.assertIn("error: deadline exceeded", proc.stdout + proc.stderr)
+
+    def test_dry_run_validation_fails_fast_when_terraform_init_fails(self):
+        bin_dir = self._tmp_path / "bin"
+        bin_dir.mkdir(parents=True)
+        terraform = bin_dir / "terraform"
+        counter = self._tmp_path / "validate_counter.txt"
+        terraform.write_text(f"""#!/bin/bash
+if [ "$1" = "init" ]; then
+  echo "init failed" >&2
+  exit 2
+fi
+if [ "$1" = "validate" ]; then
+  echo "called" >> "{counter}"
+  exit 0
+fi
+exit 0
+""")
+        terraform.chmod(0o755)
+
+        script = f"""
+# shellcheck disable=SC2317,SC2329
+validate_tf_config() {{
+  terraform init -backend=false -input=false &&
+    terraform validate
+}}
+tf_log="{self._tmp_path}/tf.log"
+rc=0
+run_with_spinner "Validating Terraform configuration" "$tf_log" validate_tf_config || rc=$?
+echo "RC=$rc"
+"""
+        proc = self._run_func(script, bin_dir=str(bin_dir))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("RC=2", proc.stdout)
+        self.assertFalse(counter.exists(), "terraform validate must not be invoked if terraform init fails")
+
+    def test_rollout_warning_does_not_mention_hardcoded_timeout(self):
+        source = _INSTALL_SH.read_text()
+        self.assertIn('print_warning "$deployment did not report ready."', source)
+        self.assertNotIn('print_warning "$deployment did not report ready within ${ROLLOUT_TIMEOUT_SECS}s."', source)
 
 
 if __name__ == "__main__":

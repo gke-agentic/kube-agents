@@ -7,7 +7,7 @@ sidebar:
 
 The PlatformAgent shell sandbox receives no API keys, access tokens, refresh tokens, or Kubernetes ServiceAccount tokens through its environment or filesystem, and its ServiceAccount is bound to no Google service account, so the metadata server has nothing to give it either. Credentials live in a trusted **credential broker** that runs as a Pod of its own, and the sandbox reaches credentialed capabilities only through a policy-enforced proxy across the network.
 
-This is the only layout. There is no configuration that puts the broker back in the agent Pod and none that turns the shell sandbox off — `spec.harness.experimental.shellSandbox.enabled: false` is refused with `Degraded`/`ShellSandboxCannotBeDisabled`. The gateway's `platform-agent` container does hold one credential, the audience-bound token it presents to the broker; [the agent now holds a credential](#the-agent-now-holds-a-credential-and-that-was-a-choice) has the trade.
+This is the only layout. There is no configuration that puts the broker back in the agent Pod and none that turns the shell sandbox off — `spec.harness.experimental.shellSandbox.enabled: false` is refused with `Degraded`/`ShellSandboxCannotBeDisabled`. The gateway's `platform-agent` container does hold one credential, the audience-bound token it presents to the broker — two under the unsupported `mode: next` toggle, which adds the A2A bus's `worker` password by SecretKeyRef; [the agent now holds a credential](#the-agent-now-holds-a-credential-and-that-was-a-choice) has the trade.
 
 This page summarizes the architecture. The canonical design — including scope, deny-policy details, migration steps, and CI verification assertions — is [`docs/credential-isolation-design.md`](https://github.com/gke-labs/kube-agents/blob/main/docs/credential-isolation-design.md).
 
@@ -133,7 +133,7 @@ Everything the agent executes — the wrappers, `execute_code`, and the file too
 
 ## Denying the sandbox the metadata server
 
-`spec.security.egressPolicy: Allowlist` renders one NetworkPolicy on the agent Pod: default-deny egress, with rules for DNS, the credential broker, LiteLLM, the namespace of the OpenTelemetry collector the agent resolved (the managed one by default; no rule when the endpoint names nothing in-cluster), the Hindsight memory API, and whatever `spec.security.egressAllowlist` adds. The metadata server's credential API is denied by not appearing on that list.
+`spec.security.egressPolicy: Allowlist` renders one NetworkPolicy on the agent Pod: default-deny egress, with rules for DNS, the credential broker, LiteLLM, the namespace of the OpenTelemetry collector the agent resolved (the managed one by default; no rule when the endpoint names nothing in-cluster), the Hindsight memory API, the A2A NATS pods on TCP `4222` (only under the unsupported `mode: next` toggle — the rule appears and disappears with the A2A stack), and whatever `spec.security.egressAllowlist` adds. The metadata server's credential API is denied by not appearing on that list.
 
 The DNS rule is the one place a metadata address does appear, on port 53 alone. On a cluster using [Cloud DNS for GKE](https://cloud.google.com/kubernetes-engine/docs/how-to/cloud-dns) the node answers DNS at `169.254.169.254:53` and every Pod's `resolv.conf` names it, so withholding it is not a narrower credential path — it is no name resolution, and every destination in this allowlist is reached by name. The token is minted over TCP 80 pre-NAT and 988 post-NAT, and no rule permits _this address_ on either. (TCP 80 is permitted to the LiteLLM Pod selector, which no link-local address matches.)
 
@@ -194,7 +194,7 @@ Two things to verify on the cluster, neither of which the operator can check for
 
 **None of this happens today** — with the one exception above: a Helm install running `spec.networkPolicy.enabled: false` on an enforcing CNI pays this whole bill the moment the flag goes on. Everywhere else, every destination below is one `<name>-gateway-netpol` still permits to the same Pod, so you can enable the flag and observe no behaviour change in either direction. This is the bill that falls due once the gateway policy is narrowed, and it is here so that the narrowing is not a surprise.
 
-At that point the allowlist covers DNS (selector peers, the resolved cluster DNS ClusterIP, and the Cloud DNS resolver — the same ladder the gateway policy renders), the broker, LiteLLM, the OTel collector and the Hindsight memory API, and everything the agent container reaches on its own would go away:
+At that point the allowlist covers DNS (selector peers, the resolved cluster DNS ClusterIP, and the Cloud DNS resolver — the same ladder the gateway policy renders), the broker, LiteLLM, the OTel collector, the Hindsight memory API and (under the unsupported `mode: next` toggle) the A2A NATS pods, and everything the agent container reaches on its own would go away:
 
 - DuckDuckGo web search, which `deploy/shared/defaults/config.yaml` turns on for every profile (`web.backend: ddgs`), and the `browser` toolset, which only the Chat Agent disables;
 - the `gke` and `developer_knowledge` MCP servers, which proxy `container.googleapis.com` and `developerknowledge.googleapis.com`;

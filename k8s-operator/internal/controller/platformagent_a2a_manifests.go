@@ -40,6 +40,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -166,6 +167,85 @@ func randomA2APassword() (string, error) {
 // as — so ensureA2ACredsSecret repairs the shape rather than trusting it.
 var a2aCredsKeys = []string{"gateway-password", "worker-password", "seed-password", "web-password", "sys-password"}
 
+// a2aProvisionedStreams is every JetStream stream the provision Job creates, and
+// the exact set seed's $JS.API grant is scoped to. KV buckets are streams named
+// KV_<bucket>, so they belong in the same list.
+//
+// The seed grant in nats.conf renders from this slice. The provision script
+// does not: each stream's create line carries its own subjects, retention and
+// caps, so the script names the streams itself, in a2aProvisionScript. The two
+// are a pair — a grant that does not name a stream makes the script's create
+// for it time out on a refused API request, and a script that creates a stream
+// the grant does not name is the same bug from the other side — and what holds
+// them together is TestSeedGrantsAndProvisionScriptNameTheSameStreams, which
+// reads the script's `stream add` / `kv add` lines and checks both directions
+// against this list. Add a stream to one side and that test says so.
+var a2aProvisionedStreams = []string{
+	"TASKS", "DIRECTORY", "TOPICS-STATE", "TOPICS-JOURNAL",
+	"KV_runtime-state", "KV_session-state", "KV_cap",
+}
+
+// a2aSeedJetStreamGrants is seed's publish allow-list for the JetStream API,
+// replacing the `$JS.API.>` wildcard this user shipped with.
+//
+// seed is trust-root — it is the identity the provision Job runs under — so this
+// is defence in depth rather than a boundary. It is worth having anyway, because
+// the seed password lives in the creds Secret for the life of the CR and
+// deliberately survives a flip back to today, so the blast radius of a leak is
+// not bounded by anything else.
+//
+// What the wildcard granted that provisioning never uses, and this list now
+// refuses: STREAM.RESTORE (arbitrary messages with arbitrary stored subjects),
+// STREAM.MSG.DELETE and PURGE (selective editing of the audit substrate),
+// CONSUMER.CREATE (deliver-subject redirection, the server-originated write onto
+// a subject nobody granted), and STREAM.DELETE.
+//
+// UPDATE is absent deliberately, and it is the interesting one. The script
+// guards every create with an info check (`stream info X || stream add X`), so
+// it never updates an existing stream — which means seed cannot set RePublish on
+// one either. RePublish is a stream-config field settable at CREATE and UPDATE,
+// and CREATE on an existing stream either returns that stream unchanged (when
+// the config it carries is identical) or fails with JSStreamNameExistErr (when
+// it differs). A RePublish edit is a differing config, so it takes the second
+// branch. The one write route that survives a name-scoped allow-list in general
+// is therefore closed here by the script's own idempotence. If a
+// future script ever needs UPDATE, that reopens RePublish and the grant should
+// say so out loud rather than quietly gaining a verb.
+func a2aSeedJetStreamGrants() []string {
+	// Account-level JetStream discovery. `stream add` asks for it
+	// (IsStreamMaxBytesRequired -> JetStreamAccountInfo) and so does the
+	// legacy CreateKeyValue path, which is what `kv add` runs.
+	//
+	// STREAM.NAMES is the one that is easy to miss and expensive to omit.
+	// natscli's selectStream falls through to mgr.StreamNames(nil) when
+	// LoadStream fails, which is exactly the first-run case the CREATE grants
+	// exist for: every `stream info X || stream add X` guard on a fresh store
+	// asks for it. A refused request is not an error the client sees -- nats.go
+	// only records it and fires the async callback -- so the CLI waits out its
+	// 5s timeout instead. Four streams, four timeouts, and four Publish
+	// Violations in the same log the install is verified from. It is a
+	// read-only listing of names the seed already knows, so granting it costs
+	// nothing the CREATE and INFO grants above do not already concede.
+	grants := []string{"$JS.API.INFO", "$JS.API.STREAM.NAMES"}
+	for _, s := range a2aProvisionedStreams {
+		grants = append(grants,
+			`$JS.API.STREAM.CREATE.`+s,
+			`$JS.API.STREAM.INFO.`+s,
+		)
+	}
+	return grants
+}
+
+// a2aSeedJetStreamGrantLines renders those grants as nats.conf allow-list
+// entries at the seed block's indentation.
+func a2aSeedJetStreamGrantLines() string {
+	lines := make([]string, 0, len(a2aSeedJetStreamGrants()))
+	for _, g := range a2aSeedJetStreamGrants() {
+		lines = append(lines, fmt.Sprintf("            %q,", g))
+	}
+	return strings.Join(lines, "\n")
+}
+
 // a2aCredsValueRe is the exact shape randomA2APassword emits. It is a
 // security check, not tidiness: buildA2ANATSConfigSecret interpolates these
 // values into nats.conf inside double quotes, so a value carrying a quote and
@@ -254,8 +334,10 @@ func (r *PlatformAgentReconciler) ensureA2ACredsSecret(ctx context.Context, agen
 // decides who may say what before a message is read. Deny-by-default — a
 // permissions block with allow lists denies everything else — with per-user
 // _INBOX prefixes so the reply path cannot leak what the subject grants
-// withheld. $JS.API.> on every app user is playground posture; production
-// narrows it to the per-stream API subjects when the callout arms.
+// withheld. Seed's JetStream API grant is scoped to the streams it provisions,
+// by name and by verb. Gateway and worker still hold $JS.API.>, which is
+// playground posture; narrowing those is gke-labs#1316 and wants its own live
+// proof, because unlike seed they create consumers.
 //
 // pw is a parameter rather than a closure over the creds Secret because two
 // callers walk this template: buildA2ANATSConfigSecret with the real lookup,
@@ -430,15 +512,22 @@ accounts {
         password: "` + pw("seed-password") + `"
         permissions {
           # No ack grant at all: seed creates no consumers. Provisioning is
-          # $JS.API requests, the starter topics are publishes, and the
-          # CLI's topic reads are stream API calls — nothing here ever acks,
-          # so an ack grant would be pure unused capability to +TERM other
-          # principals' deliveries (the same deletion the web user got).
+          # $JS.API requests and the starter topics are publishes — nothing
+          # here ever acks, so an ack grant would be pure unused capability
+          # to +TERM other principals' deliveries (the same deletion the web
+          # user got).
+          #
+          # Seed also reads no topics. "a2a topics read" is a stream API call
+          # (GetLastMsgForSubject, so $JS.API.DIRECT.GET.<stream>.<subject> on
+          # these streams, or STREAM.MSG.GET as the fallback) and the scoped
+          # grant below refuses both. Nothing runs it as seed: the provision
+          # script does writes and info checks only, and the a2a CLI runs in
+          # the agent pod as worker.
           publish { allow = [
             "a2a.topics.agent.platform.upgrade-readiness",
             "a2a.topics.shared.blueprint",
             "a2a.topics.shared.annotations",
-            "$JS.API.>",
+` + a2aSeedJetStreamGrantLines() + `
             "_INBOX.seed.>"
           ] }
           subscribe { allow = [
