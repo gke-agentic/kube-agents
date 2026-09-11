@@ -43,13 +43,15 @@ VENDOR_OTLP_ENDPOINT = "https://otlp.vendor.example"
 VENDOR_OTLP_ENDPOINT_NON_443 = "https://otlp.vendor.example:4318"
 VENDOR_OTLP_ENDPOINT_PLAIN_HTTP = "http://otlp.vendor.example/v1/traces"
 IN_CLUSTER_OTLP_ENDPOINT_NON_443 = "http://otel-collector.observability.svc.cluster.local:4318"
+BARE_HOST_OTLP_ENDPOINT_NON_443 = "http://otel-collector:4318"
+IP_LITERAL_OTLP_ENDPOINT_NON_443 = "http://10.100.5.7:4318"
 COLLECTOR_NAMESPACE = "obs"
 OTHER_COLLECTOR_NAMESPACE = "other"
 
 # The fail message the static render emits for an endpoint with no in-cluster namespace.
 VENDOR_ENDPOINT_FAIL_FRAGMENT = "does not name an in-cluster Service"
 # The fail message either render emits for an external endpoint the policy cannot reach.
-VENDOR_PORT_FAIL_FRAGMENT = "permits external egress on port 443 only"
+VENDOR_PORT_FAIL_FRAGMENT = "permits egress to external hosts on port 443 only"
 # The fail messages the CR template emits for a platformAgent.annotations entry that
 # contradicts the chart value the same key is derived from.
 ANNOTATION_CONFLICT_FRAGMENT = "contradicts"
@@ -196,12 +198,37 @@ class LiteLLMPolicyOwnershipTest(unittest.TestCase):
                 self.assertIn(VENDOR_PORT_FAIL_FRAGMENT, res.stderr)
 
     def test_otlp_port_check_stays_out_of_the_way(self) -> None:
-        # An in-cluster collector on any port, or an external one with the exporter
-        # off, or with the policy off, has nothing for the port check to catch.
+        # The check is about external hosts only. An in-cluster Service host, an
+        # explicit collector namespace (the user asserting the collector is in-cluster,
+        # in either render), the exporter off, or the policy off leave it nothing to catch.
         cases = [
             (
                 "in-cluster non-443",
                 ["--set", f"telemetry.otlpEndpoint={IN_CLUSTER_OTLP_ENDPOINT_NON_443}", "--set", "litellm.otel=true"],
+            ),
+            (
+                "collector namespace set, dynamic render",
+                [
+                    "--set",
+                    f"telemetry.otlpEndpoint={BARE_HOST_OTLP_ENDPOINT_NON_443}",
+                    "--set",
+                    "litellm.otel=true",
+                    "--set",
+                    f"telemetry.collectorNamespace={COLLECTOR_NAMESPACE}",
+                ],
+            ),
+            (
+                "collector namespace set, static render",
+                [
+                    "--set",
+                    f"telemetry.otlpEndpoint={IP_LITERAL_OTLP_ENDPOINT_NON_443}",
+                    "--set",
+                    "litellm.otel=true",
+                    "--set",
+                    f"telemetry.collectorNamespace={COLLECTOR_NAMESPACE}",
+                    "--set",
+                    "operator.enabled=false",
+                ],
             ),
             (
                 "exporter off",
@@ -257,8 +284,10 @@ class LiteLLMPolicyOwnershipTest(unittest.TestCase):
         self.assertEqual(annotations.get(COLLECTOR_NAMESPACE_ANNOTATION_KEY), COLLECTOR_NAMESPACE)
 
     def test_platform_agent_annotation_matching_derived_value_renders(self) -> None:
+        # --set-string, not --set: a bare `false` is a YAML boolean the template's `with`
+        # skips before comparing, and a values file carries the string form this exercises.
         res = _helm_template(
-            "--set",
+            "--set-string",
             _annotation_set_arg(OPT_OUT_ANNOTATION_KEY, OPT_OUT_ANNOTATION_VALUE),
             "--set",
             "litellm.networkPolicy=false",

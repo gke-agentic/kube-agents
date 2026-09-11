@@ -180,12 +180,13 @@ telemetry:
   # appended by the exporters. A gRPC-only collector (port 4317) will not work.
   otlpEndpoint: ""
   # The namespace the NetworkPolicy opens OTLP egress to. Derived from otlpEndpoint when
-  # it names an in-cluster Service (<svc>.<ns>.svc.cluster.local). Only the static
-  # litellm-policy render (operator.enabled or platformAgent.enabled false) needs it
-  # for any other endpoint: there, with litellm.otel=true, leaving it empty fails the
-  # render rather than emit a policy that blocks the collector you just configured. On
-  # the default install the operator omits the OTLP rule for an external endpoint and
-  # LiteLLM reaches it over port 443.
+  # it names an in-cluster Service (<svc>.<ns>.svc.cluster.local); set it for an
+  # in-cluster collector whose host does not (an IP literal, a bare Service name), and
+  # both renders open 4317/4318 to it. Leave it empty for an external endpoint: the
+  # operator then emits no OTLP rule and LiteLLM reaches it over port 443, which is
+  # why an external endpoint on any other port fails the render when litellm.otel is
+  # on. The static render (operator.enabled or platformAgent.enabled false) has no
+  # namespace to derive for an external endpoint and fails with litellm.otel on.
   collectorNamespace: ""
 
 litellm:

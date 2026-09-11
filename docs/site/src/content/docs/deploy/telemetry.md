@@ -84,7 +84,7 @@ Discovery only covers the agents. LiteLLM's exporter is rendered by Helm, while 
 ```yaml
 telemetry:
   otlpEndpoint: "http://otel-collector.otel-collector.svc.cluster.local:4318"
-  collectorNamespace: "" # only needed if the namespace can't be read off the host
+  collectorNamespace: "" # for an in-cluster collector whose host does not name its namespace
 ```
 
 | `telemetry.otlpEndpoint` | PlatformAgent CR              | LiteLLM env (only when `litellm.otel=true`) | NetworkPolicy egress namespace                 |
@@ -96,7 +96,7 @@ Empty means "do not decide here". When `platformAgent.enabled: true` and `operat
 
 `litellm.otel` stays a separate switch, and it defaults to **off**. Naming a collector does not turn the LiteLLM otel callback on, because that callback aborts every LLM request on DNS failure — too severe to flip as a side effect. So on a default install `telemetry.otlpEndpoint` moves the agents and the egress rule; the LiteLLM `OTEL_EXPORTER_OTLP_ENDPOINT` variable does not exist until you also set `litellm.otel=true`.
 
-The namespace is read off the endpoint host when it names an in-cluster Service (`<svc>.<ns>` or `<svc>.<ns>.svc…`). A vendor endpoint or a bare hostname has no namespace to read, and what happens then depends on who renders the policy and on that same switch. On the default install the operator owns `litellm-policy` and omits the OTLP egress rule for such an endpoint, whatever `litellm.otel` says; LiteLLM reaches the vendor over the port-443 rule, so with `litellm.otel=true` the endpoint has to be on port 443, and an external endpoint on any other port fails the render because the exporter would be blocked. When Helm renders the static copy (`operator.enabled` or `platformAgent.enabled` false), `litellm.otel=true` fails the render rather than emitting a policy that blocks the export you just configured — set `telemetry.collectorNamespace`, or `litellm.networkPolicy=false` if the policy is managed elsewhere — while with the callback off the static copy keeps `gke-managed-otel` and the install proceeds.
+The namespace is read off the endpoint host when it names an in-cluster Service (`<svc>.<ns>` or `<svc>.<ns>.svc…`). A vendor endpoint or a bare hostname has no namespace to read, and what happens then depends on who renders the policy and on that same switch. On the default install the operator owns `litellm-policy` and, with no `telemetry.collectorNamespace` set, omits the OTLP egress rule for such an endpoint whatever `litellm.otel` says; LiteLLM reaches the vendor over the port-443 rule, so with `litellm.otel=true` the endpoint has to be on port 443, and an external endpoint on any other port fails the render because the exporter would be blocked. When Helm renders the static copy (`operator.enabled` or `platformAgent.enabled` false), `litellm.otel=true` fails the render rather than emitting a policy that blocks the export you just configured — set `litellm.networkPolicy=false` if the policy is managed elsewhere — while with the callback off the static copy keeps `gke-managed-otel` and the install proceeds. `telemetry.collectorNamespace` is for an in-cluster collector whose host does not name its namespace (an IP literal, a bare Service name): set it and both renders open 4317/4318 to that namespace and skip the port-443 check.
 
 ### Kustomize and examples
 
