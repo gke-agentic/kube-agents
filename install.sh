@@ -1356,8 +1356,15 @@ run_with_spinner() {
     return "$rc"
   fi
 
-  "$@" >"$log_file" 2>&1 &
-  local task_pid=$!
+  # Everything the handler reads is given a value before the handler can run,
+  # because `set -u` would otherwise kill it on an unbound variable instead of
+  # letting it restore the cursor and reap the job.
+  local task_pid=0
+  local term_width=0
+  local frames=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
+  local frame=0
+  local started=$SECONDS
+  local status_line=""
 
   on_spinner_interrupt() {
     local sig="$1"
@@ -1370,8 +1377,10 @@ run_with_spinner() {
     # with job control off bash sets SIGINT to SIG_IGN for `&` children and the
     # disposition survives both fork and exec, so the terminal's own Ctrl-C
     # never reaches either process.
-    pkill -TERM -P "$task_pid" 2>/dev/null || true
-    kill -TERM "$task_pid" 2>/dev/null || true
+    if [ "$task_pid" -ne 0 ]; then
+      pkill -TERM -P "$task_pid" 2>/dev/null || true
+      kill -TERM "$task_pid" 2>/dev/null || true
+    fi
     tput cnorm 2>/dev/null || true
     printf '\r%*s\r' "$term_width" ''
     if [ -s "$log_file" ]; then
@@ -1382,17 +1391,17 @@ run_with_spinner() {
     exit "$sig"
   }
 
-  local frames=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
-  local frame=0
-  local started=$SECONDS
-  local status_line=""
-  local term_width=0
-  term_width="$(get_term_width)"
-  # Armed only once term_width holds a value. The handler prints it under
-  # `set -u`, so a signal arriving before the assignment would kill the handler
-  # on an unbound variable instead of restoring the cursor.
+  # Armed before the job exists, not after. Arming afterwards leaves a window in
+  # which the worker is already running while SIGINT still has its default
+  # disposition here: the shell dies, and the worker -- which inherited SIG_IGN
+  # for SIGINT as a `&` child -- outlives it with nothing left to reap it.
   trap 'on_spinner_interrupt 130' INT
   trap 'on_spinner_interrupt 143' TERM
+
+  "$@" >"$log_file" 2>&1 &
+  task_pid=$!
+
+  term_width="$(get_term_width)"
   # Everything except the status line: two spaces, spinner, message, "(NNNs)",
   # separators. Keep one column spare so the line never wraps.
   local status_width=$((term_width - ${#msg} - 15))
@@ -1401,12 +1410,20 @@ run_with_spinner() {
   fi
   tput civis 2>/dev/null || true
   while kill -0 "$task_pid" 2>/dev/null; do
-    status_line="$(tail -n 1 "$log_file" 2>/dev/null | tr -d '\r' | cut -c1-"$status_width")"
+    # Both of these fork a child, and SIGINT from a terminal goes to the whole
+    # foreground group, so on Ctrl-C the child dies of it and the command
+    # reports 130. Unguarded under `set -Ee` that fires the ERR trap, and
+    # on_error exits the shell before bash dispatches the pending INT trap --
+    # so the handler below never runs, the worker is orphaned, the cursor stays
+    # hidden, and the cancellation is recorded as a FAILED install report.
+    # `|| true` keeps errexit out of the loop and leaves the INT trap the only
+    # way out of it.
+    status_line="$(tail -n 1 "$log_file" 2>/dev/null | tr -d '\r' | cut -c1-"$status_width")" || status_line=""
     printf '\r  %b%s%b %s %b(%ss)%b %-*s' \
       "$C_CYAN" "${frames[$((frame % 10))]}" "$C_RESET" "$msg" \
       "$C_YELLOW" "$((SECONDS - started))" "$C_RESET" "$status_width" "$status_line"
     frame=$((frame + 1))
-    sleep "$SPINNER_INTERVAL_SECS"
+    sleep "$SPINNER_INTERVAL_SECS" || true
   done
   tput cnorm 2>/dev/null || true
   printf '\r%*s\r' "$term_width" ''
@@ -1848,7 +1865,7 @@ print_generate_only_handoff() {
   echo ""
   echo -e "${C_BOLD}1. Out-of-Terraform prerequisites (run if applicable to your cluster):${C_RESET}"
   echo -e "  • ${C_CYAN}CMEK Database Encryption (pre-existing cluster without CMEK):${C_RESET}"
-  echo -e "    # Note: the three create commands report ALREADY_EXISTS on a re-run, which is safe to ignore."
+  echo -e "    # Note: the two KMS create commands report ALREADY_EXISTS on a re-run, which is safe to ignore."
   echo -e "    gcloud services enable cloudkms.googleapis.com --project=${project_id}"
   echo -e "    gcloud kms keyrings create ${keyring} --location=${kms_loc} --project=${project_id}"
   echo -e "    gcloud kms keys create ${key} --keyring=${keyring} --location=${kms_loc} --purpose=encryption --project=${project_id}"
@@ -3809,13 +3826,17 @@ main() {
         print_success "Terraform configuration is valid."
         rm -f -- "$tf_log"
       else
-        print_error "Terraform validation failed (exit code $rc):"
         # Only the spinner branch withheld the output; the non-TTY branch already
-        # streamed it through tee, where repeating it doubles the log. An `if`
-        # rather than `[ -t 1 ] &&`, which under `set -e` would exit the subshell
-        # with the test's own status instead of the validation's.
+        # streamed it through tee, where repeating it doubles the log. The two
+        # messages differ so the non-TTY one does not end on a colon promising
+        # output that never follows. An `if` rather than `[ -t 1 ] &&`, which
+        # under `set -e` would exit the subshell with the test's own status
+        # instead of the validation's.
         if [ -t 1 ]; then
+          print_error "Terraform validation failed (exit code $rc):"
           cat "$tf_log" >&2
+        else
+          print_error "Terraform validation failed (exit code $rc); its output is above."
         fi
         rm -f -- "$tf_log"
         exit "$rc"

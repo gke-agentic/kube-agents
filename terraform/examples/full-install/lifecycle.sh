@@ -124,6 +124,14 @@ readonly CLUSTER_KMS_ADDRESSES
 # way (KMS cannot delete either).
 readonly MINTER_KMS_KEYRING_ADDRESS="module.github_minter[0].google_kms_key_ring.minter"
 readonly MINTER_KMS_KEY_ADDRESS="module.github_minter[0].google_kms_crypto_key.minter"
+# What "the minter's signing key is not there" looks like coming back from
+# gcloud, as against "the guard could not ask". NOT_FOUND is the key ring or key
+# itself missing. The other two are Cloud KMS not being enabled on the project,
+# which on a first apply says the same thing: main.tf enables cloudkms in the
+# very apply guard_minter_key runs ahead of, so a fresh project answers
+# SERVICE_DISABLED where an established one answers NOT_FOUND. Same shape as
+# GCS_OBJECT_ABSENT_PATTERN in scripts/installer/installer_common.sh.
+readonly MINTER_KEY_ABSENT_PATTERN='NOT_FOUND|SERVICE_DISABLED|has not been used in project'
 readonly HELM_RELEASE_ADDRESS="helm_release.kube_agents"
 readonly AGENT_GSA_ADDRESS="module.kube_agents_iam.google_service_account.agent"
 
@@ -702,7 +710,7 @@ guard_minter_key() {
   rm -f "$err_file"
 
   if [[ $list_rc -ne 0 ]]; then
-    if [[ "$list_err" != *NOT_FOUND* ]]; then
+    if ! printf '%s' "$list_err" | grep -qiE "$MINTER_KEY_ABSENT_PATTERN"; then
       warn "could not verify Cloud KMS signing key '$location/$keyring/$key' for GitHub minter ($list_err)."
       warn "Proceeding with apply, but note that the minter requires an ENABLED imported private key to pass readiness."
       return 0

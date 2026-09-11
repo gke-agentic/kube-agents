@@ -501,6 +501,24 @@ resource "google_service_account" "agent" {
         self.assertIn("Applying now would deploy the minter and wedge waiting on its readiness probe.", proc.stderr)
         self.assertNotIn("Proceeding with apply", proc.stderr)
 
+    def test_guard_minter_key_refuses_when_cloud_kms_is_not_enabled_yet(self):
+        """A disabled Cloud KMS API is the same first-apply state as an absent key.
+
+        main.tf enables cloudkms.googleapis.com as part of the very apply this
+        guard runs ahead of, so on a genuinely fresh project the probe comes back
+        SERVICE_DISABLED rather than NOT_FOUND. Reading only NOT_FOUND let the
+        first apply -- the wedge the guard exists for -- fall into warn-and-proceed.
+        """
+        proc = self._run_guard(
+            "guard_minter_key",
+            tfvar_enable_minter='"true"',
+            gcloud_kms_fail=True,
+            gcloud_kms_error="ERROR: (gcloud.kms.keys.versions.list) FAILED_PRECONDITION: Cloud Key Management Service (KMS) API has not been used in project 123 before or it is disabled.",
+        )
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("does not exist yet.", proc.stderr)
+        self.assertNotIn("Proceeding with apply", proc.stderr)
+
     def test_guard_minter_key_ignores_a_gcloud_notice_on_stderr(self):
         """A warning gcloud writes to stderr on a zero exit must not be read back as a key version.
 
