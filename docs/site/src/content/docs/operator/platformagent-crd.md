@@ -456,7 +456,8 @@ Configures the operator-generated egress `NetworkPolicy`.
   policy out-of-band during the transition via `litellm.networkPolicy=false`. The same window
   opens on a fresh default install, where Helm renders no `litellm-policy` and LiteLLM starts
   before the operator has reconciled; there is no live object to annotate, so cover it with a
-  policy of your own under `litellm.networkPolicy=false` if it matters. Going the other way,
+  policy of your own under another name if it matters, and delete that once `litellm-policy`
+  exists. Going the other way,
   from operator-managed back to the static copy, needs a handoff first — see
   [Handing `litellm-policy` back to Helm](https://github.com/gke-labs/kube-agents/blob/main/charts/kube-agents/README.md#handing-litellm-policy-back-to-helm)
   in the chart README.
@@ -730,7 +731,7 @@ one reviewable place.
 - The `kubeagents.x-k8s.io/prevent-deletion: "true"` annotation on a `PlatformAgent` blocks deletion of the resource via the validating webhook (`ValidateDelete`). This serves as an accidental-deletion guardrail rather than an authorization control — `ValidateUpdate` does not block removing the annotation, so any principal with update permissions can patch the annotation off before deleting.
 - The `kubeagents.x-k8s.io/enable-litellm-network-policy: "false"` annotation on a `PlatformAgent` opts the shared `litellm-policy` out of operator reconciliation and deletes any managed copy without affecting the agent pod's own NetworkPolicy. Note that deleting the managed policy leaves LiteLLM unselected (fail-open) unless a replacement NetworkPolicy is managed out-of-band.
 - The `kubeagents.x-k8s.io/otlp-collector-namespace` annotation sets the collector namespace for `litellm-policy` when LiteLLM exports to an in-cluster collector whose namespace cannot be derived from `spec.telemetry.otlpEndpoint`.
-- Under the Helm chart, `platformAgent.annotations` is the route to these annotations. The chart derives the last two from `litellm.networkPolicy` and `telemetry.collectorNamespace` itself, and fails the render on an entry that contradicts the value it duplicates — see [PlatformAgent annotations](https://github.com/gke-labs/kube-agents/blob/main/charts/kube-agents/README.md#platformagent-annotations) in the chart README.
+- Under the Helm chart, `platformAgent.annotations` is the route to these annotations. The chart stamps the last two itself from `litellm.networkPolicy=false` and a non-empty `telemetry.collectorNamespace`, and when it does, an entry that disagrees with the value fails the render — see [PlatformAgent annotations](https://github.com/gke-labs/kube-agents/blob/main/charts/kube-agents/README.md#platformagent-annotations) in the chart README.
 - The Helm chart renders and applies the CR (the install engine drives it through `terraform apply`); you can also edit it directly with `kubectl edit`.
 
 ## Where to go next

@@ -40,11 +40,16 @@ HARNESS_CLUSTER_NAME = "my-cluster"
 HARNESS_LOCATION = "us-central1"
 
 VENDOR_OTLP_ENDPOINT = "https://otlp.vendor.example"
+VENDOR_OTLP_ENDPOINT_NON_443 = "https://otlp.vendor.example:4318"
+VENDOR_OTLP_ENDPOINT_PLAIN_HTTP = "http://otlp.vendor.example/v1/traces"
+IN_CLUSTER_OTLP_ENDPOINT_NON_443 = "http://otel-collector.observability.svc.cluster.local:4318"
 COLLECTOR_NAMESPACE = "obs"
 OTHER_COLLECTOR_NAMESPACE = "other"
 
 # The fail message the static render emits for an endpoint with no in-cluster namespace.
 VENDOR_ENDPOINT_FAIL_FRAGMENT = "does not name an in-cluster Service"
+# The fail message either render emits for an external endpoint the policy cannot reach.
+VENDOR_PORT_FAIL_FRAGMENT = "permits external egress on port 443 only"
 # The fail messages the CR template emits for a platformAgent.annotations entry that
 # contradicts the chart value the same key is derived from.
 ANNOTATION_CONFLICT_FRAGMENT = "contradicts"
@@ -173,6 +178,50 @@ class LiteLLMPolicyOwnershipTest(unittest.TestCase):
             *HARNESS_ARGS,
         )
         self.assertEqual(len(_litellm_policy_docs(res.stdout)), 0)
+
+    def test_vendor_otlp_endpoint_off_port_443_fails_render(self) -> None:
+        # Neither copy of litellm-policy lets LiteLLM reach an external host except on
+        # 443, so an exporter pointed anywhere else would be blocked in silence.
+        for endpoint in (VENDOR_OTLP_ENDPOINT_NON_443, VENDOR_OTLP_ENDPOINT_PLAIN_HTTP):
+            with self.subTest(endpoint):
+                res = _helm_template(
+                    "--set",
+                    f"telemetry.otlpEndpoint={endpoint}",
+                    "--set",
+                    "litellm.otel=true",
+                    *HARNESS_ARGS,
+                    check=False,
+                )
+                self.assertNotEqual(res.returncode, 0)
+                self.assertIn(VENDOR_PORT_FAIL_FRAGMENT, res.stderr)
+
+    def test_otlp_port_check_stays_out_of_the_way(self) -> None:
+        # An in-cluster collector on any port, or an external one with the exporter
+        # off, or with the policy off, has nothing for the port check to catch.
+        cases = [
+            (
+                "in-cluster non-443",
+                ["--set", f"telemetry.otlpEndpoint={IN_CLUSTER_OTLP_ENDPOINT_NON_443}", "--set", "litellm.otel=true"],
+            ),
+            (
+                "exporter off",
+                ["--set", f"telemetry.otlpEndpoint={VENDOR_OTLP_ENDPOINT_NON_443}"],
+            ),
+            (
+                "policy off",
+                [
+                    "--set",
+                    f"telemetry.otlpEndpoint={VENDOR_OTLP_ENDPOINT_NON_443}",
+                    "--set",
+                    "litellm.otel=true",
+                    "--set",
+                    "litellm.networkPolicy=false",
+                ],
+            ),
+        ]
+        for name, args in cases:
+            with self.subTest(name):
+                _helm_template(*args, *HARNESS_ARGS)
 
     def test_vendor_otlp_endpoint_fails_static_render(self) -> None:
         # The static policy needs a namespaceSelector it cannot derive, and emitting one

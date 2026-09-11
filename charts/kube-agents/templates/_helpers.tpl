@@ -217,7 +217,8 @@ The fail is reachable only from the static litellm-policy render, so it never fi
 the default install, where the operator owns the policy and resolves the namespace at
 reconcile time: a vendor endpoint there yields no OTLP rule, and LiteLLM reaches the
 vendor over the port-443 rule. Do not call this helper outside that render to "validate
-early" — that reinstates the fail for a configuration that works.
+early" — that reinstates the fail for a configuration that works. The check that does
+belong outside it is kube-agents.litellmOTLPPortCheck below.
 */}}
 {{- define "kube-agents.otlpCollectorNamespace" -}}
 {{- if .Values.telemetry.collectorNamespace -}}
@@ -240,6 +241,37 @@ gke-managed-otel
 gke-managed-otel
 {{- else -}}
 {{- fail (printf "telemetry.otlpEndpoint %q does not name an in-cluster Service, so the LiteLLM NetworkPolicy cannot tell which namespace to allow egress to. Set telemetry.collectorNamespace, or set litellm.networkPolicy=false if the policy is managed elsewhere." .Values.telemetry.otlpEndpoint) -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Fails the render when the LiteLLM OTLP exporter would be blocked by litellm-policy
+whoever renders that policy.
+
+Neither copy of the policy has a rule for an external host except port 443, and the
+operator emits no OTLP rule at all for an endpoint that is not an in-cluster Service.
+So an external endpoint on any other port (an OTLP vendor's 4317/4318 ingress, say)
+renders green and exports nothing, and the only signal is an operator log line. This
+catches it at render time. Renders nothing; it is called for its fail alone, and only
+when litellm.otel is on — the check is about LiteLLM's exporter, which does not exist
+otherwise — and litellm.networkPolicy is on, since with it off nothing blocks.
+*/}}
+{{- define "kube-agents.litellmOTLPPortCheck" -}}
+{{- if and .Values.litellm.otel .Values.litellm.networkPolicy .Values.telemetry.otlpEndpoint -}}
+{{- $endpoint := .Values.telemetry.otlpEndpoint -}}
+{{- $hostport := $endpoint | trimPrefix "https://" | trimPrefix "http://" -}}
+{{- $hostport = (splitList "/" $hostport | first) -}}
+{{- $hostParts := splitList ":" $hostport -}}
+{{- $host := first $hostParts -}}
+{{- $port := ternary "80" "443" (hasPrefix "http://" $endpoint) -}}
+{{- if gt (len $hostParts) 1 -}}
+{{- $port = index $hostParts 1 -}}
+{{- end -}}
+{{- $labels := splitList "." $host -}}
+{{- $inCluster := or (eq (len $labels) 2) (and (ge (len $labels) 3) (eq (index $labels 2) "svc")) -}}
+{{- if and (not $inCluster) (ne $port "443") -}}
+{{- fail (printf "telemetry.otlpEndpoint %q names an external host on port %s, but litellm-policy permits external egress on port 443 only, so the LiteLLM OTLP exporter (litellm.otel=true) would be blocked. Use a port-443 endpoint, or set litellm.networkPolicy=false if the policy is managed elsewhere." $endpoint $port) -}}
 {{- end -}}
 {{- end -}}
 {{- end }}
