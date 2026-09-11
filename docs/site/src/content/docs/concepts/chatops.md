@@ -104,7 +104,7 @@ Both jobs fire every minute (`* * * * *`, see [Autonomous watchdogs](/kube-agent
 ## What's not here
 
 - **No web UI.** Chat is the primary surface.
-- **No CLI beyond port-forwarding to the Hermes API.** For debug you can `kubectl port-forward` to the agent pod and use the Hermes CLI directly — note the pod hosts several profiles, so a bare `hermes` command talks to the locked-down Planning Agent; use `hermes -p platform` to reach the Platform Agent (or `hermes -p <cluster-profile>` for a Cluster Agent). This isn't a user-facing pattern.
+- **No CLI beyond the Hermes CLI inside the pod.** For debug, `kubectl exec` into the agent pod and run the Hermes CLI there — note the pod hosts several profiles, so a bare `hermes` command talks to the locked-down Planning Agent; use `hermes -p platform` to reach the Platform Agent (or `hermes -p <cluster-profile>` for a Cluster Agent). `kubectl port-forward` is not a way in on a GKE Sandbox (gVisor) node pool, which is the install default: the forward is established in the host-side netns and cannot see a listener inside the sandbox — [PlatformAgent CRD](/kube-agents/operator/platformagent-crd/#specharness) is canonical on that. This isn't a user-facing pattern.
 - **No email, PagerDuty, or generic webhook ingress.** Chat channels only.
 
 ## Where to go next
