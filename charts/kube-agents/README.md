@@ -348,7 +348,8 @@ the static copy keeps `gke-managed-otel` and the operator emits no rule.
 `telemetry.collectorNamespace` is for an in-cluster collector whose host does
 not name its namespace: it tells both renders the collector is in-cluster
 whatever the host looks like, and they open 4317/4318 to that namespace instead
-of applying the port-443 check. Full precedence
+of applying the port-443 check. The site's telemetry page is canonical for this
+rule as well as for the full precedence
 ladder and discovery rules: [Deploy → Telemetry](https://gke-labs.github.io/kube-agents/deploy/telemetry/#pointing-at-your-own-collector).
 
 ### Turning telemetry off

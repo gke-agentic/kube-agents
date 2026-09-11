@@ -47,6 +47,13 @@ VENDOR_OTLP_ENDPOINT_IPV6_443 = "https://[2001:db8::1]:443/v1/traces"
 VENDOR_OTLP_ENDPOINT_QUERY_NON_443 = "https://otlp.vendor.example:4318?x=1"
 VENDOR_OTLP_ENDPOINT_GRPC = "grpc://otlp.vendor.example:4317"
 VENDOR_OTLP_ENDPOINT_USERINFO = "https://user:secret@otlp.vendor.example"
+PRIVATE_IPV4_OTLP_ENDPOINT_443 = "https://10.100.5.7"
+SINGLE_LABEL_OTLP_ENDPOINT_443 = "https://otel-collector"
+PUBLIC_IPV4_OTLP_ENDPOINT_443 = "https://203.0.113.9"
+INVALID_COLLECTOR_NAMESPACE = "Obs/Namespace"
+# The fail message for a host the 443 rule cannot reach that the render can recognise.
+PRIVATE_HOST_FAIL_FRAGMENT = "does not reach (it excepts private ranges)"
+INVALID_NAMESPACE_FAIL_FRAGMENT = "is not a valid label value"
 VENDOR_OTLP_ENDPOINT_UPPERCASE_SCHEME = "HTTPS://otlp.vendor.example"
 IN_CLUSTER_OTLP_ENDPOINT_NON_443 = "http://otel-collector.observability.svc.cluster.local:4318"
 BARE_HOST_OTLP_ENDPOINT_NON_443 = "http://otel-collector:4318"
@@ -226,6 +233,65 @@ class LiteLLMPolicyOwnershipTest(unittest.TestCase):
                 self.assertIn(VENDOR_PORT_FAIL_FRAGMENT, res.stderr)
                 self.assertNotIn("on port ,", res.stderr)
 
+    def test_private_or_single_label_host_on_443_fails_render(self) -> None:
+        # Both are in-cluster collectors in disguise: the 443 rule excepts private
+        # ranges, and the remedy is the collector namespace, as it was on main.
+        for render_args in ([], ["--set", "operator.enabled=false"]):
+            for endpoint in (PRIVATE_IPV4_OTLP_ENDPOINT_443, SINGLE_LABEL_OTLP_ENDPOINT_443):
+                with self.subTest(f"{endpoint} {render_args}"):
+                    res = _helm_template(
+                        "--set",
+                        f"telemetry.otlpEndpoint={endpoint}",
+                        "--set",
+                        "litellm.otel=true",
+                        *render_args,
+                        *HARNESS_ARGS,
+                        check=False,
+                    )
+                    self.assertNotEqual(res.returncode, 0)
+                    self.assertIn(PRIVATE_HOST_FAIL_FRAGMENT, res.stderr)
+        with self.subTest("public IPv4 literal on 443 renders"):
+            _helm_template(
+                "--set",
+                f"telemetry.otlpEndpoint={PUBLIC_IPV4_OTLP_ENDPOINT_443}",
+                "--set",
+                "litellm.otel=true",
+                *HARNESS_ARGS,
+            )
+
+    def test_annotation_values_are_read_the_way_the_operator_reads_them(self) -> None:
+        with self.subTest("invalid collector namespace annotation fails"):
+            res = _helm_template(
+                "--set",
+                f"telemetry.otlpEndpoint={VENDOR_OTLP_ENDPOINT_NON_443}",
+                "--set",
+                "litellm.otel=true",
+                "--set",
+                _annotation_set_arg(COLLECTOR_NAMESPACE_ANNOTATION_KEY, INVALID_COLLECTOR_NAMESPACE),
+                *HARNESS_ARGS,
+                check=False,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn(INVALID_NAMESPACE_FAIL_FRAGMENT, res.stderr)
+        with self.subTest("upper-case opt-out stands the port check aside"):
+            _helm_template(
+                "--set",
+                f"telemetry.otlpEndpoint={VENDOR_OTLP_ENDPOINT_NON_443}",
+                "--set",
+                "litellm.otel=true",
+                "--set-string",
+                _annotation_set_arg(OPT_OUT_ANNOTATION_KEY, "FALSE"),
+                *HARNESS_ARGS,
+            )
+        with self.subTest("upper-case opt-out agrees with litellm.networkPolicy=false"):
+            _helm_template(
+                "--set",
+                "litellm.networkPolicy=false",
+                "--set-string",
+                _annotation_set_arg(OPT_OUT_ANNOTATION_KEY, "FALSE"),
+                *HARNESS_ARGS,
+            )
+
     def test_collector_namespace_annotation_does_not_cover_the_static_render(self) -> None:
         # Only the operator reads the CR annotation; the static copy opens nothing for
         # it, so the port check still has to fire there.
@@ -233,7 +299,7 @@ class LiteLLMPolicyOwnershipTest(unittest.TestCase):
             "--set",
             "operator.enabled=false",
             "--set",
-            f"telemetry.otlpEndpoint={IP_LITERAL_OTLP_ENDPOINT_NON_443}",
+            f"telemetry.otlpEndpoint={VENDOR_OTLP_ENDPOINT_NON_443}",
             "--set",
             "litellm.otel=true",
             "--set",

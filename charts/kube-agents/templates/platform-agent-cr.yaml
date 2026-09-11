@@ -21,7 +21,8 @@ metadata:
   {{- $litellmPolicyKey := "kubeagents.x-k8s.io/enable-litellm-network-policy" }}
   {{- if and .Values.litellm (not .Values.litellm.networkPolicy) }}
   {{- with get $annotations $litellmPolicyKey }}
-  {{- if ne (toString .) "false" }}
+  {{- /* The operator reads this value trimmed and case-insensitively; agree with it. */}}
+  {{- if ne (toString . | trim | lower) "false" }}
   {{- fail (printf "platformAgent.annotations[%q]=%q contradicts litellm.networkPolicy=false, which stamps it \"false\". Drop the annotation or set litellm.networkPolicy=true." $litellmPolicyKey (toString .)) }}
   {{- end }}
   {{- end }}

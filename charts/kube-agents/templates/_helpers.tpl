@@ -275,15 +275,23 @@ Neither copy of the policy has a rule for an external host except port 443, and 
 collector namespace configured the operator emits no OTLP rule at all for an endpoint
 that is not an in-cluster Service. So an external endpoint on any other port (an OTLP
 vendor's 4317/4318 ingress, say) renders green and exports nothing, and the only signal
-is an operator log line. This catches it at render time. Renders nothing; it is called
-for its fail alone, and only when litellm.otel is on — the check is about LiteLLM's
-exporter, which does not exist otherwise — and litellm.networkPolicy is on, since with
-it off nothing blocks. An explicit telemetry.collectorNamespace is the user asserting
-the collector is in-cluster whatever its host looks like (an IP literal, a bare Service
-name), and both renders then open 4317/4318 to that namespace, so the check stands
-aside for it. It also stands aside for an in-cluster host on a port other than
-4317/4318, on purpose: the URL carries the Service port and the policy sees the
+is an operator log line. This catches it at render time. Renders nothing; it is
+included unconditionally and acts only when litellm.otel is on — the check is about
+LiteLLM's exporter, which does not exist otherwise — and litellm.networkPolicy is on,
+since with it off nothing blocks. An explicit telemetry.collectorNamespace is the user
+asserting the collector is in-cluster whatever its host looks like (an IP literal, a
+bare Service name), and both renders then open 4317/4318 to that namespace, so the
+check stands aside for it. It also stands aside for an in-cluster host on a port other
+than 4317/4318, on purpose: the URL carries the Service port and the policy sees the
 targetPort, so a Service mapping 9999 to 4318 works and a fail there would be wrong.
+
+Two host shapes are refused even on 443, because the 443 rule excepts private ranges
+and they are decidable at render time: an IPv4 literal inside private, CGNAT,
+loopback, or link-local space, and a single-label hostname, which resolves through the
+Pod's search domain to a Service in its own namespace. Both are in-cluster collectors
+in disguise, and telemetry.collectorNamespace is the remedy, as it was before this
+check existed. A DNS name that happens to resolve to private space is not decidable
+here, and the docs say so.
 */}}
 {{- define "kube-agents.litellmOTLPPortCheck" -}}
 {{- /*
@@ -298,8 +306,14 @@ targetPort, so a Service mapping 9999 to 4318 works and a fail there would be wr
 {{- $crAnnotations := .Values.platformAgent.annotations | default dict -}}
 {{- $crNetworkPolicy := .Values.platformAgent.networkPolicy | default dict -}}
 {{- $operatorOwned := and .Values.platformAgent.enabled .Values.operator.enabled -}}
-{{- $crOptOut := and $operatorOwned (or (and (kindIs "bool" $crNetworkPolicy.enabled) (not $crNetworkPolicy.enabled)) (eq (toString (get $crAnnotations "kubeagents.x-k8s.io/enable-litellm-network-policy")) "false")) -}}
-{{- $collectorNamespace := or .Values.telemetry.collectorNamespace (and $operatorOwned (get $crAnnotations "kubeagents.x-k8s.io/otlp-collector-namespace")) -}}
+{{- /* The operator reads both annotations trimmed, and the opt-out case-insensitively. */ -}}
+{{- $optOutAnnotation := get $crAnnotations "kubeagents.x-k8s.io/enable-litellm-network-policy" | toString | trim | lower -}}
+{{- $crOptOut := and $operatorOwned (or (and (kindIs "bool" $crNetworkPolicy.enabled) (not $crNetworkPolicy.enabled)) (eq $optOutAnnotation "false")) -}}
+{{- $namespaceAnnotation := get $crAnnotations "kubeagents.x-k8s.io/otlp-collector-namespace" | toString | trim -}}
+{{- if and $operatorOwned $namespaceAnnotation (not (regexMatch "^[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$" $namespaceAnnotation)) -}}
+{{- fail (printf "platformAgent.annotations[\"kubeagents.x-k8s.io/otlp-collector-namespace\"]=%q is not a valid label value, so the operator would ignore it and emit no OTLP egress rule. Give the collector's namespace name." $namespaceAnnotation) -}}
+{{- end -}}
+{{- $collectorNamespace := or .Values.telemetry.collectorNamespace (and $operatorOwned $namespaceAnnotation) -}}
 {{- if and .Values.litellm.otel .Values.litellm.networkPolicy .Values.telemetry.otlpEndpoint (not $crOptOut) (not $collectorNamespace) (not (include "kube-agents.otlpEndpointIsClusterLocal" .)) -}}
 {{- $endpoint := .Values.telemetry.otlpEndpoint -}}
 {{- /*
@@ -328,6 +342,13 @@ targetPort, so a Service mapping 9999 to 4318 works and a fail there would be wr
 {{- end -}}
 {{- if not $port -}}
 {{- $port = ternary "80" "443" (hasPrefix "http://" $endpoint) -}}
+{{- end -}}
+{{- $host := include "kube-agents.otlpEndpointHost" . -}}
+{{- $privateIPv4 := regexMatch "^(10\\.|127\\.|169\\.254\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|100\\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\\.)[0-9]+\\.[0-9]+(\\.[0-9]+)?$" $host -}}
+{{- /* A bracketed IPv6 literal cuts to "[…" with no dot; it is not a single-label host. */ -}}
+{{- $singleLabel := and (not (contains "." $host)) (not (hasPrefix "[" $hostport)) -}}
+{{- if or $privateIPv4 $singleLabel -}}
+{{- fail (printf "telemetry.otlpEndpoint %q names %s, which litellm-policy's port-443 rule does not reach (it excepts private ranges), so the LiteLLM OTLP exporter (litellm.otel=true) would be blocked. If this is an in-cluster collector, set telemetry.collectorNamespace to its namespace; otherwise give the collector's public host." $endpoint (ternary "a private IPv4 address" "a single-label host" $privateIPv4)) -}}
 {{- end -}}
 {{- if ne $port "443" -}}
 {{- fail (printf "telemetry.otlpEndpoint %q names an external host on port %s, but litellm-policy permits egress to external hosts on port 443 only, so the LiteLLM OTLP exporter (litellm.otel=true) would be blocked. Use a port-443 endpoint, set telemetry.collectorNamespace if the collector is in fact in-cluster, or set litellm.networkPolicy=false if the policy is managed elsewhere." $endpoint $port) -}}
