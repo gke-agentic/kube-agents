@@ -338,15 +338,18 @@ Service. An external endpoint or bare hostname has no namespace to read, and
 both renders then do the same thing: with `litellm.otel=true` they emit no OTLP
 egress rule (unless `telemetry.collectorNamespace` names one), so the exporter
 leaves over the policy's port-443 rule, which excepts private ranges. The
-endpoint therefore has to be a public host on port 443. Nothing in the render
-checks that: an external endpoint on any other port, or a 443 endpoint that
-resolves to private address space (an internal load balancer, say), is blocked
-without a render error, and the operator logs one line for it. With the callback
-off the static copy keeps `gke-managed-otel` and the operator emits no rule.
+endpoint therefore has to be a public host on port 443; an external endpoint on
+any other port fails the render, because the exporter would be blocked (unless
+nothing selects LiteLLM: `litellm.networkPolicy=false`, or on the default
+install the CR's `networkPolicy.enabled=false` or the opt-out annotation), and
+a 443 endpoint that resolves to private address space (an internal load
+balancer, say) is blocked without a render error. With the callback off
+the static copy keeps `gke-managed-otel` and the operator emits no rule.
 `telemetry.collectorNamespace` is for an in-cluster collector whose host does
 not name its namespace: it tells both renders the collector is in-cluster
-whatever the host looks like, and they open 4317/4318 to that namespace. The
-site's telemetry page is canonical for this rule as well as for the full precedence
+whatever the host looks like, and they open 4317/4318 to that namespace instead
+of applying the port-443 check. The site's telemetry page is canonical for this
+rule as well as for the full precedence
 ladder and discovery rules: [Deploy → Telemetry](https://gke-labs.github.io/kube-agents/deploy/telemetry/#pointing-at-your-own-collector).
 
 ### Turning telemetry off
