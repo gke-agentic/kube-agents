@@ -334,20 +334,19 @@ but that variable only exists when `litellm.otel=true` — off by default, and n
 turned on by naming a collector.
 
 The egress namespace is read off the endpoint host when it names an in-cluster
-Service. An external endpoint or bare hostname has no namespace to read. On the
-default install the operator owns the policy and, unless
-`telemetry.collectorNamespace` is set, omits the OTLP egress rule for it, so
-LiteLLM reaches the endpoint over the port-443 rule and the endpoint has to be
-on port 443: with `litellm.otel=true`, an external endpoint on any other port
-fails the render, because the exporter would be blocked. When Helm renders the
-static copy instead (`operator.enabled` or `platformAgent.enabled` false),
-`litellm.otel=true` fails the render for any external endpoint, so set
-`litellm.networkPolicy=false` if the policy is managed elsewhere; with the
-callback off the static copy keeps `gke-managed-otel` and the install
-proceeds. `telemetry.collectorNamespace` is for an in-cluster collector whose
-host does not name its namespace: it tells both renders the collector is
-in-cluster whatever the host looks like, and they open 4317/4318 to that
-namespace instead of applying the port-443 rule. Full precedence
+Service. An external endpoint or bare hostname has no namespace to read, and
+both renders then do the same thing: with `litellm.otel=true` they emit no OTLP
+egress rule (unless `telemetry.collectorNamespace` names one), so the exporter
+leaves over the policy's port-443 rule, which reaches public addresses only.
+The endpoint therefore has to be a public host on port 443; an external
+endpoint on any other port fails the render, because the exporter would be
+blocked, and a 443 endpoint that resolves to private address space (an internal
+load balancer, say) is blocked without a render error. With the callback off
+the static copy keeps `gke-managed-otel` and the operator emits no rule.
+`telemetry.collectorNamespace` is for an in-cluster collector whose host does
+not name its namespace: it tells both renders the collector is in-cluster
+whatever the host looks like, and they open 4317/4318 to that namespace instead
+of applying the port-443 check. Full precedence
 ladder and discovery rules: [Deploy → Telemetry](https://gke-labs.github.io/kube-agents/deploy/telemetry/#pointing-at-your-own-collector).
 
 ### Turning telemetry off

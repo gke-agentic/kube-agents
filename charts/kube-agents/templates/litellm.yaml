@@ -413,6 +413,11 @@ spec:
             cidr: 169.254.169.252/32
         - ipBlock:
             cidr: 169.254.169.254/32
+    {{- /*
+      Empty for an external endpoint with litellm.otel on: the exporter leaves over the
+      port-443 rule above, as it does under the operator's copy, and no rule is emitted.
+    */}}
+    {{- with include "kube-agents.otlpCollectorNamespace" . }}
     - ports:
         - port: 4317
           protocol: TCP
@@ -421,7 +426,8 @@ spec:
       to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ include "kube-agents.otlpCollectorNamespace" . }}
+              kubernetes.io/metadata.name: {{ . }}
+    {{- end }}
   ingress:
     - from:
         - podSelector: {}

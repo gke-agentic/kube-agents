@@ -46,6 +46,7 @@ VENDOR_OTLP_ENDPOINT_IPV6_NON_443 = "http://[2001:db8::1]:4318"
 VENDOR_OTLP_ENDPOINT_IPV6_443 = "https://[2001:db8::1]:443/v1/traces"
 VENDOR_OTLP_ENDPOINT_QUERY_NON_443 = "https://otlp.vendor.example:4318?x=1"
 VENDOR_OTLP_ENDPOINT_GRPC = "grpc://otlp.vendor.example:4317"
+VENDOR_OTLP_ENDPOINT_USERINFO = "https://user:secret@otlp.vendor.example"
 VENDOR_OTLP_ENDPOINT_UPPERCASE_SCHEME = "HTTPS://otlp.vendor.example"
 IN_CLUSTER_OTLP_ENDPOINT_NON_443 = "http://otel-collector.observability.svc.cluster.local:4318"
 BARE_HOST_OTLP_ENDPOINT_NON_443 = "http://otel-collector:4318"
@@ -53,12 +54,15 @@ IP_LITERAL_OTLP_ENDPOINT_NON_443 = "http://10.100.5.7:4318"
 COLLECTOR_NAMESPACE = "obs"
 OTHER_COLLECTOR_NAMESPACE = "other"
 
-# The fail message the static render emits for an endpoint with no in-cluster namespace.
-VENDOR_ENDPOINT_FAIL_FRAGMENT = "does not name an in-cluster Service"
 # The fail message either render emits for an external endpoint the policy cannot reach.
 VENDOR_PORT_FAIL_FRAGMENT = "permits egress to external hosts on port 443 only"
 # The fail message for a scheme the port check cannot read a port off.
 SCHEME_FAIL_FRAGMENT = "must start with http:// or https://"
+# The fail message for an authority the port check cannot read a port off.
+UNREADABLE_PORT_FAIL_FRAGMENT = "cannot read the port off it"
+
+OTLP_PORTS = {4317, 4318}
+MANAGED_OTEL_NAMESPACE = "gke-managed-otel"
 # The fail messages the CR template emits for a platformAgent.annotations entry that
 # contradicts the chart value the same key is derived from.
 ANNOTATION_CONFLICT_FRAGMENT = "contradicts"
@@ -99,6 +103,19 @@ def _litellm_policy_docs(rendered_yaml: str) -> list[dict]:
         ):
             docs.append(doc)
     return docs
+
+
+def _otlp_egress_namespaces(policy: dict) -> list[str]:
+    """The namespaces the policy's 4317/4318 egress rules open, in order."""
+    namespaces = []
+    for rule in policy.get("spec", {}).get("egress", []):
+        ports = {p.get("port") for p in rule.get("ports", [])}
+        if not ports & OTLP_PORTS:
+            continue
+        for peer in rule.get("to", []):
+            selector = (peer.get("namespaceSelector") or {}).get("matchLabels", {})
+            namespaces.append(selector.get("kubernetes.io/metadata.name"))
+    return namespaces
 
 
 def _find_platform_agent_cr(rendered_yaml: str) -> dict | None:
@@ -195,7 +212,6 @@ class LiteLLMPolicyOwnershipTest(unittest.TestCase):
             VENDOR_OTLP_ENDPOINT_NON_443,
             VENDOR_OTLP_ENDPOINT_PLAIN_HTTP,
             VENDOR_OTLP_ENDPOINT_IPV6_NON_443,
-            VENDOR_OTLP_ENDPOINT_QUERY_NON_443,
         ):
             with self.subTest(endpoint):
                 res = _helm_template(
@@ -210,11 +226,18 @@ class LiteLLMPolicyOwnershipTest(unittest.TestCase):
                 self.assertIn(VENDOR_PORT_FAIL_FRAGMENT, res.stderr)
                 self.assertNotIn("on port ,", res.stderr)
 
-    def test_otlp_scheme_the_port_check_cannot_read_fails_render(self) -> None:
-        # A scheme the parser does not strip would leave no port to read and pass as
-        # an implicit 443; the operator reads the same raw value case-sensitively, so
-        # the chart refuses rather than diverging from it.
-        for endpoint in (VENDOR_OTLP_ENDPOINT_GRPC, VENDOR_OTLP_ENDPOINT_UPPERCASE_SCHEME):
+    def test_otlp_endpoint_the_port_check_cannot_read_fails_render(self) -> None:
+        # A scheme the parser does not strip, or a query string, userinfo, or fragment in
+        # the authority, would leave no port to read and pass as an implicit 443; the
+        # operator reads the same raw value with the same parser, so the chart refuses
+        # rather than diverging from it.
+        cases = [
+            (VENDOR_OTLP_ENDPOINT_GRPC, SCHEME_FAIL_FRAGMENT),
+            (VENDOR_OTLP_ENDPOINT_UPPERCASE_SCHEME, SCHEME_FAIL_FRAGMENT),
+            (VENDOR_OTLP_ENDPOINT_QUERY_NON_443, UNREADABLE_PORT_FAIL_FRAGMENT),
+            (VENDOR_OTLP_ENDPOINT_USERINFO, UNREADABLE_PORT_FAIL_FRAGMENT),
+        ]
+        for endpoint, fragment in cases:
             with self.subTest(endpoint):
                 res = _helm_template(
                     "--set",
@@ -225,7 +248,7 @@ class LiteLLMPolicyOwnershipTest(unittest.TestCase):
                     check=False,
                 )
                 self.assertNotEqual(res.returncode, 0)
-                self.assertIn(SCHEME_FAIL_FRAGMENT, res.stderr)
+                self.assertIn(fragment, res.stderr)
 
     def test_otlp_port_check_stays_out_of_the_way(self) -> None:
         # The check is about external hosts off port 443 only. An in-cluster Service
@@ -286,21 +309,49 @@ class LiteLLMPolicyOwnershipTest(unittest.TestCase):
             with self.subTest(name):
                 _helm_template(*args, *HARNESS_ARGS)
 
-    def test_vendor_otlp_endpoint_fails_static_render(self) -> None:
-        # The static policy needs a namespaceSelector it cannot derive, and emitting one
-        # that blocks the configured exporter would be worse than failing.
+    def test_vendor_otlp_endpoint_static_render_follows_the_operator(self) -> None:
+        # The static copy has no namespace to open for an external endpoint. With the
+        # exporter on it emits no OTLP rule, as the operator's copy does, and the exporter
+        # leaves over the port-443 rule the port check has already vouched for; with the
+        # exporter off it keeps the shipping gke-managed-otel default.
+        with self.subTest("exporter on"):
+            res = _helm_template(
+                "--set",
+                "operator.enabled=false",
+                "--set",
+                f"telemetry.otlpEndpoint={VENDOR_OTLP_ENDPOINT}",
+                "--set",
+                "litellm.otel=true",
+                *HARNESS_ARGS,
+            )
+            docs = _litellm_policy_docs(res.stdout)
+            self.assertEqual(len(docs), 1)
+            self.assertEqual(_otlp_egress_namespaces(docs[0]), [])
+        with self.subTest("exporter off"):
+            res = _helm_template(
+                "--set",
+                "operator.enabled=false",
+                "--set",
+                f"telemetry.otlpEndpoint={VENDOR_OTLP_ENDPOINT}",
+                *HARNESS_ARGS,
+            )
+            docs = _litellm_policy_docs(res.stdout)
+            self.assertEqual(len(docs), 1)
+            self.assertEqual(_otlp_egress_namespaces(docs[0]), [MANAGED_OTEL_NAMESPACE])
+
+    def test_in_cluster_otlp_endpoint_static_render_opens_its_namespace(self) -> None:
         res = _helm_template(
             "--set",
             "operator.enabled=false",
             "--set",
-            f"telemetry.otlpEndpoint={VENDOR_OTLP_ENDPOINT}",
+            f"telemetry.otlpEndpoint={IN_CLUSTER_OTLP_ENDPOINT_NON_443}",
             "--set",
             "litellm.otel=true",
             *HARNESS_ARGS,
-            check=False,
         )
-        self.assertNotEqual(res.returncode, 0)
-        self.assertIn(VENDOR_ENDPOINT_FAIL_FRAGMENT, res.stderr)
+        docs = _litellm_policy_docs(res.stdout)
+        self.assertEqual(len(docs), 1)
+        self.assertEqual(_otlp_egress_namespaces(docs[0]), ["observability"])
 
     def test_platform_agent_annotations_pass_through_beside_derived_keys(self) -> None:
         res = _helm_template(

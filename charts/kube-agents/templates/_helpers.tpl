@@ -206,20 +206,17 @@ it has to be right when the policy is applied. So it comes from telemetry.collec
 when given, and otherwise from the endpoint host, which is a cluster-local Service name in
 the case this feature exists for (<svc>.<ns>.svc.cluster.local, or the shortened <svc>.<ns>).
 
-Anything else — an external vendor endpoint, a bare hostname — fails the render, but only
-when litellm.otel is on. Silently falling back to gke-managed-otel would emit a policy that
-blocks the very collector the user just configured, and the symptom would be zero spans
-with a green install. With litellm.otel off (the default) there is no LiteLLM exporter for
-the policy to block, so failing the whole install over an egress rule nothing uses would
-punish a user who only meant to repoint the agents.
+Anything else — an external vendor endpoint, a bare hostname — has no namespace to open,
+and what the static policy does then follows the operator's dynamic copy. With
+litellm.otel on, this renders "" and the caller emits no OTLP rule: the exporter goes out
+over the port-443 rule, which kube-agents.litellmOTLPPortCheck has already made sure is
+where the endpoint listens, and a made-up namespaceSelector would open 4317/4318 to a
+namespace nothing exports to. With litellm.otel off (the default) there is no LiteLLM
+exporter, and the rule keeps the shipping gke-managed-otel default rather than changing
+a policy over an egress rule nothing uses.
 
-The fail is reachable only from the static litellm-policy render, so it never fires on
-the default install, where the operator owns the policy and resolves the namespace at
-reconcile time: a vendor endpoint there yields no OTLP rule unless collectorNamespace
-names one, and LiteLLM reaches the vendor over the port-443 rule. Do not call this
-helper outside that render to "validate early" — that reinstates the fail for a
-configuration that works. The check that does belong outside it is
-kube-agents.litellmOTLPPortCheck below.
+Only the static litellm-policy render calls this. On the default install the operator
+owns the policy and resolves the namespace at reconcile time from the CR.
 */}}
 {{- define "kube-agents.otlpCollectorNamespace" -}}
 {{- if .Values.telemetry.collectorNamespace -}}
@@ -230,35 +227,29 @@ gke-managed-otel
 {{- index (splitList "." (include "kube-agents.otlpEndpointHost" .)) 1 -}}
 {{- else if not .Values.litellm.otel -}}
 gke-managed-otel
-{{- else -}}
-{{- fail (printf "telemetry.otlpEndpoint %q does not name an in-cluster Service, so the LiteLLM NetworkPolicy cannot tell which namespace to allow egress to. Set telemetry.collectorNamespace, or set litellm.networkPolicy=false if the policy is managed elsewhere." .Values.telemetry.otlpEndpoint) -}}
 {{- end -}}
 {{- end }}
 
 {{/*
-The host[:port] of telemetry.otlpEndpoint: scheme, path, query, and fragment stripped.
-
-Case is kept and the scheme prefixes are matched exactly, because the operator's
-otlpCollectorNamespace (k8s-operator, platformagent_manifests.go) does the same to the
-same value when it builds the dynamic policy, and the two have to reach the same
-verdict about the same endpoint. Lowercasing here would let an uppercase-scheme
-in-cluster endpoint render green while the operator, seeing no in-cluster host, emits
-no OTLP rule.
+The host[:port] of telemetry.otlpEndpoint: scheme and path stripped, nothing else.
 */}}
 {{- define "kube-agents.otlpEndpointHostPort" -}}
 {{- $hostport := .Values.telemetry.otlpEndpoint | trimPrefix "https://" | trimPrefix "http://" -}}
-{{- $hostport = splitList "/" $hostport | first -}}
-{{- $hostport = splitList "?" $hostport | first -}}
-{{- splitList "#" $hostport | first -}}
+{{- splitList "/" $hostport | first -}}
 {{- end }}
 
 {{/*
-The host of telemetry.otlpEndpoint: the port and the brackets of an IPv6 literal
-stripped as well. `:[0-9]*$` rather than a split on ":", which would cut an IPv6
-literal at its first colon.
+The host of telemetry.otlpEndpoint, parsed exactly the way the operator's
+otlpCollectorNamespace (k8s-operator, platformagent_manifests.go) parses the same value
+when it builds the dynamic policy: exact lowercase scheme prefixes, cut at the first "/",
+then at the first ":". The two renders have to reach the same verdict about the same
+endpoint, so this deliberately inherits the operator's blind spots rather than being
+smarter than it — a bracketed IPv6 literal cuts at its first colon and reads as external
+on both sides, a query string stays in the last label on both sides. Anything this leaves
+unreadable is refused by kube-agents.litellmOTLPPortCheck instead of guessed at.
 */}}
 {{- define "kube-agents.otlpEndpointHost" -}}
-{{- regexReplaceAll ":[0-9]*$" (include "kube-agents.otlpEndpointHostPort" .) "" | trimPrefix "[" | trimSuffix "]" -}}
+{{- include "kube-agents.otlpEndpointHostPort" . | splitList ":" | first -}}
 {{- end }}
 
 {{/*
@@ -306,7 +297,21 @@ targetPort, so a Service mapping 9999 to 4318 works and a fail there would be wr
 {{- if and (contains "://" $endpoint) (not (or (hasPrefix "http://" $endpoint) (hasPrefix "https://" $endpoint))) -}}
 {{- fail (printf "telemetry.otlpEndpoint %q must start with http:// or https:// (lowercase): the LiteLLM OTLP exporter (litellm.otel=true) speaks OTLP/HTTP, and the NetworkPolicy render cannot read the port off any other scheme." $endpoint) -}}
 {{- end -}}
-{{- $port := include "kube-agents.otlpEndpointHostPort" . | regexFind ":[0-9]+$" | trimPrefix ":" -}}
+{{- $hostport := include "kube-agents.otlpEndpointHostPort" . -}}
+{{- /*
+  The port is whatever follows the first ":" once a bracketed IPv6 literal is set aside,
+  and it has to be all digits. Userinfo, a query string, or a fragment in the authority
+  would leave the port unreadable (and the operator would read the host differently),
+  so those are refused too rather than passed as an implicit 443.
+*/ -}}
+{{- $afterHost := regexReplaceAll "^\\[[^\\]]*\\]" $hostport "" -}}
+{{- $port := "" -}}
+{{- if contains ":" $afterHost -}}
+{{- $port = splitList ":" $afterHost | rest | join ":" -}}
+{{- end -}}
+{{- if or (regexMatch "[?#@]" $hostport) (and (contains ":" $afterHost) (not (regexMatch "^[0-9]+$" $port))) -}}
+{{- fail (printf "telemetry.otlpEndpoint %q: the NetworkPolicy render cannot read the port off it. Give it as http(s)://host[:port][/path], with no userinfo, query, or fragment." $endpoint) -}}
+{{- end -}}
 {{- if not $port -}}
 {{- $port = ternary "80" "443" (hasPrefix "http://" $endpoint) -}}
 {{- end -}}
