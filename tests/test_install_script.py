@@ -7,10 +7,14 @@ NetworkPolicy enablement sequence install.sh runs against adopted clusters.
 
 import os
 import pathlib
+import pty
 import re
+import signal
 import stat
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 
 from tests.testing.common import (
@@ -1727,6 +1731,53 @@ class CheckExistingClusterNetworkPolicyPreflightTest(unittest.TestCase):
         self.assertNotIn("enforces no NetworkPolicy", proc.stderr + proc.stdout)
 
 
+class GenerateOnlyCrossesTheExistingClusterConsentGatesTest(unittest.TestCase):
+    """--generate-only is held to the same existing-cluster refusals as a real run.
+
+    The mode's whole output is terraform.tfvars for an operator to apply, and
+    tfvars for a cluster enforcing no NetworkPolicy cannot apply -- the
+    gke-cluster module's postcondition rejects them. Reporting
+    GENERATE_ONLY_SUCCESS over inputs already known to fail is worse than
+    refusing, especially since the refusal names the opt-in flag the apply needs
+    anyway. Exempting the mode also splits it from the interactive `g`, which
+    install-kube-agents/SKILL.md calls the same choice.
+
+    These read the source rather than running it: the gate is main()'s control
+    flow, which the KUBE_AGENTS_SOURCE_ONLY harness cannot drive. The behaviour
+    of the two functions themselves is covered by the two classes above.
+    """
+
+    _POOLS_CALL = 'check_existing_cluster_node_pools_preflight "$project_id" "$cluster_name" "$region"'
+    _NETPOL_CALL = 'check_existing_cluster_network_policy_preflight "$project_id" "$cluster_name" "$region"'
+    _PROMPT = "Proceed with automated GKE cluster & Platform Agent provisioning? (Y/n/g)"
+    _MODE_BRANCH = "Generate-only: configuration files written"
+
+    def test_neither_preflight_is_conditioned_on_the_mode(self):
+        # self.fail rather than assertNotRegex: the latter prints the whole of
+        # install.sh as the subject on failure, burying the one line at issue.
+        gated = re.search(
+            r'if \[ "\$PARAM_GENERATE_ONLY" != "true" \][^\n]*\n(?:[^\n]*\n)*?'
+            r"\s*check_existing_cluster_(?:node_pools|network_policy)_preflight",
+            _INSTALL_SH.read_text(),
+        )
+        if gated:
+            self.fail(
+                "the existing-cluster consent gates sit inside a --generate-only "
+                f"exemption, which #1336 added them to prevent: {gated.group(0)!r}"
+            )
+
+    def test_both_preflights_run_above_the_confirmation_prompt(self):
+        """Above the prompt is what makes the flag and the `g` answer the same choice."""
+        text = _INSTALL_SH.read_text()
+        pools = text.index(self._POOLS_CALL)
+        netpol = text.index(self._NETPOL_CALL)
+        prompt = text.index(self._PROMPT)
+        mode_branch = text.index(self._MODE_BRANCH)
+        self.assertLess(pools, prompt, "the node-pool gate must precede the (Y/n/g) prompt")
+        self.assertLess(netpol, prompt, "the NetworkPolicy gate must precede the (Y/n/g) prompt")
+        self.assertLess(prompt, mode_branch, "the prompt must precede the generate-only handoff")
+
+
 class SummarizeExistingClusterMutationsTest(unittest.TestCase):
     """summarize_existing_cluster_mutations outputs expected lines for adoption."""
 
@@ -3174,12 +3225,11 @@ exit 0
 """)
         terraform.chmod(0o755)
 
+        # No local definition of validate_tf_config: install.sh defines it at file
+        # scope, so _run_func sources the real one. Redeclaring it here would assert
+        # that this file's copy short-circuits, which is true of any string and
+        # stays green when install.sh's own chaining is removed.
         script = f"""
-# shellcheck disable=SC2317,SC2329
-validate_tf_config() {{
-  terraform init -backend=false -input=false &&
-    terraform validate
-}}
 tf_log="{self._tmp_path}/tf.log"
 rc=0
 run_with_spinner "Validating Terraform configuration" "$tf_log" validate_tf_config || rc=$?
@@ -3190,10 +3240,152 @@ echo "RC=$rc"
         self.assertIn("RC=2", proc.stdout)
         self.assertFalse(counter.exists(), "terraform validate must not be invoked if terraform init fails")
 
-    def test_rollout_warning_does_not_mention_hardcoded_timeout(self):
+    def test_rollout_warning_reports_measured_elapsed_not_the_timeout_constant(self):
+        """The warning carries how long the wait actually ran, never the budget.
+
+        Naming ROLLOUT_TIMEOUT_SECS asserted 300s even when the rollout failed in
+        three; ROLLOUT_ELAPSED_SECS is measured by wait_for_rollout, so a fast
+        ProgressDeadlineExceeded reads differently from an exhausted budget.
+        """
         source = _INSTALL_SH.read_text()
-        self.assertIn('print_warning "$deployment did not report ready."', source)
+        self.assertIn('print_warning "$deployment did not report ready (after ${ROLLOUT_ELAPSED_SECS}s)."', source)
+        self.assertIn("ROLLOUT_ELAPSED_SECS=$((SECONDS - started))", source)
         self.assertNotIn('print_warning "$deployment did not report ready within ${ROLLOUT_TIMEOUT_SECS}s."', source)
+
+
+@unittest.skipUnless(hasattr(pty, "fork"), "run_with_spinner's terminal branch needs a pty")
+class SpinnerTerminalBranchTest(unittest.TestCase):
+    """run_with_spinner on a real terminal, the branch no piped test reaches.
+
+    Every other test in this file runs under a subprocess pipe, so `[ ! -t 1 ]`
+    diverts it to the fallback and the spinner loop, the cursor calls, the
+    background job and the interrupt traps never execute at all. On a terminal
+    -- where an operator actually meets them -- they all do, so these drive one.
+    """
+
+    _READY_TIMEOUT_SECS = 30
+    _EXIT_TIMEOUT_SECS = 20
+    _POLL_INTERVAL_SECS = 0.1
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self._tmp_path = pathlib.Path(tmp.name)
+
+    def _spawn_on_pty(self, script):
+        """Run script under bash with a controlling terminal. Returns its pid."""
+        env = get_isolated_test_env(
+            overrides={"KUBE_AGENTS_INSTALL_REPORT_FILE": str(self._tmp_path / "report.json")}
+        )
+        pid, fd = pty.fork()
+        if pid == 0:
+            try:
+                os.chdir(str(_REPO_ROOT))
+                os.execvpe("bash", ["bash", "-c", script], env)
+            finally:  # pragma: no cover - only on execvpe failure
+                os._exit(127)
+        # The spinner redraws continuously, so the pty buffer fills and the child
+        # blocks on write unless someone is reading. Drain it for the run's life.
+        drain = threading.Thread(target=self._drain, args=(fd,), daemon=True)
+        drain.start()
+        self.addCleanup(self._cleanup_pty, pid, fd)
+        return pid
+
+    @staticmethod
+    def _drain(fd):
+        while True:
+            try:
+                if not os.read(fd, 4096):
+                    return
+            except OSError:
+                return
+
+    @staticmethod
+    def _cleanup_pty(pid, fd):
+        for killer in (lambda: os.killpg(os.getpgid(pid), signal.SIGKILL), lambda: os.kill(pid, signal.SIGKILL)):
+            try:
+                killer()
+            except OSError:
+                pass
+        try:
+            os.waitpid(pid, 0)
+        except OSError:
+            pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+    def _await_file(self, path, what):
+        deadline = time.monotonic() + self._READY_TIMEOUT_SECS
+        while time.monotonic() < deadline:
+            if path.exists() and path.read_text().strip():
+                return path.read_text().strip()
+            time.sleep(self._POLL_INTERVAL_SECS)
+        self.fail(f"timed out after {self._READY_TIMEOUT_SECS}s waiting for {what} at {path}")
+
+    def _has_exited(self, pid):
+        deadline = time.monotonic() + self._EXIT_TIMEOUT_SECS
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return True
+            except PermissionError:  # pragma: no cover - reparented, still alive
+                pass
+            time.sleep(self._POLL_INTERVAL_SECS)
+        return False
+
+    def test_interrupt_reaps_the_worker_a_function_wrapped_command_forked(self):
+        """Ctrl-C must kill the process doing the work, not only the subshell above it.
+
+        bash forks a subshell to run a function in the background, so for the dry
+        run's validate_tf_config the real worker -- terraform -- is a grandchild
+        of run_with_spinner. Signalling only $! leaves it running against the
+        same .terraform directory the next run reads. Nothing else cleans it up:
+        with job control off bash sets SIGINT to SIG_IGN for `&` children and
+        that disposition survives fork and exec, so the terminal's own Ctrl-C
+        reaches neither process.
+        """
+        worker_pid_file = self._tmp_path / "worker.pid"
+        log_file = self._tmp_path / "spinner.log"
+        script = f"""
+source "{_INSTALLER_COMMON}"
+KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
+slow_work() {{
+  # `trap "" HUP` matters: without it this dies of the terminal hangup that
+  # follows the shell's exit, which looks exactly like the handler working.
+  /bin/sh -c 'echo $$ > "{worker_pid_file}"; trap "" HUP; exec sleep 120'
+}}
+run_with_spinner "working" "{log_file}" slow_work
+"""
+        pid = self._spawn_on_pty(script)
+        worker_pid = int(self._await_file(worker_pid_file, "the worker's pid"))
+
+        # What a terminal does on Ctrl-C: SIGINT to the whole foreground group.
+        os.killpg(os.getpgid(pid), signal.SIGINT)
+
+        self.assertTrue(
+            self._has_exited(worker_pid),
+            f"worker {worker_pid} outlived SIGINT — the handler signalled the subshell "
+            "but not the process below it, so terraform would keep running detached",
+        )
+
+    def test_terminal_branch_returns_the_wrapped_command_status(self):
+        """The spinner branch must propagate the exit code, not the spinner's own."""
+        log_file = self._tmp_path / "rc.log"
+        rc_file = self._tmp_path / "rc.out"
+        script = f"""
+source "{_INSTALLER_COMMON}"
+KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
+fail_with_42() {{ echo "the wrapped output"; return 42; }}
+rc=0
+run_with_spinner "working" "{log_file}" fail_with_42 || rc=$?
+echo "$rc" > "{rc_file}"
+"""
+        self._spawn_on_pty(script)
+        self.assertEqual("42", self._await_file(rc_file, "the wrapped command's exit status"))
+        self.assertIn("the wrapped output", log_file.read_text())
 
 
 if __name__ == "__main__":

@@ -92,7 +92,7 @@ curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSI
 In `--generate-only` mode, the installer:
 
 1. Writes `install.env` (if absent) and `terraform/examples/full-install/terraform.tfvars`.
-2. Runs pre-apply validation checks (e.g., verifying the GitOps organization).
+2. Runs the same pre-apply validation checks a real run does: the GitOps organization check, and the existing-cluster node-pool and NetworkPolicy consent gates, which refuse a cluster needing `--migrate-node-pools` or `--enable-network-policy` rather than emitting `terraform.tfvars` the apply would reject.
 3. Prints a checklist of out-of-Terraform prerequisites (CMEK database encryption, Workload Identity, NetworkPolicy, GitHub App PEM import, and OTel scope) and the `lifecycle.sh apply` command with remote state variables (`KUBE_AGENTS_STATE_BUCKET` and `KUBE_AGENTS_STATE_PREFIX`).
 4. Exits 0 with status `GENERATE_ONLY_SUCCESS` in `/tmp/kube-agents-install-report.json`.
 
@@ -143,6 +143,7 @@ Upon completion, `install.sh` generates a machine-readable JSON status report at
 {
   "status": "SUCCESS",
   "dry_run": false,
+  "generate_only": false,
   "non_interactive": true,
   "project_id": "YOUR_GCP_PROJECT_ID",
   "cluster_name": "platform-agent-host",
@@ -164,6 +165,7 @@ Defaults marked "`installer_common.sh`" reach the installer through
 | :----------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `-y, --non-interactive`              | Run without blocking on `/dev/tty` prompts                                                                                                                                                                                                             | `false`                                                                                                                                            |
 | `--dry-run`                          | Output plan and `terraform.tfvars` without creating resources                                                                                                                                                                                          | `false`                                                                                                                                            |
+| `--generate-only`                    | Write `install.env` and `terraform.tfvars`, run the pre-apply checks, print the operator handoff, and exit without creating or mutating resources. Mutually exclusive with `--dry-run`                                                                 | `false`                                                                                                                                            |
 | `--menu, --config`                   | Launch the Day-2 control panel instead of installing                                                                                                                                                                                                   | `false`                                                                                                                                            |
 | `--project-id=ID`                    | Target GCP Project ID                                                                                                                                                                                                                                  | Active `gcloud` project                                                                                                                            |
 | `--region=REGION`                    | Target GCP Region                                                                                                                                                                                                                                      | `installer_common.sh` `DEFAULT_REGION`                                                                                                             |

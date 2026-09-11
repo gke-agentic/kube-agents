@@ -1362,6 +1362,15 @@ run_with_spinner() {
   on_spinner_interrupt() {
     local sig="$1"
     trap - INT TERM
+    # Reap the children before the job itself. When "$@" is a shell function
+    # bash forks a subshell, so task_pid is that subshell and the process doing
+    # the work -- terraform, for the dry-run caller -- is its child; signalling
+    # only task_pid leaves that child running, detached, against the same
+    # .terraform directory the next run reads. Nothing else will clean it up:
+    # with job control off bash sets SIGINT to SIG_IGN for `&` children and the
+    # disposition survives both fork and exec, so the terminal's own Ctrl-C
+    # never reaches either process.
+    pkill -TERM -P "$task_pid" 2>/dev/null || true
     kill -TERM "$task_pid" 2>/dev/null || true
     tput cnorm 2>/dev/null || true
     printf '\r%*s\r' "$term_width" ''
@@ -1372,8 +1381,6 @@ run_with_spinner() {
     fi
     exit "$sig"
   }
-  trap 'on_spinner_interrupt 130' INT
-  trap 'on_spinner_interrupt 143' TERM
 
   local frames=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
   local frame=0
@@ -1381,6 +1388,11 @@ run_with_spinner() {
   local status_line=""
   local term_width=0
   term_width="$(get_term_width)"
+  # Armed only once term_width holds a value. The handler prints it under
+  # `set -u`, so a signal arriving before the assignment would kill the handler
+  # on an unbound variable instead of restoring the cursor.
+  trap 'on_spinner_interrupt 130' INT
+  trap 'on_spinner_interrupt 143' TERM
   # Everything except the status line: two spaces, spinner, message, "(NNNs)",
   # separators. Keep one column spare so the line never wraps.
   local status_width=$((term_width - ${#msg} - 15))
@@ -1405,6 +1417,19 @@ run_with_spinner() {
   return "$rc"
 }
 
+# The dry run's Terraform check. At file scope, rather than inside main(), so the
+# test suite can source install.sh and drive this exact function instead of its
+# own copy of the chain -- a copy asserts that the copy short-circuits, which is
+# true of any string. Runs in whatever directory the caller has cd'd into.
+#
+# The && is load-bearing: `terraform validate` against an uninitialised directory
+# reports init's failure as a configuration error, so an unchained pair blames
+# the composition for what is really a provider download that did not happen.
+validate_tf_config() {
+  terraform init -backend=false -input=false &&
+    terraform validate
+}
+
 # Wait for one deployment to roll out, animating a spinner with the elapsed time
 # and kubectl's own latest progress line. Falls back to plain streaming output
 # when stdout is not a terminal (CI, piped logs). Returns kubectl's exit status.
@@ -1421,9 +1446,19 @@ wait_for_rollout() {
   run_with_spinner "$deployment" "$log_file" \
     kubectl rollout status "deployment/${deployment}" -n "$namespace" --timeout="${timeout_secs}s" || rc=$?
 
+  # Published for the caller's failure message. How long the wait actually ran is
+  # the diagnostic: a ProgressDeadlineExceeded that comes back in seconds is a
+  # different problem from one that used the whole budget, and the timeout
+  # constant cannot tell them apart.
+  ROLLOUT_ELAPSED_SECS=$((SECONDS - started))
+
   if [ "$rc" -eq 0 ]; then
-    print_success "$deployment rolled out in $((SECONDS - started))s"
-  else
+    print_success "$deployment rolled out in ${ROLLOUT_ELAPSED_SECS}s"
+  elif [ -t 1 ]; then
+    # Only the spinner branch withholds the command's output. The non-TTY branch
+    # of run_with_spinner has already streamed it through tee, so echoing the
+    # tail there prints the same failure twice -- and on stdout, since the 2>&1
+    # that branch needs has already folded kubectl's stderr into it.
     tail -n 3 "$log_file" 2>/dev/null | tr -d '\r' | while IFS= read -r line; do
       [ -n "$line" ] && print_info "$line"
     done
@@ -1773,6 +1808,8 @@ tf_compose_dir() {
   echo "${1}/terraform/examples/full-install"
 }
 
+# Evaluates PIPESTATUS after a pipeline guarded with `|| ps=("${PIPESTATUS[@]}")`.
+# Dispatches to on_error with the primary command name instead of the trailing tee.
 handle_pipeline_status() {
   local primary_cmd="$1"
   local log_file="$2"
@@ -1811,10 +1848,11 @@ print_generate_only_handoff() {
   echo ""
   echo -e "${C_BOLD}1. Out-of-Terraform prerequisites (run if applicable to your cluster):${C_RESET}"
   echo -e "  • ${C_CYAN}CMEK Database Encryption (pre-existing cluster without CMEK):${C_RESET}"
+  echo -e "    # Note: the three create commands report ALREADY_EXISTS on a re-run, which is safe to ignore."
   echo -e "    gcloud services enable cloudkms.googleapis.com --project=${project_id}"
-  echo -e "    gcloud kms keyrings create ${keyring} --location=${kms_loc} --project=${project_id} 2>/dev/null || true"
-  echo -e "    gcloud kms keys create ${key} --keyring=${keyring} --location=${kms_loc} --purpose=encryption --project=${project_id} 2>/dev/null || true"
-  echo -e "    gcloud beta services identity create --service=container.googleapis.com --project=${project_id} 2>/dev/null || true"
+  echo -e "    gcloud kms keyrings create ${keyring} --location=${kms_loc} --project=${project_id}"
+  echo -e "    gcloud kms keys create ${key} --keyring=${keyring} --location=${kms_loc} --purpose=encryption --project=${project_id}"
+  echo -e "    gcloud beta services identity create --service=container.googleapis.com --project=${project_id}"
   echo -e "    gcloud kms keys add-iam-policy-binding ${key} --keyring=${keyring} --location=${kms_loc} \\\\"
   echo -e "      --member=\"serviceAccount:service-\$(gcloud projects describe ${project_id} --format='value(projectNumber)')@container-engine-robot.iam.gserviceaccount.com\" \\\\"
   echo -e "      --role=\"roles/cloudkms.cryptoKeyEncrypterDecrypter\" --project=${project_id} --quiet"
@@ -1831,11 +1869,12 @@ print_generate_only_handoff() {
   echo -e "    gcloud container clusters update ${cluster_name} --location ${region} --project ${project_id} --enable-network-policy"
   echo ""
   echo -e "  • ${C_CYAN}GitHub App PEM Import (before apply, when GitOps minter is enabled):${C_RESET}"
+  echo -e "    # Note: the two create commands report ALREADY_EXISTS on a re-run, which is safe to ignore."
   echo -e "    gcloud services enable cloudkms.googleapis.com --project=${project_id}"
-  echo -e "    gcloud kms keyrings create ${minter_keyring} --location=${kms_loc} --project=${project_id} 2>/dev/null || true"
+  echo -e "    gcloud kms keyrings create ${minter_keyring} --location=${kms_loc} --project=${project_id}"
   echo -e "    gcloud kms keys create ${minter_key} --keyring=${minter_keyring} --location=${kms_loc} \\\\"
   echo -e "      --purpose=asymmetric-signing --default-algorithm=rsa-sign-pkcs1-2048-sha256 \\\\"
-  echo -e "      --import-only --skip-initial-version-creation --protection-level=software --project=${project_id} 2>/dev/null || true"
+  echo -e "      --import-only --skip-initial-version-creation --protection-level=software --project=${project_id}"
   echo -e "    git clone --depth 1 --branch ${MINTY_CLI_GIT_TAG} ${MINTY_CLI_REPO_URL} ${MINTY_CLI_MANUAL_CLONE_DIR}"
   echo -e "    (cd ${MINTY_CLI_MANUAL_CLONE_DIR} && go run ./cmd/minty tools import-pk -project-id=${project_id} -location=${kms_loc} -key-ring=${minter_keyring} -key=${minter_key} -private-key=@<path-to-pem>)"
   echo ""
@@ -3762,11 +3801,6 @@ main() {
     print_info "Dry-run: validating the Terraform configuration (local state; nothing is created)."
     (
       cd "$(tf_compose_dir "$repo_dir")"
-      # shellcheck disable=SC2317,SC2329  # invoked indirectly via run_with_spinner
-      validate_tf_config() {
-        terraform init -backend=false -input=false &&
-          terraform validate
-      }
       local tf_log=""
       tf_log="$(mktemp -t kube-agents-tf-validate.XXXXXX)"
       local rc=0
@@ -3776,7 +3810,13 @@ main() {
         rm -f -- "$tf_log"
       else
         print_error "Terraform validation failed (exit code $rc):"
-        cat "$tf_log" >&2
+        # Only the spinner branch withheld the output; the non-TTY branch already
+        # streamed it through tee, where repeating it doubles the log. An `if`
+        # rather than `[ -t 1 ] &&`, which under `set -e` would exit the subshell
+        # with the test's own status instead of the validation's.
+        if [ -t 1 ]; then
+          cat "$tf_log" >&2
+        fi
         rm -f -- "$tf_log"
         exit "$rc"
       fi
@@ -3821,13 +3861,22 @@ main() {
     exit 0
   fi
 
-  if [ "$PARAM_GENERATE_ONLY" != "true" ]; then
-    # Refuse before the confirmation checkpoint and before any cluster mutations
-    # if adopting an existing cluster lacking required node pool migration or NetworkPolicy
-    # without explicit opt-in.
-    check_existing_cluster_node_pools_preflight "$project_id" "$cluster_name" "$region"
-    check_existing_cluster_network_policy_preflight "$project_id" "$cluster_name" "$region"
-  fi
+  # Refuse before the confirmation checkpoint and before any cluster mutations
+  # if adopting an existing cluster lacking required node pool migration or NetworkPolicy
+  # without explicit opt-in.
+  #
+  # Generate-only is held to the same bar, for two reasons. The tfvars that mode
+  # exists to produce cannot apply against a cluster enforcing no NetworkPolicy --
+  # the gke-cluster module's postcondition refuses them -- so emitting a handoff
+  # that calls those inputs validated hands the operator a plan already known to
+  # fail. And the refusals name the opt-in flags (--enable-network-policy,
+  # --migrate-node-pools) that the apply needs regardless, so an operator who
+  # wants tfvars for such a cluster gets them by passing what they were going to
+  # have to pass anyway. Running here also keeps --generate-only and the
+  # interactive `g` the same choice, which install-kube-agents/SKILL.md says
+  # they are: this sits above the (Y/n/g) prompt, so both routes cross it.
+  check_existing_cluster_node_pools_preflight "$project_id" "$cluster_name" "$region"
+  check_existing_cluster_network_policy_preflight "$project_id" "$cluster_name" "$region"
 
   if [ "$PARAM_GENERATE_ONLY" != "true" ] && [ "$PARAM_NON_INTERACTIVE" != "true" ]; then
     local confirm_choice=""
@@ -3964,7 +4013,7 @@ main() {
     # the chat links and port-forward command.
     if ! wait_for_rollout "$deployment" "$namespace" "$ROLLOUT_TIMEOUT_SECS"; then
       slow_rollouts+=("$deployment")
-      print_warning "$deployment did not report ready."
+      print_warning "$deployment did not report ready (after ${ROLLOUT_ELAPSED_SECS}s)."
     fi
   done
   if [ "${#slow_rollouts[@]}" -eq 0 ]; then
