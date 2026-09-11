@@ -6,6 +6,10 @@ The NetworkPolicy `litellm-policy` has exactly one owner:
 - When either platformAgent.enabled or operator.enabled is false (and litellm.networkPolicy
   is true), Helm renders the static litellm-policy so that LiteLLM's egress is not left unrestricted.
 - When litellm.networkPolicy is false, neither renders it.
+
+Every test here drives `helm template` and asserts on the rendered objects. Asserting on the
+template source text instead would fail on a semantically identical reformat and pass on a
+behavioural change that keeps the string, so none of these do.
 """
 
 from __future__ import annotations
@@ -19,16 +23,6 @@ import yaml
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 CHART_DIR = REPO_ROOT / "charts" / "kube-agents"
-LITELLM_TEMPLATE = CHART_DIR / "templates" / "litellm.yaml"
-CR_TEMPLATE = CHART_DIR / "templates" / "platform-agent-cr.yaml"
-
-EXPECTED_RENDER_GATE = (
-    "{{- if and .Values.litellm.networkPolicy "
-    "(not (and .Values.platformAgent.enabled .Values.operator.enabled)) }}"
-)
-EXPECTED_ANNOTATION_GATE = (
-    '{{- $_ := set $annotations "kubeagents.x-k8s.io/enable-litellm-network-policy" "false" }}'
-)
 
 LITELLM_POLICY_KIND = "NetworkPolicy"
 LITELLM_POLICY_NAME = "litellm-policy"
@@ -36,14 +30,52 @@ PLATFORM_AGENT_KIND = "PlatformAgent"
 
 OPT_OUT_ANNOTATION_KEY = "kubeagents.x-k8s.io/enable-litellm-network-policy"
 OPT_OUT_ANNOTATION_VALUE = "false"
+COLLECTOR_NAMESPACE_ANNOTATION_KEY = "kubeagents.x-k8s.io/otlp-collector-namespace"
+HELM_KEEP_ANNOTATION_KEY = "helm.sh/resource-policy"
+USER_ANNOTATION_KEY = "example.com/team"
+USER_ANNOTATION_VALUE = "sre"
 
 HARNESS_PROJECT_ID = "my-proj"
 HARNESS_CLUSTER_NAME = "my-cluster"
 HARNESS_LOCATION = "us-central1"
 
+VENDOR_OTLP_ENDPOINT = "https://otlp.vendor.example"
+COLLECTOR_NAMESPACE = "obs"
+OTHER_COLLECTOR_NAMESPACE = "other"
 
-def _count_litellm_policy_docs(rendered_yaml: str) -> int:
-    count = 0
+# The fail message the static render emits for an endpoint with no in-cluster namespace.
+VENDOR_ENDPOINT_FAIL_FRAGMENT = "does not name an in-cluster Service"
+# The fail messages the CR template emits for a platformAgent.annotations entry that
+# contradicts the chart value the same key is derived from.
+ANNOTATION_CONFLICT_FRAGMENT = "contradicts"
+
+HARNESS_ARGS = [
+    "--set",
+    f"platformAgent.harness.projectId={HARNESS_PROJECT_ID}",
+    "--set",
+    f"platformAgent.harness.clusterName={HARNESS_CLUSTER_NAME}",
+    "--set",
+    f"platformAgent.harness.location={HARNESS_LOCATION}",
+]
+
+
+def _helm_template(*extra_args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["helm", "template", "test-release", str(CHART_DIR), *extra_args],
+        capture_output=True,
+        text=True,
+        check=check,
+    )
+
+
+def _annotation_set_arg(key: str, value: str) -> str:
+    # Dots inside a --set key are path separators unless escaped.
+    escaped_key = key.replace(".", "\\.")
+    return f"platformAgent.annotations.{escaped_key}={value}"
+
+
+def _litellm_policy_docs(rendered_yaml: str) -> list[dict]:
+    docs = []
     for doc in yaml.safe_load_all(rendered_yaml):
         if not doc or not isinstance(doc, dict):
             continue
@@ -51,8 +83,8 @@ def _count_litellm_policy_docs(rendered_yaml: str) -> int:
             doc.get("kind") == LITELLM_POLICY_KIND
             and doc.get("metadata", {}).get("name") == LITELLM_POLICY_NAME
         ):
-            count += 1
-    return count
+            docs.append(doc)
+    return docs
 
 
 def _find_platform_agent_cr(rendered_yaml: str) -> dict | None:
@@ -64,30 +96,14 @@ def _find_platform_agent_cr(rendered_yaml: str) -> dict | None:
     return None
 
 
+@unittest.skipUnless(shutil.which("helm"), "helm is not installed")
 class LiteLLMPolicyOwnershipTest(unittest.TestCase):
-    def test_template_contains_exact_render_gate(self) -> None:
-        content = LITELLM_TEMPLATE.read_text(encoding="utf-8")
-        self.assertIn(
-            EXPECTED_RENDER_GATE,
-            content,
-            f"litellm.yaml does not contain the expected render gate: {EXPECTED_RENDER_GATE}",
-        )
-
-    def test_cr_template_contains_opt_out_annotation_gate(self) -> None:
-        content = CR_TEMPLATE.read_text(encoding="utf-8")
-        self.assertIn(
-            EXPECTED_ANNOTATION_GATE,
-            content,
-            f"platform-agent-cr.yaml does not contain the expected opt-out gate: {EXPECTED_ANNOTATION_GATE}",
-        )
-
-    @unittest.skipUnless(shutil.which("helm"), "helm is not installed")
     def test_helm_renders_litellm_policy_combinations(self) -> None:
         # (platformAgent.enabled, operator.enabled, expected_static_policy_count)
         cases = [
-            (True, True, 0),    # Operator dynamically manages litellm-policy; Helm omits it
-            (False, True, 1),   # No PlatformAgent CR; Helm renders static litellm-policy
-            (True, False, 1),   # No operator running; Helm renders static litellm-policy
+            (True, True, 0),  # Operator dynamically manages litellm-policy; Helm omits it
+            (False, True, 1),  # No PlatformAgent CR; Helm renders static litellm-policy
+            (True, False, 1),  # No operator running; Helm renders static litellm-policy
             (False, False, 1),  # Neither running; Helm renders static litellm-policy
         ]
 
@@ -95,10 +111,6 @@ class LiteLLMPolicyOwnershipTest(unittest.TestCase):
             subtest_name = f"platformAgent={pa_enabled},operator={op_enabled}"
             with self.subTest(subtest_name):
                 args = [
-                    "helm",
-                    "template",
-                    "test-release",
-                    str(CHART_DIR),
                     "--set",
                     f"platformAgent.enabled={str(pa_enabled).lower()}",
                     "--set",
@@ -107,50 +119,27 @@ class LiteLLMPolicyOwnershipTest(unittest.TestCase):
                     "litellm.networkPolicy=true",
                 ]
                 if pa_enabled:
-                    args.extend([
-                        "--set",
-                        f"platformAgent.harness.projectId={HARNESS_PROJECT_ID}",
-                        "--set",
-                        f"platformAgent.harness.clusterName={HARNESS_CLUSTER_NAME}",
-                        "--set",
-                        f"platformAgent.harness.location={HARNESS_LOCATION}",
-                    ])
+                    args.extend(HARNESS_ARGS)
 
-                res = subprocess.run(
-                    args,
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-                actual_count = _count_litellm_policy_docs(res.stdout)
+                res = _helm_template(*args)
+                actual_count = len(_litellm_policy_docs(res.stdout))
                 self.assertEqual(
                     actual_count,
                     expected_count,
                     f"Expected {expected_count} {LITELLM_POLICY_NAME} documents for {subtest_name}, got {actual_count}",
                 )
 
-    @unittest.skipUnless(shutil.which("helm"), "helm is not installed")
     def test_helm_omits_litellm_policy_when_network_policy_disabled(self) -> None:
-        args = [
-            "helm",
-            "template",
-            "test-release",
-            str(CHART_DIR),
+        res = _helm_template(
             "--set",
             "platformAgent.enabled=true",
             "--set",
             "operator.enabled=true",
             "--set",
             "litellm.networkPolicy=false",
-            "--set",
-            f"platformAgent.harness.projectId={HARNESS_PROJECT_ID}",
-            "--set",
-            f"platformAgent.harness.clusterName={HARNESS_CLUSTER_NAME}",
-            "--set",
-            f"platformAgent.harness.location={HARNESS_LOCATION}",
-        ]
-        res = subprocess.run(args, capture_output=True, text=True, check=True)
-        self.assertEqual(_count_litellm_policy_docs(res.stdout), 0)
+            *HARNESS_ARGS,
+        )
+        self.assertEqual(len(_litellm_policy_docs(res.stdout)), 0)
 
         cr = _find_platform_agent_cr(res.stdout)
         self.assertIsNotNone(cr, "PlatformAgent CR not rendered")
@@ -160,6 +149,109 @@ class LiteLLMPolicyOwnershipTest(unittest.TestCase):
             OPT_OUT_ANNOTATION_VALUE,
             f"Expected CR annotation {OPT_OUT_ANNOTATION_KEY}={OPT_OUT_ANNOTATION_VALUE}",
         )
+
+    def test_static_policy_carries_no_helm_keep_annotation(self) -> None:
+        # helm.sh/resource-policy: keep would make `helm uninstall` and
+        # litellm.networkPolicy=false leave the policy behind and block a reinstall
+        # under another release name; the transition it was meant for is covered by
+        # the documented `kubectl annotate` on the live object.
+        res = _helm_template("--set", "operator.enabled=false", *HARNESS_ARGS)
+        docs = _litellm_policy_docs(res.stdout)
+        self.assertEqual(len(docs), 1)
+        annotations = docs[0].get("metadata", {}).get("annotations") or {}
+        self.assertNotIn(HELM_KEEP_ANNOTATION_KEY, annotations)
+
+    def test_vendor_otlp_endpoint_renders_when_operator_owns_policy(self) -> None:
+        # On the default install Helm renders no litellm-policy, and the operator omits
+        # the OTLP rule for an endpoint with no in-cluster namespace, so there is nothing
+        # for the collector-namespace fail to protect.
+        res = _helm_template(
+            "--set",
+            f"telemetry.otlpEndpoint={VENDOR_OTLP_ENDPOINT}",
+            "--set",
+            "litellm.otel=true",
+            *HARNESS_ARGS,
+        )
+        self.assertEqual(len(_litellm_policy_docs(res.stdout)), 0)
+
+    def test_vendor_otlp_endpoint_fails_static_render(self) -> None:
+        # The static policy needs a namespaceSelector it cannot derive, and emitting one
+        # that blocks the configured exporter would be worse than failing.
+        res = _helm_template(
+            "--set",
+            "operator.enabled=false",
+            "--set",
+            f"telemetry.otlpEndpoint={VENDOR_OTLP_ENDPOINT}",
+            "--set",
+            "litellm.otel=true",
+            *HARNESS_ARGS,
+            check=False,
+        )
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn(VENDOR_ENDPOINT_FAIL_FRAGMENT, res.stderr)
+
+    def test_platform_agent_annotations_pass_through_beside_derived_keys(self) -> None:
+        res = _helm_template(
+            "--set",
+            _annotation_set_arg(USER_ANNOTATION_KEY, USER_ANNOTATION_VALUE),
+            "--set",
+            "litellm.networkPolicy=false",
+            "--set",
+            f"telemetry.collectorNamespace={COLLECTOR_NAMESPACE}",
+            *HARNESS_ARGS,
+        )
+        cr = _find_platform_agent_cr(res.stdout)
+        self.assertIsNotNone(cr, "PlatformAgent CR not rendered")
+        annotations = cr.get("metadata", {}).get("annotations", {})
+        self.assertEqual(annotations.get(USER_ANNOTATION_KEY), USER_ANNOTATION_VALUE)
+        self.assertEqual(annotations.get(OPT_OUT_ANNOTATION_KEY), OPT_OUT_ANNOTATION_VALUE)
+        self.assertEqual(annotations.get(COLLECTOR_NAMESPACE_ANNOTATION_KEY), COLLECTOR_NAMESPACE)
+
+    def test_platform_agent_annotation_matching_derived_value_renders(self) -> None:
+        res = _helm_template(
+            "--set",
+            _annotation_set_arg(OPT_OUT_ANNOTATION_KEY, OPT_OUT_ANNOTATION_VALUE),
+            "--set",
+            "litellm.networkPolicy=false",
+            "--set",
+            _annotation_set_arg(COLLECTOR_NAMESPACE_ANNOTATION_KEY, COLLECTOR_NAMESPACE),
+            "--set",
+            f"telemetry.collectorNamespace={COLLECTOR_NAMESPACE}",
+            *HARNESS_ARGS,
+        )
+        cr = _find_platform_agent_cr(res.stdout)
+        self.assertIsNotNone(cr, "PlatformAgent CR not rendered")
+        annotations = cr.get("metadata", {}).get("annotations", {})
+        self.assertEqual(annotations.get(OPT_OUT_ANNOTATION_KEY), OPT_OUT_ANNOTATION_VALUE)
+        self.assertEqual(annotations.get(COLLECTOR_NAMESPACE_ANNOTATION_KEY), COLLECTOR_NAMESPACE)
+
+    def test_platform_agent_annotation_contradicting_value_fails_render(self) -> None:
+        # A user-set key the chart also derives is never overwritten in silence.
+        cases = [
+            (
+                "enable-litellm-network-policy",
+                [
+                    "--set",
+                    _annotation_set_arg(OPT_OUT_ANNOTATION_KEY, "true"),
+                    "--set",
+                    "litellm.networkPolicy=false",
+                ],
+            ),
+            (
+                "otlp-collector-namespace",
+                [
+                    "--set",
+                    _annotation_set_arg(COLLECTOR_NAMESPACE_ANNOTATION_KEY, OTHER_COLLECTOR_NAMESPACE),
+                    "--set",
+                    f"telemetry.collectorNamespace={COLLECTOR_NAMESPACE}",
+                ],
+            ),
+        ]
+        for name, args in cases:
+            with self.subTest(name):
+                res = _helm_template(*args, *HARNESS_ARGS, check=False)
+                self.assertNotEqual(res.returncode, 0)
+                self.assertIn(ANNOTATION_CONFLICT_FRAGMENT, res.stderr)
 
 
 if __name__ == "__main__":

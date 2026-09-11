@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	goerrors "errors"
 	"fmt"
 	"net"
 	"regexp"
@@ -1610,21 +1611,29 @@ func validateEgressAllowlist(agent *agentv1alpha1.PlatformAgent) (string, string
 // egress. That the CR reads Degraded at the time makes it worse rather than
 // better: the status names one bad CIDR while the Pod's egress is wide open.
 //
-// Both policies are reconciled whatever the refusal was (steps 9b, 9c, 10, 11e).
+// Both of the Pod's policies are reconciled whatever the refusal was (steps 9b, 9c, 10, 11e).
 // <name>-gateway-netpol is the Pod's baseline, it predates spec.security.egressPolicy,
 // and no refusal is an objection to it; <name>-sandbox-metadata-deny is the refused policy
 // itself, and the builder has already dropped the offending destination, so
-// what is left to render is a good policy minus one rule.
+// what is left to render is a good policy minus one rule. litellm-policy rides
+// along for the same reason, after them: it selects a different Pod, so a
+// failure on its side (a transient Get on Deployment/litellm, say) must not
+// cost the agent's own guardrails a requeue cycle. Every step runs even when an
+// earlier one fails, and the errors are joined so none of them is hidden.
 func (r *PlatformAgentReconciler) reconcileAgentNetworkGuardrails(ctx context.Context, agent *agentv1alpha1.PlatformAgent) error {
 	otlpEndpoint, otlpSource := r.resolveOTLPEndpoint(ctx, agent)
 	netpolProf := r.resolveNetpolProfile(ctx, agent)
+	var errs []error
 	if err := r.reconcileNetworkPolicy(ctx, agent, netpolProf, otlpEndpoint, otlpSource == otlpSourceNone); err != nil {
-		return err
+		errs = append(errs, err)
+	}
+	if err := r.reconcileAgentEgressPolicy(ctx, agent, r.agentEgressDNSClusterIPs(ctx, agent, netpolProf), otlpEndpoint); err != nil {
+		errs = append(errs, err)
 	}
 	if err := r.reconcileLiteLLMNetworkPolicy(ctx, agent, netpolProf); err != nil {
-		return err
+		errs = append(errs, err)
 	}
-	return r.reconcileAgentEgressPolicy(ctx, agent, r.agentEgressDNSClusterIPs(ctx, agent, netpolProf), otlpEndpoint)
+	return goerrors.Join(errs...)
 }
 
 // agentEgressDNSClusterIPs is the resolved cluster DNS VIP list for the agent

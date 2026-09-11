@@ -212,6 +212,12 @@ blocks the very collector the user just configured, and the symptom would be zer
 with a green install. With litellm.otel off (the default) there is no LiteLLM exporter for
 the policy to block, so failing the whole install over an egress rule nothing uses would
 punish a user who only meant to repoint the agents.
+
+The fail is reachable only from the static litellm-policy render, so it never fires on
+the default install, where the operator owns the policy and resolves the namespace at
+reconcile time: a vendor endpoint there yields no OTLP rule, and LiteLLM reaches the
+vendor over the port-443 rule. Do not call this helper outside that render to "validate
+early" — that reinstates the fail for a configuration that works.
 */}}
 {{- define "kube-agents.otlpCollectorNamespace" -}}
 {{- if .Values.telemetry.collectorNamespace -}}

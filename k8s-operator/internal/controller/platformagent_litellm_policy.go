@@ -268,10 +268,13 @@ func buildLiteLLMNetworkPolicy(agent *agentv1alpha1.PlatformAgent, profile netpo
 // litellmOTLPCollectorNamespace resolves the collector namespace for the LiteLLM NetworkPolicy.
 // LiteLLM's OTLP exporter is statically configured by Helm (defaulting to gke-managed-otel)
 // and does not participate in the agent's dynamic runtime discovery.
-// Precedence matches Helm (_helpers.tpl:217-220):
-// 1. AnnotationOTLPCollectorNamespace on the PlatformAgent CR if set and valid.
-// 2. The namespace extracted from agent.Spec.Telemetry.OTLPEndpoint if specified.
-// 3. Fallback to managedOTelCollectorNamespace ("gke-managed-otel").
+// The ladder matches the first two rungs of Helm's kube-agents.otlpCollectorNamespace
+// and deliberately differs on the third:
+//  1. AnnotationOTLPCollectorNamespace on the PlatformAgent CR if set and valid.
+//  2. The namespace extracted from agent.Spec.Telemetry.OTLPEndpoint if specified.
+//     An endpoint that names no in-cluster Service yields "", and the caller emits
+//     no OTLP rule; the static Helm render keeps gke-managed-otel there instead.
+//  3. With no endpoint at all, managedOTelCollectorNamespace ("gke-managed-otel").
 func litellmOTLPCollectorNamespace(agent *agentv1alpha1.PlatformAgent) string {
 	if ns := trimmedAnnotation(agent, AnnotationOTLPCollectorNamespace); ns != "" {
 		if errs := validation.IsValidLabelValue(ns); len(errs) == 0 {
@@ -377,7 +380,7 @@ func (r *PlatformAgentReconciler) reconcileLiteLLMNetworkPolicy(ctx context.Cont
 	}
 
 	netpol := buildLiteLLMNetworkPolicy(agent, profile)
-	if agent != nil && agent.Spec.Telemetry != nil && agent.Spec.Telemetry.OTLPEndpoint != "" && otlpCollectorNamespace(agent.Spec.Telemetry.OTLPEndpoint) == "" {
+	if agent.Spec.Telemetry != nil && agent.Spec.Telemetry.OTLPEndpoint != "" && otlpCollectorNamespace(agent.Spec.Telemetry.OTLPEndpoint) == "" {
 		if litellmOTLPCollectorNamespace(agent) == "" {
 			logf.FromContext(ctx).Info("WARNING: LiteLLM OTLP endpoint does not name an in-cluster Service and no collector namespace is configured; omitting OTLP egress rule",
 				"namespace", agent.Namespace, "endpoint", agent.Spec.Telemetry.OTLPEndpoint)

@@ -273,6 +273,22 @@ the annotated KSA.
 
 **Upgrading from a chart version that shipped the static `litellm-policy`:** on the first `helm upgrade` after dynamic management takes effect, Helm prunes the static `litellm-policy`. The operator recreates it once the new operator pod rolls out, acquires leader election, and reconciles. During this operator rollout window LiteLLM is selected by no NetworkPolicy and its egress is unrestricted (fail-open). To eliminate this window on an existing cluster, annotate the live policy before upgrading: `kubectl annotate netpol litellm-policy helm.sh/resource-policy=keep -n <namespace>`. Helm will retain the policy across the upgrade, and the operator will seamlessly adopt it via Server-Side Apply. Alternatively, pre-roll the new operator image (e.g. updating the `<release>-controller-manager` deployment image) to narrow the window to controller watch latency (~1s), or set `litellm.networkPolicy=false` and manage `litellm-policy` out-of-band during the transition. To opt out of operator management permanently, set the annotation `kubeagents.x-k8s.io/enable-litellm-network-policy: "false"` on the `PlatformAgent` (and manage `litellm-policy` out-of-band to prevent fail-open egress).
 
+**The same window opens on a fresh default install**, and when `operator.enabled` or `platformAgent.enabled` is flipped from `false` to `true` on a live release. Helm renders no `litellm-policy` there, so the LiteLLM Deployment starts serving, with the provider API key in its environment, before the operator pod has rolled out, won leader election, and reconciled. Nothing exists yet for `kubectl annotate` to keep; if that window matters for the install, set `litellm.networkPolicy=false`, apply a policy of your own before the release, and switch the value back once the operator is running.
+
+#### Handing `litellm-policy` back to Helm
+
+Once the operator has created or adopted `litellm-policy`, going back to the static copy — `helm upgrade` with `operator.enabled=false` or `platformAgent.enabled=false`, or `helm rollback` to a revision that rendered it — fails. The object is in the cluster, absent from the current release manifest, and labelled `app.kubernetes.io/managed-by: platformagent-controller`, so Helm refuses to import it (`rendered manifests contain a resource that already exists … invalid ownership metadata`). Hand it over first, with the operator stopped so its watch does not re-stamp the label between the relabel and the upgrade:
+
+```bash
+kubectl scale deployment <release>-controller-manager -n <namespace> --replicas=0
+kubectl label netpol litellm-policy -n <namespace> app.kubernetes.io/managed-by=Helm --overwrite
+kubectl annotate netpol litellm-policy -n <namespace> \
+  meta.helm.sh/release-name=<release> meta.helm.sh/release-namespace=<namespace> --overwrite
+helm upgrade <release> … --set operator.enabled=false   # or the rollback
+```
+
+Helm adopts the object and rewrites its spec to the static copy in the same upgrade, so LiteLLM is never unselected. If the upgrade keeps the operator (`platformAgent.enabled=false` alone), scale it back up afterwards; with no `PlatformAgent` it leaves the policy alone.
+
 ### Hindsight memory store
 
 `hindsight.*` renders the agents' long-term memory store — the Hindsight API
@@ -408,6 +424,20 @@ by hand. Each one defaults
 to `null`/`""`, which **omits** the field and lets the CRD's own default apply
 — setting `false` is therefore distinct from leaving it unset, and `replicas: 0`
 means zero rather than unset.
+
+#### PlatformAgent annotations
+
+`platformAgent.annotations` is copied onto the CR's `metadata.annotations`, and
+it is the chart's route to the `kubeagents.x-k8s.io/*` annotations the operator
+reads — `prevent-deletion`, `enable-litellm-network-policy`,
+`otlp-collector-namespace`, and the rest listed under
+[Reconcile behavior](https://gke-labs.github.io/kube-agents/operator/platformagent-crd/#reconcile-behavior).
+Two of those the chart also derives from values, and the value wins because it
+drives the rest of the release too: `litellm.networkPolicy=false` stamps
+`enable-litellm-network-policy: "false"`, and `telemetry.collectorNamespace`
+stamps `otlp-collector-namespace`. Set the value rather than the annotation. An
+entry in `platformAgent.annotations` that contradicts the value it duplicates
+fails the render instead of being overwritten.
 
 `platformAgent.deployment.image.pullPolicy` defaults to `Always`. Under
 `IfNotPresent` a node that has already cached the tag never
