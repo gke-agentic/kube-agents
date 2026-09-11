@@ -313,7 +313,15 @@ here, and the docs say so.
 {{- if and $operatorOwned $namespaceAnnotation (not (regexMatch "^[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$" $namespaceAnnotation)) -}}
 {{- fail (printf "platformAgent.annotations[\"kubeagents.x-k8s.io/otlp-collector-namespace\"]=%q is not a valid label value, so the operator would ignore it and emit no OTLP egress rule. Give the collector's namespace name." $namespaceAnnotation) -}}
 {{- end -}}
-{{- $collectorNamespace := or .Values.telemetry.collectorNamespace (and $operatorOwned $namespaceAnnotation) -}}
+{{- /*
+  The value route gets the same validation: an invalid namespace would stand this check
+  aside, be stamped on the CR, and be ignored by the operator, which then emits no rule.
+*/ -}}
+{{- $collectorNamespaceValue := .Values.telemetry.collectorNamespace | toString | trim -}}
+{{- if and $collectorNamespaceValue (not (regexMatch "^[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$" $collectorNamespaceValue)) -}}
+{{- fail (printf "telemetry.collectorNamespace=%q is not a valid namespace name; the NetworkPolicy would select nothing and the operator would ignore it. Give the collector's namespace name." $collectorNamespaceValue) -}}
+{{- end -}}
+{{- $collectorNamespace := or $collectorNamespaceValue (and $operatorOwned $namespaceAnnotation) -}}
 {{- if and .Values.litellm.otel .Values.litellm.networkPolicy .Values.telemetry.otlpEndpoint (not $crOptOut) (not $collectorNamespace) (not (include "kube-agents.otlpEndpointIsClusterLocal" .)) -}}
 {{- $endpoint := .Values.telemetry.otlpEndpoint -}}
 {{- /*
@@ -349,6 +357,10 @@ here, and the docs say so.
 {{- $singleLabel := and (not (contains "." $host)) (not (hasPrefix "[" $hostport)) -}}
 {{- if or $privateIPv4 $singleLabel -}}
 {{- fail (printf "telemetry.otlpEndpoint %q names %s, which litellm-policy's port-443 rule does not reach (it excepts private ranges), so the LiteLLM OTLP exporter (litellm.otel=true) would be blocked. If this is an in-cluster collector, set telemetry.collectorNamespace to its namespace; otherwise give the collector's public host." $endpoint (ternary "a private IPv4 address" "a single-label host" $privateIPv4)) -}}
+{{- end -}}
+{{- /* The static copy's 443 rule has an IPv4 peer only; the operator's adds ::/0. */ -}}
+{{- if and (hasPrefix "[" $hostport) (not $operatorOwned) -}}
+{{- fail (printf "telemetry.otlpEndpoint %q is an IPv6 literal, and the static litellm-policy's port-443 rule reaches IPv4 destinations only, so the LiteLLM OTLP exporter (litellm.otel=true) would be blocked. Give the collector's hostname, or set litellm.networkPolicy=false if the policy is managed elsewhere." $endpoint) -}}
 {{- end -}}
 {{- if ne $port "443" -}}
 {{- fail (printf "telemetry.otlpEndpoint %q names an external host on port %s, but litellm-policy permits egress to external hosts on port 443 only, so the LiteLLM OTLP exporter (litellm.otel=true) would be blocked. Use a port-443 endpoint, set telemetry.collectorNamespace if the collector is in fact in-cluster, or set litellm.networkPolicy=false if the policy is managed elsewhere." $endpoint $port) -}}

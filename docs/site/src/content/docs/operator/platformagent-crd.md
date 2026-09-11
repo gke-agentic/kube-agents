@@ -450,7 +450,8 @@ Configures the operator-generated egress `NetworkPolicy`.
   `kubeagents.x-k8s.io/enable-litellm-network-policy: "false"` on the `PlatformAgent`. When opted out, the operator deletes any managed copy of `litellm-policy`, leaving LiteLLM unselected (fail-open) unless a replacement policy is provided and managed out-of-band.
 
   **Upgrade note:** when upgrading from a chart version that shipped the static `litellm-policy`, Helm
-  prunes the static policy on the first upgrade. The operator recreates it once the new operator pod
+  prunes the static policy on the first upgrade (unless the live object already carries
+  `helm.sh/resource-policy: keep`, in which case Helm retains it and the operator adopts it). The operator recreates it once the new operator pod
   rolls out, acquires leader election, and reconciles. LiteLLM is unselected (fail-open) during this
   operator rollout window. To eliminate this window on an existing cluster, annotate the live policy before upgrading (`kubectl annotate netpol litellm-policy helm.sh/resource-policy=keep -n <namespace>`); Helm will retain the policy across the upgrade and the operator will adopt it via Server-Side Apply. Alternatively, pre-roll the new operator image before running `helm upgrade` to narrow the window to controller watch latency (~1s), or manage the
   policy out-of-band during the transition via `litellm.networkPolicy=false`. The same window

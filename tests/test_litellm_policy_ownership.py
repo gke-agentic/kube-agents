@@ -54,6 +54,8 @@ INVALID_COLLECTOR_NAMESPACE = "Obs/Namespace"
 # The fail message for a host the 443 rule cannot reach that the render can recognise.
 PRIVATE_HOST_FAIL_FRAGMENT = "does not reach (it excepts private ranges)"
 INVALID_NAMESPACE_FAIL_FRAGMENT = "is not a valid label value"
+INVALID_NAMESPACE_VALUE_FAIL_FRAGMENT = "is not a valid namespace name"
+IPV6_STATIC_FAIL_FRAGMENT = "reaches IPv4 destinations only"
 VENDOR_OTLP_ENDPOINT_UPPERCASE_SCHEME = "HTTPS://otlp.vendor.example"
 IN_CLUSTER_OTLP_ENDPOINT_NON_443 = "http://otel-collector.observability.svc.cluster.local:4318"
 BARE_HOST_OTLP_ENDPOINT_NON_443 = "http://otel-collector:4318"
@@ -258,6 +260,64 @@ class LiteLLMPolicyOwnershipTest(unittest.TestCase):
                 "litellm.otel=true",
                 *HARNESS_ARGS,
             )
+        with self.subTest("IPv6 literal on 443 fails the static render, whose 443 rule is IPv4-only"):
+            res = _helm_template(
+                "--set",
+                "operator.enabled=false",
+                "--set",
+                f"telemetry.otlpEndpoint={VENDOR_OTLP_ENDPOINT_IPV6_443}",
+                "--set",
+                "litellm.otel=true",
+                *HARNESS_ARGS,
+                check=False,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn(IPV6_STATIC_FAIL_FRAGMENT, res.stderr)
+
+    def test_invalid_collector_namespace_value_fails_render(self) -> None:
+        # The value route gets the validation the annotation route has: an invalid
+        # namespace would stand the port check aside and then select nothing.
+        for render_args in ([], ["--set", "operator.enabled=false"]):
+            with self.subTest(str(render_args)):
+                res = _helm_template(
+                    "--set",
+                    f"telemetry.otlpEndpoint={VENDOR_OTLP_ENDPOINT_NON_443}",
+                    "--set",
+                    "litellm.otel=true",
+                    "--set",
+                    f"telemetry.collectorNamespace={INVALID_COLLECTOR_NAMESPACE}",
+                    *render_args,
+                    *HARNESS_ARGS,
+                    check=False,
+                )
+                self.assertNotEqual(res.returncode, 0)
+                self.assertIn(INVALID_NAMESPACE_VALUE_FAIL_FRAGMENT, res.stderr)
+
+    def test_cr_side_opt_outs_do_not_cover_the_static_render(self) -> None:
+        # With the operator absent the CR's switches remove nothing; the static policy
+        # still selects LiteLLM, so the port check still has to fire.
+        cases = [
+            ("networkPolicy.enabled=false", ["--set", "platformAgent.networkPolicy.enabled=false"]),
+            (
+                "opt-out annotation",
+                ["--set-string", _annotation_set_arg(OPT_OUT_ANNOTATION_KEY, OPT_OUT_ANNOTATION_VALUE)],
+            ),
+        ]
+        for name, args in cases:
+            with self.subTest(name):
+                res = _helm_template(
+                    "--set",
+                    "operator.enabled=false",
+                    "--set",
+                    f"telemetry.otlpEndpoint={VENDOR_OTLP_ENDPOINT_NON_443}",
+                    "--set",
+                    "litellm.otel=true",
+                    *args,
+                    *HARNESS_ARGS,
+                    check=False,
+                )
+                self.assertNotEqual(res.returncode, 0)
+                self.assertIn(VENDOR_PORT_FAIL_FRAGMENT, res.stderr)
 
     def test_annotation_values_are_read_the_way_the_operator_reads_them(self) -> None:
         with self.subTest("invalid collector namespace annotation fails"):
