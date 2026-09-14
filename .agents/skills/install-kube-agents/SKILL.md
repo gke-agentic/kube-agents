@@ -155,6 +155,65 @@ The full report also carries `gvisor_enabled` and `memory_mode`. A report writte
 interview decided them (a run that failed early) says so: `gvisor_enabled` is `null` and
 `memory_mode` is empty, rather than restating a default the run never applied.
 
+## GitOps Repository & GitHub Token Minter Configuration
+
+When deploying `kube-agents` with GitOps pull-request workflows enabled, the Platform Agent creates pull requests against an infrastructure-as-code repository via the [GitHub Token Minter](https://github.com/abcxyz/github-token-minter) (`minty`). The minter runs in-cluster and signs short-lived GitHub App installation tokens using a private key securely stored in Google Cloud KMS.
+
+### Prerequisites Checklist for AI Agents and Users
+
+Before installing with GitOps enabled, ensure:
+
+1. **GitHub Organization**: A GitHub organization owning or hosting the target GitOps repository (Minty requires an organization because it queries `/orgs/{org}/installation`; personal user accounts return 404).
+2. **GitOps Repository**: The target repository (e.g. `gke-fleet-iac`) must exist.
+3. **GitHub App**:
+   - Created in GitHub (`Settings -> Developer settings -> GitHub Apps`).
+   - Repository permissions: `Contents: Read and write`, `Pull requests: Read and write`, `Issues: Read and write`.
+   - Installed onto the target organization and repository.
+   - If created under a personal user account, "Where can this GitHub App be installed?" must be set to "Any account (Public)".
+4. **GitHub App ID**: The numeric App ID from the GitHub App settings page.
+5. **Private Key (`.pem`)**: Generated and downloaded from the GitHub App settings page (only needed once for initial Cloud KMS import).
+6. **Go Toolchain**: `go` 1.27+ available on the host machine running `install.sh` (only needed if performing automated `.pem` import during install).
+
+### Deployment Path 1: Automated Import via `install.sh`
+
+In this path, `install.sh` automatically creates the Cloud KMS keyring/key (if missing) and imports the GitHub App private key using the Minty CLI before Terraform applies:
+
+```bash
+./install.sh --non-interactive \
+  --project-id="YOUR_GCP_PROJECT_ID" \
+  --cluster-name="platform-agent-host" \
+  --region="us-central1" \
+  --model-provider="gemini" \
+  --gitops-org="YOUR_GITHUB_ORG" \
+  --gitops-repo="YOUR_GITOPS_REPO" \
+  --github-app-id="YOUR_GITHUB_APP_ID" \
+  --github-pem-path="/path/to/app-private-key.pem"
+```
+
+> [!TIP]
+> After `install.sh` completes the key import into Cloud KMS, the local `.pem` file can be safely deleted. Cloud KMS keys cannot be destroyed, and subsequent runs or upgrades of `install.sh` will automatically detect the existing `ENABLED` key version and skip the `.pem` import.
+
+### Deployment Path 2: Pre-Provisioned / Ahead-Of-Time (AOT) Key
+
+For CI/CD pipelines, automated deployments, or environments where runners do not handle raw private keys, pre-provision the Cloud KMS key ahead of time following the official [GitHub Token Minter documentation](https://github.com/abcxyz/github-token-minter) and [Google Cloud KMS key import guide](https://cloud.google.com/kms/docs/importing-a-key):
+
+1. **Pre-provision Cloud KMS Key & Import Private Key:**
+   Follow the upstream [GitHub Token Minter guide](https://github.com/abcxyz/github-token-minter) and [Google Cloud KMS documentation](https://cloud.google.com/kms/docs/importing-a-key) to configure the Cloud KMS keyring and key, and import your GitHub App private key. By default, `kube-agents` expects keyring `github-token-minter-keyring` and key `github-token-minter-key` in the cluster's region (or custom names passed via `--kms-keyring` / `--kms-key`).
+
+2. **Deploy `kube-agents` without `.pem`:**
+   Once the key holds an `ENABLED` version in Cloud KMS, invoke `install.sh` without `--github-pem-path`:
+
+```bash
+./install.sh --non-interactive \
+  --project-id="YOUR_GCP_PROJECT_ID" \
+  --cluster-name="platform-agent-host" \
+  --region="us-central1" \
+  --model-provider="gemini" \
+  --gitops-org="YOUR_GITHUB_ORG" \
+  --gitops-repo="YOUR_GITOPS_REPO" \
+  --github-app-id="YOUR_GITHUB_APP_ID"
+```
+
 ## Supported Command-Line Flags
 
 Defaults marked "`installer_common.sh`" reach the installer through
@@ -184,6 +243,10 @@ Defaults marked "`installer_common.sh`" reach the installer through
 | `--custom-roles=ROLES`               | Roles for `--permission-set=custom` (space- or comma-separated)                                                                                                                                                                                        | _unset_                                                                                                                                            |
 | `--gitops-org=ORG`                   | GitHub org/user for the GitOps IaC repository                                                                                                                                                                                                          | _unset_                                                                                                                                            |
 | `--gitops-repo=REPO`                 | GitOps IaC repository name                                                                                                                                                                                                                             | `gke-fleet-iac`                                                                                                                                    |
+| `--github-app-id=ID`                 | Numeric GitHub App ID for the token minter                                                                                                                                                                                                             | _unset_                                                                                                                                            |
+| `--github-pem-path=PATH`             | Path to downloaded GitHub App private key (`.pem`) for initial Cloud KMS import                                                                                                                                                                        | _unset_                                                                                                                                            |
+| `--kms-keyring=NAME`                 | Cloud KMS Key Ring name for the token minter key                                                                                                                                                                                                       | `installer_common.sh` `DEFAULT_KMS_KEYRING` (`github-token-minter-keyring`)                                                                        |
+| `--kms-key=NAME`                     | Cloud KMS CryptoKey name for the token minter signing key                                                                                                                                                                                              | `installer_common.sh` `DEFAULT_KMS_KEY` (`github-token-minter-key`)                                                                                |
 | `--enable-google-chat`               | Enable the Google Chat integration                                                                                                                                                                                                                     | `false`                                                                                                                                            |
 | `--gvisor=true\|false`               | Enable GKE Sandbox (gVisor) runtime isolation                                                                                                                                                                                                          | `true`                                                                                                                                             |
 | `--enable-web-ui=true\|false`        | Enable the Hermes Web UI on port 9119                                                                                                                                                                                                                  | `false`                                                                                                                                            |
