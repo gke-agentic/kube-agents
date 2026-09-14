@@ -45,9 +45,9 @@ Canonical GKE-oriented Helm chart for deploying the Kube-Agents Kubernetes Opera
   by hand. Given the public half, the chart
   also renders `<platformAgent.name>-shell-authorized-keys`, the single-entry
   Secret the sandbox mounts — the sandbox never mounts the credential Secret
-  itself. Without the pair nothing breaks on an install that leaves
-  `harness.experimental.shellSandbox` off, which is the default; with it on, the
-  agent has no key to dial the sandbox with. See
+  itself. The sandbox is always on — `harness.experimental.shellSandbox.enabled`
+  is not a toggle, the operator refuses `false`, and this chart fails at template
+  time — so without the pair the agent has no key to dial the sandbox with. See
   [`docs/designs/agent-shell-sandboxing.md`](../../docs/designs/agent-shell-sandboxing.md).
 
   Absent, the pod starts anyway — but the in-pod `k8s-event-watcher`
@@ -561,6 +561,39 @@ Set `admissionPolicy.enabled=false` for a second kube-agents release in a cluste
 that already has them: the objects are cluster singletons with fixed names, so
 Helm refuses the second install on ownership rather than duplicating them.
 
+### Quota preflight
+
+`quotaPreflight.enabled` (default `true`) checks the namespace's `ResourceQuota`
+objects before anything is applied, and fails the render with a diagnosis and a
+ready-to-run `kubectl patch` rather than letting the install stall later on pod
+creation. `--set quotaPreflight.enabled=false` skips it.
+
+What it sums: the chart's own workloads from `values.yaml` — operator, LiteLLM,
+Hindsight, the GitHub minter, each multiplied by its replica count — plus the pods
+the operator renders, whose sizes come from `files/footprint.yaml` because the chart
+cannot render them itself. The agent pod is multiplied by
+`platformAgent.deployment.availability.replicas`; the shell sandbox, the credential
+proxy and the PersistentVolumeClaims are not, because they do not scale with it.
+
+How it decides. For each quota it compares `hard` against what the release needs, on
+install and upgrade alike; on install it also compares `hard - used`, which it skips
+on upgrade because the release's own pods are already counted in `used`. It reads
+CPU, memory and ephemeral-storage (requests and limits), `pods`,
+`persistentvolumeclaims` and `requests.storage`; other keys, including `services`,
+`secrets` and other `count/<resource>` entries, are not modelled and are skipped
+rather than guessed at. **Scoped quotas are skipped entirely** — a quota with
+`scopes` or a `scopeSelector` applies to a subset of pods the template cannot
+identify, so comparing the whole release against it would be wrong either way.
+The patch it prints raises `hard` to `used + required` plus one rollout surge Pod,
+because a quota raised to exactly what the release needs fits it at rest and then
+stalls its first rolling update.
+
+**It fails open.** The check needs a cluster to query, so it does nothing under
+`helm template`, and nothing when the installing identity cannot `get`/`list`
+ResourceQuotas in the release namespace — no warning either way. A clean render is
+therefore not evidence that the quota fits. Grant that read access if you want the
+check to actually run.
+
 ## Uninstalling
 
 ```bash
@@ -671,5 +704,12 @@ helm uninstall kube-agents -n kubeagents-system
   `templates/operator-webhooks.yaml`, which is hand-maintained, and fails when
   its webhooks or Service `targetPort` differ from `k8s-operator/config/webhook`
   (`hack/check_chart_webhooks.py`); fix that one by editing the template.
+- `files/footprint.yaml` is generated too, but from a different source: it is summed from
+  the operator's **golden manifest**
+  (`k8s-operator/internal/testing/testdata/platform/expected/platformagent.yaml`),
+  not from `k8s-operator/config/` and not from a live render. Changing the operator's
+  resources therefore takes two steps in order — re-bless the goldens
+  (`cd k8s-operator && go test ./internal/controller/... -update`), then `make chart-sync`.
+  Running `chart-sync` first regenerates the old numbers from the stale golden.
 
 See [docs/site/src/content/docs/deploy/release-versioning.md](../../docs/site/src/content/docs/deploy/release-versioning.md) for versioning rules.
