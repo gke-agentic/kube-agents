@@ -202,7 +202,6 @@ preflight check on adopted GKE Standard clusters. Schedulable capacity on untain
 for trusted system workloads (operator, LiteLLM, cert-manager) that cannot tolerate the sandbox taint
 on `gvisor-pool`.
 
-
 ### The predecessor: `vars.sh`
 
 `k8s-operator/scripts/vars.sh` was the generated state file `install.env` replaces. No
