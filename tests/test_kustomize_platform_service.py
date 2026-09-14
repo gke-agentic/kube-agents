@@ -9,8 +9,12 @@ operator targeted 8643, and selected `app: platform-agent` where the operator
 labels its gateway pods `<agent-name>-gateway`. Both defects survived because
 each file is correct on its own terms and no test compares them.
 
-Every value is read from the source that owns it, so changing the operator's
-port or label without changing the manifest fails here rather than in a cluster.
+The two values that drifted are each read from the source that owns them, so
+changing the operator's `api` port or its gateway-pod label without changing the
+manifest fails here rather than in a cluster. Two things are deliberately not
+compared: the `dashboard` port, where the operator uses a named port and the
+manifest a number, and the `replicas > 1` selector narrowing to the leader. Both
+would need the test to model the operator rather than read it.
 """
 
 import pathlib

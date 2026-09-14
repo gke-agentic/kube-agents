@@ -933,11 +933,12 @@ def test_stockout_scenario(
         # Check if the cluster has any GPU accelerators or nodepools.
         #
         # Through _kubectl, and with the exit code read, because empty stdout is not
-        # evidence of absence: a non-zero exit and a timeout produce one too, so testing
-        # the output alone reported "this cluster has no GPU nodes" whenever the API
-        # server was unreachable, and skipped the GPU scenarios on it. The wrapper's
-        # default timeout applies rather than the 5s this used to pass -- a timeout now
-        # fails the test, so the budget has to be one a healthy control plane meets.
+        # evidence of absence: a non-zero exit produces one too, so testing the output
+        # alone reported "this cluster has no GPU nodes" whenever the API server refused
+        # the call, and skipped the GPU scenarios on it. A timeout was never that case --
+        # the raw call passed timeout=5 with no handler, so it raised TimeoutExpired and
+        # errored the test. It now goes through the wrapper's default budget with
+        # fail_on_timeout, which reports the same thing in the suite's own words.
         res_gpu = _kubectl(
             "get", "nodes", "-o", "jsonpath={.items[*].status.allocatable}",
             fail_on_timeout=True,

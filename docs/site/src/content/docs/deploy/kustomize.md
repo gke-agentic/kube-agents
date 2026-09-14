@@ -137,7 +137,7 @@ The `app.kubernetes.io/*` labels follow the project-wide contract that makes the
 
 The exposed ports:
 
-- `8642` — the Platform Agent API. Chat integrations and the operator health probes hit this. It targets `8643` on the pod, the credential proxy's authenticated listener: Hermes itself binds `8642` on loopback only and validates a different key, so a caller never reaches it directly. [Credential isolation](/kube-agents/reference/credential-isolation/#request-paths) is canonical for that topology.
+- `8642` — the Platform Agent API. Chat integrations hit this. It targets `8643` on the pod, the credential proxy's authenticated listener: Hermes itself binds `8642` on loopback only and validates a different key, so a caller never reaches it directly. [Credential isolation](/kube-agents/reference/credential-isolation/#request-paths) is canonical for that topology. The operator's health probes do not use this port — they `exec` `curl` against `127.0.0.1:8642` inside the container.
 - `9119` — Hermes dashboard. Behind `harness.hermes.dashboardEnabled` in the CR. Nothing answers on the pod network; the listener is loopback-only — see [`PlatformAgent` CRD](/kube-agents/operator/platformagent-crd/#specharness) for how to reach it.
 
 ## Kustomize for operator integrations

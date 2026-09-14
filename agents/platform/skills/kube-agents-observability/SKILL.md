@@ -184,8 +184,9 @@ To list recent traces or analyze span latency distributions to locate performanc
   kubectl exec <pod-name> -c <agent-container-name> -n kubeagents-system -- \
     curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:9119
   ```
-- For a browser session against the dashboard, use `scripts/hermes-dashboard-tunnel.py` from a
-  repository checkout; it relays through `kubectl exec`, which does enter the sandbox.
+- For a browser session against the dashboard, use `hermes-dashboard-tunnel.py` from the
+  repository's own `scripts/` at its root — not this skill's `scripts/`, which does not carry it.
+  It relays through `kubectl exec`, which does enter the sandbox.
 
 ### 2. Inspect Persistent Internal State & Memory
 
