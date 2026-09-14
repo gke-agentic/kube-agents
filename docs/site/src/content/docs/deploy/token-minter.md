@@ -107,7 +107,7 @@ The deployment requires the following variables in `install.env` or via CLI flag
 - **Auditable.** Every sign operation logs to Cloud Audit Logs.
 - **Rotatable without touching the cluster's key material.** Import a new key version to KMS; nothing on the node ever held the old one. Rotation is not free of a redeploy, though — the Deployment names one `cryptoKeyVersions/<n>`, not the key, so a new version also needs `githubMinter.kms.keyVersion` bumped and the chart re-applied.
 
-The private key is imported into Cloud KMS Ahead-Of-Time following the upstream documentation ([`abcxyz/github-token-minter`](https://github.com/abcxyz/github-token-minter)). Because the key material lives permanently in Cloud KMS, `kube-agents` manifests, installers, and CI pipelines never handle or stage private keys.
+In the Ahead-Of-Time (AOT) model, the private key is imported into Cloud KMS upfront following the upstream documentation ([`abcxyz/github-token-minter`](https://github.com/abcxyz/github-token-minter)). Because the key material lives permanently in Cloud KMS, `kube-agents` manifests and CI pipelines never handle or stage private keys.
 
 ## GSA-only auth
 
