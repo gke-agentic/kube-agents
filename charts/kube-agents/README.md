@@ -342,8 +342,9 @@ endpoint therefore has to be a public host on port 443; an external endpoint on
 any other port fails the render, because the exporter would be blocked (unless
 nothing selects LiteLLM: `litellm.networkPolicy=false`, or on the default
 install the CR's `networkPolicy.enabled=false` or the opt-out annotation), and
-a 443 endpoint that resolves to private address space (an internal load
-balancer, say) is blocked without a render error. With the callback off
+a 443 endpoint whose DNS name resolves to private address space (an internal
+load balancer behind a hostname, say) is blocked without a render error; given
+as a private IP literal it fails the render instead. With the callback off
 the static copy keeps `gke-managed-otel` and the operator emits no rule.
 `telemetry.collectorNamespace` is for an in-cluster collector whose host does
 not name its namespace: it tells both renders the collector is in-cluster
@@ -450,8 +451,11 @@ chart stamps a key, the value wins because it drives the rest of the release
 too, and an entry in `platformAgent.annotations` that disagrees with it fails
 the render instead of being overwritten. When the chart does not stamp the key
 — `litellm.networkPolicy` left `true`, `telemetry.collectorNamespace` left
-empty — the entry passes through untouched, which is how the permanent opt-out
-above is set from values.
+empty — the entry passes through, which is how the permanent opt-out above is
+set from values. The one check the render still applies is that, with
+`litellm.otel=true`, an `otlp-collector-namespace` entry names a namespace (a
+lowercase RFC 1123 label): the operator would otherwise ignore it or open OTLP
+egress to a namespace that cannot exist, so the render fails instead.
 
 `platformAgent.deployment.image.pullPolicy` defaults to `Always`. Under
 `IfNotPresent` a node that has already cached the tag never

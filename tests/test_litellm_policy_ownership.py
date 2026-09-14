@@ -53,6 +53,13 @@ CGNAT_IPV4_OTLP_ENDPOINT_443 = "https://100.64.3.4"
 LINK_LOCAL_IPV4_OTLP_ENDPOINT_443 = "https://169.254.10.9"
 # Excepted by neither 443 rule.
 LOOPBACK_IPV4_OTLP_ENDPOINT_443 = "https://127.0.0.1"
+# Inside the ranges the operator's IPv6 443 peer excepts (unique-local, link-local,
+# multicast); the static copy has no IPv6 peer and refuses every IPv6 literal.
+PRIVATE_IPV6_OTLP_ENDPOINTS_443 = (
+    "https://[fd00::1]",
+    "https://[fe80::1]:443",
+    "https://[FF02::1]",
+)
 SINGLE_LABEL_OTLP_ENDPOINT_443 = "https://otel-collector"
 PUBLIC_IPV4_OTLP_ENDPOINT_443 = "https://203.0.113.9"
 # Not a namespace name and not a label value either.
@@ -297,6 +304,18 @@ class LiteLLMPolicyOwnershipTest(unittest.TestCase):
                         *render_args,
                         *HARNESS_ARGS,
                     )
+        for endpoint in PRIVATE_IPV6_OTLP_ENDPOINTS_443:
+            with self.subTest(f"{endpoint} fails the operator-owned render"):
+                res = _helm_template(
+                    "--set",
+                    f"telemetry.otlpEndpoint={endpoint}",
+                    "--set",
+                    "litellm.otel=true",
+                    *HARNESS_ARGS,
+                    check=False,
+                )
+                self.assertNotEqual(res.returncode, 0)
+                self.assertIn(PRIVATE_HOST_FAIL_FRAGMENT, res.stderr)
         with self.subTest("IPv6 literal on 443 fails the static render, whose 443 rule is IPv4-only"):
             res = _helm_template(
                 "--set",
@@ -523,6 +542,38 @@ class LiteLLMPolicyOwnershipTest(unittest.TestCase):
                     "litellm.otel=true",
                     "--set",
                     "litellm.networkPolicy=false",
+                ],
+            ),
+            # The namespace validations are part of the check and stand aside with it: a
+            # mistyped namespace blocks nothing when there is no exporter or no policy.
+            (
+                "invalid collector namespace value, exporter off",
+                ["--set", f"telemetry.collectorNamespace={LABEL_VALUE_NOT_NAMESPACE_NAME}"],
+            ),
+            (
+                "invalid collector namespace value, policy off",
+                [
+                    "--set",
+                    "litellm.otel=true",
+                    "--set",
+                    "litellm.networkPolicy=false",
+                    "--set",
+                    f"telemetry.collectorNamespace={LABEL_VALUE_NOT_NAMESPACE_NAME}",
+                ],
+            ),
+            (
+                "invalid collector namespace annotation, exporter off",
+                ["--set", _annotation_set_arg(COLLECTOR_NAMESPACE_ANNOTATION_KEY, LABEL_VALUE_NOT_NAMESPACE_NAME)],
+            ),
+            (
+                "invalid collector namespace annotation, CR opt-out",
+                [
+                    "--set",
+                    "litellm.otel=true",
+                    "--set-string",
+                    _annotation_set_arg(OPT_OUT_ANNOTATION_KEY, OPT_OUT_ANNOTATION_VALUE),
+                    "--set",
+                    _annotation_set_arg(COLLECTOR_NAMESPACE_ANNOTATION_KEY, LABEL_VALUE_NOT_NAMESPACE_NAME),
                 ],
             ),
         ]

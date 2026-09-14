@@ -286,15 +286,16 @@ than 4317/4318, on purpose: the URL carries the Service port and the policy sees
 targetPort, so a Service mapping 9999 to 4318 works and a fail there would be wrong.
 
 Two host shapes are refused even on 443, because the 443 rule excepts private ranges
-and they are decidable at render time: an IPv4 literal inside a range that render's
-443 rule excepts, and a single-label hostname, which resolves through the Pod's search
+and they are decidable at render time: an IP literal inside a range that render's 443
+rule excepts, and a single-label hostname, which resolves through the Pod's search
 domain to a Service in its own namespace. Both are in-cluster collectors in disguise,
 and telemetry.collectorNamespace is the remedy, as it was before this check existed.
-The two rules except different ranges — the static copy the three RFC 1918 blocks, the
-operator's those plus CGNAT and link-local space — so the check refuses exactly what
-the rule it is standing in for does not reach, and nothing else: a loopback literal is
-excepted by neither and renders. A DNS name that happens to resolve to private space
-is not decidable here, and the docs say so.
+The two rules except different ranges — the static copy the three RFC 1918 blocks and
+nothing over IPv6, the operator's those plus CGNAT and link-local space, and over IPv6
+unique-local, link-local and multicast — so the check refuses exactly what the rule it
+is standing in for does not reach, and nothing else: a loopback literal is excepted by
+neither and renders. A DNS name that happens to resolve to private space is not
+decidable here, and the docs say so.
 */}}
 {{- define "kube-agents.litellmOTLPPortCheck" -}}
 {{- /*
@@ -313,6 +314,13 @@ is not decidable here, and the docs say so.
 {{- $optOutAnnotation := get $crAnnotations "kubeagents.x-k8s.io/enable-litellm-network-policy" | toString | trim | lower -}}
 {{- $crOptOut := and $operatorOwned (or (and (kindIs "bool" $crNetworkPolicy.enabled) (not $crNetworkPolicy.enabled)) (eq $optOutAnnotation "false")) -}}
 {{- /*
+  Everything below, the namespace validations included, is about LiteLLM's exporter
+  being blocked by litellm-policy, so all of it stands aside when there is no exporter
+  or no policy that selects LiteLLM: a mistyped namespace with the exporter off blocks
+  nothing, and failing the render for it would cite a rule that serves no traffic.
+*/ -}}
+{{- $checkApplies := and .Values.litellm.otel .Values.litellm.networkPolicy (not $crOptOut) -}}
+{{- /*
   Both namespace routes are checked as a namespace name, a lowercase RFC 1123 label.
   That is tighter than the label-value rule the operator applies to the annotation,
   deliberately: a value the operator discards would stand this check aside and open
@@ -322,19 +330,19 @@ is not decidable here, and the docs say so.
 */ -}}
 {{- $namespaceNamePattern := "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" -}}
 {{- $namespaceAnnotation := get $crAnnotations "kubeagents.x-k8s.io/otlp-collector-namespace" | toString | trim -}}
-{{- if and $operatorOwned $namespaceAnnotation (not (regexMatch $namespaceNamePattern $namespaceAnnotation)) -}}
-{{- fail (printf "platformAgent.annotations[\"kubeagents.x-k8s.io/otlp-collector-namespace\"]=%q is not a valid namespace name (a lowercase RFC 1123 label), so the operator would either ignore it or open OTLP egress to a namespace that cannot exist. Give the collector's namespace name." $namespaceAnnotation) -}}
+{{- if and $checkApplies $operatorOwned $namespaceAnnotation (not (regexMatch $namespaceNamePattern $namespaceAnnotation)) -}}
+{{- fail (printf "platformAgent.annotations[\"kubeagents.x-k8s.io/otlp-collector-namespace\"]=%q is not a valid namespace name (a lowercase RFC 1123 label), so the operator would either ignore it or open OTLP egress to a namespace that cannot exist, and the LiteLLM OTLP exporter (litellm.otel=true) would be blocked. Give the collector's namespace name." $namespaceAnnotation) -}}
 {{- end -}}
 {{- /*
   The value route gets the same validation: an invalid namespace would stand this check
   aside, be stamped on the CR, and select nothing in either render.
 */ -}}
 {{- $collectorNamespaceValue := .Values.telemetry.collectorNamespace | toString | trim -}}
-{{- if and $collectorNamespaceValue (not (regexMatch $namespaceNamePattern $collectorNamespaceValue)) -}}
-{{- fail (printf "telemetry.collectorNamespace=%q is not a valid namespace name (a lowercase RFC 1123 label), so the NetworkPolicy would select nothing and the LiteLLM OTLP exporter would be blocked. Give the collector's namespace name." $collectorNamespaceValue) -}}
+{{- if and $checkApplies $collectorNamespaceValue (not (regexMatch $namespaceNamePattern $collectorNamespaceValue)) -}}
+{{- fail (printf "telemetry.collectorNamespace=%q is not a valid namespace name (a lowercase RFC 1123 label), so the NetworkPolicy would select nothing and the LiteLLM OTLP exporter (litellm.otel=true) would be blocked. Give the collector's namespace name." $collectorNamespaceValue) -}}
 {{- end -}}
 {{- $collectorNamespace := or $collectorNamespaceValue (and $operatorOwned $namespaceAnnotation) -}}
-{{- if and .Values.litellm.otel .Values.litellm.networkPolicy .Values.telemetry.otlpEndpoint (not $crOptOut) (not $collectorNamespace) (not (include "kube-agents.otlpEndpointIsClusterLocal" .)) -}}
+{{- if and $checkApplies .Values.telemetry.otlpEndpoint (not $collectorNamespace) (not (include "kube-agents.otlpEndpointIsClusterLocal" .)) -}}
 {{- $endpoint := .Values.telemetry.otlpEndpoint -}}
 {{- /*
   A scheme this parser does not strip (grpc://, or HTTP:// in capitals) would leave a
@@ -373,10 +381,18 @@ is not decidable here, and the docs say so.
 {{- $operatorOnlyPrefixes := "|169\\.254\\.|100\\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\\." -}}
 {{- $exceptedPrefixes := ternary (printf "%s%s" $rfc1918Prefixes $operatorOnlyPrefixes) $rfc1918Prefixes $operatorOwned -}}
 {{- $privateIPv4 := regexMatch (printf "^(%s)[0-9]+\\.[0-9]+(\\.[0-9]+)?$" $exceptedPrefixes) $host -}}
+{{- /*
+  The operator's ::/0 peer excepts fc00::/7, fe80::/10 and ff00::/8, all decidable off
+  a bracketed literal's first hextet. The static copy has no IPv6 peer at all, and
+  refuses every IPv6 literal further down.
+*/ -}}
+{{- $privateIPv6 := and $operatorOwned (regexMatch "^\\[(?i:f[cd]|fe[89ab]|ff)" $hostport) -}}
 {{- /* A bracketed IPv6 literal cuts to "[…" with no dot; it is not a single-label host. */ -}}
 {{- $singleLabel := and (not (contains "." $host)) (not (hasPrefix "[" $hostport)) -}}
-{{- if or $privateIPv4 $singleLabel -}}
-{{- fail (printf "telemetry.otlpEndpoint %q names %s, which litellm-policy's port-443 rule does not reach (it excepts private ranges), so the LiteLLM OTLP exporter (litellm.otel=true) would be blocked. If this is an in-cluster collector, set telemetry.collectorNamespace to its namespace; otherwise give the collector's public host." $endpoint (ternary "a private IPv4 address" "a single-label host" $privateIPv4)) -}}
+{{- if or $privateIPv4 $privateIPv6 $singleLabel -}}
+{{- $shape := "a single-label host" -}}
+{{- if $privateIPv4 -}}{{- $shape = "a private IPv4 address" -}}{{- else if $privateIPv6 -}}{{- $shape = "a private IPv6 address" -}}{{- end -}}
+{{- fail (printf "telemetry.otlpEndpoint %q names %s, which litellm-policy's port-443 rule does not reach (it excepts private ranges), so the LiteLLM OTLP exporter (litellm.otel=true) would be blocked. If this is an in-cluster collector, set telemetry.collectorNamespace to its namespace; otherwise give the collector's public host." $endpoint $shape) -}}
 {{- end -}}
 {{- /* The static copy's 443 rule has an IPv4 peer only; the operator's adds ::/0. */ -}}
 {{- if and (hasPrefix "[" $hostport) (not $operatorOwned) -}}
