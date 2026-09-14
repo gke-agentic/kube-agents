@@ -20,6 +20,18 @@
 admissionPolicy:
   enabled: true
 
+# Preflight ResourceQuota validation at chart render time (#749).
+# When enabled and running against a live cluster (`helm install` or `helm upgrade`),
+# the chart queries namespace ResourceQuotas via `lookup`. If any un-scoped quota lacks
+# sufficient headroom for the combined footprint of the chart workloads and the
+# operator-rendered pods (gateway, shell sandbox, credential proxy), the render fails
+# fast with a diagnosis and patch command instead of stalling later during pod creation.
+#
+# If `lookup` returns empty (e.g. `helm template` in CI without a cluster, or the caller's
+# identity lacks RBAC to read ResourceQuotas), the check passes (fail-open).
+quotaPreflight:
+  enabled: true
+
 global:
   # Registry prefix for the images built from this repo (operator, agent,
   # credential proxy). Empty leaves them on the public defaults below.
