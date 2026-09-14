@@ -48,13 +48,22 @@ VENDOR_OTLP_ENDPOINT_QUERY_NON_443 = "https://otlp.vendor.example:4318?x=1"
 VENDOR_OTLP_ENDPOINT_GRPC = "grpc://otlp.vendor.example:4317"
 VENDOR_OTLP_ENDPOINT_USERINFO = "https://user:secret@otlp.vendor.example"
 PRIVATE_IPV4_OTLP_ENDPOINT_443 = "https://10.100.5.7"
+# Excepted by the operator's 443 rule only; the static copy excepts RFC 1918 alone.
+CGNAT_IPV4_OTLP_ENDPOINT_443 = "https://100.64.3.4"
+LINK_LOCAL_IPV4_OTLP_ENDPOINT_443 = "https://169.254.10.9"
+# Excepted by neither 443 rule.
+LOOPBACK_IPV4_OTLP_ENDPOINT_443 = "https://127.0.0.1"
 SINGLE_LABEL_OTLP_ENDPOINT_443 = "https://otel-collector"
 PUBLIC_IPV4_OTLP_ENDPOINT_443 = "https://203.0.113.9"
+# Not a namespace name and not a label value either.
 INVALID_COLLECTOR_NAMESPACE = "Obs/Namespace"
+# A valid label value, which the operator would accept, that no namespace can be called.
+LABEL_VALUE_NOT_NAMESPACE_NAME = "Obs_NS"
+INVALID_COLLECTOR_NAMESPACES = (INVALID_COLLECTOR_NAMESPACE, LABEL_VALUE_NOT_NAMESPACE_NAME)
 # The fail message for a host the 443 rule cannot reach that the render can recognise.
 PRIVATE_HOST_FAIL_FRAGMENT = "does not reach (it excepts private ranges)"
-INVALID_NAMESPACE_FAIL_FRAGMENT = "is not a valid label value"
-INVALID_NAMESPACE_VALUE_FAIL_FRAGMENT = "is not a valid namespace name"
+# The fail message both namespace routes emit for a value that is not a namespace name.
+INVALID_NAMESPACE_FAIL_FRAGMENT = "is not a valid namespace name"
 IPV6_STATIC_FAIL_FRAGMENT = "reaches IPv4 destinations only"
 VENDOR_OTLP_ENDPOINT_UPPERCASE_SCHEME = "HTTPS://otlp.vendor.example"
 IN_CLUSTER_OTLP_ENDPOINT_NON_443 = "http://otel-collector.observability.svc.cluster.local:4318"
@@ -252,14 +261,42 @@ class LiteLLMPolicyOwnershipTest(unittest.TestCase):
                     )
                     self.assertNotEqual(res.returncode, 0)
                     self.assertIn(PRIVATE_HOST_FAIL_FRAGMENT, res.stderr)
-        with self.subTest("public IPv4 literal on 443 renders"):
-            _helm_template(
-                "--set",
-                f"telemetry.otlpEndpoint={PUBLIC_IPV4_OTLP_ENDPOINT_443}",
-                "--set",
-                "litellm.otel=true",
-                *HARNESS_ARGS,
-            )
+        # Each render refuses exactly the ranges its own 443 rule excepts: the operator's
+        # excepts CGNAT and link-local space beyond RFC 1918, the static copy does not,
+        # and neither excepts loopback.
+        for endpoint in (CGNAT_IPV4_OTLP_ENDPOINT_443, LINK_LOCAL_IPV4_OTLP_ENDPOINT_443):
+            with self.subTest(f"{endpoint} fails the operator-owned render"):
+                res = _helm_template(
+                    "--set",
+                    f"telemetry.otlpEndpoint={endpoint}",
+                    "--set",
+                    "litellm.otel=true",
+                    *HARNESS_ARGS,
+                    check=False,
+                )
+                self.assertNotEqual(res.returncode, 0)
+                self.assertIn(PRIVATE_HOST_FAIL_FRAGMENT, res.stderr)
+            with self.subTest(f"{endpoint} renders statically"):
+                _helm_template(
+                    "--set",
+                    "operator.enabled=false",
+                    "--set",
+                    f"telemetry.otlpEndpoint={endpoint}",
+                    "--set",
+                    "litellm.otel=true",
+                    *HARNESS_ARGS,
+                )
+        for render_args in ([], ["--set", "operator.enabled=false"]):
+            for endpoint in (PUBLIC_IPV4_OTLP_ENDPOINT_443, LOOPBACK_IPV4_OTLP_ENDPOINT_443):
+                with self.subTest(f"{endpoint} {render_args} renders"):
+                    _helm_template(
+                        "--set",
+                        f"telemetry.otlpEndpoint={endpoint}",
+                        "--set",
+                        "litellm.otel=true",
+                        *render_args,
+                        *HARNESS_ARGS,
+                    )
         with self.subTest("IPv6 literal on 443 fails the static render, whose 443 rule is IPv4-only"):
             res = _helm_template(
                 "--set",
@@ -276,22 +313,25 @@ class LiteLLMPolicyOwnershipTest(unittest.TestCase):
 
     def test_invalid_collector_namespace_value_fails_render(self) -> None:
         # The value route gets the validation the annotation route has: an invalid
-        # namespace would stand the port check aside and then select nothing.
+        # namespace would stand the port check aside and then select nothing. The rule
+        # is the namespace-name rule, so a valid label value that no namespace can be
+        # called fails too.
         for render_args in ([], ["--set", "operator.enabled=false"]):
-            with self.subTest(str(render_args)):
-                res = _helm_template(
-                    "--set",
-                    f"telemetry.otlpEndpoint={VENDOR_OTLP_ENDPOINT_NON_443}",
-                    "--set",
-                    "litellm.otel=true",
-                    "--set",
-                    f"telemetry.collectorNamespace={INVALID_COLLECTOR_NAMESPACE}",
-                    *render_args,
-                    *HARNESS_ARGS,
-                    check=False,
-                )
-                self.assertNotEqual(res.returncode, 0)
-                self.assertIn(INVALID_NAMESPACE_VALUE_FAIL_FRAGMENT, res.stderr)
+            for namespace in INVALID_COLLECTOR_NAMESPACES:
+                with self.subTest(f"{namespace} {render_args}"):
+                    res = _helm_template(
+                        "--set",
+                        f"telemetry.otlpEndpoint={VENDOR_OTLP_ENDPOINT_NON_443}",
+                        "--set",
+                        "litellm.otel=true",
+                        "--set",
+                        f"telemetry.collectorNamespace={namespace}",
+                        *render_args,
+                        *HARNESS_ARGS,
+                        check=False,
+                    )
+                    self.assertNotEqual(res.returncode, 0)
+                    self.assertIn(INVALID_NAMESPACE_FAIL_FRAGMENT, res.stderr)
 
     def test_cr_side_opt_outs_do_not_cover_the_static_render(self) -> None:
         # With the operator absent the CR's switches remove nothing; the static policy
@@ -320,19 +360,22 @@ class LiteLLMPolicyOwnershipTest(unittest.TestCase):
                 self.assertIn(VENDOR_PORT_FAIL_FRAGMENT, res.stderr)
 
     def test_annotation_values_are_read_the_way_the_operator_reads_them(self) -> None:
-        with self.subTest("invalid collector namespace annotation fails"):
-            res = _helm_template(
-                "--set",
-                f"telemetry.otlpEndpoint={VENDOR_OTLP_ENDPOINT_NON_443}",
-                "--set",
-                "litellm.otel=true",
-                "--set",
-                _annotation_set_arg(COLLECTOR_NAMESPACE_ANNOTATION_KEY, INVALID_COLLECTOR_NAMESPACE),
-                *HARNESS_ARGS,
-                check=False,
-            )
-            self.assertNotEqual(res.returncode, 0)
-            self.assertIn(INVALID_NAMESPACE_FAIL_FRAGMENT, res.stderr)
+        # The operator discards the first as an invalid label value and would keep the
+        # second; the chart refuses both, since neither can name a namespace.
+        for namespace in INVALID_COLLECTOR_NAMESPACES:
+            with self.subTest(f"collector namespace annotation {namespace} fails"):
+                res = _helm_template(
+                    "--set",
+                    f"telemetry.otlpEndpoint={VENDOR_OTLP_ENDPOINT_NON_443}",
+                    "--set",
+                    "litellm.otel=true",
+                    "--set",
+                    _annotation_set_arg(COLLECTOR_NAMESPACE_ANNOTATION_KEY, namespace),
+                    *HARNESS_ARGS,
+                    check=False,
+                )
+                self.assertNotEqual(res.returncode, 0)
+                self.assertIn(INVALID_NAMESPACE_FAIL_FRAGMENT, res.stderr)
         with self.subTest("upper-case opt-out stands the port check aside"):
             _helm_template(
                 "--set",

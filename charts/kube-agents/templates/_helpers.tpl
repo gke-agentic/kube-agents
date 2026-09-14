@@ -286,12 +286,15 @@ than 4317/4318, on purpose: the URL carries the Service port and the policy sees
 targetPort, so a Service mapping 9999 to 4318 works and a fail there would be wrong.
 
 Two host shapes are refused even on 443, because the 443 rule excepts private ranges
-and they are decidable at render time: an IPv4 literal inside private, CGNAT,
-loopback, or link-local space, and a single-label hostname, which resolves through the
-Pod's search domain to a Service in its own namespace. Both are in-cluster collectors
-in disguise, and telemetry.collectorNamespace is the remedy, as it was before this
-check existed. A DNS name that happens to resolve to private space is not decidable
-here, and the docs say so.
+and they are decidable at render time: an IPv4 literal inside a range that render's
+443 rule excepts, and a single-label hostname, which resolves through the Pod's search
+domain to a Service in its own namespace. Both are in-cluster collectors in disguise,
+and telemetry.collectorNamespace is the remedy, as it was before this check existed.
+The two rules except different ranges — the static copy the three RFC 1918 blocks, the
+operator's those plus CGNAT and link-local space — so the check refuses exactly what
+the rule it is standing in for does not reach, and nothing else: a loopback literal is
+excepted by neither and renders. A DNS name that happens to resolve to private space
+is not decidable here, and the docs say so.
 */}}
 {{- define "kube-agents.litellmOTLPPortCheck" -}}
 {{- /*
@@ -309,17 +312,26 @@ here, and the docs say so.
 {{- /* The operator reads both annotations trimmed, and the opt-out case-insensitively. */ -}}
 {{- $optOutAnnotation := get $crAnnotations "kubeagents.x-k8s.io/enable-litellm-network-policy" | toString | trim | lower -}}
 {{- $crOptOut := and $operatorOwned (or (and (kindIs "bool" $crNetworkPolicy.enabled) (not $crNetworkPolicy.enabled)) (eq $optOutAnnotation "false")) -}}
+{{- /*
+  Both namespace routes are checked as a namespace name, a lowercase RFC 1123 label.
+  That is tighter than the label-value rule the operator applies to the annotation,
+  deliberately: a value the operator discards would stand this check aside and open
+  nothing, and a value it keeps that no namespace can be called (Obs_NS is a valid label
+  value) would open 4317/4318 to a namespace that cannot exist. Either way the exporter
+  is blocked, and either way the render is the place to say so.
+*/ -}}
+{{- $namespaceNamePattern := "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" -}}
 {{- $namespaceAnnotation := get $crAnnotations "kubeagents.x-k8s.io/otlp-collector-namespace" | toString | trim -}}
-{{- if and $operatorOwned $namespaceAnnotation (not (regexMatch "^[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$" $namespaceAnnotation)) -}}
-{{- fail (printf "platformAgent.annotations[\"kubeagents.x-k8s.io/otlp-collector-namespace\"]=%q is not a valid label value, so the operator would ignore it and emit no OTLP egress rule. Give the collector's namespace name." $namespaceAnnotation) -}}
+{{- if and $operatorOwned $namespaceAnnotation (not (regexMatch $namespaceNamePattern $namespaceAnnotation)) -}}
+{{- fail (printf "platformAgent.annotations[\"kubeagents.x-k8s.io/otlp-collector-namespace\"]=%q is not a valid namespace name (a lowercase RFC 1123 label), so the operator would either ignore it or open OTLP egress to a namespace that cannot exist. Give the collector's namespace name." $namespaceAnnotation) -}}
 {{- end -}}
 {{- /*
   The value route gets the same validation: an invalid namespace would stand this check
-  aside, be stamped on the CR, and be ignored by the operator, which then emits no rule.
+  aside, be stamped on the CR, and select nothing in either render.
 */ -}}
 {{- $collectorNamespaceValue := .Values.telemetry.collectorNamespace | toString | trim -}}
-{{- if and $collectorNamespaceValue (not (regexMatch "^[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$" $collectorNamespaceValue)) -}}
-{{- fail (printf "telemetry.collectorNamespace=%q is not a valid namespace name; the NetworkPolicy would select nothing and the operator would ignore it. Give the collector's namespace name." $collectorNamespaceValue) -}}
+{{- if and $collectorNamespaceValue (not (regexMatch $namespaceNamePattern $collectorNamespaceValue)) -}}
+{{- fail (printf "telemetry.collectorNamespace=%q is not a valid namespace name (a lowercase RFC 1123 label), so the NetworkPolicy would select nothing and the LiteLLM OTLP exporter would be blocked. Give the collector's namespace name." $collectorNamespaceValue) -}}
 {{- end -}}
 {{- $collectorNamespace := or $collectorNamespaceValue (and $operatorOwned $namespaceAnnotation) -}}
 {{- if and .Values.litellm.otel .Values.litellm.networkPolicy .Values.telemetry.otlpEndpoint (not $crOptOut) (not $collectorNamespace) (not (include "kube-agents.otlpEndpointIsClusterLocal" .)) -}}
@@ -352,7 +364,15 @@ here, and the docs say so.
 {{- $port = ternary "80" "443" (hasPrefix "http://" $endpoint) -}}
 {{- end -}}
 {{- $host := include "kube-agents.otlpEndpointHost" . -}}
-{{- $privateIPv4 := regexMatch "^(10\\.|127\\.|169\\.254\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|100\\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\\.)[0-9]+\\.[0-9]+(\\.[0-9]+)?$" $host -}}
+{{- /*
+  The prefixes each render's 443 rule excepts, and only those: RFC 1918 in the static
+  copy (litellm.yaml); RFC 1918, CGNAT and link-local in the operator's
+  (platformagent_manifests.go). Change one alongside its rule.
+*/ -}}
+{{- $rfc1918Prefixes := "10\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[01])\\." -}}
+{{- $operatorOnlyPrefixes := "|169\\.254\\.|100\\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\\." -}}
+{{- $exceptedPrefixes := ternary (printf "%s%s" $rfc1918Prefixes $operatorOnlyPrefixes) $rfc1918Prefixes $operatorOwned -}}
+{{- $privateIPv4 := regexMatch (printf "^(%s)[0-9]+\\.[0-9]+(\\.[0-9]+)?$" $exceptedPrefixes) $host -}}
 {{- /* A bracketed IPv6 literal cuts to "[…" with no dot; it is not a single-label host. */ -}}
 {{- $singleLabel := and (not (contains "." $host)) (not (hasPrefix "[" $hostport)) -}}
 {{- if or $privateIPv4 $singleLabel -}}
