@@ -57,6 +57,21 @@ _RESET_SETTLE_SECONDS = 0.5
 # handler refuses the request instead of reading it.
 _BODY_LARGER_THAN_SOCKET_BUFFERS = 8 * 1024 * 1024
 
+# A drain deadline short enough to expire inside a test. The handler reads this
+# from the module at call time, so patching it reaches the same timeout branch a
+# stalled client hits in production without waiting out the shipped ten seconds.
+_SHORT_DRAIN_TIMEOUT_SECONDS = 0.25
+
+# How long to wait for the 401 that the drain's deadline releases. Comfortably
+# over _SHORT_DRAIN_TIMEOUT_SECONDS and under the shipped deadline, so a handler
+# that ignored the patch runs out of read budget here instead of passing.
+_STALLED_CLIENT_READ_TIMEOUT_SECONDS = 5
+
+# A body announced in Content-Length but never sent in full. Large enough that
+# the handler is still waiting on it when the client stops, small enough to stay
+# under AgentAPIProxyHandler.max_request_bytes so the drain runs at all.
+_ANNOUNCED_BODY_NEVER_SENT = 1024 * 1024
+
 
 class AgentAPIProxyTest(unittest.TestCase):
     def setUp(self):
@@ -137,6 +152,110 @@ class AgentAPIProxyTest(unittest.TestCase):
                     f"which reads to a caller as a dead listener: {exc}"
                 )
         self.assertIn(b"401", received.split(b"\r\n", 1)[0])
+        self.assertEqual("", self.received_authorization)
+
+    def _read_status_line(self, client):
+        """Return the proxy's status line, failing the test if it never sends one."""
+        received = b""
+        try:
+            while b"\r\n" not in received:
+                chunk = client.recv(65536)
+                if not chunk:
+                    break
+                received += chunk
+        except OSError as exc:
+            self.fail(
+                "the proxy abandoned the connection instead of responding, which "
+                f"reads to a caller as a dead listener: {exc}"
+            )
+        return received.split(b"\r\n", 1)[0]
+
+    def test_rejection_reaches_a_client_whose_body_cannot_be_framed(self):
+        # An unparseable Content-Length is one of the two shapes the drain
+        # declines. It still has to answer: the caller learns its key is wrong
+        # rather than that something ate the connection.
+        request = (
+            b"POST /v1/responses HTTP/1.1\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Authorization: Bearer wrong\r\n"
+            b"Content-Length: not-a-number\r\n\r\n"
+        )
+        with socket.create_connection(
+            ("127.0.0.1", self.proxy.server_port), timeout=10
+        ) as client:
+            client.sendall(request)
+            time.sleep(_RESET_SETTLE_SECONDS)
+            status = self._read_status_line(client)
+        self.assertIn(b"401", status)
+        self.assertEqual("", self.received_authorization)
+
+    def test_rejection_reaches_a_client_that_sent_a_chunked_body(self):
+        # The other declined shape. The handler cannot know how much to read
+        # without decoding the chunking, so it does not try.
+        request = (
+            b"POST /v1/responses HTTP/1.1\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Authorization: Bearer wrong\r\n"
+            b"Transfer-Encoding: chunked\r\n\r\n"
+            b"4\r\nbody\r\n0\r\n\r\n"
+        )
+        with socket.create_connection(
+            ("127.0.0.1", self.proxy.server_port), timeout=10
+        ) as client:
+            client.sendall(request)
+            time.sleep(_RESET_SETTLE_SECONDS)
+            status = self._read_status_line(client)
+        self.assertIn(b"401", status)
+        self.assertEqual("", self.received_authorization)
+
+    def test_rejection_reaches_a_client_that_closed_mid_body(self):
+        # Announce a body, send a fraction of it, then half-close. The drain
+        # reads to EOF and stops rather than blocking on bytes that will never
+        # arrive.
+        partial = b"x" * 1024
+        request = (
+            b"POST /v1/responses HTTP/1.1\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Authorization: Bearer wrong\r\n"
+            b"Content-Length: " + str(_ANNOUNCED_BODY_NEVER_SENT).encode() + b"\r\n\r\n"
+        ) + partial
+        with socket.create_connection(
+            ("127.0.0.1", self.proxy.server_port), timeout=10
+        ) as client:
+            client.sendall(request)
+            client.shutdown(socket.SHUT_WR)
+            status = self._read_status_line(client)
+        self.assertIn(b"401", status)
+        self.assertEqual("", self.received_authorization)
+
+    def test_drain_deadline_releases_a_client_that_stalls_mid_body(self):
+        # Same as above but without the close: the client announces a body,
+        # sends a fraction, and then holds the connection open saying nothing.
+        # Without the deadline the handler waits on it indefinitely, so this
+        # asserts both that the refusal arrives and that it waited for the
+        # deadline to deliver it.
+        partial = b"x" * 1024
+        request = (
+            b"POST /v1/responses HTTP/1.1\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Authorization: Bearer wrong\r\n"
+            b"Content-Length: " + str(_ANNOUNCED_BODY_NEVER_SENT).encode() + b"\r\n\r\n"
+        ) + partial
+        with mock.patch.object(
+            credential_proxy,
+            "AGENT_API_DRAIN_TIMEOUT_SECONDS",
+            _SHORT_DRAIN_TIMEOUT_SECONDS,
+        ):
+            with socket.create_connection(
+                ("127.0.0.1", self.proxy.server_port),
+                timeout=_STALLED_CLIENT_READ_TIMEOUT_SECONDS,
+            ) as client:
+                client.sendall(request)
+                started = time.monotonic()
+                status = self._read_status_line(client)
+                elapsed = time.monotonic() - started
+        self.assertIn(b"401", status)
+        self.assertGreaterEqual(elapsed, _SHORT_DRAIN_TIMEOUT_SECONDS)
         self.assertEqual("", self.received_authorization)
 
     def test_sanitizes_crlf_in_forwarded_headers(self):
