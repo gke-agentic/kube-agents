@@ -120,6 +120,15 @@ readonly PREFLIGHT_MIN_MEM_MIB_HINDSIGHT_API=1024
 readonly PREFLIGHT_MIN_CPU_MILLIS_AGENT_UNSANDBOXED=1250
 readonly PREFLIGHT_MIN_MEM_MIB_AGENT_UNSANDBOXED=2560
 
+# A node pool that can still scale up answers a deficit by itself: the
+# autoscaler provisions on Pending pods, which is the state the rollout would
+# otherwise sit in. The preflight therefore reads the pool's autoscaling
+# bounds and counts the nodes it may still add before it calls a shortfall
+# fatal. `cloud.google.com/gke-nodepool` is the label GKE stamps on every node
+# and the only link from a node back to the pool that owns it.
+readonly PREFLIGHT_NODE_POOL_LABEL="cloud.google.com/gke-nodepool"
+readonly PREFLIGHT_DAEMONSET_OWNER_KIND="DaemonSet"
+
 # The image tag the generator and the dev prompt fall back to when none was
 # given. Not an install default: every front door rejects it through
 # validate_immutable_ref, so only a direct caller of the generator or the
@@ -1513,8 +1522,15 @@ write_tfvars_from_state() {
   # live only in that cluster's Secret (a fresh clone has no install.env values),
   # and recovery is gated on the kubectl context actually being this cluster.
   if [ "$create_cluster" = "false" ] && command -v kubectl >/dev/null 2>&1; then
+    local gke_dns_flag=""
+    if type gke_dns_endpoint_flag >/dev/null 2>&1; then
+      GKE_DNS_ENDPOINT_FLAG=""
+      gke_dns_endpoint_flag "${CLUSTER_NAME}" "${REGION}" "${PROJECT_ID}" 2>/dev/null || true
+      gke_dns_flag="$GKE_DNS_ENDPOINT_FLAG"
+    fi
+    # shellcheck disable=SC2086
     gcloud container clusters get-credentials "${CLUSTER_NAME}" --location "${REGION}" \
-      --project "${PROJECT_ID}" >/dev/null 2>&1 || true
+      --project "${PROJECT_ID}" $gke_dns_flag >/dev/null 2>&1 || true
   fi
 
   # install.env does not always carry the credentials: PERSIST_SECRETS_ON_DISK=false
@@ -1847,6 +1863,8 @@ write_tfvars_from_state() {
     echo "# Optional AgentPlugins"
     echo "enable_pubsub_platform       = $(hcl_bool "${ENABLE_PUBSUB_PLATFORM:-$DEFAULT_ENABLE_PUBSUB_PLATFORM}")"
     echo "enable_stockout_investigator = $(hcl_bool "${ENABLE_STOCKOUT_INVESTIGATOR:-$DEFAULT_ENABLE_STOCKOUT_INVESTIGATOR}")"
+    echo ""
+    echo "# Helm rollout timeout (seconds)"
     echo "helm_timeout                 = ${HELM_TIMEOUT:-$DEFAULT_HELM_TIMEOUT}"
   } > "${dest}.tmp"
   chmod 600 "${dest}.tmp"
@@ -1960,6 +1978,28 @@ check_existing_cluster_capacity_preflight() {
     return 0
   fi
 
+  # Node-pool autoscaling bounds, read-only. A failure here is not a failure of
+  # the check: the evaluator falls back to the nodes that exist right now, which
+  # is what it did before it could read pools at all. An empty list is the
+  # honest input for that, so write one first and let a successful call
+  # overwrite it.
+  echo '[]' > "${tmp_cap_dir}/pools.json"
+  if command -v gcloud >/dev/null 2>&1 && [ -n "$cluster_name" ] && [ -n "$region" ]; then
+    local -a pool_list_args=(
+      container node-pools list
+      --cluster "$cluster_name"
+      --location "$region"
+      --format json
+    )
+    if [ -n "$project_id" ]; then
+      pool_list_args+=(--project "$project_id")
+    fi
+    gcloud "${pool_list_args[@]}" > "${tmp_cap_dir}/pools.raw.json" 2>/dev/null || true
+    if [ -s "${tmp_cap_dir}/pools.raw.json" ]; then
+      mv "${tmp_cap_dir}/pools.raw.json" "${tmp_cap_dir}/pools.json"
+    fi
+  fi
+
   local req_cpu=$((PREFLIGHT_MIN_CPU_MILLIS_OPERATOR + PREFLIGHT_MIN_CPU_MILLIS_LITELLM_REPLICA * PREFLIGHT_DEFAULT_LITELLM_REPLICAS))
   local req_mem=$((PREFLIGHT_MIN_MEM_MIB_OPERATOR + PREFLIGHT_MIN_MEM_MIB_LITELLM_REPLICA * PREFLIGHT_DEFAULT_LITELLM_REPLICAS))
 
@@ -2034,13 +2074,24 @@ try:
     req_cpu = int(sys.argv[3])
     req_mem = int(sys.argv[4])
     single_pods = json.loads(sys.argv[5]) if len(sys.argv) > 5 else []
+    with open(sys.argv[6], "r", encoding="utf-8") as f:
+        pools = json.load(f)
+    pool_label = sys.argv[7]
+    daemonset_kind = sys.argv[8]
 except Exception as e:
     print(json.dumps({"error": str(e)}))
     sys.exit(0)
 
+if not isinstance(pools, list):
+    pools = []
+
 untainted_nodes = {}
+nodes_per_pool = {}
 for n in nodes.get("items", []):
     name = n["metadata"]["name"]
+    pool = (n.get("metadata", {}).get("labels", {}) or {}).get(pool_label, "")
+    if pool:
+        nodes_per_pool[pool] = nodes_per_pool.get(pool, 0) + 1
     taints = n.get("spec", {}).get("taints", [])
     has_nosched = any(t.get("effect") in ("NoSchedule", "NoExecute") for t in taints)
     is_unschedulable = n.get("spec", {}).get("unschedulable", False)
@@ -2050,31 +2101,55 @@ for n in nodes.get("items", []):
         alloc_cpu = parse_cpu(n.get("status", {}).get("allocatable", {}).get("cpu", 0))
         alloc_mem = parse_mem(n.get("status", {}).get("allocatable", {}).get("memory", 0))
         untainted_nodes[name] = {
+            "pool": pool,
             "alloc_cpu": alloc_cpu,
             "alloc_mem": alloc_mem,
             "req_cpu": 0,
             "req_mem": 0,
             "sched_cpu": 0,
             "sched_mem": 0,
+            "ds_cpu": 0,
+            "ds_mem": 0,
         }
 
 for p in pods.get("items", []):
     node_name = p.get("spec", {}).get("nodeName")
-    if node_name in untainted_nodes:
-        p_cpu = 0
-        p_mem = 0
-        for c in p.get("spec", {}).get("containers", []):
-            res = c.get("resources", {}).get("requests", {})
-            p_cpu += parse_cpu(res.get("cpu", 0))
-            p_mem += parse_mem(res.get("memory", 0))
-        init_cpu = 0
-        init_mem = 0
-        for c in p.get("spec", {}).get("initContainers", []):
-            res = c.get("resources", {}).get("requests", {})
-            init_cpu = max(init_cpu, parse_cpu(res.get("cpu", 0)))
-            init_mem = max(init_mem, parse_mem(res.get("memory", 0)))
-        untainted_nodes[node_name]["req_cpu"] += max(p_cpu, init_cpu)
-        untainted_nodes[node_name]["req_mem"] += max(p_mem, init_mem)
+    if node_name not in untainted_nodes:
+        continue
+    spec = p.get("spec", {})
+    p_cpu = 0
+    p_mem = 0
+    for c in spec.get("containers", []):
+        res = c.get("resources", {}).get("requests", {})
+        p_cpu += parse_cpu(res.get("cpu", 0))
+        p_mem += parse_mem(res.get("memory", 0))
+    # A restartable init container is a native sidecar: it runs for the whole
+    # life of the pod, so the scheduler adds it to the pod request rather than
+    # treating it as a phase that ends. A regular init container only has to
+    # fit once, alongside the sidecars already started, so the largest of them
+    # competes with the running total instead of adding to it.
+    side_cpu = 0
+    side_mem = 0
+    init_cpu = 0
+    init_mem = 0
+    for c in spec.get("initContainers", []):
+        res = c.get("resources", {}).get("requests", {})
+        c_cpu = parse_cpu(res.get("cpu", 0))
+        c_mem = parse_mem(res.get("memory", 0))
+        if c.get("restartPolicy") == "Always":
+            side_cpu += c_cpu
+            side_mem += c_mem
+        else:
+            init_cpu = max(init_cpu, c_cpu)
+            init_mem = max(init_mem, c_mem)
+    eff_cpu = max(p_cpu + side_cpu, init_cpu + side_cpu)
+    eff_mem = max(p_mem + side_mem, init_mem + side_mem)
+    untainted_nodes[node_name]["req_cpu"] += eff_cpu
+    untainted_nodes[node_name]["req_mem"] += eff_mem
+    owners = p.get("metadata", {}).get("ownerReferences", []) or []
+    if any(o.get("kind") == daemonset_kind for o in owners):
+        untainted_nodes[node_name]["ds_cpu"] += eff_cpu
+        untainted_nodes[node_name]["ds_mem"] += eff_mem
 
 total_sched_cpu = 0
 total_sched_mem = 0
@@ -2091,28 +2166,85 @@ for name, data in untainted_nodes.items():
     max_single_cpu = max(max_single_cpu, sched_cpu)
     max_single_mem = max(max_single_mem, sched_mem)
 
-ok = True
-reason = ""
-if len(untainted_nodes) == 0:
-    ok = False
-    reason = "No untainted nodes found in cluster"
-elif total_sched_cpu < req_cpu:
-    ok = False
-    reason = f"Insufficient schedulable CPU ({total_sched_cpu}m < {req_cpu}m)"
-elif total_sched_mem < req_mem:
-    ok = False
-    reason = f"Insufficient schedulable Memory ({total_sched_mem}Mi < {req_mem}Mi)"
-else:
+# What one more node of each pool would offer: its allocatable less the
+# DaemonSets that land on every node of that pool. Taking the smallest
+# observed node of the pool keeps the estimate on the conservative side of a
+# heterogeneous pool.
+pool_fresh = {}
+for name, data in untainted_nodes.items():
+    pool = data["pool"]
+    if not pool:
+        continue
+    fresh = (max(0, data["alloc_cpu"] - data["ds_cpu"]), max(0, data["alloc_mem"] - data["ds_mem"]))
+    if pool not in pool_fresh or fresh < pool_fresh[pool]:
+        pool_fresh[pool] = fresh
+
+headroom_cpu = 0
+headroom_mem = 0
+headroom_single_cpu = 0
+headroom_single_mem = 0
+scalable_pools = []
+for pool in pools:
+    pname = pool.get("name", "")
+    # No untainted, Ready node of this pool to model a new one on. A pool
+    # scaled to zero is the common case, and guessing its machine type from
+    # nothing is how this check would start inventing capacity.
+    if pname not in pool_fresh:
+        continue
+    ptaints = (pool.get("config", {}) or {}).get("taints", []) or []
+    if any(t.get("effect") in ("NoSchedule", "NoExecute", "NO_SCHEDULE", "NO_EXECUTE") for t in ptaints):
+        continue
+    auto = pool.get("autoscaling", {}) or {}
+    if not auto.get("enabled"):
+        continue
+    locations = pool.get("locations", []) or []
+    total_max = auto.get("totalMaxNodeCount") or 0
+    if not total_max:
+        total_max = (auto.get("maxNodeCount") or 0) * (len(locations) if locations else 1)
+    extra = max(0, int(total_max) - int(nodes_per_pool.get(pname, 0)))
+    if extra <= 0:
+        continue
+    fresh_cpu, fresh_mem = pool_fresh[pname]
+    headroom_cpu += extra * fresh_cpu
+    headroom_mem += extra * fresh_mem
+    headroom_single_cpu = max(headroom_single_cpu, fresh_cpu)
+    headroom_single_mem = max(headroom_single_mem, fresh_mem)
+    scalable_pools.append("%s (+%d node(s))" % (pname, extra))
+
+
+def shortfall(total_cpu, total_mem, node_fits):
+    if total_cpu < req_cpu:
+        return "Insufficient schedulable CPU (%dm < %dm)" % (total_cpu, req_cpu)
+    if total_mem < req_mem:
+        return "Insufficient schedulable Memory (%dMi < %dMi)" % (total_mem, req_mem)
     for sp in single_pods:
-        p_name = sp.get("name", "workload")
-        p_cpu = int(sp.get("cpu", 0))
-        p_mem = int(sp.get("mem", 0))
-        if p_cpu > 0 or p_mem > 0:
-            fit = any(d["sched_cpu"] >= p_cpu and d["sched_mem"] >= p_mem for d in untainted_nodes.values())
-            if not fit:
-                ok = False
-                reason = f"No single untainted node has sufficient schedulable capacity for {p_name} pod (requires {p_cpu}m CPU, {p_mem}Mi Memory; max available on a single node is {max_single_cpu}m CPU, {max_single_mem}Mi Memory)"
-                break
+        sp_cpu = int(sp.get("cpu", 0))
+        sp_mem = int(sp.get("mem", 0))
+        if sp_cpu <= 0 and sp_mem <= 0:
+            continue
+        if not any(c >= sp_cpu and m >= sp_mem for c, m in node_fits):
+            return "No single untainted node has sufficient schedulable capacity for %s pod (requires %dm CPU, %dMi Memory; max available on a single node is %dm CPU, %dMi Memory)" % (
+                sp.get("name", "workload"), sp_cpu, sp_mem, max_single_cpu, max_single_mem)
+    return ""
+
+
+current_fits = [(d["sched_cpu"], d["sched_mem"]) for d in untainted_nodes.values()]
+autoscale_note = ""
+if len(untainted_nodes) == 0:
+    reason = "No untainted nodes found in cluster"
+else:
+    reason = shortfall(total_sched_cpu, total_sched_mem, current_fits)
+    # A pool that can still grow answers the deficit the way the rollout would
+    # have: pods go Pending, the autoscaler adds a node. Blocking the install
+    # on the nodes that happen to exist right now fails a cluster that was
+    # never going to be short.
+    if reason and (headroom_cpu > 0 or headroom_mem > 0):
+        after_fits = current_fits + [(headroom_single_cpu, headroom_single_mem)]
+        if not shortfall(total_sched_cpu + headroom_cpu, total_sched_mem + headroom_mem, after_fits):
+            autoscale_note = "%s on the nodes running now, within reach of autoscaling: %s" % (
+                reason, ", ".join(scalable_pools))
+            reason = ""
+ok = not reason
 
 print(json.dumps({
     "ok": ok,
@@ -2121,9 +2253,10 @@ print(json.dumps({
     "total_sched_mem": total_sched_mem,
     "req_cpu": req_cpu,
     "req_mem": req_mem,
+    "autoscale_note": autoscale_note,
     "reason": reason
 }))
-' "${tmp_cap_dir}/nodes.json" "${tmp_cap_dir}/pods.json" "$req_cpu" "$req_mem" "$single_pods_spec" 2>/dev/null || true)"
+' "${tmp_cap_dir}/nodes.json" "${tmp_cap_dir}/pods.json" "$req_cpu" "$req_mem" "$single_pods_spec" "${tmp_cap_dir}/pools.json" "$PREFLIGHT_NODE_POOL_LABEL" "$PREFLIGHT_DAEMONSET_OWNER_KIND" 2>/dev/null || true)"
 
   rm -rf "$tmp_cap_dir"
 
@@ -2132,7 +2265,7 @@ print(json.dumps({
     return 0
   fi
 
-  local ok untainted_count total_sched_cpu total_sched_mem reason
+  local ok untainted_count total_sched_cpu total_sched_mem autoscale_note reason
   # One parse, and a failed one is a failed check rather than a defaulted one.
   # The evaluator prints {"error": ...} and exits 0 when it cannot read the
   # node or pod JSON — a truncated `kubectl get nodes` write clears the [ -s ]
@@ -2153,6 +2286,7 @@ print(result["ok"])
 print(result.get("untainted_count", 0))
 print(result.get("total_sched_cpu", 0))
 print(result.get("total_sched_mem", 0))
+print(str(result.get("autoscale_note", "")).replace("\n", " "))
 print(str(result.get("reason", "")).replace("\n", " "))
 ' "$eval_result" 2>/dev/null)" || eval_fields=""
 
@@ -2166,8 +2300,10 @@ print(str(result.get("reason", "")).replace("\n", " "))
     read -r untainted_count
     read -r total_sched_cpu
     read -r total_sched_mem
-    # An empty reason is the passing case, and command substitution strips the
-    # blank line it prints, so this read lands on EOF: tolerated, not fatal.
+    # autoscale_note and reason are never both set, so one of these two reads
+    # lands on a blank line and the other on EOF once command substitution has
+    # stripped the trailing newline. Both are tolerated, neither is fatal.
+    read -r autoscale_note || autoscale_note=""
     read -r reason || reason=""
   } <<EOF
 ${eval_fields}
@@ -2183,10 +2319,18 @@ EOF
     fi
     print_info "Note: The installer creates 'gvisor-pool' carrying taint 'sandbox.gke.io/runtime=gvisor:NoSchedule'."
     print_info "Trusted system workloads cannot schedule on gvisor-pool and require schedulable capacity on untainted nodes."
+    print_info "Autoscaling headroom counts toward this check: a pool that may still add nodes is credited with them."
     print_info "To resolve:"
     print_info "  1. Resize your existing node pool: gcloud container clusters resize ${cluster_name} --node-pool <pool> --num-nodes <count> --location ${region}"
-    print_info "  2. Or bypass this check: ./install.sh ... --skip-capacity-check"
+    print_info "  2. Or raise the autoscaling ceiling: gcloud container clusters update ${cluster_name} --enable-autoscaling --node-pool <pool> --max-nodes <count> --location ${region}"
+    print_info "  3. Or bypass this check: ./install.sh ... --skip-capacity-check"
     return 1
+  fi
+
+  if [ -n "$autoscale_note" ]; then
+    print_warning "Cluster capacity preflight check passed on autoscaling headroom, not on current capacity: ${autoscale_note}."
+    print_info "Pods will be Pending until the autoscaler provisions; the Helm timeout must outlast that."
+    return 0
   fi
 
   print_success "Cluster capacity preflight check passed (${total_sched_cpu}m CPU, ${total_sched_mem}Mi Memory schedulable across ${untainted_count} untainted node(s))."

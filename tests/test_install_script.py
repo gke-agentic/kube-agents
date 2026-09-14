@@ -4561,6 +4561,7 @@ diagnose_rollout_failure "{log_file}"
     def test_capacity_preflight_failure_aborts_a_non_interactive_run(self):
         body = """
 check_existing_cluster_capacity_preflight() { return 1; }
+write_json_report() { echo "REPORT_STATUS=$1"; }
 PARAM_NON_INTERACTIVE=true PARAM_DRY_RUN=false \\
   enforce_capacity_preflight "cluster" "region" "proj" "true" "file" "false" "" ""
 """
@@ -4568,15 +4569,161 @@ PARAM_NON_INTERACTIVE=true PARAM_DRY_RUN=false \\
         self.assertEqual(proc.returncode, 1)
         self.assertIn("Aborting before Terraform apply", proc.stdout + proc.stderr)
 
+    def test_capacity_refusal_writes_a_machine_readable_status(self):
+        # The agent-facing contract: an aborted run leaves a report describing
+        # this run, not whatever the last successful install wrote.
+        body = """
+check_existing_cluster_capacity_preflight() { return 1; }
+write_json_report() { echo "REPORT_STATUS=$1"; }
+PARAM_NON_INTERACTIVE=true PARAM_DRY_RUN=false \\
+  enforce_capacity_preflight "cluster" "region" "proj" "true" "file" "false" "" ""
+"""
+        proc = self._run_cmd(body)
+        self.assertIn("REPORT_STATUS=REFUSED_INSUFFICIENT_CAPACITY", proc.stdout)
+
+    def test_declining_the_capacity_prompt_pauses_rather_than_fails(self):
+        body = """
+check_existing_cluster_capacity_preflight() { return 1; }
+write_json_report() { echo "REPORT_STATUS=$1"; }
+prompt_read() { eval "$2=n"; }
+PARAM_NON_INTERACTIVE=false PARAM_DRY_RUN=false \\
+  enforce_capacity_preflight "cluster" "region" "proj" "true" "file" "false" "" ""
+"""
+        proc = self._run_cmd(body)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("REPORT_STATUS=PAUSED", proc.stdout)
+
     def test_capacity_preflight_failure_only_warns_on_a_dry_run(self):
         body = """
 check_existing_cluster_capacity_preflight() { return 1; }
+write_json_report() { echo "REPORT_STATUS=$1"; }
 PARAM_NON_INTERACTIVE=true PARAM_DRY_RUN=true \\
   enforce_capacity_preflight "cluster" "region" "proj" "true" "file" "false" "" ""
 """
         proc = self._run_cmd(body)
         self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
         self.assertIn("continuing dry-run validation", proc.stdout + proc.stderr)
+        self.assertNotIn("REPORT_STATUS=", proc.stdout)
+
+    def _preflight_bin_dir(self, tmp, nodes_json, pods_json, pools_json="[]"):
+        """A bin dir whose kubectl and gcloud answer with the given cluster state.
+
+        gcloud is always stubbed, including when the pool list is empty: the
+        preflight shells out to it now, and a real gcloud on PATH would make
+        the test depend on the developer's credentials.
+        """
+        bin_dir = pathlib.Path(tmp) / "bin"
+        bin_dir.mkdir()
+        kubectl = bin_dir / "kubectl"
+        kubectl.write_text(f"""#!/usr/bin/env bash
+case "$*" in
+  *nodes*-o*json*) cat << 'EOF'
+{nodes_json}
+EOF
+  ;;
+  *pods*-o*json*) cat << 'EOF'
+{pods_json}
+EOF
+  ;;
+esac
+exit 0
+""")
+        kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
+        gcloud = bin_dir / "gcloud"
+        gcloud.write_text(f"""#!/usr/bin/env bash
+case "$*" in
+  *node-pools*list*) cat << 'EOF'
+{pools_json}
+EOF
+  ;;
+  *) exit 1 ;;
+esac
+exit 0
+""")
+        gcloud.chmod(gcloud.stat().st_mode | stat.S_IEXEC)
+        return bin_dir
+
+    # One 2000m/4096Mi node, which is short of the hindsight profile on its own.
+    _ONE_SMALL_NODE = json.dumps({
+        "items": [{
+            "metadata": {"name": "n1", "labels": {"cloud.google.com/gke-nodepool": "default-pool"}},
+            "spec": {"taints": []},
+            "status": {
+                "allocatable": {"cpu": "2000m", "memory": "4096Mi"},
+                "conditions": [{"type": "Ready", "status": "True"}],
+            },
+        }]
+    })
+
+    def test_preflight_credits_headroom_an_autoscaling_pool_can_still_add(self):
+        # The regression this guards: a pool that scales 1 -> 5 answers a
+        # deficit by itself, and blocking the install on the one node running
+        # right now fails a cluster that was never going to be short.
+        pools = json.dumps([{
+            "name": "default-pool",
+            "autoscaling": {"enabled": True, "maxNodeCount": 5},
+            "locations": ["us-central1-a"],
+            "config": {},
+        }])
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = self._preflight_bin_dir(
+                tmp, self._ONE_SMALL_NODE, json.dumps({"items": []}), pools)
+            body = f"""
+{_SOURCE_INSTALLER_COMMON}
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj" "false" "hindsight" "false" "" ""
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+            self.assertIn("autoscaling headroom", proc.stdout + proc.stderr)
+
+    def test_preflight_still_fails_when_the_pool_is_at_its_ceiling(self):
+        pools = json.dumps([{
+            "name": "default-pool",
+            "autoscaling": {"enabled": True, "maxNodeCount": 1},
+            "locations": ["us-central1-a"],
+            "config": {},
+        }])
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = self._preflight_bin_dir(
+                tmp, self._ONE_SMALL_NODE, json.dumps({"items": []}), pools)
+            body = f"""
+{_SOURCE_INSTALLER_COMMON}
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj" "false" "hindsight" "false" "" ""
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 1, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+            self.assertNotIn("autoscaling headroom", proc.stdout + proc.stderr)
+
+    def test_preflight_counts_native_sidecar_requests_against_a_node(self):
+        # A restartable init container runs for the life of the pod. Treating
+        # it as a phase that ends hides its request, and the check then reports
+        # capacity the scheduler will not find.
+        pods = json.dumps({
+            "items": [{
+                "metadata": {"name": "app", "namespace": "default"},
+                "spec": {
+                    "nodeName": "n1",
+                    "containers": [{"resources": {"requests": {"cpu": "100m", "memory": "128Mi"}}}],
+                    "initContainers": [{
+                        "restartPolicy": "Always",
+                        "resources": {"requests": {"cpu": "1500m", "memory": "256Mi"}},
+                    }],
+                },
+                "status": {"phase": "Running"},
+            }]
+        })
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = self._preflight_bin_dir(tmp, self._ONE_SMALL_NODE, pods)
+            body = f"""
+{_SOURCE_INSTALLER_COMMON}
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj" "false" "none" "false" "" ""
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            # 2000m allocatable less 100m container and 1500m sidecar leaves
+            # 400m. Counting the sidecar as a finished phase would leave 500m.
+            self.assertIn("400m", proc.stdout + proc.stderr)
+            self.assertNotIn("500m <", proc.stdout + proc.stderr)
+
 
 
     def test_preflight_single_node_both_cpu_and_mem_required(self):

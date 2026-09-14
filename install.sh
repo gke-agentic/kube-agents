@@ -72,6 +72,13 @@ readonly ROLLOUT_MONITOR_KUBECTL_TIMEOUT="5s"
 readonly HELM_TIMEOUT_MIN_SECONDS=540
 readonly HELM_TIMEOUT_MAX_SECONDS=899
 
+# What a Helm rollout that ran out of time leaves in the apply log. Two places
+# test for it -- the diagnoser, which has nothing to say about any other
+# failure, and the credential fetch that exists only to let the diagnoser
+# reach the cluster -- so they read the same pattern rather than two copies
+# that can drift.
+readonly ROLLOUT_TIMEOUT_LOG_PATTERN="context deadline exceeded|timed out waiting"
+
 # ─── ANSI Colors & Terminal Responsive Helpers ─────────────────────────────────
 # A function because scripts/installer/common.sh defines the same variables
 # unconditionally: sourcing it would re-enable colour under NO_COLOR or in a pipe,
@@ -1192,10 +1199,11 @@ bootstrap_install_env_file() {
   # once and then read by every later run, and every other key in it describes
   # what the install IS. A bypass describes one run: the install that needed
   # --skip-capacity-check is the undersized one, and persisting it would skip
-  # the preflight silently for the upgrade that adds hindsight-api's 2000m
-  # single-node requirement. ALLOW_UNVERIFIED_SOURCE and
-  # ALLOW_UNENCRYPTED_SECRETS are kept out of the file for the same reason.
-  
+  # the preflight silently on the next install of a cluster that has since
+  # filled up -- or one reconfigured to add hindsight-api's 2000m single-node
+  # requirement. ALLOW_UNVERIFIED_SOURCE and ALLOW_UNENCRYPTED_SECRETS are kept
+  # out of the file for the same reason.
+
   write_env_var "$tmp" REGISTRY_PREFIX "${REGISTRY_PREFIX:-}"
   if [ -n "${THIRD_PARTY_REGISTRY_PREFIX:-}" ]; then
     write_env_var "$tmp" THIRD_PARTY_REGISTRY_PREFIX "${THIRD_PARTY_REGISTRY_PREFIX}"
@@ -2157,7 +2165,7 @@ diagnose_rollout_failure() {
   local log_file="$1"
   local namespace="${NAMESPACE:-$DEFAULT_NAMESPACE}"
 
-  if ! grep -qiE "context deadline exceeded|timed out waiting" "$log_file" 2>/dev/null; then
+  if ! grep -qiE "$ROLLOUT_TIMEOUT_LOG_PATTERN" "$log_file" 2>/dev/null; then
     return 0
   fi
 
@@ -2231,6 +2239,12 @@ except Exception:
 # touches anything, and an interactive one asks. A function rather than a
 # block in main() so a test can drive the policy with a stubbed preflight;
 # returns non-zero where the caller exits.
+#
+# Return codes are the caller's instructions, because only the caller knows
+# how to write the report: 0 proceed, 1 refuse, 2 the operator declined. The
+# last is a choice rather than a fault, and the caller treats it the way it
+# treats the provisioning prompt -- PAUSED, exit 0.
+readonly CAPACITY_PREFLIGHT_RC_PAUSED=2
 enforce_capacity_preflight() {
   local cluster_name="$1"
   local region="$2"
@@ -2242,7 +2256,7 @@ enforce_capacity_preflight() {
   local github_repo="$8"
 
   if check_existing_cluster_capacity_preflight "$cluster_name" "$region" "$project_id" \
-    "$enable_gvisor" "$memory_mode" "$enable_webui" "$github_org" "$github_repo"; then
+                                               "$enable_gvisor" "$memory_mode" "$enable_webui" "$github_org" "$github_repo"; then
     return 0
   fi
 
@@ -2253,6 +2267,7 @@ enforce_capacity_preflight() {
 
   if [ "${PARAM_NON_INTERACTIVE:-false}" = "true" ]; then
     print_error "Cluster capacity preflight check failed in non-interactive mode. Aborting before Terraform apply."
+    write_json_report "REFUSED_INSUFFICIENT_CAPACITY"
     return 1
   fi
 
@@ -2260,7 +2275,8 @@ enforce_capacity_preflight() {
   prompt_read "\nCapacity check failed. Proceed anyway? (y/N)" proceed_capacity "n"
   if [[ ! "$proceed_capacity" =~ ^[Yy]$ ]]; then
     print_warning "Installation paused by user to allow cluster resizing. Configuration saved to: ${INSTALL_ENV_FILE:-install.env}"
-    return 1
+    write_json_report "PAUSED"
+    return "$CAPACITY_PREFLIGHT_RC_PAUSED"
   fi
 }
 
@@ -2292,16 +2308,32 @@ run_lifecycle_apply() {
 
   local rc_primary="${ps[0]:-0}"
   if [ "$rc_primary" -ne 0 ]; then
-    if command -v gcloud >/dev/null 2>&1 && [ -n "${PROJECT_ID:-}" ]; then
-      local gke_dns_flag=""
-      if type gke_dns_endpoint_flag >/dev/null 2>&1; then
-        GKE_DNS_ENDPOINT_FLAG=""
-        gke_dns_endpoint_flag "${CLUSTER_NAME:-$DEFAULT_CLUSTER_NAME}" "${REGION:-$DEFAULT_REGION}" "${PROJECT_ID:-}" 2>/dev/null || true
-        gke_dns_flag="$GKE_DNS_ENDPOINT_FLAG"
+    # Only fetch credentials for a failure the diagnoser can actually explain,
+    # and only when doing so is not taking the operator's session somewhere
+    # else. The monitor above argues this at length for its own fetch; an
+    # unguarded copy here undoes it, because an IAM error or a bad variable
+    # repoints the kubeconfig for a diagnosis that returns at its first line.
+    if grep -qiE "$ROLLOUT_TIMEOUT_LOG_PATTERN" "$log_file" 2>/dev/null \
+      && [ "${TFVARS_CREATE_CLUSTER:-true}" != "true" ] \
+      && command -v gcloud >/dev/null 2>&1 && [ -n "${PROJECT_ID:-}" ]; then
+      local expected_ctx="gke_${PROJECT_ID}_${REGION:-$DEFAULT_REGION}_${CLUSTER_NAME:-$DEFAULT_CLUSTER_NAME}"
+      local current_ctx=""
+      if command -v kubectl >/dev/null 2>&1; then
+        current_ctx="$(kubectl config current-context 2>/dev/null || true)"
       fi
-      # shellcheck disable=SC2086
-      gcloud container clusters get-credentials "${CLUSTER_NAME:-$DEFAULT_CLUSTER_NAME}" \
-        --location "${REGION:-$DEFAULT_REGION}" --project "${PROJECT_ID:-}" $gke_dns_flag >/dev/null 2>&1 || true
+      if [ -z "$current_ctx" ] || [ "$current_ctx" = "$expected_ctx" ]; then
+        local gke_dns_flag=""
+        if type gke_dns_endpoint_flag >/dev/null 2>&1; then
+          GKE_DNS_ENDPOINT_FLAG=""
+          gke_dns_endpoint_flag "${CLUSTER_NAME:-$DEFAULT_CLUSTER_NAME}" "${REGION:-$DEFAULT_REGION}" "${PROJECT_ID:-}" 2>/dev/null || true
+          gke_dns_flag="$GKE_DNS_ENDPOINT_FLAG"
+        fi
+        # shellcheck disable=SC2086
+        gcloud container clusters get-credentials "${CLUSTER_NAME:-$DEFAULT_CLUSTER_NAME}" \
+          --location "${REGION:-$DEFAULT_REGION}" --project "${PROJECT_ID:-}" $gke_dns_flag >/dev/null 2>&1 || true
+      else
+        print_warning "kubectl context is '${current_ctx}', not the install's cluster; leaving it alone and diagnosing with what it can reach."
+      fi
     fi
     diagnose_rollout_failure "$log_file"
   fi
@@ -4412,8 +4444,20 @@ main() {
   draw_separator
   echo -e "${C_RESET}"
 
-  # Preflight schedulable capacity on adopted Standard clusters (#1297)
-  enforce_capacity_preflight "$cluster_name" "$region" "$project_id" "$enable_gvisor" "$memory_mode" "$PARAM_ENABLE_WEBUI" "$github_org" "$github_repo" || exit 1
+  # Preflight schedulable capacity on adopted Standard clusters (#1297).
+  # `|| exit 1` would be the shorter spelling and the wrong one: it consumes
+  # the failure, so the ERR trap never fires, and the run would exit leaving
+  # whatever /tmp/kube-agents-install-report.json a previous install wrote --
+  # SUCCESS included. enforce_capacity_preflight writes the status; this maps
+  # its answer to an exit code, and a declined prompt is a pause rather than a
+  # fault, the way the provisioning prompt below treats one.
+  local capacity_rc=0
+  enforce_capacity_preflight "$cluster_name" "$region" "$project_id" "$enable_gvisor" "$memory_mode" "$PARAM_ENABLE_WEBUI" "$github_org" "$github_repo" || capacity_rc=$?
+  case "$capacity_rc" in
+    0) ;;
+    "$CAPACITY_PREFLIGHT_RC_PAUSED") exit 0 ;;
+    *) exit 1 ;;
+  esac
 
   if [ "$PARAM_DRY_RUN" = "true" ]; then
     # A real resource preview, not just a config write: validate always, and

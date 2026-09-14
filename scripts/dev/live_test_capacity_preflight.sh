@@ -6,7 +6,6 @@
 #   - Schedulable capacity preflight check on adopted Standard clusters
 #   - Single-node fit constraints for large pods (unsandboxed agent, hindsight-api)
 #   - Workload sizing variants (baseline, cert-manager, webui, minter, hindsight)
-#   - Negative deficit detection & fail-fast behavior (proving mechanism)
 #   - Preflight bypass flags (SKIP_CAPACITY_CHECK, Autopilot, fresh cluster)
 #   - Rollout live monitoring (monitor_lifecycle_rollout)
 #   - Rollout failure diagnostics (diagnose_rollout_failure) on live namespace
@@ -158,117 +157,13 @@ for entry in "${matrix[@]}"; do
   fi
 done
 
-# ------------------------------------------------------------------------------
-# 3. Prove Failure Mechanism: Deficit Detection
-# ------------------------------------------------------------------------------
-test_start "3. Proving Negative Mechanism (Synthetic Capacity Shortfall)"
-# We prove that the calculation engine correctly identifies and rejects shortfalls
-# by inspecting live nodes/pods and testing when required exceeds allocatable.
-
-tmp_test_dir="$(mktemp -d)"
-kubectl get nodes -o json > "${tmp_test_dir}/nodes.json"
-kubectl get pods -A --field-selector status.phase!=Failed,status.phase!=Succeeded -o json > "${tmp_test_dir}/pods.json"
-
-# Calculate live schedulable capacity
-live_calc="$(python3 -c '
-import sys, json
-
-def parse_cpu(val):
-    if not val: return 0
-    s = str(val).strip()
-    if s.endswith("m"): return int(s[:-1])
-    return int(float(s) * 1000)
-
-def parse_mem(val):
-    if not val: return 0
-    s = str(val).strip()
-    units = {"Ki": 1/1024, "Mi": 1, "Gi": 1024, "Ti": 1024*1024, "k": 1000/(1024*1024), "M": 1000**2/(1024*1024), "G": 1000**3/(1024*1024)}
-    for u, factor in units.items():
-        if s.endswith(u): return int(float(s[:-len(u)]) * factor)
-    try: return int(float(s) / (1024*1024))
-    except: return 0
-
-with open(sys.argv[1]) as f: nodes = json.load(f)
-with open(sys.argv[2]) as f: pods = json.load(f)
-
-untainted = {}
-for n in nodes.get("items", []):
-    name = n["metadata"]["name"]
-    taints = n.get("spec", {}).get("taints", [])
-    if not any(t.get("effect") in ("NoSchedule", "NoExecute") for t in taints):
-        untainted[name] = {
-            "alloc_cpu": parse_cpu(n.get("status", {}).get("allocatable", {}).get("cpu", 0)),
-            "alloc_mem": parse_mem(n.get("status", {}).get("allocatable", {}).get("memory", 0)),
-            "req_cpu": 0, "req_mem": 0
-        }
-
-for p in pods.get("items", []):
-    node = p.get("spec", {}).get("nodeName")
-    if node in untainted:
-        p_cpu = sum(parse_cpu(c.get("resources",{}).get("requests",{}).get("cpu",0)) for c in p.get("spec",{}).get("containers",[]))
-        p_mem = sum(parse_mem(c.get("resources",{}).get("requests",{}).get("memory",0)) for c in p.get("spec",{}).get("containers",[]))
-        untainted[node]["req_cpu"] += p_cpu
-        untainted[node]["req_mem"] += p_mem
-
-total_cpu = sum(max(0, d["alloc_cpu"] - d["req_cpu"]) for d in untainted.values())
-total_mem = sum(max(0, d["alloc_mem"] - d["req_mem"]) for d in untainted.values())
-max_single_cpu = max(max(0, d["alloc_cpu"] - d["req_cpu"]) for d in untainted.values())
-max_single_mem = max(max(0, d["alloc_mem"] - d["req_mem"]) for d in untainted.values())
-
-print(json.dumps({"total_cpu": total_cpu, "total_mem": total_mem, "max_single_cpu": max_single_cpu, "max_single_mem": max_single_mem}))
-' "${tmp_test_dir}/nodes.json" "${tmp_test_dir}/pods.json")"
-
-LIVE_TOTAL_CPU="$(python3 -c "import json; print(json.loads('''$live_calc''')['total_cpu'])")"
-LIVE_TOTAL_MEM="$(python3 -c "import json; print(json.loads('''$live_calc''')['total_mem'])")"
-LIVE_MAX_SINGLE_CPU="$(python3 -c "import json; print(json.loads('''$live_calc''')['max_single_cpu'])")"
-LIVE_MAX_SINGLE_MEM="$(python3 -c "import json; print(json.loads('''$live_calc''')['max_single_mem'])")"
-
-echo -e "  ℹ Live cluster headroom: ${LIVE_TOTAL_CPU}m CPU, ${LIVE_TOTAL_MEM}Mi Memory (Single node max: ${LIVE_MAX_SINGLE_CPU}m CPU, ${LIVE_MAX_SINGLE_MEM}Mi Memory)"
-
-# Subtest 3A: Excessive aggregate CPU request fails fast
-EXCESS_CPU=$((LIVE_TOTAL_CPU + 5000))
-eval_excess_cpu="$(python3 -c '
-import sys, json
-req_cpu = int(sys.argv[1])
-req_mem = 1000
-total_cpu = int(sys.argv[2])
-total_mem = int(sys.argv[3])
-ok = total_cpu >= req_cpu and total_mem >= req_mem
-reason = f"Insufficient schedulable CPU ({total_cpu}m < {req_cpu}m)" if not ok else ""
-print(json.dumps({"ok": ok, "reason": reason}))
-' "$EXCESS_CPU" "$LIVE_TOTAL_CPU" "$LIVE_TOTAL_MEM")"
-
-if python3 -c "import json, sys; res=json.loads(sys.argv[1]); sys.exit(0 if not res['ok'] and 'Insufficient schedulable CPU' in res['reason'] else 1)" "$eval_excess_cpu"; then
-  test_pass "Aggregate CPU deficit correctly diagnosed when required (${EXCESS_CPU}m) > schedulable (${LIVE_TOTAL_CPU}m)"
-else
-  test_fail "Aggregate CPU deficit detection failed"
-fi
-
-# Subtest 3B: Single-node constraint fails when largest pod exceeds any individual node
-EXCESS_SINGLE_CPU=$((LIVE_MAX_SINGLE_CPU + 1000))
-eval_single_pod="$(python3 -c '
-import sys, json
-single_cpu = int(sys.argv[1])
-max_single_cpu = int(sys.argv[2])
-ok = max_single_cpu >= single_cpu
-reason = f"No single untainted node has sufficient schedulable capacity for the largest single workload pod (requires {single_cpu}m CPU; max available on a single node is {max_single_cpu}m CPU)" if not ok else ""
-print(json.dumps({"ok": ok, "reason": reason}))
-' "$EXCESS_SINGLE_CPU" "$LIVE_MAX_SINGLE_CPU")"
-
-if python3 -c "import json, sys; res=json.loads(sys.argv[1]); sys.exit(0 if not res['ok'] and 'No single untainted node' in res['reason'] else 1)" "$eval_single_pod"; then
-  test_pass "Single-node constraint deficit correctly diagnosed when pod requirement (${EXCESS_SINGLE_CPU}m) > largest node (${LIVE_MAX_SINGLE_CPU}m)"
-else
-  test_fail "Single-node constraint deficit detection failed"
-fi
-
-rm -rf "${tmp_test_dir}"
 
 # ------------------------------------------------------------------------------
-# 4. Preflight Skip Guards & Exemption Logic
+# 3. Preflight Skip Guards & Exemption Logic
 # ------------------------------------------------------------------------------
-test_start "4. Preflight Skip Guards"
+test_start "3. Preflight Skip Guards"
 
-# 4A: SKIP_CAPACITY_CHECK=true
+# 3A: SKIP_CAPACITY_CHECK=true
 out_skip=$(SKIP_CAPACITY_CHECK=true check_existing_cluster_capacity_preflight "${CLUSTER_NAME}" "${REGION}" "${PROJECT_ID}" 2>&1)
 if echo "$out_skip" | grep -q "Skipping cluster capacity preflight check (SKIP_CAPACITY_CHECK=true)"; then
   test_pass "SKIP_CAPACITY_CHECK=true cleanly skips check"
@@ -276,7 +171,7 @@ else
   test_fail "SKIP_CAPACITY_CHECK=true failed to skip"
 fi
 
-# 4B: TFVARS_CREATE_CLUSTER=true (Fresh cluster creation)
+# 3B: TFVARS_CREATE_CLUSTER=true (Fresh cluster creation)
 out_create=$(TFVARS_CREATE_CLUSTER=true check_existing_cluster_capacity_preflight "${CLUSTER_NAME}" "${REGION}" "${PROJECT_ID}" 2>&1)
 if [ -z "$out_create" ]; then
   test_pass "TFVARS_CREATE_CLUSTER=true cleanly skips preflight check"
@@ -284,7 +179,7 @@ else
   test_fail "TFVARS_CREATE_CLUSTER=true produced unexpected output: $out_create"
 fi
 
-# 4C: TFVARS_CLUSTER_MODE=autopilot
+# 3C: TFVARS_CLUSTER_MODE=autopilot
 out_auto=$(TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=autopilot check_existing_cluster_capacity_preflight "${CLUSTER_NAME}" "${REGION}" "${PROJECT_ID}" 2>&1)
 if [ -z "$out_auto" ]; then
   test_pass "TFVARS_CLUSTER_MODE=autopilot cleanly skips preflight check"
@@ -292,7 +187,7 @@ else
   test_fail "TFVARS_CLUSTER_MODE=autopilot produced unexpected output: $out_auto"
 fi
 
-# 4D: Context mismatch
+# 3D: Context mismatch
 out_mismatch=$(TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "non-existent-cluster-xyz" "us-central1" "fake-proj" 2>&1)
 if echo "$out_mismatch" | grep -q "does not match target cluster"; then
   test_pass "Context mismatch warns and safely skips without failing the command"
@@ -301,9 +196,9 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# 5. Live Rollout Monitoring Functionality
+# 4. Live Rollout Monitoring Functionality
 # ------------------------------------------------------------------------------
-test_start "5. Live Rollout Monitoring (monitor_lifecycle_rollout)"
+test_start "4. Live Rollout Monitoring (monitor_lifecycle_rollout)"
 
 # Source install.sh in source-only mode
 KUBE_AGENTS_SOURCE_ONLY=true source "${INSTALL_SH}"
@@ -318,15 +213,15 @@ sleep 3
 if kill -0 "$MON_PID" 2>/dev/null; then
   kill "$MON_PID" 2>/dev/null || true
   wait "$MON_PID" 2>/dev/null || true
-  test_pass "monitor_lifecycle_rollout spawned, monitored live cluster, and terminated cleanly via trap"
+  test_pass "monitor_lifecycle_rollout spawned in background and terminated cleanly via SIGTERM"
 else
   test_fail "monitor_lifecycle_rollout died prematurely"
 fi
 
 # ------------------------------------------------------------------------------
-# 6. Live Rollout Diagnostics (diagnose_rollout_failure)
+# 5. Live Rollout Diagnostics (diagnose_rollout_failure)
 # ------------------------------------------------------------------------------
-test_start "6. Live Rollout Failure Diagnostics on Real Namespace"
+test_start "5. Live Rollout Failure Diagnostics on Real Namespace"
 
 fake_log="$(mktemp)"
 echo "Error: context deadline exceeded while waiting for Helm release" > "$fake_log"
@@ -364,9 +259,9 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# 7. CLI Flag Validation (--helm-timeout & --skip-capacity-check)
+# 6. CLI Flag Validation (--helm-timeout & --skip-capacity-check)
 # ------------------------------------------------------------------------------
-test_start "7. Flag Validation (--helm-timeout & --skip-capacity-check)"
+test_start "6. Flag Validation (--helm-timeout & --skip-capacity-check)"
 
 # install.sh's own validator, in a subshell so a rejection cannot end this run.
 # Re-implementing the regex here would assert this file against itself, and

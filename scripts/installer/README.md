@@ -141,7 +141,10 @@ only disagree with the live answer. `PROJECT_NUMBER` comes from `gcloud projects
 describe` and `KMS_LOCATION` from `derive_kms_location`. `create_cluster` and the
 **effective** `CLUSTER_MODE` come from `write_tfvars_from_state`'s own probe of the live
 cluster. `NO_CONFIRM` describes an invocation, not an install, and comes from
-`-y`/`--non-interactive`. The identity keys (`PLATFORM_AGENT_GSA_NAME`,
+`-y`/`--non-interactive`. Bypass flags (`SKIP_CAPACITY_CHECK`, `ALLOW_UNENCRYPTED_SECRETS`,
+`ALLOW_UNVERIFIED_SOURCE`) describe an invocation rather than an install, so the installer
+never writes them back: a bypass describes one run, and persisting it would silently skip
+the check on later runs. The identity keys (`PLATFORM_AGENT_GSA_NAME`,
 `GITHUB_MINTER_GSA_NAME`, `LITELLM_GSA_NAME`, `GKE_DB_KMS_KEYRING`, `GKE_DB_KMS_KEY`) are
 written into a new `install.env` only when the run set them — a default copied in
 would freeze at that release, and a custom name that went missing would replace the
@@ -193,6 +196,12 @@ making any cluster changes because kube-agents requires NetworkPolicy enforcemen
 
 `ALLOW_UNENCRYPTED_SECRETS=true` skips the out-of-band Cloud KMS CMEK database encryption on
 pre-existing clusters (testing environments only).
+
+`SKIP_CAPACITY_CHECK=true` (or `--skip-capacity-check`) bypasses the pre-apply schedulable capacity
+preflight check on adopted GKE Standard clusters. Schedulable capacity on untainted nodes is required
+for trusted system workloads (operator, LiteLLM, cert-manager) that cannot tolerate the sandbox taint
+on `gvisor-pool`.
+
 
 ### The predecessor: `vars.sh`
 

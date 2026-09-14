@@ -9,6 +9,7 @@ live in the sibling [`../installer/`](../installer/README.md).
 | Script                                     | What it does                                                                            |
 | ------------------------------------------ | --------------------------------------------------------------------------------------- |
 | `dev_rebuild_agent.sh`                     | Rebuilds one agent image and redeploys it; what `make dev-rebuild-agent` runs           |
+| `live_test_capacity_preflight.sh`          | Exercises the cluster capacity preflight and rollout diagnostics against a live cluster |
 | `setup-gcp-github-wif.sh`                  | Workload Identity Federation for CI, documented below                                   |
 | `teardown_dev_01_gcp_artifact_registry.sh` | Deletes the throwaway dev Artifact Registry this tooling created                        |
 | `update_cluster_name.sh`                   | Patches the target GKE cluster name into the deployed `PlatformAgent` spec; run by hand |
