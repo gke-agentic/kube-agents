@@ -15,6 +15,10 @@
 set -Eeuo pipefail
 
 if [ "${KUBE_AGENTS_SOURCE_ONLY:-false}" = "true" ] && [ -n "${_KUBE_AGENTS_INSTALL_SH_SOURCED:-}" ]; then
+  # shellcheck disable=SC2317  # `return` outside a function succeeds only when this file is
+  # sourced, which is the case the guard exists for; `exit 0` is the fallback for a caller that
+  # set KUBE_AGENTS_SOURCE_ONLY and executed the script instead. Static analysis sees the return
+  # as unconditional and calls the rest of the line dead.
   return 0 2>/dev/null || exit 0
 fi
 _KUBE_AGENTS_INSTALL_SH_SOURCED=1
@@ -83,6 +87,17 @@ readonly HELM_TIMEOUT_MAX_SECONDS=899
 # reach the cluster -- so they read the same pattern rather than two copies
 # that can drift.
 readonly ROLLOUT_TIMEOUT_LOG_PATTERN="context deadline exceeded|timed out waiting"
+# Neither phrase belongs to Helm. The Google provider raises both for its own
+# long API calls, so a cluster creation that ran out of time prints one and
+# would otherwise be diagnosed as a Helm rollout that never came up. Terraform
+# attributes an error to the resource that raised it, so the release's address
+# appearing in the same log is what separates the two.
+readonly ROLLOUT_TIMEOUT_RESOURCE_PATTERN="helm_release"
+
+# What enforce_capacity_preflight returns when the operator declined at the
+# prompt: a choice rather than a fault, which main() reports as PAUSED and
+# exits 0 on.
+readonly CAPACITY_PREFLIGHT_RC_PAUSED=2
 
 # ─── ANSI Colors & Terminal Responsive Helpers ─────────────────────────────────
 # A function because scripts/installer/common.sh defines the same variables
@@ -140,6 +155,12 @@ on_error() {
   # publishes the path while the write is in flight and clears it after the mv.
   if [ -n "${TFVARS_TMP_FILE:-}" ] && [ -f "${TFVARS_TMP_FILE}" ]; then
     rm -f -- "${TFVARS_TMP_FILE}"
+  fi
+  # And for the capacity check's scratch directory, which holds a dump of every
+  # pod spec in the cluster. check_existing_cluster_capacity_preflight publishes
+  # the path while the directory exists and clears it after the rm.
+  if [ -n "${PREFLIGHT_TMP_DIR:-}" ] && [ -d "${PREFLIGHT_TMP_DIR}" ]; then
+    rm -rf -- "${PREFLIGHT_TMP_DIR}"
   fi
   exit "$exit_code"
 }
@@ -2084,9 +2105,14 @@ print_generate_only_handoff() {
 # long Helm waits (#1297).
 monitor_lifecycle_rollout() {
   local namespace="${NAMESPACE:-$DEFAULT_NAMESPACE}"
+  # Built here rather than via gke_context_name, which dereferences PROJECT_ID,
+  # REGION and CLUSTER_NAME unguarded and so aborts under `set -u` when any of
+  # them is unset. This runs as a background job, and `set -E` carries the ERR
+  # trap into it: an abort here would not just lose the monitor, it would run
+  # on_error and write a FAILED install report while the apply was still going.
   local expected_ctx=""
-  if type gke_context_name >/dev/null 2>&1; then
-    expected_ctx="$(gke_context_name)"
+  if [ -n "${PROJECT_ID:-}" ]; then
+    expected_ctx="gke_${PROJECT_ID}_${REGION:-$DEFAULT_REGION}_${CLUSTER_NAME:-$DEFAULT_CLUSTER_NAME}"
   fi
   local start_time=$SECONDS
   local sleep_pid=""
@@ -2164,13 +2190,22 @@ monitor_lifecycle_rollout() {
   done
 }
 
+# True when the apply log shows a Helm release that ran out of time, rather
+# than any other timeout Terraform can print. Both callers ask through this so
+# the distinction cannot be made in one and forgotten in the other.
+helm_rollout_timed_out() {
+  local log_file="$1"
+  grep -qiE "$ROLLOUT_TIMEOUT_LOG_PATTERN" "$log_file" 2>/dev/null \
+    && grep -qF "$ROLLOUT_TIMEOUT_RESOURCE_PATTERN" "$log_file" 2>/dev/null
+}
+
 # Diagnoses Helm rollout failures (such as context deadline exceeded) by
 # inspecting Pending pods, failed containers, and scheduling warning events (#1297).
 diagnose_rollout_failure() {
   local log_file="$1"
   local namespace="${NAMESPACE:-$DEFAULT_NAMESPACE}"
 
-  if ! grep -qiE "$ROLLOUT_TIMEOUT_LOG_PATTERN" "$log_file" 2>/dev/null; then
+  if ! helm_rollout_timed_out "$log_file"; then
     return 0
   fi
 
@@ -2265,10 +2300,9 @@ except Exception:
 # returns non-zero where the caller exits.
 #
 # Return codes are the caller's instructions, because only the caller knows
-# how to write the report: 0 proceed, 1 refuse, 2 the operator declined. The
-# last is a choice rather than a fault, and the caller treats it the way it
-# treats the provisioning prompt -- PAUSED, exit 0.
-readonly CAPACITY_PREFLIGHT_RC_PAUSED=2
+# how to write the report: 0 proceed, 1 refuse, CAPACITY_PREFLIGHT_RC_PAUSED
+# the operator declined. The last is a choice rather than a fault, and the
+# caller treats it the way it treats the provisioning prompt -- PAUSED, exit 0.
 enforce_capacity_preflight() {
   local cluster_name="$1"
   local region="$2"
@@ -2341,7 +2375,7 @@ run_lifecycle_apply() {
     # else. The monitor above argues this at length for its own fetch; an
     # unguarded copy here undoes it, because an IAM error or a bad variable
     # repoints the kubeconfig for a diagnosis that returns at its first line.
-    if grep -qiE "$ROLLOUT_TIMEOUT_LOG_PATTERN" "$log_file" 2>/dev/null \
+    if helm_rollout_timed_out "$log_file" \
       && [ "${TFVARS_CREATE_CLUSTER:-true}" != "true" ] \
       && command -v gcloud >/dev/null 2>&1 && [ -n "${PROJECT_ID:-}" ]; then
       local expected_ctx="gke_${PROJECT_ID}_${REGION:-$DEFAULT_REGION}_${CLUSTER_NAME:-$DEFAULT_CLUSTER_NAME}"

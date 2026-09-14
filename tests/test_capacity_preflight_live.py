@@ -104,7 +104,14 @@ class LiveCapacityPreflightTest(unittest.TestCase):
         self._empty_install_env = pathlib.Path(tmp.name) / "install.env"
         self._empty_install_env.write_text("")
 
-    def _run_shell(self, script_body, env_overrides=None):
+    def _run_shell(self, script_body, env_overrides=None, preamble="", source_install_sh=False):
+        """Run `script_body` with the installer helpers sourced.
+
+        `preamble` runs before the source, which is the only place a caller
+        can get ahead of a `readonly` declaration. `source_install_sh` adds
+        the front door in source-only mode, for the functions that live there
+        rather than in installer_common.
+        """
         overrides = {"KUBE_AGENTS_INSTALL_ENV": str(self._empty_install_env)}
         overrides.update(env_overrides or {})
         full_env = get_isolated_test_env(overrides=overrides)
@@ -112,8 +119,12 @@ class LiveCapacityPreflightTest(unittest.TestCase):
         for k in ("KUBECONFIG", "GOOGLE_APPLICATION_CREDENTIALS", "CLOUDSDK_CONFIG"):
             if k in os.environ:
                 full_env[k] = os.environ[k]
+        install_sh_line = (
+            f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n' if source_install_sh else ""
+        )
         full_script = f"""
-source "{_INSTALLER_COMMON}"
+{preamble}
+{install_sh_line}source "{_INSTALLER_COMMON}"
 {script_body}
 """
         return subprocess.run(
@@ -179,11 +190,100 @@ TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=autopilot check_existing_cluster
         self.assertEqual(proc.returncode, 0)
         self.assertNotIn("Capacity check", proc.stdout)
 
+        # Coordinates that are not the current context. The check warns and
+        # returns 0 rather than refusing, which is what makes every other
+        # assertion in this file conditional on the coordinates being right:
+        # get them wrong and the suite grades a check that never ran.
+        proc = self._run_shell("""
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard \\
+  check_existing_cluster_capacity_preflight "not-a-cluster-xyz" "us-central1" "not-a-project-xyz"
+""")
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("does not match target cluster", proc.stdout + proc.stderr)
+
+    def test_live_cluster_is_refused_when_the_requirement_exceeds_it(self):
+        """The refusal path, against the same live node and pod data.
+
+        Everything else here asserts a pass, so a preflight that returned 0
+        unconditionally would satisfy the whole file: the suite would be
+        grading the cluster rather than the check. What is synthesised is the
+        requirement, not the cluster — the sizing constant is declared here
+        before installer_common is sourced, so its own `readonly` on the same
+        name fails (noisily, on stderr) and leaves this value in place. The
+        evaluator then runs unmodified against the real nodes.
+        """
+        huge_cpu_millis = 10_000_000
+        proc = self._run_shell(
+            f"""
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard \\
+  check_existing_cluster_capacity_preflight "{self.cluster}" "{self.region}" "{self.project}" \\
+  "false" "file" "false" "" "" "true"
+""",
+            preamble=f"readonly PREFLIGHT_MIN_CPU_MILLIS_AGENT_UNSANDBOXED={huge_cpu_millis}",
+        )
+        self.assertEqual(
+            proc.returncode,
+            1,
+            f"a {huge_cpu_millis}m requirement was not refused: {proc.stdout}\n{proc.stderr}",
+        )
+        self.assertIn("Cluster capacity preflight check failed", proc.stdout + proc.stderr)
+        self.assertIn("Insufficient schedulable CPU", proc.stdout)
+
+    def test_live_rollout_monitor_starts_and_stops_on_sigterm(self):
+        """The monitor is spawned with `&` and reaped with SIGTERM.
+
+        It polls the live cluster, so a crash on the first iteration and a
+        clean start look identical from the caller: the apply carries on
+        either way and the diagnostics are simply never printed.
+        """
+        script = f"""
+KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
+source "{_INSTALLER_COMMON}"
+PROJECT_ID="{self.project}" REGION="{self.region}" CLUSTER_NAME="{self.cluster}" \\
+  monitor_lifecycle_rollout &
+mon_pid=$!
+sleep 3
+if ! kill -0 "$mon_pid" 2>/dev/null; then
+  echo "MONITOR_DIED_EARLY"
+  exit 0
+fi
+kill "$mon_pid" 2>/dev/null || true
+wait "$mon_pid" 2>/dev/null || true
+if kill -0 "$mon_pid" 2>/dev/null; then
+  echo "MONITOR_SURVIVED_SIGTERM"
+else
+  echo "MONITOR_STOPPED_CLEANLY"
+fi
+"""
+        overrides = {"KUBE_AGENTS_INSTALL_ENV": str(self._empty_install_env)}
+        full_env = get_isolated_test_env(overrides=overrides)
+        for k in ("KUBECONFIG", "GOOGLE_APPLICATION_CREDENTIALS", "CLOUDSDK_CONFIG"):
+            if k in os.environ:
+                full_env[k] = os.environ[k]
+        proc = subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True,
+            text=True,
+            env=full_env,
+            cwd=str(_REPO_ROOT),
+            timeout=60,
+        )
+        self.assertNotIn("MONITOR_DIED_EARLY", proc.stdout, f"stderr: {proc.stderr}")
+        self.assertIn("MONITOR_STOPPED_CLEANLY", proc.stdout, f"stderr: {proc.stderr}")
+
     def test_live_rollout_failure_diagnosis(self):
         """Validates diagnose_rollout_failure against live namespace upon timeout."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_log = pathlib.Path(tmp) / "timeout.log"
-            tmp_log.write_text("Error: context deadline exceeded waiting for condition\n")
+            # Shaped the way terraform prints it. The diagnoser requires the
+            # release's address as well as the phrase: the phrase alone is
+            # also what the Google provider raises for its own long calls.
+            tmp_log.write_text(
+                "Error: context deadline exceeded waiting for condition\n"
+                "\n"
+                "  with helm_release.kube_agents,\n"
+                '  on main.tf line 497, in resource "helm_release" "kube_agents":\n'
+            )
             script = f"""
 KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
 NAMESPACE=kubeagents-system diagnose_rollout_failure "{tmp_log}"
@@ -206,25 +306,38 @@ NAMESPACE=kubeagents-system diagnose_rollout_failure "{tmp_log}"
             self.assertIn("Diagnosing cluster pod states", proc.stdout)
 
     def test_live_rollout_failure_diagnosis_ignores_non_timeout(self):
-        """Confirms that diagnose_rollout_failure does not run on successful or unrelated logs."""
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_log = pathlib.Path(tmp) / "clean.log"
-            tmp_log.write_text("Terraform apply completed with exit code 0\n")
-            script = f"""
+        """Confirms that diagnose_rollout_failure stays quiet on logs that are not its own."""
+        cases = {
+            "a successful apply": "Terraform apply completed with exit code 0\n",
+            # Same phrase, different provider. Diagnosing this one announces a
+            # Helm rollout failure for a cluster the apply never finished
+            # building, and then queries it.
+            "a provider timeout": (
+                "Error: timed out waiting for the condition\n"
+                "\n"
+                "  with google_container_cluster.primary,\n"
+                '  on main.tf line 120, in resource "google_container_cluster" "primary":\n'
+            ),
+        }
+        for label, contents in cases.items():
+            with self.subTest(log=label), tempfile.TemporaryDirectory() as tmp:
+                tmp_log = pathlib.Path(tmp) / "clean.log"
+                tmp_log.write_text(contents)
+                script = f"""
 KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
 NAMESPACE=kubeagents-system diagnose_rollout_failure "{tmp_log}"
 """
-            overrides = {"KUBE_AGENTS_INSTALL_ENV": str(self._empty_install_env)}
-            full_env = get_isolated_test_env(overrides=overrides)
-            proc = subprocess.run(
-                ["bash", "-c", script],
-                capture_output=True,
-                text=True,
-                env=full_env,
-                cwd=str(_REPO_ROOT),
-            )
-            self.assertEqual(proc.returncode, 0)
-            self.assertNotIn("Helm rollout timed out", proc.stdout)
+                overrides = {"KUBE_AGENTS_INSTALL_ENV": str(self._empty_install_env)}
+                full_env = get_isolated_test_env(overrides=overrides)
+                proc = subprocess.run(
+                    ["bash", "-c", script],
+                    capture_output=True,
+                    text=True,
+                    env=full_env,
+                    cwd=str(_REPO_ROOT),
+                )
+                self.assertEqual(proc.returncode, 0)
+                self.assertNotIn("Helm rollout timed out", proc.stdout)
 
 
 if __name__ == "__main__":

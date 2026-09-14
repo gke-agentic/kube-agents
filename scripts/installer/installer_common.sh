@@ -109,10 +109,21 @@ readonly PREFLIGHT_MIN_MEM_MIB_LITELLM_REPLICA=512
 readonly PREFLIGHT_DEFAULT_LITELLM_REPLICAS=2
 readonly PREFLIGHT_MIN_CPU_MILLIS_CERT_MANAGER=30
 readonly PREFLIGHT_MIN_MEM_MIB_CERT_MANAGER=96
-readonly PREFLIGHT_MIN_CPU_MILLIS_WEBUI=256
-readonly PREFLIGHT_MIN_MEM_MIB_WEBUI=512
-readonly PREFLIGHT_MIN_CPU_MILLIS_MINTER=200
-readonly PREFLIGHT_MIN_MEM_MIB_MINTER=256
+# The Hermes dashboard is a sidecar container in the agent pod rather than a
+# workload of its own: the operator appends `platform-agent-dashboard` to the
+# agent's container list (k8s-operator/internal/controller/platformagent_manifests.go),
+# and no Deployment renders it. Its requests therefore ride wherever the agent
+# pod lands — the tainted sandbox pool when gVisor is on, an untainted node
+# when it is off.
+readonly PREFLIGHT_MIN_CPU_MILLIS_DASHBOARD=256
+readonly PREFLIGHT_MIN_MEM_MIB_DASHBOARD=512
+# Per replica, as charts/kube-agents/values.yaml declares it under
+# githubMinter. The cluster-wide requirement is the product with the replica
+# count; the single-node fit is one replica, because that is the largest unit
+# the scheduler has to place.
+readonly PREFLIGHT_MIN_CPU_MILLIS_MINTER_REPLICA=100
+readonly PREFLIGHT_MIN_MEM_MIB_MINTER_REPLICA=128
+readonly PREFLIGHT_DEFAULT_MINTER_REPLICAS=2
 readonly PREFLIGHT_MIN_CPU_MILLIS_HINDSIGHT=2250
 readonly PREFLIGHT_MIN_MEM_MIB_HINDSIGHT=1280
 readonly PREFLIGHT_MIN_CPU_MILLIS_HINDSIGHT_API=2000
@@ -129,12 +140,21 @@ readonly PREFLIGHT_MIN_MEM_MIB_AGENT_UNSANDBOXED=2560
 readonly PREFLIGHT_NODE_POOL_LABEL="cloud.google.com/gke-nodepool"
 readonly PREFLIGHT_DAEMONSET_OWNER_KIND="DaemonSet"
 # The namespace the install puts cert-manager in when it installs it. The
-# evaluator discounts what is already running there for the same reason it
-# discounts the install's own namespace: on a re-run those pods are the
-# requirement being checked, not load competing with it. When the install does
-# not manage cert-manager (SKIP_CERT_MANAGER), they are a tenant like any other
-# and are counted.
+# evaluator discounts every pod running there for the same reason it discounts
+# the install's own namespace: on a re-run those pods are the requirement being
+# checked, not load competing with it. The discount is the whole namespace
+# rather than cert-manager's own pods, so a tenant sharing it is discounted
+# too -- cert-manager owns this namespace by convention and matching by owner
+# would cost a second API call for a case nothing here creates. When the
+# install does not manage cert-manager, they are a tenant like any other and
+# are counted; that is either SKIP_CERT_MANAGER, or the live probe finding an
+# installation somebody else owns.
 readonly PREFLIGHT_CERT_MANAGER_NAMESPACE="cert-manager"
+# Bounds the two kubectl reads the check makes. A control plane that accepts
+# the connection and then stalls would otherwise hang the install at a check
+# whose whole purpose is to fail fast; 30s is long enough for `get pods -A` on
+# a large cluster and short enough to be an interruption rather than a hang.
+readonly PREFLIGHT_KUBECTL_TIMEOUT="30s"
 
 # The image tag the generator and the dev prompt fall back to when none was
 # given. Not an install default: every front door rejects it through
@@ -1972,16 +1992,23 @@ check_existing_cluster_capacity_preflight() {
 
   local tmp_cap_dir
   tmp_cap_dir="$(mktemp -d 2>/dev/null || mktemp -d -t 'kube-agents-cap')"
-  kubectl get nodes -o json > "${tmp_cap_dir}/nodes.json" 2>/dev/null || true
+  # Published while it exists so install.sh's on_error can remove it: the pod
+  # dump below is every pod spec in the cluster, plaintext `env` included, and
+  # an abort between here and the rm would leave it behind. mktemp -d gives
+  # 0700, which bounds who could read it in the meantime.
+  PREFLIGHT_TMP_DIR="$tmp_cap_dir"
+  kubectl --request-timeout="$PREFLIGHT_KUBECTL_TIMEOUT" get nodes -o json > "${tmp_cap_dir}/nodes.json" 2>/dev/null || true
   if [ ! -s "${tmp_cap_dir}/nodes.json" ]; then
     rm -rf "$tmp_cap_dir"
+    PREFLIGHT_TMP_DIR=""
     print_warning "Could not query nodes via kubectl; skipping cluster capacity preflight check."
     return 0
   fi
 
-  kubectl get pods -A --field-selector status.phase!=Failed,status.phase!=Succeeded -o json > "${tmp_cap_dir}/pods.json" 2>/dev/null || true
+  kubectl --request-timeout="$PREFLIGHT_KUBECTL_TIMEOUT" get pods -A --field-selector status.phase!=Failed,status.phase!=Succeeded -o json > "${tmp_cap_dir}/pods.json" 2>/dev/null || true
   if [ ! -s "${tmp_cap_dir}/pods.json" ]; then
     rm -rf "$tmp_cap_dir"
+    PREFLIGHT_TMP_DIR=""
     print_warning "Could not query running pods via kubectl; skipping cluster capacity preflight check."
     return 0
   fi
@@ -2016,14 +2043,9 @@ check_existing_cluster_capacity_preflight() {
     req_mem=$((req_mem + PREFLIGHT_MIN_MEM_MIB_CERT_MANAGER))
   fi
 
-  if is_truthy "$webui_enabled"; then
-    req_cpu=$((req_cpu + PREFLIGHT_MIN_CPU_MILLIS_WEBUI))
-    req_mem=$((req_mem + PREFLIGHT_MIN_MEM_MIB_WEBUI))
-  fi
-
   if [ -n "$gitops_org" ] && [ -n "$gitops_repo" ]; then
-    req_cpu=$((req_cpu + PREFLIGHT_MIN_CPU_MILLIS_MINTER))
-    req_mem=$((req_mem + PREFLIGHT_MIN_MEM_MIB_MINTER))
+    req_cpu=$((req_cpu + PREFLIGHT_MIN_CPU_MILLIS_MINTER_REPLICA * PREFLIGHT_DEFAULT_MINTER_REPLICAS))
+    req_mem=$((req_mem + PREFLIGHT_MIN_MEM_MIB_MINTER_REPLICA * PREFLIGHT_DEFAULT_MINTER_REPLICAS))
   fi
 
   if [ "$memory_mode" = "hindsight" ]; then
@@ -2032,16 +2054,23 @@ check_existing_cluster_capacity_preflight() {
   fi
 
   local single_pods_spec="[{\"name\":\"LiteLLM\",\"cpu\":${PREFLIGHT_MIN_CPU_MILLIS_LITELLM_REPLICA},\"mem\":${PREFLIGHT_MIN_MEM_MIB_LITELLM_REPLICA}}"
-  if is_truthy "$webui_enabled"; then
-    single_pods_spec="${single_pods_spec},{\"name\":\"WebUI\",\"cpu\":${PREFLIGHT_MIN_CPU_MILLIS_WEBUI},\"mem\":${PREFLIGHT_MIN_MEM_MIB_WEBUI}}"
-  fi
   if [ -n "$gitops_org" ] && [ -n "$gitops_repo" ]; then
-    single_pods_spec="${single_pods_spec},{\"name\":\"Minter\",\"cpu\":${PREFLIGHT_MIN_CPU_MILLIS_MINTER},\"mem\":${PREFLIGHT_MIN_MEM_MIB_MINTER}}"
+    single_pods_spec="${single_pods_spec},{\"name\":\"Minter\",\"cpu\":${PREFLIGHT_MIN_CPU_MILLIS_MINTER_REPLICA},\"mem\":${PREFLIGHT_MIN_MEM_MIB_MINTER_REPLICA}}"
   fi
+  # The agent pod and its dashboard sidecar are one scheduling unit, so they
+  # are sized as one. Under gVisor that unit lands on the tainted sandbox pool
+  # and costs untainted nodes nothing, dashboard included; without it, the
+  # whole unit has to fit on a single untainted node.
   if ! is_truthy "$gvisor_enabled"; then
-    req_cpu=$((req_cpu + PREFLIGHT_MIN_CPU_MILLIS_AGENT_UNSANDBOXED))
-    req_mem=$((req_mem + PREFLIGHT_MIN_MEM_MIB_AGENT_UNSANDBOXED))
-    single_pods_spec="${single_pods_spec},{\"name\":\"unsandboxed agent\",\"cpu\":${PREFLIGHT_MIN_CPU_MILLIS_AGENT_UNSANDBOXED},\"mem\":${PREFLIGHT_MIN_MEM_MIB_AGENT_UNSANDBOXED}}"
+    local agent_cpu=$PREFLIGHT_MIN_CPU_MILLIS_AGENT_UNSANDBOXED
+    local agent_mem=$PREFLIGHT_MIN_MEM_MIB_AGENT_UNSANDBOXED
+    if is_truthy "$webui_enabled"; then
+      agent_cpu=$((agent_cpu + PREFLIGHT_MIN_CPU_MILLIS_DASHBOARD))
+      agent_mem=$((agent_mem + PREFLIGHT_MIN_MEM_MIB_DASHBOARD))
+    fi
+    req_cpu=$((req_cpu + agent_cpu))
+    req_mem=$((req_mem + agent_mem))
+    single_pods_spec="${single_pods_spec},{\"name\":\"unsandboxed agent\",\"cpu\":${agent_cpu},\"mem\":${agent_mem}}"
   fi
 
   if [ "$memory_mode" = "hindsight" ]; then
@@ -2195,17 +2224,23 @@ for name, data in untainted_nodes.items():
     max_single_mem = max(max_single_mem, sched_mem)
 
 # What one more node of each pool would offer: its allocatable less the
-# DaemonSets that land on every node of that pool. Taking the smallest
-# observed node of the pool keeps the estimate on the conservative side of a
-# heterogeneous pool.
+# DaemonSets that land on every node of that pool. CPU and memory are
+# minimised separately, because a pool can mix machine types and the node with
+# the least CPU need not be the node with the least memory -- comparing the
+# pair as a tuple would rank them lexicographically and carry the larger
+# memory figure of the CPU-poorest node into the estimate.
 pool_fresh = {}
 for name, data in untainted_nodes.items():
     pool = data["pool"]
     if not pool:
         continue
-    fresh = (max(0, data["alloc_cpu"] - data["ds_cpu"]), max(0, data["alloc_mem"] - data["ds_mem"]))
-    if pool not in pool_fresh or fresh < pool_fresh[pool]:
-        pool_fresh[pool] = fresh
+    fresh_cpu = max(0, data["alloc_cpu"] - data["ds_cpu"])
+    fresh_mem = max(0, data["alloc_mem"] - data["ds_mem"])
+    if pool not in pool_fresh:
+        pool_fresh[pool] = (fresh_cpu, fresh_mem)
+    else:
+        have_cpu, have_mem = pool_fresh[pool]
+        pool_fresh[pool] = (min(have_cpu, fresh_cpu), min(have_mem, fresh_mem))
 
 headroom_cpu = 0
 headroom_mem = 0
@@ -2287,6 +2322,7 @@ print(json.dumps({
 ' "${tmp_cap_dir}/nodes.json" "${tmp_cap_dir}/pods.json" "$req_cpu" "$req_mem" "$single_pods_spec" "${tmp_cap_dir}/pools.json" "$PREFLIGHT_NODE_POOL_LABEL" "$PREFLIGHT_DAEMONSET_OWNER_KIND" "$install_namespace" "$cert_manager_managed" "$PREFLIGHT_CERT_MANAGER_NAMESPACE" 2>/dev/null || true)"
 
   rm -rf "$tmp_cap_dir"
+  PREFLIGHT_TMP_DIR=""
 
   if [ -z "$eval_result" ]; then
     print_warning "Failed to calculate cluster schedulable capacity; continuing."

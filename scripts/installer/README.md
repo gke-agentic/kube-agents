@@ -38,7 +38,7 @@ their own copies:
 | `DEFAULT_KUBE_AGENTS_STATE_BUCKET`                                        | The `KUBE_AGENTS_STATE_BUCKET` sentinel (`auto`) that derives the state bucket         |
 | `DEFAULT_TF_STATE_BUCKET_SUFFIX` / `DEFAULT_TF_STATE_PREFIX_ROOT`         | The derived bucket `<PROJECT_ID><suffix>` and prefix `<root>/<CLUSTER_NAME>`           |
 | `DEFAULT_REGISTRY_PREFIX`                                                 | Container registry prefix                                                              |
-| `DEFAULT_HELM_TIMEOUT`                                                    | Timeout in seconds for Helm rollouts (`600`)                                           |
+| `DEFAULT_HELM_TIMEOUT`                                                    | Wait timeout for the `cert_manager` and `kube_agents` releases (`600`s, range 540-899) |
 | `default_model_for_provider <provider>`                                   | The default model for a provider                                                       |
 | `is_valid_model_provider <provider>`                                      | Accepted providers: `gemini`, `vertex_ai`, `anthropic`, `openai`                       |
 | `is_valid_permission_set <set>`                                           | Accepted GCP IAM permission sets: `read-only`, `custom`                                |

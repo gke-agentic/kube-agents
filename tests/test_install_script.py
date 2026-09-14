@@ -33,6 +33,14 @@ from tests.testing.release import (
     create_mock_release_bundle_marker,
 )
 
+# The window terraform/examples/full-install/variables.tf admits for the
+# helm_timeout variable, read from the HCL. install.sh validates --helm-timeout
+# against its own copy of those bounds and then writes the value into that
+# variable, so the two have to agree; borrowing the reader rather than adding a
+# second HCL parser keeps one place that knows how the validation block is
+# shaped.
+from tests.test_hindsight_probes import _gate_bounds_seconds as terraform_gate_bounds_seconds
+
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _INSTALL_SH = _REPO_ROOT / "install.sh"
 _INSTALLER_COMMON = _REPO_ROOT / "scripts" / "installer" / "installer_common.sh"
@@ -4508,7 +4516,12 @@ exit 0
 """)
             kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
             log_file = pathlib.Path(tmp) / "prov.log"
-            log_file.write_text("Error: context deadline exceeded\\n")
+            log_file.write_text(
+                "Error: context deadline exceeded\n"
+                "\n"
+                "  with helm_release.kube_agents,\n"
+                '  on main.tf line 497, in resource "helm_release" "kube_agents":\n'
+            )
             body = f"""
 diagnose_rollout_failure "{log_file}"
 """
@@ -4518,6 +4531,36 @@ diagnose_rollout_failure "{log_file}"
             self.assertIn("litellm-abc", proc.stdout)
             self.assertIn("Insufficient cpu", proc.stdout)
 
+    def test_diagnose_rollout_failure_ignores_a_timeout_from_another_provider(self):
+        # "context deadline exceeded" and "timed out waiting" are not Helm's.
+        # The Google provider prints both for its own long API calls, so a
+        # cluster creation that ran out of time carries the same phrase. What
+        # separates them is the resource terraform attributes the error to.
+        # Without this the diagnoser announces a Helm rollout failure and then
+        # queries a cluster the apply never finished building.
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = pathlib.Path(tmp) / "bin"
+            bin_dir.mkdir()
+            kubectl = bin_dir / "kubectl"
+            kubectl.write_text("""#!/usr/bin/env bash
+echo "kubectl should not have been called" >&2
+exit 1
+""")
+            kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
+            log_file = pathlib.Path(tmp) / "prov.log"
+            log_file.write_text(
+                "Error: timed out waiting for the condition\n"
+                "\n"
+                "  with google_container_cluster.primary,\n"
+                '  on main.tf line 120, in resource "google_container_cluster" "primary":\n'
+            )
+            body = f"""
+diagnose_rollout_failure "{log_file}"
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+            self.assertNotIn("Helm rollout timed out", proc.stdout)
+            self.assertNotIn("kubectl should not have been called", proc.stderr)
 
     def test_helm_timeout_rejects_non_positive_integers(self):
         # Drives install.sh's own validator. The previous version of this test
@@ -4557,6 +4600,45 @@ diagnose_rollout_failure "{log_file}"
                     f"install.sh: expected --helm-timeout='{valid_val}' to be accepted, "
                     f"stdout: {proc.stdout} stderr: {proc.stderr}",
                 )
+
+    def test_the_installer_window_is_the_terraform_variable_window(self):
+        # install.sh validates --helm-timeout and then writes the value into
+        # the full-install composition's helm_timeout variable, whose own
+        # validation block repeats the bounds. Nothing holds the two copies
+        # together. Raise one and miss the other and the installer accepts a
+        # value terraform rejects -- which surfaces at apply, after the
+        # tfvars are written and the cluster has been mutated. The three tests
+        # above pin the installer's behaviour to literals; this one pins those
+        # literals to the file they have to agree with.
+        bounds = terraform_gate_bounds_seconds()
+        self.assertIsNotNone(
+            bounds,
+            "the helm_timeout tfvar lost its validation block, so the installer's "
+            "window is the only check on a value terraform will still accept",
+        )
+        floor, ceiling = bounds
+        for value, accepted in (
+            (floor - 1, False),
+            (floor, True),
+            (ceiling, True),
+            (ceiling + 1, False),
+        ):
+            with self.subTest(value=value, accepted=accepted):
+                proc = self._run_cmd(f'validate_helm_timeout "{value}"')
+                if accepted:
+                    self.assertEqual(
+                        proc.returncode,
+                        0,
+                        f"terraform admits --helm-timeout={value} and install.sh "
+                        f"rejects it: {proc.stdout} {proc.stderr}",
+                    )
+                else:
+                    self.assertNotEqual(
+                        proc.returncode,
+                        0,
+                        f"install.sh accepts --helm-timeout={value}, which the "
+                        "helm_timeout variable's validation block rejects at apply",
+                    )
 
     def test_capacity_preflight_failure_aborts_a_non_interactive_run(self):
         body = """
@@ -4934,7 +5016,12 @@ exit 0
 """)
             kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
             log_file = pathlib.Path(tmp) / "prov.log"
-            log_file.write_text("Error: timed out waiting for the condition\\n")
+            log_file.write_text(
+                "Error: timed out waiting for the condition\n"
+                "\n"
+                "  with helm_release.cert_manager,\n"
+                '  on main.tf line 450, in resource "helm_release" "cert_manager":\n'
+            )
             body = f"""
 diagnose_rollout_failure "{log_file}"
 """
@@ -4945,13 +5032,105 @@ diagnose_rollout_failure "{log_file}"
             self.assertIn("agent-gateway-xyz", proc.stdout)
             self.assertIn("CrashLoopBackOff", proc.stdout)
 
-    def test_monitor_lifecycle_rollout_passes_dns_flag_on_context_mismatch(self):
-        source = _INSTALL_SH.read_text()
-        self.assertIn("gke_dns_endpoint_flag", source)
-        self.assertIn(
-            'gcloud container clusters get-credentials "${CLUSTER_NAME:-$DEFAULT_CLUSTER_NAME}" \\\n            --location "${REGION:-$DEFAULT_REGION}" --project "${PROJECT_ID:-}" $gke_dns_flag',
-            source,
-        )
+    def _monitor_bin_dir(self, tmp, current_context, gcloud_log):
+        """Stubs that let monitor_lifecycle_rollout run to completion.
+
+        `sleep` is the loop's clock and its exit status is the loop's only
+        break: `wait` on it failing is what ends the while. Stubbing it to
+        succeed once and fail once therefore runs exactly one poll and
+        returns, with no background job to reap and no real 20s wait.
+        """
+        bin_dir = pathlib.Path(tmp) / "bin"
+        bin_dir.mkdir()
+        counter = pathlib.Path(tmp) / "sleep.count"
+        sleep_stub = bin_dir / "sleep"
+        sleep_stub.write_text(f"""#!/usr/bin/env bash
+n=$(cat "{counter}" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > "{counter}"
+[ "$n" -lt 2 ]
+""")
+        kubectl = bin_dir / "kubectl"
+        kubectl.write_text(f"""#!/usr/bin/env bash
+case "$*" in
+  *current-context*) echo "{current_context}" ;;
+  *) echo "" ;;
+esac
+exit 0
+""")
+        gcloud = bin_dir / "gcloud"
+        gcloud.write_text(f"""#!/usr/bin/env bash
+echo "$@" >> "{gcloud_log}"
+exit 0
+""")
+        for stub in (sleep_stub, kubectl, gcloud):
+            stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+        return bin_dir
+
+    def test_monitor_fetches_credentials_once_with_the_dns_flag_on_a_mismatch(self):
+        # The monitor is diagnostic and runs against a cluster whose context
+        # the operator may not be on. It reclaims the context at most once --
+        # per-poll would rewrite their kubeconfig every 20s for the length of
+        # the apply -- and it has to carry the DNS-endpoint flag, without
+        # which get-credentials fails on a cluster with no public endpoint.
+        with tempfile.TemporaryDirectory() as tmp:
+            gcloud_log = pathlib.Path(tmp) / "gcloud.log"
+            bin_dir = self._monitor_bin_dir(tmp, "gke_other_proj_us-west1_other", gcloud_log)
+            body = """
+gke_dns_endpoint_flag() { GKE_DNS_ENDPOINT_FLAG="--dns-endpoint"; }
+PROJECT_ID=proj REGION=us-central1 CLUSTER_NAME=target TFVARS_CREATE_CLUSTER=false \\
+  monitor_lifecycle_rollout
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+            calls = [
+                line
+                for line in gcloud_log.read_text().splitlines()
+                if "get-credentials" in line
+            ]
+            self.assertEqual(
+                len(calls), 1, f"expected one get-credentials attempt, got: {calls}"
+            )
+            self.assertIn("--dns-endpoint", calls[0])
+            self.assertIn("target", calls[0])
+
+    def test_monitor_does_not_touch_the_kubeconfig_while_the_cluster_is_being_built(self):
+        # On a create-cluster run the context cannot match until terraform has
+        # built the cluster, so every fetch is churn ending in a silent
+        # context switch the operator did not ask for.
+        with tempfile.TemporaryDirectory() as tmp:
+            gcloud_log = pathlib.Path(tmp) / "gcloud.log"
+            gcloud_log.write_text("")
+            bin_dir = self._monitor_bin_dir(tmp, "gke_other_proj_us-west1_other", gcloud_log)
+            body = """
+gke_dns_endpoint_flag() { GKE_DNS_ENDPOINT_FLAG="--dns-endpoint"; }
+PROJECT_ID=proj REGION=us-central1 CLUSTER_NAME=target TFVARS_CREATE_CLUSTER=true \\
+  monitor_lifecycle_rollout
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+            self.assertNotIn("get-credentials", gcloud_log.read_text())
+
+    def test_monitor_survives_set_u_with_the_cluster_coordinates_unset(self):
+        # It runs as a background job under `set -u`, and `set -E` carries the
+        # ERR trap into it: dereferencing an unset PROJECT_ID here would not
+        # just lose the monitor, it would run on_error and write a FAILED
+        # install report while the apply was still healthy.
+        with tempfile.TemporaryDirectory() as tmp:
+            gcloud_log = pathlib.Path(tmp) / "gcloud.log"
+            gcloud_log.write_text("")
+            bin_dir = self._monitor_bin_dir(tmp, "gke_other_proj_us-west1_other", gcloud_log)
+            body = """
+set -uE
+unset PROJECT_ID REGION CLUSTER_NAME
+on_error() { echo "ON_ERROR_RAN"; }
+monitor_lifecycle_rollout
+echo "MONITOR_RETURNED"
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            self.assertIn("MONITOR_RETURNED", proc.stdout)
+            self.assertNotIn("ON_ERROR_RAN", proc.stdout)
+            self.assertNotIn("unbound variable", proc.stderr)
 
     def test_install_script_source_only_re_source_is_safe(self):
         script = f"""
@@ -5094,7 +5273,12 @@ exit 0
 """)
             kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
             log_file = pathlib.Path(tmp) / "prov.log"
-            log_file.write_text("Error: context deadline exceeded\n")
+            log_file.write_text(
+                "Error: context deadline exceeded\n"
+                "\n"
+                "  with helm_release.kube_agents,\n"
+                '  on main.tf line 497, in resource "helm_release" "kube_agents":\n'
+            )
             body = f"""
 PROJECT_ID="target-proj" REGION="us-central1" CLUSTER_NAME="target-cluster" diagnose_rollout_failure "{log_file}"
 """
@@ -5104,7 +5288,62 @@ PROJECT_ID="target-proj" REGION="us-central1" CLUSTER_NAME="target-cluster" diag
             self.assertNotIn("foreign-pod-should-not-be-printed", proc.stdout)
             self.assertNotIn("Helm rollout timed out waiting for Kubernetes workloads", proc.stdout)
 
+    def _main_body(self):
+        """main() as bash parsed it, not as the file spells it.
+
+        `declare -f` prints the function from the shell's own parse tree, so
+        comments are gone and indentation is bash's. A test that reads
+        install.sh with open() instead is asserting the formatting of the file
+        and goes red on a reflow that changed nothing.
+        """
+        proc = self._run_cmd("declare -f main")
+        self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+        return proc.stdout
+
+    def test_main_runs_the_capacity_preflight_before_it_applies(self):
+        # Nothing else fails if the call is deleted: every other test in this
+        # class drives enforce_capacity_preflight directly. Ordering is the
+        # point of the check -- a preflight that runs after the apply has
+        # started reports a deficit the install already committed to.
+        body = self._main_body()
+        self.assertIn(
+            "enforce_capacity_preflight",
+            body,
+            "main() no longer runs the capacity preflight, so an adopted cluster "
+            "without room for the workloads is only found at rollout",
+        )
+        self.assertLess(
+            body.index("enforce_capacity_preflight"),
+            body.index("run_lifecycle_apply"),
+            "the capacity preflight has to run before the apply it is meant to "
+            "stop, not after it",
+        )
+
+    def test_main_passes_the_preflight_the_shape_it_checks(self):
+        # The eight arguments decide what gets sized: gvisor moves the agent
+        # pod off the untainted nodes, the memory mode adds hindsight, the
+        # webui flag adds the dashboard sidecar, and the gitops pair adds the
+        # minter. Swap two and the check runs against a cluster shape no
+        # install will produce, passes, and the rollout is what finds out.
+        self.assertRegex(
+            self._main_body(),
+            r'enforce_capacity_preflight\s+"\$cluster_name"\s+"\$region"\s+'
+            r'"\$project_id"\s+"\$enable_gvisor"\s+"\$memory_mode"\s+'
+            r'"\$PARAM_ENABLE_WEBUI"\s+"\$github_org"\s+"\$github_repo"',
+        )
+
+    def test_main_treats_a_declined_capacity_prompt_as_a_pause(self):
+        # The operator said no. That is a choice, not a fault: exiting
+        # non-zero would have the wrapper that ran install.sh report a failed
+        # install and, in CI, fail the job.
+        body = self._main_body()
+        self.assertRegex(
+            body,
+            r'"\$CAPACITY_PREFLIGHT_RC_PAUSED"\)\s*\n?\s*exit 0',
+            "main() must map the declined-prompt status to exit 0; "
+            f"got: {body[body.find('enforce_capacity_preflight'):][:400]}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
-
