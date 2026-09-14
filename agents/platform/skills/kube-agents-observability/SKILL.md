@@ -176,10 +176,16 @@ To list recent traces or analyze span latency distributions to locate performanc
   ```bash
   kubectl get service platform-agent -n kubeagents-system -o yaml
   ```
-- Forward agent ports locally to test web UI or API access:
+- Probe the dashboard listener from inside the pod, not over `kubectl port-forward`. The dashboard
+  binds `127.0.0.1`, and on a GKE Sandbox (gVisor) node pool — the install default — a port-forward
+  lands in the host-side netns and never reaches the sandbox's listener, so it reports a refusal
+  whatever the dashboard is doing:
   ```bash
-  kubectl port-forward svc/<agent-service-name> -n kubeagents-system 9119:9119
+  kubectl exec <pod-name> -c <agent-container-name> -n kubeagents-system -- \
+    curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:9119
   ```
+- For a browser session against the dashboard, use `scripts/hermes-dashboard-tunnel.py` from a
+  repository checkout; it relays through `kubectl exec`, which does enter the sandbox.
 
 ### 2. Inspect Persistent Internal State & Memory
 
