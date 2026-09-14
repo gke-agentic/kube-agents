@@ -14,7 +14,12 @@ Prefer declarative IaC over the interview? Apply the same composition by hand wi
   If you're starting from a fresh project, the installer creates the GKE cluster
   for you. You do **not** need to pre-install
   [cert-manager](/kube-agents/install/prerequisites/#cert-manager-on-the-target-cluster)
-  — the composition installs it automatically if it isn't already present.
+  — the composition installs it automatically if it isn't already present. If
+  you plan to connect a GitOps repository for automated PRs
+  (`submit-suggestion`), the GitHub App and Cloud KMS key should be
+  pre-provisioned Ahead-Of-Time (AOT) — see
+  [Prerequisites](/kube-agents/install/prerequisites/#gitops-repo--github-token-minter-for-submit-suggestion)
+  and [Token minter](/kube-agents/deploy/token-minter/).
 </Aside>
 
 ## Run the Zero-Friction One-Liner Installer
@@ -117,6 +122,7 @@ Changing your mind later is the same engine: running the installer with `--menu`
 - `--enable-network-policy` — authorizes enabling the legacy Calico NetworkPolicy addon and node enforcement when adopting a GKE Standard cluster without Dataplane V2 (may recreate nodes and restart workloads; required on such clusters, else the install aborts).
 - `--gvisor=false` — runs the agent on the standard container runtime. The default is `true`: the agent executes model-authored commands, so it runs under the `gvisor` RuntimeClass unless you say otherwise. Autopilot, the default shape, ships that RuntimeClass and needs no node pool, from GKE 1.27.4-gke.800 onwards — the installer stops before applying anything if an Autopilot cluster it is adopting is older than that. On a Standard cluster the sandbox needs a node pool of its own, which the run provisions (the `gke-cluster` module's `enable_gvisor_node_pool`).
 - `--enable-google-chat` — provisions the Google Chat Pub/Sub backend and enables the CR's `googleChat` integration.
+- `--gitops-org=ORG`, `--gitops-repo=REPO`, `--github-app-id=ID`, `--github-pem-path=PATH` — configures GitOps PR automation via the in-cluster GitHub token minter (Minty). When `--github-pem-path` is provided, `install.sh` imports the private key into Cloud KMS during install; alternatively, pre-provision the key AOT beforehand (see [Token minter](/kube-agents/deploy/token-minter/)).
 - `--memory=file|hindsight|off` — the agent's long-term memory store; `hindsight` deploys the Hindsight API and Postgres into the cluster.
 
 Run the installer with `--help` (e.g. `./install.sh --help`) for the full list.

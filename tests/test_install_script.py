@@ -708,6 +708,101 @@ out_dir=""; acquire_source_repo out_dir "{requested_ref}"; echo "RESOLVED=$out_d
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("LOC=us-east4", proc.stdout)
 
+    def test_parse_args_github_minter_flags(self):
+        cmd = (
+            'parse_args --github-app-id=123456 --github-pem-path=/tmp/app.pem '
+            '--kms-keyring=custom-keyring --kms-key=custom-key; '
+            'echo "APP_ID=$PARAM_GITHUB_APP_ID PEM=$PARAM_GITHUB_PEM_PATH '
+            'KEYRING=$PARAM_KMS_KEYRING KEY=$PARAM_KMS_KEY"'
+        )
+        proc = self._run_install_func(cmd)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn(
+            "APP_ID=123456 PEM=/tmp/app.pem KEYRING=custom-keyring KEY=custom-key",
+            proc.stdout,
+        )
+
+    def test_preflight_rejects_missing_github_pem_path(self):
+        """Preflight must fail fast with an explicit error when --github-pem-path does not exist."""
+        test_env = get_isolated_test_env(
+            overrides={"KUBE_AGENTS_LOCK_FILE": str(self._empty_install_env.parent / "test.lock")}
+        )
+        proc = subprocess.run(
+            ["bash", str(_INSTALL_SH), "--image-tag=0.1.0", "--github-pem-path=/tmp/nonexistent-pem-file-12345.pem"],
+            capture_output=True,
+            text=True,
+            env=test_env,
+            cwd=str(_REPO_ROOT),
+        )
+        self.assertEqual(proc.returncode, 1, f"Expected exit code 1, got {proc.returncode}:\n{proc.stdout}\n{proc.stderr}")
+        combined = proc.stdout + proc.stderr
+        self.assertIn("GitHub App private key PEM file does not exist", combined)
+
+    def test_preflight_rejects_directory_github_pem_path(self):
+        """Preflight must fail fast when --github-pem-path is a directory instead of a file."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            test_env = get_isolated_test_env(
+                overrides={"KUBE_AGENTS_LOCK_FILE": str(self._empty_install_env.parent / "test.lock")}
+            )
+            proc = subprocess.run(
+                ["bash", str(_INSTALL_SH), "--image-tag=0.1.0", f"--github-pem-path={tmp_dir}"],
+                capture_output=True,
+                text=True,
+                env=test_env,
+                cwd=str(_REPO_ROOT),
+            )
+            self.assertEqual(proc.returncode, 1, f"Expected exit code 1, got {proc.returncode}:\n{proc.stdout}\n{proc.stderr}")
+            combined = proc.stdout + proc.stderr
+            self.assertIn("not a regular file", combined)
+
+    def test_validate_non_interactive_minter_config(self):
+        """validate_non_interactive_minter_config enforces intent-driven validation."""
+        # 1. No App ID and no PEM path -> succeeds (optional feature omitted)
+        cmd1 = f'{_SOURCE_INSTALLER_COMMON}validate_non_interactive_minter_config "" "" "ring" "key" "us-central1" "p1" ""'
+        proc1 = self._run_install_func(cmd1)
+        self.assertEqual(proc1.returncode, 0, proc1.stderr)
+
+        # 2. PEM path provided, but App ID is missing -> fails fast
+        cmd2 = f'{_SOURCE_INSTALLER_COMMON}validate_non_interactive_minter_config "" "/tmp/key.pem" "ring" "key" "us-central1" "p1" "my-org"'
+        proc2 = self._run_install_func(cmd2)
+        self.assertEqual(proc2.returncode, 1, proc2.stderr)
+        self.assertIn("--github-pem-path was provided, but --github-app-id is missing", proc2.stdout + proc2.stderr)
+
+        # 3. App ID provided, but GitOps organization is missing -> fails fast
+        cmd3 = f'{_SOURCE_INSTALLER_COMMON}validate_non_interactive_minter_config "12345" "" "ring" "key" "us-central1" "p1" ""'
+        proc3 = self._run_install_func(cmd3)
+        self.assertEqual(proc3.returncode, 1, proc3.stderr)
+        self.assertIn("provided in non-interactive mode, but --gitops-org is missing", proc3.stdout + proc3.stderr)
+
+        # 4. App ID provided with org, but no KMS key and no PEM path -> fails fast
+        cmd4 = (
+            f'{_SOURCE_INSTALLER_COMMON}'
+            'kms_key_enabled_version() { echo ""; }; '
+            'validate_non_interactive_minter_config "12345" "" "ring" "key" "us-central1" "p1" "my-org"'
+        )
+        proc4 = self._run_install_func(cmd4)
+        self.assertEqual(proc4.returncode, 1, proc4.stderr)
+        self.assertIn("provided in non-interactive mode, but no ENABLED KMS key exists", proc4.stdout + proc4.stderr)
+
+        # 5. App ID provided with org and existing KMS key version (AOT path) -> succeeds
+        cmd5 = (
+            f'{_SOURCE_INSTALLER_COMMON}'
+            'kms_key_enabled_version() { echo "1"; }; '
+            'validate_non_interactive_minter_config "12345" "" "ring" "key" "us-central1" "p1" "my-org"'
+        )
+        proc5 = self._run_install_func(cmd5)
+        self.assertEqual(proc5.returncode, 0, proc5.stderr)
+
+        # 6. App ID provided with org and valid PEM file path (automated path) -> succeeds
+        with tempfile.NamedTemporaryFile() as tf:
+            cmd6 = (
+                f'{_SOURCE_INSTALLER_COMMON}'
+                'kms_key_enabled_version() { echo ""; }; '
+                f'validate_non_interactive_minter_config "12345" "{tf.name}" "ring" "key" "us-central1" "p1" "my-org"'
+            )
+            proc6 = self._run_install_func(cmd6)
+            self.assertEqual(proc6.returncode, 0, proc6.stderr)
+
     def test_parse_args_migrate_node_pools(self):
         cmd = 'parse_args --migrate-node-pools; echo "MIGRATE=$PARAM_MIGRATE_NODE_POOLS"'
         proc = self._run_install_func(cmd)
@@ -3715,6 +3810,35 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
             self.assertIn("installed successfully", proc.stdout)
             logged = log_file.read_text()
             self.assertIn("gcloud components install gke-gcloud-auth-plugin -q", logged)
+
+    def test_auto_install_go_via_brew(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            bin_dir = create_minimal_tools_bin(tmp_path)
+            log_file = tmp_path / "calls.log"
+
+            go_path = bin_dir / "go"
+            brew_bin = bin_dir / "brew"
+            brew_bin.write_text(
+                f"#!/bin/bash\n"
+                f"printf 'brew %s\\n' \"$*\" >> '{log_file}'\n"
+                f"if [ \"$1\" = \"install\" ] && [ \"$2\" = \"go\" ]; then\n"
+                f"  printf '#!/bin/bash\\nexit 0\\n' > '{go_path}'\n"
+                f"  chmod +x '{go_path}'\n"
+                f"fi\n"
+                f"exit 0\n"
+            )
+            brew_bin.chmod(brew_bin.stat().st_mode | stat.S_IEXEC)
+
+            proc = self._run_func(
+                "PARAM_NON_INTERACTIVE=true auto_install_tool go",
+                bin_dir=str(bin_dir),
+                strict_path=True,
+            )
+            self.assertEqual(proc.returncode, 0, f"Failed: {proc.stdout}\n{proc.stderr}")
+            self.assertIn("installed successfully", proc.stdout)
+            logged = log_file.read_text()
+            self.assertIn("brew install go", logged)
 
     def test_auto_install_fails_when_tool_remains_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
