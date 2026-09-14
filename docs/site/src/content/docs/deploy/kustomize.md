@@ -133,7 +133,7 @@ spec:
   type: ClusterIP
 ```
 
-The `app.kubernetes.io/*` labels follow the project-wide contract that makes the whole kube-agents footprint selectable in one query — [Resource labels](/kube-agents/reference/resource-labels/) is canonical for what each key means and why `component` and `version` are absent. The `selector` matches what the operator labels its gateway pods, `<agent-name>-gateway`, for an agent named `platform-agent` — the name the rest of this overlay assumes.
+The `app.kubernetes.io/*` labels follow the project-wide contract that makes the whole kube-agents footprint selectable in one query — [Resource labels](/kube-agents/reference/resource-labels/) is canonical for what each key means and why `component` and `version` are absent. The `selector` matches what the operator labels its gateway pods, `<agent-name>-gateway`. It is the one object in this overlay that depends on the agent being named `platform-agent`: the NetworkPolicies beside it select `app.kubernetes.io/name`, which the operator stamps as a constant whatever the CR is called. Rename the agent and this Service needs the same edit; they do not.
 
 The exposed ports:
 

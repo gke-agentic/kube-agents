@@ -23,9 +23,10 @@ _ROOT = pathlib.Path(__file__).resolve().parents[1]
 _SERVICE_YAML = _ROOT / "deploy" / "kustomize" / "platform" / "service.yaml"
 _MANIFESTS_GO = _ROOT / "k8s-operator" / "internal" / "controller" / "platformagent_manifests.go"
 
-# The agent name the whole overlay is written for: the Service's own metadata.name,
-# and the podSelector every NetworkPolicy beside it uses. The operator derives the
-# gateway pod label from the CR name, so the manifest can only be correct for one.
+# The agent name this manifest is written for: the Service's own metadata.name, and the
+# CR name the operator derives the gateway pod label from. The NetworkPolicies beside it
+# select `app.kubernetes.io/name`, a constant, so the Service is the only object in the
+# overlay this name binds -- and it can only be correct for one.
 _AGENT_NAME = "platform-agent"
 _GATEWAY_LABEL_SUFFIX = "-gateway"
 

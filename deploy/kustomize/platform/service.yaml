@@ -9,9 +9,11 @@ metadata:
     app.kubernetes.io/part-of: kube-agents
     app.kubernetes.io/managed-by: kustomize
 spec:
-  # The operator derives this from the CR name (`<name>-gateway`), and every object in this
-  # overlay assumes that name is `platform-agent`. A Service selecting `app: platform-agent`
-  # matches no pod on any install.
+  # The operator labels gateway pods `<CR name>-gateway`, so this is the one object in the
+  # overlay that depends on the agent being named `platform-agent`: the NetworkPolicies beside
+  # it select `app.kubernetes.io/name`, which the operator stamps as the constant
+  # `platform-agent` whatever the CR is called. Rename the agent and this line needs the same
+  # rename; they do not. `app: platform-agent` -- what this was -- matches no pod on any install.
   selector:
     app: platform-agent-gateway
   ports:

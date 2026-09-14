@@ -79,7 +79,7 @@ To determine which users have interacted with the system via Google Chat in the 
 
 - Query Kubernetes metrics API to verify resource usage of the agent pods:
   ```bash
-  kubectl top pod -l app=<agent-name> -n kubeagents-system
+  kubectl top pod -l app=<agent-name>-gateway -n kubeagents-system
   ```
 
 ### 3. Check Token Usage (Last 24h)
@@ -170,11 +170,11 @@ To list recent traces or analyze span latency distributions to locate performanc
 
 - Verify pod running status and details:
   ```bash
-  kubectl get pods -n kubeagents-system -l app=<agent-name> -o wide
+  kubectl get pods -n kubeagents-system -l app=<agent-name>-gateway -o wide
   ```
-- Inspect Service configurations for the API port (`8642`) and Dashboard port (`9119`):
+- Inspect Service configurations for the API port (`8642`, which targets the credential proxy on `8643`) and Dashboard port (`9119`):
   ```bash
-  kubectl get service platform-agent -n kubeagents-system -o yaml
+  kubectl get service <agent-name> -n kubeagents-system -o yaml
   ```
 - Probe the dashboard listener from inside the pod, not over `kubectl port-forward`. The dashboard
   binds `127.0.0.1`, and on a GKE Sandbox (gVisor) node pool — the install default — a port-forward
