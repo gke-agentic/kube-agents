@@ -4953,6 +4953,157 @@ diagnose_rollout_failure "{log_file}"
             source,
         )
 
+    def test_install_script_source_only_re_source_is_safe(self):
+        script = f"""
+set -e
+KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
+KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
+echo "SOURCE_OK"
+"""
+        proc = self._run_cmd(script)
+        self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+        self.assertIn("SOURCE_OK", proc.stdout)
+
+    def test_preflight_ignores_pods_in_install_namespace_and_cert_manager(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = pathlib.Path(tmp) / "bin"
+            bin_dir.mkdir()
+            nodes_json = json.dumps({
+                "items": [{
+                    "metadata": {"name": "node-1"},
+                    "spec": {"taints": []},
+                    "status": {"allocatable": {"cpu": "1000m", "memory": "2Gi"}},
+                }]
+            })
+            pods_json = json.dumps({
+                "items": [
+                    {
+                        "metadata": {"name": "tenant-pod", "namespace": "default"},
+                        "spec": {
+                            "nodeName": "node-1",
+                            "containers": [{"resources": {"requests": {"cpu": "600m", "memory": "500Mi"}}}],
+                        },
+                    },
+                    {
+                        "metadata": {"name": "existing-agent-pod", "namespace": "kubeagents-system"},
+                        "spec": {
+                            "nodeName": "node-1",
+                            "containers": [{"resources": {"requests": {"cpu": "240m", "memory": "500Mi"}}}],
+                        },
+                    },
+                ]
+            })
+            kubectl = bin_dir / "kubectl"
+            kubectl.write_text(f"""#!/usr/bin/env bash
+case "$*" in
+  *nodes*-o*json*) cat << 'EOF'
+{nodes_json}
+EOF
+  ;;
+  *pods*-o*json*) cat << 'EOF'
+{pods_json}
+EOF
+  ;;
+esac
+exit 0
+""")
+            kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
+            body = f"""
+{_SOURCE_INSTALLER_COMMON}
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj" "true"
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 0, f"Expected preflight to pass by ignoring existing install namespace pods, stdout: {proc.stdout}\nstderr: {proc.stderr}")
+            self.assertIn("Cluster capacity preflight check passed", proc.stdout)
+
+    def test_preflight_cert_manager_ignored_when_managed_counted_when_unmanaged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = pathlib.Path(tmp) / "bin"
+            bin_dir.mkdir()
+            nodes_json = json.dumps({
+                "items": [{
+                    "metadata": {"name": "node-1"},
+                    "spec": {"taints": []},
+                    "status": {"allocatable": {"cpu": "1000m", "memory": "2Gi"}},
+                }]
+            })
+            pods_json = json.dumps({
+                "items": [
+                    {
+                        "metadata": {"name": "tenant-pod", "namespace": "default"},
+                        "spec": {
+                            "nodeName": "node-1",
+                            "containers": [{"resources": {"requests": {"cpu": "700m", "memory": "500Mi"}}}],
+                        },
+                    },
+                    {
+                        "metadata": {"name": "cert-manager-pod", "namespace": "cert-manager"},
+                        "spec": {
+                            "nodeName": "node-1",
+                            "containers": [{"resources": {"requests": {"cpu": "100m", "memory": "100Mi"}}}],
+                        },
+                    },
+                ]
+            })
+            kubectl = bin_dir / "kubectl"
+            kubectl.write_text(f"""#!/usr/bin/env bash
+case "$*" in
+  *nodes*-o*json*) cat << 'EOF'
+{nodes_json}
+EOF
+  ;;
+  *pods*-o*json*) cat << 'EOF'
+{pods_json}
+EOF
+  ;;
+esac
+exit 0
+""")
+            kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
+
+            # Managed cert-manager: passes because cert-manager pod is ignored and 300m >= 240m
+            body_managed = f"""
+{_SOURCE_INSTALLER_COMMON}
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj" "true" "file" "false" "" "" "true"
+"""
+            proc_managed = self._run_cmd(body_managed, bin_dir=str(bin_dir))
+            self.assertEqual(proc_managed.returncode, 0, f"Managed cert-manager should pass: {proc_managed.stdout}\n{proc_managed.stderr}")
+            self.assertIn("Cluster capacity preflight check passed", proc_managed.stdout)
+
+            # Unmanaged cert-manager: fails because cert-manager pod counts as tenant load (200m < 210m)
+            body_unmanaged = f"""
+{_SOURCE_INSTALLER_COMMON}
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj" "true" "file" "false" "" "" "false"
+"""
+            proc_unmanaged = self._run_cmd(body_unmanaged, bin_dir=str(bin_dir))
+            self.assertEqual(proc_unmanaged.returncode, 1, f"Unmanaged cert-manager should fail: {proc_unmanaged.stdout}\n{proc_unmanaged.stderr}")
+            self.assertIn("Cluster capacity preflight check failed", proc_unmanaged.stdout)
+            self.assertIn("Insufficient schedulable CPU", proc_unmanaged.stdout)
+
+    def test_diagnose_rollout_failure_skips_when_context_mismatches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = pathlib.Path(tmp) / "bin"
+            bin_dir.mkdir()
+            kubectl = bin_dir / "kubectl"
+            kubectl.write_text("""#!/usr/bin/env bash
+case "$*" in
+  *config*current-context*) echo "gke_foreign-proj_foreign-reg_foreign-cluster" ;;
+  *get*pods*) echo "foreign-pod-should-not-be-printed" ;;
+esac
+exit 0
+""")
+            kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
+            log_file = pathlib.Path(tmp) / "prov.log"
+            log_file.write_text("Error: context deadline exceeded\n")
+            body = f"""
+PROJECT_ID="target-proj" REGION="us-central1" CLUSTER_NAME="target-cluster" diagnose_rollout_failure "{log_file}"
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+            self.assertIn("does not match target cluster", proc.stderr + proc.stdout)
+            self.assertNotIn("foreign-pod-should-not-be-printed", proc.stdout)
+            self.assertNotIn("Helm rollout timed out waiting for Kubernetes workloads", proc.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

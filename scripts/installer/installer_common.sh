@@ -128,6 +128,13 @@ readonly PREFLIGHT_MIN_MEM_MIB_AGENT_UNSANDBOXED=2560
 # and the only link from a node back to the pool that owns it.
 readonly PREFLIGHT_NODE_POOL_LABEL="cloud.google.com/gke-nodepool"
 readonly PREFLIGHT_DAEMONSET_OWNER_KIND="DaemonSet"
+# The namespace the install puts cert-manager in when it installs it. The
+# evaluator discounts what is already running there for the same reason it
+# discounts the install's own namespace: on a re-run those pods are the
+# requirement being checked, not load competing with it. When the install does
+# not manage cert-manager (SKIP_CERT_MANAGER), they are a tenant like any other
+# and are counted.
+readonly PREFLIGHT_CERT_MANAGER_NAMESPACE="cert-manager"
 
 # The image tag the generator and the dev prompt fall back to when none was
 # given. Not an install default: every front door rejects it through
@@ -1918,6 +1925,7 @@ check_existing_cluster_capacity_preflight() {
   local gitops_org="${7:-${GITOPS_ORG:-}}"
   local gitops_repo="${8:-${GITOPS_REPO:-}}"
   local enable_cert_manager="${9:-${TFVARS_ENABLE_CERT_MANAGER:-true}}"
+  local install_namespace="${10:-${NAMESPACE:-${DEFAULT_NAMESPACE:-kubeagents-system}}}"
 
   if ! type print_info >/dev/null 2>&1; then
     print_info() { echo "  ℹ $1"; }
@@ -2041,6 +2049,14 @@ check_existing_cluster_capacity_preflight() {
   fi
   single_pods_spec="${single_pods_spec}]"
 
+  # Normalised here rather than inline in the argument list below: the
+  # evaluator compares against the literal "true", and is_truthy accepts more
+  # spellings than that.
+  local cert_manager_managed="false"
+  if is_truthy "$enable_cert_manager"; then
+    cert_manager_managed="true"
+  fi
+
   local eval_result
   eval_result="$(python3 -c '
 import sys, json
@@ -2078,6 +2094,9 @@ try:
         pools = json.load(f)
     pool_label = sys.argv[7]
     daemonset_kind = sys.argv[8]
+    install_ns = sys.argv[9] if len(sys.argv) > 9 else ""
+    cert_manager_managed = (sys.argv[10] == "true") if len(sys.argv) > 10 else False
+    cert_manager_ns = sys.argv[11] if len(sys.argv) > 11 else ""
 except Exception as e:
     print(json.dumps({"error": str(e)}))
     sys.exit(0)
@@ -2115,6 +2134,15 @@ for n in nodes.get("items", []):
 for p in pods.get("items", []):
     node_name = p.get("spec", {}).get("nodeName")
     if node_name not in untainted_nodes:
+        continue
+    # Pods the install owns are the requirement being checked, not load
+    # competing with it: counting them charges a re-run for its own footprint
+    # twice and refuses a cluster that is already running what is being asked
+    # for.
+    ns = (p.get("metadata", {}) or {}).get("namespace", "")
+    if install_ns and ns == install_ns:
+        continue
+    if cert_manager_managed and cert_manager_ns and ns == cert_manager_ns:
         continue
     spec = p.get("spec", {})
     p_cpu = 0
@@ -2256,7 +2284,7 @@ print(json.dumps({
     "autoscale_note": autoscale_note,
     "reason": reason
 }))
-' "${tmp_cap_dir}/nodes.json" "${tmp_cap_dir}/pods.json" "$req_cpu" "$req_mem" "$single_pods_spec" "${tmp_cap_dir}/pools.json" "$PREFLIGHT_NODE_POOL_LABEL" "$PREFLIGHT_DAEMONSET_OWNER_KIND" 2>/dev/null || true)"
+' "${tmp_cap_dir}/nodes.json" "${tmp_cap_dir}/pods.json" "$req_cpu" "$req_mem" "$single_pods_spec" "${tmp_cap_dir}/pools.json" "$PREFLIGHT_NODE_POOL_LABEL" "$PREFLIGHT_DAEMONSET_OWNER_KIND" "$install_namespace" "$cert_manager_managed" "$PREFLIGHT_CERT_MANAGER_NAMESPACE" 2>/dev/null || true)"
 
   rm -rf "$tmp_cap_dir"
 

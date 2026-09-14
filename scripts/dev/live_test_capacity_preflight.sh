@@ -268,7 +268,6 @@ test_start "6. Flag Validation (--helm-timeout & --skip-capacity-check)"
 # stay green with the check in install.sh deleted.
 run_validate_helm_timeout() {
   (
-    KUBE_AGENTS_SOURCE_ONLY=true source "${INSTALL_SH}" >/dev/null 2>&1
     validate_helm_timeout "$1"
   ) >/dev/null 2>&1
 }

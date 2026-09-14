@@ -14,6 +14,11 @@
 
 set -Eeuo pipefail
 
+if [ "${KUBE_AGENTS_SOURCE_ONLY:-false}" = "true" ] && [ -n "${_KUBE_AGENTS_INSTALL_SH_SOURCED:-}" ]; then
+  return 0 2>/dev/null || exit 0
+fi
+_KUBE_AGENTS_INSTALL_SH_SOURCED=1
+
 # ─── Install sources ──────────────────────────────────────────────────────────
 # Where the sources come from when this script runs alone (curl | bash) and
 # where it puts them. upgrade.sh and uninstall.sh carry the same URL for the
@@ -2169,6 +2174,25 @@ diagnose_rollout_failure() {
     return 0
   fi
 
+  # Built here rather than via gke_context_name, which dereferences PROJECT_ID,
+  # REGION and CLUSTER_NAME unguarded: this runs on the main shell under
+  # `set -u`, where an unset one would abort the install in place of reporting
+  # the failure it was called to explain. No PROJECT_ID means no context to
+  # compare against, and the diagnosis proceeds as it did before the gate.
+  local expected_ctx=""
+  if [ -n "${PROJECT_ID:-}" ]; then
+    expected_ctx="gke_${PROJECT_ID}_${REGION:-$DEFAULT_REGION}_${CLUSTER_NAME:-$DEFAULT_CLUSTER_NAME}"
+  fi
+
+  if command -v kubectl >/dev/null 2>&1 && [ -n "$expected_ctx" ]; then
+    local current_ctx=""
+    current_ctx="$(kubectl config current-context 2>/dev/null || true)"
+    if [ -n "$current_ctx" ] && [ "$current_ctx" != "$expected_ctx" ]; then
+      print_warning "kubectl current context ('${current_ctx}') does not match target cluster ('${expected_ctx}'); skipping rollout failure diagnosis."
+      return 0
+    fi
+  fi
+
   print_error "Helm rollout timed out waiting for Kubernetes workloads to become ready."
   print_info "Diagnosing cluster pod states and scheduling events in namespace '${namespace}'..."
 
@@ -2254,9 +2278,13 @@ enforce_capacity_preflight() {
   local enable_webui="$6"
   local github_org="$7"
   local github_repo="$8"
+  local enable_cert_manager="${9:-${TFVARS_ENABLE_CERT_MANAGER:-true}}"
+  local install_namespace="${10:-${NAMESPACE:-${DEFAULT_NAMESPACE:-kubeagents-system}}}"
 
   if check_existing_cluster_capacity_preflight "$cluster_name" "$region" "$project_id" \
-                                               "$enable_gvisor" "$memory_mode" "$enable_webui" "$github_org" "$github_repo"; then
+                                               "$enable_gvisor" "$memory_mode" "$enable_webui" \
+                                               "$github_org" "$github_repo" \
+                                               "$enable_cert_manager" "$install_namespace"; then
     return 0
   fi
 
@@ -2331,8 +2359,6 @@ run_lifecycle_apply() {
         # shellcheck disable=SC2086
         gcloud container clusters get-credentials "${CLUSTER_NAME:-$DEFAULT_CLUSTER_NAME}" \
           --location "${REGION:-$DEFAULT_REGION}" --project "${PROJECT_ID:-}" $gke_dns_flag >/dev/null 2>&1 || true
-      else
-        print_warning "kubectl context is '${current_ctx}', not the install's cluster; leaving it alone and diagnosing with what it can reach."
       fi
     fi
     diagnose_rollout_failure "$log_file"
