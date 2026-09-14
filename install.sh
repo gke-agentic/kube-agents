@@ -1049,7 +1049,7 @@ warn_unrecorded_interview_answers() {
     SLACK_BOT_TOKEN SLACK_APP_TOKEN SLACK_HOME_CHANNEL SLACK_HOME_CHANNEL_NAME \
     CHAT_TOPIC_NAME CHAT_SUB_NAME MODEL_PROVIDER MODEL_DEFAULT_NAME PLATFORM_AGENT_PERMISSION_SET \
     PLATFORM_AGENT_CUSTOM_ROLES ENABLE_GVISOR HERMES_DASHBOARD_ENABLED MEMORY \
-    USER_PROFILE_ENABLED GITOPS_ORG GITOPS_REPO GITHUB_APP_ID GITHUB_PEM_PATH; do
+    USER_PROFILE_ENABLED GITOPS_ORG GITOPS_REPO GITHUB_APP_ID; do
     grep -qE "^[[:space:]]*(export[[:space:]]+)?${key}=" "$file" 2>/dev/null || continue
     recorded="$(recorded_install_env_value "$file" "$key")"
     case "$key" in
@@ -1145,7 +1145,6 @@ bootstrap_install_env_file() {
   write_env_var "$tmp" GITHUB_APP_ID "${GITHUB_APP_ID:-}"
   write_env_var "$tmp" KMS_KEYRING "${KMS_KEYRING:-}"
   write_env_var "$tmp" KMS_KEY "${KMS_KEY:-}"
-  write_env_var "$tmp" GITHUB_PEM_PATH "${GITHUB_PEM_PATH:-}"
   write_env_var "$tmp" MEMORY "$PARAM_MEMORY"
   write_env_var "$tmp" USER_PROFILE_ENABLED "${USER_PROFILE_ENABLED:-$DEFAULT_USER_PROFILE_ENABLED}"
   write_env_var "$tmp" HERMES_DASHBOARD_ENABLED "${HERMES_DASHBOARD_ENABLED:-$DEFAULT_ENABLE_WEBUI}"
@@ -1881,9 +1880,9 @@ auto_install_tool() {
           sudo apt-get install -y gke-gcloud-auth-plugin 2>/dev/null || \
           (command -v gcloud >/dev/null 2>&1 && gcloud components install gke-gcloud-auth-plugin -q) || true
       elif [ "$tool" = "go" ]; then
-        sudo apt-get update
-        if ! sudo apt-get install -y golang-go; then
-          sudo apt-get install -y golang
+        sudo apt-get update >/dev/null 2>&1 || true
+        if ! sudo apt-get install -y golang-go 2>/dev/null; then
+          sudo apt-get install -y golang 2>/dev/null || true
         fi
       else
         sudo apt-get update >/dev/null 2>&1 || true
@@ -2639,15 +2638,20 @@ validate_non_interactive_minter_config() {
     return 1
   fi
 
+  local kms_loc existing_kms_ver=""
+  kms_loc="$(derive_kms_location "$region")"
+  existing_kms_ver="$(kms_key_enabled_version "$key" "$keyring" "$kms_loc" "$project_id" 2>/dev/null || echo "")"
+
+  if [ -n "$existing_kms_ver" ]; then
+    return 0
+  fi
+
   if [ -n "$pem_path" ] && [ ! -f "$pem_path" ]; then
     print_error "GitHub App private key PEM file does not exist or is not a regular file: '${pem_path}'."
     return 1
   fi
 
-  local kms_loc existing_kms_ver=""
-  kms_loc="$(derive_kms_location "$region")"
-  existing_kms_ver="$(kms_key_enabled_version "$key" "$keyring" "$kms_loc" "$project_id" 2>/dev/null || echo "")"
-  if [ -z "$existing_kms_ver" ] && [ -z "$pem_path" ]; then
+  if [ -z "$pem_path" ]; then
     print_error "GitHub App ID ('${app_id}') was provided in non-interactive mode, but no ENABLED KMS key exists in ${keyring}/${key} and no --github-pem-path was provided."
     print_info "To enable the token minter, provide --github-pem-path=<path-to-pem> for automated import, or pre-import the private key into Cloud KMS (AOT)."
     print_info "To install without the token minter, omit --github-app-id."
@@ -2763,8 +2767,8 @@ apply_managed_otel_scope() {
 # One-shot import of the GitHub App private key into the minter's KMS signing
 # key, via the Minty CLI. The PEM never enters Terraform state — that is why
 # this is not a Terraform resource. Skipped when a key version is already
-# ENABLED (the import happened on an earlier run) and downgraded to printed
-# instructions when Go is unavailable.
+# ENABLED (the import happened on an earlier run), downgraded to printed
+# instructions when no PEM is provided, and auto-installs Go if missing.
 import_github_pem() {
   local project_id="$1" region="$2"
   [ -n "${GITOPS_ORG:-}" ] && [ -n "${GITOPS_REPO:-}" ] && [ -n "${GITHUB_APP_ID:-}" ] || return 0
@@ -2792,13 +2796,8 @@ import_github_pem() {
     return 0
   fi
   if ! command -v go >/dev/null 2>&1; then
+    print_info "Go is required to build the Minty CLI for initial private key import into Cloud KMS."
     auto_install_tool "go"
-  fi
-  if ! command -v go >/dev/null 2>&1; then
-    print_error "Go is required to import the GitHub App private key via Minty CLI, but is not installed."
-    print_info "Install Go (1.27+) or import the key manually into Cloud KMS before running the installer."
-    print_info "Upstream guide: https://github.com/abcxyz/github-token-minter"
-    return 1
   fi
   # The ring and key normally come from Terraform, but this import runs
   # BEFORE the apply — the minter Deployment cannot pass readiness without an
@@ -3139,7 +3138,6 @@ run_menu_system() {
         save_env_var GITHUB_APP_ID "$github_app_id"
         save_env_var KMS_KEYRING "$kms_keyring"
         save_env_var KMS_KEY "$kms_key"
-        save_env_var GITHUB_PEM_PATH "$github_pem_path"
         print_success "Updated configuration saved to: $INSTALL_ENV_FILE"
 
         # One engine for every kind of change: a full terraform apply
@@ -3203,16 +3201,30 @@ main() {
   if [ -n "$PARAM_GITHUB_PEM_PATH" ]; then
     PARAM_GITHUB_PEM_PATH="${PARAM_GITHUB_PEM_PATH/#\~/$HOME}"
     if [ ! -e "$PARAM_GITHUB_PEM_PATH" ]; then
-      print_error "GitHub App private key PEM file does not exist: '${PARAM_GITHUB_PEM_PATH}'."
-      exit 1
+      local kms_loc keyring key enabled_ver=""
+      keyring="${PARAM_KMS_KEYRING:-$DEFAULT_KMS_KEYRING}"
+      key="${PARAM_KMS_KEY:-$DEFAULT_KMS_KEY}"
+      if [ -n "${PARAM_REGION:-}" ] && [ -n "${PARAM_PROJECT_ID:-}" ]; then
+        kms_loc="$(derive_kms_location "$PARAM_REGION")"
+        enabled_ver="$(kms_key_enabled_version "$key" "$keyring" "$kms_loc" "$PARAM_PROJECT_ID" 2>/dev/null || true)"
+      fi
+      if [ -n "$enabled_ver" ]; then
+        print_info "GitHub minter KMS key already has an ENABLED version ($enabled_ver); ignoring missing local PEM path '${PARAM_GITHUB_PEM_PATH}'."
+        PARAM_GITHUB_PEM_PATH=""
+      else
+        print_error "GitHub App private key PEM file does not exist: '${PARAM_GITHUB_PEM_PATH}'."
+        exit 1
+      fi
     fi
-    if [ ! -f "$PARAM_GITHUB_PEM_PATH" ]; then
-      print_error "GitHub App private key PEM path is not a regular file: '${PARAM_GITHUB_PEM_PATH}'."
-      exit 1
-    fi
-    if [ ! -r "$PARAM_GITHUB_PEM_PATH" ]; then
-      print_error "GitHub App private key PEM file is not readable: '${PARAM_GITHUB_PEM_PATH}'."
-      exit 1
+    if [ -n "$PARAM_GITHUB_PEM_PATH" ]; then
+      if [ ! -f "$PARAM_GITHUB_PEM_PATH" ]; then
+        print_error "GitHub App private key PEM path is not a regular file: '${PARAM_GITHUB_PEM_PATH}'."
+        exit 1
+      fi
+      if [ ! -r "$PARAM_GITHUB_PEM_PATH" ]; then
+        print_error "GitHub App private key PEM file is not readable: '${PARAM_GITHUB_PEM_PATH}'."
+        exit 1
+      fi
     fi
   fi
 

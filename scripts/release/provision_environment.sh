@@ -16,10 +16,7 @@ export CLOUDSDK_CORE_DISABLE_PROMPTS="${CLOUDSDK_CORE_DISABLE_PROMPTS:-1}"
 # shellcheck source=scripts/release/teardown_common.sh
 . "$(dirname "${BASH_SOURCE[0]}")/teardown_common.sh"
 
-# Before the temp file, so a missing coordinate aborts without leaving one
-# behind — this script deliberately carries no EXIT trap to clean it up. A trap
-# that ends on a successful command hands ITS status to the shell, which would
-# turn a `set -u` abort on a missing input into a green step.
+# Verify required GCP/GKE inputs before executing any destructive teardown.
 teardown_require_inputs
 
 # Half-configured minter: refuse before anything is destroyed.

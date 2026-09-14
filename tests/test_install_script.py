@@ -803,6 +803,15 @@ out_dir=""; acquire_source_repo out_dir "{requested_ref}"; echo "RESOLVED=$out_d
             proc6 = self._run_install_func(cmd6)
             self.assertEqual(proc6.returncode, 0, proc6.stderr)
 
+        # 7. App ID provided with existing KMS key version, even if PEM path is non-existent -> succeeds (AOT takes precedence)
+        cmd7 = (
+            f'{_SOURCE_INSTALLER_COMMON}'
+            'kms_key_enabled_version() { echo "1"; }; '
+            'validate_non_interactive_minter_config "12345" "/path/to/deleted.pem" "ring" "key" "us-central1" "p1" "my-org"'
+        )
+        proc7 = self._run_install_func(cmd7)
+        self.assertEqual(proc7.returncode, 0, proc7.stderr)
+
     def test_parse_args_migrate_node_pools(self):
         cmd = 'parse_args --migrate-node-pools; echo "MIGRATE=$PARAM_MIGRATE_NODE_POOLS"'
         proc = self._run_install_func(cmd)
@@ -3499,7 +3508,7 @@ class UnrecordedInterviewAnswersAreReportedTest(unittest.TestCase):
             for key in (
                 "ALLOWED_USERS", "GOOGLE_CHAT_HOME_CHANNEL", "SLACK_ALLOWED_USERS",
                 "SLACK_HOME_CHANNEL", "SLACK_HOME_CHANNEL_NAME", "GITOPS_ORG",
-                "GITHUB_APP_ID", "GITHUB_PEM_PATH",
+                "GITHUB_APP_ID",
             )
         )
         proc = self._warn(recorded, {})
@@ -3839,6 +3848,39 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
             self.assertIn("installed successfully", proc.stdout)
             logged = log_file.read_text()
             self.assertIn("brew install go", logged)
+
+    def test_auto_install_go_via_apt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            bin_dir = create_minimal_tools_bin(tmp_path)
+            log_file = tmp_path / "calls.log"
+
+            go_path = bin_dir / "go"
+            apt_bin = bin_dir / "apt-get"
+            apt_bin.write_text(
+                f"#!/bin/bash\n"
+                f"printf 'apt-get %s\\n' \"$*\" >> '{log_file}'\n"
+                f"if [ \"$1\" = \"install\" ] && [ \"$2\" = \"-y\" ] && [ \"$3\" = \"golang-go\" ]; then\n"
+                f"  printf '#!/bin/bash\\nexit 0\\n' > '{go_path}'\n"
+                f"  chmod +x '{go_path}'\n"
+                f"fi\n"
+                f"exit 0\n"
+            )
+            apt_bin.chmod(apt_bin.stat().st_mode | stat.S_IEXEC)
+
+            sudo_bin = bin_dir / "sudo"
+            sudo_bin.write_text('#!/bin/bash\nexec "$@"\n')
+            sudo_bin.chmod(sudo_bin.stat().st_mode | stat.S_IEXEC)
+
+            proc = self._run_func(
+                "PARAM_NON_INTERACTIVE=true auto_install_tool go",
+                bin_dir=str(bin_dir),
+                strict_path=True,
+            )
+            self.assertEqual(proc.returncode, 0, f"Failed: {proc.stdout}\n{proc.stderr}")
+            self.assertIn("installed successfully", proc.stdout)
+            logged = log_file.read_text()
+            self.assertIn("apt-get install -y golang-go", logged)
 
     def test_auto_install_fails_when_tool_remains_missing(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -12,7 +12,7 @@ The minter's Kubernetes half (Deployment, Service, NetworkPolicy, KSA, minty rul
 
 The keyring follows `var.location`, which the full-install composition passes straight from the cluster's location — so changing `location` on an install that has the minter enabled creates a **new, empty** keyring in the new region. Nothing is copied across: the key is `import_only` and KMS never releases private key material, so the version in the old keyring stays where it is.
 
-When changing regions, the GitHub App private key must be imported Ahead-Of-Time into the new region's KMS key following the [upstream guide](https://github.com/abcxyz/github-token-minter#readme).
+When changing regions, the GitHub App private key must be re-imported into the new region's KMS key (either automatically via `install.sh --github-pem-path` or Ahead-Of-Time following the [upstream guide](https://github.com/abcxyz/github-token-minter#readme)).
 
 > **KMS resources cannot be deleted.** Cloud KMS key rings and keys are never actually
 > destroyed — `terraform destroy` only removes them from state, and a subsequent apply
