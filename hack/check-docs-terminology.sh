@@ -143,7 +143,16 @@ WRONG_GO=""
 while IFS= read -r HIT; do
   [ -n "$HIT" ] || continue
 
-  if printf '%s\n' "$HIT" | grep -qiE "$MINTY_SUBJECT"; then
+  # `search` emits `path:line:text`. Classify and version-check the text alone:
+  # the path is not prose and must not vote. It did — every path component is
+  # part of the string, and `docs/…/deploy/token-minter.md` contains
+  # "token-minter", so every Go sentence in the one file most likely to discuss
+  # both toolchains was pre-classified as the import's, whatever it said. An
+  # operator sentence there was failed for "does not state 1.21+".
+  HIT_TEXT=${HIT#*:}        # drop path:
+  HIT_TEXT=${HIT_TEXT#*:}   # drop line:
+
+  if printf '%s\n' "$HIT_TEXT" | grep -qiE "$MINTY_SUBJECT"; then
     REQUIRED="${MINTY_GO_MINOR}+"
     ALLOWED="^(${GO_MINOR}|${MINTY_GO_MINOR})\+$"
     OWED="the Minty CLI import needs MIN_GO_VERSION=${MINTY_GO_MINOR} (scripts/installer/min_versions.sh)"
@@ -154,10 +163,10 @@ while IFS= read -r HIT; do
   fi
 
   REASON=""
-  if ! printf '%s\n' "$HIT" | grep -qF "$REQUIRED"; then
+  if ! printf '%s\n' "$HIT_TEXT" | grep -qF "$REQUIRED"; then
     REASON="does not state ${REQUIRED} — ${OWED}"
   else
-    STRAY=$(printf '%s\n' "$HIT" | grep -oE '1\.[0-9]+\+' | grep -Ev "$ALLOWED" | sort -u | tr '\n' ' ')
+    STRAY=$(printf '%s\n' "$HIT_TEXT" | grep -oE '1\.[0-9]+\+' | grep -Ev "$ALLOWED" | sort -u | tr '\n' ' ')
     if [ -n "$STRAY" ]; then
       REASON="also states ${STRAY}which matches no Go requirement in this repository"
     fi
