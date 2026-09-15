@@ -16,8 +16,10 @@ Prefer declarative IaC over the interview? Apply the same composition by hand wi
   [cert-manager](/kube-agents/install/prerequisites/#cert-manager-on-the-target-cluster)
   — the composition installs it automatically if it isn't already present. If
   you plan to connect a GitOps repository for automated PRs
-  (`submit-suggestion`), the GitHub App and Cloud KMS key should be
-  pre-provisioned Ahead-Of-Time (AOT) — see
+  (`submit-suggestion`), you need a GitHub App and a Cloud KMS signing key
+  holding its private key: either hand the installer the `.pem` with
+  `--github-pem-path` and it imports the key, or pre-provision it
+  Ahead-Of-Time (AOT) — see
   [Prerequisites](/kube-agents/install/prerequisites/#gitops-repo--github-token-minter-for-submit-suggestion)
   and [Token minter](/kube-agents/deploy/token-minter/).
 </Aside>
