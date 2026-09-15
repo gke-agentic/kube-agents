@@ -74,6 +74,31 @@ _ZERO_QUANTITY = "0"
 _EXIT_DRIFT = 1
 _EXIT_CANNOT_RUN = 2
 
+_YAML_STR_TAG = "tag:yaml.org,2002:str"
+_DOUBLE_QUOTE = '"'
+
+
+class _PrettierCompatibleDumper(yaml.SafeDumper):
+    """Writes the quote style Prettier normalises to.
+
+    The generated file is a `.yaml` under `charts/`, so the Prettier Check workflow
+    formats it like any other. PyYAML single-quotes a string that would otherwise parse
+    as something else -- a CPU limit of `1`, an `ephemeral-storage` of `0` -- and Prettier
+    rewrites those to double quotes. Emitting single quotes therefore produces a file that
+    fails `prettier --check` on the first push, and reformatting the file by hand makes
+    `--check` here report drift instead. Emitting what Prettier wants keeps both green.
+    """
+
+
+def _represent_str(dumper, data):
+    """Double-quote only what has to be quoted, matching Prettier rather than quoting all."""
+    resolved = dumper.resolve(yaml.ScalarNode, data, (True, False))
+    style = None if resolved == _YAML_STR_TAG else _DOUBLE_QUOTE
+    return dumper.represent_scalar(_YAML_STR_TAG, data, style=style)
+
+
+_PrettierCompatibleDumper.add_representer(str, _represent_str)
+
 _BINARY_SI_UNITS = {
     "Ki": 1024,
     "Mi": _MIB,
@@ -295,7 +320,7 @@ def main():
         print(f"ERROR: cannot build the chart footprint: {err}", file=sys.stderr)
         sys.exit(_EXIT_CANNOT_RUN)
 
-    content = _HEADER + yaml.dump(data, sort_keys=False)
+    content = _HEADER + yaml.dump(data, Dumper=_PrettierCompatibleDumper, sort_keys=False)
 
     if args.check:
         if not _FOOTPRINT_FILE.is_file():
