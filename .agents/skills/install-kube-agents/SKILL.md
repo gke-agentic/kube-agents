@@ -159,20 +159,11 @@ interview decided them (a run that failed early) says so: `gvisor_enabled` is `n
 
 When deploying `kube-agents` with GitOps pull-request workflows enabled, the Platform Agent creates pull requests against an infrastructure-as-code repository via the [GitHub Token Minter](https://github.com/abcxyz/github-token-minter) (`minty`). The minter runs in-cluster and signs short-lived GitHub App installation tokens using a private key securely stored in Google Cloud KMS.
 
-### Prerequisites Checklist for AI Agents and Users
+### Prerequisites
 
-Before installing with GitOps enabled, ensure:
+The GitHub App and its permissions, the private key, the Cloud KMS signing key and its default names, and the Go toolchain the import needs are documented once, in [Token minter](https://gke-labs.github.io/kube-agents/deploy/token-minter/). Read it before running either path below. Restating those values here is how the two copies drift apart, and this file already defers the same way for flag defaults.
 
-1. **GitHub Organization**: A GitHub organization owning or hosting the target GitOps repository (Minty requires an organization because it queries `/orgs/{org}/installation`; personal user accounts return 404).
-2. **GitOps Repository**: The target repository (e.g. `gke-fleet-iac`) must exist.
-3. **GitHub App**:
-   - Created in GitHub (`Settings -> Developer settings -> GitHub Apps`).
-   - Repository permissions: `Contents: Read and write`, `Pull requests: Read and write`, `Issues: Read and write`.
-   - Installed onto the target organization and repository.
-   - If created under a personal user account, "Where can this GitHub App be installed?" must be set to "Any account (Public)".
-4. **GitHub App ID**: The numeric App ID from the GitHub App settings page.
-5. **Private Key (`.pem`)**: Generated and downloaded from the GitHub App settings page (only needed once for initial Cloud KMS import).
-6. **Go Toolchain**: `go` 1.21+ available on the host machine running `install.sh` (only needed for the automated `.pem` import, which builds the Minty CLI; the operator's own toolchain requirement is higher and does not apply here).
+One input decides whether the minter can work at all, so it is worth stating where the command is: `--gitops-org` must be a GitHub **organization**. Minty resolves App installations at `/orgs/{org}/installation`, which returns 404 for a personal account, and `install.sh` refuses one rather than deploying a minter that can never mint a token.
 
 ### Deployment Path 1: Automated Import via `install.sh`
 
@@ -190,18 +181,11 @@ In this path, `install.sh` automatically creates the Cloud KMS keyring/key (if m
   --github-pem-path="/path/to/app-private-key.pem"
 ```
 
-> [!TIP]
-> After `install.sh` completes the key import into Cloud KMS, the local `.pem` file can be safely deleted. Cloud KMS keys cannot be destroyed, and subsequent runs or upgrades of `install.sh` will automatically detect the existing `ENABLED` key version and skip the `.pem` import.
+Delete the `.pem` once the run succeeds. Cloud KMS keys cannot be destroyed, and a later run or upgrade finds the `ENABLED` version and skips the import.
 
 ### Deployment Path 2: Pre-Provisioned / Ahead-Of-Time (AOT) Key
 
-For CI/CD pipelines, automated deployments, or environments where runners do not handle raw private keys, pre-provision the Cloud KMS key ahead of time following the official [GitHub Token Minter documentation](https://github.com/abcxyz/github-token-minter) and [Google Cloud KMS key import guide](https://cloud.google.com/kms/docs/importing-a-key):
-
-1. **Pre-provision Cloud KMS Key & Import Private Key:**
-   Follow the upstream [GitHub Token Minter guide](https://github.com/abcxyz/github-token-minter) and [Google Cloud KMS documentation](https://cloud.google.com/kms/docs/importing-a-key) to configure the Cloud KMS keyring and key, and import your GitHub App private key. By default, `kube-agents` expects keyring `github-token-minter-keyring` and key `github-token-minter-key` in the cluster's region (or custom names passed via `--kms-keyring` / `--kms-key`).
-
-2. **Deploy `kube-agents` without `.pem`:**
-   Once the key holds an `ENABLED` version in Cloud KMS, invoke `install.sh` without `--github-pem-path`:
+For CI/CD pipelines and anywhere runners must not handle raw private keys, the key is imported ahead of time — the procedure, and the keyring and key names `install.sh` expects, are in [Token minter](https://gke-labs.github.io/kube-agents/deploy/token-minter/). Once the key holds an `ENABLED` version, invoke `install.sh` without `--github-pem-path`:
 
 ```bash
 ./install.sh --non-interactive \
