@@ -152,14 +152,14 @@ identifier appears, add its source here.
 | Kubernetes service-account names | `scripts/installer/common.sh` |
 | GCP service-account names an install creates, release namespace, GKE CMEK key ring and key | `install.defaults.env` |
 | Defaults an install gets for saying nothing (region, cluster, permission set, registry prefix) | `install.defaults.env` |
-| Go toolchain version | `k8s-operator/go.mod` (and `a2a/go.mod`, kept in step) |
+| Go toolchain version | `k8s-operator/go.mod` (and `a2a/go.mod`, kept in step) for building the operator; `scripts/installer/min_versions.sh` (`MIN_GO_VERSION`) for the host that imports the GitHub App key, which builds the Minty CLI and not the operator |
 | The drift audit subscription's name | `subscription_name` in `terraform/modules/drift-pubsub/variables.tf`, mirrored by `defaultSubscriptionName` in `k8s-operator/cmd/drift-detector/main.go` |
 | A2A wire constants: protocol version, stream names, size thresholds, token grammar | `a2a/lib/envelope.go` and `a2a/lib/topics.go` |
 | The A2A gateway process's env (backend selection, gchat relay and allowlist, display mode, addressee) | `a2a/gateway/config.go` (`FromEnv`) |
 | Credential-proxy relay env vars, audiences, and route roles | reader `agents/platform/scripts/credential_proxy.py` (`serve`, `build_authenticator`, `ROUTE_ROLES`); the audience values are written by `k8s-operator/internal/controller/platformagent_broker_split.go` |
 | The bus principal set: every NATS user the A2A fabric issues or renders, which are static and which authenticate through the callout, and the subject grants each one gets | `k8s-operator/internal/controller/platformagent_a2a_identities.go` (the rendered map and the surviving static users) and `a2a/authcallout/session.go` (the per-session grants, which are in no map) |
 | The bus token contract: the audience a bus token must carry, the path the projected volume delivers it on, and its expiry | `a2a/lib/credentials.go` (client side) and `k8s-operator/internal/controller/platformagent_a2a_callout.go` (what the operator projects); the two must agree or every client is refused at connect |
-| Minimum supported tool versions (`gcloud`) | `scripts/installer/min_versions.sh` |
+| Minimum supported tool versions (`gcloud`, `terraform`, `go`) | `scripts/installer/min_versions.sh` |
 | Toolsets, plugins, and MCP servers of an agent profile | that profile's `config.yaml` (`agents/platform/`, `agents/chat/`, `agents/cluster/`) |
 | Cron job rosters and schedules | `agents/chat/defaults/cron/jobs.json` and `agents/platform/cron/jobs.json` |
 | Persona rules and `§N` section numbering | the profile's `SOUL.md` |
