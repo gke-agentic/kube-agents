@@ -59,9 +59,12 @@ proposes something. It also covers a PR or issue number offered as the reason a 
 "retries stop at three (#NNN)" tells the reader nothing they can act on and rots when the thread
 is closed or the behaviour changes again. State the reason in prose. The number belongs in
 a design doc or a maintainer runbook when the history itself is the subject. This binds
-documentation — the site, `docs/`, the READMEs. `AGENTS.md` and the skills are instructions; a
-number there points at the thread where a rule was argued, and the reason still has to stand in
-the prose beside it.
+documentation — the site, `docs/`, the READMEs. `AGENTS.md`, the skills, the rules files,
+`.claude/commands/`, and `docs/pull-request-workflow.md` (the commands behind `AGENTS.md`'s
+pull-request rules, an instruction document by content) are instructions; a number there points
+at the thread where a rule was argued, and the reason still has to stand in the prose beside it.
+The rule binds the line you write: a citation already in a document stands until the line it is
+on is touched, and a review pass raises it on that line, not on the backlog around it.
 
 ## Enforcement
 
@@ -75,7 +78,8 @@ the prose beside it.
   the denylist nor this file spells out the values: refer to them by shape or by the file that
   holds them.
 - `make docs-check-map` (`scripts/check_docs_map.py`) rejects a site row whose audience cell names
-  maintainers, CI engineers, or contributors.
+  maintainers, CI engineers, or contributors, and fails when it finds no published-site table at
+  all, so a reworded heading cannot turn the check green with nothing read.
 - The `review-docs-drift` skill asks the reader question of every hunk under `docs/site/`, and the
   `review-adversarial` skill treats a site hunk that arrives with a CI change as a prompt to ask
   whether the page is a runbook. Neither check reads prose for you: a page can describe the
