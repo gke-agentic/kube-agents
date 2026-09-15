@@ -172,7 +172,7 @@ Before installing with GitOps enabled, ensure:
    - If created under a personal user account, "Where can this GitHub App be installed?" must be set to "Any account (Public)".
 4. **GitHub App ID**: The numeric App ID from the GitHub App settings page.
 5. **Private Key (`.pem`)**: Generated and downloaded from the GitHub App settings page (only needed once for initial Cloud KMS import).
-6. **Go Toolchain**: `go` 1.27+ available on the host machine running `install.sh` (only needed if performing automated `.pem` import during install).
+6. **Go Toolchain**: `go` 1.21+ available on the host machine running `install.sh` (only needed for the automated `.pem` import, which builds the Minty CLI; the operator's own toolchain requirement is higher and does not apply here).
 
 ### Deployment Path 1: Automated Import via `install.sh`
 
