@@ -340,9 +340,12 @@ action. Not every `eval-crew` member is a root approver, so a change that also t
 paths still waits on a root approver's `/approve` after that review. The bot never requests the
 author, so a member's own case or roster change goes to the rest of the group, with the author's
 `approved` already on it (#1075). That is a property of two lists agreeing today — the alias in
-`OWNERS_ALIASES` and the group in the bot's config — not a guarantee either file makes. The one
-exception is the bot's `waw-leads` group, which also reviews the two operator workflow files under
-`.github/workflows/`: those are root-owned, and only `mplakhtiy` in that group is a root approver.
+`OWNERS_ALIASES` and the group in the bot's config — not a guarantee either file makes. The bot's
+`waw-leads` group is the exception: it is the only pool for `k8s-operator/**` and for the two
+operator workflow files under `.github/workflows/`, and only `mplakhtiy` in it is a root approver.
+A change to those workflow files, or an operator change that also touches a root-owned path such
+as `charts/`, therefore still waits on a root approver's `/approve` when the bot picks another
+member.
 
 Before any of that, a pull request from an author Prow does not already trust is labelled
 `needs-ok-to-test`, and its Prow presubmits hold until a member comments `/ok-to-test`. It gates
