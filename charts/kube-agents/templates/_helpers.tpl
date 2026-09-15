@@ -527,6 +527,45 @@ preflight prints and the numbers in footprint.yaml are written the same way.
 {{- end }}
 
 {{/*
+Two more byte formatters, for the quota diagnosis rather than for footprint.yaml.
+
+formatBytes above only names a unit when the value divides exactly, and falls back to a
+bare byte count otherwise. That is right for footprint.yaml, whose numbers are always
+Mi-aligned, and wrong in the failure message: a namespace whose quota is written in
+decimal SI (`requests.memory: 10G`) turns every figure into an eleven-digit byte count,
+which is the opposite of the legible diagnosis this check exists to give.
+
+Rounding in a patch value is not free, so the direction is chosen per use:
+
+- formatBytesCeil rounds UP to whole Mi, and sizes the remediation patch. Rounding down
+  would print a patch that is short of what the release needs, which is worse than an
+  ugly number: the operator runs it and the install still fails.
+- formatBytesApprox rounds toward zero and marks the result `~`, and is display-only.
+  Nothing is computed from it, and the `~` keeps it from being read as exact.
+*/}}
+{{- define "kube-agents.formatBytesCeil" -}}
+{{- $b := int64 . -}}
+{{- if and (gt $b 0) (eq (mod $b 1048576) 0) -}}
+{{- include "kube-agents.formatBytes" $b -}}
+{{- else if le $b 0 -}}
+{{- printf "%d" $b -}}
+{{- else -}}
+{{- printf "%dMi" (div (add $b 1048575) 1048576) -}}
+{{- end -}}
+{{- end }}
+
+{{- define "kube-agents.formatBytesApprox" -}}
+{{- $b := int64 . -}}
+{{- if and (gt $b 0) (eq (mod $b 1048576) 0) -}}
+{{- include "kube-agents.formatBytes" $b -}}
+{{- else if eq $b 0 -}}
+0
+{{- else -}}
+{{- printf "~%dMi" (div $b 1048576) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Preflight validation against namespace ResourceQuotas (#749).
 
 Split into three templates so the parts that need no cluster can be tested without one:
@@ -863,10 +902,13 @@ a Go template cannot catch the error `lookup` raises.
             {{- $availFormatted = include "kube-agents.formatCpu" $availVal -}}
             {{- $patchVal = include "kube-agents.formatCpu" $patchTarget -}}
           {{- else if $isBytes -}}
-            {{- $reqFormatted = include "kube-agents.formatBytes" $req -}}
-            {{- $hardFormatted = include "kube-agents.formatBytes" $hardVal -}}
-            {{- $availFormatted = include "kube-agents.formatBytes" $availVal -}}
-            {{- $patchVal = include "kube-agents.formatBytes" $patchTarget -}}
+            {{- $reqFormatted = include "kube-agents.formatBytesApprox" $req -}}
+            {{- /* The quota's own spelling, not a re-rendering of it: `hard 10G` is what
+                   `kubectl describe resourcequota` shows, so echoing it verbatim is both
+                   shorter and easier to match up than any unit this could pick. */ -}}
+            {{- $hardFormatted = toString $hardRaw -}}
+            {{- $availFormatted = include "kube-agents.formatBytesApprox" $availVal -}}
+            {{- $patchVal = include "kube-agents.formatBytesCeil" $patchTarget -}}
           {{- else -}}
             {{- $reqFormatted = printf "%d" $req -}}
             {{- $hardFormatted = printf "%d" $hardVal -}}

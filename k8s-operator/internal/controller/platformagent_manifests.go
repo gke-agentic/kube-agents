@@ -107,7 +107,8 @@ const (
 	// resource limits. The CPU limit is 1 (down from 2, #749): measured 22m across 19 watched
 	// Cluster Agent profiles, so 1 core leaves ~45x headroom.
 	//
-	// Go 1.27+ GOMAXPROCS is cgroup-aware, so dropping this limit from 2 to 1 sets the
+	// GOMAXPROCS has been cgroup-aware since Go 1.25 and k8s-operator builds with 1.27
+	// (k8s-operator/go.mod), so dropping this limit from 2 to 1 sets the
 	// k8s-event-watcher's GOMAXPROCS to 1. Go rounds up, so choosing 1 rather than 500m
 	// keeps GOMAXPROCS=1 while preserving a full core of burst.
 	//
@@ -3048,7 +3049,8 @@ func buildAgentAPIAuthSidecar(agent *agentv1alpha1.PlatformAgent, homeDir string
 			// The CPU limit is 1, down from 2 (#749): measured 22m across 19 watched
 			// Cluster Agent profiles, so 1 core leaves ~45x headroom.
 			//
-			// k8s-operator is built with Go 1.27, so GOMAXPROCS is cgroup-aware.
+			// GOMAXPROCS has been cgroup-aware since Go 1.25, and k8s-event-watcher builds
+			// from this module (k8s-operator/go.mod, Go 1.27), so it gets that behaviour.
 			// Dropping the CPU limit from 2 to 1 sets k8s-event-watcher's GOMAXPROCS to 1.
 			// Choosing 1 rather than 500m keeps GOMAXPROCS=1 while preserving a full core of burst.
 			//
