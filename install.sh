@@ -3890,11 +3890,25 @@ main() {
         github_pem_path=""
       fi
     else
-      github_org=""
-      github_repo=""
-      github_app_id=""
-      github_pem_path=""
-      print_info "GitOps repository connection skipped."
+      # Deliberately not clearing github_org / github_repo / github_app_id /
+      # github_pem_path here. "Skip for now" is the operator declining the
+      # interview, not asking for a teardown, and the four names are exactly
+      # the ones write_tfvars_from_state's three-way guard reads
+      # (scripts/installer/installer_common.sh): emptying them renders
+      # enable_github_minter = false, and the apply then removes a deployed
+      # minter's GSA, its Workload Identity binding, and the chart's
+      # Deployment, Service, NetworkPolicy and KSA — while install.env, which
+      # this run does not rewrite, goes on recording a minter that is gone.
+      #
+      # On a fresh install they are already empty, so the minter is skipped
+      # either way and this arm changes nothing. On a re-run the loaded values
+      # are the whole reason the minter survives. The comment above the
+      # interview prompts makes the same point about empty defaults.
+      if [ -n "$github_org" ] || [ -n "$github_app_id" ]; then
+        print_info "GitOps interview skipped; keeping the GitOps configuration this install already records."
+      else
+        print_info "GitOps repository connection skipped."
+      fi
     fi
   else
     if [ -n "$github_pem_path" ]; then
