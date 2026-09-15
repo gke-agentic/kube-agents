@@ -588,11 +588,15 @@ The patch it prints raises `hard` to `used + required` plus one rollout surge Po
 because a quota raised to exactly what the release needs fits it at rest and then
 stalls its first rolling update.
 
-**It fails open.** The check needs a cluster to query, so it does nothing under
-`helm template`, and nothing when the installing identity cannot `get`/`list`
-ResourceQuotas in the release namespace — no warning either way. A clean render is
-therefore not evidence that the quota fits. Grant that read access if you want the
-check to actually run.
+**Where it is silent, and where it is not.** The check needs a cluster to query, so it
+does nothing under `helm template` and nothing in a namespace with no ResourceQuota — a
+clean render in either case is not evidence that a quota fits.
+
+It does need `get`/`list` on `resourcequotas` in the release namespace. Helm's `lookup`
+returns nothing for a NotFound and raises a template error for everything else, so an
+identity without that permission gets `error calling lookup: resourcequotas is
+forbidden` and no install rather than a quiet pass. Grant the permission, or install with
+`--set quotaPreflight.enabled=false`.
 
 ## Uninstalling
 

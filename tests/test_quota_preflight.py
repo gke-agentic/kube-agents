@@ -80,6 +80,8 @@ _OPERATOR_REQUEST_MILLIS = 10
 # Two operator-rendered claims plus two from the shell StatefulSet's volumeClaimTemplates.
 _OPERATOR_PVC_COUNT = 4
 _OPERATOR_STORAGE_BYTES = 22 * 1024**3
+# hindsight.postgresql.storage, the volumeClaimTemplate the StatefulSet renders.
+_HINDSIGHT_STORAGE_BYTES = 8 * 1024**3
 
 _REQUIRED_HARNESS = [
     "--set",
@@ -109,7 +111,12 @@ class PreflightDecisionTest(unittest.TestCase):
     def tearDownClass(cls) -> None:
         cls._tmp.cleanup()
 
-    def _render(self, values: dict, sets: list[str] | None = None):
+    def _render(
+        self,
+        values: dict,
+        sets: list[str] | None = None,
+        extra_args: list[str] | None = None,
+    ):
         """Render the probe chart. Returns the CompletedProcess without asserting on it."""
         with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as fh:
             yaml.safe_dump(values, fh)
@@ -118,6 +125,7 @@ class PreflightDecisionTest(unittest.TestCase):
         args += _REQUIRED_HARNESS
         for item in sets or []:
             args += ["--set", item]
+        args += extra_args or []
         try:
             return subprocess.run(args, capture_output=True, text=True)
         finally:
@@ -265,6 +273,66 @@ class PreflightDecisionTest(unittest.TestCase):
         )
         self.assertEqual(
             res.returncode, 0, f"unmodelled keys must be skipped:\n{res.stderr}"
+        )
+
+    # A quota big enough for the release but nearly spent. `hard` alone clears the first
+    # branch, so only the `hard - used` one can fail these renders -- which is what makes
+    # them the tests for it.
+    _CROWDED_HARD = {"pods": "50"}
+    _CROWDED_USED = {"pods": str(50 - _DEFAULT_PODS + 1)}
+
+    def test_used_leaves_too_little_headroom_for_a_fresh_install(self) -> None:
+        res = self._render(
+            {
+                "probe": {
+                    "quotas": [self._quota(self._CROWDED_HARD, used=self._CROWDED_USED)]
+                }
+            }
+        )
+        self.assertNotEqual(res.returncode, 0, "a nearly-full quota must refuse an install")
+        self.assertIn("available headroom", res.stderr)
+
+    def test_the_same_quota_passes_on_upgrade(self) -> None:
+        """The release's own pods are in `used`, so subtracting them again refuses every upgrade."""
+        res = self._render(
+            {
+                "probe": {
+                    "quotas": [self._quota(self._CROWDED_HARD, used=self._CROWDED_USED)]
+                }
+            },
+            extra_args=["--is-upgrade"],
+        )
+        self.assertEqual(res.returncode, 0, f"upgrade must not be refused:\n{res.stderr}")
+
+    def test_the_patch_adds_to_what_is_already_used(self) -> None:
+        """A patch that forgets `used` is short by exactly `used` and fixes nothing."""
+        used = 40
+        res = self._render(
+            {
+                "probe": {
+                    "quotas": [self._quota({"pods": "2"}, used={"pods": str(used)})]
+                }
+            }
+        )
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn(f'"pods":"{used + _DEFAULT_PODS + 1}"', res.stderr)
+
+    def test_a_canonical_count_quantity_parses(self) -> None:
+        """The API server writes 1000 back as `1k`; read as 0 it refuses an ample quota."""
+        res = self._render({"probe": {"quotas": [self._quota({"pods": "1k"})]}})
+        self.assertEqual(res.returncode, 0, f"1k pods should be ample:\n{res.stderr}")
+
+    def test_hindsight_adds_its_claim_to_the_totals(self) -> None:
+        """Sized from a key the chart does not have, the claim counts as zero and stalls."""
+        base = self._requirements()
+        with_hindsight = self._requirements(["hindsight.enabled=true"])
+        self.assertEqual(
+            with_hindsight["persistentVolumeClaims"],
+            base["persistentVolumeClaims"] + 1,
+        )
+        self.assertEqual(
+            with_hindsight["requestsStorage"],
+            base["requestsStorage"] + _HINDSIGHT_STORAGE_BYTES,
         )
 
 
