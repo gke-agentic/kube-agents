@@ -569,6 +569,39 @@ out_dir=""; acquire_source_repo out_dir "{requested_ref}"; echo "RESOLVED=$out_d
                 f"{proc.stdout}\n{proc.stderr}",
             )
 
+    def test_a_missing_go_neither_refuses_a_dry_run_nor_installs_during_generate_only(self):
+        """Step 8 must not reach auto_install_tool for Go.
+
+        The interview runs inside step 8, which main crosses before both the
+        --dry-run exit and the --generate-only exit. Neither mode imports a
+        key, so neither has any business refusing over a toolchain or putting
+        a package on the operator's machine -- yet auto_install_tool does
+        exactly one of those in each.
+
+        Two halves, because the defect had two: that the call is harmful where
+        it stood, and that it is no longer there.
+        """
+        # Harmful: the refusal is real, and it ends the whole run.
+        proc = self._run_install_func('PARAM_DRY_RUN=true auto_install_tool "go"')
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("Dry-run validation will not install missing tools", proc.stdout)
+
+        # Gone: the surviving call sits where the toolchain is about to be
+        # used, which main reaches only past both exits.
+        body = _INSTALL_SH.read_text().splitlines()
+        start = next(i for i, line in enumerate(body) if line.startswith("import_github_pem() {"))
+        end = next(i for i in range(start + 1, len(body)) if body[i] == "}")
+        sites = [i for i, line in enumerate(body) if 'auto_install_tool "go"' in line]
+        self.assertTrue(sites, "import_github_pem must still be able to install Go")
+        for i in sites:
+            self.assertTrue(
+                start < i < end,
+                f"install.sh:{i + 1} installs Go outside import_github_pem "
+                f"(lines {start + 1}-{end + 1}); step 8 runs before --dry-run "
+                f"and --generate-only exit, so a call there refuses the first "
+                f"mode and mutates the host in the second.",
+            )
+
     def test_parse_args_cluster_mode(self):
         """Verifies parse_args captures --cluster-mode."""
         cmd = 'parse_args --cluster-mode=autopilot; echo "MODE=$PARAM_CLUSTER_MODE"'

@@ -3912,8 +3912,14 @@ main() {
           done
           if [ -n "$github_pem_path" ] && [ -f "$github_pem_path" ]; then
             if ! command -v go >/dev/null 2>&1; then
-              print_warning "Go toolchain ('go') is required to import the GitHub App private key into Cloud KMS via Minty CLI."
-              auto_install_tool "go"
+              # Say it now, install it later. This runs inside step 8, which
+              # --dry-run and --generate-only both cross before they exit, and
+              # auto_install_tool exits 1 in the first and `sudo apt-get
+              # install`s in the second. Neither mode imports anything, so
+              # neither has any business refusing over Go or putting a package
+              # on the operator's machine. import_github_pem makes the same
+              # check where the toolchain is actually about to be used.
+              print_warning "Go toolchain ('go') is required to import the GitHub App private key into Cloud KMS via the Minty CLI; the installer will offer to install it when the import runs."
             fi
           fi
         fi
@@ -3955,8 +3961,9 @@ main() {
       existing_kms_ver="$(kms_key_enabled_version "$kms_key" "$kms_keyring" "$kms_loc" "$project_id" 2>/dev/null || echo "")"
       if [ -z "$existing_kms_ver" ]; then
         if ! command -v go >/dev/null 2>&1; then
-          print_info "Go toolchain ('go') is required to import the GitHub App private key into Cloud KMS via Minty CLI."
-          auto_install_tool "go"
+          # Warning only, for the reason given on the interactive arm above:
+          # step 8 runs before --dry-run and --generate-only exit.
+          print_warning "Go toolchain ('go') is required to import the GitHub App private key into Cloud KMS via the Minty CLI; the installer will install it when the import runs."
         fi
       fi
     fi
