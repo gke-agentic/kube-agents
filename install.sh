@@ -3095,7 +3095,12 @@ run_menu_system() {
         esac
         ;;
       5)
-        prompt_read "GitHub Org / Username" github_org "$github_org"
+        # An organization, never a login: the minter resolves App installations
+        # at /orgs/{org}/installation, so a personal account deploys cleanly and
+        # then 404s every token request. The fresh-install interview settles
+        # this with github_account_type; this panel does not verify it, so the
+        # least it can do is stop suggesting the value that cannot work.
+        prompt_read "GitHub Organization" github_org "$github_org"
         prompt_read "GitOps Repository Name" github_repo "$github_repo"
         ;;
       6)
