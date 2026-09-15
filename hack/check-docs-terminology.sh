@@ -86,7 +86,17 @@ if ! grep -qE "\"${HOST_LABEL}\"[[:space:]]*=[[:space:]]*\"true\"" terraform/exa
 fi
 
 # --- Go toolchain ---------------------------------------------------------
-# Ground truth: k8s-operator/go.mod
+# Two ground truths, because two different things in this repository need Go
+# and they need different versions:
+#   k8s-operator/go.mod                 — the toolchain that builds the operator
+#   scripts/installer/min_versions.sh   — the toolchain install.sh needs to build
+#                                         the Minty CLI for the KMS key import
+#
+# One rule for both is what this check used to be, and it made the docs lie:
+# prerequisites.md had to claim the operator's version for the key import,
+# because any other number here was reported as stale. Widening the window to
+# {0,60} sharpened the check for the operator and, at the same time, pulled the
+# unrelated sentence into its reach.
 GO_MOD_VERSION=$(awk '/^go /{print $2; exit}' k8s-operator/go.mod)
 if [ -z "$GO_MOD_VERSION" ]; then
   echo "ERROR: could not read the go directive from k8s-operator/go.mod." >&2
@@ -94,14 +104,64 @@ if [ -z "$GO_MOD_VERSION" ]; then
 fi
 GO_MINOR=$(printf '%s' "$GO_MOD_VERSION" | cut -d. -f1,2)   # 1.25.8 -> 1.25
 
+MINTY_GO_MINOR=$(awk -F'"' '/^MIN_GO_VERSION=/{print $2; exit}' scripts/installer/min_versions.sh)
+if [ -z "$MINTY_GO_MINOR" ]; then
+  echo "ERROR: could not read MIN_GO_VERSION from scripts/installer/min_versions.sh." >&2
+  exit 1
+fi
+
 # {0,60} rather than {0,20}: at 20 this reached only "Go 1.N+." in the operator
 # development guide. INSTALL.md states it inside a padded table cell and
 # k8s-operator/README.md behind a ~38-character markdown link, so both sat
 # outside the window and a stale version in either passed the check.
-WRONG_GO=$(search 'Go[^0-9]{0,60}1\.[0-9]+\+' | grep -vF "${GO_MINOR}+" || true)
+GO_MENTIONS=$(search 'Go[^0-9]{0,60}1\.[0-9]+\+')
+
+# Which number a sentence owes is decided by whether it names the Minty CLI.
+# Naming the tool is the only signal prose offers, and it is the signal a
+# reader uses too — a sentence about the import that never says so is already
+# unclear, whatever version it quotes.
+#
+# A single line can owe both: INSTALL.md's prerequisites table states one Go
+# requirement for building the operator and, in the same cell, for importing
+# the key. So the rule is a set rather than one expected string — a line that
+# names Minty must carry Minty's number and may carry the operator's; any
+# other line must carry the operator's and nothing else. Checking only "does
+# it contain the required number" would let the second number on a shared line
+# go stale unseen, which is the hole splitting this check would otherwise open.
+WRONG_GO=""
+while IFS= read -r HIT; do
+  [ -n "$HIT" ] || continue
+
+  if printf '%s\n' "$HIT" | grep -qiE 'minty|token[ -]minter'; then
+    REQUIRED="${MINTY_GO_MINOR}+"
+    ALLOWED="^(${GO_MINOR}|${MINTY_GO_MINOR})\+$"
+    OWED="the Minty CLI import needs MIN_GO_VERSION=${MINTY_GO_MINOR} (scripts/installer/min_versions.sh)"
+  else
+    REQUIRED="${GO_MINOR}+"
+    ALLOWED="^${GO_MINOR}\+$"
+    OWED="building the operator needs go ${GO_MOD_VERSION} (k8s-operator/go.mod)"
+  fi
+
+  REASON=""
+  if ! printf '%s\n' "$HIT" | grep -qF "$REQUIRED"; then
+    REASON="does not state ${REQUIRED} — ${OWED}"
+  else
+    STRAY=$(printf '%s\n' "$HIT" | grep -oE '1\.[0-9]+\+' | grep -Ev "$ALLOWED" | sort -u | tr '\n' ' ')
+    if [ -n "$STRAY" ]; then
+      REASON="also states ${STRAY}which matches no Go requirement in this repository"
+    fi
+  fi
+
+  if [ -n "$REASON" ]; then
+    WRONG_GO="${WRONG_GO}${HIT}
+  -> ${REASON}
+"
+  fi
+done <<< "$GO_MENTIONS"
+
 if [ -n "$WRONG_GO" ]; then
-  echo "::error::Documented Go version does not match k8s-operator/go.mod (go ${GO_MOD_VERSION}; expected \"${GO_MINOR}+\")."
-  printf '%s\n\n' "$WRONG_GO" | sed 's/^/    /'
+  echo "::error::Documented Go version does not match its source of truth (operator: go ${GO_MOD_VERSION}; Minty CLI: ${MINTY_GO_MINOR}). A line counts as the Minty CLI's when it names the tool."
+  printf '%s\n' "$WRONG_GO" | sed 's/^/    /'
   FAILED=1
 fi
 
