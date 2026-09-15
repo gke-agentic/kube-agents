@@ -699,8 +699,15 @@ if [ -r "$_min_versions" ]; then
   # shellcheck source=scripts/installer/min_versions.sh disable=SC1091
   source "$_min_versions"
 else
+  # Reached when install.sh runs without the repository beside it, which is
+  # the documented `curl … | bash` path. Every require_min_* the script calls
+  # needs an arm here: the calls are unguarded, so a missing one is not a
+  # skipped check but an undefined command, and `set -u`/`|| return 1` turns
+  # that 127 into a failure of whatever was being attempted. Version floors
+  # are simply unenforceable without the file that states them.
   require_min_gcloud_version() { return 0; }
   require_min_terraform_version() { return 0; }
+  require_min_go_version() { return 0; }
 fi
 unset _min_versions
 

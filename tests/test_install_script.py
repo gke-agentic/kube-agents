@@ -527,6 +527,48 @@ out_dir=""; acquire_source_repo out_dir "{requested_ref}"; echo "RESOLVED=$out_d
         )
         self.assertEqual(proc.stdout.strip().splitlines()[-1], "1.26.0", proc.stderr)
 
+    def test_every_version_floor_resolves_when_installed_by_curl_pipe_bash(self):
+        """install.sh alone, with no repository beside it — the documented one-liner.
+
+        min_versions.sh cannot be sourced there, so the else arm hand-stubs the
+        floors. The call sites are unguarded, which makes a floor the arm
+        forgets not a skipped check but `command not found`; the caller's
+        `|| return 1` then reports it as the operation failing, on a host where
+        nothing was wrong. require_min_go_version shipped in exactly that state.
+
+        The expected set is read out of install.sh rather than listed here, so
+        a floor added later cannot satisfy this test by being absent from both
+        the else arm and the assertion.
+        """
+        names = sorted(set(re.findall(r"\brequire_min_\w+", _INSTALL_SH.read_text())))
+        self.assertGreaterEqual(len(names), 3, f"expected the known floors, found {names}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            outside = pathlib.Path(tmp) / "outside"
+            outside.mkdir()
+            # The copy is the point: no scripts/installer/ next to it, exactly
+            # as when the script arrives over the wire.
+            (outside / "install.sh").write_text(_INSTALL_SH.read_text())
+            probe = "; ".join(f'echo "{n}=$(type -t {n})"' for n in names)
+            proc = subprocess.run(
+                ["bash", "-c", f'KUBE_AGENTS_SOURCE_ONLY=true source ./install.sh >/dev/null 2>&1; {probe}'],
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=120,
+                env=get_isolated_test_env(),
+                cwd=str(outside),
+            )
+
+        for name in names:
+            self.assertIn(
+                f"{name}=function",
+                proc.stdout,
+                f"{name} is undefined when install.sh runs outside a checkout; "
+                f"add a stub to the else arm beside the source of min_versions.sh.\n"
+                f"{proc.stdout}\n{proc.stderr}",
+            )
+
     def test_parse_args_cluster_mode(self):
         """Verifies parse_args captures --cluster-mode."""
         cmd = 'parse_args --cluster-mode=autopilot; echo "MODE=$PARAM_CLUSTER_MODE"'
