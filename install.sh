@@ -3198,25 +3198,24 @@ main() {
   resolve_effective_image_tag image_tag "." "${PARAM_IMAGE_TAG:-}" || exit 1
   validate_immutable_ref "$image_tag" || exit 1
 
+  # Local-only checks on the GitHub App private key path. The other half of this
+  # decision — that a missing .pem is harmless once the signing key holds an
+  # ENABLED version, which is the state this installer's own documentation tells
+  # the operator to leave behind — cannot be made here. kms_key_enabled_version
+  # and derive_kms_location arrive with installer_common.sh at step 2, the
+  # keyring and key defaults with resolve_shared_defaults beside it, and the
+  # lookup itself needs an authenticated gcloud and a resolved project and
+  # region, none of which exist this early. It runs at step 8 instead, beside
+  # the only consumer.
+  #
+  # What is left is what the filesystem alone can answer. A path that exists but
+  # is not a readable regular file is a typo or a permission problem rather than
+  # a deleted key, and no KMS state makes it right, so it is worth catching
+  # before the installer does any work. A path that is simply absent is not
+  # decided here.
   if [ -n "$PARAM_GITHUB_PEM_PATH" ]; then
     PARAM_GITHUB_PEM_PATH="${PARAM_GITHUB_PEM_PATH/#\~/$HOME}"
-    if [ ! -e "$PARAM_GITHUB_PEM_PATH" ]; then
-      local kms_loc keyring key enabled_ver=""
-      keyring="${PARAM_KMS_KEYRING:-$DEFAULT_KMS_KEYRING}"
-      key="${PARAM_KMS_KEY:-$DEFAULT_KMS_KEY}"
-      if [ -n "${PARAM_REGION:-}" ] && [ -n "${PARAM_PROJECT_ID:-}" ]; then
-        kms_loc="$(derive_kms_location "$PARAM_REGION")"
-        enabled_ver="$(kms_key_enabled_version "$key" "$keyring" "$kms_loc" "$PARAM_PROJECT_ID" 2>/dev/null || true)"
-      fi
-      if [ -n "$enabled_ver" ]; then
-        print_info "GitHub minter KMS key already has an ENABLED version ($enabled_ver); ignoring missing local PEM path '${PARAM_GITHUB_PEM_PATH}'."
-        PARAM_GITHUB_PEM_PATH=""
-      else
-        print_error "GitHub App private key PEM file does not exist: '${PARAM_GITHUB_PEM_PATH}'."
-        exit 1
-      fi
-    fi
-    if [ -n "$PARAM_GITHUB_PEM_PATH" ]; then
+    if [ -e "$PARAM_GITHUB_PEM_PATH" ]; then
       if [ ! -f "$PARAM_GITHUB_PEM_PATH" ]; then
         print_error "GitHub App private key PEM path is not a regular file: '${PARAM_GITHUB_PEM_PATH}'."
         exit 1
@@ -3759,6 +3758,35 @@ main() {
 
   # 8. GitOps Infrastructure Repository Connection
   print_step "8. GitOps Infrastructure Repository Setup"
+
+  # The half of the PEM decision the early preflight could not make. By here
+  # installer_common.sh is sourced, resolve_shared_defaults has filled the
+  # keyring and key, gcloud is authenticated, and project and region are
+  # settled — step 5 can still change the region, and it has run.
+  #
+  # A .pem deleted after a successful import is the documented end state, not an
+  # error: docs/site/src/content/docs/deploy/token-minter.md and
+  # .agents/skills/install-kube-agents/SKILL.md both tell the operator to remove
+  # it. So a missing file is fatal only when the signing key has no ENABLED
+  # version to fall back on. Resolved before the locals below copy
+  # PARAM_GITHUB_PEM_PATH, so every consumer in this step sees one answer.
+  if [ -n "$PARAM_GITHUB_PEM_PATH" ] && [ ! -e "$PARAM_GITHUB_PEM_PATH" ]; then
+    local pem_keyring pem_key pem_kms_loc pem_enabled_ver=""
+    pem_keyring="${PARAM_KMS_KEYRING:-$DEFAULT_KMS_KEYRING}"
+    pem_key="${PARAM_KMS_KEY:-$DEFAULT_KMS_KEY}"
+    pem_kms_loc="$(derive_kms_location "$region")"
+    pem_enabled_ver="$(kms_key_enabled_version "$pem_key" "$pem_keyring" "$pem_kms_loc" "$project_id" 2>/dev/null || true)"
+    if [ -n "$pem_enabled_ver" ]; then
+      print_info "Cloud KMS key ${pem_keyring}/${pem_key} already has an ENABLED version (${pem_enabled_ver}); ignoring missing local PEM path '${PARAM_GITHUB_PEM_PATH}'."
+      PARAM_GITHUB_PEM_PATH=""
+    else
+      print_error "GitHub App private key PEM file does not exist: '${PARAM_GITHUB_PEM_PATH}'."
+      print_info "Cloud KMS key ${pem_keyring}/${pem_key} has no ENABLED version, so the import still needs that file."
+      print_info "Point --github-pem-path at the downloaded key, or clear GITHUB_PEM_PATH from install.env to install without the token minter."
+      exit 1
+    fi
+  fi
+
   local github_org="$PARAM_GITOPS_ORG"
   local github_repo="$PARAM_GITOPS_REPO"
   local github_app_id="$PARAM_GITHUB_APP_ID"
