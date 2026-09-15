@@ -323,11 +323,17 @@ full.
 `githubMinter.*` renders the minty Deployment, Service, NetworkPolicy,
 Workload Identity KSA, and rule ConfigMap, plus the `github-app-credentials`
 Secret when `githubMinter.appId` is set (leave it empty to manage that Secret
-yourself). `org` and `repo` are required when enabled. This is the Kubernetes
+yourself). `enabled` defaults to `false`; `org` and `repo` are required when
+it is on, and `org` must be a GitHub **organization**: Minty resolves App
+installations at `/orgs/{org}/installation`, which does not exist for a
+personal account. `kms.keyring`, `kms.key` and `kms.keyVersion` address the
+Cloud KMS key version holding the App's private key. This is the Kubernetes
 half only: the minter GSA, its Workload Identity binding, and the import-only
 KMS signing key come from `terraform/modules/github-minter`, and the App
 private key must be imported into that key (see the module README) before the
-Deployment passes its readiness probe.
+Deployment passes its readiness probe. The chart never imports it;
+`install.sh --github-pem-path` does, or you import it yourself Ahead-Of-Time —
+see the [Token minter guide](https://gke-labs.github.io/kube-agents/deploy/token-minter/).
 
 ### Telemetry
 
@@ -522,17 +528,6 @@ Four knobs need context beyond the chart:
 - `plugins.stockoutInvestigator.enabled` (default `false`): Deploys the GKE Stockout Investigator (`AgentPlugin/gkestockoutinvestigator`) targeting the `platform` profile, which investigates autoscaler scale-up failures. Requires `plugins.pubsubPlatform.enabled=true`.
 
 When `plugins.stockoutInvestigator.enabled=true`, the chart automatically seeds `platformAgent.harness.tuning` execution limits (`maxInProgress: 3`, `platform: {apiMaxRetries: 8, maxTurns: 200}`, `cluster: {apiMaxRetries: 8, maxTurns: 150}`). Stockout remediation is long-running and quota-intensive; these limits ensure the platform agent and delegated cluster workers have sufficient turns and retry budgets to diagnose and remediate capacity incidents across the fleet. Explicit settings in `platformAgent.harness.tuning.*` take precedence over these defaults.
-
-### GitHub Token Minter (GitOps Integration)
-
-`githubMinter.*` renders the in-cluster broker for short-lived GitHub App tokens (`submit-suggestion` and GitOps pull requests).
-
-Minty operates on an **Ahead-Of-Time (AOT)** infrastructure model: the GitHub App and the Cloud KMS asymmetric signing key (with its imported private key) must be set up beforehand (see upstream [`abcxyz/github-token-minter`](https://github.com/abcxyz/github-token-minter) and the [Token minter guide](https://gke-labs.github.io/kube-agents/deploy/token-minter/)).
-
-- `githubMinter.enabled` (default `false`): Enables the GitHub token minter Deployment, Service, NetworkPolicy, and KSA.
-- `githubMinter.org` & `githubMinter.repo`: Target organization and GitOps repository. The repository must be owned by a GitHub Organization (personal accounts are not supported by Minty).
-- `githubMinter.appId`: Numeric GitHub App ID. If set, the chart renders the `github-app-credentials` Secret automatically; if left empty, the Secret must be pre-created in the release namespace.
-- `githubMinter.kms.keyring`, `githubMinter.kms.key`, `githubMinter.kms.keyVersion`: Reference to the Cloud KMS key version holding the imported GitHub App private key.
 
 ### Scoped service accounts
 
