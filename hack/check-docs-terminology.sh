@@ -116,23 +116,27 @@ fi
 # outside the window and a stale version in either passed the check.
 GO_MENTIONS=$(search 'Go[^0-9]{0,60}1\.[0-9]+\+')
 
-# Which number a sentence owes is decided by whether it names the Minty CLI.
-# Naming the tool is the only signal prose offers, and it is the signal a
-# reader uses too — a sentence about the import that never says so is already
-# unclear, whatever version it quotes.
+# Which number a sentence owes is decided by whether it is about the key
+# import. Naming the Minty CLI is the clearest signal, but the install skill
+# stated the requirement as "only needed if performing automated `.pem` import
+# during install" and named no tool, so it read as an operator sentence and
+# kept the operator's number for a path that never builds the operator. The
+# subject matter has to be the test, not the brand name.
 #
 # A single line can owe both: INSTALL.md's prerequisites table states one Go
 # requirement for building the operator and, in the same cell, for importing
-# the key. So the rule is a set rather than one expected string — a line that
-# names Minty must carry Minty's number and may carry the operator's; any
-# other line must carry the operator's and nothing else. Checking only "does
-# it contain the required number" would let the second number on a shared line
-# go stale unseen, which is the hole splitting this check would otherwise open.
+# the key. So the rule is a set rather than one expected string — a line about
+# the import must carry Minty's number and may carry the operator's; any other
+# line must carry the operator's and nothing else. Checking only "does it
+# contain the required number" would let the second number on a shared line go
+# stale unseen, which is the hole splitting this check would otherwise open.
+MINTY_SUBJECT='minty|token[ -]minter|\.pem|private key'
+
 WRONG_GO=""
 while IFS= read -r HIT; do
   [ -n "$HIT" ] || continue
 
-  if printf '%s\n' "$HIT" | grep -qiE 'minty|token[ -]minter'; then
+  if printf '%s\n' "$HIT" | grep -qiE "$MINTY_SUBJECT"; then
     REQUIRED="${MINTY_GO_MINOR}+"
     ALLOWED="^(${GO_MINOR}|${MINTY_GO_MINOR})\+$"
     OWED="the Minty CLI import needs MIN_GO_VERSION=${MINTY_GO_MINOR} (scripts/installer/min_versions.sh)"
@@ -160,7 +164,7 @@ while IFS= read -r HIT; do
 done <<< "$GO_MENTIONS"
 
 if [ -n "$WRONG_GO" ]; then
-  echo "::error::Documented Go version does not match its source of truth (operator: go ${GO_MOD_VERSION}; Minty CLI: ${MINTY_GO_MINOR}). A line counts as the Minty CLI's when it names the tool."
+  echo "::error::Documented Go version does not match its source of truth (operator: go ${GO_MOD_VERSION}; Minty CLI: ${MINTY_GO_MINOR}). A line counts as the Minty CLI's when it is about the private-key import."
   printf '%s\n' "$WRONG_GO" | sed 's/^/    /'
   FAILED=1
 fi
