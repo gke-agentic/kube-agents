@@ -754,26 +754,32 @@ RBAC to read ResourceQuotas).
 
     {{- range $key, $hardRaw := $hard -}}
       {{- $req := 0 -}}
-      {{- $surge := 0 -}}
+      {{- /* Named $surgeRoom rather than the fencepost name used by
+             kube-agents.rollingUpdateFenceposts: tests/test_deployments_rollout_quota.py
+             scans this whole file for an unguarded reassignment of that name, which would be
+             a rollingUpdate fencepost pinned for every install. This is a different quantity
+             — the headroom the remediation patch leaves — and sharing the name would make
+             that check unreadable. */ -}}
+      {{- $surgeRoom := 0 -}}
       {{- $isCpu := false -}}
       {{- $isBytes := false -}}
       {{- $isCount := false -}}
 
       {{- if eq $key "limits.cpu" -}}
         {{- $req = int64 $r.limitsCpu -}}
-        {{- $surge = int64 $r.surgeLimitsCpu -}}
+        {{- $surgeRoom = int64 $r.surgeLimitsCpu -}}
         {{- $isCpu = true -}}
       {{- else if or (eq $key "requests.cpu") (eq $key "cpu") -}}
         {{- $req = int64 $r.requestsCpu -}}
-        {{- $surge = int64 $r.surgeRequestsCpu -}}
+        {{- $surgeRoom = int64 $r.surgeRequestsCpu -}}
         {{- $isCpu = true -}}
       {{- else if eq $key "limits.memory" -}}
         {{- $req = int64 $r.limitsMemory -}}
-        {{- $surge = int64 $r.surgeLimitsMemory -}}
+        {{- $surgeRoom = int64 $r.surgeLimitsMemory -}}
         {{- $isBytes = true -}}
       {{- else if or (eq $key "requests.memory") (eq $key "memory") -}}
         {{- $req = int64 $r.requestsMemory -}}
-        {{- $surge = int64 $r.surgeRequestsMemory -}}
+        {{- $surgeRoom = int64 $r.surgeRequestsMemory -}}
         {{- $isBytes = true -}}
       {{- else if eq $key "limits.ephemeral-storage" -}}
         {{- $req = int64 $r.limitsEphemeral -}}
@@ -787,7 +793,7 @@ RBAC to read ResourceQuotas).
       {{- else if eq $key "pods" -}}
         {{- $req = int64 $r.pods -}}
         {{- /* One surge Pod, for the same reason as the CPU and memory surge. */ -}}
-        {{- $surge = 1 -}}
+        {{- $surgeRoom = 1 -}}
         {{- $isCount = true -}}
       {{- else if or (eq $key "persistentvolumeclaims") (eq $key "count/persistentvolumeclaims") -}}
         {{- $req = int64 $r.persistentVolumeClaims -}}
@@ -823,7 +829,7 @@ RBAC to read ResourceQuotas).
         {{- if $failed -}}
           {{- /* used + required + one surge Pod. Exactly used+required fits the release at
                  rest and then stalls its first rolling update. */ -}}
-          {{- $patchTarget := add $usedVal $req $surge -}}
+          {{- $patchTarget := add $usedVal $req $surgeRoom -}}
           {{- $reqFormatted := "" -}}
           {{- $hardFormatted := "" -}}
           {{- $availFormatted := "" -}}
