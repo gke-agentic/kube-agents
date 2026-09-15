@@ -46,8 +46,10 @@ Generated release notes are the tracking mechanism. GitHub milestones are unused
 
 GitHub writes each release's notes from the pull requests merged between the previous release tag
 and the new one, grouped by label: features, bug fixes, security, documentation, infrastructure,
-and a catch-all for anything else. Dependabot's pull requests, and any labelled `duplicate`,
-`invalid` or `wontfix`, are left out. Read them on
+and a catch-all for anything else. The grouping is the label-to-category map in
+[`.github/release.yml`](https://github.com/gke-labs/kube-agents/blob/main/.github/release.yml),
+so a pull request's labels decide the heading it appears under. Dependabot's pull requests, and any
+labelled `duplicate`, `invalid` or `wontfix`, are left out. Read them on
 [the releases page](https://github.com/gke-labs/kube-agents/releases) once the release exists.
 
 Before it exists, the next release is whatever has merged since the latest GA tag, which

@@ -109,20 +109,20 @@ Required for a **plan** as much as for an apply: the reconcile renders `--strict
 before it branches on the mode, so until an environment carries all twelve the daily
 drift report goes red on it rather than reporting no drift.
 
-| GitHub variable                 | install.env key                 | Notes                                                         |
-| ------------------------------- | ------------------------------- | ------------------------------------------------------------- |
-| `GCP_PROJECT_ID`                | `PROJECT_ID`                    | Required everywhere, including for a plan                     |
-| `GCP_REGION`                    | `REGION`                        | Required everywhere                                           |
-| `GKE_CLUSTER_NAME`              | `CLUSTER_NAME`                  | Required everywhere                                           |
-| `GOOGLE_CHAT_ENABLED`           | `GOOGLE_CHAT_ENABLED`           | `false` removes the topic and subscription                    |
-| `MODEL_PROVIDER`                | `MODEL_PROVIDER`                | Absent falls back to `gemini`                                 |
-| `PLATFORM_AGENT_PERMISSION_SET` | `PLATFORM_AGENT_PERMISSION_SET` | Absent falls back to `read-only` and drops the custom roles   |
-| `ENABLE_GVISOR`                 | `ENABLE_GVISOR`                 | Absent destroys the gVisor node pool on Standard              |
-| `MEMORY_PROVIDER`               | `MEMORY`                        | Absent destroys the Hindsight API and its Postgres            |
-| `USER_PROFILE_ENABLED`          | `USER_PROFILE_ENABLED`          | Absent resets it                                              |
-| `ENABLE_GKE_BACKUP_PLAN`        | `ENABLE_GKE_BACKUP_PLAN`        | Absent destroys the backup plan                               |
-| `ENABLE_PUBSUB_PLATFORM`        | `ENABLE_PUBSUB_PLATFORM`        | Absent removes the adapter plugin; no GCP resource of its own |
-| `ENABLE_STOCKOUT_INVESTIGATOR`  | `ENABLE_STOCKOUT_INVESTIGATOR`  | Absent destroys log sink and stockout alerts topic/sub        |
+| GitHub variable                 | install.env key                 | Notes                                                                                                                                               |
+| ------------------------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GCP_PROJECT_ID`                | `PROJECT_ID`                    | Required everywhere, including for a plan                                                                                                           |
+| `GCP_REGION`                    | `REGION`                        | Required everywhere                                                                                                                                 |
+| `GKE_CLUSTER_NAME`              | `CLUSTER_NAME`                  | Required everywhere                                                                                                                                 |
+| `GOOGLE_CHAT_ENABLED`           | `GOOGLE_CHAT_ENABLED`           | `false` removes the topic and subscription                                                                                                          |
+| `MODEL_PROVIDER`                | `MODEL_PROVIDER`                | Absent falls back to `gemini`                                                                                                                       |
+| `PLATFORM_AGENT_PERMISSION_SET` | `PLATFORM_AGENT_PERMISSION_SET` | Absent falls back to `read-only` and drops the custom roles                                                                                         |
+| `ENABLE_GVISOR`                 | `ENABLE_GVISOR`                 | Absent destroys the gVisor node pool on Standard                                                                                                    |
+| `MEMORY_PROVIDER`               | `MEMORY`                        | Absent destroys the Hindsight API and its Postgres                                                                                                  |
+| `USER_PROFILE_ENABLED`          | `USER_PROFILE_ENABLED`          | Absent resets it                                                                                                                                    |
+| `ENABLE_GKE_BACKUP_PLAN`        | `ENABLE_GKE_BACKUP_PLAN`        | Absent destroys the backup plan                                                                                                                     |
+| `ENABLE_PUBSUB_PLATFORM`        | `ENABLE_PUBSUB_PLATFORM`        | Absent removes the adapter plugin unless `ENABLE_STOCKOUT_INVESTIGATOR` keeps it; the Pub/Sub API it enabled stays on and nothing else is destroyed |
+| `ENABLE_STOCKOUT_INVESTIGATOR`  | `ENABLE_STOCKOUT_INVESTIGATOR`  | Absent destroys log sink and stockout alerts topic/sub                                                                                              |
 
 Required when the integration they belong to is switched on, because an empty
 allowlist is not "no opinion" — the operator reads an absent list as allow-all,

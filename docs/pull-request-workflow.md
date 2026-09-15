@@ -122,6 +122,10 @@ that failure is why this step has previously been skipped rather than run.
 docker build --platform linux/amd64 -f deploy/docker/Dockerfile --target platform .
 ```
 
+`make docker-build-platform` runs the same build and supplies `HERMES_AGENT_TAG` from `tags.env`,
+the build argument the Dockerfile has no default for and the `Docker Build` CI job passes from the
+same file.
+
 Keep `--platform linux/amd64`: the base images are multi-arch and deployment targets are amd64 GKE
 nodes, so a bare build on an arm64 machine produces an image that cannot run on the cluster (#560).
 
@@ -168,9 +172,8 @@ loop while you work:
 
 - `make validate` — the `Validate Repo Structure` job; fails if skills live under
   `agents/*/defaults/skills/` instead of `agents/*/skills/`.
-- `make -C k8s-operator test` — manifests, generate, fmt, vet, the envtest download, then
-  `go test` and the operator's Python tests; what the
-  `Operator Tests` job runs.
+- `make -C k8s-operator test` — manifests, generate, fmt, vet, the envtest download, the
+  operator's Python tests, then `go test`; what the `Operator Tests` job runs.
 - `make test-integration` — the seam tier only, for a component another one talks to across a
   process or protocol boundary. Install a Go toolchain first: the injector seam compiles the real
   Go event-watcher client, and without `go` on `PATH` its tests skip and the run still prints

@@ -14,7 +14,7 @@ Use [`terraform/examples/full-install`](../full-install/README.md) instead for a
 
 Each pool project gets its **own** private GitOps repository, and the minty rule the chart renders scopes tokens to exactly that one repository, keyed on that project's agent GSA. Two leases therefore cannot reach each other's repository, cannot share a ledger issue, and cannot race on a remediation branch. The resources are per-project (a KMS key ring is not shareable across projects), so the composition is applied once per project with its own state.
 
-The project-to-repository mapping has exactly one home: `gitops_repo_for_project()` in `hack/ci-deploy.sh`, with [CI pool project prerequisites](../../../docs/ci-pool-projects.md) as the onboarding runbook. Read the `gitops_repo` for the project being onboarded out of there. Onboarding a project is one line in that function, so a copy of the mapping here would go stale on the first onboarding.
+The project-to-repository mapping has exactly one home: `gitops_repo_for_project()` in `hack/ci-deploy.sh`, with [CI pool project prerequisites](../../../docs/ci-pool-projects.md) as the onboarding runbook. Read the `gitops_repo` for the project being onboarded out of there. Onboarding a project is one line in that function and one entry in `_EXPECTED_MAPPING` in `tests/test_ci_gitops_repo.py`, so a copy of the mapping here would go stale on the first onboarding.
 
 ## Usage
 
