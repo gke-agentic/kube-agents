@@ -522,7 +522,7 @@ exit {install_exit}
         )
         combined = proc.stdout + proc.stderr
         self.assertNotIn(
-            "Tearing down existing RC environment",
+            "Tearing down the existing environment",
             combined,
             "the guard must fire before uninstall.sh destroys the environment",
         )
