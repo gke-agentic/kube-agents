@@ -19,6 +19,7 @@ decision rather than only that the templates exist.
 
 import json
 import pathlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -82,6 +83,10 @@ _OPERATOR_PVC_COUNT = 4
 _OPERATOR_STORAGE_BYTES = 22 * 1024**3
 # hindsight.postgresql.storage, the volumeClaimTemplate the StatefulSet renders.
 _HINDSIGHT_STORAGE_BYTES = 8 * 1024**3
+# A memory quota written in decimal SI. 1G is 1,000,000,000 bytes, which is a whole number
+# of no binary unit -- the case where an exact-only formatter falls back to raw bytes.
+_DECIMAL_SI_HARD = "1G"
+_DECIMAL_SI_HARD_BYTES = 1000000000
 
 _REQUIRED_HARNESS = [
     "--set",
@@ -321,6 +326,31 @@ class PreflightDecisionTest(unittest.TestCase):
         """The API server writes 1000 back as `1k`; read as 0 it refuses an ample quota."""
         res = self._render({"probe": {"quotas": [self._quota({"pods": "1k"})]}})
         self.assertEqual(res.returncode, 0, f"1k pods should be ample:\n{res.stderr}")
+
+    def test_a_decimal_si_quota_is_still_diagnosed_in_units(self) -> None:
+        """A decimal-SI quota divides into no whole Mi, and used to print as raw bytes.
+
+        Every figure in the message became an eleven-digit byte count, including the
+        remediation patch -- unreadable, in the one output whose whole job is to be read.
+        """
+        res = self._render(
+            {"probe": {"quotas": [self._quota({"requests.memory": _DECIMAL_SI_HARD})]}}
+        )
+        self.assertNotEqual(res.returncode, 0)
+        # The quota's own spelling, so it matches `kubectl describe resourcequota`.
+        self.assertIn(f"hard {_DECIMAL_SI_HARD}", res.stderr)
+        self.assertNotIn(str(_DECIMAL_SI_HARD_BYTES), res.stderr)
+
+        patch = re.search(r'"requests\.memory":"([^"]+)"', res.stderr)
+        self.assertIsNotNone(patch, f"no memory patch value in:\n{res.stderr}")
+        quantity = patch.group(1)
+        self.assertTrue(quantity.endswith("Mi"), f"unreadable patch quantity {quantity!r}")
+        # Rounding a patch down prints one that is short of what the release needs, so the
+        # operator runs it and the install fails anyway. Up is the only safe direction.
+        self.assertGreaterEqual(
+            int(quantity.removesuffix("Mi")) * 1024**2,
+            _DEFAULT_REQUESTS_MEMORY_BYTES,
+        )
 
     def test_hindsight_adds_its_claim_to_the_totals(self) -> None:
         """Sized from a key the chart does not have, the claim counts as zero and stalls."""

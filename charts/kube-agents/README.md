@@ -605,6 +605,12 @@ stalls its first rolling update.
 does nothing under `helm template` and nothing in a namespace with no ResourceQuota — a
 clean render in either case is not evidence that a quota fits.
 
+It reads ResourceQuota and nothing else, so a `LimitRange` in the namespace is invisible
+to it. A LimitRange with a per-container `max`, or a `default` that rewrites what the pods
+request, rejects or resizes them at admission no matter how much quota is free — the same
+stall, from an object this check never looks at. Check it separately with
+`kubectl describe limitrange -n <release-namespace>`.
+
 It does need `get`/`list` on `resourcequotas` in the release namespace. Helm's `lookup`
 returns nothing for a NotFound and raises a template error for everything else, so an
 identity without that permission gets `error calling lookup: resourcequotas is

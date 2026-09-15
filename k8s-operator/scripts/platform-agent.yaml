@@ -1,0 +1,56 @@
+apiVersion: kubeagents.x-k8s.io/v1alpha1
+kind: PlatformAgent
+metadata:
+  name: platform-agent
+  namespace: "kubeagents-system"
+spec:
+  harness:
+    clusterName: "platform-agent-host"
+    location: "us-east4"
+    projectId: "shalinibhatia-gkedemos"
+    hermes:
+      dashboardEnabled: false
+      pluginsDebug: false
+      agentHome: "/opt/data"
+      apiServerSecretRef:
+        name: platform-agent-secrets
+        key: API_SERVER_KEY
+    memory:
+      memoryEnabled: false
+      provider: "multiuser_memory"
+      userProfileEnabled: true
+  deployment:
+    image: "ghcr.io/gke-labs/kube-agents/platform-agent"
+    tag: "latest"
+    imagePullPolicy: Always
+    availability:
+      replicas: 1
+      # runtimeClassName: gvisor # Uncomment to enable GKE Sandbox (gVisor) kernel isolation
+  security:
+    serviceAccountName: "kubeagents-platform-agent"
+    serviceAccountAnnotations:
+      iam.gke.io/gcp-service-account: "kubeagents-platform-gsa@shalinibhatia-gkedemos.iam.gserviceaccount.com"
+  integration:
+    github:
+      gitRepo: "gke-agentic/kube-agents"
+    googleChat:
+      enabled: true
+      mode: "default"
+      projectId: "shalinibhatia-gkedemos"
+      topicName: "platform-agent-chat-events"
+      subscriptionName: "platform-agent-chat-events-sub"
+      allowedUsers:
+        - ""
+      homeChannel: ""
+    slack:
+      enabled: true
+      botTokenSecretRef:
+        name: platform-agent-secrets
+        key: SLACK_BOT_TOKEN
+      appTokenSecretRef:
+        name: platform-agent-secrets
+        key: SLACK_APP_TOKEN
+      allowedUsers:
+        - ""
+      homeChannel: ""
+      homeChannelName: ""
