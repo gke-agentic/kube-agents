@@ -52,13 +52,7 @@ When configuring the installer or Terraform (`install.env` or `terraform.tfvars`
 - `GITOPS_ORG`: The name of the GitHub organization hosting the GitOps repository.
 - `GITOPS_REPO`: The name of the target repository the agent will manage.
 
-When deploying manually via the Kustomize Makefile target (`make deploy-github`), export `GITHUB_ORG` and `GITHUB_REPO` directly in the environment (as detailed in [`k8s-operator/README.md`](../../../README.md#step-by-step-deployment)) and ensure the credentials Secret exists in the target namespace beforehand:
-
-```bash
-kubectl create secret generic github-app-credentials \
-  --namespace kubeagents-system \
-  --from-literal=app-id="${GITHUB_APP_ID}"
-```
+When deploying manually via the Kustomize Makefile target (`make deploy-github`), export `GITHUB_ORG` and `GITHUB_REPO` directly in the environment and create the `github-app-credentials` Secret in the target namespace first. Both steps, with the commands, are in [`k8s-operator/README.md`](../../../README.md#deploying-github-integration), which documents this path end to end.
 
 ## Minty Limitations & GSA Tokens
 
