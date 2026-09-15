@@ -276,8 +276,10 @@ fi
         with tempfile.TemporaryDirectory() as tmp:
             tmp_log = pathlib.Path(tmp) / "timeout.log"
             # Shaped the way terraform prints it. The diagnoser requires the
-            # release's address as well as the phrase: the phrase alone is
-            # also what the Google provider raises for its own long calls.
+            # error-attribution line naming the release, not just the phrase:
+            # the phrase alone is also what the Google provider raises for its
+            # own long calls, and the release's address on its own appears in
+            # the plan output of every apply.
             tmp_log.write_text(
                 "Error: context deadline exceeded waiting for condition\n"
                 "\n"

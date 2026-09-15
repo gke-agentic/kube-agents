@@ -4555,6 +4555,105 @@ diagnose_rollout_failure "{log_file}"
             self.assertNotIn("Helm rollout timed out", proc.stdout)
             self.assertNotIn("kubectl should not have been called", proc.stderr)
 
+    def test_diagnose_rollout_failure_ignores_a_node_pool_timeout_in_a_real_apply_log(self):
+        # The log the predicate actually reads is the tee of `./lifecycle.sh
+        # apply`, and lifecycle.sh runs `terraform apply` with no saved plan, so
+        # terraform prints the refresh and the plan into it first. Both
+        # helm_release addresses are therefore in the log of every apply the
+        # installer runs, whether or not either release started -- which a
+        # substring test for "helm_release" cannot tell apart from a rollout
+        # that timed out. The error block's attribution line can: terraform
+        # prints "with <address>," only under the error it raised.
+        #
+        # The case that matters is this one: the gVisor node pool is created by
+        # the same apply, and the Google provider says "context deadline
+        # exceeded" when it runs long. The fixtures above cannot catch it --
+        # they are four-line error blocks with no plan above them, a shape
+        # terraform does not produce.
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = pathlib.Path(tmp) / "bin"
+            bin_dir.mkdir()
+            kubectl = bin_dir / "kubectl"
+            kubectl.write_text("""#!/usr/bin/env bash
+echo "kubectl should not have been called" >&2
+exit 1
+""")
+            kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
+            log_file = pathlib.Path(tmp) / "prov.log"
+            log_file.write_text(
+                "module.gke_cluster.google_container_cluster.primary: Refreshing state... "
+                "[id=projects/p/locations/us-east4/clusters/platform-agent-host]\n"
+                "helm_release.cert_manager: Refreshing state... [id=cert-manager]\n"
+                "helm_release.kube_agents: Refreshing state... [id=kube-agents]\n"
+                "\n"
+                "Terraform used the selected providers to generate the following execution\n"
+                "plan. Resource actions are indicated with the following symbols:\n"
+                "  + create\n"
+                "\n"
+                "Terraform will perform the following actions:\n"
+                "\n"
+                "  # google_container_node_pool.gvisor_pool will be created\n"
+                '  + resource "google_container_node_pool" "gvisor_pool" {\n'
+                '      + name = "gvisor-pool"\n'
+                "    }\n"
+                "\n"
+                "  # helm_release.kube_agents will be updated in-place\n"
+                '  ~ resource "helm_release" "kube_agents" {\n'
+                '      ~ version = "0.1.0" -> "0.2.0"\n'
+                "    }\n"
+                "\n"
+                "Plan: 1 to add, 1 to change, 0 to destroy.\n"
+                "google_container_node_pool.gvisor_pool: Creating...\n"
+                "google_container_node_pool.gvisor_pool: Still creating... [10m0s elapsed]\n"
+                "\n"
+                "Error: context deadline exceeded\n"
+                "\n"
+                "  with google_container_node_pool.gvisor_pool,\n"
+                '  on main.tf line 284, in resource "google_container_node_pool" "gvisor_pool":\n'
+                "  284: resource \"google_container_node_pool\" \"gvisor_pool\" {\n"
+            )
+            body = f"""
+diagnose_rollout_failure "{log_file}"
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+            self.assertNotIn(
+                "Helm rollout timed out",
+                proc.stdout,
+                "a node-pool timeout in an apply log that names both helm_release "
+                "resources in its plan was diagnosed as a Helm rollout failure",
+            )
+            self.assertNotIn("kubectl should not have been called", proc.stderr)
+
+    def test_helm_rollout_timed_out_still_fires_on_a_release_timeout_in_a_real_apply_log(self):
+        # The mirror of the test above: the same plan and refresh preamble, with
+        # the error attributed to the release instead. Without this, narrowing
+        # the discriminator could pass by rejecting everything.
+        with tempfile.TemporaryDirectory() as tmp:
+            log_file = pathlib.Path(tmp) / "prov.log"
+            log_file.write_text(
+                "helm_release.cert_manager: Refreshing state... [id=cert-manager]\n"
+                "\n"
+                "  # helm_release.kube_agents will be created\n"
+                '  + resource "helm_release" "kube_agents" {\n'
+                "    }\n"
+                "\n"
+                "Plan: 1 to add, 0 to change, 0 to destroy.\n"
+                "helm_release.kube_agents: Creating...\n"
+                "helm_release.kube_agents: Still creating... [10m0s elapsed]\n"
+                "\n"
+                "Error: context deadline exceeded\n"
+                "\n"
+                "  with helm_release.kube_agents,\n"
+                '  on main.tf line 497, in resource "helm_release" "kube_agents":\n'
+            )
+            body = f"""
+if helm_rollout_timed_out "{log_file}"; then echo "PREDICATE=true"; else echo "PREDICATE=false"; fi
+"""
+            proc = self._run_cmd(body)
+            self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+            self.assertIn("PREDICATE=true", proc.stdout)
+
     def test_helm_timeout_rejects_non_positive_integers(self):
         # Drives install.sh's own validator. The previous version of this test
         # re-implemented the regex in the bash it ran and asserted on its own

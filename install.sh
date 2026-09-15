@@ -90,10 +90,15 @@ readonly HELM_TIMEOUT_MAX_SECONDS=899
 readonly ROLLOUT_TIMEOUT_LOG_PATTERN="context deadline exceeded|timed out waiting"
 # Neither phrase belongs to Helm. The Google provider raises both for its own
 # long API calls, so a cluster creation that ran out of time prints one and
-# would otherwise be diagnosed as a Helm rollout that never came up. Terraform
-# attributes an error to the resource that raised it, so the release's address
-# appearing in the same log is what separates the two.
-readonly ROLLOUT_TIMEOUT_RESOURCE_PATTERN="helm_release"
+# would otherwise be diagnosed as a Helm rollout that never came up.
+#
+# The release's address alone does not separate them. lifecycle.sh runs
+# `terraform apply` with no saved plan, so the refresh and the plan print into
+# the same log the diagnoser reads, and `helm_release.kube_agents` is in every
+# apply log whether or not either release started. What terraform prints only
+# under the error it raised is the attribution line -- `with <address>,`, two
+# spaces in -- so that is what this matches.
+readonly ROLLOUT_TIMEOUT_RESOURCE_PATTERN="^[[:space:]]*with helm_release\\."
 
 # What enforce_capacity_preflight returns when the operator declined at the
 # prompt: a choice rather than a fault, which main() reports as PAUSED and
@@ -2197,7 +2202,7 @@ monitor_lifecycle_rollout() {
 helm_rollout_timed_out() {
   local log_file="$1"
   grep -qiE "$ROLLOUT_TIMEOUT_LOG_PATTERN" "$log_file" 2>/dev/null \
-    && grep -qF "$ROLLOUT_TIMEOUT_RESOURCE_PATTERN" "$log_file" 2>/dev/null
+    && grep -qE "$ROLLOUT_TIMEOUT_RESOURCE_PATTERN" "$log_file" 2>/dev/null
 }
 
 # Diagnoses Helm rollout failures (such as context deadline exceeded) by
