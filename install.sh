@@ -2799,6 +2799,13 @@ import_github_pem() {
     print_info "Go is required to build the Minty CLI for initial private key import into Cloud KMS."
     auto_install_tool "go"
   fi
+  # auto_install_tool judges success by `command -v`, which a Go far too old to
+  # build the CLI answers just as well — and on Debian 12 and Ubuntu 22.04 that
+  # is exactly what its `apt-get install golang-go` leaves behind. Checked here
+  # rather than left to `go run`: that call is wrapped in `retry 6 5` below, so
+  # a toolchain that cannot satisfy the CLI's go.mod costs six attempts and
+  # then advises retrying the same command by hand.
+  require_min_go_version || return 1
   # The ring and key normally come from Terraform, but this import runs
   # BEFORE the apply — the minter Deployment cannot pass readiness without an
   # imported key, and the composition's helm release waits on every
