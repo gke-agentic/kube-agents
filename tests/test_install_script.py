@@ -722,21 +722,84 @@ out_dir=""; acquire_source_repo out_dir "{requested_ref}"; echo "RESOLVED=$out_d
             proc.stdout,
         )
 
-    def test_preflight_rejects_missing_github_pem_path(self):
-        """Preflight must fail fast with an explicit error when --github-pem-path does not exist."""
-        test_env = get_isolated_test_env(
-            overrides={"KUBE_AGENTS_LOCK_FILE": str(self._empty_install_env.parent / "test.lock")}
-        )
-        proc = subprocess.run(
-            ["bash", str(_INSTALL_SH), "--image-tag=0.1.0", "--github-pem-path=/tmp/nonexistent-pem-file-12345.pem"],
-            capture_output=True,
-            text=True,
-            env=test_env,
-            cwd=str(_REPO_ROOT),
-        )
-        self.assertEqual(proc.returncode, 1, f"Expected exit code 1, got {proc.returncode}:\n{proc.stdout}\n{proc.stderr}")
-        combined = proc.stdout + proc.stderr
-        self.assertIn("GitHub App private key PEM file does not exist", combined)
+    def test_missing_github_pem_path_is_deferred_not_rejected_early(self):
+        """A .pem deleted after a successful import must not abort the early preflight.
+
+        The installer's own docs tell the operator to delete the file once it is
+        in Cloud KMS, and install.env may still name it. Rejecting that path up
+        front makes every later run unusable, so the decision belongs with the
+        KMS lookup that can see the imported key.
+
+        The run is expected to fail -- --dry-run makes the prerequisites step
+        refuse to install the gcloud a sterile PATH cannot provide -- but it
+        must fail *there*, past the PEM preflight, rather than on the missing
+        file. stdin is closed so a regression that reintroduces a prompt fails
+        the test instead of hanging it.
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bin_dir = create_minimal_tools_bin(tmp_dir)
+            test_env = get_isolated_test_env(
+                overrides={
+                    "KUBE_AGENTS_LOCK_FILE": str(self._empty_install_env.parent / "test.lock"),
+                    "PATH": str(bin_dir),
+                },
+            )
+            proc = subprocess.run(
+                [
+                    "bash",
+                    str(_INSTALL_SH),
+                    "--image-tag=0.1.0",
+                    "--dry-run",
+                    "--github-pem-path=/tmp/nonexistent-pem-file-12345.pem",
+                ],
+                capture_output=True,
+                text=True,
+                env=test_env,
+                cwd=str(_REPO_ROOT),
+                stdin=subprocess.DEVNULL,
+                timeout=120,
+            )
+            combined = proc.stdout + proc.stderr
+            self.assertNotIn(
+                "GitHub App private key PEM file does not exist",
+                combined,
+                f"the early preflight must not decide a missing .pem:\n{combined}",
+            )
+            self.assertIn(
+                "Checking Prerequisites",
+                combined,
+                f"the run should have reached the prerequisites step:\n{combined}",
+            )
+
+    def test_the_missing_pem_decision_runs_after_the_kms_helpers_are_sourced(self):
+        """The KMS-aware half of the PEM check must sit below source_provisioning_helpers.
+
+        derive_kms_location and kms_key_enabled_version live in
+        installer_common.sh, and DEFAULT_KMS_KEYRING in install.defaults.env,
+        which a `curl | bash` run has no copy of. Calling either above the
+        sourcing aborts the installer with `command not found` (127) or an
+        unbound variable long before it can print anything useful, and it does
+        so only on the runs that carry a PEM path -- which is why a green suite
+        is not evidence here and this ordering is pinned instead.
+        """
+        body = _INSTALL_SH.read_text()
+
+        # Markers unique to the step 8 block. The bare "PEM file does not exist"
+        # wording is not: validate_non_interactive_minter_config carries it too,
+        # and that function is *defined* above main() while only being *called*
+        # from step 8, so matching on it would compare a definition against a
+        # call site and fail for the wrong reason.
+        sourced_at = body.index('source_provisioning_helpers "$repo_dir"')
+        for marker in (
+            'pem_kms_loc="$(derive_kms_location "$region")"',
+            'pem_enabled_ver="$(kms_key_enabled_version',
+            "has no ENABLED version, so the import still needs that file.",
+        ):
+            self.assertLess(
+                sourced_at,
+                body.index(marker),
+                f"{marker!r} must come after installer_common.sh is sourced",
+            )
 
     def test_preflight_rejects_directory_github_pem_path(self):
         """Preflight must fail fast when --github-pem-path is a directory instead of a file."""
