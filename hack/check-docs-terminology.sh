@@ -114,7 +114,14 @@ fi
 # development guide. INSTALL.md states it inside a padded table cell and
 # k8s-operator/README.md behind a ~38-character markdown link, so both sat
 # outside the window and a stale version in either passed the check.
-GO_MENTIONS=$(search 'Go[^0-9]{0,60}1\.[0-9]+\+')
+#
+# `[Gg]o`, because the token minter guide writes the requirement as "`go`
+# 1.27+" — lowercase, the way you type the binary. A case-sensitive `Go` read
+# straight past it, and that one line was the last surviving copy of the
+# version this guard exists to correct. The word boundaries keep Django and
+# mongo out; without them, case-insensitivity would match any word ending in
+# "go" that happens to precede a version number.
+GO_MENTIONS=$(search '\b[Gg]o\b[^0-9]{0,60}1\.[0-9]+\+')
 
 # Which number a sentence owes is decided by whether it is about the key
 # import. Naming the Minty CLI is the clearest signal, but the install skill
