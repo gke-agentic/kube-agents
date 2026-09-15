@@ -55,7 +55,7 @@ terraform output manual_steps
 
 `terraform plan` before every apply is the check that matters. Onboarding a project that has not been onboarded yet is a create-only plan; **any `destroy` line means the wrong state is loaded** — stop and fix the workspace or the backend prefix rather than confirming.
 
-Every project `gitops_repo_for_project()` maps has this applied, each in its own workspace, each with the App PEM imported — `gcloud kms keys versions list --location us-central1 --keyring github-token-minter-keyring --key github-token-minter-key --project <project>` shows one `ENABLED` `RSA_SIGN_PKCS1_2048_SHA256` version in each, and `scripts/verify_ci_pool_project.py` is the check rather than this paragraph. Applied is not the same as leasable: which projects a presubmit can draw is the Boskos roster, which a project joins after this apply rather than before. The next project onboarded is the create-only case above, in a workspace of its own, and step 2 below has no key to import into until that apply lands.
+A project `gitops_repo_for_project()` maps is expected to have this applied, in its own workspace, with the App PEM imported — `gcloud kms keys versions list --location us-central1 --keyring github-token-minter-keyring --key github-token-minter-key --project <project>` shows one `ENABLED` `RSA_SIGN_PKCS1_2048_SHA256` version — and `scripts/verify_ci_pool_project.py` is the check for any one project rather than this paragraph. Applied is not the same as leasable: which projects a presubmit can draw is the Boskos roster, which a project joins after this apply rather than before. The next project onboarded is the create-only case above, in a workspace of its own, and step 2 below has no key to import into until that apply lands.
 
 `location` and `namespace` default to the values `hack/ci-env.sh` uses (`us-central1`, `kubeagents-system`) and should only be overridden if that file changes: the chart derives the KMS key path from `platformAgent.harness.location`, which `hack/ci-deploy.sh` sets from `REGION`.
 
@@ -70,6 +70,8 @@ Two steps are human-only, and the minter does not work until both are done. `ter
 **This is already done for every project onboarded so far.** The pool is served by one App — its numeric ID is `APP_ID` in `scripts/provision_ci_pool_project.sh` — installed on each project's GitOps repository and nothing else. The query below is the list, rather than a copy of it kept here to go stale:
 
 ```bash
+# The organisation half of a gitops_repo_for_project() entry; one organisation hosts every pool repository.
+GITOPS_ORG="$(sed -nE 's#^[[:space:]]+kube-agents-evals[-0-9]*\) echo "([^/]+)/.*#\1#p' ../../../hack/ci-deploy.sh | head -1)"
 APP_ID="$(sed -n 's/^APP_ID="\(.*\)"$/\1/p' ../../../scripts/provision_ci_pool_project.sh)"
 gh api "/orgs/${GITOPS_ORG}/installations" \
   --jq ".installations[] | select(.app_id==${APP_ID}) |

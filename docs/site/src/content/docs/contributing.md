@@ -17,7 +17,7 @@ This project follows [Google's Open Source Community Guidelines](https://opensou
 
 ## How to contribute
 
-The contributor workflow lives in the repository, next to the code it governs. [`CONTRIBUTING.md`](https://github.com/gke-labs/kube-agents/blob/main/CONTRIBUTING.md) is the entry point; [`AGENTS.md`](https://github.com/gke-labs/kube-agents/blob/main/AGENTS.md) states the rules every change follows, and [`docs/pull-request-workflow.md`](https://github.com/gke-labs/kube-agents/blob/main/docs/pull-request-workflow.md) has the commands. Every pull request is reviewed by an automated reviewer and then by a maintainer, and merges through Prow once both have approved.
+The contributor workflow lives in the repository, next to the code it governs. [`CONTRIBUTING.md`](https://github.com/gke-labs/kube-agents/blob/main/CONTRIBUTING.md) is the entry point; [`AGENTS.md`](https://github.com/gke-labs/kube-agents/blob/main/AGENTS.md) states the rules every change follows, and [`docs/pull-request-workflow.md`](https://github.com/gke-labs/kube-agents/blob/main/docs/pull-request-workflow.md) has the commands. Every pull request is reviewed by an automated reviewer and then by a maintainer; Prow merges it once a reviewer's `lgtm` and an `OWNERS` approver's `approved` are both on it and the required checks are green.
 
 ## Where to file issues
 

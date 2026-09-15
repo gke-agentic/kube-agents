@@ -96,7 +96,7 @@ on any other port is unreachable until someone adds a VPC firewall rule for it �
 hand. Serving on 10250 lands inside the rule GKE already made. It does not collide with the kubelet,
 which binds 10250 on the node IP in a different network namespace.
 
-The port is set in three places that must agree, and a build-time check fails if they drift: the
+The port is set in three places that must agree, and a test under `make test` fails if they drift: the
 `--webhook-port` flag default in the webhook package, the manager `containerPort`, and the Service
 `targetPort`. The Service `port` stays `443` regardless — that is what the `*WebhookConfiguration`
 `clientConfig` resolves to, not what crosses the network.
@@ -133,7 +133,7 @@ All three have to move together, so the override is a Kustomize patch rather tha
 ```
 
 Changing the compiled-in default instead of patching means changing the flag default in the webhook
-package as well — the build-time check reads both manifests and fails if either still names the old
+package as well — the test reads both manifests and fails if either still names the old
 port. `--webhook-port` rejects anything outside 1–65535 at startup rather than letting
 controller-runtime fall back to its own 9443 default.
 

@@ -103,7 +103,7 @@ A late build step precompiles the Python tree — `/opt/hermes`, its venv, and t
 
 The Envoy-based credential broker runtime, which runs as the `envoy-credential-proxy` container in its own `<name>-credential-proxy` Deployment. The same image also runs the gateway pod's `agent-api-auth` sidecar, with `CREDENTIAL_PROXY_ROLE=api-proxy` starting neither Envoy nor the executor there. Built from the `credential-proxy` target of the same [`deploy/docker/Dockerfile`](https://github.com/gke-labs/kube-agents/blob/main/deploy/docker/Dockerfile), on the shared `agent-base` stage rather than on `platform`: it adds the real `gcloud`, `kubectl`, `gh` and `git` that the sandbox image deliberately lacks, the `envoy` binary and its config, and `/opt/defaults/scripts`, which is where `start-services.sh` finds `credential_proxy.py`. It carries none of what the `platform` stage adds on top — no kube-agents personas, skills, cron entries or profile templates — because nothing that runs from this image reads them.
 
-Building it from `agent-base` rather than `platform` is also what keeps a one-file agent change cheap: an edit under `agents/*/scripts/` invalidates the `platform` layers, not the sidecar's, so the sidecar does not rebuild a chain whose output it does not use.
+Building it from `agent-base` rather than `platform` is also what keeps a one-file agent change cheap. The stage copies `agents/*/scripts/` itself, so an edit there still rebuilds that copy and the layers after it — but no longer the whole `platform` chain, whose output the sidecar does not use.
 
 ### `replay-proxy`
 
@@ -129,7 +129,7 @@ An unrecognised value falls back to `auto` and logs a warning rather than guessi
 
 The operator sets the variable explicitly on every container it builds — `owner` on the gateway, `skip` on the dashboard — so `auto` never runs under a `PlatformAgent`. Auto-detection exists for deployments with no operator to ask: Compose, plain manifests, `docker run`. Set it by hand in those if the owning container's own argv does not contain `gateway`. Above one replica the operator's gateway is itself such a case: it runs `leader_elect.py`, which starts `hermes gateway run` as a child process, so the word never appears in the container's own arguments.
 
-The image build verifies every case in that table against the real entrypoint (`deploy/shared/entrypoint_gate_check.sh`): it runs the entrypoint once per case against a scratch `$PLATFORM_AGENT_HOME` and checks the decision the gate announces against what it then writes to disk. The script is not shipped in the runtime image, but it is safe to pipe into a running pod when diagnosing one:
+A Dockerfile stage built on every pull request, `entrypoint-gate-test`, verifies every case in that table against the real entrypoint (`deploy/shared/entrypoint_gate_check.sh`): it runs the entrypoint once per case against a scratch `$PLATFORM_AGENT_HOME` and checks the decision the gate announces against what it then writes to disk. A build that targets a runtime image does not run it. The script is not shipped in the runtime image, but it is safe to pipe into a running pod when diagnosing one:
 
 ```bash
 kubectl exec -i deploy/platform-agent-gateway -c platform-agent -- \
@@ -318,4 +318,4 @@ yourself from the mirror and set `enable_cert_manager = false`.
 
 ## Local builds
 
-`make docker-build` at the repository root builds every image this repository ships; `make docker-build-agents`, `make docker-build-credential-proxy` and `make docker-build-sandbox` build one. For iterating on the agent against a running cluster, `make dev-rebuild-agent` builds, pushes to a dev Artifact Registry repository and restarts the Deployment; [`k8s-operator/README.md`](https://github.com/gke-labs/kube-agents/blob/main/k8s-operator/README.md) covers it.
+`make docker-build` at the repository root builds the agent, credential-proxy and sandbox images; `make docker-build-agents`, `make docker-build-credential-proxy` and `make docker-build-sandbox` build one. The operator image builds from `k8s-operator/` (above) and `replay-proxy` from its own Dockerfile. For iterating on the agent against a running cluster, `make dev-rebuild-agent` builds, pushes to a dev Artifact Registry repository and patches the running `PlatformAgent` — or a Deployment that pulls the image directly — to the new tag; [`k8s-operator/README.md`](https://github.com/gke-labs/kube-agents/blob/main/k8s-operator/README.md) covers it.

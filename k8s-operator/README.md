@@ -77,9 +77,9 @@ images and downloading dependencies.
 
 The two scripts handle the unset case differently. `dev_rebuild_agent.sh` takes the default pool's
 default machine (2 vCPUs), while `hack/ci-deploy.sh` requests `e2-highcpu-8` because it compiles all
-three container images in a single Cloud Build submission
-([`deploy/docker/cloudbuild-ci.yaml`](../deploy/docker/cloudbuild-ci.yaml)) with the operator build
-running in parallel alongside the agent builds. Because private worker pools define their own fixed
+four container images (platform, credential-proxy, sandbox and operator) in a single Cloud Build
+submission ([`deploy/docker/cloudbuild-ci.yaml`](../deploy/docker/cloudbuild-ci.yaml)), with the
+sandbox and operator builds running in parallel alongside the two agent builds. Because private worker pools define their own fixed
 machine types and reject `--machine-type`, `hack/ci-deploy.sh` only passes `--machine-type` when
 `CLOUD_BUILD_WORKER_POOL` is unset.
 

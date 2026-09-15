@@ -212,18 +212,18 @@ Two consequences worth stating plainly:
       --member="serviceAccount:${GSA_EMAIL}" --role="${role}"
   done
 
-  # Add the read-only roles -- all eight, not just the three removed above.
+  # Add the read-only roles -- all nine, not just the three removed above.
   # add-iam-policy-binding is idempotent, so naming one the GSA already holds
   # costs nothing.
   for role in roles/container.clusterViewer roles/container.viewer roles/compute.viewer \
     roles/monitoring.viewer roles/logging.viewer roles/iam.serviceAccountUser \
-    roles/iam.securityReviewer roles/mcp.toolUser; do
+    roles/iam.securityReviewer roles/mcp.toolUser roles/serviceusage.serviceUsageConsumer; do
     gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
       --member="serviceAccount:${GSA_EMAIL}" --role="${role}"
   done
   ```
 
-  The eight are `local.read_only_roles` in `terraform/examples/full-install/main.tf`.
+  The nine are `local.read_only_roles` in `terraform/examples/full-install/main.tf`.
 
 The Kubernetes RBAC above is already read-only in every mode, so no cluster-side change is needed. Neither is the GitOps path affected: the agent proposes pull requests under every permission set, because what makes it propose rather than apply is Kubernetes RBAC, not the IAM set.
 

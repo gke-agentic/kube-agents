@@ -861,10 +861,12 @@ request can carry its input into the error string, and those inputs are credenti
 log line, prefer the identifier over the value: the profile name rather than the file's contents,
 the cluster rather than the token, the status code rather than the response body.
 
-One place deliberately logs a body: `_handle_github_refresh` in `credential_proxy.py` records the
-GitHub refresh helper's stderr, because a broker that refuses a mint is otherwise recorded nowhere
-— the caller gets a reason code with no detail, and the reason code is all a chat room ever sees.
-It passes the text through `redact_credentials` before bounding it, which blanks GitHub token and
+Two places deliberately log a body. `bootstrap` in `credential_proxy.py` logs the stdout and
+stderr of the start-up shell bootstrap when that command fails, truncated but not redacted, so
+that the exception it raises can stay output-free. `_handle_github_refresh` records the GitHub
+refresh helper's stderr, because a broker that refuses a mint is otherwise recorded nowhere — the
+caller gets a reason code with no detail, and the reason code is all a chat room ever sees. It
+passes the text through `redact_credentials` before bounding it, which blanks GitHub token and
 JWT shapes. Extend that function rather than the exception if another credentialed subprocess
 needs the same treatment.
 

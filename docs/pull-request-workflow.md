@@ -168,7 +168,8 @@ loop while you work:
 
 - `make validate` — the `Validate Repo Structure` job; fails if skills live under
   `agents/*/defaults/skills/` instead of `agents/*/skills/`.
-- `make -C k8s-operator test` — manifests, generate, fmt, vet, then `go test`; what the
+- `make -C k8s-operator test` — manifests, generate, fmt, vet, the envtest download, then
+  `go test` and the operator's Python tests; what the
   `Operator Tests` job runs.
 - `make test-integration` — the seam tier only, for a component another one talks to across a
   process or protocol boundary. Install a Go toolchain first: the injector seam compiles the real
