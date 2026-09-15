@@ -322,9 +322,8 @@ The two labels are the two people:
   `trusted_team_for_sticky_lgtm: Googlers` is configured, which means a push after the label lands
   strips it again unless the author is in that team, and the reviewer has to give it a second time.
 - **`approved` is an `OWNERS` approver's.** `/approve`, from someone in the `OWNERS` file governing
-  the changed paths — [`OWNERS`](../OWNERS) at the root, [`k8s-operator/OWNERS`](../k8s-operator/OWNERS)
-  for the operator, [`bench/tasks/OWNERS`](../bench/tasks/OWNERS) for the eval cases and
-  [`hack/OWNERS`](../hack/OWNERS) for `hack/ci-eval-pr.sh` alone, with
+  the changed paths — [`OWNERS`](../OWNERS) at the root, [`bench/tasks/OWNERS`](../bench/tasks/OWNERS)
+  for the eval cases and [`hack/OWNERS`](../hack/OWNERS) for `hack/ci-eval-pr.sh` alone, with
   [`OWNERS_ALIASES`](../OWNERS_ALIASES) expanding `eval-crew`. The last two name
   only `eval-crew` and set `no_parent_owners`, so a root approver's `/approve` does not clear
   a change to a case or to the presubmit roster (#1546). An approver's
@@ -340,12 +339,7 @@ action. Not every `eval-crew` member is a root approver, so a change that also t
 paths still waits on a root approver's `/approve` after that review. The bot never requests the
 author, so a member's own case or roster change goes to the rest of the group, with the author's
 `approved` already on it (#1075). That is a property of two lists agreeing today — the alias in
-`OWNERS_ALIASES` and the group in the bot's config — not a guarantee either file makes. The bot's
-`waw-leads` group is the exception: it is the only pool for `k8s-operator/**` and for the two
-operator workflow files under `.github/workflows/`, and only `mplakhtiy` in it is a root approver.
-A change to those workflow files, or an operator change that also touches a root-owned path such
-as `charts/`, therefore still waits on a root approver's `/approve` when the bot picks another
-member.
+`OWNERS_ALIASES` and the group in the bot's config — not a guarantee either file makes.
 
 Before any of that, a pull request from an author Prow does not already trust is labelled
 `needs-ok-to-test`, and its Prow presubmits hold until a member comments `/ok-to-test`. It gates
