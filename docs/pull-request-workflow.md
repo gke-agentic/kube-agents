@@ -325,7 +325,7 @@ The two labels are the two people:
   the changed paths — [`OWNERS`](../OWNERS) at the root, [`k8s-operator/OWNERS`](../k8s-operator/OWNERS)
   for the operator, [`bench/tasks/OWNERS`](../bench/tasks/OWNERS) for the eval cases and
   [`hack/OWNERS`](../hack/OWNERS) for `hack/ci-eval-pr.sh` alone, with
-  [`OWNERS_ALIASES`](../OWNERS_ALIASES) expanding `waw-leads` and `eval-crew`. The last two name
+  [`OWNERS_ALIASES`](../OWNERS_ALIASES) expanding `eval-crew`. The last two name
   only `eval-crew` and set `no_parent_owners`, so a root approver's `/approve` does not clear
   a change to a case or to the presubmit roster (#1546). An approver's
   "Approve" review sets both labels at once, which is why most pull requests here need exactly one
@@ -340,7 +340,9 @@ action. Not every `eval-crew` member is a root approver, so a change that also t
 paths still waits on a root approver's `/approve` after that review. The bot never requests the
 author, so a member's own case or roster change goes to the rest of the group, with the author's
 `approved` already on it (#1075). That is a property of two lists agreeing today — the alias in
-`OWNERS_ALIASES` and the group in the bot's config — not a guarantee either file makes.
+`OWNERS_ALIASES` and the group in the bot's config — not a guarantee either file makes. The one
+exception is the bot's `waw-leads` group, which also reviews the two operator workflow files under
+`.github/workflows/`: those are root-owned, and only `mplakhtiy` in that group is a root approver.
 
 Before any of that, a pull request from an author Prow does not already trust is labelled
 `needs-ok-to-test`, and its Prow presubmits hold until a member comments `/ok-to-test`. It gates
