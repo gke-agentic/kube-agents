@@ -190,24 +190,35 @@ def preconditions(root: Path = SITE_ROOT, ci_env: Path = CI_ENV) -> list[str]:
     return errors
 
 
-def main() -> int:
-    errors = preconditions()
+def display_path(path: Path) -> Path:
+    """Repository-relative when the path is inside the repository, otherwise as given."""
+    try:
+        return path.relative_to(REPO)
+    except ValueError:
+        return path
+
+
+def main(
+    root: Path = SITE_ROOT,
+    denylist: Path = DENYLIST,
+    ci_env: Path = CI_ENV,
+) -> int:
+    errors = preconditions(root, ci_env)
     if errors:
         for error in errors:
             print(f"ERROR: {error}")
         return 1
-    findings = scan()
-    pages = len(site_pages())
+    findings = scan(root, denylist, ci_env)
+    pages = len(site_pages(root))
     if findings:
         print(
             f"{len(findings)} maintainer identifier(s) on the published site "
-            f"(rule: .agents/rules/documentation.md; shapes: {DENYLIST.relative_to(REPO)}). "
+            f"(rule: .agents/rules/documentation.md; shapes: {display_path(denylist)}). "
             "Move the page to the home the AGENTS.md canonical-home table names, or replace "
             "the value with a placeholder the reader fills in:"
         )
         for finding in findings:
-            rel = finding.path.relative_to(REPO)
-            print(f"  {rel}:{finding.line}: {finding.shape} -- {finding.text!r}")
+            print(f"  {display_path(finding.path)}:{finding.line}: {finding.shape} -- {finding.text!r}")
         return 1
     print(f"No maintainer identifiers on the {pages} published site pages.")
     return 0

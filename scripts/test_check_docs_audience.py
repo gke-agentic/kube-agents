@@ -11,6 +11,8 @@ relies on instead of repeating the values, and the two preconditions that stop
 an empty run from reporting clean.
 """
 
+import contextlib
+import io
 import re
 import tempfile
 import unittest
@@ -242,6 +244,30 @@ class CommittedSiteTest(unittest.TestCase):
 
     def test_main_reports_success(self):
         self.assertEqual(check_docs_audience.main(), 0)
+
+
+class MainRedPathTest(SiteFixture):
+    """`main()` on a failing site: the exit code and the file:line an author has to act on."""
+
+    def _run_main(self) -> tuple[int, str]:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = check_docs_audience.main(self.site, self.denylist, self.ci_env)
+        return code, out.getvalue()
+
+    def test_a_finding_fails_and_names_file_line_and_shape(self):
+        (self.site / "page.md").write_text("clean line\nuses secrets.API_TOKEN here\n", encoding="utf-8")
+        code, out = self._run_main()
+        self.assertEqual(code, 1)
+        self.assertIn("1 maintainer identifier(s)", out)
+        self.assertIn(f"{self.site / 'page.md'}:2: ", out)
+        self.assertIn("'secrets.API_TOKEN'", out)
+
+    def test_a_failed_precondition_fails_without_scanning(self):
+        code, out = self._run_main()  # the fixture site has no page yet
+        self.assertEqual(code, 1)
+        self.assertIn("ERROR:", out)
+        self.assertNotIn("maintainer identifier(s)", out)
 
 
 if __name__ == "__main__":

@@ -503,7 +503,8 @@ only what the title does not say.
   root-level dot-directory has no inventory entry here, when a path in the
   inventory's path column no longer exists, when a table row has been
   re-padded, or when a published-site row's audience cell names maintainers,
-  CI engineers, or contributors. It deliberately checks no counts — see
+  CI engineers, or contributors; a map with no published-site table is an
+  error, not a pass. It deliberately checks no counts — see
   section 1. The prose
   summaries, key-topic cells, and the identifier-sources table have no
   mechanical guard; PR review (and the drift skill) is the only check on their

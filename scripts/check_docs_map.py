@@ -35,7 +35,9 @@ failure instead of a review-time hope. Four checks:
   (``.agents/rules/documentation.md``); a page for another reader belongs at one
   of the other homes the ``AGENTS.md`` canonical-home table names, and its row
   in that section of the map. The CLA page (``contributing.md``) is the one
-  exemption.
+  exemption. A map with no published-site table is an error, not a clean
+  report: the table is found by its heading, and a reworded heading would
+  otherwise leave the check evaluating zero rows and printing green.
 
 Deliberately NOT checked: any *count*. The map used to state a repository
 document total and a per-family file count, and both were verified here. They
@@ -86,9 +88,15 @@ SELF = "docs/README.md"
 # away and the author would have no way to satisfy the check.
 ALIGNMENT_PADDING = "  |"
 
-# The published-site inventory table: from its heading to the next `###`.
+# The published-site inventory table: from its heading to the next heading of
+# any level. Closing on `###` alone would run the table into section 5 the day
+# it becomes the last subsection of the inventory.
 SITE_SECTION_START = "### `docs/site/src/content/docs/`"
-SECTION_HEADING_PREFIX = "### "
+HEADING_PREFIX = "#"
+NO_SITE_TABLE_ERROR = (
+    "{map} has no heading starting '{start}' -- the site-audience check found no "
+    "published-site table to read; restore the heading or update SITE_SECTION_START"
+)
 
 # Readers the site is not for. A site row whose audience cell names one is a
 # page that belongs at another home (.agents/rules/documentation.md, "Who the
@@ -166,6 +174,27 @@ def realigned_rows(text: str) -> list[tuple[int, str]]:
     return rows
 
 
+def display_path(path: Path) -> Path:
+    """Repository-relative when the path is inside the repository, otherwise as given."""
+    try:
+        return path.relative_to(REPO)
+    except ValueError:
+        return path
+
+
+def has_site_table(text: str) -> bool:
+    """True when the map carries the heading the site-audience check reads from."""
+    return any(line.strip().startswith(SITE_SECTION_START) for line in text.splitlines())
+
+
+def preconditions(text: str) -> list[str]:
+    """Reasons a run cannot be trusted to have checked the site table at all."""
+    errors = []
+    if not has_site_table(text):
+        errors.append(NO_SITE_TABLE_ERROR.format(map=display_path(MAP), start=SITE_SECTION_START))
+    return errors
+
+
 def site_rows(text: str) -> list[tuple[int, str]]:
     """(line number, row) for every data row of the published-site table."""
     rows = []
@@ -175,7 +204,7 @@ def site_rows(text: str) -> list[tuple[int, str]]:
         if stripped.startswith(SITE_SECTION_START):
             inside = True
             continue
-        if inside and stripped.startswith(SECTION_HEADING_PREFIX):
+        if inside and stripped.startswith(HEADING_PREFIX):
             break
         if not inside or not stripped.startswith(CELL_DELIMITER):
             continue
@@ -258,6 +287,11 @@ def main() -> int:
     total_actual = sum(1 for f in files if not in_dot_dir(f))
     files.discard(SELF)
     text = MAP.read_text(encoding="utf-8")
+    errors = preconditions(text)
+    if errors:
+        for error in errors:
+            print(f"ERROR: {error}")
+        return 1
 
     covered: set[str] = set()
     stale: list[tuple[str, str]] = []  # (row path-cell token, reason)
@@ -279,7 +313,7 @@ def main() -> int:
     ok = True
     if missing:
         ok = False
-        print(f"{len(missing)} tracked doc(s) missing from the map inventory ({MAP.relative_to(REPO)}):")
+        print(f"{len(missing)} tracked doc(s) missing from the map inventory ({display_path(MAP)}):")
         for f in missing:
             print(f"  MISSING  {f}")
     if stale:
@@ -289,14 +323,14 @@ def main() -> int:
             print(f"  STALE    `{token}` -- {reason}")
     if realigned:
         ok = False
-        print(f"{len(realigned)} column-aligned table row(s) in {MAP.relative_to(REPO)} "
+        print(f"{len(realigned)} column-aligned table row(s) in {display_path(MAP)} "
               "-- re-pad them as `| cell | cell |`; aligning a table rewrites every "
               "row and conflicts with every open pull request:")
         for number, line in realigned:
             print(f"  PADDING  line {number}: {line[:72]}…")
     if misplaced:
         ok = False
-        print(f"{len(misplaced)} published-site row(s) in {MAP.relative_to(REPO)} whose audience "
+        print(f"{len(misplaced)} published-site row(s) in {display_path(MAP)} whose audience "
               "cell names a reader the site is not for -- move the page to the home the "
               "AGENTS.md canonical-home table gives it, and its row to that section:")
         for number, path, word in misplaced:
