@@ -92,11 +92,13 @@ fi
 #   scripts/installer/min_versions.sh   — the toolchain install.sh needs to build
 #                                         the Minty CLI for the KMS key import
 #
-# One rule for both is what this check used to be, and it made the docs lie:
-# prerequisites.md had to claim the operator's version for the key import,
-# because any other number here was reported as stale. Widening the window to
-# {0,60} sharpened the check for the operator and, at the same time, pulled the
-# unrelated sentence into its reach.
+# One rule for both cannot be right, and this check used to have one. A single
+# ground truth forces the operator's number onto every sentence about the key
+# import, because any other number there reads as stale — so the prose either
+# states a version the import does not need, or dodges the guard by not
+# writing one. Widening the window to {0,60} sharpened the check for the
+# operator and, in the same stroke, pulled the import's sentences into its
+# reach, which is what made telling the two apart unavoidable.
 GO_MOD_VERSION=$(awk '/^go /{print $2; exit}' k8s-operator/go.mod)
 if [ -z "$GO_MOD_VERSION" ]; then
   echo "ERROR: could not read the go directive from k8s-operator/go.mod." >&2
@@ -115,12 +117,13 @@ fi
 # k8s-operator/README.md behind a ~38-character markdown link, so both sat
 # outside the window and a stale version in either passed the check.
 #
-# `[Gg]o`, because the token minter guide writes the requirement as "`go`
-# 1.27+" — lowercase, the way you type the binary. A case-sensitive `Go` read
-# straight past it, and that one line was the last surviving copy of the
-# version this guard exists to correct. The word boundaries keep Django and
-# mongo out; without them, case-insensitivity would match any word ending in
-# "go" that happens to precede a version number.
+# `[Gg]o`, because the token minter guide writes the requirement lowercase —
+# "`go` 1.21+", the way you type the binary rather than the way you name the
+# language. A case-sensitive `Go` read straight past that line, which is how
+# the canonical page kept a stale version through three rounds of correcting
+# the pages that defer to it. The word boundaries keep Django and mongo out;
+# without them, case-insensitivity would match any word ending in "go" that
+# happens to precede a version number.
 GO_MENTIONS=$(search '\b[Gg]o\b[^0-9]{0,60}1\.[0-9]+\+')
 
 # Which number a sentence owes is decided by whether it is about the key
