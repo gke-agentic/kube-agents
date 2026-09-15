@@ -2043,7 +2043,9 @@ check_existing_cluster_capacity_preflight() {
     req_mem=$((req_mem + PREFLIGHT_MIN_MEM_MIB_CERT_MANAGER))
   fi
 
-  if [ -n "$gitops_org" ] && [ -n "$gitops_repo" ]; then
+  # Charge for the minter only when it is actually planned. If write_tfvars_from_state
+  # deferred the minter (e.g. missing KMS signing key or PEM), it will not be deployed.
+  if [ -n "$gitops_org" ] && [ -n "$gitops_repo" ] && is_truthy "${TFVARS_ENABLE_GITHUB_MINTER:-true}"; then
     req_cpu=$((req_cpu + PREFLIGHT_MIN_CPU_MILLIS_MINTER_REPLICA * PREFLIGHT_DEFAULT_MINTER_REPLICAS))
     req_mem=$((req_mem + PREFLIGHT_MIN_MEM_MIB_MINTER_REPLICA * PREFLIGHT_DEFAULT_MINTER_REPLICAS))
   fi
@@ -2054,7 +2056,7 @@ check_existing_cluster_capacity_preflight() {
   fi
 
   local single_pods_spec="[{\"name\":\"LiteLLM\",\"cpu\":${PREFLIGHT_MIN_CPU_MILLIS_LITELLM_REPLICA},\"mem\":${PREFLIGHT_MIN_MEM_MIB_LITELLM_REPLICA}}"
-  if [ -n "$gitops_org" ] && [ -n "$gitops_repo" ]; then
+  if [ -n "$gitops_org" ] && [ -n "$gitops_repo" ] && is_truthy "${TFVARS_ENABLE_GITHUB_MINTER:-true}"; then
     single_pods_spec="${single_pods_spec},{\"name\":\"Minter\",\"cpu\":${PREFLIGHT_MIN_CPU_MILLIS_MINTER_REPLICA},\"mem\":${PREFLIGHT_MIN_MEM_MIB_MINTER_REPLICA}}"
   fi
   # The agent pod and its dashboard sidecar are one scheduling unit, so they
@@ -2244,8 +2246,7 @@ for name, data in untainted_nodes.items():
 
 headroom_cpu = 0
 headroom_mem = 0
-headroom_single_cpu = 0
-headroom_single_mem = 0
+scalable_fresh_fits = []
 scalable_pools = []
 for pool in pools:
     pname = pool.get("name", "")
@@ -2270,8 +2271,7 @@ for pool in pools:
     fresh_cpu, fresh_mem = pool_fresh[pname]
     headroom_cpu += extra * fresh_cpu
     headroom_mem += extra * fresh_mem
-    headroom_single_cpu = max(headroom_single_cpu, fresh_cpu)
-    headroom_single_mem = max(headroom_single_mem, fresh_mem)
+    scalable_fresh_fits.append((fresh_cpu, fresh_mem))
     scalable_pools.append("%s (+%d node(s))" % (pname, extra))
 
 
@@ -2302,7 +2302,7 @@ else:
     # on the nodes that happen to exist right now fails a cluster that was
     # never going to be short.
     if reason and (headroom_cpu > 0 or headroom_mem > 0):
-        after_fits = current_fits + [(headroom_single_cpu, headroom_single_mem)]
+        after_fits = current_fits + scalable_fresh_fits
         if not shortfall(total_sched_cpu + headroom_cpu, total_sched_mem + headroom_mem, after_fits):
             autoscale_note = "%s on the nodes running now, within reach of autoscaling: %s" % (
                 reason, ", ".join(scalable_pools))

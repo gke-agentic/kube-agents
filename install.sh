@@ -68,6 +68,7 @@ readonly GKE_OP_STATUS_RUNNING="RUNNING"
 readonly ROLLOUT_MONITOR_POLL_INTERVAL_SECS=20
 readonly ROLLOUT_DIAGNOSTIC_EVENT_LIMIT=5
 readonly ROLLOUT_MONITOR_KUBECTL_TIMEOUT="5s"
+readonly CERT_MANAGER_NAMESPACE="${PREFLIGHT_CERT_MANAGER_NAMESPACE:-cert-manager}"
 
 # Bounds on --helm-timeout, in seconds, both derived from hindsight-api, the
 # slowest workload the install rolls out. The floor is its 300s startupProbe
@@ -2162,7 +2163,7 @@ monitor_lifecycle_rollout() {
 
       local namespaces_to_check=("$namespace")
       if [ "${TFVARS_ENABLE_CERT_MANAGER:-true}" = "true" ]; then
-        namespaces_to_check+=("cert-manager")
+        namespaces_to_check+=("$CERT_MANAGER_NAMESPACE")
       fi
 
       for ns in "${namespaces_to_check[@]}"; do
@@ -2237,7 +2238,7 @@ diagnose_rollout_failure() {
 
   local namespaces_to_check=("$namespace")
   if [ "${TFVARS_ENABLE_CERT_MANAGER:-true}" = "true" ]; then
-    namespaces_to_check+=("cert-manager")
+    namespaces_to_check+=("$CERT_MANAGER_NAMESPACE")
   fi
 
   for ns in "${namespaces_to_check[@]}"; do
@@ -2247,14 +2248,14 @@ diagnose_rollout_failure() {
     fi
 
     local pending_pods
-    pending_pods="$(kubectl get pods -n "$ns" --field-selector=status.phase=Pending -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)"
+    pending_pods="$(kubectl --request-timeout="$ROLLOUT_MONITOR_KUBECTL_TIMEOUT" get pods -n "$ns" --field-selector=status.phase=Pending -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)"
 
     if [ -n "$pending_pods" ]; then
       echo -e "\n${C_RED}${C_BOLD}Pending Pods Detected${ns_label}:${C_RESET}"
       for pod in $pending_pods; do
         echo -e "  • ${C_BOLD}${pod}${C_RESET}"
         local events
-        events="$(kubectl get events -n "$ns" --field-selector "involvedObject.name=${pod},type=Warning" --sort-by='.lastTimestamp' -o custom-columns=REASON:.reason,MESSAGE:.message --no-headers 2>/dev/null | tail -n "$ROLLOUT_DIAGNOSTIC_EVENT_LIMIT" || true)"
+        events="$(kubectl --request-timeout="$ROLLOUT_MONITOR_KUBECTL_TIMEOUT" get events -n "$ns" --field-selector "involvedObject.name=${pod},type=Warning" --sort-by='.lastTimestamp' -o custom-columns=REASON:.reason,MESSAGE:.message --no-headers 2>/dev/null | tail -n "$ROLLOUT_DIAGNOSTIC_EVENT_LIMIT" || true)"
         if [ -n "$events" ]; then
           echo "$events" | while IFS= read -r ev; do
             echo -e "      ${C_YELLOW}↳ $ev${C_RESET}"
@@ -2264,14 +2265,21 @@ diagnose_rollout_failure() {
     fi
 
     local unready_pods
-    unready_pods="$(kubectl get pods -n "$ns" --field-selector=status.phase=Running -o json 2>/dev/null | python3 -c '
+    unready_pods="$(kubectl --request-timeout="$ROLLOUT_MONITOR_KUBECTL_TIMEOUT" get pods -n "$ns" --field-selector=status.phase=Running -o json 2>/dev/null | python3 -c '
 import sys, json
 try:
     data = json.load(sys.stdin)
     unready = []
+    def is_unready(s):
+        term = s.get("state", {}).get("terminated")
+        if term and term.get("exitCode") == 0:
+            return False
+        return not s.get("ready", False)
+
     for item in data.get("items", []):
-        statuses = item.get("status", {}).get("containerStatuses", [])
-        if statuses and any(not s.get("ready", False) for s in statuses):
+        st = item.get("status", {})
+        statuses = st.get("containerStatuses", []) + st.get("initContainerStatuses", [])
+        if statuses and any(is_unready(s) for s in statuses):
             unready.append(item["metadata"]["name"])
     print(" ".join(unready))
 except Exception:
@@ -2282,7 +2290,7 @@ except Exception:
       for pod in $unready_pods; do
         echo -e "  • ${C_BOLD}${pod}${C_RESET}"
         local events
-        events="$(kubectl get events -n "$ns" --field-selector "involvedObject.name=${pod},type=Warning" --sort-by='.lastTimestamp' -o custom-columns=REASON:.reason,MESSAGE:.message --no-headers 2>/dev/null | tail -n "$ROLLOUT_DIAGNOSTIC_EVENT_LIMIT" || true)"
+        events="$(kubectl --request-timeout="$ROLLOUT_MONITOR_KUBECTL_TIMEOUT" get events -n "$ns" --field-selector "involvedObject.name=${pod},type=Warning" --sort-by='.lastTimestamp' -o custom-columns=REASON:.reason,MESSAGE:.message --no-headers 2>/dev/null | tail -n "$ROLLOUT_DIAGNOSTIC_EVENT_LIMIT" || true)"
         if [ -n "$events" ]; then
           echo "$events" | while IFS= read -r ev; do
             echo -e "      ${C_YELLOW}↳ $ev${C_RESET}"

@@ -4287,7 +4287,6 @@ source "{_INSTALLER_COMMON}"
 
     def test_preflight_skips_on_fresh_cluster(self):
         body = f"""
-{_SOURCE_INSTALLER_COMMON}
 TFVARS_CREATE_CLUSTER=true check_existing_cluster_capacity_preflight "cluster" "region" "proj"
 """
         proc = self._run_cmd(body)
@@ -4296,7 +4295,6 @@ TFVARS_CREATE_CLUSTER=true check_existing_cluster_capacity_preflight "cluster" "
 
     def test_preflight_skips_on_autopilot(self):
         body = f"""
-{_SOURCE_INSTALLER_COMMON}
 TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=autopilot check_existing_cluster_capacity_preflight "cluster" "region" "proj"
 """
         proc = self._run_cmd(body)
@@ -4305,7 +4303,6 @@ TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=autopilot check_existing_cluster
 
     def test_preflight_skips_when_skip_capacity_check_is_true(self):
         body = f"""
-{_SOURCE_INSTALLER_COMMON}
 TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard SKIP_CAPACITY_CHECK=true check_existing_cluster_capacity_preflight "cluster" "region" "proj"
 """
         proc = self._run_cmd(body)
@@ -4352,7 +4349,6 @@ exit 0
 """)
             kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
             body = f"""
-{_SOURCE_INSTALLER_COMMON}
 TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj"
 """
             proc = self._run_cmd(body, bin_dir=str(bin_dir))
@@ -4400,7 +4396,6 @@ exit 0
 """)
             kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
             body = f"""
-{_SOURCE_INSTALLER_COMMON}
 TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj"
 """
             proc = self._run_cmd(body, bin_dir=str(bin_dir))
@@ -4452,7 +4447,6 @@ exit 0
 """)
             kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
             body = f"""
-{_SOURCE_INSTALLER_COMMON}
 TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj"
 """
             proc = self._run_cmd(body, bin_dir=str(bin_dir))
@@ -4482,7 +4476,6 @@ exit 0
 """)
             kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
             body = f"""
-{_SOURCE_INSTALLER_COMMON}
 TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj"
 """
             proc = self._run_cmd(body, bin_dir=str(bin_dir))
@@ -4751,7 +4744,6 @@ exit 0
             bin_dir = self._preflight_bin_dir(
                 tmp, self._ONE_SMALL_NODE, json.dumps({"items": []}), pools)
             body = f"""
-{_SOURCE_INSTALLER_COMMON}
 TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj" "false" "hindsight" "false" "" ""
 """
             proc = self._run_cmd(body, bin_dir=str(bin_dir))
@@ -4769,7 +4761,6 @@ TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_
             bin_dir = self._preflight_bin_dir(
                 tmp, self._ONE_SMALL_NODE, json.dumps({"items": []}), pools)
             body = f"""
-{_SOURCE_INSTALLER_COMMON}
 TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj" "false" "hindsight" "false" "" ""
 """
             proc = self._run_cmd(body, bin_dir=str(bin_dir))
@@ -4797,7 +4788,6 @@ TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_
         with tempfile.TemporaryDirectory() as tmp:
             bin_dir = self._preflight_bin_dir(tmp, self._ONE_SMALL_NODE, pods)
             body = f"""
-{_SOURCE_INSTALLER_COMMON}
 TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj" "false" "none" "false" "" ""
 """
             proc = self._run_cmd(body, bin_dir=str(bin_dir))
@@ -4847,12 +4837,92 @@ exit 0
 """)
             kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
             body = f"""
-{_SOURCE_INSTALLER_COMMON}
 TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj" "false" "file" "false" "" ""
 """
             proc = self._run_cmd(body, bin_dir=str(bin_dir))
             self.assertEqual(proc.returncode, 1, f"Expected preflight failure, got code {proc.returncode}")
             self.assertIn("No single untainted node has sufficient schedulable capacity", proc.stdout)
+
+    def test_preflight_autoscaling_heterogeneous_pools_does_not_synthesize_hybrid_node(self):
+        # Pool A has high CPU, low memory. Pool B has low CPU, high memory.
+        # Neither pool can fit an unsandboxed agent (needs 1250m CPU AND 2560Mi mem).
+        # Autoscaling headroom must not synthesize a hybrid node combining max(CPU)
+        # from Pool A and max(Memory) from Pool B.
+        nodes_json = json.dumps({
+            "items": [
+                {
+                    "metadata": {"name": "node-cpu", "labels": {"cloud.google.com/gke-nodepool": "pool-cpu"}},
+                    "spec": {"taints": []},
+                    "status": {
+                        "allocatable": {"cpu": "4000m", "memory": "1000Mi"},
+                        "conditions": [{"type": "Ready", "status": "True"}],
+                    },
+                },
+                {
+                    "metadata": {"name": "node-mem", "labels": {"cloud.google.com/gke-nodepool": "pool-mem"}},
+                    "spec": {"taints": []},
+                    "status": {
+                        "allocatable": {"cpu": "1000m", "memory": "8000Mi"},
+                        "conditions": [{"type": "Ready", "status": "True"}],
+                    },
+                },
+            ]
+        })
+        pools_json = json.dumps([
+            {
+                "name": "pool-cpu",
+                "autoscaling": {"enabled": True, "maxNodeCount": 5},
+                "locations": ["us-central1-a"],
+                "config": {},
+            },
+            {
+                "name": "pool-mem",
+                "autoscaling": {"enabled": True, "maxNodeCount": 5},
+                "locations": ["us-central1-a"],
+                "config": {},
+            },
+        ])
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = self._preflight_bin_dir(tmp, nodes_json, json.dumps({"items": []}), pools_json)
+            body = f"""
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj" "false" "file" "false" "" ""
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 1, f"Expected preflight failure, got code {proc.returncode}: {proc.stdout}")
+            self.assertIn("No single untainted node has sufficient schedulable capacity", proc.stdout)
+
+    def test_preflight_skips_minter_charge_when_minter_deferred(self):
+        # A node with 220m CPU and 2048Mi RAM fits the baseline (operator + LiteLLM = 210m CPU),
+        # but cannot fit minter (+200m CPU = 410m CPU).
+        # When TFVARS_ENABLE_GITHUB_MINTER=false, minter is not deployed and capacity check must pass.
+        node_json = json.dumps({
+            "items": [{
+                "metadata": {"name": "n1", "labels": {"cloud.google.com/gke-nodepool": "default-pool"}},
+                "spec": {"taints": []},
+                "status": {
+                    "allocatable": {"cpu": "220m", "memory": "2048Mi"},
+                    "conditions": [{"type": "Ready", "status": "True"}],
+                },
+            }]
+        })
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = self._preflight_bin_dir(tmp, node_json, json.dumps({"items": []}))
+            # 1. When minter is deferred (TFVARS_ENABLE_GITHUB_MINTER=false), check passes
+            body_deferred = f"""
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard TFVARS_ENABLE_GITHUB_MINTER=false \\
+  check_existing_cluster_capacity_preflight "cluster" "region" "proj" "true" "file" "false" "my-org" "my-repo" "false"
+"""
+            proc_deferred = self._run_cmd(body_deferred, bin_dir=str(bin_dir))
+            self.assertEqual(proc_deferred.returncode, 0, f"stdout: {proc_deferred.stdout}\nstderr: {proc_deferred.stderr}")
+
+            # 2. When minter is enabled (default), check fails on insufficient capacity
+            body_enabled = f"""
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard TFVARS_ENABLE_GITHUB_MINTER=true \\
+  check_existing_cluster_capacity_preflight "cluster" "region" "proj" "true" "file" "false" "my-org" "my-repo" "false"
+"""
+            proc_enabled = self._run_cmd(body_enabled, bin_dir=str(bin_dir))
+            self.assertEqual(proc_enabled.returncode, 1, f"stdout: {proc_enabled.stdout}\nstderr: {proc_enabled.stderr}")
+            self.assertIn("Insufficient schedulable CPU", proc_enabled.stdout)
 
     def test_preflight_hindsight_single_pod_constraint_enforced_with_gvisor(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -4886,7 +4956,6 @@ exit 0
 """)
             kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
             body = f"""
-{_SOURCE_INSTALLER_COMMON}
 TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj" "true" "hindsight" "false" "" ""
 """
             proc = self._run_cmd(body, bin_dir=str(bin_dir))
@@ -4906,7 +4975,6 @@ exit 0
 """)
             kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
             body = f"""
-{_SOURCE_INSTALLER_COMMON}
 TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj"
 """
             proc = self._run_cmd(body, bin_dir=str(bin_dir))
@@ -4952,7 +5020,6 @@ exit 0
 """)
             kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
             body = f"""
-{_SOURCE_INSTALLER_COMMON}
 TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj" "false" "hindsight" "false" "" ""
 """
             proc = self._run_cmd(body, bin_dir=str(bin_dir))
@@ -4991,7 +5058,6 @@ exit 0
 """)
             kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
             body = f"""
-{_SOURCE_INSTALLER_COMMON}
 TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj" "true" "file" "false" "" ""
 """
             proc = self._run_cmd(body, bin_dir=str(bin_dir))
@@ -5030,6 +5096,57 @@ diagnose_rollout_failure "{log_file}"
             self.assertIn("Helm rollout timed out waiting for Kubernetes workloads", proc.stdout)
             self.assertIn("Unready / Crashing Pods Detected", proc.stdout)
             self.assertIn("agent-gateway-xyz", proc.stdout)
+            self.assertIn("CrashLoopBackOff", proc.stdout)
+
+    def test_diagnose_rollout_failure_detects_unready_native_sidecars_on_timeout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = pathlib.Path(tmp) / "bin"
+            bin_dir.mkdir()
+            kubectl = bin_dir / "kubectl"
+            kubectl.write_text("""#!/usr/bin/env bash
+case "$*" in
+  *status.phase=Pending*) echo "" ;;
+  *status.phase=Running*) cat << 'EOF'
+{
+  "items": [
+    {
+      "metadata": {"name": "pod-crashing-sidecar"},
+      "status": {
+        "containerStatuses": [{"name": "app", "ready": true}],
+        "initContainerStatuses": [{"name": "native-sidecar", "ready": false, "state": {"waiting": {"reason": "CrashLoopBackOff"}}}]
+      }
+    },
+    {
+      "metadata": {"name": "pod-completed-init"},
+      "status": {
+        "containerStatuses": [{"name": "app", "ready": true}],
+        "initContainerStatuses": [{"name": "init-setup", "ready": false, "state": {"terminated": {"exitCode": 0, "reason": "Completed"}}}]
+      }
+    }
+  ]
+}
+EOF
+  ;;
+  *get*events*) echo "CrashLoopBackOff Back-off restarting failed sidecar" ;;
+esac
+exit 0
+""")
+            kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
+            log_file = pathlib.Path(tmp) / "prov.log"
+            log_file.write_text(
+                "Error: timed out waiting for the condition\n"
+                "\n"
+                "  with helm_release.cert_manager,\n"
+                '  on main.tf line 450, in resource "helm_release" "cert_manager":\n'
+            )
+            body = f"""
+diagnose_rollout_failure "{log_file}"
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+            self.assertIn("Unready / Crashing Pods Detected", proc.stdout)
+            self.assertIn("pod-crashing-sidecar", proc.stdout)
+            self.assertNotIn("pod-completed-init", proc.stdout)
             self.assertIn("CrashLoopBackOff", proc.stdout)
 
     def _monitor_bin_dir(self, tmp, current_context, gcloud_log):
@@ -5188,7 +5305,6 @@ exit 0
 """)
             kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
             body = f"""
-{_SOURCE_INSTALLER_COMMON}
 TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj" "true"
 """
             proc = self._run_cmd(body, bin_dir=str(bin_dir))
@@ -5242,7 +5358,6 @@ exit 0
 
             # Managed cert-manager: passes because cert-manager pod is ignored and 300m >= 240m
             body_managed = f"""
-{_SOURCE_INSTALLER_COMMON}
 TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj" "true" "file" "false" "" "" "true"
 """
             proc_managed = self._run_cmd(body_managed, bin_dir=str(bin_dir))
@@ -5251,7 +5366,6 @@ TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_
 
             # Unmanaged cert-manager: fails because cert-manager pod counts as tenant load (200m < 210m)
             body_unmanaged = f"""
-{_SOURCE_INSTALLER_COMMON}
 TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj" "true" "file" "false" "" "" "false"
 """
             proc_unmanaged = self._run_cmd(body_unmanaged, bin_dir=str(bin_dir))
