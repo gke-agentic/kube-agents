@@ -139,7 +139,43 @@ ensure compilation succeeds.
 
 **A2A module code.** If you modify `a2a/`, run `go vet ./...` and `go test -race ./...` inside that
 directory — what the `A2A Module Tests` CI job runs. The conformance suite starts an embedded
-JetStream server, so no cluster or credentials are needed.
+JetStream server, so no cluster or credentials are needed. The CI job additionally installs the
+envtest binaries and the `nats` CLI; without them the auth callout's API-server and CLI cases skip
+and the run still reports green. To match it, run with
+`KUBEBUILDER_ASSETS="$(make -C ../k8s-operator -s envtest-path)"` — the path is relative to
+`a2a/`, and getting it wrong makes the substitution empty and the cases skip exactly as if it had
+not been set.
+
+**Image pins.** `images.json` is the source of truth for every image an install pulls, but a bump
+starts there and rarely ends there. Several images keep a second copy that the file is the source
+for — a chart value, a Dockerfile `ARG` default, a compiled constant in the operator — and
+`make images-check` is what holds them in step. It covers every image the chart renders, on a
+default and a mirrored install, and what `githubMinter.enabled=true` adds to each; the build-time
+bases against their Dockerfile `ARG` defaults; the Go builder pin against the `go` directive in
+`k8s-operator/go.mod`; the fluent-bit fallback baked into the operator binary; the example
+manifests; and the kustomize integrations, which it requires to name a variable the file owns
+rather than a literal. Two copies it does not reach, where a stale pin passes every check:
+Hindsight's images sit behind `hindsight.enabled` — unset by default, and then following
+`platformAgent.harness.memory.provider`, which no render turns on — so their pins in
+`charts/kube-agents/values.yaml` are unguarded; and cert-manager's version is set again in
+`terraform/examples/full-install/variables.tf`, which no check reads. So: bump the pin in
+`images.json`, run `make images-check` and `make docs-generate`, then grep the tree for the old
+version before opening the pull request.
+
+**Everything at once.** `make verify` runs what a pull request must pass offline — Go build, vet
+and test, the Python suites, the conformance suite. The per-area targets it wraps, for a faster
+loop while you work:
+
+- `make validate` — the `Validate Repo Structure` job; fails if skills live under
+  `agents/*/defaults/skills/` instead of `agents/*/skills/`.
+- `make -C k8s-operator test` — manifests, generate, fmt, vet, then `go test`; what the
+  `Operator Tests` job runs.
+- `make test-integration` — the seam tier only, for a component another one talks to across a
+  process or protocol boundary. Install a Go toolchain first: the injector seam compiles the real
+  Go event-watcher client, and without `go` on `PATH` its tests skip and the run still prints
+  `OK`. [`tests/integration/README.md`](../tests/integration/README.md) is the tier's contract;
+  [`testing-map.md`](testing-map.md) says which suite runs where.
+- `make docs-check`, plus `cd docs/site && npm ci && npm run build` if you touched `docs/site/`.
 
 ## The automated review
 

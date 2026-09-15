@@ -92,13 +92,6 @@ Edit `jobs.json`, then redeploy the agent image at the revision carrying the cha
 ./upgrade.sh --upgrade-mode=harness --image-tag=<SEMVER_TAG_OR_FULL_COMMIT_SHA>
 ```
 
-Or during development:
-
-```bash
-cd k8s-operator
-make dev-rebuild-agent ARGS="platform"
-```
-
 The change is picked up on the next pod restart.
 
 ### How an edit reaches an existing pod

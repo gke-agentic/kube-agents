@@ -30,7 +30,7 @@ namespace, `seeded-b`'s master is still one minor behind its channel with the ex
 window ahead of now). Presence alone passed on 2026-09-07 while every slot-a fixture sat
 Pending (#1278); the state pass is what would have failed that project. A role on a cluster
 it could not reach usually reports as unchecked rather than absent; the warnings that
-override that default are in the site's `deploy/ci-pool-projects` §6.
+override that default are in `docs/ci-pool-projects.md` §6.
 Project N+1 follows the same convention. The fleet owner creates the bucket once per project; switching projects means
 re-initializing against that project's bucket and naming the project on the apply:
 

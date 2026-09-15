@@ -847,6 +847,27 @@ Costs:
 The gateway Pod's own cloud identity is the boundary still to be drawn; see
 [Limitation](#limitation).
 
+## Logging
+
+Nothing in the `envoy-credential-proxy` container may log credential material. It is the one
+place holding cluster credentials, GCP tokens, and chat secrets, and everything it writes to
+stdout leaves the cluster through Cloud Logging. The same rule covers the event watcher in the
+gateway Pod's `agent-api-auth` sidecar: it logs identifiers — cluster, namespace, pod, event
+reason, profile directory — and never a token, a kubeconfig body, or a request header.
+
+The exposure to watch when changing this code is **wrapped errors**, not deliberate logging. A
+failure from parsing a profile's `kubeconfig.yaml`, minting a token, or an API server rejecting a
+request can carry its input into the error string, and those inputs are credentials. When adding a
+log line, prefer the identifier over the value: the profile name rather than the file's contents,
+the cluster rather than the token, the status code rather than the response body.
+
+One place deliberately logs a body: `_handle_github_refresh` in `credential_proxy.py` records the
+GitHub refresh helper's stderr, because a broker that refuses a mint is otherwise recorded nowhere
+— the caller gets a reason code with no detail, and the reason code is all a chat room ever sees.
+It passes the text through `redact_credentials` before bounding it, which blanks GitHub token and
+JWT shapes. Extend that function rather than the exception if another credentialed subprocess
+needs the same treatment.
+
 ## Verification
 
 CI and deployment tests should assert that:

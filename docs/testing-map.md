@@ -102,8 +102,8 @@ in this repository, so this table asserts nothing about either.
 contexts as they stand, gives the command to read them back, and says why that command sees only
 the branch-protection half of the set. `make verify` (the `verify` target in the root `Makefile`) is the
 local answer to the same question — everything a pull request must pass offline, in one target —
-and [`site/src/content/docs/contributing.md`](site/src/content/docs/contributing.md) lists the
-individual targets to run when you have touched a given area.
+and [`pull-request-workflow.md`](pull-request-workflow.md#local-validation-before-committing) lists
+the individual targets to run when you have touched a given area.
 
 Per-tier detail lives with each tier: [`bench/cuj/README.md`](../bench/cuj/README.md) for adding a
 journey, [`tests/integration/README.md`](../tests/integration/README.md) for the seam tier,

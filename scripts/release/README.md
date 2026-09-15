@@ -145,7 +145,7 @@ the composition, Helm release, and images together via `upgrade.sh --upgrade-mod
 Similarly, `autopush` receives atomic deploys through `autopush-deploy.yml` whenever container images
 are published to GHCR. Both workflows enforce atomic full upgrades, preventing image drift and
 contention.
-[`environment-reconcile.md`](../../docs/site/src/content/docs/deploy/environment-reconcile.md) is
+[`environment-reconcile.md`](../../docs/environment-reconcile.md) is
 the canonical page for that whole path.
 
 It reuses the RC pipeline's machinery unchanged. `deploy-environment.yml`, `teardown-environment.yml`,
@@ -298,6 +298,81 @@ candidate commit and exits 1 if unpromoted:
 Staging tags exist and are pushed nightly by `nightly-pipeline.yml`. The gate works as designed
 to ensure only thoroughly validated commits reach GA; `skip_staging_validation` with an audit
 reason is strictly the emergency override for hotfixes rather than a way to cut an ordinary release.
+
+### Dispatching a release by hand
+
+Before dispatching:
+
+1. The target commit exists on `main`.
+2. It carries a `staging_<ts>_<sha>` tag from the nightly promotion. An `rc_*_validated` tag is
+   not checked alongside it: a staging tag is only ever derived from a candidate that already
+   carries one.
+3. The four release images (`k8s-operator`, `platform-agent`, `credential-proxy`, `replay-proxy`)
+   exist in GHCR under that commit.
+4. `gh` 2.40.0 or newer, authenticated with `repo` and `workflow` permissions (`gh auth status`).
+
+Then dispatch `release-publish.yml` from the Actions tab or the CLI:
+
+```bash
+# Standard release: the next version is calculated from Conventional Commits.
+gh workflow run release-publish.yml --repo gke-labs/kube-agents
+
+# A specific staging-promoted commit.
+gh workflow run release-publish.yml --repo gke-labs/kube-agents \
+  -f target_commit="<TARGET_COMMIT_SHA>"
+
+# An explicit version, which is how 0.y.z graduates to 1.0.0.
+gh workflow run release-publish.yml --repo gke-labs/kube-agents \
+  -f explicit_release_version="1.0.0"
+```
+
+A dispatch runs with `schedule_gate=bypass` unless told otherwise, so it publishes without the
+scheduled gate's verdict; `verify_release_eligibility.sh` still enforces staging promotion two
+steps later. `dry-run` reports the verdict in the job summary and publishes nothing.
+
+### Emergency hotfix
+
+`skip_staging_validation: true` skips the live GKE validation gate and nothing else. It is
+reserved for two situations: a zero-day CVE in a container dependency that needs immediate
+publication, or a production regression where waiting for the next nightly promotion would
+prolong user-facing downtime.
+
+Three invariants hold under the bypass:
+
+1. `verify_release_eligibility.sh` still requires the four release images to exist in GHCR under
+   `<TARGET_COMMIT>`; an unbuilt commit hard-fails.
+2. `emergency_override_reason` must carry a non-whitespace justification; an empty one aborts the
+   workflow.
+3. The target SemVer tag must not already exist on another commit; a collision aborts the release.
+
+Always pass `target_commit`. Omitting it defaults to the tip of `main` and releases every
+intervening commit without live validation:
+
+```bash
+# Version calculated automatically.
+gh workflow run release-publish.yml --repo gke-labs/kube-agents \
+  -f skip_staging_validation=true \
+  -f emergency_override_reason="CVE-2026-XXXX: critical vulnerability in base container dependencies" \
+  -f target_commit="<HOTFIX_COMMIT_SHA>"
+
+# Explicit version.
+gh workflow run release-publish.yml --repo gke-labs/kube-agents \
+  -f skip_staging_validation=true \
+  -f emergency_override_reason="Critical regression fix for gateway admission deadlock" \
+  -f target_commit="<HOTFIX_COMMIT_SHA>" \
+  -f explicit_release_version="0.3.1"
+```
+
+Afterwards:
+
+1. Confirm the release tag, the GHCR images and the signed Helm OCI chart with
+   `gh release view <VERSION>`.
+2. Dispatch `rc-release-pipeline.yml` against the hotfix commit
+   (`-f commit_sha="<HOTFIX_COMMIT_SHA>"`, the same SHA passed as `target_commit`) so the full
+   GKE E2E suite runs on it. Do not pass the tagged release commit: `tag_ga_release.sh` creates a
+   stamped commit on detached HEAD that has no SHA-tagged images in GHCR, and the RC pipeline's
+   image verification fails on it.
+3. Attach the Actions run URL and the justification to the tracking issue or incident report.
 
 ### Scheduled execution & testing the gate
 
