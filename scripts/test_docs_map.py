@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for the two guards the documentation map's mergeability rests on.
+"""Unit tests for the guards the documentation map's mergeability and audience rest on.
 
 Run: cd scripts && python3 -m unittest test_docs_map
 
@@ -53,6 +53,51 @@ class RealignedRowsTest(unittest.TestCase):
     def test_the_committed_map_is_compact(self):
         text = check_docs_map.MAP.read_text(encoding="utf-8")
         self.assertEqual(check_docs_map.realigned_rows(text), [])
+
+
+SITE_TABLE_HEAD = (
+    "### `docs/site/src/content/docs/` — the published site\n\n"
+    "| Path | Category | Purpose | Key topics | Audience / notes |\n| --- | --- | --- | --- | --- |\n"
+)
+
+
+class MaintainerAudienceRowsTest(unittest.TestCase):
+    """`maintainer_audience_rows` -- the audience check on the site table."""
+
+    def _site(self, *rows: str, after: str = "") -> str:
+        return SITE_TABLE_HEAD + "".join(f"{row}\n" for row in rows) + after
+
+    def test_users_row_is_clean(self):
+        text = self._site("| `install/x.md` | Site page | Installing. | Install | Users |")
+        self.assertEqual(check_docs_map.maintainer_audience_rows(text), [])
+
+    def test_ci_engineers_row_is_flagged(self):
+        text = self._site("| `deploy/ci.md` | Site page | Wiring. | Prow | CI engineers |")
+        self.assertEqual(check_docs_map.maintainer_audience_rows(text), [(5, "`deploy/ci.md`", "CI engineers")])
+
+    def test_maintainers_and_contributors_are_flagged_case_insensitively(self):
+        text = self._site(
+            "| `a.md` | Site page | A. | A | maintainers only |",
+            "| `b.md` | Site page | B. | B | New Contributors |",
+        )
+        self.assertEqual([w for _, _, w in check_docs_map.maintainer_audience_rows(text)], ["maintainers", "Contributors"])
+
+    def test_the_word_in_a_purpose_cell_is_not_a_finding(self):
+        """A page may point contributors off-site without being for them."""
+        text = self._site("| `contributing.md` | Site page | Points contributors at `CONTRIBUTING.md`. | CLA | Users |")
+        self.assertEqual(check_docs_map.maintainer_audience_rows(text), [])
+
+    def test_the_cla_page_may_name_contributors(self):
+        text = self._site("| `contributing.md` | Site page | The CLA. | CLA | Prospective contributors |")
+        self.assertEqual(check_docs_map.maintainer_audience_rows(text), [])
+
+    def test_rows_outside_the_site_table_are_not_checked(self):
+        text = self._site(after="### `terraform/`\n\n| Path | C | P | K | A |\n| --- | --- | --- | --- | --- |\n| `t/README.md` | README | T. | T | CI engineers |\n")
+        self.assertEqual(check_docs_map.maintainer_audience_rows(text), [])
+
+    def test_the_committed_map_has_no_maintainer_site_rows(self):
+        text = check_docs_map.MAP.read_text(encoding="utf-8")
+        self.assertEqual(check_docs_map.maintainer_audience_rows(text), [])
 
 
 class FamilyGlobsTest(unittest.TestCase):
