@@ -3302,9 +3302,9 @@ func checkA2AUserGrants(t a2aGrantReporter, user string, row a2aGrantRow, lists 
 // is what the server reads: a user the identities tests never see (callout,
 // in the AUTH template) still appears there, and a rendering bug that dropped
 // a list would too. The render is also held equal to the identity lists it
-// came from. The one callout-issued principal, provision, never reaches
-// nats.conf, so its lists are read from a2aIdentities and held to the same
-// rows. A callout-issued principal whose entry carries no grants at all,
+// came from. The callout-issued principals never reach nats.conf, so their
+// lists are read from a2aIdentities and held to the same rows. A
+// callout-issued principal whose entry carries no grants at all,
 // because the callout mints each connection's authorization from the pod the
 // API server attested, is recorded as perConnection and held to zero grants
 // in both lists; an empty row without that flag fails rule 1, so the empty
