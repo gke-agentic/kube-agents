@@ -731,6 +731,41 @@ config and writable only by the operator. That is a coordination boundary rather
 in-process and could change these at runtime — but it keeps limits with board-wide consequences in
 one reviewable place.
 
+### Rotating a Secret rolls the pod
+
+Credentials reach the agent pod as environment, through `SecretKeyRef`, and a container's
+environment is fixed for the life of the pod: editing the Secret changes nothing a running container
+can see. So the operator does for Secrets what the config hash does for ConfigMaps. It reads the
+Secret keys the rendered pod spec consumes as environment, digests them with SHA-256, and stamps the
+result on the pod template as `kubeagents.x-k8s.io/secret-env-hash`. Rotating one of those keys moves
+the digest, which changes the template, which rolls the pod onto the new value. Both pods that read
+credentials this way are stamped: the gateway and the credential proxy.
+
+Four details decide whether you will see it happen.
+
+- **Within fifteen minutes, not immediately.** The operator does not watch Secrets — it holds no
+  `list` or `watch` on them, deliberately — so nothing wakes a reconcile when one changes. A healthy
+  pass instead asks to be requeued after `secretEnvReprobeInterval`, and the re-read happens then.
+  `kubectl rollout restart deployment/<agent>-gateway` still works and is immediate.
+- **Only what the pod reads as environment.** A key no container references is not in the digest, and
+  editing it rolls nothing. Neither does a Secret the pod *mounts*: the kubelet refreshes a mounted
+  Secret in place, which is why the shell sandbox — which mounts `platform-agent-secrets` rather than
+  reading it through `SecretKeyRef` — never needed this.
+- **Whichever Secret the pod actually names.** The refs are read off the rendered pod spec, so a CR
+  that supplies its own `SecretKeyRef` pointing at a different Secret is covered without naming it
+  anywhere.
+- **A missing Secret is not an error.** It digests to a marker, so creating the Secret later moves the
+  digest and rolls the pod, and an install whose credentials arrive after the agent behaves the way
+  you would expect. A Secret the operator cannot read for any other reason — an API error rather than
+  a `NotFound` — keeps the digest the last good pass computed, so a blip neither rolls the pod nor
+  stops the rest of the reconcile.
+
+**The roll is a stop-start.** At the default single replica the gateway's update strategy is
+`Recreate`, so the old pod is terminated before the new one starts and the agent is unreachable
+across the gap — up to the startup budget of roughly ten minutes on a cold image pull. Expect one
+such restart per agent the first time an operator carrying this change reconciles: the annotation is
+new, so the first pass adds it and the template changes once, whether or not anything was rotated.
+
 ## Reconcile behavior
 
 - On create/update, the controller ensures the Deployment, Service, ServiceAccount, and ConfigMaps match the spec.

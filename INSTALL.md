@@ -540,6 +540,10 @@ kubectl patch secret platform-agent-secrets -n kubeagents-system --type=merge \
 kubectl rollout restart deployment/platform-agent-gateway -n kubeagents-system
 ```
 
+The restart buys promptness, not correctness: the operator notices the changed
+Secret within fifteen minutes and rolls the gateway itself. See
+[Rotating a Secret rolls the pod](docs/site/src/content/docs/operator/platformagent-crd.md#rotating-a-secret-rolls-the-pod).
+
 Vertex AI needs no entry here: `MODEL_PROVIDER=vertex` authenticates with Workload Identity
 (see [Inference gateway](docs/site/src/content/docs/concepts/inference-gateway.md#vertex-ai-and-model-garden)).
 

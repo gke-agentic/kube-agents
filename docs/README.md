@@ -169,6 +169,7 @@ identifier appears, add its source here.
 | Shared agent defaults (`approvals.*`, `security.*`) | `deploy/shared/defaults/config.yaml` and `renderConfigYAML()` in `k8s-operator/internal/controller/platformagent_manifests.go` |
 | Image defaults and override env vars (`PLATFORM_AGENT_IMAGE` et al.) | `k8s-operator/internal/controller/manifest_helpers.go` |
 | OTLP endpoint default, discovery candidates, and `otlpEndpointSource` values | `k8s-operator/internal/controller/telemetry.go` |
+| The `secret-env-hash` pod-template annotation and its re-read interval | `k8s-operator/internal/controller/platformagent_secret_hash.go` |
 | DNS/metadata-daemon defaults, the `dnsClusterIPsSource` / `metadataDaemonIPSource` values, and the `additionalEgress` prefix floors (`/12`, `/48`) | `k8s-operator/internal/controller/netpolprofile.go` and `platformagent_controller.go` |
 | Agent egress-allowlist policy: metadata addresses, the `-sandbox-metadata-deny` name, the `controlPlaneCIDRs` floors (`/16`, `/32`), and the `EgressAllowlistRefused` reason | `k8s-operator/internal/controller/platformagent_egress_policy.go` and `platformagent_controller.go` |
 | LiteLLM egress policy: `litellm-policy`, the `enable-litellm-network-policy` and `otlp-collector-namespace` annotations, the external-endpoint port-443 check, and the `platformAgent.annotations` conflict rule | `k8s-operator/internal/controller/platformagent_litellm_policy.go`, `charts/kube-agents/templates/_helpers.tpl`, `charts/kube-agents/templates/platform-agent-cr.yaml` |
