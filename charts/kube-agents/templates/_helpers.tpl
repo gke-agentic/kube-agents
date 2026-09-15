@@ -617,7 +617,7 @@ in this helper, and saying so is the only honest outcome.
 {{- if and (eq $out "") (hasSuffix $unit $raw) -}}
 {{- $n := trimSuffix $unit $raw -}}
 {{- if not (regexMatch $numeric $n) -}}
-{{- fail (printf "quota preflight: cannot parse memory/storage quantity %q — set quotaPreflight.enabled=false to bypass, and please report it." $raw) -}}
+{{- fail (printf "quota preflight: cannot parse quantity %q (memory, storage or count) — set quotaPreflight.enabled=false to bypass, and please report it." $raw) -}}
 {{- end -}}
 {{- $out = mulf (float64 $n) $mult | int64 | toString -}}
 {{- end -}}
@@ -627,7 +627,7 @@ in this helper, and saying so is the only honest outcome.
 {{- if and (eq $out "") (hasSuffix $unit $raw) -}}
 {{- $n := trimSuffix $unit $raw -}}
 {{- if not (regexMatch $numeric $n) -}}
-{{- fail (printf "quota preflight: cannot parse memory/storage quantity %q — set quotaPreflight.enabled=false to bypass, and please report it." $raw) -}}
+{{- fail (printf "quota preflight: cannot parse quantity %q (memory, storage or count) — set quotaPreflight.enabled=false to bypass, and please report it." $raw) -}}
 {{- end -}}
 {{- $out = mulf (float64 $n) $mult | int64 | toString -}}
 {{- end -}}
@@ -635,12 +635,27 @@ in this helper, and saying so is the only honest outcome.
 {{- end -}}
 {{- if eq $out "" -}}
 {{- if not (regexMatch $numeric $raw) -}}
-{{- fail (printf "quota preflight: cannot parse memory/storage quantity %q — set quotaPreflight.enabled=false to bypass, and please report it." $raw) -}}
+{{- fail (printf "quota preflight: cannot parse quantity %q (memory, storage or count) — set quotaPreflight.enabled=false to bypass, and please report it." $raw) -}}
 {{- end -}}
 {{- $out = float64 $raw | int64 | toString -}}
 {{- end -}}
 {{- $out -}}
 {{- end -}}
+{{- end }}
+
+{{/*
+Count quotas (`pods`, `persistentvolumeclaims`) go through the same parser.
+
+They are not plain integers on the wire. The API server round-trips every quota value
+through resource.Quantity and writes back the canonical form, so a namespace created
+with `pods: 1000` is read back as `pods: "1k"`. Sprig's `int64` is `cast.ToInt64`, which
+answers 0 for a string it cannot parse rather than failing — so an earlier version read
+that quota as `hard 0`, refused the release for a shortfall that did not exist, and
+printed a patch lowering the namespace to 7 pods for whoever followed the instructions.
+parseBytes already reads the decimal-SI suffixes this needs, and fails loudly on the rest.
+*/}}
+{{- define "kube-agents.parseCount" -}}
+{{- include "kube-agents.parseBytes" . -}}
 {{- end }}
 
 {{/*
@@ -695,8 +710,15 @@ Quota keys understood: CPU, memory and ephemeral-storage (requests and limits), 
 persistentvolumeclaims and requests.storage. Keys outside that set (services, secrets, other
 count/<resource>) are not modelled, and are skipped rather than guessed at.
 
-Inert when lookup returns empty (helm template in CI without a cluster, or a caller without
-RBAC to read ResourceQuotas).
+Inert when lookup returns empty — `helm template` without a cluster, or a namespace with no
+ResourceQuota at all.
+
+It is NOT inert when the installing identity cannot read ResourceQuotas. Helm's `lookup`
+swallows a NotFound and returns nothing; every other API error, a 403 on
+`list resourcequotas` among them, comes back as a template error and aborts the render. So
+the check needs `get`/`list` on `resourcequotas` in the release namespace, and an identity
+without it installs with `--set quotaPreflight.enabled=false`. Nothing here can soften that:
+a Go template cannot catch the error `lookup` raises.
 */}}
 {{- define "kube-agents.quotaRequirements" -}}
 {{- $footprint := .Files.Get "files/footprint.yaml" | fromYaml -}}
@@ -784,11 +806,12 @@ RBAC to read ResourceQuotas).
   {{- $limCpu = add $limCpu (include "kube-agents.parseCpuMillis" .Values.hindsight.postgresql.resources.limits.cpu | int64) -}}
   {{- $reqMem = add $reqMem (include "kube-agents.parseBytes" .Values.hindsight.postgresql.resources.requests.memory | int64) -}}
   {{- $limMem = add $limMem (include "kube-agents.parseBytes" .Values.hindsight.postgresql.resources.limits.memory | int64) -}}
-  {{- $pgStorage := include "kube-agents.parseBytes" ((.Values.hindsight.postgresql.persistence | default dict).size | default "0") | int64 -}}
-  {{- if gt $pgStorage 0 -}}
-    {{- $reqPvc = add $reqPvc 1 -}}
-    {{- $reqStorage = add $reqStorage $pgStorage -}}
-  {{- end -}}
+  {{- /* The same key templates/hindsight.yaml renders the volumeClaimTemplate request
+         from. values.schema.json closes hindsight.postgresql to image, resources and
+         storage, so there is no key to fall back to and no default to guard: a missing
+         one is a schema violation the render has already rejected. */ -}}
+  {{- $reqPvc = add $reqPvc 1 -}}
+  {{- $reqStorage = add $reqStorage (include "kube-agents.parseBytes" .Values.hindsight.postgresql.storage | int64) -}}
 {{- end -}}
 
 {{- /* GitHub Minter */ -}}
@@ -969,8 +992,8 @@ RBAC to read ResourceQuotas).
           {{- $hardVal = include "kube-agents.parseBytes" $hardRaw | int64 -}}
           {{- $usedVal = include "kube-agents.parseBytes" (index $used $key | default "0") | int64 -}}
         {{- else if $isCount -}}
-          {{- $hardVal = int64 $hardRaw -}}
-          {{- $usedVal = int64 (index $used $key | default 0) -}}
+          {{- $hardVal = include "kube-agents.parseCount" $hardRaw | int64 -}}
+          {{- $usedVal = include "kube-agents.parseCount" (index $used $key | default "0") | int64 -}}
         {{- end -}}
 
         {{- $availVal := sub $hardVal $usedVal -}}
