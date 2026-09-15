@@ -88,11 +88,9 @@ is unset.
 
 ## Local Development (Fast Iteration)
 
-The operator is a standard Kubebuilder project: `make generate` regenerates deepcopy code,
-`make manifests` regenerates the CRDs, ClusterRoles and WebhookConfiguration (into
-`config/crd/bases/`, `config/rbac/` and `config/webhook/`), `make build` builds the manager binary,
-and `make test` runs the unit and envtest suites against an envtest binary downloaded to `bin/` on
-first run (`make setup-envtest`). `make help` lists every target.
+The operator is a standard Kubebuilder project; `make help` lists every target. `make manifests`
+writes to `config/crd/bases/`, `config/rbac/` and `config/webhook/`, and `make test` downloads the
+envtest binaries to `bin/` on first run.
 
 `make build`, `make run` and `make test` all run `manifests`, `generate`, `fmt` and `vet` first, so
 generated code and manifests stay in sync automatically. `make install`, `make uninstall` and
@@ -333,9 +331,8 @@ When modifying or deprecating RBAC roles or rolebindings in the operator:
 
 ## Formatting and CI
 
-`make prettier-check` verifies Markdown and YAML formatting (`**/*.{md,yaml,yml}`) and
-`make prettier-write` applies it; `prettier.yml` enforces it in CI. The workflows that exercise this
-directory: `k8s-operator-test.yml` runs `make test`, `docker-publish-ghcr.yml` publishes the manager
+`prettier.yml` enforces Markdown and YAML formatting (`**/*.{md,yaml,yml}`) in CI; the local
+targets are under `make help`. The workflows that exercise this directory: `k8s-operator-test.yml` runs `make test`, `docker-publish-ghcr.yml` publishes the manager
 image alongside the agent images, and `e2e-gchat-test.yml` is the end-to-end Google Chat test.
 
 ---
