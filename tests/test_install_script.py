@@ -466,6 +466,67 @@ out_dir=""; acquire_source_repo out_dir "{requested_ref}"; echo "RESOLVED=$out_d
         self.assertIn("RC=2", proc.stdout)
         self.assertIn("--dry-run and --generate-only are different modes and cannot be combined", proc.stdout)
 
+    # ── require_min_go_version: the toolchain that builds the Minty CLI ──────
+
+    def _run_with_go(
+        self,
+        go_stdout,
+        func_call='rc=0; require_min_go_version || rc=$?; echo "rc=$rc"',
+    ):
+        """Run `func_call` with a stub `go` that prints `go_stdout` for any call.
+
+        A stub rather than the host's Go: the check's whole job is to judge a
+        version, so a suite that asked the developer's toolchain would pass or
+        fail by whose machine it ran on.
+        """
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        bin_dir = pathlib.Path(tmp.name) / "bin"
+        bin_dir.mkdir()
+        go = bin_dir / "go"
+        go.write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' '{go_stdout}'\nexit 0\n")
+        go.chmod(0o755)
+        return self._run_install_func(func_call, bin_dir=str(bin_dir))
+
+    def test_a_go_too_old_for_the_minty_cli_is_refused(self):
+        """Debian 12's golang-go, which auto_install_tool happily installs.
+
+        `command -v go` answers for it, so the installer used to call it a
+        success and spend six `retry` attempts on a build that cannot satisfy
+        the CLI's go.mod.
+        """
+        for version in ("go1.18.1", "go1.19.8", "go1.20.14"):
+            with self.subTest(version=version):
+                proc = self._run_with_go(f"go version {version} linux/amd64")
+                self.assertIn("rc=1", proc.stdout, proc.stdout + proc.stderr)
+                self.assertIn("too old", proc.stdout)
+
+    def test_a_go_that_can_fetch_the_toolchain_is_accepted(self):
+        """1.21 is the floor because 1.21 is where toolchain downloads arrived.
+
+        Pinning the CLI's own 1.24 here would refuse 1.22 and 1.23 hosts that
+        fetch 1.24 themselves and build perfectly well.
+        """
+        for version in ("go1.21.0", "go1.22.11", "go1.26.0"):
+            with self.subTest(version=version):
+                proc = self._run_with_go(f"go version {version} linux/amd64")
+                self.assertIn("rc=0", proc.stdout, proc.stdout + proc.stderr)
+                self.assertNotIn("too old", proc.stdout)
+
+    def test_an_unreadable_go_version_warns_instead_of_refusing(self):
+        # The same call the other two checks in min_versions.sh make: a regex
+        # that missed must not be the reason an import is refused, because the
+        # build reports an unusable toolchain anyway.
+        proc = self._run_with_go("go: unknown command")
+        self.assertIn("rc=0", proc.stdout, proc.stdout + proc.stderr)
+        self.assertIn("Could not determine the Go version", proc.stdout)
+
+    def test_the_go_version_is_read_out_of_the_release_string(self):
+        proc = self._run_with_go(
+            "go version go1.26.0 linux/amd64", func_call="go_core_version"
+        )
+        self.assertEqual(proc.stdout.strip().splitlines()[-1], "1.26.0", proc.stderr)
+
     def test_parse_args_cluster_mode(self):
         """Verifies parse_args captures --cluster-mode."""
         cmd = 'parse_args --cluster-mode=autopilot; echo "MODE=$PARAM_CLUSTER_MODE"'
