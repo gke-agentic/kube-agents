@@ -2773,7 +2773,7 @@ import_github_pem() {
   local project_id="$1" region="$2"
   [ -n "${GITOPS_ORG:-}" ] && [ -n "${GITOPS_REPO:-}" ] && [ -n "${GITHUB_APP_ID:-}" ] || return 0
   local pem_path="${GITHUB_PEM_PATH:-}"
-  pem_path="${pem_path/#\~/$HOME}"
+  pem_path="$(expand_tilde_path "$pem_path")"
   local kms_location keyring="${KMS_KEYRING:-$DEFAULT_KMS_KEYRING}" key="${KMS_KEY:-$DEFAULT_KMS_KEY}"
   kms_location="$(derive_kms_location "$region")"
 
@@ -3208,13 +3208,19 @@ main() {
   # region, none of which exist this early. It runs at step 8 instead, beside
   # the only consumer.
   #
-  # What is left is what the filesystem alone can answer. A path that exists but
-  # is not a readable regular file is a typo or a permission problem rather than
-  # a deleted key, and no KMS state makes it right, so it is worth catching
-  # before the installer does any work. A path that is simply absent is not
-  # decided here.
+  # Nor is the path expanded here: expand_tilde_path is in installer_common.sh,
+  # which is not sourced yet either. So a `~/...` value does not match -e below,
+  # falls through this block untouched, and is expanded and judged at step 8.
+  # That costs nothing in practice — a ~ typed on the command line is expanded
+  # by the operator's own shell before install.sh sees it, so what reaches here
+  # is a quoted flag value or a path out of install.env.
+  #
+  # What is left is what the filesystem alone can answer about an already-usable
+  # path. A path that exists but is not a readable regular file is a typo or a
+  # permission problem rather than a deleted key, and no KMS state makes it
+  # right, so it is worth catching before the installer does any work. A path
+  # that is simply absent is not decided here.
   if [ -n "$PARAM_GITHUB_PEM_PATH" ]; then
-    PARAM_GITHUB_PEM_PATH="${PARAM_GITHUB_PEM_PATH/#\~/$HOME}"
     if [ -e "$PARAM_GITHUB_PEM_PATH" ]; then
       if [ ! -f "$PARAM_GITHUB_PEM_PATH" ]; then
         print_error "GitHub App private key PEM path is not a regular file: '${PARAM_GITHUB_PEM_PATH}'."
@@ -3759,6 +3765,14 @@ main() {
   # 8. GitOps Infrastructure Repository Connection
   print_step "8. GitOps Infrastructure Repository Setup"
 
+  # A leading ~ survived the early preflight untouched, because the function
+  # that resolves it lives in installer_common.sh and that file was not sourced
+  # yet. Resolved here, ahead of every test and every copy below, so the whole
+  # step judges one real path.
+  if [ -n "$PARAM_GITHUB_PEM_PATH" ]; then
+    PARAM_GITHUB_PEM_PATH="$(expand_tilde_path "$PARAM_GITHUB_PEM_PATH")"
+  fi
+
   # The half of the PEM decision the early preflight could not make. By here
   # installer_common.sh is sourced, resolve_shared_defaults has filled the
   # keyring and key, gcloud is authenticated, and project and region are
@@ -3872,7 +3886,7 @@ main() {
               print_warning "No PEM path entered. The token minter will be deferred unless key version 1 is imported into KMS."
               break
             fi
-            github_pem_path="${github_pem_path/#\~/$HOME}"
+            github_pem_path="$(expand_tilde_path "$github_pem_path")"
             if [ -f "$github_pem_path" ]; then
               break
             fi
@@ -3912,7 +3926,7 @@ main() {
     fi
   else
     if [ -n "$github_pem_path" ]; then
-      github_pem_path="${github_pem_path/#\~/$HOME}"
+      github_pem_path="$(expand_tilde_path "$github_pem_path")"
     fi
 
     validate_non_interactive_minter_config "$github_app_id" "$github_pem_path" "$kms_keyring" "$kms_key" "$region" "$project_id" "$github_org" || exit 1
@@ -3931,7 +3945,7 @@ main() {
   fi
 
   if [ -n "$github_pem_path" ]; then
-    github_pem_path="${github_pem_path/#\~/$HOME}"
+    github_pem_path="$(expand_tilde_path "$github_pem_path")"
   fi
 
   # 9. Agent Permissions & Sandbox Isolation Boundary
