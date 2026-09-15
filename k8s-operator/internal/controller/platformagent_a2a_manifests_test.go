@@ -3362,6 +3362,13 @@ func TestEveryNATSUserGrantIsEnumeratedAndStreamScoped(t *testing.T) {
 			streams:      a2aSameVerbsOn(a2aProvisionedStreams, "STREAM.CREATE", "STREAM.INFO"),
 			accountLevel: []string{"$JS.API.INFO", "$JS.API.STREAM.NAMES", "$JS.API.STREAM.LIST"},
 		},
+		"session": {
+			// sessionIdentity lists nothing: the callout derives each
+			// connection's grants from the attested pod, and a grant
+			// recorded here would reach every session pod at once.
+			callout:       true,
+			perConnection: true,
+		},
 	}
 	var staticRows, calloutRows []string
 	for user, row := range rows {
