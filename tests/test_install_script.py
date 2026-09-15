@@ -801,6 +801,33 @@ out_dir=""; acquire_source_repo out_dir "{requested_ref}"; echo "RESOLVED=$out_d
                 f"{marker!r} must come after installer_common.sh is sourced",
             )
 
+    def test_skipping_the_gitops_interview_keeps_the_minter_configuration(self):
+        """"Skip for now" must not empty the four names that gate the minter.
+
+        write_tfvars_from_state enables the minter only when GITOPS_ORG,
+        GITOPS_REPO and GITHUB_APP_ID are all non-empty, so clearing them on
+        the skip arm renders enable_github_minter = false and the apply removes
+        a deployed minter -- its GSA, its Workload Identity binding, and the
+        chart's Deployment, Service, NetworkPolicy and KSA -- on a re-run where
+        the operator only meant to decline the questions.
+        """
+        body = _INSTALL_SH.read_text()
+
+        marker = "GitOps repository connection skipped."
+        arm_start = body.rindex("else", 0, body.index(marker))
+        arm = body[arm_start : body.index(marker)]
+
+        for cleared in (
+            'github_org=""',
+            'github_repo=""',
+            'github_app_id=""',
+        ):
+            self.assertNotIn(
+                cleared,
+                arm,
+                f"the skip arm must not clear {cleared!r}: it disables and removes a deployed minter",
+            )
+
     def test_preflight_rejects_directory_github_pem_path(self):
         """Preflight must fail fast when --github-pem-path is a directory instead of a file."""
         with tempfile.TemporaryDirectory() as tmp_dir:
