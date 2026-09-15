@@ -2969,7 +2969,6 @@ run_menu_system() {
   local github_app_id="${GITHUB_APP_ID:-}"
   local kms_keyring="${KMS_KEYRING:-}"
   local kms_key="${KMS_KEY:-}"
-  local github_pem_path="${GITHUB_PEM_PATH:-}"
   local image_tag="${PARAM_IMAGE_TAG:-}"
 
   while true; do
