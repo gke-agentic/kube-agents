@@ -540,6 +540,96 @@ func TestAHealthyPassAsksToBeWokenForTheSecretReRead(t *testing.T) {
 	}
 }
 
+// The third call site, and the one the gateway tests cannot reach: Slack and
+// Teams credentials are on the credential proxy, not the gateway, and they are
+// the credentials an install rotates most often.
+//
+// Slack has to be enabled for this to test anything. The proxy names a Secret
+// only when an integration is configured (buildCredentialProxyEnv), so on a
+// default fixture it is stamped with nothing and reverting the call in
+// reconcileCredentialProxy leaves the suite green — which is exactly what
+// review found.
+func TestRotatingASlackTokenChangesTheRenderedCredentialProxy(t *testing.T) {
+	scheme := setupScheme()
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "test-ns"},
+		Spec: agentv1alpha1.PlatformAgentSpec{
+			Integration: &agentv1alpha1.PlatformAgentIntegrationSpec{
+				Slack: &agentv1alpha1.SlackSpec{Enabled: ptr.To(true)},
+			},
+		},
+	}
+	secret := secretHashTestSecret("platform-agent-secrets", map[string][]byte{
+		"SLACK_BOT_TOKEN": []byte("xoxb-before-rotation"),
+		"SLACK_APP_TOKEN": []byte("xapp-unchanged"),
+		"API_SERVER_KEY":  []byte("gateway-key"),
+	})
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(agent, secret).
+		WithStatusSubresource(&agentv1alpha1.PlatformAgent{}).
+		WithInterceptorFuncs(fakeServerSideApplyInterceptors()).
+		Build()
+	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "test-agent", Namespace: "test-ns"}}
+	ctx := context.Background()
+
+	// First pass adds the finalizer; the second renders the workloads.
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("Reconcile 1: %v", err)
+	}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("Reconcile 2: %v", err)
+	}
+
+	proxyKey := types.NamespacedName{Name: "test-agent-credential-proxy", Namespace: "test-ns"}
+	proxy := &appsv1.Deployment{}
+	if err := cl.Get(ctx, proxyKey, proxy); err != nil {
+		t.Fatalf("read the credential-proxy Deployment: %v", err)
+	}
+	if !podReadsSecretKey(&proxy.Spec.Template.Spec, "SLACK_BOT_TOKEN") {
+		t.Fatal("the fixture no longer gives the proxy a Slack secretKeyRef, so this proves nothing")
+	}
+	before := proxy.Spec.Template.Annotations[secretEnvHashAnnotation]
+	if before == "" {
+		t.Fatalf("the rendered credential proxy carries no %s; a rotated Slack token would reach nothing", secretEnvHashAnnotation)
+	}
+
+	rotated := &corev1.Secret{}
+	if err := cl.Get(ctx, types.NamespacedName{Name: "platform-agent-secrets", Namespace: "test-ns"}, rotated); err != nil {
+		t.Fatalf("read the Secret back: %v", err)
+	}
+	rotated.Data["SLACK_BOT_TOKEN"] = []byte("xoxb-after-rotation")
+	if err := cl.Update(ctx, rotated); err != nil {
+		t.Fatalf("rotate the token: %v", err)
+	}
+
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("Reconcile 3: %v", err)
+	}
+	if err := cl.Get(ctx, proxyKey, proxy); err != nil {
+		t.Fatalf("re-read the credential-proxy Deployment: %v", err)
+	}
+	if after := proxy.Spec.Template.Annotations[secretEnvHashAnnotation]; after == before {
+		t.Errorf("the rendered credential proxy is unchanged after the rotation (%s), so the running pod keeps the old Slack token", before)
+	}
+}
+
+// podReadsSecretKey reports whether any container takes this environment
+// variable from a Secret, so a fixture can say so rather than assume it.
+func podReadsSecretKey(spec *corev1.PodSpec, name string) bool {
+	for _, containers := range [][]corev1.Container{spec.InitContainers, spec.Containers} {
+		for _, container := range containers {
+			for _, env := range container.Env {
+				if env.Name == name && env.ValueFrom != nil && env.ValueFrom.SecretKeyRef != nil {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // secretEnvReprobeInterval has to stay different from rbacReprobeInterval:
 // TestReconcileReportsAnOutOfDateClusterRoleAndKeepsGoing reads the requeue to
 // tell that the RBAC poll has stopped, and two reasons to come back that share a duration cannot
