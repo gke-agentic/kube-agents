@@ -588,6 +588,7 @@ in this helper, and saying so is the only honest outcome.
 {{- define "kube-agents.parseCpuMillis" -}}
 {{- $raw := trim (toString .) -}}
 {{- $numeric := "^[0-9]+(\\.[0-9]+)?([eE][-+]?[0-9]+)?$" -}}
+{{- $decimalCores := dict "k" 1000.0 "M" 1000000.0 "G" 1000000000.0 "T" 1000000000000.0 "P" 1000000000000000.0 "E" 1000000000000000000.0 -}}
 {{- if or (eq $raw "") (eq $raw "<nil>") -}}
 0
 {{- else if hasSuffix "m" $raw -}}
@@ -597,10 +598,23 @@ in this helper, and saying so is the only honest outcome.
 {{- end -}}
 {{- float64 $n | int64 -}}
 {{- else -}}
+{{- $out := "" -}}
+{{- range $unit, $mult := $decimalCores -}}
+{{- if and (eq $out "") (hasSuffix $unit $raw) -}}
+{{- $n := trimSuffix $unit $raw -}}
+{{- if not (regexMatch $numeric $n) -}}
+{{- fail (printf "quota preflight: cannot parse CPU quantity %q — set quotaPreflight.enabled=false to bypass, and please report it." $raw) -}}
+{{- end -}}
+{{- $out = mulf (mulf (float64 $n) $mult) 1000.0 | int64 | toString -}}
+{{- end -}}
+{{- end -}}
+{{- if eq $out "" -}}
 {{- if not (regexMatch $numeric $raw) -}}
 {{- fail (printf "quota preflight: cannot parse CPU quantity %q — set quotaPreflight.enabled=false to bypass, and please report it." $raw) -}}
 {{- end -}}
-{{- mulf (float64 $raw) 1000 | int64 -}}
+{{- $out = mulf (float64 $raw) 1000.0 | int64 | toString -}}
+{{- end -}}
+{{- $out -}}
 {{- end -}}
 {{- end }}
 
@@ -611,6 +625,12 @@ in this helper, and saying so is the only honest outcome.
 {{- $decimal := dict "k" 1000.0 "M" 1000000.0 "G" 1000000000.0 "T" 1000000000000.0 "P" 1000000000000000.0 "E" 1000000000000000000.0 -}}
 {{- if or (eq $raw "") (eq $raw "<nil>") -}}
 0
+{{- else if hasSuffix "m" $raw -}}
+{{- $n := trimSuffix "m" $raw -}}
+{{- if not (regexMatch $numeric $n) -}}
+{{- fail (printf "quota preflight: cannot parse quantity %q (memory, storage or count) — set quotaPreflight.enabled=false to bypass, and please report it." $raw) -}}
+{{- end -}}
+{{- ceil (divf (float64 $n) 1000.0) | int64 -}}
 {{- else -}}
 {{- $out := "" -}}
 {{- range $unit, $mult := $binary -}}

@@ -346,6 +346,33 @@ class PreflightDecisionTest(unittest.TestCase):
         res = self._render({"probe": {"quotas": [self._quota({"pods": "1k"})]}})
         self.assertEqual(res.returncode, 0, f"1k pods should be ample:\n{res.stderr}")
 
+    def test_a_canonical_cpu_quantity_parses(self) -> None:
+        """CPU is DecimalSI, so `requests.cpu: 1000` reads back from the API server as `1k`."""
+        res = self._render(
+            {"probe": {"quotas": [self._quota({"requests.cpu": "1k", "limits.cpu": "2k"})]}}
+        )
+        self.assertEqual(res.returncode, 0, f"1k/2k CPU should be ample:\n{res.stderr}")
+
+    def test_fractional_memory_in_used_milli_bytes_parses(self) -> None:
+        """A neighbour pod with `memory: 1.2Gi` makes `status.used` read `1288490188800m`."""
+        res = self._render(
+            {
+                "probe": {
+                    "quotas": [
+                        self._quota(
+                            {"requests.memory": "20Gi"},
+                            used={"requests.memory": "1288490188800m"},
+                        )
+                    ]
+                }
+            }
+        )
+        self.assertEqual(
+            res.returncode,
+            0,
+            f"fractional memory in used (milli-bytes) must parse:\n{res.stderr}",
+        )
+
     def test_a_decimal_si_quota_is_still_diagnosed_in_units(self) -> None:
         """A decimal-SI quota divides into no whole Mi, and used to print as raw bytes.
 
