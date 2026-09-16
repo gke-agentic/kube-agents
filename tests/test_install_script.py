@@ -1009,13 +1009,35 @@ out_dir=""; acquire_source_repo out_dir "{requested_ref}"; echo "RESOLVED=$out_d
         body = _INSTALL_SH.read_text()
 
         marker = "GitOps repository connection skipped."
-        arm_start = body.rindex("else", 0, body.index(marker))
+        # The arm's own `else` is found by its indentation, not by proximity.
+        # The arm ends in an inner `if … else print_info "GitOps repository
+        # connection skipped."`, so the nearest preceding `else` is that inner
+        # one and anchoring on it narrows the slice to twenty-five characters
+        # -- `else\n        print_info "` -- which no assignment could ever
+        # appear in. The outer arm is the one indented by four spaces.
+        arm_start = body.rindex("\n    else\n", 0, body.index(marker))
         arm = body[arm_start : body.index(marker)]
+
+        # The anchor has to prove itself before the assertions below are worth
+        # anything: an assertNotIn over the wrong slice passes in silence, and
+        # that is exactly how this test used to miss the teardown it forbids.
+        # Both landmarks sit inside the arm, one at each end of it.
+        self.assertIn(
+            "Deliberately not clearing",
+            arm,
+            f"the anchor no longer spans the skip arm (slice is {len(arm)} chars)",
+        )
+        self.assertIn(
+            "GitOps interview skipped; keeping",
+            arm,
+            f"the anchor no longer reaches the end of the skip arm (slice is {len(arm)} chars)",
+        )
 
         for cleared in (
             'github_org=""',
             'github_repo=""',
             'github_app_id=""',
+            'github_pem_path=""',
         ):
             self.assertNotIn(
                 cleared,
