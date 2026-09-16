@@ -748,9 +748,12 @@ Four details decide whether you will see it happen.
   pass instead asks to be requeued after `secretEnvReprobeInterval`, and the re-read happens then.
   `kubectl rollout restart deployment/<agent>-gateway` still works and is immediate.
 - **Only what the pod reads as environment.** A key no container references is not in the digest, and
-  editing it rolls nothing. Neither does a Secret the pod _mounts_: the kubelet refreshes a mounted
-  Secret in place, which is why the shell sandbox — which mounts `platform-agent-secrets` rather than
-  reading it through `SecretKeyRef` — never needed this.
+  editing it rolls nothing. Neither does a key the pod _mounts_: the kubelet refreshes a mounted
+  Secret file in place, so hashing one would roll a pod over a change it was going to see anyway. The
+  gateway mounts exactly one item of `platform-agent-secrets` that way, `SANDBOX_SSH_PRIVATE_KEY`,
+  and because an init container copies it into an `emptyDir` at pod start, rotating that one key
+  still needs a restart — as it did before this change. The shell sandbox mounts its own
+  `<agent>-shell-authorized-keys`, and deliberately never names `platform-agent-secrets` at all.
 - **Whichever Secret the pod actually names.** The refs are read off the rendered pod spec, so a CR
   that supplies its own `SecretKeyRef` pointing at a different Secret is covered without naming it
   anywhere.

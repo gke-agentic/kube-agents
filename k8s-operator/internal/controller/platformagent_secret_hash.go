@@ -91,10 +91,14 @@ import (
 //
 // Only Secret material that arrives as environment — SecretKeyRef, and
 // envFrom.secretRef on a CR-supplied sidecar. Mounted Secrets are deliberately
-// excluded: the kubelet refreshes a mounted Secret in place, so the shell
-// sandbox, which volume-mounts platform-agent-secrets, never had this bug, and
-// hashing a mount would roll a pod that was about to pick the change up on its
-// own.
+// excluded: the kubelet refreshes a mounted Secret file in place, so hashing
+// one would roll a pod over a change it was going to see anyway. The gateway
+// has exactly one such mount, the SANDBOX_SSH_PRIVATE_KEY item of
+// platform-agent-secrets (buildShellSandboxClientKeyVolumes), and rotating that
+// key still needs a restart because an init container copies it to an emptyDir
+// at pod start — unchanged by this file. The shell sandbox pod is not involved:
+// it mounts its own <agent>-shell-authorized-keys and deliberately never names
+// platform-agent-secrets.
 //
 // Reading the refs off the rendered pod spec rather than naming
 // platform-agent-secrets also covers the case where the CR supplies its own
