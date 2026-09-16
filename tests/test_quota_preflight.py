@@ -36,7 +36,7 @@ _PREFLIGHT_TPL = _CHART / "templates" / "quota-preflight.yaml"
 _HELPERS = _CHART / "templates" / "_helpers.tpl"
 _FOOTPRINT_SCRIPT = _ROOT / "scripts" / "generate_chart_footprint.py"
 
-# helm is not on PATH in every environment; the operator's pinned copy usually is present.
+# helm is not on PATH in every environment; check PATH first, then any developer copy under k8s-operator/bin/.
 _VENDORED_HELM = _ROOT / "k8s-operator" / "bin" / "helm"
 _HELM = shutil.which("helm") or (str(_VENDORED_HELM) if _VENDORED_HELM.is_file() else None)
 
@@ -247,6 +247,37 @@ class PreflightDecisionTest(unittest.TestCase):
             }
         )
         self.assertEqual(res.returncode, 0, f"render should have passed:\n{res.stderr}")
+
+    def test_generic_operator_rendered_workload_is_counted(self) -> None:
+        """A workload added to operatorRendered is counted without editing the template."""
+        base_req = self._requirements()
+
+        footprint_path = self.chart / "files" / "footprint.yaml"
+        original_footprint = footprint_path.read_text()
+        footprint_data = yaml.safe_load(original_footprint)
+        footprint_data["operatorRendered"]["extraWorkload"] = {
+            "pods": 1,
+            "cpuMillisRequest": 200,
+            "cpuMillisLimit": 400,
+            "memoryBytesRequest": 128 * 1024**2,
+            "memoryBytesLimit": 256 * 1024**2,
+            "ephemeralStorageBytesRequest": 0,
+            "ephemeralStorageBytesLimit": 0,
+        }
+        try:
+            footprint_path.write_text(yaml.safe_dump(footprint_data))
+            new_req = self._requirements()
+            self.assertEqual(new_req["pods"], base_req["pods"] + 1)
+            self.assertEqual(new_req["requestsCpu"], base_req["requestsCpu"] + 200)
+            self.assertEqual(new_req["limitsCpu"], base_req["limitsCpu"] + 400)
+            self.assertEqual(
+                new_req["requestsMemory"], base_req["requestsMemory"] + 128 * 1024**2
+            )
+            self.assertEqual(
+                new_req["limitsMemory"], base_req["limitsMemory"] + 256 * 1024**2
+            )
+        finally:
+            footprint_path.write_text(original_footprint)
 
     def test_a_scoped_quota_is_skipped(self) -> None:
         """A scoped quota covers a subset of pods this template cannot identify."""
@@ -715,7 +746,7 @@ class QuotaPreflightTest(unittest.TestCase):
         self.assertEqual(res.returncode, 0, f"the bypass must render:\n{res.stderr}")
 
         helpers = _HELPERS.read_text()
-        body = helpers.split('define "kube-agents.quotaPreflight"')[1]
+        body = helpers.split('define "kube-agents.quotaPreflight"')[1].split("{{- end }}")[0]
         guard = body.index(".Values.quotaPreflight.enabled")
         self.assertLess(
             guard,

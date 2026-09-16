@@ -122,6 +122,26 @@ _GIB = 1024**3
 _MILLICORES_PER_CORE = 1000
 _ZERO_QUANTITY = "0"
 
+_REPLICAS_FIELD = "replicas"
+
+_OPERATOR_RENDERED = "operatorRendered"
+_AGENT_POD = "agentPod"
+_BASE = "base"
+_DASHBOARD = "dashboard"
+_SHELL_SANDBOX = "shellSandbox"
+_CREDENTIAL_PROXY = "credentialProxy"
+_STORAGE_SECTION = "storage"
+_PERSISTENT_VOLUME_CLAIMS = "persistentVolumeClaims"
+_STORAGE_REQUEST = "storageRequest"
+_STORAGE_BYTES_REQUEST = "storageBytesRequest"
+_CPU_MILLIS_REQUEST = "cpuMillisRequest"
+_CPU_MILLIS_LIMIT = "cpuMillisLimit"
+_MEMORY_BYTES_REQUEST = "memoryBytesRequest"
+_MEMORY_BYTES_LIMIT = "memoryBytesLimit"
+_EPHEMERAL_STORAGE_BYTES_REQUEST = "ephemeralStorageBytesRequest"
+_EPHEMERAL_STORAGE_BYTES_LIMIT = "ephemeralStorageBytesLimit"
+_PODS = "pods"
+
 _KEY_SEPARATOR = "/"
 
 
@@ -160,9 +180,10 @@ _IGNORED_CONTAINERS: dict[str, str] = {
 
 _COMPLETENESS_ADVICE = (
     "Each one is either part of what an install costs or it is not. Sum it into "
-    "extract_footprint so the quota preflight counts it, or add it to _IGNORED_WORKLOADS "
-    "or _IGNORED_CONTAINERS in this file with the reason it does not change the totals. "
-    "Then run `make chart-sync`."
+    "extract_footprint as a top-level key under operatorRendered (where the chart's "
+    "kube-agents.quotaRequirements template generically iterates and counts it), or add "
+    "it to _IGNORED_WORKLOADS or _IGNORED_CONTAINERS in this file with the reason it does "
+    "not change the totals. Then run `make chart-sync`."
 )
 
 _YAML_STR_TAG = "tag:yaml.org,2002:str"
@@ -262,19 +283,23 @@ def _sum_quantity(containers: list, section: str, key: str, parse) -> int:
     return sum(_quantity(c, section, key, parse) for c in containers)
 
 
-def _workload_entry(containers: list, pods: int) -> dict:
+def _workload_entry(containers: list, pods: int = 1, replicas: int = 1) -> dict:
     """Sum a set of co-scheduled containers into one footprint entry.
 
-    Init containers are deliberately excluded. A pod's effective request is the greater of
-    (largest init container, sum of regular and sidecar containers), and for every workload
-    here the sum dominates, so adding the init containers would over-count.
+    Callers select which regular and native sidecar init containers contribute to the pod's
+    resources; ordinary init containers that run to completion and request less than the
+    container sum are excluded by the caller.
+
+    When `replicas` is greater than 1 (as read from `spec.replicas`), total pods and resource
+    quantities are scaled by `replicas`.
     """
-    req_cpu = _sum_quantity(containers, _REQUESTS, _CPU, parse_cpu_millis)
-    lim_cpu = _sum_quantity(containers, _LIMITS, _CPU, parse_cpu_millis)
-    req_mem = _sum_quantity(containers, _REQUESTS, _MEMORY, parse_bytes)
-    lim_mem = _sum_quantity(containers, _LIMITS, _MEMORY, parse_bytes)
-    req_eph = _sum_quantity(containers, _REQUESTS, _EPHEMERAL_STORAGE, parse_bytes)
-    lim_eph = _sum_quantity(containers, _LIMITS, _EPHEMERAL_STORAGE, parse_bytes)
+    total_pods = pods * replicas
+    req_cpu = _sum_quantity(containers, _REQUESTS, _CPU, parse_cpu_millis) * replicas
+    lim_cpu = _sum_quantity(containers, _LIMITS, _CPU, parse_cpu_millis) * replicas
+    req_mem = _sum_quantity(containers, _REQUESTS, _MEMORY, parse_bytes) * replicas
+    lim_mem = _sum_quantity(containers, _LIMITS, _MEMORY, parse_bytes) * replicas
+    req_eph = _sum_quantity(containers, _REQUESTS, _EPHEMERAL_STORAGE, parse_bytes) * replicas
+    lim_eph = _sum_quantity(containers, _LIMITS, _EPHEMERAL_STORAGE, parse_bytes) * replicas
 
     return {
         _REQUESTS: {
@@ -287,14 +312,20 @@ def _workload_entry(containers: list, pods: int) -> dict:
             _MEMORY: format_bytes(lim_mem),
             _EPHEMERAL_STORAGE: format_bytes(lim_eph),
         },
-        "cpuMillisRequest": req_cpu,
-        "cpuMillisLimit": lim_cpu,
-        "memoryBytesRequest": req_mem,
-        "memoryBytesLimit": lim_mem,
-        "ephemeralStorageBytesRequest": req_eph,
-        "ephemeralStorageBytesLimit": lim_eph,
-        "pods": pods,
+        _CPU_MILLIS_REQUEST: req_cpu,
+        _CPU_MILLIS_LIMIT: lim_cpu,
+        _MEMORY_BYTES_REQUEST: req_mem,
+        _MEMORY_BYTES_LIMIT: lim_mem,
+        _EPHEMERAL_STORAGE_BYTES_REQUEST: req_eph,
+        _EPHEMERAL_STORAGE_BYTES_LIMIT: lim_eph,
+        _PODS: total_pods,
     }
+
+
+def _replicas(doc: dict) -> int:
+    """Read spec.replicas from a workload document, defaulting to 1."""
+    replicas = (doc.get("spec") or {}).get(_REPLICAS_FIELD)
+    return 1 if replicas is None else int(replicas)
 
 
 def _pod_spec(doc: dict) -> dict:
@@ -385,6 +416,9 @@ def extract_footprint() -> dict:
     cred_proxy_containers = {}
     gateway_containers = {}
     gateway_init_containers = {}
+    shell_replicas = 1
+    cred_proxy_replicas = 1
+    gateway_replicas = 1
     # Every pod-bearing document, summed or not, for _check_completeness below.
     pod_workloads = {}
     pvc_count = 0
@@ -410,10 +444,12 @@ def extract_footprint() -> dict:
             shell_containers = {
                 c.get(_NAME_FIELD): c for c in spec.get(_CONTAINERS_FIELD, [])
             }
+            shell_replicas = _replicas(doc)
         elif kind == _KIND_DEPLOYMENT and name == _CRED_PROXY_WORKLOAD:
             cred_proxy_containers = {
                 c.get(_NAME_FIELD): c for c in spec.get(_CONTAINERS_FIELD, [])
             }
+            cred_proxy_replicas = _replicas(doc)
         elif kind == _KIND_DEPLOYMENT and name == _GATEWAY_WORKLOAD:
             gateway_containers = {
                 c.get(_NAME_FIELD): c for c in spec.get(_CONTAINERS_FIELD, [])
@@ -421,11 +457,11 @@ def extract_footprint() -> dict:
             gateway_init_containers = {
                 c.get(_NAME_FIELD): c for c in spec.get(_INIT_CONTAINERS_FIELD, [])
             }
+            gateway_replicas = _replicas(doc)
 
         if kind == _KIND_STATEFULSET:
             # A StatefulSet's volumeClaimTemplates become one claim per replica.
-            replicas = (doc.get("spec") or {}).get("replicas")
-            replicas = 1 if replicas is None else int(replicas)
+            replicas = _replicas(doc)
             for claim in (doc.get("spec") or {}).get("volumeClaimTemplates") or []:
                 pvc_count += replicas
                 storage_bytes += _claim_storage(claim) * replicas
@@ -443,6 +479,13 @@ def extract_footprint() -> dict:
             raise ValueError(
                 f"container {container_name!r} not found in {workload} in the golden"
             )
+
+    if gateway_replicas != 1:
+        raise ValueError(
+            f"{_GATEWAY_WORKLOAD} spec.replicas is {gateway_replicas}, expected 1. "
+            "The footprint records one gateway replica's base for the chart to scale "
+            "via availability.replicas."
+        )
 
     # The containers the entries below sum, named the way the guard names them. Dropping
     # one from an entry without dropping it here leaves it unaccounted and the guard says
@@ -468,25 +511,29 @@ def extract_footprint() -> dict:
     ]
 
     return {
-        "operatorRendered": {
-            "agentPod": {
+        _OPERATOR_RENDERED: {
+            _AGENT_POD: {
                 # One pod for the base. The dashboard is another container in that same pod,
                 # so it adds resources but no pod.
-                "base": _workload_entry(agent_pod_base, pods=1),
-                "dashboard": _workload_entry(
+                _BASE: _workload_entry(agent_pod_base, pods=1),
+                _DASHBOARD: _workload_entry(
                     [gateway_containers[_DASHBOARD_CONTAINER]], pods=0
                 ),
             },
-            "shellSandbox": _workload_entry([shell_containers[_SHELL_CONTAINER]], pods=1),
-            "credentialProxy": _workload_entry(
-                [cred_proxy_containers[_CRED_PROXY_CONTAINER]], pods=1
+            _SHELL_SANDBOX: _workload_entry(
+                [shell_containers[_SHELL_CONTAINER]], pods=1, replicas=shell_replicas
+            ),
+            _CREDENTIAL_PROXY: _workload_entry(
+                [cred_proxy_containers[_CRED_PROXY_CONTAINER]],
+                pods=1,
+                replicas=cred_proxy_replicas,
             ),
             # Claims are release-scoped rather than per-agent-replica: scaling the agent does
             # not create more of them, so the preflight must not multiply these.
-            "storage": {
-                "persistentVolumeClaims": pvc_count,
-                "storageRequest": format_bytes(storage_bytes),
-                "storageBytesRequest": storage_bytes,
+            _STORAGE_SECTION: {
+                _PERSISTENT_VOLUME_CLAIMS: pvc_count,
+                _STORAGE_REQUEST: format_bytes(storage_bytes),
+                _STORAGE_BYTES_REQUEST: storage_bytes,
             },
         }
     }

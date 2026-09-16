@@ -972,23 +972,22 @@ a Go template cannot catch the error `lookup` raises.
     {{- $surgeEphLim = max $surgeEphLim $podLimEph -}}
   {{- end -}}
 
-  {{- $shell := (index $op "shellSandbox") | default dict -}}
-  {{- $reqPods = add $reqPods ($shell.pods | default 1 | int64) -}}
-  {{- $reqCpu = add $reqCpu ($shell.cpuMillisRequest | default 0 | int64) -}}
-  {{- $limCpu = add $limCpu ($shell.cpuMillisLimit | default 0 | int64) -}}
-  {{- $reqMem = add $reqMem ($shell.memoryBytesRequest | default 0 | int64) -}}
-  {{- $limMem = add $limMem ($shell.memoryBytesLimit | default 0 | int64) -}}
-  {{- $reqEph = add $reqEph ($shell.ephemeralStorageBytesRequest | default 0 | int64) -}}
-  {{- $limEph = add $limEph ($shell.ephemeralStorageBytesLimit | default 0 | int64) -}}
-
-  {{- $cred := (index $op "credentialProxy") | default dict -}}
-  {{- $reqPods = add $reqPods ($cred.pods | default 1 | int64) -}}
-  {{- $reqCpu = add $reqCpu ($cred.cpuMillisRequest | default 0 | int64) -}}
-  {{- $limCpu = add $limCpu ($cred.cpuMillisLimit | default 0 | int64) -}}
-  {{- $reqMem = add $reqMem ($cred.memoryBytesRequest | default 0 | int64) -}}
-  {{- $limMem = add $limMem ($cred.memoryBytesLimit | default 0 | int64) -}}
-  {{- $reqEph = add $reqEph ($cred.ephemeralStorageBytesRequest | default 0 | int64) -}}
-  {{- $limEph = add $limEph ($cred.ephemeralStorageBytesLimit | default 0 | int64) -}}
+  {{- /* Workloads rendered by the operator outside the agent pod (e.g. shellSandbox,
+         credentialProxy, and any future workload added to operatorRendered). Iterating
+         generic keys here ensures that any workload summed into extract_footprint is
+         automatically counted by the preflight without requiring manual template edits.
+         agentPod and storage are handled separately above and below. */ -}}
+  {{- range $key, $workload := $op -}}
+    {{- if and (ne $key "agentPod") (ne $key "storage") -}}
+      {{- $reqPods = add $reqPods ($workload.pods | default 1 | int64) -}}
+      {{- $reqCpu = add $reqCpu ($workload.cpuMillisRequest | default 0 | int64) -}}
+      {{- $limCpu = add $limCpu ($workload.cpuMillisLimit | default 0 | int64) -}}
+      {{- $reqMem = add $reqMem ($workload.memoryBytesRequest | default 0 | int64) -}}
+      {{- $limMem = add $limMem ($workload.memoryBytesLimit | default 0 | int64) -}}
+      {{- $reqEph = add $reqEph ($workload.ephemeralStorageBytesRequest | default 0 | int64) -}}
+      {{- $limEph = add $limEph ($workload.ephemeralStorageBytesLimit | default 0 | int64) -}}
+    {{- end -}}
+  {{- end -}}
 
   {{- /* Claims are release-scoped rather than per-replica, so they are not multiplied. */ -}}
   {{- $storage := (index $op "storage") | default dict -}}

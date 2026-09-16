@@ -125,16 +125,8 @@ const (
 	// agentAPIAuthCPULimit and agentAPIAuthMemoryLimit size the agent-api-auth native sidecar's
 	// resource limits. The CPU limit is 1, down from 2 (#749).
 	//
-	// The container runs two processes, so the limit binds both: Envoy, fronting the
-	// PlatformAgent API on 8643, and the k8s-event-watcher. The 22m measured across 19
-	// watched Cluster Agent profiles is the container's total, both processes included, so
-	// one core is roughly 45x the observed use rather than a budget for the watcher alone.
-	//
-	// What the cut does change for Envoy: deploy/shared/start-services.sh starts it without
-	// --concurrency, so it sizes its worker threads from the node's core count and not from
-	// this limit. The threads are unchanged; the ceiling they share halves. A TCP readiness
-	// probe cannot see CPU throttling, so raise this before looking elsewhere if the API
-	// front door slows under load on large nodes.
+	// The 22m measured across 19 watched Cluster Agent profiles is the container's total,
+	// so one core is roughly 45x the observed use rather than a budget for the watcher alone.
 	//
 	// GOMAXPROCS has been cgroup-aware since Go 1.25 and k8s-operator builds with 1.27
 	// (k8s-operator/go.mod), so dropping this limit from 2 to 1 sets the

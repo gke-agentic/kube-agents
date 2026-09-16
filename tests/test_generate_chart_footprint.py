@@ -113,6 +113,28 @@ def _promote_ignored_init_container(docs):
     )
 
 
+def _rename_shell_container(docs):
+    doc = _find_doc(docs, "StatefulSet", gcf._SHELL_WORKLOAD)
+    for container in doc["spec"]["template"]["spec"].get("containers", []):
+        if container.get("name") == gcf._SHELL_CONTAINER:
+            container["name"] = "renamed"
+
+
+def _scale_shell_statefulset(docs):
+    doc = _find_doc(docs, "StatefulSet", gcf._SHELL_WORKLOAD)
+    doc["spec"]["replicas"] = 2
+
+
+def _scale_cred_proxy_deployment(docs):
+    doc = _find_doc(docs, "Deployment", gcf._CRED_PROXY_WORKLOAD)
+    doc["spec"]["replicas"] = 3
+
+
+def _scale_gateway_deployment(docs):
+    doc = _find_doc(docs, "Deployment", gcf._GATEWAY_WORKLOAD)
+    doc["spec"]["replicas"] = 2
+
+
 @contextlib.contextmanager
 def _golden_with(mutate):
     """Run the block against the committed golden with `mutate` applied to its documents."""
@@ -302,22 +324,41 @@ class ExtractFootprintTest(unittest.TestCase):
 
     def test_a_renamed_container_is_an_error_rather_than_a_zero(self):
         """Finding containers by name means a rename must fail loudly, not sum to 0."""
-        docs = list(yaml.safe_load_all(gcf._GOLDEN_MANIFEST.read_text()))
-        for doc in docs:
-            if isinstance(doc, dict) and doc.get("kind") == "StatefulSet":
-                for container in doc["spec"]["template"]["spec"].get("containers", []):
-                    if container.get("name") == gcf._SHELL_CONTAINER:
-                        container["name"] = "renamed"
-        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as fh:
-            yaml.safe_dump_all(docs, fh)
-            path = pathlib.Path(fh.name)
-        try:
-            with unittest.mock.patch.object(gcf, "_GOLDEN_MANIFEST", path):
-                with self.assertRaises(ValueError) as caught:
-                    gcf.extract_footprint()
-            self.assertIn(gcf._SHELL_CONTAINER, str(caught.exception))
-        finally:
-            path.unlink(missing_ok=True)
+        with _golden_with(_rename_shell_container):
+            with self.assertRaises(ValueError) as caught:
+                gcf.extract_footprint()
+        self.assertIn(gcf._SHELL_CONTAINER, str(caught.exception))
+
+    def test_shell_replicas_multiplies_pods_resources_and_claims(self):
+        with _golden_with(_scale_shell_statefulset):
+            data = gcf.extract_footprint()
+        shell = data["operatorRendered"]["shellSandbox"]
+        baseline_shell = self.op["shellSandbox"]
+        self.assertEqual(shell["pods"], 2)
+        self.assertEqual(shell["cpuMillisRequest"], baseline_shell["cpuMillisRequest"] * 2)
+        self.assertEqual(shell["memoryBytesRequest"], baseline_shell["memoryBytesRequest"] * 2)
+        # Shell StatefulSet has 2 volumeClaimTemplates (data=10Gi, sshd=1Gi), so scaling from
+        # 1 to 2 replicas adds 2 claims (baseline 4 -> 6) and 11Gi storage (baseline 22Gi -> 33Gi).
+        self.assertEqual(data["operatorRendered"]["storage"]["persistentVolumeClaims"], 6)
+        self.assertEqual(
+            data["operatorRendered"]["storage"]["storageBytesRequest"],
+            self.op["storage"]["storageBytesRequest"] + 11 * _GIB,
+        )
+
+    def test_cred_proxy_replicas_multiplies_pods_and_resources(self):
+        with _golden_with(_scale_cred_proxy_deployment):
+            data = gcf.extract_footprint()
+        cred = data["operatorRendered"]["credentialProxy"]
+        baseline_cred = self.op["credentialProxy"]
+        self.assertEqual(cred["pods"], 3)
+        self.assertEqual(cred["cpuMillisRequest"], baseline_cred["cpuMillisRequest"] * 3)
+        self.assertEqual(cred["memoryBytesRequest"], baseline_cred["memoryBytesRequest"] * 3)
+
+    def test_gateway_replicas_must_be_one(self):
+        with _golden_with(_scale_gateway_deployment):
+            with self.assertRaises(ValueError) as caught:
+                gcf.extract_footprint()
+        self.assertIn("expected 1", str(caught.exception))
 
     def test_empty_documents_in_the_stream_are_skipped(self):
         """A stray `---` yields a None document; iterating it must not crash the sum."""
