@@ -4022,6 +4022,10 @@ func buildBaseContainers(agent *agentv1alpha1.PlatformAgent, image string, envVa
 				},
 			},
 			Env: dashboardEnvVars,
+			// Limits remain 1 CPU / 2Gi pending live working-set measurement (#1635):
+			// lowering limits.memory without measurement risks OOMKilling the container,
+			// and Pod readiness is the AND of every container, so an OOM-looping dashboard
+			// withdraws the agent API on :8642 and drives the CR to Ready=False.
 			Resources: corev1.ResourceRequirements{
 				Requests: corev1.ResourceList{
 					corev1.ResourceCPU:    resource.MustParse("256m"),

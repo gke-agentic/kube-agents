@@ -525,6 +525,34 @@ class PreflightDecisionTest(unittest.TestCase):
             "the patch must leave room for the surge Pod it promises",
         )
 
+    def test_count_pods_spelling_is_enforced(self) -> None:
+        """`count/pods` is valid Kubernetes syntax alongside `pods` and must be checked."""
+        res = self._render(
+            {"probe": {"quotas": [self._quota({"count/pods": str(_DEFAULT_PODS - 1)})]}}
+        )
+        self.assertNotEqual(res.returncode, 0, "a too-small count/pods quota must fail")
+        self.assertIn("count/pods", res.stderr)
+        self.assertIn(f'"count/pods":"{_DEFAULT_PODS + 1}"', res.stderr)
+
+    def test_the_install_patch_for_claims_does_not_double_count_retained_used(self) -> None:
+        """Retained claims sitting in `used` on install must not double the suggested patch."""
+        req_gib = _OPERATOR_STORAGE_BYTES // 1024**3
+        res = self._render(
+            {
+                "probe": {
+                    "quotas": [
+                        self._quota(
+                            {"requests.storage": f"{req_gib - 2}Gi"},
+                            used={"requests.storage": f"{req_gib}Gi"},
+                        )
+                    ]
+                }
+            }
+        )
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn(f'"requests.storage":"{req_gib}Gi"', res.stderr)
+        self.assertNotIn(f'"requests.storage":"{req_gib * 2}Gi"', res.stderr)
+
 
 
 class QuotaPreflightTest(unittest.TestCase):

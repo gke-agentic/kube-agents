@@ -296,6 +296,8 @@ litellm:
     # and the audit SOP this project ships rules it out at every replica count
     # (obtainability_audit_sop.md 3.3).
     enabled: true
+  # Observed steady-state memory usage is ~1090Mi per pod across both replicas;
+  # raising requests.memory to match is tracked in #1636.
   resources:
     requests:
       cpu: 100m
@@ -385,6 +387,8 @@ hindsight:
     # Recall is CPU-bound on the in-process cross-encoder reranker; see the
     # template before raising these — more CPU has been measured to buy
     # nothing on e2-standard-4, and a request of 4 CPUs never schedules there.
+    # Steady-state usage is ~9m against the 2-CPU request; right-sizing
+    # requests.cpu is tracked in #1637.
     resources:
       requests:
         cpu: "2"

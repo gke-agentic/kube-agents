@@ -1061,7 +1061,7 @@ a Go template cannot catch the error `lookup` raises.
         {{- /* No surge room: a surge Pod mounts the existing claim rather than creating one. */ -}}
         {{- $isBytes = true -}}
         {{- $isClaimShaped = true -}}
-      {{- else if eq $key "pods" -}}
+      {{- else if or (eq $key "pods") (eq $key "count/pods") -}}
         {{- $req = int64 $r.pods -}}
         {{- /* One surge Pod, for the same reason as the CPU and memory surge. */ -}}
         {{- $surgeRoom = 1 -}}
@@ -1100,17 +1100,19 @@ a Go template cannot catch the error `lookup` raises.
 
         {{- if $failed -}}
           {{- $patchTarget := 0 -}}
-          {{- if $ctx.Release.IsInstall -}}
+          {{- if and $ctx.Release.IsInstall (not $isClaimShaped) -}}
             {{- /* used + required + one surge Pod. Exactly used+required fits the release at
                    rest and then stalls its first rolling update. */ -}}
             {{- $patchTarget = add $usedVal $req $surgeRoom -}}
           {{- else -}}
-            {{- /* On upgrade `used` already holds this release's own pods, so adding the two
-                   asks for the release twice: a release needing 6 pods with 4 running was
-                   told to patch to 11 where 7 does. What a neighbouring workload holds is in
-                   `used` too and cannot be told apart from the release's own, so this is the
-                   release's need plus a surge Pod — right in a namespace the release has to
-                   itself, and short by the neighbours' share in one it does not. */ -}}
+            {{- /* On upgrade — and for claim-shaped keys on install, where retained PVCs from a
+                   previous install may already sit in `used` — adding `used` asks for the
+                   release twice: a release needing 6 pods with 4 running was told to patch to
+                   11 where 7 does, and a 22Gi claim requirement with 22Gi retained asked for
+                   44Gi. What a neighbouring workload holds is in `used` too and cannot be told
+                   apart from the release's own, so this is the release's need plus a surge Pod
+                   — right in a namespace the release has to itself, and short by the neighbours'
+                   share in one it does not. */ -}}
             {{- $patchTarget = add $req $surgeRoom -}}
           {{- end -}}
           {{- $reqFormatted := "" -}}

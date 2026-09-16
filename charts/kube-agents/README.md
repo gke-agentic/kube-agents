@@ -597,14 +597,14 @@ by name.
 
 How it decides. For each quota it compares `hard` against what the release needs, on
 install and upgrade alike; on install it also compares `hard - used`. It reads
-CPU, memory and ephemeral-storage (requests and limits), `pods`,
-`persistentvolumeclaims` and `requests.storage`; other keys, including `services`,
-`secrets` and other `count/<resource>` entries, are not modelled and are skipped
-rather than guessed at. **Scoped quotas are skipped entirely** — a quota with
-`scopes` or a `scopeSelector` applies to a subset of pods the template cannot
-identify, so comparing the whole release against it would be wrong either way.
-Every quota that falls short is reported in one failure, so a namespace with two of them
-takes one patch rather than two rounds.
+CPU, memory and ephemeral-storage (requests and limits), `pods` (`count/pods`),
+`persistentvolumeclaims` (`count/persistentvolumeclaims`) and `requests.storage`; other
+keys, including `services`, `secrets` and other `count/<resource>` entries, are not
+modelled and are skipped rather than guessed at. **Scoped quotas are skipped entirely** —
+a quota with `scopes` or a `scopeSelector` applies to a subset of pods the template cannot
+identify, so comparing the whole release against it would be wrong either way. Every quota
+that falls short is reported in one failure, so a namespace with two of them takes one
+patch rather than two rounds.
 
 Two carve-outs in that comparison, both to stop it refusing an install that would have
 worked:
@@ -622,8 +622,9 @@ worked:
   genuinely too small for it.
 
 The patch it prints raises `hard` to what the release needs plus one rollout surge Pod —
-adding `used` on install, where `used` is somebody else's, and not on upgrade, where it is
-largely the release's own. Claim counts and `requests.storage` get no surge allowance,
+adding `used` on install for compute and pod quotas, where `used` is somebody else's, and
+not on upgrade or for claim-shaped keys, where `used` already holds the release's own
+running pods or retained PVCs. Claim counts and `requests.storage` get no surge allowance,
 because a surge Pod mounts the existing claim rather than creating one.
 
 **Where it is silent, and where it is not.** The check needs a cluster to query, so it
