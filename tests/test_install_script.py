@@ -3064,6 +3064,83 @@ class ImportGithubPemKmsKeyTest(unittest.TestCase):
         # rather than discarded, which is what 2>/dev/null used to hide.
         self.assertIn("ALREADY_EXISTS: it already exists", proc.stdout)
 
+    def test_the_manual_import_recipe_is_printed_before_go_is_installed(self):
+        """auto_install_tool's exit is a dead end, so the recipe has to come first.
+
+        On a host with neither brew nor apt -- which is exactly where the
+        install cannot succeed -- auto_install_tool exhausts its branches and
+        ends the run with `exit 1` from inside itself. Nothing after the call
+        site runs, so an operator told "install go manually" is told nothing
+        about the thing they were installing it for. The `minty tools
+        import-pk` invocation is the one output that makes that host
+        recoverable: the key can be imported from anywhere, including a
+        machine that is not this one.
+
+        Ordering is the assertion, not presence. A recipe printed after the
+        call site is a recipe nobody sees.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            # No go, no brew, no apt-get, no sudo: the shape of a host
+            # auto_install_tool has no route on. PATH is replaced rather than
+            # prepended, so a developer's own Go toolchain cannot satisfy the
+            # `command -v go` this test needs to fail.
+            bin_dir = create_minimal_tools_bin(tmp)
+            pem = pathlib.Path(tmp) / "app.pem"
+            pem.write_text("-----BEGIN RSA PRIVATE KEY-----\n")
+            gcloud = bin_dir / "gcloud"
+            # Reports no ENABLED key version, so the import is not skipped.
+            gcloud.write_text(
+                "#!/usr/bin/env bash\n"
+                'case "$*" in\n'
+                "  *'kms keys versions list'*) exit 0 ;;\n"
+                "esac\n"
+                "exit 0\n"
+            )
+            gcloud.chmod(gcloud.stat().st_mode | stat.S_IEXEC)
+            body = (
+                f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n'
+                f'source "{_INSTALLER_COMMON}"\n'
+                # Non-interactive, because the interactive arm of
+                # auto_install_tool prompts on /dev/tty and would hang here.
+                # Its answer is the same "y" that arm assumes.
+                "PARAM_NON_INTERACTIVE=true GITOPS_ORG=an-org GITOPS_REPO=a-repo "
+                f'GITHUB_APP_ID=12345 GITHUB_PEM_PATH="{pem}" '
+                "import_github_pem a-project us-central1-a\n"
+            )
+            proc = subprocess.run(
+                ["bash", "-c", body],
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=120,
+                env=get_isolated_test_env(overrides={"PATH": str(bin_dir)}),
+                cwd=str(_REPO_ROOT),
+            )
+
+        combined = proc.stdout + proc.stderr
+        self.assertEqual(proc.returncode, 1, f"the run must stop here:\n{combined}")
+        dead_end = proc.stdout.find("Tool 'go' is still missing")
+        self.assertNotEqual(
+            dead_end, -1, f"expected auto_install_tool to give up:\n{combined}"
+        )
+        recipe = proc.stdout.find("import the key by hand instead:")
+        self.assertNotEqual(
+            recipe,
+            -1,
+            "a host that cannot install Go must still be told how to import the "
+            f"key: print the recipe before auto_install_tool.\n{combined}",
+        )
+        self.assertLess(
+            recipe,
+            dead_end,
+            "the recipe is printed after the call that ends the run, so it never "
+            f"reaches the operator.\n{combined}",
+        )
+        # The recipe has to be runnable: the real path, not the placeholder.
+        self.assertIn("tools import-pk", proc.stdout)
+        self.assertIn(f"-private-key=@{pem}", proc.stdout)
+        self.assertNotIn("-private-key=@<path-to-pem>", proc.stdout)
+
 
 class InstallEnvIsCreatedInTheCheckoutTest(unittest.TestCase):
     """The configuration file has to land where every other front door looks.

@@ -2818,6 +2818,15 @@ import_github_pem() {
   fi
   if ! command -v go >/dev/null 2>&1; then
     print_info "Go is required to build the Minty CLI for initial private key import into Cloud KMS."
+    # Said before the attempt rather than after it. auto_install_tool ends in
+    # `exit 1` when the tool is still missing afterwards, which is what every
+    # host it has no package manager for gets -- and from inside that exit
+    # there is nowhere left to say what to do instead. The run stops either
+    # way: the minter is enabled in the generated configuration, so the
+    # readiness gate after this import refuses the apply without a key. What
+    # the operator loses is the recipe, and only on the path where they need
+    # it most, so print it while there is still a stdout to print it to.
+    print_info "If Go cannot be installed on this host, import the key by hand instead: ${import_cmd/<path-to-pem>/$pem_path}"
     auto_install_tool "go"
   fi
   # auto_install_tool judges success by `command -v`, which a Go far too old to
