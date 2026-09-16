@@ -9,6 +9,7 @@ import os
 import pathlib
 import pty
 import re
+import shlex
 import shutil
 import signal
 import stat
@@ -467,14 +468,14 @@ out_dir=""; acquire_source_repo out_dir "{requested_ref}"; echo "RESOLVED=$out_d
         self.assertIn("--dry-run and --generate-only are different modes and cannot be combined", proc.stdout)
 
     def test_parse_args_cluster_mode(self):
-        """Verifies parse_args captures --cluster-mode."""
-        cmd = 'parse_args --cluster-mode=autopilot; echo "MODE=$PARAM_CLUSTER_MODE"'
+        """Verifies parse_args captures --gke-cluster-mode."""
+        cmd = 'parse_args --gke-cluster-mode=autopilot; echo "MODE=$PARAM_CLUSTER_MODE"'
         proc = self._run_install_func(cmd)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("MODE=autopilot", proc.stdout)
 
     def test_cluster_mode_defaults_to_unset(self):
-        """An unpassed --cluster-mode leaves the interview free to ask."""
+        """An unpassed --gke-cluster-mode leaves the interview free to ask."""
         proc = self._run_install_func('echo "MODE=[$PARAM_CLUSTER_MODE]"')
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("MODE=[]", proc.stdout)
@@ -1189,13 +1190,16 @@ run_menu_system "."
         self.assertIn("GVISOR=true", proc.stdout)
 
     def test_parse_args_keeps_an_empty_gvisor_value_empty(self):
-        """`--gvisor=` must reach main's validator rather than read as a default.
+        """`--enable-gvisor=` must reach main's validator rather than read as a default.
 
         main uses ${PARAM_ENABLE_GVISOR-true} for exactly this: parse_args
         leaves the empty string in place, the `:-` form would silently
         substitute it back to the default, and the validator rejects it.
+
+        flag_bool_value has to preserve this too: the bare `--enable-gvisor`
+        form yields true, and only the `=` form with nothing after it is empty.
         """
-        cmd = 'parse_args --gvisor=; echo "GVISOR=[$PARAM_ENABLE_GVISOR]"'
+        cmd = 'parse_args --enable-gvisor=; echo "GVISOR=[$PARAM_ENABLE_GVISOR]"'
         proc = self._run_install_func(cmd)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("GVISOR=[]", proc.stdout)
@@ -1205,7 +1209,7 @@ run_menu_system "."
 
         main lists the incoming value as option 1 and treats option 2 as "the
         other one", so that answering the prompt with nothing confirms what
-        `--gvisor` asked for and the `(Default)` label matches what that
+        `--enable-gvisor` asked for and the `(Default)` label matches what that
         produces. It holds only while prompt_menu resolves an unanswered
         prompt to option 1; if that moves, the prompt starts inverting the
         caller's choice in silence.
@@ -1395,7 +1399,7 @@ class InstallEnvInputTest(unittest.TestCase):
     def test_a_flag_beats_the_file(self):
         """Order of authority: flag, then file, then default."""
         proc = self._source_with_env_file(
-            'parse_args --project-id=from-the-flag; echo "P=$PARAM_PROJECT_ID"',
+            'parse_args --gcp-project-id=from-the-flag; echo "P=$PARAM_PROJECT_ID"',
             contents="PROJECT_ID=from-the-file\n",
         )
         self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
@@ -1591,7 +1595,7 @@ class NonInteractiveRerunInheritanceTest(unittest.TestCase):
 
         proc = self._params(
             "ALLOWED_USERS=from-the-file@example.com",
-            'parse_args --allowed-users=from-the-flag@example.com; '
+            'parse_args --google-chat-allowed-users=from-the-flag@example.com; '
             'echo "U=$PARAM_ALLOWED_USERS"',
         )
         self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
@@ -3284,9 +3288,9 @@ class ChatBooleansAreReadThroughIsTruthyTest(unittest.TestCase):
         and it is invisible to the behavioural cases below on a `true` file."""
         block = self._SOURCE_BLOCK()
         self.assertNotIn('"$PARAM_ENABLE_GOOGLE_CHAT" = "true"', block)
-        self.assertNotIn('"${SLACK_ENABLED:-$DEFAULT_SLACK_ENABLED}" = "true"', block)
+        self.assertNotIn('"${PARAM_ENABLE_SLACK:-$DEFAULT_SLACK_ENABLED}" = "true"', block)
         self.assertIn('is_truthy "$PARAM_ENABLE_GOOGLE_CHAT"', block)
-        self.assertIn('is_truthy "${SLACK_ENABLED:-$DEFAULT_SLACK_ENABLED}"', block)
+        self.assertIn('is_truthy "${PARAM_ENABLE_SLACK:-$DEFAULT_SLACK_ENABLED}"', block)
 
     def _SOURCE_BLOCK(self):
         source = _INSTALL_SH.read_text()
@@ -4235,6 +4239,271 @@ echo "$rc" > "{rc_file}"
         self._spawn_on_pty(script)
         self.assertEqual("42", self._await_file(rc_file, "the wrapped command's exit status"))
         self.assertIn("the wrapped output", log_file.read_text())
+
+
+class DomainScopedFlagsTest(unittest.TestCase):
+    """The CLI surface issue #1540 defines.
+
+    Three things are asserted here and nowhere else: that the legacy spellings
+    are GONE rather than quietly still accepted, that every `--enable-*` toggle
+    means the same thing bare as it does with `=true`, and that the flags which
+    had no CLI at all before this reach the variables the install actually
+    reads.
+    """
+
+    def _parse(self, args, body, contents=""):
+        """parse_args the given args, then run `body`, with an install.env."""
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = pathlib.Path(tmp) / "install.env"
+            env_file.write_text(contents)
+            script = (
+                f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n'
+                f"parse_args {args}\n{body}\n"
+            )
+            return subprocess.run(
+                ["bash", "-c", script],
+                capture_output=True,
+                text=True,
+                env=get_isolated_test_env(
+                    overrides={"KUBE_AGENTS_INSTALL_ENV": str(env_file)}
+                ),
+                cwd=str(_REPO_ROOT),
+            )
+
+    # Every flag the issue removes, with no alias fallback. A rename that left
+    # the old spelling working would pass every other test in this file.
+    LEGACY_FLAGS = [
+        "--project-id=p",
+        "--region=r",
+        "--cluster-name=c",
+        "--cluster-mode=autopilot",
+        "--gvisor=false",
+        "--allowed-users=a@example.com",
+        "--enable-web-ui",
+        "--enable-web-ui=true",
+        "--enable-webui",
+        "--enable-webui=true",
+        "--webui",
+        "--webui=true",
+    ]
+
+    def test_every_legacy_flag_is_rejected(self):
+        for flag in self.LEGACY_FLAGS:
+            with self.subTest(flag=flag):
+                proc = self._parse(flag, 'echo "REACHED"')
+                self.assertNotIn("REACHED", proc.stdout)
+                self.assertIn("Unknown parameter", proc.stdout + proc.stderr)
+
+    # flag -> (PARAM variable, value to pass)
+    RENAMED_FLAGS = {
+        "--gcp-project-id": ("PARAM_PROJECT_ID", "my-project"),
+        "--gcp-region": ("PARAM_REGION", "europe-west1"),
+        "--gke-cluster-name": ("PARAM_CLUSTER_NAME", "my-cluster"),
+        "--gke-cluster-mode": ("PARAM_CLUSTER_MODE", "standard"),
+        "--agent-namespace": ("PARAM_AGENT_NAMESPACE", "my-namespace"),
+        "--google-chat-allowed-users": ("PARAM_ALLOWED_USERS", "a@example.com"),
+        "--slack-bot-token": ("PARAM_SLACK_BOT_TOKEN", "xoxb-1"),
+        "--slack-app-token": ("PARAM_SLACK_APP_TOKEN", "xapp-1"),
+        "--slack-allowed-users": ("PARAM_SLACK_ALLOWED_USERS", "U123,U456"),
+        "--slack-home-channel": ("PARAM_SLACK_HOME_CHANNEL", "C01234567"),
+        "--slack-home-channel-name": ("PARAM_SLACK_HOME_CHANNEL_NAME", "#gke-alerts"),
+    }
+
+    def test_each_value_flag_reaches_its_variable(self):
+        for flag, (var, value) in self.RENAMED_FLAGS.items():
+            with self.subTest(flag=flag):
+                proc = self._parse(f"{flag}={shlex.quote(value)}", f'echo "V=${var}"')
+                self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+                self.assertIn(f"V={value}", proc.stdout)
+
+    TOGGLES = {
+        "--enable-gvisor": "PARAM_ENABLE_GVISOR",
+        "--enable-hermes-dashboard": "PARAM_ENABLE_WEBUI",
+        "--enable-gke-backup-plan": "PARAM_ENABLE_GKE_BACKUP_PLAN",
+        "--enable-pubsub-platform": "PARAM_ENABLE_PUBSUB_PLATFORM",
+        "--enable-stockout-investigator": "PARAM_ENABLE_STOCKOUT_INVESTIGATOR",
+        "--enable-google-chat": "PARAM_ENABLE_GOOGLE_CHAT",
+        "--enable-slack": "PARAM_ENABLE_SLACK",
+    }
+
+    def test_bare_and_explicit_boolean_forms_agree(self):
+        """`--flag` and `--flag=true` are the same answer, for every toggle.
+
+        The old parser was inconsistent about this -- `--enable-gvisor` took only the
+        `=` form, `--enable-google-chat` only the bare one -- so an automated
+        caller had to know which was which per flag.
+        """
+        for flag, var in self.TOGGLES.items():
+            with self.subTest(flag=flag):
+                bare = self._parse(flag, f'echo "V=${var}"')
+                self.assertEqual(bare.returncode, 0, bare.stderr + bare.stdout)
+                self.assertIn("V=true", bare.stdout)
+
+                explicit = self._parse(f"{flag}=true", f'echo "V=${var}"')
+                self.assertEqual(explicit.returncode, 0, explicit.stderr + explicit.stdout)
+                self.assertIn("V=true", explicit.stdout)
+
+                off = self._parse(f"{flag}=false", f'echo "V=${var}"')
+                self.assertEqual(off.returncode, 0, off.stderr + off.stdout)
+                self.assertIn("V=false", off.stdout)
+
+    def test_a_flag_still_beats_install_env_for_the_new_names(self):
+        """The precedence install.defaults.env documents, on the renamed flags.
+
+        parse_args runs after install.env is sourced, which is what makes this
+        true; a seed added in the wrong place would silently invert it.
+        """
+        proc = self._parse(
+            "--gcp-project-id=from-the-flag",
+            'echo "P=$PARAM_PROJECT_ID"',
+            contents="PROJECT_ID=from-the-file\n",
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("P=from-the-flag", proc.stdout)
+
+    def test_slack_settings_inherit_from_install_env(self):
+        """A re-run that repeats no --slack-* flag keeps the recorded settings.
+
+        Same contract the Google Chat seeds have: losing SLACK_ALLOWED_USERS on
+        a silent re-run would widen the allowlist to the whole workspace rather
+        than merely dropping a setting.
+        """
+        proc = self._parse(
+            "--enable-slack",
+            'echo "T=$PARAM_SLACK_BOT_TOKEN U=$PARAM_SLACK_ALLOWED_USERS"',
+            contents="SLACK_BOT_TOKEN=xoxb-from-the-file\nSLACK_ALLOWED_USERS=U999\n",
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("T=xoxb-from-the-file U=U999", proc.stdout)
+
+    def test_agent_namespace_survives_the_unset_namespace_guard(self):
+        """--agent-namespace must reach NAMESPACE despite bootstrap_install_env.
+
+        That function unsets NAMESPACE before reading install.env, so an
+        inherited kubectl variable cannot redirect an install. A flag is a
+        deliberate act and has to get through anyway -- and the seed is read
+        BEFORE main() exports it, so this pins the ordering rather than just
+        the parse.
+        """
+        proc = self._parse(
+            "--agent-namespace=chosen-ns",
+            'if [ -n "${PARAM_AGENT_NAMESPACE:-}" ]; then export NAMESPACE="$PARAM_AGENT_NAMESPACE"; fi; echo "N=$NAMESPACE"',
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("N=chosen-ns", proc.stdout)
+
+    def test_empty_gvisor_value_is_not_read_back_as_true(self):
+        """`--enable-gvisor=` stays empty so the validator can reject it.
+
+        flag_bool_value returns true only for the BARE form. Collapsing the two
+        would send the empty string back as the default and lose the rejection.
+        """
+        proc = self._parse("--enable-gvisor=", 'echo "G=[$PARAM_ENABLE_GVISOR]"')
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("G=[]", proc.stdout)
+
+    def test_flag_bool_value_handles_a_value_containing_equals(self):
+        """Only the FIRST `=` separates the flag from its value."""
+        proc = self._parse(
+            "--slack-home-channel-name=a=b",
+            'echo "V=$PARAM_SLACK_HOME_CHANNEL_NAME"',
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("V=a=b", proc.stdout)
+
+
+class SlackRequiresTokensNonInteractivelyTest(unittest.TestCase):
+    """--enable-slack with nobody to ask for the tokens is refused.
+
+    The socket-mode relay cannot connect without both, and the failure would
+    otherwise appear as a CrashLoopBackOff long after a successful-looking
+    apply. Asserted against the script's text rather than by running main(),
+    which would need a cluster: what matters is that the refusal exists, names
+    both flags, and sits in the chat step before anything is provisioned.
+    """
+
+    def test_the_guard_names_both_tokens(self):
+        text = _INSTALL_SH.read_text()
+        self.assertIn("--slack-bot-token (SLACK_BOT_TOKEN)", text)
+        self.assertIn("--slack-app-token (SLACK_APP_TOKEN)", text)
+
+    def test_the_guard_only_fires_without_a_tty(self):
+        """Interactive runs must still reach the interview that prompts."""
+        text = _INSTALL_SH.read_text()
+        guard = text[text.find("Slack asked for, with nobody to ask") :]
+        self.assertIn('[ "$PARAM_NON_INTERACTIVE" = "true" ] || ! has_controlling_tty', guard[:1200])
+
+    def test_the_guard_precedes_the_tfvars_write(self):
+        """A refusal after the apply would be a refusal of nothing.
+
+        Matched against the call site rather than the name: install.sh mentions
+        write_tfvars_from_state in a comment on line 110, 170KB before anything
+        runs, so searching for the bare name compares the guard to prose.
+        """
+        text = _INSTALL_SH.read_text()
+        guard_at = text.find("--enable-slack needs a bot token and an app token")
+        self.assertNotEqual(guard_at, -1, "the Slack token guard is missing")
+        write_at = text.find('write_tfvars_from_state "$tfvars_file"')
+        self.assertNotEqual(write_at, -1)
+        self.assertLess(guard_at, write_at)
+
+
+class ToggleValuesAreValidatedTest(unittest.TestCase):
+    """Every --enable-* toggle rejects a value that is not a boolean.
+
+    flag_bool_value extracts what a toggle carries without checking it, and
+    every read of the result goes through is_truthy, where anything that is not
+    "true" is false. Unchecked, `--enable-slack=ture` provisions an install with
+    Slack off and says nothing until the integration is missed.
+    """
+
+    def _validate(self, flag, value):
+        script = (
+            f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n'
+            f'validate_optional_bool_param "{flag}" "{value}"\n'
+            'echo "PASSED"\n'
+        )
+        return subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True,
+            text=True,
+            env=get_isolated_test_env(),
+            cwd=str(_REPO_ROOT),
+        )
+
+    def test_a_typo_is_rejected_and_names_the_flag(self):
+        proc = self._validate("--enable-slack", "ture")
+        self.assertNotIn("PASSED", proc.stdout)
+        self.assertIn(
+            "--enable-slack must be either true or false",
+            proc.stdout + proc.stderr,
+        )
+
+    def test_booleans_and_the_unset_case_pass(self):
+        """Empty has to pass: it is how a toggle nobody set reaches its default."""
+        for value in ("true", "false", ""):
+            with self.subTest(value=value):
+                proc = self._validate("--enable-slack", value)
+                self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+                self.assertIn("PASSED", proc.stdout)
+
+    # The toggles nothing else in main() checks. --enable-gvisor and
+    # --enable-hermes-dashboard have validators of their own, which are stricter:
+    # they also reject the empty string the five below use to mean "nobody chose".
+    UNCHECKED_TOGGLES = [
+        "--enable-google-chat",
+        "--enable-slack",
+        "--enable-gke-backup-plan",
+        "--enable-pubsub-platform",
+        "--enable-stockout-investigator",
+    ]
+
+    def test_every_unchecked_toggle_is_wired_to_the_validator(self):
+        """A validator main() never calls for a flag is a validator that is not there."""
+        text = _INSTALL_SH.read_text()
+        for flag in self.UNCHECKED_TOGGLES:
+            with self.subTest(flag=flag):
+                self.assertIn(f'validate_optional_bool_param "{flag}"', text)
 
 
 if __name__ == "__main__":

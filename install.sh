@@ -257,11 +257,13 @@ load_legacy_vars_file() {
 bootstrap_install_env() {
   local file="${1:-}"
   # NAMESPACE reaches terraform.tfvars, and it is a name kubectl tooling
-  # commonly exports. Only install.env may set it: a value inherited from the
-  # shell would put a fresh release into a namespace the agent's fixed gateway
-  # endpoint does not serve, and record nothing that says why. Cleared before
-  # the file is read (and whether or not there is one), so the file's own key
-  # is the only way in.
+  # commonly exports. An inherited value would put a fresh release into a
+  # namespace the agent's fixed gateway endpoint does not serve, and record
+  # nothing that says why, so it is cleared before the file is read (and
+  # whether or not there is one). Two things may set it after that, both
+  # deliberate acts rather than inherited ones: this file's own key, and
+  # --agent-namespace, which main() exports over the top once parse_args has
+  # run.
   unset NAMESPACE
   [ -n "$file" ] || return 0
   if [ ! -f "$file" ]; then
@@ -376,7 +378,8 @@ PARAM_CUSTOM_ROLES="${PLATFORM_AGENT_CUSTOM_ROLES:-}"
 # fills in install.defaults.env's answer once the helpers are sourced.
 PARAM_ENABLE_PUBSUB_PLATFORM="${ENABLE_PUBSUB_PLATFORM:-}"
 PARAM_ENABLE_STOCKOUT_INVESTIGATOR="${ENABLE_STOCKOUT_INVESTIGATOR:-}"
-# Set-ness, never ${VAR:-...}: `--gvisor=` with no value sets this to the empty
+PARAM_ENABLE_GKE_BACKUP_PLAN="${ENABLE_GKE_BACKUP_PLAN:-}"
+# Set-ness, never ${VAR:-...}: `--enable-gvisor=` with no value sets this to the empty
 # string, and that has to survive to the validator in main rather than being
 # silently read back as the default. The default itself comes from
 # install.defaults.env, sourced above — and again through
@@ -385,7 +388,7 @@ PARAM_ENABLE_STOCKOUT_INVESTIGATOR="${ENABLE_STOCKOUT_INVESTIGATOR:-}"
 #
 # Leaving PARAM_ENABLE_GVISOR *unset* when neither name is set is what makes
 # that second route work. Assigning the empty string here would be
-# indistinguishable from `--gvisor=`: under curl | bash there is no
+# indistinguishable from `--enable-gvisor=`: under curl | bash there is no
 # install.defaults.env beside the script, so DEFAULT_ENABLE_GVISOR is unset at
 # this point, and resolve_shared_defaults' own ${PARAM_ENABLE_GVISOR-...} would
 # see a variable already set and leave it empty for the validator to reject.
@@ -395,7 +398,7 @@ elif [ -n "${DEFAULT_ENABLE_GVISOR+x}" ]; then
   PARAM_ENABLE_GVISOR="$DEFAULT_ENABLE_GVISOR"
 fi
 # HERMES_DASHBOARD_ENABLED as well as ENABLE_WEBUI: the flag is spelled
-# --enable-web-ui and the install records the setting under the Hermes name, so
+# --enable-hermes-dashboard and the install records the setting under the Hermes name, so
 # a file written from a previous install carries the second spelling and only
 # the second. The same asymmetry applies to MEMORY / MEMORY_PROVIDER below and
 # to GOOGLE_CHAT_ENABLED below.
@@ -440,6 +443,20 @@ PARAM_GOOGLE_CHAT_MODE="${GOOGLE_CHAT_MODE:-}"
 PARAM_GOOGLE_CHAT_HOME_CHANNEL="${GOOGLE_CHAT_HOME_CHANNEL:-}"
 PARAM_MODEL_DEFAULT_NAME="${MODEL_DEFAULT_NAME:-}"
 PARAM_USER_PROFILE_ENABLED="${USER_PROFILE_ENABLED:-}"
+# Slack, seeded from the loaded configuration exactly as Google Chat is above,
+# and for the same reason: the chat interview reads these rather than the
+# SLACK_* variables directly, so a --slack-* flag and an install.env key reach
+# it by one route, and a re-run that repeats no flag keeps what the last
+# install recorded rather than clearing it.
+PARAM_ENABLE_SLACK="${SLACK_ENABLED:-}"
+PARAM_SLACK_BOT_TOKEN="${SLACK_BOT_TOKEN:-}"
+PARAM_SLACK_APP_TOKEN="${SLACK_APP_TOKEN:-}"
+PARAM_SLACK_ALLOWED_USERS="${SLACK_ALLOWED_USERS:-}"
+PARAM_SLACK_HOME_CHANNEL="${SLACK_HOME_CHANNEL:-}"
+PARAM_SLACK_HOME_CHANNEL_NAME="${SLACK_HOME_CHANNEL_NAME:-}"
+# bootstrap_install_env clears NAMESPACE before reading install.env, so this
+# seeds from the file alone; --agent-namespace is the other way in.
+PARAM_AGENT_NAMESPACE="${NAMESPACE:-}"
 
 show_help() {
   cat << EOF
@@ -454,22 +471,26 @@ Flags for AI Agents & Automation:
                                 pre-apply checks, print lifecycle commands, and
                                 exit without applying
   --dry-run                     Validate prerequisites & output config/plan without creating resources
-  --project-id=ID               Target GCP Project ID
-  --region=REGION               Target GCP Region (default: install.defaults.env
+  --gcp-project-id=ID           Target GCP Project ID
+  --gcp-region=REGION           Target GCP Region (default: install.defaults.env
                                 DEFAULT_REGION, currently us-central1)
-  --cluster-name=NAME           GKE Cluster Name (default: DEFAULT_CLUSTER_NAME,
+  --gke-cluster-name=NAME       GKE Cluster Name (default: DEFAULT_CLUSTER_NAME,
                                 currently platform-agent-host)
-  --cluster-mode=MODE           Shape of a cluster this run creates: autopilot | standard
+  --gke-cluster-mode=MODE       Shape of a cluster this run creates: autopilot | standard
                                 (default: DEFAULT_CLUSTER_MODE, currently autopilot).
                                 Autopilot clusters are regional. Passing this flag with
-                                autopilot and a zonal --region is an error; leaving it
-                                unset at a zonal --region builds Standard instead.
+                                autopilot and a zonal --gcp-region is an error; leaving it
+                                unset at a zonal --gcp-region builds Standard instead.
                                 Ignored when installing onto a cluster that already
                                 exists — its live shape wins.
+  --agent-namespace=NAMESPACE   Kubernetes namespace the release installs into
+                                (default: DEFAULT_NAMESPACE, currently kubeagents-system).
+                                The chart wires the agent's model-gateway endpoint to this
+                                namespace, so changing it is for CI and second installs
   --model-provider=PROVIDER     Model provider: gemini | vertex_ai | anthropic | openai
                                 (default: DEFAULT_MODEL_PROVIDER, currently gemini)
   --model-default-name=NAME     Default model name for the provider
-  --vertex-project-id=ID        GCP project serving Vertex AI models (default: --project-id)
+  --vertex-project-id=ID        GCP project serving Vertex AI models (default: --gcp-project-id)
   --vertex-location=LOCATION    Vertex AI serving location, a region or "global"
                                 (default: DEFAULT_VERTEX_LOCATION, currently global)
   --vertex-manage-serving-project=BOOL
@@ -488,10 +509,14 @@ Flags for AI Agents & Automation:
   --permission-set=SET          Agent GCP IAM permission set: read-only | custom
                                 (default: DEFAULT_PERMISSION_SET, currently read-only)
   --custom-roles=ROLES          Roles for --permission-set=custom (space- or comma-separated)
-  --gvisor=true|false           Enable GKE Sandbox (gVisor) runtime isolation
+  --enable-gvisor[=true|false]  Enable GKE Sandbox (gVisor) runtime isolation
                                 (default: DEFAULT_ENABLE_GVISOR, currently true)
-  --enable-web-ui=true|false    Enable Hermes Web UI port 9119 dashboard
+  --enable-hermes-dashboard[=true|false]
+                                Enable Hermes Web UI port 9119 dashboard
                                 (default: DEFAULT_ENABLE_WEBUI, currently false)
+  --enable-gke-backup-plan[=true|false]
+                                Provision a GKE Backup Plan for the cluster
+                                (default: DEFAULT_ENABLE_GKE_BACKUP_PLAN, currently false)
   --user-profile-enabled=BOOL   Enable user profile persona extensions
                                 (default: DEFAULT_USER_PROFILE_ENABLED,
                                 currently false)
@@ -526,11 +551,16 @@ Flags for AI Agents & Automation:
                                 See 'make mirror-images'
   --allow-unverified-source     Provision from a dirty or mismatched checkout (local script edits
                                 are applied even though the deployed image was built elsewhere)
-  --enable-google-chat          Enable Google Chat integration
-  --enable-pubsub-platform      Enable Pub/Sub platform adapter AgentPlugin (default: false)
-  --enable-stockout-investigator
+  --enable-google-chat[=true|false]
+                                Enable Google Chat integration
+  --enable-slack[=true|false]   Enable the Slack socket-mode relay. Non-interactively
+                                this requires --slack-bot-token and --slack-app-token
+  --enable-pubsub-platform[=true|false]
+                                Enable Pub/Sub platform adapter AgentPlugin (default: false)
+  --enable-stockout-investigator[=true|false]
                                 Enable GKE Stockout Investigator AgentPlugin (default: false)
-  --allowed-users=EMAILS        Comma-separated user emails allowed to talk to the
+  --google-chat-allowed-users=EMAILS
+                                Comma-separated user emails allowed to talk to the
                                 agent over Google Chat. Empty allows all users
   --chat-topic-name=TOPIC       Pub/Sub topic name for Google Chat
                                 (default: DEFAULT_CHAT_TOPIC_NAME,
@@ -542,6 +572,13 @@ Flags for AI Agents & Automation:
                                 (default: DEFAULT_GOOGLE_CHAT_MODE, currently default)
   --google-chat-home-channel=SPACE_ID
                                 Google Chat space ID for unsolicited alerts/messages (e.g. spaces/AAAA...)
+  --slack-bot-token=TOKEN       Slack bot token (xoxb-...)
+  --slack-app-token=TOKEN       Slack socket-mode app-level token (xapp-...)
+  --slack-allowed-users=USERS   Comma-separated Slack user IDs allowed to talk to the
+                                agent. Empty allows all users
+  --slack-home-channel=CHANNEL  Slack channel ID for unsolicited alerts/messages (e.g. C01234567)
+  --slack-home-channel-name=NAME
+                                Display name of that channel (e.g. #gke-alerts)
   --migrate-node-pools          Opt in to migrating legacy node pools to GKE_METADATA on an existing
                                 cluster (recreates nodes and restarts workloads; required on clusters
                                 with legacy pools, else install aborts)
@@ -561,6 +598,36 @@ Configuration file:
 EOF
 }
 
+# The value an --enable-* flag carries: `--flag` is true, `--flag=VALUE` is
+# VALUE. The empty string of `--enable-gvisor=` is preserved rather than read
+# back as true, because main's validator has to see it and reject it -- the
+# invariant PARAM_ENABLE_GVISOR's set-ness dance above exists to protect.
+#
+# Defined here and not in scripts/installer/installer_common.sh, where shared
+# installer code belongs: parse_args is the first statement of main(), the
+# workspace step that sources installer_common.sh has not run by then, and
+# under `curl … | bash` there is no checkout to source it from at all. Nothing
+# duplicates it -- install.sh is the only front door with --enable-* toggles.
+flag_bool_value() {
+  case "${1:-}" in
+    *=*) printf '%s' "${1#*=}" ;;
+    *) printf 'true' ;;
+  esac
+}
+
+# Rejects a toggle whose value is neither true nor false, naming the flag that
+# carried it. Empty passes: it is how a toggle nobody set reaches the
+# ${VAR:-$DEFAULT} reads in main(), and rejecting it here would make every
+# install that omits the flag fail. Lives beside flag_bool_value for the same
+# reason that one is not in scripts/installer/installer_common.sh.
+validate_optional_bool_param() {
+  local flag="$1" value="${2:-}"
+  if [ -n "$value" ] && [[ ! "$value" =~ ^(true|false)$ ]]; then
+    print_error "${flag} must be either true or false."
+    exit 1
+  fi
+}
+
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -568,10 +635,11 @@ parse_args() {
       --generate-only) PARAM_GENERATE_ONLY="true"; shift ;;
       --dry-run) PARAM_DRY_RUN="true"; shift ;;
       --menu|--config|--configure|menu|config) PARAM_MENU_MODE="true"; shift ;;
-      --project-id=*) PARAM_PROJECT_ID="${1#*=}"; shift ;;
-      --region=*) PARAM_REGION="${1#*=}"; shift ;;
-      --cluster-name=*) PARAM_CLUSTER_NAME="${1#*=}"; shift ;;
-      --cluster-mode=*) PARAM_CLUSTER_MODE="${1#*=}"; shift ;;
+      --gcp-project-id=*) PARAM_PROJECT_ID="${1#*=}"; shift ;;
+      --gcp-region=*) PARAM_REGION="${1#*=}"; shift ;;
+      --gke-cluster-name=*) PARAM_CLUSTER_NAME="${1#*=}"; shift ;;
+      --gke-cluster-mode=*) PARAM_CLUSTER_MODE="${1#*=}"; shift ;;
+      --agent-namespace=*) PARAM_AGENT_NAMESPACE="${1#*=}"; shift ;;
       --model-provider=*) PARAM_MODEL_PROVIDER="${1#*=}"; shift ;;
       --model-default-name=*) PARAM_MODEL_DEFAULT_NAME="${1#*=}"; shift ;;
       --vertex-project-id=*) PARAM_VERTEX_PROJECT_ID="${1#*=}"; shift ;;
@@ -584,21 +652,25 @@ parse_args() {
       --gitops-repo=*) PARAM_GITOPS_REPO="${1#*=}"; shift ;;
       --permission-set=*) PARAM_PERMISSION_SET="${1#*=}"; shift ;;
       --custom-roles=*) PARAM_CUSTOM_ROLES="${1#*=}"; shift ;;
-      --gvisor=*) PARAM_ENABLE_GVISOR="${1#*=}"; shift ;;
-      --enable-web-ui=*|--enable-webui=*|--webui=*) PARAM_ENABLE_WEBUI="${1#*=}"; shift ;;
-      --enable-web-ui|--enable-webui|--webui) PARAM_ENABLE_WEBUI="true"; shift ;;
+      --enable-gvisor|--enable-gvisor=*) PARAM_ENABLE_GVISOR="$(flag_bool_value "$1")"; shift ;;
+      --enable-hermes-dashboard|--enable-hermes-dashboard=*) PARAM_ENABLE_WEBUI="$(flag_bool_value "$1")"; shift ;;
       --user-profile-enabled=*) PARAM_USER_PROFILE_ENABLED="${1#*=}"; shift ;;
-      --enable-pubsub-platform=*|--enable-pubsub=*) PARAM_ENABLE_PUBSUB_PLATFORM="${1#*=}"; shift ;;
-      --enable-pubsub-platform|--enable-pubsub) PARAM_ENABLE_PUBSUB_PLATFORM="true"; shift ;;
-      --enable-stockout-investigator=*|--enable-stockout=*) PARAM_ENABLE_STOCKOUT_INVESTIGATOR="${1#*=}"; shift ;;
-      --enable-stockout-investigator|--enable-stockout) PARAM_ENABLE_STOCKOUT_INVESTIGATOR="true"; shift ;;
+      --enable-gke-backup-plan|--enable-gke-backup-plan=*) PARAM_ENABLE_GKE_BACKUP_PLAN="$(flag_bool_value "$1")"; shift ;;
+      --enable-pubsub-platform|--enable-pubsub|--enable-pubsub-platform=*|--enable-pubsub=*) PARAM_ENABLE_PUBSUB_PLATFORM="$(flag_bool_value "$1")"; shift ;;
+      --enable-stockout-investigator|--enable-stockout|--enable-stockout-investigator=*|--enable-stockout=*) PARAM_ENABLE_STOCKOUT_INVESTIGATOR="$(flag_bool_value "$1")"; shift ;;
       --memory=*) PARAM_MEMORY="${1#*=}"; shift ;;
       --image-tag=*) PARAM_IMAGE_TAG="${1#*=}"; shift ;;
       --registry-prefix=*) PARAM_REGISTRY_PREFIX="${1#*=}"; shift ;;
       --third-party-registry-prefix=*) PARAM_THIRD_PARTY_REGISTRY_PREFIX="${1#*=}"; shift ;;
       --allow-unverified-source|--allow-dirty) PARAM_ALLOW_UNVERIFIED_SOURCE="true"; shift ;;
-      --enable-google-chat|--google-chat) PARAM_ENABLE_GOOGLE_CHAT="true"; shift ;;
-      --allowed-users=*) PARAM_ALLOWED_USERS="${1#*=}"; shift ;;
+      --enable-google-chat|--google-chat|--enable-google-chat=*|--google-chat=*) PARAM_ENABLE_GOOGLE_CHAT="$(flag_bool_value "$1")"; shift ;;
+      --enable-slack|--enable-slack=*) PARAM_ENABLE_SLACK="$(flag_bool_value "$1")"; shift ;;
+      --google-chat-allowed-users=*) PARAM_ALLOWED_USERS="${1#*=}"; shift ;;
+      --slack-bot-token=*) PARAM_SLACK_BOT_TOKEN="${1#*=}"; shift ;;
+      --slack-app-token=*) PARAM_SLACK_APP_TOKEN="${1#*=}"; shift ;;
+      --slack-allowed-users=*) PARAM_SLACK_ALLOWED_USERS="${1#*=}"; shift ;;
+      --slack-home-channel=*) PARAM_SLACK_HOME_CHANNEL="${1#*=}"; shift ;;
+      --slack-home-channel-name=*) PARAM_SLACK_HOME_CHANNEL_NAME="${1#*=}"; shift ;;
       --chat-topic-name=*) PARAM_CHAT_TOPIC_NAME="${1#*=}"; shift ;;
       --chat-sub-name=*) PARAM_CHAT_SUB_NAME="${1#*=}"; CLI_CHAT_SUB_NAME="${1#*=}"; shift ;;
       --google-chat-mode=*) PARAM_GOOGLE_CHAT_MODE="${1#*=}"; shift ;;
@@ -727,7 +799,7 @@ resolve_creatable_cluster_mode() {
   # A defaulted Autopilot steps aside at a zonal location rather than failing:
   # nobody asked for Autopilot here, and the alternative is an abort blaming
   # --region for a shape the installer chose itself. An explicit
-  # --cluster-mode=autopilot still fails in require_creatable_cluster_mode —
+  # --gke-cluster-mode=autopilot still fails in require_creatable_cluster_mode —
   # that request is impossible, not merely inconvenient.
   if [ "${DEFAULT_CLUSTER_MODE}" = "autopilot" ] && ! location_is_region "$location"; then
     echo "standard"
@@ -746,12 +818,12 @@ resolve_creatable_cluster_mode() {
 require_creatable_cluster_mode() {
   local mode="${1:-}" location="${2:-}"
   if ! is_valid_cluster_mode "$mode"; then
-    print_error "--cluster-mode must be either autopilot or standard (got '${mode}')."
+    print_error "--gke-cluster-mode must be either autopilot or standard (got '${mode}')."
     exit 1
   fi
   if [ "$mode" = "autopilot" ] && ! location_is_region "$location"; then
     print_error "GKE Autopilot clusters are regional: --region must be a region such as us-central1, not '${location}'."
-    print_info "For a zonal cluster, pass --cluster-mode=standard."
+    print_info "For a zonal cluster, pass --gke-cluster-mode=standard."
     exit 1
   fi
 }
@@ -1430,7 +1502,7 @@ resolve_shared_defaults() {
   PARAM_MODEL_PROVIDER="${PARAM_MODEL_PROVIDER:-$DEFAULT_MODEL_PROVIDER}"
   PARAM_REGISTRY_PREFIX="${PARAM_REGISTRY_PREFIX:-$DEFAULT_REGISTRY_PREFIX}"
   PARAM_PERMISSION_SET="${PARAM_PERMISSION_SET:-$DEFAULT_PERMISSION_SET}"
-  # ${VAR-...}, not ${VAR:-...}: an explicit `--gvisor=` sets it to empty, and
+  # ${VAR-...}, not ${VAR:-...}: an explicit `--enable-gvisor=` sets it to empty, and
   # that has to survive to the validator rather than being read as the default.
   PARAM_ENABLE_GVISOR="${PARAM_ENABLE_GVISOR-$DEFAULT_ENABLE_GVISOR}"
   PARAM_ENABLE_WEBUI="${PARAM_ENABLE_WEBUI:-$DEFAULT_ENABLE_WEBUI}"
@@ -2581,7 +2653,7 @@ check_existing_cluster_network_policy_preflight() {
   fi
 }
 
-# Validates explicit values for existing-cluster opt-in flags (loud like --gvisor)
+# Validates explicit values for existing-cluster opt-in flags (loud like --enable-gvisor)
 validate_existing_cluster_opt_in_flags() {
   if { [ "${PARAM_MIGRATE_NODE_POOLS_PASSED:-false}" = "true" ] || [ -n "${PARAM_MIGRATE_NODE_POOLS:-}" ]; } && \
      [[ ! "$PARAM_MIGRATE_NODE_POOLS" =~ ^(true|false)$ ]]; then
@@ -3102,6 +3174,14 @@ run_menu_system() {
 # ─── Main Installer Procedure ──────────────────────────────────────────────────
 main() {
   parse_args "$@"
+  # The namespace the run installs into, once parse_args has had its say.
+  # bootstrap_install_env cleared NAMESPACE before install.env was read so that
+  # an inherited kubectl variable could not redirect the install; a flag is a
+  # deliberate act, so it is allowed back in here. Empty leaves the variable
+  # unset and every reader falls back to DEFAULT_NAMESPACE, exactly as before.
+  if [ -n "${PARAM_AGENT_NAMESPACE:-}" ]; then
+    export NAMESPACE="$PARAM_AGENT_NAMESPACE"
+  fi
   if [ "$PARAM_DRY_RUN" = "true" ] && [ "$PARAM_GENERATE_ONLY" = "true" ]; then
     print_error "--dry-run and --generate-only are different modes and cannot be combined."
     return 2
@@ -3226,7 +3306,7 @@ main() {
     prompt_read "Target GCP Region" region "${active_region:-$DEFAULT_REGION}"
   fi
 
-  # Checked here as well as after the menu below so a bad --cluster-mode fails
+  # Checked here as well as after the menu below so a bad --gke-cluster-mode fails
   # before the rest of the interview, not after it.
   local cluster_mode="${PARAM_CLUSTER_MODE:-}"
   [ -z "$cluster_mode" ] || require_creatable_cluster_mode "$cluster_mode" "$region"
@@ -3249,7 +3329,7 @@ main() {
 
   local cluster_name="${PARAM_CLUSTER_NAME:-}"
   # Set on the branches where the user has demonstrably asked for a cluster
-  # that does not exist yet, which is the only case --cluster-mode decides.
+  # that does not exist yet, which is the only case --gke-cluster-mode decides.
   # Picking one out of the discovered list, or naming one with --cluster-name,
   # does not qualify: the generator probes those and the live shape wins.
   local ask_cluster_shape="false"
@@ -3301,7 +3381,7 @@ main() {
       fi
     fi
   fi
-  # Only when --cluster-mode said nothing: a flag the caller passed is an
+  # Only when --gke-cluster-mode said nothing: a flag the caller passed is an
   # answer already, and re-asking would let a mis-keyed menu choice override
   # it.
   #
@@ -3317,7 +3397,7 @@ main() {
     [ "$PARAM_NON_INTERACTIVE" != "true" ]; then
     local mode_choice="" menu_default=""
     local autopilot_option="Autopilot — Google manages the nodes and you pay per Pod; regional only, and gVisor comes from its built-in RuntimeClass"
-    local standard_option="Standard — you size and pay for the node pool; carries the GKE Sandbox pool for --gvisor, and is the only shape that can be zonal"
+    local standard_option="Standard — you size and pay for the node pool; carries the GKE Sandbox pool for --enable-gvisor, and is the only shape that can be zonal"
     menu_default="$(resolve_creatable_cluster_mode "" "$region")"
     if [ "$menu_default" = "autopilot" ]; then
       prompt_menu "Which shape should the GKE cluster be, if this run creates it?" \
@@ -3399,11 +3479,11 @@ main() {
   # sibling booleans fail loudly on their ^(true|false)$ validators instead;
   # only these two are silent.
   local chat_choice=""
-  if is_truthy "$PARAM_ENABLE_GOOGLE_CHAT" && is_truthy "${SLACK_ENABLED:-$DEFAULT_SLACK_ENABLED}"; then
+  if is_truthy "$PARAM_ENABLE_GOOGLE_CHAT" && is_truthy "${PARAM_ENABLE_SLACK:-$DEFAULT_SLACK_ENABLED}"; then
     chat_choice="3"
   elif is_truthy "$PARAM_ENABLE_GOOGLE_CHAT"; then
     chat_choice="1"
-  elif is_truthy "${SLACK_ENABLED:-$DEFAULT_SLACK_ENABLED}"; then
+  elif is_truthy "${PARAM_ENABLE_SLACK:-$DEFAULT_SLACK_ENABLED}"; then
     chat_choice="2"
   fi
   # Nothing configured and nobody to ask: "None", as before. Left unset when
@@ -3422,8 +3502,9 @@ main() {
   local google_chat_enabled="false"
   local slack_enabled="false"
   # Empty by default: the allowlist is opt-in, and an unset list allows all users.
-  # PARAM_ALLOWED_USERS carries both --allowed-users and the loaded ALLOWED_USERS,
-  # so an install that had an allowlist keeps it on a re-run that says nothing.
+  # PARAM_ALLOWED_USERS carries both --google-chat-allowed-users and the loaded
+  # ALLOWED_USERS, so an install that had an allowlist keeps it on a re-run that
+  # says nothing.
   local allowed_users="${PARAM_ALLOWED_USERS:-}"
   local allowed_users_hint=""
   if [ -z "$allowed_users" ]; then
@@ -3437,13 +3518,31 @@ main() {
     exit 1
   fi
   local google_chat_home_channel="${PARAM_GOOGLE_CHAT_HOME_CHANNEL:-}"
-  # Seeded from the environment so the non-interactive path can carry the
-  # Slack settings: prompt_read keeps a non-empty current value there.
-  local slack_bot_token="${SLACK_BOT_TOKEN:-}"
-  local slack_app_token="${SLACK_APP_TOKEN:-}"
-  local slack_allowed_users="${SLACK_ALLOWED_USERS:-}"
-  local slack_home_channel="${SLACK_HOME_CHANNEL:-}"
-  local slack_home_channel_name="${SLACK_HOME_CHANNEL_NAME:-}"
+  # Seeded from PARAM_SLACK_*, which carry both the --slack-* flags and the
+  # loaded SLACK_* keys, so the non-interactive path can carry the Slack
+  # settings: prompt_read keeps a non-empty current value there.
+  local slack_bot_token="${PARAM_SLACK_BOT_TOKEN:-}"
+  local slack_app_token="${PARAM_SLACK_APP_TOKEN:-}"
+  local slack_allowed_users="${PARAM_SLACK_ALLOWED_USERS:-}"
+  local slack_home_channel="${PARAM_SLACK_HOME_CHANNEL:-}"
+  local slack_home_channel_name="${PARAM_SLACK_HOME_CHANNEL_NAME:-}"
+
+  # Slack asked for, with nobody to ask for the tokens. The relay cannot open a
+  # socket without both, and the failure would otherwise surface as a CrashLoop
+  # long after the apply -- so refuse here, naming both flags, rather than
+  # provisioning an install that cannot work. Interactive runs fall through to
+  # the interview below, which prompts for them.
+  if is_truthy "${PARAM_ENABLE_SLACK:-$DEFAULT_SLACK_ENABLED}" \
+    && { [ "$PARAM_NON_INTERACTIVE" = "true" ] || ! has_controlling_tty; }; then
+    local slack_missing=""
+    [ -n "$slack_bot_token" ] || slack_missing="${slack_missing} --slack-bot-token (SLACK_BOT_TOKEN)"
+    [ -n "$slack_app_token" ] || slack_missing="${slack_missing} --slack-app-token (SLACK_APP_TOKEN)"
+    if [ -n "$slack_missing" ]; then
+      print_error "--enable-slack needs a bot token and an app token, and this run has nobody to ask. Missing:${slack_missing}."
+      print_info "Pass them as flags, or record them in ${INSTALL_ENV_FILE}, or drop --enable-slack."
+      exit 1
+    fi
+  fi
 
   # One definition for both arms that ask it. Arms 2 and 3 ran identical
   # copies, and the copies are what drifted: the "pass the current value, not
@@ -3548,7 +3647,7 @@ main() {
   # DEFAULT_VERTEX_LOCATION in scripts/installer/installer_common.sh.
   local vertex_project_id="${PARAM_VERTEX_PROJECT_ID:-$project_id}"
   local vertex_location="${PARAM_VERTEX_LOCATION:-$DEFAULT_VERTEX_LOCATION}"
-  # Loud like --gvisor and --enable-web-ui, not lenient like the chat booleans:
+  # Loud like --enable-gvisor and --enable-hermes-dashboard, not lenient like the chat booleans:
   # a typo read as false would silently skip the two serving-project resources,
   # and the first sign would be the gateway's 403 on its first model call.
   local vertex_manage_serving_project="${PARAM_VERTEX_MANAGE_SERVING_PROJECT:-$DEFAULT_VERTEX_MANAGE_SERVING_PROJECT}"
@@ -3772,18 +3871,29 @@ main() {
     warn_on_overreaching_custom_roles "$custom_roles"
   fi
   # No `:-` fallback: resolve_shared_defaults already applied
-  # DEFAULT_ENABLE_GVISOR with ${VAR-...}, which leaves `--gvisor=` (set, but
+  # DEFAULT_ENABLE_GVISOR with ${VAR-...}, which leaves `--enable-gvisor=` (set, but
   # empty) empty on purpose so the validator below rejects it instead of
   # silently reading it as the default.
   local enable_gvisor="$PARAM_ENABLE_GVISOR"
   if [[ ! "$enable_gvisor" =~ ^(true|false)$ ]]; then
-    print_error "--gvisor must be either true or false."
+    print_error "--enable-gvisor must be either true or false."
     exit 1
   fi
   if [[ ! "$PARAM_ENABLE_WEBUI" =~ ^(true|false)$ ]]; then
-    print_error "--enable-web-ui must be either true or false."
+    print_error "--enable-hermes-dashboard must be either true or false."
     exit 1
   fi
+  # The remaining --enable-* toggles. flag_bool_value extracts what they carry
+  # without checking it, and every read below goes through is_truthy, where
+  # anything that is not "true" is false -- so `--enable-slack=ture` would
+  # provision an install with Slack off and say nothing. These are checked
+  # rather than defaulted because the two above cannot be the only loud ones:
+  # the value a caller typed is either a boolean or a mistake.
+  validate_optional_bool_param "--enable-google-chat" "${PARAM_ENABLE_GOOGLE_CHAT:-}"
+  validate_optional_bool_param "--enable-slack" "${PARAM_ENABLE_SLACK:-}"
+  validate_optional_bool_param "--enable-gke-backup-plan" "${PARAM_ENABLE_GKE_BACKUP_PLAN:-}"
+  validate_optional_bool_param "--enable-pubsub-platform" "${PARAM_ENABLE_PUBSUB_PLATFORM:-}"
+  validate_optional_bool_param "--enable-stockout-investigator" "${PARAM_ENABLE_STOCKOUT_INVESTIGATOR:-}"
   validate_existing_cluster_opt_in_flags
   # An agent that forgets every conversation is the worse default, so memory is
   # on unless it is turned off. The choice decides two things: whether the
@@ -3844,8 +3954,8 @@ main() {
     # prompt_menu answers an empty line with option 1, so the current value has
     # to be listed first — otherwise the "(Default)" label contradicts what a
     # bare Enter actually produces. The value reaching here is the sandbox
-    # unless --gvisor=false said otherwise, so the usual order is Yes first;
-    # the else branch keeps an explicit --gvisor=false from being re-enabled by
+    # unless --enable-gvisor=false said otherwise, so the usual order is Yes first;
+    # the else branch keeps an explicit --enable-gvisor=false from being re-enabled by
     # someone confirming the prompt. Option 2 is "the other one" either way.
     local gvisor_choice=""
     local gvisor_yes="Yes - gVisor Secure Kernel Sandbox (Hardened Workload Isolation)"
@@ -4008,8 +4118,15 @@ main() {
   # No GVISOR_POOL_NAME. It has no flag and no interview question, so anything
   # exported here would be a constant written over whatever install.env says --
   # the generator already applies DEFAULT_GVISOR_POOL_NAME when nothing sets it,
-  # which leaves the operator's value free to win. The same reasoning keeps
-  # ENABLE_GKE_BACKUP_PLAN out of this block.
+  # which leaves the operator's value free to win.
+  #
+  # ENABLE_GKE_BACKUP_PLAN used to be kept out for that same reason. It has a
+  # flag now, so it is exported when something chose -- the flag, or install.env,
+  # which seeds PARAM_ENABLE_GKE_BACKUP_PLAN. Empty still means nobody chose, and
+  # the generator's DEFAULT_ENABLE_GKE_BACKUP_PLAN decides as it did before.
+  if [ -n "${PARAM_ENABLE_GKE_BACKUP_PLAN:-}" ]; then
+    export ENABLE_GKE_BACKUP_PLAN="$PARAM_ENABLE_GKE_BACKUP_PLAN"
+  fi
   export MODEL_PROVIDER="$model_provider"
   export MODEL_DEFAULT_NAME="$model_default_name"
   export VERTEX_PROJECT_ID="$vertex_project_id"
@@ -4337,7 +4454,7 @@ main() {
       if [ "$deployment" = "$PLATFORM_AGENT_DEPLOYMENT" ] && [ "$enable_gvisor" = "true" ]; then
         print_info "The agent asks for the ${C_BOLD}gvisor${C_RESET} RuntimeClass; the operator will not create its Deployment until that RuntimeClass exists."
         print_info "Read the reason with: ${C_BOLD}kubectl get platformagent -n ${namespace} -o jsonpath='{.items[*].status.conditions}'${C_RESET}"
-        print_info "Re-run with ${C_BOLD}--gvisor=false${C_RESET} to run the agent on the standard container runtime instead."
+        print_info "Re-run with ${C_BOLD}--enable-gvisor=false${C_RESET} to run the agent on the standard container runtime instead."
       fi
       exit 1
     fi

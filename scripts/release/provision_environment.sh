@@ -177,11 +177,25 @@ rm -f "${TEARDOWN_LOG}"
 
 INSTALL_ARGS=(
   --non-interactive -y
-  --project-id="${GCP_PROJECT_ID}"
-  --region="${GCP_REGION}"
-  --cluster-name="${GKE_CLUSTER_NAME}"
+  --gcp-project-id="${GCP_PROJECT_ID}"
+  --gcp-region="${GCP_REGION}"
+  --gke-cluster-name="${GKE_CLUSTER_NAME}"
   --image-tag="${IMAGE_TAG}"
 )
+
+# Everything below reaches install.sh as a flag rather than as an inherited
+# environment variable. The two routes are not equivalent: install.env is
+# sourced with `set -a` and so beats an exported variable of the same name, and
+# these environments render an install.env from their GitHub variables -- so a
+# setting passed only by export is silently overridden by whatever the rendered
+# file happens to say. A flag is the one thing that wins for a single run.
+if [ -n "${AGENT_NAMESPACE:-${NAMESPACE:-}}" ]; then
+  INSTALL_ARGS+=(--agent-namespace="${AGENT_NAMESPACE:-${NAMESPACE}}")
+fi
+
+if [ -n "${GKE_CLUSTER_MODE:-${CLUSTER_MODE:-}}" ]; then
+  INSTALL_ARGS+=(--gke-cluster-mode="${GKE_CLUSTER_MODE:-${CLUSTER_MODE}}")
+fi
 
 if [ "${GOOGLE_CHAT_ENABLED:-false}" = "true" ]; then
   INSTALL_ARGS+=(--enable-google-chat)
@@ -199,6 +213,37 @@ if [ -n "${CHAT_TOPIC_NAME:-}" ]; then
   INSTALL_ARGS+=(--chat-topic-name="${CHAT_TOPIC_NAME}")
 fi
 
+# The Google Chat allowlist. Empty is NOT "no opinion" -- the operator turns an
+# absent list into allow-all -- which is why provision_check_allowlist above
+# refuses an empty one on a long-lived environment. Passing it explicitly means
+# the value this job was given is the value the install gets.
+if [ -n "${GOOGLE_CHAT_ALLOWED_USERS:-${ALLOWED_USERS:-}}" ]; then
+  INSTALL_ARGS+=(--google-chat-allowed-users="${GOOGLE_CHAT_ALLOWED_USERS:-${ALLOWED_USERS}}")
+fi
+
+if [ "${SLACK_ENABLED:-false}" = "true" ]; then
+  INSTALL_ARGS+=(--enable-slack)
+  # install.sh refuses --enable-slack without both tokens when there is no tty,
+  # which is this job. Passing them unconditionally inside this branch keeps
+  # that refusal about a genuinely missing secret rather than about the route
+  # it travelled.
+  INSTALL_ARGS+=(--slack-bot-token="${SLACK_BOT_TOKEN:-}")
+  INSTALL_ARGS+=(--slack-app-token="${SLACK_APP_TOKEN:-}")
+  if [ -n "${SLACK_ALLOWED_USERS:-}" ]; then
+    INSTALL_ARGS+=(--slack-allowed-users="${SLACK_ALLOWED_USERS}")
+  fi
+  if [ -n "${SLACK_HOME_CHANNEL:-}" ]; then
+    INSTALL_ARGS+=(--slack-home-channel="${SLACK_HOME_CHANNEL}")
+  fi
+  if [ -n "${SLACK_HOME_CHANNEL_NAME:-}" ]; then
+    INSTALL_ARGS+=(--slack-home-channel-name="${SLACK_HOME_CHANNEL_NAME}")
+  fi
+fi
+
+if [ -n "${ENABLE_GKE_BACKUP_PLAN:-}" ]; then
+  INSTALL_ARGS+=(--enable-gke-backup-plan="${ENABLE_GKE_BACKUP_PLAN}")
+fi
+
 if [ -n "${MODEL_PROVIDER:-}" ]; then
   INSTALL_ARGS+=(--model-provider="${MODEL_PROVIDER}")
 fi
@@ -208,7 +253,7 @@ if [ -n "${MODEL_DEFAULT_NAME:-}" ]; then
 fi
 
 if [ -n "${ENABLE_GVISOR:-}" ]; then
-  INSTALL_ARGS+=(--gvisor="${ENABLE_GVISOR}")
+  INSTALL_ARGS+=(--enable-gvisor="${ENABLE_GVISOR}")
 fi
 
 if [ -n "${PLATFORM_AGENT_PERMISSION_SET:-}" ]; then

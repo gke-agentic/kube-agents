@@ -86,6 +86,10 @@ PARAM_DRY_RUN="false"
 PARAM_PROJECT_ID=""
 PARAM_CLUSTER_NAME=""
 PARAM_REGION=""
+# Empty means "whatever the loaded configuration says". The teardown
+# regenerates terraform.tfvars before destroying and namespace is one of its
+# keys, so this is not cosmetic: it names the release being torn down.
+PARAM_AGENT_NAMESPACE=""
 PARAM_SOURCE_REF=""
 TEMP_REPO_DIR=""
 
@@ -150,9 +154,11 @@ Usage: ./uninstall.sh [OPTIONS]
 Options:
   -y, --yes, --non-interactive  Automated execution mode (no interactive confirmation prompt)
   --dry-run                     Preview uninstall plan without deleting resources
-  --project-id ID               GCP Target Project ID
-  --cluster-name NAME           GKE Target Cluster Name (default: platform-agent-host)
-  --region REGION               GKE GCP Region
+  --gcp-project-id ID           GCP Target Project ID
+  --gke-cluster-name NAME       GKE Target Cluster Name (default: platform-agent-host)
+  --gcp-region REGION           GKE GCP Region
+  --agent-namespace NS          Kubernetes namespace the release lives in
+                                (default: the install's own, else kubeagents-system)
   --source-ref REF              Tag or commit SHA of the release that made the install; that
                                 release's own uninstall.sh is fetched and run in place of this one
   --help, -h, -?                Show this help message
@@ -162,7 +168,7 @@ Examples:
   ./uninstall.sh
 
   # Automated teardown for a known project and cluster
-  ./uninstall.sh --non-interactive --project-id="my-gcp-project" --cluster-name="platform-agent-host"
+  ./uninstall.sh --non-interactive --gcp-project-id="my-gcp-project" --gke-cluster-name="platform-agent-host"
 
 Exit codes:
   0  Teardown completed (or --dry-run finished, or you declined the
@@ -185,12 +191,14 @@ parse_args() {
       -y|--yes|--non-interactive) PARAM_NON_INTERACTIVE="true"; shift ;;
       --dry-run) PARAM_DRY_RUN="true"; shift ;;
       --uninstall|--delete) shift ;;
-      --project-id=*) PARAM_PROJECT_ID="${1#*=}"; shift ;;
-      --project-id) PARAM_PROJECT_ID="$2"; shift 2 ;;
-      --cluster-name=*) PARAM_CLUSTER_NAME="${1#*=}"; shift ;;
-      --cluster-name) PARAM_CLUSTER_NAME="$2"; shift 2 ;;
-      --region=*) PARAM_REGION="${1#*=}"; shift ;;
-      --region) PARAM_REGION="$2"; shift 2 ;;
+      --gcp-project-id=*) PARAM_PROJECT_ID="${1#*=}"; shift ;;
+      --gcp-project-id) PARAM_PROJECT_ID="$2"; shift 2 ;;
+      --gke-cluster-name=*) PARAM_CLUSTER_NAME="${1#*=}"; shift ;;
+      --gke-cluster-name) PARAM_CLUSTER_NAME="$2"; shift 2 ;;
+      --gcp-region=*) PARAM_REGION="${1#*=}"; shift ;;
+      --gcp-region) PARAM_REGION="$2"; shift 2 ;;
+      --agent-namespace=*) PARAM_AGENT_NAMESPACE="${1#*=}"; shift ;;
+      --agent-namespace) PARAM_AGENT_NAMESPACE="$2"; shift 2 ;;
       --source-ref=*) PARAM_SOURCE_REF="${1#*=}"; shift ;;
       --source-ref) PARAM_SOURCE_REF="$2"; shift 2 ;;
       --help|-h|-\?|help) show_help ;;
@@ -310,6 +318,14 @@ main() {
       print_error "'${PARAM_SOURCE_REF}' carries no uninstall.sh; tear the install down with that release's documented procedure."
       exit 1
     fi
+    # LEGACY FLAG SPELLINGS, deliberately. These are not this script's flags --
+    # they are the pinned release's, and --source-ref exists for installs made
+    # by releases that predate this engine, every one of which parses
+    # --project-id/--cluster-name/--region and none of which parses the
+    # domain-scoped names. Renaming them here would make the hand-over fail
+    # with "Unknown parameter" against exactly the old releases the flag is for.
+    # --agent-namespace is not passed at all, for the same reason: no release
+    # that this flag targets has it.
     local dispatch_args=()
     if [ "$PARAM_NON_INTERACTIVE" = "true" ]; then
       dispatch_args+=(--non-interactive)
@@ -382,7 +398,7 @@ main() {
     target_project="$(gcloud config get-value project 2>/dev/null || true)"
   fi
   if [ -z "$target_project" ]; then
-    print_error "A GCP project is required. Pass --project-id or configure one with gcloud."
+    print_error "A GCP project is required. Pass --gcp-project-id or configure one with gcloud."
     exit 1
   fi
 
@@ -400,6 +416,11 @@ main() {
   export PROJECT_ID="$target_project"
   export CLUSTER_NAME="$target_cluster"
   export REGION="$target_region"
+  # write_tfvars_from_state writes `namespace` from this, so --agent-namespace
+  # has to win over the loaded configuration here the way the three above do.
+  if [ -n "$PARAM_AGENT_NAMESPACE" ]; then
+    export NAMESPACE="$PARAM_AGENT_NAMESPACE"
+  fi
   export NO_CONFIRM="1"
 
   # The engine is `lifecycle.sh destroy` against the install's Terraform state

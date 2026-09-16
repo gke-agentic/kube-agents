@@ -41,9 +41,9 @@ For production installations, AI Agents and automated pipelines must target an o
 ```bash
 curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSION>/install.sh | bash -s -- \
   --non-interactive \
-  --project-id="YOUR_GCP_PROJECT_ID" \
-  --cluster-name="platform-agent-host" \
-  --region="us-central1" \
+  --gcp-project-id="YOUR_GCP_PROJECT_ID" \
+  --gke-cluster-name="platform-agent-host" \
+  --gcp-region="us-central1" \
   --model-provider="gemini" \
   --permission-set="read-only"
 ```
@@ -54,9 +54,9 @@ If deploying from local sources instead of piping the script via curl, AI Agents
 curl -fsSL https://github.com/gke-labs/kube-agents/releases/download/<RELEASE_VERSION>/kube-agents-<RELEASE_VERSION>.tar.gz | tar -xz
 cd kube-agents-<RELEASE_VERSION>
 ./install.sh --non-interactive \
-  --project-id="YOUR_GCP_PROJECT_ID" \
-  --cluster-name="platform-agent-host" \
-  --region="us-central1" \
+  --gcp-project-id="YOUR_GCP_PROJECT_ID" \
+  --gke-cluster-name="platform-agent-host" \
+  --gcp-region="us-central1" \
   --model-provider="gemini" \
   --permission-set="read-only"
 ```
@@ -67,9 +67,9 @@ Alternatively, if a Git checkout is specifically required, clone pinned to the t
 git clone --branch <RELEASE_VERSION> https://github.com/gke-labs/kube-agents.git
 cd kube-agents
 ./install.sh --non-interactive \
-  --project-id="YOUR_GCP_PROJECT_ID" \
-  --cluster-name="platform-agent-host" \
-  --region="us-central1" \
+  --gcp-project-id="YOUR_GCP_PROJECT_ID" \
+  --gke-cluster-name="platform-agent-host" \
+  --gcp-region="us-central1" \
   --model-provider="gemini" \
   --permission-set="read-only"
 ```
@@ -84,9 +84,9 @@ To generate configuration files (`install.env` and `terraform.tfvars`), run pre-
 curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSION>/install.sh | bash -s -- \
   --generate-only \
   --non-interactive \
-  --project-id="YOUR_GCP_PROJECT_ID" \
-  --cluster-name="platform-agent-host" \
-  --region="us-central1"
+  --gcp-project-id="YOUR_GCP_PROJECT_ID" \
+  --gke-cluster-name="platform-agent-host" \
+  --gcp-region="us-central1"
 ```
 
 In `--generate-only` mode, the installer:
@@ -106,7 +106,7 @@ To validate prerequisites and preview the install without creating GCP resources
 curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSION>/install.sh | bash -s -- \
   --dry-run \
   --non-interactive \
-  --project-id="YOUR_GCP_PROJECT_ID"
+  --gcp-project-id="YOUR_GCP_PROJECT_ID"
 ```
 
 A dry run regenerates `terraform.tfvars`, so back that up first if a real deployment's copy is
@@ -167,10 +167,10 @@ Defaults marked "`installer_common.sh`" reach the installer through
 | `--dry-run`                          | Output plan and `terraform.tfvars` without creating resources                                                                                                                                                                                          | `false`                                                                                                                                            |
 | `--generate-only`                    | Write `install.env` and `terraform.tfvars`, run the pre-apply checks, print the operator handoff, and exit without creating or mutating resources. Mutually exclusive with `--dry-run`                                                                 | `false`                                                                                                                                            |
 | `--menu, --config`                   | Launch the Day-2 control panel instead of installing                                                                                                                                                                                                   | `false`                                                                                                                                            |
-| `--project-id=ID`                    | Target GCP Project ID                                                                                                                                                                                                                                  | Active `gcloud` project                                                                                                                            |
-| `--region=REGION`                    | Target GCP Region                                                                                                                                                                                                                                      | `installer_common.sh` `DEFAULT_REGION`                                                                                                             |
-| `--cluster-name=NAME`                | GKE Cluster Name                                                                                                                                                                                                                                       | `installer_common.sh` `DEFAULT_CLUSTER_NAME`                                                                                                       |
-| `--cluster-mode=MODE`                | Shape of a cluster this run creates: `autopilot` \| `standard`. Autopilot is regional: unset at a zonal `--region` builds `standard`, explicit `autopilot` there is an error. No bearing on an existing cluster, whose live shape the generator probes | `autopilot`                                                                                                                                        |
+| `--gcp-project-id=ID`                    | Target GCP Project ID                                                                                                                                                                                                                                  | Active `gcloud` project                                                                                                                            |
+| `--gcp-region=REGION`                    | Target GCP Region                                                                                                                                                                                                                                      | `installer_common.sh` `DEFAULT_REGION`                                                                                                             |
+| `--gke-cluster-name=NAME`                | GKE Cluster Name                                                                                                                                                                                                                                       | `installer_common.sh` `DEFAULT_CLUSTER_NAME`                                                                                                       |
+| `--gke-cluster-mode=MODE`                | Shape of a cluster this run creates: `autopilot` \| `standard`. Autopilot is regional: unset at a zonal `--gcp-region` builds `standard`, explicit `autopilot` there is an error. No bearing on an existing cluster, whose live shape the generator probes | `autopilot`                                                                                                                                        |
 | `--image-tag=TAG`                    | Validated immutable release tag or full commit SHA (developer/CI only)                                                                                                                                                                                 | Developer and CI/CD testing only; end users must use official release installations. Default: inferred from baked release, bundle, or local `HEAD` |
 | `--registry-prefix=PATH`             | Registry path (no URL scheme) for the first-party images this project builds                                                                                                                                                                           | `installer_common.sh` `DEFAULT_REGISTRY_PREFIX`                                                                                                    |
 | `--third-party-registry-prefix=PATH` | Registry path holding the mirrored third-party images (cert-manager, LiteLLM, fluent-bit, token minter, Hindsight). Not implied by `--registry-prefix`                                                                                                 | _unset_ — upstream registries                                                                                                                      |
@@ -185,9 +185,9 @@ Defaults marked "`installer_common.sh`" reach the installer through
 | `--gitops-org=ORG`                   | GitHub org/user for the GitOps IaC repository                                                                                                                                                                                                          | _unset_                                                                                                                                            |
 | `--gitops-repo=REPO`                 | GitOps IaC repository name                                                                                                                                                                                                                             | `gke-fleet-iac`                                                                                                                                    |
 | `--enable-google-chat`               | Enable the Google Chat integration                                                                                                                                                                                                                     | `false`                                                                                                                                            |
-| `--gvisor=true\|false`               | Enable GKE Sandbox (gVisor) runtime isolation                                                                                                                                                                                                          | `true`                                                                                                                                             |
-| `--enable-web-ui=true\|false`        | Enable the Hermes Web UI on port 9119                                                                                                                                                                                                                  | `false`                                                                                                                                            |
-| `--allowed-users=EMAILS`             | Comma-separated chat users allowed to reach the agent; empty allows everyone                                                                                                                                                                           | _unset_                                                                                                                                            |
+| `--enable-gvisor=true\|false`               | Enable GKE Sandbox (gVisor) runtime isolation                                                                                                                                                                                                          | `true`                                                                                                                                             |
+| `--enable-hermes-dashboard=true\|false`        | Enable the Hermes Web UI on port 9119                                                                                                                                                                                                                  | `false`                                                                                                                                            |
+| `--google-chat-allowed-users=EMAILS`             | Comma-separated chat users allowed to reach the agent; empty allows everyone                                                                                                                                                                           | _unset_                                                                                                                                            |
 | `--migrate-node-pools`               | Authorize migrating legacy GCE metadata server node pools to `GKE_METADATA` (recreates nodes, restarts workloads; required on clusters with legacy pools, else install aborts)                                                                         | `false`                                                                                                                                            |
 | `--enable-network-policy`            | Authorize enabling legacy Calico NetworkPolicy addon and node enforcement on GKE Standard clusters without Dataplane V2 (may recreate nodes, restart workloads; required on such clusters, else install aborts)                                        | `false`                                                                                                                                            |
 | `--memory=MODE`                      | Long-term agent memory engine: `file` \| `hindsight` \| `off`                                                                                                                                                                                          | `file`                                                                                                                                             |

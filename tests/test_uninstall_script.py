@@ -266,7 +266,7 @@ bash -c "exit 3"
         root = self._scratch_repo(tmp)
         return subprocess.run(
             ["bash", str(root / "uninstall.sh"), "--non-interactive", "-y",
-             "--project-id=p1", "--cluster-name=c1", "--region=r1"],
+             "--gcp-project-id=p1", "--gke-cluster-name=c1", "--gcp-region=r1"],
             capture_output=True,
             text=True,
             env=get_isolated_test_env(
@@ -366,13 +366,19 @@ class SourceRefDispatchTest(unittest.TestCase):
             args=[
                 "--source-ref=v0.9.0",
                 "--non-interactive",
-                "--project-id=p1",
-                "--cluster-name=c1",
-                "--region=r1",
+                "--gcp-project-id=p1",
+                "--gke-cluster-name=c1",
+                "--gcp-region=r1",
             ],
         )
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIsNotNone(log, proc.stdout + proc.stderr)
+        # LEGACY spellings coming out, domain-scoped ones going in, and the
+        # asymmetry is the assertion. What is dispatched is not this script's
+        # flag set but the v0.9.0 uninstall.sh's, which has never heard of
+        # --gcp-project-id and would exit 2 on it. --source-ref exists for
+        # precisely those pre-Terraform releases, so translating the flags here
+        # would break the one path it is for.
         self.assertEqual(
             log.split(),
             [

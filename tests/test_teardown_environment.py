@@ -92,9 +92,9 @@ exit {uninstall_exit}
         for expected in (
             "--non-interactive",
             "-y",
-            f"--project-id={MOCK_GCP_PROJECT_ID}",
-            f"--region={MOCK_GCP_REGION}",
-            f"--cluster-name={MOCK_GKE_CLUSTER_NAME}",
+            f"--gcp-project-id={MOCK_GCP_PROJECT_ID}",
+            f"--gcp-region={MOCK_GCP_REGION}",
+            f"--gke-cluster-name={MOCK_GKE_CLUSTER_NAME}",
         ):
             self.assertIn(expected, calls[0])
 
@@ -161,8 +161,8 @@ exit {uninstall_exit}
 
     def test_the_summary_names_the_cluster_to_remove_by_hand(self):
         _, _, summary = self._run(uninstall_exit=1)
-        self.assertIn(f"--project-id={MOCK_GCP_PROJECT_ID}", summary)
-        self.assertIn(f"--cluster-name={MOCK_GKE_CLUSTER_NAME}", summary)
+        self.assertIn(f"--gcp-project-id={MOCK_GCP_PROJECT_ID}", summary)
+        self.assertIn(f"--gke-cluster-name={MOCK_GKE_CLUSTER_NAME}", summary)
 
 
 if __name__ == "__main__":

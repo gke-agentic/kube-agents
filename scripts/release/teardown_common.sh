@@ -83,9 +83,9 @@ teardown_run() {
   local log_file="$1"
   local args=(
     --non-interactive -y
-    --project-id="${GCP_PROJECT_ID}"
-    --region="${GCP_REGION}"
-    --cluster-name="${GKE_CLUSTER_NAME}"
+    --gcp-project-id="${GCP_PROJECT_ID}"
+    --gcp-region="${GCP_REGION}"
+    --gke-cluster-name="${GKE_CLUSTER_NAME}"
   )
 
   local status

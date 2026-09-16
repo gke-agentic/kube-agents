@@ -112,13 +112,13 @@ exit 0
             self.assertEqual(len(calls), 2)
             self.assertEqual(
                 calls[0],
-                f"uninstall: --non-interactive -y --project-id={MOCK_GCP_PROJECT_ID} --region={MOCK_GCP_REGION} --cluster-name={MOCK_GKE_CLUSTER_NAME}",
+                f"uninstall: --non-interactive -y --gcp-project-id={MOCK_GCP_PROJECT_ID} --gcp-region={MOCK_GCP_REGION} --gke-cluster-name={MOCK_GKE_CLUSTER_NAME}",
             )
             expected_install_call = (
                 f"install: --non-interactive -y "
-                f"--project-id={MOCK_GCP_PROJECT_ID} "
-                f"--region={MOCK_GCP_REGION} "
-                f"--cluster-name={MOCK_GKE_CLUSTER_NAME} "
+                f"--gcp-project-id={MOCK_GCP_PROJECT_ID} "
+                f"--gcp-region={MOCK_GCP_REGION} "
+                f"--gke-cluster-name={MOCK_GKE_CLUSTER_NAME} "
                 f"--image-tag={MOCK_IMAGE_TAG_SHA} "
                 f"--enable-google-chat "
                 f"--google-chat-mode={MOCK_GOOGLE_CHAT_MODE} "
@@ -126,7 +126,7 @@ exit 0
                 f"--chat-topic-name={MOCK_CHAT_TOPIC_NAME} "
                 f"--model-provider={MOCK_MODEL_PROVIDER} "
                 f"--model-default-name={MOCK_MODEL_DEFAULT_NAME} "
-                f"--gvisor=true "
+                f"--enable-gvisor=true "
                 f"--permission-set={MOCK_PERMISSION_SET} "
                 f"--registry-prefix={MOCK_REGISTRY_PREFIX} "
                 f"--user-profile-enabled={MOCK_USER_PROFILE_ENABLED} "

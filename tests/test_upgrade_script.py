@@ -152,7 +152,7 @@ class PersistStateVarTest(unittest.TestCase):
     only if vars.sh existed, so the directory always existed by the time this
     ran. Letting install.env satisfy state_loaded is what exposed the write.
     The invocation that breaks is the one show_help gives as its own example,
-    `./upgrade.sh --non-interactive --project-id=... --cluster-name=...`.
+    `./upgrade.sh --non-interactive --gcp-project-id=... --gke-cluster-name=...`.
     """
 
     def _persist_into(self, state_file):
