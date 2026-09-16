@@ -3992,10 +3992,6 @@ main() {
     fi
   fi
 
-  if [ -n "$github_pem_path" ]; then
-    github_pem_path="$(expand_tilde_path "$github_pem_path")"
-  fi
-
   # 9. Agent Permissions & Sandbox Isolation Boundary
   print_step "9. Agent Security & Runtime Isolation Boundary"
   local permission_set="$PARAM_PERMISSION_SET"
