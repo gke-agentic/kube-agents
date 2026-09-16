@@ -110,7 +110,7 @@ import (
 const (
 	// secretEnvHashAnnotation carries the digest on the pod template. Named for
 	// environment specifically, because a mounted Secret is not in it.
-	secretEnvHashAnnotation = "kubeagents.x-k8s.io/secret-env-hash"
+	secretEnvHashAnnotation = "kubeagents.x-k8s.io/secret-env-hash" // #nosec G101 -- Annotation name, not a credential
 	// secretEnvReprobeInterval bounds how long a rotated key can take to reach
 	// the pod: the reconcile that re-reads the Secret is the only thing that
 	// notices, so this is the requeue a healthy pass asks for. It is the one
