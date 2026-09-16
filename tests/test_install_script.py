@@ -3066,11 +3066,11 @@ class ImportGithubPemKmsKeyTest(unittest.TestCase):
     invocation, so dropping it again would look like nothing in a diff.
     """
 
-    def _run(self, creates_fail=False):
+    def _run(self, creates_fail=False, describe_fails=True, go_version=None, git_clone_fails=False):
         """import_github_pem against a stub gcloud that records every call.
 
-        The stub reports no ENABLED key version, so the import is not
-        short-circuited, and fails `keys describe`, which takes the
+        By default the stub reports no ENABLED key version, so the import is
+        not short-circuited, and fails `keys describe`, which takes the
         could-not-be-confirmed branch. That branch returns before the Minty
         CLI clone, which is what keeps this a unit test.
 
@@ -3078,6 +3078,13 @@ class ImportGithubPemKmsKeyTest(unittest.TestCase):
         the way KMS answers a re-run once the keyring exists. That is the only
         path that exercises the error capture at all, so the default of 0
         leaves it untested -- see the ERR-trap test below.
+
+        describe_fails=False confirms the key instead, which is the only way
+        past that branch and into the import itself. go_version and
+        git_clone_fails plant the two tools the import shells out to: without
+        them the real ones on PATH decide the outcome, and a real `git clone`
+        would reach the network. Both stubs are deliberate, not incidental --
+        the paths below exist precisely for when those tools disappoint.
         """
         with tempfile.TemporaryDirectory() as tmp:
             bin_dir = pathlib.Path(tmp) / "bin"
@@ -3091,18 +3098,37 @@ class ImportGithubPemKmsKeyTest(unittest.TestCase):
                 if creates_fail
                 else ""
             )
+            describe_case = "  *'kms keys describe'*) exit 1 ;;\n" if describe_fails else ""
             gcloud = bin_dir / "gcloud"
             gcloud.write_text(
                 "#!/usr/bin/env bash\n"
                 f"printf '%s\\n' \"$*\" >> '{log}'\n"
                 'case "$*" in\n'
                 "  *'kms keys versions list'*) exit 0 ;;\n"
-                "  *'kms keys describe'*) exit 1 ;;\n"
+                f"{describe_case}"
                 f"{create_case}"
                 "esac\n"
                 "exit 0\n"
             )
             gcloud.chmod(gcloud.stat().st_mode | stat.S_IEXEC)
+            if go_version is not None:
+                go = bin_dir / "go"
+                go.write_text(
+                    "#!/usr/bin/env bash\n"
+                    f'[ "$1" = version ] && echo "go version go{go_version} linux/amd64" && exit 0\n'
+                    "exit 0\n"
+                )
+                go.chmod(go.stat().st_mode | stat.S_IEXEC)
+            if git_clone_fails:
+                git = bin_dir / "git"
+                git.write_text(
+                    "#!/usr/bin/env bash\n"
+                    "case \"$*\" in\n"
+                    "  *clone*) echo 'fatal: could not read from remote repository' >&2; exit 128 ;;\n"
+                    "esac\n"
+                    "exit 0\n"
+                )
+                git.chmod(git.stat().st_mode | stat.S_IEXEC)
             body = (
                 f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n'
                 f'source "{_INSTALLER_COMMON}"\n'
@@ -3262,6 +3288,64 @@ class ImportGithubPemKmsKeyTest(unittest.TestCase):
         self.assertIn("tools import-pk", proc.stdout)
         self.assertIn(f"-private-key=@{pem}", proc.stdout)
         self.assertNotIn("-private-key=@<path-to-pem>", proc.stdout)
+
+    def test_a_go_too_old_for_the_cli_stops_the_import_instead_of_building(self):
+        """The floor has to end the import, not warn and carry on.
+
+        `apt-get install golang-go` leaves Go 1.19 behind on Debian 12 and
+        Ubuntu 22.04, and auto_install_tool judges success by `command -v`,
+        which such a toolchain answers. Continuing spends `retry 6 5` on a
+        build that cannot satisfy the CLI's go.mod and then advises retrying
+        the same command by hand.
+
+        Asserted on the KMS calls too: returning here has to happen before the
+        keyring and key are created, so a host that cannot import is not left
+        holding an empty import-only key.
+        """
+        proc, calls = self._run(go_version="1.19.8")
+        self.assertEqual(proc.returncode, 1, f"the import must fail:\n{proc.stdout}\n{proc.stderr}")
+        self.assertIn("too old to build the Minty CLI", proc.stdout + proc.stderr)
+        self.assertEqual(
+            [],
+            [c for c in calls if "kms keyrings create" in c or "kms keys create" in c],
+            f"the floor must stop the import before it creates anything:\n{calls}",
+        )
+
+    def test_a_failed_minty_import_is_reported_as_a_failure(self):
+        """A key that exists but holds nothing is the wedge this return prevents.
+
+        main() turns this into `exit 1` before `terraform apply`, which is the
+        point: the apply enables the minter, whose Deployment cannot pass
+        readiness without an imported key, and the composition's helm release
+        waits on every Deployment. Returning 0 here buys a hung apply instead
+        of a named failure.
+
+        The clone is stubbed to fail rather than the CLI itself -- the `go run`
+        below it is wrapped in `retry 6 5`, so failing there would cost the
+        suite half a minute of sleeps to reach the same branch.
+        """
+        proc, _ = self._run(describe_fails=False, go_version="1.22.0", git_clone_fails=True)
+        self.assertEqual(proc.returncode, 1, f"the import must fail:\n{proc.stdout}\n{proc.stderr}")
+        combined = proc.stdout + proc.stderr
+        self.assertIn("PEM import failed", combined)
+        # The operator is left with a runnable command, not the placeholder.
+        self.assertIn("tools import-pk", combined)
+        self.assertNotIn("-private-key=@<path-to-pem>", combined)
+
+    def test_main_turns_a_failed_import_into_a_hard_exit(self):
+        """The two returns above are only fatal because main() makes them so.
+
+        Reaching that call costs a live project and a cluster, so this pins the
+        wiring rather than executing it: a bare `import_github_pem …` would let
+        an install whose key never reached KMS walk into the apply, and the two
+        tests above would still pass while it did.
+        """
+        body = _INSTALL_SH.read_text()
+        self.assertIn(
+            'import_github_pem "$project_id" "$region" || exit 1',
+            body,
+            "a failed PEM import must stop the run before terraform apply",
+        )
 
 
 class InstallEnvIsCreatedInTheCheckoutTest(unittest.TestCase):
