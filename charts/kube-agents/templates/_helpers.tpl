@@ -725,6 +725,51 @@ Rounding in a patch value is not free, so the direction is chosen per use:
 {{- end }}
 
 {{/*
+Reads one resources block — requests and limits, CPU, memory and ephemeral-storage — from a
+values subtree, and returns the parsed quantities as JSON.
+
+Every field is optional at every level. values.schema.json declares each `resources` as a
+bare object with no `required` keyword, so `--set litellm.resources.limits=null` — the
+documented Helm way to drop a key, and the obvious edit for someone who does not want
+limits charged against a quota — is valid input. Reaching through it with
+`.Values.litellm.resources.limits.cpu` aborted the whole render with `nil pointer
+evaluating interface {}.cpu`, and only in a namespace that has a ResourceQuota, which is
+the one population this check exists for.
+
+A missing quantity counts as zero, which is what the quota charges for a container that
+does not set it.
+*/}}
+{{- define "kube-agents.workloadResources" -}}
+{{- $res := (. | default dict).resources | default dict -}}
+{{- $req := (index $res "requests") | default dict -}}
+{{- $lim := (index $res "limits") | default dict -}}
+{{- dict
+      "cpuRequest" (include "kube-agents.parseCpuMillis" (index $req "cpu" | default "0") | int64)
+      "cpuLimit" (include "kube-agents.parseCpuMillis" (index $lim "cpu" | default "0") | int64)
+      "memoryRequest" (include "kube-agents.parseBytes" (index $req "memory" | default "0") | int64)
+      "memoryLimit" (include "kube-agents.parseBytes" (index $lim "memory" | default "0") | int64)
+      "ephemeralRequest" (include "kube-agents.parseBytes" (index $req "ephemeral-storage" | default "0") | int64)
+      "ephemeralLimit" (include "kube-agents.parseBytes" (index $lim "ephemeral-storage" | default "0") | int64)
+   | toJson -}}
+{{- end }}
+
+{{/*
+Replica count, where an explicit 0 means 0.
+
+`replicas | default 1` reads a falsy 0 as absent and charges a full replica for a workload
+scaled to zero. AvailabilitySpec.Replicas is +kubebuilder:validation:Minimum=0
+(k8s-operator/api/v1alpha1/common_types.go), so 0 is a value a user can legitimately set,
+and the chart's own replicaCount keys take one too. Only an absent value defaults to 1.
+*/}}
+{{- define "kube-agents.replicaCount" -}}
+{{- if kindIs "invalid" . -}}
+1
+{{- else -}}
+{{- int64 . -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Preflight validation against namespace ResourceQuotas (#749).
 
 Split into three templates so the parts that need no cluster can be tested without one:
@@ -743,7 +788,9 @@ Fails the render if:
 - OR (hard - used) < required AND .Release.IsInstall (on a fresh install, remaining headroom
   is insufficient). Install-only on purpose: on upgrade the release's own pods are already
   counted in `used`, so subtracting them again would refuse every upgrade of a release that
-  exactly fits its quota.
+  exactly fits its quota. The cost of that exemption is that `used` on upgrade also holds
+  any neighbouring workload's usage, which this cannot tell apart from the release's own —
+  so in a namespace shared with other workloads an upgrade is checked against `hard` alone.
 
 Quota keys understood: CPU, memory and ephemeral-storage (requests and limits), pods,
 persistentvolumeclaims and requests.storage. Keys outside that set (services, secrets, other
@@ -789,86 +836,65 @@ a Go template cannot catch the error `lookup` raises.
 {{- $surgeCpuLim := 0 -}}
 {{- $surgeMemReq := 0 -}}
 {{- $surgeMemLim := 0 -}}
+{{- $surgeEphReq := 0 -}}
+{{- $surgeEphLim := 0 -}}
 
-{{- /* Operator */ -}}
+{{- /* The chart's own workloads, as (resources subtree, pod count, rolls-with-a-surge-Pod).
+       One list and one loop rather than a block each: the four blocks this replaced were
+       identical but for the values path, which is how the dashboard came to be read from
+       the wrong key and how a new workload comes to be missed. `hindsight.postgresql` is a
+       StatefulSet, so it contributes no surge Pod. */ -}}
+{{- $chartWorkloads := list -}}
 {{- if .Values.operator.enabled -}}
-  {{- $replicas := .Values.operator.replicaCount | default 1 | int64 -}}
-  {{- $cReqCpu := include "kube-agents.parseCpuMillis" .Values.operator.resources.requests.cpu | int64 -}}
-  {{- $cLimCpu := include "kube-agents.parseCpuMillis" .Values.operator.resources.limits.cpu | int64 -}}
-  {{- $cReqMem := include "kube-agents.parseBytes" .Values.operator.resources.requests.memory | int64 -}}
-  {{- $cLimMem := include "kube-agents.parseBytes" .Values.operator.resources.limits.memory | int64 -}}
-  {{- $reqPods = add $reqPods $replicas -}}
-  {{- $reqCpu = add $reqCpu (mul $cReqCpu $replicas) -}}
-  {{- $limCpu = add $limCpu (mul $cLimCpu $replicas) -}}
-  {{- $reqMem = add $reqMem (mul $cReqMem $replicas) -}}
-  {{- $limMem = add $limMem (mul $cLimMem $replicas) -}}
-  {{- $surgeCpuReq = max $surgeCpuReq $cReqCpu -}}
-  {{- $surgeCpuLim = max $surgeCpuLim $cLimCpu -}}
-  {{- $surgeMemReq = max $surgeMemReq $cReqMem -}}
-  {{- $surgeMemLim = max $surgeMemLim $cLimMem -}}
+  {{- $chartWorkloads = append $chartWorkloads (dict "values" .Values.operator "pods" (include "kube-agents.replicaCount" .Values.operator.replicaCount | int64) "surges" true) -}}
 {{- end -}}
-
-{{- /* LiteLLM */ -}}
 {{- if .Values.litellm.enabled -}}
-  {{- $replicas := .Values.litellm.replicaCount | default 1 | int64 -}}
-  {{- $cReqCpu := include "kube-agents.parseCpuMillis" .Values.litellm.resources.requests.cpu | int64 -}}
-  {{- $cLimCpu := include "kube-agents.parseCpuMillis" .Values.litellm.resources.limits.cpu | int64 -}}
-  {{- $cReqMem := include "kube-agents.parseBytes" .Values.litellm.resources.requests.memory | int64 -}}
-  {{- $cLimMem := include "kube-agents.parseBytes" .Values.litellm.resources.limits.memory | int64 -}}
-  {{- $reqPods = add $reqPods $replicas -}}
-  {{- $reqCpu = add $reqCpu (mul $cReqCpu $replicas) -}}
-  {{- $limCpu = add $limCpu (mul $cLimCpu $replicas) -}}
-  {{- $reqMem = add $reqMem (mul $cReqMem $replicas) -}}
-  {{- $limMem = add $limMem (mul $cLimMem $replicas) -}}
-  {{- $surgeCpuReq = max $surgeCpuReq $cReqCpu -}}
-  {{- $surgeCpuLim = max $surgeCpuLim $cLimCpu -}}
-  {{- $surgeMemReq = max $surgeMemReq $cReqMem -}}
-  {{- $surgeMemLim = max $surgeMemLim $cLimMem -}}
+  {{- $chartWorkloads = append $chartWorkloads (dict "values" .Values.litellm "pods" (include "kube-agents.replicaCount" .Values.litellm.replicaCount | int64) "surges" true) -}}
 {{- end -}}
-
-{{- /* Hindsight: the API Deployment and the postgresql StatefulSet. */ -}}
 {{- if include "kube-agents.hindsightEnabled" . -}}
-  {{- $reqPods = add $reqPods 2 -}}
-  {{- $aReqCpu := include "kube-agents.parseCpuMillis" .Values.hindsight.api.resources.requests.cpu | int64 -}}
-  {{- $aLimCpu := include "kube-agents.parseCpuMillis" .Values.hindsight.api.resources.limits.cpu | int64 -}}
-  {{- $aReqMem := include "kube-agents.parseBytes" .Values.hindsight.api.resources.requests.memory | int64 -}}
-  {{- $aLimMem := include "kube-agents.parseBytes" .Values.hindsight.api.resources.limits.memory | int64 -}}
-  {{- $reqCpu = add $reqCpu $aReqCpu -}}
-  {{- $limCpu = add $limCpu $aLimCpu -}}
-  {{- $reqMem = add $reqMem $aReqMem -}}
-  {{- $limMem = add $limMem $aLimMem -}}
-  {{- $surgeCpuReq = max $surgeCpuReq $aReqCpu -}}
-  {{- $surgeCpuLim = max $surgeCpuLim $aLimCpu -}}
-  {{- $surgeMemReq = max $surgeMemReq $aReqMem -}}
-  {{- $surgeMemLim = max $surgeMemLim $aLimMem -}}
-  {{- $reqCpu = add $reqCpu (include "kube-agents.parseCpuMillis" .Values.hindsight.postgresql.resources.requests.cpu | int64) -}}
-  {{- $limCpu = add $limCpu (include "kube-agents.parseCpuMillis" .Values.hindsight.postgresql.resources.limits.cpu | int64) -}}
-  {{- $reqMem = add $reqMem (include "kube-agents.parseBytes" .Values.hindsight.postgresql.resources.requests.memory | int64) -}}
-  {{- $limMem = add $limMem (include "kube-agents.parseBytes" .Values.hindsight.postgresql.resources.limits.memory | int64) -}}
-  {{- /* The same key templates/hindsight.yaml renders the volumeClaimTemplate request
-         from. values.schema.json closes hindsight.postgresql to image, resources and
-         storage, so there is no key to fall back to and no default to guard: a missing
-         one is a schema violation the render has already rejected. */ -}}
-  {{- $reqPvc = add $reqPvc 1 -}}
-  {{- $reqStorage = add $reqStorage (include "kube-agents.parseBytes" .Values.hindsight.postgresql.storage | int64) -}}
+  {{- $chartWorkloads = append $chartWorkloads (dict "values" .Values.hindsight.api "pods" 1 "surges" true) -}}
+  {{- $chartWorkloads = append $chartWorkloads (dict "values" .Values.hindsight.postgresql "pods" 1 "surges" false) -}}
+{{- end -}}
+{{- if .Values.githubMinter.enabled -}}
+  {{- $chartWorkloads = append $chartWorkloads (dict "values" .Values.githubMinter "pods" (include "kube-agents.replicaCount" .Values.githubMinter.replicaCount | int64) "surges" true) -}}
 {{- end -}}
 
-{{- /* GitHub Minter */ -}}
-{{- if .Values.githubMinter.enabled -}}
-  {{- $replicas := .Values.githubMinter.replicaCount | default 1 | int64 -}}
-  {{- $cReqCpu := include "kube-agents.parseCpuMillis" .Values.githubMinter.resources.requests.cpu | int64 -}}
-  {{- $cLimCpu := include "kube-agents.parseCpuMillis" .Values.githubMinter.resources.limits.cpu | int64 -}}
-  {{- $cReqMem := include "kube-agents.parseBytes" .Values.githubMinter.resources.requests.memory | int64 -}}
-  {{- $cLimMem := include "kube-agents.parseBytes" .Values.githubMinter.resources.limits.memory | int64 -}}
+{{- range $workload := $chartWorkloads -}}
+  {{- $res := include "kube-agents.workloadResources" $workload.values | fromJson -}}
+  {{- $replicas := $workload.pods | int64 -}}
   {{- $reqPods = add $reqPods $replicas -}}
-  {{- $reqCpu = add $reqCpu (mul $cReqCpu $replicas) -}}
-  {{- $limCpu = add $limCpu (mul $cLimCpu $replicas) -}}
-  {{- $reqMem = add $reqMem (mul $cReqMem $replicas) -}}
-  {{- $limMem = add $limMem (mul $cLimMem $replicas) -}}
-  {{- $surgeCpuReq = max $surgeCpuReq $cReqCpu -}}
-  {{- $surgeCpuLim = max $surgeCpuLim $cLimCpu -}}
-  {{- $surgeMemReq = max $surgeMemReq $cReqMem -}}
-  {{- $surgeMemLim = max $surgeMemLim $cLimMem -}}
+  {{- $reqCpu = add $reqCpu (mul $res.cpuRequest $replicas) -}}
+  {{- $limCpu = add $limCpu (mul $res.cpuLimit $replicas) -}}
+  {{- $reqMem = add $reqMem (mul $res.memoryRequest $replicas) -}}
+  {{- $limMem = add $limMem (mul $res.memoryLimit $replicas) -}}
+  {{- $reqEph = add $reqEph (mul $res.ephemeralRequest $replicas) -}}
+  {{- $limEph = add $limEph (mul $res.ephemeralLimit $replicas) -}}
+  {{- /* A workload scaled to zero has no pod to surge from, so it sizes no patch. */ -}}
+  {{- if and $workload.surges (gt $replicas (int64 0)) -}}
+    {{- $surgeCpuReq = max $surgeCpuReq $res.cpuRequest -}}
+    {{- $surgeCpuLim = max $surgeCpuLim $res.cpuLimit -}}
+    {{- $surgeMemReq = max $surgeMemReq $res.memoryRequest -}}
+    {{- $surgeMemLim = max $surgeMemLim $res.memoryLimit -}}
+    {{- $surgeEphReq = max $surgeEphReq $res.ephemeralRequest -}}
+    {{- $surgeEphLim = max $surgeEphLim $res.ephemeralLimit -}}
+  {{- end -}}
+{{- end -}}
+
+{{- /* Hindsight's PostgreSQL claim, from the same key templates/hindsight.yaml renders the
+       volumeClaimTemplate request from. */ -}}
+{{- if include "kube-agents.hindsightEnabled" . -}}
+  {{- $pgStorage := .Values.hindsight.postgresql.storage -}}
+  {{- /* values.schema.json closes hindsight.postgresql to image, resources and storage, but
+         `additionalProperties: false` rejects extra keys rather than requiring the ones
+         listed, and the schema has no `required` anywhere. So `storage: null` is valid
+         input that parses as 0 and under-counts requests.storage by the whole claim,
+         passing a quota that cannot hold it. The StatefulSet would render an empty request
+         from the same key, so failing here is the honest answer. */ -}}
+  {{- if or (kindIs "invalid" $pgStorage) (eq (toString $pgStorage) "") -}}
+    {{- fail "quota preflight: hindsight.postgresql.storage is empty, so the PostgreSQL claim cannot be sized. Set it to the size the StatefulSet should request, or set quotaPreflight.enabled=false to skip the check." -}}
+  {{- end -}}
+  {{- $reqPvc = add $reqPvc 1 -}}
+  {{- $reqStorage = add $reqStorage (include "kube-agents.parseBytes" $pgStorage | int64) -}}
 {{- end -}}
 
 {{- /* Operator-rendered workloads (footprint.yaml) */ -}}
@@ -879,8 +905,9 @@ a Go template cannot catch the error `lookup` raises.
          where the gateway goes to 3 and the other two do not). The footprint records one
          pod's worth, so it is multiplied here — without this an HA install passes the
          check and then leaves its extra replicas Pending, which is the failure this
-         whole template exists to prevent. `null` means the operator's own default of 1. */ -}}
-  {{- $agentReplicas := (((.Values.platformAgent.deployment | default dict).availability | default dict).replicas) | default 1 | int64 -}}
+         whole template exists to prevent. An absent value means the operator's own
+         default of 1; an explicit 0 means 0, and the CRD allows it. */ -}}
+  {{- $agentReplicas := include "kube-agents.replicaCount" (((.Values.platformAgent.deployment | default dict).availability | default dict).replicas) | int64 -}}
   {{- $base := (index $op "agentPod" "base") | default dict -}}
   {{- $podReqCpu := $base.cpuMillisRequest | default 0 | int64 -}}
   {{- $podLimCpu := $base.cpuMillisLimit | default 0 | int64 -}}
@@ -916,10 +943,14 @@ a Go template cannot catch the error `lookup` raises.
   {{- $limMem = add $limMem (mul $podLimMem $agentReplicas) -}}
   {{- $reqEph = add $reqEph (mul $podReqEph $agentReplicas) -}}
   {{- $limEph = add $limEph (mul $podLimEph $agentReplicas) -}}
-  {{- $surgeCpuReq = max $surgeCpuReq $podReqCpu -}}
-  {{- $surgeCpuLim = max $surgeCpuLim $podLimCpu -}}
-  {{- $surgeMemReq = max $surgeMemReq $podReqMem -}}
-  {{- $surgeMemLim = max $surgeMemLim $podLimMem -}}
+  {{- if gt $agentReplicas (int64 0) -}}
+    {{- $surgeCpuReq = max $surgeCpuReq $podReqCpu -}}
+    {{- $surgeCpuLim = max $surgeCpuLim $podLimCpu -}}
+    {{- $surgeMemReq = max $surgeMemReq $podReqMem -}}
+    {{- $surgeMemLim = max $surgeMemLim $podLimMem -}}
+    {{- $surgeEphReq = max $surgeEphReq $podReqEph -}}
+    {{- $surgeEphLim = max $surgeEphLim $podLimEph -}}
+  {{- end -}}
 
   {{- $shell := (index $op "shellSandbox") | default dict -}}
   {{- $reqPods = add $reqPods ($shell.pods | default 1 | int64) -}}
@@ -953,12 +984,17 @@ a Go template cannot catch the error `lookup` raises.
       "persistentVolumeClaims" $reqPvc "requestsStorage" $reqStorage
       "surgeRequestsCpu" $surgeCpuReq "surgeLimitsCpu" $surgeCpuLim
       "surgeRequestsMemory" $surgeMemReq "surgeLimitsMemory" $surgeMemLim
+      "surgeRequestsEphemeral" $surgeEphReq "surgeLimitsEphemeral" $surgeEphLim
    | toJson -}}
 {{- end }}
 
 {{- define "kube-agents.quotaCheckItems" -}}
 {{- $ctx := .ctx -}}
 {{- $r := .required -}}
+{{- /* Every deficient quota, not the first one. `fail` inside the loop reported one quota
+       per render, so a namespace with two of them was a patch-and-retry cycle — and the
+       whole value of this check is telling the operator what to fix in one pass. */ -}}
+{{- $quotaReports := list -}}
 {{- range $quota := .items -}}
   {{- $spec := index $quota "spec" | default dict -}}
   {{- $scopes := index $spec "scopes" -}}
@@ -985,6 +1021,15 @@ a Go template cannot catch the error `lookup` raises.
       {{- $isCpu := false -}}
       {{- $isBytes := false -}}
       {{- $isCount := false -}}
+      {{- /* Claim-shaped keys. A PersistentVolumeClaim outlives the release that created it:
+             the shell StatefulSet sets persistentVolumeClaimRetentionPolicy Retain/Retain, so
+             `helm uninstall` leaves its claims behind and they appear in `used` on the next
+             install — claims this release will reuse by name rather than create again.
+             Charging them twice refused a reinstall into a namespace sized exactly for the
+             release, and the patch it printed asked for 50% more claims than the release
+             will ever hold. `hard` still has to fit the release, which is the comparison
+             that catches a quota genuinely too small. */ -}}
+      {{- $isClaimShaped := false -}}
 
       {{- if eq $key "limits.cpu" -}}
         {{- $req = int64 $r.limitsCpu -}}
@@ -1004,13 +1049,18 @@ a Go template cannot catch the error `lookup` raises.
         {{- $isBytes = true -}}
       {{- else if eq $key "limits.ephemeral-storage" -}}
         {{- $req = int64 $r.limitsEphemeral -}}
+        {{- /* A surge Pod brings its ephemeral storage with it, same as its CPU and memory. */ -}}
+        {{- $surgeRoom = int64 $r.surgeLimitsEphemeral -}}
         {{- $isBytes = true -}}
       {{- else if or (eq $key "requests.ephemeral-storage") (eq $key "ephemeral-storage") -}}
         {{- $req = int64 $r.requestsEphemeral -}}
+        {{- $surgeRoom = int64 $r.surgeRequestsEphemeral -}}
         {{- $isBytes = true -}}
       {{- else if or (eq $key "requests.storage") (eq $key "storage") -}}
         {{- $req = int64 $r.requestsStorage -}}
+        {{- /* No surge room: a surge Pod mounts the existing claim rather than creating one. */ -}}
         {{- $isBytes = true -}}
+        {{- $isClaimShaped = true -}}
       {{- else if eq $key "pods" -}}
         {{- $req = int64 $r.pods -}}
         {{- /* One surge Pod, for the same reason as the CPU and memory surge. */ -}}
@@ -1019,6 +1069,7 @@ a Go template cannot catch the error `lookup` raises.
       {{- else if or (eq $key "persistentvolumeclaims") (eq $key "count/persistentvolumeclaims") -}}
         {{- $req = int64 $r.persistentVolumeClaims -}}
         {{- $isCount = true -}}
+        {{- $isClaimShaped = true -}}
       {{- end -}}
 
       {{- if or $isCpu $isBytes $isCount -}}
@@ -1042,15 +1093,26 @@ a Go template cannot catch the error `lookup` raises.
         {{- if lt $hardVal $req -}}
           {{- $failed = true -}}
           {{- $reason = "quota hard capacity is less than required" -}}
-        {{- else if and $ctx.Release.IsInstall (lt $availVal $req) -}}
+        {{- else if and $ctx.Release.IsInstall (not $isClaimShaped) (lt $availVal $req) -}}
           {{- $failed = true -}}
           {{- $reason = "available headroom (hard - used) is less than required for fresh install" -}}
         {{- end -}}
 
         {{- if $failed -}}
-          {{- /* used + required + one surge Pod. Exactly used+required fits the release at
-                 rest and then stalls its first rolling update. */ -}}
-          {{- $patchTarget := add $usedVal $req $surgeRoom -}}
+          {{- $patchTarget := 0 -}}
+          {{- if $ctx.Release.IsInstall -}}
+            {{- /* used + required + one surge Pod. Exactly used+required fits the release at
+                   rest and then stalls its first rolling update. */ -}}
+            {{- $patchTarget = add $usedVal $req $surgeRoom -}}
+          {{- else -}}
+            {{- /* On upgrade `used` already holds this release's own pods, so adding the two
+                   asks for the release twice: a release needing 6 pods with 4 running was
+                   told to patch to 11 where 7 does. What a neighbouring workload holds is in
+                   `used` too and cannot be told apart from the release's own, so this is the
+                   release's need plus a surge Pod — right in a namespace the release has to
+                   itself, and short by the neighbours' share in one it does not. */ -}}
+            {{- $patchTarget = add $req $surgeRoom -}}
+          {{- end -}}
           {{- $reqFormatted := "" -}}
           {{- $hardFormatted := "" -}}
           {{- $availFormatted := "" -}}
@@ -1086,10 +1148,13 @@ a Go template cannot catch the error `lookup` raises.
       {{- $qName := (index (index $quota "metadata" | default dict) "name") | default "resourcequota" -}}
       {{- $patchBody := printf "{\"spec\":{\"hard\":{%s}}}" (join "," $patchEntries) -}}
       {{- $patchCmd := printf "kubectl patch resourcequota %s -n %s --type=strategic --patch '%s'" $qName $ctx.Release.Namespace $patchBody -}}
-      {{- $msg := printf "ResourceQuota %q in namespace %q has insufficient capacity for release %q:\n%s\n\nRemediation: increase the quota with:\n  %s\n(those values leave room for one rollout surge Pod)\nor bypass this check with --set quotaPreflight.enabled=false" $qName $ctx.Release.Namespace $ctx.Release.Name (join "\n" $shortfalls) $patchCmd -}}
-      {{- fail $msg -}}
+      {{- $report := printf "ResourceQuota %q in namespace %q has insufficient capacity for release %q:\n%s\n\nRemediation: increase the quota with:\n  %s\n(those values leave room for one rollout surge Pod, except for claim counts and storage, which a surge Pod does not add to)" $qName $ctx.Release.Namespace $ctx.Release.Name (join "\n" $shortfalls) $patchCmd -}}
+      {{- $quotaReports = append $quotaReports $report -}}
     {{- end -}}
   {{- end -}}
+{{- end -}}
+{{- if gt (len $quotaReports) 0 -}}
+  {{- fail (printf "%s\n\nor bypass this check with --set quotaPreflight.enabled=false" (join "\n\n" $quotaReports)) -}}
 {{- end -}}
 {{- end }}
 

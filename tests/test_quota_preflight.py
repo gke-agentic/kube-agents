@@ -87,6 +87,25 @@ _HINDSIGHT_STORAGE_BYTES = 8 * 1024**3
 # of no binary unit -- the case where an exact-only formatter falls back to raw bytes.
 _DECIMAL_SI_HARD = "1G"
 _DECIMAL_SI_HARD_BYTES = 1000000000
+# LiteLLM runs two replicas at a 500m CPU limit each.
+_LITELLM_REPLICAS = 2
+_LITELLM_CPU_LIMIT_MILLIS = 500 * _LITELLM_REPLICAS
+# An ephemeral-storage request no chart workload sets by default, so the totals move by
+# exactly this much when one does.
+_EPHEMERAL_SET_GIB = 3
+# What the shell StatefulSet leaves behind: persistentVolumeClaimRetentionPolicy is
+# Retain/Retain, so these two claims survive `helm uninstall` and are in `used` on the
+# next install, to be reused by name rather than created again.
+_RETAINED_PVC_COUNT = 2
+_RETAINED_STORAGE_GIB = 11
+
+
+def _parse_gib_or_mib(quantity: str) -> int:
+    """Bytes from the Gi/Mi spellings the patch generator emits."""
+    for suffix, multiplier in (("Gi", 1024**3), ("Mi", 1024**2)):
+        if quantity.endswith(suffix):
+            return int(quantity.removesuffix(suffix)) * multiplier
+    return int(quantity)
 
 _REQUIRED_HARNESS = [
     "--set",
@@ -365,6 +384,148 @@ class PreflightDecisionTest(unittest.TestCase):
             base["requestsStorage"] + _HINDSIGHT_STORAGE_BYTES,
         )
 
+    def test_a_workload_scaled_to_zero_is_not_charged(self) -> None:
+        """`replicas | default 1` read a falsy 0 as absent and charged a full replica.
+
+        AvailabilitySpec.Replicas is Minimum=0, so 0 is a value a user can set, and an
+        upgrade was refused over a pod that would not exist.
+        """
+        base = self._requirements()
+        no_agent = self._requirements(["platformAgent.deployment.availability.replicas=0"])
+        self.assertEqual(no_agent["pods"], base["pods"] - 1)
+        self.assertEqual(
+            no_agent["requestsCpu"], base["requestsCpu"] - _AGENT_POD_REQUEST_MILLIS
+        )
+
+        no_operator = self._requirements(["operator.replicaCount=0"])
+        self.assertEqual(no_operator["pods"], base["pods"] - 1)
+        self.assertEqual(
+            no_operator["requestsCpu"], base["requestsCpu"] - _OPERATOR_REQUEST_MILLIS
+        )
+
+    def test_a_pruned_resources_map_does_not_break_the_render(self) -> None:
+        """`--set litellm.resources.limits=null` is valid input the schema accepts.
+
+        Reaching two levels in aborted the render with `nil pointer evaluating
+        interface {}.cpu` -- and only in a namespace that has a ResourceQuota, which is
+        the one population this check exists for. A dropped limit counts as zero.
+        """
+        base = self._requirements()
+        pruned = self._requirements(["litellm.resources.limits=null"])
+        self.assertEqual(pruned["limitsCpu"], base["limitsCpu"] - _LITELLM_CPU_LIMIT_MILLIS)
+        self.assertEqual(pruned["pods"], base["pods"])
+
+    def test_chart_workload_ephemeral_storage_is_counted(self) -> None:
+        """Only the footprint contributed ephemeral storage, so a chart-set value was free."""
+        base = self._requirements()
+        with_ephemeral = self._requirements(
+            [f"litellm.resources.requests.ephemeral-storage={_EPHEMERAL_SET_GIB}Gi"]
+        )
+        self.assertEqual(
+            with_ephemeral["requestsEphemeral"],
+            base["requestsEphemeral"]
+            + _EPHEMERAL_SET_GIB * 1024**3 * _LITELLM_REPLICAS,
+        )
+
+    def test_an_empty_hindsight_storage_key_fails_loudly(self) -> None:
+        """`storage: null` passes the closed schema and used to count as zero silently."""
+        res = self._render(
+            {"probe": {"emitRequirements": True}},
+            ["hindsight.enabled=true", "hindsight.postgresql.storage=null"],
+        )
+        self.assertNotEqual(res.returncode, 0, "an unsized claim must not count as zero")
+        self.assertIn("hindsight.postgresql.storage is empty", res.stderr)
+
+    def test_retained_claims_do_not_refuse_a_reinstall(self) -> None:
+        """The shell StatefulSet retains its claims, so they are in `used` on reinstall.
+
+        They are reused by name rather than created again. Charging them twice refused a
+        reinstall into a namespace sized exactly for the release, and the patch it printed
+        asked for 50% more claims than the release will ever hold.
+        """
+        res = self._render(
+            {
+                "probe": {
+                    "quotas": [
+                        self._quota(
+                            {
+                                "persistentvolumeclaims": str(_OPERATOR_PVC_COUNT),
+                                "requests.storage": f"{_OPERATOR_STORAGE_BYTES // 1024**3}Gi",
+                            },
+                            used={
+                                "persistentvolumeclaims": str(_RETAINED_PVC_COUNT),
+                                "requests.storage": f"{_RETAINED_STORAGE_GIB}Gi",
+                            },
+                        )
+                    ]
+                }
+            }
+        )
+        self.assertEqual(
+            res.returncode, 0, f"retained claims must not refuse a reinstall:\n{res.stderr}"
+        )
+
+    def test_a_quota_too_small_for_the_claims_is_still_refused(self) -> None:
+        """Exempting claims from the headroom check must not disable the `hard` check."""
+        res = self._render(
+            {
+                "probe": {
+                    "quotas": [
+                        self._quota({"persistentvolumeclaims": str(_OPERATOR_PVC_COUNT - 1)})
+                    ]
+                }
+            }
+        )
+        self.assertNotEqual(res.returncode, 0, "a quota that cannot hold the claims must fail")
+        self.assertIn("persistentvolumeclaims", res.stderr)
+
+    def test_the_upgrade_patch_does_not_double_count_used(self) -> None:
+        """On upgrade `used` already holds the release's own pods.
+
+        Adding the two asked for the release twice: a release needing 6 pods with 4
+        running was told to patch to 11 where 7 does.
+        """
+        running = _DEFAULT_PODS - 2
+        res = self._render(
+            {
+                "probe": {
+                    "quotas": [
+                        self._quota({"pods": str(running)}, used={"pods": str(running)})
+                    ]
+                }
+            },
+            extra_args=["--is-upgrade"],
+        )
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn(f'"pods":"{_DEFAULT_PODS + 1}"', res.stderr)
+        self.assertNotIn(f'"pods":"{running + _DEFAULT_PODS + 1}"', res.stderr)
+
+    def test_every_deficient_quota_is_reported_at_once(self) -> None:
+        """`fail` inside the loop reported one quota per render, so two meant two rounds."""
+        first = self._quota({"pods": "2"})
+        first["metadata"] = {"name": "first-quota"}
+        second = self._quota({"requests.cpu": "100m"})
+        second["metadata"] = {"name": "second-quota"}
+        res = self._render({"probe": {"quotas": [first, second]}})
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("first-quota", res.stderr)
+        self.assertIn("second-quota", res.stderr)
+
+    def test_the_patch_leaves_ephemeral_room_for_a_surge_pod(self) -> None:
+        """A surge Pod brings its ephemeral storage with it, same as its CPU and memory."""
+        res = self._render(
+            {"probe": {"quotas": [self._quota({"requests.ephemeral-storage": "1Mi"})]}}
+        )
+        self.assertNotEqual(res.returncode, 0)
+        patch = re.search(r'"requests\.ephemeral-storage":"([^"]+)"', res.stderr)
+        self.assertIsNotNone(patch, f"no ephemeral patch value in:\n{res.stderr}")
+        self.assertGreater(
+            _parse_gib_or_mib(patch.group(1)),
+            _DEFAULT_REQUESTS_EPHEMERAL_BYTES,
+            "the patch must leave room for the surge Pod it promises",
+        )
+
+
 
 class QuotaPreflightTest(unittest.TestCase):
     def test_footprint_file_structure(self) -> None:
@@ -473,6 +634,110 @@ class QuotaPreflightTest(unittest.TestCase):
             text=True,
         )
         self.assertEqual(res.returncode, 0, f"helm template failed:\n{res.stderr}")
+
+    @unittest.skipUnless(_HELM, "helm is not installed")
+    def test_the_bypass_flag_gates_the_whole_check(self) -> None:
+        """`quotaPreflight.enabled=false` is the only remedy offered to a deployer without
+        `list resourcequotas`, and nothing exercised it.
+
+        The refusal itself needs a cluster, so what is asserted here is that the flag gates
+        the template body rather than some inner branch of it: with the flag off the render
+        succeeds, and the helper reaches the lookup only inside that guard.
+        """
+        res = subprocess.run(
+            [
+                _HELM,
+                "template",
+                "test-release",
+                str(_CHART),
+                "--set",
+                "quotaPreflight.enabled=false",
+                *_REQUIRED_HARNESS,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res.returncode, 0, f"the bypass must render:\n{res.stderr}")
+
+        helpers = _HELPERS.read_text()
+        body = helpers.split('define "kube-agents.quotaPreflight"')[1]
+        guard = body.index(".Values.quotaPreflight.enabled")
+        self.assertLess(
+            guard,
+            body.index("lookup"),
+            "the lookup must sit inside the enabled guard, or the flag cannot help a "
+            "deployer who lacks permission to perform it",
+        )
+
+
+class DocumentedFootprintTest(unittest.TestCase):
+    """The install prerequisites page quotes figures derived from values and footprint.
+
+    Nothing regenerated them, and the row that preceded this one was stale within a
+    release. These recompute each figure and look for it on the page, so a change that
+    moves a total fails here rather than in a reader's namespace.
+    """
+
+    _PREREQUISITES = (
+        _ROOT
+        / "docs"
+        / "site"
+        / "src"
+        / "content"
+        / "docs"
+        / "install"
+        / "prerequisites.md"
+    )
+
+    @unittest.skipUnless(_HELM, "helm is not installed")
+    def test_the_prerequisites_page_quotes_the_current_totals(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        chart = pathlib.Path(tmp.name) / "kube-agents"
+        shutil.copytree(_CHART, chart)
+        (chart / "values.schema.json").unlink(missing_ok=True)
+        (chart / "templates" / "zz-probe.yaml").write_text(_PROBE_TEMPLATE)
+
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as fh:
+            yaml.safe_dump({"probe": {"emitRequirements": True}}, fh)
+            values_path = fh.name
+        self.addCleanup(lambda: pathlib.Path(values_path).unlink(missing_ok=True))
+        res = subprocess.run(
+            [_HELM, "template", "test-release", str(chart), "-f", values_path]
+            + _REQUIRED_HARNESS,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res.returncode, 0, f"render failed:\n{res.stderr}")
+        required = None
+        for doc in yaml.safe_load_all(res.stdout):
+            if doc and doc.get("metadata", {}).get("name") == "probe-requirements":
+                required = json.loads(doc["data"]["requirements"])
+        self.assertIsNotNone(required, "probe ConfigMap not found")
+
+        # Collapsed, so a figure that spans a line break still matches: the guard is
+        # about the numbers, not about where the prose happens to wrap.
+        page = " ".join(self._PREREQUISITES.read_text().split())
+        gib = 1024**3
+        expected = {
+            "pod count": f"{required['pods']} pods",
+            "CPU requests": f"about {round(required['requestsCpu'] / 1000)} vCPU",
+            "memory requests": f"{required['requestsMemory'] / gib:.1f} GiB",
+            "CPU limits": f"{round(required['limitsCpu'] / 1000)} CPU",
+            "memory limits": f"{required['limitsMemory'] / gib:.1f} GiB",
+            "claim count": f"{required['persistentVolumeClaims']} persistent volume claims",
+            "claim storage": f"{required['requestsStorage'] // gib} GiB",
+            "ephemeral requests": f"{required['requestsEphemeral'] // gib} GiB of ephemeral-storage requests",
+            "ephemeral limits": f"{required['limitsEphemeral'] // gib} GiB of limits",
+        }
+        for label, figure in expected.items():
+            self.assertIn(
+                figure,
+                page,
+                f"the {label} on the prerequisites page no longer matches the chart "
+                f"(expected to find {figure!r})",
+            )
+
 
 
 if __name__ == "__main__":

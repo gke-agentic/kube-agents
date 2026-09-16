@@ -7,17 +7,40 @@ CR and writes them to a file the chart reads with `.Files.Get`.
 
 The source is a golden, not a live render and not k8s-operator/config/, so changing the
 operator's resources takes two steps in order: re-bless the golden
-(cd k8s-operator && go test ./internal/controller/... -update), then `make chart-sync`.
-Syncing first regenerates the old numbers from the stale golden.
+(cd k8s-operator && go test ./internal/testing/... -update), then `make chart-sync`.
+Syncing first regenerates the old numbers from the stale golden. The golden is written by
+k8s-operator/internal/testing/golden_test.go, so ./internal/testing/... is the package to
+run: ./internal/controller/... defines an unrelated -update flag of its own, which makes
+the wrong command pass while leaving this golden stale.
 
 Verified in CI by `make chart-check`, which runs this with --check.
+
+Exit codes: 0 in sync, _EXIT_DRIFT on a difference, _EXIT_CANNOT_RUN when the generator
+could not run (no PyYAML, an unreadable golden, a golden it cannot account for).
 """
 
 import argparse
+import difflib
 import pathlib
 import sys
 
-import yaml
+# `make chart-check` distinguishes these: 1 means the committed file has drifted and the
+# fix is to re-sync, anything else means the check could not run and the fix is different.
+# Declared above the PyYAML import because a missing dependency has to exit with the
+# second of them: an unhandled ImportError exits 1 and is read as drift.
+_EXIT_DRIFT = 1
+_EXIT_CANNOT_RUN = 2
+
+_MISSING_PYYAML = (
+    "generate_chart_footprint needs PyYAML: python3 -m pip install pyyaml"
+    " (or make test-python-deps)"
+)
+
+try:
+    import yaml
+except ImportError:
+    print(_MISSING_PYYAML, file=sys.stderr)
+    sys.exit(_EXIT_CANNOT_RUN)
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 _GOLDEN_MANIFEST = (
@@ -52,10 +75,40 @@ _AGENT_CONTAINER = "platform-agent"
 _DASHBOARD_CONTAINER = "platform-agent-dashboard"
 _FLUENT_BIT_CONTAINER = "fluent-bit"
 _AGENT_API_AUTH_CONTAINER = "agent-api-auth"
+_SANDBOX_CLEANUP_CONTAINER = "sandbox-credential-cleanup"
+_SANDBOX_SSH_KEY_CONTAINER = "sandbox-ssh-key"
 
 _KIND_STATEFULSET = "StatefulSet"
 _KIND_DEPLOYMENT = "Deployment"
 _KIND_PVC = "PersistentVolumeClaim"
+
+# Kinds that put pods on a cluster. Every golden document of one of these has to reach the
+# footprint or be ignored on purpose; _check_completeness is what enforces that.
+_POD_BEARING_KINDS = frozenset(
+    {
+        _KIND_DEPLOYMENT,
+        _KIND_STATEFULSET,
+        "DaemonSet",
+        "ReplicaSet",
+        "ReplicationController",
+        "Job",
+        "CronJob",
+        "Pod",
+    }
+)
+
+_CONTAINERS_FIELD = "containers"
+_INIT_CONTAINERS_FIELD = "initContainers"
+_NAME_FIELD = "name"
+_RESOURCES_FIELD = "resources"
+_RESTART_POLICY_FIELD = "restartPolicy"
+
+# On an init container this makes it a native sidecar: it runs for the life of the pod and
+# is added to the pod's request rather than only being the floor under it.
+_RESTART_POLICY_ALWAYS = "Always"
+
+_DIFF_COMMITTED_LABEL = "committed footprint.yaml"
+_DIFF_GENERATED_LABEL = "regenerated from the operator golden"
 
 _REQUESTS = "requests"
 _LIMITS = "limits"
@@ -69,10 +122,48 @@ _GIB = 1024**3
 _MILLICORES_PER_CORE = 1000
 _ZERO_QUANTITY = "0"
 
-# `make chart-check` distinguishes these: 1 means the committed file has drifted and the
-# fix is to re-sync, anything else means the check could not run and the fix is different.
-_EXIT_DRIFT = 1
-_EXIT_CANNOT_RUN = 2
+_KEY_SEPARATOR = "/"
+
+
+def _workload_key(kind: str, name: str) -> str:
+    """Identify a workload the way the guard's messages and ignore lists name it."""
+    return f"{kind}{_KEY_SEPARATOR}{name}"
+
+
+def _container_key(workload_key: str, container: str) -> str:
+    return f"{workload_key}{_KEY_SEPARATOR}{container}"
+
+
+_SHELL_WORKLOAD_KEY = _workload_key(_KIND_STATEFULSET, _SHELL_WORKLOAD)
+_CRED_PROXY_WORKLOAD_KEY = _workload_key(_KIND_DEPLOYMENT, _CRED_PROXY_WORKLOAD)
+_GATEWAY_WORKLOAD_KEY = _workload_key(_KIND_DEPLOYMENT, _GATEWAY_WORKLOAD)
+
+# Pod-bearing workloads the footprint deliberately leaves out, and why. Empty today: the
+# operator renders three, and all three are summed. An entry here excludes the workload
+# and everything in it, so it needs a reason the release does not pay for those pods.
+_IGNORED_WORKLOADS: dict[str, str] = {}
+
+# Containers inside the summed workloads that deliberately do not change the totals, and
+# why. A pod's effective request is max(largest init container, sum of the regular and
+# sidecar containers), so an ordinary init container only counts when it is larger than
+# that sum -- which is the thing to recheck before adding an entry here. _check_completeness
+# rechecks only that the container is still an ordinary init container; that it is still
+# the smaller of the two is on whoever changes its resources.
+_IGNORED_CONTAINERS: dict[str, str] = {
+    _container_key(_GATEWAY_WORKLOAD_KEY, _SANDBOX_CLEANUP_CONTAINER): (
+        "ordinary init container, requests less than the gateway pod's container sum"
+    ),
+    _container_key(_GATEWAY_WORKLOAD_KEY, _SANDBOX_SSH_KEY_CONTAINER): (
+        "ordinary init container, requests less than the gateway pod's container sum"
+    ),
+}
+
+_COMPLETENESS_ADVICE = (
+    "Each one is either part of what an install costs or it is not. Sum it into "
+    "extract_footprint so the quota preflight counts it, or add it to _IGNORED_WORKLOADS "
+    "or _IGNORED_CONTAINERS in this file with the reason it does not change the totals. "
+    "Then run `make chart-sync`."
+)
 
 _YAML_STR_TAG = "tag:yaml.org,2002:str"
 _DOUBLE_QUOTE = '"'
@@ -163,7 +254,7 @@ def format_bytes(num_bytes: int) -> str:
 
 
 def _quantity(container: dict, section: str, key: str, parse) -> int:
-    resources = container.get("resources") or {}
+    resources = container.get(_RESOURCES_FIELD) or {}
     return parse((resources.get(section) or {}).get(key, _ZERO_QUANTITY))
 
 
@@ -211,8 +302,76 @@ def _pod_spec(doc: dict) -> dict:
 
 
 def _claim_storage(claim: dict) -> int:
-    resources = (claim.get("spec") or {}).get("resources") or {}
+    resources = (claim.get("spec") or {}).get(_RESOURCES_FIELD) or {}
     return parse_bytes((resources.get(_REQUESTS) or {}).get(_STORAGE, _ZERO_QUANTITY))
+
+
+def _pod_containers(spec: dict) -> list:
+    """Every container in a pod spec, regular and init alike, in declaration order."""
+    return list(spec.get(_CONTAINERS_FIELD) or []) + list(
+        spec.get(_INIT_CONTAINERS_FIELD) or []
+    )
+
+
+def _describe_container(container: dict) -> str:
+    """Name a container and what it asks for, so a guard failure shows its size."""
+    name = container.get(_NAME_FIELD)
+    cpu = _quantity(container, _REQUESTS, _CPU, parse_cpu_millis)
+    memory = _quantity(container, _REQUESTS, _MEMORY, parse_bytes)
+    return f"{name!r} (requests {format_cpu(cpu)} cpu, {format_bytes(memory)} memory)"
+
+
+def _check_completeness(pod_workloads: dict, summed_containers: set) -> None:
+    """Fail on anything in the golden that the footprint neither sums nor ignores.
+
+    The generator finds what it sums by name, which makes a rename loud and an addition
+    silent: a workload or container the operator started rendering would be missing from
+    footprint.yaml, and `make chart-check` would report no drift because nothing looked
+    for it. An undercounted footprint is worse than none, because the quota preflight
+    passes the install it exists to stop. This is what looks.
+    """
+    unaccounted = []
+    for workload_key, spec in sorted(pod_workloads.items()):
+        if workload_key in _IGNORED_WORKLOADS:
+            continue
+        containers = _pod_containers(spec)
+        summed_here = [
+            container
+            for container in containers
+            if _container_key(workload_key, container.get(_NAME_FIELD))
+            in summed_containers
+        ]
+        if not summed_here:
+            unaccounted.append(
+                f"workload {workload_key} contributes nothing to the footprint"
+            )
+            continue
+        for container in containers:
+            key = _container_key(workload_key, container.get(_NAME_FIELD))
+            if key in summed_containers:
+                continue
+            if key in _IGNORED_CONTAINERS:
+                # Every reason in _IGNORED_CONTAINERS rests on the container being an
+                # ordinary init container, which a pod's request only pays for while it
+                # runs. restartPolicy: Always makes it a native sidecar that is added to
+                # the sum instead, so the reason no longer holds and the ignore lapses.
+                if container.get(_RESTART_POLICY_FIELD) == _RESTART_POLICY_ALWAYS:
+                    unaccounted.append(
+                        f"container {_describe_container(container)} in {workload_key}"
+                        " is ignored as an init container but now restarts Always,"
+                        " which counts it toward the pod's request"
+                    )
+                continue
+            unaccounted.append(
+                f"container {_describe_container(container)} in {workload_key}"
+                " is neither summed nor ignored"
+            )
+    if unaccounted:
+        found = "\n".join(f"  - {item}" for item in unaccounted)
+        raise ValueError(
+            f"the golden renders pods the footprint does not account for:\n{found}\n"
+            f"{_COMPLETENESS_ADVICE}"
+        )
 
 
 def extract_footprint() -> dict:
@@ -226,6 +385,8 @@ def extract_footprint() -> dict:
     cred_proxy_containers = {}
     gateway_containers = {}
     gateway_init_containers = {}
+    # Every pod-bearing document, summed or not, for _check_completeness below.
+    pod_workloads = {}
     pvc_count = 0
     storage_bytes = 0
 
@@ -242,14 +403,23 @@ def extract_footprint() -> dict:
             storage_bytes += _claim_storage(doc)
             continue
 
+        if kind in _POD_BEARING_KINDS:
+            pod_workloads[_workload_key(kind, name)] = spec
+
         if kind == _KIND_STATEFULSET and name == _SHELL_WORKLOAD:
-            shell_containers = {c.get("name"): c for c in spec.get("containers", [])}
+            shell_containers = {
+                c.get(_NAME_FIELD): c for c in spec.get(_CONTAINERS_FIELD, [])
+            }
         elif kind == _KIND_DEPLOYMENT and name == _CRED_PROXY_WORKLOAD:
-            cred_proxy_containers = {c.get("name"): c for c in spec.get("containers", [])}
+            cred_proxy_containers = {
+                c.get(_NAME_FIELD): c for c in spec.get(_CONTAINERS_FIELD, [])
+            }
         elif kind == _KIND_DEPLOYMENT and name == _GATEWAY_WORKLOAD:
-            gateway_containers = {c.get("name"): c for c in spec.get("containers", [])}
+            gateway_containers = {
+                c.get(_NAME_FIELD): c for c in spec.get(_CONTAINERS_FIELD, [])
+            }
             gateway_init_containers = {
-                c.get("name"): c for c in spec.get("initContainers", [])
+                c.get(_NAME_FIELD): c for c in spec.get(_INIT_CONTAINERS_FIELD, [])
             }
 
         if kind == _KIND_STATEFULSET:
@@ -273,6 +443,20 @@ def extract_footprint() -> dict:
             raise ValueError(
                 f"container {container_name!r} not found in {workload} in the golden"
             )
+
+    # The containers the entries below sum, named the way the guard names them. Dropping
+    # one from an entry without dropping it here leaves it unaccounted and the guard says
+    # so; the reverse -- listed here but summed nowhere -- is the hole the guard cannot
+    # see, so the two move together.
+    summed_containers = {
+        _container_key(_SHELL_WORKLOAD_KEY, _SHELL_CONTAINER),
+        _container_key(_CRED_PROXY_WORKLOAD_KEY, _CRED_PROXY_CONTAINER),
+        _container_key(_GATEWAY_WORKLOAD_KEY, _AGENT_CONTAINER),
+        _container_key(_GATEWAY_WORKLOAD_KEY, _DASHBOARD_CONTAINER),
+        _container_key(_GATEWAY_WORKLOAD_KEY, _FLUENT_BIT_CONTAINER),
+        _container_key(_GATEWAY_WORKLOAD_KEY, _AGENT_API_AUTH_CONTAINER),
+    }
+    _check_completeness(pod_workloads, summed_containers)
 
     # The agent pod's base is everything always present: the agent, its log shipper, and the
     # agent-api-auth native sidecar (declared as an init container with restartPolicy:
@@ -308,6 +492,19 @@ def extract_footprint() -> dict:
     }
 
 
+def _drift_diff(committed: str, generated: str) -> str:
+    """A unified diff of the two, so --check shows what moved rather than only that it did."""
+    return "\n".join(
+        difflib.unified_diff(
+            committed.splitlines(),
+            generated.splitlines(),
+            _DIFF_COMMITTED_LABEL,
+            _DIFF_GENERATED_LABEL,
+            lineterm="",
+        )
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="Check for drift without writing")
@@ -315,8 +512,10 @@ def main():
 
     try:
         data = extract_footprint()
-    except (FileNotFoundError, ValueError, yaml.YAMLError) as err:
-        # Not drift: the check could not be performed at all, and the fix is a different one.
+    except (OSError, ValueError, yaml.YAMLError) as err:
+        # Not drift: the check could not be performed at all, and the fix is a different
+        # one. OSError covers the golden being absent and being unreadable alike; both
+        # leave the generator with nothing to compare, and neither is fixed by re-syncing.
         print(f"ERROR: cannot build the chart footprint: {err}", file=sys.stderr)
         sys.exit(_EXIT_CANNOT_RUN)
 
@@ -329,7 +528,13 @@ def main():
                 file=sys.stderr,
             )
             sys.exit(_EXIT_DRIFT)
-        if _FOOTPRINT_FILE.read_text() != content:
+        try:
+            committed = _FOOTPRINT_FILE.read_text()
+        except OSError as err:
+            print(f"ERROR: cannot read {_FOOTPRINT_FILE}: {err}", file=sys.stderr)
+            sys.exit(_EXIT_CANNOT_RUN)
+        if committed != content:
+            print(_drift_diff(committed, content), file=sys.stderr)
             print(
                 f"ERROR: {_FOOTPRINT_FILE} is out of date vs {_GOLDEN_MANIFEST}",
                 file=sys.stderr,
@@ -337,7 +542,11 @@ def main():
             sys.exit(_EXIT_DRIFT)
         print("Chart footprint is in sync with the operator golden.")
     else:
-        _FOOTPRINT_FILE.write_text(content)
+        try:
+            _FOOTPRINT_FILE.write_text(content)
+        except OSError as err:
+            print(f"ERROR: cannot write {_FOOTPRINT_FILE}: {err}", file=sys.stderr)
+            sys.exit(_EXIT_CANNOT_RUN)
         print(f"Generated {_FOOTPRINT_FILE} from {_GOLDEN_MANIFEST}")
 
 

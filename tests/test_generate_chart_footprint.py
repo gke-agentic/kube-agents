@@ -15,6 +15,8 @@ directly.
 
 from __future__ import annotations
 
+import builtins
+import contextlib
 import importlib.util
 import io
 import pathlib
@@ -35,6 +37,95 @@ _spec.loader.exec_module(gcf)
 
 _MIB = 1024**2
 _GIB = 1024**3
+
+# Names that exist in no golden, so a test using one is asserting about the guard rather
+# than about something the operator happens to render today.
+_UNMODELLED_WORKLOAD = "platformagent-newthing"
+_UNMODELLED_WORKLOAD_KEY = f"Deployment/{_UNMODELLED_WORKLOAD}"
+_UNMODELLED_CONTAINER = "newthing"
+_ADDED_GATEWAY_CONTAINER = "otel-agent"
+_ADDED_GATEWAY_SIDECAR = "token-refresher"
+
+
+def _find_doc(docs, kind, name):
+    for doc in docs:
+        if doc.get("kind") == kind and (doc.get("metadata") or {}).get("name") == name:
+            return doc
+    raise AssertionError(f"{kind}/{name} is not in the golden")
+
+
+def _gateway_pod_spec(docs):
+    gateway = _find_doc(docs, "Deployment", gcf._GATEWAY_WORKLOAD)
+    return gateway["spec"]["template"]["spec"]
+
+
+def _add_unmodelled_deployment(docs):
+    docs.append(
+        {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {"name": _UNMODELLED_WORKLOAD},
+            "spec": {
+                "template": {
+                    "spec": {
+                        "containers": [
+                            {
+                                "name": _UNMODELLED_CONTAINER,
+                                "resources": {
+                                    "requests": {"cpu": "500m", "memory": "1Gi"}
+                                },
+                            }
+                        ]
+                    }
+                }
+            },
+        }
+    )
+
+
+def _add_gateway_container(docs):
+    _gateway_pod_spec(docs)["containers"].append(
+        {
+            "name": _ADDED_GATEWAY_CONTAINER,
+            "resources": {"requests": {"cpu": "250m", "memory": "256Mi"}},
+        }
+    )
+
+
+def _add_gateway_sidecar(docs):
+    _gateway_pod_spec(docs)["initContainers"].append(
+        {
+            "name": _ADDED_GATEWAY_SIDECAR,
+            "restartPolicy": "Always",
+            "resources": {"requests": {"cpu": "50m", "memory": "64Mi"}},
+        }
+    )
+
+
+def _promote_ignored_init_container(docs):
+    """Turn an ignored ordinary init container into a native sidecar."""
+    for container in _gateway_pod_spec(docs)["initContainers"]:
+        if container["name"] == gcf._SANDBOX_SSH_KEY_CONTAINER:
+            container["restartPolicy"] = "Always"
+            return
+    raise AssertionError(
+        f"{gcf._SANDBOX_SSH_KEY_CONTAINER} is no longer in the golden's init containers"
+    )
+
+
+@contextlib.contextmanager
+def _golden_with(mutate):
+    """Run the block against the committed golden with `mutate` applied to its documents."""
+    docs = [doc for doc in yaml.safe_load_all(gcf._GOLDEN_MANIFEST.read_text()) if doc]
+    mutate(docs)
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as fh:
+        yaml.safe_dump_all(docs, fh)
+        path = pathlib.Path(fh.name)
+    try:
+        with unittest.mock.patch.object(gcf, "_GOLDEN_MANIFEST", path):
+            yield path
+    finally:
+        path.unlink(missing_ok=True)
 
 
 def _container(name="c", requests=None, limits=None):
@@ -286,7 +377,7 @@ class MainExitCodeTest(unittest.TestCase):
         self.assertEqual(code, gcf._EXIT_DRIFT)
         self.assertIn("does not exist", err)
 
-    def test_an_unreadable_golden_is_exit_2_not_drift(self):
+    def test_a_missing_golden_is_exit_2_not_drift(self):
         """Reporting this as drift would send the reader to re-sync, which cannot help."""
         missing = gcf._GOLDEN_MANIFEST.parent / "does-not-exist.yaml"
         with unittest.mock.patch.object(gcf, "_GOLDEN_MANIFEST", missing):
@@ -311,6 +402,166 @@ class MainExitCodeTest(unittest.TestCase):
                 self._run_main(["generate_chart_footprint.py"])
             self.assertTrue(path.read_text().startswith(gcf._HEADER))
             self.assertIn("do not edit", path.read_text())
+
+    def test_an_unreadable_golden_is_exit_2_not_drift(self):
+        """A present-but-unreadable golden used to raise past the except clause and exit 1."""
+        with unittest.mock.patch.object(
+            pathlib.Path, "read_text", side_effect=PermissionError("denied")
+        ):
+            code, _, err = self._run_main(["generate_chart_footprint.py", "--check"])
+        self.assertEqual(code, gcf._EXIT_CANNOT_RUN)
+        self.assertIn("cannot build the chart footprint", err)
+
+    def test_a_missing_pyyaml_is_exit_2_not_drift(self):
+        """A bare `import yaml` exits 1, which the sync script reads as drift."""
+        real_import = builtins.__import__
+
+        def refuse_yaml(name, *args, **kwargs):
+            if name == "yaml":
+                raise ImportError("no module named yaml")
+            return real_import(name, *args, **kwargs)
+
+        namespace = {"__name__": "generate_chart_footprint_without_yaml"}
+        err = io.StringIO()
+        with unittest.mock.patch.object(builtins, "__import__", refuse_yaml):
+            with self.assertRaises(SystemExit) as caught:
+                with redirect_stderr(err):
+                    exec(  # noqa: S102 - the module's import guard is the thing under test
+                        compile(_MODULE_PATH.read_text(), str(_MODULE_PATH), "exec"),
+                        namespace,
+                    )
+        self.assertEqual(caught.exception.code, gcf._EXIT_CANNOT_RUN)
+        self.assertIn("PyYAML", err.getvalue())
+
+    def test_a_golden_the_guard_rejects_is_exit_2_not_drift(self):
+        """Re-syncing cannot fix an unaccounted workload, so this must not read as drift."""
+        with _golden_with(_add_unmodelled_deployment):
+            code, _, err = self._run_main(["generate_chart_footprint.py", "--check"])
+        self.assertEqual(code, gcf._EXIT_CANNOT_RUN)
+        self.assertIn("does not account for", err)
+
+    def test_check_prints_the_diff_it_claims_to(self):
+        """hack/sync-chart-manifests.sh tells the reader to see the diff above."""
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as fh:
+            fh.write("operatorRendered: {}\n")
+            path = pathlib.Path(fh.name)
+        try:
+            with unittest.mock.patch.object(gcf, "_FOOTPRINT_FILE", path):
+                code, _, err = self._run_main(["generate_chart_footprint.py", "--check"])
+            self.assertEqual(code, gcf._EXIT_DRIFT)
+            self.assertIn(f"--- {gcf._DIFF_COMMITTED_LABEL}", err)
+            self.assertIn(f"+++ {gcf._DIFF_GENERATED_LABEL}", err)
+            self.assertIn("-operatorRendered: {}", err)
+        finally:
+            path.unlink(missing_ok=True)
+
+
+class CompletenessGuardTest(unittest.TestCase):
+    """The guard that makes an addition to the golden as loud as a rename.
+
+    Finding things by name means the generator cannot see what it was never told about:
+    before this guard, a workload the operator started rendering was simply absent from
+    footprint.yaml and `make chart-check` reported no drift, because nothing looked for
+    it. The quota preflight then passed the install it exists to stop.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.baseline = gcf.extract_footprint()
+
+    def test_the_committed_golden_passes(self):
+        """Every pod-bearing workload the operator renders today is summed or ignored."""
+        self.assertIn("operatorRendered", self.baseline)
+
+    def test_a_new_workload_is_rejected(self):
+        with _golden_with(_add_unmodelled_deployment):
+            with self.assertRaises(ValueError) as caught:
+                gcf.extract_footprint()
+        message = str(caught.exception)
+        self.assertIn(_UNMODELLED_WORKLOAD_KEY, message)
+        self.assertIn("contributes nothing", message)
+
+    def test_a_new_container_in_a_summed_workload_is_rejected(self):
+        with _golden_with(_add_gateway_container):
+            with self.assertRaises(ValueError) as caught:
+                gcf.extract_footprint()
+        message = str(caught.exception)
+        self.assertIn(_ADDED_GATEWAY_CONTAINER, message)
+        self.assertIn(gcf._GATEWAY_WORKLOAD_KEY, message)
+
+    def test_a_new_native_sidecar_is_rejected(self):
+        """A sidecar counts toward the pod's request, so an unsummed one undercounts it."""
+        with _golden_with(_add_gateway_sidecar):
+            with self.assertRaises(ValueError) as caught:
+                gcf.extract_footprint()
+        self.assertIn(_ADDED_GATEWAY_SIDECAR, str(caught.exception))
+
+    def test_the_message_says_what_was_found_and_what_to_do(self):
+        with _golden_with(_add_gateway_container):
+            with self.assertRaises(ValueError) as caught:
+                gcf.extract_footprint()
+        message = str(caught.exception)
+        # The size, so a reader can judge whether it belongs in the totals.
+        self.assertIn("requests 250m cpu, 256Mi memory", message)
+        self.assertIn("_IGNORED_CONTAINERS", message)
+        self.assertIn("make chart-sync", message)
+
+    def test_an_ignored_workload_is_accepted_and_changes_no_total(self):
+        with _golden_with(_add_unmodelled_deployment):
+            with unittest.mock.patch.dict(
+                gcf._IGNORED_WORKLOADS, {_UNMODELLED_WORKLOAD_KEY: "a test's reason"}
+            ):
+                data = gcf.extract_footprint()
+        self.assertEqual(data, self.baseline)
+
+    def test_an_ignored_container_is_accepted_and_changes_no_total(self):
+        key = gcf._container_key(gcf._GATEWAY_WORKLOAD_KEY, _ADDED_GATEWAY_CONTAINER)
+        with _golden_with(_add_gateway_container):
+            with unittest.mock.patch.dict(gcf._IGNORED_CONTAINERS, {key: "a test's reason"}):
+                data = gcf.extract_footprint()
+        self.assertEqual(data, self.baseline)
+
+    def test_every_ignore_entry_carries_a_reason(self):
+        """An ignore list without reasons is a list nobody can review."""
+        for key, reason in {**gcf._IGNORED_WORKLOADS, **gcf._IGNORED_CONTAINERS}.items():
+            self.assertTrue(reason.strip(), f"{key} is ignored without a reason")
+
+    def test_an_ignored_init_container_promoted_to_a_sidecar_is_rejected(self):
+        """The entry's reason is that it is an init container; Always ends that."""
+        with _golden_with(_promote_ignored_init_container):
+            with self.assertRaises(ValueError) as caught:
+                gcf.extract_footprint()
+        message = str(caught.exception)
+        self.assertIn(gcf._SANDBOX_SSH_KEY_CONTAINER, message)
+        self.assertIn("restarts Always", message)
+
+    def test_the_ignored_containers_are_the_goldens_ordinary_init_containers(self):
+        """The list covers exactly today's non-sidecar init containers, nothing stale."""
+        docs = [doc for doc in yaml.safe_load_all(gcf._GOLDEN_MANIFEST.read_text()) if doc]
+        gateway = _gateway_pod_spec(docs)
+        ordinary_init = {
+            container["name"]
+            for container in gateway.get("initContainers", [])
+            if container.get("restartPolicy") != "Always"
+        }
+        self.assertEqual(
+            set(gcf._IGNORED_CONTAINERS),
+            {
+                gcf._container_key(gcf._GATEWAY_WORKLOAD_KEY, name)
+                for name in ordinary_init
+            },
+        )
+
+    def test_the_guard_reads_every_pod_bearing_kind(self):
+        """A Job or DaemonSet the operator starts rendering has to fail the guard too."""
+        for kind in ("Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob", "Pod"):
+            self.assertIn(kind, gcf._POD_BEARING_KINDS)
+
+    def test_a_workload_with_no_containers_at_all_is_reported(self):
+        """An empty pod spec sums to nothing, which must not read as "fully accounted"."""
+        with self.assertRaises(ValueError) as caught:
+            gcf._check_completeness({"DaemonSet/node-thing": {}}, set())
+        self.assertIn("DaemonSet/node-thing", str(caught.exception))
 
 
 if __name__ == "__main__":

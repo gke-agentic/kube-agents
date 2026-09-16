@@ -157,7 +157,9 @@ if $check; then
   if [[ $footprint_rc -eq 1 ]]; then
     echo "ERROR: $FOOTPRINT_DST has drifted from $FOOTPRINT_SRC (see the diff above)." >&2
     echo "       $FOOTPRINT_SRC is a golden, so re-bless it before syncing:" >&2
-    echo "       (cd k8s-operator && go test ./internal/controller/... -update), then 'make chart-sync'." >&2
+    echo "       (cd k8s-operator && go test ./internal/testing/... -update), then 'make chart-sync'." >&2
+    echo "       That package, not ./internal/controller/..., writes this golden; the latter has an" >&2
+    echo "       unrelated -update flag of its own that exits 0 and leaves this golden stale." >&2
     exit 1
   elif [[ $footprint_rc -ne 0 ]]; then
     exit "$footprint_rc"

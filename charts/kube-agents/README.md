@@ -513,9 +513,11 @@ Four knobs need context beyond the chart:
   `roles/iam.workloadIdentityUser` grant on the agent's GSA. Nothing creates
   them: the three `gcloud` commands are in
   [`designs/agent-shell-sandboxing.md`](../../docs/designs/agent-shell-sandboxing.md#setting-up-the-pool).
-  Set it with `harness.experimental.shellSandbox.enabled` — the chart fails the
-  render if you set one without the other, since federation only takes effect
-  when the credential proxy runs beside the sandbox.
+  Set `audience` and `serviceAccountEmail` together — the chart fails the
+  render on one without the other, because the operator reads a half-filled
+  block as absent and leaves the credential proxy on the metadata server
+  without saying so. Federation takes effect wherever that proxy runs beside
+  the sandbox, which is every install: `shellSandbox.enabled: false` is refused.
 - `harness.hermes.dashboardEnabled` defaults to `null`, which leaves the field
   out of the CR so the CRD default (`true`) applies. Set it explicitly when an
   install must pin the dashboard on or off rather than float with the CRD.
@@ -581,25 +583,48 @@ objects before anything is applied, and fails the render with a diagnosis and a
 ready-to-run `kubectl patch` rather than letting the install stall later on pod
 creation. `--set quotaPreflight.enabled=false` skips it.
 
-What it sums: the chart's own workloads from `values.yaml` — operator, LiteLLM,
-Hindsight, the GitHub minter, each multiplied by its replica count — plus the pods
-the operator renders, whose sizes come from `files/footprint.yaml` because the chart
-cannot render them itself. The agent pod is multiplied by
-`platformAgent.deployment.availability.replicas`; the shell sandbox, the credential
-proxy and the PersistentVolumeClaims are not, because they do not scale with it.
+What it sums: the chart's own workloads from `values.yaml` — the operator, LiteLLM and
+the GitHub minter, each multiplied by its `replicaCount`, and Hindsight's two pods, which
+have no replica count to multiply — plus the pods the operator renders, whose sizes come
+from `files/footprint.yaml` because the chart cannot render them itself. The agent pod is
+multiplied by `platformAgent.deployment.availability.replicas`; the shell sandbox, the
+credential proxy and the PersistentVolumeClaims are not, because they do not scale with
+it. A replica count of `0` costs nothing, and a `resources` key you have pruned
+(`--set litellm.resources.limits=null`) counts as zero rather than failing the render.
+The one value it will not guess is `hindsight.postgresql.storage`: the schema permits
+`null`, a claim sized from it would be counted as zero, so an empty one fails the check
+by name.
 
 How it decides. For each quota it compares `hard` against what the release needs, on
-install and upgrade alike; on install it also compares `hard - used`, which it skips
-on upgrade because the release's own pods are already counted in `used`. It reads
+install and upgrade alike; on install it also compares `hard - used`. It reads
 CPU, memory and ephemeral-storage (requests and limits), `pods`,
 `persistentvolumeclaims` and `requests.storage`; other keys, including `services`,
 `secrets` and other `count/<resource>` entries, are not modelled and are skipped
 rather than guessed at. **Scoped quotas are skipped entirely** — a quota with
 `scopes` or a `scopeSelector` applies to a subset of pods the template cannot
 identify, so comparing the whole release against it would be wrong either way.
-The patch it prints raises `hard` to `used + required` plus one rollout surge Pod,
-because a quota raised to exactly what the release needs fits it at rest and then
-stalls its first rolling update.
+Every quota that falls short is reported in one failure, so a namespace with two of them
+takes one patch rather than two rounds.
+
+Two carve-outs in that comparison, both to stop it refusing an install that would have
+worked:
+
+- **`hard - used` is not applied on upgrade**, because the release's own pods are already
+  counted in `used` and subtracting them again refuses every upgrade of a release that
+  exactly fits. The cost is that a neighbouring workload's usage is in `used` too and
+  cannot be told apart from the release's own, so in a shared namespace an upgrade is
+  checked against `hard` alone.
+- **`hard - used` is not applied to claims** — `persistentvolumeclaims` and
+  `requests.storage` — on install either. The shell sandbox's StatefulSet sets
+  `persistentVolumeClaimRetentionPolicy` to `Retain`, so its claims outlive
+  `helm uninstall` and show up in `used` on the next install, to be reused by name rather
+  than created again. `hard` still has to fit the release, which is what catches a quota
+  genuinely too small for it.
+
+The patch it prints raises `hard` to what the release needs plus one rollout surge Pod —
+adding `used` on install, where `used` is somebody else's, and not on upgrade, where it is
+largely the release's own. Claim counts and `requests.storage` get no surge allowance,
+because a surge Pod mounts the existing claim rather than creating one.
 
 **Where it is silent, and where it is not.** The check needs a cluster to query, so it
 does nothing under `helm template` and nothing in a namespace with no ResourceQuota — a
@@ -732,7 +757,10 @@ helm uninstall kube-agents -n kubeagents-system
   (`k8s-operator/internal/testing/testdata/platform/expected/platformagent.yaml`),
   not from `k8s-operator/config/` and not from a live render. Changing the operator's
   resources therefore takes two steps in order — re-bless the goldens
-  (`cd k8s-operator && go test ./internal/controller/... -update`), then `make chart-sync`.
-  Running `chart-sync` first regenerates the old numbers from the stale golden.
+  (`cd k8s-operator && go test ./internal/testing/... -update`), then `make chart-sync`.
+  Running `chart-sync` first regenerates the old numbers from the stale golden. The
+  package matters: the goldens are written by `internal/testing/golden_test.go`, and
+  `./internal/controller/...` has an unrelated `-update` flag of its own, so pointing the
+  command there exits 0 without touching them.
 
 See [docs/site/src/content/docs/deploy/release-versioning.md](../../docs/site/src/content/docs/deploy/release-versioning.md) for versioning rules.

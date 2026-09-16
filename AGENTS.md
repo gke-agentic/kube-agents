@@ -319,8 +319,8 @@ Agents with a user in the loop follow this file.
   install step — a kubectl-applied manifest a chart template already renders, a gcloud
   call the composition already makes. Operator-owned YAML mirrored or derived into
   the chart (`config/crd`, `config/rbac`, the admission policy, the generated
-  `files/footprint.yaml`) is held in step by `make chart-check`; the kustomize
-  integration manifests for the dev path each carry a comment saying so.
+  `files/footprint.yaml`, and the webhook template it compares) is held in step by
+  `make chart-check`; the dev path's kustomize manifests are the other copy.
 - **Expect an automated review after opening a PR.** Opening the pull request starts
   `kube-agents-bot`; see
   [Automated Review After Opening a Pull Request](#automated-review-after-opening-a-pull-request)
