@@ -318,14 +318,24 @@ main() {
       print_error "'${PARAM_SOURCE_REF}' carries no uninstall.sh; tear the install down with that release's documented procedure."
       exit 1
     fi
-    # LEGACY FLAG SPELLINGS, deliberately. These are not this script's flags --
-    # they are the pinned release's, and --source-ref exists for installs made
-    # by releases that predate this engine, every one of which parses
-    # --project-id/--cluster-name/--region and none of which parses the
-    # domain-scoped names. Renaming them here would make the hand-over fail
-    # with "Unknown parameter" against exactly the old releases the flag is for.
-    # --agent-namespace is not passed at all, for the same reason: no release
-    # that this flag targets has it.
+    # FLAG DIALECT, chosen from the script we are about to exec rather than
+    # assumed. --source-ref reaches in both directions: releases cut before the
+    # domain-scoped rename parse --project-id/--cluster-name/--region and reject
+    # the new spellings, and releases cut from this commit on do the exact
+    # opposite. Hard-coding either one makes the hand-over fail with "Unknown
+    # parameter" against half the refs the flag exists for, and that failure
+    # exits 2 -- not the 3 an automated caller reads as "nothing to tear down".
+    #
+    # Grepping the cloned script is the only signal available here: the ref is a
+    # tag or a SHA, so there is no version to compare against.
+    local flag_project_id="--project-id"
+    local flag_cluster_name="--cluster-name"
+    local flag_region="--region"
+    if grep -q -- '--gcp-project-id' "${repo_dir}/uninstall.sh"; then
+      flag_project_id="--gcp-project-id"
+      flag_cluster_name="--gke-cluster-name"
+      flag_region="--gcp-region"
+    fi
     local dispatch_args=()
     if [ "$PARAM_NON_INTERACTIVE" = "true" ]; then
       dispatch_args+=(--non-interactive)
@@ -334,13 +344,18 @@ main() {
       dispatch_args+=(--dry-run)
     fi
     if [ -n "$PARAM_PROJECT_ID" ]; then
-      dispatch_args+=(--project-id="$PARAM_PROJECT_ID")
+      dispatch_args+=("${flag_project_id}=$PARAM_PROJECT_ID")
     fi
     if [ -n "$PARAM_CLUSTER_NAME" ]; then
-      dispatch_args+=(--cluster-name="$PARAM_CLUSTER_NAME")
+      dispatch_args+=("${flag_cluster_name}=$PARAM_CLUSTER_NAME")
     fi
     if [ -n "$PARAM_REGION" ]; then
-      dispatch_args+=(--region="$PARAM_REGION")
+      dispatch_args+=("${flag_region}=$PARAM_REGION")
+    fi
+    # Only to a release that parses it. Older ones do not, and passing it there
+    # is the same "Unknown parameter" exit the dialect choice above avoids.
+    if [ -n "$PARAM_AGENT_NAMESPACE" ] && grep -q -- '--agent-namespace' "${repo_dir}/uninstall.sh"; then
+      dispatch_args+=(--agent-namespace="$PARAM_AGENT_NAMESPACE")
     fi
     print_info "Handing over to the '${PARAM_SOURCE_REF}' release's own uninstall.sh..."
     TEMP_REPO_DIR=""

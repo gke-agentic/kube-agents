@@ -3255,8 +3255,8 @@ class ChatBooleansAreReadThroughIsTruthyTest(unittest.TestCase):
     literal. `GOOGLE_CHAT_ENABLED=True` therefore dropped `chat_choice` to 4 and
     planned the Pub/Sub topic away on the next `-y` run, while `upgrade.sh` read
     the same file as enabled — two front doors disagreeing about one file. The
-    sibling booleans fail loudly on their `^(true|false)$` validators instead;
-    only these two were silent.
+    `^(true|false)$` validators run in `parse_args`, on what a caller typed on
+    the command line, so a spelling seeded from `install.env` never reaches one.
     """
 
     def _chat_choice(self, contents):
@@ -4433,7 +4433,7 @@ class SlackRequiresTokensNonInteractivelyTest(unittest.TestCase):
         guard = text[text.find("Slack asked for, with nobody to ask") :]
         self.assertIn('[ "$PARAM_NON_INTERACTIVE" = "true" ] || ! has_controlling_tty', guard[:1200])
 
-    def test_the_guard_precedes_the_tfvars_write(self):
+    def test_the_fail_fast_guard_precedes_the_tfvars_write(self):
         """A refusal after the apply would be a refusal of nothing.
 
         Matched against the call site rather than the name: install.sh mentions
@@ -4446,6 +4446,32 @@ class SlackRequiresTokensNonInteractivelyTest(unittest.TestCase):
         write_at = text.find('write_tfvars_from_state "$tfvars_file"')
         self.assertNotEqual(write_at, -1)
         self.assertLess(guard_at, write_at)
+
+    def test_the_fail_fast_guard_defers_when_the_tokens_live_in_the_secret(self):
+        """PERSIST_SECRETS_ON_DISK=false keeps the tokens out of install.env.
+
+        Their home is the live Secret, and write_tfvars_from_state recovers
+        them from it. Failing before that recovery refuses exactly the
+        unattended re-run the setting exists to support, so the fail-fast copy
+        is conditioned on the tokens having been expected on disk.
+        """
+        text = _INSTALL_SH.read_text()
+        guard = text[text.find("Slack asked for, with nobody to ask") :][:1600]
+        self.assertIn(
+            'is_truthy "${PERSIST_SECRETS_ON_DISK:-$DEFAULT_PERSIST_SECRETS_ON_DISK}"',
+            guard,
+        )
+
+    def test_the_deferred_check_runs_after_the_recovery_and_before_the_apply(self):
+        """The other half of the guard, for the configuration that defers."""
+        text = _INSTALL_SH.read_text()
+        write_at = text.find('write_tfvars_from_state "$tfvars_file"')
+        deferred_at = text.find("\n  require_slack_tokens_after_recovery")
+        apply_at = text.find("run_lifecycle_apply \"$repo_dir\" \"$provisioning_log\"")
+        self.assertNotEqual(deferred_at, -1, "the deferred Slack check is missing")
+        self.assertNotEqual(apply_at, -1)
+        self.assertLess(write_at, deferred_at)
+        self.assertLess(deferred_at, apply_at)
 
 
 class ToggleValuesAreValidatedTest(unittest.TestCase):
@@ -4498,12 +4524,66 @@ class ToggleValuesAreValidatedTest(unittest.TestCase):
         "--enable-stockout-investigator",
     ]
 
-    def test_every_unchecked_toggle_is_wired_to_the_validator(self):
-        """A validator main() never calls for a flag is a validator that is not there."""
-        text = _INSTALL_SH.read_text()
+    def _parse_args(self, *args, **env_overrides):
+        """Run parse_args with these arguments, under these environment keys."""
+        quoted = " ".join(shlex.quote(a) for a in args)
+        script = (
+            f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n'
+            f"parse_args {quoted}\n"
+            'echo "PASSED"\n'
+        )
+        env = get_isolated_test_env()
+        env.update(env_overrides)
+        return subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(_REPO_ROOT),
+        )
+
+    def test_every_toggle_rejects_a_typo_at_parse_time(self):
+        """A toggle nothing checks is a toggle that fails silently.
+
+        The check lives in parse_args rather than main() because that is the
+        last point the value is known to have come from the command line.
+        """
         for flag in self.UNCHECKED_TOGGLES:
             with self.subTest(flag=flag):
-                self.assertIn(f'validate_optional_bool_param "{flag}"', text)
+                proc = self._parse_args(f"{flag}=ture")
+                self.assertNotIn("PASSED", proc.stdout)
+                self.assertIn(
+                    f"{flag} must be either true or false",
+                    proc.stdout + proc.stderr,
+                )
+
+    # The environment key each toggle is seeded from, before parse_args runs.
+    SEEDED_TOGGLE_ENV_KEYS = {
+        "--enable-google-chat": "GOOGLE_CHAT_ENABLED",
+        "--enable-slack": "SLACK_ENABLED",
+        "--enable-gke-backup-plan": "ENABLE_GKE_BACKUP_PLAN",
+        "--enable-pubsub-platform": "ENABLE_PUBSUB_PLATFORM",
+        "--enable-stockout-investigator": "ENABLE_STOCKOUT_INVESTIGATOR",
+    }
+
+    def test_a_spelling_seeded_from_install_env_is_never_judged(self):
+        """`install.env` is hand-written, and is_truthy takes True/yes/y/1/on.
+
+        Every PARAM_* these flags write is also seeded from the loaded
+        configuration before parse_args runs. Judging the seeded value with
+        ^(true|false)$ would abort a re-run over a spelling the rest of the
+        pipeline honours, naming a flag the operator never passed — and CI
+        exports three of these keys from GitHub vars.
+        """
+        for flag, key in self.SEEDED_TOGGLE_ENV_KEYS.items():
+            for value in ("True", "yes", "on", "1"):
+                with self.subTest(flag=flag, value=value):
+                    proc = self._parse_args(**{key: value})
+                    self.assertIn(
+                        "PASSED",
+                        proc.stdout,
+                        f"{key}={value} was rejected: {proc.stdout + proc.stderr}",
+                    )
 
 
 if __name__ == "__main__":

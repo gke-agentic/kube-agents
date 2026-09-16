@@ -7,7 +7,7 @@
 #
 # Usage (AI Agents & Non-Interactive Automation):
 #   curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSION>/install.sh | bash -s -- \
-#     --non-interactive --project-id="my-gcp-project" --cluster-name="platform-agent-host"
+#     --non-interactive --gcp-project-id="my-gcp-project" --gke-cluster-name="platform-agent-host"
 #
 # Designed for Google Cloud Shell, Linux, macOS, and AI Agent harnesses.
 # ==============================================================================
@@ -616,10 +616,16 @@ flag_bool_value() {
 }
 
 # Rejects a toggle whose value is neither true nor false, naming the flag that
-# carried it. Empty passes: it is how a toggle nobody set reaches the
-# ${VAR:-$DEFAULT} reads in main(), and rejecting it here would make every
-# install that omits the flag fail. Lives beside flag_bool_value for the same
-# reason that one is not in scripts/installer/installer_common.sh.
+# carried it. Called from parse_args, on what the caller actually typed, and
+# never on a PARAM_* that install.env or the environment seeded: those are read
+# through is_truthy, which takes True/yes/y/1/on, and the documentation tells
+# operators to hand-write that file. Judging a seeded value here would abort a
+# re-run over a spelling the rest of the pipeline accepts, naming a flag the
+# operator never passed.
+#
+# Empty passes: `--enable-slack=` reaches the ${VAR:-$DEFAULT} reads in main()
+# as "nobody chose". Lives beside flag_bool_value for the same reason that one
+# is not in scripts/installer/installer_common.sh.
 validate_optional_bool_param() {
   local flag="$1" value="${2:-}"
   if [ -n "$value" ] && [[ ! "$value" =~ ^(true|false)$ ]]; then
@@ -655,16 +661,26 @@ parse_args() {
       --enable-gvisor|--enable-gvisor=*) PARAM_ENABLE_GVISOR="$(flag_bool_value "$1")"; shift ;;
       --enable-hermes-dashboard|--enable-hermes-dashboard=*) PARAM_ENABLE_WEBUI="$(flag_bool_value "$1")"; shift ;;
       --user-profile-enabled=*) PARAM_USER_PROFILE_ENABLED="${1#*=}"; shift ;;
-      --enable-gke-backup-plan|--enable-gke-backup-plan=*) PARAM_ENABLE_GKE_BACKUP_PLAN="$(flag_bool_value "$1")"; shift ;;
-      --enable-pubsub-platform|--enable-pubsub|--enable-pubsub-platform=*|--enable-pubsub=*) PARAM_ENABLE_PUBSUB_PLATFORM="$(flag_bool_value "$1")"; shift ;;
-      --enable-stockout-investigator|--enable-stockout|--enable-stockout-investigator=*|--enable-stockout=*) PARAM_ENABLE_STOCKOUT_INVESTIGATOR="$(flag_bool_value "$1")"; shift ;;
+      --enable-gke-backup-plan|--enable-gke-backup-plan=*)
+        PARAM_ENABLE_GKE_BACKUP_PLAN="$(flag_bool_value "$1")"
+        validate_optional_bool_param "${1%%=*}" "$PARAM_ENABLE_GKE_BACKUP_PLAN"; shift ;;
+      --enable-pubsub-platform|--enable-pubsub|--enable-pubsub-platform=*|--enable-pubsub=*)
+        PARAM_ENABLE_PUBSUB_PLATFORM="$(flag_bool_value "$1")"
+        validate_optional_bool_param "${1%%=*}" "$PARAM_ENABLE_PUBSUB_PLATFORM"; shift ;;
+      --enable-stockout-investigator|--enable-stockout|--enable-stockout-investigator=*|--enable-stockout=*)
+        PARAM_ENABLE_STOCKOUT_INVESTIGATOR="$(flag_bool_value "$1")"
+        validate_optional_bool_param "${1%%=*}" "$PARAM_ENABLE_STOCKOUT_INVESTIGATOR"; shift ;;
       --memory=*) PARAM_MEMORY="${1#*=}"; shift ;;
       --image-tag=*) PARAM_IMAGE_TAG="${1#*=}"; shift ;;
       --registry-prefix=*) PARAM_REGISTRY_PREFIX="${1#*=}"; shift ;;
       --third-party-registry-prefix=*) PARAM_THIRD_PARTY_REGISTRY_PREFIX="${1#*=}"; shift ;;
       --allow-unverified-source|--allow-dirty) PARAM_ALLOW_UNVERIFIED_SOURCE="true"; shift ;;
-      --enable-google-chat|--google-chat|--enable-google-chat=*|--google-chat=*) PARAM_ENABLE_GOOGLE_CHAT="$(flag_bool_value "$1")"; shift ;;
-      --enable-slack|--enable-slack=*) PARAM_ENABLE_SLACK="$(flag_bool_value "$1")"; shift ;;
+      --enable-google-chat|--google-chat|--enable-google-chat=*|--google-chat=*)
+        PARAM_ENABLE_GOOGLE_CHAT="$(flag_bool_value "$1")"
+        validate_optional_bool_param "${1%%=*}" "$PARAM_ENABLE_GOOGLE_CHAT"; shift ;;
+      --enable-slack|--enable-slack=*)
+        PARAM_ENABLE_SLACK="$(flag_bool_value "$1")"
+        validate_optional_bool_param "${1%%=*}" "$PARAM_ENABLE_SLACK"; shift ;;
       --google-chat-allowed-users=*) PARAM_ALLOWED_USERS="${1#*=}"; shift ;;
       --slack-bot-token=*) PARAM_SLACK_BOT_TOKEN="${1#*=}"; shift ;;
       --slack-app-token=*) PARAM_SLACK_APP_TOKEN="${1#*=}"; shift ;;
@@ -822,7 +838,7 @@ require_creatable_cluster_mode() {
     exit 1
   fi
   if [ "$mode" = "autopilot" ] && ! location_is_region "$location"; then
-    print_error "GKE Autopilot clusters are regional: --region must be a region such as us-central1, not '${location}'."
+    print_error "GKE Autopilot clusters are regional: --gcp-region must be a region such as us-central1, not '${location}'."
     print_info "For a zonal cluster, pass --gke-cluster-mode=standard."
     exit 1
   fi
@@ -3172,6 +3188,32 @@ run_menu_system() {
 }
 
 # ─── Main Installer Procedure ──────────────────────────────────────────────────
+# The deferred half of the Slack token guard in main(). The fail-fast copy up
+# there covers the run whose tokens should have been in install.env; this one
+# covers PERSIST_SECRETS_ON_DISK=false, where their home is the live Secret and
+# write_tfvars_from_state is what fetches them. Called immediately after that
+# generator, on the exported SLACK_* it leaves behind, so a re-run that recovers
+# both tokens proceeds and one that recovers neither still stops before the
+# apply rather than reaching a CrashLooping relay.
+#
+# Interactive runs are exempt for the same reason the fail-fast copy exempts
+# them: the interview already prompted, and anything still missing was refused
+# by hand.
+require_slack_tokens_after_recovery() {
+  is_truthy "${SLACK_ENABLED:-}" || return 0
+  if [ "$PARAM_NON_INTERACTIVE" != "true" ] && has_controlling_tty; then
+    return 0
+  fi
+  local slack_missing=""
+  [ -n "${SLACK_BOT_TOKEN:-}" ] || slack_missing="${slack_missing} --slack-bot-token (SLACK_BOT_TOKEN)"
+  [ -n "${SLACK_APP_TOKEN:-}" ] || slack_missing="${slack_missing} --slack-app-token (SLACK_APP_TOKEN)"
+  if [ -n "$slack_missing" ]; then
+    print_error "--enable-slack needs a bot token and an app token, and this run has nobody to ask. Missing:${slack_missing}."
+    print_info "They are not in ${INSTALL_ENV_FILE} (PERSIST_SECRETS_ON_DISK=false keeps them out) and the live '${PLATFORM_AGENT_SECRET}' Secret does not carry them either. Pass them as flags, or drop --enable-slack."
+    exit 1
+  fi
+}
+
 main() {
   parse_args "$@"
   # The namespace the run installs into, once parse_args has had its say.
@@ -3277,7 +3319,7 @@ main() {
   fi
 
   if [ -z "$project_id" ]; then
-    print_error "No GCP project selected. Re-run with --project-id=<project-id>."
+    print_error "No GCP project selected. Re-run with --gcp-project-id=<project-id>."
     exit 1
   fi
 
@@ -3426,7 +3468,7 @@ main() {
   # resolve_creatable_cluster_mode applies it. Explaining the demotion is the
   # caller's job so the resolver can echo the mode and nothing else.
   #
-  # This matters most on the --cluster-name path, where ask_cluster_shape is
+  # This matters most on the --gke-cluster-name path, where ask_cluster_shape is
   # false and the check below therefore never runs: a named cluster that does
   # not exist yet would otherwise be written as autopilot at a zone and
   # rejected by the module's precondition at terraform validate, after the
@@ -3435,14 +3477,14 @@ main() {
   cluster_mode="$(resolve_creatable_cluster_mode "$cluster_mode" "$region")"
   # ask_cluster_shape gates the message for the same reason it gates the check
   # below: on both adoption paths no cluster is created by this run, so the
-  # advice to "pass --region with a region" would point at a location the
-  # target cluster does not live at. On --cluster-name that is not merely
+  # advice to "pass --gcp-region with a region" would point at a location the
+  # target cluster does not live at. On --gke-cluster-name that is not merely
   # noise — write_tfvars_from_state probes with --location "$REGION", so
   # re-running with the suggested region misses the live cluster, takes the
   # confirmed-NOT_FOUND branch, and creates a second one under -auto-approve.
   if [ "$ask_cluster_shape" = "true" ] && [ -z "$cluster_mode_requested" ] &&
     [ "$cluster_mode" != "$DEFAULT_CLUSTER_MODE" ]; then
-    print_info "Location '${region}' is a zone and Autopilot clusters are regional, so a cluster created by this run will be Standard. Pass --region with a region to get the default Autopilot shape."
+    print_info "Location '${region}' is a zone and Autopilot clusters are regional, so a cluster created by this run will be Standard. Pass --gcp-region with a region to get the default Autopilot shape."
   fi
 
   # Only where a cluster is about to be created. Adopting a discovered cluster
@@ -3475,9 +3517,10 @@ main() {
   # install.env is a file the documentation now tells operators to hand-write.
   # A string compare against the lowercase literal would read
   # `GOOGLE_CHAT_ENABLED=True` as off, drop chat_choice to 4 and plan the
-  # Pub/Sub topic away, while upgrade.sh read the same file as enabled. The
-  # sibling booleans fail loudly on their ^(true|false)$ validators instead;
-  # only these two are silent.
+  # Pub/Sub topic away, while upgrade.sh read the same file as enabled. Every
+  # --enable-* toggle is read this way; the ^(true|false)$ validators run in
+  # parse_args, on what a caller typed on the command line, so a hand-written
+  # spelling in install.env never reaches one.
   local chat_choice=""
   if is_truthy "$PARAM_ENABLE_GOOGLE_CHAT" && is_truthy "${PARAM_ENABLE_SLACK:-$DEFAULT_SLACK_ENABLED}"; then
     chat_choice="3"
@@ -3532,7 +3575,15 @@ main() {
   # long after the apply -- so refuse here, naming both flags, rather than
   # provisioning an install that cannot work. Interactive runs fall through to
   # the interview below, which prompts for them.
+  #
+  # Only when the tokens were supposed to be on disk. PERSIST_SECRETS_ON_DISK=false
+  # keeps them out of install.env deliberately -- their home is the live Secret,
+  # and write_tfvars_from_state recovers them from it further down. Failing here
+  # would refuse every unattended re-run of exactly that configuration, so for it
+  # the check is deferred to require_slack_tokens_after_recovery, which runs once
+  # the recovery has had its turn.
   if is_truthy "${PARAM_ENABLE_SLACK:-$DEFAULT_SLACK_ENABLED}" \
+    && is_truthy "${PERSIST_SECRETS_ON_DISK:-$DEFAULT_PERSIST_SECRETS_ON_DISK}" \
     && { [ "$PARAM_NON_INTERACTIVE" = "true" ] || ! has_controlling_tty; }; then
     local slack_missing=""
     [ -n "$slack_bot_token" ] || slack_missing="${slack_missing} --slack-bot-token (SLACK_BOT_TOKEN)"
@@ -3883,17 +3934,14 @@ main() {
     print_error "--enable-hermes-dashboard must be either true or false."
     exit 1
   fi
-  # The remaining --enable-* toggles. flag_bool_value extracts what they carry
-  # without checking it, and every read below goes through is_truthy, where
-  # anything that is not "true" is false -- so `--enable-slack=ture` would
-  # provision an install with Slack off and say nothing. These are checked
-  # rather than defaulted because the two above cannot be the only loud ones:
-  # the value a caller typed is either a boolean or a mistake.
-  validate_optional_bool_param "--enable-google-chat" "${PARAM_ENABLE_GOOGLE_CHAT:-}"
-  validate_optional_bool_param "--enable-slack" "${PARAM_ENABLE_SLACK:-}"
-  validate_optional_bool_param "--enable-gke-backup-plan" "${PARAM_ENABLE_GKE_BACKUP_PLAN:-}"
-  validate_optional_bool_param "--enable-pubsub-platform" "${PARAM_ENABLE_PUBSUB_PLATFORM:-}"
-  validate_optional_bool_param "--enable-stockout-investigator" "${PARAM_ENABLE_STOCKOUT_INVESTIGATOR:-}"
+  # The remaining --enable-* toggles are checked in parse_args, not here.
+  # flag_bool_value extracts what they carry without checking it, and every
+  # read below goes through is_truthy, where anything that is not "true" is
+  # false -- so `--enable-slack=ture` would provision an install with Slack off
+  # and say nothing. Checking them at the point they are parsed is what keeps
+  # the check on the value a caller typed: by this line the same PARAM_* also
+  # holds whatever install.env seeded, where True/yes/on are spellings the
+  # documentation invites and is_truthy honours.
   validate_existing_cluster_opt_in_flags
   # An agent that forgets every conversation is the worse default, so memory is
   # on unless it is turned off. The choice decides two things: whether the
@@ -4186,6 +4234,10 @@ main() {
   # leave this unset so an unfindable key stays an error for them.
   KUBE_AGENTS_GENERATE_API_SERVER_KEY=true \
     write_tfvars_from_state "$tfvars_file" "$image_tag"
+  # After the generator, because its Secret-recovery loop is the thing that can
+  # still supply the tokens; before the apply, because a relay without them
+  # CrashLoops.
+  require_slack_tokens_after_recovery
   print_success "Terraform input saved to: $tfvars_file"
 
   # Before the summary, the confirmation and the dry-run exit alike: a
