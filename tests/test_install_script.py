@@ -970,7 +970,7 @@ out_dir=""; acquire_source_repo out_dir "{requested_ref}"; echo "RESOLVED=$out_d
             )
 
     def test_the_missing_pem_decision_runs_after_the_kms_helpers_are_sourced(self):
-        """The KMS-aware half of the PEM check must sit below source_provisioning_helpers.
+        """The KMS-aware half of the PEM check must be *called* below source_provisioning_helpers.
 
         derive_kms_location and kms_key_enabled_version live in
         installer_common.sh, and DEFAULT_KMS_KEYRING in install.defaults.env,
@@ -979,25 +979,22 @@ out_dir=""; acquire_source_repo out_dir "{requested_ref}"; echo "RESOLVED=$out_d
         unbound variable long before it can print anything useful, and it does
         so only on the runs that carry a PEM path -- which is why a green suite
         is not evidence here and this ordering is pinned instead.
+
+        The marker is the call, not the body: resolve_missing_pem_against_kms
+        is *defined* above main() like every other function in this file, so
+        matching on its internals would compare a definition against a sourcing
+        line and fail for the wrong reason. What the function does once called
+        is covered by MissingPemAgainstKmsTest.
         """
         body = _INSTALL_SH.read_text()
 
-        # Markers unique to the step 8 block. The bare "PEM file does not exist"
-        # wording is not: validate_non_interactive_minter_config carries it too,
-        # and that function is *defined* above main() while only being *called*
-        # from step 8, so matching on it would compare a definition against a
-        # call site and fail for the wrong reason.
         sourced_at = body.index('source_provisioning_helpers "$repo_dir"')
-        for marker in (
-            'pem_kms_loc="$(derive_kms_location "$region")"',
-            'pem_enabled_ver="$(kms_key_enabled_version',
-            "has no ENABLED version, so the import still needs that file.",
-        ):
-            self.assertLess(
-                sourced_at,
-                body.index(marker),
-                f"{marker!r} must come after installer_common.sh is sourced",
-            )
+        called_at = body.index('resolve_missing_pem_against_kms "$region" "$project_id"')
+        self.assertLess(
+            sourced_at,
+            called_at,
+            "resolve_missing_pem_against_kms must be called after installer_common.sh is sourced",
+        )
 
     def test_skipping_the_gitops_interview_keeps_the_minter_configuration(self):
         """"Skip for now" must not empty the four names that gate the minter.
@@ -2932,6 +2929,131 @@ class SummarizeExistingClusterMutationsTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("NetworkPolicy Enforcement: Skipped (could not query cluster network policy state)", proc.stdout)
 
+
+
+class MissingPemAgainstKmsTest(unittest.TestCase):
+    """resolve_missing_pem_against_kms, the step 8 decision on a .pem that is gone.
+
+    The installer's own docs tell the operator to delete the private key once
+    it is in Cloud KMS, and install.env keeps naming it, so a missing file has
+    to mean "already imported" whenever the signing key can prove it and
+    "nothing left to import with" when it cannot. Getting that backwards is
+    silent in both directions: the wrong answer either aborts every re-run of a
+    working install, or lets one proceed to an apply that will never have a key.
+
+    Exercised directly rather than through main(): step 8 sits behind cluster
+    creation, so nothing in this suite can reach it, and while this decision was
+    a block inside main() an inverted test left all 398 tests passing.
+    """
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self._tmp = pathlib.Path(tmp.name)
+        self._empty_install_env = self._tmp / "install.env"
+        self._empty_install_env.write_text("")
+        self._probe_log = self._tmp / "probe.log"
+
+    def _probe_args(self):
+        """What the stubbed KMS lookup was asked, or "" if it was never called."""
+        return self._probe_log.read_text() if self._probe_log.exists() else ""
+
+    def _resolve(self, pem_path, enabled_version, region="us-central1-a", overrides=""):
+        """Run the resolver over `pem_path` with the KMS probe stubbed.
+
+        The stub records its arguments in a file rather than on stderr: the
+        resolver wraps the lookup in `2>/dev/null` -- deliberately, so a re-run
+        against a key that is not there yet stays quiet -- and that would
+        swallow them. Recording them at all is what makes reading the wrong
+        keyring, or skipping the zonal-to-regional reduction, visible here
+        instead of only against a live project.
+        """
+        script = (
+            f'{_SOURCE_INSTALLER_COMMON}'
+            "kms_key_enabled_version() { "
+            f'echo "key=$1 ring=$2 loc=$3 proj=$4" > "{self._probe_log}"; '
+            f'echo "{enabled_version}"; '
+            "}; "
+            f'{overrides}'
+            f'PARAM_GITHUB_PEM_PATH="{pem_path}"; '
+            # install.sh runs under `set -Eeuo pipefail` with an ERR trap armed
+            # at source time, so the call has to sit in an OR list: a bare one
+            # that returns 1 aborts this harness with an abort banner before it
+            # can report what the resolver did to the path.
+            'rc=0; '
+            f'resolve_missing_pem_against_kms "{region}" "p1" || rc=$?; '
+            'echo "PEM=[$PARAM_GITHUB_PEM_PATH] RC=$rc"; '
+            "exit $rc"
+        )
+        setup = f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n{script}\n'
+        return subprocess.run(
+            ["bash", "-c", setup],
+            capture_output=True,
+            text=True,
+            env=get_isolated_test_env(overrides={"KUBE_AGENTS_INSTALL_ENV": str(self._empty_install_env)}),
+            cwd=str(_REPO_ROOT),
+            stdin=subprocess.DEVNULL,
+            timeout=60,
+        )
+
+    def test_a_pem_that_is_still_on_disk_is_left_alone_without_asking_kms(self):
+        """The common case must not spend a KMS round trip, nor rewrite the path."""
+        pem = self._tmp / "app.pem"
+        pem.write_text("key")
+        proc = self._resolve(str(pem), "3")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn(f"PEM=[{pem}] RC=0", proc.stdout)
+        self.assertEqual("", self._probe_args(), "an existing file must not be checked against KMS")
+        self.assertNotIn("ignoring missing local PEM path", proc.stdout)
+
+    def test_an_empty_pem_path_is_not_treated_as_a_missing_file(self):
+        """An install without the minter carries no path, and must not be failed for it."""
+        proc = self._resolve("", "")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("PEM=[] RC=0", proc.stdout)
+        self.assertEqual("", self._probe_args())
+
+    def test_a_missing_pem_is_ignored_when_the_signing_key_has_an_enabled_version(self):
+        """The re-run case: the key proves the import already happened.
+
+        The path is cleared rather than kept, because everything downstream in
+        step 8 copies it and would otherwise try to import a file that is gone.
+        The probe's arguments are asserted too: the keyring and key have to be
+        the minter's own, and a zonal --region has to arrive as a KMS location.
+        """
+        proc = self._resolve("/tmp/deleted-after-import-12345.pem", "3")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("PEM=[] RC=0", proc.stdout)
+        self.assertIn("already has an ENABLED version (3)", proc.stdout)
+        self.assertIn(
+            "key=github-token-minter-key ring=github-token-minter-keyring loc=us-central1 proj=p1",
+            self._probe_args(),
+        )
+
+    def test_a_missing_pem_is_fatal_when_the_signing_key_has_no_enabled_version(self):
+        """Nothing to import and nothing imported: say so instead of continuing.
+
+        The apply that follows enables the minter, whose Deployment cannot pass
+        readiness without a key, and the composition's helm release waits on it
+        -- so proceeding here buys a wedged install rather than a partial one.
+        """
+        proc = self._resolve("/tmp/never-existed-12345.pem", "")
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        combined = proc.stdout + proc.stderr
+        self.assertIn("GitHub App private key PEM file does not exist", combined)
+        self.assertIn("has no ENABLED version, so the import still needs that file", combined)
+        self.assertIn("PEM=[/tmp/never-existed-12345.pem] RC=1", proc.stdout)
+
+    def test_an_overridden_keyring_and_key_are_what_kms_is_asked_about(self):
+        """--kms-keyring/--kms-key must reach the probe, or the fallback checks the wrong key."""
+        proc = self._resolve(
+            "/tmp/deleted-after-import-12345.pem",
+            "7",
+            overrides='PARAM_KMS_KEYRING="custom-ring"; PARAM_KMS_KEY="custom-key"; ',
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("key=custom-key ring=custom-ring ", self._probe_args())
+        self.assertIn("Cloud KMS key custom-ring/custom-key already has an ENABLED version (7)", proc.stdout)
 
 
 class ImportGithubPemKmsKeyTest(unittest.TestCase):
