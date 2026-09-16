@@ -59,6 +59,11 @@ try:
 except ImportError:  # run as a script: python3 scripts/eval_dashboard/health.py
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
     import tiers
+try:
+    import eval_rosters
+except ImportError:  # run as a script: scripts/ is not on sys.path yet
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+    import eval_rosters
 
 HEALTH_SCHEMA_VERSION = 1
 
@@ -177,7 +182,9 @@ STORM_RUN_SIGNATURE_REPS = 5
 # SETUP_DEATH_WINDOW across SETUP_DEATH_MIN_PRS distinct pull requests. The
 # distinct-PR floor is a tuning from the replay: on 2026-09-01 08:00Z one
 # pull request (#1068) died seven times in an hour on its own merge
-# conflict, which is that branch's problem and not the gate's.
+# conflict, which is that branch's problem and not the gate's. A run the
+# collector recorded as a conflicted merge is excluded outright (#1608),
+# which is the same judgement without needing a second pull request.
 SETUP_DEATH_MAX_DURATION = timedelta(minutes=5)
 SETUP_DEATH_WINDOW = timedelta(hours=2)
 SETUP_DEATH_MIN = 3
@@ -268,12 +275,14 @@ SLOW_CLEAR_FACTOR = 1.1
 
 # --- Roster ------------------------------------------------------------------
 # The admitted roster is the source of truth for what can red a pull request
-# (AGENTS.md, "The behavioural presubmit gate"). Read from the checkout by
-# default; a replay over history passes --roster-history because the roster
-# moved four times in the week the fixture covers.
+# (AGENTS.md, "The behavioural presubmit gate"). Read from the checkout's
+# hack/eval/blocking-roster.txt by default; a replay over history passes
+# --roster-history because the roster moved four times in the week the
+# fixture covers. The roster lived in hack/ci-eval-pr.sh's BOOTSTRAP_ADMITTED
+# line until 2026-09-15 (#1546); Roster.from_script_text reads that shape, so
+# a `git show <old-commit>:hack/ci-eval-pr.sh` resolves an era before the move.
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-CI_EVAL_SCRIPT = REPO_ROOT / "hack" / "ci-eval-pr.sh"
-ROSTER_RE = re.compile(r'BOOTSTRAP_ADMITTED="\$\{BOOTSTRAP_ADMITTED:-([^}]*)\}"')
+BLOCKING_ROSTER_FILE = eval_rosters.BLOCKING_ROSTER_FILE
 
 # case-notes.yaml is the dashboard's per-case annotation file; its `issues`
 # list is where the tracking issue for a broken case already lives, so the
@@ -320,7 +329,7 @@ GZIP_SUFFIX = ".gz"
 TRIM_REASON_CHARS = 96
 # The optional "how the build ended" run fields (SCHEMA.md) the trimmer
 # carries when the source has them; absent stays absent.
-ENDED_FIELDS = ("has_build_log", "pod_phase", "pod_node", "pod_last_event")
+ENDED_FIELDS = ("has_build_log", "pod_phase", "pod_node", "pod_last_event", "merge_conflict")
 
 UTC = timezone.utc
 
@@ -408,7 +417,7 @@ class Task:
 
 
 class Run:
-    __slots__ = ("build_id", "duration", "finished", "has_build_log", "pod_last_event", "pod_node", "pr", "result", "started", "tasks")
+    __slots__ = ("build_id", "duration", "finished", "has_build_log", "merge_conflict", "pod_last_event", "pod_node", "pr", "result", "started", "tasks")
 
     def __init__(self, run: dict):
         self.build_id = str(run.get("build_id") or "")
@@ -427,6 +436,10 @@ class Run:
         self.has_build_log = run.get("has_build_log") if isinstance(run.get("has_build_log"), bool) else None
         self.pod_node = run.get("pod_node") if isinstance(run.get("pod_node"), str) else None
         self.pod_last_event = run.get("pod_last_event") if isinstance(run.get("pod_last_event"), str) else None
+        # True when clonerefs could not merge the pull request into its base.
+        # Unknown stays a setup death: a document written before the collector
+        # recorded the field must keep reading the way it did.
+        self.merge_conflict = run.get("merge_conflict") if isinstance(run.get("merge_conflict"), bool) else None
 
     @property
     def full(self) -> bool:
@@ -457,10 +470,14 @@ class Run:
 
     @property
     def setup_death(self) -> bool:
+        """Rule 3's unit. A conflicted merge leaves the same shape and is not
+        one: the fix is the author's rebase, so it is neither an outage nor a
+        reason to retest (#1608)."""
         return (
             not self.tasks
             and self.result == RUN_FAILURE
             and not self.lost_pod
+            and self.merge_conflict is not True
             and self.duration is not None
             and self.duration < SETUP_DEATH_MAX_DURATION
         )
@@ -514,11 +531,21 @@ class Roster:
         return cls(eras)
 
     @classmethod
-    def from_script(cls, path: pathlib.Path = CI_EVAL_SCRIPT) -> Roster:
-        match = ROSTER_RE.search(path.read_text())
-        if not match:
-            raise SystemExit(f"ERROR: no BOOTSTRAP_ADMITTED default found in {path}")
-        return cls.fixed(name for name in match.group(1).split(",") if name)
+    def from_file(cls, path: pathlib.Path = BLOCKING_ROSTER_FILE) -> Roster:
+        """The roster in hack/eval/blocking-roster.txt (one id per line)."""
+        admitted = eval_rosters.parse_blocking_roster(path.read_text())
+        if not admitted:
+            raise SystemExit(f"ERROR: no blocking roster found in {path}")
+        return cls.fixed(admitted)
+
+    @classmethod
+    def from_script_text(cls, text: str) -> Roster:
+        """The roster of a pre-2026-09-15 hack/ci-eval-pr.sh, for an era in
+        roster history: hand it `git show <commit>:hack/ci-eval-pr.sh`."""
+        try:
+            return cls.fixed(eval_rosters.parse_script_roster(text))
+        except ValueError as exc:
+            raise SystemExit(f"ERROR: {exc}") from exc
 
     def at(self, when: datetime | None) -> frozenset[str]:
         current: frozenset[str] = frozenset()
@@ -1253,7 +1280,8 @@ def trim(data: dict, start: datetime, end: datetime, source: str) -> dict:
 
     Runs that finished in [start, end); per run build_id, pr, started,
     finished, result, duration_s and tasks, plus how the build ended
-    (has_build_log and the pod_* trio) when the source recorded it; per task
+    (has_build_log, the pod_* trio, merge_conflict) when the source recorded
+    it; per task
     name, result and reps; per rep result and the first TRIM_REASON_CHARS of
     the reason (null for passing reps, as the collector writes them).
     """
@@ -1358,7 +1386,7 @@ def build_roster(args) -> Roster:
         return Roster.from_history(history)
     if args.admitted is not None:
         return Roster.fixed(name for name in args.admitted.split(",") if name)
-    return Roster.from_script(args.ci_eval_script)
+    return Roster.from_file(args.blocking_roster)
 
 
 def parse_args(argv):
@@ -1375,9 +1403,9 @@ def parse_args(argv):
     parser.add_argument("--fixture-status", type=pathlib.Path, help="optional fixtures.json to surface in metrics")
     parser.add_argument("--case-notes", type=pathlib.Path, default=DEFAULT_CASE_NOTES, help="case-notes.yaml for tracking issues")
     roster = parser.add_mutually_exclusive_group()
-    roster.add_argument("--admitted", help="comma-separated admitted roster (default: BOOTSTRAP_ADMITTED in hack/ci-eval-pr.sh)")
+    roster.add_argument("--admitted", help="comma-separated admitted roster (default: hack/eval/blocking-roster.txt)")
     roster.add_argument("--roster-history", help="JSON [{since, admitted[]}] of roster eras, for replay over history")
-    parser.add_argument("--ci-eval-script", type=pathlib.Path, default=CI_EVAL_SCRIPT, help=argparse.SUPPRESS)
+    parser.add_argument("--blocking-roster", "--ci-eval-script", dest="blocking_roster", type=pathlib.Path, default=BLOCKING_ROSTER_FILE, help=argparse.SUPPRESS)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--replay", action="store_true", help="walk the data as if the job had run every --step; print the timeline")
     mode.add_argument("--trim", action="store_true", help="write a fixture: the runs in [--from, --to) reduced to the fields read here")

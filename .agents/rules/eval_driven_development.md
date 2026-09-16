@@ -69,17 +69,40 @@ must pass on the deterministic checks; a judged score moving is not a pass. The 
 is the one that goes green: loosening the check in between is a new red, not a green. Keep the three
 run directories; the pull request cites them.
 
-**4. Register.** A new case is registered in `hack/ci-eval-pr.sh` in the same pull request, with
-`owner:` set and a `docs/designs/domains.yaml` slug (or a reviewed `KNOWN_NO_DOMAIN` entry).
-Which array is the Registration paragraph's call in
-[`docs/designs/bench-case-format.md`](../../docs/designs/bench-case-format.md): `NIGHTLY_TASKS`
-for a case you have seen red and green that is too slow for a presubmit seat or whose domain a
-probe already covers there; `TASKS` for a fast case in an uncovered domain; commented out in
-`TASKS` only for a case whose fixture is not ready yet. A case already registered stays where it is. Admission
-to the blocking roster is earned on the case's record afterwards
-([`docs/eval-gate-roster.md`](../../docs/eval-gate-roster.md),
+**4. Register.** A new case is registered in `hack/eval/nightly-cases.txt` in the same pull
+request, with `owner:` set and a `docs/designs/domains.yaml` slug (or a reviewed
+`KNOWN_NO_DOMAIN` entry). The nightly is where a new case lands
+([`docs/designs/bench-case-format.md`](../../docs/designs/bench-case-format.md),
+"Registration"): it runs every night from the night it merges and builds its record; a
+presubmit seat (`hack/eval/presubmit-cases.txt`, an `eval-crew` approval) is a later pull
+request that cites that record, never the one that makes the case pass. A case whose
+fixture does not exist at all is a `FIXTURE_NOT_READY` entry in
+`scripts/validate_bench_cases.py` with its issue instead. A case already registered stays
+where it is. Admission to the blocking roster (`hack/eval/blocking-roster.txt`) is earned on
+the case's record afterwards ([`docs/eval-gate-roster.md`](../../docs/eval-gate-roster.md),
 [`bench/baselines/README.md`](../../bench/baselines/README.md)); never add a new case to
-`BOOTSTRAP_ADMITTED` in the pull request that makes it pass.
+it in the pull request that makes it pass.
+
+## When the fix is not yours
+
+The loop above is for a change you are making. A gap you found but will not fix — another
+owner's SOP, a defect in a domain you do not work in — still lands as a case rather than as an
+issue, and the marker is how: write the case, run it red against `main` exactly as step 1 says (a
+case that fails for a broken fixture is broken, not red), then register it with
+`expected_fail: true` at the top level of its `task.yaml`. `bench-gate` inverts a marked case:
+failing is the declared outcome and is reported as `EXPECTED_FAIL`, never `FAILED`; collapse
+(rung 4) and the judged comparison (rung 6) skip it; and passing every repetition reds the job
+(rung 5) until the marker is flipped. The pull request that closes the gap therefore removes the
+marker in the same diff, and its **Live validation** is the loop above with the red already on
+record. Registration follows the same rule as any case, and a marked case is never added to
+the blocking roster. `make bench-case-check` rejects a marker that is not a bare YAML boolean:
+`expected_fail: "false"` is a string, and `bench-gate` would otherwise refuse it only after the
+cluster lease.
+
+Do not mark a case for your own change to flip. The red-to-green run inside one pull request is
+the record; a marked case waiting for a fix is a placeholder that reds the job the moment anyone's
+change happens to fix it, which is the right behaviour for a gap with an owner and noise for a gap
+you are about to close.
 
 ## What the pull request records
 

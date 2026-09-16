@@ -110,9 +110,8 @@ lists, rebase onto `upstream/main` and re-read those files before you write more
 have already read about them may no longer be true. Nothing listed, and being behind is a
 merge-conflict risk to settle later, not a reason to stop.
 
-This subsection is the canonical statement of the requirement; the site's
-[contributing guide](docs/site/src/content/docs/contributing.md) summarises it — change this
-first, then reconcile that to it.
+This subsection is the canonical statement of the requirement; [`CONTRIBUTING.md`](CONTRIBUTING.md)
+points here rather than restating it.
 
 ### Check whether someone is already doing it
 
@@ -277,10 +276,10 @@ Agents with a user in the loop follow this file.
   This bullet and [`.agents/rules/pre_pr_review.md`](.agents/rules/pre_pr_review.md) are together
   the canonical statement — the requirement here, the mechanics there (why the clean context has
   to be a real one, what to do when your harness will not spawn one, and the disposition every
-  finding owes). The site's [contributing guide](docs/site/src/content/docs/contributing.md) and
-  the comment in [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) summarise
-  the pair — change this bullet or `pre_pr_review.md`, whichever owns what you are changing, then
-  reconcile the summaries to it.
+  finding owes). The comment in
+  [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) summarises the pair —
+  change this bullet or `pre_pr_review.md`, whichever owns what you are changing, then reconcile
+  the summary to it.
 - **Docs-drift review before opening a PR:** run the `review-docs-drift` skill
   (`.agents/skills/review-docs-drift/SKILL.md`) against your branch diff and address its
   Blocking findings. This is a required pre-PR step for AI agents working in this repository;
@@ -297,11 +296,10 @@ Agents with a user in the loop follow this file.
   [`.agents/rules/pre_pr_review.md`](.agents/rules/pre_pr_review.md) are together the canonical
   statement — the requirement here, the mechanics there (what to name and observe, how to prove
   the mechanism rather than a coincidence, the screenshot and shared-install lease rules, and what
-  to write when the change cannot reach an installation at all). The site's
-  [contributing guide](docs/site/src/content/docs/contributing.md) and the comment in
-  [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) summarise the pair —
+  to write when the change cannot reach an installation at all). The comment in
+  [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) summarises the pair —
   change this bullet or `pre_pr_review.md`, whichever owns what you are changing, then reconcile
-  the summaries to it.
+  the summary to it.
 - **Keep these sections current, not chronological.** **Self-Review** and **Live validation** tell
   a reviewer at a glance what has been reviewed and exercised against the branch as it stands. A
   second pass — after review findings, after a rebase — folds into what is there rather than being

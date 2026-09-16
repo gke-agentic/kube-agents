@@ -241,16 +241,25 @@ class SharedBreak(unittest.TestCase):
         self.assertEqual(roster.at(T0 - timedelta(days=3)), frozenset())
         self.assertEqual(roster.current, frozenset())
 
-    def test_the_roster_is_read_from_the_ci_script_default_line(self):
+    def test_the_roster_is_read_from_the_roster_file_or_the_old_script(self):
         with tempfile.TemporaryDirectory() as tmp:
-            script = pathlib.Path(tmp) / "ci-eval-pr.sh"
-            script.write_text('#!/bin/bash\nexport BOOTSTRAP_ADMITTED="${BOOTSTRAP_ADMITTED:-a-probe,b-probe}"\n')
-            self.assertEqual(health.Roster.from_script(script).current, frozenset({"a-probe", "b-probe"}))
-            script.write_text("#!/bin/bash\n")
+            roster_file = pathlib.Path(tmp) / "blocking-roster.txt"
+            roster_file.write_text("# the roster\na-probe\nb-probe  # admitted 09-01\n\n")
+            self.assertEqual(health.Roster.from_file(roster_file).current, frozenset({"a-probe", "b-probe"}))
+            # The shape the script carried before 2026-09-15, for an era
+            # taken from `git show <old-commit>:hack/ci-eval-pr.sh`, has its
+            # own reader; the file reader treats that line as prose.
+            old_script = '#!/bin/bash\nexport BOOTSTRAP_ADMITTED="${BOOTSTRAP_ADMITTED:-a-probe,b-probe}"\n'
+            self.assertEqual(health.Roster.from_script_text(old_script).current, frozenset({"a-probe", "b-probe"}))
+            roster_file.write_text("# a laptop run may export " + old_script.splitlines()[1] + "\nc-probe\n")
+            self.assertEqual(health.Roster.from_file(roster_file).current, frozenset({"c-probe"}))
             with self.assertRaises(SystemExit):
-                health.Roster.from_script(script)
+                health.Roster.from_script_text("c-probe\n")
+            roster_file.write_text("# nothing admitted\n")
+            with self.assertRaises(SystemExit):
+                health.Roster.from_file(roster_file)
         # And the real one parses to a non-empty roster of case names.
-        live = health.Roster.from_script()
+        live = health.Roster.from_file()
         self.assertTrue(live.current)
         self.assertTrue(all("/" not in name and " " not in name for name in live.current))
 
@@ -341,6 +350,27 @@ class SetupDeaths(unittest.TestCase):
             adjudicate(self.deaths([1, 2, 3]), T0)["advice"],
             "Retest once the setup failures stop; check the leased pool projects (stuck Helm release, image pulls) before spending another run.",
         )
+
+    def test_a_conflicted_merge_is_not_a_setup_death(self):
+        # 2026-09-15 (#1608): #1569, #1572 and #1575 died in six to twelve
+        # seconds because they would not merge into main, and were reported
+        # as an infrastructure degradation.
+        conflicted = self.deaths([1569, 1572, 1575])
+        for entry in conflicted["runs"]:
+            entry["merge_conflict"] = True
+        self.assertFalse(any(health.Run(entry).setup_death for entry in conflicted["runs"]))
+        result = adjudicate(conflicted, T0)
+        self.assertEqual(result["state"], "GREEN")
+        self.assertEqual(result["metrics"]["setup_deaths"], 0)
+        self.assertEqual(result["metrics"]["infra_reds"], 0, "the author's rebase is not the pool's fault")
+
+    def test_a_clone_that_failed_any_other_way_still_is_one(self):
+        for flag in (False, None):
+            doc = self.deaths([1, 2, 3])
+            for entry in doc["runs"]:
+                if flag is not None:
+                    entry["merge_conflict"] = flag
+            self.assertEqual(assess(doc, T0)["condition"], "setup_deaths", f"merge_conflict={flag}")
 
     def test_greens_that_predate_the_deaths_do_not_recover_it(self):
         doc = self.deaths([1, 2, 3])
@@ -471,8 +501,16 @@ class LostPods(unittest.TestCase):
     def test_trim_carries_how_the_build_ended(self):
         doc = data(lost(1, 1, T0), run(2, 2, T0, tasks=[task("x", "ppp")]))
         trimmed = health.trim(doc, T0 - timedelta(days=1), T0 + timedelta(days=1), "test")["runs"]
-        self.assertEqual({k: trimmed[0][k] for k in health.ENDED_FIELDS}, {"has_build_log": False, "pod_phase": "Failed", "pod_node": "node-a", "pod_last_event": "NodeNotReady"})
+        self.assertEqual({k: v for k, v in trimmed[0].items() if k in health.ENDED_FIELDS}, {"has_build_log": False, "pod_phase": "Failed", "pod_node": "node-a", "pod_last_event": "NodeNotReady"})
         self.assertFalse(set(health.ENDED_FIELDS) & set(trimmed[1]))
+
+    def test_trim_carries_merge_conflict_so_a_fixture_replays_the_same_verdict(self):
+        # #1608: a field trim drops is a field the replay cannot see, and the
+        # conflicted merge silently returns as a setup death in the fixture.
+        doc = data(*(dict(run(i, i, T0, minutes=0.2, result="FAILURE"), merge_conflict=True) for i in (1569, 1572, 1575)))
+        trimmed = health.trim(doc, T0 - timedelta(days=1), T0 + timedelta(days=1), "test")
+        self.assertTrue(all(entry["merge_conflict"] is True for entry in trimmed["runs"]))
+        self.assertEqual(assess(trimmed, T0)["condition"], None)
 
 
 # --------------------------------------------------------------------------- #

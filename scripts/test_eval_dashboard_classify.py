@@ -32,7 +32,7 @@ CRASHLOOP_TRIO = [
     "cluster-agent-crashloop-evidence-chain",
     "cluster-agent-crashloop-misleading-symptom",
 ]
-# The roster in force on 2026-09-08 (hack/ci-eval-pr.sh at this checkout).
+# The roster in force on 2026-09-08 (hack/eval/blocking-roster.txt at this checkout).
 ADMITTED = frozenset(
     CRASHLOOP_TRIO
     + [
@@ -117,12 +117,12 @@ class RepAndOutcomeTest(unittest.TestCase):
         with_excerpt = dict(task("a", "fff"), excerpt="  payments-api is Pending  ")
         self.assertEqual(classify.excerpt_of(with_excerpt), "payments-api is Pending")
 
-    def test_the_roster_is_read_from_the_ci_script(self):
+    def test_the_roster_is_read_from_the_roster_file(self):
         roster = classify.admitted_cases()
         self.assertIsNotNone(roster)
         for name in CRASHLOOP_TRIO:
             self.assertIn(name, roster)
-        self.assertIsNone(classify.admitted_cases(pathlib.Path("/nonexistent/ci-eval-pr.sh")))
+        self.assertIsNone(classify.admitted_cases(pathlib.Path("/nonexistent/blocking-roster.txt")))
 
 
 class SharedRuleTest(unittest.TestCase):
@@ -248,6 +248,21 @@ class StormAndSetupTest(unittest.TestCase):
         self.assertTrue(verdict["matches_incident"])
         self.assertEqual(verdict["do"], classify.DO_SETUP)
         self.assertFalse(classify_run(target, [target])["matches_incident"])
+
+    def test_a_conflicted_merge_is_the_branch_s_own_and_says_rebase(self):
+        # #1608: the same zero-task FAILURE shape, but the run page must not
+        # send the author to /retest -- that re-runs the same merge.
+        target = dict(run(1, 1, T0, minutes=3, result="FAILURE"), merge_conflict=True)
+        self.assertTrue(classify.is_merge_conflict(target))
+        self.assertFalse(classify.is_setup_death(target))
+        verdict = classify_run(target, [target], health_at=SETUP)
+        self.assertEqual((verdict["verdict"], verdict["setup_death"], verdict["cases"]), ("red", False, []))
+        self.assertEqual(verdict["do"], classify.DO_MERGE_CONFLICT)
+        # A setup-death outage running at the same time is not this run's.
+        self.assertFalse(verdict["matches_incident"])
+        # False and absent both stay setup deaths.
+        for other in ({"merge_conflict": False}, {}):
+            self.assertTrue(classify.is_setup_death(dict(run(1, 1, T0, minutes=3, result="FAILURE"), **other)))
 
     def test_a_lost_pod_is_run_level_and_never_a_setup_death(self):
         # The build node went away (#1478): zero tasks, FAILURE, no build

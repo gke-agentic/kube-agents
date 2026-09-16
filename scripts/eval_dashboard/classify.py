@@ -46,7 +46,10 @@ Per failed admitted case, in priority order:
 SETUP_DEATH_MAX_DURATION (#1172). A lost pod -- the same zero-task FAILURE
 at any duration, with a NodeNotReady pod event or no build log at all
 (``is_lost_pod``, #1478) -- shares the class with its own headline and
-``do``. Neither run has cases to classify.
+``do``. A conflicted merge (``is_merge_conflict``, #1608) is the same shape
+again and is neither: it is the branch's own, so it is ``red`` and the
+``do`` is a rebase rather than a retest. None of the three has cases to
+classify.
 
 ``runs`` may carry the nightly periodic's runs beside the presubmit's
 (SCHEMA.md: ``runs[].tier``; ``tiers.py``). Every rule above reads the
@@ -73,6 +76,11 @@ try:
 except ImportError:  # imported by path (render.py run as a script)
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
     import tiers
+try:
+    import eval_rosters
+except ImportError:  # run as a script: scripts/ is not on sys.path yet
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+    import eval_rosters
 
 # --- Shared break (#1269, #1278; #1171 a week earlier) -----------------------
 # Other pull requests' runs are looked at when they finished inside this
@@ -160,11 +168,10 @@ VERDICT_INFRA = "infra"
 # --- Roster -------------------------------------------------------------------
 # Only an admitted case reds a pull request (AGENTS.md, "The behavioural
 # presubmit gate"); a hold-out failing is reported but never blamed. Read
-# from the checkout; when the script is missing every case counts as
-# admitted, which over-reports rather than hides.
+# from the checkout's hack/eval/blocking-roster.txt; when the file is missing
+# every case counts as admitted, which over-reports rather than hides.
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-CI_EVAL_SCRIPT = REPO_ROOT / "hack" / "ci-eval-pr.sh"
-ROSTER_RE = re.compile(r'BOOTSTRAP_ADMITTED="\$\{BOOTSTRAP_ADMITTED:-([^}]*)\}"')
+BLOCKING_ROSTER_FILE = eval_rosters.BLOCKING_ROSTER_FILE
 
 # The grader prefixes every reason with its score; the reader wants the
 # check name and what was missing.
@@ -177,6 +184,7 @@ DO_STORM = "Retest after the storm clears; a run started inside it loses repetit
 DO_ONLY_THIS_PR = "Fix the PR. Read the transcript first; it usually names the problem."
 DO_SETUP = "Retest. If it dies the same way again, the leased project is the suspect, not your change."
 DO_LOST_POD = "Retest once new jobs are progressing; the build node died under this run, not your change."
+DO_MERGE_CONFLICT = "Rebase on main and push. A retest re-runs the same conflicted merge."
 DO_UNCLEAR = "Read the transcript. Nothing else on the gate matches this failure yet, so it may be yours."
 DO_HELD_OUT = "Nothing for the gate; this case is held out and does not block."
 DO_PASSED = ""
@@ -320,12 +328,19 @@ def is_lost_pod(run: dict) -> bool:
     )
 
 
+def is_merge_conflict(run: dict) -> bool:
+    """A zero-task FAILURE the collector recorded as a clone that could not
+    merge the pull request into its base (SCHEMA.md, `merge_conflict`)."""
+    return not run_tasks(run) and str(run.get("result") or "").upper() == RUN_FAILURE and run.get("merge_conflict") is True
+
+
 def is_setup_death(run: dict) -> bool:
     length = run_length(run)
     return (
         not run_tasks(run)
         and str(run.get("result") or "").upper() == RUN_FAILURE
         and not is_lost_pod(run)
+        and not is_merge_conflict(run)
         and length is not None
         and length < SETUP_DEATH_MAX_DURATION
     )
@@ -375,15 +390,15 @@ def excerpt_of(task: dict) -> str | None:
 _ROSTER_CACHE: dict[str, frozenset | None] = {}
 
 
-def admitted_cases(script: pathlib.Path = CI_EVAL_SCRIPT) -> frozenset | None:
-    """BOOTSTRAP_ADMITTED from hack/ci-eval-pr.sh; None when unreadable."""
-    key = str(script)
+def admitted_cases(roster_file: pathlib.Path = BLOCKING_ROSTER_FILE) -> frozenset | None:
+    """The blocking roster from hack/eval/blocking-roster.txt; None when unreadable."""
+    key = str(roster_file)
     if key not in _ROSTER_CACHE:
         roster = None
         try:
-            match = ROSTER_RE.search(script.read_text())
-            if match:
-                roster = frozenset(name for name in match.group(1).split(",") if name)
+            names = eval_rosters.parse_blocking_roster(roster_file.read_text())
+            if names:
+                roster = frozenset(names)
         except OSError:
             roster = None
         _ROSTER_CACHE[key] = roster
@@ -687,6 +702,16 @@ def classify_run(run: dict, runs: list[dict], health_at: dict | None = None, now
                 cls=CLS_SETUP,
                 do=DO_LOST_POD,
                 matches_incident=condition == CONDITION_LOST_PODS,
+            )
+        if is_merge_conflict(run):
+            return dict(
+                base,
+                headline="The branch would not merge into main, so nothing ran.",
+                lede="clonerefs hit a conflict merging this pull request into its base; the gate never started and nothing about the change is implied.",
+                verdict=VERDICT_RED,
+                setup_death=False,
+                cls=CLS_ONLY_THIS_PR,
+                do=DO_MERGE_CONFLICT,
             )
         if is_setup_death(run):
             return dict(

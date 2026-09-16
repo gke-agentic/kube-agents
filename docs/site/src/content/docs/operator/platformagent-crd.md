@@ -393,7 +393,7 @@ leave the Platform Agent unable to do the work the flag exists to let it do.
 
 - `enabled` — the agent's shell runs in a StatefulSet of its own, reached over SSH with the keypair in the agent's credential Secret (`SANDBOX_SSH_PRIVATE_KEY` and its public half in `<name>-shell-authorized-keys`). **This is not a toggle: `false` is refused** with `Degraded`/`ShellSandboxCannotBeDisabled`, which changes nothing about the running workload. Absent or `true` are the same thing. With no keypair the sandbox Pod cannot start at all — the Secret it mounts is not optional — so the operator reports `Degraded`/`ShellSandboxKeysMissing` rather than leaving the Pod in `ContainerCreating` with the reason only in a Pod event. Every install surface generates the pair; a bare `helm install` that passes none is the way to reach that state.
 - `image` — overrides the sandbox image. Empty takes the operator's default.
-- `runtimeClassName` — runs the sandbox Pod under a sandboxed container runtime, `gvisor` being the one GKE offers. Unset by default. Separate from [`spec.deployment.availability.runtimeClassName`](#specdeployment), which governs the agent Pod: that Pod holds WAL-mode SQLite, which gVisor corrupts on the gofer-backed mount ([#610](https://github.com/gke-labs/kube-agents/issues/610)), and the sandbox Pod holds none — so an install can sandbox the untrusted Pod without sandboxing the trusted one. On GKE Standard the cluster needs a node pool created with `--sandbox type=gvisor`; Autopilot ships the RuntimeClass natively. A RuntimeClass the cluster does not have leaves the CR `Degraded` naming it, rather than a Pod sitting `Pending`.
+- `runtimeClassName` — runs the sandbox Pod under a sandboxed container runtime, `gvisor` being the one GKE offers. Unset by default. Separate from [`spec.deployment.availability.runtimeClassName`](#specdeployment), which governs the agent Pod: that Pod holds WAL-mode SQLite, which gVisor corrupts on the gofer-backed mount, and the sandbox Pod holds none — so an install can sandbox the untrusted Pod without sandboxing the trusted one. On GKE Standard the cluster needs a node pool created with `--sandbox type=gvisor`; Autopilot ships the RuntimeClass natively. A RuntimeClass the cluster does not have leaves the CR `Degraded` naming it, rather than a Pod sitting `Pending`.
 
 The GitHub-writing skills hand the credential broker file content and a commit message rather than a directory both sides mount, so the agent never holds a `.git`. There is no field for it: the broker keeps the checkout on its own state volume, which closes git's config-driven exec surface — a hook, a pager, a `filter.*.clean`, an `ext::` transport — and an install that could turn that off would be choosing to keep it open.
 
@@ -652,7 +652,7 @@ So `$HERMES_HOME/config.yaml` stays an ordinary writable file — `/sethome` and
 while every leaf the operator renders is authoritative and immutable at runtime. Whatever ends up in
 the PVC file, the operator's value is what loads, so a restart always heals. Earlier shapes did not
 manage both: mounting the render over `$HERMES_HOME/config.yaml` made the path read-only and failed
-every runtime write (`/sethome` with a permission error, the rest silently — issue #658), and
+every runtime write (`/sethome` with a permission error, the rest silently), and
 merging it into the file at startup left every merged key mutable, so an agent that repointed
 `model.base_url` at nothing kept that across restarts.
 
@@ -666,16 +666,16 @@ the non-secret loopback sentinel the Hermes API server on `127.0.0.1:8642` valid
 because Hermes' stage2 hook generates a random `API_SERVER_KEY` into `$HERMES_HOME/.env` whenever that
 file carries none, and the PVC `.env` is applied with `override=True` too — ahead of the container env,
 behind `/etc/hermes`. Unpinned, the gateway ends up validating against a value no caller has, and the
-credential proxy, the startup probe and every in-pod loopback call get `401 Invalid gateway API key`
-(issue #786). The container entrypoint warns at boot when this pin and the container env disagree.
+credential proxy, the startup probe and every in-pod loopback call get `401 Invalid gateway API key`.
+The container entrypoint warns at boot when this pin and the container env disagree.
 The credential that guards the API from _outside_ is `API_SERVER_EXTERNAL_KEY`, set from
 `hermes.apiServerSecretRef`; the sidecar authenticates the caller against it and swaps in the sentinel.
 The second is `KUBEAGENTS_MODE` (`today` or `next`, from `spec.mode`) — the mode switch's delivery
 contract (`docs/designs/spec-mode-switch.md`). It is pinned always, with the real value, because an
 absent key is a key the agent may write, and it is read back by exactly one module,
-`agents/platform/scripts/runtime_mode.py` (a grep test enforces the pair).
+`agents/platform/scripts/runtime_mode.py`.
 
-One consequence is worth knowing before you edit `renderConfigYAML`: the managed overlay is a
+One consequence of the render is worth knowing: the managed overlay is a
 leaf-level merge, and a list is a leaf, so a list rendered here **replaces** the image's rather than
 unioning with it — for every profile at once. That is why the render emits no lists at all today,
 and why adding one is the change to think hardest about.
@@ -779,5 +779,5 @@ new, so the first pass adds it and the template changes once, whether or not any
 
 ## Where to go next
 
-- [Development](/kube-agents/operator/development/) — build and test the controller locally.
+- [`k8s-operator/README.md`](https://github.com/gke-labs/kube-agents/blob/main/k8s-operator/README.md) — build and test the controller locally.
 - [Quick start (GKE)](/kube-agents/install/quickstart-gke/) — how the CR gets applied in a fresh install.
