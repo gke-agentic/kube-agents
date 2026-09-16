@@ -569,6 +569,68 @@ out_dir=""; acquire_source_repo out_dir "{requested_ref}"; echo "RESOLVED=$out_d
                 f"{proc.stdout}\n{proc.stderr}",
             )
 
+    def test_the_go_floor_is_enforced_after_the_workspace_step_on_the_curl_pipe_bash_path(self):
+        """Resolving to *something* is not the same as checking anything.
+
+        The test above pins that no `require_min_*` is left undefined when
+        install.sh arrives over the wire. That is the crash guard, and it was
+        satisfied by a stub that returns 0 for every Go ever released -- so
+        the floor that exists to catch the 1.19 `auto_install_tool` leaves on
+        Debian 12 passed a 1.19 host, on the one path where auto_install_tool
+        is the likely way Go got there at all.
+
+        The stub is only meant to hold until the clone lands. This asserts the
+        second half: that the workspace step replaces it, and the check the
+        Minty CLI import makes at step 12 is the real one.
+        """
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        outside = pathlib.Path(tmp.name) / "outside"
+        outside.mkdir()
+        # No scripts/installer/ beside it: the `curl … | bash` shape.
+        (outside / "install.sh").write_text(_INSTALL_SH.read_text())
+
+        bin_dir = pathlib.Path(tmp.name) / "bin"
+        bin_dir.mkdir()
+        go = bin_dir / "go"
+        # Debian 12's golang-go, the exact toolchain the floor was written for.
+        go.write_text("#!/usr/bin/env bash\nprintf '%s\\n' 'go version go1.19.8 linux/amd64'\nexit 0\n")
+        go.chmod(0o755)
+
+        script = (
+            "KUBE_AGENTS_SOURCE_ONLY=true source ./install.sh >/dev/null 2>&1\n"
+            'before=0; require_min_go_version >/dev/null 2>&1 || before=$?; echo "before=$before"\n'
+            # The step-2 call, with this checkout standing in for the clone.
+            f'source_provisioning_helpers "{_REPO_ROOT}" >/dev/null\n'
+            'after=0; require_min_go_version || after=$?; echo "after=$after"\n'
+        )
+        proc = subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=120,
+            env=get_isolated_test_env(
+                overrides={"KUBE_AGENTS_INSTALL_ENV": str(self._empty_install_env)},
+                bin_dir=str(bin_dir),
+            ),
+            cwd=str(outside),
+        )
+
+        details = f"\n{proc.stdout}\n{proc.stderr}"
+        # Not an assertion about desired behaviour -- it records that the stub
+        # is what answers before the clone, which is why the second half has
+        # to be pinned at all.
+        self.assertIn("before=0", proc.stdout, details)
+        self.assertIn(
+            "after=1",
+            proc.stdout,
+            "the Go floor is still the no-op stub after the workspace step; "
+            "source_provisioning_helpers must source the clone's min_versions.sh"
+            + details,
+        )
+        self.assertIn("too old to build the Minty CLI", proc.stdout, details)
+
     def test_a_missing_go_neither_refuses_a_dry_run_nor_installs_during_generate_only(self):
         """Step 8 must not reach auto_install_tool for Go.
 

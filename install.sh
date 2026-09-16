@@ -689,8 +689,8 @@ EOF
 # Minimum tool versions, kept in scripts/installer/min_versions.sh so the
 # numbers live in exactly one place. This installer is also downloaded and run
 # on its own, before any checkout exists, so the source is guarded: in that
-# case the workspace step clones the repository and the check runs against the
-# clone's copy.
+# case source_provisioning_helpers re-sources this file out of the clone at
+# step 2, which is what the Go floor at step 12 relies on.
 _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || echo "")"
 _min_versions="${_script_dir}/scripts/installer/min_versions.sh"
 if [ -r "$_min_versions" ]; then
@@ -703,8 +703,13 @@ else
   # the documented `curl … | bash` path. Every require_min_* the script calls
   # needs an arm here: the calls are unguarded, so a missing one is not a
   # skipped check but an undefined command, and `set -u`/`|| return 1` turns
-  # that 127 into a failure of whatever was being attempted. Version floors
-  # are simply unenforceable without the file that states them.
+  # that 127 into a failure of whatever was being attempted.
+  #
+  # These stubs hold only until the clone arrives. The gcloud and terraform
+  # floors run at step 1 and so are genuinely unenforceable on this path --
+  # there is no checkout yet to state a number. The Go floor is not: it runs
+  # at step 12, and source_provisioning_helpers has replaced this stub with
+  # the clone's copy by then.
   require_min_gcloud_version() { return 0; }
   require_min_terraform_version() { return 0; }
   require_min_go_version() { return 0; }
@@ -1433,6 +1438,15 @@ source_provisioning_helpers() {
   # gke_dns_endpoint_flag, for the credentials fetch before the health checks.
   # shellcheck source=/dev/null
   source "${SCRIPT_DIR}/gke_dns_endpoint.sh"
+  # The version floors. On the `curl … | bash` path the guard near the top of
+  # this file had no file to read them from and armed no-op stubs instead; the
+  # clone has the file, so the real checks replace those stubs here. This is
+  # what makes the Go floor at import_github_pem an actual check on that path
+  # rather than an unconditional `return 0` — it runs at step 12, long after
+  # this step 2. (The gcloud and terraform floors are already past by now:
+  # they run at step 1, before any checkout exists to read a number from.)
+  # shellcheck source=/dev/null
+  source "${SCRIPT_DIR}/min_versions.sh"
   print_success "Loaded installer defaults from scripts/installer/installer_common.sh"
 }
 
