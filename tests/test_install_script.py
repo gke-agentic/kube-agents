@@ -5343,23 +5343,54 @@ class DomainScopedFlagsTest(unittest.TestCase):
     def test_a_non_canonical_recorded_value_still_warns_when_it_disagrees(self):
         """Comparing by meaning must not turn the warning off altogether.
 
-        `ENABLE_GKE_BACKUP_PLAN=no` with `--enable-gke-backup-plan` is the
-        reversal the warning exists for, spelled the way a hand-written
-        install.env spells it.
+        Both directions, because they are different branches of the comparison
+        and each is a reversal: a recorded `no` against the bare flag, and a
+        recorded `True` against `=false`, which is the run that turns a backup
+        plan off for itself and leaves the file saying otherwise.
         """
-        with tempfile.TemporaryDirectory() as tmp:
-            destination = pathlib.Path(tmp) / "existing.env"
-            destination.write_text("ENABLE_GKE_BACKUP_PLAN=no\n")
-            proc = self._parse(
-                "--enable-gke-backup-plan",
-                f'bootstrap_install_env_file "{destination}" v1.2.3',
-            )
-            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
-            combined = proc.stdout + proc.stderr
-            self.assertIn("applies to this run only", combined)
-            # The operator's own spelling, not a canonicalised one: they have to
-            # find the line in the file.
-            self.assertIn("ENABLE_GKE_BACKUP_PLAN=no", combined)
+        for recorded, flag in (
+            ("no", "--enable-gke-backup-plan"),
+            ("True", "--enable-gke-backup-plan=false"),
+        ):
+            with self.subTest(recorded=recorded, flag=flag):
+                with tempfile.TemporaryDirectory() as tmp:
+                    destination = pathlib.Path(tmp) / "existing.env"
+                    destination.write_text(f"ENABLE_GKE_BACKUP_PLAN={recorded}\n")
+                    proc = self._parse(
+                        flag,
+                        f'bootstrap_install_env_file "{destination}" v1.2.3',
+                    )
+                    self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+                    combined = proc.stdout + proc.stderr
+                    self.assertIn("applies to this run only", combined)
+                    # The operator's own spelling, not a canonicalised one: they
+                    # have to find the line in the file.
+                    self.assertIn(f"ENABLE_GKE_BACKUP_PLAN={recorded}", combined)
+
+    def test_a_recorded_spelling_warns_about_nothing_when_no_flag_was_passed(self):
+        """The case that reaches this function without anyone typing a flag.
+
+        `PARAM_ENABLE_GKE_BACKUP_PLAN` is seeded from the loaded
+        `ENABLE_GKE_BACKUP_PLAN`, so on a re-run that says nothing about the
+        backup plan the "flag value" this function is handed is the file's own
+        spelling. Canonicalising one side and not the other therefore reported
+        the file as disagreeing with itself, and printed the BackupPlan's
+        destruction as the consequence of a flag nobody passed.
+
+        The file loaded and the file written to are the same one here, as they
+        are in the real call: `bootstrap_install_env_file "$INSTALL_ENV_FILE"`.
+        """
+        for recorded in ("true", "false", "True", "yes", "1", "on", "off", "no"):
+            with self.subTest(recorded=recorded):
+                proc = self._parse(
+                    "",
+                    'bootstrap_install_env_file "$KUBE_AGENTS_INSTALL_ENV" v1.2.3',
+                    contents=f"ENABLE_GKE_BACKUP_PLAN={recorded}\n",
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+                self.assertNotIn(
+                    "applies to this run only", proc.stdout + proc.stderr
+                )
 
     def test_the_namespace_flag_is_compared_literally(self):
         """NAMESPACE is a string, and `true`/`false` are legal namespace names.

@@ -1223,14 +1223,16 @@ warn_unrecorded_interview_answers() {
 # is the route these flags were added for.
 #
 # Pass compare_as_bool=true for a key the rest of the pipeline reads through
-# is_truthy. The flag's value is always canonical true/false -- the validator
-# enforces it, and provision_environment.sh canonicalises the environment's
-# variable before passing it -- while install.env is hand-written and
-# render_install_env.sh copies a GitHub variable in verbatim, so True/yes/on/1
-# all reach here. Compared as strings those read as a disagreement, and the
-# operator gets the destructive consequence line for a reversal that cannot
-# happen: the next run re-reads True, is_truthy accepts it, and nothing changes.
-# NAMESPACE is a string and keeps the literal comparison.
+# is_truthy, and both sides are then read the same way. Neither is canonical:
+# install.env is hand-written and render_install_env.sh copies a GitHub variable
+# in verbatim, so the recorded value can be True/yes/on/1 -- and the same PARAM_*
+# is seeded from that value, so on a run that passes no flag the "flag value" is
+# that spelling too. Comparing the two as strings reports a disagreement that
+# does not exist, and the operator gets the destructive consequence line for a
+# reversal that cannot happen: the next run re-reads True, is_truthy accepts it,
+# and nothing changes. NAMESPACE is a string and keeps the literal comparison --
+# `true` is a legal namespace name, and reading a recorded `yes` against a
+# flagged `true` as agreement would drop a warning about a release moving.
 warn_flag_beats_unrecorded_file_value() {
   local file="$1" key="$2" flag="$3" value="$4" consequence="$5" compare_as_bool="${6:-false}"
   [ -n "$value" ] || return 0
@@ -1238,9 +1240,11 @@ warn_flag_beats_unrecorded_file_value() {
     local recorded
     recorded="$(recorded_install_env_value "$file" "$key")"
     if [ "$compare_as_bool" = "true" ]; then
-      local recorded_means="false"
-      is_truthy "$recorded" && recorded_means="true"
-      [ "$recorded_means" != "$value" ] || return 0
+      if is_truthy "$recorded"; then
+        is_truthy "$value" && return 0
+      else
+        ! is_truthy "$value" && return 0
+      fi
     else
       [ "$recorded" != "$value" ] || return 0
     fi
