@@ -36,9 +36,7 @@ _SCHEMA = _CHART / "values.schema.json"
 _PREFLIGHT_TPL = _CHART / "templates" / "quota-preflight.yaml"
 _HELPERS = _CHART / "templates" / "_helpers.tpl"
 
-# helm is not on PATH in every environment; check PATH first, then any developer copy under k8s-operator/bin/.
-_VENDORED_HELM = _ROOT / "k8s-operator" / "bin" / "helm"
-_HELM = shutil.which("helm") or (str(_VENDORED_HELM) if _VENDORED_HELM.is_file() else None)
+_HELM = shutil.which("helm")
 
 _PROBE_TEMPLATE = """
 {{- if .Values.probe.emitRequirements }}
@@ -446,11 +444,16 @@ class PreflightDecisionTest(unittest.TestCase):
         patch = re.search(r'"requests\.memory":"([^"]+)"', res.stderr)
         self.assertIsNotNone(patch, f"no memory patch value in:\n{res.stderr}")
         quantity = patch.group(1)
-        self.assertTrue(quantity.endswith("Mi"), f"unreadable patch quantity {quantity!r}")
+        self.assertTrue(
+            quantity.endswith("Mi") or quantity.endswith("Gi"),
+            f"unreadable patch quantity {quantity!r}",
+        )
+        mult = 1024**3 if quantity.endswith("Gi") else 1024**2
+        number = int(quantity[:-2])
         # Rounding a patch down prints one that is short of what the release needs, so the
         # operator runs it and the install fails anyway. Up is the only safe direction.
         self.assertGreaterEqual(
-            int(quantity.removesuffix("Mi")) * 1024**2,
+            number * mult,
             _DEFAULT_REQUESTS_MEMORY_BYTES,
         )
 
@@ -932,14 +935,15 @@ class DocumentedFootprintTest(unittest.TestCase):
 
         # Check limits table row.
         m_limits = re.search(
-            r"plus\s+(\d+)\s+CPU and ~([\d\.]+)\s+GiB in limits\.",
+            r"plus\s+~?([\d\.]+)\s+CPU and ~([\d\.]+)\s+GiB in limits\.",
             page,
         )
         self.assertIsNotNone(
             m_limits, "limits row not found on prerequisites page"
         )
         self.assertEqual(
-            int(m_limits.group(1)), round(required["limitsCpu"] / 1000)
+            float(m_limits.group(1)),
+            math.floor((required["limitsCpu"] / 1000) * 10 + 0.5) / 10,
         )
         self.assertEqual(
             float(m_limits.group(2)),

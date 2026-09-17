@@ -312,7 +312,7 @@ class SyncScriptExitCodeTest(unittest.TestCase):
     """`sync-chart-manifests.sh --check` runs the check and tells drift from tooling failure.
 
     A `python3` shim on PATH stands in for the webhook check, so this covers the bash branch
-    (which exit code gets the hand-edit hint, which is passed through) without helm or PyYAML.
+    (which exit code gets the hand-edit hint, which is passed through) without helm.
     Every other `python3` the script runs — the footprint check among them — is forwarded to
     the real interpreter, so those steps run for real against the checkout, as the CRD, RBAC
     and admission-policy steps before them do.

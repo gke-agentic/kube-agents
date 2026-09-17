@@ -186,6 +186,11 @@ class ParseQuantityTest(unittest.TestCase):
         self.assertEqual(gcf.parse_bytes(""), 0)
         self.assertEqual(gcf.parse_bytes("  "), 0)
 
+    def test_milli_bytes(self):
+        self.assertEqual(gcf.parse_bytes("1000m"), 1)
+        self.assertEqual(gcf.parse_bytes("1001m"), 2)
+        self.assertEqual(gcf.parse_bytes("1288490188800m"), 1288490189)
+
     def test_binary_is_preferred_over_decimal(self):
         """`1Ei` must read as a binary exbibyte, not a decimal exabyte."""
         self.assertEqual(gcf.parse_bytes("1Ei"), 1024**6)

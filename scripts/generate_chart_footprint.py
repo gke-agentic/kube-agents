@@ -21,6 +21,7 @@ could not run (no PyYAML, an unreadable golden, a golden it cannot account for).
 
 import argparse
 import difflib
+import math
 import pathlib
 import sys
 
@@ -30,6 +31,7 @@ import sys
 # second of them: an unhandled ImportError exits 1 and is read as drift.
 _EXIT_DRIFT = 1
 _EXIT_CANNOT_RUN = 2
+_UTF8 = "utf-8"
 
 _MISSING_PYYAML = (
     "generate_chart_footprint needs PyYAML: python3 -m pip install pyyaml"
@@ -132,6 +134,7 @@ _STORAGE = "storage"
 _MIB = 1024**2
 _GIB = 1024**3
 _MILLICORES_PER_CORE = 1000
+_MILLI_DIVISOR = 1000
 _ZERO_QUANTITY = "0"
 
 _REPLICAS_FIELD = "replicas"
@@ -249,6 +252,8 @@ def parse_bytes(val: str | int | float) -> int:
     val = str(val).strip()
     if not val:
         return 0
+    if val.endswith("m"):
+        return math.ceil(float(val[:-1]) / _MILLI_DIVISOR)
     for unit, mult in _BINARY_SI_UNITS.items():
         if val.endswith(unit):
             return int(float(val[: -len(unit)]) * mult)
@@ -607,7 +612,7 @@ def main():
             )
             sys.exit(_EXIT_DRIFT)
         try:
-            committed = _FOOTPRINT_FILE.read_text()
+            committed = _FOOTPRINT_FILE.read_text(encoding=_UTF8)
         except OSError as err:
             print(f"ERROR: cannot read {_FOOTPRINT_FILE}: {err}", file=sys.stderr)
             sys.exit(_EXIT_CANNOT_RUN)
@@ -621,7 +626,7 @@ def main():
         print("Chart footprint is in sync with the operator golden.")
     else:
         try:
-            _FOOTPRINT_FILE.write_text(content)
+            _FOOTPRINT_FILE.write_text(content, encoding=_UTF8)
         except OSError as err:
             print(f"ERROR: cannot write {_FOOTPRINT_FILE}: {err}", file=sys.stderr)
             sys.exit(_EXIT_CANNOT_RUN)
