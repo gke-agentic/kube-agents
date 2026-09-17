@@ -5249,6 +5249,77 @@ class DomainScopedFlagsTest(unittest.TestCase):
                 "an install.env that already exists must be left alone",
             )
 
+    def test_the_backup_plan_flag_says_so_when_it_beats_a_recorded_value(self):
+        """Reversing this one destroys a BackupPlan rather than moving a release.
+
+        The recorded value is what a later run re-reads, so a re-run that omits
+        the flag plans the BackupPlan's destruction — and once a backup has been
+        taken the API refuses that destroy, leaving a half-applied install.
+        Nothing else says so: bootstrap_install_env_file will not rewrite an
+        existing file, the menu has no entry for the key, and
+        warn_unrecorded_interview_answers deliberately excludes it because it
+        has no interview question.
+
+        The recorded value is named, not merely contradicted: "applies to this
+        run only" against a file the operator believes says true is a warning
+        they will read as spurious.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = pathlib.Path(tmp) / "existing.env"
+            destination.write_text("ENABLE_GKE_BACKUP_PLAN=false\n")
+            proc = self._parse(
+                "--enable-gke-backup-plan",
+                f'bootstrap_install_env_file "{destination}" v1.2.3',
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            combined = proc.stdout + proc.stderr
+            self.assertIn("applies to this run only", combined)
+            self.assertIn("ENABLE_GKE_BACKUP_PLAN=false", combined)
+            self.assertIn("BackupPlan", combined)
+
+    def test_the_backup_plan_warning_fires_non_interactively(self):
+        """-y is the route these flags were added for, not an exemption.
+
+        warn_unrecorded_interview_answers returns early on -y, because its
+        answers came from flags and the file and there is no third source to
+        surprise anyone. Here the flag IS the surprise, so a copy of that early
+        return would silence the warning on every run that can hit the trap.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = pathlib.Path(tmp) / "existing.env"
+            destination.write_text("PROJECT_ID=p\n")
+            proc = self._parse(
+                "-y --enable-gke-backup-plan",
+                f'bootstrap_install_env_file "{destination}" v1.2.3',
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            combined = proc.stdout + proc.stderr
+            self.assertIn("applies to this run only", combined)
+            self.assertIn("records no ENABLE_GKE_BACKUP_PLAN", combined)
+
+    def test_a_flag_that_agrees_with_the_recorded_value_is_not_warned_about(self):
+        """Nothing is overridden, so there is nothing to lose by omitting it.
+
+        A warning here would fire on every re-run of a correctly recorded
+        install, which is the way a real warning gets ignored.
+        """
+        for key, flag in (
+            ("ENABLE_GKE_BACKUP_PLAN=true", "--enable-gke-backup-plan=true"),
+            ("NAMESPACE=chosen-ns", "--agent-namespace=chosen-ns"),
+        ):
+            with self.subTest(flag=flag):
+                with tempfile.TemporaryDirectory() as tmp:
+                    destination = pathlib.Path(tmp) / "existing.env"
+                    destination.write_text(f"{key}\n")
+                    proc = self._parse(
+                        flag,
+                        f'bootstrap_install_env_file "{destination}" v1.2.3',
+                    )
+                    self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+                    self.assertNotIn(
+                        "applies to this run only", proc.stdout + proc.stderr
+                    )
+
     def test_empty_gvisor_value_is_not_read_back_as_true(self):
         """`--enable-gvisor=` stays empty so the validator can reject it.
 
@@ -5276,17 +5347,13 @@ class SlackRequiresTokensNonInteractivelyTest(unittest.TestCase):
     otherwise appear as a CrashLoopBackOff long after a successful-looking
     apply.
 
-    The guard is in two halves. The deferred one is a function, so it is run;
-    the fail-fast one is a block inside main(), which would need a cluster to
-    reach, so what is asserted of it is that it exists, names both flags, and
-    sits before anything is provisioned.
+    One guard does this, require_slack_tokens_after_recovery, and it runs after
+    write_tfvars_from_state -- the only thing that can still supply the tokens
+    -- and before the apply. It is a function, so these exercise it; the two
+    ordering tests read the file, because reaching that point in main() needs a
+    cluster.
     """
 
-    # The comment above main()'s copy. Unique in the file, and the only way to
-    # tell the two halves apart by text: they print the same refusal, and
-    # require_slack_tokens_after_recovery is defined above main(), so a plain
-    # find() for the message always returns the deferred one.
-    _FAIL_FAST_ANCHOR = "# Slack asked for, with nobody to ask"
     _REFUSAL = "--enable-slack needs a bot token and an app token"
 
     def setUp(self):
@@ -5374,50 +5441,49 @@ class SlackRequiresTokensNonInteractivelyTest(unittest.TestCase):
         self.assertIn("--slack-bot-token (SLACK_BOT_TOKEN)", text)
         self.assertIn("--slack-app-token (SLACK_APP_TOKEN)", text)
 
-    def test_the_guard_only_fires_without_a_tty(self):
-        """Interactive runs must still reach the interview that prompts."""
-        text = _INSTALL_SH.read_text()
-        guard = text[text.find(self._FAIL_FAST_ANCHOR) :]
-        self.assertIn('[ "$PARAM_NON_INTERACTIVE" = "true" ] || ! has_controlling_tty', guard[:1200])
+    def test_an_interactive_run_is_left_to_the_interview(self):
+        """Interactive runs must still reach the interview that prompts.
 
-    def test_the_fail_fast_guard_precedes_the_tfvars_write(self):
-        """A refusal after the apply would be a refusal of nothing.
-
-        Matched against the call site rather than the name: install.sh mentions
-        write_tfvars_from_state in a comment on line 110, 170KB before anything
-        runs, so searching for the bare name compares the guard to prose.
-
-        And searched for from main()'s own anchor, not from the top of the
-        file: the refusal string occurs twice, the deferred function has the
-        first copy and is defined above main(), so a plain find() would report
-        this ordering as correct however far the fail-fast block moved.
+        has_controlling_tty is stubbed rather than allocating a pty: the guard
+        asks that one question, and under a test runner the real answer is
+        always "no", which would make every interactive case look like the
+        unattended one it is supposed to be distinguished from.
         """
-        text = _INSTALL_SH.read_text()
-        anchor_at = text.find(self._FAIL_FAST_ANCHOR)
-        self.assertNotEqual(anchor_at, -1, "the fail-fast Slack guard is missing")
-        guard_at = text.find(self._REFUSAL, anchor_at)
-        self.assertNotEqual(guard_at, -1, "the fail-fast guard no longer refuses")
-        write_at = text.find('write_tfvars_from_state "$tfvars_file"')
-        self.assertNotEqual(write_at, -1)
-        self.assertLess(guard_at, write_at)
-
-    def test_the_fail_fast_guard_defers_when_the_tokens_live_in_the_secret(self):
-        """PERSIST_SECRETS_ON_DISK=false keeps the tokens out of install.env.
-
-        Their home is the live Secret, and write_tfvars_from_state recovers
-        them from it. Failing before that recovery refuses exactly the
-        unattended re-run the setting exists to support, so the fail-fast copy
-        is conditioned on the tokens having been expected on disk.
-        """
-        text = _INSTALL_SH.read_text()
-        guard = text[text.find(self._FAIL_FAST_ANCHOR) :][:1600]
-        self.assertIn(
-            'is_truthy "${PERSIST_SECRETS_ON_DISK:-$DEFAULT_PERSIST_SECRETS_ON_DISK}"',
-            guard,
+        proc = self._run_deferred_check(
+            before='PARAM_NON_INTERACTIVE="false"; has_controlling_tty() { return 0; }'
         )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("REACHED_THE_APPLY", proc.stdout)
+
+    def test_nothing_refuses_slack_before_the_recovery_has_run(self):
+        """There is one guard, and it is the one that runs after the recovery.
+
+        A second, earlier copy is the tempting change -- refusing in the chat
+        step that asks for Slack reads as failing faster. It is not: the
+        Secret-recovery loop inside write_tfvars_from_state can still supply
+        both tokens off the live Secret, and it is gated on kubectl's context,
+        not on PERSIST_SECRETS_ON_DISK. An earlier copy keyed on that setting
+        therefore refuses the fresh-clone adoption the loop exists to serve,
+        and buys nothing, because the surviving guard already lands before
+        anything is provisioned.
+
+        Counting the refusal is what catches the copy coming back; asserting
+        the surviving one is present would not.
+        """
+        text = _INSTALL_SH.read_text()
+        self.assertEqual(
+            text.count(self._REFUSAL),
+            1,
+            "the Slack refusal must exist exactly once, in "
+            "require_slack_tokens_after_recovery",
+        )
+        refusal_at = text.find(self._REFUSAL)
+        function_at = text.find("require_slack_tokens_after_recovery() {")
+        self.assertNotEqual(function_at, -1)
+        self.assertLess(function_at, refusal_at, "the refusal moved out of the guard")
 
     def test_the_deferred_check_runs_after_the_recovery_and_before_the_apply(self):
-        """The other half of the guard, for the configuration that defers."""
+        """The guard's position: after the recovery that answers it, before the apply."""
         text = _INSTALL_SH.read_text()
         write_at = text.find('write_tfvars_from_state "$tfvars_file"')
         deferred_at = text.find("\n  require_slack_tokens_after_recovery")
@@ -5440,7 +5506,7 @@ class ToggleValuesAreValidatedTest(unittest.TestCase):
     def _validate(self, flag, value):
         script = (
             f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n'
-            f'validate_optional_bool_param "{flag}" "{value}"\n'
+            f'validate_bool_flag_value "{flag}" "{value}"\n'
             'echo "PASSED"\n'
         )
         return subprocess.run(
@@ -5459,17 +5525,32 @@ class ToggleValuesAreValidatedTest(unittest.TestCase):
             proc.stdout + proc.stderr,
         )
 
-    def test_booleans_and_the_unset_case_pass(self):
-        """Empty has to pass: it is how a toggle nobody set reaches its default."""
-        for value in ("true", "false", ""):
+    def test_booleans_pass(self):
+        for value in ("true", "false"):
             with self.subTest(value=value):
                 proc = self._validate("--enable-slack", value)
                 self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
                 self.assertIn("PASSED", proc.stdout)
 
-    # The toggles nothing else in main() checks. --enable-gvisor and
-    # --enable-hermes-dashboard have validators of their own, which are stricter:
-    # they also reject the empty string the five below use to mean "nobody chose".
+    def test_an_empty_value_is_refused_and_suggests_the_three_spellings(self):
+        """`--enable-slack=` is not "nobody chose"; nobody chose is no flag.
+
+        Only the `=` form reaches here empty — the bare flag yields "true" — so
+        the empty string is always something a caller typed, and taking it as
+        "leave the setting alone" is what made it dangerous.
+        """
+        proc = self._validate("--enable-slack", "")
+        self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertNotIn("PASSED", proc.stdout)
+        combined = proc.stdout + proc.stderr
+        self.assertIn("empty value", combined)
+        self.assertIn("--enable-slack=true", combined)
+        self.assertIn("--enable-slack=false", combined)
+
+    # The toggles nothing else in main() checks, so validate_bool_flag_value is
+    # the whole of their validation. --enable-gvisor and
+    # --enable-hermes-dashboard are absent because they have validators of their
+    # own, further down in main().
     UNCHECKED_TOGGLES = [
         "--enable-google-chat",
         "--enable-slack",
@@ -5538,6 +5619,53 @@ class ToggleValuesAreValidatedTest(unittest.TestCase):
                         proc.stdout,
                         f"{key}={value} was rejected: {proc.stdout + proc.stderr}",
                     )
+
+    def test_every_toggle_refuses_an_empty_value_against_a_seed(self):
+        """`--enable-slack=` with SLACK_ENABLED=true recorded is the bad case.
+
+        The seed is set here deliberately: waving the empty string through as
+        "nobody chose" is only tempting while the run has nothing to lose, and
+        this is the run that has something to lose. A wrapper expanding an
+        unset variable produces exactly this, so the flag arrives without
+        anyone having chosen to turn the integration off.
+        """
+        for flag, key in self.SEEDED_TOGGLE_ENV_KEYS.items():
+            with self.subTest(flag=flag):
+                proc = self._parse_args(f"{flag}=", **{key: "true"})
+                self.assertNotIn("PASSED", proc.stdout)
+                self.assertIn(
+                    f"{flag}= was given an empty value",
+                    proc.stdout + proc.stderr,
+                )
+
+    def test_an_empty_toggle_resolves_to_the_default_not_the_recorded_value(self):
+        """Why the refusal above is a refusal and not a shrug.
+
+        PARAM_ENABLE_SLACK is seeded from SLACK_ENABLED so a re-run that says
+        nothing about Slack keeps the relay. The read is
+        `${PARAM_ENABLE_SLACK:-$DEFAULT_SLACK_ENABLED}`, and `:-` treats empty
+        as unset — so an empty assignment does not restate the recorded value,
+        it falls through to the default. Were the validator to accept it, the
+        run would disable a working relay and say nothing.
+        """
+        script = (
+            f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n'
+            'echo "SEEDED=${PARAM_ENABLE_SLACK:-$DEFAULT_SLACK_ENABLED}"\n'
+            'PARAM_ENABLE_SLACK=""\n'
+            'echo "EMPTIED=${PARAM_ENABLE_SLACK:-$DEFAULT_SLACK_ENABLED}"\n'
+        )
+        env = get_isolated_test_env()
+        env["SLACK_ENABLED"] = "true"
+        proc = subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(_REPO_ROOT),
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("SEEDED=true", proc.stdout)
+        self.assertIn("EMPTIED=false", proc.stdout)
 
 
 if __name__ == "__main__":

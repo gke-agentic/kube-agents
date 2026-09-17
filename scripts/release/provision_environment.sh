@@ -126,6 +126,77 @@ if provision_is_truthy "${LONG_LIVED_ENVIRONMENT:-}"; then
   [ "$ALLOWLIST_STATUS" -eq 0 ] || exit 1
 fi
 
+# The two GitHub variables this script turns into `--enable-*` flags, in the
+# spelling install.sh's validator accepts.
+#
+# The flag route and the file route do not judge a value the same way:
+# validate_bool_flag_value matches ^(true|false)$ and exits 1 naming the flag,
+# while a value that reaches the installer through the rendered install.env goes
+# to is_truthy, which takes True/yes/y/1/on as well. A human types these into a
+# GitHub environment form, so an environment that deploys today on `True` must
+# keep deploying once the value travels as a flag.
+#
+# A value neither list recognises is returned untouched rather than folded into
+# "false": `ture` should still be refused rather than silently disabling the
+# feature. The guard below is what refuses it, above the teardown.
+provision_canonical_bool() {
+  local val="${1:-}"
+  if provision_is_truthy "$val"; then
+    echo "true"
+    return 0
+  fi
+  local stripped="${val//[[:space:]]/}"
+  case "$stripped" in
+    [Ff][Aa][Ll][Ss][Ee] | [Nn][Oo] | [Nn] | 0 | [Oo][Ff][Ff] | "") echo "false" ;;
+    *) echo "$val" ;;
+  esac
+}
+
+# Everything install.sh would refuse this configuration for, checked here.
+#
+# Above the teardown, for the reason the minter and allowlist guards give: the
+# refusal otherwise arrives from `./install.sh` at the bottom of this script,
+# by which point `teardown_run` has destroyed the environment — and on the
+# autopush/staging rebuild path that is a long-lived install left down over a
+# typo in a GitHub variable or an unset secret.
+#
+# Each of these is knowable before anything is destroyed, so each is checked
+# before anything is destroyed. Keep this in step with install.sh's parse-time
+# validators and its Slack token guard: a refusal added there and not mirrored
+# here reverts to failing after the teardown.
+INSTALL_REFUSAL_STATUS=0
+
+for _bool_var in ENABLE_GKE_BACKUP_PLAN ENABLE_GVISOR; do
+  [ -n "${!_bool_var:-}" ] || continue
+  _canonical="$(provision_canonical_bool "${!_bool_var}")"
+  case "$_canonical" in
+    true | false) ;;
+    *)
+      echo "::error title=${_bool_var} is not a boolean::'${!_bool_var}' is neither true nor false, and this script passes it to install.sh as a flag, whose validator exits 1 on it. Refusing before the teardown rather than after. Set ${_bool_var} on this GitHub environment to true or false."
+      echo "==> ${_bool_var}='${!_bool_var}' is not a boolean." >&2
+      INSTALL_REFUSAL_STATUS=1
+      ;;
+  esac
+done
+
+# install.sh refuses --enable-slack without both tokens when there is no tty,
+# which is this job. Its own guard runs after the Secret-recovery loop, which
+# can read them off a live install -- but this script has just destroyed that
+# install by the time it runs, so nothing can recover them here and the refusal
+# is certain.
+if provision_is_truthy "${SLACK_ENABLED:-}"; then
+  SLACK_MISSING=""
+  [ -n "${SLACK_BOT_TOKEN:-}" ] || SLACK_MISSING="${SLACK_MISSING} SLACK_BOT_TOKEN"
+  [ -n "${SLACK_APP_TOKEN:-}" ] || SLACK_MISSING="${SLACK_MISSING} SLACK_APP_TOKEN"
+  if [ -n "${SLACK_MISSING}" ]; then
+    echo "::error title=Slack is enabled with no tokens::SLACK_ENABLED is set on this environment but${SLACK_MISSING} reached this job empty, and install.sh refuses --enable-slack without both. Refusing to tear down '${GKE_CLUSTER_NAME:-this environment}' for an install that cannot complete. Check the secret is set on the GitHub environment this job binds to, and that the calling pipeline still invokes this workflow with \`secrets: inherit\`."
+    echo "==> Slack enabled with missing:${SLACK_MISSING}." >&2
+    INSTALL_REFUSAL_STATUS=1
+  fi
+fi
+
+[ "$INSTALL_REFUSAL_STATUS" -eq 0 ] || exit 1
+
 TEARDOWN_LOG="$(mktemp)"
 
 echo "==> Tearing down the existing environment (${TEARDOWN_TARGET}) via canonical uninstall.sh..."
@@ -172,32 +243,10 @@ esac
 
 rm -f "${TEARDOWN_LOG}"
 
-# The two GitHub variables this script turns into `--enable-*` flags, in the
-# spelling install.sh's validator accepts.
-#
-# The flag route and the file route do not judge a value the same way:
-# validate_optional_bool_param matches ^(true|false)$ and exits 1 naming the
-# flag, while a value that reaches the installer through the rendered
-# install.env goes to is_truthy, which takes True/yes/y/1/on as well. A human
-# types these into a GitHub environment form, so an environment that deploys
-# today on `True` must keep deploying once the value travels as a flag.
-#
-# A value neither list recognises is returned untouched rather than folded into
-# "false": `ture` should still reach install.sh and be refused by name, which is
-# what the validator is for.
-provision_canonical_bool() {
-  local val="${1:-}"
-  if provision_is_truthy "$val"; then
-    echo "true"
-    return 0
-  fi
-  local stripped="${val//[[:space:]]/}"
-  case "$stripped" in
-    [Ff][Aa][Ll][Ss][Ee] | [Nn][Oo] | [Nn] | 0 | [Oo][Ff][Ff] | "") echo "false" ;;
-    *) echo "$val" ;;
-  esac
-}
-
+# The two GitHub variables this script turns into `--enable-*` flags travel
+# through provision_canonical_bool, defined with the guards above: the spelling
+# check has to happen before the teardown, and the canonicalisation is the same
+# call.
 INSTALL_ARGS=(
   --non-interactive -y
   --gcp-project-id="${GCP_PROJECT_ID}"

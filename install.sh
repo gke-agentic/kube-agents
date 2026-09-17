@@ -625,7 +625,7 @@ flag_bool_value() {
   esac
 }
 
-# Rejects a toggle whose value is neither true nor false, naming the flag that
+# Rejects a toggle value that is neither true nor false, naming the flag that
 # carried it. Called from parse_args, on what the caller actually typed, and
 # never on a PARAM_* that install.env or the environment seeded: those are read
 # through is_truthy, which takes True/yes/y/1/on, and the documentation tells
@@ -633,12 +633,26 @@ flag_bool_value() {
 # re-run over a spelling the rest of the pipeline accepts, naming a flag the
 # operator never passed.
 #
-# Empty passes: `--enable-slack=` reaches the ${VAR:-$DEFAULT} reads in main()
-# as "nobody chose". Lives beside flag_bool_value for the same reason that one
-# is not in scripts/installer/installer_common.sh.
-validate_optional_bool_param() {
+# Empty is rejected rather than waved through as "nobody chose". Only the `=`
+# form can produce it -- the bare flag yields "true" -- so it is always
+# something a caller typed, and it cannot mean "leave the setting alone":
+# PARAM_ENABLE_SLACK and PARAM_ENABLE_GOOGLE_CHAT are seeded from install.env
+# precisely so a re-run that says nothing keeps the integration on, and an empty
+# assignment discards that seed. `${PARAM_ENABLE_SLACK:-$DEFAULT_SLACK_ENABLED}`
+# then falls back to the default rather than to the recorded value, so
+# `--enable-slack=` out of a wrapper expanding an unset variable would remove a
+# working relay in silence.
+#
+# Lives beside flag_bool_value for the same reason that one is not in
+# scripts/installer/installer_common.sh.
+validate_bool_flag_value() {
   local flag="$1" value="${2:-}"
-  if [ -n "$value" ] && [[ ! "$value" =~ ^(true|false)$ ]]; then
+  if [ -z "$value" ]; then
+    print_error "${flag}= was given an empty value."
+    print_info "Pass ${flag} on its own, or ${flag}=true, or ${flag}=false."
+    exit 1
+  fi
+  if [[ ! "$value" =~ ^(true|false)$ ]]; then
     print_error "${flag} must be either true or false."
     exit 1
   fi
@@ -677,13 +691,13 @@ parse_args() {
       --user-profile-enabled=*) PARAM_USER_PROFILE_ENABLED="${1#*=}"; shift ;;
       --enable-gke-backup-plan|--enable-gke-backup-plan=*)
         PARAM_ENABLE_GKE_BACKUP_PLAN="$(flag_bool_value "$1")"
-        validate_optional_bool_param "${1%%=*}" "$PARAM_ENABLE_GKE_BACKUP_PLAN"; shift ;;
+        validate_bool_flag_value "${1%%=*}" "$PARAM_ENABLE_GKE_BACKUP_PLAN"; shift ;;
       --enable-pubsub-platform|--enable-pubsub|--enable-pubsub-platform=*|--enable-pubsub=*)
         PARAM_ENABLE_PUBSUB_PLATFORM="$(flag_bool_value "$1")"
-        validate_optional_bool_param "${1%%=*}" "$PARAM_ENABLE_PUBSUB_PLATFORM"; shift ;;
+        validate_bool_flag_value "${1%%=*}" "$PARAM_ENABLE_PUBSUB_PLATFORM"; shift ;;
       --enable-stockout-investigator|--enable-stockout|--enable-stockout-investigator=*|--enable-stockout=*)
         PARAM_ENABLE_STOCKOUT_INVESTIGATOR="$(flag_bool_value "$1")"
-        validate_optional_bool_param "${1%%=*}" "$PARAM_ENABLE_STOCKOUT_INVESTIGATOR"; shift ;;
+        validate_bool_flag_value "${1%%=*}" "$PARAM_ENABLE_STOCKOUT_INVESTIGATOR"; shift ;;
       --memory=*) PARAM_MEMORY="${1#*=}"; shift ;;
       --image-tag=*) PARAM_IMAGE_TAG="${1#*=}"; shift ;;
       --registry-prefix=*) PARAM_REGISTRY_PREFIX="${1#*=}"; shift ;;
@@ -691,10 +705,10 @@ parse_args() {
       --allow-unverified-source|--allow-dirty) PARAM_ALLOW_UNVERIFIED_SOURCE="true"; shift ;;
       --enable-google-chat|--google-chat|--enable-google-chat=*|--google-chat=*)
         PARAM_ENABLE_GOOGLE_CHAT="$(flag_bool_value "$1")"
-        validate_optional_bool_param "${1%%=*}" "$PARAM_ENABLE_GOOGLE_CHAT"; shift ;;
+        validate_bool_flag_value "${1%%=*}" "$PARAM_ENABLE_GOOGLE_CHAT"; shift ;;
       --enable-slack|--enable-slack=*)
         PARAM_ENABLE_SLACK="$(flag_bool_value "$1")"
-        validate_optional_bool_param "${1%%=*}" "$PARAM_ENABLE_SLACK"; shift ;;
+        validate_bool_flag_value "${1%%=*}" "$PARAM_ENABLE_SLACK"; shift ;;
       --google-chat-allowed-users=*) PARAM_ALLOWED_USERS="${1#*=}"; shift ;;
       --slack-bot-token=*) PARAM_SLACK_BOT_TOKEN="${1#*=}"; shift ;;
       --slack-app-token=*) PARAM_SLACK_APP_TOKEN="${1#*=}"; shift ;;
@@ -1184,24 +1198,48 @@ warn_unrecorded_interview_answers() {
   print_info "Or re-run './install.sh --menu' and use Save & Apply, which writes them for you."
 }
 
+# A flag that beats install.env for a single run, against a file this installer
+# will not rewrite. Says so, because the reversal is silent at both ends: the
+# run that passes the flag looks like it took effect permanently, and the next
+# run that omits it re-reads the file and quietly undoes the change.
+#
+# Only reachable on an existing install.env. A first install records both keys
+# from the same PARAM_*, so there is nothing to warn about there.
+#
+# Fires on -y as well, unlike warn_unrecorded_interview_answers: that one skips
+# non-interactive runs because their answers came from flags and the file, with
+# no third source to surprise anyone. Here the flag IS the surprise, and headless
+# is the route these flags were added for.
+warn_flag_beats_unrecorded_file_value() {
+  local file="$1" key="$2" flag="$3" value="$4" consequence="$5"
+  [ -n "$value" ] || return 0
+  if grep -qE "^[[:space:]]*(export[[:space:]]+)?${key}=" "$file" 2>/dev/null; then
+    local recorded
+    recorded="$(recorded_install_env_value "$file" "$key")"
+    [ "$recorded" != "$value" ] || return 0
+    print_warning "${flag}=${value} applies to this run only: ${file} records ${key}=${recorded}."
+  else
+    print_warning "${flag}=${value} applies to this run only: ${file} records no ${key}."
+  fi
+  print_info "$consequence"
+  print_info "Set ${key}=${value} in ${file}, or repeat ${flag} on every later install.sh, upgrade.sh and --menu run."
+}
+
 bootstrap_install_env_file() {
   local destination="${1:-}" image_tag="${2:-}"
   [ -n "$destination" ] || return 0
   if [ -f "$destination" ]; then
     print_info "Left your install configuration as you wrote it: ${destination}"
     warn_unrecorded_interview_answers "$destination"
-    # --agent-namespace on a run whose install.env already exists. This
-    # function never rewrites that file, so only the first install can record
-    # the key on the operator's behalf -- and unsaid, the flag applies to this
-    # run alone: the next install.sh, upgrade.sh or --menu run that omits it
-    # resolves the default namespace back, renders tfvars for it, looks for the
-    # recovered Secret there, and is refused by lifecycle.sh's
-    # guard_release_namespace.
-    if [ -n "${PARAM_AGENT_NAMESPACE:-}" ] &&
-      ! grep -qE "^[[:space:]]*(export[[:space:]]+)?NAMESPACE=" "$destination" 2>/dev/null; then
-      print_warning "--agent-namespace=${PARAM_AGENT_NAMESPACE} applies to this run only: ${destination} records no NAMESPACE."
-      print_info "Add NAMESPACE=${PARAM_AGENT_NAMESPACE} to ${destination}, or repeat the flag on every later install.sh, upgrade.sh and --menu run."
-    fi
+    # The two flags that override a recorded value for one run. This function
+    # never rewrites an existing file, so only a first install can record either
+    # on the operator's behalf.
+    warn_flag_beats_unrecorded_file_value "$destination" NAMESPACE --agent-namespace \
+      "${PARAM_AGENT_NAMESPACE:-}" \
+      "A later run without it resolves the default namespace, renders tfvars for that one, looks for the recovered Secret there, and is refused by lifecycle.sh's guard_release_namespace."
+    warn_flag_beats_unrecorded_file_value "$destination" ENABLE_GKE_BACKUP_PLAN --enable-gke-backup-plan \
+      "${PARAM_ENABLE_GKE_BACKUP_PLAN:-}" \
+      "A later run without it re-reads the recorded value and plans the BackupPlan's destruction; once a backup has been taken the API refuses that destroy and the apply fails partway instead."
     return 0
   fi
   if [ "$PARAM_DRY_RUN" = "true" ]; then
@@ -3371,17 +3409,22 @@ run_menu_system() {
 }
 
 # ─── Main Installer Procedure ──────────────────────────────────────────────────
-# The deferred half of the Slack token guard in main(). The fail-fast copy up
-# there covers the run whose tokens should have been in install.env; this one
-# covers PERSIST_SECRETS_ON_DISK=false, where their home is the live Secret and
-# write_tfvars_from_state is what fetches them. Called immediately after that
-# generator, on the exported SLACK_* it leaves behind, so a re-run that recovers
-# both tokens proceeds and one that recovers neither still stops before the
-# apply rather than reaching a CrashLooping relay.
+# The Slack token guard. Placed after write_tfvars_from_state rather than in the
+# chat step that asks for Slack, because that generator's Secret-recovery loop is
+# what can still supply the tokens: it reads them off the live
+# '${PLATFORM_AGENT_SECRET}' Secret whenever kubectl's context is this cluster,
+# which covers both PERSIST_SECRETS_ON_DISK=false (their only home by design) and
+# a fresh clone adopting an existing install. A copy in the chat step would
+# refuse those runs before the thing that answers them had run, and it would buy
+# nothing: this still lands before the apply, and before it nothing has been
+# provisioned.
 #
-# Interactive runs are exempt for the same reason the fail-fast copy exempts
-# them: the interview already prompted, and anything still missing was refused
-# by hand.
+# Runs on the exported SLACK_* the generator leaves behind, so a re-run that
+# recovers both tokens proceeds and one that recovers neither stops rather than
+# reaching a CrashLooping relay.
+#
+# Interactive runs are exempt: the interview already prompted, and anything still
+# missing was refused by hand.
 require_slack_tokens_after_recovery() {
   is_truthy "${SLACK_ENABLED:-}" || return 0
   if [ "$PARAM_NON_INTERACTIVE" != "true" ] && has_controlling_tty; then
@@ -3799,30 +3842,16 @@ main() {
   local slack_home_channel="${PARAM_SLACK_HOME_CHANNEL:-}"
   local slack_home_channel_name="${PARAM_SLACK_HOME_CHANNEL_NAME:-}"
 
-  # Slack asked for, with nobody to ask for the tokens. The relay cannot open a
-  # socket without both, and the failure would otherwise surface as a CrashLoop
-  # long after the apply -- so refuse here, naming both flags, rather than
-  # provisioning an install that cannot work. Interactive runs fall through to
-  # the interview below, which prompts for them.
-  #
-  # Only when the tokens were supposed to be on disk. PERSIST_SECRETS_ON_DISK=false
-  # keeps them out of install.env deliberately -- their home is the live Secret,
-  # and write_tfvars_from_state recovers them from it further down. Failing here
-  # would refuse every unattended re-run of exactly that configuration, so for it
-  # the check is deferred to require_slack_tokens_after_recovery, which runs once
-  # the recovery has had its turn.
-  if is_truthy "${PARAM_ENABLE_SLACK:-$DEFAULT_SLACK_ENABLED}" \
-    && is_truthy "${PERSIST_SECRETS_ON_DISK:-$DEFAULT_PERSIST_SECRETS_ON_DISK}" \
-    && { [ "$PARAM_NON_INTERACTIVE" = "true" ] || ! has_controlling_tty; }; then
-    local slack_missing=""
-    [ -n "$slack_bot_token" ] || slack_missing="${slack_missing} --slack-bot-token (SLACK_BOT_TOKEN)"
-    [ -n "$slack_app_token" ] || slack_missing="${slack_missing} --slack-app-token (SLACK_APP_TOKEN)"
-    if [ -n "$slack_missing" ]; then
-      print_error "--enable-slack needs a bot token and an app token, and this run has nobody to ask. Missing:${slack_missing}."
-      print_info "Pass them as flags, or record them in ${INSTALL_ENV_FILE}, or drop --enable-slack."
-      exit 1
-    fi
-  fi
+  # No Slack token check here. The obvious place for one is this step -- Slack
+  # is asked for here and the relay cannot open a socket without both tokens --
+  # but a refusal here cannot tell "the operator never supplied them" from
+  # "write_tfvars_from_state has not run yet". Its Secret-recovery loop
+  # (installer_common.sh) reads them off the live Secret whenever kubectl's
+  # context is this cluster, which is exactly the fresh-clone adoption case its
+  # own comment names as its reason to exist: no install.env, no tokens on the
+  # command line, and both sitting in the cluster. require_slack_tokens_after_recovery
+  # makes the same check once that loop has had its turn and still before the
+  # apply, so nothing is provisioned either way.
 
   # One definition for both arms that ask it. Arms 2 and 3 ran identical
   # copies, and the copies are what drifted: the "pass the current value, not

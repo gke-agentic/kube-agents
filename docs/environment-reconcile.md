@@ -146,6 +146,24 @@ above its teardown. `rc` and `nightly` are exempt by design — they are
 destroyed and rebuilt every run and no real user reaches them, so an
 unconditional check would fail the RC pipeline rather than protect anything.
 
+`SLACK_ENABLED` needs both `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` beside it.
+`install.sh` refuses the combination itself, but only after the Secret-recovery
+step that can still read them off a live install — which a rebuild has already
+destroyed by then, so `provision_environment.sh` makes the same check above its
+teardown. A token that goes missing on an environment that had one is usually
+the `secrets: inherit` gap
+[`scripts/release/README.md`](../scripts/release/README.md) describes for
+`GH_APP_ID`, which drops every secret the same way.
+
+`ENABLE_GKE_BACKUP_PLAN` and `ENABLE_GVISOR` are checked there too, for spelling
+rather than presence. Both reach `install.sh` as `--enable-*` flags, whose
+validator takes `true` or `false` and nothing else, while the same values
+travelling through `install.env` reach `is_truthy`, which also takes
+`True`/`yes`/`y`/`1`/`on`. `provision_environment.sh` folds the second list into
+the first, so an environment that deployed on `True` keeps deploying; a spelling
+neither list recognises is refused before the teardown rather than by
+`install.sh` after it.
+
 Optional, and copied through when set: `CLUSTER_MODE`, `MODEL_DEFAULT_NAME`,
 `VERTEX_PROJECT_ID`, `VERTEX_LOCATION`, `GOOGLE_CHAT_MODE`, `GOOGLE_CHAT_HOME_CHANNEL`,
 `CHAT_TOPIC_NAME`, `CHAT_SUB_NAME`, `SLACK_ENABLED`, `SLACK_HOME_CHANNEL`,
