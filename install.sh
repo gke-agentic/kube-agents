@@ -689,7 +689,16 @@ parse_args() {
       --permission-set=*) PARAM_PERMISSION_SET="${1#*=}"; shift ;;
       --custom-roles=*) PARAM_CUSTOM_ROLES="${1#*=}"; shift ;;
       --enable-gvisor|--enable-gvisor=*) PARAM_ENABLE_GVISOR="$(flag_bool_value "$1")"; shift ;;
-      --enable-hermes-dashboard|--enable-hermes-dashboard=*) PARAM_ENABLE_WEBUI="$(flag_bool_value "$1")"; shift ;;
+      # Validated here and again in main(). The second check is not redundant:
+      # PARAM_ENABLE_WEBUI is seeded from the recorded value and resolved with
+      # ${VAR:-...}, which reads an empty assignment as "unset" and hands back
+      # DEFAULT_ENABLE_WEBUI -- so `--enable-hermes-dashboard=` out of a wrapper
+      # expanding an unset variable arrived at main() as a valid "false" and
+      # took a running dashboard down. Only parse_args still knows the value
+      # came from the command line.
+      --enable-hermes-dashboard|--enable-hermes-dashboard=*)
+        PARAM_ENABLE_WEBUI="$(flag_bool_value "$1")"
+        validate_bool_flag_value "${1%%=*}" "$PARAM_ENABLE_WEBUI"; shift ;;
       --user-profile-enabled=*) PARAM_USER_PROFILE_ENABLED="${1#*=}"; shift ;;
       --enable-gke-backup-plan|--enable-gke-backup-plan=*)
         PARAM_ENABLE_GKE_BACKUP_PLAN="$(flag_bool_value "$1")"
@@ -1212,13 +1221,29 @@ warn_unrecorded_interview_answers() {
 # non-interactive runs because their answers came from flags and the file, with
 # no third source to surprise anyone. Here the flag IS the surprise, and headless
 # is the route these flags were added for.
+#
+# Pass compare_as_bool=true for a key the rest of the pipeline reads through
+# is_truthy. The flag's value is always canonical true/false -- the validator
+# enforces it, and provision_environment.sh canonicalises the environment's
+# variable before passing it -- while install.env is hand-written and
+# render_install_env.sh copies a GitHub variable in verbatim, so True/yes/on/1
+# all reach here. Compared as strings those read as a disagreement, and the
+# operator gets the destructive consequence line for a reversal that cannot
+# happen: the next run re-reads True, is_truthy accepts it, and nothing changes.
+# NAMESPACE is a string and keeps the literal comparison.
 warn_flag_beats_unrecorded_file_value() {
-  local file="$1" key="$2" flag="$3" value="$4" consequence="$5"
+  local file="$1" key="$2" flag="$3" value="$4" consequence="$5" compare_as_bool="${6:-false}"
   [ -n "$value" ] || return 0
   if grep -qE "^[[:space:]]*(export[[:space:]]+)?${key}=" "$file" 2>/dev/null; then
     local recorded
     recorded="$(recorded_install_env_value "$file" "$key")"
-    [ "$recorded" != "$value" ] || return 0
+    if [ "$compare_as_bool" = "true" ]; then
+      local recorded_means="false"
+      is_truthy "$recorded" && recorded_means="true"
+      [ "$recorded_means" != "$value" ] || return 0
+    else
+      [ "$recorded" != "$value" ] || return 0
+    fi
     print_warning "${flag}=${value} applies to this run only: ${file} records ${key}=${recorded}."
   else
     print_warning "${flag}=${value} applies to this run only: ${file} records no ${key}."
@@ -1241,7 +1266,8 @@ bootstrap_install_env_file() {
       "A later run without it resolves the default namespace, renders tfvars for that one, looks for the recovered Secret there, and is refused by lifecycle.sh's guard_release_namespace."
     warn_flag_beats_unrecorded_file_value "$destination" ENABLE_GKE_BACKUP_PLAN --enable-gke-backup-plan \
       "${PARAM_ENABLE_GKE_BACKUP_PLAN:-}" \
-      "A later run without it re-reads the recorded value and plans the BackupPlan's destruction; once a backup has been taken the API refuses that destroy and the apply fails partway instead."
+      "A later run without it re-reads the recorded value and plans the BackupPlan's destruction; once a backup has been taken the API refuses that destroy and the apply fails partway instead." \
+      true
     return 0
   fi
   if [ "$PARAM_DRY_RUN" = "true" ]; then

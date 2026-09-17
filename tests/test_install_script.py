@@ -5011,12 +5011,18 @@ class DomainScopedFlagsTest(unittest.TestCase):
     """
 
     def _parse(self, args, body, contents="", env=None):
-        """parse_args the given args, then run `body`, with an install.env."""
+        """parse_args the given args, then run `body`, with an install.env.
+
+        installer_common.sh is sourced too, in the order main() does it:
+        source_provisioning_helpers runs at step 2, so every function reached
+        below has is_truthy and the DEFAULT_* set by the time it runs.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             env_file = pathlib.Path(tmp) / "install.env"
             env_file.write_text(contents)
             script = (
                 f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n'
+                f'source "{_REPO_ROOT}/scripts/installer/installer_common.sh"\n'
                 f"parse_args {args}\n{body}\n"
             )
             overrides = {"KUBE_AGENTS_INSTALL_ENV": str(env_file)}
@@ -5302,12 +5308,26 @@ class DomainScopedFlagsTest(unittest.TestCase):
 
         A warning here would fire on every re-run of a correctly recorded
         install, which is the way a real warning gets ignored.
+
+        The non-canonical spellings are the case that matters. A flag's value is
+        always `true` or `false`; install.env is hand-written, and CI's
+        render_install_env.sh copies the GitHub variable in verbatim while
+        provision_environment.sh canonicalises the same variable onto the flag.
+        So an environment typed `True` disagrees on spelling and agrees on
+        meaning, and comparing the two as strings warned about a destroyed
+        BackupPlan on every rebuild.
         """
         for key, flag in (
             ("ENABLE_GKE_BACKUP_PLAN=true", "--enable-gke-backup-plan=true"),
+            ("ENABLE_GKE_BACKUP_PLAN=True", "--enable-gke-backup-plan=true"),
+            ("ENABLE_GKE_BACKUP_PLAN=yes", "--enable-gke-backup-plan"),
+            ("ENABLE_GKE_BACKUP_PLAN=1", "--enable-gke-backup-plan=true"),
+            ("ENABLE_GKE_BACKUP_PLAN=on", "--enable-gke-backup-plan=true"),
+            ("ENABLE_GKE_BACKUP_PLAN=off", "--enable-gke-backup-plan=false"),
+            ("ENABLE_GKE_BACKUP_PLAN=no", "--enable-gke-backup-plan=false"),
             ("NAMESPACE=chosen-ns", "--agent-namespace=chosen-ns"),
         ):
-            with self.subTest(flag=flag):
+            with self.subTest(key=key, flag=flag):
                 with tempfile.TemporaryDirectory() as tmp:
                     destination = pathlib.Path(tmp) / "existing.env"
                     destination.write_text(f"{key}\n")
@@ -5319,6 +5339,45 @@ class DomainScopedFlagsTest(unittest.TestCase):
                     self.assertNotIn(
                         "applies to this run only", proc.stdout + proc.stderr
                     )
+
+    def test_a_non_canonical_recorded_value_still_warns_when_it_disagrees(self):
+        """Comparing by meaning must not turn the warning off altogether.
+
+        `ENABLE_GKE_BACKUP_PLAN=no` with `--enable-gke-backup-plan` is the
+        reversal the warning exists for, spelled the way a hand-written
+        install.env spells it.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = pathlib.Path(tmp) / "existing.env"
+            destination.write_text("ENABLE_GKE_BACKUP_PLAN=no\n")
+            proc = self._parse(
+                "--enable-gke-backup-plan",
+                f'bootstrap_install_env_file "{destination}" v1.2.3',
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            combined = proc.stdout + proc.stderr
+            self.assertIn("applies to this run only", combined)
+            # The operator's own spelling, not a canonicalised one: they have to
+            # find the line in the file.
+            self.assertIn("ENABLE_GKE_BACKUP_PLAN=no", combined)
+
+    def test_the_namespace_flag_is_compared_literally(self):
+        """NAMESPACE is a string, and `true`/`false` are legal namespace names.
+
+        Routing it through is_truthy as well would read a recorded `yes` and a
+        flagged `true` as agreement and skip a warning about a release moving.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = pathlib.Path(tmp) / "existing.env"
+            destination.write_text("NAMESPACE=yes\n")
+            proc = self._parse(
+                "--agent-namespace=true",
+                f'bootstrap_install_env_file "{destination}" v1.2.3',
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            combined = proc.stdout + proc.stderr
+            self.assertIn("applies to this run only", combined)
+            self.assertIn("NAMESPACE=yes", combined)
 
     def test_empty_gvisor_value_is_not_read_back_as_true(self):
         """`--enable-gvisor=` stays empty so the validator can reject it.
@@ -5583,16 +5642,19 @@ class ToggleValuesAreValidatedTest(unittest.TestCase):
         self.assertIn("--enable-slack=true", combined)
         self.assertIn("--enable-slack=false", combined)
 
-    # The toggles nothing else in main() checks, so validate_bool_flag_value is
-    # the whole of their validation. --enable-gvisor and
-    # --enable-hermes-dashboard are absent because they have validators of their
-    # own, further down in main().
-    UNCHECKED_TOGGLES = [
+    # Every toggle validate_bool_flag_value judges at parse time.
+    # --enable-gvisor is absent: it has a validator of its own further down in
+    # main(), reached because resolve_shared_defaults applies its default with
+    # ${VAR-...} and so leaves an empty assignment empty.
+    # --enable-hermes-dashboard is here as well as in main() because its default
+    # is applied with ${VAR:-...}, which reads the empty assignment as "unset".
+    PARSE_TIME_CHECKED_TOGGLES = [
         "--enable-google-chat",
         "--enable-slack",
         "--enable-gke-backup-plan",
         "--enable-pubsub-platform",
         "--enable-stockout-investigator",
+        "--enable-hermes-dashboard",
     ]
 
     def _parse_args(self, *args, **env_overrides):
@@ -5619,7 +5681,7 @@ class ToggleValuesAreValidatedTest(unittest.TestCase):
         The check lives in parse_args rather than main() because that is the
         last point the value is known to have come from the command line.
         """
-        for flag in self.UNCHECKED_TOGGLES:
+        for flag in self.PARSE_TIME_CHECKED_TOGGLES:
             with self.subTest(flag=flag):
                 proc = self._parse_args(f"{flag}=ture")
                 self.assertNotIn("PASSED", proc.stdout)
@@ -5702,6 +5764,56 @@ class ToggleValuesAreValidatedTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
         self.assertIn("SEEDED=true", proc.stdout)
         self.assertIn("EMPTIED=false", proc.stdout)
+
+    def test_an_empty_hermes_dashboard_value_is_refused_against_a_seed(self):
+        """The dashboard toggle reaches the same trap by the same route.
+
+        It is not in SEEDED_TOGGLE_ENV_KEYS because main() does judge its seeded
+        value with ^(true|false)$, so the claim that test makes does not hold
+        for it. What does hold is the half that bites: PARAM_ENABLE_WEBUI is
+        seeded from HERMES_DASHBOARD_ENABLED and resolved with `:-`, so an empty
+        assignment fell through to DEFAULT_ENABLE_WEBUI and main() saw a
+        well-formed "false" -- a running dashboard taken down by a wrapper
+        expanding an unset variable.
+        """
+        proc = self._parse_args(
+            "--enable-hermes-dashboard=", HERMES_DASHBOARD_ENABLED="true"
+        )
+        self.assertNotIn("PASSED", proc.stdout)
+        self.assertIn(
+            "--enable-hermes-dashboard= was given an empty value",
+            proc.stdout + proc.stderr,
+        )
+
+    def test_an_empty_hermes_dashboard_value_would_resolve_to_the_default(self):
+        """Why the refusal above is a refusal and not a shrug.
+
+        `:-` here, `-` for --enable-gvisor: the gvisor toggle keeps an empty
+        assignment empty so main()'s validator rejects it, and the dashboard's
+        does not. Driven through resolve_shared_defaults rather than by
+        restating the expansion, which would assert a fact about bash and stay
+        green whatever install.sh does with it.
+        """
+        script = (
+            f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n'
+            f'source "{_REPO_ROOT}/scripts/installer/installer_common.sh"\n'
+            'PARAM_ENABLE_WEBUI=""\n'
+            "resolve_shared_defaults\n"
+            'echo "RESOLVED=[$PARAM_ENABLE_WEBUI]"\n'
+        )
+        env = get_isolated_test_env()
+        env["HERMES_DASHBOARD_ENABLED"] = "true"
+        proc = subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(_REPO_ROOT),
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        # Not "[]": the empty assignment reaches main() as a well-formed
+        # "false", which is what makes it silent.
+        self.assertIn("RESOLVED=[false]", proc.stdout)
 
 
 if __name__ == "__main__":
