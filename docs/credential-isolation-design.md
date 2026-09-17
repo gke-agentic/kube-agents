@@ -101,8 +101,11 @@ The shared agent volume used to be the live gap here: a `core.fsmonitor` entry t
 sandbox wrote under a workspace root ran in the credential holder on the next
 `git status`, with no lease taken and no mutating verb, so neither the workspace-lease
 floor nor the argument-level deny policy reached it. Separate Pods close it. There is no
-volume both sides mount, the broker owns the only checkout, and the skills that write to
-a forge hand it file content and a commit message rather than a directory.
+writable volume both sides mount — the one object both Pods project is the
+`<agent>-gitops-state` ConfigMap, read-only in each, a list of repository names rather
+than a filesystem either can write into — the broker owns the only checkout, and the
+skills that write to a forge hand it file content and a commit message rather than a
+directory.
 
 `spec.deployment.env` is applied to the credential runtime because it may
 contain credentials. A short allowlist may also be copied to the sandbox — the
@@ -846,6 +849,29 @@ Costs:
 
 The gateway Pod's own cloud identity is the boundary still to be drawn; see
 [Limitation](#limitation).
+
+## Logging
+
+Nothing in the `envoy-credential-proxy` container may log credential material. It is the one
+place holding cluster credentials, GCP tokens, and chat secrets, and everything it writes to
+stdout leaves the cluster through Cloud Logging. The same rule covers the event watcher in the
+gateway Pod's `agent-api-auth` sidecar: it logs identifiers — cluster, namespace, pod, event
+reason, profile directory — and never a token, a kubeconfig body, or a request header.
+
+The exposure to watch when changing this code is **wrapped errors**, not deliberate logging. A
+failure from parsing a profile's `kubeconfig.yaml`, minting a token, or an API server rejecting a
+request can carry its input into the error string, and those inputs are credentials. When adding a
+log line, prefer the identifier over the value: the profile name rather than the file's contents,
+the cluster rather than the token, the status code rather than the response body.
+
+Two places deliberately log a body. `bootstrap` in `credential_proxy.py` logs the stdout and
+stderr of the start-up shell bootstrap when that command fails, truncated but not redacted, so
+that the exception it raises can stay output-free. `_handle_github_refresh` records the GitHub
+refresh helper's stderr, because a broker that refuses a mint is otherwise recorded nowhere — the
+caller gets a reason code with no detail, and the reason code is all a chat room ever sees. It
+passes the text through `redact_credentials` before bounding it, which blanks GitHub token and
+JWT shapes. Extend that function rather than the exception if another credentialed subprocess
+needs the same treatment.
 
 ## Verification
 

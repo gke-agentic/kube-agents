@@ -49,7 +49,7 @@ page under "Why there is no `gke-admin` set".
 - `resolve_deploy.sh`: Resolves candidate target commit SHA and validates lease policy for long-lived environments (`autopush` and `staging`). Configured via `TARGET_ENVIRONMENT` environment variable (`autopush` or `staging`). Called by `autopush-deploy.yml` and `staging-deploy.yml`.
 - `validate_and_log_deploy_summary.sh`: Validates required environment variables and secrets, then logs a formatted deployment matrix and GCP cluster target overview for auditing before provisioning.
 - `teardown_common.sh`: Sourced by the two scripts below, which both call `uninstall.sh` and read the same three outcomes out of its exit code (`./uninstall.sh --help` lists them). Holds the invocation, the `TEARDOWN_STRICT` parsing, and the job-summary rendering; each caller decides for itself what a failure means. The variable is read under both names — `TEARDOWN_STRICT` first, then the legacy `RC_TEARDOWN_STRICT` — because reading only the new one would have left the parser on an unset variable until the settings caught up, and unset is "off" with no error. Both `rc` and `nightly` now define `TEARDOWN_STRICT`, so `deploy-environment.yml` forwards that name alone; the fallback stays for anyone running these scripts by hand against an environment nobody has migrated, and is dropped when the old variable is deleted from both settings pages.
-- `provision_environment.sh`: Tears the environment down with `uninstall.sh`, then reinstalls it at the candidate commit with `install.sh`. Which environment is entirely `GCP_PROJECT_ID` / `GCP_REGION` / `GKE_CLUSTER_NAME` and the rest of the install inputs, which `deploy-environment.yml` reads from the GitHub environment named by its `github_environment` input — `rc` for the RC pipeline, `nightly` for the nightly one. A failed teardown raises an `::error` annotation and a job-summary entry carrying the teardown output, and provisions anyway unless `TEARDOWN_STRICT` is truthy — the choice between validating a candidate against stale state and letting a teardown problem block every release. It also forwards the GitOps repository and, with it, the GitHub token minter, and stages an optional `GH_APP_PRIVATE_KEY` to a private temporary file because `install.sh` takes a path; see "Enabling the GitHub token minter on the RC" below for what to set.
+- `provision_environment.sh`: Tears the environment down with `uninstall.sh`, then reinstalls it at the candidate commit with `install.sh`. Which environment is entirely `GCP_PROJECT_ID` / `GCP_REGION` / `GKE_CLUSTER_NAME` and the rest of the install inputs, which `deploy-environment.yml` reads from the GitHub environment named by its `github_environment` input — `rc` for the RC pipeline, `nightly` for the nightly one. A failed teardown raises an `::error` annotation and a job-summary entry carrying the teardown output, and provisions anyway unless `TEARDOWN_STRICT` is truthy — the choice between validating a candidate against stale state and letting a teardown problem block every release. It also forwards the GitOps repository and, with it, the GitHub token minter; see "Enabling the GitHub token minter on the RC" below for what to set.
 - `render_install_env.sh`: The one mapping from a GitHub environment's `vars.*`/`secrets.*` to the installer's `install.env`. A runner is ephemeral and has no hand-authored one, so every job that drives the installer renders one and points `KUBE_AGENTS_INSTALL_ENV` at it. `--strict` additionally requires every setting whose absence would _remove_ something from an install that already exists — the gVisor node pool, Hindsight, the backup plan, the Chat topic — and names all the missing ones in one annotation rather than one per run. That distinction is the whole difference between the two families of environment: `rc` and `nightly` are rebuilt every run, so an omitted setting costs a feature; `autopush` and `staging` have been up for weeks, so the same omission is a `terraform apply` that plans a destroy. A key with no value is omitted from the file rather than written empty, because `KEY=` beats `install.defaults.env` and means "explicitly nothing".
 - `reconcile_environment.sh`: Applies `terraform/examples/full-install` to a long-lived environment, or reports what applying it would change. Renders the configuration strictly, waits out any `*-redeploy-*` run already in flight (both drive `helm upgrade` on the release `helm_release.kube_agents` owns), takes the live-test lease for an apply, and then runs `upgrade.sh --plan` or `upgrade.sh --upgrade-mode=full`. `LEASE_POLICY` picks what a held lease means: `defer` for the scheduled path, `fail` for a manual one. A plan takes no lease and holds no lock, because it changes nothing. Called by `reconcile-environment.yml`.
 - `report_drift.py`: Turns a non-empty plan into one tracked issue per environment, labelled `infra-drift`, edited in place while the drift lasts and closed by the first clean plan. Found again by a marker in the body rather than by title, so retitling one does not orphan it. A plan that failed to run leaves whatever is open exactly as it is: a failure is evidence of nothing either way. Called by `drift-detect.yml`.
@@ -61,15 +61,15 @@ page under "Why there is no `gke-admin` set".
 - `dispatch_release_pipeline.sh`: Starts `release-publish.yml` with `-f schedule_gate=evaluate` when `release-scheduler.yml` evaluates that candidate conditions are satisfied (`should_release=true`). Verifies `gh` CLI presence defensively, emits error annotations on failure, and records the dispatch event into the Job Summary.
 - `record_release_scheduler_skip.sh`: Records a quiet weekly tick into the Job Summary when `release-scheduler.yml` candidate evaluation determines no GA release should be published (e.g. no staging tag present, or zero commits since the latest GA release tag). Because a quiet tick deliberately leaves no `release-publish.yml` run behind, this summary is its only trace, explicitly clarifying that a green scheduler run reflects a clean evaluation and reports nothing about publishing status.
 - `calculate_next_version.sh`: Automatically calculates the next SemVer 2.0 version from Conventional Commits since the latest numeric GA release tag.
-- `verify_release_eligibility.sh`: Release gatekeeper that verifies commit eligibility, checks for a shape-valid staging promotion tag (`staging_<ts>_<sha>`, meaning the full nightly matrix passed on the commit), performs tag collision detection, and verifies all 6 required container images exist in registry. It does not also require `rc_*_validated`: a staging tag is only ever derived from a candidate that carries one, so checking both would leave two gates to keep in step. `skip_staging_validation` with an audit reason is the emergency bypass.
+- `verify_release_eligibility.sh`: Release gatekeeper that verifies commit eligibility, checks for a shape-valid staging promotion tag (`staging_<ts>_<sha>`, meaning the full nightly matrix passed on the commit), performs tag collision detection, and verifies every image in `REQUIRED_RELEASE_IMAGES` (`common.sh`; seven today) exists in registry. It does not also require `rc_*_validated`: a staging tag is only ever derived from a candidate that carries one, so checking both would leave two gates to keep in step. `skip_staging_validation` with an audit reason is the emergency bypass.
 - `tag_ga_release.sh`: Creates and pushes official GA SemVer Git tags (`X.Y.Z`) on a detached HEAD commit stamped with the release version in installer scripts (`install.sh`, `uninstall.sh`, `upgrade.sh`), Helm charts (`charts/kube-agents/Chart.yaml`), and Terraform defaults (`terraform/examples/full-install/variables.tf`, `terraform.tfvars.example`). Note: candidate commits must carry the `^BAKED_RELEASE_VERSION=` placeholder line in root installer scripts, `version`/`appVersion` fields in Helm charts, and `image_tag` defaults in Terraform examples.
 - `promote_release_images.sh`: Promotes verified container images from candidate commit SHA to GA release tag in GHCR without rebuilding.
 - `sign_release_images.sh`: Signs promoted GA release container images in GHCR using Keyless Cosign OIDC.
 - `publish_helm_chart.sh`: Packages, publishes, and signs the official kube-agents Helm chart to GHCR as an OCI artifact. Extracts the chart tree directly from the release commit SHA via `extract_commit_tree`.
-- `generate_release_sbom.sh`: Generates Software Bill of Materials (SBOM) in SPDX 2.3 JSON (`.spdx.json`) and CycloneDX 1.5 JSON (`.cdx.json`) formats using Syft for the staged filesystem bundle and each of the four release container images (`k8s-operator`, `platform-agent`, `credential-proxy`, `replay-proxy`). Staged in an isolated temporary directory and moved atomically into `DIST_DIR`. The `syft` CLI is mandatory in CI (exits 1 if missing or if image SBOM generation fails) and optional locally (warns and skips).
+- `generate_release_sbom.sh`: Generates Software Bill of Materials (SBOM) in SPDX 2.3 JSON (`.spdx.json`) and CycloneDX 1.5 JSON (`.cdx.json`) formats using Syft for the staged filesystem bundle (both formats) and each of the seven release container images in `REQUIRED_RELEASE_IMAGES` (`k8s-operator`, `platform-agent`, `credential-proxy`, `agent-sandbox`, `replay-proxy`, `pubsub-platform`, `gke-stockout-investigator`; SPDX only). Staged in an isolated temporary directory and moved atomically into `DIST_DIR`. The `syft` CLI is mandatory in CI (exits 1 if missing or if image SBOM generation fails) and optional locally (warns and skips).
 - `package_release_bundle.sh`: Assembles self-contained offline distribution archives (`kube-agents-<version>.tar.gz` and `.zip`) for air-gapped environments. Extracts tracked files directly from the resolved release commit via `extract_commit_tree` to ensure dirty or untracked files are never packaged. Stamps `BAKED_RELEASE_VERSION` into root installer scripts, Helm `Chart.yaml`, and Terraform example defaults, writes the `.release-bundle` provenance marker, packages Helm charts, invokes `generate_release_sbom.sh`, sanitizes sensitive files (tokens, credentials, keys, real tfvars while preserving `terraform.tfvars.example`), computes SHA256 checksums into `checksums.txt`, and promotes verified assets atomically into `DIST_DIR`.
 - `sign_release_artifacts.sh`: Signs `checksums.txt` in `DIST_DIR` using Keyless Cosign OIDC, producing `checksums.txt.bundle` to provide verifiable cryptographic supply-chain provenance for all offline distribution archives and SBOMs. The `cosign` CLI is mandatory in CI (exits 1 if missing or signing fails) and skipped with a dry-run warning locally.
-- `publish_github_release.sh`: Publishes official GitHub Releases with auto-generated release notes from Conventional Commits, discovers and attaches all distribution artifacts (`.tar.gz`, `.zip`, `.tgz`, `*.spdx.json`, `*.cdx.json`, `checksums.txt`, `checksums.txt.bundle`) from `DIST_DIR`, and handles idempotent re-runs via `gh release upload --clobber`. The notes start from the previous GA tag, passed explicitly as `--notes-start-tag`: GA tags sit on stamped commits that never return to `main`, and left to pick the start tag itself GitHub started 0.4.0's notes from 0.2.0 and 0.5.0's from the first commit. The tag is `get_previous_ga_tag` from `common.sh`, or `PREVIOUS_VERSION` from the environment for a hand run (`release-publish.yml` sets none). With no lower GA tag the flag is omitted and the script warns: that is the first release, or a checkout that did not fetch its tags, and the script cannot tell them apart locally, so the banner's `Notes Start Tag` line and the warning are the check. It does not call `release_fetch_tags`; like `resolve_release_commit`, it relies on the publish job's `fetch-depth: 0` checkout.
+- `publish_github_release.sh`: Publishes official GitHub Releases with notes GitHub generates (`gh release create --generate-notes`) from the pull requests merged since the previous GA tag, grouped by the label categories in `.github/release.yml` and excluding Dependabot's and anything labelled `duplicate`, `invalid` or `wontfix`; discovers and attaches all distribution artifacts (`.tar.gz`, `.zip`, `.tgz`, `*.spdx.json`, `*.cdx.json`, `checksums.txt`, `checksums.txt.bundle`) from `DIST_DIR`; and handles idempotent re-runs via `gh release upload --clobber`. Those notes and the compare view, not a milestone, are where a release's contents are: `.github/workflows/auto-assign-milestone.yml` still runs after every merge to `main`, but exits without assigning anything when no milestone is open, and none is kept. The notes start from the previous GA tag, passed explicitly as `--notes-start-tag`: GA tags sit on stamped commits that never return to `main`, and left to pick the start tag itself GitHub started 0.4.0's notes from 0.2.0 and 0.5.0's from the first commit. The tag is `get_previous_ga_tag` from `common.sh`, or `PREVIOUS_VERSION` from the environment for a hand run (`release-publish.yml` sets none). With no lower GA tag the flag is omitted and the script warns: that is the first release, or a checkout that did not fetch its tags, and the script cannot tell them apart locally, so the banner's `Notes Start Tag` line and the warning are the check. It does not call `release_fetch_tags`; like `resolve_release_commit`, it relies on the publish job's `fetch-depth: 0` checkout.
 
 ## Pipeline Cadence & Execution Flow
 
@@ -120,7 +120,7 @@ Set all three on the environment rather than the repository. A repository-level 
 
 `GITOPS_ORG` and `GITOPS_REPO` are deliberately separate from `GH_ORG` and `GH_REPO`, which every other workflow does use for this. On the `rc` environment that pair names the _release_ repository (`gke-labs/kube-agents`) and is what `common.sh`'s `get_target_repo` resolves for tag and release operations; pointing the minter at it would scope a live App token to this repository.
 
-The App's private key is separate, because it is signing material rather than configuration and never enters Terraform state. Import it into the minter's KMS key once, by hand. [`terraform/modules/github-minter/README.md`](../../terraform/modules/github-minter/README.md) is canonical for that import and carries the Minty CLI route inline; it hands the `gcloud`/`openssl` path, for a host whose Go toolchain cannot build it, to `k8s-operator/config/integrations/github/README.md`. For the RC, the parameters it asks for are project `kube-agents-rc` and location `us-central1` (the KMS location is `GCP_REGION` with any zone suffix stripped, so it moves if the region does), with the default `github-token-minter-keyring` and `github-token-minter-key` names.
+The App's private key is separate, because it is signing material rather than configuration and never enters Terraform state. Import it into the minter's KMS key once Ahead-Of-Time following the [upstream guide](https://github.com/abcxyz/github-token-minter#readme) (see also [`terraform/modules/github-minter/README.md`](../../terraform/modules/github-minter/README.md)). For the RC, the parameters it asks for are project `kube-agents-rc` and location `us-central1` (the KMS location is `GCP_REGION` with any zone suffix stripped, so it moves if the region does), with the default `github-token-minter-keyring` and `github-token-minter-key` names.
 
 Do not hand-create the key from the `gcloud kms keys create` in that module's Terraform without `--skip-initial-version-creation`: KMS rejects an import-only key that does not skip it, which is why `skip_initial_version_creation = true` is set on the resource and why `install.sh`'s own pre-create passes the flag.
 
@@ -131,8 +131,6 @@ gcloud kms keys versions list --key=github-token-minter-key \
   --keyring=github-token-minter-keyring --location=us-central1 \
   --project=kube-agents-rc --filter=state=ENABLED
 ```
-
-Setting an optional `GH_APP_PRIVATE_KEY` secret to the `.pem` contents is the alternative: `provision_environment.sh` writes it to a private temporary file and hands `install.sh` the path, which imports it on the first install that finds no enabled version. It exists to bootstrap an environment without a manual step, and costs an App private key living in GitHub Actions — which is why the manual import is the better of the two.
 
 ## The nightly environment
 
@@ -145,7 +143,7 @@ the composition, Helm release, and images together via `upgrade.sh --upgrade-mod
 Similarly, `autopush` receives atomic deploys through `autopush-deploy.yml` whenever container images
 are published to GHCR. Both workflows enforce atomic full upgrades, preventing image drift and
 contention.
-[`environment-reconcile.md`](../../docs/site/src/content/docs/deploy/environment-reconcile.md) is
+[`environment-reconcile.md`](../../docs/environment-reconcile.md) is
 the canonical page for that whole path.
 
 It reuses the RC pipeline's machinery unchanged. `deploy-environment.yml`, `teardown-environment.yml`,
@@ -287,7 +285,7 @@ into a more legible green outcome. Red is left to mean the machinery is broken.
 
 **Every candidate selected for GA release must carry a `staging_<ts>_<sha>` tag produced by the
 nightly pipeline** — whether released by cron or dispatched by hand. `bypass` short-circuits the
-gate job, but two steps later `verify_release_eligibility.sh` verifies staging promotion on the
+gate job, but in the publish job `verify_release_eligibility.sh` verifies staging promotion on the
 candidate commit and exits 1 if unpromoted:
 
 ```
@@ -298,6 +296,84 @@ candidate commit and exits 1 if unpromoted:
 Staging tags exist and are pushed nightly by `nightly-pipeline.yml`. The gate works as designed
 to ensure only thoroughly validated commits reach GA; `skip_staging_validation` with an audit
 reason is strictly the emergency override for hotfixes rather than a way to cut an ordinary release.
+
+### Dispatching a release by hand
+
+Before dispatching:
+
+1. The target commit exists on `main`.
+2. It carries a `staging_<ts>_<sha>` tag from the nightly promotion. An `rc_*_validated` tag is
+   not checked alongside it: a staging tag is only ever derived from a candidate that already
+   carries one.
+3. The seven release images in `REQUIRED_RELEASE_IMAGES` (`common.sh`: `k8s-operator`,
+   `platform-agent`, `credential-proxy`, `agent-sandbox`, `replay-proxy`, `pubsub-platform`,
+   `gke-stockout-investigator`) exist in GHCR under that commit.
+4. `gh`, authenticated with `repo` and `workflow` permissions (`gh auth status`).
+
+Then dispatch `release-publish.yml` from the Actions tab or the CLI:
+
+```bash
+# Standard release: the next version is calculated from Conventional Commits.
+gh workflow run release-publish.yml --repo gke-labs/kube-agents
+
+# A specific staging-promoted commit.
+gh workflow run release-publish.yml --repo gke-labs/kube-agents \
+  -f target_commit="<TARGET_COMMIT_SHA>"
+
+# An explicit version, which is how 0.y.z graduates to 1.0.0.
+gh workflow run release-publish.yml --repo gke-labs/kube-agents \
+  -f explicit_release_version="1.0.0"
+```
+
+A dispatch runs with `schedule_gate=bypass` unless told otherwise, so it publishes without the
+scheduled gate's verdict; `verify_release_eligibility.sh` still enforces staging promotion in the
+publish job. `dry-run` reports the verdict in the job summary and publishes nothing.
+
+### Emergency hotfix
+
+`skip_staging_validation: true` skips the live GKE validation gate and nothing else. It is
+reserved for two situations: a zero-day CVE in a container dependency that needs immediate
+publication, or a production regression where waiting for the next nightly promotion would
+prolong user-facing downtime.
+
+Three invariants hold under the bypass:
+
+1. `verify_release_eligibility.sh` still requires every image in `REQUIRED_RELEASE_IMAGES` to exist
+   in GHCR under `<TARGET_COMMIT>`; an unbuilt commit hard-fails.
+2. `emergency_override_reason` must carry a non-whitespace justification; an empty one aborts the
+   workflow.
+3. The target SemVer tag must not already exist on another commit; a collision aborts the release.
+
+Always pass `target_commit`. Omitting it defaults to the tip of `main` and releases every
+intervening commit without live validation:
+
+```bash
+# Version calculated automatically.
+gh workflow run release-publish.yml --repo gke-labs/kube-agents \
+  -f skip_staging_validation=true \
+  -f emergency_override_reason="CVE-2026-XXXX: critical vulnerability in base container dependencies" \
+  -f target_commit="<HOTFIX_COMMIT_SHA>"
+
+# Explicit version.
+gh workflow run release-publish.yml --repo gke-labs/kube-agents \
+  -f skip_staging_validation=true \
+  -f emergency_override_reason="Critical regression fix for gateway admission deadlock" \
+  -f target_commit="<HOTFIX_COMMIT_SHA>" \
+  -f explicit_release_version="0.3.1"
+```
+
+Afterwards:
+
+1. Confirm the release, its tag and the attached assets with `gh release view <VERSION>`. The
+   promoted images and the OCI chart are not release assets; check them separately, as the
+   scripts do, with `docker manifest inspect ghcr.io/gke-labs/kube-agents/<image>:<VERSION>` and
+   `docker manifest inspect ghcr.io/gke-labs/kube-agents/charts/kube-agents:<VERSION>`.
+2. Dispatch `rc-release-pipeline.yml` against the hotfix commit
+   (`-f commit_sha="<HOTFIX_COMMIT_SHA>"`, the same SHA passed as `target_commit`) so the full
+   GKE E2E suite runs on it. Do not pass the tagged release commit: `tag_ga_release.sh` creates a
+   stamped commit on detached HEAD that has no SHA-tagged images in GHCR, and the RC pipeline's
+   image verification fails on it.
+3. Attach the Actions run URL and the justification to the tracking issue or incident report.
 
 ### Scheduled execution & testing the gate
 

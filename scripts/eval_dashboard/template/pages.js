@@ -615,7 +615,7 @@ function beingDoneHtml(inc) {
   const lines = [];
   if (inc.tracking.length) lines.push(`<p>Tracking ${inc.tracking.map(issueLink).join(", ")}. The gate comes back on its own once the fix lands: the bot reports healthy after ${PAGE.recoveryGreenRuns} clean runs on different PRs.</p>`);
   if (inc.recovering) lines.push(`<p><b>The condition has cleared.</b> A retest is reasonable now; ${recoveryProgress(inc)} of ${PAGE.recoveryGreenRuns} clean runs on distinct PRs so far.</p>`);
-  else if (isBreak(inc) && !inc.tracking.length && !inc.past) lines.push(`<p>No issue is filed yet. File one with the <code>presubmit-gate</code> label and link this page. Demoting the case in <code>hack/ci-eval-pr.sh</code> unblocks merges while the fixture is fixed; re-admit it afterwards.</p>`);
+  else if (isBreak(inc) && !inc.tracking.length && !inc.past) lines.push(`<p>No issue is filed yet. File one with the <code>presubmit-gate</code> label and link this page. Demoting the case in <code>hack/eval/blocking-roster.txt</code> unblocks merges while the fixture is fixed; re-admit it afterwards.</p>`);
   else if (inc.condition === "storm" && !inc.past) {
     const retest = stormRetestMs(inc);
     lines.push(`<p>Wait it out${retest != null ? `: retest after ${esc(et(retest))}` : ""}. The API quota is fixed, so fewer runs at once is the only lever; a retest inside the storm loses repetitions the same way.</p>`);
@@ -845,9 +845,19 @@ function caseCard(run, c) {
     `<div class="links">${url ? `<a href="${esc(url)}">transcript (rep 1)</a>` : ""}${log ? `<a href="${esc(log)}">build log</a>` : ""}<a href="${esc(caseHref(c.case))}">this case's history</a></div></div>`;
 }
 
+// classify.py's run-level `do` for a run with no cases, as "<imperative>.
+// <why>." Bolding its own first sentence rather than prefixing one is what
+// lets the advice differ: a conflicted merge says rebase, not retest (#1608).
+function runDoHtml(text) {
+  const cut = text.indexOf(". ");
+  const lead = cut < 0 ? text : text.slice(0, cut + 1);
+  return `<li><b>${esc(lead)}</b>${cut < 0 ? "" : " " + esc(text.slice(cut + 2))}</li>`;
+}
+
 function whatToDoHtml(run) {
   const items = [];
-  if (run.setup_death || (!measured(run) && run.verdict === "infra")) items.push("<li><b>Retest.</b> " + esc(run.do || "Nothing ran, so nothing here is about your change.") + "</li>");
+  if (!measured(run) && run.do) items.push(runDoHtml(run.do));
+  else if (run.setup_death || (!measured(run) && run.verdict === "infra")) items.push("<li><b>Retest.</b> Nothing ran, so nothing here is about your change.</li>");
   else if (!measured(run) && run.verdict === "green") items.push("<li><b>Nothing.</b> The gate revalidated this branch's earlier green run.</li>");
   else if (!measured(run)) items.push("<li><b>Read the build log.</b> The failure is before the eval loop; a broken image build or deploy on this branch looks like this.</li>");
   else if (run.verdict === "green") items.push("<li><b>Nothing.</b> This run is green.</li>");

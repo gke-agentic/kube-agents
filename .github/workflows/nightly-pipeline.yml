@@ -116,7 +116,7 @@ jobs:
       needs.step-1-resolve-candidate.outputs.skip_pipeline != 'true'
     # `inherit` for the reason rc-release-pipeline.yml's step 2 records: the
     # called job declares an `environment:` and reads environment secrets
-    # (GH_APP_ID, GH_APP_PRIVATE_KEY, GEMINI_API_KEY) from it. A `uses:` job
+    # (GH_APP_ID, GEMINI_API_KEY) from it. A `uses:` job
     # cannot declare an environment, so an explicit mapping here resolves at
     # repository scope and forwards empties.
     uses: ./.github/workflows/deploy-environment.yml # zizmor: ignore[secrets-inherit]
@@ -150,9 +150,10 @@ jobs:
       # nightly run with it in the optional list.
       blocking_suite: "rc"
       # Together these cover every file `nightly` holds that `rc` does not:
-      # agentplugins_e2e_test.py, gchat_agent_test.py, and the stockout file
-      # across every scenario rather than the one the gate pins.
-      optional_suites: "agent-plugin,gchat,stockout-full"
+      # gchat_agent_test.py (run first on a quiescent cluster, matching rc-release),
+      # agentplugins_e2e_test.py, and the stockout file across every scenario
+      # rather than the one the gate pins.
+      optional_suites: "gchat,agent-plugin,stockout-full"
       # Double the RC gate's 60: the same fixed provisioning cost, but all five
       # test files rather than one suite's worth.
       timeout_minutes: 120

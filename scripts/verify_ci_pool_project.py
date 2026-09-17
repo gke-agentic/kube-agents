@@ -2,7 +2,7 @@
 """Pre-flight verification for onboarding a GCP project into the CI evaluation pool.
 
 Validates that a project has completed every prerequisite in
-docs/site/src/content/docs/deploy/ci-pool-projects.md before it is registered in
+docs/ci-pool-projects.md before it is registered in
 the Boskos resource pool in gke-internal/test-infra.
 
 Registering a project that has not finished onboarding does not fail only that
@@ -195,6 +195,18 @@ AR_PULLER_ROLES = AR_WRITER_ROLES | {"roles/artifactregistry.reader"}
 # without it -- until a lease of -6 died on gke-labs/kube-agents#966 with
 # `Required "container.clusters.get" permission(s)`.
 PROW_RUNNER_MEMBER = "serviceAccount:prowjob-default-sa@kube-agents-prow.iam.gserviceaccount.com"
+
+# The second identity that borrows seeded-fleet-reader: the CI health bot's
+# hourly seeded-fleet scan (.github/workflows/ci-health.yml, docs/ci-health.md
+# "The seeded-fleet scan") runs as eval-dashboard-publisher@kube-agents-prow and
+# impersonates the reader in every pool project. Without the grant the scan
+# reports the project as "not checked" and fixture drift there goes unseen.
+CI_HEALTH_BOT_MEMBER = "serviceAccount:eval-dashboard-publisher@kube-agents-prow.iam.gserviceaccount.com"
+
+# Every member that must hold roles/iam.serviceAccountTokenCreator on the
+# fleet reader. Kept equal to bench/tf/fleet's `fleet_reader_token_creators`
+# default by scripts/test_verify_ci_pool_project.py.
+FLEET_READER_TOKEN_CREATORS = (PROW_RUNNER_MEMBER, CI_HEALTH_BOT_MEMBER)
 
 # The set kube-agents-evals holds, matched literally rather than by permission.
 # Not minimal -- container.admin subsumes container.developer, viewer subsumes
@@ -1000,18 +1012,26 @@ def check_iam_and_service_accounts(project_id: str, project_number: str) -> Chec
         fleet_reader_checked = True
         try:
             policy = _load_json(out)
-            token_creator_bound = any(
-                b.get("role") == "roles/iam.serviceAccountTokenCreator"
-                and PROW_RUNNER_MEMBER in b.get("members", [])
-                for b in policy.get("bindings", [])
-            )
-            if not token_creator_bound:
+            token_creators = set()
+            for b in policy.get("bindings", []):
+                if b.get("role") == "roles/iam.serviceAccountTokenCreator":
+                    token_creators.update(b.get("members", []))
+            if PROW_RUNNER_MEMBER not in token_creators:
                 passed = False
                 details.append(
                     f"The Prow runner ({PROW_RUNNER_MEMBER.split(':', 1)[1]}) is missing "
                     f"roles/iam.serviceAccountTokenCreator on {fleet_reader_email}, so every "
                     f"fleet check in this project runs under the runner's own read-write "
                     f"credential. Re-apply bench/tf/fleet against {project_id}."
+                )
+            if CI_HEALTH_BOT_MEMBER not in token_creators:
+                passed = False
+                details.append(
+                    f"The CI health bot ({CI_HEALTH_BOT_MEMBER.split(':', 1)[1]}) is missing "
+                    f"roles/iam.serviceAccountTokenCreator on {fleet_reader_email}, so its hourly "
+                    f"seeded-fleet scan reports {project_id} as not checked and fixture drift "
+                    f"there goes unseen. Re-apply bench/tf/fleet against {project_id}, or run "
+                    f"the grant in docs/ci-health.md (The seeded-fleet scan)."
                 )
         except Exception as exc:
             passed = False
@@ -2029,7 +2049,7 @@ def check_ledger_read_credential(project_id: str, timeout: int = 15) -> CheckRes
             return CheckResult(name, False, "Ledger issues not readable", details=[
                 f"App {LEDGER_APP_ID} cannot see {repo_slug} at all (404). Its installation is "
                 "repository_selection: selected, so add this repository to it -- see section 5.4 "
-                "of deploy/ci-pool-projects.md. (The same 404 covers a repository that does not "
+                "of docs/ci-pool-projects.md. (The same 404 covers a repository that does not "
                 "exist; the check above settles which.)"
             ])
         return CheckResult(name, True, "Not checked", warnings=[

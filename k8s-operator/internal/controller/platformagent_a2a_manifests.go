@@ -120,6 +120,13 @@ const (
 	// agree, so they read from one name rather than four string literals.
 	a2aProvisionWritablePath = "/tmp"
 
+	// The two third-party pins. images.json carries both (as `nats` and
+	// `nats-box`), and hack/check-image-inventory.sh holds these constants
+	// to it on the normalised reference, so a bump starts there. The short
+	// Docker Hub spelling stays: it is the string the operator renders, and
+	// qualifying it to docker.io/library/... would change the pod template
+	// on every running next install, rolling the NATS pod and minting a new
+	// provision Job for the same image.
 	a2aNATSImageEnvVar      = "A2A_NATS_IMAGE"
 	defaultA2ANATSImage     = "nats:2.10-alpine"
 	a2aProvisionImageEnvVar = "A2A_PROVISION_IMAGE"
@@ -130,24 +137,35 @@ const (
 	// registry; graduation moves this to the release pipeline alongside the
 	// other first-party images.
 	//
-	// None of the A2A images are in images.json, deliberately: the inventory
-	// documents what a SUPPORTED install pulls, and mode next is an
-	// unsupported dev toggle. That exemption is graduation debt alongside the
-	// registry move — a mirrored or air-gapped install that flips next must
-	// override every one of them via the env vars until then. There are five
-	// now: NATS, provision, gateway, worker, and the auth callout
-	// (A2A_CALLOUT_IMAGE, in platformagent_a2a_callout.go).
+	// The first-party A2A images — this one, the worker below and the auth
+	// callout (A2A_CALLOUT_IMAGE, platformagent_a2a_callout.go) — are not in
+	// images.json, deliberately: this repo builds them and publishes them
+	// only from that dev registry, off the release pipeline the inventory's
+	// first-party entries are copied from. That exemption is graduation debt
+	// alongside the registry move (#1557) — a mirrored or air-gapped install
+	// that flips next must override each of them via the env vars until then.
 	defaultA2AGatewayImage = "northamerica-northeast1-docker.pkg.dev/bnaylor-kagents-dev/a2a-demo/gateway:latest"
 
-	// The session-pod image, on the same terms as the others. The
+	// The session-pod image, on the same terms as the gateway above. The
 	// gateway binary carries this same default of its own (gateway/config.go),
 	// which is what a gateway run outside the operator falls back to; the
 	// operator renders the env unconditionally so that the override exists
 	// wherever the operator is what installed the gateway. Arming spawning
 	// without it would mean an install that flips next pulls an image no
 	// operator input can redirect.
-	a2aWorkerImageEnvVar  = "A2A_WORKER_IMAGE"
-	defaultA2AWorkerImage = "northamerica-northeast1-docker.pkg.dev/bnaylor-kagents-dev/a2a-demo/worker-next:latest"
+	a2aWorkerImageEnvVar = "A2A_WORKER_IMAGE"
+
+	// a2aStrictEventsWriterEnvVar is read from the CONTROLLER's environment
+	// and rendered onto the gateway, the same override shape as the worker
+	// image above. It exists so that tightening the `…events` writer-class
+	// agreement check from advisory to refusal is an operator action rather
+	// than a code change: the check must stay advisory for one TASKS
+	// retention window after an install takes the supervisor subject split,
+	// because until then the stream still holds supervisor terminals written
+	// on `…events` before it, and refusing those folds every recent task
+	// non-terminal. A flip that needed a new image would not get made.
+	a2aStrictEventsWriterEnvVar = "A2A_STRICT_EVENTS_WRITER"
+	defaultA2AWorkerImage       = "northamerica-northeast1-docker.pkg.dev/bnaylor-kagents-dev/a2a-demo/worker-next:latest"
 
 	// a2aConfigHashPlaceholder is the stand-in a2aConfigRolloutHash puts where
 	// each password goes when it re-renders nats.conf for hashing. It carries
@@ -259,6 +277,16 @@ func a2aWorkerImage() string {
 		return override
 	}
 	return defaultA2AWorkerImage
+}
+
+// a2aStrictEventsWriter renders "false" for anything but an explicit "true",
+// so a typo relaxes rather than tightens - the safe direction here, because
+// the tight setting is the one that can refuse legitimate history.
+func a2aStrictEventsWriter() string {
+	if os.Getenv(a2aStrictEventsWriterEnvVar) == "true" {
+		return "true"
+	}
+	return "false"
 }
 
 func a2aNATSName(agent *agentv1alpha1.PlatformAgent) string    { return agent.Name + "-a2a-nats" }
@@ -1682,6 +1710,14 @@ func buildA2AGatewayDeployment(agent *agentv1alpha1.PlatformAgent) *appsv1.Deplo
 							// when it matches the gateway's own default, so
 							// the operator-side override reaches it.
 							{Name: "A2A_WORKER_IMAGE", Value: a2aWorkerImage()},
+							// Rendered explicitly at its default, like
+							// A2A_MAX_SESSIONS above: a reader of the live
+							// Deployment can see which posture the events
+							// writer-class check is in without knowing the
+							// gateway binary's default, and the flip after
+							// the retention window is an edit to a value
+							// that is already there.
+							{Name: a2aStrictEventsWriterEnvVar, Value: a2aStrictEventsWriter()},
 							// The namespace from the downward API, not a baked
 							// default: the boot-time owner resolution below
 							// reads the gateway's own Deployment in THIS

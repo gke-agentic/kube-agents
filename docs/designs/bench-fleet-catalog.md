@@ -65,11 +65,11 @@ eventually resolves it.
 Every project in the Boskos pool carries a fleet and keeps its own state bucket. Which
 projects those are is not repeated here, because a count written into prose goes stale the
 next time a project is onboarded and nothing fails when it does. Two lists hold it and they
-are not the same list: the table in
-[CI pool project prerequisites](../site/src/content/docs/deploy/ci-pool-projects.md) is every
-project this codebase maps to a GitOps repository, while the leasable roster is
-`gke-internal/test-infra`. A project is mapped before it is registered, so the table runs
-ahead.
+are not the same list: `gitops_repo_for_project()` in `hack/ci-deploy.sh` (see
+[CI pool project prerequisites](../ci-pool-projects.md)) is every
+project this codebase maps to a GitOps repository, while the leasable roster is the Boskos
+configuration in Google's internal test-infra repository. A project is mapped before it is
+registered, so the mapping runs ahead.
 
 The live audit behind this document covered `kube-agents-evals` and `kube-agents-evals-2`.
 `kube-agents-evals-3` predates `scripts/provision_ci_pool_project.sh`; every project from
@@ -85,7 +85,7 @@ So the rule is that the fleet stack is applied to every project in the pool befo
 fleet-dependent case activates, and a project added to the pool later is not lease-eligible
 until its fleet is applied. Nothing in the harness checks it, so it belongs on the
 pool-project onboarding checklist in
-[CI pool project prerequisites](../site/src/content/docs/deploy/ci-pool-projects.md),
+[CI pool project prerequisites](../ci-pool-projects.md),
 whose own rule is that the project is registered last.
 
 ## The roles

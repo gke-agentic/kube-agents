@@ -15,5 +15,4 @@ Pages in this section:
 - [**Release versioning & promotion**](/kube-agents/deploy/release-versioning/) — how candidate builds are promoted to SemVer releases across Docker images, Helm charts, and Terraform modules.
 - [**Telemetry**](/kube-agents/deploy/telemetry/) — OpenTelemetry + Prometheus + Cloud Logging.
 - [**GitOps with ArgoCD**](/kube-agents/deploy/gitops-argocd/) — standing up the reconciler that applies what the agent proposes.
-- [**CI pool project prerequisites**](/kube-agents/deploy/ci-pool-projects/) — prerequisites and setup for GCP projects in the Boskos evaluation pool.
-- [**Reconciling the long-lived environments**](/kube-agents/deploy/environment-reconcile/) — keeping `autopush` and `staging` in step with the composition rather than only re-tagging their images.
+- [**Rolling back a release**](/kube-agents/deploy/rollback/) — moving an install from GA release N back to N-1 with the N-1 checkout's `upgrade.sh`, and what that leaves in place.

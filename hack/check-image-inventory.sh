@@ -224,14 +224,30 @@ jq -r '.images[] | select(.tagFrom) | "\(.name)\t\(.tagFrom.file)\t\(.tagFrom.ke
   done || status=1
 
 # ---------------------------------------------------------------------------
-# 2. The fluent-bit pin compiled into the operator. It is the only image the
-#    operator falls back to without an env var, so a drift here mirrors the
-#    wrong tag with nothing to catch it at render time.
+# 2. The pins compiled into the operator. Each is an image the operator falls
+#    back to when its env var is unset, so a drift here mirrors the wrong tag
+#    with nothing to catch it at render time. fluent-bit reaches every agent
+#    pod. nats and nats-box reach only a `spec.mode: next` install, which no
+#    chart render in check 3 turns on, so this is the only check that sees
+#    them (#1557). The constants keep Docker Hub's short spelling because that
+#    is the string the operator renders into the pod template; the comparison
+#    is on the normalised form, the same way check 1 reads a Dockerfile ARG.
+#    The first-party next defaults (gateway, worker, callout) fit the same
+#    description and are deliberately not here: they are not inventory
+#    entries, so there is nothing to hold them to until the stack graduates.
 # ---------------------------------------------------------------------------
-want_fluent="$(normalise "$(repo_of fluent-bit)"):$(pin_of fluent-bit)"
-got_fluent="$(sed -n 's/.*fallbackFluentBitImage = "\(.*\)".*/\1/p' k8s-operator/internal/controller/manifest_helpers.go)"
-[ "$(normalise "$got_fluent")" = "$want_fluent" ] ||
-  fail "k8s-operator/internal/controller/manifest_helpers.go: fallbackFluentBitImage is '$got_fluent', but $INVENTORY has '$want_fluent'."
+check_operator_pin() {
+  local name=$1 gofile=$2 constant=$3
+  local want got
+  want="$(normalise "$(repo_of "$name")"):$(pin_of "$name")"
+  got="$(sed -n "s/^[[:space:]]*${constant}[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$gofile" | head -n1)"
+  [ "$(normalise "$got")" = "$want" ] ||
+    fail "$gofile: $constant is '${got:-<unset>}', but $INVENTORY has '$want' for '$name'."
+}
+
+check_operator_pin fluent-bit k8s-operator/internal/controller/manifest_helpers.go fallbackFluentBitImage
+check_operator_pin nats k8s-operator/internal/controller/platformagent_a2a_manifests.go defaultA2ANATSImage
+check_operator_pin nats-box k8s-operator/internal/controller/platformagent_a2a_manifests.go defaultA2AProvisionImage
 
 # ---------------------------------------------------------------------------
 # 3. The chart. Rendering it is the only way to see what it actually pulls:
@@ -397,10 +413,12 @@ check_mirror_names() {
   done <<<"$images"
 }
 
-# The images in the first list that the second does not carry. Both come out
-# of image_refs, so both are sorted and deduplicated.
+# The images in the first list that the second does not carry.
+# Precondition: requires both inputs to be sorted and deduplicated under matching
+# collation (as produced by image_refs' sort -u) for comm -23 to perform a correct
+# sorted merge.
 added_images() {
-  grep -Fxv -f <(printf '%s\n' "$2") <<<"$1" || true
+  comm -23 <(printf '%s\n' "$1" | sed '/^$/d') <(printf '%s\n' "$2" | sed '/^$/d')
 }
 
 # An off-by-default chart toggle: rendered unmirrored and mirrored on top of

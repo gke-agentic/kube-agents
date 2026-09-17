@@ -196,6 +196,16 @@ the same layout and is collected from the moment it starts running.
   over by `--merge-with` keep whatever they have (older documents have
   none).
 
+- `merge_conflict` — **optional, additive**: `true` when the zero-task
+  `FAILURE` was a pull request that would not merge into its base rather than
+  a setup crash (#1608). One read of `clone-records.json`, for the zero-task
+  `FAILURE` subset of the builds `podinfo.json` is read for, and skipped when
+  that read already said no log was uploaded: `true` when a record carrying
+  `pulls` has `failed: true` and a `git merge` command that both errored and
+  printed `CONFLICT`. A merge that failed any other way is `false` — a full
+  disk fails the merge too, and that is the pool's problem. Absent means
+  unknown and reads as a setup crash, as it did before the field existed.
+
 A truncated log yields a **partial run** (fewer tasks, fallback duration),
 never an error. A task line whose name matches nothing under `bench/tasks/`
 on the current checkout still parses; only its domain lookup degrades (see
@@ -213,14 +223,14 @@ side.
   `bench/tasks/<name>/task.yaml` **on the checkout the collector runs
   from**; `"unknown"` for a historical task with no yaml (renamed or
   deleted). Never a crash.
-- `active` — `true` iff the name is an **uncommented** entry in
-  `hack/ci-eval-pr.sh`'s `TASKS` array (same textual parse as
+- `active` — `true` iff the name is an entry in
+  `hack/eval/presubmit-cases.txt` (the same parse, `scripts/eval_rosters.py`, as
   `scripts/test_domain_coverage.py`). Historical-only cases are kept with
   `active: false`.
 - `nightly_active` — **optional, additive**: `true` iff the name is an
-  uncommented entry in `TASKS` **or** `NIGHTLY_TASKS` — the nightly matrix
-  is the presubmit's superset (`EVAL_TIER=nightly` appends the second
-  array). `active` implies `nightly_active`; the Cases page's "nightly
+  entry in `hack/eval/presubmit-cases.txt` **or** `hack/eval/nightly-cases.txt`
+  — the nightly matrix is the presubmit's superset (`EVAL_TIER=nightly`
+  appends the second file). `active` implies `nightly_active`; the Cases page's "nightly
   only" status is `nightly_active and not active`.
 - `runs_on_record` — total task appearances across presubmit runs, `infra`
   included (it is history).
@@ -260,8 +270,10 @@ Additive, optional, and safe to omit — consumers must default them.
   index pointer that could not be read this scan, so
   they are not in `runs[]` and do not raise the watermark. Entries are
   `{"build_id": "<id>", "first_seen": "<iso8601>"}`, plus `"tier": "nightly"`
-  when the nightly periodic's listing named the build (absent: the
-  presubmit's, as for `runs[].tier`; the tag is kept across scans), lowest
+  and `"log_url"` (Spyglass's page for the build directory, as for
+  `runs[].log_url`) when the nightly periodic's listing named the build
+  (absent: the presubmit's, as for `runs[].tier`; both are kept across
+  scans), lowest
   id first; `first_seen` is when the collector first listed the build. The next
   incremental scan re-reads exactly these ids even though they sit at or
   below the watermark, and drops an entry once it is recorded or once
@@ -344,6 +356,13 @@ what the renderer does with them.
 - `runs[].eval_verdict` — `GREEN` | `RED` | `null`: the Nightly report reads
   it; a night that is not a `SUCCESS` and carries `null` was ended before
   its verdict and is reported as truncated. Absent means unknown.
+- `runs[].log_url` — nightly runs only: Spyglass's page for the build
+  directory the collector listed
+  (`https://oss.gprow.dev/view/gs/<bucket>/logs/<job>/<build>`), so the
+  Nightly report's links follow whichever bucket the nightly logs to.
+  Absent on a nightly record means it predates the field and was read from
+  the bucket the nightly used before 2026-09-15, `gs://kube-agents-prow`;
+  `nightly.py` links it there.
 - `runs[].has_build_log`, `runs[].pod_*` — a zero-task `FAILURE` with
   `pod_last_event: "NodeNotReady"` or `has_build_log: false` is a **lost
   pod**: `classify.py` gives it its own run-level headline (`infra`, never
@@ -351,6 +370,11 @@ what the renderer does with them.
   never as a setup death, and `gate_comment.py` leaves the one-line "run
   lost" comment on its pull request. Absent fields make none of that
   happen.
+- `runs[].merge_conflict` — `true` makes the same zero-task `FAILURE` the
+  branch's own: `classify.py` verdicts it `red` with a rebase as the `do`,
+  and `health.py` excludes it from `setup_deaths` and `infra_reds`.
+  `gate_comment.py` does not read it; no comment is left either way.
+  Absent reads as a setup crash.
 
 ### `coverage` — from `docs/designs/domains.yaml`
 
@@ -390,15 +414,20 @@ what the renderer does with them.
   names every build and the watermark filter runs on it directly. Every
   build read through it is `tier: "nightly"`, `pr: null`, `job` the
   prefix's last segment (or `--nightly-job`). Given without a value it is
-  `gs://kube-agents-prow/logs/ci-kube-agents-eval-nightly/`; omitted, no
+  `gs://kube-agents-evals-nightly-logs/logs/ci-kube-agents-eval-nightly/`
+  (the nightly's own bucket; the presubmit and the RC lane stay on the
+  cluster default `gs://kube-agents-prow`); omitted, no
   nightly scan happens (`--merge-with` alone still recomputes without
-  touching the bucket). A prefix that does not list is read by whether a
-  night is already on record. With none (no nightly watermark) the
-  periodic may simply not have run yet, so that is a
+  touching the bucket). A prefix that does not list is read three ways. A
+  prefix with no objects (`gsutil` says "matched no objects") is a job
+  that has not run there yet — before its first night, or after its bucket
+  moved while nights from the old one are on record — so that is a
   `note: nightly prefix ... did not list` line and no nightly runs this
   scan, **not** the refusal line below: the nightly is evidence beside the
   gate, and a missing night must not stop the gate's dashboard from
-  publishing. With a night on record it is a
+  publishing. Any other failure with no night on record (no nightly
+  watermark) is the same note: the periodic may simply not exist yet. With
+  a night on record, any other failure is a
   `warning: gsutil ls failed for ...` line — the refusal line — because a
   prefix that listed yesterday and not today is the bucket or the grant
   failing, and republishing would freeze the nightly record under a fresh
@@ -408,7 +437,7 @@ what the renderer does with them.
 - `--nightly-job <name>` — the `job` recorded on nightly runs; default
   derived from the prefix.
 - `--from-dir <dir>` — local `<build_id>/` subdirectories with the same
-  three files; the offline/testing path. Its runs are the presubmit with
+  files; the offline/testing path. Its runs are the presubmit with
   `job: null`.
 - `--rc-glob <gs glob>` (repeatable) / `--rc-from-dir <dir>` — the same two
   shapes for `post-kube-agents-eval-rc`, collected into `releases[]` rather
@@ -554,8 +583,8 @@ when none did — evidence about `main`, shown beside the case, never a tag.
 
 `cases{}` is, per case, `{active, nightly_active, admitted, domain, status,
 demoted_on, note, issues[], rates, strip[], last_failure}`. `status` is
-`blocking` (active and in `BOOTSTRAP_ADMITTED`), `held_out` (active, off
-the roster), `demoted` (held out, with `demoted_on` read from the hold-out
+`blocking` (active and in `hack/eval/blocking-roster.txt`), `held_out`
+(active, off the roster), `demoted` (held out, with `demoted_on` read from the hold-out
 entry in `docs/eval-gate-roster.md` that says `demoted YYYY-MM-DD`),
 `nightly_only`, or `retired` (in neither matrix on this checkout); an
 unreadable roster reads every active case as `blocking`, over-reporting
@@ -609,7 +638,9 @@ is every `fail` tonight that was not `fail` on `previous_build`, the night
 before it on record (the one past the window included), `fixed` every
 `fail` then that is `pass` now; both `[]` on the first night, when
 `previous_build` is `null`. `log_url` and `transcript_url` point at
-Spyglass under `logs/<job>/<build>`, a periodic's path. The nights are
+Spyglass under `logs/<job>/<build>`, a periodic's path, in the bucket the
+run's `runs[].log_url` names (without it: `gs://kube-agents-prow`, the
+bucket before 2026-09-15). The nights are
 never in `runs[]`. `running[]` is the nightly's entries of `pending_builds`
 first seen inside `RUNNING_MAX_AGE` (9 hours: the periodic's 8-hour budget
 and Prow's time to write `finished.json`) of `generated_at`, oldest first,
@@ -621,7 +652,7 @@ block, the report page and the digest say instead of "no night".
 `health.json` is the CI health adjudicator's verdict, published beside
 `data.json` (nothing in this directory writes it); the fields read are
 `state` (`GREEN|DEGRADED|OUTAGE`), `condition`
-(`shared_break|storm|setup_deaths|lost_pods`), `since`, `cause`, `advice`,
+(`shared_break|storm|setup_deaths|lost_pods|fixture_drift`), `since`, `cause`, `advice`,
 `failing_cases`, `tracking_issues`, `incident`, `recovering`, `stale`,
 `slow`, `generated_at`, `tick`. Any other state, or an unreadable file, means no
 verdict: the Brief says no verdict is published and shows the last 24
@@ -632,7 +663,12 @@ it}`) and `event` (`true` when the loss counts as a build-cluster event);
 the pages give it the same 2-hour lead on the Brief's window as a storm and
 a run-page banner of its own, and otherwise show the generic degraded
 headline. `issue` (`{number, url}`) may carry `condition`, the one it was
-filed for. `slow` is `null` or, on a `GREEN` tick, the slow-gate note
+filed for. `fixture_drift` (the hourly seeded-fleet scan found a fixture
+role out of its designed state; docs/ci-health.md, "The seeded-fleet scan")
+carries `roles`, `projects` and `drift` in its `incident` and a
+`fixture_state` block beside `metrics`; the pages show it as the generic
+degraded headline, and `fixture-state.json` beside `health.json` is the
+scan's own document, which no page reads. `slow` is `null` or, on a `GREEN` tick, the slow-gate note
 (`{since, runs, min_s, median_s, max_s, baseline_days, baseline_runs,
 baseline_p50_s, baseline_p90_s, infra_reps}`, `docs/ci-health.md`, "A slow
 gate"); the pages read `since`, `runs`, `median_s`, `baseline_p50_s` and
@@ -676,12 +712,14 @@ token observed in the wild (`pass`, `fail`, `infra`, `blocked`):
 zero-task shapes the health adjudicator has to tell apart. `started.json` /
 `finished.json` are verbatim; `podinfo.json` is trimmed to the pod's
 metadata, node, phase, container states and events (the values are real);
-PR 1446's build log keeps the clone header and the failing tail:
+PR 1446's build log keeps the clone header and the failing tail, and its
+`clone-records.json` keeps every field the parser reads, with only the long
+`git` transcripts in `output` cut short:
 
-| build               | why it is here                                                                                    |
-| ------------------- | ------------------------------------------------------------------------------------------------- |
-| 2098383791838990336 | PR 1118 — node went NotReady 2h08m in; no build-log.txt; `has_build_log: false`                   |
-| 2098418565454499840 | PR 1446 — clone failed (merge conflict) in 0 s; log present, last event `Started`, phase `Failed` |
+| build               | why it is here                                                                                                             |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| 2098383791838990336 | PR 1118 — node went NotReady 2h08m in; no build-log.txt; `has_build_log: false`                                            |
+| 2098418565454499840 | PR 1446 — clone failed (merge conflict) in 0 s; log and `clone-records.json` present, last event `Started`, phase `Failed` |
 
 `testdata_rc/` holds one **real** `post-kube-agents-eval-rc` build — the
 release-candidate job, which is a postsubmit, so its `started.json` carries no
@@ -714,8 +752,11 @@ its `trimmed` key records the source and the cut. Six of its zero-task runs
 carry `result: "failure"` in lowercase, as Prow wrote them on 2026-09-05 —
 the one departure from the `result` vocabulary above seen in the wild, so
 consumers compare it case-insensitively. `testdata_health/roster-history.json` is the
-`BOOTSTRAP_ADMITTED` roster per era over the same week, taken from the
-commits that changed it. Together they are the replay fixture
+blocking roster per era over the same week, taken from the commits that
+changed it (the `BOOTSTRAP_ADMITTED` line of `hack/ci-eval-pr.sh` then;
+`hack/eval/blocking-roster.txt` since 2026-09-15 — `health.Roster.from_file`
+reads the file and `health.Roster.from_script_text` the old line, so an era
+from before the move is taken from the script at that commit). Together they are the replay fixture
 `scripts/test_eval_dashboard_health.py` asserts the week's incident
 timeline against. `testdata_health/lost-pods-2026-09-11.json.gz` is the same
 cut of the published `data.json` for 2026-09-11 (#1478) — the day five build
