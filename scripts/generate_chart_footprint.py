@@ -283,6 +283,9 @@ def parse_cpu_millis(val: str | int | float) -> int:
         return 0
     if val.endswith("m"):
         return int(float(val[:-1]))
+    for unit, mult in _DECIMAL_SI_UNITS.items():
+        if val.endswith(unit):
+            return int(float(val[: -len(unit)]) * mult * _MILLICORES_PER_CORE)
     return int(float(val) * _MILLICORES_PER_CORE)
 
 
@@ -618,7 +621,7 @@ def main():
 
     try:
         data = extract_footprint()
-    except (OSError, ValueError, yaml.YAMLError) as err:
+    except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError) as err:
         # Not drift: the check could not be performed at all, and the fix is a different
         # one. OSError covers the golden being absent and being unreadable alike; both
         # leave the generator with nothing to compare, and neither is fixed by re-syncing.

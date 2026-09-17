@@ -113,6 +113,7 @@ _EPHEMERAL_SET_GIB = 3
 # next install, to be reused by name rather than created again.
 _RETAINED_PVC_COUNT = 2
 _RETAINED_STORAGE_GIB = 11
+_MILLICORES_PER_CORE = 1000
 
 
 def _parse_gib_or_mib(quantity: str) -> int:
@@ -121,6 +122,13 @@ def _parse_gib_or_mib(quantity: str) -> int:
         if quantity.endswith(suffix):
             return int(quantity.removesuffix(suffix)) * multiplier
     return int(quantity)
+
+
+def _format_cpu(millis: int) -> str:
+    """Format millicores matching kube-agents.formatCpu."""
+    if millis and millis % _MILLICORES_PER_CORE == 0:
+        return str(millis // _MILLICORES_PER_CORE)
+    return f"{millis}m"
 
 _REQUIRED_HARNESS = [
     "--set",
@@ -689,8 +697,11 @@ class PreflightDecisionTest(unittest.TestCase):
         required = self._requirements()
         res = self._render({"probe": {"quotas": [self._quota({"requests.cpu": "100m"})]}})
         self.assertNotEqual(res.returncode, 0)
+        expected_patch_cpu = _format_cpu(
+            required["requestsCpu"] + _LARGEST_SURGING_REQUEST_MILLIS
+        )
         self.assertIn(
-            f'"requests.cpu":"{required["requestsCpu"] + _LARGEST_SURGING_REQUEST_MILLIS}m"',
+            f'"requests.cpu":"{expected_patch_cpu}"',
             res.stderr,
             "the patch must be sized for the largest pod that actually surges",
         )
@@ -703,8 +714,11 @@ class PreflightDecisionTest(unittest.TestCase):
             {"probe": {"quotas": [self._quota({"requests.cpu": "100m"})]}}, sets
         )
         self.assertNotEqual(res.returncode, 0)
+        expected_patch_cpu = _format_cpu(
+            required["requestsCpu"] + _AGENT_POD_REQUEST_MILLIS
+        )
         self.assertIn(
-            f'"requests.cpu":"{required["requestsCpu"] + _AGENT_POD_REQUEST_MILLIS}m"',
+            f'"requests.cpu":"{expected_patch_cpu}"',
             res.stderr,
             "an HA gateway's rollout needs room for an agent pod",
         )
@@ -740,6 +754,73 @@ class PreflightDecisionTest(unittest.TestCase):
         self.assertIn(
             f'"count/persistentvolumeclaims":"{_OPERATOR_PVC_COUNT}"', res.stderr
         )
+
+    def test_limits_cpu_shortfall_is_enforced(self) -> None:
+        """A quota deficient in limits.cpu must be refused and named in the patch."""
+        res = self._render(
+            {"probe": {"quotas": [self._quota({"limits.cpu": "100m"})]}}
+        )
+        self.assertNotEqual(res.returncode, 0, "a too-small limits.cpu quota must fail")
+        self.assertIn("  - limits.cpu:", res.stderr)
+        self.assertIn('"limits.cpu":"10700m"', res.stderr)
+
+    def test_limits_memory_shortfall_is_enforced(self) -> None:
+        """A quota deficient in limits.memory must be refused and named in the patch."""
+        res = self._render(
+            {"probe": {"quotas": [self._quota({"limits.memory": "100Mi"})]}}
+        )
+        self.assertNotEqual(res.returncode, 0, "a too-small limits.memory quota must fail")
+        self.assertIn("  - limits.memory:", res.stderr)
+        self.assertIn('"limits.memory":"22016Mi"', res.stderr)
+
+    def test_limits_ephemeral_storage_shortfall_is_enforced(self) -> None:
+        """A quota deficient in limits.ephemeral-storage must be refused and named in the patch."""
+        res = self._render(
+            {"probe": {"quotas": [self._quota({"limits.ephemeral-storage": "100Mi"})]}}
+        )
+        self.assertNotEqual(
+            res.returncode, 0, "a too-small limits.ephemeral-storage quota must fail"
+        )
+        self.assertIn("  - limits.ephemeral-storage:", res.stderr)
+        self.assertIn('"limits.ephemeral-storage":"5Gi"', res.stderr)
+
+    def test_shorthand_cpu_spelling_is_enforced(self) -> None:
+        """`cpu` is the shorthand spelling for `requests.cpu` and must be checked."""
+        res = self._render(
+            {"probe": {"quotas": [self._quota({"cpu": "100m"})]}}
+        )
+        self.assertNotEqual(res.returncode, 0, "a too-small cpu shorthand quota must fail")
+        self.assertIn("  - cpu:", res.stderr)
+        self.assertIn('"cpu":"2166m"', res.stderr)
+
+    def test_shorthand_memory_spelling_is_enforced(self) -> None:
+        """`memory` is the shorthand spelling for `requests.memory` and must be checked."""
+        res = self._render(
+            {"probe": {"quotas": [self._quota({"memory": "100Mi"})]}}
+        )
+        self.assertNotEqual(res.returncode, 0, "a too-small memory shorthand quota must fail")
+        self.assertIn("  - memory:", res.stderr)
+        self.assertIn('"memory":"5504Mi"', res.stderr)
+
+    def test_shorthand_ephemeral_storage_spelling_is_enforced(self) -> None:
+        """`ephemeral-storage` is the shorthand spelling for `requests.ephemeral-storage`."""
+        res = self._render(
+            {"probe": {"quotas": [self._quota({"ephemeral-storage": "100Mi"})]}}
+        )
+        self.assertNotEqual(
+            res.returncode, 0, "a too-small ephemeral-storage shorthand quota must fail"
+        )
+        self.assertIn("  - ephemeral-storage:", res.stderr)
+        self.assertIn('"ephemeral-storage":"5Gi"', res.stderr)
+
+    def test_shorthand_storage_spelling_is_enforced(self) -> None:
+        """`storage` is the shorthand spelling for `requests.storage`."""
+        res = self._render(
+            {"probe": {"quotas": [self._quota({"storage": "1Gi"})]}}
+        )
+        self.assertNotEqual(res.returncode, 0, "a too-small storage shorthand quota must fail")
+        self.assertIn("  - storage:", res.stderr)
+        self.assertIn('"storage":"22Gi"', res.stderr)
 
     def test_the_install_patch_for_claims_does_not_double_count_retained_used(self) -> None:
         """Retained claims sitting in `used` on install must not double the suggested patch."""
@@ -911,16 +992,22 @@ class QuotaPreflightTest(unittest.TestCase):
         self.assertEqual(res.returncode, 0, f"the bypass must render:\n{res.stderr}")
 
         helpers = _HELPERS.read_text()
-        body = helpers.split('define "kube-agents.quotaPreflight"')[1].split("{{- end }}")[0]
-        match = re.search(
-            r"\{\{-\s*if\s+\.Values\.quotaPreflight\.enabled\s*-\}\}(.*?)\{\{-\s*end\s*-?\}\}",
-            body,
-            re.DOTALL,
+        body = (
+            helpers.split('define "kube-agents.quotaPreflight" -}}')[1]
+            .split("{{- end }}")[0]
+            .strip()
         )
-        self.assertIsNotNone(match, "expected if .Values.quotaPreflight.enabled guard block")
+        self.assertTrue(
+            body.startswith("{{- if .Values.quotaPreflight.enabled -}}"),
+            "quotaPreflight must begin with the enabled guard",
+        )
+        self.assertTrue(
+            body.endswith("{{- end -}}"),
+            "quotaPreflight must be closed by the enabled guard end",
+        )
         self.assertIn(
             "lookup",
-            match.group(1),
+            body,
             "the lookup must sit inside the enabled guard, or the flag cannot help a "
             "deployer who lacks permission to perform it",
         )

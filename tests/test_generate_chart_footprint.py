@@ -215,6 +215,8 @@ class ParseQuantityTest(unittest.TestCase):
         self.assertEqual(gcf.parse_bytes("1.5Gi"), int(1.5 * _GIB))
         self.assertEqual(gcf.parse_cpu_millis("500.5m"), 500)
         self.assertEqual(gcf.parse_cpu_millis("1e1"), 10000)
+        self.assertEqual(gcf.parse_cpu_millis("1k"), 1000000)
+        self.assertEqual(gcf.parse_cpu_millis("2M"), 2000000000)
 
     def test_a_declared_zero_request_is_not_replaced_by_the_limit(self):
         """`if not val` called a declared 0 absent and charged the limit in its place."""
