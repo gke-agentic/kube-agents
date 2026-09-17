@@ -81,6 +81,12 @@ _SANDBOX_SSH_KEY_CONTAINER = "sandbox-ssh-key"
 _KIND_STATEFULSET = "StatefulSet"
 _KIND_DEPLOYMENT = "Deployment"
 _KIND_PVC = "PersistentVolumeClaim"
+_KIND_DAEMONSET = "DaemonSet"
+_KIND_REPLICASET = "ReplicaSet"
+_KIND_REPLICATION_CONTROLLER = "ReplicationController"
+_KIND_JOB = "Job"
+_KIND_CRON_JOB = "CronJob"
+_KIND_POD = "Pod"
 
 # Kinds that put pods on a cluster. Every golden document of one of these has to reach the
 # footprint or be ignored on purpose; _check_completeness is what enforces that.
@@ -88,20 +94,26 @@ _POD_BEARING_KINDS = frozenset(
     {
         _KIND_DEPLOYMENT,
         _KIND_STATEFULSET,
-        "DaemonSet",
-        "ReplicaSet",
-        "ReplicationController",
-        "Job",
-        "CronJob",
-        "Pod",
+        _KIND_DAEMONSET,
+        _KIND_REPLICASET,
+        _KIND_REPLICATION_CONTROLLER,
+        _KIND_JOB,
+        _KIND_CRON_JOB,
+        _KIND_POD,
     }
 )
 
+_KIND_FIELD = "kind"
+_METADATA_FIELD = "metadata"
+_SPEC_FIELD = "spec"
+_TEMPLATE_FIELD = "template"
+_JOB_TEMPLATE_FIELD = "jobTemplate"
 _CONTAINERS_FIELD = "containers"
 _INIT_CONTAINERS_FIELD = "initContainers"
 _NAME_FIELD = "name"
 _RESOURCES_FIELD = "resources"
 _RESTART_POLICY_FIELD = "restartPolicy"
+_VOLUME_CLAIM_TEMPLATES_FIELD = "volumeClaimTemplates"
 
 # On an init container this makes it a native sidecar: it runs for the life of the pod and
 # is added to the pod's request rather than only being the floor under it.
@@ -331,16 +343,25 @@ def _workload_entry(containers: list, pods: int = 1, replicas: int = 1) -> dict:
 
 def _replicas(doc: dict) -> int:
     """Read spec.replicas from a workload document, defaulting to 1."""
-    replicas = (doc.get("spec") or {}).get(_REPLICAS_FIELD)
+    replicas = (doc.get(_SPEC_FIELD) or {}).get(_REPLICAS_FIELD)
     return 1 if replicas is None else int(replicas)
 
 
 def _pod_spec(doc: dict) -> dict:
-    return ((doc.get("spec") or {}).get("template") or {}).get("spec") or {}
+    kind = doc.get(_KIND_FIELD)
+    spec = doc.get(_SPEC_FIELD) or {}
+    if kind == _KIND_POD:
+        return spec
+    if kind == _KIND_CRON_JOB:
+        job_template = spec.get(_JOB_TEMPLATE_FIELD) or {}
+        job_spec = job_template.get(_SPEC_FIELD) or {}
+        pod_template = job_spec.get(_TEMPLATE_FIELD) or {}
+        return pod_template.get(_SPEC_FIELD) or {}
+    return (spec.get(_TEMPLATE_FIELD) or {}).get(_SPEC_FIELD) or {}
 
 
 def _claim_storage(claim: dict) -> int:
-    resources = (claim.get("spec") or {}).get(_RESOURCES_FIELD) or {}
+    resources = (claim.get(_SPEC_FIELD) or {}).get(_RESOURCES_FIELD) or {}
     return parse_bytes((resources.get(_REQUESTS) or {}).get(_STORAGE, _ZERO_QUANTITY))
 
 
@@ -434,8 +455,11 @@ def extract_footprint() -> dict:
     for doc in docs:
         if not doc or not isinstance(doc, dict):
             continue
-        kind = doc.get("kind")
-        name = (doc.get("metadata") or {}).get("name")
+        kind = doc.get(_KIND_FIELD)
+        name = (doc.get(_METADATA_FIELD) or {}).get(_NAME_FIELD)
+        workload_key = _workload_key(kind, name)
+        if workload_key in _IGNORED_WORKLOADS:
+            continue
         spec = _pod_spec(doc)
 
         if kind == _KIND_PVC:
@@ -445,7 +469,7 @@ def extract_footprint() -> dict:
             continue
 
         if kind in _POD_BEARING_KINDS:
-            pod_workloads[_workload_key(kind, name)] = spec
+            pod_workloads[workload_key] = spec
 
         if kind == _KIND_STATEFULSET and name == _SHELL_WORKLOAD:
             shell_containers = {
@@ -469,7 +493,7 @@ def extract_footprint() -> dict:
         if kind == _KIND_STATEFULSET:
             # A StatefulSet's volumeClaimTemplates become one claim per replica.
             replicas = _replicas(doc)
-            for claim in (doc.get("spec") or {}).get("volumeClaimTemplates") or []:
+            for claim in (doc.get(_SPEC_FIELD) or {}).get(_VOLUME_CLAIM_TEMPLATES_FIELD) or []:
                 pvc_count += replicas
                 storage_bytes += _claim_storage(claim) * replicas
 

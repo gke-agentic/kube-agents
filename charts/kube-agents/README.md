@@ -584,10 +584,11 @@ ready-to-run `kubectl patch` rather than letting the install stall later on pod
 creation. `--set quotaPreflight.enabled=false` skips it.
 
 What it sums: the chart's own workloads from `values.yaml` — the operator, LiteLLM and
-the GitHub minter, each multiplied by its `replicaCount`, and Hindsight's two pods, which
-have no replica count to multiply — plus the pods the operator renders, whose sizes come
-from `files/footprint.yaml` because the chart cannot render them itself. The agent pod is
-multiplied by `platformAgent.deployment.availability.replicas`; the shell sandbox, the
+the GitHub minter, each multiplied by its `replicaCount`, Hindsight's two pods, which
+have no replica count to multiply, and the pre-delete cleanup hook Job (one pod, when
+`platformAgent.cleanupHook.enabled` is true) — plus the pods the operator renders, whose
+sizes come from `files/footprint.yaml` because the chart cannot render them itself. The agent
+pod is multiplied by `platformAgent.deployment.availability.replicas`; the shell sandbox, the
 credential proxy and the PersistentVolumeClaims are not, because they do not scale with
 it. A replica count of `0` costs nothing, and a `resources` key you have pruned
 (`--set litellm.resources.limits=null`) counts as zero rather than failing the render —

@@ -18,6 +18,7 @@ decision rather than only that the templates exist.
 """
 
 import json
+import math
 import pathlib
 import re
 import shutil
@@ -34,7 +35,6 @@ _FOOTPRINT = _CHART / "files" / "footprint.yaml"
 _SCHEMA = _CHART / "values.schema.json"
 _PREFLIGHT_TPL = _CHART / "templates" / "quota-preflight.yaml"
 _HELPERS = _CHART / "templates" / "_helpers.tpl"
-_FOOTPRINT_SCRIPT = _ROOT / "scripts" / "generate_chart_footprint.py"
 
 # helm is not on PATH in every environment; check PATH first, then any developer copy under k8s-operator/bin/.
 _VENDORED_HELM = _ROOT / "k8s-operator" / "bin" / "helm"
@@ -61,16 +61,22 @@ data:
 # Totals for a stock install, re-derived by hand from values.yaml and footprint.yaml. These
 # are the same numbers the install prerequisites table quotes, so a change that moves one
 # without updating the other fails here.
-_DEFAULT_PODS = 6
-_DEFAULT_REQUESTS_CPU_MILLIS = 2016
-_DEFAULT_LIMITS_CPU_MILLIS = 10000
+_DEFAULT_PODS = 7
+_DEFAULT_REQUESTS_CPU_MILLIS = 2066
+_DEFAULT_LIMITS_CPU_MILLIS = 10200
 # Memory and ephemeral storage are summed by the same helper as CPU but were asserted
 # nowhere, so a generator that stopped parsing them could be regenerated and committed
 # together with a green `--check` (both sides move at once) and nothing would catch it.
-_DEFAULT_REQUESTS_MEMORY_BYTES = 4928 * 1024**2
-_DEFAULT_LIMITS_MEMORY_BYTES = 19840 * 1024**2
+_DEFAULT_REQUESTS_MEMORY_BYTES = 4992 * 1024**2
+_DEFAULT_LIMITS_MEMORY_BYTES = 19968 * 1024**2
 _DEFAULT_REQUESTS_EPHEMERAL_BYTES = 5 * 1024**3
 _DEFAULT_LIMITS_EPHEMERAL_BYTES = 5 * 1024**3
+# Cleanup hook Job: 50m requested / 200m limit, 64Mi requested / 128Mi limit, 1 pod.
+_CLEANUP_HOOK_REQUEST_MILLIS = 50
+_CLEANUP_HOOK_LIMIT_MILLIS = 200
+_CLEANUP_HOOK_REQUEST_MEMORY_BYTES = 64 * 1024**2
+_CLEANUP_HOOK_LIMIT_MEMORY_BYTES = 128 * 1024**2
+_CLEANUP_HOOK_PODS = 1
 # Dashboard container: 256m requested, 1 core limit, inside the agent pod.
 _DASHBOARD_REQUEST_MILLIS = 256
 _DASHBOARD_LIMIT_MILLIS = 1000
@@ -187,6 +193,25 @@ class PreflightDecisionTest(unittest.TestCase):
         self.assertEqual(base["limitsCpu"] - off["limitsCpu"], _DASHBOARD_LIMIT_MILLIS)
         # The dashboard shares the agent's pod, so switching it off frees no pod.
         self.assertEqual(base["pods"], off["pods"])
+
+    def test_disabling_cleanup_hook_drops_it_from_the_total(self) -> None:
+        """Disabling the pre-delete cleanup hook drops its pod and resources."""
+        base = self._requirements()
+        off = self._requirements(["platformAgent.cleanupHook.enabled=false"])
+        self.assertEqual(base["pods"] - off["pods"], _CLEANUP_HOOK_PODS)
+        self.assertEqual(
+            base["requestsCpu"] - off["requestsCpu"], _CLEANUP_HOOK_REQUEST_MILLIS
+        )
+        self.assertEqual(
+            base["limitsCpu"] - off["limitsCpu"], _CLEANUP_HOOK_LIMIT_MILLIS
+        )
+        self.assertEqual(
+            base["requestsMemory"] - off["requestsMemory"],
+            _CLEANUP_HOOK_REQUEST_MEMORY_BYTES,
+        )
+        self.assertEqual(
+            base["limitsMemory"] - off["limitsMemory"], _CLEANUP_HOOK_LIMIT_MEMORY_BYTES
+        )
 
     def test_agent_replicas_multiply_the_agent_pod(self) -> None:
         """An HA install must not pass a check sized for one replica."""
@@ -601,6 +626,29 @@ class PreflightDecisionTest(unittest.TestCase):
         self.assertIn("count/pods", res.stderr)
         self.assertIn(f'"count/pods":"{_DEFAULT_PODS + 1}"', res.stderr)
 
+    def test_count_persistentvolumeclaims_spelling_is_enforced(self) -> None:
+        """`count/persistentvolumeclaims` is valid Kubernetes syntax alongside `persistentvolumeclaims`."""
+        res = self._render(
+            {
+                "probe": {
+                    "quotas": [
+                        self._quota(
+                            {"count/persistentvolumeclaims": str(_OPERATOR_PVC_COUNT - 1)}
+                        )
+                    ]
+                }
+            }
+        )
+        self.assertNotEqual(
+            res.returncode,
+            0,
+            "a too-small count/persistentvolumeclaims quota must fail",
+        )
+        self.assertIn("count/persistentvolumeclaims", res.stderr)
+        self.assertIn(
+            f'"count/persistentvolumeclaims":"{_OPERATOR_PVC_COUNT}"', res.stderr
+        )
+
     def test_the_install_patch_for_claims_does_not_double_count_retained_used(self) -> None:
         """Retained claims sitting in `used` on install must not double the suggested patch."""
         req_gib = _OPERATOR_STORAGE_BYTES // 1024**3
@@ -721,6 +769,30 @@ class QuotaPreflightTest(unittest.TestCase):
             text=True,
         )
         self.assertEqual(res.returncode, 0, f"helm template failed:\n{res.stderr}")
+
+    @unittest.skipUnless(_HELM, "helm is not installed")
+    def test_missing_footprint_fails_render(self) -> None:
+        """A chart missing footprint.yaml must fail preflight rather than zeroing pods."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        chart = pathlib.Path(tmp.name) / "kube-agents"
+        shutil.copytree(_CHART, chart)
+        (chart / "values.schema.json").unlink(missing_ok=True)
+        (chart / "templates" / "zz-probe.yaml").write_text(_PROBE_TEMPLATE)
+        (chart / "files" / "footprint.yaml").unlink()
+
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as fh:
+            yaml.safe_dump({"probe": {"emitRequirements": True}}, fh)
+            values_path = fh.name
+        self.addCleanup(lambda: pathlib.Path(values_path).unlink(missing_ok=True))
+        res = subprocess.run(
+            [_HELM, "template", "test-release", str(chart), "-f", values_path]
+            + _REQUIRED_HARNESS,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(res.returncode, 0, "missing footprint must fail render")
+        self.assertIn("footprint.yaml is missing or unreadable", res.stderr)
 
     @unittest.skipUnless(_HELM, "helm is not installed")
     def test_the_bypass_flag_gates_the_whole_check(self) -> None:
@@ -853,7 +925,8 @@ class DocumentedFootprintTest(unittest.TestCase):
             int(m_capacity.group(1)), round(required["requestsCpu"] / 1000)
         )
         self.assertEqual(
-            float(m_capacity.group(2)), round(required["requestsMemory"] / gib, 1)
+            float(m_capacity.group(2)),
+            math.floor((required["requestsMemory"] / gib) * 10 + 0.5) / 10,
         )
         self.assertEqual(int(m_capacity.group(3)), required["pods"])
 
@@ -869,7 +942,8 @@ class DocumentedFootprintTest(unittest.TestCase):
             int(m_limits.group(1)), round(required["limitsCpu"] / 1000)
         )
         self.assertEqual(
-            float(m_limits.group(2)), round(required["limitsMemory"] / gib, 1)
+            float(m_limits.group(2)),
+            math.floor((required["limitsMemory"] / gib) * 10 + 0.5) / 10,
         )
 
 

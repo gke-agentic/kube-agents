@@ -6,11 +6,8 @@ The generator is the only source for the operator-rendered half of the quota pre
 arithmetic, so a parser of its that silently returns 0 puts a green render in front of a
 quota that cannot fit the release.
 
-`tests/test_quota_preflight.py` already runs the script end to end, but through
-`subprocess.run`, which exercises the behaviour and measures none of it: coverage.py in
-the parent process does not instrument a child interpreter. These tests import the module
-instead, so the parsers, the formatters and every exit path of `main()` are reached
-directly.
+These tests import the generator module directly, so the parsers, the formatters,
+and every exit path of `main()` are reached and instrumented under coverage.
 """
 
 from __future__ import annotations
@@ -288,6 +285,13 @@ class WorkloadEntryTest(unittest.TestCase):
         self.assertEqual(gcf._pod_spec({}), {})
         self.assertEqual(
             gcf._pod_spec({"spec": {"template": {"spec": {"a": 1}}}}), {"a": 1}
+        )
+        self.assertEqual(gcf._pod_spec({"kind": "Pod", "spec": {"a": 1}}), {"a": 1})
+        self.assertEqual(
+            gcf._pod_spec(
+                {"kind": "CronJob", "spec": {"jobTemplate": {"spec": {"template": {"spec": {"a": 1}}}}}}
+            ),
+            {"a": 1},
         )
 
 

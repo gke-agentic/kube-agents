@@ -866,7 +866,9 @@ a Go template cannot catch the error `lookup` raises.
        One list and one loop rather than a block each: the four blocks this replaced were
        identical but for the values path, which is how the dashboard came to be read from
        the wrong key and how a new workload comes to be missed. `hindsight.postgresql` is a
-       StatefulSet, so it contributes no surge Pod. */ -}}
+       StatefulSet, so it contributes no surge Pod. The pre-delete cleanup hook is a batch
+       Job that runs at uninstall while the release still stands, so it needs headroom but
+       no surge. */ -}}
 {{- $chartWorkloads := list -}}
 {{- if .Values.operator.enabled -}}
   {{- $chartWorkloads = append $chartWorkloads (dict "values" .Values.operator "pods" (include "kube-agents.replicaCount" .Values.operator.replicaCount | int64) "surges" true) -}}
@@ -880,6 +882,12 @@ a Go template cannot catch the error `lookup` raises.
 {{- end -}}
 {{- if .Values.githubMinter.enabled -}}
   {{- $chartWorkloads = append $chartWorkloads (dict "values" .Values.githubMinter "pods" (include "kube-agents.replicaCount" .Values.githubMinter.replicaCount | int64) "surges" true) -}}
+{{- end -}}
+{{- if and .Values.platformAgent.enabled .Values.platformAgent.cleanupHook.enabled -}}
+  {{- /* Pre-delete hook Job in templates/platform-agent-cr-cleanup.yaml: runs at helm uninstall
+         while every release pod still exists, so quota admission needs headroom for it. */ -}}
+  {{- $cleanupRes := dict "resources" (dict "requests" (dict "cpu" "50m" "memory" "64Mi") "limits" (dict "cpu" "200m" "memory" "128Mi")) -}}
+  {{- $chartWorkloads = append $chartWorkloads (dict "values" $cleanupRes "pods" 1 "surges" false) -}}
 {{- end -}}
 
 {{- range $workload := $chartWorkloads -}}
@@ -982,7 +990,7 @@ a Go template cannot catch the error `lookup` raises.
          agentPod and storage are handled separately above and below. */ -}}
   {{- range $key, $workload := $op -}}
     {{- if and (ne $key "agentPod") (ne $key "storage") -}}
-      {{- $reqPods = add $reqPods ($workload.pods | default 1 | int64) -}}
+      {{- $reqPods = add $reqPods (include "kube-agents.replicaCount" $workload.pods | int64) -}}
       {{- $reqCpu = add $reqCpu ($workload.cpuMillisRequest | default 0 | int64) -}}
       {{- $limCpu = add $limCpu ($workload.cpuMillisLimit | default 0 | int64) -}}
       {{- $reqMem = add $reqMem ($workload.memoryBytesRequest | default 0 | int64) -}}

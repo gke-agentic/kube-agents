@@ -11,7 +11,8 @@ caBundle, failurePolicy, rule ordering) do not.
 The one end-to-end case renders the real chart with `helm` and skips where the binary is
 absent; `make chart-check` in the `validate` job, which sets helm up, is where that render
 runs on every pull request. The sync script's exit-code plumbing is exercised with a
-`python3` shim on PATH, so it needs neither helm nor PyYAML.
+`python3` shim on PATH to stand in for the webhook check, so that step needs
+neither helm nor PyYAML.
 """
 
 from __future__ import annotations
