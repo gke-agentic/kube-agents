@@ -204,6 +204,32 @@ class ParseQuantityTest(unittest.TestCase):
         self.assertEqual(gcf.parse_cpu_millis(0.5), 500)
         self.assertEqual(gcf.parse_cpu_millis(""), 0)
 
+    def test_the_forms_the_chart_parser_accepts_parse_here_too(self):
+        """kube-agents.parseCpuMillis and parseBytes take a fraction or an exponent.
+
+        `int(val)` raised ValueError on both, so a golden holding a quantity the chart
+        itself reads crashed `make chart-check` instead of being summed.
+        """
+        self.assertEqual(gcf.parse_bytes("1e3"), 1000)
+        self.assertEqual(gcf.parse_bytes("1.5"), 1)
+        self.assertEqual(gcf.parse_bytes("1.5Gi"), int(1.5 * _GIB))
+        self.assertEqual(gcf.parse_cpu_millis("500.5m"), 500)
+        self.assertEqual(gcf.parse_cpu_millis("1e1"), 10000)
+
+    def test_a_declared_zero_request_is_not_replaced_by_the_limit(self):
+        """`if not val` called a declared 0 absent and charged the limit in its place."""
+        container = {
+            "resources": {"requests": {"cpu": 0}, "limits": {"cpu": "2"}},
+        }
+        self.assertEqual(
+            gcf._quantity(container, "requests", "cpu", gcf.parse_cpu_millis), 0
+        )
+        # An omitted request still defaults to the limit, which is what Kubernetes does.
+        omitted = {"resources": {"limits": {"cpu": "2"}}}
+        self.assertEqual(
+            gcf._quantity(omitted, "requests", "cpu", gcf.parse_cpu_millis), 2000
+        )
+
 
 class FormatQuantityTest(unittest.TestCase):
     """These mirror kube-agents.formatCpu / formatBytes, so the two must agree."""

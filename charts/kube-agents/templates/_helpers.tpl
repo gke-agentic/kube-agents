@@ -584,7 +584,27 @@ An earlier version fell through to `int64`, which yields 0 for anything it does 
 understand: a `1Pi` quota then read as `hard 0` and the release was refused with a
 message describing a cluster that does not exist. A quantity this cannot read is a bug
 in this helper, and saying so is the only honest outcome.
+
+Every conversion to an integer goes through kube-agents.clampInt64 rather than `int64`,
+because the millicore and byte forms of a large quantity overflow where the quantity
+itself does not. `1E` CPU is 10^21 millicores and `8Ei` is 2^63 bytes, both past
+math.MaxInt64, and Go's float-to-int conversion wraps them to -9223372036854775808:
+`hard` then read as negative, fell short of every requirement it dwarfs, and the render
+was refused with a patch asking for a negative quota. Saturating keeps the comparison
+honest — a quota that large cannot constrain this release either way.
 */}}
+{{- /* Float to int64, saturating rather than wrapping. 2^63 is the first float64 above
+       math.MaxInt64, which is not itself representable as a float64 — comparing against
+       a rounded MaxInt64 would let the wrapping value through. */ -}}
+{{- define "kube-agents.clampInt64" -}}
+{{- $v := float64 . -}}
+{{- if ge $v 9223372036854775808.0 -}}
+9223372036854775807
+{{- else -}}
+{{- $v | int64 -}}
+{{- end -}}
+{{- end }}
+
 {{- define "kube-agents.parseCpuMillis" -}}
 {{- $raw := trim (toString .) -}}
 {{- $numeric := "^[0-9]+(\\.[0-9]+)?([eE][-+]?[0-9]+)?$" -}}
@@ -596,7 +616,7 @@ in this helper, and saying so is the only honest outcome.
 {{- if not (regexMatch $numeric $n) -}}
 {{- fail (printf "quota preflight: cannot parse CPU quantity %q — set quotaPreflight.enabled=false to bypass, and please report it." $raw) -}}
 {{- end -}}
-{{- float64 $n | int64 -}}
+{{- include "kube-agents.clampInt64" (float64 $n) -}}
 {{- else -}}
 {{- $out := "" -}}
 {{- range $unit, $mult := $decimalCores -}}
@@ -605,14 +625,14 @@ in this helper, and saying so is the only honest outcome.
 {{- if not (regexMatch $numeric $n) -}}
 {{- fail (printf "quota preflight: cannot parse CPU quantity %q — set quotaPreflight.enabled=false to bypass, and please report it." $raw) -}}
 {{- end -}}
-{{- $out = mulf (mulf (float64 $n) $mult) 1000.0 | int64 | toString -}}
+{{- $out = include "kube-agents.clampInt64" (mulf (mulf (float64 $n) $mult) 1000.0) -}}
 {{- end -}}
 {{- end -}}
 {{- if eq $out "" -}}
 {{- if not (regexMatch $numeric $raw) -}}
 {{- fail (printf "quota preflight: cannot parse CPU quantity %q — set quotaPreflight.enabled=false to bypass, and please report it." $raw) -}}
 {{- end -}}
-{{- $out = mulf (float64 $raw) 1000.0 | int64 | toString -}}
+{{- $out = include "kube-agents.clampInt64" (mulf (float64 $raw) 1000.0) -}}
 {{- end -}}
 {{- $out -}}
 {{- end -}}
@@ -630,7 +650,7 @@ in this helper, and saying so is the only honest outcome.
 {{- if not (regexMatch $numeric $n) -}}
 {{- fail (printf "quota preflight: cannot parse quantity %q (memory, storage or count) — set quotaPreflight.enabled=false to bypass, and please report it." $raw) -}}
 {{- end -}}
-{{- ceil (divf (float64 $n) 1000.0) | int64 -}}
+{{- include "kube-agents.clampInt64" (ceil (divf (float64 $n) 1000.0)) -}}
 {{- else -}}
 {{- $out := "" -}}
 {{- range $unit, $mult := $binary -}}
@@ -639,7 +659,7 @@ in this helper, and saying so is the only honest outcome.
 {{- if not (regexMatch $numeric $n) -}}
 {{- fail (printf "quota preflight: cannot parse quantity %q (memory, storage or count) — set quotaPreflight.enabled=false to bypass, and please report it." $raw) -}}
 {{- end -}}
-{{- $out = mulf (float64 $n) $mult | int64 | toString -}}
+{{- $out = include "kube-agents.clampInt64" (mulf (float64 $n) $mult) -}}
 {{- end -}}
 {{- end -}}
 {{- if eq $out "" -}}
@@ -649,7 +669,7 @@ in this helper, and saying so is the only honest outcome.
 {{- if not (regexMatch $numeric $n) -}}
 {{- fail (printf "quota preflight: cannot parse quantity %q (memory, storage or count) — set quotaPreflight.enabled=false to bypass, and please report it." $raw) -}}
 {{- end -}}
-{{- $out = mulf (float64 $n) $mult | int64 | toString -}}
+{{- $out = include "kube-agents.clampInt64" (mulf (float64 $n) $mult) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -657,7 +677,7 @@ in this helper, and saying so is the only honest outcome.
 {{- if not (regexMatch $numeric $raw) -}}
 {{- fail (printf "quota preflight: cannot parse quantity %q (memory, storage or count) — set quotaPreflight.enabled=false to bypass, and please report it." $raw) -}}
 {{- end -}}
-{{- $out = float64 $raw | int64 | toString -}}
+{{- $out = include "kube-agents.clampInt64" (float64 $raw) -}}
 {{- end -}}
 {{- $out -}}
 {{- end -}}
@@ -761,18 +781,40 @@ match the limit at admission time, which is reflected here. When a quantity is o
 from both requests and limits, it contributes zero to the sum (though note that if a
 ResourceQuota constrains that resource, Kubernetes quota admission requires containers
 to declare it unless defaulted by a LimitRange).
+
+"Omitted" is decided by kube-agents.declaredQuantity rather than by Sprig's `default`,
+for the same reason kube-agents.replicaCount exists: `default` calls 0 empty, and each
+`resources` block is an open object in values.schema.json, so `requests: {cpu: 0}` is
+valid input that arrives as a numeric zero. Chained through `default` it read as absent
+and was charged the limit instead — a workload asking for nothing was summed as the
+largest thing it could ever use.
 */}}
+{{- define "kube-agents.declaredQuantity" -}}
+{{- $v := .value -}}
+{{- if or (kindIs "invalid" $v) (eq (toString $v) "") -}}
+{{- toString .fallback -}}
+{{- else -}}
+{{- toString $v -}}
+{{- end -}}
+{{- end }}
+
 {{- define "kube-agents.workloadResources" -}}
 {{- $res := (. | default dict).resources | default dict -}}
 {{- $req := (index $res "requests") | default dict -}}
 {{- $lim := (index $res "limits") | default dict -}}
+{{- $cpuLim := include "kube-agents.declaredQuantity" (dict "value" (index $lim "cpu") "fallback" "0") -}}
+{{- $memLim := include "kube-agents.declaredQuantity" (dict "value" (index $lim "memory") "fallback" "0") -}}
+{{- $ephLim := include "kube-agents.declaredQuantity" (dict "value" (index $lim "ephemeral-storage") "fallback" "0") -}}
+{{- $cpuReq := include "kube-agents.declaredQuantity" (dict "value" (index $req "cpu") "fallback" $cpuLim) -}}
+{{- $memReq := include "kube-agents.declaredQuantity" (dict "value" (index $req "memory") "fallback" $memLim) -}}
+{{- $ephReq := include "kube-agents.declaredQuantity" (dict "value" (index $req "ephemeral-storage") "fallback" $ephLim) -}}
 {{- dict
-      "cpuRequest" (include "kube-agents.parseCpuMillis" (index $req "cpu" | default (index $lim "cpu") | default "0") | int64)
-      "cpuLimit" (include "kube-agents.parseCpuMillis" (index $lim "cpu" | default "0") | int64)
-      "memoryRequest" (include "kube-agents.parseBytes" (index $req "memory" | default (index $lim "memory") | default "0") | int64)
-      "memoryLimit" (include "kube-agents.parseBytes" (index $lim "memory" | default "0") | int64)
-      "ephemeralRequest" (include "kube-agents.parseBytes" (index $req "ephemeral-storage" | default (index $lim "ephemeral-storage") | default "0") | int64)
-      "ephemeralLimit" (include "kube-agents.parseBytes" (index $lim "ephemeral-storage" | default "0") | int64)
+      "cpuRequest" (include "kube-agents.parseCpuMillis" $cpuReq | int64)
+      "cpuLimit" (include "kube-agents.parseCpuMillis" $cpuLim | int64)
+      "memoryRequest" (include "kube-agents.parseBytes" $memReq | int64)
+      "memoryLimit" (include "kube-agents.parseBytes" $memLim | int64)
+      "ephemeralRequest" (include "kube-agents.parseBytes" $ephReq | int64)
+      "ephemeralLimit" (include "kube-agents.parseBytes" $ephLim | int64)
    | toJson -}}
 {{- end }}
 

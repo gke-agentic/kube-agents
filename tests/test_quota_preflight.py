@@ -101,9 +101,10 @@ _HINDSIGHT_STORAGE_BYTES = 8 * 1024**3
 # of no binary unit -- the case where an exact-only formatter falls back to raw bytes.
 _DECIMAL_SI_HARD = "1G"
 _DECIMAL_SI_HARD_BYTES = 1000000000
-# LiteLLM runs two replicas at a 500m CPU limit each.
+# LiteLLM runs two replicas at a 500m CPU limit each, requesting 100m each.
 _LITELLM_REPLICAS = 2
 _LITELLM_CPU_LIMIT_MILLIS = 500 * _LITELLM_REPLICAS
+_LITELLM_CPU_REQUEST_MILLIS = 100 * _LITELLM_REPLICAS
 # An ephemeral-storage request no chart workload sets by default, so the totals move by
 # exactly this much when one does.
 _EPHEMERAL_SET_GIB = 3
@@ -416,6 +417,46 @@ class PreflightDecisionTest(unittest.TestCase):
             {"probe": {"quotas": [self._quota({"requests.cpu": "1k", "limits.cpu": "2k"})]}}
         )
         self.assertEqual(res.returncode, 0, f"1k/2k CPU should be ample:\n{res.stderr}")
+
+    def test_a_quota_too_large_for_int64_does_not_wrap_negative(self) -> None:
+        """`1E` CPU is 10^21 millicores and `8Ei` is 2^63 bytes, both past math.MaxInt64.
+
+        Converted with a bare `int64` they wrapped to -9223372036854775808, so `hard` read
+        as negative, fell short of every requirement, and the render was refused with a
+        patch asking for a negative quota — against quotas that cannot constrain anything.
+        """
+        for key, quantity in (
+            ("requests.cpu", "1E"),
+            ("requests.cpu", "10P"),
+            ("requests.memory", "8Ei"),
+            ("requests.memory", "10E"),
+            ("pods", "1E"),
+        ):
+            with self.subTest(key=key, quantity=quantity):
+                res = self._render({"probe": {"quotas": [self._quota({key: quantity})]}})
+                self.assertEqual(
+                    res.returncode,
+                    0,
+                    f"{quantity} is larger than the release needs:\n{res.stderr}",
+                )
+
+    def test_an_explicit_zero_request_is_not_charged_the_limit(self) -> None:
+        """`requests.cpu: 0` is valid input — every `resources` block is an open object.
+
+        Chained through Sprig's `default`, which calls 0 empty, it read as absent and the
+        limit was charged instead: LiteLLM's two Pods were summed at their 500m limit
+        rather than the nothing they ask for.
+        """
+        base = self._requirements()
+        zeroed = self._requirements(["litellm.resources.requests.cpu=0"])
+        self.assertEqual(
+            base["requestsCpu"] - zeroed["requestsCpu"],
+            _LITELLM_CPU_REQUEST_MILLIS,
+            "an explicit zero request must drop LiteLLM's requests, not raise them",
+        )
+        self.assertEqual(
+            zeroed["limitsCpu"], base["limitsCpu"], "limits must be untouched by it"
+        )
 
     def test_fractional_memory_in_used_milli_bytes_parses(self) -> None:
         """A neighbour pod with `memory: 1.2Gi` makes `status.used` read `1288490188800m`."""

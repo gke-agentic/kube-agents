@@ -246,7 +246,14 @@ _DECIMAL_SI_UNITS = {
 
 
 def parse_bytes(val: str | int | float) -> int:
-    """Parse a Kubernetes memory/storage quantity to integer bytes."""
+    """Parse a Kubernetes memory/storage quantity to integer bytes.
+
+    Reads every form kube-agents.parseBytes reads, including the fractional and exponent
+    spellings its regex allows (`1.5Gi`, `1e3`). The two run over the same quantities --
+    this generator over the operator golden, the template over the values and the quota it
+    writes -- so a form one accepts and the other rejects means `make chart-check` crashes
+    on a manifest the chart itself would have rendered.
+    """
     if isinstance(val, (int, float)):
         return int(val)
     val = str(val).strip()
@@ -260,18 +267,22 @@ def parse_bytes(val: str | int | float) -> int:
     for unit, mult in _DECIMAL_SI_UNITS.items():
         if val.endswith(unit):
             return int(float(val[: -len(unit)]) * mult)
-    return int(val)
+    return int(float(val))
 
 
 def parse_cpu_millis(val: str | int | float) -> int:
-    """Parse a Kubernetes CPU quantity to integer millicores."""
+    """Parse a Kubernetes CPU quantity to integer millicores.
+
+    Same contract as parse_bytes: every form kube-agents.parseCpuMillis reads, fractional
+    millicores (`500.5m`) among them.
+    """
     if isinstance(val, (int, float)):
         return int(float(val) * _MILLICORES_PER_CORE)
     val = str(val).strip()
     if not val:
         return 0
     if val.endswith("m"):
-        return int(val[:-1])
+        return int(float(val[:-1]))
     return int(float(val) * _MILLICORES_PER_CORE)
 
 
@@ -291,15 +302,27 @@ def format_bytes(num_bytes: int) -> str:
     return str(num_bytes)
 
 
+def _declared(val) -> bool:
+    """Whether a container declared this quantity at all.
+
+    `if not val` would call a declared `0` absent and fall through to the limit, the same
+    trap kube-agents.declaredQuantity avoids on the chart side. A golden written by
+    resource.Quantity spells zero as the string `"0"`, which is truthy, so this only bites
+    on a hand-edited manifest -- but the two sides have to agree on what "omitted" means.
+    """
+    return val is not None and str(val).strip() != ""
+
+
 def _quantity(container: dict, section: str, key: str, parse) -> int:
     resources = container.get(_RESOURCES_FIELD) or {}
     val = (resources.get(section) or {}).get(key)
-    if not val:
+    if not _declared(val):
+        val = _ZERO_QUANTITY
         if section == _REQUESTS:
             # When requests are omitted, Kubernetes defaults the request to match the limit.
-            val = (resources.get(_LIMITS) or {}).get(key) or _ZERO_QUANTITY
-        else:
-            val = _ZERO_QUANTITY
+            limit = (resources.get(_LIMITS) or {}).get(key)
+            if _declared(limit):
+                val = limit
     return parse(val)
 
 
