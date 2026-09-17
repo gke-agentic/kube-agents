@@ -705,6 +705,68 @@ class LongLivedAllowlistGuardTest(GithubMinterInputsTest):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
 
+class BooleanVariablesSurviveTheFlagRouteTest(GithubMinterInputsTest):
+    """A GitHub variable a human typed still means what it meant in install.env.
+
+    These two settings reach install.sh as `--enable-*` flags, whose validator
+    matches exactly true|false and exits 1 naming the flag. The same variables
+    also reach it through the rendered install.env, where is_truthy accepts
+    True/yes/y/1/on. An environment spelled `True` deployed fine on the file
+    route, so it has to keep deploying on the flag route.
+
+    Inherits the harness, not the assertions: `_run` executes the real script
+    against a mock install.sh, so these read the flags it actually built.
+    """
+
+    _TOGGLES = {
+        "ENABLE_GKE_BACKUP_PLAN": "--enable-gke-backup-plan",
+        "ENABLE_GVISOR": "--enable-gvisor",
+    }
+
+    def _install_call(self, tmp_dir):
+        return (tmp_dir / MOCK_CALLS_LOG).read_text()
+
+    def _run_recording(self, overrides):
+        return self._run(overrides, install_body=f'echo "install: $*" >> "{MOCK_CALLS_LOG}"\n')
+
+    def test_a_truthy_spelling_reaches_the_flag_as_true(self):
+        for name, flag in self._TOGGLES.items():
+            for spelling in TRUTHY_BOOLEAN_INPUTS:
+                with self.subTest(name=name, spelling=spelling):
+                    proc, tmp_dir = self._run_recording({name: spelling})
+                    self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                    self.assertIn(f"{flag}=true", self._install_call(tmp_dir))
+
+    def test_a_falsy_spelling_reaches_the_flag_as_false(self):
+        for name, flag in self._TOGGLES.items():
+            for spelling in ("false", "False", "no", "0", "off", "OFF"):
+                with self.subTest(name=name, spelling=spelling):
+                    proc, tmp_dir = self._run_recording({name: spelling})
+                    self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                    self.assertIn(f"{flag}=false", self._install_call(tmp_dir))
+
+    def test_a_spelling_nobody_recognises_is_passed_through_untouched(self):
+        """So install.sh refuses it by name rather than reading it as off.
+
+        Folding everything unrecognised into "false" would turn a typo into a
+        silently disabled feature, which is the failure the flag's validator
+        was added to prevent.
+        """
+        for name, flag in self._TOGGLES.items():
+            with self.subTest(name=name):
+                proc, tmp_dir = self._run_recording({name: "ture"})
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                self.assertIn(f"{flag}=ture", self._install_call(tmp_dir))
+
+    def test_an_unset_variable_adds_no_flag_at_all(self):
+        """Unset is not false: it leaves install.sh's own default in charge."""
+        proc, tmp_dir = self._run_recording({})
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        call = self._install_call(tmp_dir)
+        for flag in self._TOGGLES.values():
+            self.assertNotIn(flag, call)
+
+
 class DeployEnvironmentCarriesTheInstallSettingsTest(unittest.TestCase):
     """A setting the workflow never exports is unset everywhere, permanently.
 

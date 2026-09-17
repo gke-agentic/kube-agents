@@ -172,6 +172,32 @@ esac
 
 rm -f "${TEARDOWN_LOG}"
 
+# The two GitHub variables this script turns into `--enable-*` flags, in the
+# spelling install.sh's validator accepts.
+#
+# The flag route and the file route do not judge a value the same way:
+# validate_optional_bool_param matches ^(true|false)$ and exits 1 naming the
+# flag, while a value that reaches the installer through the rendered
+# install.env goes to is_truthy, which takes True/yes/y/1/on as well. A human
+# types these into a GitHub environment form, so an environment that deploys
+# today on `True` must keep deploying once the value travels as a flag.
+#
+# A value neither list recognises is returned untouched rather than folded into
+# "false": `ture` should still reach install.sh and be refused by name, which is
+# what the validator is for.
+provision_canonical_bool() {
+  local val="${1:-}"
+  if provision_is_truthy "$val"; then
+    echo "true"
+    return 0
+  fi
+  local stripped="${val//[[:space:]]/}"
+  case "$stripped" in
+    [Ff][Aa][Ll][Ss][Ee] | [Nn][Oo] | [Nn] | 0 | [Oo][Ff][Ff] | "") echo "false" ;;
+    *) echo "$val" ;;
+  esac
+}
+
 INSTALL_ARGS=(
   --non-interactive -y
   --gcp-project-id="${GCP_PROJECT_ID}"
@@ -238,7 +264,7 @@ if [ "${SLACK_ENABLED:-false}" = "true" ]; then
 fi
 
 if [ -n "${ENABLE_GKE_BACKUP_PLAN:-}" ]; then
-  INSTALL_ARGS+=(--enable-gke-backup-plan="${ENABLE_GKE_BACKUP_PLAN}")
+  INSTALL_ARGS+=(--enable-gke-backup-plan="$(provision_canonical_bool "${ENABLE_GKE_BACKUP_PLAN}")")
 fi
 
 if [ -n "${MODEL_PROVIDER:-}" ]; then
@@ -250,7 +276,7 @@ if [ -n "${MODEL_DEFAULT_NAME:-}" ]; then
 fi
 
 if [ -n "${ENABLE_GVISOR:-}" ]; then
-  INSTALL_ARGS+=(--enable-gvisor="${ENABLE_GVISOR}")
+  INSTALL_ARGS+=(--enable-gvisor="$(provision_canonical_bool "${ENABLE_GVISOR}")")
 fi
 
 if [ -n "${PLATFORM_AGENT_PERMISSION_SET:-}" ]; then

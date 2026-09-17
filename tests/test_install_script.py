@@ -5010,7 +5010,7 @@ class DomainScopedFlagsTest(unittest.TestCase):
     reads.
     """
 
-    def _parse(self, args, body, contents=""):
+    def _parse(self, args, body, contents="", env=None):
         """parse_args the given args, then run `body`, with an install.env."""
         with tempfile.TemporaryDirectory() as tmp:
             env_file = pathlib.Path(tmp) / "install.env"
@@ -5019,13 +5019,13 @@ class DomainScopedFlagsTest(unittest.TestCase):
                 f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n'
                 f"parse_args {args}\n{body}\n"
             )
+            overrides = {"KUBE_AGENTS_INSTALL_ENV": str(env_file)}
+            overrides.update(env or {})
             return subprocess.run(
                 ["bash", "-c", script],
                 capture_output=True,
                 text=True,
-                env=get_isolated_test_env(
-                    overrides={"KUBE_AGENTS_INSTALL_ENV": str(env_file)}
-                ),
+                env=get_isolated_test_env(overrides=overrides),
                 cwd=str(_REPO_ROOT),
             )
 
@@ -5139,17 +5139,115 @@ class DomainScopedFlagsTest(unittest.TestCase):
         """--agent-namespace must reach NAMESPACE despite bootstrap_install_env.
 
         That function unsets NAMESPACE before reading install.env, so an
-        inherited kubectl variable cannot redirect an install. A flag is a
-        deliberate act and has to get through anyway -- and the seed is read
-        BEFORE main() exports it, so this pins the ordering rather than just
-        the parse.
+        inherited kubectl variable cannot redirect an install -- which is what
+        the seeded NAMESPACE below stands in for. A flag is a deliberate act and
+        has to get through anyway.
+
+        Calls install.sh's own apply_agent_namespace_override rather than a copy
+        of its body: a test that re-implements the export passes just as well
+        once the export is deleted from the script, while --agent-namespace
+        silently stops reaching write_tfvars_from_state.
         """
         proc = self._parse(
             "--agent-namespace=chosen-ns",
-            'if [ -n "${PARAM_AGENT_NAMESPACE:-}" ]; then export NAMESPACE="$PARAM_AGENT_NAMESPACE"; fi; echo "N=$NAMESPACE"',
+            'apply_agent_namespace_override; echo "N=$NAMESPACE"',
+            env={"NAMESPACE": "inherited-from-kubectl"},
         )
         self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
         self.assertIn("N=chosen-ns", proc.stdout)
+
+    def test_the_ambient_namespace_alone_still_does_not_get_through(self):
+        """The other half of the same guard: no flag, no override.
+
+        A function that exported $NAMESPACE rather than PARAM_AGENT_NAMESPACE
+        would pass the test above and undo the guard entirely.
+        """
+        proc = self._parse(
+            "--gcp-project-id=p",
+            'apply_agent_namespace_override; echo "N=[${NAMESPACE:-}]"',
+            env={"NAMESPACE": "inherited-from-kubectl"},
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("N=[]", proc.stdout)
+
+    def test_both_entry_paths_apply_the_namespace_override(self):
+        """main() and the control panel each have to apply it after their unset.
+
+        The behavioural test above can only prove the function does what it
+        says; it cannot notice the call going missing. main() applies it once
+        parse_args has run, and run_menu_system applies it again because
+        load_install_env unsets NAMESPACE a second time on its way in -- a menu
+        that lost the flag would open on the default namespace and write tfvars
+        for that one.
+        """
+        text = _INSTALL_SH.read_text()
+        main_at = text.index("\nmain() {")
+        self.assertIn(
+            'parse_args "$@"\n  apply_agent_namespace_override',
+            text[main_at:],
+            "main() must apply the override immediately after parse_args",
+        )
+        menu = text[text.index("run_menu_system() {") : main_at]
+        load_at = menu.find('load_install_env "$INSTALL_ENV_FILE"')
+        reapply_at = menu.find("apply_agent_namespace_override")
+        self.assertNotEqual(load_at, -1, "the menu's install.env reload is missing")
+        self.assertNotEqual(
+            reapply_at, -1, "run_menu_system never re-applies --agent-namespace"
+        )
+        self.assertLess(load_at, reapply_at)
+
+    def test_a_namespace_the_flag_chose_is_recorded_for_the_next_run(self):
+        """Otherwise the flag applies to exactly one run and says nothing.
+
+        install.env is the only thing a later install.sh, upgrade.sh or --menu
+        run reads. Without the key they resolve ${NAMESPACE:-$DEFAULT_NAMESPACE}
+        back to kubeagents-system, render tfvars for it, look for the recovered
+        Secret there, and are refused by lifecycle.sh's guard_release_namespace.
+
+        $NAMESPACE on its own must still not be recorded: it is a variable
+        kubectl tooling exports, and freezing a stray value would move the
+        release on the next apply.
+        """
+        for args, expected in (("--agent-namespace=chosen-ns", True), ("", False)):
+            with self.subTest(args=args):
+                with tempfile.TemporaryDirectory() as tmp:
+                    destination = pathlib.Path(tmp) / "written.env"
+                    proc = self._parse(
+                        args,
+                        f'bootstrap_install_env_file "{destination}" v1.2.3',
+                        env={"NAMESPACE": "inherited-from-kubectl"},
+                    )
+                    self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+                    written = destination.read_text()
+                    if expected:
+                        self.assertIn("NAMESPACE=chosen-ns", written)
+                    else:
+                        self.assertNotIn("\nNAMESPACE=", written)
+                        self.assertNotIn("inherited-from-kubectl", written)
+
+    def test_the_flag_says_so_when_it_cannot_be_recorded(self):
+        """An install.env that already exists is never rewritten.
+
+        That is the file's contract, so the second install passing the flag by
+        hand is the one case nothing can record for the operator. Silence there
+        is the trap the test above describes, arriving one run later.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = pathlib.Path(tmp) / "existing.env"
+            destination.write_text("PROJECT_ID=p\n")
+            proc = self._parse(
+                "--agent-namespace=chosen-ns",
+                f'bootstrap_install_env_file "{destination}" v1.2.3',
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            combined = proc.stdout + proc.stderr
+            self.assertIn("applies to this run only", combined)
+            self.assertIn("chosen-ns", combined)
+            self.assertEqual(
+                destination.read_text(),
+                "PROJECT_ID=p\n",
+                "an install.env that already exists must be left alone",
+            )
 
     def test_empty_gvisor_value_is_not_read_back_as_true(self):
         """`--enable-gvisor=` stays empty so the validator can reject it.
@@ -5176,10 +5274,100 @@ class SlackRequiresTokensNonInteractivelyTest(unittest.TestCase):
 
     The socket-mode relay cannot connect without both, and the failure would
     otherwise appear as a CrashLoopBackOff long after a successful-looking
-    apply. Asserted against the script's text rather than by running main(),
-    which would need a cluster: what matters is that the refusal exists, names
-    both flags, and sits in the chat step before anything is provisioned.
+    apply.
+
+    The guard is in two halves. The deferred one is a function, so it is run;
+    the fail-fast one is a block inside main(), which would need a cluster to
+    reach, so what is asserted of it is that it exists, names both flags, and
+    sits before anything is provisioned.
     """
+
+    # The comment above main()'s copy. Unique in the file, and the only way to
+    # tell the two halves apart by text: they print the same refusal, and
+    # require_slack_tokens_after_recovery is defined above main(), so a plain
+    # find() for the message always returns the deferred one.
+    _FAIL_FAST_ANCHOR = "# Slack asked for, with nobody to ask"
+    _REFUSAL = "--enable-slack needs a bot token and an app token"
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self._install_env = pathlib.Path(tmp.name) / "install.env"
+        self._install_env.write_text("")
+
+    def _run_deferred_check(self, bot="", app="", enabled="true", before=""):
+        """Execute require_slack_tokens_after_recovery on a given recovery.
+
+        The variables are assigned after the source rather than exported into
+        the environment, because install.sh seeds its own copies at file scope
+        and would overwrite them.
+        """
+        script = (
+            f'source "{_INSTALLER_COMMON}"\n'
+            f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n'
+            f"SLACK_ENABLED={shlex.quote(enabled)}\n"
+            f"SLACK_BOT_TOKEN={shlex.quote(bot)}\n"
+            f"SLACK_APP_TOKEN={shlex.quote(app)}\n"
+            'PARAM_NON_INTERACTIVE="true"\n'
+            f"{before}\n"
+            "require_slack_tokens_after_recovery\n"
+            'echo "REACHED_THE_APPLY"\n'
+        )
+        return subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True,
+            text=True,
+            env=get_isolated_test_env(
+                overrides={"KUBE_AGENTS_INSTALL_ENV": str(self._install_env)}
+            ),
+            cwd=str(_REPO_ROOT),
+        )
+
+    def test_the_deferred_check_refuses_when_the_recovery_found_nothing(self):
+        """The run this guard exists for: both tokens still missing after it."""
+        proc = self._run_deferred_check()
+        self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertNotIn("REACHED_THE_APPLY", proc.stdout)
+        combined = proc.stdout + proc.stderr
+        self.assertIn("--slack-bot-token (SLACK_BOT_TOKEN)", combined)
+        self.assertIn("--slack-app-token (SLACK_APP_TOKEN)", combined)
+
+    def test_the_deferred_check_refuses_on_one_token_and_names_only_it(self):
+        """Half a recovery is still a relay that cannot open a socket."""
+        proc = self._run_deferred_check(bot="xoxb-recovered")
+        self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        combined = proc.stdout + proc.stderr
+        self.assertIn("--slack-app-token (SLACK_APP_TOKEN)", combined)
+        self.assertNotIn("--slack-bot-token (SLACK_BOT_TOKEN)", combined)
+
+    def test_a_recovery_that_found_both_tokens_proceeds(self):
+        """The unattended PERSIST_SECRETS_ON_DISK=false re-run this unblocks."""
+        proc = self._run_deferred_check(bot="xoxb-recovered", app="xapp-recovered")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("REACHED_THE_APPLY", proc.stdout)
+
+    def test_an_install_without_slack_is_never_asked_for_tokens(self):
+        proc = self._run_deferred_check(enabled="false")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("REACHED_THE_APPLY", proc.stdout)
+
+    def test_the_deferred_check_reads_the_recovered_tokens_not_the_flags(self):
+        """PARAM_SLACK_* is what the operator passed; SLACK_* is what exists.
+
+        write_tfvars_from_state exports the tokens it recovered from the live
+        Secret under the unprefixed names, and this check runs on those. Reading
+        PARAM_SLACK_* instead would let a run whose recovery found nothing reach
+        the apply and CrashLoop, which is the whole failure the guard prevents.
+        """
+        proc = self._run_deferred_check(
+            before='PARAM_SLACK_BOT_TOKEN="xoxb-1"; PARAM_SLACK_APP_TOKEN="xapp-1"'
+        )
+        self.assertNotEqual(
+            proc.returncode,
+            0,
+            "the flag variables must not stand in for a recovery that failed",
+        )
+        self.assertNotIn("REACHED_THE_APPLY", proc.stdout)
 
     def test_the_guard_names_both_tokens(self):
         text = _INSTALL_SH.read_text()
@@ -5189,7 +5377,7 @@ class SlackRequiresTokensNonInteractivelyTest(unittest.TestCase):
     def test_the_guard_only_fires_without_a_tty(self):
         """Interactive runs must still reach the interview that prompts."""
         text = _INSTALL_SH.read_text()
-        guard = text[text.find("Slack asked for, with nobody to ask") :]
+        guard = text[text.find(self._FAIL_FAST_ANCHOR) :]
         self.assertIn('[ "$PARAM_NON_INTERACTIVE" = "true" ] || ! has_controlling_tty', guard[:1200])
 
     def test_the_fail_fast_guard_precedes_the_tfvars_write(self):
@@ -5198,10 +5386,17 @@ class SlackRequiresTokensNonInteractivelyTest(unittest.TestCase):
         Matched against the call site rather than the name: install.sh mentions
         write_tfvars_from_state in a comment on line 110, 170KB before anything
         runs, so searching for the bare name compares the guard to prose.
+
+        And searched for from main()'s own anchor, not from the top of the
+        file: the refusal string occurs twice, the deferred function has the
+        first copy and is defined above main(), so a plain find() would report
+        this ordering as correct however far the fail-fast block moved.
         """
         text = _INSTALL_SH.read_text()
-        guard_at = text.find("--enable-slack needs a bot token and an app token")
-        self.assertNotEqual(guard_at, -1, "the Slack token guard is missing")
+        anchor_at = text.find(self._FAIL_FAST_ANCHOR)
+        self.assertNotEqual(anchor_at, -1, "the fail-fast Slack guard is missing")
+        guard_at = text.find(self._REFUSAL, anchor_at)
+        self.assertNotEqual(guard_at, -1, "the fail-fast guard no longer refuses")
         write_at = text.find('write_tfvars_from_state "$tfvars_file"')
         self.assertNotEqual(write_at, -1)
         self.assertLess(guard_at, write_at)
@@ -5215,7 +5410,7 @@ class SlackRequiresTokensNonInteractivelyTest(unittest.TestCase):
         is conditioned on the tokens having been expected on disk.
         """
         text = _INSTALL_SH.read_text()
-        guard = text[text.find("Slack asked for, with nobody to ask") :][:1600]
+        guard = text[text.find(self._FAIL_FAST_ANCHOR) :][:1600]
         self.assertIn(
             'is_truthy "${PERSIST_SECRETS_ON_DISK:-$DEFAULT_PERSIST_SECRETS_ON_DISK}"',
             guard,

@@ -143,9 +143,9 @@ When enabling GitOps pull-request automation, also provide the GitOps repository
 ```bash
 curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSION>/install.sh | bash -s -- \
   --non-interactive \
-  --project-id="YOUR_GCP_PROJECT_ID" \
-  --cluster-name="platform-agent-host" \
-  --region="us-central1" \
+  --gcp-project-id="YOUR_GCP_PROJECT_ID" \
+  --gke-cluster-name="platform-agent-host" \
+  --gcp-region="us-central1" \
   --model-provider="gemini" \
   --permission-set="read-only" \
   --gitops-org="YOUR_GITHUB_ORG" \

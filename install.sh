@@ -1190,6 +1190,18 @@ bootstrap_install_env_file() {
   if [ -f "$destination" ]; then
     print_info "Left your install configuration as you wrote it: ${destination}"
     warn_unrecorded_interview_answers "$destination"
+    # --agent-namespace on a run whose install.env already exists. This
+    # function never rewrites that file, so only the first install can record
+    # the key on the operator's behalf -- and unsaid, the flag applies to this
+    # run alone: the next install.sh, upgrade.sh or --menu run that omits it
+    # resolves the default namespace back, renders tfvars for it, looks for the
+    # recovered Secret there, and is refused by lifecycle.sh's
+    # guard_release_namespace.
+    if [ -n "${PARAM_AGENT_NAMESPACE:-}" ] &&
+      ! grep -qE "^[[:space:]]*(export[[:space:]]+)?NAMESPACE=" "$destination" 2>/dev/null; then
+      print_warning "--agent-namespace=${PARAM_AGENT_NAMESPACE} applies to this run only: ${destination} records no NAMESPACE."
+      print_info "Add NAMESPACE=${PARAM_AGENT_NAMESPACE} to ${destination}, or repeat the flag on every later install.sh, upgrade.sh and --menu run."
+    fi
     return 0
   fi
   if [ "$PARAM_DRY_RUN" = "true" ]; then
@@ -1261,16 +1273,31 @@ bootstrap_install_env_file() {
   # defaults, and a default copied here would freeze at this release; the
   # install that did set one (a second install in the project) must keep it,
   # because losing the line renames -- that is, replaces -- the account.
-  # NAMESPACE is deliberately not in the list: it is a variable kubectl
-  # tooling commonly exports, and freezing a stray shell value into the
-  # install's configuration would move the release on the next apply. An
-  # install that means it writes the key into install.env by hand.
+  # NAMESPACE is not in that list, and is handled separately below: the
+  # ambient variable must not be frozen, but a flag must be.
   local identity_key
   for identity_key in PLATFORM_AGENT_GSA_NAME GITHUB_MINTER_GSA_NAME LITELLM_GSA_NAME GKE_DB_KMS_KEYRING GKE_DB_KMS_KEY; do
     if [ -n "${!identity_key:-}" ]; then
       write_env_var "$tmp" "$identity_key" "${!identity_key}"
     fi
   done
+  # NAMESPACE, and only when --agent-namespace put it there.
+  #
+  # $NAMESPACE itself is not consulted: it is a variable kubectl tooling
+  # commonly exports, which is why bootstrap_install_env clears it, and
+  # freezing a stray shell value into the install's configuration would move
+  # the release on the next apply. PARAM_AGENT_NAMESPACE carries only the two
+  # deliberate routes -- this file's own key, and the flag.
+  #
+  # Recorded rather than left to the operator, because the flag is the only one
+  # of those routes that leaves no trace of itself. A second install that
+  # passed it once and omits it next time resolves ${NAMESPACE:-$DEFAULT_NAMESPACE}
+  # back to the default: write_tfvars_from_state then renders the wrong
+  # namespace, the Secret-recovery loop looks for the tokens somewhere they are
+  # not, and lifecycle.sh's guard_release_namespace refuses the install.
+  if [ -n "${PARAM_AGENT_NAMESPACE:-}" ]; then
+    write_env_var "$tmp" NAMESPACE "$PARAM_AGENT_NAMESPACE"
+  fi
   if ! is_truthy "${PERSIST_SECRETS_ON_DISK:-$DEFAULT_PERSIST_SECRETS_ON_DISK}"; then
     printf '\n%s\n' "# PERSIST_SECRETS_ON_DISK=false: credentials are deliberately absent." >> "$tmp"
     write_env_var "$tmp" PERSIST_SECRETS_ON_DISK "false"
@@ -3085,6 +3112,11 @@ run_menu_system() {
   # hand-authored file is what the panel opens on, whichever order the two
   # files disagree in.
   load_install_env "$INSTALL_ENV_FILE" || true
+  # That reload unsets NAMESPACE on its way in, for the reason
+  # bootstrap_install_env does -- so --agent-namespace, which main() applied
+  # before dispatching here, has to be applied again or the panel opens on the
+  # default namespace and its Save & Apply writes tfvars for that one.
+  apply_agent_namespace_override
   # ...and the same for the memory setting, which the two files spell
   # differently (install.env MEMORY, legacy vars.sh MEMORY_PROVIDER) so load
   # order alone cannot make the input win. Save & Apply generates tfvars
@@ -3365,16 +3397,27 @@ require_slack_tokens_after_recovery() {
   fi
 }
 
-main() {
-  parse_args "$@"
-  # The namespace the run installs into, once parse_args has had its say.
-  # bootstrap_install_env cleared NAMESPACE before install.env was read so that
-  # an inherited kubectl variable could not redirect the install; a flag is a
-  # deliberate act, so it is allowed back in here. Empty leaves the variable
-  # unset and every reader falls back to DEFAULT_NAMESPACE, exactly as before.
+# The namespace the run installs into, once parse_args has had its say.
+#
+# bootstrap_install_env cleared NAMESPACE before install.env was read so that an
+# inherited kubectl variable could not redirect the install; a flag is a
+# deliberate act, so it is allowed back in here. PARAM_AGENT_NAMESPACE empty
+# leaves the variable unset and every reader falls back to DEFAULT_NAMESPACE,
+# exactly as before.
+#
+# A function rather than three lines inside main(), for two reasons: the menu
+# path reloads install.env and so has to re-apply it, and a test can only pin an
+# export it is able to call -- one that re-implements these lines passes just as
+# well after they are deleted.
+apply_agent_namespace_override() {
   if [ -n "${PARAM_AGENT_NAMESPACE:-}" ]; then
     export NAMESPACE="$PARAM_AGENT_NAMESPACE"
   fi
+}
+
+main() {
+  parse_args "$@"
+  apply_agent_namespace_override
   if [ "$PARAM_DRY_RUN" = "true" ] && [ "$PARAM_GENERATE_ONLY" = "true" ]; then
     print_error "--dry-run and --generate-only are different modes and cannot be combined."
     return 2
