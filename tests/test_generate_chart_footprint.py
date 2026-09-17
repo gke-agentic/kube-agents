@@ -267,6 +267,16 @@ class WorkloadEntryTest(unittest.TestCase):
         self.assertEqual(entry["ephemeralStorageBytesLimit"], 0)
         self.assertEqual(entry["limits"]["ephemeral-storage"], "0")
 
+    def test_omitted_request_defaults_to_limit(self):
+        """When requests omits a resource, Kubernetes defaults requests to match limits."""
+        entry = gcf._workload_entry(
+            [_container(limits={"ephemeral-storage": "2Gi"})],
+            pods=1,
+        )
+        self.assertEqual(entry["ephemeralStorageBytesRequest"], 2 * _GIB)
+        self.assertEqual(entry["ephemeralStorageBytesLimit"], 2 * _GIB)
+        self.assertEqual(entry["requests"]["ephemeral-storage"], "2Gi")
+
     def test_claim_storage_defaults_to_zero(self):
         self.assertEqual(gcf._claim_storage({}), 0)
         self.assertEqual(
@@ -300,6 +310,8 @@ class ExtractFootprintTest(unittest.TestCase):
         base = self.op["agentPod"]["base"]
         self.assertEqual(base["cpuMillisRequest"], 1000 + 100 + 150)
         self.assertEqual(base["cpuMillisLimit"], 3000 + 500 + 1000)
+        self.assertEqual(base["ephemeralStorageBytesRequest"], 3 * _GIB)
+        self.assertEqual(base["ephemeralStorageBytesLimit"], 3 * _GIB)
         self.assertEqual(base["pods"], 1)
 
     def test_the_dashboard_adds_resources_but_no_pod(self):

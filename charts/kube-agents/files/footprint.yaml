@@ -9,7 +9,7 @@ operatorRendered:
       requests:
         cpu: 1250m
         memory: 2560Mi
-        ephemeral-storage: 1Gi
+        ephemeral-storage: 3Gi
       limits:
         cpu: 4500m
         memory: 10496Mi
@@ -18,7 +18,7 @@ operatorRendered:
       cpuMillisLimit: 4500
       memoryBytesRequest: 2684354560
       memoryBytesLimit: 11005853696
-      ephemeralStorageBytesRequest: 1073741824
+      ephemeralStorageBytesRequest: 3221225472
       ephemeralStorageBytesLimit: 3221225472
       pods: 1
     dashboard:
@@ -57,7 +57,7 @@ operatorRendered:
     requests:
       cpu: 100m
       memory: 256Mi
-      ephemeral-storage: "0"
+      ephemeral-storage: 2Gi
     limits:
       cpu: "1"
       memory: 1Gi
@@ -66,7 +66,7 @@ operatorRendered:
     cpuMillisLimit: 1000
     memoryBytesRequest: 268435456
     memoryBytesLimit: 1073741824
-    ephemeralStorageBytesRequest: 0
+    ephemeralStorageBytesRequest: 2147483648
     ephemeralStorageBytesLimit: 2147483648
     pods: 1
   storage:

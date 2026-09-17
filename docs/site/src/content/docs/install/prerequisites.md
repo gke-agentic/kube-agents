@@ -53,7 +53,7 @@ The first command omits a key whose value is unset, so a requirement that is not
 | **Namespace ResourceQuota headroom.** When the release namespace enforces a baseline ResourceQuota, it needs room for the whole release: the requests in the row above, plus 10 CPU and ~19.4 GiB in limits.                                                                                                                                                                                                                                                                        | `kubectl describe resourcequota -n <release-namespace>`                                                                       | The chart checks un-scoped ResourceQuotas in the release namespace at render time (`quotaPreflight.enabled=true`; `--set quotaPreflight.enabled=false` skips it) and fails with a diagnosis and a ready-to-run `kubectl patch`. With no cluster to query (`helm template`) or no ResourceQuota in the namespace it passes silently, so a clean render is not proof a quota fits; without `get`/`list` on `resourcequotas` there it fails the render instead, because Helm's `lookup` raises on anything but a NotFound. The [chart README](https://github.com/gke-labs/kube-agents/blob/main/charts/kube-agents/README.md#quota-preflight) is canonical for what it sums and how it compares. |
 
 A quota is more than CPU and memory, and so is the check: a stock install also needs 6
-pods, 4 persistent volume claims totalling 22 GiB of `requests.storage`, and 1 GiB of
+pods, 4 persistent volume claims totalling 22 GiB of `requests.storage`, and 5 GiB of
 ephemeral-storage requests against 5 GiB of limits. A namespace that caps any of those
 refuses the install the same way.
 

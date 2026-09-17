@@ -756,19 +756,22 @@ limits charged against a quota — is valid input. Reaching through it with
 evaluating interface {}.cpu`, and only in a namespace that has a ResourceQuota, which is
 the one population this check exists for.
 
-A missing quantity counts as zero, which is what the quota charges for a container that
-does not set it.
+When requests are omitted but limits are specified, Kubernetes defaults the request to
+match the limit at admission time, which is reflected here. When a quantity is omitted
+from both requests and limits, it contributes zero to the sum (though note that if a
+ResourceQuota constrains that resource, Kubernetes quota admission requires containers
+to declare it unless defaulted by a LimitRange).
 */}}
 {{- define "kube-agents.workloadResources" -}}
 {{- $res := (. | default dict).resources | default dict -}}
 {{- $req := (index $res "requests") | default dict -}}
 {{- $lim := (index $res "limits") | default dict -}}
 {{- dict
-      "cpuRequest" (include "kube-agents.parseCpuMillis" (index $req "cpu" | default "0") | int64)
+      "cpuRequest" (include "kube-agents.parseCpuMillis" (index $req "cpu" | default (index $lim "cpu") | default "0") | int64)
       "cpuLimit" (include "kube-agents.parseCpuMillis" (index $lim "cpu" | default "0") | int64)
-      "memoryRequest" (include "kube-agents.parseBytes" (index $req "memory" | default "0") | int64)
+      "memoryRequest" (include "kube-agents.parseBytes" (index $req "memory" | default (index $lim "memory") | default "0") | int64)
       "memoryLimit" (include "kube-agents.parseBytes" (index $lim "memory" | default "0") | int64)
-      "ephemeralRequest" (include "kube-agents.parseBytes" (index $req "ephemeral-storage" | default "0") | int64)
+      "ephemeralRequest" (include "kube-agents.parseBytes" (index $req "ephemeral-storage" | default (index $lim "ephemeral-storage") | default "0") | int64)
       "ephemeralLimit" (include "kube-agents.parseBytes" (index $lim "ephemeral-storage" | default "0") | int64)
    | toJson -}}
 {{- end }}

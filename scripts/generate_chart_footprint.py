@@ -276,7 +276,14 @@ def format_bytes(num_bytes: int) -> str:
 
 def _quantity(container: dict, section: str, key: str, parse) -> int:
     resources = container.get(_RESOURCES_FIELD) or {}
-    return parse((resources.get(section) or {}).get(key, _ZERO_QUANTITY))
+    val = (resources.get(section) or {}).get(key)
+    if not val:
+        if section == _REQUESTS:
+            # When requests are omitted, Kubernetes defaults the request to match the limit.
+            val = (resources.get(_LIMITS) or {}).get(key) or _ZERO_QUANTITY
+        else:
+            val = _ZERO_QUANTITY
+    return parse(val)
 
 
 def _sum_quantity(containers: list, section: str, key: str, parse) -> int:
@@ -286,9 +293,9 @@ def _sum_quantity(containers: list, section: str, key: str, parse) -> int:
 def _workload_entry(containers: list, pods: int = 1, replicas: int = 1) -> dict:
     """Sum a set of co-scheduled containers into one footprint entry.
 
-    Callers select which regular and native sidecar init containers contribute to the pod's
+    Callers pass the regular and native sidecar init containers that contribute to the pod's
     resources; ordinary init containers that run to completion and request less than the
-    container sum are excluded by the caller.
+    container sum are excluded before calling.
 
     When `replicas` is greater than 1 (as read from `spec.replicas`), total pods and resource
     quantities are scaled by `replicas`.

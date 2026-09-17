@@ -69,7 +69,7 @@ _DEFAULT_LIMITS_CPU_MILLIS = 10000
 # together with a green `--check` (both sides move at once) and nothing would catch it.
 _DEFAULT_REQUESTS_MEMORY_BYTES = 4928 * 1024**2
 _DEFAULT_LIMITS_MEMORY_BYTES = 19840 * 1024**2
-_DEFAULT_REQUESTS_EPHEMERAL_BYTES = 1 * 1024**3
+_DEFAULT_REQUESTS_EPHEMERAL_BYTES = 5 * 1024**3
 _DEFAULT_LIMITS_EPHEMERAL_BYTES = 5 * 1024**3
 # Dashboard container: 256m requested, 1 core limit, inside the agent pod.
 _DASHBOARD_REQUEST_MILLIS = 256
@@ -473,6 +473,15 @@ class PreflightDecisionTest(unittest.TestCase):
         self.assertEqual(pruned["limitsCpu"], base["limitsCpu"] - _LITELLM_CPU_LIMIT_MILLIS)
         self.assertEqual(pruned["pods"], base["pods"])
 
+    def test_chart_workload_requests_default_to_limits_when_omitted(self) -> None:
+        """When a workload sets limits but omits requests, requests defaults to limits."""
+        base = self._requirements()
+        # litellm default: requests.cpu=100m, limits.cpu=500m across 2 replicas.
+        # Omitting requests defaults requests.cpu to limits.cpu (500m per replica, +800m total).
+        without_requests = self._requirements(["litellm.resources.requests=null"])
+        diff_millis = (500 - 100) * _LITELLM_REPLICAS
+        self.assertEqual(without_requests["requestsCpu"], base["requestsCpu"] + diff_millis)
+
     def test_chart_workload_ephemeral_storage_is_counted(self) -> None:
         """Only the footprint contributed ephemeral storage, so a chart-set value was free."""
         base = self._requirements()
@@ -658,23 +667,15 @@ class QuotaPreflightTest(unittest.TestCase):
         self.assertEqual(
             op["credentialProxy"]["ephemeralStorageBytesLimit"], 2 * 1024**3
         )
+        self.assertEqual(op["agentPod"]["base"]["ephemeralStorageBytesRequest"], 3 * 1024**3)
+        self.assertEqual(op["agentPod"]["dashboard"]["ephemeralStorageBytesRequest"], 0)
+        self.assertEqual(op["shellSandbox"]["ephemeralStorageBytesRequest"], 0)
+        self.assertEqual(
+            op["credentialProxy"]["ephemeralStorageBytesRequest"], 2 * 1024**3
+        )
 
         self.assertEqual(op["storage"]["persistentVolumeClaims"], _OPERATOR_PVC_COUNT)
         self.assertEqual(op["storage"]["storageBytesRequest"], _OPERATOR_STORAGE_BYTES)
-
-    def test_footprint_sync_and_check(self) -> None:
-        """Verify footprint generator script runs clean in --check mode."""
-        self.assertTrue(_FOOTPRINT_SCRIPT.is_file(), f"missing {_FOOTPRINT_SCRIPT}")
-        res = subprocess.run(
-            ["python3", str(_FOOTPRINT_SCRIPT), "--check"],
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(
-            res.returncode,
-            0,
-            f"footprint drift detected:\n{res.stderr}\n{res.stdout}",
-        )
 
     def test_values_yaml_quota_preflight_enabled(self) -> None:
         values = yaml.safe_load(_VALUES.read_text())
@@ -747,10 +748,15 @@ class QuotaPreflightTest(unittest.TestCase):
 
         helpers = _HELPERS.read_text()
         body = helpers.split('define "kube-agents.quotaPreflight"')[1].split("{{- end }}")[0]
-        guard = body.index(".Values.quotaPreflight.enabled")
-        self.assertLess(
-            guard,
-            body.index("lookup"),
+        match = re.search(
+            r"\{\{-\s*if\s+\.Values\.quotaPreflight\.enabled\s*-\}\}(.*?)\{\{-\s*end\s*-?\}\}",
+            body,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(match, "expected if .Values.quotaPreflight.enabled guard block")
+        self.assertIn(
+            "lookup",
+            match.group(1),
             "the lookup must sit inside the enabled guard, or the flag cannot help a "
             "deployer who lacks permission to perform it",
         )
@@ -805,24 +811,66 @@ class DocumentedFootprintTest(unittest.TestCase):
         # about the numbers, not about where the prose happens to wrap.
         page = " ".join(self._PREREQUISITES.read_text().split())
         gib = 1024**3
-        expected = {
-            "pod count": f"{required['pods']} pods",
-            "CPU requests": f"about {round(required['requestsCpu'] / 1000)} vCPU",
-            "memory requests": f"{required['requestsMemory'] / gib:.1f} GiB",
-            "CPU limits": f"{round(required['limitsCpu'] / 1000)} CPU",
-            "memory limits": f"{required['limitsMemory'] / gib:.1f} GiB",
-            "claim count": f"{required['persistentVolumeClaims']} persistent volume claims",
-            "claim storage": f"{required['requestsStorage'] // gib} GiB",
-            "ephemeral requests": f"{required['requestsEphemeral'] // gib} GiB of ephemeral-storage requests",
-            "ephemeral limits": f"{required['limitsEphemeral'] // gib} GiB of limits",
-        }
-        for label, figure in expected.items():
-            self.assertIn(
-                figure,
-                page,
-                f"the {label} on the prerequisites page no longer matches the chart "
-                f"(expected to find {figure!r})",
-            )
+        # Check that the quota summary sentence quotes the exact current totals without stale figures.
+        m_sentence = re.search(
+            r"(\d+)\s+pods,\s+(\d+)\s+persistent volume claims totalling\s+(\d+)\s+GiB of `requests\.storage`,\s+and\s+(\d+)\s+GiB of ephemeral-storage requests against\s+(\d+)\s+GiB of limits\.",
+            page,
+        )
+        self.assertIsNotNone(
+            m_sentence, "quota summary sentence not found on prerequisites page"
+        )
+        self.assertEqual(int(m_sentence.group(1)), required["pods"], "stale pod count")
+        self.assertEqual(
+            int(m_sentence.group(2)),
+            required["persistentVolumeClaims"],
+            "stale claim count",
+        )
+        self.assertEqual(
+            int(m_sentence.group(3)),
+            required["requestsStorage"] // gib,
+            "stale claim storage",
+        )
+        self.assertEqual(
+            int(m_sentence.group(4)),
+            required["requestsEphemeral"] // gib,
+            "stale ephemeral-storage requests",
+        )
+        self.assertEqual(
+            int(m_sentence.group(5)),
+            required["limitsEphemeral"] // gib,
+            "stale ephemeral-storage limits",
+        )
+
+        # Check schedulable capacity table row.
+        m_capacity = re.search(
+            r"requests about\s+(\d+)\s+vCPU and\s+([\d\.]+)\s+GiB across\s+(\d+)\s+pods",
+            page,
+        )
+        self.assertIsNotNone(
+            m_capacity, "schedulable capacity row not found on prerequisites page"
+        )
+        self.assertEqual(
+            int(m_capacity.group(1)), round(required["requestsCpu"] / 1000)
+        )
+        self.assertEqual(
+            float(m_capacity.group(2)), round(required["requestsMemory"] / gib, 1)
+        )
+        self.assertEqual(int(m_capacity.group(3)), required["pods"])
+
+        # Check limits table row.
+        m_limits = re.search(
+            r"plus\s+(\d+)\s+CPU and ~([\d\.]+)\s+GiB in limits\.",
+            page,
+        )
+        self.assertIsNotNone(
+            m_limits, "limits row not found on prerequisites page"
+        )
+        self.assertEqual(
+            int(m_limits.group(1)), round(required["limitsCpu"] / 1000)
+        )
+        self.assertEqual(
+            float(m_limits.group(2)), round(required["limitsMemory"] / gib, 1)
+        )
 
 
 

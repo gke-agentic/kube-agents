@@ -3159,8 +3159,8 @@ func buildAgentAPIAuthSidecar(agent *agentv1alpha1.PlatformAgent, homeDir string
 				corev1.ResourceCPU:    resource.MustParse(agentAPIAuthCPURequest),
 				corev1.ResourceMemory: resource.MustParse(agentAPIAuthMemoryRequest),
 			},
-			// Why these four values are what they are, Envoy's share of the CPU limit
-			// included: see the agentAPIAuth* constant declarations at the top of this file.
+			// Why these values are what they are: see the agentAPIAuth* constant
+			// declarations at the top of this file.
 			Limits: corev1.ResourceList{
 				corev1.ResourceCPU:              resource.MustParse(agentAPIAuthCPULimit),
 				corev1.ResourceMemory:           resource.MustParse(agentAPIAuthMemoryLimit),

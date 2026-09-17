@@ -590,7 +590,10 @@ from `files/footprint.yaml` because the chart cannot render them itself. The age
 multiplied by `platformAgent.deployment.availability.replicas`; the shell sandbox, the
 credential proxy and the PersistentVolumeClaims are not, because they do not scale with
 it. A replica count of `0` costs nothing, and a `resources` key you have pruned
-(`--set litellm.resources.limits=null`) counts as zero rather than failing the render.
+(`--set litellm.resources.limits=null`) counts as zero rather than failing the render —
+though note that if a namespace ResourceQuota restricts that compute resource (such as
+`limits.cpu` or `limits.memory`), Kubernetes quota admission requires every container to
+declare it (or a `LimitRange` to default it), and will reject the pod if omitted.
 The one value it will not guess is `hindsight.postgresql.storage`: the schema permits
 `null`, a claim sized from it would be counted as zero, so an empty one fails the check
 by name.
@@ -636,6 +639,14 @@ to it. A LimitRange with a per-container `max`, or a `default` that rewrites wha
 request, rejects or resizes them at admission no matter how much quota is free — the same
 stall, from an object this check never looks at. Check it separately with
 `kubectl describe limitrange -n <release-namespace>`.
+
+Conversely, a ResourceQuota that restricts compute resources (`requests.cpu`, `limits.cpu`,
+`requests.memory`, `limits.memory`, `requests.ephemeral-storage`, `limits.ephemeral-storage`)
+requires every container in the namespace to declare that request or limit unless a
+`LimitRange` provides a default. Several operator containers (such as the shell sandbox and
+dashboard) set no ephemeral storage, and pruning a workload's limits leaves it without them;
+the preflight checks total headroom against what is declared, not whether every individual
+container declares every resource the quota constrains.
 
 It does need `get`/`list` on `resourcequotas` in the release namespace. Helm's `lookup`
 returns nothing for a NotFound and raises a template error for everything else, so an
