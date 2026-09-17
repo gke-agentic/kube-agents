@@ -477,6 +477,7 @@ save_secret_env_var() {
 # a path read out of install.env.
 expand_tilde_path() {
   local path="$1"
+  # shellcheck disable=SC2088  # Intentionally matching literal tilde to expand it.
   case "$path" in
     "~" | "~/"*)
       if [ -z "${HOME:-}" ]; then
