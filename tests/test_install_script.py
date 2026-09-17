@@ -5339,6 +5339,42 @@ class DomainScopedFlagsTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
         self.assertIn("V=a=b", proc.stdout)
 
+    def test_several_slack_bot_tokens_reach_the_variable_unsplit(self):
+        """One token per workspace, comma-separated, is a supported shape.
+
+        SlackRelay splits SLACK_BOT_TOKEN on commas and keys a client per
+        team_id, which is how one install serves several Slack workspaces. The
+        flag is the only new way in, and it must hand the value over whole:
+        splitting, trimming to the first token, or rejecting the comma as a
+        malformed secret would each remove multi-workspace support while every
+        other test stayed green.
+        """
+        tokens = "xoxb-workspace-one,xoxb-workspace-two"
+        proc = self._parse(
+            f"--slack-bot-token={tokens}",
+            'echo "T=[$PARAM_SLACK_BOT_TOKEN]"',
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn(f"T=[{tokens}]", proc.stdout)
+
+    def test_the_help_text_says_the_bot_token_flag_takes_several(self):
+        """A capability nobody can find from `--help` is one nobody uses.
+
+        Asserted because the singular wording it replaces was accurate about
+        the common case and wrong about the feature, which is exactly the kind
+        of line that gets "tidied" back.
+        """
+        proc = subprocess.run(
+            ["bash", str(_INSTALL_SH), "--help"],
+            capture_output=True,
+            text=True,
+            env=get_isolated_test_env(),
+            cwd=str(_REPO_ROOT),
+        )
+        help_text = proc.stdout + proc.stderr
+        self.assertIn("--slack-bot-token=TOKENS", help_text)
+        self.assertRegex(help_text, r"Comma-separated Slack bot tokens")
+
 
 class SlackRequiresTokensNonInteractivelyTest(unittest.TestCase):
     """--enable-slack with nobody to ask for the tokens is refused.

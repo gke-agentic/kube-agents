@@ -582,7 +582,9 @@ Flags for AI Agents & Automation:
                                 (default: DEFAULT_GOOGLE_CHAT_MODE, currently default)
   --google-chat-home-channel=SPACE_ID
                                 Google Chat space ID for unsolicited alerts/messages (e.g. spaces/AAAA...)
-  --slack-bot-token=TOKEN       Slack bot token (xoxb-...)
+  --slack-bot-token=TOKENS      Comma-separated Slack bot tokens (xoxb-...), one per
+                                workspace the agent serves. The relay keys each one by
+                                the team it authenticates as
   --slack-app-token=TOKEN       Slack socket-mode app-level token (xapp-...)
   --slack-allowed-users=USERS   Comma-separated Slack user IDs allowed to talk to the
                                 agent. Empty allows all users
@@ -3880,7 +3882,8 @@ main() {
     # Same shape as allowed_users_hint above: an empty list has to read as a
     # deliberate choice rather than as a missing default.
     [ -z "$slack_allowed_users" ] && slack_allowed_hint="empty list"
-    prompt_read "Slack Bot Token (xoxb-...)" slack_bot_token "$slack_bot_token" true "$bot_hint"
+    prompt_read "Slack Bot Tokens (xoxb-..., comma-separated for several workspaces)" \
+      slack_bot_token "$slack_bot_token" true "$bot_hint"
     prompt_read "Slack App Token (xapp-...)" slack_app_token "$slack_app_token" true "$app_hint"
     prompt_read "Allowed Slack User IDs / Emails (comma-separated)" \
       slack_allowed_users "$slack_allowed_users" false "$slack_allowed_hint"
