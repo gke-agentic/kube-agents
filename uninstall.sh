@@ -383,7 +383,7 @@ main() {
   source "${repo_dir}/scripts/installer/installer_common.sh"
   # Legacy state first, then install.env over the top of it, so the
   # hand-authored input wins. Both are optional here: unlike upgrade.sh, a
-  # teardown can proceed on --project-id/--cluster-name/--region alone.
+  # teardown can proceed on --gcp-project-id/--gke-cluster-name/--gcp-region alone.
   if [ -f "${repo_dir}/k8s-operator/scripts/vars.sh" ]; then
     # shellcheck disable=SC1091
     if ! source "${repo_dir}/k8s-operator/scripts/vars.sh"; then

@@ -535,7 +535,7 @@ out_dir=""; acquire_source_repo out_dir "{requested_ref}"; echo "RESOLVED=$out_d
 
     def test_resolve_creatable_cluster_mode_steps_aside_for_a_zone(self):
         """A defaulted Autopilot demotes rather than writing a config Terraform
-        rejects. Reachable non-interactively via --cluster-name, where nothing
+        rejects. Reachable non-interactively via --gke-cluster-name, where nothing
         else checks the mode/location pair."""
         proc = self._run_install_func(
             f'{_SOURCE_INSTALLER_COMMON}resolve_creatable_cluster_mode "" us-central1-a'
@@ -2630,7 +2630,7 @@ class ImportGithubPemKmsKeyTest(unittest.TestCase):
             )
 
     def test_a_zonal_region_is_reduced_to_the_kms_region(self):
-        """KMS locations are regional. The caller passes install.sh's --region,
+        """KMS locations are regional. The caller passes install.sh's --gcp-region,
         which may be a zone."""
         _, calls = self._run()
         creates = [c for c in calls if "kms keys create" in c]

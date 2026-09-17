@@ -328,7 +328,7 @@ bootstrap_install_env() {
 #
 # Scanned here rather than in parse_args because the loads run at source time,
 # before it. An exact match only: --help-me is not --help, and a value that
-# merely contains the word (--project-id=help-desk) is not the flag.
+# merely contains the word (--gcp-project-id=help-desk) is not the flag.
 wants_help_only() {
   local arg
   for arg in "$@"; do
@@ -814,7 +814,7 @@ resolve_creatable_cluster_mode() {
   fi
   # A defaulted Autopilot steps aside at a zonal location rather than failing:
   # nobody asked for Autopilot here, and the alternative is an abort blaming
-  # --region for a shape the installer chose itself. An explicit
+  # --gcp-region for a shape the installer chose itself. An explicit
   # --gke-cluster-mode=autopilot still fails in require_creatable_cluster_mode —
   # that request is impossible, not merely inconvenient.
   if [ "${DEFAULT_CLUSTER_MODE}" = "autopilot" ] && ! location_is_region "$location"; then
@@ -3372,7 +3372,7 @@ main() {
   local cluster_name="${PARAM_CLUSTER_NAME:-}"
   # Set on the branches where the user has demonstrably asked for a cluster
   # that does not exist yet, which is the only case --gke-cluster-mode decides.
-  # Picking one out of the discovered list, or naming one with --cluster-name,
+  # Picking one out of the discovered list, or naming one with --gke-cluster-name,
   # does not qualify: the generator probes those and the live shape wins.
   local ask_cluster_shape="false"
   if [ "$cluster_choice" = "1" ]; then
