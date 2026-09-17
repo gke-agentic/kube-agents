@@ -974,7 +974,17 @@ a Go template cannot catch the error `lookup` raises.
   {{- $limMem = add $limMem (mul $podLimMem $agentReplicas) -}}
   {{- $reqEph = add $reqEph (mul $podReqEph $agentReplicas) -}}
   {{- $limEph = add $limEph (mul $podLimEph $agentReplicas) -}}
-  {{- if gt $agentReplicas (int64 0) -}}
+  {{- /* Only an HA gateway surges. The operator gives the gateway Deployment a
+         RollingUpdate strategy only when availability.replicas is above 1 and renders
+         `strategy: Recreate` otherwise (resolveDeploymentReplicasAndStrategy in
+         k8s-operator/internal/controller/manifest_helpers.go; the default-CR golden
+         platformagent.yaml shows Recreate, the platformagent-ha one RollingUpdate). A
+         Recreate rollout deletes the old Pod before creating the new one, so it needs no
+         extra room. Counting the agent pod here at one replica made it win the max on
+         every default install — it is the largest workload in the release — and the
+         printed patch then asked for an agent pod's worth of CPU, memory and ephemeral
+         storage that the release can never consume. */ -}}
+  {{- if gt $agentReplicas (int64 1) -}}
     {{- $surgeCpuReq = max $surgeCpuReq $podReqCpu -}}
     {{- $surgeCpuLim = max $surgeCpuLim $podLimCpu -}}
     {{- $surgeMemReq = max $surgeMemReq $podReqMem -}}

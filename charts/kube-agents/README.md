@@ -629,7 +629,13 @@ The patch it prints raises `hard` to what the release needs plus one rollout sur
 adding `used` on install for compute and pod quotas, where `used` is somebody else's, and
 not on upgrade or for claim-shaped keys, where `used` already holds the release's own
 running pods or retained PVCs. Claim counts and `requests.storage` get no surge allowance,
-because a surge Pod mounts the existing claim rather than creating one.
+because a surge Pod mounts the existing claim rather than creating one. The surge Pod it
+sizes for is the largest one in the release that a rollout actually creates: rollouts are
+per-workload, so room for one at a time is enough. The shell sandbox's StatefulSet and the
+pre-delete cleanup Job never surge, and neither does the agent pod at the default
+`platformAgent.deployment.availability.replicas` of one, where the operator rolls the
+gateway Deployment with `strategy: Recreate` — it counts only from two replicas up, where
+the strategy becomes `RollingUpdate`.
 
 **Where it is silent, and where it is not.** The check needs a cluster to query, so it
 does nothing under `helm template` and nothing in a namespace with no ResourceQuota — a

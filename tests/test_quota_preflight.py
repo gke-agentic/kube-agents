@@ -80,6 +80,16 @@ _DASHBOARD_REQUEST_MILLIS = 256
 _DASHBOARD_LIMIT_MILLIS = 1000
 # One agent pod (base + dashboard) as requested.
 _AGENT_POD_REQUEST_MILLIS = 1506
+# The agent pod's ephemeral-storage request, the only one among the operator-rendered
+# workloads that ever sizes a surge.
+_AGENT_POD_EPHEMERAL_REQUEST_BYTES = 3 * 1024**3
+# The replica count at which the operator switches the gateway Deployment from Recreate to
+# RollingUpdate (resolveDeploymentReplicasAndStrategy), and so the first one whose rollout
+# creates a surge Pod.
+_HA_REPLICAS = 2
+# The largest pod that rolls with a surge Pod at defaults: LiteLLM, at a 100m CPU request.
+# The agent pod is larger but rolls with Recreate at the default single replica.
+_LARGEST_SURGING_REQUEST_MILLIS = 100
 # The operator's own request.
 _OPERATOR_REQUEST_MILLIS = 10
 # Two operator-rendered claims plus two from the shell StatefulSet's volumeClaimTemplates.
@@ -607,17 +617,55 @@ class PreflightDecisionTest(unittest.TestCase):
         self.assertIn("second-quota", res.stderr)
 
     def test_the_patch_leaves_ephemeral_room_for_a_surge_pod(self) -> None:
-        """A surge Pod brings its ephemeral storage with it, same as its CPU and memory."""
+        """A surge Pod brings its ephemeral storage with it, same as its CPU and memory.
+
+        Asserted at two replicas because the agent pod is the only workload in the release
+        that requests ephemeral storage, and it rolls with a surge Pod only there: at the
+        default single replica the operator renders `strategy: Recreate`.
+        """
+        sets = [f"platformAgent.deployment.availability.replicas={_HA_REPLICAS}"]
+        required = self._requirements(sets)
         res = self._render(
-            {"probe": {"quotas": [self._quota({"requests.ephemeral-storage": "1Mi"})]}}
+            {"probe": {"quotas": [self._quota({"requests.ephemeral-storage": "1Mi"})]}},
+            sets,
         )
         self.assertNotEqual(res.returncode, 0)
         patch = re.search(r'"requests\.ephemeral-storage":"([^"]+)"', res.stderr)
         self.assertIsNotNone(patch, f"no ephemeral patch value in:\n{res.stderr}")
-        self.assertGreater(
+        self.assertEqual(
             _parse_gib_or_mib(patch.group(1)),
-            _DEFAULT_REQUESTS_EPHEMERAL_BYTES,
+            required["requestsEphemeral"] + _AGENT_POD_EPHEMERAL_REQUEST_BYTES,
             "the patch must leave room for the surge Pod it promises",
+        )
+
+    def test_the_default_patch_does_not_size_a_surge_the_gateway_never_creates(self) -> None:
+        """At one replica the operator rolls the gateway with Recreate, which never surges.
+
+        Sizing the patch for an agent pod there asked a default install for an agent pod's
+        worth of CPU more than the release can ever consume — it is the largest workload in
+        the release, so it won the surge maximum on every install that tripped a shortfall.
+        """
+        required = self._requirements()
+        res = self._render({"probe": {"quotas": [self._quota({"requests.cpu": "100m"})]}})
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn(
+            f'"requests.cpu":"{required["requestsCpu"] + _LARGEST_SURGING_REQUEST_MILLIS}m"',
+            res.stderr,
+            "the patch must be sized for the largest pod that actually surges",
+        )
+
+    def test_an_ha_patch_does_size_the_agent_pod_surge(self) -> None:
+        """Above one replica the gateway rolls with RollingUpdate, so its Pod does surge."""
+        sets = [f"platformAgent.deployment.availability.replicas={_HA_REPLICAS}"]
+        required = self._requirements(sets)
+        res = self._render(
+            {"probe": {"quotas": [self._quota({"requests.cpu": "100m"})]}}, sets
+        )
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn(
+            f'"requests.cpu":"{required["requestsCpu"] + _AGENT_POD_REQUEST_MILLIS}m"',
+            res.stderr,
+            "an HA gateway's rollout needs room for an agent pod",
         )
 
     def test_count_pods_spelling_is_enforced(self) -> None:
