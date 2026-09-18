@@ -9,10 +9,14 @@ Use this skill when asked to remove or uninstall `kube-agents` infrastructure fr
 
 ## One-Liner Uninstall Command (Non-Interactive)
 
-To run the project teardown non-interactively:
+To run the project teardown non-interactively, use the `uninstall.sh` published for the release
+the install runs, substituting `<RELEASE_VERSION>` with a release tag from
+[GitHub Releases](https://github.com/gke-labs/kube-agents/releases). The release-pinned script
+tears the install down with its own release's engine; a copy carrying no baked version falls back
+to the engine on `main`, which is not the one that built the install:
 
 ```bash
-curl -fsSL https://gke-labs.github.io/kube-agents/uninstall.sh | bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSION>/uninstall.sh | bash -s -- \
   --non-interactive \
   --project-id="<PROJECT_ID>" \
   --cluster-name="<CLUSTER_NAME>" \

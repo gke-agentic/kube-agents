@@ -6,12 +6,15 @@
 #
 # Usage:
 #   ./upgrade.sh [options]
-#   curl -fsSL https://gke-labs.github.io/kube-agents/upgrade.sh | bash -s -- \
-#     --upgrade-mode=full --image-tag=<SEMVER_TAG_OR_FULL_COMMIT_SHA>
+#   curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSION>/upgrade.sh | bash -s -- \
+#     --non-interactive --project-id="my-gcp-project" --cluster-name="platform-agent-host"
 #
-# Run this from the directory holding your original install checkout: the
-# upgrade refuses to re-render cluster configuration without the install's
-# install.env (a legacy k8s-operator/scripts/vars.sh also satisfies it).
+# The release-pinned script carries its own version, so no image tag is passed.
+# It upgrades the install whose checkout the installer left in $HOME/kube-agents,
+# reading the install.env in it; KUBE_AGENTS_INSTALL_ENV points at a
+# configuration held somewhere else, and a legacy k8s-operator/scripts/vars.sh
+# also satisfies the requirement. The upgrade refuses to re-render cluster
+# configuration without one.
 # ==============================================================================
 
 set -Eeuo pipefail
@@ -135,7 +138,10 @@ Options:
   --project-id ID          GCP Target Project ID
   --cluster-name NAME      GKE Target Cluster Name
   --region REGION          GKE GCP Region
-  --image-tag TAG          Validated immutable release tag or full commit SHA (required)
+  --image-tag TAG          Validated immutable release tag or full commit SHA.
+                           Developer and CI/CD testing only: an official release
+                           bakes its own version into this script, and --plan and
+                           --keep-image-tag read the tag from the install itself.
   --keep-image-tag         Upgrade everything except the images, leaving them on
                            the tag the install already serves. Use instead of
                            --image-tag, not alongside it.
@@ -627,7 +633,7 @@ main() {
         exit 1
       fi
     else
-      print_error "--image-tag is required when no interactive terminal is available (e.g. curl | bash)."
+      print_error "--image-tag is required when no interactive terminal is available and this copy of the script carries no baked release version. Re-run the release-pinned script for the version you want, or pass --image-tag."
       exit 1
     fi
   fi
