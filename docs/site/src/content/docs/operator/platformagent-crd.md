@@ -304,8 +304,8 @@ Three things change while it is on:
   anchors `kanban.db` at the shared root rather than the active profile, deliberately, so the
   dispatcher/worker handoff survives — so cards in flight are unaffected by the flip.
 - The entrypoint stops force-syncing `profiles/platform/config.yaml` from the image and back-fills
-  it instead, on the same terms as the `default` profile's own file, so `/sethome` and
-  `monitoring.install_id` survive a restart — see
+  it instead, on the same terms as the `default` profile's own file (with one exception, the
+  remote MCP `User-Agent`), so `/sethome` and `monitoring.install_id` survive a restart — see
   [How config reaches each profile](#how-config-reaches-each-profile).
 
 Setting the field back to `false` reverses all three. The overlay records what it applied, so the
@@ -382,8 +382,9 @@ leave the Platform Agent unable to do the work the flag exists to let it do.
   Handing the file to the agent is the point — that is what lets `/sethome` and
   `monitoring.install_id` survive — but the same change means a key the running agent writes there
   is not reverted at boot. Keys the image adds still arrive through the back-fill; keys already in
-  the file stay as they were last written. Operator-owned settings are unaffected: they come from
-  the overlay and the `/etc/hermes` pins, both re-applied every boot.
+  the file stay as they were last written, except the remote MCP `User-Agent`, which follows the
+  image ([below](#how-config-reaches-each-profile)). Operator-owned settings are unaffected: they
+  come from the overlay and the `/etc/hermes` pins, both re-applied every boot.
 - Cluster profiles that already exist are otherwise unaffected — their config, skills and
   scaffolding on disk are unchanged and they keep working. What stops is the scheduled work above,
   which includes `cluster-agent-reconcile`, so a cluster onboarded while the flag is on gets no
@@ -514,7 +515,7 @@ Enables external integrations. Only the enabled ones need to be present.
 
 - **`googleChat`** — `enabled` (default `false`), `projectId`, `topicName`, `subscriptionName`, `allowedUsers`, `homeChannel`, and `mode` (`default` or `debug`, default `default`). When `enabled`, `projectId`, `topicName`, and `subscriptionName` are required (enforced by a CEL validation rule). Populated by the installer when Google Chat is enabled.
 - **`slack`** — `enabled` (default `false`), `botTokenSecretRef` and `appTokenSecretRef` (Secret refs, required when enabled), `allowedUsers`, `homeChannel`, and `homeChannelName`. Populated by the installer when Slack is enabled.
-- **`github`** — `org` (optional target GitHub organization/user, up to 39 characters) and `gitRepo` (optional target GitOps repository URL or `owner/repo` shorthand, up to 2048 characters). Supports HTTPS/HTTP (`https://`, `http://`), SCP-style SSH (`git@github.com:owner/repo`), SSH/Git protocols (`ssh://`, `git://`), and bare `owner/repo` shorthand. Rejects non-GitHub hosts and URLs containing whitespace or invalid syntax at admission (`failurePolicy: Fail`). If an invalid URL or organization is encountered during reconciliation, GitOps is disabled in config and a `Degraded` condition (`Reason: InvalidGitRepoURL`) is surfaced on the resource status. On reconcile, `gitRepo` is appended to the `gitops-state` ConfigMap (`managed_repos`) if absent; removing a repository configured via `gitRepo` requires clearing or updating `spec.integration.github.gitRepo` on the CR in addition to editing the ConfigMap. Populated by the installer when a GitOps repository is connected. The same ConfigMap accepts a hand-added `context_repos` key in the same JSON shape (`[{"type": "github", "url": "https://github.com/<owner>/<name>"}]`), naming repositories the agent reads for declared intent — a Terraform repository an audit consults before it reports a posture as a finding — and never writes to. The operator does not manage that key: it is not seeded from the CR, there is no CR field for it, and reconciles leave it in place. A private context repository also needs a token the minter will issue for it, which today it does only for `managed_repos`; the pilot reads public repositories and the GitOps repository itself.
+- **`github`** — `org` (optional target GitHub organization/user, up to 39 characters) and `gitRepo` (optional target GitOps repository URL or `owner/repo` shorthand, up to 2048 characters). Supports HTTPS/HTTP (`https://`, `http://`), SCP-style SSH (`git@github.com:owner/repo`), SSH/Git protocols (`ssh://`, `git://`), and bare `owner/repo` shorthand. Rejects non-GitHub hosts and URLs containing whitespace or invalid syntax at admission (`failurePolicy: Fail`). If an invalid URL or organization is encountered during reconciliation, GitOps is disabled in config and a `Degraded` condition (`Reason: InvalidGitRepoURL`) is surfaced on the resource status. On reconcile, `gitRepo` is appended to the `gitops-state` ConfigMap (`managed_repos`) if absent; removing a repository configured via `gitRepo` requires clearing or updating `spec.integration.github.gitRepo` on the CR in addition to editing the ConfigMap. Populated by the installer when a GitOps repository is connected. The same ConfigMap accepts a hand-added `context_repos` key in the same JSON shape (`[{"type": "github", "url": "https://github.com/<owner>/<name>"}]`), naming repositories the agent reads for declared intent — a Terraform repository an audit consults before it reports a posture as a finding — and never writes to. The operator does not seed that key: it is not populated from the CR, there is no CR field for it, and reconciles leave it in place. The operator does read it: each same-organization entry gets a read-only (`contents: read`) token minter policy, so a private context repository is readable through the credential broker's content-mode clone, provided the GitHub App is installed on it — see [Read-only tokens for context repositories](/kube-agents/deploy/token-minter/#read-only-tokens-for-context-repositories). Nothing that writes consults the key: a context repository stays refused by the broker's `commit` and `push`.
 
 :::caution[Upgrade note: non-GitHub repository rejection]
 Earlier operator versions passed arbitrary `https://` and `http://` URLs through to `CleanRepoURLWithOrg` without host validation. The operator now strictly restricts repository URLs to GitHub (`github.com` or `www.github.com`). Existing `PlatformAgent` resources configured with non-GitHub repositories reconcile into `phase: Degraded` with condition `Reason: InvalidGitRepoURL`, and subsequent updates to those resources are rejected at admission by the validating webhook (`failurePolicy: Fail`) until `spec.integration.github.gitRepo` is corrected or removed.
@@ -723,6 +724,13 @@ alone. Its overlay merges after that back-fill as it always did. Everything else
 that profile — the persona files, `cron/`, `skills/`, `governance/`, `hindsight/` — still
 force-syncs either way.
 
+One value inside both of these files does follow the image: the `User-Agent` header that the
+remote MCP servers' `args` carry (see [the config reference](/kube-agents/reference/config/)). The
+back-fill recurses only through mappings and that value lives in a list, so it would otherwise stay
+as the image that scaffolded the profile spelled it for the life of the volume. At every start the
+entrypoint sets it to the image template's in each cluster profile's `config.yaml`, and in the
+platform profile's when it is the front door, and changes nothing else in the file.
+
 **Merge semantics.** These differ between the two mechanisms, which is the easiest thing to get
 wrong here. In a startup **overlay** — every profile including `default` — maps merge recursively,
 lists union, and scalars are replaced by the overlay; precedence, lowest to highest, is Hermes
@@ -744,12 +752,17 @@ one reviewable place.
 Credentials reach the agent pod as environment, through `SecretKeyRef`, and a container's
 environment is fixed for the life of the pod: editing the Secret changes nothing a running container
 can see. So the operator does for Secrets what the config hash does for ConfigMaps. It reads the
-Secret keys the rendered pod spec consumes as environment, digests them with SHA-256, and stamps the
-result on the pod template as `kubeagents.x-k8s.io/secret-env-hash`. Rotating one of those keys moves
-the digest, which changes the template, which rolls the pod onto the new value. Both pods that read
-credentials this way are stamped: the gateway and the credential proxy.
+Secret keys the rendered pod spec consumes as environment, digests them with an HMAC-SHA256 keyed by
+the UID of each Secret they come from, and stamps the result on the pod template as
+`kubeagents.x-k8s.io/secret-env-hash`. Rotating one of those keys moves the digest, which changes the
+template, which rolls the pod onto the new value. Both pods that read credentials this way are
+stamped: the gateway and the credential proxy. The digest is keyed because the annotation is
+readable by anyone who can read pods: an unkeyed hash would let that reader verify guesses at a
+low-entropy value offline, whereas the UID is on the Secret object, and reading it takes the same
+`get` on the Secret that reads the values. (A UID also travels on Events and owner references that
+point at the Secret; the operator creates neither.)
 
-Four details decide whether you will see it happen.
+Five details decide whether you will see it happen.
 
 - **Within fifteen minutes, not immediately.** The operator does not watch Secrets — it holds no
   `list` or `watch` on them, deliberately — so nothing wakes a reconcile when one changes. A healthy
@@ -770,12 +783,18 @@ Four details decide whether you will see it happen.
   you would expect. A Secret the operator cannot read for any other reason — an API error rather than
   a `NotFound` — keeps the digest the last good pass computed, so a blip neither rolls the pod nor
   stops the rest of the reconcile.
+- **Recreating a Secret rolls the pod once, even with the same values.** The digest's key is built
+  from the UID of every Secret it reads, which an in-place edit, `kubectl apply`, or a patch keeps
+  and a delete-and-create (including `kubectl replace --force`) replaces. A metadata-only write — a new label or annotation —
+  changes neither the UID nor the values and rolls nothing.
 
 **The roll is a stop-start.** At the default single replica the gateway's update strategy is
 `Recreate`, so the old pod is terminated before the new one starts and the agent is unreachable
 across the gap — up to the startup budget of roughly ten minutes on a cold image pull. Expect one
 such restart per agent the first time an operator carrying this change reconciles: the annotation is
 new, so the first pass adds it and the template changes once, whether or not anything was rotated.
+An operator upgrade that changes how the digest is computed restarts each stamped pod once in the
+same way.
 
 ## Reconcile behavior
 
@@ -785,6 +804,7 @@ new, so the first pass adds it and the template changes once, whether or not any
 - The `kubeagents.x-k8s.io/prevent-deletion: "true"` annotation on a `PlatformAgent` blocks deletion of the resource via the validating webhook (`ValidateDelete`). This serves as an accidental-deletion guardrail rather than an authorization control — `ValidateUpdate` does not block removing the annotation, so any principal with update permissions can patch the annotation off before deleting.
 - The `kubeagents.x-k8s.io/enable-litellm-network-policy: "false"` annotation on a `PlatformAgent` opts the shared `litellm-policy` out of operator reconciliation and deletes any managed copy without affecting the agent pod's own NetworkPolicy. Note that deleting the managed policy leaves LiteLLM unselected (fail-open) unless a replacement NetworkPolicy is managed out-of-band.
 - The `kubeagents.x-k8s.io/otlp-collector-namespace` annotation sets the collector namespace for `litellm-policy` when LiteLLM exports to an in-cluster collector whose namespace cannot be derived from `spec.telemetry.otlpEndpoint`.
+- The `kubeagents.x-k8s.io/network-policy-enforcement: absent-accepted` annotation is a record, not a control: the Terraform composition stamps it when an install onto an existing cluster chose to proceed without NetworkPolicy enforcement, and the operator does not read it. [Installing without NetworkPolicy enforcement](/kube-agents/install/prerequisites/#installing-without-networkpolicy-enforcement) says what it means.
 - Under the Helm chart, `platformAgent.annotations` is the route to these annotations. The chart stamps the last two itself from `litellm.networkPolicy=false` and a non-empty `telemetry.collectorNamespace`, and when it does, an entry that disagrees with the value fails the render — see [PlatformAgent annotations](https://github.com/gke-labs/kube-agents/blob/main/charts/kube-agents/README.md#platformagent-annotations) in the chart README.
 - The Helm chart renders and applies the CR (the install engine drives it through `terraform apply`); you can also edit it directly with `kubectl edit`.
 

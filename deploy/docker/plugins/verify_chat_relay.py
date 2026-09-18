@@ -133,7 +133,16 @@ def main() -> None:
     #    set, because the set is one of several ways a name can be dropped.
     from tools.environments.local import build_subprocess_env
 
-    for name in ("SESSION_KV_API_KEY", "CRON_REPORT_RELAY_URL"):
+    #    The two feedback-prompt knobs take the same route: rendered by the
+    #    operator's allowlist, then through this scrub to `feedback_prompt.py`.
+    #    Scrubbed, `FEEDBACK_PROMPT_ENABLED=false` on the CR would still render
+    #    and the prompt would post on an install that turned it off.
+    for name in (
+        "SESSION_KV_API_KEY",
+        "CRON_REPORT_RELAY_URL",
+        "FEEDBACK_PROMPT_ENABLED",
+        "FEEDBACK_PROMPT_DELAY",
+    ):
         child_env = build_subprocess_env(base={**os.environ, name: "sentinel"})
         check(
             child_env.get(name) == "sentinel",
@@ -278,6 +287,32 @@ def main() -> None:
     check(
         not _is_cron_silence_response("the issues sweep failed"),
         "a real report is not mistaken for silence",
+    )
+
+    # 10. `adapter.SILENT_MARKER` restates this string because `cron.scheduler`
+    #     is absent from the checkout the unit tests run in. A restated constant
+    #     is only safe while something notices divergence, and this is the one
+    #     place both are importable. If upstream ever renames the token, the
+    #     adapter's silence predicate would stop matching it and every quiet
+    #     cron run would post the new marker to the home channel — so fail the
+    #     image build here instead.
+    from plugins.platforms.chat.adapter import SILENT_MARKER as ADAPTER_SILENT_MARKER
+    from plugins.platforms.chat.adapter import is_silent_report
+
+    check(
+        ADAPTER_SILENT_MARKER == SILENT_MARKER,
+        f"the adapter's restated silence marker still matches upstream's ({SILENT_MARKER!r})",
+    )
+    # The predicate the relay actually calls, against the real marker and
+    # against the shape upstream's matcher swallows: an alert that quotes the
+    # marker while explaining a quiet run. `_is_cron_silence_response` accepts
+    # the second one, which is why the adapter does not ask it.
+    check(is_silent_report(f"**{SILENT_MARKER}**"), "a dressed marker is still silence")
+    check(
+        not is_silent_report(
+            f"Incident: the 06:00 audit posted nothing.\n{SILENT_MARKER}\nwas the last thing recorded."
+        ),
+        "an alert that quotes the marker in prose is not silence",
     )
 
     print("\nverify_chat_relay: all checks passed")

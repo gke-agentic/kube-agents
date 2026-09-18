@@ -65,8 +65,8 @@ _DEFAULT_LIMITS_CPU_MILLIS = 10200
 # Memory and ephemeral storage are summed by the same helper as CPU but were asserted
 # nowhere, so a generator that stopped parsing them could be regenerated and committed
 # together with a green `--check` (both sides move at once) and nothing would catch it.
-_DEFAULT_REQUESTS_MEMORY_BYTES = 4992 * 1024**2
-_DEFAULT_LIMITS_MEMORY_BYTES = 19968 * 1024**2
+_DEFAULT_REQUESTS_MEMORY_BYTES = 8064 * 1024**2
+_DEFAULT_LIMITS_MEMORY_BYTES = 22016 * 1024**2
 _DEFAULT_REQUESTS_EPHEMERAL_BYTES = 5 * 1024**3
 _DEFAULT_LIMITS_EPHEMERAL_BYTES = 5 * 1024**3
 # Cleanup hook Job: 50m requested / 200m limit, 64Mi requested / 128Mi limit, 1 pod.
@@ -771,7 +771,7 @@ class PreflightDecisionTest(unittest.TestCase):
         )
         self.assertNotEqual(res.returncode, 0, "a too-small limits.memory quota must fail")
         self.assertIn("  - limits.memory:", res.stderr)
-        self.assertIn('"limits.memory":"22016Mi"', res.stderr)
+        self.assertIn('"limits.memory":"25088Mi"', res.stderr)
 
     def test_limits_ephemeral_storage_shortfall_is_enforced(self) -> None:
         """A quota deficient in limits.ephemeral-storage must be refused and named in the patch."""
@@ -800,7 +800,7 @@ class PreflightDecisionTest(unittest.TestCase):
         )
         self.assertNotEqual(res.returncode, 0, "a too-small memory shorthand quota must fail")
         self.assertIn("  - memory:", res.stderr)
-        self.assertIn('"memory":"5504Mi"', res.stderr)
+        self.assertIn('"memory":"10112Mi"', res.stderr)
 
     def test_shorthand_ephemeral_storage_spelling_is_enforced(self) -> None:
         """`ephemeral-storage` is the shorthand spelling for `requests.ephemeral-storage`."""

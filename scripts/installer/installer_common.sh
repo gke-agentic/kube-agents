@@ -479,7 +479,10 @@ expand_tilde_path() {
   local path="$1"
   # shellcheck disable=SC2088  # Intentionally matching literal tilde to expand it.
   case "$path" in
-    "~" | "~/"*)
+    # The slash sits outside the quotes so shellcheck's SC2088 stays enforced in
+    # this block rather than being suppressed across it. The tilde stays quoted
+    # because the pattern has to match one the shell did not expand.
+    "~" | "~"/*)
       if [ -z "${HOME:-}" ]; then
         print_error "Cannot expand '~' in '${path}': HOME is unset. Pass an absolute path instead." >&2
         return 1
@@ -1762,6 +1765,9 @@ write_tfvars_from_state() {
     echo "# --cluster-mode the install asked for only on a create."
     echo "cluster_mode               = $(hcl_str "${cluster_mode}")"
     echo "create_cluster             = ${create_cluster}"
+    echo "# An adoption that chose to install without NetworkPolicy enforcement."
+    echo "# Inert on a created cluster and on one that already enforces."
+    echo "accept_no_network_policy   = $(hcl_bool "${ACCEPT_NO_NETWORK_POLICY:-false}")"
     echo "allow_external_dns_traffic = true"
     echo "deletion_protection        = false"
     echo "enable_gvisor_node_pool    = ${gvisor_node_pool}"
