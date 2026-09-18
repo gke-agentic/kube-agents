@@ -28,13 +28,27 @@ _UPGRADE_SH = _REPO_ROOT / "upgrade.sh"
 
 
 class UpgradeScriptValidationTest(unittest.TestCase):
+    def setUp(self):
+        # upgrade.sh looks for an install.env in the repository directory and in
+        # the working directory, so without a pointer a developer's own
+        # install.env would be found and loaded. An empty file, rather than a
+        # path that does not exist, because a front door refuses to start when
+        # KUBE_AGENTS_INSTALL_ENV names a file it cannot read.
+        temp_dir = tempfile.TemporaryDirectory(prefix="upgrade-install-env-")
+        self.addCleanup(temp_dir.cleanup)
+        self.empty_install_env = pathlib.Path(temp_dir.name) / "install.env"
+        self.empty_install_env.write_text("")
+
     def _run_upgrade_func(self, func_call, env=None, cwd=None):
         """Source upgrade.sh in test mode and run the given function call."""
         setup = f"""
 KUBE_AGENTS_SOURCE_ONLY=true source "{_UPGRADE_SH}"
 {func_call}
 """
-        full_env = get_isolated_test_env(overrides=env)
+        overrides = {"KUBE_AGENTS_INSTALL_ENV": str(self.empty_install_env)}
+        if env:
+            overrides.update(env)
+        full_env = get_isolated_test_env(overrides=overrides)
         return subprocess.run(
             ["bash", "-c", setup],
             capture_output=True,
@@ -428,6 +442,285 @@ class InteractiveImageTagPromptTest(unittest.TestCase):
         self.assertIn('[ "$PARAM_UPGRADE_MODE" = "harness" ] || [ "$PARAM_UPGRADE_MODE" = "full" ]', text)
         self.assertIn('kubectl get deployment "$PLATFORM_AGENT_DEPLOYMENT" -n "$target_namespace"', text)
 
+
+
+class UpgradeReusesTheInstallCheckoutTest(unittest.TestCase):
+    """upgrade.sh moves the checkout install.sh left behind, rather than fetching its own.
+
+    The install one-liner leaves its sources — and the install's install.env —
+    in HOME/kube-agents. Before this, the upgrade one-liner fetched a fresh copy
+    into a temporary directory, which has sources and no configuration, and the
+    run then refused to upgrade without configuration. These tests mirror
+    tests/test_install_script.py, whose refresh_existing_clone this one copies.
+    """
+
+    @staticmethod
+    def _git(*args, cwd):
+        return subprocess.run(
+            ["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    def _existing_clone_fixture(self, checked_out_tag, full_clone=False):
+        """A clone of an earlier release under HOME, the way an install leaves one.
+
+        A bare "upstream" holds tags 0.2.0 and 0.3.0, each tracking install.sh
+        (the marker refresh_existing_clone requires). The clone is taken while
+        only 0.2.0 exists, so it has never seen 0.3.0 — the shape of a checkout
+        from an earlier install. Returns (home_dir, clone_dir, upstream_url,
+        {tag: commit}).
+        """
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(temp_dir.cleanup)
+        base = pathlib.Path(temp_dir.name)
+        work_dir = base / "work"
+        bare_dir = base / "upstream.git"
+        home_dir = base / "home"
+        clone_dir = home_dir / "kube-agents"
+        home_dir.mkdir()
+        git = self._git
+
+        work_dir.mkdir()
+        git("init", "-b", "main", cwd=work_dir)
+        git("config", "user.name", "Test", cwd=work_dir)
+        git("config", "user.email", "test@example.com", cwd=work_dir)
+        git("config", "commit.gpgsign", "false", cwd=work_dir)
+        (work_dir / "install.sh").write_text("release 0.2.0\n")
+        git("add", "install.sh", cwd=work_dir)
+        git("commit", "-m", "release 0.2.0", cwd=work_dir)
+        git("tag", "0.2.0", cwd=work_dir)
+        git("clone", "--bare", "--quiet", str(work_dir), str(bare_dir), cwd=base)
+        upstream_url = bare_dir.as_uri()
+        if full_clone:
+            git("clone", "--quiet", upstream_url, str(clone_dir), cwd=base)
+        else:
+            git("clone", "--quiet", "--filter=blob:none", "--no-checkout", upstream_url, str(clone_dir), cwd=base)
+
+        (work_dir / "install.sh").write_text("release 0.3.0\n")
+        git("add", "install.sh", cwd=work_dir)
+        git("commit", "-m", "release 0.3.0", cwd=work_dir)
+        git("tag", "0.3.0", cwd=work_dir)
+        git("push", "--quiet", upstream_url, "main", "--tags", cwd=work_dir)
+        commits = {tag: git("rev-parse", f"{tag}^{{commit}}", cwd=work_dir) for tag in ("0.2.0", "0.3.0")}
+
+        if full_clone:
+            if checked_out_tag == "0.3.0":
+                git("fetch", "--quiet", upstream_url, "+refs/tags/0.3.0:refs/tags/0.3.0", cwd=clone_dir)
+            git("checkout", "--quiet", "--detach", checked_out_tag, cwd=clone_dir)
+        else:
+            refspec = f"+refs/tags/{checked_out_tag}:refs/tags/{checked_out_tag}"
+            git("fetch", "--quiet", "--depth=1", upstream_url, refspec, cwd=clone_dir)
+            git("checkout", "--quiet", "--detach", "FETCH_HEAD", cwd=clone_dir)
+            self.assertEqual(git("rev-parse", "--is-shallow-repository", cwd=clone_dir), "true")
+        return home_dir, clone_dir, upstream_url, commits
+
+    def _refresh_from_outside(self, home_dir, clone_dir, upstream_url, requested_ref):
+        """Run refresh_existing_clone from a copy of upgrade.sh outside any checkout.
+
+        KUBE_AGENTS_REPO_URL is overridden after sourcing, because upgrade.sh
+        assigns it unconditionally.
+        """
+        outside_dir = home_dir.parent / "outside"
+        outside_dir.mkdir(exist_ok=True)
+        isolated_upgrade_sh = outside_dir / "upgrade.sh"
+        isolated_upgrade_sh.write_text(_UPGRADE_SH.read_text())
+        setup = f"""
+KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_upgrade_sh}"
+KUBE_AGENTS_REPO_URL="{upstream_url}"
+refresh_existing_clone "{clone_dir}" "{requested_ref}"
+"""
+        return subprocess.run(
+            ["bash", "-c", setup],
+            capture_output=True,
+            text=True,
+            env={"HOME": str(home_dir), "PATH": os.environ["PATH"]},
+            cwd=str(outside_dir),
+        )
+
+    def _head_of(self, clone_dir):
+        return self._git("rev-parse", "HEAD", cwd=clone_dir)
+
+    def test_the_clone_is_moved_to_the_requested_release(self):
+        """The upgrade one-liner's whole point: an install at N ends up at N+1."""
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+
+        proc = self._refresh_from_outside(home_dir, clone_dir, upstream_url, "0.3.0")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("fetching '0.3.0'", proc.stdout)
+        self.assertIn("Moved", proc.stdout)
+        self.assertEqual(self._head_of(clone_dir), commits["0.3.0"])
+
+    def test_the_install_env_in_the_clone_survives_the_move(self):
+        """The configuration is why the clone is preferred, so the move must keep it."""
+        home_dir, clone_dir, upstream_url, _ = self._existing_clone_fixture("0.2.0")
+        (clone_dir / "install.env").write_text('PROJECT_ID="my-gcp-project"\n')
+
+        proc = self._refresh_from_outside(home_dir, clone_dir, upstream_url, "0.3.0")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual((clone_dir / "install.env").read_text(), 'PROJECT_ID="my-gcp-project"\n')
+
+    def test_a_clone_already_at_the_release_is_not_fetched_into(self):
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+
+        proc = self._refresh_from_outside(home_dir, clone_dir, upstream_url, "0.2.0")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("already at '0.2.0'", proc.stdout)
+        self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
+
+    def test_a_dirty_clone_is_left_alone(self):
+        """Local changes are never fetched over; the run stops at verify_local_source_ref instead."""
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+        (clone_dir / "install.sh").write_text("local edits\n")
+
+        proc = self._refresh_from_outside(home_dir, clone_dir, upstream_url, "0.3.0")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("the checkout is dirty", proc.stdout)
+        self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
+
+    def test_a_directory_that_is_not_a_kube_agents_repository_is_left_alone(self):
+        """A repository that merely shares the directory name is never moved."""
+        home_dir, clone_dir, upstream_url, _ = self._existing_clone_fixture("0.2.0")
+        unrelated = home_dir / "unrelated"
+        unrelated.mkdir()
+        self._git("init", "-b", "main", cwd=unrelated)
+        self._git("config", "user.name", "Test", cwd=unrelated)
+        self._git("config", "user.email", "test@example.com", cwd=unrelated)
+        self._git("config", "commit.gpgsign", "false", cwd=unrelated)
+        (unrelated / "README.md").write_text("not kube-agents\n")
+        self._git("add", "README.md", cwd=unrelated)
+        self._git("commit", "-m", "init", cwd=unrelated)
+        before = self._head_of(unrelated)
+
+        proc = self._refresh_from_outside(home_dir, unrelated, upstream_url, "0.3.0")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("is not a kube-agents revision", proc.stdout)
+        self.assertEqual(self._head_of(unrelated), before)
+
+    def test_a_complete_clone_does_not_become_shallow(self):
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0", full_clone=True)
+
+        proc = self._refresh_from_outside(home_dir, clone_dir, upstream_url, "0.3.0")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self._head_of(clone_dir), commits["0.3.0"])
+        self.assertEqual(self._git("rev-parse", "--is-shallow-repository", cwd=clone_dir), "false")
+
+    def test_the_tagless_arms_never_reach_the_clone(self):
+        """--plan and --keep-image-tag still require a checkout; HOME is not a substitute.
+
+        A CI job that checked out the ref it reconciles must keep that tree, so
+        the preference for the installer's clone lives inside the arm that has a
+        tag and no checkout, after the tagless refusal.
+        """
+        text = _UPGRADE_SH.read_text()
+        tagless_refusal = text.index('--plan and --keep-image-tag have to run from a kube-agents checkout')
+        clone_preference = text.index('refresh_existing_clone "$repo_dir" "$PARAM_IMAGE_TAG"')
+        self.assertLess(tagless_refusal, clone_preference)
+
+    def test_the_configuration_is_also_looked_for_in_the_working_directory(self):
+        """install.sh honours an install.env where you stand; so must the upgrade."""
+        text = _UPGRADE_SH.read_text()
+        resolved = text.index('install_env_file="$(default_install_env_file "$repo_dir")"')
+        fallback = text.index('install_env_file="$(pwd)/install.env"')
+        loaded = text.index('if load_install_env "$install_env_file"; then')
+        self.assertLess(resolved, fallback)
+        self.assertLess(fallback, loaded)
+
+
+class FrontDoorsAgreeOnTheInstallCheckoutTest(unittest.TestCase):
+    """install.sh and upgrade.sh have to find and move the same checkout.
+
+    These helpers cannot live in scripts/installer/installer_common.sh, which is
+    sourced out of the very checkout they go and find, so each front door
+    carries a copy — the arrangement installer_common.sh already describes for
+    the install.env loader. Copies drift, so they are pinned here.
+    """
+
+    _INSTALL_SH = _REPO_ROOT / "install.sh"
+
+    @staticmethod
+    def _function_text(source, name):
+        opening = f"\n{name}() {{\n"
+        start = source.index(opening) + 1
+        end = source.index("\n}\n", start) + len("\n}\n")
+        return source[start:end]
+
+    def test_the_helpers_are_identical(self):
+        install_sh = self._INSTALL_SH.read_text()
+        upgrade_sh = _UPGRADE_SH.read_text()
+        for name in ("fetch_source_ref", "refresh_existing_clone"):
+            with self.subTest(function=name):
+                self.assertEqual(
+                    self._function_text(install_sh, name),
+                    self._function_text(upgrade_sh, name),
+                    f"{name} has drifted between install.sh and upgrade.sh",
+                )
+
+    def test_the_clone_constants_are_identical(self):
+        install_sh = self._INSTALL_SH.read_text()
+        upgrade_sh = _UPGRADE_SH.read_text()
+        for constant in ("KUBE_AGENTS_CLONE_MARKER", "KUBE_AGENTS_FETCH_DEPTH_OPT"):
+            with self.subTest(constant=constant):
+                pattern = rf'^{constant}="([^"]+)"$'
+                install_value = re.search(pattern, install_sh, re.MULTILINE)
+                upgrade_value = re.search(pattern, upgrade_sh, re.MULTILINE)
+                self.assertIsNotNone(install_value, f"install.sh does not declare {constant}")
+                self.assertIsNotNone(upgrade_value, f"upgrade.sh does not declare {constant}")
+                self.assertEqual(install_value.group(1), upgrade_value.group(1))
+
+    def test_both_front_doors_name_the_same_directory(self):
+        """The message HOME:? carries differs; the path it builds may not."""
+        with tempfile.TemporaryDirectory(prefix="front-doors-install-env-") as env_dir:
+            empty_install_env = pathlib.Path(env_dir) / "install.env"
+            empty_install_env.write_text("")
+            paths = {}
+            for script in (self._INSTALL_SH, _UPGRADE_SH):
+                proc = subprocess.run(
+                    ["bash", "-c", f'KUBE_AGENTS_SOURCE_ONLY=true source "{script}"; kube_agents_clone_dir'],
+                    capture_output=True,
+                    text=True,
+                    env={
+                        "HOME": "/h",
+                        "PATH": os.environ["PATH"],
+                        "KUBE_AGENTS_INSTALL_ENV": str(empty_install_env),
+                    },
+                    cwd=str(_REPO_ROOT),
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                paths[script.name] = proc.stdout.strip()
+        self.assertEqual(paths["install.sh"], "/h/kube-agents")
+        self.assertEqual(paths["upgrade.sh"], paths["install.sh"])
+
+
+class PipedUpgradeResolvesItsSourcesTest(unittest.TestCase):
+    def test_a_piped_run_does_not_abort_on_an_unset_bash_source(self):
+        """Under `curl | bash` with `set -u`, BASH_SOURCE[0] may name no file.
+
+        install.sh has always defaulted it; upgrade.sh did not, so the source
+        resolution could abort with an unbound variable instead of reporting
+        what was wrong. --keep-image-tag reaches that resolution and then stops
+        for its own, expected reason.
+        """
+        with tempfile.TemporaryDirectory(prefix="outside-checkout-") as outside:
+            empty_install_env = pathlib.Path(outside) / "pinned-install.env"
+            empty_install_env.write_text("")
+            proc = subprocess.run(
+                ["bash", "-s", "--", "--keep-image-tag", "--non-interactive", "--project-id=my-gcp-project"],
+                input=_UPGRADE_SH.read_text(),
+                capture_output=True,
+                text=True,
+                env=get_isolated_test_env(
+                    overrides={"KUBE_AGENTS_INSTALL_ENV": str(empty_install_env)}
+                ),
+                cwd=outside,
+            )
+        combined = proc.stdout + proc.stderr
+        self.assertNotIn("unbound variable", combined)
+        self.assertIn("have to run from a kube-agents checkout", combined)
 
 
 if __name__ == "__main__":
