@@ -719,10 +719,11 @@ curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSI
   --region="<REGION>"
 ```
 
-From a checkout or an unpacked release bundle, run `./upgrade.sh` with the same flags. `--image-tag`
-overrides the version the script carries and exists for development and CI/CD testing; `--plan`
-reports what a full upgrade would change without changing anything. The three upgrade modes, the
-previews, and the refusals are in
+From a checkout, run `./upgrade.sh` with the same flags. An unpacked release bundle carries sources
+and no configuration, so copy the install's `install.env` into it first, or point
+`KUBE_AGENTS_INSTALL_ENV` at one. `--image-tag` overrides the version the script carries and exists
+for development and CI/CD testing; `--plan` reports what a full upgrade would change without
+changing anything. The upgrade modes, the previews, and the refusals are in
 [the Upgrade page](docs/site/src/content/docs/install/upgrade.md).
 
 ## Teardown & Cleanup

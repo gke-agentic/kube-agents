@@ -72,7 +72,7 @@ These steps are irreversible and run **before** Terraform's own prompt, which is
 curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSION>/uninstall.sh | bash -s -- --source-ref=<old release tag>
 ```
 
-Substitute `<RELEASE_VERSION>` with a release tag from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases). A release copy of the script tears an install down with its own release's engine, so the version you fetch is the version that runs.
+Substitute `<RELEASE_VERSION>` with a release tag from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases). A release copy of the script tears an install down with its own release's engine, so the version you fetch is the version that runs — unless `--source-ref` names another one, as it does above, where the point is to run the engine of the release that built the install.
 
 ## Where to go next
 
