@@ -680,10 +680,14 @@ acquire_upgrade_sources() {
   # $1 or $2 would be the one printf -v writes to, and the caller would read
   # back an empty string.
   local resolved_dir="" found_checkout="" script_dir=""
-  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || echo "")"
+  if [ -n "${BASH_SOURCE[0]:-}" ]; then
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
+  fi
   if [ -n "$script_dir" ] && [ -f "${script_dir}/scripts/installer/installer_common.sh" ]; then
     resolved_dir="$script_dir"
-  elif [ -f "$(pwd)/scripts/installer/installer_common.sh" ]; then
+  elif [ -f "$(pwd)/scripts/installer/installer_common.sh" ] && {
+    [ -z "$expected_ref" ] || ! is_kube_agents_clone "$(pwd)"
+  }; then
     resolved_dir="$(pwd)"
   elif [ -z "$expected_ref" ]; then
     print_error "--plan and --keep-image-tag have to run from a kube-agents checkout: without --image-tag there is no ref to fetch the engine at."
@@ -697,13 +701,18 @@ acquire_upgrade_sources() {
     #
     # Only inside this arm. A run that already has a checkout keeps it, so a CI
     # job that checked out the ref it is reconciling is never redirected at
-    # whatever an earlier install happened to leave in HOME.
+    # whatever an earlier install happened to leave in HOME. A piped run
+    # (`curl … | bash`, where BASH_SOURCE[0] is unset) invoked while standing
+    # inside a kube-agents clone lands here too, so the checkout under $(pwd)
+    # is moved (or previewed from a temp copy) rather than failing the ref check.
     local clone_dir=""
-    if [ -n "${HOME:-}" ]; then
+    if [ -f "$(pwd)/scripts/installer/installer_common.sh" ] && is_kube_agents_clone "$(pwd)"; then
+      found_checkout="$(pwd)"
+    elif [ -n "${HOME:-}" ]; then
       clone_dir="$(kube_agents_clone_dir)"
-    fi
-    if [ -n "$clone_dir" ] && is_kube_agents_clone "$clone_dir"; then
-      found_checkout="$clone_dir"
+      if [ -n "$clone_dir" ] && is_kube_agents_clone "$clone_dir"; then
+        found_checkout="$clone_dir"
+      fi
     fi
     # A preview promises to change nothing, and the operator's checkout is part
     # of "nothing": moving it to the requested release would leave the next
