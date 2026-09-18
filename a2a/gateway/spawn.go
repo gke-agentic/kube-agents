@@ -229,8 +229,10 @@ func (s *podSpawner) resolveOwner(ctx context.Context) error {
 // session and gets a projected token bound to itself; the callout reads the
 // pod name the API server attests and mints grants for that session's
 // subjects and no others. Two sessions running side by side hold different
-// credentials, and neither holds the static `worker` user that could speak
-// for the whole task plane.
+// credentials, and neither holds a credential that speaks for the whole task
+// plane -- the static `worker` user that did is retired, and what replaced it
+// on the agent side is two narrower principals, neither of them reachable
+// from a session pod.
 func (s *podSpawner) Spawn(ctx context.Context, rec *SessionRecord, taskID, primer string) (string, error) {
 	name := rec.BusSession
 	// The gateway Deployment owns its sessions: when it goes — cleanupA2A on

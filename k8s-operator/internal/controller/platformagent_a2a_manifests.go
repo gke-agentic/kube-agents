@@ -100,9 +100,9 @@ const (
 	// a2aDNSPort is name resolution, granted on both protocols.
 	a2aDNSPort = int32(53)
 
-	// The streams the worker's JetStream API grant names, spelled as the
-	// provision script creates them. A KV bucket is a stream called
-	// KV_<bucket>, so the bucket name and the prefix are held apart.
+	// The streams the bridge's and the agent's JetStream API grants name,
+	// spelled as the provision script creates them. A KV bucket is a stream
+	// called KV_<bucket>, so the bucket name and the prefix are held apart.
 	a2aTasksStream         = "TASKS"
 	a2aTopicsStateStream   = "TOPICS-STATE"
 	a2aTopicsJournalStream = "TOPICS-JOURNAL"
@@ -210,7 +210,7 @@ const (
 	// `password: ""` or mounts nothing, so they are named rather than spelled
 	// out at each site.
 	a2aGatewayPasswordKey = "gateway-password" // #nosec G101 -- Secret key name, not a credential
-	a2aWorkerPasswordKey  = "worker-password"  // #nosec G101 -- Secret key name, not a credential
+	a2aBridgePasswordKey  = "bridge-password"  // #nosec G101 -- Secret key name, not a credential
 	a2aSeedPasswordKey    = "seed-password"    // #nosec G101 -- Secret key name, not a credential
 	a2aWebPasswordKey     = "web-password"     // #nosec G101 -- Secret key name, not a credential
 	a2aSysPasswordKey     = "sys-password"     // #nosec G101 -- Secret key name, not a credential
@@ -357,7 +357,7 @@ func randomA2APassword() (string, error) {
 // valid Secret shape through the upgrade, and so the hand-applied seed tooling
 // still has a credential.
 var a2aCredsKeys = []string{
-	a2aGatewayPasswordKey, a2aWorkerPasswordKey, a2aSeedPasswordKey,
+	a2aGatewayPasswordKey, a2aBridgePasswordKey, a2aSeedPasswordKey,
 	a2aWebPasswordKey, a2aSysPasswordKey, a2aCalloutPasswordKey,
 }
 
@@ -438,43 +438,37 @@ func a2aSeedJetStreamGrants() []string {
 	return grants
 }
 
-// a2aWorkerJetStreamGrants is the worker's publish allow-list for the
-// JetStream API, replacing the `$JS.API.>` wildcard this user shipped with
-// (gke-labs/kube-agents#1316).
+// a2aBridgeJetStreamGrants is the bridge's publish allow-list for the
+// JetStream API. It is the task-plane half of the list `worker` held: that
+// user's `$JS.API.>` wildcard was enumerated by gke-labs/kube-agents#1316, and
+// A5 split the enumeration between the two workloads that were sharing it (the
+// topic-stream half is a2aAgentJetStreamGrants below).
 //
-// worker is the least-trusted principal in the deployment: it is the identity
-// a session pod runs as, executing model output against untrusted input. The
-// wildcard covered STREAM.PURGE, STREAM.UPDATE, STREAM.DELETE and
+// The wildcard covered STREAM.PURGE, STREAM.UPDATE, STREAM.DELETE and
 // STREAM.MSG.DELETE on every stream, DIRECTORY included. One PURGE empties the
 // directory for every profile and nothing repopulates it; DELETE leaves only a
 // re-run of the provision Job to bring the stream back.
 //
-// The list is what the worker-side binaries emit, read out of nats.go and then
-// measured against a real server running this render
-// (TestWorkerJetStreamGrantOnARealServer). Per stream:
+// The list is what the bridge emits, read out of nats.go and then measured
+// against a real server running this render
+// (TestBridgeJetStreamGrantOnARealServer). Per stream:
 //
-//   - TASKS: STREAM.INFO (js.Stream in lib.TasksGet and the bridge's sweep),
-//     CONSUMER.CREATE (the bridge's durable through CreateOrUpdateConsumer, and
+//   - TASKS: STREAM.INFO (js.Stream in lib.TasksGet and the sweep),
+//     CONSUMER.CREATE (the durable through CreateOrUpdateConsumer, and
 //     the replay's ordered consumer; nats.go puts the filter subject in the API
 //     subject, so the grant ends in `>`), CONSUMER.MSG.NEXT (every pull), and
 //     DIRECT.GET (GetLastMsgForSubject: the replay horizon and the sweep's CAS
 //     baseline). Acks are $JS.ACK.TASKS.>, granted beside this list.
-//   - KV_runtime-state, the bridge's in-flight registry: STREAM.INFO
+//   - KV_runtime-state, the in-flight registry: STREAM.INFO
 //     (js.KeyValue binds a bucket by reading its stream), and CONSUMER.CREATE
 //     with CONSUMER.DELETE (kv.Keys is a push ordered consumer that nats.go
 //     creates and then deletes on Unsubscribe, and the sweep runs it at every
 //     bridge start). Put and Delete are publishes on $KV.runtime-state.>,
 //     granted beside this list. No DIRECT.GET: nothing on the path calls
 //     kv.Get -- the bridge puts, deletes and lists, and the worker adapter
-//     touches no bucket -- and when a caller appears the grant is
+//     touches no bucket at all -- and when a caller appears the grant is
 //     DIRECT.GET.KV_runtime-state.>, with the server test as the place its
 //     absence shows.
-//   - TOPICS-STATE and TOPICS-JOURNAL: STREAM.INFO and DIRECT.GET, reads only.
-//     `a2a topics read` and `list` are js.Stream, Stream.Info and
-//     GetLastMsgForSubject on these two streams (lib.ReadTopicLatest,
-//     lib.TopicRegistry), and the CLI dials with whatever NATS_USER its pod
-//     carries; the worker credential is what a gateway-spawned session pod
-//     gets. The writes are the three exact topic subjects above this list.
 //
 // Reads go through DIRECT.GET and not STREAM.MSG.GET because every stream the
 // provision script creates has allow_direct set: the script says
@@ -483,7 +477,7 @@ func a2aSeedJetStreamGrants() []string {
 // shows it on all seven. nats.go picks the route from the stream's own config,
 // so the fallback is never emitted and is not granted.
 //
-// What the wildcard granted that nothing on the worker path uses, and this
+// What the wildcard granted that nothing on the bridge path uses, and this
 // list now refuses: every verb on DIRECTORY (no STREAM.INFO, no consumer, no
 // DIRECT.GET -- the gateway keeps subscribe on the cards, which is the read
 // discovery needs), every verb on KV_session-state and KV_cap, PURGE / UPDATE /
@@ -492,7 +486,7 @@ func a2aSeedJetStreamGrants() []string {
 // account INFO (jetstream.New never asks for it), and CONSUMER.INFO (nothing
 // on the path binds to an existing consumer by name, and on nats.go v1.53.1
 // no consumer re-verifies itself with it after a reconnect either --
-// TestWorkerConsumersSurviveABusRestart holds that across a server restart).
+// TestBridgeConsumersSurviveABusRestart holds that across a server restart).
 //
 // CONSUMER.DELETE on TASKS is withheld, and it is the one subject nats.go
 // does emit here without a grant. The only emitter is the ordered consumer's
@@ -504,8 +498,8 @@ func a2aSeedJetStreamGrants() []string {
 // does not close the route, which is the correction to what this comment said
 // first. CONSUMER.CREATE is create-OR-UPDATE by name -- the request's `action`
 // field is empty for both, and the server has no ownership concept for a
-// consumer name -- so within a stream the worker may create consumers on,
-// every consumer on that stream is the worker's to reconfigure. Measured
+// consumer name -- so within a stream the bridge may create consumers on,
+// every consumer on that stream is the bridge's to reconfigure. Measured
 // against this render, on the gateway's relay durable: one permitted
 // $JS.API.CONSUMER.CREATE.TASKS.gateway-relay carrying the durable's own
 // config with filter_subject changed retunes it, and the gateway stops seeing
@@ -519,15 +513,15 @@ func a2aSeedJetStreamGrants() []string {
 // NATS wildcards match whole tokens, so a per-prefix grant matches a consumer
 // literally named that. What closes it is the auth callout giving each
 // principal its own user. DELETE stays out as the one destructive verb here
-// that nothing on the worker path needs.
+// that nothing on the bridge path needs.
 //
 // One route this list narrows but cannot close, because it lives in a request
 // body: a push consumer's deliver_subject. CONSUMER.CREATE on TASKS (or on the
-// KV bucket) lets the worker ask the server to deliver that stream's messages
+// KV bucket) lets the bridge ask the server to deliver that stream's messages
 // onto any subject, and a stream whose subjects cover the deliver subject
 // stores them -- under their ORIGINAL subjects, so this is not forgery (a
 // topic or card read by subject never sees them) but it is a persisted write
-// into a stream the worker has no publish grant for, and with discard=old an
+// into a stream the bridge has no publish grant for, and with discard=old an
 // eviction lever against it. The server delivers only once a subscription
 // exists whose subject is EXACTLY the deliver subject: a push consumer
 // registers through Sublist.registerNotification, which takes interest only
@@ -546,11 +540,11 @@ func a2aSeedJetStreamGrants() []string {
 // `a2a.>` subscribe grants permit that but do not supply it: a subscription
 // on either wildcard leaves DIRECTORY empty, measured. Nothing in the tree
 // opens a literal card subscription today. The wildcard this replaces had the
-// same route with every stream as a source; what closes it is the worker not
+// same route with every stream as a source; what closes it is the bridge not
 // holding CONSUMER.CREATE at all, which is a pre-created consumer per task
 // (the stage-3 dispatcher), not a grant. The server test measures all four
 // cases.
-func a2aWorkerJetStreamGrants() []string {
+func a2aBridgeJetStreamGrants() []string {
 	kvRuntimeState := a2aKVStreamPrefix + a2aRuntimeStateBucket
 	return []string{
 		"$JS.API.STREAM.INFO." + a2aTasksStream,
@@ -560,6 +554,27 @@ func a2aWorkerJetStreamGrants() []string {
 		"$JS.API.STREAM.INFO." + kvRuntimeState,
 		"$JS.API.CONSUMER.CREATE." + kvRuntimeState + ".>",
 		"$JS.API.CONSUMER.DELETE." + kvRuntimeState + ".*",
+	}
+}
+
+// a2aAgentJetStreamGrants is the platform agent container's publish allow-list
+// for the JetStream API: the topic-stream half of what `worker` held.
+//
+// Reads only, on the two topic streams and nothing else. `a2a topics read` and
+// `a2a topics list` are js.Stream, Stream.Info and GetLastMsgForSubject on
+// TOPICS-STATE and TOPICS-JOURNAL (lib.ReadTopicLatest, lib.TopicRegistry), and
+// the three writes are ordinary publishes on the exact topic subjects, granted
+// beside this list rather than in it.
+//
+// No CONSUMER verb of any kind, which is the difference that matters between
+// this list and the bridge's above. The deliver_subject residue the bridge
+// comment ends on is a consequence of holding CONSUMER.CREATE; an identity
+// without it cannot ask the server to deliver a stream anywhere. The platform
+// agent container is the widest-reach workload in the namespace and it runs
+// model output, so it is the one principal that should hold no route into the
+// task plane at all -- not a narrow one.
+func a2aAgentJetStreamGrants() []string {
+	return []string{
 		"$JS.API.STREAM.INFO." + a2aTopicsStateStream,
 		"$JS.API.DIRECT.GET." + a2aTopicsStateStream + ".>",
 		"$JS.API.STREAM.INFO." + a2aTopicsJournalStream,
@@ -666,9 +681,10 @@ func (r *PlatformAgentReconciler) ensureA2ACredsSecret(ctx context.Context, agen
 // decides who may say what before a message is read. Deny-by-default — a
 // permissions block with allow lists denies everything else — with per-user
 // _INBOX prefixes so the reply path cannot leak what the subject grants
-// withheld. Seed's JetStream API grant is scoped to the streams it provisions
-// and the worker's to the streams it uses, both by name and by verb
-// (a2aSeedJetStreamGrants, a2aWorkerJetStreamGrants), and provision has moved
+// withheld. Seed's JetStream API grant is scoped to the streams it provisions,
+// the bridge's and the agent's to the streams each one uses, all by name and by
+// verb (a2aSeedJetStreamGrants, a2aBridgeJetStreamGrants,
+// a2aAgentJetStreamGrants), and provision has moved
 // to the callout and holds the enumerated subjects too (its identity entry
 // spells them). Gateway alone still holds a bare $JS.API.>, which is playground
 // posture; narrowing it is the same change again with its own table of what it
@@ -847,15 +863,16 @@ authorization {
     # itself, plus every identity marked STATIC above. The session entry is
     # absent exactly because it is not one: a session pod presents a
     # pod-bound ServiceAccount token and the callout scopes it to its own
-    # task, so worker is no longer the credential a session holds. Do not
-    # read this list as the session path.
+    # task. Do not read this list as the session path.
     #
-    # A name is here for one of two reasons, and each identity's own comment
+    # A name is here for one of three reasons, and each identity's own comment
     # above says which. It can hold no projected token at all — the browser
     # read user, the $SYS login held by a person, the seed tooling that is
-    # applied rather than run. Or it could and has not moved yet: the
-    # agent-side workloads still on worker, and gateway. The first group is
-    # permanent; the second is the remaining migration.
+    # applied rather than run. Or it is a sidecar, which a ServiceAccount
+    # token cannot name apart from the container beside it — the bridge, whose
+    # own comment above says what a callout entry there would merge. Or it
+    # could move and has not: gateway, which is the remaining migration. The
+    # first two reasons are permanent; only the third is a migration.
     auth_users: [ ` + renderA2AAuthUsers(agent) + ` ]
   }
 }
@@ -902,10 +919,14 @@ func buildA2ANATSConfigSecret(agent *agentv1alpha1.PlatformAgent, creds *corev1.
 // accepted write to the creds Secret, so labelling it by hand, a policy
 // controller stamping the namespace, or a restore that renumbers the namespace
 // rolls the single-replica bus once with nothing the server reads having
-// changed — clients reconnect, and JetStream state lives on the PV. The
-// alternative that ignores metadata churn is a digest of the password bytes,
-// which is the alert this function exists to close, so the spurious roll is
-// the price of not hashing the credential.
+// changed — clients reconnect, and JetStream state lives on the PV. An unkeyed
+// digest of the password bytes would ignore metadata churn but is the alert
+// this function exists to close, so the spurious roll is the price of not
+// hashing the credential. secretEnvHash (platformagent_secret_hash.go) has
+// since shown a third way — an HMAC over the values keyed by the Secret's UID,
+// which ignores metadata churn without an unkeyed digest — and moving this
+// function onto it is a separate change: it alters when the bus rolls under
+// mode: next and needs its own live test.
 //
 // And the rotation it notices rolls the bus, not the bus's clients. This hash
 // rides the NATS pod template alone; the gateway Deployment and the provision
@@ -1286,7 +1307,7 @@ NATS="nats --server ` + server + ` --user ${BUS_USER} --password ${BUS_TOKEN} --
 # replay oldest-first instead of filling the PV and stalling JetStream.
 #
 # --allow-direct is stated on every stream even though it is the CLI's
-# default: the worker's JetStream API grant is written for the direct-get
+# default: the bus grants are written for the direct-get
 # route (nats.go picks DIRECT.GET or STREAM.MSG.GET from the stream's own
 # config), so the bit the grant rests on is set here, not inherited.
 
