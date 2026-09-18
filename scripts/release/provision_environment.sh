@@ -139,6 +139,15 @@ fi
 # A value neither list recognises is returned untouched rather than folded into
 # "false": `ture` should still be refused rather than silently disabling the
 # feature. The guard below is what refuses it, above the teardown.
+#
+# That includes a value which is nothing but whitespace, which is why no arm
+# here matches the empty string. Both callers skip a genuinely empty variable,
+# so an empty `stripped` means the operator saved a space or a tab into the
+# GitHub environment — and `--enable-gvisor=false` is the one answer that must
+# not be inferred from it. Folded, that rebuild redeploys a long-lived
+# environment onto the standard runtime with nothing in the log saying so;
+# returned untouched, it is refused with the variable named and the environment
+# still up.
 provision_canonical_bool() {
   local val="${1:-}"
   if provision_is_truthy "$val"; then
@@ -147,7 +156,7 @@ provision_canonical_bool() {
   fi
   local stripped="${val//[[:space:]]/}"
   case "$stripped" in
-    [Ff][Aa][Ll][Ss][Ee] | [Nn][Oo] | [Nn] | 0 | [Oo][Ff][Ff] | "") echo "false" ;;
+    [Ff][Aa][Ll][Ss][Ee] | [Nn][Oo] | [Nn] | 0 | [Oo][Ff][Ff]) echo "false" ;;
     *) echo "$val" ;;
   esac
 }

@@ -777,6 +777,42 @@ class BooleanVariablesSurviveTheFlagRouteTest(GithubMinterInputsTest):
                     "the guard must fire before install.sh is invoked",
                 )
 
+    def test_a_whitespace_only_value_is_refused_rather_than_read_as_false(self):
+        """A space is not an answer, and `false` is the dangerous guess.
+
+        Both callers skip a genuinely empty variable, so whitespace is the only
+        thing that can reach the canonicaliser looking empty. Folding it into
+        `false` builds `--enable-gvisor=false`, which the validator accepts, and
+        the rebuild puts a long-lived environment back up on the standard
+        runtime — the sandbox off, nothing in the log saying so. Refusing costs
+        a rebuild; guessing costs the isolation boundary.
+
+        Asserted on the calls log rather than the exit code alone: the failure
+        this prevents is a run that succeeds with the wrong flag, so what
+        matters is that no flag was built at all.
+        """
+        for name in self._TOGGLES:
+            for value in (" ", "\t", "  \n  "):
+                with self.subTest(name=name, value=repr(value)):
+                    proc, tmp_dir = self._run_recording({name: value})
+                    self.assertNotEqual(
+                        proc.returncode,
+                        0,
+                        "a whitespace-only value must not provision",
+                    )
+                    combined = proc.stdout + proc.stderr
+                    self.assertIn(name, combined)
+                    self.assertIn("::error", combined)
+                    self.assertNotIn(
+                        "Tearing down the existing environment",
+                        combined,
+                        "the guard must fire before uninstall.sh destroys the environment",
+                    )
+                    self.assertFalse(
+                        (tmp_dir / MOCK_CALLS_LOG).exists(),
+                        "the guard must fire before install.sh is invoked",
+                    )
+
     def test_a_recognised_spelling_is_not_caught_by_the_guard(self):
         """The guard judges the canonical form, not the spelling.
 

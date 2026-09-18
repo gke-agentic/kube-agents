@@ -162,7 +162,10 @@ travelling through `install.env` reach `is_truthy`, which also takes
 `True`/`yes`/`y`/`1`/`on`. `provision_environment.sh` folds the second list into
 the first, so an environment that deployed on `True` keeps deploying; a spelling
 neither list recognises is refused before the teardown rather than by
-`install.sh` after it.
+`install.sh` after it. A variable holding nothing but a space or a tab is
+refused the same way rather than read as `false`: unset means "say nothing about
+this setting", and guessing `false` from whitespace would rebuild the
+environment with the feature off and nothing in the log saying so.
 
 Optional, and copied through when set: `CLUSTER_MODE`, `MODEL_DEFAULT_NAME`,
 `VERTEX_PROJECT_ID`, `VERTEX_LOCATION`, `GOOGLE_CHAT_MODE`, `GOOGLE_CHAT_HOME_CHANNEL`,
