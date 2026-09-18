@@ -97,6 +97,19 @@ exit {uninstall_exit}
             f"--gke-cluster-name={MOCK_GKE_CLUSTER_NAME}",
         ):
             self.assertIn(expected, calls[0])
+        self.assertNotIn("--agent-namespace=", calls[0])
+
+    def test_forwards_agent_namespace_when_set(self):
+        proc, calls, _ = self._run(uninstall_exit=0, extra_env={"AGENT_NAMESPACE": "custom-ns"})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(len(calls), 1, calls)
+        self.assertIn("--agent-namespace=custom-ns", calls[0])
+
+    def test_forwards_fallback_namespace_when_set(self):
+        proc, calls, _ = self._run(uninstall_exit=0, extra_env={"NAMESPACE": "custom-ns"})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(len(calls), 1, calls)
+        self.assertIn("--agent-namespace=custom-ns", calls[0])
 
     def test_a_clean_teardown_reports_the_cluster_gone(self):
         proc, _, summary = self._run(uninstall_exit=0)
