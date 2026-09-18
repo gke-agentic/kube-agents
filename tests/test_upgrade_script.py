@@ -760,6 +760,31 @@ echo "INSTALL_CHECKOUT=$install_checkout"
         self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
         self.assertIn("already at '0.2.0'", proc.stdout)
 
+    def test_a_piped_run_from_inside_the_install_checkout_moves_it(self):
+        """Standing in ~/kube-agents when piping upgrade.sh must move the checkout, not fail the ref check."""
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+
+        proc = self._acquire_from_outside(home_dir, upstream_url, "0.3.0", cwd=clone_dir)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
+        self.assertEqual(self._reported(proc, "INSTALL_CHECKOUT"), str(clone_dir))
+        self.assertEqual(self._head_of(clone_dir), commits["0.3.0"])
+
+    def test_a_piped_plan_from_inside_the_install_checkout_does_not_move_it(self):
+        """A piped --plan run from inside ~/kube-agents keeps it at its current ref and still finds install.env."""
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+
+        proc = self._acquire_from_outside(
+            home_dir, upstream_url, "0.3.0", preview_flag="PARAM_PLAN", cwd=clone_dir
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
+        self.assertNotEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
+        self.assertEqual(self._reported(proc, "INSTALL_CHECKOUT"), str(clone_dir))
+        self.assertIn("a preview does not move it", proc.stdout)
+
 
 class ConfigurationLookupOrderTest(unittest.TestCase):
     """Which install.env an upgrade loads, when more than one is reachable.
