@@ -343,9 +343,16 @@ class DirtyCheckoutRefusalTest(unittest.TestCase):
                                   proc.stdout + proc.stderr)
 
     def test_the_tagless_paths_call_it(self):
-        """Both in-checkout arms, so neither route skips the check."""
+        """A run with no ref is verified clean, whichever arm found its sources.
+
+        acquire_upgrade_sources verifies once, after the arms: with a ref it
+        compares against the ref, and without one it still refuses a dirty tree,
+        because a tagless run applies that tree to a live install all the same.
+        """
         source = _UPGRADE_SH.read_text()
-        self.assertEqual(source.count('verify_local_source_clean "$repo_dir"'), 2)
+        self.assertEqual(source.count('verify_local_source_clean "$resolved_dir"'), 1)
+        guard = source.index('if [ -n "$expected_ref" ]; then\n    verify_local_source_ref "$resolved_dir" "$expected_ref"\n  else\n    verify_local_source_clean "$resolved_dir"')
+        self.assertLess(source.index("acquire_upgrade_sources() {"), guard)
 
 
 class InteractiveImageTagPromptTest(unittest.TestCase):
@@ -614,21 +621,239 @@ refresh_existing_clone "{clone_dir}" "{requested_ref}"
 
         A CI job that checked out the ref it reconciles must keep that tree, so
         the preference for the installer's clone lives inside the arm that has a
-        tag and no checkout, after the tagless refusal.
+        tag and no checkout, after the tagless refusal. The behaviour of that
+        arm is covered below; this pins where it sits.
         """
         text = _UPGRADE_SH.read_text()
         tagless_refusal = text.index('--plan and --keep-image-tag have to run from a kube-agents checkout')
-        clone_preference = text.index('refresh_existing_clone "$repo_dir" "$PARAM_IMAGE_TAG"')
+        clone_preference = text.index('refresh_existing_clone "$resolved_dir" "$expected_ref"')
         self.assertLess(tagless_refusal, clone_preference)
 
-    def test_the_configuration_is_also_looked_for_in_the_working_directory(self):
-        """install.sh honours an install.env where you stand; so must the upgrade."""
-        text = _UPGRADE_SH.read_text()
-        resolved = text.index('install_env_file="$(default_install_env_file "$repo_dir")"')
-        fallback = text.index('install_env_file="$(pwd)/install.env"')
-        loaded = text.index('if load_install_env "$install_env_file"; then')
-        self.assertLess(resolved, fallback)
-        self.assertLess(fallback, loaded)
+    def _acquire_from_outside(
+        self, home_dir, upstream_url, requested_ref, preview_flag=None, cwd=None, baked_version=None
+    ):
+        """Run acquire_upgrade_sources from a copy of upgrade.sh outside any checkout.
+
+        The copy is what makes the clone arm reachable: sourced from a directory
+        with no scripts/installer/installer_common.sh, the script has no checkout
+        of its own, which is the shape of `curl … | bash`.
+        """
+        outside_dir = home_dir.parent / "outside"
+        outside_dir.mkdir(exist_ok=True)
+        isolated_upgrade_sh = outside_dir / "upgrade.sh"
+        isolated_upgrade_sh.write_text(_UPGRADE_SH.read_text())
+        preview_line = f'{preview_flag}="true"' if preview_flag else ":"
+        baked_line = f'BAKED_RELEASE_VERSION="{baked_version}"' if baked_version else ":"
+        setup = f"""
+KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_upgrade_sh}"
+KUBE_AGENTS_REPO_URL="{upstream_url}"
+{preview_line}
+{baked_line}
+repo_dir=""
+install_checkout=""
+acquire_upgrade_sources repo_dir install_checkout "{requested_ref}"
+echo "REPO_DIR=$repo_dir"
+echo "INSTALL_CHECKOUT=$install_checkout"
+"""
+        return subprocess.run(
+            ["bash", "-c", setup],
+            capture_output=True,
+            text=True,
+            env={"HOME": str(home_dir), "PATH": os.environ["PATH"]},
+            cwd=str(cwd or outside_dir),
+        )
+
+    @staticmethod
+    def _reported(proc, key):
+        for line in proc.stdout.splitlines():
+            if line.startswith(f"{key}="):
+                return line.split("=", 1)[1]
+        return None
+
+    def test_the_install_checkout_becomes_the_upgrade_sources(self):
+        """The documented one-liner: no checkout of its own, so it uses the install's."""
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+
+        proc = self._acquire_from_outside(home_dir, upstream_url, "0.3.0")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
+        self.assertEqual(self._reported(proc, "INSTALL_CHECKOUT"), str(clone_dir))
+        self.assertEqual(self._head_of(clone_dir), commits["0.3.0"])
+
+    def test_a_plain_directory_at_the_clone_path_is_not_adopted(self):
+        """A stale bundle or a copied tree in HOME is not verified release sources.
+
+        verify_local_source_ref accepts anything that is not a Git worktree once
+        the baked version equals the requested ref — the default on a release
+        copy — so adopting the directory on its existence alone would announce
+        an unrelated tree as verified and then apply it to a live install.
+        """
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+        stale_bundle = home_dir / "kube-agents-plain"
+        stale_bundle.mkdir()
+        (stale_bundle / "install.sh").write_text("an unpacked bundle of some other release\n")
+        # Put the plain directory where the upgrader looks.
+        clone_dir.rename(home_dir / "kube-agents-real")
+        stale_bundle.rename(clone_dir)
+
+        proc = self._acquire_from_outside(home_dir, upstream_url, "0.3.0", baked_version="0.3.0")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self._reported(proc, "INSTALL_CHECKOUT"), "")
+        self.assertNotEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
+        self.assertNotIn("baked official release", proc.stdout)
+        self.assertEqual((clone_dir / "install.sh").read_text(), "an unpacked bundle of some other release\n")
+        self.assertIn(commits["0.3.0"], proc.stdout)
+
+    def test_an_unrelated_repository_at_the_clone_path_is_not_adopted(self):
+        """Sharing the directory name is not enough; HEAD has to be a kube-agents revision."""
+        home_dir, clone_dir, upstream_url, _ = self._existing_clone_fixture("0.2.0")
+        clone_dir.rename(home_dir / "kube-agents-real")
+        clone_dir.mkdir()
+        self._git("init", "-b", "main", cwd=clone_dir)
+        self._git("config", "user.name", "Test", cwd=clone_dir)
+        self._git("config", "user.email", "test@example.com", cwd=clone_dir)
+        self._git("config", "commit.gpgsign", "false", cwd=clone_dir)
+        (clone_dir / "README.md").write_text("not kube-agents\n")
+        self._git("add", "README.md", cwd=clone_dir)
+        self._git("commit", "-m", "init", cwd=clone_dir)
+        before = self._head_of(clone_dir)
+
+        proc = self._acquire_from_outside(home_dir, upstream_url, "0.3.0")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self._reported(proc, "INSTALL_CHECKOUT"), "")
+        self.assertNotEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
+        self.assertEqual(self._head_of(clone_dir), before)
+
+    def test_a_plan_does_not_move_the_install_checkout(self):
+        """--plan says it changes nothing, and the operator's checkout is part of nothing."""
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+
+        proc = self._acquire_from_outside(home_dir, upstream_url, "0.3.0", preview_flag="PARAM_PLAN")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
+        self.assertNotEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
+        # Still found, because the install's configuration lives in it.
+        self.assertEqual(self._reported(proc, "INSTALL_CHECKOUT"), str(clone_dir))
+        self.assertIn("a preview does not move it", proc.stdout)
+
+    def test_a_dry_run_does_not_move_the_install_checkout(self):
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+
+        proc = self._acquire_from_outside(home_dir, upstream_url, "0.3.0", preview_flag="PARAM_DRY_RUN")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
+        self.assertNotEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
+
+    def test_a_preview_uses_the_checkout_when_nothing_has_to_move(self):
+        """Fetching a second copy of what is already there would be waste, not safety."""
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+
+        proc = self._acquire_from_outside(home_dir, upstream_url, "0.2.0", preview_flag="PARAM_PLAN")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
+        self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
+        self.assertIn("already at '0.2.0'", proc.stdout)
+
+
+class ConfigurationLookupOrderTest(unittest.TestCase):
+    """Which install.env an upgrade loads, when more than one is reachable.
+
+    install.sh resolves script directory, then the working directory, and the
+    clone in HOME last. The upgrade has to agree: a workstation that manages two
+    installs has one $HOME/kube-agents, and preferring it would re-render the
+    install the operator is standing in from the other one's configuration.
+    """
+
+    _INSTALLER_COMMON = _REPO_ROOT / "scripts" / "installer" / "installer_common.sh"
+
+    def _resolve(self, repo_dir, install_checkout, cwd, install_env_var=None):
+        setup = f"""
+KUBE_AGENTS_SOURCE_ONLY=true source "{_UPGRADE_SH}"
+# default_install_env_file is the last candidate, and it lives here.
+source "{self._INSTALLER_COMMON}"
+resolve_install_env_file "{repo_dir}" "{install_checkout}"
+"""
+        env = {"HOME": str(cwd), "PATH": os.environ["PATH"]}
+        if install_env_var is not None:
+            env["KUBE_AGENTS_INSTALL_ENV"] = str(install_env_var)
+        proc = subprocess.run(
+            ["bash", "-c", setup],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(cwd),
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return proc.stdout.strip()
+
+    def _layout(self):
+        """A run's own sources, the operator's working directory, and the install checkout."""
+        temp_dir = tempfile.TemporaryDirectory(prefix="install-env-order-")
+        self.addCleanup(temp_dir.cleanup)
+        base = pathlib.Path(temp_dir.name)
+        for name in ("sources", "cwd", "checkout"):
+            (base / name).mkdir()
+        return base
+
+    def test_the_explicit_pointer_wins(self):
+        base = self._layout()
+        named = base / "named.env"
+        named.write_text("")
+        (base / "sources" / "install.env").write_text("")
+        (base / "cwd" / "install.env").write_text("")
+        (base / "checkout" / "install.env").write_text("")
+
+        resolved = self._resolve(base / "sources", base / "checkout", base / "cwd", install_env_var=named)
+
+        self.assertEqual(resolved, str(named))
+
+    def test_the_run_s_own_checkout_wins_over_the_working_directory(self):
+        """Running ./upgrade.sh from a checkout loads that checkout's configuration."""
+        base = self._layout()
+        (base / "sources" / "install.env").write_text("")
+        (base / "cwd" / "install.env").write_text("")
+
+        resolved = self._resolve(base / "sources", base / "checkout", base / "cwd")
+
+        self.assertEqual(resolved, str(base / "sources" / "install.env"))
+
+    def test_the_working_directory_wins_over_the_install_checkout(self):
+        """The regression this order exists to stop: two installs, one $HOME/kube-agents.
+
+        The piped run's sources ARE the install checkout, so preferring the
+        sources' directory would silently load the wrong install's chat space,
+        allowed users and namespace.
+        """
+        base = self._layout()
+        (base / "cwd" / "install.env").write_text("")
+        (base / "checkout" / "install.env").write_text("")
+
+        resolved = self._resolve(base / "checkout", base / "checkout", base / "cwd")
+
+        self.assertEqual(resolved, str(base / "cwd" / "install.env"))
+
+    def test_the_install_checkout_is_used_when_nothing_is_nearer(self):
+        """The documented one-liner, run from a directory with no configuration in it."""
+        base = self._layout()
+        (base / "checkout" / "install.env").write_text("")
+
+        resolved = self._resolve(base / "checkout", base / "checkout", base / "cwd")
+
+        self.assertEqual(resolved, str(base / "checkout" / "install.env"))
+
+    def test_with_nothing_anywhere_it_names_the_sources_directory(self):
+        """Nothing to load: the refusal that follows names where one would live."""
+        base = self._layout()
+
+        resolved = self._resolve(base / "sources", "", base / "cwd")
+
+        self.assertEqual(resolved, str(base / "sources" / "install.env"))
 
 
 class FrontDoorsAgreeOnTheInstallCheckoutTest(unittest.TestCase):

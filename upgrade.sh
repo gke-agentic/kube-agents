@@ -140,11 +140,12 @@ Options:
   --region REGION          GKE GCP Region
   --image-tag TAG          Validated immutable release tag or full commit SHA.
                            Developer and CI/CD testing only: an official release
-                           bakes its own version into this script, and --plan and
-                           --keep-image-tag read the tag from the install itself.
+                           bakes its own version into this script and upgrades to
+                           it, so an upgrade to a published release passes no tag.
   --keep-image-tag         Upgrade everything except the images, leaving them on
                            the tag the install already serves. Use instead of
-                           --image-tag, not alongside it.
+                           --image-tag, not alongside it; a script carrying a
+                           baked release version already has one, and refuses it.
   --help, -h               Show this help message
 
 Examples:
@@ -532,6 +533,71 @@ refresh_existing_clone() {
   fi
 }
 
+# Whether a directory may be adopted as this run's sources. Stricter than
+# [ -d ] on purpose: verify_local_source_ref accepts anything that is not a Git
+# worktree as soon as the script's own baked release version equals the
+# requested ref — the default on every release copy — so a stale unpacked
+# bundle or an unrelated tree left at this path would be announced as verified
+# release sources and then applied to a live install. The checks are
+# refresh_existing_clone's own first three, in the same order and for the same
+# reasons; a directory that fails them is left alone and the run fetches its
+# engine instead.
+is_kube_agents_clone() {
+  local repo_dir="$1"
+  [ -n "$repo_dir" ] && [ -d "$repo_dir" ] || return 1
+  git -C "$repo_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+  [ -e "${repo_dir}/.git" ] || return 1
+  git -C "$repo_dir" rev-parse --verify HEAD >/dev/null 2>&1 || return 1
+  [ -n "$(git -C "$repo_dir" ls-tree --name-only HEAD -- "$KUBE_AGENTS_CLONE_MARKER" 2>/dev/null)" ]
+}
+
+# Whether a checkout already sits on the requested ref. A preview may take its
+# sources from the install's own checkout only in that case, because then
+# nothing has to move for it.
+clone_head_is_ref() {
+  local repo_dir="$1"
+  local expected_ref="$2"
+  local head_commit="" expected_commit=""
+  head_commit="$(git -C "$repo_dir" rev-parse --verify HEAD 2>/dev/null)" || return 1
+  expected_commit="$(git -C "$repo_dir" rev-parse --verify "${expected_ref}^{commit}" 2>/dev/null)" || return 1
+  [ "$head_commit" = "$expected_commit" ]
+}
+
+# Where this run's install configuration is, in install.sh's order of
+# preference: an explicit KUBE_AGENTS_INSTALL_ENV, then the checkout the run's
+# own sources came from, then the directory the operator is standing in, and
+# the checkout discovered in HOME last.
+#
+# That last position is the point. A workstation that manages two installs has
+# one $HOME/kube-agents and one install.env in it, so preferring it would load
+# install A's chat space, allowed users, namespace and GitOps repository into a
+# run the operator started in install B's directory and pointed at install B's
+# cluster — and a full upgrade re-renders B from all of it. The flags name the
+# cluster; they do not name the configuration.
+resolve_install_env_file() {
+  local repo_dir="$1"
+  local install_checkout="${2:-}"
+  if [ -n "${KUBE_AGENTS_INSTALL_ENV:-}" ]; then
+    echo "${KUBE_AGENTS_INSTALL_ENV}"
+    return 0
+  fi
+  if [ "$repo_dir" != "$install_checkout" ] && [ -f "${repo_dir}/install.env" ]; then
+    echo "${repo_dir}/install.env"
+    return 0
+  fi
+  if [ -f "$(pwd)/install.env" ]; then
+    echo "$(pwd)/install.env"
+    return 0
+  fi
+  if [ -n "$install_checkout" ] && [ -f "${install_checkout}/install.env" ]; then
+    echo "${install_checkout}/install.env"
+    return 0
+  fi
+  # Nothing exists yet. Naming the sources' own directory keeps the refusal
+  # below pointing at the file the installer would have written.
+  default_install_env_file "$repo_dir"
+}
+
 # Parameter Parsing
 parse_args() {
   while [[ $# -gt 0 ]]; do
@@ -592,6 +658,95 @@ run_lifecycle() {
   )
 }
 
+# Put this run's sources on disk, and name the install checkout it found. Both
+# land in the variables named by $1 and $2 rather than being echoed, because
+# the progress lines would otherwise be captured along with the paths — the
+# arrangement, and the arm structure, of install.sh's acquire_source_repo.
+#
+# A tagless run cannot fetch its own engine — there is no tag to fetch — and
+# cannot compare the checkout against a ref it was not given. Both are things
+# the tag makes possible rather than things the run needs.
+#
+# What the tag does NOT excuse is the state of the checkout itself: a tagless
+# run still applies this directory's Terraform and charts to a live install, so
+# verify_local_source_clean runs either way and only the ref comparison is
+# conditional.
+acquire_upgrade_sources() {
+  local repo_var="$1"
+  local checkout_var="$2"
+  local expected_ref="$3"
+  # Named differently from the caller's variables on purpose: bash scopes
+  # locals dynamically, so a local sharing a name with the variable named in
+  # $1 or $2 would be the one printf -v writes to, and the caller would read
+  # back an empty string.
+  local resolved_dir="" found_checkout="" script_dir=""
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || echo "")"
+  if [ -n "$script_dir" ] && [ -f "${script_dir}/scripts/installer/installer_common.sh" ]; then
+    resolved_dir="$script_dir"
+  elif [ -f "$(pwd)/scripts/installer/installer_common.sh" ]; then
+    resolved_dir="$(pwd)"
+  elif [ -z "$expected_ref" ]; then
+    print_error "--plan and --keep-image-tag have to run from a kube-agents checkout: without --image-tag there is no ref to fetch the engine at."
+    exit 1
+  else
+    # The checkout install.sh left behind is preferred over a fresh copy of the
+    # same sources, because it is not only sources: the install's install.env
+    # sits in it, and the upgrade refuses to re-render the install without one.
+    # Fetching into a temporary directory instead is what made the documented
+    # install and the documented upgrade disagree.
+    #
+    # Only inside this arm. A run that already has a checkout keeps it, so a CI
+    # job that checked out the ref it is reconciling is never redirected at
+    # whatever an earlier install happened to leave in HOME.
+    local clone_dir=""
+    if [ -n "${HOME:-}" ]; then
+      clone_dir="$(kube_agents_clone_dir)"
+    fi
+    if [ -n "$clone_dir" ] && is_kube_agents_clone "$clone_dir"; then
+      found_checkout="$clone_dir"
+    fi
+    # A preview promises to change nothing, and the operator's checkout is part
+    # of "nothing": moving it to the requested release would leave the next
+    # thing run from that directory — install.sh, uninstall.sh, terraform by
+    # hand — on a revision the cluster is not on, after a command that said it
+    # had changed nothing. So a preview reuses the checkout only when it is
+    # already at the ref, and otherwise reads its engine from a temporary copy.
+    # It still loads the install's configuration from the checkout; that is a
+    # read.
+    local preview="false"
+    if [ "$PARAM_PLAN" = "true" ] || [ "$PARAM_DRY_RUN" = "true" ]; then
+      preview="true"
+    fi
+    if [ -n "$found_checkout" ] && [ "$preview" = "false" ]; then
+      resolved_dir="$found_checkout"
+      refresh_existing_clone "$resolved_dir" "$expected_ref"
+    elif [ -n "$found_checkout" ] && clone_head_is_ref "$found_checkout" "$expected_ref"; then
+      resolved_dir="$found_checkout"
+      print_info "Using the install checkout at ${resolved_dir}: it is already at '${expected_ref}'."
+    else
+      if [ -n "$found_checkout" ]; then
+        print_info "Previewing '${expected_ref}' from a temporary copy: ${found_checkout} is on another revision, and a preview does not move it."
+      fi
+      TEMP_REPO_DIR="$(mktemp -d)"
+      resolved_dir="${TEMP_REPO_DIR}/kube-agents"
+      print_info "Fetching the upgrade engine for '${expected_ref}'..."
+      git clone --filter=blob:none --no-checkout "$KUBE_AGENTS_REPO_URL" "$resolved_dir"
+      # Through fetch_source_ref, the way install.sh fetches: by object name for
+      # a commit SHA and under refs/tags for a release, and from the repository
+      # URL rather than the clone's own origin.
+      fetch_source_ref "$resolved_dir" "$expected_ref" "$KUBE_AGENTS_FETCH_DEPTH_OPT"
+      git -C "$resolved_dir" checkout --detach FETCH_HEAD
+    fi
+  fi
+  if [ -n "$expected_ref" ]; then
+    verify_local_source_ref "$resolved_dir" "$expected_ref"
+  else
+    verify_local_source_clean "$resolved_dir"
+  fi
+  printf -v "$repo_var" '%s' "$resolved_dir"
+  printf -v "$checkout_var" '%s' "$found_checkout"
+}
+
 main() {
   parse_args "$@"
   print_banner
@@ -617,7 +772,7 @@ main() {
     print_info "No --image-tag given; the plan will use the tag this install is already running."
   elif [ -z "$PARAM_IMAGE_TAG" ]; then
     if [ "$PARAM_NON_INTERACTIVE" = "true" ]; then
-      print_error "--image-tag is required; use a validated release tag or full commit SHA."
+      print_error "--image-tag is required; this copy of the script carries no baked release version. Re-run the release-pinned script for the version you want, or pass a validated release tag or full commit SHA."
       exit 1
     fi
     if [ -c /dev/tty ] && ( : </dev/tty ) 2>/dev/null; then
@@ -650,63 +805,8 @@ main() {
     *) print_error "Unsupported upgrade mode '$PARAM_UPGRADE_MODE'. Use full, harness, or operator."; exit 1 ;;
   esac
 
-  # A tagless run cannot fetch its own engine — there is no tag to fetch — and
-  # cannot compare the checkout against a ref it was not given. Both are things
-  # the tag makes possible rather than things the run needs.
-  #
-  # What the tag does NOT excuse is the state of the checkout itself: a tagless
-  # run still applies this directory's Terraform and charts to a live install,
-  # so verify_local_source_clean runs either way and only the ref comparison is
-  # conditional.
-  local script_dir repo_dir
-  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || echo "")"
-  if [ -n "$script_dir" ] && [ -f "${script_dir}/scripts/installer/installer_common.sh" ]; then
-    repo_dir="$script_dir"
-    if [ -n "$PARAM_IMAGE_TAG" ]; then
-      verify_local_source_ref "$repo_dir" "$PARAM_IMAGE_TAG"
-    else
-      verify_local_source_clean "$repo_dir"
-    fi
-  elif [ -f "$(pwd)/scripts/installer/installer_common.sh" ]; then
-    repo_dir="$(pwd)"
-    if [ -n "$PARAM_IMAGE_TAG" ]; then
-      verify_local_source_ref "$repo_dir" "$PARAM_IMAGE_TAG"
-    else
-      verify_local_source_clean "$repo_dir"
-    fi
-  elif [ -z "$PARAM_IMAGE_TAG" ]; then
-    print_error "--plan and --keep-image-tag have to run from a kube-agents checkout: without --image-tag there is no ref to fetch the engine at."
-    exit 1
-  else
-    # The checkout install.sh left behind is preferred over a fresh copy of the
-    # same sources, because it is not only sources: the install's install.env
-    # sits in it, and the upgrade refuses to re-render the install without one.
-    # Fetching into a temporary directory instead is what made the documented
-    # install and the documented upgrade disagree.
-    #
-    # Only inside this arm. A run that already has a checkout keeps it, so a CI
-    # job that checked out the ref it is reconciling is never redirected at
-    # whatever an earlier install happened to leave in HOME.
-    local clone_dir=""
-    if [ -n "${HOME:-}" ]; then
-      clone_dir="$(kube_agents_clone_dir)"
-    fi
-    if [ -n "$clone_dir" ] && [ -d "$clone_dir" ]; then
-      repo_dir="$clone_dir"
-      refresh_existing_clone "$repo_dir" "$PARAM_IMAGE_TAG"
-    else
-      TEMP_REPO_DIR="$(mktemp -d)"
-      repo_dir="${TEMP_REPO_DIR}/kube-agents"
-      print_info "Fetching the upgrade engine for '${PARAM_IMAGE_TAG}'..."
-      git clone --filter=blob:none --no-checkout "$KUBE_AGENTS_REPO_URL" "$repo_dir"
-      # Through fetch_source_ref, the way install.sh fetches: by object name for
-      # a commit SHA and under refs/tags for a release, and from the repository
-      # URL rather than the clone's own origin.
-      fetch_source_ref "$repo_dir" "$PARAM_IMAGE_TAG" "$KUBE_AGENTS_FETCH_DEPTH_OPT"
-      git -C "$repo_dir" checkout --detach FETCH_HEAD
-    fi
-    verify_local_source_ref "$repo_dir" "$PARAM_IMAGE_TAG"
-  fi
+  local repo_dir="" install_checkout=""
+  acquire_upgrade_sources repo_dir install_checkout "$PARAM_IMAGE_TAG"
 
   print_step "1. Validating Upgrade Target & Environment"
   print_info "Upgrade Mode: ${C_BOLD}${PARAM_UPGRADE_MODE}${C_RESET}"
@@ -736,14 +836,7 @@ main() {
   # the top of it. Either one on its own is enough to upgrade.
   local state_file="${repo_dir}/k8s-operator/scripts/vars.sh"
   local install_env_file
-  install_env_file="$(default_install_env_file "$repo_dir")"
-  # An install.env in the directory the operator is standing in is a deliberate
-  # act, and install.sh already honours one there. It is also the only
-  # configuration a run whose engine came from a temporary clone can have: that
-  # clone holds sources and nothing else.
-  if [ ! -f "$install_env_file" ] && [ -z "${KUBE_AGENTS_INSTALL_ENV:-}" ] && [ -f "$(pwd)/install.env" ]; then
-    install_env_file="$(pwd)/install.env"
-  fi
+  install_env_file="$(resolve_install_env_file "$repo_dir" "$install_checkout")"
   local state_loaded="false"
   if [ -f "$state_file" ]; then
     # shellcheck disable=SC1090,SC1091
