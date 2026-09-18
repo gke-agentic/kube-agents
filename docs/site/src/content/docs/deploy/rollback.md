@@ -118,12 +118,13 @@ kubectl describe pod -n kubeagents-system -l app=platform-agent-gateway
 ## What they leave as it is
 
 Terraform state and every GCP resource. The Helm-only modes write nothing to state, so it keeps
-recording `N` as the installed tag. `./upgrade.sh --plan` with no `--image-tag` plans at the tag
-state records, so the re-tag is not in its report; run from the `N-1` checkout it still lists
-every composition difference between `N-1` and `N`, which is the next section's subject. The state
-and the cluster disagree on the tag until the next `--upgrade-mode=full`, which re-applies
-whatever tag it is given. The `terraform.tfvars` in the `N-1` checkout is regenerated on every run
-and is not a record of anything.
+recording `N` as the installed tag. What `./upgrade.sh --plan` then reports depends on the copy it
+runs from: the `N-1` checkout's script carries `N-1` as its baked version, so it plans at `N-1` and
+the report holds the re-tag along with every composition difference between `N-1` and `N`, which is
+the next section's subject. A copy carrying no baked version plans at the tag state records
+instead, and the re-tag is not in that report. The state and the cluster disagree on the tag until
+the next `--upgrade-mode=full`, which re-applies whatever tag it is given. The `terraform.tfvars`
+in the `N-1` checkout is regenerated on every run and is not a record of anything.
 
 Secrets. The script never rewrites a Secret value that exists. A key that `N-1`'s script knows and
 finds missing is generated and added, which is what a forward upgrade does too.

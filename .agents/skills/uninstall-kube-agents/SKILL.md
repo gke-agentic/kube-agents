@@ -31,9 +31,10 @@ undeletable KMS resources from state (kept usable in GCP, re-adopted on the next
 the `PlatformAgent` CR and force-clears its finalizer if the operator is wedged, purges every
 backup the GKE BackupPlan owns, and clears the cluster's deletion protection.
 
-When the command does not run from a local `kube-agents` checkout, pass
-`--source-ref="<SEMVER_TAG_OR_FULL_COMMIT_SHA>"` so the teardown engine is fetched at the same
-revision that was installed; otherwise it is fetched from `main`.
+When the command does not run from a local `kube-agents` checkout, the teardown engine is fetched:
+at the script's own baked release when it has one, and from `main` when it does not.
+`--source-ref="<SEMVER_TAG_OR_FULL_COMMIT_SHA>"` names a revision instead, which is how an
+unstamped copy is pointed at the release that was installed.
 
 `terraform` must be on `PATH` — the teardown engine, which this script never installs for you.
 See the site's [uninstall page](../../../docs/site/src/content/docs/install/uninstall.md).
