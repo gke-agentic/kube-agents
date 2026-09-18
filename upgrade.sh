@@ -814,12 +814,10 @@ main() {
     *) print_error "Unsupported upgrade mode '$PARAM_UPGRADE_MODE'. Use full, harness, or operator."; exit 1 ;;
   esac
 
-  local repo_dir="" install_checkout=""
-  acquire_upgrade_sources repo_dir install_checkout "$PARAM_IMAGE_TAG"
-
-  print_step "1. Validating Upgrade Target & Environment"
-  print_info "Upgrade Mode: ${C_BOLD}${PARAM_UPGRADE_MODE}${C_RESET}"
-  print_info "Target Image Tag: ${C_BOLD}${PARAM_IMAGE_TAG}${C_RESET}"
+  if [ "$PARAM_DRY_RUN" = "true" ] && [ "$PARAM_PLAN" = "true" ]; then
+    print_error "--dry-run and --plan are different previews and cannot be combined: --dry-run answers offline from configuration, --plan answers from the install's Terraform state."
+    exit 1
+  fi
 
   local required_tools=(gcloud kubectl helm)
   if [ "$PARAM_UPGRADE_MODE" = "full" ]; then
@@ -832,6 +830,13 @@ main() {
       exit 1
     fi
   done
+
+  local repo_dir="" install_checkout=""
+  acquire_upgrade_sources repo_dir install_checkout "$PARAM_IMAGE_TAG"
+
+  print_step "1. Validating Upgrade Target & Environment"
+  print_info "Upgrade Mode: ${C_BOLD}${PARAM_UPGRADE_MODE}${C_RESET}"
+  print_info "Target Image Tag: ${C_BOLD}${PARAM_IMAGE_TAG}${C_RESET}"
 
   # Shared defaults, the install.env loader, and the terraform.tfvars generator.
   # Sourced here rather than just before the generator, because the state load
@@ -886,11 +891,6 @@ main() {
 
   print_info "GCP Target Project: ${C_BOLD}${target_project}${C_RESET}"
   print_info "GKE Target Cluster: ${C_BOLD}${target_cluster}${C_RESET} (${target_region})"
-
-  if [ "$PARAM_DRY_RUN" = "true" ] && [ "$PARAM_PLAN" = "true" ]; then
-    print_error "--dry-run and --plan are different previews and cannot be combined: --dry-run answers offline from configuration, --plan answers from the install's Terraform state."
-    exit 1
-  fi
 
   if [ "$PARAM_DRY_RUN" = "true" ]; then
     print_step "2. Dry-Run Upgrade Plan Preview"
@@ -1130,7 +1130,6 @@ main() {
 
     full)
       print_step "4. Executing Full Atomic Upgrade (Terraform + Helm)"
-      apply_crd_upgrades
       # install.sh's post-generation minter guard, without its import step:
       # an upgrade never imports the App key, so an install.env that enables the
       # minter against a key with no ENABLED version would wedge the apply on
@@ -1150,6 +1149,7 @@ main() {
       # new fixed-name GSA on an install that has been running without one, so
       # the 409 check install.sh runs before its apply runs here too.
       check_service_account_ownership || exit 1
+      apply_crd_upgrades
       # A full terraform apply against the regenerated tfvars: both image tags
       # move, and every setting recorded in install.env is re-rendered — the successor
       # of the old path's re-render of the CR from saved state.
