@@ -26,10 +26,13 @@ _PAGES_SCRIPT_URL = re.compile(r"gke-labs\.github\.io/kube-agents/(?:install|upg
 _MOVING_RAW_URL = re.compile(r"raw\.githubusercontent\.com/gke-labs/kube-agents/(?:main|HEAD)/")
 
 # Where a reader or an agent is told how to run something. The three scripts are
-# included because their own header comments are the first thing a reader sees.
+# included because their own header comments are the first thing a reader sees,
+# and `.github/` because a workflow, an issue template or a release note names
+# these URLs to exactly the same effect as a page does.
 _SEARCHED_PREFIXES = (
     "docs/",
     ".agents/",
+    ".github/",
     "agents/",
     "charts/",
     "terraform/",
@@ -43,7 +46,7 @@ _SEARCHED_FILES = (
     "upgrade.sh",
     "uninstall.sh",
 )
-_SEARCHED_SUFFIXES = (".md", ".mdx", ".sh")
+_SEARCHED_SUFFIXES = (".md", ".mdx", ".sh", ".yml", ".yaml")
 
 
 def _tracked_files():
