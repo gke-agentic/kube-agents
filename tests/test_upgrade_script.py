@@ -785,14 +785,39 @@ echo "INSTALL_CHECKOUT=$install_checkout"
         self.assertEqual(self._reported(proc, "INSTALL_CHECKOUT"), str(clone_dir))
         self.assertIn("a preview does not move it", proc.stdout)
 
+    def test_a_missing_cli_tool_does_not_move_the_install_checkout(self):
+        """Like install.sh, missing CLI tools and conflicting preview flags fail before acquire_upgrade_sources moves ~/kube-agents."""
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+        outside_dir = home_dir.parent / "outside"
+        outside_dir.mkdir(exist_ok=True)
+        isolated_upgrade_sh = outside_dir / "upgrade.sh"
+        isolated_upgrade_sh.write_text(
+            _UPGRADE_SH.read_text().replace(
+                'KUBE_AGENTS_REPO_URL="https://github.com/gke-labs/kube-agents.git"',
+                f'KUBE_AGENTS_REPO_URL="{upstream_url}"',
+            )
+        )
+        proc = subprocess.run(
+            ["bash", str(isolated_upgrade_sh), "--image-tag=0.3.0", "--non-interactive"],
+            capture_output=True,
+            text=True,
+            env=get_isolated_test_env(overrides={"HOME": str(home_dir), "PATH": "/usr/bin:/bin"}),
+            cwd=str(outside_dir),
+        )
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("Required CLI tool", proc.stdout + proc.stderr)
+        self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
+
 
 class ConfigurationLookupOrderTest(unittest.TestCase):
     """Which install.env an upgrade loads, when more than one is reachable.
 
-    install.sh resolves script directory, then the working directory, and the
-    clone in HOME last. The upgrade has to agree: a workstation that manages two
-    installs has one $HOME/kube-agents, and preferring it would re-render the
-    install the operator is standing in from the other one's configuration.
+    install.sh resolves: KUBE_AGENTS_INSTALL_ENV -> the script's own checkout ->
+    $(pwd) -> the clone in HOME. The upgrade had only the first and the last, and
+    when it gained $(pwd) it put the HOME checkout ahead of it — so with two
+    installs on one workstation, standing in B's directory and passing
+    --cluster-name=B loaded A's chat space, allowed users, model provider,
+    NAMESPACE and GitOps repo out of ~/kube-agents/install.env.
     """
 
     _INSTALLER_COMMON = _REPO_ROOT / "scripts" / "installer" / "installer_common.sh"
@@ -964,7 +989,10 @@ class PipedUpgradeResolvesItsSourcesTest(unittest.TestCase):
                 capture_output=True,
                 text=True,
                 env=get_isolated_test_env(
-                    overrides={"KUBE_AGENTS_INSTALL_ENV": str(empty_install_env)}
+                    overrides={
+                        "KUBE_AGENTS_INSTALL_ENV": str(empty_install_env),
+                        "PATH": os.environ["PATH"],
+                    }
                 ),
                 cwd=outside,
             )
