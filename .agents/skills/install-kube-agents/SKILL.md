@@ -140,8 +140,8 @@ consent and you must obtain it before passing one. Present each pending change w
      own, not the operator's workloads'; "we trust the workloads in this cluster" does not answer
      it. Recorded in the report and on the `PlatformAgent`.
   3. Stop. The cluster is unchanged.
-- **gVisor node pool** — on an existing Standard cluster `--gvisor=true` (the default) adds a
-  billable `gvisor-pool` node pool. Say so; `--gvisor=false` runs the agent unsandboxed instead.
+- **gVisor node pool** — on an existing Standard cluster `--enable-gvisor=true` (the default) adds a
+  billable `gvisor-pool` node pool. Say so; `--enable-gvisor=false` runs the agent unsandboxed instead.
 
 A refusal is not a failure to route around: a `REFUSED_*` status with an unchanged cluster is the
 installer doing its job. Report it, relay the options above, and pass a flag only when the operator

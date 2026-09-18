@@ -115,7 +115,7 @@ jobs:
           PATH="$RUNNER_TEMP/kube-agents-test-bin:$PATH" ./upgrade.sh --dry-run -y --upgrade-mode=full --gcp-project-id="ci-test-project" --image-tag="$GITHUB_SHA"
 
       # The gcloud stub answers NOT_FOUND, so every dry run here takes the
-      # fresh-create path — the one case where --cluster-mode has a say. That
+      # fresh-create path — the one case where --gke-cluster-mode has a say. That
       # makes the generated tfvars the whole assertion.
       - name: Validate Dry-Run Installer Cluster Mode
         run: |
@@ -132,7 +132,7 @@ jobs:
             fi
           done
 
-          # Adoption: the live cluster's shape overrules --cluster-mode.
+          # Adoption: the live cluster's shape overrules --gke-cluster-mode.
           #
           # This used to assert the same thing about vars.sh, because the
           # installer wrote the probed shape back there and upgrade.sh and
