@@ -14,10 +14,13 @@ included. The supported rollback is the Helm-only pair below. The full mode is t
 revert, and it needs a plan read first.
 
 Because the script that runs is `N-1`'s, its timeouts and Helm flags are `N-1`'s too, and this
-page says where the published releases differ. The `curl | bash` one-liner is the exception: it
-runs the published script and fetches only `N-1`'s chart, CRDs and installer library, so a
-rollback done that way has the current script's behaviour against `N-1`'s chart. This page
-describes the checkout.
+page says where the published releases differ. A copy of the script that carries no baked version
+— one taken from `main` rather than from release `N-1` — is the exception: it fetches only `N-1`'s
+chart, CRDs and installer library, so a rollback done that way has the current script's behaviour
+against `N-1`'s chart. This page describes the checkout.
+
+The forward move, the three upgrade modes, and how a run resolves the version it targets are in
+[Upgrade](/kube-agents/install/upgrade/); this page covers going backwards only.
 
 ## Before you start
 
