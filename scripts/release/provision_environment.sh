@@ -126,7 +126,7 @@ if provision_is_truthy "${LONG_LIVED_ENVIRONMENT:-}"; then
   [ "$ALLOWLIST_STATUS" -eq 0 ] || exit 1
 fi
 
-# The two GitHub variables this script turns into `--enable-*` flags, in the
+# The GitHub variables this script turns into `--enable-*` flags, in the
 # spelling install.sh's validator accepts.
 #
 # The flag route and the file route do not judge a value the same way:
@@ -175,7 +175,7 @@ provision_canonical_bool() {
 # here reverts to failing after the teardown.
 INSTALL_REFUSAL_STATUS=0
 
-for _bool_var in ENABLE_GKE_BACKUP_PLAN ENABLE_GVISOR; do
+for _bool_var in ENABLE_GKE_BACKUP_PLAN ENABLE_GVISOR HERMES_DASHBOARD_ENABLED ENABLE_WEBUI; do
   [ -n "${!_bool_var:-}" ] || continue
   _canonical="$(provision_canonical_bool "${!_bool_var}")"
   case "$_canonical" in
@@ -252,7 +252,7 @@ esac
 
 rm -f "${TEARDOWN_LOG}"
 
-# The two GitHub variables this script turns into `--enable-*` flags travel
+# The GitHub variables this script turns into `--enable-*` flags travel
 # through provision_canonical_bool, defined with the guards above: the spelling
 # check has to happen before the teardown, and the canonicalisation is the same
 # call.
@@ -323,6 +323,10 @@ fi
 
 if [ -n "${ENABLE_GKE_BACKUP_PLAN:-}" ]; then
   INSTALL_ARGS+=(--enable-gke-backup-plan="$(provision_canonical_bool "${ENABLE_GKE_BACKUP_PLAN}")")
+fi
+
+if [ -n "${HERMES_DASHBOARD_ENABLED:-${ENABLE_WEBUI:-}}" ]; then
+  INSTALL_ARGS+=(--enable-hermes-dashboard="$(provision_canonical_bool "${HERMES_DASHBOARD_ENABLED:-${ENABLE_WEBUI}}")")
 fi
 
 if [ -n "${MODEL_PROVIDER:-}" ]; then

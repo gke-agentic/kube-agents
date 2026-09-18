@@ -708,7 +708,7 @@ class LongLivedAllowlistGuardTest(GithubMinterInputsTest):
 class BooleanVariablesSurviveTheFlagRouteTest(GithubMinterInputsTest):
     """A GitHub variable a human typed still means what it meant in install.env.
 
-    These two settings reach install.sh as `--enable-*` flags, whose validator
+    These settings reach install.sh as `--enable-*` flags, whose validator
     matches exactly true|false and exits 1 naming the flag. The same variables
     also reach it through the rendered install.env, where is_truthy accepts
     True/yes/y/1/on. An environment spelled `True` deployed fine on the file
@@ -721,6 +721,7 @@ class BooleanVariablesSurviveTheFlagRouteTest(GithubMinterInputsTest):
     _TOGGLES = {
         "ENABLE_GKE_BACKUP_PLAN": "--enable-gke-backup-plan",
         "ENABLE_GVISOR": "--enable-gvisor",
+        "HERMES_DASHBOARD_ENABLED": "--enable-hermes-dashboard",
     }
 
     def _install_call(self, tmp_dir):
@@ -835,6 +836,11 @@ class BooleanVariablesSurviveTheFlagRouteTest(GithubMinterInputsTest):
         call = self._install_call(tmp_dir)
         for flag in self._TOGGLES.values():
             self.assertNotIn(flag, call)
+
+    def test_enable_webui_fallback_reaches_the_flag(self):
+        proc, tmp_dir = self._run_recording({"ENABLE_WEBUI": "true"})
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("--enable-hermes-dashboard=true", self._install_call(tmp_dir))
 
 
 class SlackTokensAreRequiredBeforeTheTeardownTest(GithubMinterInputsTest):

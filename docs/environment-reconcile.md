@@ -155,10 +155,10 @@ the `secrets: inherit` gap
 [`scripts/release/README.md`](../scripts/release/README.md) describes for
 `GH_APP_ID`, which drops every secret the same way.
 
-`ENABLE_GKE_BACKUP_PLAN` and `ENABLE_GVISOR` are checked there too, for spelling
-rather than presence. Both reach `install.sh` as `--enable-*` flags, whose
-validator takes `true` or `false` and nothing else, while the same values
-travelling through `install.env` reach `is_truthy`, which also takes
+`ENABLE_GKE_BACKUP_PLAN`, `ENABLE_GVISOR`, and `HERMES_DASHBOARD_ENABLED` are checked
+there too, for spelling rather than presence. All three reach `install.sh` as
+`--enable-*` flags, whose validator takes `true` or `false` and nothing else, while
+the same values travelling through `install.env` reach `is_truthy`, which also takes
 `True`/`yes`/`y`/`1`/`on`. `provision_environment.sh` folds the second list into
 the first, so an environment that deployed on `True` keeps deploying; a spelling
 neither list recognises is refused before the teardown rather than by
@@ -171,7 +171,7 @@ Optional, and copied through when set: `CLUSTER_MODE`, `MODEL_DEFAULT_NAME`,
 `VERTEX_PROJECT_ID`, `VERTEX_LOCATION`, `GOOGLE_CHAT_MODE`, `GOOGLE_CHAT_HOME_CHANNEL`,
 `CHAT_TOPIC_NAME`, `CHAT_SUB_NAME`, `SLACK_ENABLED`, `SLACK_HOME_CHANNEL`,
 `SLACK_HOME_CHANNEL_NAME`, `PLATFORM_AGENT_CUSTOM_ROLES`,
-`HERMES_DASHBOARD_ENABLED`, `REGISTRY_PREFIX`, `THIRD_PARTY_REGISTRY_PREFIX`,
+`REGISTRY_PREFIX`, `THIRD_PARTY_REGISTRY_PREFIX`,
 `KMS_KEYRING`, `KMS_KEY`, `GITOPS_ORG`, `GITOPS_REPO`. Secrets: `GH_APP_ID`,
 `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `SLACK_BOT_TOKEN`,
 `SLACK_APP_TOKEN`.
