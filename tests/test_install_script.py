@@ -6585,6 +6585,55 @@ if helm_rollout_timed_out "{log_file}"; then echo "PREDICATE=true"; else echo "P
             self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
             self.assertIn("PREDICATE=false", proc.stdout)
 
+    def test_helm_rollout_timed_out_survives_a_warning_nested_in_the_same_box(self):
+        # Terraform nests provider warnings in a diagnostic's detail text. The
+        # matcher used to clear its state on any Error:/Warning: line, so a
+        # warning between the attribution and the timeout phrase wiped the
+        # attribution of the very rollout being reported -- and the installer
+        # printed a bare `context deadline exceeded` with no diagnosis.
+        with tempfile.TemporaryDirectory() as tmp:
+            log_file = pathlib.Path(tmp) / "prov.log"
+            log_file.write_text(
+                "╷\n"
+                "│ Error: context deadline exceeded\n"
+                "│ \n"
+                "│   with helm_release.kube_agents,\n"
+                '│   on main.tf line 497, in resource "helm_release" "kube_agents":\n'
+                "│ \n"
+                "│ Warning: Helm release created but has a failed status.\n"
+                "│ timed out waiting for the condition\n"
+                "╵\n"
+            )
+            body = f"""
+if helm_rollout_timed_out "{log_file}"; then echo "PREDICATE=true"; else echo "PREDICATE=false"; fi
+"""
+            proc = self._run_cmd(body)
+            self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+            self.assertIn("PREDICATE=true", proc.stdout)
+
+    def test_helm_rollout_timed_out_does_not_pair_a_closed_box_with_a_later_timeout(self):
+        # The closing ╵ ends a diagnostic. A non-timeout helm_release error
+        # followed by an unboxed timeout from somewhere else is two failures,
+        # and resetting only on the opening ╷ would have joined them.
+        with tempfile.TemporaryDirectory() as tmp:
+            log_file = pathlib.Path(tmp) / "prov.log"
+            log_file.write_text(
+                "╷\n"
+                "│ Error: Resource creation failed\n"
+                "│ \n"
+                "│   with helm_release.kube_agents,\n"
+                '│   on main.tf line 497, in resource "helm_release" "kube_agents":\n'
+                "╵\n"
+                "\n"
+                "Terraform: waiting for the node pool: timed out waiting for the condition\n"
+            )
+            body = f"""
+if helm_rollout_timed_out "{log_file}"; then echo "PREDICATE=true"; else echo "PREDICATE=false"; fi
+"""
+            proc = self._run_cmd(body)
+            self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+            self.assertIn("PREDICATE=false", proc.stdout)
+
     def test_helm_timeout_rejects_non_positive_integers(self):
         # Drives install.sh's own validator. The previous version of this test
         # re-implemented the regex in the bash it ran and asserted on its own
@@ -6890,6 +6939,90 @@ TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_
             self.assertIn("7936Mi Memory", output)
             self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
 
+    def test_preflight_reads_allocatable_in_the_Ki_gke_reports_it_in(self):
+        # Every GKE node reports status.allocatable.memory in Ki, so this is
+        # the spelling the check meets on every real cluster and the one branch
+        # of parse_mem that has to be right. Reading it as Mi would credit the
+        # node with a thousand times its memory.
+        node = json.dumps({
+            "items": [{
+                "metadata": {"name": "n1", "labels": {"cloud.google.com/gke-nodepool": "default-pool"}},
+                "spec": {"taints": []},
+                "status": {
+                    "allocatable": {"cpu": "4000m", "memory": "16069588Ki"},
+                    "conditions": [{"type": "Ready", "status": "True"}],
+                },
+            }]
+        })
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = self._preflight_bin_dir(tmp, node, json.dumps({"items": []}))
+            body = f"""
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj" "true" "none" "false" "" ""
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            output = proc.stdout + proc.stderr
+            # 16069588Ki is 15692Mi. Mis-scaled by 1024 it reads as either
+            # 16069588Mi or 15Mi, and neither is this number.
+            self.assertIn("15692Mi Memory", output)
+            self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+
+    def test_preflight_discounts_daemonsets_from_the_node_a_pool_would_add(self):
+        # A DaemonSet lands on every node of the pool, including the one the
+        # autoscaler has yet to create, so a new node offers its allocatable
+        # less that pod -- not its allocatable. Crediting the full figure is
+        # how this check passes a cluster the rollout then leaves Pending.
+        pods = json.dumps({
+            "items": [{
+                "metadata": {
+                    "name": "agent", "namespace": "kube-system",
+                    "ownerReferences": [{"kind": "DaemonSet", "name": "agent"}],
+                },
+                "spec": {
+                    "nodeName": "n1",
+                    "containers": [{"resources": {"requests": {"cpu": "1000m", "memory": "2048Mi"}}}],
+                },
+                "status": {"phase": "Running"},
+            }]
+        })
+        pools = json.dumps([{
+            "name": "default-pool",
+            "autoscaling": {"enabled": True, "maxNodeCount": 2},
+            "locations": ["us-central1-a"],
+            "config": {},
+        }])
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = self._preflight_bin_dir(tmp, self._ONE_SMALL_NODE, pods, pools)
+            body = f"""
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj" "true" "none" "false" "" ""
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            # The one node is 2000m/4096Mi and the DaemonSet takes half of it.
+            # A second node discounted the same way brings the total to
+            # 2000m/4096Mi, still short. Credited undiscounted it would reach
+            # 3000m/6144Mi, clear the requirement, and pass on headroom.
+            self.assertEqual(proc.returncode, 1, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+            self.assertNotIn("autoscaling headroom", proc.stdout + proc.stderr)
+
+    def test_preflight_reads_totalMaxNodeCount_as_the_ceiling(self):
+        # A pool with locations set reports its ceiling as totalMaxNodeCount
+        # across all of them, and maxNodeCount per zone. Reading only the
+        # second refuses a regional pool that can still add nodes.
+        pools = json.dumps([{
+            "name": "default-pool",
+            "autoscaling": {"enabled": True, "totalMaxNodeCount": 5},
+            "locations": ["us-central1-a"],
+            "config": {},
+        }])
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = self._preflight_bin_dir(
+                tmp, self._ONE_SMALL_NODE, json.dumps({"items": []}), pools)
+            body = f"""
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj" "false" "hindsight" "false" "" ""
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+            self.assertIn("autoscaling headroom", proc.stdout + proc.stderr)
+
     def test_diagnose_rollout_failure_guards_the_scan_that_needs_python(self):
         # The preflight warns and skips where python3 is absent; the diagnoser
         # piped into it regardless, and the pipeline's own `|| true` turned the
@@ -6913,8 +7046,6 @@ TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_
 
     def test_preflight_single_node_both_cpu_and_mem_required(self):
         with tempfile.TemporaryDirectory() as tmp:
-            bin_dir = pathlib.Path(tmp) / "bin"
-            bin_dir.mkdir()
             # Node 1 has 2000m CPU, but only 500Mi memory
             # Node 2 has 500m CPU, but 8000Mi memory
             # Total CPU = 2500m, Total Mem = 8500Mi (>= 1790m CPU, 7584Mi Mem total)
@@ -6934,21 +7065,7 @@ TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_
                 ]
             })
             pods_json = json.dumps({"items": []})
-            kubectl = bin_dir / "kubectl"
-            kubectl.write_text(f"""#!/usr/bin/env bash
-case "$*" in
-  *nodes*-o*json*) cat << 'EOF'
-{nodes_json}
-EOF
-  ;;
-  *pods*-o*json*) cat << 'EOF'
-{pods_json}
-EOF
-  ;;
-esac
-exit 0
-""")
-            kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
+            bin_dir = self._preflight_bin_dir(tmp, nodes_json, pods_json)
             body = f"""
 TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" "proj" "false" "file" "false" "" ""
 """
@@ -7427,8 +7544,6 @@ echo "SOURCE_OK"
 
     def test_preflight_ignores_pods_in_install_namespace_and_cert_manager(self):
         with tempfile.TemporaryDirectory() as tmp:
-            bin_dir = pathlib.Path(tmp) / "bin"
-            bin_dir.mkdir()
             nodes_json = json.dumps({
                 "items": [{
                     "metadata": {"name": "node-1"},
@@ -7454,21 +7569,7 @@ echo "SOURCE_OK"
                     },
                 ]
             })
-            kubectl = bin_dir / "kubectl"
-            kubectl.write_text(f"""#!/usr/bin/env bash
-case "$*" in
-  *nodes*-o*json*) cat << 'EOF'
-{nodes_json}
-EOF
-  ;;
-  *pods*-o*json*) cat << 'EOF'
-{pods_json}
-EOF
-  ;;
-esac
-exit 0
-""")
-            kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
+            bin_dir = self._preflight_bin_dir(tmp, nodes_json, pods_json)
             body = f"""
 TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard TFVARS_ENABLE_GITHUB_MINTER=false NAMESPACE=kubeagents-system \\
   check_existing_cluster_capacity_preflight "cluster" "region" "proj" "true"
@@ -7479,8 +7580,6 @@ TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard TFVARS_ENABLE_GITHUB_MI
 
     def test_preflight_cert_manager_ignored_when_managed_counted_when_unmanaged(self):
         with tempfile.TemporaryDirectory() as tmp:
-            bin_dir = pathlib.Path(tmp) / "bin"
-            bin_dir.mkdir()
             nodes_json = json.dumps({
                 "items": [{
                     "metadata": {"name": "node-1"},
@@ -7506,21 +7605,7 @@ TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard TFVARS_ENABLE_GITHUB_MI
                     },
                 ]
             })
-            kubectl = bin_dir / "kubectl"
-            kubectl.write_text(f"""#!/usr/bin/env bash
-case "$*" in
-  *nodes*-o*json*) cat << 'EOF'
-{nodes_json}
-EOF
-  ;;
-  *pods*-o*json*) cat << 'EOF'
-{pods_json}
-EOF
-  ;;
-esac
-exit 0
-""")
-            kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
+            bin_dir = self._preflight_bin_dir(tmp, nodes_json, pods_json)
 
             # Managed cert-manager: passes because cert-manager pod is ignored and 600m >= 540m
             body_managed = f"""

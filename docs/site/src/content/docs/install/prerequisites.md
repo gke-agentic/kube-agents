@@ -54,15 +54,24 @@ The first command omits a key whose value is unset, so a requirement that is not
 ### Capacity preflight and rollout visibility
 
 The preflight runs on adopted Standard clusters, when `kubectl` and `python3` are present and the
-current context is the target cluster; it warns and skips otherwise. A node pool that can still
+current context is the target cluster; it warns and skips otherwise. Installing onto an existing
+cluster fetches that cluster's credentials first, which makes it `kubectl`'s current context for
+the rest of your session — the installer prints the context it moved away from and the
+`kubectl config use-context` that restores it. A node pool that can still
 scale up is credited with the nodes it may add, modeled on the allocatable capacity of its
-running nodes (pools scaled to zero have no running node to model on and are not credited). A cluster
+running nodes (pools scaled to zero have no running node to model on and are not credited).
+Cordoned and NotReady nodes are left out of the sum, and counted in the output: a pool part-way
+through an upgrade looks like that and gets its capacity back when the upgrade finishes. A cluster
 that cannot grow into the requirement fails. A non-interactive run is refused with a capacity
 breakdown; an interactive one prompts, and declining pauses the install rather than failing it.
 
 On a cluster already running kube-agents, pods in the release namespace — and in `cert-manager`
 when the install manages it — are the requirement being measured rather than load competing with
-it. They are discounted, so a re-run is not charged twice for a footprint it already has.
+it. They are discounted, so a re-run is not charged twice for a footprint it already has. The
+discount is by namespace, not by owner: anything else sharing those namespaces is discounted with
+them and its requests are credited as free capacity, which can pass a cluster that is genuinely
+full. The preflight prints how many pods it discounted and what they were requesting, so an install
+into a namespace someone else is using shows it.
 
 What it checks is aggregate schedulable capacity across untainted nodes, plus a single-node fit for
 each pod that has to land whole. It is not a placement simulation: a cluster whose free capacity is

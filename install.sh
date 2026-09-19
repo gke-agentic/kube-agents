@@ -822,7 +822,11 @@ validate_immutable_ref() {
 # --helm-timeout, as a named validator rather than a block inside main(): a
 # test can call this, and could not call the block. An empty value is "not
 # passed", where DEFAULT_HELM_TIMEOUT applies. The bounds are the two numbers
-# hindsight-api's manifest fixes; see HELM_TIMEOUT_MIN_SECONDS above.
+# hindsight-api's manifest fixes; see HELM_TIMEOUT_MIN_SECONDS above. They are
+# enforced on every install, not only the ones that deploy Hindsight, because
+# terraform/examples/full-install/variables.tf admits the same window for the
+# helm_timeout variable and refuses the plan outside it -- so a value this
+# validator let through would fail later and less legibly.
 validate_helm_timeout() {
   local seconds="${1:-}"
   if [ -z "$seconds" ]; then
@@ -833,11 +837,11 @@ validate_helm_timeout() {
     return 1
   fi
   if [ "${#seconds}" -gt 3 ] || [ "$seconds" -gt "$HELM_TIMEOUT_MAX_SECONDS" ]; then
-    print_error "--helm-timeout must be at most ${HELM_TIMEOUT_MAX_SECONDS}s (got '${seconds}'): hindsight-api's Deployment gives up at its 900s progressDeadlineSeconds, so a longer wait ends the same way and no later."
+    print_error "--helm-timeout must be at most ${HELM_TIMEOUT_MAX_SECONDS}s (got '${seconds}'): it is the window terraform's helm_timeout variable accepts, one second under the 900s progressDeadlineSeconds of hindsight-api -- the slowest workload the install can roll out, and the one that would give up first when a memory provider selects it."
     return 1
   fi
   if [ "$seconds" -lt "$HELM_TIMEOUT_MIN_SECONDS" ]; then
-    print_error "--helm-timeout must be at least ${HELM_TIMEOUT_MIN_SECONDS}s (got '${seconds}'): a shorter wait gives up on a cold hindsight-api roll that is loading normally."
+    print_error "--helm-timeout must be at least ${HELM_TIMEOUT_MIN_SECONDS}s (got '${seconds}'): it is the window terraform's helm_timeout variable accepts, and a shorter wait gives up on a cold hindsight-api roll that is loading normally."
     return 1
   fi
 }
@@ -2342,7 +2346,21 @@ monitor_lifecycle_rollout() {
 helm_rollout_timed_out() {
   local log_file="$1"
   awk '
-    /^([[:space:]│|]|\033\[[0-9;]*m)*(Error|Warning):/ || /^([[:space:]│|]|\033\[[0-9;]*m)*╷/ {
+    # Terraform prints a diagnostic either boxed -- ╷ above it, ╵ below it, and
+    # every line between them behind a │ rule -- or plain, opened by its
+    # `Error:`/`Warning:` summary and ended by the next one. The attribution and
+    # the timeout phrase only mean a Helm rollout timed out when they are in the
+    # SAME diagnostic, so the state has to be cleared at both ends of one:
+    # ╷ and ╵ bound the boxed form, the summary line opens the plain one.
+    #
+    # Clearing on ╵ as well as ╷ is what stops a non-timeout helm_release error
+    # from pairing with a later, unrelated timeout outside the box. And the
+    # summary line must NOT clear anything while a box is open: terraform nests
+    # provider warnings in the detail text, and a `Warning:` there would
+    # otherwise wipe the attribution of the very timeout being reported.
+    /^([[:space:]│|]|\033\[[0-9;]*m)*╷/ { in_box = 1; helm = 0; err = 0; next }
+    /^([[:space:]│|]|\033\[[0-9;]*m)*╵/ { in_box = 0; helm = 0; err = 0; next }
+    /^([[:space:]│|]|\033\[[0-9;]*m)*(Error|Warning):/ && !in_box {
       helm = 0; err = 0
     }
     {
@@ -2402,8 +2420,14 @@ diagnose_rollout_failure() {
       ns_label=" (${ns})"
     fi
 
-    local pending_pods
-    pending_pods="$(kubectl --request-timeout="$ROLLOUT_MONITOR_KUBECTL_TIMEOUT" get pods -n "$ns" --field-selector=status.phase=Pending -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)"
+    # A query that failed and a namespace with nothing stuck in it both come
+    # back as an empty string. Reporting nothing for the first reads as a clean
+    # bill of health, so take the exit status and say which one this is.
+    local pending_pods=""
+    if ! pending_pods="$(kubectl --request-timeout="$ROLLOUT_MONITOR_KUBECTL_TIMEOUT" get pods -n "$ns" --field-selector=status.phase=Pending -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)"; then
+      pending_pods=""
+      print_warning "Could not list Pending pods in '${ns}' (kubectl failed or timed out); this diagnosis is incomplete."
+    fi
 
     if [ -n "$pending_pods" ]; then
       echo -e "\n${C_RED}${C_BOLD}Pending Pods Detected${ns_label}:${C_RESET}"
@@ -2426,7 +2450,17 @@ diagnose_rollout_failure() {
     if ! command -v python3 >/dev/null 2>&1; then
       print_warning "python3 is not installed; skipping the unready-pod scan${ns_label}. Pending pods above are still reported."
     else
-      unready_pods="$(kubectl --request-timeout="$ROLLOUT_MONITOR_KUBECTL_TIMEOUT" get pods -n "$ns" --field-selector=status.phase=Running -o json 2>/dev/null | python3 -c '
+      # Read first, scan second. Piping kubectl straight into python3 put the
+      # query's failure behind the pipeline's own `|| true` and the scanner's
+      # `except: pass`, so no permission to list pods -- or the 5s timeout
+      # expiring on the very cluster that is in trouble -- produced silence that
+      # reads as "nothing is crash-looping".
+      local running_pods_json=""
+      if ! running_pods_json="$(kubectl --request-timeout="$ROLLOUT_MONITOR_KUBECTL_TIMEOUT" get pods -n "$ns" --field-selector=status.phase=Running -o json 2>/dev/null)" ||
+        [ -z "$running_pods_json" ]; then
+        print_warning "Could not list Running pods in '${ns}' (kubectl failed or timed out); crash-looping containers there are not reported below."
+      else
+        unready_pods="$(printf '%s' "$running_pods_json" | python3 -c '
 import sys, json
 try:
     data = json.load(sys.stdin)
@@ -2446,6 +2480,7 @@ try:
 except Exception:
     pass
 ' 2>/dev/null || true)"
+      fi
     fi
     if [ -n "$unready_pods" ]; then
       echo -e "\n${C_RED}${C_BOLD}Unready / Crashing Pods Detected${ns_label}:${C_RESET}"
@@ -2519,6 +2554,15 @@ run_lifecycle_apply() {
   local log_file="$2"
   local -a ps=()
   local monitor_pid=""
+  # Where the apply records its own exit statuses. Read from a file rather than
+  # from PIPESTATUS out here because the INT handler below can run between the
+  # pipeline and anything that would capture it, and the handler's own commands
+  # overwrite PIPESTATUS before it could be read. Both callers pass an absolute
+  # log path, which this has to stay: the subshell writes it after cd-ing into
+  # the compose directory, and a relative one would land somewhere this
+  # function then fails to find -- reading a failed apply as a clean one.
+  local apply_status_file="${log_file}.status"
+  rm -f -- "$apply_status_file"
 
   on_apply_interrupt() {
     local sig="$1"
@@ -2526,6 +2570,27 @@ run_lifecycle_apply() {
     if [ -n "$monitor_pid" ]; then
       kill "$monitor_pid" 2>/dev/null || true
       wait "$monitor_pid" 2>/dev/null || true
+    fi
+    # bash holds a trapped signal until the foreground command it is waiting on
+    # returns, so this handler can run *after* the apply has already finished.
+    # That is the SIGINT sent to the installer alone -- a CI canceller, a
+    # supervisor -- rather than to the process group, where terraform would have
+    # died with it. Exiting here would throw away a completed apply: no
+    # diagnosis, no report, and exit 130 on an install that succeeded. The
+    # recorded status tells the two apart, and a terraform killed by the same
+    # signal exits above 128, which is a real interrupt and still exits.
+    if [ -s "$apply_status_file" ]; then
+      local finished_rc=""
+      finished_rc="$(cut -d' ' -f1 -- "$apply_status_file" 2>/dev/null || true)"
+      case "$finished_rc" in
+        "" | *[!0-9]*) ;;
+        *)
+          if [ "$finished_rc" -le 128 ]; then
+            print_warning "Interrupt received after the apply had already finished; completing the run so its outcome is reported."
+            return 0
+          fi
+          ;;
+      esac
     fi
     exit "$sig"
   }
@@ -2546,8 +2611,17 @@ run_lifecycle_apply() {
     if [ -n "${NO_COLOR:-}" ]; then
       apply_args+=(-no-color)
     fi
-    ./lifecycle.sh apply "${apply_args[@]}"
-  ) 2>&1 | tee "$log_file" || ps=("${PIPESTATUS[@]}")
+    # `|| apply_ps=(...)` is load-bearing twice over. It captures PIPESTATUS
+    # where it is still the pipeline's, and it puts the pipeline in an AND-OR
+    # list, which is the only thing that keeps a failing apply from firing the
+    # ERR trap inherited from the main shell: that trap runs whenever a command
+    # fails, `set +e` or not, and its handler exits -- so without this the
+    # subshell would die here, the status below would never be written, and the
+    # backgrounded rollout monitor would never be reaped.
+    local -a apply_ps=(0 0)
+    ./lifecycle.sh apply "${apply_args[@]}" 2>&1 | tee "$log_file" || apply_ps=("${PIPESTATUS[@]}")
+    printf '%s\n' "${apply_ps[*]}" > "$apply_status_file" || true
+  )
 
   trap - INT
 
@@ -2555,6 +2629,12 @@ run_lifecycle_apply() {
     kill "$monitor_pid" 2>/dev/null || true
     wait "$monitor_pid" 2>/dev/null || true
   fi
+
+  if [ -s "$apply_status_file" ]; then
+    # shellcheck disable=SC2207  # deliberate word splitting: "rc_primary rc_tee"
+    ps=($(cat -- "$apply_status_file" 2>/dev/null || true))
+  fi
+  rm -f -- "$apply_status_file"
 
   local rc_primary="${ps[0]:-0}"
   if [ "$rc_primary" -ne 0 ]; then
