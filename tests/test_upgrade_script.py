@@ -7,6 +7,7 @@ piped stdin execution, and source ref alignment in upgrade.sh.
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -799,6 +800,8 @@ echo "INSTALL_CHECKOUT=$install_checkout"
         home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
         outside_dir = home_dir.parent / "outside"
         outside_dir.mkdir(exist_ok=True)
+        sterile_bin = home_dir.parent / "sterile-bin"
+        sterile_bin.mkdir(exist_ok=True)
         isolated_upgrade_sh = outside_dir / "upgrade.sh"
         isolated_upgrade_sh.write_text(
             _UPGRADE_SH.read_text().replace(
@@ -807,10 +810,10 @@ echo "INSTALL_CHECKOUT=$install_checkout"
             )
         )
         proc = subprocess.run(
-            ["bash", str(isolated_upgrade_sh), "--image-tag=0.3.0", "--non-interactive"],
+            [shutil.which("bash") or "/bin/bash", str(isolated_upgrade_sh), "--image-tag=0.3.0", "--non-interactive"],
             capture_output=True,
             text=True,
-            env=get_isolated_test_env(overrides={"HOME": str(home_dir), "PATH": "/usr/bin:/bin"}),
+            env=get_isolated_test_env(overrides={"HOME": str(home_dir), "PATH": str(sterile_bin)}),
             cwd=str(outside_dir),
         )
         self.assertEqual(proc.returncode, 1)
@@ -888,6 +891,36 @@ echo "INSTALL_CHECKOUT=$install_checkout"
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
         self.assertEqual(self._head_of(clone_dir), commits["0.3.0"])
+
+    def test_a_real_pipe_in_a_dev_clone_without_install_env_moves_the_home_checkout(self):
+        """A clean dev clone in $(pwd) carrying no install.env yields to ~/kube-agents."""
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+        (clone_dir / "install.env").write_text('CLUSTER_NAME="home-install"\n')
+        dev_clone = home_dir.parent / "dev-clone"
+        self._git("clone", "--branch", "0.2.0", str(upstream_url), str(dev_clone), cwd=home_dir)
+
+        proc = self._acquire_through_a_real_pipe(home_dir, upstream_url, "0.3.0", cwd=dev_clone)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self._head_of(dev_clone), commits["0.2.0"])
+        self.assertEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
+        self.assertEqual(self._reported(proc, "INSTALL_CHECKOUT"), str(clone_dir))
+        self.assertEqual(self._head_of(clone_dir), commits["0.3.0"])
+
+    def test_a_run_configured_from_pwd_install_env_does_not_adopt_the_home_checkout(self):
+        """Standing in install B's directory (with install.env) fetches a temporary copy rather than moving or writing into ~/kube-agents."""
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+        (clone_dir / "install.env").write_text('CLUSTER_NAME="install-a"\n')
+        install_b = home_dir.parent / "install-b"
+        install_b.mkdir(exist_ok=True)
+        (install_b / "install.env").write_text('CLUSTER_NAME="install-b"\n')
+
+        proc = self._acquire_through_a_real_pipe(home_dir, upstream_url, "0.3.0", cwd=install_b)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
+        self.assertEqual(self._reported(proc, "INSTALL_CHECKOUT"), "")
+        self.assertNotEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
 
 
 class ConfigurationLookupOrderTest(unittest.TestCase):

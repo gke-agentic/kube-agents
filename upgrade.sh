@@ -711,6 +711,18 @@ run_lifecycle() {
 # run still applies this directory's Terraform and charts to a live install, so
 # verify_local_source_clean runs either way and only the ref comparison is
 # conditional.
+checkout_owns_run_config() {
+  local candidate="$1"
+  if [ -n "${KUBE_AGENTS_INSTALL_ENV:-}" ]; then
+    [ "$KUBE_AGENTS_INSTALL_ENV" = "${candidate}/install.env" ]
+    return
+  fi
+  if [ -f "$(pwd)/install.env" ] && [ "$(pwd)" != "$candidate" ]; then
+    return 1
+  fi
+  return 0
+}
+
 acquire_upgrade_sources() {
   local repo_var="$1"
   local checkout_var="$2"
@@ -756,21 +768,24 @@ acquire_upgrade_sources() {
     # Fetching into a temporary directory instead is what made the documented
     # install and the documented upgrade disagree.
     #
-    # Only inside this arm. A run that already has a checkout keeps it, so a CI
-    # job that checked out the ref it is reconciling is never redirected at
-    # whatever an earlier install happened to leave in HOME. A piped run
-    # (`curl … | bash`, where BASH_SOURCE[0] names no file) invoked while
-    # standing inside a kube-agents clone lands here too, so the checkout under
-    # $(pwd) is moved (or previewed from a temp copy) rather than failing the
-    # ref check.
+    # Only inside this arm, and only when that checkout owns this run's
+    # install.env. A run that already has a checkout keeps it, so a CI job that
+    # checked out the ref it is reconciling is never redirected at whatever an
+    # earlier install happened to leave in HOME. A developer clone in $(pwd)
+    # without install.env yields to HOME's install checkout rather than being
+    # detached onto the release tag, and a second install configured from
+    # $(pwd)/install.env or KUBE_AGENTS_INSTALL_ENV outside HOME's checkout
+    # fetches a temporary engine instead of overwriting HOME's terraform.tfvars.
     local clone_dir=""
-    if [ -f "$(pwd)/scripts/installer/installer_common.sh" ] && is_kube_agents_clone "$(pwd)"; then
-      found_checkout="$(pwd)"
-    elif [ -n "${HOME:-}" ]; then
+    if [ -n "${HOME:-}" ]; then
       clone_dir="$(kube_agents_clone_dir)"
-      if [ -n "$clone_dir" ] && is_kube_agents_clone "$clone_dir"; then
-        found_checkout="$clone_dir"
-      fi
+    fi
+    if [ -f "$(pwd)/scripts/installer/installer_common.sh" ] && [ -f "$(pwd)/install.env" ] && checkout_owns_run_config "$(pwd)"; then
+      found_checkout="$(pwd)"
+    elif [ -n "$clone_dir" ] && is_kube_agents_clone "$clone_dir" && checkout_owns_run_config "$clone_dir"; then
+      found_checkout="$clone_dir"
+    elif [ -f "$(pwd)/scripts/installer/installer_common.sh" ] && checkout_owns_run_config "$(pwd)"; then
+      found_checkout="$(pwd)"
     fi
     # A preview promises to change nothing, and the operator's checkout is part
     # of "nothing": moving it to the requested release would leave the next
@@ -961,6 +976,7 @@ main() {
   if [ "$state_loaded" != "true" ]; then
     print_error "Refusing to upgrade without the installation's configuration."
     print_info "Run upgrade.sh from the directory holding the install's install.env, point KUBE_AGENTS_INSTALL_ENV at one, or keep the install checkout the installer left in \$HOME/kube-agents."
+    print_info "If this install predates 0.4.0 and holds only k8s-operator/scripts/vars.sh, copy its settings into install.env first."
     exit 1
   fi
 

@@ -31,8 +31,9 @@ This comprehensive, step-by-step guide explains how to install, configure, deplo
    - [Step 5: Deploy Integrations (LiteLLM & GitHub)](#step-5-deploy-integrations-litellm--github)
    - [Step 6: Apply Custom Resources](#step-6-apply-custom-resources)
 7. [Method 3: Local Development & Fast Iteration](#method-3-local-development--fast-iteration)
-8. [Teardown & Cleanup](#teardown--cleanup)
-9. [Troubleshooting & Common FAQ](#troubleshooting--common-faq)
+8. [Upgrading](#upgrading)
+9. [Teardown & Cleanup](#teardown--cleanup)
+10. [Troubleshooting & Common FAQ](#troubleshooting--common-faq)
 
 ---
 

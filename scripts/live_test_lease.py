@@ -272,14 +272,14 @@ def _expand(value, scope):
     protection at all.
 
     `admin_console/project_config.py` carries the same expansion for the same
-    files; change both together.
+    file; change both together.
     """
     return _REFERENCE.sub(
         lambda m: scope.get(m.group(1) or m.group(2), m.group(0)), value
     )
 
 
-def _parse_install_state(text, scope=None):
+def _parse_install_state(text):
     """The allowlisted coordinates out of an install configuration, unquoted.
 
     Accepts `K=V` and `export K=V` alike. install.env is a hand-authored
@@ -296,8 +296,7 @@ def _parse_install_state(text, scope=None):
     so a later assignment can reference an earlier one.
     """
     found = {}
-    if scope is None:
-        scope = {}
+    scope = {}
     for line in text.splitlines():
         match = _ASSIGNMENT.match(line)
         if not match:
@@ -346,12 +345,12 @@ def find_install_env(cwd):
         path = parent
 
 
-def _read_install_state(path, scope=None):
+def _read_install_state(path):
     if not path:
         return {}
     try:
         with open(path) as fh:
-            return _parse_install_state(fh.read(), scope)
+            return _parse_install_state(fh.read())
     except OSError:
         return {}
 
@@ -362,7 +361,7 @@ def _install_from_state(install_env):
     Assignments are read in order into a single expansion scope, so a later
     `$VAR` can name a key an earlier line set, as sourcing the file would.
     """
-    fields = _read_install_state(install_env, {})
+    fields = _read_install_state(install_env)
     if not fields:
         return None
     project = fields.get("PROJECT_ID")

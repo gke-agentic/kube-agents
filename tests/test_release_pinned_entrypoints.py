@@ -23,7 +23,7 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 # The three front doors served unstamped from GitHub Pages.
 _PAGES_SCRIPT_URL = re.compile(r"gke-labs\.github\.io/kube-agents/(?:install|upgrade|uninstall)\.sh")
 # The same problem by another route: a raw URL pinned to a moving branch.
-_MOVING_RAW_URL = re.compile(r"raw\.githubusercontent\.com/gke-labs/kube-agents/(?:main|HEAD)/")
+_MOVING_RAW_URL = re.compile(r"raw\.githubusercontent\.com/gke-labs/kube-agents/(?:refs/heads/)?(?:main|HEAD)/")
 
 # Where a reader or an agent is told how to run something. The three scripts are
 # included because their own header comments are the first thing a reader sees,

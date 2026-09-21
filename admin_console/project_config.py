@@ -136,20 +136,15 @@ _ASSIGNMENT = re.compile(
 )
 
 
-def _read_assignments(path: Path, scope: dict[str, str] | None = None) -> dict[str, str]:
+def _read_assignments(path: Path) -> dict[str, str]:
     """The allowlisted assignments in one file, or {} if it cannot be read.
 
-    `scope` is the context `_expand` resolves `$VAR` against. It is both read
-    and written: every accepted assignment is added to it as the file is
-    walked, so a later line can reference an earlier one, which is the order
-    the shell resolves them in. It is optional because no caller has prior
-    context to supply any more -- install.env is read on its own -- but it
-    stays a parameter so what a reference may resolve to is the caller's
-    decision rather than an assumption hard-coded here.
+    `scope` is the context `_expand` resolves `$VAR` against: every accepted
+    assignment is added to it as the file is walked, so a later line can
+    reference an earlier one, which is the order the shell resolves them in.
     """
     values: dict[str, str] = {}
-    if scope is None:
-        scope = {}
+    scope: dict[str, str] = {}
     if not path.is_file():
         return values
     try:

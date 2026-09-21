@@ -244,6 +244,13 @@ bootstrap_install_env() {
       print_error "KUBE_AGENTS_INSTALL_ENV names '$file', which does not exist." >&2
       exit 1
     fi
+    local retired_vars_file
+    retired_vars_file="$(dirname "$file")/k8s-operator/scripts/vars.sh"
+    if [ -f "$retired_vars_file" ]; then
+      print_error "Retired state file '${retired_vars_file}' found without '${file}'." >&2
+      print_info "k8s-operator/scripts/vars.sh is no longer read; copy its settings into '${file}' before running install.sh." >&2
+      exit 1
+    fi
     return 0
   fi
   # Checked before sourcing: a stray quote would otherwise abort the run through

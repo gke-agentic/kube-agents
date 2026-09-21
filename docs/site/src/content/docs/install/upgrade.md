@@ -105,11 +105,15 @@ answers offline, from configuration alone, and never contacts the install. `--pl
 the install's real Terraform state, so it needs credentials, and it is the only one of the two that
 can report drift. The two are refused together.
 
-Neither moves the install checkout in `$HOME/kube-agents`: a preview that needs sources the
-checkout does not have reads them from a temporary copy instead, so the checkout is still on the
-release the install runs when the preview is over. Neither writes into it either. A preview reads
-that checkout's `install.env`, and reading it does not make it the preview's to edit — on a
-workstation managing two installs, it may well belong to the other one.
+Neither moves the install checkout in `$HOME/kube-agents` or edits `install.env`: a preview that
+needs sources the checkout does not have reads them from a temporary copy instead, so the checkout
+is still on the release the install runs when the preview is over. When a run is configured from
+`$(pwd)/install.env` or `KUBE_AGENTS_INSTALL_ENV` outside `$HOME/kube-agents`, it fetches a
+temporary copy as well rather than touching `$HOME/kube-agents`. When `--plan` reuses the
+install's own checkout because it is already on the target release (or runs from inside it),
+`--plan` refreshes the generated `terraform/examples/full-install/terraform.tfvars` and
+`.terraform/` working directory there so Terraform can plan against the live backend; `--dry-run`
+exits before Terraform runs and writes nothing.
 
 Neither is refused by an edited checkout either. A preview of what an uncommitted change would
 apply is the one report that answers "what have I edited here", so both previews warn and continue
@@ -145,10 +149,9 @@ These refusals happen before anything on the cluster moves.
   release script carries its version with it, so standing in an older unpacked tree and running a
   newer one is refused rather than silently applying the older tree. Start again from a clean
   checkout or from the bundle of the release you want.
-- **No install configuration.** Neither `KUBE_AGENTS_INSTALL_ENV` nor an `install.env` was found.
-  `install.env` is searched for in three directories — the checkout the script runs from, the
-  directory you are standing in, and the install checkout in `$HOME/kube-agents` —
-  and `KUBE_AGENTS_INSTALL_ENV` overrides that search.
+- **No install configuration.** Neither `KUBE_AGENTS_INSTALL_ENV` nor an `install.env` was found in
+  any of the configuration locations described at the top of this page (or the checkout holds only a
+  retired `k8s-operator/scripts/vars.sh` that has not yet been copied into `install.env`).
 - **No Helm release.** The target namespace has no `kube-agents` release to upgrade.
 
 ## Where to go next
