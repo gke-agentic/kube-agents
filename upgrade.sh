@@ -698,6 +698,18 @@ run_lifecycle() {
   )
 }
 
+checkout_owns_run_config() {
+  local candidate="$1"
+  if [ -n "${KUBE_AGENTS_INSTALL_ENV:-}" ]; then
+    [ "$KUBE_AGENTS_INSTALL_ENV" = "${candidate}/install.env" ]
+    return
+  fi
+  if [ -f "$(pwd)/install.env" ] && [ "$(pwd)" != "$candidate" ]; then
+    return 1
+  fi
+  return 0
+}
+
 # Put this run's sources on disk, and name the install checkout it found. Both
 # land in the variables named by $1 and $2 rather than being echoed, because
 # the progress lines would otherwise be captured along with the paths — the
@@ -711,18 +723,6 @@ run_lifecycle() {
 # run still applies this directory's Terraform and charts to a live install, so
 # verify_local_source_clean runs either way and only the ref comparison is
 # conditional.
-checkout_owns_run_config() {
-  local candidate="$1"
-  if [ -n "${KUBE_AGENTS_INSTALL_ENV:-}" ]; then
-    [ "$KUBE_AGENTS_INSTALL_ENV" = "${candidate}/install.env" ]
-    return
-  fi
-  if [ -f "$(pwd)/install.env" ] && [ "$(pwd)" != "$candidate" ]; then
-    return 1
-  fi
-  return 0
-}
-
 acquire_upgrade_sources() {
   local repo_var="$1"
   local checkout_var="$2"
@@ -784,8 +784,6 @@ acquire_upgrade_sources() {
       found_checkout="$(pwd)"
     elif [ -n "$clone_dir" ] && is_kube_agents_clone "$clone_dir" && checkout_owns_run_config "$clone_dir"; then
       found_checkout="$clone_dir"
-    elif [ -f "$(pwd)/scripts/installer/installer_common.sh" ] && checkout_owns_run_config "$(pwd)"; then
-      found_checkout="$(pwd)"
     fi
     # A preview promises to change nothing, and the operator's checkout is part
     # of "nothing": moving it to the requested release would leave the next

@@ -907,6 +907,20 @@ echo "INSTALL_CHECKOUT=$install_checkout"
         self.assertEqual(self._reported(proc, "INSTALL_CHECKOUT"), str(clone_dir))
         self.assertEqual(self._head_of(clone_dir), commits["0.3.0"])
 
+    def test_a_real_pipe_in_a_dev_clone_with_no_home_checkout_does_not_move_the_dev_clone(self):
+        """When neither $(pwd) nor ~/kube-agents holds install.env, a piped run does not detach the developer clone."""
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+        shutil.rmtree(clone_dir)
+        dev_clone = home_dir.parent / "dev-clone"
+        self._git("clone", "--branch", "0.2.0", str(upstream_url), str(dev_clone), cwd=home_dir)
+
+        proc = self._acquire_through_a_real_pipe(home_dir, upstream_url, "0.3.0", cwd=dev_clone)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self._head_of(dev_clone), commits["0.2.0"])
+        self.assertEqual(self._reported(proc, "INSTALL_CHECKOUT"), "")
+        self.assertNotEqual(self._reported(proc, "REPO_DIR"), str(dev_clone))
+
     def test_a_run_configured_from_pwd_install_env_does_not_adopt_the_home_checkout(self):
         """Standing in install B's directory (with install.env) fetches a temporary copy rather than moving or writing into ~/kube-agents."""
         home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
