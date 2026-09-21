@@ -223,26 +223,21 @@ pre-existing clusters (testing environments only).
 
 ### The predecessor: `vars.sh`
 
-`k8s-operator/scripts/vars.sh` was the generated state file `install.env` replaces. No
-front door writes one any more. Every reader still accepts one so that an install
-predating the change keeps working with no action from its owner: each loads `vars.sh`
-first and `install.env` over the top, so the input wins. `install.sh` additionally
-migrates — it reads a legacy `vars.sh` and warns, and a full run that has no `install.env`
-yet writes those values into one on the way out, after which the old file can be deleted.
-A run that already has an `install.env` does not: `bootstrap_install_env_file` treats an
-existing file as the operator's, so the legacy values are loaded for that run and recorded
-nowhere. Delete `vars.sh` only once `install.env` carries what you need from it.
+`k8s-operator/scripts/vars.sh` was the generated state file `install.env` replaced. No
+front door or Python helper reads or writes it any more; `install.env` is the sole
+install configuration input.
 
-One writer is left, and it is not an install one. The dev tooling under `scripts/dev/`
-records whether it created the throwaway Artifact Registry (`DEV_ARTIFACT_REGISTRY_CREATED`)
-through `save_var`, which lands in `scripts/installer/vars.sh` beside these helpers. That
-file is developer scratch state, git-ignored, and holds nothing an install is configured
-from; deleting it costs at most one redundant registry check.
+One separate file of the same name remains, and it is not an install configuration: the
+dev tooling under `scripts/dev/` records whether it created the throwaway Artifact Registry
+(`DEV_ARTIFACT_REGISTRY_CREATED`) through `save_var`, which lands in
+`scripts/installer/vars.sh` beside these helpers. That file is developer scratch state,
+git-ignored, and holds nothing an install is configured from; deleting it costs at most one
+redundant registry check.
 
 Both Python readers — `scripts/live_test_lease.py` and `admin_console/project_config.py`
-— match an allowlist of assignments with a regex and never source either file, because
-both hold credentials. They accept `K=V` and `export K=V` alike, since `install.env` is a
-dotenv and `vars.sh` was generated with `printf %q`.
+— match an allowlist of assignments in `install.env` with a regex and never source it,
+because it holds credentials. They accept `K=V` and `export K=V` alike, since `install.env`
+is a hand-authored dotenv and a hand may well write `export`.
 
 ## File directory
 

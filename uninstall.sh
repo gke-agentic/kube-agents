@@ -217,18 +217,6 @@ EOF
   print_success "Uninstall report written to: $report_file"
 }
 
-persist_state_var() {
-  local state_file="$1"
-  local var_name="$2"
-  local var_value="$3"
-  if [ -f "$state_file" ]; then
-    grep -E -v "^[[:space:]]*export[[:space:]]+${var_name}=" "$state_file" > "${state_file}.tmp" || true
-    mv "${state_file}.tmp" "$state_file"
-  fi
-  printf 'export %s=%q\n' "$var_name" "$var_value" >> "$state_file"
-  chmod 600 "$state_file" 2>/dev/null || true
-}
-
 # Decide WHERE the state lives before pinning the backend. Exporting
 # KUBE_AGENTS_STATE_BUCKET first would make lifecycle.sh's ensure_backend
 # `terraform init -reconfigure` onto the (possibly empty) remote prefix —
@@ -354,17 +342,8 @@ main() {
   # install.sh. Print helpers are already defined above, as the file expects.
   # shellcheck disable=SC1091
   source "${repo_dir}/scripts/installer/installer_common.sh"
-  # Legacy state first, then install.env over the top of it, so the
-  # hand-authored input wins. Both are optional here: unlike upgrade.sh, a
-  # teardown can proceed on --project-id/--cluster-name/--region alone.
-  if [ -f "${repo_dir}/k8s-operator/scripts/vars.sh" ]; then
-    # shellcheck disable=SC1091
-    if ! source "${repo_dir}/k8s-operator/scripts/vars.sh"; then
-      print_error "Configuration state is invalid and could not be loaded."
-      exit 1
-    fi
-    print_success "Loaded configuration state from k8s-operator/scripts/vars.sh"
-  fi
+  # install.env is optional here: unlike upgrade.sh, a teardown can proceed on
+  # --project-id/--cluster-name/--region alone.
   local install_env_file
   install_env_file="$(default_install_env_file "$repo_dir")"
   if load_install_env "$install_env_file"; then
@@ -373,9 +352,8 @@ main() {
   # GITOPS_ORG / GITOPS_REPO are the names; a configuration still carrying
   # GITHUB_ORG / GITHUB_REPO is accepted with a warning.
   normalize_gitops_repo_vars
-  # Same shape, for the memory setting: install.env records MEMORY, a migrated
-  # vars.sh still carries the old MEMORY_PROVIDER, and the file loaded second
-  # has to win. This teardown regenerates tfvars before destroying.
+  # install.env records the operator-facing MEMORY; MEMORY_PROVIDER is the name
+  # the generator reads. This teardown regenerates tfvars before destroying.
   normalize_memory_vars
 
   local target_project="${PARAM_PROJECT_ID:-${PROJECT_ID:-}}"
@@ -462,22 +440,6 @@ main() {
 
   print_step "2. Executing Automated Teardown Engine"
 
-  # Keep the state file agreeing with the confirmed target: the tfvars
-  # generator below reads the environment, but a saved vars.sh that names a
-  # different cluster would mislead the next tool that sources it.
-  local state_file="${repo_dir}/k8s-operator/scripts/vars.sh"
-  if [ -f "$state_file" ]; then
-    if [ -n "$PARAM_PROJECT_ID" ]; then
-      persist_state_var "$state_file" PROJECT_ID "$target_project"
-    fi
-    if [ -n "$PARAM_CLUSTER_NAME" ]; then
-      persist_state_var "$state_file" CLUSTER_NAME "$target_cluster"
-    fi
-    if [ -n "$PARAM_REGION" ]; then
-      persist_state_var "$state_file" REGION "$target_region"
-    fi
-  fi
-
   # terraform destroy still evaluates the configuration, so required variables
   # must be present even from a fresh clone; the placeholder key feeds nothing
   # that survives the destroy.
@@ -504,11 +466,9 @@ main() {
     cd "$compose_dir"
     ./lifecycle.sh destroy -auto-approve -input=false
   )
-  # The derived state goes; install.env stays. It is the operator's own file,
-  # not something this tool generated, and deleting it would throw away the
-  # configuration a re-install would otherwise reuse. Say so rather than
-  # leaving a file behind silently.
-  rm -f "$state_file"
+  # install.env stays. It is the operator's own file, not something this tool
+  # generated, and deleting it would throw away the configuration a re-install
+  # would otherwise reuse. Say so rather than leaving a file behind silently.
   if [ -f "$install_env_file" ]; then
     print_info "Left your install configuration in place: ${install_env_file}"
   fi

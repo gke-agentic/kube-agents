@@ -12,8 +12,7 @@
 # The release-pinned script carries its own version, so no image tag is passed.
 # It upgrades the install whose checkout the installer left in $HOME/kube-agents,
 # reading the install.env in it; KUBE_AGENTS_INSTALL_ENV points at a
-# configuration held somewhere else, and a legacy k8s-operator/scripts/vars.sh
-# also satisfies the requirement. The upgrade refuses to re-render cluster
+# configuration held somewhere else. The upgrade refuses to re-render cluster
 # configuration without one.
 # ==============================================================================
 
@@ -192,22 +191,6 @@ json_escape() {
   value=${value//$'\r'/\\r}
   value=${value//$'\t'/\\t}
   printf '%s' "$value"
-}
-
-# Persist one variable into a legacy vars.sh, for an install that still has
-# one. Nothing in this repository re-sources it -- the exports after each call
-# are what this run reads -- but a tool still pointed at the old file would
-# otherwise name a different target than the one this run acts on.
-persist_state_var() {
-  local state_file="$1"
-  local var_name="$2"
-  local var_value="$3"
-  if [ -f "$state_file" ]; then
-    grep -E -v "^[[:space:]]*export[[:space:]]+${var_name}=" "$state_file" > "${state_file}.tmp" || true
-    mv "${state_file}.tmp" "$state_file"
-  fi
-  printf 'export %s=%q\n' "$var_name" "$var_value" >> "$state_file"
-  chmod 600 "$state_file" 2>/dev/null || true
 }
 
 random_hex_32() {
@@ -655,26 +638,6 @@ resolve_install_env_file() {
   default_install_env_file "$repo_dir"
 }
 
-# The legacy vars.sh, by the same reasoning as resolve_install_env_file.
-# k8s-operator/scripts/vars.sh is gitignored, so a run whose sources are a
-# freshly fetched copy — every preview of a release the install checkout is not
-# on — has none, and looking only there told a legacy install that the file it
-# does have is missing. Sources first, so a checkout the run was handed wins,
-# then the install checkout the run discovered.
-resolve_state_file() {
-  local repo_dir="$1"
-  local install_checkout="${2:-}"
-  if [ -f "${repo_dir}/k8s-operator/scripts/vars.sh" ]; then
-    echo "${repo_dir}/k8s-operator/scripts/vars.sh"
-    return 0
-  fi
-  if [ -n "$install_checkout" ] && [ -f "${install_checkout}/k8s-operator/scripts/vars.sh" ]; then
-    echo "${install_checkout}/k8s-operator/scripts/vars.sh"
-    return 0
-  fi
-  echo "${repo_dir}/k8s-operator/scripts/vars.sh"
-}
-
 # Parameter Parsing
 parse_args() {
   while [[ $# -gt 0 ]]; do
@@ -940,24 +903,12 @@ main() {
   # shellcheck disable=SC1091
   source "${repo_dir}/scripts/installer/installer_common.sh"
 
-  # Two sources, in this order, so the hand-authored input wins: a legacy
-  # vars.sh from an install that predates install.env, then install.env over
-  # the top of it. Either one on its own is enough to upgrade. Both are
-  # resolved against the install checkout as well as this run's sources: a
-  # preview reads its engine from a temporary copy, which has neither file.
-  local state_file install_env_file
-  state_file="$(resolve_state_file "$repo_dir" "$install_checkout")"
+  # install.env is the install's configuration, and the only one. It is resolved
+  # against the install checkout as well as this run's sources, because a
+  # preview reads its engine from a temporary copy, which has no install.env.
+  local install_env_file
   install_env_file="$(resolve_install_env_file "$repo_dir" "$install_checkout")"
   local state_loaded="false"
-  if [ -f "$state_file" ]; then
-    # shellcheck disable=SC1090,SC1091
-    if ! source "$state_file"; then
-      print_error "Configuration state is invalid and could not be loaded."
-      exit 1
-    fi
-    state_loaded="true"
-    print_success "Loaded existing configuration state from: ${state_file}"
-  fi
   if load_install_env "$install_env_file"; then
     state_loaded="true"
     print_success "Loaded install configuration from: ${install_env_file}"
@@ -967,15 +918,15 @@ main() {
     if [ -n "$install_checkout" ] && [ "$install_checkout" != "$repo_dir" ]; then
       searched="${searched} or ${install_checkout}"
     fi
-    print_warning "No install configuration (install.env) and no saved state (k8s-operator/scripts/vars.sh) was found in ${searched}."
+    print_warning "No install configuration (install.env) was found in ${searched}."
   fi
   # GITOPS_ORG / GITOPS_REPO are the names; a configuration still carrying
   # GITHUB_ORG / GITHUB_REPO is accepted with a warning. Runs after the load and
   # before anything reads the coordinates.
   normalize_gitops_repo_vars
-  # Same shape, for the memory setting: install.env records MEMORY, a migrated
-  # vars.sh still carries the old MEMORY_PROVIDER, and the file loaded second
-  # has to win.
+  # install.env records the operator-facing MEMORY; MEMORY_PROVIDER is the name
+  # the chart and the generator read. Derived here, after the load and before
+  # anything reads it.
   normalize_memory_vars
 
   local target_project="${PARAM_PROJECT_ID:-${PROJECT_ID:-}}"
@@ -1009,30 +960,10 @@ main() {
   # configuration to blank defaults.
   if [ "$state_loaded" != "true" ]; then
     print_error "Refusing to upgrade without the installation's configuration."
-    print_info "Run upgrade.sh from the directory holding the install's install.env, point KUBE_AGENTS_INSTALL_ENV at one, keep the install checkout the installer left in \$HOME/kube-agents, or restore k8s-operator/scripts/vars.sh."
+    print_info "Run upgrade.sh from the directory holding the install's install.env, point KUBE_AGENTS_INSTALL_ENV at one, or keep the install checkout the installer left in \$HOME/kube-agents."
     exit 1
   fi
 
-  # Keep a legacy vars.sh agreeing with the confirmed target, the way
-  # uninstall.sh does, so no tool still pointed at it names another cluster.
-  #
-  # Only into a vars.sh that is already there, the way uninstall.sh guards the
-  # same three calls. persist_state_var's append is unconditional -- only its
-  # grep/mv rewrite tests for the file -- so on an install.env-only install the
-  # redirect would open a path under k8s-operator/scripts/, a directory this
-  # release no longer creates, and `set -Eeuo pipefail` would abort the upgrade
-  # at step 1. The exports below are what the rest of this run actually reads.
-  if [ -f "$state_file" ]; then
-    if [ -n "$PARAM_PROJECT_ID" ]; then
-      persist_state_var "$state_file" PROJECT_ID "$target_project"
-    fi
-    if [ -n "$PARAM_CLUSTER_NAME" ]; then
-      persist_state_var "$state_file" CLUSTER_NAME "$target_cluster"
-    fi
-    if [ -n "$PARAM_REGION" ]; then
-      persist_state_var "$state_file" REGION "$target_region"
-    fi
-  fi
   export PROJECT_ID="$target_project"
   export CLUSTER_NAME="$target_cluster"
   export REGION="$target_region"
@@ -1160,7 +1091,7 @@ main() {
 
   # The release guard runs before the tfvars generation on purpose: a
   # pre-Terraform install deserves this message, not whatever the generator
-  # trips over first (its vars.sh may lack the credentials the generator
+  # trips over first (its install.env may lack the credentials the generator
   # recovers from the live Secret).
   if ! helm status "$KUBE_AGENTS_HELM_RELEASE" -n "$target_namespace" >/dev/null 2>&1; then
     print_error "No Helm release '${KUBE_AGENTS_HELM_RELEASE}' in namespace '$target_namespace'."

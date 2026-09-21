@@ -219,48 +219,7 @@ else
   unset _install_env_dir
 fi
 
-# The state file install.env replaces. Loaded FIRST so install.env wins on
-# every key it carries, and only from a checkout -- a fresh clone has none.
-# This is the migration: an existing install keeps working with no action from
-# its owner, and the run writes their values into install.env on the way out.
-#
-# Resolved against the same checkout, for the same reason: under
-# `curl … | bash` a script-relative path names the invocation directory, not
-# the clone the migration has to read.
-LEGACY_VARS_FILE=""
-if [ -f "${_state_repo_dir}/k8s-operator/scripts/vars.sh" ]; then
-  LEGACY_VARS_FILE="${_state_repo_dir}/k8s-operator/scripts/vars.sh"
-fi
 unset _state_repo_dir
-
-load_legacy_vars_file() {
-  local file="${1:-}"
-  [ -n "$file" ] && [ -f "$file" ] || return 0
-  if ! bash -n "$file" 2>/dev/null; then
-    print_error "Legacy install state '$file' is not valid shell and could not be loaded."
-    exit 1
-  fi
-  set -a
-  # shellcheck disable=SC1090
-  . "$file"
-  set +a
-  # stderr, like the load message below and for the same reason.
-  print_warning "Loaded legacy install state from ${file}; install.env replaces it." >&2
-  # Telling the operator to delete vars.sh is only safe once its values are
-  # somewhere else, and this function cannot promise that. bootstrap_install_env_file
-  # is the sole writer, it runs near the end of main(), and it returns early
-  # when install.env already exists -- so --help, --menu, --dry-run, any abort,
-  # and every run against a file the operator wrote themselves reach the write
-  # never or as a no-op. An existing install.env is the dangerous case rather
-  # than the safe-looking one: `cp install.env.example install.env` carries no
-  # MEMORY, so discarding vars.sh there loses the only record that the install
-  # runs Hindsight, and the next apply derives multiuser_memory and tears it down.
-  if [ -f "$INSTALL_ENV_FILE" ]; then
-    print_info "${INSTALL_ENV_FILE} already exists and this run will not rewrite it. Copy anything you still need from vars.sh into it before deleting vars.sh." >&2
-  else
-    print_info "Once this run creates ${INSTALL_ENV_FILE}, check it against vars.sh and then delete vars.sh." >&2
-  fi
-}
 
 # Named apart from installer_common.sh's load_install_env, which this file
 # sources later and which upgrade.sh and uninstall.sh use. The two differ on
@@ -352,7 +311,6 @@ wants_help_only() {
 }
 
 if ! wants_help_only "$@"; then
-  load_legacy_vars_file "$LEGACY_VARS_FILE"
   bootstrap_install_env "$INSTALL_ENV_FILE"
 fi
 
@@ -1520,9 +1478,6 @@ source_provisioning_helpers() {
     exit 1
   fi
   SCRIPT_DIR="${repo_dir}/scripts/installer"
-  # The legacy state file, still at its original address: an install made
-  # before the move has one there and nowhere else.
-  VARS_FILE="${repo_dir}/k8s-operator/scripts/vars.sh"
   # shellcheck source=/dev/null
   source "$helper_script"
   # gke_dns_endpoint_flag, for the credentials fetch before the health checks.
@@ -3197,34 +3152,23 @@ run_menu_system() {
 
   local repo_dir
   repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  local vars_file="${repo_dir}/k8s-operator/scripts/vars.sh"
   local helper_script="${repo_dir}/scripts/installer/installer_common.sh"
 
   if [ ! -f "$helper_script" ]; then
     print_error "Cannot find installer helpers at $helper_script."
     exit 1
   fi
-  export VARS_FILE="$vars_file"
   # shellcheck disable=SC1090
   source "$helper_script"
 
-  if [ -f "$vars_file" ]; then
-    # shellcheck disable=SC1090
-    if ! source "$vars_file"; then
-      print_error "Configuration state is invalid and could not be loaded: $vars_file"
-      exit 1
-    fi
-  fi
-  # install.env was already loaded at startup, but sourcing vars.sh just now put
-  # the derived state back over the top of it. Re-apply the input so the
-  # hand-authored file is what the panel opens on, whichever order the two
-  # files disagree in.
+  # install.env is already loaded at startup; re-apply it here so the panel
+  # always opens on the operator's own input, whatever the sourced helpers
+  # left in the environment.
   load_install_env "$INSTALL_ENV_FILE" || true
-  # ...and the same for the memory setting, which the two files spell
-  # differently (install.env MEMORY, legacy vars.sh MEMORY_PROVIDER) so load
-  # order alone cannot make the input win. Save & Apply generates tfvars
-  # directly, without passing through the parameter block that resolves this
-  # pair on install.sh's own run.
+  # ...and the memory setting needs normalizing, because install.env spells it
+  # MEMORY while the provisioner reads MEMORY_PROVIDER. Save & Apply generates
+  # tfvars directly, without passing through the parameter block that resolves
+  # this pair on install.sh's own run.
   normalize_memory_vars
 
   local project_id="${PROJECT_ID:-$(gcloud config get-value project 2>/dev/null || echo "")}"
@@ -3259,11 +3203,11 @@ run_menu_system() {
   local permission_set="${PLATFORM_AGENT_PERMISSION_SET:-$DEFAULT_PERMISSION_SET}"
   local custom_roles="${PLATFORM_AGENT_CUSTOM_ROLES:-}"
   # Not the fresh-install default. The control panel describes an install that
-  # already exists and its Save & Apply re-applies what it displays, so a
-  # vars.sh with no ENABLE_GVISOR has to read as the standard runtime — that is
-  # what such a cluster is actually running. Defaulting on here would show
-  # "gVisor Sandbox" for an unsandboxed install and then provision a node pool
-  # nobody asked for on the next apply.
+  # already exists and its Save & Apply re-applies what it displays, so an
+  # install.env with no ENABLE_GVISOR has to read as the standard runtime —
+  # that is what such a cluster is actually running. Defaulting on here would
+  # show "gVisor Sandbox" for an unsandboxed install and then provision a node
+  # pool nobody asked for on the next apply.
   local enable_gvisor="${ENABLE_GVISOR:-false}"
   # DEFAULT_ENABLE_WEBUI is "false" and the paragraph above applies to it too:
   # the panel has to read as what an unconfigured install is running. Flipping
@@ -4254,7 +4198,7 @@ main() {
   permission_set=$(printf '%s' "$permission_set" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
   # require_supported_permission_set (installer_common.sh) is the one home for
   # the accepted vocabulary and for the explanation the removed admin bundle
-  # gets -- a PLATFORM_AGENT_PERMISSION_SET inherited from a vars.sh or a CI
+  # gets -- a PLATFORM_AGENT_PERMISSION_SET carried in install.env or a CI
   # environment variable written before the removal lands here.
   require_supported_permission_set "$permission_set" || exit 1
   local custom_roles="${PARAM_CUSTOM_ROLES:-}"
@@ -4445,7 +4389,7 @@ main() {
   # alongside whichever provider is chosen — two competing stores in front of one
   # agent. Every provider here replaces it rather than supplementing it. Nothing
   # about memory keys off this flag, so an upgrade cannot read a false left in an
-  # old vars.sh as "this install wanted no memory".
+  # old install.env as "this install wanted no memory".
   #
   # `none` rather than an empty string: the choice has to survive the trip
   # through the CR, and an absent provider takes the CRD default. The operator

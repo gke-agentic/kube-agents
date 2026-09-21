@@ -28,9 +28,7 @@ with whatever it forgets. `KUBE_AGENTS_INSTALL_ENV` names the file outright, whi
 ephemeral CI runner supplies one. Otherwise the script looks for `install.env` in the checkout it
 is running from, then in the directory you run it from, and last in the install checkout the
 installer left in `$HOME/kube-agents` — so standing in one install's directory upgrades that
-install, not whichever one the checkout in `$HOME` belongs to. A legacy
-`k8s-operator/scripts/vars.sh` from an install that predates `install.env` also satisfies the
-requirement.
+install, not whichever one the checkout in `$HOME` belongs to.
 
 `--upgrade-mode=full`, the default, additionally needs the `terraform` CLI on `PATH`.
 
@@ -109,7 +107,9 @@ can report drift. The two are refused together.
 
 Neither moves the install checkout in `$HOME/kube-agents`: a preview that needs sources the
 checkout does not have reads them from a temporary copy instead, so the checkout is still on the
-release the install runs when the preview is over.
+release the install runs when the preview is over. Neither writes into it either. A preview reads
+that checkout's `install.env`, and reading it does not make it the preview's to edit — on a
+workstation managing two installs, it may well belong to the other one.
 
 Neither is refused by an edited checkout either. A preview of what an uncommitted change would
 apply is the one report that answers "what have I edited here", so both previews warn and continue

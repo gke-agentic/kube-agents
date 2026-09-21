@@ -810,7 +810,7 @@ class InstallerCommonTest(unittest.TestCase):
             self.assertIn('agent_runtime_class        = ""', content)
 
     def test_tfvars_unset_gvisor_skips_the_autopilot_floor(self):
-        # uninstall.sh treats vars.sh as optional -- the documented
+        # uninstall.sh treats install.env as optional -- the documented
         # `curl ... | bash` teardown runs from a fresh clone that has none --
         # and calls this bare under `set -e` before lifecycle.sh destroy. If an
         # unset ENABLE_GVISOR defaulted on, the floor check would abort the
@@ -1444,16 +1444,17 @@ class InstallDefaultsFileTest(unittest.TestCase):
 
 
 class NormalizeMemoryVarsTest(unittest.TestCase):
-    """install.env's MEMORY must beat a migrated vars.sh's MEMORY_PROVIDER.
+    """install.env's MEMORY must beat an inherited MEMORY_PROVIDER.
 
-    The two files spell the setting differently, so the load order that gives
-    install.env the last word on every other key cannot do it for this one. The
-    pre-install.env installer wrote `export MEMORY_PROVIDER=...` into vars.sh
-    and every migrated install still has it; install.sh's migration writes only
-    MEMORY. write_tfvars_from_state prefers MEMORY_PROVIDER, so without the
-    normalizer the stale provider won and an upgrade regenerated the tfvars
-    against the old store -- the apply then deleting the Hindsight API and its
-    Postgres. #1060 item 5, on the front doors install.sh does not cover.
+    The input and the generator spell the setting differently, so the load
+    order that gives install.env the last word on every other key cannot do it
+    for this one. MEMORY_PROVIDER still reaches a run from the environment --
+    a CI job, a dev shell that sourced scripts/installer/vars.sh, or an
+    install.env that carries both -- and write_tfvars_from_state prefers it, so
+    without the normalizer the inherited provider wins and an upgrade
+    regenerates the tfvars against the wrong store, the apply then deleting the
+    Hindsight API and its Postgres. #1060 item 5, on the front doors install.sh
+    does not cover.
     """
 
     _INSTALLER_COMMON = _REPO_ROOT / "scripts" / "installer" / "installer_common.sh"
@@ -1469,8 +1470,8 @@ class NormalizeMemoryVarsTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         return proc.stdout.strip()
 
-    def test_the_install_env_mode_overrides_a_legacy_provider(self):
-        """A legacy vars.sh says the file store, the operator's install.env says
+    def test_the_install_env_mode_overrides_an_inherited_provider(self):
+        """The environment says the file store, the operator's install.env says
         Hindsight, and the generated provider must be Hindsight's."""
         self.assertEqual(
             "P=kube_agents_memory",
@@ -1490,8 +1491,8 @@ class NormalizeMemoryVarsTest(unittest.TestCase):
                 )
 
     def test_nothing_recorded_leaves_the_provider_alone(self):
-        """An install that never carried MEMORY -- a vars.sh-only install that
-        has not been migrated yet -- must keep the provider it has."""
+        """An install whose configuration never carried MEMORY must keep the
+        provider it was given."""
         self.assertEqual(
             "P=kube_agents_memory",
             self._normalize('MEMORY_PROVIDER=kube_agents_memory'),
@@ -1506,17 +1507,18 @@ class NormalizeMemoryVarsTest(unittest.TestCase):
             self._normalize('MEMORY_PROVIDER=kube_agents_memory\nMEMORY=hindsigt'),
         )
 
-    def test_the_front_doors_that_load_both_files_call_it(self):
-        """upgrade.sh, uninstall.sh and install.sh's Day-2 menu each source a
-        legacy vars.sh and then load install.env over it, and each generates
+    def test_the_front_doors_that_generate_tfvars_call_it(self):
+        """upgrade.sh, uninstall.sh and install.sh's Day-2 menu each load
+        install.env into an environment they did not clear, and each generates
         tfvars without passing through install.sh's parameter block. A caller
-        that loads both and skips the normalizer has the defect back."""
+        that skips the normalizer has the defect back."""
         for name in ("upgrade.sh", "uninstall.sh", "install.sh"):
             with self.subTest(name=name):
                 self.assertIn(
                     "normalize_memory_vars",
                     (_REPO_ROOT / name).read_text(),
-                    f"{name} loads vars.sh and install.env; it must normalize the pair",
+                    f"{name} generates tfvars outside install.sh's parameter "
+                    "block; it must normalize MEMORY against MEMORY_PROVIDER",
                 )
 
 

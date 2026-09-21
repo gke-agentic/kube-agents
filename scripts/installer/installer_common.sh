@@ -130,31 +130,28 @@ memory_provider_from_mode() {
   esac
 }
 
-# Make install.env's MEMORY win over a legacy vars.sh MEMORY_PROVIDER, for the
-# front doors that load both files and then generate tfvars directly.
+# Translate install.env's MEMORY into MEMORY_PROVIDER for the front doors that
+# load install.env and then generate tfvars directly (upgrade.sh, uninstall.sh,
+# and install.sh's Day-2 menu).
 #
-# The two files spell the setting differently, so "install.env wins on every key
-# it carries" cannot hold for this one by load order alone: the pre-install.env
-# installer persisted `export MEMORY_PROVIDER=…` into vars.sh, every migrated
-# install still has it on disk, and install.sh's migration writes only MEMORY.
-# write_tfvars_from_state prefers MEMORY_PROVIDER (install.sh's own run exports
-# the interview's answer there, and must keep winning), so the stale provider
-# would shadow the operator's edited MEMORY and regenerate the tfvars against
-# the old store -- an apply then deleting the Hindsight API and its Postgres.
+# install.env and the tfvars generator spell the setting differently: the
+# hand-authored input records MEMORY, while write_tfvars_from_state prefers
+# MEMORY_PROVIDER (install.sh's own run exports the interview's answer there,
+# and must keep winning). Without this step, an inherited MEMORY_PROVIDER in the
+# shell environment (or both keys in install.env) would shadow MEMORY and
+# regenerate the tfvars against the wrong store -- an apply then deleting the
+# Hindsight API and its Postgres.
 #
-# Call after BOTH loads and before anything reads the pair. Not called by
-# install.sh's own run, which resolves the same precedence in its parameter
+# Call after loading install.env and before anything reads the pair. Not called
+# by install.sh's own run, which resolves the same precedence in its parameter
 # block (PARAM_MEMORY) and exports MEMORY_PROVIDER from the interview later.
 #
-# The cost, stated because it is real: this cannot distinguish a stale
-# MEMORY_PROVIDER sourced from a legacy vars.sh -- the case it exists for --
-# from one the operator exported for this run. So on these three front doors a
-# recognised MEMORY in install.env beats `MEMORY_PROVIDER=… ./upgrade.sh`, and
-# upgrade.sh has no --memory flag to override it with. That is the accepted
-# trade: MEMORY_PROVIDER is not a documented install.env or environment input
-# (it appears nowhere in install.env.example, and docs/designs/memory.md names
-# MEMORY as the recorded spelling), while the stale-file case silently deletes
-# a Hindsight deployment. To force one for a single run, set MEMORY instead.
+# Note: on these three front doors a recognised MEMORY in install.env beats
+# `MEMORY_PROVIDER=… ./upgrade.sh`, and upgrade.sh has no --memory flag to
+# override it with. MEMORY_PROVIDER is not a documented install.env or
+# environment input (it appears nowhere in install.env.example, and
+# docs/designs/memory.md names MEMORY as the recorded spelling). To force one
+# for a single run, set MEMORY instead.
 normalize_memory_vars() {
   local from_mode
   [ -n "${MEMORY:-}" ] || return 0
@@ -544,10 +541,12 @@ normalize_identity_vars() {
   fi
 }
 
-# ─── vars.sh Persistence (legacy) ─────────────────────────────────────────────
-# The generated state file install.env replaced. Still written by the dev
-# scripts through common.sh's init_var helpers, and still read everywhere as a
-# fallback, so these stay. VARS_FILE must be set by the caller.
+# ─── Dev Scratch State Persistence (scripts/installer/vars.sh) ────────────────
+# No installer front door reads or writes vars.sh any more (install.env is the
+# sole install configuration). These helpers stay only for the dev scripts under
+# scripts/dev/, which record throwaway scratch state (such as
+# DEV_ARTIFACT_REGISTRY_CREATED) into scripts/installer/vars.sh through
+# common.sh's init_var helpers. VARS_FILE must be set by the caller.
 save_var() {
   local var_name=$1
   local var_val=$2

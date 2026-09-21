@@ -243,95 +243,8 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_UPGRADE_SH}"
             self.assertNotIn("Refusing", proc.stdout)
 
 
-class PersistStateVarTest(unittest.TestCase):
-    """persist_state_var must not create the vars.sh tree this release removed.
-
-    Its grep/mv rewrite tests for the file, but the append that follows is
-    unconditional, so the redirect opens a path under k8s-operator/scripts/ --
-    a directory nothing creates any more. Under `set -Eeuo pipefail` and the
-    ERR trap that aborts the upgrade at step 1.
-
-    Reachable only since install.env: before it, state_loaded could be true
-    only if vars.sh existed, so the directory always existed by the time this
-    ran. Letting install.env satisfy state_loaded is what exposed the write.
-    The invocation that breaks is the one show_help gives as its own example,
-    `./upgrade.sh --non-interactive --project-id=... --cluster-name=...`.
-    """
-
-    def _persist_into(self, state_file):
-        """Call persist_state_var against a path whose parent may not exist."""
-        return subprocess.run(
-            ["bash", "-c",
-             f'KUBE_AGENTS_SOURCE_ONLY=true source "{_UPGRADE_SH}"\n'
-             f'persist_state_var "{state_file}" PROJECT_ID a-project\n'
-             'echo DONE'],
-            capture_output=True, text=True,
-            env=get_isolated_test_env(), cwd=str(_REPO_ROOT),
-        )
-
-    def test_the_append_needs_a_directory_that_no_longer_exists(self):
-        """The mechanism, pinned so the guard below cannot be read as
-        redundant: called against a missing tree, the helper itself fails."""
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as tmp:
-            missing = pathlib.Path(tmp) / "k8s-operator" / "scripts" / "vars.sh"
-            proc = self._persist_into(missing)
-            self.assertNotEqual(
-                proc.returncode, 0,
-                "persist_state_var appended into a directory that does not exist; "
-                "if this now succeeds the callers' [ -f ] guard may be droppable",
-            )
-            self.assertFalse(missing.exists())
-
-    def test_upgrade_guards_every_persist_call_on_the_file_existing(self):
-        """uninstall.sh already wraps the same three calls this way; upgrade.sh
-        was the last unguarded writer. Checked against the source rather than
-        by driving main(), which needs gcloud and a cluster.
-
-        Checked by walking the block structure, not by a regex bridging from an
-        `if [ -f "$state_file" ]` to a `persist_state_var` line. `upgrade.sh`
-        contains three such `if` lines — one inside `persist_state_var` itself,
-        one on the legacy-state load, one the real guard — and an unanchored
-        search takes the leftmost, so a bridging pattern anchors on the helper's
-        own internal guard nearly 300 lines away and stays green when the real
-        guard is deleted. Same correction as the chat-menu guard.
-        """
-        lines = _UPGRADE_SH.read_text().splitlines()
-        calls = [
-            i for i, line in enumerate(lines)
-            if re.match(r'\s*persist_state_var "\$state_file" \w+', line)
-        ]
-        self.assertEqual(
-            3, len(calls),
-            f"expected the three coordinate persists, found {len(calls)}",
-        )
-        for i in calls:
-            with self.subTest(line=i + 1):
-                # Walk back to the nearest enclosing `if` at a lower indent and
-                # require it to be the file-existence guard. A guard that is
-                # deleted leaves the nearest enclosing `if` as the per-parameter
-                # `[ -n "$PARAM_..." ]`, whose own enclosing block is the
-                # function body — so this fails exactly when the guard goes.
-                # Strictly decreasing indent, so this collects the chain of
-                # blocks that actually enclose the call rather than the sibling
-                # `fi`s and neighbouring calls that merely sit further left.
-                min_indent = len(lines[i]) - len(lines[i].lstrip())
-                enclosing = []
-                for j in range(i - 1, -1, -1):
-                    if not lines[j].strip():
-                        continue
-                    ind = len(lines[j]) - len(lines[j].lstrip())
-                    if ind < min_indent:
-                        enclosing.append(lines[j].strip())
-                        min_indent = ind
-                self.assertTrue(
-                    any('[ -f "$state_file" ]' in line for line in enclosing[:3]),
-                    "each persist_state_var call must sit inside "
-                    '`[ -f "$state_file" ]`; an install.env-only install has no '
-                    "vars.sh and the unconditional append aborts the upgrade. "
-                    f"Enclosing blocks were: {enclosing[:3]}",
-                )
+class UpgradeRunContractTest(unittest.TestCase):
+    """Properties of the run main() performs, checked against the script source."""
 
     def test_health_verification_covers_the_pods_that_run_the_commands(self):
         """A healthy gateway is not a working install.
@@ -355,9 +268,10 @@ class PersistStateVarTest(unittest.TestCase):
                 self.assertIn(f'readonly {constant}="{name}"', common)
                 self.assertIn(f'kubectl rollout status "{kind}/${{{constant}}}"', source)
 
-    def test_an_install_env_only_install_still_records_the_override(self):
-        """The guard must not lose the override, only the file write: the
-        exports right after are what the rest of the run reads."""
+    def test_the_coordinate_overrides_reach_the_environment(self):
+        """--project-id/--cluster-name/--region have to travel: the exports are
+        what the credentials fetch, the tfvars generator and the helm release
+        all read, and nothing else carries them."""
         source = _UPGRADE_SH.read_text()
         for var in ("PROJECT_ID", "CLUSTER_NAME", "REGION"):
             with self.subTest(var=var):
@@ -1071,66 +985,6 @@ resolve_install_env_file "{repo_dir}" "{install_checkout}"
         resolved = self._resolve(base / "sources", "", base / "cwd")
 
         self.assertEqual(resolved, str(base / "sources" / "install.env"))
-
-
-class LegacyStateFileLookupTest(unittest.TestCase):
-    """Where an upgrade looks for a legacy k8s-operator/scripts/vars.sh.
-
-    vars.sh is gitignored, so it is never in the temporary clone a preview reads
-    its engine from. Looking only there told a legacy install — one still on
-    vars.sh, with no install.env — that the configuration it does have is
-    missing, and refused the documented --plan while a real upgrade of the same
-    install went through.
-    """
-
-    def _resolve(self, repo_dir, install_checkout):
-        setup = f"""
-KUBE_AGENTS_SOURCE_ONLY=true source "{_UPGRADE_SH}"
-resolve_state_file "{repo_dir}" "{install_checkout}"
-"""
-        proc = subprocess.run(
-            ["bash", "-c", setup],
-            capture_output=True,
-            text=True,
-            env=get_isolated_test_env(),
-            cwd=str(_REPO_ROOT),
-        )
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        return proc.stdout.strip()
-
-    def _layout(self):
-        temp_dir = tempfile.TemporaryDirectory(prefix="state-file-order-")
-        self.addCleanup(temp_dir.cleanup)
-        base = pathlib.Path(temp_dir.name)
-        for name in ("sources", "checkout"):
-            (base / name / "k8s-operator" / "scripts").mkdir(parents=True)
-        return base
-
-    def test_the_sources_own_state_file_wins(self):
-        base = self._layout()
-        (base / "sources" / "k8s-operator" / "scripts" / "vars.sh").write_text("")
-        (base / "checkout" / "k8s-operator" / "scripts" / "vars.sh").write_text("")
-
-        resolved = self._resolve(base / "sources", base / "checkout")
-
-        self.assertEqual(resolved, str(base / "sources" / "k8s-operator" / "scripts" / "vars.sh"))
-
-    def test_the_install_checkout_is_used_when_the_sources_have_none(self):
-        """The preview shape: sources are a fresh clone, so only the checkout has it."""
-        base = self._layout()
-        (base / "checkout" / "k8s-operator" / "scripts" / "vars.sh").write_text("")
-
-        resolved = self._resolve(base / "sources", base / "checkout")
-
-        self.assertEqual(resolved, str(base / "checkout" / "k8s-operator" / "scripts" / "vars.sh"))
-
-    def test_with_nothing_anywhere_it_names_the_sources_directory(self):
-        """Nothing to load: the warning that follows names where one would live."""
-        base = self._layout()
-
-        resolved = self._resolve(base / "sources", "")
-
-        self.assertEqual(resolved, str(base / "sources" / "k8s-operator" / "scripts" / "vars.sh"))
 
 
 class FrontDoorsAgreeOnTheInstallCheckoutTest(unittest.TestCase):

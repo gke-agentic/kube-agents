@@ -847,12 +847,14 @@ out_dir=""; acquire_source_repo out_dir "{requested_ref}"; echo "RESOLVED=$out_d
             "configuration; the probe is authoritative on every run",
         )
 
-    def test_the_installer_no_longer_writes_the_state_file(self):
-        """vars.sh is read as a legacy input and never generated.
+    def test_the_installer_neither_writes_nor_reads_the_state_file(self):
+        """k8s-operator/scripts/vars.sh is gone from the installer entirely.
 
-        Regenerating it would put the old two-file model back: a derived file
-        that other tools read, drifting from the input that actually decides
-        the install.
+        Writing it would put the old two-file model back: a derived file that
+        other tools read, drifting from the input that actually decides the
+        install. Reading it was the migration path off that model, and it has
+        served its term -- keeping it meant every front door had to agree on
+        where an unowned, unversioned file lived, and they did not.
         """
         source = _INSTALL_SH.read_text()
         self.assertNotIn(
@@ -861,11 +863,11 @@ out_dir=""; acquire_source_repo out_dir "{requested_ref}"; echo "RESOLVED=$out_d
             "install.sh must not write vars.sh; install.env is the input and "
             "terraform.tfvars the only derived artifact",
         )
-        self.assertIn(
-            "load_legacy_vars_file",
+        self.assertNotIn(
+            "k8s-operator/scripts/vars.sh",
             source,
-            "an existing install's vars.sh must still be read, so upgrading "
-            "needs no action from its owner",
+            "install.sh must not read the legacy state file either; install.env "
+            "is the only configuration input",
         )
 
     def test_parse_args_enable_google_chat(self):
@@ -3899,7 +3901,7 @@ class InstallEnvIsCreatedInTheCheckoutTest(unittest.TestCase):
     """
 
     def _resolved_paths(self, cwd, home, extra_env=None):
-        """What install.sh picks for install.env and the legacy vars.sh.
+        """What install.sh picks for install.env.
 
         Piped into `bash -s` rather than sourced by path, because that is the
         whole point: `source /abs/path/install.sh` sets BASH_SOURCE and the
@@ -3915,9 +3917,7 @@ class InstallEnvIsCreatedInTheCheckoutTest(unittest.TestCase):
         full_env = get_isolated_test_env(overrides=overrides)
         if "KUBE_AGENTS_INSTALL_ENV" not in (extra_env or {}):
             full_env.pop("KUBE_AGENTS_INSTALL_ENV", None)
-        script = _INSTALL_SH.read_text() + (
-            '\necho "ENV=$INSTALL_ENV_FILE"\necho "LEGACY=$LEGACY_VARS_FILE"\n'
-        )
+        script = _INSTALL_SH.read_text() + '\necho "ENV=$INSTALL_ENV_FILE"\n'
         return subprocess.run(
             ["bash", "-s"], input=script,
             capture_output=True, text=True, env=full_env, cwd=str(cwd),
@@ -3962,18 +3962,6 @@ class InstallEnvIsCreatedInTheCheckoutTest(unittest.TestCase):
             )
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn(f"ENV={named}", proc.stdout)
-
-    def test_the_legacy_vars_file_is_looked_for_in_the_same_checkout(self):
-        """Same root cause, same fix: resolved script-relative, a piped re-run
-        against an existing clone never found the legacy file and silently
-        skipped the migration it exists for."""
-        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as home:
-            legacy = pathlib.Path(home) / "kube-agents" / "k8s-operator" / "scripts"
-            legacy.mkdir(parents=True)
-            (legacy / "vars.sh").write_text("export PROJECT_ID=from-the-legacy-file\n")
-            proc = self._resolved_paths(tmp, home)
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            self.assertIn(f"LEGACY={legacy}/vars.sh", proc.stdout)
 
 
 class ServiceAccountOwnershipIsCheckedOnEveryApplyDoorTest(unittest.TestCase):

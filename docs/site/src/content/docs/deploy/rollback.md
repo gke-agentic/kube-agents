@@ -218,8 +218,8 @@ so the release itself keeps its last revision.
 - **The sources do not match the tag.** The checkout's `HEAD` is not the tag's commit, the tree
   has uncommitted changes, or the bundle's baked version is not the `--image-tag` given. Start
   again from a clean checkout or bundle of `N-1`.
-- **No install configuration.** Neither `install.env` beside the script, nor
-  `KUBE_AGENTS_INSTALL_ENV`, nor a legacy `k8s-operator/scripts/vars.sh` was found. Supply the
+- **No install configuration.** Neither `install.env` beside the script nor
+  `KUBE_AGENTS_INSTALL_ENV` was found. Supply the
   install's own file; a fresh one written from memory re-renders the `PlatformAgent` with whatever
   it forgets.
 - **`N-1`'s chart carries a values schema and `N` added a chart value.** Every release after
