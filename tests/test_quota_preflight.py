@@ -718,6 +718,28 @@ class PreflightDecisionTest(unittest.TestCase):
         self.assertIn("LimitRange", res.stderr)
         self.assertIn("must specify requests.ephemeral-storage", res.stderr)
 
+    def test_ephemeral_storage_remediation_notes_limitrange_when_ephemeral_not_deficient(
+        self,
+    ) -> None:
+        """A quota constraining ephemeral storage must note LimitRange when another resource trips a shortfall."""
+        res = self._render(
+            {
+                "probe": {
+                    "quotas": [
+                        self._quota(
+                            {
+                                "requests.cpu": "100m",
+                                "requests.ephemeral-storage": "100Gi",
+                            }
+                        )
+                    ]
+                }
+            }
+        )
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("LimitRange", res.stderr)
+        self.assertIn("must specify requests.ephemeral-storage", res.stderr)
+
     def test_the_default_patch_does_not_size_a_surge_the_gateway_never_creates(self) -> None:
         """At one replica the operator rolls the gateway with Recreate, which never surges.
 

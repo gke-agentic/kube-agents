@@ -1163,9 +1163,12 @@ a Go template cannot catch the error `lookup` raises.
     {{- $used := index $status "used" | default dict -}}
     {{- $shortfalls := list -}}
     {{- $patchEntries := list -}}
-    {{- $hasEphemeralShortfall := false -}}
+    {{- $constrainsEphemeral := false -}}
 
     {{- range $key, $hardRaw := $hard -}}
+      {{- if or (eq $key "limits.ephemeral-storage") (eq $key "requests.ephemeral-storage") (eq $key "ephemeral-storage") -}}
+        {{- $constrainsEphemeral = true -}}
+      {{- end -}}
       {{- $req := 0 -}}
       {{- /* Named $surgeRoom rather than the fencepost name used by
              kube-agents.rollingUpdateFenceposts: tests/test_deployments_rollout_quota.py
@@ -1298,9 +1301,6 @@ a Go template cannot catch the error `lookup` raises.
           {{- $line := printf "  - %s: required %s, hard %s, available %s (%s)" $key $reqFormatted $hardFormatted $availFormatted $reason -}}
           {{- $shortfalls = append $shortfalls $line -}}
           {{- $patchEntries = append $patchEntries (printf "%q:%q" $key $patchVal) -}}
-          {{- if or (eq $key "limits.ephemeral-storage") (eq $key "requests.ephemeral-storage") (eq $key "ephemeral-storage") -}}
-            {{- $hasEphemeralShortfall = true -}}
-          {{- end -}}
         {{- end -}}
       {{- end -}}
     {{- end -}}
@@ -1310,7 +1310,7 @@ a Go template cannot catch the error `lookup` raises.
       {{- $patchBody := printf "{\"spec\":{\"hard\":{%s}}}" (join "," $patchEntries) -}}
       {{- $patchCmd := printf "kubectl patch resourcequota %s -n %s --type=strategic --patch '%s'" $qName $ctx.Release.Namespace $patchBody -}}
       {{- $ephNote := "" -}}
-      {{- if $hasEphemeralShortfall -}}
+      {{- if $constrainsEphemeral -}}
         {{- $ephNote = printf "\n(a quota constraining ephemeral storage additionally requires a LimitRange in namespace %q providing default requests and limits, because chart workloads and operator containers omit them; without one, pod creation fails with 'must specify requests.ephemeral-storage')" $ctx.Release.Namespace -}}
       {{- end -}}
       {{- $report := printf "ResourceQuota %q in namespace %q has insufficient capacity for release %q:\n%s\n\nRemediation: increase the quota with:\n  %s\n(those values leave room for one rollout surge Pod, except for claim counts and storage, which a surge Pod does not add to)%s" $qName $ctx.Release.Namespace $ctx.Release.Name (join "\n" $shortfalls) $patchCmd $ephNote -}}
