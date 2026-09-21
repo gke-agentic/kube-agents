@@ -93,12 +93,13 @@ the script carries a baked version. A release copy's version is in place before 
   and plans against empty local state, so the two are refused together. `--image-tag` **is** accepted
   alongside it, and plans at that tag — which is what a drift check of a specific candidate wants.
   A release copy plans at its own baked release; a copy with no baked version and no `--image-tag`
-  plans at the tag the running agent Deployment serves.
+  plans at the tag the install's Terraform state records (falling back to the tag the running agent
+  Deployment serves if state records none).
 - `--keep-image-tag` upgrades everything except the images, leaving them on the tag the install
   already serves. It refuses `--image-tag`, because the two ask for opposite things — and a release
   copy carries a version, so it refuses this flag too. It is what a scheduled reconcile of an
   environment that tracks `main` uses, from a checkout.
 
-Given no tag at all, both read the running one off the agent Deployment and validate it exactly as a
-passed one, so an install serving a mutable ref stops the run rather than writing that ref into the
-composition.
+When `--keep-image-tag` (or a tagless `--plan` whose state records no tag) reads the running tag off the
+agent Deployment, it validates it exactly as a passed one, so an install serving a mutable ref stops the
+run rather than writing that ref into the composition.

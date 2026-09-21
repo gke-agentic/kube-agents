@@ -29,27 +29,13 @@ _UPGRADE_SH = _REPO_ROOT / "upgrade.sh"
 
 
 class UpgradeScriptValidationTest(unittest.TestCase):
-    def setUp(self):
-        # upgrade.sh looks for an install.env in the repository directory and in
-        # the working directory, so without a pointer a developer's own
-        # install.env would be found and loaded. An empty file, rather than a
-        # path that does not exist, because a front door refuses to start when
-        # KUBE_AGENTS_INSTALL_ENV names a file it cannot read.
-        temp_dir = tempfile.TemporaryDirectory(prefix="upgrade-install-env-")
-        self.addCleanup(temp_dir.cleanup)
-        self.empty_install_env = pathlib.Path(temp_dir.name) / "install.env"
-        self.empty_install_env.write_text("")
-
     def _run_upgrade_func(self, func_call, env=None, cwd=None):
         """Source upgrade.sh in test mode and run the given function call."""
         setup = f"""
 KUBE_AGENTS_SOURCE_ONLY=true source "{_UPGRADE_SH}"
 {func_call}
 """
-        overrides = {"KUBE_AGENTS_INSTALL_ENV": str(self.empty_install_env)}
-        if env:
-            overrides.update(env)
-        full_env = get_isolated_test_env(overrides=overrides)
+        full_env = get_isolated_test_env(overrides=env or {})
         return subprocess.run(
             ["bash", "-c", setup],
             capture_output=True,
@@ -821,7 +807,27 @@ echo "INSTALL_CHECKOUT=$install_checkout"
         self.assertIn("Required CLI tool", proc.stdout + proc.stderr)
         self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
 
-    def _acquire_through_a_real_pipe(self, home_dir, upstream_url, requested_ref, preview_flag=None, cwd=None):
+        conflicting = subprocess.run(
+            [
+                shutil.which("bash") or "/bin/bash",
+                str(isolated_upgrade_sh),
+                "--image-tag=0.3.0",
+                "--dry-run",
+                "--plan",
+                "--non-interactive",
+            ],
+            capture_output=True,
+            text=True,
+            env=get_isolated_test_env(overrides={"HOME": str(home_dir), "PATH": str(sterile_bin)}),
+            cwd=str(outside_dir),
+        )
+        self.assertEqual(conflicting.returncode, 1)
+        self.assertIn("--dry-run and --plan are different previews", conflicting.stdout + conflicting.stderr)
+        self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
+
+    def _acquire_through_a_real_pipe(
+        self, home_dir, upstream_url, requested_ref, preview_flag=None, cwd=None, extra_env=None
+    ):
         """Run acquire_upgrade_sources with the script arriving on stdin.
 
         The distinction this makes against _acquire_from_outside is the point:
@@ -845,12 +851,15 @@ echo "INSTALL_CHECKOUT=$install_checkout"
                 'echo "INSTALL_CHECKOUT=$install_checkout"',
             ]
         )
+        run_env = {"HOME": str(home_dir), "PATH": os.environ["PATH"]}
+        if extra_env:
+            run_env.update(extra_env)
         return subprocess.run(
             ["bash", "-s"],
             input=piped,
             capture_output=True,
             text=True,
-            env={"HOME": str(home_dir), "PATH": os.environ["PATH"]},
+            env=run_env,
             cwd=str(cwd or home_dir),
         )
 
@@ -936,6 +945,39 @@ echo "INSTALL_CHECKOUT=$install_checkout"
         self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
         self.assertEqual(self._reported(proc, "INSTALL_CHECKOUT"), "")
         self.assertNotEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
+
+    def test_a_run_configured_from_explicit_install_env_does_not_adopt_the_home_checkout(self):
+        """An explicit KUBE_AGENTS_INSTALL_ENV outside ~/kube-agents does not adopt ~/kube-agents; pointing at ~/kube-agents/install.env does."""
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+        (clone_dir / "install.env").write_text('CLUSTER_NAME="install-a"\n')
+        external_env = home_dir.parent / "ci-install.env"
+        external_env.write_text('CLUSTER_NAME="ci-install"\n')
+        neutral = home_dir.parent / "neutral"
+        neutral.mkdir(exist_ok=True)
+
+        external_proc = self._acquire_through_a_real_pipe(
+            home_dir,
+            upstream_url,
+            "0.3.0",
+            cwd=neutral,
+            extra_env={"KUBE_AGENTS_INSTALL_ENV": str(external_env)},
+        )
+        self.assertEqual(external_proc.returncode, 0, external_proc.stderr)
+        self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
+        self.assertEqual(self._reported(external_proc, "INSTALL_CHECKOUT"), "")
+        self.assertNotEqual(self._reported(external_proc, "REPO_DIR"), str(clone_dir))
+
+        home_proc = self._acquire_through_a_real_pipe(
+            home_dir,
+            upstream_url,
+            "0.3.0",
+            cwd=neutral,
+            extra_env={"KUBE_AGENTS_INSTALL_ENV": str(clone_dir / "install.env")},
+        )
+        self.assertEqual(home_proc.returncode, 0, home_proc.stderr)
+        self.assertEqual(self._head_of(clone_dir), commits["0.3.0"])
+        self.assertEqual(self._reported(home_proc, "INSTALL_CHECKOUT"), str(clone_dir))
+        self.assertEqual(self._reported(home_proc, "REPO_DIR"), str(clone_dir))
 
 
 class ConfigurationLookupOrderTest(unittest.TestCase):
