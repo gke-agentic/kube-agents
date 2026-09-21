@@ -169,21 +169,25 @@ func a2aConnectAs(t *testing.T, url, user, password string) (*nats.Conn, jetstre
 	return nc, js
 }
 
-// a2aProvisionLikeTheScript creates what the provision Job creates, as seed,
-// with the flags the script passes to natscli translated to StreamConfig: four
-// message streams and three KV buckets. AllowDirect is set because the script
-// says --allow-direct on every `stream add` (and a KV bucket always has it);
-// it decides which API subject a last-message read uses, and the bridge's
-// grant is written for the direct route.
-func a2aProvisionLikeTheScript(t *testing.T, url, seedPassword string) {
-	t.Helper()
-	_, js := a2aConnectAs(t, url, "seed", seedPassword)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	streams := []jetstream.StreamConfig{
+// a2aSeedStreamConfigs is what the provision Job creates, with the flags the
+// script passes to natscli translated to StreamConfig: four message streams.
+// AllowDirect is set because the script says --allow-direct on every `stream
+// add` (and a KV bucket always has it); it decides which API subject a
+// last-message read uses, and the bridge's grant is written for the direct
+// route.
+//
+// The translation is asserted rather than trusted —
+// TestTheSeedFixtureCarriesTheLimitsTheScriptRenders reads the flags back off
+// the script — because the fixture is the substrate every authz test in this
+// package runs on, and one that has drifted from the render tests the wrong
+// deployment without saying so.
+func a2aSeedStreamConfigs() []jetstream.StreamConfig {
+	return []jetstream.StreamConfig{
 		{Name: "TASKS", Subjects: []string{"a2a.tasks.>"},
 			Storage: jetstream.FileStorage, Retention: jetstream.LimitsPolicy, Discard: jetstream.DiscardOld,
-			MaxAge: 72 * time.Hour, MaxBytes: 21474836480, Replicas: 1, MaxConsumers: 64, AllowDirect: true},
+			MaxAge: 72 * time.Hour, MaxBytes: 21474836480, Replicas: 1,
+			MaxConsumers:      a2aTasksMaxConsumersFloor,
+			MaxMsgsPerSubject: a2aTasksMaxMsgsPerSubject, AllowDirect: true},
 		{Name: "DIRECTORY", Subjects: []string{"a2a.agents.>"},
 			Storage: jetstream.FileStorage, Retention: jetstream.LimitsPolicy, Discard: jetstream.DiscardOld,
 			MaxMsgsPerSubject: 1, MaxBytes: 1073741824, Replicas: 1, MaxConsumers: 64, AllowDirect: true},
@@ -194,7 +198,16 @@ func a2aProvisionLikeTheScript(t *testing.T, url, seedPassword string) {
 			Storage: jetstream.FileStorage, Retention: jetstream.LimitsPolicy, Discard: jetstream.DiscardOld,
 			MaxAge: 720 * time.Hour, MaxBytes: 5368709120, Replicas: 1, MaxConsumers: 64, AllowDirect: true},
 	}
-	for _, cfg := range streams {
+}
+
+// a2aProvisionLikeTheScript seeds a test bus with what the provision Job
+// creates: the streams above and three KV buckets.
+func a2aProvisionLikeTheScript(t *testing.T, url, seedPassword string) {
+	t.Helper()
+	_, js := a2aConnectAs(t, url, "seed", seedPassword)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for _, cfg := range a2aSeedStreamConfigs() {
 		if _, err := js.CreateStream(ctx, cfg); err != nil {
 			t.Fatalf("provision %s as seed: %v", cfg.Name, err)
 		}

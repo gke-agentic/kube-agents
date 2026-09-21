@@ -231,8 +231,13 @@ posture: non-root, scratch on an emptyDir, no secrets. Two deltas from the demo:
   still nil for the default profile (a KSA with no RoleBindings has a name and nothing
   else). Automount stays off; the projected volume is explicit.
 
-Env is minimal: `TASK_ID`, `PROFILE`, `NATS_URL`. Everything else - prompt, correlation,
-context - is in the task message the adapter fetches from the stream by subject.
+Env is minimal: `TASK_ID`, `PROFILE`, `NATS_URL`, and `A2A_ORIGIN_SEQ`. Everything else -
+prompt, correlation, context - is in the task message, which the adapter fetches by the
+stream sequence `A2A_ORIGIN_SEQ` names rather than by scanning the subject. The spawner
+knows that sequence because it publishes the submission before it spawns the pod, and the
+ack carries it. The variable can also read `unknown`, from a spawner that could not tell;
+absence means an older spawner. Both send the adapter back to the subject scan, which is
+correct only while the submission is still the head of the subject.
 
 **The adapter.** Inside the pod, a thin adapter sits between the bus and the harness.
 It fetches the task message, opens its own ephemeral consumer on the task's `…in`

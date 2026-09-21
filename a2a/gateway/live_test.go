@@ -634,7 +634,7 @@ func TestLiveDetachedDelegateSupervisorTerminal(t *testing.T) {
 		ActiveTask:   &ActiveTask{TaskID: seedTask, CorrelationID: "corr-s9sup", Detached: true},
 		Tasks:        []TaskRef{{ID: seedTask, Addressee: "chat-s9sup-seed", Canceled: true}},
 	}
-	podName, err := sp.Spawn(ctx, rec, seedTask, "")
+	podName, err := sp.Spawn(ctx, rec, seedTask, "", 1)
 	if err != nil {
 		t.Fatalf("seed pod spawn on the install: %v", err)
 	}

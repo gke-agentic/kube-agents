@@ -900,10 +900,15 @@ class C1IsolationIsStructural(unittest.TestCase):
         it presents whatever file it read. What demands the audience is the
         callout, whose TokenReview names it explicitly (`NewTokenValidator`), so
         a kubelet minting anything else produces a refused connect rather than a
-        silent downgrade. The two literals are held apart by the same module
-        boundary as the path above, so they are checked together.
+        silent downgrade. The operator spells it in `api/v1alpha1`, a package
+        over from the projection, because the validating webhook reads the
+        same value to refuse a user volume that projects it; the controller
+        constant the render uses is a reference to that one. The two literals
+        are held apart by the same module boundary as the path above, so they
+        are checked together.
         """
         operator = h.text("operator_a2a_callout")
+        api = h.text("operator_bus_api")
         library = h.text("a2a_bus_credentials")
 
         def one(pattern: str, text: str, what: str) -> str:
@@ -929,8 +934,26 @@ class C1IsolationIsStructural(unittest.TestCase):
             "container is refused" % (mount, filename, reader),
         )
 
+        # The operator's half of the audience is declared in the API package
+        # rather than beside the projection, because the validating webhook
+        # reads it too. So it is extracted from there -- and the controller's
+        # constant is held to being a reference to it rather than a second
+        # spelling, which is what keeps the literal read here the one the
+        # kubelet actually mints under. Comparing the controller constant to
+        # the API constant instead would be the same value twice.
         rendered_audience = one(
-            r'a2aBusTokenAudience\s*=\s*"([^"]+)"', operator, "a2aBusTokenAudience"
+            r'A2ABusTokenAudience\s*=\s*"([^"]+)"', api, "A2ABusTokenAudience"
+        )
+        controller_audience = one(
+            r"a2aBusTokenAudience\s*=\s*(\S+)", operator, "the controller's audience"
+        )
+        self.assertEqual(
+            controller_audience,
+            "agentv1alpha1.A2ABusTokenAudience",
+            "the controller spells the bus token audience %s rather than "
+            "taking it from the API package, so the literal this test "
+            "compared is not the one the projection mints under"
+            % controller_audience,
         )
         demanded_audience = one(
             r'BusTokenAudience\s*=\s*"([^"]+)"', library, "lib.BusTokenAudience"

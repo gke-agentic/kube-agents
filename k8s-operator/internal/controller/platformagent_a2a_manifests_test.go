@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -393,6 +394,9 @@ func TestReconcileA2AGatedByMode(t *testing.T) {
 	if err := cl.List(ctx, jobs); err != nil || len(jobs.Items) == 0 {
 		t.Errorf("provision Job not rendered under next (err=%v, n=%d)", err, len(jobs.Items))
 	}
+	// The gateway waits on BusCredentialsReady (see the gate tests); under
+	// next with a serving callout it renders like the rest.
+	letTheGatewayThrough(t, ctx, cl, r, req, agent)
 	dep := &appsv1.Deployment{}
 	if err := cl.Get(ctx, types.NamespacedName{Name: "test-agent-a2a-gateway", Namespace: "test-ns"}, dep); err != nil {
 		t.Errorf("A2A gateway Deployment not rendered under next: %v", err)
@@ -461,6 +465,7 @@ func TestUnrecognizedModePreservesRunningNextStack(t *testing.T) {
 	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatalf("Reconcile 2 failed: %v", err)
 	}
+	letTheGatewayThrough(t, ctx, cl, r, req, agent)
 	sts := &appsv1.StatefulSet{}
 	if err := cl.Get(ctx, types.NamespacedName{Name: "test-agent-a2a-nats", Namespace: "test-ns"}, sts); err != nil {
 		t.Fatalf("next stack did not render: %v", err)
@@ -1561,26 +1566,40 @@ func TestEveryA2AContainerLandsInAWorkingDirectoryItsUserCanUse(t *testing.T) {
 // unexercised -- nothing seeded a Job condition -- so dropping the JobFailed case
 // or inverting the ConditionTrue guard left a stream-less bus reporting Ready
 // with the suite green.
+//
+// The two failed cases split on the condition's reason, which is what decides
+// whether the message carries the consumer remedy. Only the deterministic
+// refusal exits 2, only exit 2 matches the podFailurePolicy, and only a Job the
+// policy failed carries PodFailurePolicy; a transient failure that spends the
+// backoffLimit arrives as BackoffLimitExceeded and must get no stream edit
+// prescribed for it.
 func TestA2AProvisionJobConditionsDriveStatus(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		cond       *batchv1.JobCondition
 		wantDone   bool
 		wantFailed bool
+		wantRemedy bool
 	}{
-		{"pending", nil, false, false},
-		{"complete", &batchv1.JobCondition{
+		{name: "pending"},
+		{name: "complete", cond: &batchv1.JobCondition{
 			Type: batchv1.JobComplete, Status: corev1.ConditionTrue,
-		}, true, false},
-		{"failed", &batchv1.JobCondition{
+		}, wantDone: true},
+		{name: "failed-backoff-limit", cond: &batchv1.JobCondition{
 			Type: batchv1.JobFailed, Status: corev1.ConditionTrue,
-			Reason: "BackoffLimitExceeded", Message: "Job has reached the specified backoff limit",
-		}, false, true},
+			Reason:  batchv1.JobReasonBackoffLimitExceeded,
+			Message: "Job has reached the specified backoff limit",
+		}, wantFailed: true},
+		{name: "failed-pod-failure-policy", cond: &batchv1.JobCondition{
+			Type: batchv1.JobFailed, Status: corev1.ConditionTrue,
+			Reason:  batchv1.JobReasonPodFailurePolicy,
+			Message: "Container provision for pod test/x failed with exit code 2 matching FailJob rule at index 0",
+		}, wantFailed: true, wantRemedy: true},
 		// A condition present but False is not the event: the scan must skip it
 		// rather than read the type alone.
-		{"failed-but-false", &batchv1.JobCondition{
+		{name: "failed-but-false", cond: &batchv1.JobCondition{
 			Type: batchv1.JobFailed, Status: corev1.ConditionFalse,
-		}, false, false},
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			scheme := setupScheme()
@@ -1612,12 +1631,153 @@ func TestA2AProvisionJobConditionsDriveStatus(t *testing.T) {
 				if !strings.Contains(state.message, job.Name) {
 					t.Errorf("message does not name the Job to inspect: %q", state.message)
 				}
-				if !strings.Contains(state.message, "BackoffLimitExceeded") {
-					t.Errorf("message drops the condition reason: %q", state.message)
+				if !strings.Contains(state.message, tc.cond.Reason) {
+					t.Errorf("message drops the condition reason %q: %q", tc.cond.Reason, state.message)
+				}
+				// The message is the only thing a refusal puts in
+				// `kubectl describe`, and the script's closing block
+				// refuses installs whose bus is complete. So whatever
+				// the cause, it must not promise an empty bus and must
+				// not offer a Job delete as the remedy.
+				for _, untrue := range []string{"the bus has no streams", "deleting the Job retries"} {
+					if strings.Contains(state.message, untrue) {
+						t.Errorf("message claims %q, which is false of a closing-block refusal — that bus is fully provisioned and one limit short: %q", untrue, state.message)
+					}
+				}
+			}
+			if tc.wantFailed && !tc.wantRemedy {
+				// A reason that is not PodFailurePolicy is not the
+				// exit-2 refusal, so prescribing the consumer remedy
+				// for it is a wrong answer that costs something. The
+				// cause may be a NATS outage, and both ways out of
+				// the refusal give something up: one lowers the
+				// concurrency the install advertises, the other
+				// deletes a stream holding task history. `nats stream
+				// edit` is in the list because the remedy naming it
+				// was wrong for a second reason and could come back
+				// as a well-meaning revert. The gateway restart is
+				// there for the same reason as the other two: it is
+				// the last step of the recreate, and prescribing it
+				// against a NATS outage tells an operator to bounce
+				// the one component whose durable is fine.
+				for _, unwanted := range []string{"delete the TASKS stream", "lower maxSessions", "nats stream edit", "kubectl rollout restart"} {
+					if strings.Contains(state.message, unwanted) {
+						t.Errorf("a %s failure names %q, which only the exit-2 refusal needs: %q", tc.cond.Reason, unwanted, state.message)
+					}
+				}
+			}
+			if tc.wantRemedy {
+				// Both ways out, and the second half that makes
+				// either of them land. Neither one changes anything
+				// the operator can see on its own: reconcileA2A reads
+				// the Job's condition, and a Failed Job stays Failed.
+				// So the message has to say what re-runs the script -
+				// or an operator lowers maxSessions, watches the CR
+				// stay Degraded, and concludes the change was wrong.
+				//
+				// And the recreate's last step, which is the one
+				// an operator cannot infer: deleting a stream
+				// deletes every consumer on it, and the gateway's
+				// event relay and the Hermes bridge hold durables
+				// there that their client does not re-create --
+				// lib.Client.SubscribeDurable consumes with no
+				// jetstream.ConsumeErrHandler, so the deleted
+				// consumer ends the subscription silently. The
+				// remedy without the restart produces a gateway
+				// that spawns session pods and relays no events
+				// while this very condition has gone back to
+				// Ready, which is a worse place than the refusal.
+				//
+				// The restart is asserted as the whole command,
+				// down to the workload it names. A restart of the
+				// wrong Deployment is worse than none: the callout
+				// and the agent workload both exist and both
+				// restart cleanly, so an operator who is sent to
+				// one of those watches the command succeed, sees
+				// the relay still dead, and has no reason to
+				// suspect the instruction. Only the A2A gateway
+				// holds the relay durable.
+				for _, want := range []string{
+					"maxSessions",
+					"delete the TASKS stream",
+					"Delete the Job to re-run it now",
+					fmt.Sprintf("kubectl rollout restart deployment/%s -n %s", a2aGatewayName(agent), agent.Namespace),
+				} {
+					if !strings.Contains(state.message, want) {
+						t.Errorf("message does not name %q, so the only remedy for a consumer refusal is in a pod log: %q", want, state.message)
+					}
+				}
+				// The half that needs none of the above. Lowering
+				// maxSessions moves required_consumers in the
+				// render, and the Job's name digests the render,
+				// so a new Job appears and runs on its own. The
+				// message used to tell the operator that neither
+				// way out cleared itself, which sent the one who
+				// took the cheap branch looking for something to
+				// delete.
+				if strings.Contains(state.message, "Neither way out clears this on its own") {
+					t.Errorf("message claims neither remedy clears itself, which is false of the maxSessions edit -- it re-renders the Job: %q", state.message)
+				}
+				// And it must not go back to naming the stream edit
+				// it used to name. nats-server refuses a
+				// max_consumers change on a stream that exists -
+				// "stream configuration update can not change
+				// MaxConsumers", in every release this operator's
+				// pinned nats:2.10 bus can be - so that remedy sent
+				// operators to a command that could only fail. The
+				// flag and not the command: the script's
+				// max_msgs_per_subject report names a `nats stream
+				// edit` that IS legal.
+				if strings.Contains(state.message, "--max-consumers=") {
+					t.Errorf("message prescribes a --max-consumers= edit, which nats-server refuses on a stream that exists: %q", state.message)
+				}
+				// The number it does name is the width a fresh render
+				// creates, not the raw budget. This agent takes the
+				// default maxSessions, so its budget (46) sits below
+				// the floor its TASKS renders at (64), and the
+				// refusal is reached as readily by an operator
+				// upgrade whose stream is already at that floor. A
+				// recreate at the budget would hand that operator a
+				// NARROWER stream than the one they deleted, which is
+				// the downward derivation the render refuses to make.
+				width := remedyRecreateWidth(t, state.message)
+				if width < a2aTasksMaxConsumersFloor {
+					t.Errorf("remedy recreates TASKS at %d, below the shipped floor %d: run against a default install's stream, that TIGHTENS it: %q",
+						width, a2aTasksMaxConsumersFloor, state.message)
+				}
+				if width < a2aTasksConsumerBudget(agent) {
+					t.Errorf("remedy recreates TASKS at %d but the budget is %d, so the stream it describes does not clear the script's own gate: %q",
+						width, a2aTasksConsumerBudget(agent), state.message)
 				}
 			}
 		})
 	}
+}
+
+// remedyRecreateWidth reads the number out of the status message's "delete the
+// TASKS stream and let provisioning recreate it at N" remedy. It fails rather
+// than returning a zero value: a parse that quietly answered 0 would make every
+// floor assertion above pass on a message that had stopped naming a number.
+func remedyRecreateWidth(t *testing.T, message string) int {
+	t.Helper()
+	const marker = "recreate it at "
+	i := strings.Index(message, marker)
+	if i < 0 {
+		t.Fatalf("no %q in the status message, so its recreate remedy names no width: %q", marker, message)
+	}
+	rest := message[i+len(marker):]
+	end := strings.IndexFunc(rest, func(r rune) bool { return r < '0' || r > '9' })
+	if end == 0 {
+		t.Fatalf("%q in the status message is not followed by a number: %q", marker, message)
+	}
+	if end > 0 {
+		rest = rest[:end]
+	}
+	n, err := strconv.Atoi(rest)
+	if err != nil {
+		t.Fatalf("parsing the remedy's recreate width from %q: %v", message, err)
+	}
+	return n
 }
 
 // TestCleanupA2AResumesAfterAMidPassError is the safety proof for cleanupA2A's
@@ -1655,8 +1815,28 @@ func TestCleanupA2AResumesAfterAMidPassError(t *testing.T) {
 	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
 	ctx := context.Background()
 
+	// The gateway is the first object cleanupA2A deletes, so it is the object
+	// this test's early-exit argument turns on -- and reconcileA2A withholds
+	// its creation until BusCredentialsReady is True. Driving reconcileA2A
+	// directly never publishes that condition, so without this the gateway is
+	// never created and the "it is gone after cleanup" row below asserts the
+	// absence of an object the render never made.
+	busCredentialsAreReady(agent)
+
 	if _, err := r.reconcileA2A(ctx, agent); err != nil {
 		t.Fatalf("render: %v", err)
+	}
+
+	// The render has to have produced what the cleanup is asked to remove.
+	// Checked for the whole teardown list, not the gateway alone: every row of
+	// the IsNotFound table below is satisfied by an object that was never
+	// created, so this is what makes that table a proof rather than a
+	// restatement of what the render skipped.
+	for _, entry := range r.a2aNamespacedTeardown(agent) {
+		if err := entry.reader.Get(ctx, client.ObjectKeyFromObject(entry.obj), entry.obj); err != nil {
+			t.Fatalf("%T %s was not rendered, so cleanup deleting it proves nothing: %v",
+				entry.obj, entry.obj.GetName(), err)
+		}
 	}
 
 	// Pass one dies on the Role. The gateway Deployment (deleted first) is
@@ -2386,6 +2566,10 @@ func TestA2ARenderedObjectsCarryNoPasswordDigest(t *testing.T) {
 	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatalf("Reconcile 2 failed: %v", err)
 	}
+	// The A2A gateway is withheld until BusCredentialsReady is True, and it is
+	// one of the objects this test has to look at. Report the callout serving
+	// so the walk below has a gateway to walk.
+	letTheGatewayThrough(t, ctx, cl, r, req, agent)
 
 	stored := &corev1.Secret{}
 	if err := cl.Get(ctx, client.ObjectKeyFromObject(creds), stored); err != nil {
@@ -2438,6 +2622,7 @@ func TestA2ARenderedObjectsCarryNoPasswordDigest(t *testing.T) {
 		&rbacv1.RoleBindingList{},
 	}
 	walked := 0
+	seen := map[string]bool{}
 	for _, list := range lists {
 		if err := cl.List(ctx, list); err != nil {
 			t.Fatalf("listing %T: %v", list, err)
@@ -2453,6 +2638,7 @@ func TestA2ARenderedObjectsCarryNoPasswordDigest(t *testing.T) {
 			}
 			walked++
 			kind := fmt.Sprintf("%T %s", obj, obj.GetName())
+			seen[kind] = true
 			check(t, kind, "name", obj.GetName())
 			for key, value := range obj.GetLabels() {
 				check(t, kind, "label "+key, value)
@@ -2484,6 +2670,22 @@ func TestA2ARenderedObjectsCarryNoPasswordDigest(t *testing.T) {
 	}
 	if walked == 0 {
 		t.Fatal("walked no rendered objects; the check is inert")
+	}
+	// Named, not counted. A non-zero walk says the lists found something; it
+	// does not say they found the objects whose metadata the passwords could
+	// reach. Two must be there or this proves nothing about them: the NATS
+	// StatefulSet, which carries the nats.conf digest on its pod template and
+	// is the exact regression above, and the A2A gateway Deployment, which the
+	// creation gate withholds until BusCredentialsReady is True -- so a test
+	// that does not open the gate walks a namespace with no gateway in it and
+	// reports green on coverage it never had.
+	for _, want := range []string{
+		"*v1.StatefulSet test-agent-a2a-nats",
+		"*v1.Deployment test-agent-a2a-gateway",
+	} {
+		if !seen[want] {
+			t.Errorf("the walk never saw %s, so nothing here checked its metadata; walked %d objects", want, walked)
+		}
 	}
 }
 
@@ -3885,8 +4087,9 @@ func TestCheckA2AUserGrants(t *testing.T) {
 // Scope, so the name is not read as more than it pins: this is the NAME-based
 // reservation. A user volume projecting the a2a-bus audience under some other
 // name defeats the reservation and leaves this test passing, which is what the
-// ByName is doing in the name. gke-labs#1667 adds the source check, with its
-// own test.
+// ByName is doing in the name. The source check is
+// TestUserAuthoredVolumesCannotCarryTheBusCredentialBySource, its sibling in
+// platformagent_a2a_bus_source_test.go.
 func TestUserAuthoredContainersCannotMountTheBusTokenByName(t *testing.T) {
 	grab := func(agent *agentv1alpha1.PlatformAgent) corev1.PodSpec {
 		t.Helper()
