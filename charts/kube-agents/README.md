@@ -653,10 +653,13 @@ stall, from an object this check never looks at. Check it separately with
 Conversely, a ResourceQuota that restricts compute resources (`requests.cpu`, `limits.cpu`,
 `requests.memory`, `limits.memory`, `requests.ephemeral-storage`, `limits.ephemeral-storage`)
 requires every container in the namespace to declare that request or limit unless a
-`LimitRange` provides a default. Several operator containers (such as the shell sandbox and
-dashboard) set no ephemeral storage, and pruning a workload's limits leaves it without them;
-the preflight checks total headroom against what is declared, not whether every individual
-container declares every resource the quota constrains.
+`LimitRange` provides a default. All chart-rendered workloads (operator, LiteLLM, minter,
+Hindsight, cleanup Job) and several operator containers (such as the shell sandbox, dashboard,
+and agent container) set no ephemeral storage, and pruning a workload's limits leaves it
+without them; the preflight checks total headroom against what is declared, not whether every
+individual container declares every resource the quota constrains. A namespace quota constraining
+ephemeral storage therefore additionally requires a `LimitRange` defaulting it, or the API
+server will reject pod creation.
 
 It does need `get`/`list` on `resourcequotas` in the release namespace. Helm's `lookup`
 returns nothing for a NotFound and raises a template error for everything else, so an

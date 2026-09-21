@@ -486,6 +486,28 @@ class PreflightDecisionTest(unittest.TestCase):
             f"fractional memory in used (milli-bytes) must parse:\n{res.stderr}",
         )
 
+    def test_sub_millicore_cpu_in_used_micro_and_nanocores_parses(self) -> None:
+        """A neighbour pod with `cpu: 1.5m` makes `status.used` read `1500u`, and 1m + 100u reads `1000100u`."""
+        for used_qty in ("1500u", "1000100u", "1500000n"):
+            with self.subTest(used=used_qty):
+                res = self._render(
+                    {
+                        "probe": {
+                            "quotas": [
+                                self._quota(
+                                    {"requests.cpu": "10"},
+                                    used={"requests.cpu": used_qty},
+                                )
+                            ]
+                        }
+                    }
+                )
+                self.assertEqual(
+                    res.returncode,
+                    0,
+                    f"sub-millicore CPU {used_qty} in used must parse:\n{res.stderr}",
+                )
+
     def test_a_decimal_si_quota_is_still_diagnosed_in_units(self) -> None:
         """A decimal-SI quota divides into no whole Mi, and used to print as raw bytes.
 
@@ -686,6 +708,15 @@ class PreflightDecisionTest(unittest.TestCase):
             required["requestsEphemeral"] + _AGENT_POD_EPHEMERAL_REQUEST_BYTES,
             "the patch must leave room for the surge Pod it promises",
         )
+
+    def test_ephemeral_storage_remediation_notes_limitrange_requirement(self) -> None:
+        """A quota deficient in ephemeral storage must note the LimitRange declaration requirement."""
+        res = self._render(
+            {"probe": {"quotas": [self._quota({"requests.ephemeral-storage": "100Mi"})]}}
+        )
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("LimitRange", res.stderr)
+        self.assertIn("must specify requests.ephemeral-storage", res.stderr)
 
     def test_the_default_patch_does_not_size_a_surge_the_gateway_never_creates(self) -> None:
         """At one replica the operator rolls the gateway with Recreate, which never surges.

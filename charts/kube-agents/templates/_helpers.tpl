@@ -637,7 +637,7 @@ maxUnavailable: {{ $unavail }}
 {{/*
 Resource parsing helpers for quota preflight (#749).
 Converts Kubernetes quantities to canonical integer units:
-- CPU: millicores (e.g. "500m" -> 500, "1" -> 1000, "1.5" -> 1500)
+- CPU: millicores (e.g. "500m" -> 500, "1" -> 1000, "1.5" -> 1500, "1500u" -> 2)
 - Memory / Storage: bytes (e.g. "128Mi" -> 134217728, "2Gi" -> 2147483648)
 
 Both fail the render on a quantity they cannot parse rather than returning a number.
@@ -678,6 +678,18 @@ honest — a quota that large cannot constrain this release either way.
 {{- fail (printf "quota preflight: cannot parse CPU quantity %q — set quotaPreflight.enabled=false to bypass, and please report it." $raw) -}}
 {{- end -}}
 {{- include "kube-agents.clampInt64" (float64 $n) -}}
+{{- else if hasSuffix "u" $raw -}}
+{{- $n := trimSuffix "u" $raw -}}
+{{- if not (regexMatch $numeric $n) -}}
+{{- fail (printf "quota preflight: cannot parse CPU quantity %q — set quotaPreflight.enabled=false to bypass, and please report it." $raw) -}}
+{{- end -}}
+{{- include "kube-agents.clampInt64" (ceil (divf (float64 $n) 1000.0)) -}}
+{{- else if hasSuffix "n" $raw -}}
+{{- $n := trimSuffix "n" $raw -}}
+{{- if not (regexMatch $numeric $n) -}}
+{{- fail (printf "quota preflight: cannot parse CPU quantity %q — set quotaPreflight.enabled=false to bypass, and please report it." $raw) -}}
+{{- end -}}
+{{- include "kube-agents.clampInt64" (ceil (divf (float64 $n) 1000000.0)) -}}
 {{- else -}}
 {{- $out := "" -}}
 {{- range $unit, $mult := $decimalCores -}}
@@ -1151,6 +1163,7 @@ a Go template cannot catch the error `lookup` raises.
     {{- $used := index $status "used" | default dict -}}
     {{- $shortfalls := list -}}
     {{- $patchEntries := list -}}
+    {{- $hasEphemeralShortfall := false -}}
 
     {{- range $key, $hardRaw := $hard -}}
       {{- $req := 0 -}}
@@ -1285,6 +1298,9 @@ a Go template cannot catch the error `lookup` raises.
           {{- $line := printf "  - %s: required %s, hard %s, available %s (%s)" $key $reqFormatted $hardFormatted $availFormatted $reason -}}
           {{- $shortfalls = append $shortfalls $line -}}
           {{- $patchEntries = append $patchEntries (printf "%q:%q" $key $patchVal) -}}
+          {{- if or (eq $key "limits.ephemeral-storage") (eq $key "requests.ephemeral-storage") (eq $key "ephemeral-storage") -}}
+            {{- $hasEphemeralShortfall = true -}}
+          {{- end -}}
         {{- end -}}
       {{- end -}}
     {{- end -}}
@@ -1293,7 +1309,11 @@ a Go template cannot catch the error `lookup` raises.
       {{- $qName := (index (index $quota "metadata" | default dict) "name") | default "resourcequota" -}}
       {{- $patchBody := printf "{\"spec\":{\"hard\":{%s}}}" (join "," $patchEntries) -}}
       {{- $patchCmd := printf "kubectl patch resourcequota %s -n %s --type=strategic --patch '%s'" $qName $ctx.Release.Namespace $patchBody -}}
-      {{- $report := printf "ResourceQuota %q in namespace %q has insufficient capacity for release %q:\n%s\n\nRemediation: increase the quota with:\n  %s\n(those values leave room for one rollout surge Pod, except for claim counts and storage, which a surge Pod does not add to)" $qName $ctx.Release.Namespace $ctx.Release.Name (join "\n" $shortfalls) $patchCmd -}}
+      {{- $ephNote := "" -}}
+      {{- if $hasEphemeralShortfall -}}
+        {{- $ephNote = printf "\n(a quota constraining ephemeral storage additionally requires a LimitRange in namespace %q providing default requests and limits, because chart workloads and operator containers omit them; without one, pod creation fails with 'must specify requests.ephemeral-storage')" $ctx.Release.Namespace -}}
+      {{- end -}}
+      {{- $report := printf "ResourceQuota %q in namespace %q has insufficient capacity for release %q:\n%s\n\nRemediation: increase the quota with:\n  %s\n(those values leave room for one rollout surge Pod, except for claim counts and storage, which a surge Pod does not add to)%s" $qName $ctx.Release.Namespace $ctx.Release.Name (join "\n" $shortfalls) $patchCmd $ephNote -}}
       {{- $quotaReports = append $quotaReports $report -}}
     {{- end -}}
   {{- end -}}
