@@ -176,6 +176,7 @@ identifier appears, add its source here.
 | Controller permissions | `k8s-operator/config/rbac/` |
 | The operator RBAC self-check: the `RBACIncomplete` reason, its re-check interval and condition message; the floating tags `make deploy` refuses and `ALLOW_MUTABLE_IMG` | `k8s-operator/internal/controller/rbac_selfcheck.go`; `k8s-operator/Makefile` |
 | `make` targets | the root `Makefile` and `k8s-operator/Makefile` |
+| The third-party download retry rule: which files are walked and what flags a curl line must carry | `DOWNLOAD_SOURCES`, `RETRY_COUNT` and `RETRY_ALL_ERRORS` in `tests/test_third_party_download_retry.py` |
 | The GitHub environment variables an install is configured from, which install.env key each becomes, and which are required to reconcile a long-lived environment | `MAPPING`, `REQUIRED_ALWAYS` and `REQUIRED_STRICT` in `scripts/release/render_install_env.sh` |
 | Paths baked into the agent image (`/opt/defaults/...`) | `deploy/docker/Dockerfile` |
 | The maintainers' CI project IDs, which `docs-check-audience` forbids on the site | `hack/ci-env.sh` (the `PROJECT_ID` export) |
