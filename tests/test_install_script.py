@@ -73,7 +73,8 @@ class InstallScriptValidationTest(unittest.TestCase):
         """
         setup = f"""
 KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
-{func_call}
+has_controlling_tty() {{ return 1; }}
+{{func_call}}
 """
         overrides = {"KUBE_AGENTS_INSTALL_ENV": str(self._empty_install_env)}
         overrides.update(env or {})
@@ -2397,12 +2398,13 @@ class EnsureExistingClusterWorkloadIdentityTest(unittest.TestCase):
             )
             gcloud.chmod(gcloud.stat().st_mode | stat.S_IEXEC)
             opt_in_line = (
-                'PARAM_MIGRATE_NODE_POOLS="true"\n' if migrate_opt_in else ""
+                'export PARAM_MIGRATE_NODE_POOLS="true"\n' if migrate_opt_in else 'export PARAM_MIGRATE_NODE_POOLS="false"\n'
             )
             body = (
                 f'source "{_INSTALLER_COMMON}"\n'
                 f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n'
                 f"{opt_in_line}"
+                "has_controlling_tty() { return 1; }\n"
                 "ensure_existing_cluster_workload_identity proj cluster region\n"
             )
             proc = subprocess.run(
@@ -4047,6 +4049,55 @@ class FailedInitialReleaseIsClearedBeforeTheApplyTest(unittest.TestCase):
         self.assertIn("$GKE_DNS_ENDPOINT_FLAG", self.source[credentials:clear])
 
 
+class OnlyTheFrontDoorThatPreflightsMovesTheContextTest(unittest.TestCase):
+    """Who gets `get-credentials` run on their behalf by the tfvars generator.
+
+    The generator fetches unconditionally when adopting a cluster, because every
+    front door's Secret-recovery loop needs those credentials. On a cluster the
+    state already manages it fetches only for a caller that asked, because the
+    only thing that wants the context moved there is the capacity preflight and
+    the move outlives the command: it rewrites the operator's kubeconfig. This
+    is wiring across three scripts that no unit test can execute, so it is
+    checked as wiring.
+    """
+
+    _OPT_IN = "KUBE_AGENTS_FETCH_CLUSTER_CREDENTIALS=true"
+
+    def setUp(self):
+        self.install = (_REPO_ROOT / "install.sh").read_text()
+        self.uninstall = (_REPO_ROOT / "uninstall.sh").read_text()
+        self.upgrade = (_REPO_ROOT / "upgrade.sh").read_text()
+
+    def test_the_main_path_asks_before_it_preflights(self):
+        generate = self.install.index(
+            'write_tfvars_from_state "$tfvars_file" "$image_tag"',
+            self.install.index("tfvars_file=\"$(tf_compose_dir \"$repo_dir\")/terraform.tfvars\""),
+        )
+        preflight = self.install.index(
+            'enforce_capacity_preflight "$cluster_name" "$region" "$project_id" '
+            '"$enable_gvisor" "$memory_mode" "$PARAM_ENABLE_WEBUI"', generate)
+        # The opt-in is on this call, not merely somewhere in the file.
+        self.assertIn(self._OPT_IN, self.install[generate - 400:generate])
+        self.assertLess(generate, preflight)
+
+    def test_the_day_two_panel_asks_before_it_preflights(self):
+        generate = self.install.index(
+            'write_tfvars_from_state "$(tf_compose_dir "$repo_dir")/terraform.tfvars" "$image_tag"')
+        preflight = self.install.index(
+            'enforce_capacity_preflight "$cluster_name" "$region" "$project_id" '
+            '"$enable_gvisor" "$memory_mode" "$enable_webui"', generate)
+        self.assertIn(self._OPT_IN, self.install[generate - 400:generate])
+        self.assertLess(generate, preflight)
+
+    def test_teardown_and_upgrade_do_not_ask(self):
+        # uninstall.sh would be repointing the kubeconfig at the cluster its
+        # next command destroys. upgrade.sh runs its own get-credentials before
+        # it generates, so the opt-in would buy it nothing and cost it the same
+        # surprise on a path that never preflights.
+        self.assertNotIn(self._OPT_IN, self.uninstall)
+        self.assertNotIn(self._OPT_IN, self.upgrade)
+
+
 class TheCloneDirectoryNeedsHomeOnlyWhenCloningTest(unittest.TestCase):
     """HOME is unset in some service environments (a systemd system unit, a
     container with no passwd entry). A run from a checkout never clones, so it
@@ -5064,6 +5115,13 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
             env=full_env,
             cwd=str(cwd or _REPO_ROOT),
             timeout=15,
+            # Detached from the controlling terminal on purpose. prompt_read and
+            # auto_install_tool read from /dev/tty rather than stdin, so
+            # stdin=DEVNULL does not stop them blocking -- only losing the
+            # terminal does. Without this, a body that reaches a prompt hangs a
+            # developer's run until the timeout while staying green in CI, where
+            # there is no terminal to block on.
+            start_new_session=True,
         )
 
     def test_failed_apply_reports_only_command_and_not_tee(self):
@@ -5113,6 +5171,69 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"
         )
         self.assertEqual(proc.returncode, 0, f"Stderr: {proc.stderr}")
         self.assertIn("-no-color", log_file.read_text())
+
+    def test_failed_apply_still_fails_when_the_status_file_cannot_be_written(self):
+        # The status file is an optimisation; the subshell's exit status is the
+        # record that needs no filesystem. If a failed apply can lose its status
+        # and be reported as a success, main() writes SUCCESS for an install
+        # that did not happen -- so this drives the apply to failure with the
+        # status file's directory read-only.
+        repo_dir = self._tmp_path / "mock-repo"
+        compose_dir = repo_dir / "terraform" / "examples" / "full-install"
+        compose_dir.mkdir(parents=True)
+        lifecycle_sh = compose_dir / "lifecycle.sh"
+        lifecycle_sh.write_text("#!/bin/bash\necho 'Terraform error' >&2\nexit 1\n")
+        lifecycle_sh.chmod(0o755)
+
+        # The log file must stay writable while its directory does not: tee
+        # appends to an existing file, but creating "<log>.status" beside it
+        # needs write permission on the directory.
+        log_dir = self._tmp_path / "ro-logs"
+        log_dir.mkdir()
+        log_file = log_dir / "provision.log"
+        log_file.touch()
+        log_dir.chmod(0o555)
+        self.addCleanup(log_dir.chmod, 0o755)
+
+        proc = self._run_func(f'run_lifecycle_apply "{repo_dir}" "{log_file}"')
+
+        self.assertFalse(
+            (log_dir / "provision.log.status").exists(),
+            "precondition: the status file must not be writable for this test to mean anything",
+        )
+        self.assertNotEqual(
+            proc.returncode,
+            0,
+            "a failed apply whose status could not be recorded was reported as a success\n"
+            f"stdout: {proc.stdout}\nstderr: {proc.stderr}",
+        )
+        self.assertIn("./lifecycle.sh apply -auto-approve -input=false", proc.stderr)
+
+    def test_clean_apply_still_succeeds_when_the_status_file_cannot_be_written(self):
+        # The other half of the pair: the fallback must not turn an unwritable
+        # status file into a failure of its own. Without this, "always fail when
+        # the record is missing" would satisfy the test above.
+        repo_dir = self._tmp_path / "mock-repo"
+        compose_dir = repo_dir / "terraform" / "examples" / "full-install"
+        compose_dir.mkdir(parents=True)
+        lifecycle_sh = compose_dir / "lifecycle.sh"
+        lifecycle_sh.write_text("#!/bin/bash\necho 'Apply complete'\nexit 0\n")
+        lifecycle_sh.chmod(0o755)
+
+        log_dir = self._tmp_path / "ro-logs-clean"
+        log_dir.mkdir()
+        log_file = log_dir / "provision.log"
+        log_file.touch()
+        log_dir.chmod(0o555)
+        self.addCleanup(log_dir.chmod, 0o755)
+
+        proc = self._run_func(f'run_lifecycle_apply "{repo_dir}" "{log_file}"')
+
+        self.assertEqual(
+            proc.returncode,
+            0,
+            f"a clean apply was failed by an unwritable status file\nstdout: {proc.stdout}\nstderr: {proc.stderr}",
+        )
 
     def test_pipeline_status_handles_empty_array_safely_under_set_u(self):
         source = _INSTALL_SH.read_text()
@@ -5302,11 +5423,15 @@ while true; do /bin/sleep 0.1; done
         bin_dir = self._tmp_path / "bin"
         bin_dir.mkdir()
         monitor_pid_file = self._tmp_path / "monitor.pid"
+        sleep_pid_file = self._tmp_path / "sleep.pid"
         sleep_stub = bin_dir / "sleep"
         sleep_stub.write_text(f"""#!/usr/bin/env bash
 trap '' INT
 if [ ! -f "{monitor_pid_file}" ]; then
   echo "$PPID" > "{monitor_pid_file}"
+fi
+if [ ! -f "{sleep_pid_file}" ]; then
+  echo "$$" > "{sleep_pid_file}"
 fi
 exec /bin/sleep 5
 """)
@@ -5340,12 +5465,14 @@ run_lifecycle_apply "{repo_dir}" "{log_file}"
 
         try:
             for _ in range(50):
-                if monitor_pid_file.exists() and log_file.exists() and "APPLY_STARTED" in log_file.read_text():
+                if monitor_pid_file.exists() and sleep_pid_file.exists() and log_file.exists() and "APPLY_STARTED" in log_file.read_text():
                     break
                 time.sleep(0.1)
 
             self.assertTrue(monitor_pid_file.exists(), "monitor failed to record its pid")
+            self.assertTrue(sleep_pid_file.exists(), "sleep stub failed to record its pid")
             mon_pid = int(monitor_pid_file.read_text().strip())
+            sleep_pid = int(sleep_pid_file.read_text().strip())
 
             os.killpg(proc.pid, signal.SIGINT)
             try:
@@ -5366,6 +5493,22 @@ run_lifecycle_apply "{repo_dir}" "{log_file}"
                 except OSError:
                     pass
             self.assertFalse(mon_alive, f"monitor process {mon_pid} is still alive after SIGINT")
+
+            sleep_alive = False
+            for _ in range(30):
+                try:
+                    os.kill(sleep_pid, 0)
+                    sleep_alive = True
+                    time.sleep(0.1)
+                except OSError:
+                    sleep_alive = False
+                    break
+            if sleep_alive:
+                try:
+                    os.kill(sleep_pid, signal.SIGKILL)
+                except OSError:
+                    pass
+            self.assertFalse(sleep_alive, f"monitor sleep child process {sleep_pid} is still alive after SIGINT")
         finally:
             if proc.poll() is None:
                 try:
@@ -6034,6 +6177,9 @@ trap - ERR
             env=full_env,
             cwd=str(_REPO_ROOT),
             timeout=20,
+            # See RunLifecycleApplyTrapTest._run_func: /dev/tty prompts ignore
+            # stdin redirection, so the session has to go.
+            start_new_session=True,
         )
 
     def test_preflight_skips_on_fresh_cluster(self):
@@ -6140,6 +6286,129 @@ TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=autopilot check_existing_cluster
             self.assertIn("Skipping cluster capacity preflight check (cluster_mode is not standard)", proc.stdout)
             self.assertFalse(called_file.exists(), "kubectl was called on an autopilot skip")
 
+    def test_preflight_skips_when_the_temp_directory_cannot_be_created(self):
+        # With an unusable TMPDIR both mktemp attempts fail. Unguarded, the
+        # empty result sends the cluster-wide pod dump to /pods.json and leaves
+        # it there, because the cleanup guards test for a non-empty path. The
+        # check has to decline instead, before it dumps anything. `kubectl
+        # config current-context` legitimately runs earlier, so the assertion is
+        # on the two reads whose output has nowhere to go.
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = pathlib.Path(tmp) / "bin"
+            bin_dir.mkdir()
+            args_file = pathlib.Path(tmp) / "kubectl.args"
+            kubectl = bin_dir / "kubectl"
+            kubectl.write_text(f"""#!/usr/bin/env bash
+echo "$@" >> "{args_file}"
+exit 1
+""")
+            kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
+            body = """
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_capacity_preflight "cluster" "region" ""
+"""
+            proc = self._run_cmd(
+                body,
+                bin_dir=str(bin_dir),
+                env_overrides={"TMPDIR": str(pathlib.Path(tmp) / "does-not-exist")},
+            )
+            self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+            self.assertIn("Could not create a temporary working directory", proc.stdout)
+            calls = args_file.read_text() if args_file.exists() else ""
+            self.assertNotIn(
+                "get nodes",
+                calls,
+                "the node dump ran with no usable temp directory, so its output had nowhere to go but /",
+            )
+            self.assertNotIn(
+                "get pods",
+                calls,
+                "the pod dump ran with no usable temp directory, so its output had nowhere to go but /",
+            )
+
+    def test_preflight_declines_rather_than_grading_the_cluster_it_runs_inside(self):
+        # With no current-context, kubectl falls back to in-cluster credentials
+        # and every read succeeds -- against the pod's own cluster, not the
+        # target. Nothing downstream re-checks: the evaluator is handed JSON and
+        # never learns which cluster produced it, so a pass here is a pass on the
+        # wrong cluster. The nodes below are generous enough that an ungated run
+        # reports success, which is the outcome being guarded against.
+        roomy_node = json.dumps({
+            "items": [{
+                "metadata": {"name": "n1", "labels": {"cloud.google.com/gke-nodepool": "default-pool"}},
+                "spec": {"taints": []},
+                "status": {
+                    "allocatable": {"cpu": "16000m", "memory": "65536Mi"},
+                    "conditions": [{"type": "Ready", "status": "True"}],
+                },
+            }]
+        })
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = pathlib.Path(tmp) / "bin"
+            bin_dir.mkdir()
+            args_file = pathlib.Path(tmp) / "kubectl.args"
+            kubectl = bin_dir / "kubectl"
+            kubectl.write_text(f"""#!/usr/bin/env bash
+echo "$@" >> "{args_file}"
+case "$*" in
+  *nodes*-o*json*) cat << 'EOF'
+{roomy_node}
+EOF
+  ;;
+  *pods*-o*json*) echo '{{"items": []}}' ;;
+esac
+exit 0
+""")
+            kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
+            body = """
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard \\
+  check_existing_cluster_capacity_preflight "cluster" "region" "proj" "false" "none" "false" "" ""
+"""
+            proc = self._run_cmd(
+                body,
+                bin_dir=str(bin_dir),
+                # What kubectl's in-cluster fallback keys off, and the only
+                # signal available to tell "no kubeconfig at all" (which fails
+                # harmlessly a few lines later) from "a working client pointed
+                # somewhere we did not choose".
+                env_overrides={"KUBERNETES_SERVICE_HOST": "10.0.0.1"},
+            )
+            self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+            self.assertIn("in-cluster credentials", proc.stdout + proc.stderr)
+            calls = args_file.read_text() if args_file.exists() else ""
+            self.assertNotIn(
+                "get nodes",
+                calls,
+                "the check read a cluster it had no way to confirm was the target",
+            )
+
+    def test_preflight_still_runs_with_a_context_that_matches_the_target(self):
+        # The guard above must not turn into "skip whenever this looks like a
+        # pod": an operator who has selected the target context keeps the check,
+        # in-cluster environment or not. Without this, the fix for grading the
+        # wrong cluster silently disables the check wherever both hold.
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = self._preflight_bin_dir(
+                tmp, self._ONE_SMALL_NODE, json.dumps({"items": []}))
+            kubectl = bin_dir / "kubectl"
+            kubectl.write_text(kubectl.read_text().replace(
+                'case "$*" in',
+                'case "$*" in\n  *current-context*) echo "gke_proj_region_cluster" ;;',
+            ))
+            body = """
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard \\
+  check_existing_cluster_capacity_preflight "cluster" "region" "proj" "false" "hindsight" "false" "" ""
+"""
+            proc = self._run_cmd(
+                body,
+                bin_dir=str(bin_dir),
+                env_overrides={"KUBERNETES_SERVICE_HOST": "10.0.0.1"},
+            )
+            output = proc.stdout + proc.stderr
+            self.assertNotIn("in-cluster credentials", output)
+            # One 2000m/4096Mi node is short of the hindsight profile, so the
+            # check ran and reached a verdict rather than declining.
+            self.assertEqual(proc.returncode, 1, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+
     def test_preflight_skips_when_skip_capacity_check_is_true(self):
         body = f"""
 TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard SKIP_CAPACITY_CHECK=true check_existing_cluster_capacity_preflight "cluster" "region" "proj"
@@ -6212,7 +6481,11 @@ TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard \\
             self.assertIn("Cluster capacity preflight check failed", proc.stdout)
             self.assertIn("Insufficient schedulable CPU", proc.stdout)
 
-    def test_preflight_ignores_tainted_gvisor_nodes(self):
+    def test_preflight_keeps_tainted_gvisor_nodes_out_of_the_untainted_sum(self):
+        # Not "ignores": the sandbox pool gets a verdict of its own, because the
+        # agent pod lands there. What must never happen is its capacity joining
+        # the untainted sum, where the workloads that cannot tolerate the taint
+        # are measured -- 8000m/32Gi here would pass a cluster with 50m free.
         with tempfile.TemporaryDirectory() as tmp:
             # node-1 is gVisor tainted; node-2 is untainted but has zero free capacity
             nodes_json = json.dumps({
@@ -6247,31 +6520,44 @@ TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard \\
             self.assertEqual(proc.returncode, 1)
             self.assertIn("Cluster capacity preflight check failed", proc.stdout)
             self.assertIn("1 untainted node(s)", proc.stdout)
+            # That pool has ample room for the agent, so it is the untainted sum
+            # that refused and the sandbox verdict has nothing to add.
+            self.assertNotIn("sandbox pool", proc.stdout)
 
-    def test_preflight_ignores_cordoned_and_not_ready_nodes(self):
-        # Self-Review finding 5: nodes with spec.unschedulable=true or with a
-        # Ready condition of False/Unknown must not be counted as available capacity.
-        # Node 1 is cordoned (unschedulable) and Node 2 is NotReady, each with ample
-        # capacity; Node 3 is ready and untainted but has only 500m/1Gi, with 450m/800Mi
-        # consumed by a pod. The preflight must exclude both cordoned/unready nodes,
-        # find only 1 untainted schedulable node, and fail on insufficient capacity.
+    def test_preflight_leaves_cordoned_and_not_ready_capacity_out_of_the_current_sum(self):
+        # Self-Review finding 5: a node with spec.unschedulable=true, or with a
+        # Ready condition of False/Unknown, cannot accept a pod, so nothing it
+        # holds may enter the figure the check decides on or reports. Here the
+        # cordoned and NotReady nodes are too small to cover the deficit on
+        # their own either, so the refusal stands and every number on it is the
+        # ready node's alone: 500m/1Gi allocatable less a 450m/800Mi pod, which
+        # is 50m CPU and 224Mi Memory across one node.
         with tempfile.TemporaryDirectory() as tmp:
             nodes_json = json.dumps({
                 "items": [
                     {
                         "metadata": {"name": "node-cordoned"},
-                        "spec": {"unschedulable": True, "taints": []},
+                        "spec": {
+                            "unschedulable": True,
+                            "taints": [
+                                {"key": "node.kubernetes.io/unschedulable", "effect": "NoSchedule"}
+                            ],
+                        },
                         "status": {
                             "conditions": [{"type": "Ready", "status": "True"}],
-                            "allocatable": {"cpu": "8000m", "memory": "32Gi"},
+                            "allocatable": {"cpu": "100m", "memory": "128Mi"},
                         },
                     },
                     {
                         "metadata": {"name": "node-notready"},
-                        "spec": {"taints": []},
+                        "spec": {
+                            "taints": [
+                                {"key": "node.kubernetes.io/not-ready", "effect": "NoSchedule"}
+                            ],
+                        },
                         "status": {
                             "conditions": [{"type": "Ready", "status": "False"}],
-                            "allocatable": {"cpu": "8000m", "memory": "32Gi"},
+                            "allocatable": {"cpu": "100m", "memory": "128Mi"},
                         },
                     },
                     {
@@ -6302,6 +6588,568 @@ TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard \\
             self.assertEqual(proc.returncode, 1)
             self.assertIn("Cluster capacity preflight check failed", proc.stdout)
             self.assertIn("1 untainted node(s)", proc.stdout)
+            self.assertIn("50m CPU, 224Mi Memory", proc.stdout)
+            self.assertIn(
+                "1 cordoned and 1 NotReady node(s) are not counted toward the capacity available right now",
+                proc.stdout,
+            )
+
+    def test_preflight_reports_capacity_coming_back_rather_than_refusing_mid_upgrade(self):
+        # A node pool part-way through a GKE surge upgrade looks exactly like
+        # this: one node cordoned, the next NotReady, each coming back in
+        # minutes with everything it had. Refusing on the sum that leaves them
+        # out sends the operator to resize a cluster that was the right size a
+        # minute ago -- the loop this check exists to end rather than to cause.
+        # The deficit those nodes cover is reported, not refused.
+        with tempfile.TemporaryDirectory() as tmp:
+            nodes_json = json.dumps({
+                "items": [
+                    {
+                        "metadata": {"name": "node-cordoned"},
+                        "spec": {
+                            "unschedulable": True,
+                            "taints": [
+                                {"key": "node.kubernetes.io/unschedulable", "effect": "NoSchedule"}
+                            ],
+                        },
+                        "status": {
+                            "conditions": [{"type": "Ready", "status": "True"}],
+                            "allocatable": {"cpu": "8000m", "memory": "32Gi"},
+                        },
+                    },
+                    {
+                        "metadata": {"name": "node-notready"},
+                        "spec": {
+                            "taints": [
+                                {"key": "node.kubernetes.io/not-ready", "effect": "NoSchedule"}
+                            ],
+                        },
+                        "status": {
+                            "conditions": [{"type": "Ready", "status": "False"}],
+                            "allocatable": {"cpu": "8000m", "memory": "32Gi"},
+                        },
+                    },
+                    {
+                        "metadata": {"name": "node-ready"},
+                        "spec": {"taints": []},
+                        "status": {
+                            "conditions": [{"type": "Ready", "status": "True"}],
+                            "allocatable": {"cpu": "500m", "memory": "1Gi"},
+                        },
+                    },
+                ]
+            })
+            pods_json = json.dumps({
+                "items": [{
+                    "metadata": {"name": "busy-pod"},
+                    "spec": {
+                        "nodeName": "node-ready",
+                        "containers": [{"resources": {"requests": {"cpu": "450m", "memory": "800Mi"}}}],
+                    },
+                }]
+            })
+            bin_dir = self._preflight_bin_dir(tmp, nodes_json, pods_json)
+            body = """
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard \\
+  check_existing_cluster_capacity_preflight "cluster" "region" "proj" "true" "file" "false" "" ""
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn("passed only by counting cordoned or NotReady nodes", proc.stdout)
+            self.assertIn("2 cordoned or NotReady node(s)", proc.stdout)
+            # The half of the story the first wording left out. A GKE surge
+            # upgrade provisions the replacement before it drains the old node,
+            # so the replacement is already in the sum above and the drained
+            # node is never coming back: on that shape this pass counts a pool
+            # of N nodes as N+1. The operator is the only one who can tell the
+            # two apart, so the line has to give them both.
+            self.assertIn("A GKE surge upgrade works that way", proc.stdout)
+            self.assertIn("can exceed what the pool settles at", proc.stdout)
+            self.assertNotIn("passed on capacity that is coming back", proc.stdout)
+            # The note printed above it has to agree with it: these nodes were
+            # not left out of the decision, they are the reason it went this
+            # way, and they are still not capacity available right now. It must
+            # not promise they come back either, for the same surge reason.
+            self.assertIn("are not counted toward the capacity available right now", proc.stdout)
+            self.assertNotIn("left out of this calculation", proc.stdout)
+            self.assertNotIn("gets its capacity back when the upgrade finishes", proc.stdout)
+            # Said out loud, not passed over: the unqualified success line
+            # claims the capacity is schedulable now, and it is not.
+            self.assertNotIn("Cluster capacity preflight check passed (", proc.stdout)
+            self.assertNotIn("Cluster capacity preflight check failed", proc.stdout)
+
+    def test_preflight_charges_a_recovering_node_for_the_pods_it_already_holds(self):
+        # The over-correction the test above invites: crediting a cordoned or
+        # NotReady node with its whole allocatable. A node already full of pods
+        # brings nothing back when it returns, so the refusal has to stand --
+        # and this must hold whether those nodes are excluded outright or
+        # counted as capacity coming back.
+        with tempfile.TemporaryDirectory() as tmp:
+            nodes_json = json.dumps({
+                "items": [
+                    {
+                        "metadata": {"name": "node-cordoned"},
+                        "spec": {
+                            "unschedulable": True,
+                            "taints": [
+                                {"key": "node.kubernetes.io/unschedulable", "effect": "NoSchedule"}
+                            ],
+                        },
+                        "status": {
+                            "conditions": [{"type": "Ready", "status": "True"}],
+                            "allocatable": {"cpu": "8000m", "memory": "32768Mi"},
+                        },
+                    },
+                    {
+                        "metadata": {"name": "node-ready"},
+                        "spec": {"taints": []},
+                        "status": {
+                            "conditions": [{"type": "Ready", "status": "True"}],
+                            "allocatable": {"cpu": "500m", "memory": "1Gi"},
+                        },
+                    },
+                ]
+            })
+            pods_json = json.dumps({
+                "items": [
+                    {
+                        "metadata": {"name": "hog-pod"},
+                        "spec": {
+                            "nodeName": "node-cordoned",
+                            "containers": [{"resources": {"requests": {"cpu": "8000m", "memory": "32768Mi"}}}],
+                        },
+                    },
+                    {
+                        "metadata": {"name": "busy-pod"},
+                        "spec": {
+                            "nodeName": "node-ready",
+                            "containers": [{"resources": {"requests": {"cpu": "450m", "memory": "800Mi"}}}],
+                        },
+                    },
+                ]
+            })
+            bin_dir = self._preflight_bin_dir(tmp, nodes_json, pods_json)
+            body = """
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard \\
+  check_existing_cluster_capacity_preflight "cluster" "region" "proj" "true" "file" "false" "" ""
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("Cluster capacity preflight check failed", proc.stdout)
+            self.assertIn("1 untainted node(s)", proc.stdout)
+            self.assertNotIn("passed only by counting cordoned or NotReady nodes", proc.stdout)
+
+    def test_preflight_excludes_cordoned_node_with_non_lifecycle_taint_from_recovering(self):
+        # A node that is cordoned but ALSO carries a workload-excluding taint
+        # (such as dedicated=gpu) cannot accept kube-agents workloads even after
+        # uncordoning. It must not enter untainted_nodes or be credited as
+        # recovering capacity.
+        with tempfile.TemporaryDirectory() as tmp:
+            nodes_json = json.dumps({
+                "items": [
+                    {
+                        "metadata": {"name": "node-cordoned-gpu"},
+                        "spec": {
+                            "unschedulable": True,
+                            "taints": [
+                                {"key": "node.kubernetes.io/unschedulable", "effect": "NoSchedule"},
+                                {"key": "dedicated", "value": "gpu", "effect": "NoSchedule"},
+                            ],
+                        },
+                        "status": {
+                            "conditions": [{"type": "Ready", "status": "True"}],
+                            "allocatable": {"cpu": "8000m", "memory": "32Gi"},
+                        },
+                    },
+                    {
+                        "metadata": {"name": "node-ready"},
+                        "spec": {"taints": []},
+                        "status": {
+                            "conditions": [{"type": "Ready", "status": "True"}],
+                            "allocatable": {"cpu": "500m", "memory": "1Gi"},
+                        },
+                    },
+                ]
+            })
+            pods_json = json.dumps({
+                "items": [{
+                    "metadata": {"name": "busy-pod"},
+                    "spec": {
+                        "nodeName": "node-ready",
+                        "containers": [{"resources": {"requests": {"cpu": "450m", "memory": "800Mi"}}}],
+                    },
+                }]
+            })
+            bin_dir = self._preflight_bin_dir(tmp, nodes_json, pods_json)
+            body = """
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard \\
+  check_existing_cluster_capacity_preflight "cluster" "region" "proj" "true" "file" "false" "" ""
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("Cluster capacity preflight check failed", proc.stdout)
+            self.assertNotIn("passed only by counting cordoned or NotReady nodes", proc.stdout)
+
+    def test_preflight_recovering_capacity_works_with_unreachable_taint(self):
+        # A node whose kubelet stopped communicating receives the
+        # node.kubernetes.io/unreachable lifecycle taint from TaintNodesByCondition.
+        # It must be treated as recovering capacity rather than permanently tainted.
+        with tempfile.TemporaryDirectory() as tmp:
+            nodes_json = json.dumps({
+                "items": [
+                    {
+                        "metadata": {"name": "node-unreachable"},
+                        "spec": {
+                            "taints": [
+                                {"key": "node.kubernetes.io/unreachable", "effect": "NoSchedule"},
+                            ],
+                        },
+                        "status": {
+                            "conditions": [{"type": "Ready", "status": "Unknown"}],
+                            "allocatable": {"cpu": "8000m", "memory": "32Gi"},
+                        },
+                    },
+                    {
+                        "metadata": {"name": "node-ready"},
+                        "spec": {"taints": []},
+                        "status": {
+                            "conditions": [{"type": "Ready", "status": "True"}],
+                            "allocatable": {"cpu": "500m", "memory": "1Gi"},
+                        },
+                    },
+                ]
+            })
+            pods_json = json.dumps({
+                "items": [{
+                    "metadata": {"name": "busy-pod"},
+                    "spec": {
+                        "nodeName": "node-ready",
+                        "containers": [{"resources": {"requests": {"cpu": "450m", "memory": "800Mi"}}}],
+                    },
+                }]
+            })
+            bin_dir = self._preflight_bin_dir(tmp, nodes_json, pods_json)
+            body = """
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard \\
+  check_existing_cluster_capacity_preflight "cluster" "region" "proj" "true" "file" "false" "" ""
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn("passed only by counting cordoned or NotReady nodes", proc.stdout)
+
+    # Untainted capacity well clear of the requirement, so any refusal these
+    # produce is the sandbox pool speaking and not the sum beside it.
+    _ROOMY_UNTAINTED_NODE = {
+        "metadata": {"name": "node-untainted", "labels": {"cloud.google.com/gke-nodepool": "default-pool"}},
+        "spec": {"taints": []},
+        "status": {
+            "conditions": [{"type": "Ready", "status": "True"}],
+            "allocatable": {"cpu": "8000m", "memory": "32768Mi"},
+        },
+    }
+
+    @staticmethod
+    def _gvisor_node(name, cpu, mem, taint_value="gvisor"):
+        return {
+            "metadata": {"name": name, "labels": {"cloud.google.com/gke-nodepool": "gvisor-pool"}},
+            "spec": {"taints": [{
+                "key": "sandbox.gke.io/runtime",
+                "value": taint_value,
+                "effect": "NoSchedule",
+            }]},
+            "status": {
+                "conditions": [{"type": "Ready", "status": "True"}],
+                "allocatable": {"cpu": cpu, "memory": mem},
+            },
+        }
+
+    # gVisor on, which is the default, and the agent unit is 1250m/2560Mi with
+    # the dashboard off.
+    _GVISOR_PREFLIGHT_BODY = """
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard \\
+  check_existing_cluster_capacity_preflight "cluster" "region" "proj" "true" "file" "false" "" ""
+"""
+
+    def test_preflight_refuses_when_the_sandbox_pool_has_no_room_for_the_agent(self):
+        # Under gVisor the agent pod carries the sandbox toleration and lands on
+        # the tainted pool, so untainted capacity -- ample here -- says nothing
+        # about whether it can be placed. The reachable shape is a Day-2
+        # re-apply against a sandbox pool that has since filled up: the module
+        # sets neither node_count nor autoscaling on it, so that drift is never
+        # reconciled, and without this the apply dies at the Helm wait instead.
+        with tempfile.TemporaryDirectory() as tmp:
+            nodes_json = json.dumps({
+                "items": [self._ROOMY_UNTAINTED_NODE, self._gvisor_node("node-gvisor", "2000m", "4096Mi")]
+            })
+            pods_json = json.dumps({
+                "items": [{
+                    "metadata": {"name": "sandbox-tenant"},
+                    "spec": {
+                        "nodeName": "node-gvisor",
+                        "containers": [{"resources": {"requests": {"cpu": "1500m", "memory": "3000Mi"}}}],
+                    },
+                }]
+            })
+            bin_dir = self._preflight_bin_dir(tmp, nodes_json, pods_json)
+            proc = self._run_cmd(self._GVISOR_PREFLIGHT_BODY, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("The gVisor sandbox pool has no room for the agent pod", proc.stdout)
+            # The pod already on that node is charged against it: 2000m/4096Mi
+            # allocatable less 1500m/3000Mi leaves 500m and 1096Mi.
+            self.assertIn("requires 1250m CPU, 2560Mi Memory", proc.stdout)
+            self.assertIn("has 500m CPU and 1096Mi Memory free", proc.stdout)
+            self.assertIn("--gvisor=false", proc.stdout)
+            # The untainted sum is not what refused, and must not be reported as
+            # though it were.
+            self.assertNotIn("Untainted nodes have insufficient schedulable capacity", proc.stdout)
+
+    def test_preflight_matches_the_sandbox_pool_by_taint_value_not_key_alone(self):
+        # A pool tainted `sandbox.gke.io/runtime=kata` is not the pool the agent
+        # tolerates. Room on it is not room for the agent, and counting it would
+        # pass exactly the cluster this check has to stop.
+        with tempfile.TemporaryDirectory() as tmp:
+            nodes_json = json.dumps({
+                "items": [
+                    self._ROOMY_UNTAINTED_NODE,
+                    self._gvisor_node("node-kata", "8000m", "32768Mi", taint_value="kata"),
+                    self._gvisor_node("node-gvisor", "500m", "1024Mi"),
+                ]
+            })
+            bin_dir = self._preflight_bin_dir(tmp, nodes_json, json.dumps({"items": []}))
+            proc = self._run_cmd(self._GVISOR_PREFLIGHT_BODY, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("The gVisor sandbox pool has no room for the agent pod", proc.stdout)
+            self.assertIn("the closest of 1 node(s) accepting pods", proc.stdout)
+
+    def test_preflight_passes_when_the_sandbox_pool_has_room(self):
+        # The over-correction the test above invites: refusing on a pool that is
+        # fine. A sandbox node with room has to pass silently, with the ordinary
+        # success line and nothing said about the pool.
+        with tempfile.TemporaryDirectory() as tmp:
+            nodes_json = json.dumps({
+                "items": [self._ROOMY_UNTAINTED_NODE, self._gvisor_node("node-gvisor", "4000m", "8192Mi")]
+            })
+            bin_dir = self._preflight_bin_dir(tmp, nodes_json, json.dumps({"items": []}))
+            proc = self._run_cmd(self._GVISOR_PREFLIGHT_BODY, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 0)
+            self.assertNotIn("sandbox pool", proc.stdout)
+            self.assertIn("Cluster capacity preflight check passed (", proc.stdout)
+
+    def test_preflight_says_nothing_about_a_sandbox_pool_that_does_not_exist_yet(self):
+        # The false refusal this check must not become. gVisor is on and there
+        # is no tainted node, which is every install before terraform creates
+        # the pool -- at one node per zone, sized for the agent. Refusing there
+        # would block the install rather than the hang.
+        with tempfile.TemporaryDirectory() as tmp:
+            nodes_json = json.dumps({"items": [self._ROOMY_UNTAINTED_NODE]})
+            bin_dir = self._preflight_bin_dir(tmp, nodes_json, json.dumps({"items": []}))
+            proc = self._run_cmd(self._GVISOR_PREFLIGHT_BODY, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 0)
+            self.assertNotIn("sandbox pool", proc.stdout)
+
+    def test_preflight_refuses_a_sandbox_pool_that_exists_with_no_nodes(self):
+        # The hang the test above lets through. An adopted cluster whose
+        # gvisor-pool was scaled to zero has no tainted node either, so the
+        # node list alone cannot tell it from the pool terraform has yet to
+        # create -- but nothing resizes an existing pool, so the agent pod
+        # stays Pending until the Helm wait expires. The pool list is what
+        # tells the two apart.
+        with tempfile.TemporaryDirectory() as tmp:
+            nodes_json = json.dumps({"items": [self._ROOMY_UNTAINTED_NODE]})
+            bin_dir = self._preflight_bin_dir(
+                tmp, nodes_json, json.dumps({"items": []}),
+                json.dumps([self._gvisor_pool()])
+            )
+            proc = self._run_cmd(self._GVISOR_PREFLIGHT_BODY, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 1, proc.stdout)
+            self.assertIn("exists with no nodes", proc.stdout)
+            self.assertIn("does not autoscale", proc.stdout)
+            # Sized, even though there is no node to measure against: the
+            # operator resizing the pool needs the number.
+            self.assertIn("1250m CPU, 2560Mi Memory", proc.stdout)
+
+    def test_preflight_warns_rather_than_refuses_on_an_empty_sandbox_pool_that_autoscales(self):
+        # The over-correction the test above invites. An empty pool that can
+        # grow is the autoscaler's job, exactly as it is for a pool with nodes
+        # and no room: the agent pod goes Pending, a node arrives, the install
+        # comes up. Refusing blocks a cluster that was never short.
+        with tempfile.TemporaryDirectory() as tmp:
+            nodes_json = json.dumps({"items": [self._ROOMY_UNTAINTED_NODE]})
+            bin_dir = self._preflight_bin_dir(
+                tmp, nodes_json, json.dumps({"items": []}),
+                json.dumps([self._gvisor_pool(max_nodes=2)])
+            )
+            proc = self._run_cmd(self._GVISOR_PREFLIGHT_BODY, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 0, proc.stdout)
+            self.assertNotIn("Cluster capacity preflight check failed", proc.stdout)
+            self.assertIn("exists with no nodes", proc.stdout)
+            self.assertIn("within reach of autoscaling: gvisor-pool (+2 node(s))", proc.stdout)
+
+    def test_preflight_stays_silent_on_an_empty_sandbox_pool_gcloud_could_not_list(self):
+        # The fail-open the branch must keep. A gcloud that is missing, denied
+        # or timed out leaves the empty pool list, which is indistinguishable
+        # from a cluster with no pools -- and refusing on an absence of
+        # evidence turns a read the check treats as optional into one it
+        # depends on.
+        with tempfile.TemporaryDirectory() as tmp:
+            nodes_json = json.dumps({"items": [self._ROOMY_UNTAINTED_NODE]})
+            bin_dir = self._preflight_bin_dir(
+                tmp, nodes_json, json.dumps({"items": []}), "[]"
+            )
+            proc = self._run_cmd(self._GVISOR_PREFLIGHT_BODY, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 0, proc.stdout)
+            self.assertNotIn("exists with no nodes", proc.stdout)
+
+    def test_preflight_stays_silent_on_a_sandbox_pool_whose_nodes_lost_the_taint(self):
+        # A third state that reaches the same branch: the pool exists and has
+        # nodes, but none carry the sandbox taint, so none landed in the
+        # sandbox table. Those nodes were counted on the untainted side, and
+        # reporting an empty pool here would contradict that sum.
+        with tempfile.TemporaryDirectory() as tmp:
+            untainted_pool_node = {
+                "metadata": {"name": "node-gvisor-untainted",
+                             "labels": {"cloud.google.com/gke-nodepool": "gvisor-pool"}},
+                "spec": {},
+                "status": {
+                    "conditions": [{"type": "Ready", "status": "True"}],
+                    "allocatable": {"cpu": "4000m", "memory": "8192Mi"},
+                },
+            }
+            nodes_json = json.dumps({
+                "items": [self._ROOMY_UNTAINTED_NODE, untainted_pool_node]
+            })
+            bin_dir = self._preflight_bin_dir(
+                tmp, nodes_json, json.dumps({"items": []}),
+                json.dumps([self._gvisor_pool()])
+            )
+            proc = self._run_cmd(self._GVISOR_PREFLIGHT_BODY, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 0, proc.stdout)
+            self.assertNotIn("exists with no nodes", proc.stdout)
+
+    def test_preflight_ignores_the_sandbox_pool_when_gvisor_is_off(self):
+        # With gVisor off the agent unit is charged to untainted nodes and has
+        # to fit on one of them, which is the behaviour that was already there.
+        # A tainted pool with no room is then somebody else's pool and says
+        # nothing about this install.
+        with tempfile.TemporaryDirectory() as tmp:
+            nodes_json = json.dumps({
+                "items": [self._ROOMY_UNTAINTED_NODE, self._gvisor_node("node-gvisor", "10m", "16Mi")]
+            })
+            body = """
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard \\
+  check_existing_cluster_capacity_preflight "cluster" "region" "proj" "false" "file" "false" "" ""
+"""
+            bin_dir = self._preflight_bin_dir(tmp, nodes_json, json.dumps({"items": []}))
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 0)
+            self.assertNotIn("sandbox pool has no room", proc.stdout)
+
+    # A sandbox pool whose nodes are full but whose autoscaler may add more.
+    # The node shape is the point: 4000m/8192Mi allocatable with a 3000m/6000Mi
+    # tenant on it leaves 1000m/2192Mi schedulable, under the 1250m/2560Mi the
+    # agent unit needs, while a node the autoscaler adds arrives empty and
+    # clears it. Anything smaller would fail on both counts and prove nothing.
+    _FULL_GVISOR_TENANT = {
+        "metadata": {"name": "sandbox-tenant"},
+        "spec": {
+            "nodeName": "node-gvisor",
+            "containers": [{"resources": {"requests": {"cpu": "3000m", "memory": "6000Mi"}}}],
+        },
+    }
+
+    @staticmethod
+    def _gvisor_pool(max_nodes=None):
+        pool = {"name": "gvisor-pool", "locations": ["us-central1-a"], "config": {
+            "taints": [{"key": "sandbox.gke.io/runtime", "value": "gvisor", "effect": "NO_SCHEDULE"}]
+        }}
+        if max_nodes is None:
+            pool["autoscaling"] = {"enabled": False}
+        else:
+            pool["autoscaling"] = {"enabled": True, "maxNodeCount": max_nodes}
+        return pool
+
+    def test_preflight_credits_a_sandbox_pool_that_can_still_autoscale(self):
+        # The false refusal the sandbox check became. terraform creates
+        # gvisor-pool without an autoscaling block, which was taken as licence
+        # to leave the term out -- but the check also runs against adopted
+        # clusters and on Day-2 re-runs, where the pool may autoscale for
+        # reasons the installer never saw. There the agent pod goes Pending,
+        # the autoscaler adds a node, and the install comes up: refusing blocks
+        # a cluster that was never short. This is the argument the untainted
+        # branch already makes thirty lines above.
+        with tempfile.TemporaryDirectory() as tmp:
+            nodes_json = json.dumps({
+                "items": [self._ROOMY_UNTAINTED_NODE, self._gvisor_node("node-gvisor", "4000m", "8192Mi")]
+            })
+            pods_json = json.dumps({"items": [self._FULL_GVISOR_TENANT]})
+            bin_dir = self._preflight_bin_dir(
+                tmp, nodes_json, pods_json, json.dumps([self._gvisor_pool(max_nodes=3)])
+            )
+            proc = self._run_cmd(self._GVISOR_PREFLIGHT_BODY, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 0, proc.stdout)
+            self.assertNotIn("Cluster capacity preflight check failed", proc.stdout)
+            # Reported, not passed over. One node exists of a ceiling of three.
+            self.assertIn("within reach of autoscaling: gvisor-pool (+2 node(s))", proc.stdout)
+            self.assertIn("only on capacity that is not there yet", proc.stdout)
+
+    def test_preflight_refuses_a_sandbox_pool_already_at_its_autoscaling_ceiling(self):
+        # The over-correction the test above invites: reading "autoscaling is
+        # on" as "there is always another node". A pool at its ceiling has none
+        # to add, and the refusal has to stand.
+        with tempfile.TemporaryDirectory() as tmp:
+            nodes_json = json.dumps({
+                "items": [self._ROOMY_UNTAINTED_NODE, self._gvisor_node("node-gvisor", "4000m", "8192Mi")]
+            })
+            pods_json = json.dumps({"items": [self._FULL_GVISOR_TENANT]})
+            bin_dir = self._preflight_bin_dir(
+                tmp, nodes_json, pods_json, json.dumps([self._gvisor_pool(max_nodes=1)])
+            )
+            proc = self._run_cmd(self._GVISOR_PREFLIGHT_BODY, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 1, proc.stdout)
+            self.assertIn("The gVisor sandbox pool has no room for the agent pod", proc.stdout)
+            self.assertNotIn("within reach of autoscaling", proc.stdout)
+
+    def test_preflight_does_not_credit_a_sandbox_pool_whose_autoscaling_is_off(self):
+        # The pool terraform actually creates. Nothing is going to add a node
+        # to it, so the deficit is real and this is the case the check was
+        # added for.
+        with tempfile.TemporaryDirectory() as tmp:
+            nodes_json = json.dumps({
+                "items": [self._ROOMY_UNTAINTED_NODE, self._gvisor_node("node-gvisor", "4000m", "8192Mi")]
+            })
+            pods_json = json.dumps({"items": [self._FULL_GVISOR_TENANT]})
+            bin_dir = self._preflight_bin_dir(
+                tmp, nodes_json, pods_json, json.dumps([self._gvisor_pool()])
+            )
+            proc = self._run_cmd(self._GVISOR_PREFLIGHT_BODY, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 1, proc.stdout)
+            self.assertIn("The gVisor sandbox pool has no room for the agent pod", proc.stdout)
+            self.assertNotIn("within reach of autoscaling", proc.stdout)
+
+    def test_preflight_does_not_let_an_untainted_pool_autoscale_on_the_agent_behalf(self):
+        # The subtler over-correction: crediting the sandbox deficit with
+        # headroom in a pool the agent pod cannot land on. Under gVisor the pod
+        # carries the sandbox toleration and only the tainted pool will take
+        # it, so default-pool growing to ten nodes does nothing for it.
+        with tempfile.TemporaryDirectory() as tmp:
+            nodes_json = json.dumps({
+                "items": [self._ROOMY_UNTAINTED_NODE, self._gvisor_node("node-gvisor", "4000m", "8192Mi")]
+            })
+            pods_json = json.dumps({"items": [self._FULL_GVISOR_TENANT]})
+            pools_json = json.dumps([
+                self._gvisor_pool(),
+                {
+                    "name": "default-pool",
+                    "autoscaling": {"enabled": True, "maxNodeCount": 10},
+                    "locations": ["us-central1-a"],
+                    "config": {},
+                },
+            ])
+            bin_dir = self._preflight_bin_dir(tmp, nodes_json, pods_json, pools_json)
+            proc = self._run_cmd(self._GVISOR_PREFLIGHT_BODY, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 1, proc.stdout)
+            self.assertIn("The gVisor sandbox pool has no room for the agent pod", proc.stdout)
+            self.assertNotIn("within reach of autoscaling", proc.stdout)
 
     def test_preflight_warns_rather_than_passes_when_the_node_json_is_truncated(self):
         """A check that could not read its input has not passed.
@@ -6376,6 +7224,131 @@ diagnose_rollout_failure "{log_file}"
             self.assertIn("Helm rollout timed out waiting for Kubernetes workloads", proc.stdout)
             self.assertIn("litellm-abc", proc.stdout)
             self.assertIn("Insufficient cpu", proc.stdout)
+
+    def test_diagnose_rollout_failure_handles_kubectl_pending_pods_timeout_or_error(self):
+        # When kubectl fails or times out while querying pending pods, diagnose_rollout_failure
+        # must warn that the diagnosis is incomplete and exit 0 without crashing.
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = pathlib.Path(tmp) / "bin"
+            bin_dir.mkdir()
+            kubectl = bin_dir / "kubectl"
+            kubectl.write_text("""#!/usr/bin/env bash
+case "$*" in
+  *status.phase=Pending*) exit 1 ;;
+  *status.phase=Running*) echo '{"items": []}' ;;
+esac
+exit 0
+""")
+            kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
+            log_file = pathlib.Path(tmp) / "prov.log"
+            log_file.write_text(
+                "Error: context deadline exceeded\n"
+                "\n"
+                "  with helm_release.kube_agents,\n"
+                '  on main.tf line 497, in resource "helm_release" "kube_agents":\n'
+            )
+            body = f"""
+diagnose_rollout_failure "{log_file}"
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+            self.assertIn(
+                "Could not list Pending pods in 'kubeagents-system' (kubectl failed or timed out)",
+                proc.stdout + proc.stderr,
+            )
+
+    def test_diagnose_rollout_failure_handles_kubectl_running_pods_timeout_or_error(self):
+        # When kubectl fails or times out while querying running pods, diagnose_rollout_failure
+        # must warn that running pods were not inspected and exit 0 without crashing.
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = pathlib.Path(tmp) / "bin"
+            bin_dir.mkdir()
+            kubectl = bin_dir / "kubectl"
+            kubectl.write_text("""#!/usr/bin/env bash
+case "$*" in
+  *status.phase=Pending*) echo "pending-pod-1" ;;
+  *status.phase=Running*) exit 1 ;;
+  *get*events*) echo "Warning event" ;;
+esac
+exit 0
+""")
+            kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
+            log_file = pathlib.Path(tmp) / "prov.log"
+            log_file.write_text(
+                "Error: context deadline exceeded\n"
+                "\n"
+                "  with helm_release.kube_agents,\n"
+                '  on main.tf line 497, in resource "helm_release" "kube_agents":\n'
+            )
+            body = f"""
+diagnose_rollout_failure "{log_file}"
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+            self.assertIn(
+                "Could not list Running pods in 'kubeagents-system' (kubectl failed or timed out)",
+                proc.stdout + proc.stderr,
+            )
+            self.assertIn("pending-pod-1", proc.stdout)
+
+    def test_diagnose_rollout_failure_handles_corrupt_running_pods_json(self):
+        # When kubectl returns malformed/unparseable JSON for running pods,
+        # the python parser must not crash or bubble up a fatal error.
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = pathlib.Path(tmp) / "bin"
+            bin_dir.mkdir()
+            kubectl = bin_dir / "kubectl"
+            kubectl.write_text("""#!/usr/bin/env bash
+case "$*" in
+  *status.phase=Pending*) echo "" ;;
+  *status.phase=Running*) echo "INVALID_JSON_GARBAGE" ;;
+esac
+exit 0
+""")
+            kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
+            log_file = pathlib.Path(tmp) / "prov.log"
+            log_file.write_text(
+                "Error: context deadline exceeded\n"
+                "\n"
+                "  with helm_release.kube_agents,\n"
+                '  on main.tf line 497, in resource "helm_release" "kube_agents":\n'
+            )
+            body = f"""
+diagnose_rollout_failure "{log_file}"
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+            self.assertNotIn("Traceback", proc.stderr + proc.stdout)
+
+    def test_diagnose_rollout_failure_handles_kubectl_events_failure(self):
+        # When querying events fails (non-zero exit from kubectl), the pod is still
+        # reported and the command exits 0.
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = pathlib.Path(tmp) / "bin"
+            bin_dir.mkdir()
+            kubectl = bin_dir / "kubectl"
+            kubectl.write_text("""#!/usr/bin/env bash
+case "$*" in
+  *status.phase=Pending*) echo "stalled-pod" ;;
+  *status.phase=Running*) echo '{"items": []}' ;;
+  *get*events*) exit 1 ;;
+esac
+exit 0
+""")
+            kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
+            log_file = pathlib.Path(tmp) / "prov.log"
+            log_file.write_text(
+                "Error: context deadline exceeded\n"
+                "\n"
+                "  with helm_release.kube_agents,\n"
+                '  on main.tf line 497, in resource "helm_release" "kube_agents":\n'
+            )
+            body = f"""
+diagnose_rollout_failure "{log_file}"
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+            self.assertIn("stalled-pod", proc.stdout)
 
     def test_diagnose_rollout_failure_ignores_a_timeout_from_another_provider(self):
         # "context deadline exceeded" and "timed out waiting" are not Helm's.
@@ -6797,8 +7770,10 @@ enforce_capacity_preflight "cluster" "region" "proj" "true" "file" "false" "" ""
         """
         bin_dir = pathlib.Path(tmp) / "bin"
         bin_dir.mkdir()
+        klog = pathlib.Path(tmp) / "kubectl.log"
         kubectl = bin_dir / "kubectl"
         kubectl.write_text(f"""#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "{klog}"
 case "$*" in
   *nodes*-o*json*) cat << 'EOF'
 {nodes_json}
@@ -7003,6 +7978,152 @@ TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_
             self.assertEqual(proc.returncode, 1, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
             self.assertNotIn("autoscaling headroom", proc.stdout + proc.stderr)
 
+    def test_the_discount_note_costs_a_pod_the_way_the_scheduler_does(self):
+        # An init container that has already completed holds nothing: the
+        # scheduler charges the pod the larger of its containers and its init
+        # phase, not their sum. The discount note is the figure an operator
+        # reads to judge whether a re-run's numbers are trustworthy, and summing
+        # flat inflates it by every init container the install has ever run.
+        # 100m/128Mi of containers behind a 500m/1024Mi init container is 500m
+        # and 1024Mi; flat it is 600m and 1152Mi.
+        pods = json.dumps({
+            "items": [{
+                "metadata": {"name": "agent", "namespace": "kube-agents"},
+                "spec": {
+                    "nodeName": "n1",
+                    "containers": [{"resources": {"requests": {"cpu": "100m", "memory": "128Mi"}}}],
+                    "initContainers": [
+                        {"resources": {"requests": {"cpu": "500m", "memory": "1024Mi"}}},
+                    ],
+                },
+                "status": {"phase": "Running"},
+            }]
+        })
+        roomy = json.dumps({
+            "items": [{
+                "metadata": {"name": "n1", "labels": {"cloud.google.com/gke-nodepool": "default-pool"}},
+                "spec": {"taints": []},
+                "status": {
+                    "allocatable": {"cpu": "8000m", "memory": "16384Mi"},
+                    "conditions": [{"type": "Ready", "status": "True"}],
+                },
+            }]
+        })
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = self._preflight_bin_dir(tmp, roomy, pods)
+            # The tenth argument is the install namespace, which is what the
+            # discount matches on; the pod above is in it.
+            body = """
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard \\
+  check_existing_cluster_capacity_preflight "cluster" "region" "proj" "true" "none" "false" "" "" "false" "kube-agents"
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            output = proc.stdout + proc.stderr
+            self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+            self.assertIn("1 pod(s) already running in kube-agents were discounted", output)
+            self.assertIn("(500m CPU, 1024Mi Memory)", output)
+
+    def test_a_native_sidecar_is_still_added_to_the_discount(self):
+        # The other half of the same rule, and the reason this is not just
+        # "take the max": restartPolicy Always makes an init container a
+        # sidecar that runs for the pod's whole life, so it adds. 100m of
+        # containers plus a 200m sidecar is 300m, against a 50m init container
+        # that finishes. Taking the max across all three would report 200m.
+        pods = json.dumps({
+            "items": [{
+                "metadata": {"name": "agent", "namespace": "kube-agents"},
+                "spec": {
+                    "nodeName": "n1",
+                    "containers": [{"resources": {"requests": {"cpu": "100m", "memory": "128Mi"}}}],
+                    "initContainers": [
+                        {"restartPolicy": "Always",
+                         "resources": {"requests": {"cpu": "200m", "memory": "256Mi"}}},
+                        {"resources": {"requests": {"cpu": "50m", "memory": "64Mi"}}},
+                    ],
+                },
+                "status": {"phase": "Running"},
+            }]
+        })
+        roomy = json.dumps({
+            "items": [{
+                "metadata": {"name": "n1", "labels": {"cloud.google.com/gke-nodepool": "default-pool"}},
+                "spec": {"taints": []},
+                "status": {
+                    "allocatable": {"cpu": "8000m", "memory": "16384Mi"},
+                    "conditions": [{"type": "Ready", "status": "True"}],
+                },
+            }]
+        })
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = self._preflight_bin_dir(tmp, roomy, pods)
+            body = """
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard \\
+  check_existing_cluster_capacity_preflight "cluster" "region" "proj" "true" "none" "false" "" "" "false" "kube-agents"
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            output = proc.stdout + proc.stderr
+            self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+            self.assertIn("(300m CPU, 384Mi Memory)", output)
+
+    def test_the_node_pool_read_is_bounded_like_the_kubectl_reads(self):
+        # Both kubectl reads carry --request-timeout because a control plane
+        # that accepts the connection and then stalls would hang a check whose
+        # purpose is to fail fast. The gcloud read added beside them is the same
+        # kind of call and `|| true` covers a failure, not a stall. Stubbing
+        # `timeout` rather than reading the source proves gcloud actually goes
+        # through it, and costs no wall-clock: the stub records the deadline and
+        # runs the command straight away.
+        pools = json.dumps([{
+            "name": "default-pool",
+            "autoscaling": {"enabled": True, "maxNodeCount": 5},
+            "locations": ["us-central1-a"],
+            "config": {},
+        }])
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = self._preflight_bin_dir(
+                tmp, self._ONE_SMALL_NODE, json.dumps({"items": []}), pools)
+            deadline_file = pathlib.Path(tmp) / "timeout.args"
+            timeout_stub = bin_dir / "timeout"
+            timeout_stub.write_text(f"""#!/usr/bin/env bash
+echo "$1" >> "{deadline_file}"
+shift
+exec "$@"
+""")
+            timeout_stub.chmod(timeout_stub.stat().st_mode | stat.S_IEXEC)
+            body = """
+TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard \\
+  check_existing_cluster_capacity_preflight "cluster" "region" "proj" "false" "hindsight" "false" "" ""
+"""
+            proc = self._run_cmd(body, bin_dir=str(bin_dir))
+            self.assertTrue(
+                deadline_file.exists(),
+                "the node-pool read ran unbounded; a stalled control plane hangs "
+                f"the check here. stdout: {proc.stdout}\nstderr: {proc.stderr}",
+            )
+            deadline = deadline_file.read_text().strip()
+            self.assertRegex(deadline, r"^\d+[smh]?$", f"not a timeout duration: {deadline!r}")
+            # And the pools it read still reached the evaluator: a wrapper that
+            # bounded the call but broke it would pass the assertion above and
+            # silently drop the autoscaling headroom this cluster needs.
+            self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+            self.assertIn("autoscaling headroom", proc.stdout + proc.stderr)
+
+            # Both kubectl reads (nodes and pods) carry --request-timeout
+            klog = pathlib.Path(tmp) / "kubectl.log"
+            self.assertTrue(klog.exists(), "kubectl was never invoked")
+            kcalls = klog.read_text().splitlines()
+            node_calls = [c for c in kcalls if "get nodes" in c]
+            pod_calls = [c for c in kcalls if "get pods" in c]
+            self.assertTrue(node_calls, "preflight did not query nodes")
+            self.assertTrue(pod_calls, "preflight did not query pods")
+            for call in node_calls + pod_calls:
+                self.assertIn(
+                    "--request-timeout=",
+                    call,
+                    f"preflight kubectl read missing --request-timeout: {call}",
+                )
+
+
     def test_preflight_reads_totalMaxNodeCount_as_the_ceiling(self):
         # A pool with locations set reports its ceiling as totalMaxNodeCount
         # across all of them, and maxNodeCount per zone. Reading only the
@@ -7024,23 +8145,39 @@ TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard check_existing_cluster_
             self.assertIn("autoscaling headroom", proc.stdout + proc.stderr)
 
     def test_diagnose_rollout_failure_guards_the_scan_that_needs_python(self):
-        # The preflight warns and skips where python3 is absent; the diagnoser
-        # piped into it regardless, and the pipeline's own `|| true` turned the
-        # missing interpreter into an empty pod list -- a clean bill of health
-        # for pods that are crash-looping. Asserted against the shell's parse
-        # tree rather than a run, because hiding python3 from a test that has
-        # to source install.sh first would take the rest of PATH with it: this
-        # catches the guard being removed, not every way it could be wrong.
-        proc = self._run_cmd("declare -f diagnose_rollout_failure")
-        self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
-        body = proc.stdout
-        guard = body.find("command -v python3")
-        self.assertNotEqual(guard, -1, "the unready-pod scan no longer checks for python3")
-        self.assertLess(
-            guard,
-            body.index("python3 -c"),
-            "the python3 check has to run before the scan that needs it",
-        )
+        # When python3 is absent, the unready-pod scan must be skipped with a
+        # warning rather than failing silently or crashing, and pending pods
+        # must still be diagnosed.
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = create_minimal_tools_bin(tmp, exclude=("python3", "python"))
+            kubectl = bin_dir / "kubectl"
+            kubectl.write_text("""#!/usr/bin/env bash
+case "$*" in
+  *status.phase=Pending*) echo "stuck-pod" ;;
+  *get*events*) echo "FailedScheduling 0/1 nodes available" ;;
+esac
+exit 0
+""")
+            kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
+            log_file = pathlib.Path(tmp) / "prov.log"
+            log_file.write_text(
+                "Error: context deadline exceeded\n"
+                "\n"
+                "  with helm_release.kube_agents,\n"
+                '  on main.tf line 497, in resource "helm_release" "kube_agents":\n'
+            )
+            body = f"""
+export PATH="{bin_dir}"
+diagnose_rollout_failure "{log_file}"
+"""
+            proc = self._run_cmd(body)
+            self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+            self.assertIn(
+                "python3 is not installed; skipping the unready-pod scan",
+                proc.stdout + proc.stderr,
+            )
+            self.assertIn("stuck-pod", proc.stdout)
+            self.assertIn("FailedScheduling", proc.stdout)
 
 
 
@@ -7655,13 +8792,21 @@ PROJECT_ID="target-proj" REGION="us-central1" CLUSTER_NAME="target-cluster" diag
             self.assertNotIn("foreign-pod-should-not-be-printed", proc.stdout)
             self.assertNotIn("Helm rollout timed out waiting for Kubernetes workloads", proc.stdout)
 
-    def _menu_body(self):
-        """run_menu_system() as bash parsed it."""
-        proc = self._run_cmd("declare -f run_menu_system")
-        self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
-        return proc.stdout
+    # Exiting inside the apply is what the three original callers want: it stops
+    # the panel loop dead and keeps the assertion to "did we get here". A caller
+    # that needs to see what the panel does *after* the apply passes a stub that
+    # returns instead, and a second menu answer to leave the loop with.
+    _APPLY_STUB_EXITS = 'run_lifecycle_apply() { echo "APPLY_CALLED"; exit 0; }'
 
-    def _run_menu_option_6_with_preflight_rc(self, preflight_rc_expr):
+    def _run_menu_option_6_with_preflight_rc(
+        self,
+        preflight_rc_expr,
+        apply_stub=None,
+        menu_choices=("6",),
+        preflight_stub=None,
+        preamble="",
+        assert_panel_opened=True,
+    ):
         # The coordinates go in install.env, not in the script body. run_menu_system
         # sources the checkout's k8s-operator/scripts/vars.sh itself -- an untracked
         # file holding whatever install the developer last ran -- which lands on top
@@ -7687,11 +8832,17 @@ PROJECT_ID="target-proj" REGION="us-central1" CLUSTER_NAME="target-cluster" diag
             stub.write_text("#!/usr/bin/env bash\nexit 0\n")
             stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
 
+        menu_answers = " ".join(f'"{choice}"' for choice in menu_choices)
         body = f"""
 has_controlling_tty() {{ return 0; }}
+_menu_answers=({menu_answers})
+_menu_i=0
 prompt_menu() {{
   local var="${{!#}}"
-  printf -v "$var" "%s" "6"
+  printf -v "$var" "%s" "${{_menu_answers[$_menu_i]}}"
+  if [ "$_menu_i" -lt $(( ${{#_menu_answers[@]}} - 1 )) ]; then
+    _menu_i=$(( _menu_i + 1 ))
+  fi
 }}
 resolve_effective_image_tag() {{ return 0; }}
 validate_immutable_ref() {{ return 0; }}
@@ -7700,9 +8851,10 @@ save_env_var() {{ return 0; }}
 save_secret_env_var() {{ return 0; }}
 write_tfvars_from_state() {{ return 0; }}
 check_service_account_ownership() {{ return 0; }}
-run_lifecycle_apply() {{ echo "APPLY_CALLED"; exit 0; }}
+{preamble}
+{apply_stub or self._APPLY_STUB_EXITS}
 
-enforce_capacity_preflight() {{ return {preflight_rc_expr}; }}
+{preflight_stub or f"enforce_capacity_preflight() {{ return {preflight_rc_expr}; }}"}
 
 run_menu_system
 """
@@ -7714,12 +8866,13 @@ run_menu_system
         # The isolation is load-bearing for the three assertions below -- a panel
         # opened on someone's real install is not the scenario any of them describe
         # -- so it is checked rather than assumed.
-        self.assertIn(
-            "GKE Cluster: test-cluster (us-central1)",
-            proc.stdout,
-            "the control panel did not open on the test coordinates; ambient install "
-            f"state reached the run. stdout: {proc.stdout}",
-        )
+        if assert_panel_opened:
+            self.assertIn(
+                "GKE Cluster: test-cluster (us-central1)",
+                proc.stdout,
+                "the control panel did not open on the test coordinates; ambient install "
+                f"state reached the run. stdout: {proc.stdout}",
+            )
         return proc
 
     def test_menu_system_option_6_preflight_refusal_exits_one_without_apply(self):
@@ -7743,47 +8896,141 @@ run_menu_system
         self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
         self.assertIn("APPLY_CALLED", proc.stdout)
 
-    def _main_body(self):
-        """main() as bash parsed it, not as the file spells it.
-
-        `declare -f` prints the function from the shell's own parse tree, so
-        comments are gone and indentation is bash's. A test that reads
-        install.sh with open() instead is asserting the formatting of the file
-        and goes red on a reflow that changed nothing.
-        """
-        proc = self._run_cmd("declare -f main")
+    def test_the_panel_records_a_success_so_an_earlier_refusal_stops_being_the_answer(self):
+        # The panel writes REFUSED_INSUFFICIENT_CAPACITY and PAUSED into the
+        # install report -- the file install-kube-agents/SKILL.md tells an agent
+        # to read as the install status -- because the preflight now runs from
+        # here. Writing nothing on the way out leaves a declined prompt as the
+        # last word even after a resize and a re-apply that worked. The report
+        # is seeded with a refusal to stand for that earlier attempt.
+        self._test_report_file.write_text('{"status": "REFUSED_INSUFFICIENT_CAPACITY"}')
+        proc = self._run_menu_option_6_with_preflight_rc(
+            "0",
+            apply_stub='run_lifecycle_apply() { echo "APPLY_CALLED"; return 0; }',
+            # The apply returns now instead of exiting, so the panel loop comes
+            # back round; 7 is "exit the control panel".
+            menu_choices=("6", "7"),
+        )
         self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
-        return proc.stdout
+        self.assertIn("APPLY_CALLED", proc.stdout)
+        report = json.loads(self._test_report_file.read_text())
+        self.assertEqual(
+            report["status"], "SUCCESS",
+            "the panel applied successfully and left the report saying "
+            f"{report['status']}",
+        )
+
+
+
+    def _run_main_with_preflight_and_apply(
+        self, tmp, preflight_rc=0, preflight_probe=None, extra_env="", main_args="--non-interactive"
+    ):
+        bin_dir = create_minimal_tools_bin(tmp)
+        for tool in ("kubectl", "gh", "helm", "jq", "terraform", "gke-gcloud-auth-plugin"):
+            stub = bin_dir / tool
+            stub.write_text("#!/usr/bin/env bash\nexit 0\n")
+            stub.chmod(0o755)
+        gcloud = bin_dir / "gcloud"
+        gcloud.write_text('#!/usr/bin/env bash\necho "test-account"\nexit 0\n')
+        gcloud.chmod(0o755)
+
+        order_log = pathlib.Path(tmp) / "order.log"
+        default_preflight = f"""
+enforce_capacity_preflight() {{
+  echo "preflight" >> "$order_log"
+  return {preflight_rc}
+}}
+"""
+        body = f"""
+set -u
+order_log="{order_log}"
+{preflight_probe or default_preflight}
+run_lifecycle_apply() {{
+  echo "apply" >> "$order_log"
+  exit 0
+}}
+require_min_gcloud_version() {{ return 0; }}
+require_min_terraform_version() {{ return 0; }}
+acquire_source_repo() {{ eval "$1='{tmp}'"; return 0; }}
+source_provisioning_helpers() {{ return 0; }}
+check_service_account_ownership() {{ return 0; }}
+check_iam_prerequisites() {{ return 0; }}
+check_existing_cluster_node_pools_preflight() {{ return 0; }}
+check_existing_cluster_network_policy_preflight() {{ return 0; }}
+note_stale_network_policy_acceptance() {{ return 0; }}
+check_github_org_is_organization() {{ return 0; }}
+write_tfvars_from_state() {{ return 0; }}
+bootstrap_install_env_file() {{ return 0; }}
+draw_separator() {{ return 0; }}
+summarize_existing_cluster_mutations() {{ return 0; }}
+import_github_pem() {{ return 0; }}
+ensure_existing_cluster_network_policy() {{ return 0; }}
+ensure_existing_cluster_workload_identity() {{ return 0; }}
+ensure_existing_cluster_cmek() {{ return 0; }}
+validate_non_interactive_minter_config() {{ return 0; }}
+export PARAM_PROJECT_ID=test-project
+export PARAM_CLUSTER_NAME=default-cluster
+export PARAM_REGION=us-central1
+export PARAM_MODEL_PROVIDER=vertex_ai
+export PARAM_VERTEX_PROJECT_ID=test-project
+export PARAM_VERTEX_LOCATION=us-central1
+export PARAM_GITOPS_ORG=test-org
+export PARAM_GITOPS_REPO=test-repo
+export PARAM_CREATE_CLUSTER=false
+export TFVARS_CREATE_CLUSTER=false
+export PARAM_GOOGLE_CHAT_MODE=default
+export PARAM_ENABLE_GOOGLE_CHAT=false
+export PARAM_MIGRATE_NODE_POOLS="true"
+{extra_env}
+main {main_args}
+"""
+        proc = self._run_cmd(body, bin_dir=str(bin_dir))
+        order = order_log.read_text().split() if order_log.exists() else []
+        return proc, order
 
     def test_main_runs_the_capacity_preflight_before_it_applies(self):
         # Nothing else fails if the call is deleted: every other test in this
         # class drives enforce_capacity_preflight directly. Ordering is the
         # point of the check -- a preflight that runs after the apply has
         # started reports a deficit the install already committed to.
-        body = self._main_body()
-        self.assertIn(
-            "enforce_capacity_preflight",
-            body,
-            "main() no longer runs the capacity preflight, so an adopted cluster "
-            "without room for the workloads is only found at rollout",
-        )
-        self.assertLess(
-            body.index("enforce_capacity_preflight"),
-            body.index("run_lifecycle_apply"),
-            "the capacity preflight has to run before the apply it is meant to "
-            "stop, not after it",
-        )
+        with tempfile.TemporaryDirectory() as tmp1:
+            proc_fail, order_fail = self._run_main_with_preflight_and_apply(tmp1, preflight_rc=1)
+            self.assertEqual(proc_fail.returncode, 1, f"stdout: {proc_fail.stdout}\nstderr: {proc_fail.stderr}")
+            self.assertEqual(order_fail, ["preflight"], "apply must not run when preflight fails")
+
+        with tempfile.TemporaryDirectory() as tmp2:
+            proc_ok, order_ok = self._run_main_with_preflight_and_apply(tmp2, preflight_rc=0)
+            self.assertEqual(proc_ok.returncode, 0, f"stdout: {proc_ok.stdout}\nstderr: {proc_ok.stderr}")
+            self.assertEqual(order_ok, ["preflight", "apply"], "preflight must run before apply")
 
     def test_main_validates_and_exports_helm_timeout_and_skip_capacity_check(self):
         # main() must validate HELM_TIMEOUT, export HELM_TIMEOUT and export
         # SKIP_CAPACITY_CHECK before the preflight runs.
-        body = self._main_body()
-        self.assertIn("validate_helm_timeout", body)
-        self.assertIn("export HELM_TIMEOUT=", body)
-        self.assertIn("export SKIP_CAPACITY_CHECK=", body)
-        self.assertLess(body.index("validate_helm_timeout"), body.index("enforce_capacity_preflight"))
-        self.assertLess(body.index("export HELM_TIMEOUT="), body.index("enforce_capacity_preflight"))
-        self.assertLess(body.index("export SKIP_CAPACITY_CHECK="), body.index("enforce_capacity_preflight"))
+        #
+        # 1. Invalid PARAM_HELM_TIMEOUT (e.g. 100s) fails validation and aborts before preflight.
+        with tempfile.TemporaryDirectory() as tmp1:
+            proc_invalid, order_invalid = self._run_main_with_preflight_and_apply(
+                tmp1,
+                extra_env='export PARAM_HELM_TIMEOUT="100"',
+            )
+            self.assertNotEqual(proc_invalid.returncode, 0)
+            self.assertIn("--helm-timeout must be at least 540s", proc_invalid.stdout + proc_invalid.stderr)
+            self.assertEqual(order_invalid, [], "preflight must not run when validation fails")
+
+        # 2. Valid HELM_TIMEOUT and SKIP_CAPACITY_CHECK are exported before preflight runs.
+        with tempfile.TemporaryDirectory() as tmp2:
+            probe = """
+enforce_capacity_preflight() {
+  echo "PREFLIGHT_SEEN: TIMEOUT=${HELM_TIMEOUT:-unset} SKIP=${SKIP_CAPACITY_CHECK:-unset}"
+  return 1
+}
+"""
+            proc_valid, _ = self._run_main_with_preflight_and_apply(
+                tmp2,
+                preflight_probe=probe,
+                extra_env='export PARAM_HELM_TIMEOUT="750"\nexport PARAM_SKIP_CAPACITY_CHECK="true"',
+            )
+            self.assertIn("PREFLIGHT_SEEN: TIMEOUT=750 SKIP=true", proc_valid.stdout)
 
     def test_main_skip_capacity_check_flag_bypasses_preflight(self):
         # Passing --skip-capacity-check causes the menu or fresh-install path to export
@@ -7817,13 +9064,28 @@ main --non-interactive
     def test_menu_system_validates_and_exports_helm_timeout_and_skip_capacity_check(self):
         # run_menu_system() must validate HELM_TIMEOUT, export HELM_TIMEOUT and export
         # SKIP_CAPACITY_CHECK before option 6's preflight runs.
-        body = self._menu_body()
-        self.assertIn("validate_helm_timeout", body)
-        self.assertIn("export HELM_TIMEOUT=", body)
-        self.assertIn("export SKIP_CAPACITY_CHECK=", body)
-        self.assertLess(body.index("validate_helm_timeout"), body.index("enforce_capacity_preflight"))
-        self.assertLess(body.index("export HELM_TIMEOUT="), body.index("enforce_capacity_preflight"))
-        self.assertLess(body.index("export SKIP_CAPACITY_CHECK="), body.index("enforce_capacity_preflight"))
+        probe = """
+enforce_capacity_preflight() {
+  echo "PREFLIGHT_SEEN: TIMEOUT=${HELM_TIMEOUT:-unset} SKIP=${SKIP_CAPACITY_CHECK:-unset}"
+  return 1
+}
+"""
+        proc_invalid = self._run_menu_option_6_with_preflight_rc(
+            "1",
+            preamble='CLI_HELM_TIMEOUT="100"',
+            preflight_stub=probe,
+            assert_panel_opened=False,
+        )
+        self.assertNotEqual(proc_invalid.returncode, 0)
+        self.assertIn("--helm-timeout must be at least 540s", proc_invalid.stdout + proc_invalid.stderr)
+        self.assertNotIn("PREFLIGHT_SEEN", proc_invalid.stdout)
+
+        proc_valid = self._run_menu_option_6_with_preflight_rc(
+            "1",
+            preamble='CLI_HELM_TIMEOUT="750"\nPARAM_SKIP_CAPACITY_CHECK="true"',
+            preflight_stub=probe,
+        )
+        self.assertIn("PREFLIGHT_SEEN: TIMEOUT=750 SKIP=true", proc_valid.stdout)
 
     def test_menu_system_rejects_out_of_range_helm_timeout_flag(self):
         body = """
@@ -7880,24 +9142,29 @@ PREFLIGHT_TMP_DIR="{scratch}"
         # webui flag adds the dashboard sidecar, and the gitops pair adds the
         # minter. Swap two and the check runs against a cluster shape no
         # install will produce, passes, and the rollout is what finds out.
-        self.assertRegex(
-            self._main_body(),
-            r'enforce_capacity_preflight\s+"\$cluster_name"\s+"\$region"\s+'
-            r'"\$project_id"\s+"\$enable_gvisor"\s+"\$memory_mode"\s+'
-            r'"\$PARAM_ENABLE_WEBUI"\s+"\$github_org"\s+"\$github_repo"',
-        )
+        probe = """
+enforce_capacity_preflight() {
+  echo "PREFLIGHT_ARGS: $@"
+  return 0
+}
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            proc, _ = self._run_main_with_preflight_and_apply(
+                tmp,
+                preflight_probe=probe,
+                extra_env='export PARAM_ENABLE_WEBUI="true"',
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn('PREFLIGHT_ARGS: default-cluster us-central1 test-project true file true test-org test-repo', proc.stdout)
 
     def test_main_treats_a_declined_capacity_prompt_as_a_pause(self):
         # The operator said no. That is a choice, not a fault: exiting
         # non-zero would have the wrapper that ran install.sh report a failed
         # install and, in CI, fail the job.
-        body = self._main_body()
-        self.assertRegex(
-            body,
-            r'"\$CAPACITY_PREFLIGHT_RC_PAUSED"\)\s*\n?\s*exit 0',
-            "main() must map the declined-prompt status to exit 0; "
-            f"got: {body[body.find('enforce_capacity_preflight'):][:400]}",
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            proc, order = self._run_main_with_preflight_and_apply(tmp, preflight_rc=2)
+            self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+            self.assertEqual(order, ["preflight"], "apply must not run when preflight is paused")
 
     def test_capacity_preflight_cleans_tmp_dir_on_sigint(self):
         # On INT or TERM, the preflight's signal handler must remove PREFLIGHT_TMP_DIR.

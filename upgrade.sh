@@ -629,6 +629,7 @@ main() {
   # vars.sh still carries the old MEMORY_PROVIDER, and the file loaded second
   # has to win.
   normalize_memory_vars
+  validate_helm_timeout "${HELM_TIMEOUT:-}" || exit 1
 
   local target_project="${PARAM_PROJECT_ID:-${PROJECT_ID:-}}"
   local target_cluster="${PARAM_CLUSTER_NAME:-${CLUSTER_NAME:-$DEFAULT_CLUSTER_NAME}}"

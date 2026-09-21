@@ -52,7 +52,7 @@ their own copies:
 | `tf_state_has_cluster`                                                    | Whether that state manages THIS cluster (project, location and name all match)         |
 | `check_service_account_ownership`                                         | Refuses an apply that would 409 on a service account another install owns              |
 | `write_tfvars_from_state <dest> [tag]`                                    | The `terraform.tfvars` generator (reads the loaded `install.env` variable set)         |
-| `check_existing_cluster_capacity_preflight`                               | Preflights schedulable capacity on untainted nodes for existing Standard clusters      |
+| `check_existing_cluster_capacity_preflight`                               | Preflights schedulable capacity on untainted nodes (and `gvisor-pool` when present) for existing Standard clusters |
 
 The values themselves live in [`install.defaults.env`](../../install.defaults.env) at the
 repository root, which `installer_common.sh` sources. That file does one job and holds
@@ -106,11 +106,21 @@ reach `write_tfvars_from_state` and the `TF_VAR_*` handoff, both of which read t
 environment. Order of authority is **flag, then file, then an exported variable, then
 the defaults above** — `set -a` sourcing means a key the file carries overwrites an
 export of the same name, so a flag is what overrides a recorded value for one run.
-Two keys are file-only: the front doors clear a shell-exported `NAMESPACE` and `HELM_TIMEOUT`
-before reading the file, because kubectl tooling exports the former and ambient environments the
-latter. The dev tooling's `load_state` clears `NAMESPACE` the same way.
+Two keys ignore ambient shell exports: the front doors clear a shell-exported `NAMESPACE`
+(file-only, since `kubectl` tooling exports it) and `HELM_TIMEOUT` (flag-or-file via
+`--helm-timeout` or `install.env`, since ambient CI/shell environments export it) before
+reading the file. The dev tooling's `load_state` clears `NAMESPACE` the same way.
 `KUBE_AGENTS_INSTALL_ENV` points at a different path, which is how CI renders one from
 its own variables rather than keeping install state on an ephemeral runner.
+
+`KUBE_AGENTS_LEGACY_VARS_FILE` does the same for the file `install.env` replaced.
+`install.sh` loads `<repo>/k8s-operator/scripts/vars.sh` before `install.env` when the
+checkout has one, so an install predating `install.env` keeps working and gets its values
+written out on the way past. Set the variable to read a different path; set it **empty**
+to read none, which is what a test does when a developer's checkout has a real `vars.sh`
+that would otherwise answer for the fixture. Unset is not the same as empty here: only
+unset falls back to the checkout. `upgrade.sh` and `uninstall.sh` read the same legacy
+file for the same reason, but at its fixed path — the variable steers `install.sh` alone.
 
 `install.sh` reads it and does not rewrite it. It creates one at the end of a first
 install, when there is nothing there, and never touches it again; the Day-2 menu's
@@ -219,9 +229,10 @@ aborts before making any cluster changes.
 pre-existing clusters (testing environments only).
 
 `SKIP_CAPACITY_CHECK=true` (or `--skip-capacity-check`) bypasses the pre-apply schedulable capacity
-preflight check on adopted GKE Standard clusters. Schedulable capacity on untainted nodes is required
+preflight check on existing GKE Standard clusters. Schedulable capacity on untainted nodes is required
 for trusted system workloads (operator, LiteLLM, cert-manager) that cannot tolerate the sandbox taint
-on `gvisor-pool`.
+on `gvisor-pool`, and when `gvisor-pool` already exists its schedulable capacity is checked for the
+sandboxed agent workload as well.
 
 ### The predecessor: `vars.sh`
 

@@ -139,8 +139,12 @@ readonly PREFLIGHT_MIN_CPU_MILLIS_HINDSIGHT=2250
 readonly PREFLIGHT_MIN_MEM_MIB_HINDSIGHT=1280
 readonly PREFLIGHT_MIN_CPU_MILLIS_HINDSIGHT_API=2000
 readonly PREFLIGHT_MIN_MEM_MIB_HINDSIGHT_API=1024
-readonly PREFLIGHT_MIN_CPU_MILLIS_AGENT_UNSANDBOXED=1250
-readonly PREFLIGHT_MIN_MEM_MIB_AGENT_UNSANDBOXED=2560
+# The agent pod itself. A RuntimeClass changes where the pod may land, not what
+# it asks for, so this is its request under gVisor and without it alike -- what
+# differs is which nodes the check measures it against: the tainted sandbox
+# pool when gVisor is on, untainted nodes when it is off.
+readonly PREFLIGHT_MIN_CPU_MILLIS_AGENT=1250
+readonly PREFLIGHT_MIN_MEM_MIB_AGENT=2560
 # Workloads created by the operator for every PlatformAgent: credential-proxy
 # Deployment (100m/256Mi in k8s-operator/internal/controller/credential_proxy_manifests.go)
 # and shell-sandbox StatefulSet (200m/512Mi in shell_sandbox_manifests.go).
@@ -175,6 +179,18 @@ readonly PREFLIGHT_CERT_MANAGER_NAMESPACE="cert-manager"
 # whose whole purpose is to fail fast; 30s is long enough for `get pods -A` on
 # a large cluster and short enough to be an interruption rather than a hang.
 readonly PREFLIGHT_KUBECTL_TIMEOUT="30s"
+# The same deadline for the node-pool read, which is a control-plane call like
+# the other two and stalls the same way. Spelled for `timeout`, which takes the
+# same suffixes.
+readonly PREFLIGHT_GCLOUD_TIMEOUT="30s"
+# GKE stamps this taint on every node of a pool created with
+# `sandbox_config { type = "GVISOR" }` -- which is how
+# terraform/modules/gke-cluster/main.tf creates gvisor-pool, and the only mark
+# on the node that says the agent pod may land there. The effect is NoSchedule,
+# so these nodes are excluded from the untainted sum and have to be measured
+# separately or not at all.
+readonly PREFLIGHT_GVISOR_TAINT_KEY="sandbox.gke.io/runtime"
+readonly PREFLIGHT_GVISOR_TAINT_VALUE="gvisor"
 
 # The image tag the generator and the dev prompt fall back to when none was
 # given. Not an install default: every front door rejects it through
@@ -1209,8 +1225,9 @@ ensure_clean_helm_release() {
 
   # Determine if this operation was started recently and could be an active,
   # in-flight deployment rather than a wedged zombie lock.
-  # Helm's standard release timeout across deploy workflows is 10m (600s).
-  local operation_timeout="${HELM_OPERATION_TIMEOUT:-$HELM_OPERATION_TIMEOUT_DEFAULT}"
+  # Helm's standard release timeout across deploy workflows is 10m (600s),
+  # but HELM_TIMEOUT can configure it up to 899s.
+  local operation_timeout="${HELM_OPERATION_TIMEOUT:-${HELM_TIMEOUT:-$HELM_OPERATION_TIMEOUT_DEFAULT}}"
   local pending_age=""
   local created_epoch=""
   if command -v kubectl >/dev/null 2>&1; then
@@ -1608,9 +1625,20 @@ write_tfvars_from_state() {
   # recovery loop below — adoption is exactly the case where the credentials
   # live only in that cluster's Secret (a fresh clone has no install.env values),
   # and recovery is gated on the kubectl context actually being this cluster.
-  # This also ensures kubectl config current-context points to the cluster
-  # before enforce_capacity_preflight checks allocatable capacity (#1297).
-  if [ "$cluster_exists" = "true" ] && command -v kubectl >/dev/null 2>&1; then
+  #
+  # Adoption (`create_cluster = false`, which this function only ever sets on a
+  # cluster it found) fetches for every caller, because every caller's recovery
+  # loop needs it. A cluster this state created and still manages does not: the
+  # only reason to move the context there is enforce_capacity_preflight (#1297),
+  # which reads whatever kubectl points at, and install.sh is the only front
+  # door that runs it. uninstall.sh and upgrade.sh generate through here too,
+  # and get-credentials rewrites the operator's kubeconfig for every later
+  # shell — on the teardown path, to a cluster the next command destroys. So
+  # that case is the caller's to ask for; upgrade.sh, which does want the
+  # context, already fetches its own beforehand.
+  if [ "$cluster_exists" = "true" ] && command -v kubectl >/dev/null 2>&1 &&
+    { [ "$create_cluster" = "false" ] ||
+      is_truthy "${KUBE_AGENTS_FETCH_CLUSTER_CREDENTIALS:-false}"; }; then
     local prior_ctx=""
     prior_ctx="$(kubectl config current-context 2>/dev/null || true)"
     local gke_dns_flag=""
@@ -2074,9 +2102,39 @@ check_existing_cluster_capacity_preflight() {
     print_warning "kubectl current context ('${current_ctx}') does not match target cluster ('${expected_ctx}'); skipping cluster capacity preflight check."
     return 0
   fi
+  # An empty current-context is only safe to read as "whatever kubectl reaches is
+  # the target" when kubectl cannot reach anything: with no context and no
+  # kubeconfig the `get nodes` below fails and the check declines a few lines
+  # down. In-cluster config is the one way the reads succeed anyway -- running
+  # from inside a pod, the ServiceAccount resolves to the *host* cluster, which
+  # is not necessarily the cluster being installed into, and nothing downstream
+  # re-checks identity: the evaluator is handed JSON and never sees which cluster
+  # it came from. Grading the wrong cluster passes an undersized target or
+  # refuses a sound one, so decline instead.
+  if [ -z "$current_ctx" ] && [ -n "${KUBERNETES_SERVICE_HOST:-}" ]; then
+    print_warning "kubectl has no current context and is falling back to in-cluster credentials, which point at the cluster this is running in rather than '${expected_ctx}'; skipping cluster capacity preflight check."
+    return 0
+  fi
 
   local tmp_cap_dir
-  tmp_cap_dir="$(mktemp -d 2>/dev/null || mktemp -d -t 'kube-agents-cap')"
+  # `|| true` so the guard below is what decides, in every calling context. The
+  # sole caller today invokes this inside an `if`, where errexit is suppressed
+  # and a failed assignment falls through -- but called bare, as the tests do
+  # and as a future caller might, the same failure would abort the shell before
+  # the guard could decline gracefully. The BSD-style fallback keeps its own
+  # stderr quiet: GNU mktemp rejects a -t template with no X's, so on Linux it
+  # only ever prints a confusing error on its way to the guard.
+  tmp_cap_dir="$(mktemp -d 2>/dev/null || mktemp -d -t 'kube-agents-cap' 2>/dev/null || true)"
+  # An unusable TMPDIR leaves this empty, and every path below would then
+  # resolve against the filesystem root: the pod dump is written to /pods.json,
+  # the `[ -n ]` guards that arm cleanup never fire, and `rm -rf ""` refuses, so
+  # a dump of every pod spec in the cluster -- plaintext `env` included -- is
+  # left behind at /. This is the same class of "cannot run the check" as a
+  # missing kubectl or python3 above, and takes the same exit.
+  if [ -z "$tmp_cap_dir" ] || [ ! -d "$tmp_cap_dir" ]; then
+    print_warning "Could not create a temporary working directory; skipping cluster capacity preflight check."
+    return 0
+  fi
   # Published while it exists so install.sh's on_error can remove it: the pod
   # dump below is every pod spec in the cluster, plaintext `env` included, and
   # an abort between here and the rm would leave it behind. mktemp -d gives
@@ -2124,11 +2182,26 @@ check_existing_cluster_capacity_preflight() {
       --cluster "$cluster_name"
       --location "$region"
       --format json
+      # Never prompt. This is a read on the critical path of a check that has to
+      # finish or decline; a gcloud that stops to ask about an uninstalled
+      # component or an unset project would wait for an answer that the
+      # --non-interactive path is never going to give it.
+      --quiet
     )
     if [ -n "$project_id" ]; then
       pool_list_args+=(--project "$project_id")
     fi
-    gcloud "${pool_list_args[@]}" > "${tmp_cap_dir}/pools.raw.json" 2>/dev/null || true
+    # Bounded for the reason PREFLIGHT_KUBECTL_TIMEOUT gives: this is the third
+    # network read in a check built to fail fast, and `|| true` below covers a
+    # failure, not a stall. `timeout` is coreutils and is not on a stock macOS,
+    # so it is used when present rather than required -- an unbounded read on
+    # the platform that lacks it is what the code did everywhere until now, and
+    # refusing to run there would be a worse trade than leaving it as it was.
+    local -a pool_list_cmd=(gcloud "${pool_list_args[@]}")
+    if command -v timeout >/dev/null 2>&1; then
+      pool_list_cmd=(timeout "$PREFLIGHT_GCLOUD_TIMEOUT" "${pool_list_cmd[@]}")
+    fi
+    "${pool_list_cmd[@]}" > "${tmp_cap_dir}/pools.raw.json" 2>/dev/null || true
     if [ -s "${tmp_cap_dir}/pools.raw.json" ]; then
       mv "${tmp_cap_dir}/pools.raw.json" "${tmp_cap_dir}/pools.json"
     fi
@@ -2159,16 +2232,25 @@ check_existing_cluster_capacity_preflight() {
     single_pods_spec="${single_pods_spec},{\"name\":\"Minter\",\"cpu\":${PREFLIGHT_MIN_CPU_MILLIS_MINTER_REPLICA},\"mem\":${PREFLIGHT_MIN_MEM_MIB_MINTER_REPLICA}}"
   fi
   # The agent pod and its dashboard sidecar are one scheduling unit, so they
-  # are sized as one. Under gVisor that unit lands on the tainted sandbox pool
-  # and costs untainted nodes nothing, dashboard included; without it, the
-  # whole unit has to fit on a single untainted node.
-  if ! is_truthy "$gvisor_enabled"; then
-    local agent_cpu=$PREFLIGHT_MIN_CPU_MILLIS_AGENT_UNSANDBOXED
-    local agent_mem=$PREFLIGHT_MIN_MEM_MIB_AGENT_UNSANDBOXED
-    if is_truthy "$webui_enabled"; then
-      agent_cpu=$((agent_cpu + PREFLIGHT_MIN_CPU_MILLIS_DASHBOARD))
-      agent_mem=$((agent_mem + PREFLIGHT_MIN_MEM_MIB_DASHBOARD))
-    fi
+  # are sized as one. Where that unit has to fit is what the runtime class
+  # decides: under gVisor it carries the sandbox toleration and lands on the
+  # tainted pool, costing untainted nodes nothing, dashboard included; without
+  # it, the whole unit has to fit on a single untainted node.
+  local agent_cpu=$PREFLIGHT_MIN_CPU_MILLIS_AGENT
+  local agent_mem=$PREFLIGHT_MIN_MEM_MIB_AGENT
+  if is_truthy "$webui_enabled"; then
+    agent_cpu=$((agent_cpu + PREFLIGHT_MIN_CPU_MILLIS_DASHBOARD))
+    agent_mem=$((agent_mem + PREFLIGHT_MIN_MEM_MIB_DASHBOARD))
+  fi
+  # What the evaluator measures the sandbox pool against, and the empty object
+  # when there is nothing to measure. Costing untainted nodes nothing is not
+  # the same as costing nothing: with gVisor on -- the default -- this is the
+  # largest pod the install schedules, and before this it was the only one
+  # neither charged nor fit-tested anywhere.
+  local sandbox_spec="{}"
+  if is_truthy "$gvisor_enabled"; then
+    sandbox_spec="{\"cpu\":${agent_cpu},\"mem\":${agent_mem},\"taint_key\":\"${PREFLIGHT_GVISOR_TAINT_KEY}\",\"taint_value\":\"${PREFLIGHT_GVISOR_TAINT_VALUE}\",\"pool_name\":\"${GVISOR_POOL_NAME:-$DEFAULT_GVISOR_POOL_NAME}\"}"
+  else
     req_cpu=$((req_cpu + agent_cpu))
     req_mem=$((req_mem + agent_mem))
     single_pods_spec="${single_pods_spec},{\"name\":\"unsandboxed agent\",\"cpu\":${agent_cpu},\"mem\":${agent_mem}}"
@@ -2190,6 +2272,15 @@ check_existing_cluster_capacity_preflight() {
   local eval_result
   eval_result="$(python3 -c '
 import sys, json
+
+# Standard Kubernetes lifecycle taints automatically set on cordoned or
+# unready nodes by the node lifecycle controller (TaintNodesByCondition).
+# These nodes are tracked as recovering rather than excluded as tainted.
+LIFECYCLE_TAINTS = {
+    "node.kubernetes.io/unschedulable",
+    "node.kubernetes.io/not-ready",
+    "node.kubernetes.io/unreachable",
+}
 
 # A quantity arrives spelled the way whoever wrote the manifest spelled it:
 # the API server returns the suffix it parsed rather than a canonical form, so
@@ -2248,6 +2339,7 @@ try:
     install_ns = sys.argv[9] if len(sys.argv) > 9 else ""
     cert_manager_managed = (sys.argv[10] == "true") if len(sys.argv) > 10 else False
     cert_manager_ns = sys.argv[11] if len(sys.argv) > 11 else ""
+    sandbox_spec = json.loads(sys.argv[12]) if len(sys.argv) > 12 else {}
 except Exception as e:
     print(json.dumps({"error": str(e)}))
     sys.exit(0)
@@ -2255,70 +2347,118 @@ except Exception as e:
 if not isinstance(pools, list):
     pools = []
 
+# Absent, empty or malformed all mean the same thing: no sandbox pool to
+# measure. Only a spec naming both a taint and a size turns the check on, so
+# the gVisor-off path below reaches none of it.
+if not isinstance(sandbox_spec, dict):
+    sandbox_spec = {}
+sandbox_taint_key = str(sandbox_spec.get("taint_key", ""))
+sandbox_taint_value = str(sandbox_spec.get("taint_value", ""))
+sandbox_pool_name = str(sandbox_spec.get("pool_name", ""))
+sandbox_cpu = int(sandbox_spec.get("cpu", 0) or 0)
+sandbox_mem = int(sandbox_spec.get("mem", 0) or 0)
+sandbox_checked = bool(sandbox_taint_key) and (sandbox_cpu > 0 or sandbox_mem > 0)
+
 untainted_nodes = {}
+sandbox_nodes = {}
 nodes_per_pool = {}
 skipped_unschedulable = 0
 skipped_not_ready = 0
+
+
+def blank_node(pool, recovering, alloc_cpu, alloc_mem):
+    return {
+        "pool": pool,
+        "recovering": recovering,
+        "alloc_cpu": alloc_cpu,
+        "alloc_mem": alloc_mem,
+        "req_cpu": 0,
+        "req_mem": 0,
+        "sched_cpu": 0,
+        "sched_mem": 0,
+        "ds_cpu": 0,
+        "ds_mem": 0,
+    }
+
+
 for n in nodes.get("items", []):
     name = n["metadata"]["name"]
     pool = (n.get("metadata", {}).get("labels", {}) or {}).get(pool_label, "")
     if pool:
         nodes_per_pool[pool] = nodes_per_pool.get(pool, 0) + 1
     taints = n.get("spec", {}).get("taints", []) or []
-    has_nosched = any(t.get("effect") in ("NoSchedule", "NoExecute") for t in taints)
-    is_unschedulable = n.get("spec", {}).get("unschedulable", False)
+    non_lifecycle_nosched = [
+        t for t in taints
+        if t.get("effect") in ("NoSchedule", "NoExecute")
+        and t.get("key") not in LIFECYCLE_TAINTS
+    ]
+    has_nosched = bool(non_lifecycle_nosched)
+    is_unschedulable = bool(
+        n.get("spec", {}).get("unschedulable", False)
+        or any(t.get("key") == "node.kubernetes.io/unschedulable" for t in taints)
+    )
     conditions = n.get("status", {}).get("conditions", []) or []
-    is_not_ready = any(c.get("type") == "Ready" and c.get("status") != "True" for c in conditions)
-    # Counted, not just dropped. A node pool part-way through a GKE surge
-    # upgrade looks exactly like this -- cordoned, then NotReady, one node at a
-    # time -- and a refusal that does not say so sends the operator to resize a
-    # cluster that was the right size a minute ago and will be again.
+    is_not_ready = bool(
+        any(c.get("type") == "Ready" and c.get("status") != "True" for c in conditions)
+        or any(t.get("key") in ("node.kubernetes.io/not-ready", "node.kubernetes.io/unreachable") for t in taints)
+    )
+    alloc_cpu = parse_cpu(n.get("status", {}).get("allocatable", {}).get("cpu", 0))
+    alloc_mem = parse_mem(n.get("status", {}).get("allocatable", {}).get("memory", 0))
+    recovering = bool(is_unschedulable or is_not_ready)
+    # A tainted node is not available to the untainted sum at all, upgrade or
+    # no upgrade, so it stays out of that table entirely. An untainted one that
+    # is merely cordoned or NotReady goes in flagged: the decision below is
+    # still taken on the nodes that can accept a pod right now, but the flagged
+    # ones are summed separately, so a deficit they would cover is reported as
+    # capacity coming back instead of as a refusal. Putting them in the same
+    # table is what makes their load measurable -- the pod loop keys off it, so
+    # their pods come off their allocatable the way every other nodes do,
+    # instead of the whole allocatable being credited as if they were empty.
+    if has_nosched:
+        # One exception, and it is a table of its own rather than a share of
+        # that one: the sandbox pool is where the agent pod lands under gVisor,
+        # so it is the one tainted pool this check has a workload to place on.
+        # Every non-lifecycle NoSchedule/NoExecute taint on the node must be the
+        # sandbox taint (since the agent pod carries no other toleration), and
+        # when the node carries a GKE pool label it must match the target sandbox
+        # pool name so another tenant pool does not trigger a false verdict.
+        if (
+            sandbox_checked
+            and (not pool or not sandbox_pool_name or pool == sandbox_pool_name)
+            and all(
+                t.get("key") == sandbox_taint_key
+                and (not sandbox_taint_value or t.get("value") == sandbox_taint_value)
+                for t in non_lifecycle_nosched
+            )
+        ):
+            sandbox_nodes[name] = blank_node(pool, recovering, alloc_cpu, alloc_mem)
+            if is_unschedulable:
+                skipped_unschedulable += 1
+            elif is_not_ready:
+                skipped_not_ready += 1
+        continue
     if is_unschedulable:
         skipped_unschedulable += 1
     elif is_not_ready:
         skipped_not_ready += 1
-    if not has_nosched and not is_unschedulable and not is_not_ready:
-        alloc_cpu = parse_cpu(n.get("status", {}).get("allocatable", {}).get("cpu", 0))
-        alloc_mem = parse_mem(n.get("status", {}).get("allocatable", {}).get("memory", 0))
-        untainted_nodes[name] = {
-            "pool": pool,
-            "alloc_cpu": alloc_cpu,
-            "alloc_mem": alloc_mem,
-            "req_cpu": 0,
-            "req_mem": 0,
-            "sched_cpu": 0,
-            "sched_mem": 0,
-            "ds_cpu": 0,
-            "ds_mem": 0,
-        }
+    untainted_nodes[name] = blank_node(pool, recovering, alloc_cpu, alloc_mem)
 
 discounted_pods = 0
 discounted_cpu = 0
 discounted_mem = 0
 for p in pods.get("items", []):
     node_name = p.get("spec", {}).get("nodeName")
-    if node_name not in untainted_nodes:
+    # Whichever table owns the node this pod is on. A pod already running on
+    # the sandbox pool has to come off it the same way: crediting that pool
+    # with its whole allocatable is how a full pool would read as empty.
+    node_table = None
+    if node_name in untainted_nodes:
+        node_table = untainted_nodes
+    elif node_name in sandbox_nodes:
+        node_table = sandbox_nodes
+    if node_table is None:
         continue
-    # Pods the install owns are the requirement being checked, not load
-    # competing with it: counting them charges a re-run for its own footprint
-    # twice and refuses a cluster that is already running what is being asked
-    # for.
-    #
-    # The discount is by namespace, so anything else sharing those namespaces is
-    # discounted with them and its requests are credited as free capacity. That
-    # is why the totals are reported: an install into a namespace someone else
-    # is already using can otherwise pass on capacity the cluster does not have.
     ns = (p.get("metadata", {}) or {}).get("namespace", "")
-    if (install_ns and ns == install_ns) or (
-        cert_manager_managed and cert_manager_ns and ns == cert_manager_ns
-    ):
-        spec = p.get("spec", {})
-        for c in spec.get("containers", []) + (spec.get("initContainers", []) or []):
-            res = c.get("resources", {}).get("requests", {})
-            discounted_cpu += parse_cpu(res.get("cpu", 0))
-            discounted_mem += parse_mem(res.get("memory", 0))
-        discounted_pods += 1
-        continue
     spec = p.get("spec", {})
     p_cpu = 0
     p_mem = 0
@@ -2345,25 +2485,70 @@ for p in pods.get("items", []):
         else:
             init_cpu = max(init_cpu, c_cpu)
             init_mem = max(init_mem, c_mem)
+    # One definition of what a pod costs, used by both branches below. Summing
+    # containers and initContainers flat for the discount and computing this
+    # for the load was two answers to the same question, and the flat one is
+    # the larger: every completed init container in the namespaces this install
+    # owns inflated the figure an operator reads to judge whether the numbers
+    # on a re-run can be trusted.
+    #
+    # No apostrophes in this block. It is the body of a single-quoted
+    # `python3 -c` string, and one would close it.
     eff_cpu = max(p_cpu + side_cpu, init_cpu + side_cpu)
     eff_mem = max(p_mem + side_mem, init_mem + side_mem)
-    untainted_nodes[node_name]["req_cpu"] += eff_cpu
-    untainted_nodes[node_name]["req_mem"] += eff_mem
+    # Pods the install owns are the requirement being checked, not load
+    # competing with it: counting them charges a re-run for its own footprint
+    # twice and refuses a cluster that is already running what is being asked
+    # for.
+    #
+    # The discount is by namespace, so anything else sharing those namespaces is
+    # discounted with them and its requests are credited as free capacity. That
+    # is why the totals are reported: an install into a namespace someone else
+    # is already using can otherwise pass on capacity the cluster does not have.
+    if (install_ns and ns == install_ns) or (
+        cert_manager_managed and cert_manager_ns and ns == cert_manager_ns
+    ):
+        discounted_cpu += eff_cpu
+        discounted_mem += eff_mem
+        discounted_pods += 1
+        continue
+    node_table[node_name]["req_cpu"] += eff_cpu
+    node_table[node_name]["req_mem"] += eff_mem
     owners = p.get("metadata", {}).get("ownerReferences", []) or []
     if any(o.get("kind") == daemonset_kind for o in owners):
-        untainted_nodes[node_name]["ds_cpu"] += eff_cpu
-        untainted_nodes[node_name]["ds_mem"] += eff_mem
+        node_table[node_name]["ds_cpu"] += eff_cpu
+        node_table[node_name]["ds_mem"] += eff_mem
 
 total_sched_cpu = 0
 total_sched_mem = 0
+# The same figures for the cordoned and NotReady nodes, kept apart. Nothing
+# below adds them to the totals reported to the operator: they are not
+# schedulable now, and a number that says they are would be a lie on the one
+# line an operator reads to decide whether to resize.
+recovering_cpu = 0
+recovering_mem = 0
+recovering_nodes = 0
 
 for name, data in untainted_nodes.items():
     sched_cpu = max(0, data["alloc_cpu"] - data["req_cpu"])
     sched_mem = max(0, data["alloc_mem"] - data["req_mem"])
     data["sched_cpu"] = sched_cpu
     data["sched_mem"] = sched_mem
+    if data["recovering"]:
+        recovering_cpu += sched_cpu
+        recovering_mem += sched_mem
+        recovering_nodes += 1
+        continue
     total_sched_cpu += sched_cpu
     total_sched_mem += sched_mem
+
+# Every count and list below this line means "schedulable right now". A
+# recovering node is not a node the check can place a pod on, and it is not a
+# node to model a new one on either: the pool it belongs to is being changed,
+# which is the whole reason it is in this state.
+schedulable_nodes = {
+    name: data for name, data in untainted_nodes.items() if not data["recovering"]
+}
 
 # What one more node of each pool would offer: its allocatable less the
 # DaemonSets that land on every node of that pool. CPU and memory are
@@ -2372,7 +2557,7 @@ for name, data in untainted_nodes.items():
 # pair as a tuple would rank them lexicographically and carry the larger
 # memory figure of the CPU-poorest node into the estimate.
 pool_fresh = {}
-for name, data in untainted_nodes.items():
+for name, data in schedulable_nodes.items():
     pool = data["pool"]
     if not pool:
         continue
@@ -2383,6 +2568,24 @@ for name, data in untainted_nodes.items():
     else:
         have_cpu, have_mem = pool_fresh[pool]
         pool_fresh[pool] = (min(have_cpu, fresh_cpu), min(have_mem, fresh_mem))
+
+
+def pool_extra_nodes(pool):
+    # How many more nodes the autoscaler may still add to this pool, 0 when it
+    # does not autoscale or is already at its ceiling. Shared by the untainted
+    # sum here and the sandbox pool below, which has the same question to ask
+    # and had grown a second copy of the answer. totalMaxNodeCount is the
+    # whole-pool ceiling where the API reports one; otherwise the per-zone
+    # maxNodeCount over the zones the pool spans.
+    auto = pool.get("autoscaling", {}) or {}
+    if not auto.get("enabled"):
+        return 0
+    locations = pool.get("locations", []) or []
+    total_max = auto.get("totalMaxNodeCount") or 0
+    if not total_max:
+        total_max = (auto.get("maxNodeCount") or 0) * (len(locations) if locations else 1)
+    return max(0, int(total_max) - int(nodes_per_pool.get(pool.get("name", ""), 0)))
+
 
 headroom_cpu = 0
 headroom_mem = 0
@@ -2398,14 +2601,7 @@ for pool in pools:
     ptaints = (pool.get("config", {}) or {}).get("taints", []) or []
     if any(t.get("effect") in ("NoSchedule", "NoExecute", "NO_SCHEDULE", "NO_EXECUTE") for t in ptaints):
         continue
-    auto = pool.get("autoscaling", {}) or {}
-    if not auto.get("enabled"):
-        continue
-    locations = pool.get("locations", []) or []
-    total_max = auto.get("totalMaxNodeCount") or 0
-    if not total_max:
-        total_max = (auto.get("maxNodeCount") or 0) * (len(locations) if locations else 1)
-    extra = max(0, int(total_max) - int(nodes_per_pool.get(pname, 0)))
+    extra = pool_extra_nodes(pool)
     if extra <= 0:
         continue
     fresh_cpu, fresh_mem = pool_fresh[pname]
@@ -2448,9 +2644,14 @@ def shortfall(total_cpu, total_mem, node_fits):
     return ""
 
 
-current_fits = [(d["sched_cpu"], d["sched_mem"]) for d in untainted_nodes.values()]
+current_fits = [(d["sched_cpu"], d["sched_mem"]) for d in schedulable_nodes.values()]
+recovering_fits = [
+    (d["sched_cpu"], d["sched_mem"])
+    for d in untainted_nodes.values() if d["recovering"]
+]
 autoscale_note = ""
-if len(untainted_nodes) == 0:
+recovering_note = ""
+if len(schedulable_nodes) == 0 and recovering_nodes == 0:
     reason = "No untainted nodes found in cluster"
 else:
     reason = shortfall(total_sched_cpu, total_sched_mem, current_fits)
@@ -2464,7 +2665,159 @@ else:
             autoscale_note = "%s on the nodes running now, within reach of autoscaling: %s" % (
                 reason, ", ".join(scalable_pools))
             reason = ""
+    # Same argument, different source of the capacity -- and a weaker one, so
+    # it is checked second and never passes silently. A cordoned or NotReady
+    # node is one of two things and the API does not say which: a node that
+    # comes back with everything it had (an in-place upgrade, a kubelet that
+    # flapped, a manual cordon), or a node being drained ahead of deletion,
+    # which never comes back. A GKE surge upgrade is the second kind, and it is
+    # also where this credit over-counts: surge provisions the replacement
+    # first, so that node is already in the sum above, and adding the drained
+    # one reads a pool of N nodes as N+1. Refusing outright is the worse of the
+    # two errors -- it sends the operator to resize a cluster that was the
+    # right size a minute ago, which is the loop this check exists to end
+    # rather than to cause -- so the deficit is reported instead, on a pass
+    # bounded the way the autoscaling one is, by a Helm timeout that has to
+    # outlast it. The line printed for this note says both halves, because an
+    # operator reading it is the only one who knows which kind the node is.
+    if reason and (recovering_cpu > 0 or recovering_mem > 0):
+        after_fits = current_fits + recovering_fits + scalable_fresh_fits
+        if not shortfall(
+            total_sched_cpu + recovering_cpu + headroom_cpu,
+            total_sched_mem + recovering_mem + headroom_mem,
+            after_fits,
+        ):
+            recovering_note = "%s on the nodes accepting pods right now, covered by %d cordoned or NotReady node(s) holding %dm CPU and %dMi Memory" % (
+                reason, recovering_nodes, recovering_cpu, recovering_mem)
+            reason = ""
 ok = not reason
+
+# The sandbox pool, measured on its own terms. It holds one workload -- the
+# agent pod -- so there is no sum to take: a single node has to have room for
+# it, the way single_pods are tested against untainted nodes. Two cases are
+# deliberately silent. gVisor off leaves sandbox_checked false, and gVisor on
+# with no tainted node yet means the pool does not exist, which is the fresh
+# create where terraform is about to build it at one node per zone. Refusing
+# there would block the install this check was added to let through.
+sandbox_reason = ""
+sandbox_note = ""
+sandbox_ready_count = 0
+sandbox_recovering_count = 0
+if sandbox_checked and sandbox_nodes:
+    for d in sandbox_nodes.values():
+        d["sched_cpu"] = max(0, d["alloc_cpu"] - d["req_cpu"])
+        d["sched_mem"] = max(0, d["alloc_mem"] - d["req_mem"])
+    sandbox_ready = [d for d in sandbox_nodes.values() if not d["recovering"]]
+    sandbox_coming_back = [d for d in sandbox_nodes.values() if d["recovering"]]
+    sandbox_ready_count = len(sandbox_ready)
+    sandbox_recovering_count = len(sandbox_coming_back)
+
+    # What one more node of the sandbox pool would offer, modelled on a Ready
+    # node of it the way pool_fresh models the untainted pools: allocatable
+    # less the DaemonSets that land on every node of that pool.
+    sandbox_pool_fresh = {}
+    for d in sandbox_ready:
+        pool_name = d["pool"]
+        if not pool_name:
+            continue
+        fresh_cpu = max(0, d["alloc_cpu"] - d["ds_cpu"])
+        fresh_mem = max(0, d["alloc_mem"] - d["ds_mem"])
+        if pool_name not in sandbox_pool_fresh:
+            sandbox_pool_fresh[pool_name] = (fresh_cpu, fresh_mem)
+        else:
+            have_cpu, have_mem = sandbox_pool_fresh[pool_name]
+            sandbox_pool_fresh[pool_name] = (min(have_cpu, fresh_cpu), min(have_mem, fresh_mem))
+
+    # A sandbox pool that can still grow answers the deficit the way the
+    # rollout would have, which is the argument the untainted branch above
+    # makes: the agent pod goes Pending and the autoscaler adds a node with
+    # room for it. The pool terraform/modules/gke-cluster/main.tf creates
+    # carries initial_node_count and no autoscaling block -- but this check
+    # also runs against adopted clusters and on Day-2 re-runs, where the pool
+    # may autoscale because somebody enabled it or because the cluster arrived
+    # that way. Refusing there blocks an install that would have come up, and
+    # sends the operator to resize a pool that resizes itself.
+    sandbox_scalable_fits = []
+    sandbox_scalable_pools = []
+    for pool in pools:
+        pname = pool.get("name", "")
+        if pname not in sandbox_pool_fresh:
+            continue
+        extra = pool_extra_nodes(pool)
+        if extra <= 0:
+            continue
+        fresh_cpu, fresh_mem = sandbox_pool_fresh[pname]
+        sandbox_scalable_fits.append({"sched_cpu": fresh_cpu, "sched_mem": fresh_mem})
+        sandbox_scalable_pools.append("%s (+%d node(s))" % (pname, extra))
+
+    def sandbox_fits(candidates):
+        return any(
+            d["sched_cpu"] >= sandbox_cpu and d["sched_mem"] >= sandbox_mem
+            for d in candidates
+        )
+
+    if not sandbox_fits(sandbox_ready):
+        # Ranked by the worse of the two ratios, as the untainted shortfall is:
+        # the node named has to be the one to grow, and the largest CPU and the
+        # largest memory in a pool need not belong to the same node.
+        best_cpu = 0
+        best_mem = 0
+        best_score = None
+        for d in sandbox_ready:
+            cpu_ratio = 1.0 if sandbox_cpu <= 0 else float(d["sched_cpu"]) / float(sandbox_cpu)
+            mem_ratio = 1.0 if sandbox_mem <= 0 else float(d["sched_mem"]) / float(sandbox_mem)
+            score = min(cpu_ratio, mem_ratio)
+            if best_score is None or score > best_score:
+                best_score = score
+                best_cpu = d["sched_cpu"]
+                best_mem = d["sched_mem"]
+        sandbox_shortfall = "no node of the gVisor sandbox pool has room for the agent pod (requires %dm CPU, %dMi Memory; the closest of %d node(s) accepting pods has %dm CPU and %dMi Memory free)" % (
+            sandbox_cpu, sandbox_mem, sandbox_ready_count, best_cpu, best_mem)
+        # Autoscaling first, for the reason the untainted branch checks it
+        # first: the autoscaler acts on the Pending pod, whereas a cordoned
+        # node comes back only if whatever cordoned it meant to give it back.
+        if sandbox_fits(sandbox_scalable_fits):
+            sandbox_note = "%s, within reach of autoscaling: %s" % (
+                sandbox_shortfall, ", ".join(sandbox_scalable_pools))
+        elif sandbox_fits(sandbox_coming_back):
+            sandbox_note = "%s, covered by %d cordoned or NotReady sandbox node(s)" % (
+                sandbox_shortfall, sandbox_recovering_count)
+        else:
+            sandbox_reason = sandbox_shortfall
+elif sandbox_checked and sandbox_pool_name:
+    # No tainted node, which the branch above reads as the pool not existing
+    # yet. That is one of two states producing an empty sandbox_nodes, and the
+    # node list cannot tell them apart: the pool may exist with no nodes, and
+    # then nothing in this install adds one. terraform/modules/gke-cluster
+    # gives the gvisor pool initial_node_count and no node_count, which sizes
+    # a pool at creation and never resizes one, so the apply leaves an empty
+    # pool empty and the agent pod stays Pending until the Helm wait expires
+    # -- the hang this check exists to pre-empt, arriving through the case it
+    # stays silent for.
+    #
+    # The pool list already read for autoscaling bounds is what tells them
+    # apart, so consult it rather than adding a call. A pool absent from it
+    # keeps the silence, and that covers the fresh create and the empty list a
+    # missing or failed gcloud leaves behind: only a pool positively seen with
+    # no nodes is reported on, so the check still fails open. A pool with
+    # nodes that do not carry the taint is a third state and stays silent too
+    # -- its capacity was counted on the untainted side.
+    sandbox_pool = next(
+        (p for p in pools if p.get("name", "") == sandbox_pool_name), None)
+    if sandbox_pool is not None and nodes_per_pool.get(sandbox_pool_name, 0) == 0:
+        # Reported, not measured. An empty pool has no Ready node to model a
+        # new one on, and the untainted branch above keeps the rule that
+        # follows from that by skipping such a pool rather than inventing a
+        # machine type for it. What is knowable without a node is whether
+        # anything will add one, and that is the whole of the split below.
+        sandbox_empty = "the gVisor sandbox pool %s exists with no nodes, so there is none to measure the agent pod against (it requires %dm CPU, %dMi Memory)" % (
+            sandbox_pool_name, sandbox_cpu, sandbox_mem)
+        sandbox_extra = pool_extra_nodes(sandbox_pool)
+        if sandbox_extra > 0:
+            sandbox_note = "%s, within reach of autoscaling: %s (+%d node(s))" % (
+                sandbox_empty, sandbox_pool_name, sandbox_extra)
+        else:
+            sandbox_reason = "%s, and it does not autoscale, so nothing in this install adds one" % sandbox_empty
 
 discount_note = ""
 if discounted_pods:
@@ -2476,12 +2829,19 @@ if discounted_pods:
 
 exclusion_note = ""
 if skipped_unschedulable or skipped_not_ready:
-    exclusion_note = "%d cordoned and %d NotReady node(s) were left out of this calculation; a node pool part-way through an upgrade looks like that and gets its capacity back when the upgrade finishes." % (
+    # "not counted toward what is available now" rather than "left out of this
+    # calculation": an untainted one of these is read below as capacity coming
+    # back, and on that path the note would otherwise contradict the line
+    # printed under it. Neither ever adds to the figure reported as
+    # schedulable, which is what this sentence has to keep meaning. It does not
+    # promise the capacity returns, either: a node draining ahead of a deletion
+    # looks exactly like one part-way through an in-place upgrade.
+    exclusion_note = "%d cordoned and %d NotReady node(s) are not counted toward the capacity available right now; a node pool part-way through an upgrade looks like that, and whether the capacity returns depends on whether those nodes are coming back or being replaced." % (
         skipped_unschedulable, skipped_not_ready)
 
 print(json.dumps({
     "ok": ok,
-    "untainted_count": len(untainted_nodes),
+    "untainted_count": len(schedulable_nodes),
     "total_sched_cpu": total_sched_cpu,
     "total_sched_mem": total_sched_mem,
     "req_cpu": req_cpu,
@@ -2489,9 +2849,12 @@ print(json.dumps({
     "discount_note": discount_note,
     "exclusion_note": exclusion_note,
     "autoscale_note": autoscale_note,
-    "reason": reason
+    "recovering_note": recovering_note,
+    "reason": reason,
+    "sandbox_note": sandbox_note,
+    "sandbox_reason": sandbox_reason
 }))
-' "${tmp_cap_dir}/nodes.json" "${tmp_cap_dir}/pods.json" "$req_cpu" "$req_mem" "$single_pods_spec" "${tmp_cap_dir}/pools.json" "$PREFLIGHT_NODE_POOL_LABEL" "$PREFLIGHT_DAEMONSET_OWNER_KIND" "$install_namespace" "$cert_manager_managed" "$PREFLIGHT_CERT_MANAGER_NAMESPACE" 2>"${tmp_cap_dir}/eval.err" || true)"
+' "${tmp_cap_dir}/nodes.json" "${tmp_cap_dir}/pods.json" "$req_cpu" "$req_mem" "$single_pods_spec" "${tmp_cap_dir}/pools.json" "$PREFLIGHT_NODE_POOL_LABEL" "$PREFLIGHT_DAEMONSET_OWNER_KIND" "$install_namespace" "$cert_manager_managed" "$PREFLIGHT_CERT_MANAGER_NAMESPACE" "$sandbox_spec" 2>"${tmp_cap_dir}/eval.err" || true)"
 
   # Read while the scratch directory is still there. A traceback on that stderr
   # is a defect in the evaluator above, and the check fails open either way --
@@ -2516,7 +2879,8 @@ print(json.dumps({
   fi
 
   local ok untainted_count total_sched_cpu total_sched_mem
-  local discount_note exclusion_note autoscale_note reason
+  local discount_note exclusion_note autoscale_note recovering_note reason
+  local sandbox_note sandbox_reason
   # One parse, and a failed one is a failed check rather than a defaulted one.
   # The evaluator prints {"error": ...} and exits 0 when it cannot read the
   # node or pod JSON — a truncated `kubectl get nodes` write clears the [ -s ]
@@ -2540,6 +2904,9 @@ print(result.get("total_sched_mem", 0))
 print(str(result.get("discount_note", "")).replace("\n", " "))
 print(str(result.get("exclusion_note", "")).replace("\n", " "))
 print(str(result.get("autoscale_note", "")).replace("\n", " "))
+print(str(result.get("recovering_note", "")).replace("\n", " "))
+print(str(result.get("sandbox_note", "")).replace("\n", " "))
+print(str(result.get("sandbox_reason", "")).replace("\n", " "))
 print(str(result.get("reason", "")).replace("\n", " "))
 ' "$eval_result" 2>/dev/null)" || eval_fields=""
 
@@ -2560,13 +2927,16 @@ print(str(result.get("reason", "")).replace("\n", " "))
     read -r discount_note || discount_note=""
     read -r exclusion_note || exclusion_note=""
     read -r autoscale_note || autoscale_note=""
+    read -r recovering_note || recovering_note=""
+    read -r sandbox_note || sandbox_note=""
+    read -r sandbox_reason || sandbox_reason=""
     read -r reason || reason=""
   } <<EOF
 ${eval_fields}
 EOF
 
   if [ "$ok" != "True" ]; then
-    print_error "Cluster capacity preflight check failed for adopted Standard cluster '${cluster_name}'."
+    print_error "Cluster capacity preflight check failed for existing Standard cluster '${cluster_name}'."
     print_error "Untainted nodes have insufficient schedulable capacity for non-gVisor workloads (LiteLLM, operator, cert-manager):"
     print_info "  • Available on untainted nodes: ${total_sched_cpu}m CPU, ${total_sched_mem}Mi Memory (${untainted_count} untainted node(s))"
     print_info "  • Required minimum capacity:   ${req_cpu}m CPU, ${req_mem}Mi Memory"
@@ -2578,6 +2948,12 @@ EOF
     fi
     if [ -n "$exclusion_note" ]; then
       print_info "  • Excluded:                    ${exclusion_note}"
+    fi
+    # Both deficits at once. They are independent -- different pools, different
+    # workloads -- and reporting one at a time sends the operator to resize,
+    # re-run, and meet the other.
+    if [ -n "$sandbox_reason" ]; then
+      print_info "  • Sandbox pool as well:        ${sandbox_reason}"
     fi
     print_info "Note: The installer creates 'gvisor-pool' carrying taint 'sandbox.gke.io/runtime=gvisor:NoSchedule'."
     print_info "Trusted system workloads cannot schedule on gvisor-pool and require schedulable capacity on untainted nodes."
@@ -2600,12 +2976,66 @@ EOF
     print_info "$discount_note"
   fi
 
+  # The sandbox pool is a separate verdict on separate nodes, so it is checked
+  # even when the untainted sum passed -- and before the two notes below
+  # return, which would otherwise carry a sandbox deficit past as a pass. Under
+  # gVisor the agent pod is the largest thing the install schedules and this is
+  # the only check that looks at where it lands.
+  if [ -n "$sandbox_reason" ]; then
+    print_error "Cluster capacity preflight check failed for existing Standard cluster '${cluster_name}'."
+    print_error "The gVisor sandbox pool has no room for the agent pod:"
+    print_info "  • Reason:                      ${sandbox_reason}"
+    print_info "Under gVisor the agent pod carries the sandbox toleration and can only land on that pool, so untainted capacity does not help it."
+    print_info "To resolve:"
+    print_info "  1. Resize the sandbox pool: gcloud container clusters resize ${cluster_name} --node-pool gvisor-pool --num-nodes <count> --location ${region}"
+    print_info "  2. Or let it grow on demand: gcloud container clusters update ${cluster_name} --enable-autoscaling --node-pool gvisor-pool --max-nodes <count> --location ${region}"
+    print_info "  3. Or install without GKE Sandbox, which puts the agent on untainted nodes: ./install.sh ... --gvisor=false"
+    print_info "  4. Or bypass this check: ./install.sh ... --skip-capacity-check"
+    return 1
+  fi
+
+  if [ -n "$sandbox_note" ]; then
+    print_warning "The gVisor sandbox pool has room for the agent pod only on capacity that is not there yet: ${sandbox_note}."
+    print_info "The agent pod is created by the operator after the Helm release and will remain Pending until that node is ready."
+  fi
+
   if [ -n "$autoscale_note" ]; then
     print_warning "Cluster capacity preflight check passed on autoscaling headroom, not on current capacity: ${autoscale_note}."
     print_info "Pods will be Pending until the autoscaler provisions; the Helm timeout must outlast that."
     return 0
   fi
 
+  if [ -n "$recovering_note" ]; then
+    print_warning "Cluster capacity preflight check passed only by counting cordoned or NotReady nodes, not on the capacity accepting pods right now: ${recovering_note}."
+    print_info "Those nodes bring their capacity back after an in-place upgrade or a transient NotReady, and pods stay Pending until they do, so the Helm timeout must outlast it."
+    print_info "They do not come back if they are being drained ahead of a deletion. A GKE surge upgrade works that way, and its replacement node is already counted above, so this total can exceed what the pool settles at -- if that is what you are looking at, stop here and re-run once the cluster has settled."
+    return 0
+  fi
+
   print_success "Cluster capacity preflight check passed (${total_sched_cpu}m CPU, ${total_sched_mem}Mi Memory schedulable across ${untainted_count} untainted node(s))."
   return 0
+}
+
+if [ -z "${HELM_TIMEOUT_MIN_SECONDS:-}" ]; then
+  readonly HELM_TIMEOUT_MIN_SECONDS=540
+  readonly HELM_TIMEOUT_MAX_SECONDS=899
+fi
+
+validate_helm_timeout() {
+  local seconds="${1:-}"
+  if [ -z "$seconds" ]; then
+    return 0
+  fi
+  if [[ ! "$seconds" =~ ^[1-9][0-9]*$ ]]; then
+    print_error "--helm-timeout must be a positive integer in seconds (got '${seconds}')."
+    return 1
+  fi
+  if [ "${#seconds}" -gt 3 ] || [ "$seconds" -gt "$HELM_TIMEOUT_MAX_SECONDS" ]; then
+    print_error "--helm-timeout must be at most ${HELM_TIMEOUT_MAX_SECONDS}s (got '${seconds}'): it is the window terraform's helm_timeout variable accepts, one second under the 900s progressDeadlineSeconds of hindsight-api -- the slowest workload the install can roll out, and the one that would give up first when a memory provider selects it."
+    return 1
+  fi
+  if [ "$seconds" -lt "$HELM_TIMEOUT_MIN_SECONDS" ]; then
+    print_error "--helm-timeout must be at least ${HELM_TIMEOUT_MIN_SECONDS}s (got '${seconds}'): it is the window terraform's helm_timeout variable accepts, and a shorter wait gives up on a cold hindsight-api roll that is loading normally."
+    return 1
+  fi
 }

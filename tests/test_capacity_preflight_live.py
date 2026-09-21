@@ -113,12 +113,11 @@ class LiveCapacityPreflightTest(unittest.TestCase):
         rather than in installer_common.
         """
         overrides = {"KUBE_AGENTS_INSTALL_ENV": str(self._empty_install_env)}
-        overrides.update(env_overrides or {})
-        full_env = get_isolated_test_env(overrides=overrides)
-        # Inherit PATH, KUBECONFIG and authentication environment
         for k in ("KUBECONFIG", "GOOGLE_APPLICATION_CREDENTIALS", "CLOUDSDK_CONFIG"):
             if k in os.environ:
-                full_env[k] = os.environ[k]
+                overrides[k] = os.environ[k]
+        overrides.update(env_overrides or {})
+        full_env = get_isolated_test_env(overrides=overrides)
         install_sh_line = (
             f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n' if source_install_sh else ""
         )
@@ -219,7 +218,7 @@ TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard \\
   check_existing_cluster_capacity_preflight "{self.cluster}" "{self.region}" "{self.project}" \\
   "false" "file" "false" "" "" "true"
 """,
-            preamble=f"readonly PREFLIGHT_MIN_CPU_MILLIS_AGENT_UNSANDBOXED={huge_cpu_millis}",
+            preamble=f"readonly PREFLIGHT_MIN_CPU_MILLIS_AGENT={huge_cpu_millis}",
         )
         self.assertEqual(
             proc.returncode,
@@ -229,38 +228,102 @@ TFVARS_CREATE_CLUSTER=false TFVARS_CLUSTER_MODE=standard \\
         self.assertIn("Cluster capacity preflight check failed", proc.stdout + proc.stderr)
         self.assertIn("Insufficient schedulable CPU", proc.stdout)
 
-    def test_live_rollout_monitor_starts_and_stops_on_sigterm(self):
-        """The monitor is spawned with `&` and reaped with SIGTERM.
+    def test_live_rollout_monitor_reaps_its_sleep_child_on_sigterm(self):
+        """The monitor is spawned with `&`, completes one live poll, and reaps its sleep child on SIGTERM."""
+        real_sleep = shutil.which("sleep") or "/bin/sleep"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            first_poll_gate = tmp_path / "first_poll.done"
+            sleep_pid_file = tmp_path / "sleep.pid"
 
-        It polls the live cluster, so a crash on the first iteration and a
-        clean start look identical from the caller: the apply carries on
-        either way and the diagnostics are simply never printed.
-        """
-        script = f"""
+            # First sleep exits immediately so monitor_lifecycle_rollout executes one
+            # full kubectl poll against the live cluster; the second sleep records its
+            # PID atomically and execs a bounded real sleep so the test can deterministically
+            # signal the monitor without pgrep or unbounded background processes.
+            sleep_wrapper = bin_dir / "sleep"
+            sleep_wrapper.write_text(
+                f"""#!/usr/bin/env bash
+if [ ! -f "{first_poll_gate}" ]; then
+  : > "{first_poll_gate}"
+  exit 0
+fi
+echo "$$" > "{sleep_pid_file}.tmp" && mv "{sleep_pid_file}.tmp" "{sleep_pid_file}"
+exec "{real_sleep}" 5
+"""
+            )
+            sleep_wrapper.chmod(0o755)
+
+            script = f"""
+mon_pid=""
+sleep_pid=""
+cleanup() {{
+  [ -n "$mon_pid" ] && kill -9 "$mon_pid" 2>/dev/null || true
+  [ -n "$sleep_pid" ] && kill -9 "$sleep_pid" 2>/dev/null || true
+}}
+trap cleanup EXIT
+
 PROJECT_ID="{self.project}" REGION="{self.region}" CLUSTER_NAME="{self.cluster}" \\
   monitor_lifecycle_rollout &
 mon_pid=$!
-sleep 3
+
+for _ in $(seq 1 100); do
+  if [ -s "{sleep_pid_file}" ]; then
+    sleep_pid="$(cat "{sleep_pid_file}")"
+    break
+  fi
+  "{real_sleep}" 0.05
+done
+
 if ! kill -0 "$mon_pid" 2>/dev/null; then
   echo "MONITOR_DIED_EARLY"
   exit 0
 fi
+if [ -z "$sleep_pid" ]; then
+  echo "NO_SLEEP_CHILD_TO_REAP"
+  exit 0
+fi
+
 kill "$mon_pid" 2>/dev/null || true
 wait "$mon_pid" 2>/dev/null || true
+
 if kill -0 "$mon_pid" 2>/dev/null; then
   echo "MONITOR_SURVIVED_SIGTERM"
 else
   echo "MONITOR_STOPPED_CLEANLY"
 fi
+
+for _ in $(seq 1 40); do
+  if ! kill -0 "$sleep_pid" 2>/dev/null; then
+    break
+  fi
+  "{real_sleep}" 0.05
+done
+
+if kill -0 "$sleep_pid" 2>/dev/null; then
+  echo "SLEEP_CHILD_LEAKED"
+else
+  echo "SLEEP_CHILD_REAPED"
+fi
 """
-        proc = self._run_shell(script, source_install_sh=True)
-        self.assertNotIn("MONITOR_DIED_EARLY", proc.stdout, f"stderr: {proc.stderr}")
-        self.assertIn("MONITOR_STOPPED_CLEANLY", proc.stdout, f"stderr: {proc.stderr}")
+            proc = self._run_shell(
+                script,
+                env_overrides={"PATH": f"{bin_dir}:{os.environ.get('PATH', '')}"},
+                source_install_sh=True,
+            )
+            self.assertNotIn("MONITOR_DIED_EARLY", proc.stdout, f"stderr: {proc.stderr}")
+            self.assertNotIn("NO_SLEEP_CHILD_TO_REAP", proc.stdout, f"stderr: {proc.stderr}")
+            self.assertIn("MONITOR_STOPPED_CLEANLY", proc.stdout, f"stderr: {proc.stderr}")
+            self.assertIn("SLEEP_CHILD_REAPED", proc.stdout, f"stderr: {proc.stderr}")
 
     def test_live_rollout_failure_diagnosis(self):
-        """Validates diagnose_rollout_failure against live namespace upon timeout."""
+        """Validates diagnose_rollout_failure upon timeout with an isolated kubectl stub."""
         with tempfile.TemporaryDirectory() as tmp:
-            tmp_log = pathlib.Path(tmp) / "timeout.log"
+            tmp_path = pathlib.Path(tmp)
+            tmp_log = tmp_path / "timeout.log"
+            isolated_kubeconfig = tmp_path / "kubeconfig"
+            isolated_kubeconfig.write_text("")
             # Shaped the way terraform prints it. The diagnoser requires the
             # error-attribution line naming the release, not just the phrase:
             # the phrase alone is also what the Google provider raises for its
@@ -273,12 +336,31 @@ fi
                 '  on main.tf line 497, in resource "helm_release" "kube_agents":\n'
             )
             script = f"""
-NAMESPACE=kubeagents-system diagnose_rollout_failure "{tmp_log}"
+kubectl() {{
+  case "$*" in
+    *"config current-context"*)
+      echo "{self.context}"
+      ;;
+    *"get pods"*"-o json"*)
+      echo '{{"items": []}}'
+      ;;
+    *"get pods"*|*"get events"*)
+      ;;
+  esac
+  return 0
+}}
+PROJECT_ID="{self.project}" REGION="{self.region}" CLUSTER_NAME="{self.cluster}" \\
+  NAMESPACE=kubeagents-system diagnose_rollout_failure "{tmp_log}"
 """
-            proc = self._run_shell(script, source_install_sh=True)
-            self.assertEqual(proc.returncode, 0)
+            proc = self._run_shell(
+                script,
+                env_overrides={"KUBECONFIG": str(isolated_kubeconfig)},
+                source_install_sh=True,
+            )
+            self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
             self.assertIn("Helm rollout timed out waiting for Kubernetes workloads", proc.stdout)
             self.assertIn("Diagnosing cluster pod states", proc.stdout)
+            self.assertNotIn("kubectl failed or timed out", proc.stdout + proc.stderr)
 
     def test_live_rollout_failure_diagnosis_ignores_non_timeout(self):
         """Confirms that diagnose_rollout_failure stays quiet on logs that are not its own."""

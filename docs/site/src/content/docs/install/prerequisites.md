@@ -49,7 +49,7 @@ The first command omits a key whose value is unset, so a requirement that is not
 | **A control plane reachable from where Terraform runs, and from the agent.** Terraform's Helm provider always dials the IP endpoint, so it must be public or Terraform must run inside the VPC. The agent and the installer's post-apply `kubectl` can use the DNS endpoint instead when it allows external traffic.                                                                                                             | `enablePrivateEndpoint` unset or `false` for Terraform; for the agent, that or `dnsEndpointConfig.allowExternalTraffic: true`                                         | Nothing checks either. A private-only IP endpoint fails the Helm provider, and enabling the DNS endpoint does not change that. On a cluster the install did not create, `allow_external_dns_traffic` does nothing; open the DNS endpoint with `gcloud container clusters update --enable-dns-access` instead. [`gke_dns_endpoint.sh`](https://github.com/gke-labs/kube-agents/blob/main/scripts/installer/gke_dns_endpoint.sh) explains why the flag is never passed blind. |
 | **cert-manager**, present or absent, but declared either way.                                                                                                                                                                                                                                                                                                                                                                    | `kubectl get deployment cert-manager -n cert-manager`                                                                                                                 | `install.sh` probes for it (in that namespace only) and sets `enable_cert_manager` for you; a bare Terraform run against a cluster that already has it fails on the existing CRDs unless you set it to `false`. Details [below](#cert-manager-on-the-target-cluster).                                                                                                                                                                                                       |
 | **A gVisor RuntimeClass**, because the agent runs sandboxed by default (`--gvisor=false` opts out).                                                                                                                                                                                                                                                                                                                              | Autopilot: `currentMasterVersion` at or above `1.27.4-gke.800`. Standard: nothing to read; the install adds it.                                                       | `install.sh` refuses an older Autopilot cluster before applying anything. On Standard the composition creates a `gvisor-pool` node pool of one `e2-standard-4` per zone: new billable capacity, and it carries GKE's sandbox taint, so only the sandboxed agent lands there. A cluster that already has a pool of that name needs `gvisor_pool_name` changed; the module never adopts one.                                                                                  |
-| **Schedulable capacity for the workloads the install adds.** Untainted nodes must fit trusted system workloads (operator, credential proxy, shell sandbox, LiteLLM, cert-manager; ~540m CPU and ~4.9 GiB RAM). If the agent runs unsandboxed (`--gvisor=false`), it also lands on untainted nodes and requires >1 vCPU and ~2.5 GiB free on a single node. Hindsight memory, the dashboard, and the GitHub minter each add more. | `kubectl describe nodes` allocatable minus requests, on untainted nodes (pools the non-gVisor workloads can use), discounting anything kube-agents already runs there | `install.sh` preflights this before Terraform apply on adopted Standard clusters and refuses one that cannot grow into the requirement; `--skip-capacity-check` bypasses it. [Below](#capacity-preflight-and-rollout-visibility) for when it runs, what it discounts, and what happens during the apply.                                                                                                                                                                    |
+| **Schedulable capacity for the workloads the install adds.** Untainted nodes must fit trusted system workloads (operator, credential proxy, shell sandbox, LiteLLM, cert-manager; ~540m CPU and ~4.9 GiB RAM). The agent pod needs >1 vCPU and ~2.5 GiB free on a single node wherever it lands: a node of `gvisor-pool` by default, or an untainted node if it runs unsandboxed (`--gvisor=false`). Hindsight memory, the dashboard, and the GitHub minter each add more. | `kubectl describe nodes` allocatable minus requests, on untainted nodes (pools the non-gVisor workloads can use) and on `gvisor-pool`, discounting anything kube-agents already runs there | `install.sh` preflights this before Terraform apply on adopted Standard clusters and refuses one that cannot grow into the requirement; `--skip-capacity-check` bypasses it. [Below](#capacity-preflight-and-rollout-visibility) for when it runs, what it discounts, and what happens during the apply.                                                                                                                                                                    |
 
 ### Capacity preflight and rollout visibility
 
@@ -60,10 +60,18 @@ the rest of your session — the installer prints the context it moved away from
 `kubectl config use-context` that restores it. A node pool that can still
 scale up is credited with the nodes it may add, modeled on the allocatable capacity of its
 running nodes (pools scaled to zero have no running node to model on and are not credited).
-Cordoned and NotReady nodes are left out of the sum, and counted in the output: a pool part-way
-through an upgrade looks like that and gets its capacity back when the upgrade finishes. A cluster
-that cannot grow into the requirement fails. A non-interactive run is refused with a capacity
-breakdown; an interactive one prompts, and declining pauses the install rather than failing it.
+Cordoned and NotReady nodes are never counted toward the capacity available right now, and are
+counted in the output. A deficit those nodes would cover is reported rather than refused — the
+install proceeds, with pods Pending until the capacity arrives, which the Helm timeout has to
+outlast. Whether it arrives is the part the check cannot know: a node part-way through an in-place
+upgrade, or one whose kubelet flapped, comes back with everything it had, while a node being
+drained ahead of a deletion does not. A GKE surge upgrade is the second kind and is also where the
+credit over-counts, because surge provisions the replacement before it drains the old node, so the
+replacement is already in the sum and adding the drained node reads a pool of N nodes as N+1. The
+warning printed on that pass says so; you are the one who knows which kind you are looking at. A
+cluster that cannot grow into the requirement fails. A non-interactive run is refused with a
+capacity breakdown; an interactive one prompts, and declining pauses the install rather than
+failing it.
 
 On a cluster already running kube-agents, pods in the release namespace — and in `cert-manager`
 when the install manages it — are the requirement being measured rather than load competing with
@@ -74,16 +82,27 @@ full. The preflight prints how many pods it discounted and what they were reques
 into a namespace someone else is using shows it.
 
 What it checks is aggregate schedulable capacity across untainted nodes, plus a single-node fit for
-each pod that has to land whole. It is not a placement simulation: a cluster whose free capacity is
-enough in total, and enough on one node for each pod taken separately, can still leave a pod Pending
-when two of them want that same node. The rollout diagnostics below are what catch that case.
+each pod that has to land whole. The sandbox pool is a second, separate verdict: with gVisor on the
+agent pod carries the sandbox toleration and can only land there, so untainted capacity says nothing
+about it, and the check requires one node of that pool to have room for it. Autoscaling headroom in
+that pool counts, on the same terms as for untainted pools — the pool the composition creates does
+not autoscale, but an adopted cluster's may — and headroom in an untainted pool does not, because
+the agent pod will not land there. That verdict is silent when the pool does not exist yet, which is
+every install before Terraform creates it, and when the node pool list cannot be read at all. A pool
+that exists with no nodes is a different state and is reported: nothing in the apply resizes an
+existing pool, so the agent pod would stay Pending until the Helm wait expired. Neither is a
+placement simulation: a cluster whose free capacity is enough in total, and enough on one node for
+each pod taken separately, can still leave a pod Pending when two of them want that same node. The
+rollout diagnostics below are what catch that case.
 
-During apply on an adopted cluster, rollout progress surfaces pending pods and scheduling events.
+During apply on an existing cluster, rollout progress surfaces pending pods and scheduling events.
 On a cluster the install creates, the context does not exist until Terraform has built it and the
-monitor stays quiet. If a Helm rollout times out (`--helm-timeout`, default 600s, range 540-899),
-the installer diagnoses pending pods and scheduling warning events rather than failing with a bare
-`context deadline exceeded` — under the same context condition as the preflight, since a diagnosis
-run against whichever cluster `kubectl` happens to point at would describe the wrong one.
+live monitor stays quiet. If a Helm rollout times out (`--helm-timeout`, default 600s, range 540-899),
+the installer diagnoses pending pods, unready or crash-looping `Running` pods, and scheduling warning
+events rather than failing with a bare `context deadline exceeded` — fetching cluster credentials first
+when `kubectl` has no current context (so a cluster the install just created is diagnosed too), and
+skipping diagnosis when `kubectl`'s current context points at a different cluster (or falls back to
+in-cluster credentials) so it never describes another cluster's pods.
 
 One pod is expected to be Pending for a while and is not a capacity problem: the operator creates
 the agent pod after the Helm release, so the apply succeeds, `install.sh` prints a warning naming

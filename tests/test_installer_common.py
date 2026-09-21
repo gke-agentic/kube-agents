@@ -1372,6 +1372,33 @@ class InstallerCommonTest(unittest.TestCase):
             self.assertFalse(log_file.exists())
 
     def test_tfvars_fetches_credentials_for_existing_cluster(self):
+        # The caller that runs the capacity preflight asks for the context to be
+        # moved; on a cluster this state already manages, that opt-in is what
+        # moves it.
+        with tempfile.TemporaryDirectory() as out_dir:
+            dest = pathlib.Path(out_dir) / "terraform.tfvars"
+            log_file = pathlib.Path(out_dir) / "gcloud_mock.log"
+            proc = self._run(
+                f'write_tfvars_from_state "{dest}"; echo "rc=$?"',
+                env={
+                    "API_SERVER_KEY": "k",
+                    "GCLOUD_MOCK_LOG": str(log_file),
+                    "KUBE_AGENTS_FETCH_CLUSTER_CREDENTIALS": "true",
+                },
+                describe_stub='echo "name: test-cluster"; exit 0',
+                gcloud_stdout=MANAGED_CLUSTER_STATE,
+            )
+            self.assertIn("rc=0", proc.stdout)
+            self.assertTrue(log_file.exists())
+            self.assertIn("GCLOUD_CALL: container clusters get-credentials test-cluster --location us-central1 --project test-project", log_file.read_text())
+
+    def test_tfvars_leaves_the_kubeconfig_alone_for_a_caller_that_did_not_ask(self):
+        # uninstall.sh generates through here against the cluster it is about to
+        # destroy, and upgrade.sh has fetched its own credentials already.
+        # get-credentials rewrites the operator's kubeconfig and outlives the
+        # command, so on a cluster this state manages it happens only when a
+        # caller asks -- which uninstall.sh never does. Same inputs as the test
+        # above, opt-in withheld.
         with tempfile.TemporaryDirectory() as out_dir:
             dest = pathlib.Path(out_dir) / "terraform.tfvars"
             log_file = pathlib.Path(out_dir) / "gcloud_mock.log"
@@ -1382,8 +1409,33 @@ class InstallerCommonTest(unittest.TestCase):
                 gcloud_stdout=MANAGED_CLUSTER_STATE,
             )
             self.assertIn("rc=0", proc.stdout)
-            self.assertTrue(log_file.exists())
-            self.assertIn("GCLOUD_CALL: container clusters get-credentials test-cluster --location us-central1 --project test-project", log_file.read_text())
+            self.assertFalse(
+                log_file.exists(),
+                "the generator repointed the operator's kubeconfig at a cluster "
+                "no caller asked it to reach",
+            )
+
+    def test_tfvars_still_fetches_on_adoption_without_the_opt_in(self):
+        # Adoption is not the caller's to opt into: the credentials the recovery
+        # loop below needs live only in the adopted cluster's Secret, and every
+        # front door's loop needs them. A data-mode state entry is what an
+        # existing-cluster install records, so the cluster is found but not
+        # managed here -- create_cluster = false.
+        with tempfile.TemporaryDirectory() as out_dir:
+            dest = pathlib.Path(out_dir) / "terraform.tfvars"
+            log_file = pathlib.Path(out_dir) / "gcloud_mock.log"
+            proc = self._run(
+                f'write_tfvars_from_state "{dest}"; echo "rc=$?"',
+                env={"API_SERVER_KEY": "k", "GCLOUD_MOCK_LOG": str(log_file)},
+                describe_stub='echo "name: test-cluster"; exit 0',
+                gcloud_stdout=DATA_MODE_STATE,
+            )
+            self.assertIn("rc=0", proc.stdout)
+            self.assertTrue(
+                log_file.exists(),
+                "adoption skipped the fetch the Secret-recovery loop depends on",
+            )
+
 
 class InstallDefaultsFileTest(unittest.TestCase):
     """install.defaults.env holds every default, and only defaults.
@@ -2016,6 +2068,55 @@ class HelmReleaseSelfHealingTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 1, proc.stderr)
         self.assertIn("Refusing to recover active operation", proc.stderr)
         self.assertNotIn("ROLLBACK CALLED", proc.stderr)
+
+    def test_pending_upgrade_honours_helm_timeout_operation_window(self):
+        helm_script = (
+            '#!/usr/bin/env bash\n'
+            'case "$*" in\n'
+            '  *"status kube-agents"*) echo \'{"name": "kube-agents", "info": {"status": "pending-upgrade"}}\' ; exit 0 ;;\n'
+            '  *"history kube-agents"*) echo \'[{"revision": 1, "status": "superseded"}, {"revision": 2, "status": "pending-upgrade"}]\'; exit 0 ;;\n'
+            '  *"rollback kube-agents"*) echo "ROLLBACK CALLED" >&2; exit 0 ;;\n'
+            '  *) exit 0 ;;\n'
+            'esac\n'
+        )
+        # 700s ago is beyond the 600s default, but within a custom HELM_TIMEOUT=850s.
+        ts_700s_ago = (
+            datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=700)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        kubectl_script = (
+            '#!/usr/bin/env bash\n'
+            'case "$*" in\n'
+            f'  *"get secret"*) echo "{ts_700s_ago}" ; exit 0 ;;\n'
+            '  *) exit 1 ;;\n'
+            'esac\n'
+        )
+        # With HELM_TIMEOUT=850: 700s is within budget, so it refuses recovery.
+        proc_within = self._run_helm_test(
+            'ensure_clean_helm_release kube-agents kubeagents-system',
+            helm_script,
+            env_overrides={
+                "HELM_TIMEOUT": "850",
+                "HELM_PENDING_WAIT_MAX": "1",
+                "HELM_LOCK_POLL_INTERVAL": "1",
+            },
+            extra_bins={"kubectl": kubectl_script},
+        )
+        self.assertEqual(proc_within.returncode, 1, proc_within.stderr)
+        self.assertIn("Refusing to recover active operation", proc_within.stderr)
+        self.assertNotIn("ROLLBACK CALLED", proc_within.stderr)
+
+        # Without HELM_TIMEOUT: 700s exceeds the 600s default, so it rolls back.
+        proc_exceeded = self._run_helm_test(
+            'ensure_clean_helm_release kube-agents kubeagents-system',
+            helm_script,
+            env_overrides={
+                "HELM_PENDING_WAIT_MAX": "1",
+                "HELM_LOCK_POLL_INTERVAL": "1",
+            },
+            extra_bins={"kubectl": kubectl_script},
+        )
+        self.assertEqual(proc_exceeded.returncode, 0, proc_exceeded.stderr)
+        self.assertIn("ROLLBACK CALLED", proc_exceeded.stderr)
 
     def test_running_image_tag_extracts_container_tag(self):
         kubectl_script = (

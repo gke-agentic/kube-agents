@@ -18,6 +18,7 @@ itself, and a ref with no uninstall.sh is refused rather than driven with an
 engine it does not carry.
 """
 
+import os
 import pathlib
 import re
 import shlex
@@ -429,50 +430,77 @@ class GvisorFloorCannotBlockTheTeardownTest(unittest.TestCase):
     teardown, from the checkout that installed, is the case the floor can abort.
     The `false` fallback inside write_tfvars_from_state does not cover it; only
     the export in uninstall.sh does.
-
-    Asserted against the script's text rather than by running it, because the
-    call sits inside the teardown's confirmation and lock machinery. What makes
-    the assertion meaningful is the ordering: an export placed after the call
-    would read as a fix and change nothing.
     """
 
+    def _run_uninstall_and_read_tfvars(self, install_env_extra: str) -> tuple[subprocess.CompletedProcess[str], str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            (tmp_path / "scripts").symlink_to(_REPO_ROOT / "scripts")
+            (tmp_path / "install.defaults.env").symlink_to(_REPO_ROOT / "install.defaults.env")
+            (tmp_path / "images.json").symlink_to(_REPO_ROOT / "images.json")
+            compose_dir = tmp_path / "terraform" / "examples" / "full-install"
+            compose_dir.mkdir(parents=True)
+            lifecycle = compose_dir / "lifecycle.sh"
+            lifecycle.write_text("#!/usr/bin/env bash\nexit 0\n")
+            lifecycle.chmod(0o755)
+            script_path = tmp_path / "uninstall.sh"
+            script_path.symlink_to(_UNINSTALL_SH)
+
+            (tmp_path / "install.env").write_text(
+                "PROJECT_ID=test-proj\n"
+                "REGION=us-central1\n"
+                "CLUSTER_NAME=test-cluster\n"
+                "MODEL_PROVIDER=vertex_ai\n"
+                f"{install_env_extra}\n"
+            )
+
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            for tool in ("terraform", "kubectl"):
+                stub = bin_dir / tool
+                stub.write_text("#!/usr/bin/env bash\nexit 0\n")
+                stub.chmod(0o755)
+            # Return a sub-floor Autopilot version (1.29.1-gke.1000) when queried so
+            # write_tfvars_from_state would abort if ENABLE_GVISOR remained true.
+            gcloud = bin_dir / "gcloud"
+            gcloud.write_text(
+                '#!/usr/bin/env bash\n'
+                'case "$*" in\n'
+                '  *"value(autopilot.enabled)"*) echo "True" ;;\n'
+                '  *"value(currentMasterVersion)"*) echo "1.29.1-gke.1000" ;;\n'
+                '  *"value(projectNumber)"*) echo "123456789" ;;\n'
+                'esac\n'
+                'exit 0\n'
+            )
+            gcloud.chmod(0o755)
+
+            env = get_isolated_test_env(
+                overrides={
+                    "KUBE_AGENTS_INSTALL_ENV": str(tmp_path / "install.env"),
+                    "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                }
+            )
+            proc = subprocess.run(
+                [str(script_path), "--non-interactive"],
+                capture_output=True,
+                text=True,
+                env=env,
+                cwd=str(tmp_path),
+            )
+            tfvars_path = compose_dir / "terraform.tfvars"
+            tfvars_text = tfvars_path.read_text() if tfvars_path.exists() else ""
+            return proc, tfvars_text
+
     def test_uninstall_forces_gvisor_off_before_generating_tfvars(self):
-        text = _UNINSTALL_SH.read_text()
-        export_at = text.find('export ENABLE_GVISOR="false"')
-        self.assertNotEqual(
-            export_at,
-            -1,
-            "uninstall.sh must export ENABLE_GVISOR=false; without it a "
-            "sub-floor Autopilot cluster cannot be torn down from the checkout "
-            "that installed it.",
-        )
-        # The invocation, not the two comments that name the function.
-        call = re.search(r"^\s*write_tfvars_from_state \"", text, re.MULTILINE)
-        self.assertIsNotNone(call, "write_tfvars_from_state call not found")
-        call_at = call.start()
-        self.assertLess(
-            export_at,
-            call_at,
-            "the ENABLE_GVISOR export must come before write_tfvars_from_state, "
-            "which is what runs the floor check.",
-        )
+        proc, tfvars = self._run_uninstall_and_read_tfvars("ENABLE_GVISOR=true")
+        self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+        self.assertRegex(tfvars, r"enable_gvisor_node_pool\s*=\s*false")
+        self.assertRegex(tfvars, r'agent_runtime_class\s*=\s*""')
 
     def test_uninstall_forces_helm_timeout_before_generating_tfvars(self):
-        text = _UNINSTALL_SH.read_text()
-        export_at = text.find('export HELM_TIMEOUT="${DEFAULT_HELM_TIMEOUT}"')
-        self.assertNotEqual(
-            export_at,
-            -1,
-            "uninstall.sh must export HELM_TIMEOUT before generating tfvars",
-        )
-        call = re.search(r"^\s*write_tfvars_from_state \"", text, re.MULTILINE)
-        self.assertIsNotNone(call, "write_tfvars_from_state call not found")
-        call_at = call.start()
-        self.assertLess(
-            export_at,
-            call_at,
-            "the HELM_TIMEOUT export must come before write_tfvars_from_state",
-        )
+        proc, tfvars = self._run_uninstall_and_read_tfvars("HELM_TIMEOUT=750")
+        self.assertEqual(proc.returncode, 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
+        self.assertRegex(tfvars, r"helm_timeout\s*=\s*600")
 
 
 class UninstallSummaryDisclosureTest(unittest.TestCase):

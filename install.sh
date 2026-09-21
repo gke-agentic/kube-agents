@@ -469,6 +469,7 @@ memory_mode_from_provider() {
   esac
 }
 PARAM_MEMORY="${MEMORY:-$(memory_mode_from_provider "${MEMORY_PROVIDER:-}")}"
+CLI_MEMORY=""
 PARAM_ALLOWED_USERS="${ALLOWED_USERS:-}"
 PARAM_IMAGE_TAG="${IMAGE_TAG:-}"
 PARAM_MIGRATE_NODE_POOLS="${MIGRATE_NODE_POOLS:-}"
@@ -678,7 +679,7 @@ parse_args() {
       --enable-pubsub-platform|--enable-pubsub) PARAM_ENABLE_PUBSUB_PLATFORM="true"; shift ;;
       --enable-stockout-investigator=*|--enable-stockout=*) PARAM_ENABLE_STOCKOUT_INVESTIGATOR="${1#*=}"; shift ;;
       --enable-stockout-investigator|--enable-stockout) PARAM_ENABLE_STOCKOUT_INVESTIGATOR="true"; shift ;;
-      --memory=*) PARAM_MEMORY="${1#*=}"; shift ;;
+      --memory=*) PARAM_MEMORY="${1#*=}"; CLI_MEMORY="${1#*=}"; shift ;;
       --image-tag=*) PARAM_IMAGE_TAG="${1#*=}"; shift ;;
       --registry-prefix=*) PARAM_REGISTRY_PREFIX="${1#*=}"; shift ;;
       --third-party-registry-prefix=*) PARAM_THIRD_PARTY_REGISTRY_PREFIX="${1#*=}"; shift ;;
@@ -2243,6 +2244,7 @@ print_generate_only_handoff() {
 # pending pods and scheduling bottlenecks rather than sitting silent during
 # long Helm waits (#1297).
 monitor_lifecycle_rollout() {
+  trap - ERR
   local namespace="${NAMESPACE:-$DEFAULT_NAMESPACE}"
   # Built here rather than via gke_context_name, which dereferences PROJECT_ID,
   # REGION and CLUSTER_NAME unguarded and so aborts under `set -u` when any of
@@ -2398,6 +2400,10 @@ diagnose_rollout_failure() {
     current_ctx="$(kubectl config current-context 2>/dev/null || true)"
     if [ -n "$current_ctx" ] && [ "$current_ctx" != "$expected_ctx" ]; then
       print_warning "kubectl current context ('${current_ctx}') does not match target cluster ('${expected_ctx}'); skipping rollout failure diagnosis."
+      return 0
+    fi
+    if [ -z "$current_ctx" ] && [ -n "${KUBERNETES_SERVICE_HOST:-}" ]; then
+      print_warning "kubectl has no current context and is falling back to in-cluster credentials, which point at the cluster this is running in rather than '${expected_ctx}'; skipping rollout failure diagnosis."
       return 0
     fi
   fi
@@ -2602,6 +2608,16 @@ run_lifecycle_apply() {
     monitor_pid=$!
   fi
 
+  # The subshell reports the apply's outcome twice, by design. The status file
+  # is the detailed record -- both pipeline statuses, readable by the INT
+  # handler while the apply is still running -- and the subshell's own exit
+  # status is the copy that needs no filesystem. Writing only the file was a way
+  # to lose a failure: the `|| true` below exists so that a lost record cannot
+  # itself abort the run, but it also made "the apply failed and the record
+  # failed with it" indistinguishable from "the apply succeeded", and the parent
+  # resolved that tie as success. A full or read-only /tmp was enough to do it.
+  # `|| apply_rc=$?` keeps this out of the inherited ERR trap.
+  local apply_rc=0
   (
     cd "$(tf_compose_dir "$repo_dir")"
     export KUBE_AGENTS_STATE_BUCKET="${KUBE_AGENTS_STATE_BUCKET:-$DEFAULT_KUBE_AGENTS_STATE_BUCKET}"
@@ -2621,7 +2637,8 @@ run_lifecycle_apply() {
     local -a apply_ps=(0 0)
     ./lifecycle.sh apply "${apply_args[@]}" 2>&1 | tee "$log_file" || apply_ps=("${PIPESTATUS[@]}")
     printf '%s\n' "${apply_ps[*]}" > "$apply_status_file" || true
-  )
+    exit "${apply_ps[0]}"
+  ) || apply_rc=$?
 
   trap - INT
 
@@ -2633,6 +2650,14 @@ run_lifecycle_apply() {
   if [ -s "$apply_status_file" ]; then
     # shellcheck disable=SC2207  # deliberate word splitting: "rc_primary rc_tee"
     ps=($(cat -- "$apply_status_file" 2>/dev/null || true))
+  elif [ "$apply_rc" -ne 0 ]; then
+    # No record, and the subshell reported a failure: either the apply failed
+    # and the write failed with it, or the subshell died before reaching the
+    # write at all -- a missing compose directory, or tf_state_prefix firing the
+    # ERR trap. The tee status is lost with the record, so claim only what is
+    # known: the apply did not succeed.
+    ps=("$apply_rc" 0)
+    print_warning "The apply's exit status could not be read back from ${apply_status_file}; using the status the apply reported directly (${apply_rc})."
   fi
   rm -f -- "$apply_status_file"
 
@@ -2667,8 +2692,10 @@ run_lifecycle_apply() {
     diagnose_rollout_failure "$log_file"
   fi
 
-  # ${ps[@]+"${ps[@]}"}: empty on a clean apply, and macOS's bash 3.2 treats an
-  # empty array expansion as unbound under `set -u`.
+  # ${ps[@]+"${ps[@]}"}: empty only when a clean apply left no record behind --
+  # the status file is written on every path that reaches it, and a failure with
+  # no record is filled in from $apply_rc above. macOS's bash 3.2 treats an
+  # empty array expansion as unbound under `set -u`, so the guard stays.
   handle_pipeline_status "./lifecycle.sh apply -auto-approve -input=false" "$log_file" ${ps[@]+"${ps[@]}"}
 }
 
@@ -3186,6 +3213,7 @@ settle_network_policy_acceptance() {
   if is_truthy "${PARAM_ACCEPT_NO_NETWORK_POLICY:-false}" && ! is_truthy "${ACCEPT_NO_NETWORK_POLICY:-false}"; then
     export ACCEPT_NO_NETWORK_POLICY="true"
     KUBE_AGENTS_GENERATE_API_SERVER_KEY=true \
+      KUBE_AGENTS_FETCH_CLUSTER_CREDENTIALS=true \
       write_tfvars_from_state "$tfvars_file" "$image_tag"
   fi
   if is_truthy "${PARAM_ACCEPT_NO_NETWORK_POLICY:-${ACCEPT_NO_NETWORK_POLICY:-false}}"; then
@@ -3785,7 +3813,7 @@ run_menu_system() {
   local kms_keyring="${KMS_KEYRING:-}"
   local kms_key="${KMS_KEY:-}"
   local image_tag="${PARAM_IMAGE_TAG:-}"
-  local memory_mode="${PARAM_MEMORY:-${MEMORY:-$(memory_mode_from_provider "${MEMORY_PROVIDER:-}")}}"
+  local memory_mode="${CLI_MEMORY:-${MEMORY:-$(memory_mode_from_provider "${MEMORY_PROVIDER:-}")}}"
 
   while true; do
     echo -e "\n${C_CYAN}${C_BOLD}"
@@ -3958,6 +3986,15 @@ run_menu_system() {
         save_env_var GITHUB_APP_ID "$github_app_id"
         save_env_var KMS_KEYRING "$kms_keyring"
         save_env_var KMS_KEY "$kms_key"
+        export MEMORY="$memory_mode"
+        normalize_memory_vars
+        if [ -n "${CLI_MEMORY:-}" ]; then
+          save_env_var MEMORY "$MEMORY"
+          save_env_var MEMORY_PROVIDER "$MEMORY_PROVIDER"
+        fi
+        if [ -n "${CLI_HELM_TIMEOUT:-}" ]; then
+          save_env_var HELM_TIMEOUT "$HELM_TIMEOUT"
+        fi
         print_success "Updated configuration saved to: $INSTALL_ENV_FILE"
 
         # One engine for every kind of change: a full terraform apply
@@ -3967,7 +4004,11 @@ run_menu_system() {
         #
         # No re-source: save_env_var exports as it writes, so the environment
         # write_tfvars_from_state reads is already current.
-        write_tfvars_from_state "$(tf_compose_dir "$repo_dir")/terraform.tfvars" "$image_tag"
+        #
+        # The opt-in is for enforce_capacity_preflight below, the same reason
+        # main() sets it: the preflight grades whatever kubectl points at.
+        KUBE_AGENTS_FETCH_CLUSTER_CREDENTIALS=true \
+          write_tfvars_from_state "$(tf_compose_dir "$repo_dir")/terraform.tfvars" "$image_tag"
         # A provider or minter switch is where a new fixed-name GSA is first
         # planned on an existing install, so the 409 check runs here too.
         check_service_account_ownership || exit 1
@@ -3982,6 +4023,13 @@ run_menu_system() {
         print_info "Re-applying the install to GKE cluster '$cluster_name' (terraform apply)..."
         run_lifecycle_apply "$repo_dir" "/tmp/kube-agents-apply-$(date -u +%Y%m%dT%H%M%SZ).log"
         print_success "Configuration applied!"
+        # The panel writes the report on the way out as well as on the way to a
+        # refusal. Since the preflight moved in above it, this branch can leave
+        # REFUSED_INSUFFICIENT_CAPACITY or PAUSED in the file an agent reads as
+        # the install status -- and without this, a declined prompt followed by
+        # a resize and a re-apply that worked leaves the last word with the
+        # attempt that did not.
+        write_json_report "SUCCESS"
         ;;
       7)
         print_info "Exiting Control Panel."
@@ -5096,7 +5144,15 @@ main() {
   # install.sh is the one front door allowed to mint an API_SERVER_KEY, and only
   # after the generator has tried the live Secret. upgrade.sh and uninstall.sh
   # leave this unset so an unfindable key stays an error for them.
+  #
+  # The second opt-in is for enforce_capacity_preflight below, which grades
+  # whatever kubectl points at: on a cluster this state already manages, ask the
+  # generator to move the context there first. Adoption fetches regardless.
+  # uninstall.sh leaves this unset too — it would be repointing the operator's
+  # kubeconfig at the cluster it is about to destroy — and upgrade.sh has
+  # already fetched its own by the time it generates.
   KUBE_AGENTS_GENERATE_API_SERVER_KEY=true \
+    KUBE_AGENTS_FETCH_CLUSTER_CREDENTIALS=true \
     write_tfvars_from_state "$tfvars_file" "$image_tag"
   print_success "Terraform input saved to: $tfvars_file"
 
