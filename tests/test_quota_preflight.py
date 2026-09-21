@@ -1020,7 +1020,6 @@ class QuotaPreflightTest(unittest.TestCase):
         self.assertNotEqual(res.returncode, 0, "missing footprint must fail render")
         self.assertIn("footprint.yaml is missing or unreadable", res.stderr)
 
-    @unittest.skipUnless(_HELM, "helm is not installed")
     def test_the_bypass_flag_gates_the_whole_check(self) -> None:
         """`quotaPreflight.enabled=false` is the only remedy offered to a deployer without
         `list resourcequotas`, and nothing exercised it.
@@ -1029,40 +1028,86 @@ class QuotaPreflightTest(unittest.TestCase):
         the template body rather than some inner branch of it: with the flag off the render
         succeeds, and the helper reaches the lookup only inside that guard.
         """
-        res = subprocess.run(
-            [
-                _HELM,
-                "template",
-                "test-release",
-                str(_CHART),
-                "--set",
-                "quotaPreflight.enabled=false",
-                *_REQUIRED_HARNESS,
-            ],
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(res.returncode, 0, f"the bypass must render:\n{res.stderr}")
+        if _HELM:
+            res = subprocess.run(
+                [
+                    _HELM,
+                    "template",
+                    "test-release",
+                    str(_CHART),
+                    "--set",
+                    "quotaPreflight.enabled=false",
+                    *_REQUIRED_HARNESS,
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(res.returncode, 0, f"the bypass must render:\n{res.stderr}")
 
         helpers = _HELPERS.read_text()
-        body = (
-            helpers.split('define "kube-agents.quotaPreflight" -}}')[1]
-            .split("{{- end }}")[0]
-            .strip()
+        marker = '{{- define "kube-agents.quotaPreflight" -}}'
+        start = helpers.find(marker)
+        self.assertNotEqual(start, -1, "kube-agents.quotaPreflight must be defined")
+        template_text = helpers[start + len(marker) :]
+
+        # Extract control tags (if/range/with and end) in order
+        tags: list[tuple[int, str]] = []
+        for m in re.finditer(
+            r"\{\{-?\s*(if\b[^\}]*|range\b[^\}]*|with\b[^\}]*|end)\s*-?\}\}",
+            template_text,
+        ):
+            tags.append((m.start(), m.group(1).strip()))
+
+        self.assertTrue(
+            len(tags) >= 2,
+            "quotaPreflight must contain opening guard and closing end tags",
         )
         self.assertTrue(
-            body.startswith("{{- if .Values.quotaPreflight.enabled -}}"),
+            tags[0][1].startswith("if .Values.quotaPreflight.enabled"),
             "quotaPreflight must begin with the enabled guard",
         )
-        self.assertTrue(
-            body.endswith("{{- end -}}"),
-            "quotaPreflight must be closed by the enabled guard end",
+
+        # Track nesting depth to locate where the enabled guard closes.
+        depth = 0
+        guard_closed_at = -1
+        for i, (offset, tag) in enumerate(tags):
+            if tag.startswith(("if", "range", "with")):
+                depth += 1
+            elif tag == "end":
+                depth -= 1
+                if depth == 0 and guard_closed_at == -1:
+                    guard_closed_at = i
+                    break
+
+        self.assertNotEqual(
+            guard_closed_at,
+            -1,
+            "the enabled guard must have a matching closing end",
         )
-        self.assertIn(
-            "lookup",
-            body,
-            "the lookup must sit inside the enabled guard, or the flag cannot help a "
-            "deployer who lacks permission to perform it",
+        # The matching end for the enabled guard must be the penultimate tag,
+        # immediately preceding the define's own closing end.
+        self.assertEqual(
+            guard_closed_at,
+            len(tags) - 2,
+            "the enabled guard must enclose the entire template body before the define closes",
+        )
+
+        lookup_offset = template_text.find("lookup")
+        self.assertNotEqual(
+            lookup_offset,
+            -1,
+            "lookup must be present in quotaPreflight",
+        )
+        guard_start_offset = tags[0][0]
+        guard_end_offset = tags[guard_closed_at][0]
+        self.assertTrue(
+            guard_start_offset < lookup_offset < guard_end_offset,
+            "the lookup must sit inside the enabled guard block",
+        )
+        first_end_offset = next(offset for offset, tag in tags if tag == "end")
+        self.assertTrue(
+            lookup_offset < first_end_offset,
+            "the lookup must precede any inner closing end in the enabled guard",
         )
 
 
