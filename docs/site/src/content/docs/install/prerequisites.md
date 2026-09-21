@@ -17,6 +17,7 @@ The shipping install path targets GKE. You'll need one working GCP project plus 
 - **`jq`, `gh`, `helm`, `git`** — the rest of the CLI set the installer pre-flights up front and offers to install when missing.
 - **`gcloud beta` component** — required when adopting an existing unencrypted cluster for CMEK (`gcloud beta services identity create`) or purging backup plans during teardown (`gcloud beta container backup-restore`). Not required for standard fresh installs.
 - **`envsubst`** — only for the development Kustomize path (`make -C k8s-operator deploy-*`); usually shipped with `gettext`.
+- **`ssh-keygen`** — for Method 2, which mints the shell sandbox SSH keypair by hand in [INSTALL.md Step 2](https://github.com/gke-labs/kube-agents/blob/main/INSTALL.md#step-2-create-api-key--access-secrets), and for `upgrade.sh`'s backfill of that pair; the installer and the Terraform composition mint it without it (`tls_private_key`). Ships with the OpenSSH client.
 
 ## GCP project
 

@@ -815,6 +815,10 @@ export AGENT_NAMESPACE="${TARGET_NAMESPACE}"
 # completions: 606s / 827s / 1497s / ~2170s on identical inputs. 2700s puts
 # the ceiling above the worst observed; the variance itself is #985's
 # problem, this export just stops mislabeling slowness as wrongness.
+#
+# This is the ceiling every unit inherits. The full-audit units override it
+# per unit in run_one_unit through unit_delegation_timeout (beside
+# unit_cost_hint, below): the measured audit outgrew 2700s too (#1683).
 export AGENT_DELEGATION_TIMEOUT="2700"
 export BENCH_TF_ROOT="./tf"
 
@@ -1624,6 +1628,46 @@ unit_cost_hint() {
   esac
 }
 
+# The harness's delegation ceiling for one unit, in seconds: how long
+# devops-bench keeps polling the Platform Agent for a delegated worker before
+# it grades whatever the parent has said so far. Every unit inherits the
+# global AGENT_DELEGATION_TIMEOUT exported in section 3 (2700s); the six
+# full-audit units -- SOP dispatch, a delegated worker sweeping the fleet,
+# a ledger write, one closing line -- get 3000s.
+#
+# Why more than 2700 (#1683). The nightly of 2026-09-16 (build
+# 2100374258805903360) cut three audits at the ceiling after their work was
+# done: compliance-rbac-overgrant rep 1's worker rewrote its ledger 2520s
+# after launch and the harness gave up 192s later, while the same case's
+# passing rep needed 160s between its ledger write and its delivered answer;
+# upgrade-readiness-lagging-cluster rep 1 timed out 30s after its ledger was
+# created; fleet-cost-idle-pool rep 1 ran 2739s. The audit's own wall clock
+# at p90 is ~35 minutes (2074s over 903 presubmit repetitions, 2026-09-04 to
+# 09-15), so a run at p90 fits under 2700s -- the reps that hit the ceiling
+# are the tail beyond it, whose true length the graded durations cannot show
+# because they are cut there. The variance is still #985's problem.
+#
+# Why not more than 3000. The ledger read token is minted just before
+# devops-bench starts (mint_ledger_token, below) and lives one hour, and
+# ledger_issue_contains reads GitHub with it only after the agent turn, the
+# delegation wait and the settle. The delegation clock starts after the
+# opening turn, so everything outside it -- startup, port-forward, the
+# opening turn, settle, the verifier's own GET -- has to fit in the hour
+# minus this ceiling. 3000 leaves 600s for that; 3600 left nothing, and a
+# worker that delivered its URL in the last minutes would have handed the
+# verifier an expired token and a rung-2 "checks errored" red on a run that
+# had done its work. 300s over 2700 covers all three cut reps above with
+# margin. The task lock a later repetition waits behind is sized from this
+# ceiling (run_one_unit), so a unit that uses all of it cannot make its
+# successor give up.
+unit_delegation_timeout() {
+  case "$1" in
+    compliance-rbac-overgrant | obtainability-planted-pdb | stockout-pinned-pool) echo 3000 ;;
+    upgrade-readiness-lagging-cluster | consistency-drift-outlier | fleet-cost-idle-pool) echo 3000 ;;
+    *) echo "${AGENT_DELEGATION_TIMEOUT:-1800}" ;;
+  esac
+}
+
 # Per-task env is decided ONCE, before the fan-out, and handed to each unit:
 # the serial loop exported it globally per iteration, which two concurrent
 # units would trample. Per TASK, not per repetition, so repetitions stay
@@ -1695,7 +1739,15 @@ run_one_unit() { # <task-path> <task-name> <rep> <reuse:true|empty> <has-stack:t
   # listener under every sibling mid-conversation. On its own port, each
   # unit owns its own tunnel and keeps the harness's stale-tunnel recycling.
   export AGENT_LOCAL_PORT=$((28642 + seq))
-  if ! lock_acquire "${STATE_DIR}/lock-task-${name}"; then
+  # The task lock is held for the holder's whole unit, so the wait must
+  # outlast one: the unit's delegation ceiling plus grading and teardown
+  # (about 300s on the record; 600s here). A fixed 1800s deadline under a
+  # 3000s ceiling would make a same-task successor give up while its
+  # predecessor was still legitimately running -- 24% of presubmit runs
+  # launch compliance rep 2 within 2090s of rep 1 (385 logs, 09-04 to
+  # 09-15). The infra lock keeps its default: audit units carry no stack.
+  if ! lock_acquire "${STATE_DIR}/lock-task-${name}" \
+    "$(($(unit_delegation_timeout "${name}") + 600))"; then
     echo "<<< [$(date -u +'%Y-%m-%dT%H:%M:%SZ')] ${name} rep ${rep} gave up on its task lock" >&2
     return 0
   fi
@@ -1724,6 +1776,10 @@ run_one_unit() { # <task-path> <task-name> <rep> <reuse:true|empty> <has-stack:t
     unset TF_VAR_reuse_existing_cluster
   fi
   export BENCH_NO_INFRA="false"
+  # Per unit, inside this subshell, so the audit units' longer ceiling never
+  # leaks to a sibling lane; see unit_delegation_timeout.
+  AGENT_DELEGATION_TIMEOUT="$(unit_delegation_timeout "${name}")"
+  export AGENT_DELEGATION_TIMEOUT
   local start end dir
   start="$(_now_ms)"
   (cd "${BENCH_DIR}" && uv run devops-bench "${task}" --agent-type kubeagents 2>&1 | _ts_lines > "${log}") || true

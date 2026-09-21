@@ -5931,3 +5931,89 @@ func TestGetDeploymentStatusDetails_StagingInitTerminatedReportsDegraded(t *test
 		t.Errorf("expected message diagnosing missing /bin/sh, got %q", message)
 	}
 }
+
+// TestGetDeploymentStatusDetails_A2AGatewayFaultReportsDegraded: the A2A gateway
+// gates Ready (readSplitWorkloads), so its pod faults have to be nameable too.
+// Unscanned, this shape reported "Waiting for Deployment test-agent-a2a-gateway
+// to become ready" for as long as the fault lasted -- the same sentence the
+// deliberate callout hold produces and the same one a slow scheduler produces,
+// so nothing on the CR told an operator which of the three they had.
+func TestGetDeploymentStatusDetails_A2AGatewayFaultReportsDegraded(t *testing.T) {
+	scheme := setupScheme()
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "test-ns"},
+		Spec:       agentv1alpha1.PlatformAgentSpec{Mode: ptr.To(string(ModeNext))},
+	}
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent-a2a-gateway-7d9f-abc",
+			Namespace: "test-ns",
+			Labels:    map[string]string{"app": "test-agent-a2a-gateway"},
+		},
+		Status: corev1.PodStatus{
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name: "gateway",
+				State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{
+					Reason:  "ImagePullBackOff",
+					Message: "Back-off pulling image",
+				}},
+			}},
+			Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionTrue}},
+		},
+	}
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(agent, pod).Build()
+	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
+
+	phase, reason, message := r.getDeploymentStatusDetails(context.Background(), agent)
+
+	if phase != "Degraded" {
+		t.Errorf("phase = %q, want Degraded -- a gateway that cannot pull its image is a fault, not provisioning", phase)
+	}
+	if reason != "ImagePullBackOff" {
+		t.Errorf("reason = %q, want ImagePullBackOff", reason)
+	}
+	if !strings.Contains(message, "test-agent-a2a-gateway-7d9f-abc") {
+		t.Errorf("message does not name the faulting pod: %q", message)
+	}
+}
+
+// TestGetDeploymentStatusDetails_A2AGatewayNotScannedOnATodayInstall keeps the
+// dark stack dark, and matches the gate readSplitWorkloads uses. A today install
+// renders no A2A gateway; a pod left behind by a mode flip, or one frozen by
+// version skew, must not turn that CR Degraded for a workload this install does
+// not claim to run.
+func TestGetDeploymentStatusDetails_A2AGatewayNotScannedOnATodayInstall(t *testing.T) {
+	scheme := setupScheme()
+	agent := &agentv1alpha1.PlatformAgent{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "test-ns"},
+	}
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent-a2a-gateway-7d9f-abc",
+			Namespace: "test-ns",
+			Labels:    map[string]string{"app": "test-agent-a2a-gateway"},
+		},
+		Status: corev1.PodStatus{
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name: "gateway",
+				State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{
+					Reason:  "ImagePullBackOff",
+					Message: "Back-off pulling image",
+				}},
+			}},
+			Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionTrue}},
+		},
+	}
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(agent, pod).Build()
+	r := &PlatformAgentReconciler{Client: cl, Scheme: scheme}
+
+	phase, reason, _ := r.getDeploymentStatusDetails(context.Background(), agent)
+
+	if phase == "Degraded" {
+		t.Errorf("phase = Degraded (reason %q) -- a today install has no A2A gateway to be degraded by", reason)
+	}
+}
