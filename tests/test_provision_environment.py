@@ -173,6 +173,39 @@ exit 0
             self.assertNotIn("--enable-stockout-investigator", calls[0])
             self.assertNotIn("--google-chat-home-channel", calls[0])
 
+    def test_forwards_namespace_when_set(self):
+        """Verifies --agent-namespace is forwarded when NAMESPACE is set."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = pathlib.Path(tmp)
+            recorded_calls = tmp_dir / MOCK_CALLS_LOG
+            mock_uninstall = tmp_dir / MOCK_UNINSTALL_SCRIPT
+            mock_uninstall.write_text("#!/usr/bin/env bash\nexit 0\n")
+            mock_uninstall.chmod(0o755)
+
+            mock_install = tmp_dir / MOCK_INSTALL_SCRIPT
+            mock_install.write_text(f'#!/usr/bin/env bash\necho "install: $*" >> "{recorded_calls}"\nexit 0\n')
+            mock_install.chmod(0o755)
+
+            env = get_isolated_test_env(
+                overrides={
+                    "GCP_PROJECT_ID": MOCK_GCP_PROJECT_ID,
+                    "GCP_REGION": MOCK_GCP_REGION,
+                    "GKE_CLUSTER_NAME": MOCK_GKE_CLUSTER_NAME,
+                    "IMAGE_TAG": MOCK_IMAGE_TAG_SHA,
+                    "NAMESPACE": "custom-ns",
+                }
+            )
+            proc = subprocess.run(
+                ["bash", str(_PROVISION_SCRIPT)],
+                capture_output=True,
+                text=True,
+                env=env,
+                cwd=str(tmp_dir),
+            )
+            self.assertEqual(proc.returncode, 0, f"Script failed: {proc.stderr}")
+            calls = recorded_calls.read_text().splitlines()
+            self.assertIn("--agent-namespace=custom-ns", calls[0])
+
     def test_memory_provider_mappings(self):
         """Verifies memory mode resolution for hindsight, file, and off."""
         test_cases = [
@@ -749,7 +782,7 @@ class BooleanVariablesSurviveTheFlagRouteTest(GithubMinterInputsTest):
     def test_a_spelling_nobody_recognises_is_refused_before_the_teardown(self):
         """A typo must not cost the environment.
 
-        provision_canonical_bool still returns an unrecognised value untouched
+        canonical_bool still returns an unrecognised value untouched
         rather than folding it into "false" — folding would turn a typo into a
         silently disabled feature. But the refusal that follows from that used
         to arrive from install.sh, at the bottom of this script, by which point
@@ -837,10 +870,11 @@ class BooleanVariablesSurviveTheFlagRouteTest(GithubMinterInputsTest):
         for flag in self._TOGGLES.values():
             self.assertNotIn(flag, call)
 
-    def test_enable_webui_fallback_reaches_the_flag(self):
+    def test_legacy_enable_webui_does_not_set_dashboard_flag(self):
+        """ENABLE_WEBUI alone is ignored; HERMES_DASHBOARD_ENABLED is the one UI flag."""
         proc, tmp_dir = self._run_recording({"ENABLE_WEBUI": "true"})
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertIn("--enable-hermes-dashboard=true", self._install_call(tmp_dir))
+        self.assertNotIn("--enable-hermes-dashboard", self._install_call(tmp_dir))
 
 
 class SlackTokensAreRequiredBeforeTheTeardownTest(GithubMinterInputsTest):
@@ -938,11 +972,12 @@ class DeployEnvironmentCarriesTheInstallSettingsTest(unittest.TestCase):
 
     # Carried some other way, and each for a stated reason.
     _NOT_IN_ENV = {
-        # The three coordinates go as explicit install.sh flags, built from
-        # GCP_PROJECT_ID / GCP_REGION / GKE_CLUSTER_NAME.
+        # The coordinates and namespace go as explicit install.sh flags, built
+        # from GCP_PROJECT_ID / GCP_REGION / GKE_CLUSTER_NAME / NAMESPACE.
         "PROJECT_ID",
         "REGION",
         "CLUSTER_NAME",
+        "NAMESPACE",
         # Derived, not mapped: the workflow passes the CI-side MEMORY_PROVIDER
         # and both paths translate it into the installer's MEMORY vocabulary.
         "MEMORY",

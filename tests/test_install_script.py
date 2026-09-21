@@ -4098,7 +4098,7 @@ class TheMinterCliSourceIsSpelledOnceTest(unittest.TestCase):
 
 
 class ShellNamespaceNeverReachesTheGeneratorTest(unittest.TestCase):
-    """NAMESPACE is a name kubectl tooling exports; only install.env may set it."""
+    """NAMESPACE is a name kubectl tooling exports; only install.env or flags may set it."""
 
     def _namespace_after_load(self, contents):
         with tempfile.TemporaryDirectory() as tmp:
@@ -4108,6 +4108,7 @@ class ShellNamespaceNeverReachesTheGeneratorTest(unittest.TestCase):
             proc = subprocess.run(
                 ["bash", "-c",
                  f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n'
+                 'apply_agent_namespace_override\n'
                  'echo "NS=${NAMESPACE:-unset}"'],
                 capture_output=True, text=True,
                 env=get_isolated_test_env(overrides={
@@ -5689,6 +5690,17 @@ class DomainScopedFlagsTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
         self.assertIn("N=[]", proc.stdout)
 
+    def test_agent_namespace_seeds_from_install_env(self):
+        """install.env key NAMESPACE seeds PARAM_AGENT_NAMESPACE and reaches NAMESPACE."""
+        proc = self._parse(
+            "--gcp-project-id=p",
+            'apply_agent_namespace_override; echo "N=[${NAMESPACE:-}]"',
+            contents="NAMESPACE=recorded-ns\n",
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("N=[recorded-ns]", proc.stdout)
+
+
     def test_both_entry_paths_apply_the_namespace_override(self):
         """main() and the control panel each have to apply it after their unset.
 
@@ -6090,19 +6102,19 @@ class SlackRequiresTokensNonInteractivelyTest(unittest.TestCase):
         self.assertIn("--slack-bot-token (SLACK_BOT_TOKEN)", text)
         self.assertIn("--slack-app-token (SLACK_APP_TOKEN)", text)
 
-    def test_an_interactive_run_is_left_to_the_interview(self):
-        """Interactive runs must still reach the interview that prompts.
+    def test_an_interactive_run_without_tokens_is_still_refused_after_recovery(self):
+        """Even with a TTY, missing tokens after recovery cannot reach apply.
 
-        has_controlling_tty is stubbed rather than allocating a pty: the guard
-        asks that one question, and under a test runner the real answer is
-        always "no", which would make every interactive case look like the
-        unattended one it is supposed to be distinguished from.
+        The interview prompts for the tokens, but an empty response against an
+        empty default leaves them empty; if the live Secret recovery also finds
+        nothing, proceeding would CrashLoop the relay.
         """
         proc = self._run_deferred_check(
             before='PARAM_NON_INTERACTIVE="false"; has_controlling_tty() { return 0; }'
         )
-        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
-        self.assertIn("REACHED_THE_APPLY", proc.stdout)
+        self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertNotIn("REACHED_THE_APPLY", proc.stdout)
+        self.assertIn(self._REFUSAL, proc.stdout + proc.stderr)
 
     def test_nothing_refuses_slack_before_the_recovery_has_run(self):
         """There is one guard, and it is the one that runs after the recovery.

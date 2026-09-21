@@ -126,41 +126,6 @@ if provision_is_truthy "${LONG_LIVED_ENVIRONMENT:-}"; then
   [ "$ALLOWLIST_STATUS" -eq 0 ] || exit 1
 fi
 
-# The GitHub variables this script turns into `--enable-*` flags, in the
-# spelling install.sh's validator accepts.
-#
-# The flag route and the file route do not judge a value the same way:
-# validate_bool_flag_value matches ^(true|false)$ and exits 1 naming the flag,
-# while a value that reaches the installer through the rendered install.env goes
-# to is_truthy, which takes True/yes/y/1/on as well. A human types these into a
-# GitHub environment form, so an environment that deploys today on `True` must
-# keep deploying once the value travels as a flag.
-#
-# A value neither list recognises is returned untouched rather than folded into
-# "false": `ture` should still be refused rather than silently disabling the
-# feature. The guard below is what refuses it, above the teardown.
-#
-# That includes a value which is nothing but whitespace, which is why no arm
-# here matches the empty string. Both callers skip a genuinely empty variable,
-# so an empty `stripped` means the operator saved a space or a tab into the
-# GitHub environment — and `--enable-gvisor=false` is the one answer that must
-# not be inferred from it. Folded, that rebuild redeploys a long-lived
-# environment onto the standard runtime with nothing in the log saying so;
-# returned untouched, it is refused with the variable named and the environment
-# still up.
-provision_canonical_bool() {
-  local val="${1:-}"
-  if provision_is_truthy "$val"; then
-    echo "true"
-    return 0
-  fi
-  local stripped="${val//[[:space:]]/}"
-  case "$stripped" in
-    [Ff][Aa][Ll][Ss][Ee] | [Nn][Oo] | [Nn] | 0 | [Oo][Ff][Ff]) echo "false" ;;
-    *) echo "$val" ;;
-  esac
-}
-
 # Everything install.sh would refuse this configuration for, checked here.
 #
 # Above the teardown, for the reason the minter and allowlist guards give: the
@@ -175,9 +140,9 @@ provision_canonical_bool() {
 # here reverts to failing after the teardown.
 INSTALL_REFUSAL_STATUS=0
 
-for _bool_var in ENABLE_GKE_BACKUP_PLAN ENABLE_GVISOR HERMES_DASHBOARD_ENABLED ENABLE_WEBUI; do
+for _bool_var in ENABLE_GKE_BACKUP_PLAN ENABLE_GVISOR HERMES_DASHBOARD_ENABLED; do
   [ -n "${!_bool_var:-}" ] || continue
-  _canonical="$(provision_canonical_bool "${!_bool_var}")"
+  _canonical="$(canonical_bool "${!_bool_var}")"
   case "$_canonical" in
     true | false) ;;
     *)
@@ -253,7 +218,7 @@ esac
 rm -f "${TEARDOWN_LOG}"
 
 # The GitHub variables this script turns into `--enable-*` flags travel
-# through provision_canonical_bool, defined with the guards above: the spelling
+# through canonical_bool (from teardown_common.sh): the spelling
 # check has to happen before the teardown, and the canonicalisation is the same
 # call.
 INSTALL_ARGS=(
@@ -270,8 +235,8 @@ INSTALL_ARGS=(
 # these environments render an install.env from their GitHub variables -- so a
 # setting passed only by export is silently overridden by whatever the rendered
 # file happens to say. A flag is the one thing that wins for a single run.
-if [ -n "${AGENT_NAMESPACE:-${NAMESPACE:-}}" ]; then
-  INSTALL_ARGS+=(--agent-namespace="${AGENT_NAMESPACE:-${NAMESPACE}}")
+if [ -n "${NAMESPACE:-}" ]; then
+  INSTALL_ARGS+=(--agent-namespace="${NAMESPACE}")
 fi
 
 if [ -n "${GKE_CLUSTER_MODE:-${CLUSTER_MODE:-}}" ]; then
@@ -322,11 +287,11 @@ if [ "${SLACK_ENABLED:-false}" = "true" ]; then
 fi
 
 if [ -n "${ENABLE_GKE_BACKUP_PLAN:-}" ]; then
-  INSTALL_ARGS+=(--enable-gke-backup-plan="$(provision_canonical_bool "${ENABLE_GKE_BACKUP_PLAN}")")
+  INSTALL_ARGS+=(--enable-gke-backup-plan="$(canonical_bool "${ENABLE_GKE_BACKUP_PLAN}")")
 fi
 
-if [ -n "${HERMES_DASHBOARD_ENABLED:-${ENABLE_WEBUI:-}}" ]; then
-  INSTALL_ARGS+=(--enable-hermes-dashboard="$(provision_canonical_bool "${HERMES_DASHBOARD_ENABLED:-${ENABLE_WEBUI}}")")
+if [ -n "${HERMES_DASHBOARD_ENABLED:-}" ]; then
+  INSTALL_ARGS+=(--enable-hermes-dashboard="$(canonical_bool "${HERMES_DASHBOARD_ENABLED}")")
 fi
 
 if [ -n "${MODEL_PROVIDER:-}" ]; then
@@ -338,7 +303,7 @@ if [ -n "${MODEL_DEFAULT_NAME:-}" ]; then
 fi
 
 if [ -n "${ENABLE_GVISOR:-}" ]; then
-  INSTALL_ARGS+=(--enable-gvisor="$(provision_canonical_bool "${ENABLE_GVISOR}")")
+  INSTALL_ARGS+=(--enable-gvisor="$(canonical_bool "${ENABLE_GVISOR}")")
 fi
 
 if [ -n "${PLATFORM_AGENT_PERMISSION_SET:-}" ]; then

@@ -182,7 +182,6 @@ jobs:
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           GCP_REGION: ${{ vars.GCP_REGION }}
           GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
-          AGENT_NAMESPACE: ${{ vars.AGENT_NAMESPACE }}
           NAMESPACE: ${{ vars.NAMESPACE }}
         run: |
           set -euo pipefail
@@ -358,10 +357,7 @@ jobs:
           PLATFORM_AGENT_CUSTOM_ROLES: ${{ vars.PLATFORM_AGENT_CUSTOM_ROLES }}
           HERMES_DASHBOARD_ENABLED: ${{ vars.HERMES_DASHBOARD_ENABLED }}
           THIRD_PARTY_REGISTRY_PREFIX: ${{ vars.THIRD_PARTY_REGISTRY_PREFIX }}
-          # The installer's own spelling, from the CI-side name — the same
-          # translation render_install_env.sh's `NAMESPACE:AGENT_NAMESPACE`
-          # mapping makes. The bare NAMESPACE fallback is staging's spelling.
-          NAMESPACE: ${{ vars.AGENT_NAMESPACE || vars.NAMESPACE }}
+          NAMESPACE: ${{ vars.NAMESPACE }}
         # provision_environment.sh is this change's name for what candidates up
         # to and including rc_2608310656_cf038a2_validated carry as
         # provision_rc_environment.sh. get_latest_validated_rc_tag has no recency

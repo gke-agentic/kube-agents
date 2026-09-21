@@ -99,13 +99,7 @@ exit {uninstall_exit}
             self.assertIn(expected, calls[0])
         self.assertNotIn("--agent-namespace=", calls[0])
 
-    def test_forwards_agent_namespace_when_set(self):
-        proc, calls, _ = self._run(uninstall_exit=0, extra_env={"AGENT_NAMESPACE": "custom-ns"})
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(len(calls), 1, calls)
-        self.assertIn("--agent-namespace=custom-ns", calls[0])
-
-    def test_forwards_fallback_namespace_when_set(self):
+    def test_forwards_namespace_when_set(self):
         proc, calls, _ = self._run(uninstall_exit=0, extra_env={"NAMESPACE": "custom-ns"})
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(len(calls), 1, calls)
@@ -178,20 +172,47 @@ exit {uninstall_exit}
         self.assertIn(f"--gke-cluster-name={MOCK_GKE_CLUSTER_NAME}", summary)
         self.assertNotIn("--agent-namespace=", summary)
 
-    def test_the_summary_includes_agent_namespace_when_set(self):
+    def test_the_summary_includes_namespace_when_set(self):
         _, _, summary = self._run(
-            uninstall_exit=1, extra_env={"AGENT_NAMESPACE": "custom-ns"}
+            uninstall_exit=1, extra_env={"NAMESPACE": "custom-ns"}
         )
         self.assertIn(
             f"`./uninstall.sh --non-interactive -y --gcp-project-id={MOCK_GCP_PROJECT_ID} --gcp-region={MOCK_GCP_REGION} --gke-cluster-name={MOCK_GKE_CLUSTER_NAME} --agent-namespace=custom-ns`",
             summary,
         )
 
-    def test_the_summary_includes_fallback_namespace_when_set(self):
-        _, _, summary = self._run(
-            uninstall_exit=1, extra_env={"NAMESPACE": "fallback-ns"}
-        )
-        self.assertIn("--agent-namespace=fallback-ns", summary)
+
+_TEARDOWN_COMMON = _REPO_ROOT / "scripts" / "release" / "teardown_common.sh"
+
+
+class CanonicalBoolTest(unittest.TestCase):
+    """Verifies canonical_bool in teardown_common.sh."""
+
+    def _call(self, val):
+        cmd = f'. "{_TEARDOWN_COMMON}"; canonical_bool "{val}"'
+        proc = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True)
+        return proc.returncode, proc.stdout
+
+    def test_truthy_values_canonicalize_to_true(self):
+        for val in TRUTHY_BOOLEAN_INPUTS:
+            with self.subTest(val=val):
+                code, out = self._call(val)
+                self.assertEqual(code, 0)
+                self.assertEqual(out, "true\n")
+
+    def test_falsy_values_canonicalize_to_false(self):
+        for val in ("false", "False", "no", "0", "off", "OFF"):
+            with self.subTest(val=val):
+                code, out = self._call(val)
+                self.assertEqual(code, 0)
+                self.assertEqual(out, "false\n")
+
+    def test_unrecognised_values_are_preserved(self):
+        for val in ("ture", "flase", "invalid", "  \t  "):
+            with self.subTest(val=val):
+                code, out = self._call(val)
+                self.assertEqual(code, 0)
+                self.assertEqual(out, f"{val}\n")
 
 
 if __name__ == "__main__":

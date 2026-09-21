@@ -55,8 +55,8 @@ case "${TEARDOWN_STATUS}" in
     # billed, and nothing later in the pipeline will remove it, so the only
     # useful outcome is a red job somebody looks at.
     UNINSTALL_BY_HAND="./uninstall.sh --non-interactive -y --gcp-project-id=${GCP_PROJECT_ID} --gcp-region=${GCP_REGION} --gke-cluster-name=${GKE_CLUSTER_NAME}"
-    if [ -n "${AGENT_NAMESPACE:-${NAMESPACE:-}}" ]; then
-      UNINSTALL_BY_HAND+=" --agent-namespace=${AGENT_NAMESPACE:-${NAMESPACE}}"
+    if [ -n "${NAMESPACE:-}" ]; then
+      UNINSTALL_BY_HAND+=" --agent-namespace=${NAMESPACE}"
     fi
     teardown_report_failure \
       "${TEARDOWN_STATUS}" "${TEARDOWN_LOG}" \

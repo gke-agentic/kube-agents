@@ -474,8 +474,9 @@ PARAM_SLACK_APP_TOKEN="${SLACK_APP_TOKEN:-}"
 PARAM_SLACK_ALLOWED_USERS="${SLACK_ALLOWED_USERS:-}"
 PARAM_SLACK_HOME_CHANNEL="${SLACK_HOME_CHANNEL:-}"
 PARAM_SLACK_HOME_CHANNEL_NAME="${SLACK_HOME_CHANNEL_NAME:-}"
-# bootstrap_install_env clears NAMESPACE before reading install.env, so this
-# seeds from the file alone; --agent-namespace is the other way in.
+# bootstrap_install_env clears NAMESPACE before reading
+# install.env, so this seeds from the file alone; --agent-namespace is the
+# other way in.
 PARAM_AGENT_NAMESPACE="${NAMESPACE:-}"
 
 show_help() {
@@ -1449,9 +1450,8 @@ bootstrap_install_env_file() {
   done
   # NAMESPACE, and only when --agent-namespace put it there.
   #
-  # $NAMESPACE itself is not consulted: it is a variable kubectl tooling
-  # commonly exports, which is why bootstrap_install_env clears it, and
-  # freezing a stray shell value into the install's configuration would move
+  # NAMESPACE itself in the ambient environment is not consulted:
+  # bootstrap_install_env clears it so a stray shell value does not move
   # the release on the next apply. PARAM_AGENT_NAMESPACE carries only the two
   # deliberate routes -- this file's own key, and the flag.
   #
@@ -3682,21 +3682,17 @@ run_menu_system() {
 #
 # Runs on the exported SLACK_* the generator leaves behind, so a re-run that
 # recovers both tokens proceeds and one that recovers neither stops rather than
-# reaching a CrashLooping relay.
-#
-# Interactive runs are exempt: the interview already prompted, and anything still
-# missing was refused by hand.
+# reaching a CrashLooping relay. This applies to interactive and unattended
+# runs alike: if the tokens are still missing after the interview and Secret
+# recovery, proceeding would CrashLoop the relay.
 require_slack_tokens_after_recovery() {
   is_truthy "${SLACK_ENABLED:-}" || return 0
-  if [ "$PARAM_NON_INTERACTIVE" != "true" ] && has_controlling_tty; then
-    return 0
-  fi
   local slack_missing=""
   [ -n "${SLACK_BOT_TOKEN:-}" ] || slack_missing="${slack_missing} --slack-bot-token (SLACK_BOT_TOKEN)"
   [ -n "${SLACK_APP_TOKEN:-}" ] || slack_missing="${slack_missing} --slack-app-token (SLACK_APP_TOKEN)"
   if [ -n "$slack_missing" ]; then
-    print_error "--enable-slack needs a bot token and an app token, and this run has nobody to ask. Missing:${slack_missing}."
-    print_info "They are not in ${INSTALL_ENV_FILE} (PERSIST_SECRETS_ON_DISK=false keeps them out) and the live '${PLATFORM_AGENT_SECRET}' Secret does not carry them either. Pass them as flags, or drop --enable-slack."
+    print_error "--enable-slack needs a bot token and an app token. Missing:${slack_missing}."
+    print_info "They are not in ${INSTALL_ENV_FILE} (PERSIST_SECRETS_ON_DISK=false keeps them out) and the live '${PLATFORM_AGENT_SECRET}' Secret does not carry them either. Pass them as flags, answer both prompts on an interactive run, or drop --enable-slack."
     exit 1
   fi
 }
@@ -3704,7 +3700,7 @@ require_slack_tokens_after_recovery() {
 # The namespace the run installs into, once parse_args has had its say.
 #
 # bootstrap_install_env cleared NAMESPACE before install.env was read so that an
-# inherited kubectl variable could not redirect the install; a flag is a
+# inherited variable could not redirect the install; a flag is a
 # deliberate act, so it is allowed back in here. PARAM_AGENT_NAMESPACE empty
 # leaves the variable unset and every reader falls back to DEFAULT_NAMESPACE,
 # exactly as before.
