@@ -850,10 +850,11 @@ out_dir=""; acquire_source_repo out_dir "{requested_ref}"; echo "RESOLVED=$out_d
     def test_the_installer_neither_writes_nor_reads_the_state_file(self):
         """k8s-operator/scripts/vars.sh is never written or sourced by install.sh.
 
-        When a pre-0.4.0 checkout holds k8s-operator/scripts/vars.sh without
-        install.env, bootstrap_install_env fails closed and tells the operator
-        to copy its settings into install.env rather than either sourcing it or
-        silently re-rendering the install from defaults.
+        When a pre-0.4.0 checkout holds k8s-operator/scripts/vars.sh — whether
+        alone or beside an existing (potentially incomplete) install.env —
+        bootstrap_install_env fails closed and tells the operator to copy any
+        settings they still need into install.env and remove vars.sh rather than
+        either sourcing it or silently re-rendering the install from defaults.
         """
         source = _INSTALL_SH.read_text()
         self.assertNotIn(
@@ -873,13 +874,17 @@ out_dir=""; acquire_source_repo out_dir "{requested_ref}"; echo "RESOLVED=$out_d
             retired = checkout / "k8s-operator" / "scripts" / "vars.sh"
             retired.parent.mkdir(parents=True)
             retired.write_text('export CLUSTER_NAME="from-retired-vars"\n')
-            missing_env = checkout / "install.env"
-            proc = self._run_install_func(
-                f'INSTALL_ENV_EXPLICIT="false"; bootstrap_install_env "{missing_env}"'
-            )
-            self.assertNotEqual(proc.returncode, 0)
-            self.assertIn("Retired state file", proc.stdout + proc.stderr)
-            self.assertIn("copy its settings", proc.stdout + proc.stderr)
+            install_env = checkout / "install.env"
+            for present in (False, True):
+                if present:
+                    install_env.write_text('CLUSTER_NAME="partial-install-env"\n')
+                with self.subTest(install_env_present=present):
+                    proc = self._run_install_func(
+                        f'INSTALL_ENV_EXPLICIT="false"; bootstrap_install_env "{install_env}"'
+                    )
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("Retired state file", proc.stdout + proc.stderr)
+                    self.assertIn("remove", proc.stdout + proc.stderr)
 
     def test_parse_args_enable_google_chat(self):
         """Verifies parse_args captures --enable-google-chat."""

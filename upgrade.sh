@@ -923,6 +923,7 @@ main() {
   # preview reads its engine from a temporary copy, which has no install.env.
   local install_env_file
   install_env_file="$(resolve_install_env_file "$repo_dir" "$install_checkout")"
+  refuse_retired_vars_file "$install_env_file" "$repo_dir" "$install_checkout" "$(pwd)"
   local state_loaded="false"
   if load_install_env "$install_env_file"; then
     state_loaded="true"

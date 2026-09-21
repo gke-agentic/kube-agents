@@ -360,6 +360,35 @@ default_install_env_file() {
   echo "${repo_dir}/install.env"
 }
 
+# Refuse to proceed when a checkout still holds the retired pre-0.4.0 state
+# file (k8s-operator/scripts/vars.sh). Checked whether or not install.env also
+# exists beside it: a pre-0.4.0 checkout that gained a partial install.env (for
+# instance a copy of an older install.env.example lacking MEMORY, or a file
+# holding only credentials while MEMORY="hindsight" stayed in vars.sh) would
+# otherwise have vars.sh silently ignored and re-render from defaults.
+#
+# Skipped when KUBE_AGENTS_INSTALL_ENV is set explicitly, because CI and
+# multi-install callers pass a self-contained file by path.
+#
+# Arguments: $1 is the target install.env path to name in the remediation hint;
+# the remaining arguments ($2, $3, ...) are candidate checkout directories to
+# inspect for k8s-operator/scripts/vars.sh.
+refuse_retired_vars_file() {
+  [ -z "${KUBE_AGENTS_INSTALL_ENV:-}" ] || return 0
+  local target_install_env="${1:-install.env}"
+  shift || true
+  local dir retired_vars_file
+  for dir in "$@"; do
+    [ -n "$dir" ] || continue
+    retired_vars_file="${dir}/k8s-operator/scripts/vars.sh"
+    if [ -f "$retired_vars_file" ]; then
+      print_error "Retired state file '${retired_vars_file}' found." >&2
+      print_info "k8s-operator/scripts/vars.sh is no longer read; copy any settings you still need into '${target_install_env}' and remove '${retired_vars_file}' before continuing." >&2
+      exit 1
+    fi
+  done
+}
+
 # Load it into the environment. `set -a` rather than a K=V parser because these
 # values have to reach write_tfvars_from_state and the TF_VAR_* handoff at the
 # end of it, both of which read the environment: a conventional dotenv without

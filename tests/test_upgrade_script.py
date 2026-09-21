@@ -1019,6 +1019,35 @@ resolve_install_env_file "{repo_dir}" "{install_checkout}"
 
         self.assertEqual(resolved, str(base / "sources" / "install.env"))
 
+    def test_retired_vars_sh_is_refused_even_when_install_env_exists(self):
+        """A checkout still holding k8s-operator/scripts/vars.sh is refused whether or not install.env exists beside it."""
+        base = self._layout()
+        checkout = base / "checkout"
+        retired = checkout / "k8s-operator" / "scripts" / "vars.sh"
+        retired.parent.mkdir(parents=True)
+        retired.write_text('export MEMORY="hindsight"\n')
+        install_env = checkout / "install.env"
+        for present in (False, True):
+            if present:
+                install_env.write_text('CLUSTER_NAME="partial-install-env"\n')
+            with self.subTest(install_env_present=present):
+                script = f"""
+KUBE_AGENTS_SOURCE_ONLY=true source "{_UPGRADE_SH}"
+source "{self._INSTALLER_COMMON}"
+refuse_retired_vars_file "{install_env}" "{checkout}"
+"""
+                proc = subprocess.run(
+                    ["bash", "-c", script],
+                    capture_output=True,
+                    text=True,
+                    env={"HOME": str(base / "cwd"), "PATH": os.environ["PATH"]},
+                    cwd=str(base / "cwd"),
+                )
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn("Retired state file", proc.stdout + proc.stderr)
+                self.assertIn(str(install_env), proc.stdout + proc.stderr)
+                self.assertIn("remove", proc.stdout + proc.stderr)
+
 
 class FrontDoorsAgreeOnTheInstallCheckoutTest(unittest.TestCase):
     """install.sh and upgrade.sh have to find and move the same checkout.
