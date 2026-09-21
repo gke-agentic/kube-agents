@@ -488,7 +488,7 @@ class PreflightDecisionTest(unittest.TestCase):
 
     def test_sub_millicore_cpu_in_used_micro_and_nanocores_parses(self) -> None:
         """A neighbour pod with `cpu: 1.5m` makes `status.used` read `1500u`, and 1m + 100u reads `1000100u`."""
-        for used_qty in ("1500u", "1000100u", "1500000n"):
+        for used_qty in ("1500u", "1000100u", "1500000n", "0.5m", "1.5m"):
             with self.subTest(used=used_qty):
                 res = self._render(
                     {

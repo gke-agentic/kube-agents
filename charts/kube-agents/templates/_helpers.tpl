@@ -677,7 +677,7 @@ honest — a quota that large cannot constrain this release either way.
 {{- if not (regexMatch $numeric $n) -}}
 {{- fail (printf "quota preflight: cannot parse CPU quantity %q — set quotaPreflight.enabled=false to bypass, and please report it." $raw) -}}
 {{- end -}}
-{{- include "kube-agents.clampInt64" (float64 $n) -}}
+{{- include "kube-agents.clampInt64" (ceil (float64 $n)) -}}
 {{- else if hasSuffix "u" $raw -}}
 {{- $n := trimSuffix "u" $raw -}}
 {{- if not (regexMatch $numeric $n) -}}
