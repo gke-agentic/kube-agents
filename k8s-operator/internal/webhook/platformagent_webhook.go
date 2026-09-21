@@ -54,6 +54,14 @@ const PreventDeletionAnnotation = "kubeagents.x-k8s.io/prevent-deletion"
 // reproduces exactly the outage described above, so TestWebhookPortsMatchDefault guards it.
 const DefaultPort = 10250
 
+// The two refusals validateBusCredentialSource makes, one per route in
+// agentv1alpha1.BusCredentialRoutes. Each names the thing matched, so the
+// author reading the field error knows which line to change and why.
+const (
+	busTokenAudienceForbiddenFmt = "volume %q projects a serviceAccountToken for audience %q, which is the A2A bus token audience; the operator projects that token for the platform-agent container alone" // #nosec G101 -- Error message format, not a credential
+	busCredsSecretForbiddenFmt   = "volume %q mounts Secret %q, which the operator renders with A2A bus credentials for its own workloads; it may not be mounted by the CR"
+)
+
 // restrictedServiceAccounts is the set of high-privilege service account names forbidden in PlatformAgent spec.
 var restrictedServiceAccounts = map[string]struct{}{
 	"cluster-admin": {},
@@ -188,6 +196,7 @@ func (v *PlatformAgentCustomValidator) validatePlatformAgent(ctx context.Context
 				))
 			}
 			allErrs = append(allErrs, validateReservedVolumeName(vol.Name, depPath.Child("extraVolumes").Index(i).Child("name"))...)
+			allErrs = append(allErrs, validateBusCredentialSource(vol, platformAgent.Name, depPath.Child("extraVolumes").Index(i))...)
 		}
 		for i, vol := range platformAgent.Spec.Deployment.SidecarVolumes {
 			if vol.HostPath != nil {
@@ -197,6 +206,7 @@ func (v *PlatformAgentCustomValidator) validatePlatformAgent(ctx context.Context
 				))
 			}
 			allErrs = append(allErrs, validateReservedVolumeName(vol.Name, depPath.Child("sidecarVolumes").Index(i).Child("name"))...)
+			allErrs = append(allErrs, validateBusCredentialSource(vol, platformAgent.Name, depPath.Child("sidecarVolumes").Index(i))...)
 		}
 
 		// 2da. The fifth user-authored mount surface. Unlike the four above it
@@ -325,6 +335,41 @@ func validateReservedVolumeName(name string, path *field.Path) field.ErrorList {
 	return field.ErrorList{field.Forbidden(
 		path, fmt.Sprintf("volume name %q is reserved by the operator", name),
 	)}
+}
+
+// validateBusCredentialSource refuses a user-supplied volume whose SOURCE
+// would deliver the A2A bus credential, whatever the volume is called: a
+// projected serviceAccountToken for the bus audience, or one of the Secrets
+// the operator renders with bus credentials in them, as a `secret` volume or
+// a projected `secret` source. Volumes only; env is not checked, and
+// BusCredentialRoutes says why. validateReservedVolumeName above is the name half of the same
+// reservation; agentv1alpha1.BusCredentialRoutes is the source half, and the
+// render strips what this refuses, because the chart's default failurePolicy
+// is Ignore. The error lands on the field that matched, not on the volume, so
+// the author is told which line and why.
+//
+// A guard against a misconfiguration by the CR's author, not a boundary
+// against a hostile sidecar: KSA tokens are pod-scoped and the callout cannot
+// tell which container presented one.
+// path is the volume's own path (the list element).
+func validateBusCredentialSource(vol corev1.Volume, agentName string, path *field.Path) field.ErrorList {
+	var errs field.ErrorList
+	for _, route := range agentv1alpha1.BusCredentialRoutes(vol, agentName) {
+		switch route.Kind {
+		case agentv1alpha1.BusCredentialRouteAudience:
+			errs = append(errs, field.Forbidden(
+				path.Child("projected", "sources").Index(route.Source).Child("serviceAccountToken", "audience"),
+				fmt.Sprintf(busTokenAudienceForbiddenFmt, vol.Name, agentv1alpha1.A2ABusTokenAudience),
+			))
+		case agentv1alpha1.BusCredentialRouteSecret:
+			at := path.Child("secret", "secretName")
+			if route.Source != agentv1alpha1.BusCredentialRouteVolumeSource {
+				at = path.Child("projected", "sources").Index(route.Source).Child("secret", "name")
+			}
+			errs = append(errs, field.Forbidden(at, fmt.Sprintf(busCredsSecretForbiddenFmt, vol.Name, route.Secret)))
+		}
+	}
+	return errs
 }
 
 func validateContainerSecurity(sc *corev1.SecurityContext, path *field.Path) field.ErrorList {

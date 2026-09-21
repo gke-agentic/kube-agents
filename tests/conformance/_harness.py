@@ -332,6 +332,25 @@ SOURCES: dict[str, Source] = {
             "func a2aStripBusTokenMounts(",
         ),
     ),
+    # The audience the projection above mints under is no longer declared
+    # beside it. It moved to the API package when the validating webhook
+    # became its second reader -- a user-authored volume that projects a token
+    # for this audience is the bus credential by another name, and a second
+    # spelling in the webhook package would drift from the one the render
+    # mints under. C1 reads the literal here and holds the controller's
+    # constant to being a reference to it, so both files are needed to resolve
+    # the operator half of the contract.
+    "operator_bus_api": Source(
+        "k8s-operator/api/v1alpha1/common_types.go",
+        (
+            # The assignment rather than the bare name: the name also appears
+            # in the doc comment and in BusCredentialRoutes, so an anchor on
+            # it alone survives the declaration being renamed away.
+            'A2ABusTokenAudience = "',
+            "func A2ACredentialSecretNames(",
+            "func BusCredentialRoutes(",
+        ),
+    ),
     "a2a_bus_credentials": Source(
         "a2a/lib/credentials.go",
         ("EnvBusUser", "EnvBusTokenFile", "BusTokenAudience", "BusTokenPath"),
