@@ -679,9 +679,15 @@ acquire_upgrade_sources() {
   # locals dynamically, so a local sharing a name with the variable named in
   # $1 or $2 would be the one printf -v writes to, and the caller would read
   # back an empty string.
-  local resolved_dir="" found_checkout="" script_dir=""
-  if [ -n "${BASH_SOURCE[0]:-}" ]; then
-    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
+  local resolved_dir="" found_checkout="" script_dir="" script_path="${BASH_SOURCE[0]:-}"
+  # Under `curl … | bash` BASH_SOURCE[0] is unset only at the top level. Inside
+  # a function bash fills it with the name it was invoked as ("bash"), which
+  # dirname turns into "." and pwd into the directory the operator is standing
+  # in — so a non-empty test alone would hand a piped run whatever it is
+  # standing in, skipping the checkout arms below. Require the entry to name a
+  # file that is actually there, which only a run from a real script does.
+  if [ -n "$script_path" ] && [ -f "$script_path" ]; then
+    script_dir="$(cd "$(dirname "$script_path")" 2>/dev/null && pwd || echo "")"
   fi
   if [ -n "$script_dir" ] && [ -f "${script_dir}/scripts/installer/installer_common.sh" ]; then
     resolved_dir="$script_dir"
@@ -702,9 +708,10 @@ acquire_upgrade_sources() {
     # Only inside this arm. A run that already has a checkout keeps it, so a CI
     # job that checked out the ref it is reconciling is never redirected at
     # whatever an earlier install happened to leave in HOME. A piped run
-    # (`curl … | bash`, where BASH_SOURCE[0] is unset) invoked while standing
-    # inside a kube-agents clone lands here too, so the checkout under $(pwd)
-    # is moved (or previewed from a temp copy) rather than failing the ref check.
+    # (`curl … | bash`, where BASH_SOURCE[0] names no file) invoked while
+    # standing inside a kube-agents clone lands here too, so the checkout under
+    # $(pwd) is moved (or previewed from a temp copy) rather than failing the
+    # ref check.
     local clone_dir=""
     if [ -f "$(pwd)/scripts/installer/installer_common.sh" ] && is_kube_agents_clone "$(pwd)"; then
       found_checkout="$(pwd)"

@@ -471,10 +471,13 @@ class UpgradeReusesTheInstallCheckoutTest(unittest.TestCase):
         """A clone of an earlier release under HOME, the way an install leaves one.
 
         A bare "upstream" holds tags 0.2.0 and 0.3.0, each tracking install.sh
-        (the marker refresh_existing_clone requires). The clone is taken while
-        only 0.2.0 exists, so it has never seen 0.3.0 — the shape of a checkout
-        from an earlier install. Returns (home_dir, clone_dir, upstream_url,
-        {tag: commit}).
+        (the marker refresh_existing_clone requires) and the
+        scripts/installer/installer_common.sh every kube-agents checkout has —
+        the file the source-resolution arms test for, so a fixture without it
+        would make those arms unreachable and the tests vacuous. The clone is
+        taken while only 0.2.0 exists, so it has never seen 0.3.0 — the shape of
+        a checkout from an earlier install. Returns (home_dir, clone_dir,
+        upstream_url, {tag: commit}).
         """
         temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(temp_dir.cleanup)
@@ -491,8 +494,10 @@ class UpgradeReusesTheInstallCheckoutTest(unittest.TestCase):
         git("config", "user.name", "Test", cwd=work_dir)
         git("config", "user.email", "test@example.com", cwd=work_dir)
         git("config", "commit.gpgsign", "false", cwd=work_dir)
+        (work_dir / "scripts" / "installer").mkdir(parents=True)
+        (work_dir / "scripts" / "installer" / "installer_common.sh").write_text("# release 0.2.0\n")
         (work_dir / "install.sh").write_text("release 0.2.0\n")
-        git("add", "install.sh", cwd=work_dir)
+        git("add", "install.sh", "scripts/installer/installer_common.sh", cwd=work_dir)
         git("commit", "-m", "release 0.2.0", cwd=work_dir)
         git("tag", "0.2.0", cwd=work_dir)
         git("clone", "--bare", "--quiet", str(work_dir), str(bare_dir), cwd=base)
@@ -503,7 +508,8 @@ class UpgradeReusesTheInstallCheckoutTest(unittest.TestCase):
             git("clone", "--quiet", "--filter=blob:none", "--no-checkout", upstream_url, str(clone_dir), cwd=base)
 
         (work_dir / "install.sh").write_text("release 0.3.0\n")
-        git("add", "install.sh", cwd=work_dir)
+        (work_dir / "scripts" / "installer" / "installer_common.sh").write_text("# release 0.3.0\n")
+        git("add", "install.sh", "scripts/installer/installer_common.sh", cwd=work_dir)
         git("commit", "-m", "release 0.3.0", cwd=work_dir)
         git("tag", "0.3.0", cwd=work_dir)
         git("push", "--quiet", upstream_url, "main", "--tags", cwd=work_dir)
@@ -808,6 +814,78 @@ echo "INSTALL_CHECKOUT=$install_checkout"
         self.assertIn("Required CLI tool", proc.stdout + proc.stderr)
         self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
 
+    def _acquire_through_a_real_pipe(self, home_dir, upstream_url, requested_ref, preview_flag=None, cwd=None):
+        """Run acquire_upgrade_sources with the script arriving on stdin.
+
+        The distinction this makes against _acquire_from_outside is the point:
+        there the script is a file, so BASH_SOURCE[0] names it. Under
+        `curl … | bash` there is no file, and bash fills BASH_SOURCE[0] inside a
+        function with the name the shell was invoked as ("bash") — which
+        dirname turns into the invocation directory. Sourcing a copy therefore
+        cannot reach the arms a real pipe takes.
+        """
+        preview_line = f'{preview_flag}="true"' if preview_flag else ":"
+        piped = "\n".join(
+            [
+                "KUBE_AGENTS_SOURCE_ONLY=true",
+                _UPGRADE_SH.read_text(),
+                f'KUBE_AGENTS_REPO_URL="{upstream_url}"',
+                preview_line,
+                'repo_dir=""',
+                'install_checkout=""',
+                f'acquire_upgrade_sources repo_dir install_checkout "{requested_ref}"',
+                'echo "REPO_DIR=$repo_dir"',
+                'echo "INSTALL_CHECKOUT=$install_checkout"',
+            ]
+        )
+        return subprocess.run(
+            ["bash", "-s"],
+            input=piped,
+            capture_output=True,
+            text=True,
+            env={"HOME": str(home_dir), "PATH": os.environ["PATH"]},
+            cwd=str(cwd or home_dir),
+        )
+
+    def test_a_real_pipe_from_inside_the_install_checkout_moves_it(self):
+        """The documented one-liner, run the way the docs say: standing in the install checkout.
+
+        BASH_SOURCE[0] is non-empty here, so the guard cannot be "is it set";
+        it has to be "does it name a file".
+        """
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+
+        proc = self._acquire_through_a_real_pipe(home_dir, upstream_url, "0.3.0", cwd=clone_dir)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
+        self.assertEqual(self._reported(proc, "INSTALL_CHECKOUT"), str(clone_dir))
+        self.assertEqual(self._head_of(clone_dir), commits["0.3.0"])
+
+    def test_a_real_pipe_plan_from_inside_the_install_checkout_does_not_move_it(self):
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+
+        proc = self._acquire_through_a_real_pipe(
+            home_dir, upstream_url, "0.3.0", preview_flag="PARAM_PLAN", cwd=clone_dir
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
+        self.assertNotEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
+        self.assertEqual(self._reported(proc, "INSTALL_CHECKOUT"), str(clone_dir))
+
+    def test_a_real_pipe_from_a_neutral_directory_still_finds_the_install_checkout(self):
+        """Nothing in the invocation directory, so HOME's checkout is the one to move."""
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+        neutral = home_dir.parent / "neutral"
+        neutral.mkdir(exist_ok=True)
+
+        proc = self._acquire_through_a_real_pipe(home_dir, upstream_url, "0.3.0", cwd=neutral)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
+        self.assertEqual(self._head_of(clone_dir), commits["0.3.0"])
+
 
 class ConfigurationLookupOrderTest(unittest.TestCase):
     """Which install.env an upgrade loads, when more than one is reachable.
@@ -983,21 +1061,30 @@ class PipedUpgradeResolvesItsSourcesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="outside-checkout-") as outside:
             empty_install_env = pathlib.Path(outside) / "pinned-install.env"
             empty_install_env.write_text("")
+            # main() checks its CLI tools before resolving sources, the way
+            # install.sh does. Stub them, so this test reads the source
+            # resolution it is about on any host, rather than whichever tool the
+            # runner happens to be missing.
+            stub_bin = pathlib.Path(outside) / "bin"
+            stub_bin.mkdir()
+            for tool in ("gcloud", "kubectl", "helm", "terraform"):
+                stub = stub_bin / tool
+                stub.write_text("#!/usr/bin/env bash\nexit 0\n")
+                stub.chmod(0o755)
             proc = subprocess.run(
                 ["bash", "-s", "--", "--keep-image-tag", "--non-interactive", "--project-id=my-gcp-project"],
                 input=_UPGRADE_SH.read_text(),
                 capture_output=True,
                 text=True,
                 env=get_isolated_test_env(
-                    overrides={
-                        "KUBE_AGENTS_INSTALL_ENV": str(empty_install_env),
-                        "PATH": os.environ["PATH"],
-                    }
+                    overrides={"KUBE_AGENTS_INSTALL_ENV": str(empty_install_env)},
+                    bin_dir=str(stub_bin),
                 ),
                 cwd=outside,
             )
         combined = proc.stdout + proc.stderr
         self.assertNotIn("unbound variable", combined)
+        self.assertNotIn("Required CLI tool", combined)
         self.assertIn("have to run from a kube-agents checkout", combined)
 
 
