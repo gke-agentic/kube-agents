@@ -131,6 +131,26 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_UPGRADE_SH}"
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn("Refusing to upgrade from an unversioned source directory", proc.stdout)
 
+    def test_verify_local_source_ref_rejects_a_bundle_of_another_release(self):
+        """A piped release script carries its own baked version wherever it runs.
+
+        Standing in an unpacked 0.5.0 bundle and piping the 0.6.0 one-liner used
+        to fall through matches_release_bundle_ref into "match baked official
+        release 0.6.0", and then applied the old tree's Terraform and charts at
+        the new tag. The directory says which release it is; that wins.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="unpacked-older-bundle-") as outer_dir:
+            archive_dir = pathlib.Path(outer_dir) / "kube-agents-0.5.0"
+            create_mock_release_bundle_marker(archive_dir, version="0.5.0")
+
+            cmd = f'BAKED_RELEASE_VERSION="0.6.0"; verify_local_source_ref "{archive_dir}" "0.6.0"'
+            proc = self._run_upgrade_func(cmd, cwd=archive_dir)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("unpacked release bundle of another release", proc.stdout)
+            self.assertNotIn("Verified", proc.stdout)
+
     def test_verify_local_source_ref_in_git_worktree_enforces_git_alignment(self):
         """Verifies verify_local_source_ref in upgrade.sh enforces clean git status in real git checkouts."""
         import tempfile

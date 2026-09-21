@@ -42,6 +42,10 @@ cp /path/to/the/install/install.env .
 ./upgrade.sh --upgrade-mode="full" --non-interactive --project-id="<PROJECT_ID>"
 ```
 
+Run the bundle's own `./upgrade.sh`, not a newer one piped into a bundle directory: the sources
+applied would be the unpacked release's while the images came from the piped script's. A bundle
+that is not the release being asked for is refused by name.
+
 ## Upgrade Modes
 
 - `--upgrade-mode=harness`: `helm upgrade --reset-then-reuse-values` re-tagging the Platform Agent image (`platformAgent.deployment.image.tag`) and the sandbox it reaches over ssh (`agentSandbox.image.tag`), which is built from the same revision.

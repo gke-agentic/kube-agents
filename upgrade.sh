@@ -412,6 +412,16 @@ verify_local_source_ref() {
         print_success "Verified upgrade sources match official release bundle ${bundle_version}."
         return 0
       fi
+      # BAKED_RELEASE_VERSION belongs to the script that is RUNNING, not to the
+      # directory it was handed: a piped release one-liner carries its own
+      # version wherever it is run. So when the directory says which release it
+      # is and disagrees, that is the answer -- without this, standing in an
+      # unpacked older bundle and piping a newer upgrade.sh applied the old
+      # tree's Terraform and charts at the new tag and called it verified.
+      if [ -f "${repo_dir}/.release-bundle" ]; then
+        print_error "Refusing to upgrade from '${repo_dir}': it is an unpacked release bundle of another release, not of '${expected_ref}'."
+        return 1
+      fi
       print_success "Verified upgrade sources match baked official release ${BAKED_RELEASE_VERSION}."
       return 0
     fi
