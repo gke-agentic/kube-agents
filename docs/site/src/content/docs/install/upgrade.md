@@ -140,12 +140,15 @@ The run also writes a machine-readable report to `/tmp/kube-agents-upgrade-repor
 These refusals happen before anything on the cluster moves.
 
 - **The sources do not match the release.** The checkout's `HEAD` is not the release's commit, the
-  tree has uncommitted changes, or a bundle's baked version is not the version asked for. Start
-  again from a clean checkout or bundle.
-- **No install configuration.** Neither `KUBE_AGENTS_INSTALL_ENV`, nor an `install.env` in the
-  checkout the script runs from, the directory you are standing in, or the install checkout in
-  `$HOME/kube-agents`, nor a legacy `k8s-operator/scripts/vars.sh` in this run's sources or in that
-  same install checkout, was found.
+  tree has uncommitted changes, or an unpacked tree names a release other than the one asked for —
+  either in its `.release-bundle` marker or in the version stamped into its own `upgrade.sh`. A
+  release script carries its version with it, so standing in an older unpacked tree and running a
+  newer one is refused rather than silently applying the older tree. Start again from a clean
+  checkout or from the bundle of the release you want.
+- **No install configuration.** Neither `KUBE_AGENTS_INSTALL_ENV` nor an `install.env` was found.
+  `install.env` is searched for in three directories — the checkout the script runs from, the
+  directory you are standing in, and the install checkout in `$HOME/kube-agents` —
+  and `KUBE_AGENTS_INSTALL_ENV` overrides that search.
 - **No Helm release.** The target namespace has no `kube-agents` release to upgrade.
 
 ## Where to go next

@@ -148,8 +148,47 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_UPGRADE_SH}"
             cmd = f'BAKED_RELEASE_VERSION="0.6.0"; verify_local_source_ref "{archive_dir}" "0.6.0"'
             proc = self._run_upgrade_func(cmd, cwd=archive_dir)
             self.assertNotEqual(proc.returncode, 0)
-            self.assertIn("unpacked release bundle of another release", proc.stdout)
+            self.assertIn("it is release '0.5.0', not '0.6.0'", proc.stdout)
             self.assertNotIn("Verified", proc.stdout)
+
+    def test_verify_local_source_ref_rejects_a_stale_tree_carrying_no_marker(self):
+        """The marker is one way a tree names its release, not the only one.
+
+        A copy of a bundle with .release-bundle removed, or a bundle from a
+        release predating the marker, still carries the version the packager
+        stamps into every root script. Keying the refusal on the marker alone
+        let exactly those trees through with a green "verified".
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="unmarked-older-tree-") as outer_dir:
+            archive_dir = pathlib.Path(outer_dir) / "kube-agents-0.5.0"
+            archive_dir.mkdir(parents=True)
+            (archive_dir / "upgrade.sh").write_text('#!/usr/bin/env bash\nBAKED_RELEASE_VERSION="0.5.0"\n')
+
+            cmd = f'BAKED_RELEASE_VERSION="0.6.0"; verify_local_source_ref "{archive_dir}" "0.6.0"'
+            proc = self._run_upgrade_func(cmd, cwd=archive_dir)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("it is release '0.5.0', not '0.6.0'", proc.stdout)
+            self.assertNotIn("Verified", proc.stdout)
+
+    def test_verify_local_source_ref_accepts_a_marker_that_names_only_the_tag(self):
+        """deploy/release-versioning.md promises a match on version *or* tag.
+
+        Requiring version= before tag= was consulted turned a marker naming the
+        requested release into a refusal of it.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="tag-only-bundle-") as outer_dir:
+            archive_dir = pathlib.Path(outer_dir) / "kube-agents-0.6.0"
+            archive_dir.mkdir(parents=True)
+            (archive_dir / ".release-bundle").write_text("name=kube-agents\ntag=0.6.0\n")
+
+            cmd = f'BAKED_RELEASE_VERSION="0.6.0"; verify_local_source_ref "{archive_dir}" "0.6.0"'
+            proc = self._run_upgrade_func(cmd, cwd=archive_dir)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("official release bundle 0.6.0", proc.stdout)
 
     def test_verify_local_source_ref_in_git_worktree_enforces_git_alignment(self):
         """Verifies verify_local_source_ref in upgrade.sh enforces clean git status in real git checkouts."""

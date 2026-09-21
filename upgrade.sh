@@ -53,6 +53,10 @@ KUBE_AGENTS_CLONE_MARKER="install.sh"
 # shallow (one an earlier install left) keeps; a complete clone is fetched
 # without it so it does not become shallow.
 KUBE_AGENTS_FETCH_DEPTH_OPT="--depth=1"
+# The file an unpacked release bundle carries to say which release it is.
+# package_release_bundle.sh writes it into every bundle it produces, with
+# `version=` and `tag=` both set to the release tag.
+readonly KUBE_AGENTS_RELEASE_BUNDLE_MARKER=".release-bundle"
 
 # Default CLI Configuration
 PARAM_UPGRADE_MODE="full"
@@ -344,18 +348,53 @@ backfill_sandbox_ssh_key() {
 matches_release_bundle_ref() {
   local repo_dir="$1"
   local expected_ref="$2"
-  local bundle_file="${repo_dir}/.release-bundle"
+  local bundle_file="${repo_dir}/${KUBE_AGENTS_RELEASE_BUNDLE_MARKER}"
 
   if [ -f "$bundle_file" ]; then
     local bundle_version bundle_tag
     bundle_version="$(grep -E "^version=" "$bundle_file" 2>/dev/null | cut -d'=' -f2- | tr -d '[:space:]' || echo "")"
     bundle_tag="$(grep -E "^tag=" "$bundle_file" 2>/dev/null | cut -d'=' -f2- | tr -d '[:space:]' || echo "")"
-    if [ -n "$bundle_version" ] && { [ "$bundle_version" = "$expected_ref" ] || [ "$bundle_tag" = "$expected_ref" ]; }; then
-      echo "$bundle_version"
+    # Either field answers the question. This repository's packager writes both,
+    # but deploy/release-versioning.md documents a match on "version or tag",
+    # and requiring version= first turned a marker carrying only tag= into a
+    # refusal of the very release it names.
+    if [ -n "$expected_ref" ] && { [ "$bundle_version" = "$expected_ref" ] || [ "$bundle_tag" = "$expected_ref" ]; }; then
+      echo "${bundle_version:-$bundle_tag}"
       return 0
     fi
   fi
   return 1
+}
+
+# What release a non-Git source tree says it is, or "" when it says nothing.
+#
+# Two statements are consulted, because the bundle marker is not the only shape
+# a stale tree arrives in. A bundle this repository packaged carries the marker.
+# A copy of one with the marker removed, or a tree from a release predating the
+# marker, still carries the version package_release_bundle.sh stamps into every
+# root script, so the tree's own upgrade.sh answers where the marker cannot.
+#
+# What this still cannot see: a tree that was never stamped at all -- GitHub's
+# auto-generated "Source code" archive of a tag is the plain repository content,
+# where BAKED_RELEASE_VERSION is empty. Such a directory is indistinguishable
+# from any other unversioned directory, and the arm below accepts it on the
+# running script's baked version, which is what tests/test_upgrade_script.py's
+# test_verify_local_source_ref_accepts_baked_release_in_non_git_dir pins.
+release_version_of_source_tree() {
+  local repo_dir="$1"
+  local marker="${repo_dir}/${KUBE_AGENTS_RELEASE_BUNDLE_MARKER}"
+  local declared=""
+
+  if [ -f "$marker" ]; then
+    declared="$(grep -E "^version=" "$marker" 2>/dev/null | cut -d'=' -f2- | tr -d '[:space:]' || echo "")"
+    if [ -z "$declared" ]; then
+      declared="$(grep -E "^tag=" "$marker" 2>/dev/null | cut -d'=' -f2- | tr -d '[:space:]' || echo "")"
+    fi
+  fi
+  if [ -z "$declared" ] && [ -f "${repo_dir}/upgrade.sh" ]; then
+    declared="$(grep -m1 -E '^BAKED_RELEASE_VERSION=' "${repo_dir}/upgrade.sh" 2>/dev/null | cut -d'=' -f2- | tr -d '"'"'"'[:space:]' || echo "")"
+  fi
+  echo "$declared"
 }
 
 # The two refusals that do not need a ref to make sense: an unversioned source
@@ -418,8 +457,10 @@ verify_local_source_ref() {
       # is and disagrees, that is the answer -- without this, standing in an
       # unpacked older bundle and piping a newer upgrade.sh applied the old
       # tree's Terraform and charts at the new tag and called it verified.
-      if [ -f "${repo_dir}/.release-bundle" ]; then
-        print_error "Refusing to upgrade from '${repo_dir}': it is an unpacked release bundle of another release, not of '${expected_ref}'."
+      local tree_release=""
+      tree_release="$(release_version_of_source_tree "$repo_dir")"
+      if [ -n "$tree_release" ] && [ "$tree_release" != "$expected_ref" ]; then
+        print_error "Refusing to upgrade from '${repo_dir}': it is release '${tree_release}', not '${expected_ref}'."
         return 1
       fi
       print_success "Verified upgrade sources match baked official release ${BAKED_RELEASE_VERSION}."
@@ -720,8 +761,19 @@ acquire_upgrade_sources() {
   # a function bash fills it with the name it was invoked as ("bash"), which
   # dirname turns into "." and pwd into the directory the operator is standing
   # in — so a non-empty test alone would hand a piped run whatever it is
-  # standing in, skipping the checkout arms below. Require the entry to name a
-  # file that is actually there, which only a run from a real script does.
+  # standing in, skipping the checkout arms below. Requiring the entry to name
+  # a file that is actually there rejects that, because "bash" is not a file in
+  # the directory the operator stands in.
+  #
+  # It is a test of plausibility, not of identity: `curl … | /bin/bash` names a
+  # file that does exist, and so would a file called `bash` sitting in the
+  # invocation directory. The first is harmless because /bin carries no
+  # scripts/installer/installer_common.sh and the run falls through to the arms
+  # below. The second, inside an install checkout, does resolve to that
+  # checkout and costs the run its install_checkout, so it is refused on the
+  # ref check rather than upgrading anything wrongly. Both are fail-closed —
+  # but do not read this guard as proof that script_dir is this script's own
+  # directory, because it is not.
   if [ -n "$script_path" ] && [ -f "$script_path" ]; then
     script_dir="$(cd "$(dirname "$script_path")" 2>/dev/null && pwd || echo "")"
   fi
