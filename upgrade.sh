@@ -444,8 +444,14 @@ verify_local_source_ref() {
     return 1
   fi
   if [ -n "$(git -C "$repo_dir" status --porcelain --untracked-files=no)" ]; then
-    if [ "$PARAM_DRY_RUN" = "true" ]; then
-      print_warning "Dry-run is using uncommitted source changes; a real upgrade would require a clean checkout."
+    # Both previews warn, the way verify_local_source_clean's do and for the
+    # same reason: they change nothing, and a preview of what the working tree
+    # WOULD apply is the one command that answers "what have I edited here".
+    # --plan reaches this only since previews started reusing an install
+    # checkout that is already at the ref; refusing there would take the drift
+    # report away from an operator whose checkout carries a stray edit.
+    if [ "$PARAM_DRY_RUN" = "true" ] || [ "$PARAM_PLAN" = "true" ]; then
+      print_warning "This preview is using uncommitted source changes; a real upgrade would require a clean checkout."
     else
       print_error "Refusing to upgrade from a dirty checkout because its scripts do not exactly match '$expected_ref'."
       return 1
@@ -606,6 +612,26 @@ resolve_install_env_file() {
   # Nothing exists yet. Naming the sources' own directory keeps the refusal
   # below pointing at the file the installer would have written.
   default_install_env_file "$repo_dir"
+}
+
+# The legacy vars.sh, by the same reasoning as resolve_install_env_file.
+# k8s-operator/scripts/vars.sh is gitignored, so a run whose sources are a
+# freshly fetched copy — every preview of a release the install checkout is not
+# on — has none, and looking only there told a legacy install that the file it
+# does have is missing. Sources first, so a checkout the run was handed wins,
+# then the install checkout the run discovered.
+resolve_state_file() {
+  local repo_dir="$1"
+  local install_checkout="${2:-}"
+  if [ -f "${repo_dir}/k8s-operator/scripts/vars.sh" ]; then
+    echo "${repo_dir}/k8s-operator/scripts/vars.sh"
+    return 0
+  fi
+  if [ -n "$install_checkout" ] && [ -f "${install_checkout}/k8s-operator/scripts/vars.sh" ]; then
+    echo "${install_checkout}/k8s-operator/scripts/vars.sh"
+    return 0
+  fi
+  echo "${repo_dir}/k8s-operator/scripts/vars.sh"
 }
 
 # Parameter Parsing
@@ -864,9 +890,11 @@ main() {
 
   # Two sources, in this order, so the hand-authored input wins: a legacy
   # vars.sh from an install that predates install.env, then install.env over
-  # the top of it. Either one on its own is enough to upgrade.
-  local state_file="${repo_dir}/k8s-operator/scripts/vars.sh"
-  local install_env_file
+  # the top of it. Either one on its own is enough to upgrade. Both are
+  # resolved against the install checkout as well as this run's sources: a
+  # preview reads its engine from a temporary copy, which has neither file.
+  local state_file install_env_file
+  state_file="$(resolve_state_file "$repo_dir" "$install_checkout")"
   install_env_file="$(resolve_install_env_file "$repo_dir" "$install_checkout")"
   local state_loaded="false"
   if [ -f "$state_file" ]; then
@@ -876,14 +904,18 @@ main() {
       exit 1
     fi
     state_loaded="true"
-    print_success "Loaded existing configuration state from k8s-operator/scripts/vars.sh"
+    print_success "Loaded existing configuration state from: ${state_file}"
   fi
   if load_install_env "$install_env_file"; then
     state_loaded="true"
     print_success "Loaded install configuration from: ${install_env_file}"
   fi
   if [ "$state_loaded" != "true" ]; then
-    print_warning "No install configuration (install.env) and no saved state (k8s-operator/scripts/vars.sh) was found in ${repo_dir}."
+    local searched="${repo_dir}"
+    if [ -n "$install_checkout" ] && [ "$install_checkout" != "$repo_dir" ]; then
+      searched="${searched} or ${install_checkout}"
+    fi
+    print_warning "No install configuration (install.env) and no saved state (k8s-operator/scripts/vars.sh) was found in ${searched}."
   fi
   # GITOPS_ORG / GITOPS_REPO are the names; a configuration still carrying
   # GITHUB_ORG / GITHUB_REPO is accepted with a warning. Runs after the load and

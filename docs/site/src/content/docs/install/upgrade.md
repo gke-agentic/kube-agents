@@ -111,6 +111,10 @@ Neither moves the install checkout in `$HOME/kube-agents`: a preview that needs 
 checkout does not have reads them from a temporary copy instead, so the checkout is still on the
 release the install runs when the preview is over.
 
+Neither is refused by an edited checkout either. A preview of what an uncommitted change would
+apply is the one report that answers "what have I edited here", so both previews warn and continue
+where a real upgrade stops.
+
 ## Checking the result
 
 ```bash
@@ -140,7 +144,8 @@ These refusals happen before anything on the cluster moves.
   again from a clean checkout or bundle.
 - **No install configuration.** Neither `KUBE_AGENTS_INSTALL_ENV`, nor an `install.env` in the
   checkout the script runs from, the directory you are standing in, or the install checkout in
-  `$HOME/kube-agents`, nor a legacy `k8s-operator/scripts/vars.sh` was found.
+  `$HOME/kube-agents`, nor a legacy `k8s-operator/scripts/vars.sh` in this run's sources or in that
+  same install checkout, was found.
 - **No Helm release.** The target namespace has no `kube-agents` release to upgrade.
 
 ## Where to go next

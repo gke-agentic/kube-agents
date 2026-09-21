@@ -173,6 +173,36 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_UPGRADE_SH}"
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn("dirty checkout", proc.stdout)
 
+    def test_a_plan_previews_a_dirty_checkout_instead_of_refusing_it(self):
+        """--plan says it changes nothing, so a stray edit is something to report, not refuse.
+
+        Previews reuse the install checkout once it is at the ref — the steady
+        state after any successful upgrade — so refusing here would take the
+        drift report away from the one command that answers "what have I
+        edited". verify_local_source_clean already warns both previews.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="git-upgrade-plan-dirty-") as repo_dir:
+            repo_path = pathlib.Path(repo_dir)
+            subprocess.run(["git", "init"], cwd=str(repo_path), check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=str(repo_path), check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(repo_path), check=True)
+            (repo_path / "file.txt").write_text("initial\n")
+            subprocess.run(["git", "add", "file.txt"], cwd=str(repo_path), check=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=str(repo_path), check=True)
+            subprocess.run(["git", "tag", "0.2.0"], cwd=str(repo_path), check=True)
+            (repo_path / "file.txt").write_text("a hand edit the operator wants to see planned\n")
+
+            cmd = (
+                'BAKED_RELEASE_VERSION="0.2.0"; PARAM_PLAN="true"; '
+                f'verify_local_source_ref "{repo_path}" "0.2.0"'
+            )
+            proc = self._run_upgrade_func(cmd, cwd=repo_path)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("preview is using uncommitted source changes", proc.stdout)
+            self.assertNotIn("Refusing", proc.stdout)
+
 
 class PersistStateVarTest(unittest.TestCase):
     """persist_state_var must not create the vars.sh tree this release removed.
@@ -1002,6 +1032,66 @@ resolve_install_env_file "{repo_dir}" "{install_checkout}"
         resolved = self._resolve(base / "sources", "", base / "cwd")
 
         self.assertEqual(resolved, str(base / "sources" / "install.env"))
+
+
+class LegacyStateFileLookupTest(unittest.TestCase):
+    """Where an upgrade looks for a legacy k8s-operator/scripts/vars.sh.
+
+    vars.sh is gitignored, so it is never in the temporary clone a preview reads
+    its engine from. Looking only there told a legacy install — one still on
+    vars.sh, with no install.env — that the configuration it does have is
+    missing, and refused the documented --plan while a real upgrade of the same
+    install went through.
+    """
+
+    def _resolve(self, repo_dir, install_checkout):
+        setup = f"""
+KUBE_AGENTS_SOURCE_ONLY=true source "{_UPGRADE_SH}"
+resolve_state_file "{repo_dir}" "{install_checkout}"
+"""
+        proc = subprocess.run(
+            ["bash", "-c", setup],
+            capture_output=True,
+            text=True,
+            env=get_isolated_test_env(),
+            cwd=str(_REPO_ROOT),
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return proc.stdout.strip()
+
+    def _layout(self):
+        temp_dir = tempfile.TemporaryDirectory(prefix="state-file-order-")
+        self.addCleanup(temp_dir.cleanup)
+        base = pathlib.Path(temp_dir.name)
+        for name in ("sources", "checkout"):
+            (base / name / "k8s-operator" / "scripts").mkdir(parents=True)
+        return base
+
+    def test_the_sources_own_state_file_wins(self):
+        base = self._layout()
+        (base / "sources" / "k8s-operator" / "scripts" / "vars.sh").write_text("")
+        (base / "checkout" / "k8s-operator" / "scripts" / "vars.sh").write_text("")
+
+        resolved = self._resolve(base / "sources", base / "checkout")
+
+        self.assertEqual(resolved, str(base / "sources" / "k8s-operator" / "scripts" / "vars.sh"))
+
+    def test_the_install_checkout_is_used_when_the_sources_have_none(self):
+        """The preview shape: sources are a fresh clone, so only the checkout has it."""
+        base = self._layout()
+        (base / "checkout" / "k8s-operator" / "scripts" / "vars.sh").write_text("")
+
+        resolved = self._resolve(base / "sources", base / "checkout")
+
+        self.assertEqual(resolved, str(base / "checkout" / "k8s-operator" / "scripts" / "vars.sh"))
+
+    def test_with_nothing_anywhere_it_names_the_sources_directory(self):
+        """Nothing to load: the warning that follows names where one would live."""
+        base = self._layout()
+
+        resolved = self._resolve(base / "sources", "")
+
+        self.assertEqual(resolved, str(base / "sources" / "k8s-operator" / "scripts" / "vars.sh"))
 
 
 class FrontDoorsAgreeOnTheInstallCheckoutTest(unittest.TestCase):
