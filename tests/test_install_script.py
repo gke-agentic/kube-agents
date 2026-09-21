@@ -5762,6 +5762,10 @@ class DomainScopedFlagsTest(unittest.TestCase):
             combined = proc.stdout + proc.stderr
             self.assertIn("applies to this run only", combined)
             self.assertIn("chosen-ns", combined)
+            self.assertIn(
+                "repeat --agent-namespace on every later install.sh, upgrade.sh and --menu run",
+                combined,
+            )
             self.assertEqual(
                 destination.read_text(),
                 "PROJECT_ID=p\n",
@@ -5795,6 +5799,12 @@ class DomainScopedFlagsTest(unittest.TestCase):
             self.assertIn("applies to this run only", combined)
             self.assertIn("ENABLE_GKE_BACKUP_PLAN=false", combined)
             self.assertIn("BackupPlan", combined)
+            self.assertIn(
+                "repeat --enable-gke-backup-plan on every later install.sh run",
+                combined,
+            )
+            self.assertNotIn("upgrade.sh", combined)
+            self.assertNotIn("--menu", combined)
 
     def test_the_backup_plan_warning_fires_non_interactively(self):
         """-y is the route these flags were added for, not an exemption.

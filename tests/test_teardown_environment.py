@@ -176,6 +176,22 @@ exit {uninstall_exit}
         _, _, summary = self._run(uninstall_exit=1)
         self.assertIn(f"--gcp-project-id={MOCK_GCP_PROJECT_ID}", summary)
         self.assertIn(f"--gke-cluster-name={MOCK_GKE_CLUSTER_NAME}", summary)
+        self.assertNotIn("--agent-namespace=", summary)
+
+    def test_the_summary_includes_agent_namespace_when_set(self):
+        _, _, summary = self._run(
+            uninstall_exit=1, extra_env={"AGENT_NAMESPACE": "custom-ns"}
+        )
+        self.assertIn(
+            f"`./uninstall.sh --non-interactive -y --gcp-project-id={MOCK_GCP_PROJECT_ID} --gcp-region={MOCK_GCP_REGION} --gke-cluster-name={MOCK_GKE_CLUSTER_NAME} --agent-namespace=custom-ns`",
+            summary,
+        )
+
+    def test_the_summary_includes_fallback_namespace_when_set(self):
+        _, _, summary = self._run(
+            uninstall_exit=1, extra_env={"NAMESPACE": "fallback-ns"}
+        )
+        self.assertIn("--agent-namespace=fallback-ns", summary)
 
 
 if __name__ == "__main__":

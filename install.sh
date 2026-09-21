@@ -1313,8 +1313,11 @@ note_stale_network_policy_acceptance() {
 # and nothing changes. NAMESPACE is a string and keeps the literal comparison --
 # `true` is a legal namespace name, and reading a recorded `yes` against a
 # flagged `true` as agreement would drop a warning about a release moving.
+#
+# repeat_on names the routes that accept the flag: --agent-namespace is taken
+# by install.sh, upgrade.sh and --menu; --enable-gke-backup-plan is install.sh-only.
 warn_flag_beats_unrecorded_file_value() {
-  local file="$1" key="$2" flag="$3" value="$4" consequence="$5" compare_as_bool="${6:-false}"
+  local file="$1" key="$2" flag="$3" value="$4" consequence="$5" compare_as_bool="${6:-false}" repeat_on="${7:-every later install.sh run}"
   [ -n "$value" ] || return 0
   if grep -qE "^[[:space:]]*(export[[:space:]]+)?${key}=" "$file" 2>/dev/null; then
     local recorded
@@ -1333,7 +1336,7 @@ warn_flag_beats_unrecorded_file_value() {
     print_warning "${flag}=${value} applies to this run only: ${file} records no ${key}."
   fi
   print_info "$consequence"
-  print_info "Set ${key}=${value} in ${file}, or repeat ${flag} on every later install.sh, upgrade.sh and --menu run."
+  print_info "Set ${key}=${value} in ${file}, or repeat ${flag} on ${repeat_on}."
 }
 
 bootstrap_install_env_file() {
@@ -1348,11 +1351,14 @@ bootstrap_install_env_file() {
     # on the operator's behalf.
     warn_flag_beats_unrecorded_file_value "$destination" NAMESPACE --agent-namespace \
       "${PARAM_AGENT_NAMESPACE:-}" \
-      "A later run without it resolves the default namespace, renders tfvars for that one, looks for the recovered Secret there, and is refused by lifecycle.sh's guard_release_namespace."
+      "A later run without it resolves the default namespace, renders tfvars for that one, looks for the recovered Secret there, and is refused by lifecycle.sh's guard_release_namespace." \
+      false \
+      "every later install.sh, upgrade.sh and --menu run"
     warn_flag_beats_unrecorded_file_value "$destination" ENABLE_GKE_BACKUP_PLAN --enable-gke-backup-plan \
       "${PARAM_ENABLE_GKE_BACKUP_PLAN:-}" \
       "A later run without it re-reads the recorded value and plans the BackupPlan's destruction; once a backup has been taken the API refuses that destroy and the apply fails partway instead." \
-      true
+      true \
+      "every later install.sh run"
     return 0
   fi
   if [ "$PARAM_DRY_RUN" = "true" ]; then
