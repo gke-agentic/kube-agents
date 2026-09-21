@@ -588,7 +588,8 @@ is_kube_agents_clone() {
   git -C "$repo_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
   [ -e "${repo_dir}/.git" ] || return 1
   git -C "$repo_dir" rev-parse --verify HEAD >/dev/null 2>&1 || return 1
-  [ -n "$(git -C "$repo_dir" ls-tree --name-only HEAD -- "$KUBE_AGENTS_CLONE_MARKER" 2>/dev/null)" ]
+  [ -n "$(git -C "$repo_dir" ls-tree --name-only HEAD -- "$KUBE_AGENTS_CLONE_MARKER" 2>/dev/null)" ] &&
+    [ -n "$(git -C "$repo_dir" ls-tree --name-only HEAD -- "scripts/installer/installer_common.sh" 2>/dev/null)" ]
 }
 
 # Whether a checkout already sits on the requested ref. A preview may take its

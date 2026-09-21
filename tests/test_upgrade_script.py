@@ -717,7 +717,7 @@ echo "INSTALL_CHECKOUT=$install_checkout"
         self.assertIn(commits["0.3.0"], proc.stdout)
 
     def test_an_unrelated_repository_at_the_clone_path_is_not_adopted(self):
-        """Sharing the directory name is not enough; HEAD has to be a kube-agents revision."""
+        """Sharing the directory name or a generic root install.sh is not enough; HEAD has to track kube-agents' own installer layout."""
         home_dir, clone_dir, upstream_url, _ = self._existing_clone_fixture("0.2.0")
         clone_dir.rename(home_dir / "kube-agents-real")
         clone_dir.mkdir()
@@ -726,7 +726,8 @@ echo "INSTALL_CHECKOUT=$install_checkout"
         self._git("config", "user.email", "test@example.com", cwd=clone_dir)
         self._git("config", "commit.gpgsign", "false", cwd=clone_dir)
         (clone_dir / "README.md").write_text("not kube-agents\n")
-        self._git("add", "README.md", cwd=clone_dir)
+        (clone_dir / "install.sh").write_text("#!/usr/bin/env bash\necho foreign installer\n")
+        self._git("add", "README.md", "install.sh", cwd=clone_dir)
         self._git("commit", "-m", "init", cwd=clone_dir)
         before = self._head_of(clone_dir)
 
