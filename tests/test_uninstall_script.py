@@ -469,5 +469,48 @@ class UninstallSummaryDisclosureTest(unittest.TestCase):
         )
 
 
+class UninstallRefusesRetiredVarsFileTest(unittest.TestCase):
+    """A pre-0.4.0 checkout holding k8s-operator/scripts/vars.sh is refused before defaulting CLUSTER_NAME."""
+
+    def test_uninstall_refuses_retired_vars_file_before_loading_or_defaulting(self):
+        text = _UNINSTALL_SH.read_text()
+        refuse_at = text.find('refuse_retired_vars_file "$install_env_file" "$repo_dir" "$(pwd)"')
+        self.assertNotEqual(
+            refuse_at,
+            -1,
+            "uninstall.sh must call refuse_retired_vars_file before falling back to DEFAULT_CLUSTER_NAME",
+        )
+        load_at = text.find('load_install_env "$install_env_file"')
+        self.assertNotEqual(load_at, -1)
+        self.assertLess(refuse_at, load_at)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            checkout = pathlib.Path(tmp) / "checkout"
+            retired = checkout / "k8s-operator" / "scripts" / "vars.sh"
+            retired.parent.mkdir(parents=True)
+            retired.write_text('export CLUSTER_NAME="pre-040-cluster"\n')
+            install_env = checkout / "install.env"
+            for present in (False, True):
+                if present:
+                    install_env.write_text('CLUSTER_NAME="partial-install-env"\n')
+                with self.subTest(install_env_present=present):
+                    body = f"""
+KUBE_AGENTS_SOURCE_ONLY=true source "{_UNINSTALL_SH}"
+source "{_INSTALLER_COMMON}"
+install_env_file="$(default_install_env_file "{checkout}")"
+refuse_retired_vars_file "$install_env_file" "{checkout}" "$(pwd)"
+"""
+                    proc = subprocess.run(
+                        ["bash", "-c", body],
+                        capture_output=True,
+                        text=True,
+                        env=get_isolated_test_env(overrides={"KUBE_AGENTS_INSTALL_ENV": ""}),
+                        cwd=str(checkout),
+                    )
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("Retired state file", proc.stdout + proc.stderr)
+                    self.assertIn("remove", proc.stdout + proc.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

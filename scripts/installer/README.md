@@ -226,8 +226,9 @@ pre-existing clusters (testing environments only).
 `k8s-operator/scripts/vars.sh` was the generated state file `install.env` replaced in 0.4.0.
 No front door or Python helper reads or writes it any more; `install.env` is the sole
 install configuration input. If a pre-0.4.0 checkout still holds `k8s-operator/scripts/vars.sh`
-without `install.env`, `install.sh` and `upgrade.sh` refuse and tell the operator to copy its
-settings into `install.env` before running the command.
+(whether alone or beside `install.env`), `install.sh`, `upgrade.sh`, and `uninstall.sh` refuse
+and tell the operator to copy any settings they still need into `install.env` and remove
+`k8s-operator/scripts/vars.sh` before running the command.
 
 One separate file of the same name remains, and it is not an install configuration: the
 dev tooling under `scripts/dev/` records whether it created the throwaway Artifact Registry

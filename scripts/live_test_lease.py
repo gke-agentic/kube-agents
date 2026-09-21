@@ -110,8 +110,8 @@ SESSION_CONTINUES = frozenset({"clear", "resume"})
 # of truth: DEFAULT_NAMESPACE in install.defaults.env.
 DEFAULT_NAMESPACE = "kubeagents-system"
 
-# Only these keys are read out of an install's configuration. Both files are
-# mode-600 and hold credentials as well as coordinates, and neither is ever
+# Only these keys are read out of an install's configuration. The file is
+# mode-600 and holds credentials as well as coordinates, and is never
 # sourced -- sourcing a file to read a handful of variables out of it executes
 # everything else in there. No ZONE: the installer writes REGION for every
 # install (installer_common.sh), and a zonal location would derive an Artifact

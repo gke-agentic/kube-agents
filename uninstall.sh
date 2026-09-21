@@ -346,6 +346,7 @@ main() {
   # --project-id/--cluster-name/--region alone.
   local install_env_file
   install_env_file="$(default_install_env_file "$repo_dir")"
+  refuse_retired_vars_file "$install_env_file" "$repo_dir" "$(pwd)"
   if load_install_env "$install_env_file"; then
     print_success "Loaded install configuration from: ${install_env_file}"
   fi
