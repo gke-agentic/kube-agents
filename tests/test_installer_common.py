@@ -118,6 +118,7 @@ class InstallerCommonTest(unittest.TestCase):
         kms_versions="",
         sa_describe_stub="exit 1",
         gcloud_stderr=None,
+        gcloud_extra_cases="",
     ):
         """Source installer_common.sh with print stubs and run `script`.
 
@@ -125,6 +126,10 @@ class InstallerCommonTest(unittest.TestCase):
         `gcloud_exit` for `storage cat` calls on the state object;
         `clusters describe` runs `describe_stub` (default: exit 1, meaning
         the cluster does not exist).
+
+        `gcloud_extra_cases` is spliced in ahead of those arms, for a caller
+        that needs to answer a subcommand none of them match — `get-credentials`
+        and its `--help` probe, which fall through to the state read otherwise.
         """
         # A failing `storage cat` with no stderr of its own reads as "absent":
         # that is what every pre-existing caller meant by gcloud_exit=1, and
@@ -144,6 +149,7 @@ class InstallerCommonTest(unittest.TestCase):
             gcloud.write_text(
                 "#!/usr/bin/env bash\n"
                 'case "$*" in\n'
+                f"{gcloud_extra_cases}"
                 f"  *\"clusters describe\"*) {describe_stub} ;;\n"
                 f"  *\"keys versions list\"*) printf '%s' '{kms_versions}'; exit 0 ;;\n"
                 f"  *\"service-accounts describe\"*) {sa_describe_stub} ;;\n"
@@ -1009,6 +1015,74 @@ class InstallerCommonTest(unittest.TestCase):
             # SESSION_KV_* recover too: an adoption re-install must keep the
             # live salt or every chat identity re-pseudonymises.
             self.assertIn('session_kv_salt    = "recovered-key"', content)
+
+    # ── the adoption fetch: which control-plane endpoint it writes ───────────
+
+    def _run_adoption_fetch(self, dns_endpoint, allow_external, supports_flag=True):
+        """Drive write_tfvars_from_state down the adoption path.
+
+        Returns the recorded `gcloud container clusters get-credentials`
+        invocation. create_cluster is false only when the cluster is already
+        there, so the existence probe has to succeed; the helper's own describe
+        asks for the dnsEndpointConfig fields and is answered from the same arm.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            record = pathlib.Path(tmp) / "fetch.args"
+            describe_stub = (
+                'if [[ "$*" == *dnsEndpointConfig* ]]; then '
+                f"printf '{dns_endpoint}\\t{allow_external}\\n'; exit 0; fi\n"
+                'case "$*" in\n'
+                "  *currentMasterVersion*) printf '1.30.1-gke.100\\n' ;;\n"
+                "  *) printf 'True\\n' ;;\n"
+                "esac\n"
+                "exit 0"
+            )
+            # An older gcloud has no --dns-endpoint at all, and the helper is
+            # meant to notice that from the help text before offering the flag.
+            help_text = "--dns-endpoint" if supports_flag else "--internal-ip"
+            extra = (
+                f"  *\"get-credentials --help\"*) printf -- '{help_text}\\n'; exit 0 ;;\n"
+                f"  *get-credentials*) printf '%s\\n' \"$*\" >> '{record}'; exit 0 ;;\n"
+            )
+            with tempfile.TemporaryDirectory() as out_dir:
+                dest = pathlib.Path(out_dir) / "terraform.tfvars"
+                proc = self._run(
+                    f'write_tfvars_from_state "{dest}"; echo "rc=$?"',
+                    env={"API_SERVER_KEY": "k"},
+                    describe_stub=describe_stub,
+                    gcloud_extra_cases=extra,
+                )
+            self.assertIn("rc=0", proc.stdout, proc.stderr)
+            return record.read_text() if record.exists() else ""
+
+    def test_the_helper_is_in_scope_for_a_caller_that_sources_only_this_file(self):
+        # uninstall.sh sources installer_common.sh and nothing else, so the
+        # predicate has to come with the file. Left to the caller, the fetch
+        # below would be an undefined function and `set -e` would end the run.
+        proc = self._run('echo "kind=$(type -t gke_dns_endpoint_flag)"')
+        self.assertIn("kind=function", proc.stdout, proc.stderr)
+
+    def test_the_adoption_fetch_uses_the_dns_endpoint_when_one_accepts_traffic(self):
+        # The whole point of the call: on a cluster whose IP endpoint this host
+        # cannot route to, the IP kubeconfig makes every secret read below time
+        # out, and the generator cannot tell that from "nothing to recover" --
+        # so it mints a new SESSION_KV_SALT over the live one.
+        args = self._run_adoption_fetch("gke-abc.us-central1.gke.goog", "True")
+        self.assertIn("--dns-endpoint", args)
+
+    def test_the_adoption_fetch_leaves_an_ordinary_cluster_on_its_ip_endpoint(self):
+        # gcloud rejects the flag on a cluster with no externally reachable DNS
+        # endpoint, so passing it blind would break the clusters that work.
+        for dns_endpoint, allow_external, supports_flag, why in (
+            ("gke-abc.us-central1.gke.goog", "False", True, "external traffic is off"),
+            ("", "True", True, "no DNS endpoint is published"),
+            ("gke-abc.us-central1.gke.goog", "True", False, "this gcloud has no such flag"),
+        ):
+            with self.subTest(why=why):
+                args = self._run_adoption_fetch(dns_endpoint, allow_external, supports_flag)
+                self.assertNotIn("--dns-endpoint", args)
+                # Still fetched, just over the IP endpoint as before.
+                self.assertIn("get-credentials test-cluster", args)
 
     def test_tfvars_omits_credentials_when_persist_secrets_off(self):
         with tempfile.TemporaryDirectory() as out_dir:
