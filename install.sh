@@ -94,8 +94,10 @@ readonly ROLLOUT_CERT_MANAGER_NAMESPACE="cert-manager"
 # terraform/examples/full-install/variables.tf repeats the pair as a variable
 # validation, and tests/test_hindsight_probes.py holds both against the
 # manifest they come from.
-readonly HELM_TIMEOUT_MIN_SECONDS=540
-readonly HELM_TIMEOUT_MAX_SECONDS=899
+if [ -z "${HELM_TIMEOUT_MIN_SECONDS:-}" ]; then
+  readonly HELM_TIMEOUT_MIN_SECONDS=540
+  readonly HELM_TIMEOUT_MAX_SECONDS=899
+fi
 
 # What enforce_capacity_preflight returns when the operator declined at the
 # prompt: a choice rather than a fault, which main() reports as PAUSED and
