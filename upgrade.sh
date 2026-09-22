@@ -1365,17 +1365,21 @@ main() {
     exit "$plan_status"
   fi
 
-  # Past here every mode puts something on the cluster: CRDs and a re-tagging
-  # `helm upgrade` for operator and harness, a full `terraform apply` for full.
-  # Both previews have already exited above, so this is the line at which the
-  # install starts moving to the release the checkout is on — and therefore the
-  # line after which the EXIT trap must stop undoing the checkout move, since a
-  # half-applied upgrade that is resumed or debugged needs the sources it was
-  # applying rather than the ones it came from.
-  UPGRADE_APPLY_STARTED="true"
+  # UPGRADE_APPLY_STARTED is set inside each arm below rather than here, and
+  # the difference is load-bearing. Both previews have exited above, so it is
+  # tempting to read "past the previews" as "past the point of no return" — but
+  # two arms still refuse after the dispatch and before they write anything:
+  # full runs the minter/KMS guard and the service-account 409 check, and
+  # harness reads the release's values to learn which plugin tags to move. A run
+  # that stops on one of those has put nothing on the cluster, so the checkout
+  # this run detached has to go back. Each arm therefore flips the gate on its
+  # own last line before its first mutating command, and
+  # UpgradeRunContractTest.test_the_apply_gate_sits_after_every_refusal_in_its_arm
+  # pins that placement, which is otherwise unreachable from the test suite.
   case "$PARAM_UPGRADE_MODE" in
     operator)
       print_step "4. Upgrading Kubernetes Operator (CRDs & Controller Manager)"
+      UPGRADE_APPLY_STARTED="true"
       apply_crd_upgrades
       helm_retag "operator.image.tag"
       print_success "Kubernetes Operator upgraded successfully!"
@@ -1393,6 +1397,9 @@ main() {
       # the image check below reads both. A plain call, not a substitution: a
       # failed read stops the run here, once, with its own message shown.
       harness_retag_keys "$KUBE_AGENTS_HELM_RELEASE" "$target_namespace"
+      # After the read, not before it: `helm get values` is the last thing this
+      # arm does that can fail without having changed anything.
+      UPGRADE_APPLY_STARTED="true"
       helm_retag "${HARNESS_RETAG_KEYS[@]}"
       print_success "Platform Agent deployment upgraded successfully!"
       ;;
@@ -1418,6 +1425,9 @@ main() {
       # new fixed-name GSA on an install that has been running without one, so
       # the 409 check install.sh runs before its apply runs here too.
       check_service_account_ownership || exit 1
+      # Both guards above are refusals, and apply_crd_upgrades is the first
+      # write this arm makes, so the gate belongs between them.
+      UPGRADE_APPLY_STARTED="true"
       apply_crd_upgrades
       # A full terraform apply against the regenerated tfvars: both image tags
       # move, and every setting recorded in install.env is re-rendered — the successor

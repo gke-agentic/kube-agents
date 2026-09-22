@@ -265,6 +265,84 @@ class UpgradeRunContractTest(unittest.TestCase):
             with self.subTest(var=var):
                 self.assertIn(f'export {var}="$target_', source)
 
+    def test_the_apply_gate_sits_after_every_refusal_in_its_arm(self):
+        """UPGRADE_APPLY_STARTED is what keeps cleanup() from putting an adopted
+        checkout back, so a run that raises it and then refuses strands someone
+        else's clone on this run's ref. Both previews exit before the mode
+        dispatch, but refusals do not stop there: full still runs the minter/KMS
+        guard and the service-account 409 check, and harness still reads the
+        release's values to learn which plugin tags to move. So the gate cannot
+        be raised once above the `case`; each arm has to raise it on its own,
+        after its last refusal and before its first write.
+
+        A refusing run cannot observe this -- the refusal is all it produces,
+        whichever side of it the flag was set on -- so the placement is pinned
+        against the source text instead.
+        """
+        source = _UPGRADE_SH.read_text()
+        gate = 'UPGRADE_APPLY_STARTED="true"'
+        self.assertEqual(
+            source.count(gate),
+            3,
+            f"one assignment per mode arm expected, found {source.count(gate)}",
+        )
+
+        plan_exit = 'exit "$plan_status"'
+        self.assertIn(plan_exit, source)
+        dispatch_at = source.index('case "$PARAM_UPGRADE_MODE" in', source.index(plan_exit))
+        self.assertEqual(
+            source[:dispatch_at].count(gate),
+            0,
+            "the gate is raised before the mode dispatch, where two arms can still refuse",
+        )
+
+        # Anchored to the start of a command line: every arm explains itself in
+        # a comment first, and those comments name the very commands this test
+        # orders the gate against.
+        def command(literal):
+            return "\n      " + literal
+
+        for mode, last_refusal, first_write in (
+            ("operator", None, "apply_crd_upgrades"),
+            (
+                "harness",
+                'harness_retag_keys "$KUBE_AGENTS_HELM_RELEASE"',
+                'helm_retag "${HARNESS_RETAG_KEYS[@]}"',
+            ),
+            ("full", "check_service_account_ownership || exit 1", "apply_crd_upgrades"),
+        ):
+            with self.subTest(mode=mode):
+                opener = f"\n    {mode})\n"
+                self.assertIn(opener, source[dispatch_at:], f"no {mode} arm in the dispatch")
+                arm_at = source.index(opener, dispatch_at)
+                arm = source[arm_at : source.index("\n      ;;\n", arm_at)]
+                self.assertIn(
+                    command(gate), arm, f"{mode} never raises the gate ({len(arm)} chars read)"
+                )
+                self.assertIn(
+                    command(first_write),
+                    arm,
+                    f"{mode}'s first write has moved out of its arm ({len(arm)} chars read)",
+                )
+                self.assertLess(
+                    arm.index(command(gate)),
+                    arm.index(command(first_write)),
+                    f"{mode} writes to the cluster before raising the gate, so a failure there "
+                    "would restore a checkout the run had already started applying",
+                )
+                if last_refusal is not None:
+                    self.assertIn(
+                        command(last_refusal),
+                        arm,
+                        f"{mode}'s last refusal has moved out of its arm ({len(arm)} chars read)",
+                    )
+                    self.assertLess(
+                        arm.index(command(last_refusal)),
+                        arm.index(command(gate)),
+                        f"{mode} raises the gate before its last refusal, so refusing there "
+                        "would leave the adopted checkout detached",
+                    )
+
 
 class DirtyCheckoutRefusalTest(unittest.TestCase):
     """A tagless upgrade still applies this checkout to a live install.
@@ -441,13 +519,23 @@ class InteractiveImageTagPromptTest(unittest.TestCase):
         The assembly itself runs under test in HarnessRetagKeysTest; what the
         branch owes is to call it and to hand the whole list to helm_retag,
         which turns each key into `--set key=<tag>` (#1808).
+
+        Order, not adjacency: the arm raises UPGRADE_APPLY_STARTED between the
+        two, because the read is the last thing here that can fail without
+        having changed anything. That placement is
+        UpgradeRunContractTest.test_the_apply_gate_sits_after_every_refusal_in_its_arm's
+        to keep.
         """
         text = (_REPO_ROOT / "upgrade.sh").read_text()
         harness = text[text.index("    harness)") : text.index("    full)")]
-        self.assertIn(
-            '\n      harness_retag_keys "$KUBE_AGENTS_HELM_RELEASE" "$target_namespace"\n'
-            '      helm_retag "${HARNESS_RETAG_KEYS[@]}"\n',
-            harness,
+        assemble = '\n      harness_retag_keys "$KUBE_AGENTS_HELM_RELEASE" "$target_namespace"\n'
+        retag_call = '\n      helm_retag "${HARNESS_RETAG_KEYS[@]}"\n'
+        self.assertIn(assemble, harness, f"the key assembly left the arm ({len(harness)} chars read)")
+        self.assertIn(retag_call, harness, f"the re-tag left the arm ({len(harness)} chars read)")
+        self.assertLess(
+            harness.index(assemble),
+            harness.index(retag_call),
+            "the arm re-tags before it knows which keys to move",
         )
         self.assertNotIn("mapfile", harness, "macOS ships bash 3.2, which has no mapfile")
         retag = text[text.index("  helm_retag() {") : text.index("  }", text.index("  helm_retag() {"))]
@@ -1040,11 +1128,15 @@ exit {exit_code}
     def test_a_run_that_fails_before_applying_returns_the_checkout(self):
         """Nothing reached the cluster, so the operator's directory goes back.
 
-        Every refusal left in the run — no install.env, no project, credentials,
-        no Helm release, the KMS and service-account guards, Terraform itself —
-        happens after the move. Leaving the checkout on the new release after
-        one of them puts the next install.sh, uninstall.sh or hand-run terraform
-        in that directory on an engine the install is not running.
+        Leaving the checkout on the new release after a refusal puts the next
+        install.sh, uninstall.sh or hand-run terraform in that directory on an
+        engine the install is not running.
+
+        What this test covers is the mechanism: an exit before the gate was
+        raised restores the checkout. Which refusals actually land on that side
+        of the gate is a question about where each mode arm raises it, and
+        UpgradeRunContractTest.test_the_apply_gate_sits_after_every_refusal_in_its_arm
+        is what pins that.
         """
         home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
 
