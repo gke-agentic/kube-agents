@@ -4197,6 +4197,38 @@ main() {
       google_chat_home_channel "$google_chat_home_channel"
   }
 
+  # Both chat platforms are opt-in and default off, so this is the common
+  # install, and the terminal is the only way to reach the agent. Printed again
+  # at the end of main(), beside the Google Chat and Slack instructions.
+  #
+  # project_id, region and cluster_name are all set by earlier steps, and
+  # NAMESPACE is exported before the menu runs.
+  _prompt_no_chat_enabled() {
+    print_info "Chat integrations disabled. Agent will operate via CLI / REST API Gateway."
+
+    # gcloud rejects --dns-endpoint on clusters without an external DNS
+    # endpoint, so print the resolved flag rather than a literal one. Resolved
+    # up here because it can warn on stderr, which would otherwise split the
+    # block below.
+    gke_dns_endpoint_flag "$cluster_name" "$region" "$project_id"
+
+    echo ""
+    echo -e "${C_CYAN}${C_BOLD}--- [Talking to the Agent from a Terminal] ---${C_RESET}"
+    echo -e "With no chat platform, the terminal is the way in. Point kubectl at the cluster,"
+    echo -e "then open a Hermes session in the agent container:"
+    echo ""
+    # The `:+` keeps the empty flag from leaving a trailing space.
+    echo -e "  ${C_BOLD}gcloud container clusters get-credentials ${cluster_name} --location ${region} --project ${project_id}${GKE_DNS_ENDPOINT_FLAG:+ ${GKE_DNS_ENDPOINT_FLAG}}${C_RESET}"
+    echo -e "  ${C_BOLD}kubectl exec -it deploy/${PLATFORM_AGENT_DEPLOYMENT} -n ${NAMESPACE:-$DEFAULT_NAMESPACE} -c ${PLATFORM_AGENT_CONTAINER} -- hermes -p ${PLATFORM_AGENT_HERMES_PROFILE}${C_RESET}"
+    echo ""
+    # The pod runs three containers and hosts more than one Hermes profile, so
+    # a command missing -c or -p lands somewhere by accident.
+    echo -e "  ${C_CYAN}-p ${PLATFORM_AGENT_HERMES_PROFILE} reaches the Platform Agent directly, bypassing the Planning${C_RESET}"
+    echo -e "  ${C_CYAN}Agent front door where a chat message would have landed.${C_RESET}"
+    echo ""
+    echo -e "  To add a chat platform later, re-run ${C_BOLD}./install.sh --enable-google-chat${C_RESET} or ${C_BOLD}./install.sh --enable-slack${C_RESET}."
+  }
+
   case "$chat_choice" in
     1)
       google_chat_enabled="true"
@@ -4213,7 +4245,7 @@ main() {
       _prompt_slack_settings
       ;;
     4)
-      print_info "Chat integrations disabled. Agent will operate via CLI / REST API Gateway."
+      _prompt_no_chat_enabled
       ;;
   esac
 
@@ -5224,6 +5256,12 @@ main() {
   if [ "${slack_enabled:-false}" = "true" ]; then
     echo ""
     IMAGE_TAG="$image_tag" bash "${repo_dir}/scripts/installer/print_instructions_slack.sh" || true
+  fi
+  # Repeated here, where the two printers above give their instructions. Arm 4
+  # prints it as well, for the runs that never reach the end of main().
+  if [ "$chat_choice" = "4" ]; then
+    echo ""
+    _prompt_no_chat_enabled
   fi
 }
 
