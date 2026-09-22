@@ -375,9 +375,33 @@ main() {
   source "${repo_dir}/scripts/installer/installer_common.sh"
   # install.env is optional here: unlike upgrade.sh, a teardown can proceed on
   # --gcp-project-id/--gke-cluster-name/--gcp-region alone.
-  local install_env_file
-  install_env_file="$(default_install_env_file "$repo_dir")"
+  #
+  # Where it is looked for is upgrade.sh's order, and for upgrade.sh's reason.
+  # Under `curl … | bash` repo_dir is a clone this run has just made, which
+  # carries no configuration, while the install's own sits where install.sh left
+  # it. Reading only repo_dir meant the documented teardown one-liner never
+  # found any configuration at all and fell through to DEFAULT_CLUSTER_NAME and
+  # to whatever project gcloud was pointing at — on a GCE instance, the one the
+  # metadata server answers with. Retiring the legacy state file removed the
+  # other way a pre-0.4.0 install used to be located, so this is now the only
+  # one. The copy is deliberate: the resolution decides which checkout to
+  # read, so it cannot come from installer_common.sh, which is sourced out of a
+  # checkout — the same arrangement install.sh and upgrade.sh already have.
+  local install_env_file="" install_checkout="${HOME:-}/kube-agents"
+  if [ -n "${KUBE_AGENTS_INSTALL_ENV:-}" ]; then
+    install_env_file="$KUBE_AGENTS_INSTALL_ENV"
+  elif [ -f "${repo_dir}/install.env" ]; then
+    install_env_file="${repo_dir}/install.env"
+  elif [ -f "$(pwd)/install.env" ]; then
+    install_env_file="$(pwd)/install.env"
+  elif [ -n "${HOME:-}" ] && [ -f "${install_checkout}/install.env" ]; then
+    install_env_file="${install_checkout}/install.env"
+  else
+    install_env_file="$(default_install_env_file "$repo_dir")"
+  fi
+  local state_loaded="false"
   if load_install_env "$install_env_file"; then
+    state_loaded="true"
     print_success "Loaded install configuration from: ${install_env_file}"
   fi
   # GITOPS_ORG / GITOPS_REPO are the names; a configuration still carrying
@@ -390,9 +414,27 @@ main() {
   local target_project="${PARAM_PROJECT_ID:-${PROJECT_ID:-}}"
   local target_cluster="${PARAM_CLUSTER_NAME:-${CLUSTER_NAME:-$DEFAULT_CLUSTER_NAME}}"
   local target_region="${PARAM_REGION:-${REGION:-$DEFAULT_REGION}}"
+  # Which of the three nobody actually named. A teardown is allowed to run on
+  # defaults -- that is what makes `./uninstall.sh` in a checkout work -- but it
+  # is not allowed to be quiet about it: the same three lines are printed
+  # whether they name the install the operator meant or a guess, and the
+  # confirmation prompt below reads exactly those lines.
+  local guessed_coordinates=""
+  if [ -z "$PARAM_CLUSTER_NAME" ] && [ -z "${CLUSTER_NAME:-}" ]; then
+    guessed_coordinates="${guessed_coordinates}    cluster '${target_cluster}' is installer_common.sh's default, not this install's"$'\n'
+  fi
+  if [ -z "$PARAM_REGION" ] && [ -z "${REGION:-}" ]; then
+    guessed_coordinates="${guessed_coordinates}    region '${target_region}' is installer_common.sh's default, not this install's"$'\n'
+  fi
 
   if [ -z "$target_project" ]; then
     target_project="$(gcloud config get-value project 2>/dev/null || true)"
+    if [ -n "$target_project" ]; then
+      # gcloud answers from the user's configuration, and on a GCE instance
+      # (Cloud Shell, a Cloudtop, a CI runner) from the metadata server -- which
+      # names the project the machine lives in, not the one being torn down.
+      guessed_coordinates="${guessed_coordinates}    project '${target_project}' came from gcloud's active configuration, not from this install"$'\n'
+    fi
   fi
   if [ -z "$target_project" ]; then
     print_error "A GCP project is required. Pass --gcp-project-id or configure one with gcloud."
@@ -401,6 +443,15 @@ main() {
 
   print_info "GCP Target Project: ${C_BOLD}${target_project}${C_RESET}"
   print_info "GKE Target Cluster: ${C_BOLD}${target_cluster}${C_RESET} (${target_region})"
+  if [ -n "$guessed_coordinates" ]; then
+    if [ "$state_loaded" = "true" ]; then
+      print_warning "Some of what this teardown is aimed at was not recorded in ${install_env_file}:"
+    else
+      print_warning "No install configuration (install.env) was found, so some of what this teardown is aimed at is a guess:"
+    fi
+    printf '%s' "$guessed_coordinates" >&2
+    print_info "Pass --gcp-project-id/--gke-cluster-name/--gcp-region, or point KUBE_AGENTS_INSTALL_ENV at the install's install.env, to say which install this is."
+  fi
   if [ "$PARAM_DRY_RUN" = "true" ]; then
     print_step "2. Dry-Run Uninstall Preview"
     echo -e "  • ${C_CYAN}Target Cluster:${C_RESET} ${target_cluster} in ${target_project} (${target_region})"

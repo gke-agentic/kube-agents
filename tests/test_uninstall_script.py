@@ -539,5 +539,128 @@ class UninstallNeverReferencesRetiredVarsFileTest(unittest.TestCase):
         self.assertNotIn("load_legacy_vars_file", text)
 
 
+class TeardownKnowsWhichInstallItIsAimedAtTest(unittest.TestCase):
+    """What a piped teardown reads, and what it admits to guessing.
+
+    Under `curl … | bash` the teardown's repo_dir is a clone it has just made,
+    which carries no install.env. It used to look nowhere else, so the
+    documented one-liner silently tore down whatever DEFAULT_CLUSTER_NAME and
+    gcloud's active project happened to name. Retiring
+    k8s-operator/scripts/vars.sh removed the other way a pre-0.4.0 install used
+    to be located, so the install checkout is now the only one left.
+    """
+
+    def _scratch_repo(self, tmp):
+        """A checkout with the engine markers, but no install.env of its own."""
+        root = pathlib.Path(tmp) / "repo"
+        (root / "terraform" / "examples" / "full-install").mkdir(parents=True)
+        (root / "scripts" / "installer").mkdir(parents=True)
+        (root / "terraform" / "examples" / "full-install" / "lifecycle.sh").touch()
+        shutil.copy(_UNINSTALL_SH, root / "uninstall.sh")
+        shutil.copy(_INSTALLER_COMMON, root / "scripts" / "installer" / "installer_common.sh")
+        shutil.copy(_INSTALL_DEFAULTS, root / "install.defaults.env")
+        return root
+
+    def _preview(self, tmp, home, args=()):
+        """A --dry-run teardown from a neutral directory, with HOME moved.
+
+        --dry-run because everything under test happens before it: the
+        resolution, the coordinates, and what the run says about them. The
+        gcloud stub answers the active-project query the way a developer
+        machine -- or a GCE metadata server -- would.
+        """
+        bin_dir = create_minimal_tools_bin(tmp)
+        gcloud = bin_dir / "gcloud"
+        gcloud.write_text(
+            "#!/usr/bin/env bash\n"
+            'case "$*" in\n'
+            '  *"config get-value project"*) echo \'the-machines-own-project\'; exit 0 ;;\n'
+            "esac\n"
+            "exit 0\n"
+        )
+        gcloud.chmod(gcloud.stat().st_mode | stat.S_IEXEC)
+        neutral = pathlib.Path(tmp) / "neutral"
+        neutral.mkdir(exist_ok=True)
+        root = self._scratch_repo(tmp)
+        return subprocess.run(
+            ["bash", str(root / "uninstall.sh"), "--dry-run", "--non-interactive", *args],
+            capture_output=True,
+            text=True,
+            env=get_isolated_test_env(
+                overrides={
+                    "PATH": str(bin_dir),
+                    "HOME": str(home),
+                    "KUBE_AGENTS_STATE_BUCKET": "",
+                    "KUBE_AGENTS_INSTALL_ENV": "",
+                }
+            ),
+            cwd=str(neutral),
+        )
+
+    def test_the_install_checkout_in_home_is_where_the_configuration_comes_from(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = pathlib.Path(tmp) / "home"
+            (home / "kube-agents").mkdir(parents=True)
+            (home / "kube-agents" / "install.env").write_text(
+                'PROJECT_ID="the-installs-project"\n'
+                'CLUSTER_NAME="the-installs-cluster"\n'
+                'REGION="europe-north1"\n'
+            )
+
+            proc = self._preview(tmp, home)
+
+            combined = proc.stdout + proc.stderr
+            self.assertEqual(proc.returncode, 0, combined)
+            self.assertIn(
+                f"Loaded install configuration from: {home}/kube-agents/install.env", combined
+            )
+            self.assertIn("the-installs-cluster in the-installs-project (europe-north1)", combined)
+            self.assertNotIn("the-machines-own-project", combined)
+            self.assertNotIn("is a guess", combined)
+
+    def test_a_teardown_with_nothing_to_read_says_what_it_is_guessing(self):
+        """It is still allowed to run on defaults -- `./uninstall.sh` in a
+        checkout is exactly that -- but not to present a guess as the install's
+        own coordinates. The confirmation prompt reads these very lines."""
+        with tempfile.TemporaryDirectory() as tmp:
+            home = pathlib.Path(tmp) / "home"
+            home.mkdir()
+
+            proc = self._preview(tmp, home)
+
+            combined = proc.stdout + proc.stderr
+            self.assertEqual(proc.returncode, 0, combined)
+            self.assertNotIn("Loaded install configuration from", combined)
+            self.assertIn("No install configuration (install.env) was found", combined)
+            self.assertIn("is installer_common.sh's default, not this install's", combined)
+            self.assertIn(
+                "project 'the-machines-own-project' came from gcloud's active configuration",
+                combined,
+            )
+
+    def test_coordinates_given_on_the_command_line_are_not_a_guess(self):
+        """The control: naming all three leaves nothing to warn about, so the
+        documented one-liner does not grow a warning it cannot act on."""
+        with tempfile.TemporaryDirectory() as tmp:
+            home = pathlib.Path(tmp) / "home"
+            home.mkdir()
+
+            proc = self._preview(
+                tmp,
+                home,
+                args=(
+                    "--gcp-project-id=named-project",
+                    "--gke-cluster-name=named-cluster",
+                    "--gcp-region=named-region",
+                ),
+            )
+
+            combined = proc.stdout + proc.stderr
+            self.assertEqual(proc.returncode, 0, combined)
+            self.assertIn("named-cluster in named-project (named-region)", combined)
+            self.assertNotIn("is a guess", combined)
+            self.assertNotIn("came from gcloud's active configuration", combined)
+
+
 if __name__ == "__main__":
     unittest.main()
