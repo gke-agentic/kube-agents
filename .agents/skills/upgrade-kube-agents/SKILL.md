@@ -18,9 +18,9 @@ carries its own version, so no image tag is passed:
 curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSION>/upgrade.sh | bash -s -- \
   --upgrade-mode="full" \
   --non-interactive \
-  --project-id="<PROJECT_ID>" \
-  --cluster-name="<CLUSTER_NAME>" \
-  --region="<REGION>"
+  --gcp-project-id="<PROJECT_ID>" \
+  --gke-cluster-name="<CLUSTER_NAME>" \
+  --gcp-region="<REGION>"
 ```
 
 A full upgrade re-renders the whole install (the `PlatformAgent` CR included) from the install's
@@ -38,7 +38,7 @@ curl -fsSLO https://github.com/gke-labs/kube-agents/releases/download/<RELEASE_V
 tar -xzf kube-agents-<RELEASE_VERSION>.tar.gz
 cd kube-agents-<RELEASE_VERSION>
 cp /path/to/the/install/install.env .
-./upgrade.sh --upgrade-mode="full" --non-interactive --project-id="<PROJECT_ID>"
+./upgrade.sh --upgrade-mode="full" --non-interactive --gcp-project-id="<PROJECT_ID>"
 ```
 
 Run the bundle's own `./upgrade.sh`, not a newer one piped into a bundle directory: the sources
@@ -47,7 +47,7 @@ that is not the release being asked for is refused by name.
 
 ## Upgrade Modes
 
-- `--upgrade-mode=harness`: `helm upgrade --reset-then-reuse-values` re-tagging the Platform Agent image (`platformAgent.deployment.image.tag`) and the sandbox it reaches over ssh (`agentSandbox.image.tag`), which is built from the same revision.
+- `--upgrade-mode=harness`: one `helm upgrade --reset-then-reuse-values` re-tagging the Platform Agent image (`platformAgent.deployment.image.tag`), the shell sandbox image (`agentSandbox.image.tag`) and every plugin image tag the release's values record (`plugins.pubsubPlatform.image.tag`, `plugins.stockoutInvestigator.image.tag`), followed by a read-back of the gateway Deployment's release images against the tag. Requires `jq`.
 - `--upgrade-mode=operator`: applies the chart's CRDs with `kubectl` first (Helm never touches `crds/` on upgrade), then `helm upgrade --reset-then-reuse-values` re-tagging only the operator image.
 - `--upgrade-mode=full` (Default): applies the CRDs, then runs a full `terraform apply` at the new `--image-tag` through the install engine — both image tags move and every setting in `install.env` is re-rendered. This mode additionally requires the `terraform` CLI.
 
@@ -61,7 +61,7 @@ engine.
 To preview the upgrade plan and output a JSON status report without modifying cloud resources:
 
 ```bash
-./upgrade.sh --dry-run --upgrade-mode=full --project-id="<PROJECT_ID>"
+./upgrade.sh --dry-run --upgrade-mode=full --gcp-project-id="<PROJECT_ID>"
 ```
 
 Machine-readable JSON status reports are generated at `/tmp/kube-agents-upgrade-report.json`.
@@ -75,7 +75,7 @@ development and CI/CD testing — a candidate commit SHA, or a release other tha
 ```bash
 # CI / testing override, not the path an install takes to a published release.
 ./upgrade.sh --non-interactive --upgrade-mode=full \
-  --project-id="<PROJECT_ID>" \
+  --gcp-project-id="<PROJECT_ID>" \
   --image-tag="<SEMVER_TAG_OR_FULL_COMMIT_SHA>"
 ```
 

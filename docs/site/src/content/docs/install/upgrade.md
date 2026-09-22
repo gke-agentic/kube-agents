@@ -41,9 +41,9 @@ Substitute `<RELEASE_VERSION>` with the release tag you are moving to, from
 ```bash
 curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSION>/upgrade.sh | bash -s -- \
   --non-interactive \
-  --project-id="my-gcp-project" \
-  --cluster-name="platform-agent-host" \
-  --region="us-central1"
+  --gcp-project-id="my-gcp-project" \
+  --gke-cluster-name="platform-agent-host" \
+  --gcp-region="us-central1"
 ```
 
 The release-pinned script upgrades to its own version, so you pass no tag. It reuses the install
@@ -58,7 +58,7 @@ checkout:
 curl -fsSL https://github.com/gke-labs/kube-agents/releases/download/<RELEASE_VERSION>/kube-agents-<RELEASE_VERSION>.tar.gz | tar -xz
 cd kube-agents-<RELEASE_VERSION>
 cp /path/to/your/install/install.env .
-./upgrade.sh --non-interactive --project-id="my-gcp-project"
+./upgrade.sh --non-interactive --gcp-project-id="my-gcp-project"
 ```
 
 ## Upgrade modes

@@ -18,9 +18,9 @@ to the engine on `main`, which is not the one that built the install:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSION>/uninstall.sh | bash -s -- \
   --non-interactive \
-  --project-id="<PROJECT_ID>" \
-  --cluster-name="<CLUSTER_NAME>" \
-  --region="<REGION>"
+  --gcp-project-id="<PROJECT_ID>" \
+  --gke-cluster-name="<CLUSTER_NAME>" \
+  --gcp-region="<REGION>"
 ```
 
 The engine is `lifecycle.sh destroy` in `terraform/examples/full-install`, run against the
