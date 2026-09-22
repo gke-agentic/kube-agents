@@ -18,42 +18,42 @@ agree on; it reads them from [`install.defaults.env`](../../install.defaults.env
 declares none itself. `install.sh`, `uninstall.sh`, and `upgrade.sh` source it rather than keeping
 their own copies:
 
-| Symbol                                                                    | What it fixes                                                                                                      |
-| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `DEFAULT_CLUSTER_NAME`                                                    | GKE cluster name (`platform-agent-host`)                                                                           |
-| `DEFAULT_REGION`                                                          | GCP region (`us-central1`)                                                                                         |
-| `DEFAULT_CLUSTER_MODE`                                                    | Shape a fresh install creates (`autopilot`); a live cluster's probed shape always wins                             |
-| `DEFAULT_VERTEX_LOCATION`                                                 | Vertex AI serving location (`global`)                                                                              |
-| `DEFAULT_VERTEX_MANAGE_SERVING_PROJECT`                                   | Enable the API and grant the gateway's role in the serving project (`true`)                                        |
-| `DEFAULT_MODEL_PROVIDER`                                                  | Model provider (`gemini`)                                                                                          |
-| `DEFAULT_MODEL_GEMINI` / `_OPENAI` / `_ANTHROPIC`                         | The model each provider serves by default; the chart's `litellm.yaml` mirrors them                                 |
-| `DEFAULT_MODEL_MAX_TOKENS`                                                | Output tokens the gateway asks for on a request that names none (`0`: no `max_tokens`)                             |
-| `DEFAULT_GEMINI_API_KEY_SECRET_NAME`                                      | Secret Manager secret a Gemini key is read from when none is given (`gemini-api-key`)                              |
-| `DEFAULT_NAMESPACE`                                                       | Kubernetes namespace of the release (`kubeagents-system`)                                                          |
-| `DEFAULT_PLATFORM_AGENT_GSA_NAME`                                         | The agent's GCP service account id (`kubeagents-platform-gsa`); one name per project                               |
-| `DEFAULT_GITHUB_MINTER_GSA_NAME`                                          | The minter's GCP service account id (`kubeagents-github-minter-gsa`); one per project                              |
-| `DEFAULT_LITELLM_GSA_NAME`                                                | The gateway's Vertex AI service account id (`kubeagents-litellm-gsa`); one per project                             |
-| `DEFAULT_GKE_DB_KMS_KEYRING`                                              | Cloud KMS key ring for GKE database encryption (`platform-agent-keyring`)                                          |
-| `DEFAULT_GKE_DB_KMS_KEY`                                                  | Cloud KMS key for GKE database encryption (`k8s-secret-encryption-key`)                                            |
-| `DEFAULT_ENABLE_PUBSUB_PLATFORM` / `DEFAULT_ENABLE_STOCKOUT_INVESTIGATOR` | The optional AgentPlugins (`false`)                                                                                |
-| `DEFAULT_KUBE_AGENTS_STATE_BUCKET`                                        | The `KUBE_AGENTS_STATE_BUCKET` sentinel (`auto`) that derives the state bucket                                     |
-| `DEFAULT_TF_STATE_BUCKET_SUFFIX` / `DEFAULT_TF_STATE_PREFIX_ROOT`         | The derived bucket `<PROJECT_ID><suffix>` and prefix `<root>/<CLUSTER_NAME>`                                       |
-| `DEFAULT_REGISTRY_PREFIX`                                                 | Container registry prefix                                                                                          |
-| `DEFAULT_HELM_TIMEOUT`                                                    | Wait timeout for the `cert_manager` and `kube_agents` releases (`600`s, range 540-899)                             |
-| `default_model_for_provider <provider>`                                   | The default model for a provider                                                                                   |
-| `is_valid_model_provider <provider>`                                      | Accepted providers: `gemini`, `vertex_ai`, `anthropic`, `openai`                                                   |
-| `is_valid_permission_set <set>`                                           | Accepted GCP IAM permission sets: `read-only`, `custom`                                                            |
-| `require_supported_permission_set <set>`                                  | The same check, reporting why a rejected value is rejected                                                         |
-| `is_valid_cluster_mode <mode>`                                            | Accepted cluster shapes: `autopilot`, `standard`                                                                   |
-| `derive_kms_location <region>`                                            | Region for Cloud KMS (strips a zone suffix)                                                                        |
-| `derive_chat_sub_name [topic] [sub]`                                      | Derive Google Chat Pub/Sub subscription (`<topic>-sub`) when topic is custom                                       |
-| `tf_state_chat_subscription_name`                                         | The subscription name managed by module.chat_pubsub, or empty                                                      |
-| `tf_state_bucket` / `tf_state_prefix`                                     | Where the install's Terraform state lives in GCS                                                                   |
-| `kms_key_enabled_version <key> <ring> <location> <project>`               | The minter key's first ENABLED version, or nothing; one probe for three callers                                    |
-| `tf_state_has_cluster`                                                    | Whether that state manages THIS cluster (project, location and name all match)                                     |
-| `check_service_account_ownership`                                         | Refuses an apply that would 409 on a service account another install owns                                          |
-| `write_tfvars_from_state <dest> [tag]`                                    | The `terraform.tfvars` generator (reads the loaded `install.env` variable set)                                     |
-| `check_existing_cluster_capacity_preflight`                               | Preflights schedulable capacity on untainted nodes (and `gvisor-pool` when present) for existing Standard clusters |
+| Symbol                                                                    | What it fixes                                                                          |
+| ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `DEFAULT_CLUSTER_NAME`                                                    | GKE cluster name (`platform-agent-host`)                                               |
+| `DEFAULT_REGION`                                                          | GCP region (`us-central1`)                                                             |
+| `DEFAULT_CLUSTER_MODE`                                                    | Shape a fresh install creates (`autopilot`); a live cluster's probed shape always wins |
+| `DEFAULT_VERTEX_LOCATION`                                                 | Vertex AI serving location (`global`)                                                  |
+| `DEFAULT_VERTEX_MANAGE_SERVING_PROJECT`                                   | Enable the API and grant the gateway's role in the serving project (`true`)            |
+| `DEFAULT_MODEL_PROVIDER`                                                  | Model provider (`gemini`)                                                              |
+| `DEFAULT_MODEL_GEMINI` / `_OPENAI` / `_ANTHROPIC`                         | The model each provider serves by default; the chart's `litellm.yaml` mirrors them     |
+| `DEFAULT_MODEL_MAX_TOKENS`                                                | Output tokens the gateway asks for on a request that names none (`0`: no `max_tokens`) |
+| `DEFAULT_GEMINI_API_KEY_SECRET_NAME`                                      | Secret Manager secret a Gemini key is read from when none is given (`gemini-api-key`)  |
+| `DEFAULT_NAMESPACE`                                                       | Kubernetes namespace of the release (`kubeagents-system`)                              |
+| `DEFAULT_PLATFORM_AGENT_GSA_NAME`                                         | The agent's GCP service account id (`kubeagents-platform-gsa`); one name per project   |
+| `DEFAULT_GITHUB_MINTER_GSA_NAME`                                          | The minter's GCP service account id (`kubeagents-github-minter-gsa`); one per project  |
+| `DEFAULT_LITELLM_GSA_NAME`                                                | The gateway's Vertex AI service account id (`kubeagents-litellm-gsa`); one per project |
+| `DEFAULT_GKE_DB_KMS_KEYRING`                                              | Cloud KMS key ring for GKE database encryption (`platform-agent-keyring`)              |
+| `DEFAULT_GKE_DB_KMS_KEY`                                                  | Cloud KMS key for GKE database encryption (`k8s-secret-encryption-key`)                |
+| `DEFAULT_ENABLE_PUBSUB_PLATFORM` / `DEFAULT_ENABLE_STOCKOUT_INVESTIGATOR` | The optional AgentPlugins (`false`)                                                    |
+| `DEFAULT_KUBE_AGENTS_STATE_BUCKET`                                        | The `KUBE_AGENTS_STATE_BUCKET` sentinel (`auto`) that derives the state bucket         |
+| `DEFAULT_TF_STATE_BUCKET_SUFFIX` / `DEFAULT_TF_STATE_PREFIX_ROOT`         | The derived bucket `<PROJECT_ID><suffix>` and prefix `<root>/<CLUSTER_NAME>`           |
+| `DEFAULT_REGISTRY_PREFIX`                                                 | Container registry prefix                                                              |
+| `DEFAULT_HELM_TIMEOUT`                                                    | Wait timeout for the `cert_manager` and `kube_agents` releases (`600`s, range 540-899) |
+| `default_model_for_provider <provider>`                                   | The default model for a provider                                                       |
+| `is_valid_model_provider <provider>`                                      | Accepted providers: `gemini`, `vertex_ai`, `anthropic`, `openai`                       |
+| `is_valid_permission_set <set>`                                           | Accepted GCP IAM permission sets: `read-only`, `custom`                                |
+| `require_supported_permission_set <set>`                                  | The same check, reporting why a rejected value is rejected                             |
+| `is_valid_cluster_mode <mode>`                                            | Accepted cluster shapes: `autopilot`, `standard`                                       |
+| `derive_kms_location <region>`                                            | Region for Cloud KMS (strips a zone suffix)                                            |
+| `derive_chat_sub_name [topic] [sub]`                                      | Derive Google Chat Pub/Sub subscription (`<topic>-sub`) when topic is custom           |
+| `tf_state_chat_subscription_name`                                         | The subscription name managed by module.chat_pubsub, or empty                          |
+| `tf_state_bucket` / `tf_state_prefix`                                     | Where the install's Terraform state lives in GCS                                       |
+| `kms_key_enabled_version <key> <ring> <location> <project>`               | The minter key's first ENABLED version, or nothing; one probe for three callers        |
+| `tf_state_has_cluster`                                                    | Whether that state manages THIS cluster (project, location and name all match)         |
+| `check_service_account_ownership`                                         | Refuses an apply that would 409 on a service account another install owns              |
+| `write_tfvars_from_state <dest> [tag]`                                    | The `terraform.tfvars` generator (reads the loaded `install.env` variable set)         |
+| `check_existing_cluster_capacity_preflight`                               | Preflights schedulable capacity on untainted and `gvisor-pool` nodes (Standard)        |
 
 The values themselves live in [`install.defaults.env`](../../install.defaults.env) at the
 repository root, which `installer_common.sh` sources. That file does one job and holds
@@ -107,12 +107,13 @@ reach `write_tfvars_from_state` and the `TF_VAR_*` handoff, both of which read t
 environment. Order of authority is **flag, then file, then an exported variable, then
 the defaults above** — `set -a` sourcing means a key the file carries overwrites an
 export of the same name, so a flag is what overrides a recorded value for one run.
-Two keys ignore ambient shell exports: the front doors clear a shell-exported `NAMESPACE`
-(file-only, since `kubectl` tooling exports it) and `HELM_TIMEOUT` (flag-or-file via
-`--helm-timeout` or `install.env`, since ambient CI/shell environments export it) before
-reading the file. The dev tooling's `load_state` clears `NAMESPACE` the same way.
+One key is file-only: the front doors clear a shell-exported `NAMESPACE` before
+reading the file because kubectl tooling exports that name and the value now reaches
+the Helm release's namespace. The dev tooling's `load_state` does the same.
 `KUBE_AGENTS_INSTALL_ENV` points at a different path, which is how CI renders one from
-its own variables rather than keeping install state on an ephemeral runner.
+its own variables rather than keeping install state on an ephemeral runner. The front
+doors also clear a shell-exported `HELM_TIMEOUT` before reading `install.env` (the file
+and `--helm-timeout` are the two routes in).
 
 `KUBE_AGENTS_LEGACY_VARS_FILE` does the same for the file `install.env` replaced.
 `install.sh` loads `<repo>/k8s-operator/scripts/vars.sh` before `install.env` when the

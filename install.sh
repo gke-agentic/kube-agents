@@ -311,6 +311,7 @@ load_legacy_vars_file() {
 # definition silently replacing this one.
 bootstrap_install_env() {
   local file="${1:-}"
+  unset HELM_TIMEOUT
   # NAMESPACE reaches terraform.tfvars, and it is a name kubectl tooling
   # commonly exports. Only install.env may set it: a value inherited from the
   # shell would put a fresh release into a namespace the agent's fixed gateway
@@ -318,7 +319,6 @@ bootstrap_install_env() {
   # the file is read (and whether or not there is one), so the file's own key
   # is the only way in.
   unset NAMESPACE
-  unset HELM_TIMEOUT
   [ -n "$file" ] || return 0
   if [ ! -f "$file" ]; then
     if [ "$INSTALL_ENV_EXPLICIT" = "true" ]; then
@@ -471,7 +471,14 @@ memory_mode_from_provider() {
   esac
 }
 PARAM_MEMORY="${MEMORY:-$(memory_mode_from_provider "${MEMORY_PROVIDER:-}")}"
+_SEEDED_PARAM_MEMORY="$PARAM_MEMORY"
 CLI_MEMORY=""
+for _cli_arg in "$@"; do
+  case "$_cli_arg" in
+    --memory=*) CLI_MEMORY="${_cli_arg#*=}" ;;
+  esac
+done
+unset _cli_arg
 PARAM_ALLOWED_USERS="${ALLOWED_USERS:-}"
 PARAM_IMAGE_TAG="${IMAGE_TAG:-}"
 PARAM_MIGRATE_NODE_POOLS="${MIGRATE_NODE_POOLS:-}"
@@ -480,6 +487,9 @@ PARAM_ENABLE_NETWORK_POLICY="${ENABLE_NETWORK_POLICY:-}"
 PARAM_ENABLE_NETWORK_POLICY_PASSED="false"
 PARAM_ACCEPT_NO_NETWORK_POLICY="${ACCEPT_NO_NETWORK_POLICY:-}"
 PARAM_ACCEPT_NO_NETWORK_POLICY_PASSED="false"
+PARAM_HELM_TIMEOUT="${HELM_TIMEOUT:-}"
+CLI_HELM_TIMEOUT=""
+PARAM_SKIP_CAPACITY_CHECK="${SKIP_CAPACITY_CHECK:-false}"
 PARAM_ALLOW_UNVERIFIED_SOURCE="${ALLOW_UNVERIFIED_SOURCE:-false}"
 # "<repo_dir>@<ref>" already checked by verify_local_source_ref, so the pre-flight
 # check and the one at the workspace step do not report the same verdict twice.
@@ -506,9 +516,6 @@ PARAM_MODEL_DEFAULT_NAME="${MODEL_DEFAULT_NAME:-}"
 # as an empty MODEL_DEFAULT_NAME takes the provider's default model.
 PARAM_MODEL_MAX_TOKENS="${MODEL_MAX_TOKENS:-}"
 PARAM_USER_PROFILE_ENABLED="${USER_PROFILE_ENABLED:-}"
-PARAM_HELM_TIMEOUT="${HELM_TIMEOUT:-}"
-CLI_HELM_TIMEOUT=""
-PARAM_SKIP_CAPACITY_CHECK="${SKIP_CAPACITY_CHECK:-false}"
 
 show_help() {
   cat << EOF
@@ -690,7 +697,7 @@ parse_args() {
       --enable-pubsub-platform|--enable-pubsub) PARAM_ENABLE_PUBSUB_PLATFORM="true"; shift ;;
       --enable-stockout-investigator=*|--enable-stockout=*) PARAM_ENABLE_STOCKOUT_INVESTIGATOR="${1#*=}"; shift ;;
       --enable-stockout-investigator|--enable-stockout) PARAM_ENABLE_STOCKOUT_INVESTIGATOR="true"; shift ;;
-      --memory=*) PARAM_MEMORY="${1#*=}"; CLI_MEMORY="${1#*=}"; shift ;;
+      --memory=*) PARAM_MEMORY="${1#*=}"; shift ;;
       --image-tag=*) PARAM_IMAGE_TAG="${1#*=}"; shift ;;
       --registry-prefix=*) PARAM_REGISTRY_PREFIX="${1#*=}"; shift ;;
       --third-party-registry-prefix=*) PARAM_THIRD_PARTY_REGISTRY_PREFIX="${1#*=}"; shift ;;
@@ -1331,7 +1338,6 @@ bootstrap_install_env_file() {
   write_env_var "$tmp" USER_PROFILE_ENABLED "${USER_PROFILE_ENABLED:-$DEFAULT_USER_PROFILE_ENABLED}"
   write_env_var "$tmp" HERMES_DASHBOARD_ENABLED "${HERMES_DASHBOARD_ENABLED:-$DEFAULT_ENABLE_WEBUI}"
   write_env_var "$tmp" ENABLE_GVISOR "${ENABLE_GVISOR:-$DEFAULT_ENABLE_GVISOR}"
-  write_env_var "$tmp" ENABLE_GKE_BACKUP_PLAN "${ENABLE_GKE_BACKUP_PLAN:-$DEFAULT_ENABLE_GKE_BACKUP_PLAN}"
   write_env_var "$tmp" ENABLE_PUBSUB_PLATFORM "${PARAM_ENABLE_PUBSUB_PLATFORM:-$DEFAULT_ENABLE_PUBSUB_PLATFORM}"
   write_env_var "$tmp" ENABLE_STOCKOUT_INVESTIGATOR "${PARAM_ENABLE_STOCKOUT_INVESTIGATOR:-$DEFAULT_ENABLE_STOCKOUT_INVESTIGATOR}"
   # Recorded only when this run accepted it -- the decision, not the flag: a
@@ -1343,7 +1349,6 @@ bootstrap_install_env_file() {
   if [ "${NETWORK_POLICY_ENFORCEMENT:-}" = "$NP_ENFORCEMENT_ABSENT_ACCEPTED" ]; then
     write_env_var "$tmp" ACCEPT_NO_NETWORK_POLICY "true"
   fi
-
   write_env_var "$tmp" HELM_TIMEOUT "${PARAM_HELM_TIMEOUT:-$DEFAULT_HELM_TIMEOUT}"
   # SKIP_CAPACITY_CHECK is deliberately not written. This file is bootstrapped
   # once and then read by every later run, and every other key in it describes
@@ -1353,7 +1358,6 @@ bootstrap_install_env_file() {
   # filled up -- or one reconfigured to add hindsight-api's 2000m single-node
   # requirement. ALLOW_UNVERIFIED_SOURCE and ALLOW_UNENCRYPTED_SECRETS are kept
   # out of the file for the same reason.
-
   write_env_var "$tmp" REGISTRY_PREFIX "${REGISTRY_PREFIX:-}"
   if [ -n "${THIRD_PARTY_REGISTRY_PREFIX:-}" ]; then
     write_env_var "$tmp" THIRD_PARTY_REGISTRY_PREFIX "${THIRD_PARTY_REGISTRY_PREFIX}"
@@ -1362,10 +1366,6 @@ bootstrap_install_env_file() {
   # defaults, and a default copied here would freeze at this release; the
   # install that did set one (a second install in the project) must keep it,
   # because losing the line renames -- that is, replaces -- the account.
-  # NAMESPACE is deliberately not in the list: it is a variable kubectl
-  # tooling commonly exports, and freezing a stray shell value into the
-  # install's configuration would move the release on the next apply. An
-  # install that means it writes the key into install.env by hand.
   local identity_key
   for identity_key in PLATFORM_AGENT_GSA_NAME GITHUB_MINTER_GSA_NAME LITELLM_GSA_NAME GKE_DB_KMS_KEYRING GKE_DB_KMS_KEY; do
     if [ -n "${!identity_key:-}" ]; then
@@ -3781,6 +3781,7 @@ run_menu_system() {
   normalize_memory_vars
 
   # CLI flag overrides outrank the reloaded install.env.
+  [ -z "${CLI_MEMORY:-}" ] && [ "${PARAM_MEMORY:-}" != "${_SEEDED_PARAM_MEMORY:-}" ] && CLI_MEMORY="$PARAM_MEMORY"
   if [ -n "${CLI_HELM_TIMEOUT:-}" ]; then
     export HELM_TIMEOUT="$CLI_HELM_TIMEOUT"
   fi
@@ -4393,9 +4394,10 @@ main() {
   # install.env is a file the documentation now tells operators to hand-write.
   # A string compare against the lowercase literal would read
   # `GOOGLE_CHAT_ENABLED=True` as off, drop chat_choice to 4 and plan the
-  # Pub/Sub topic away, while upgrade.sh read the same file as enabled. The
-  # sibling booleans fail loudly on their ^(true|false)$ validators instead;
-  # only these two are silent.
+  # Pub/Sub topic away, while upgrade.sh read the same file as enabled. Every
+  # --enable-* toggle is read this way; the ^(true|false)$ validators run in
+  # parse_args, on what a caller typed on the command line, so a hand-written
+  # spelling in install.env never reaches one.
   local chat_choice=""
   if is_truthy "$PARAM_ENABLE_GOOGLE_CHAT" && is_truthy "${SLACK_ENABLED:-$DEFAULT_SLACK_ENABLED}"; then
     chat_choice="3"
@@ -4420,8 +4422,9 @@ main() {
   local google_chat_enabled="false"
   local slack_enabled="false"
   # Empty by default: the allowlist is opt-in, and an unset list allows all users.
-  # PARAM_ALLOWED_USERS carries both --allowed-users and the loaded ALLOWED_USERS,
-  # so an install that had an allowlist keeps it on a re-run that says nothing.
+  # PARAM_ALLOWED_USERS carries both --google-chat-allowed-users and the loaded
+  # ALLOWED_USERS, so an install that had an allowlist keeps it on a re-run that
+  # says nothing.
   local allowed_users="${PARAM_ALLOWED_USERS:-}"
   local allowed_users_hint=""
   if [ -z "$allowed_users" ]; then
@@ -4435,8 +4438,8 @@ main() {
     exit 1
   fi
   local google_chat_home_channel="${PARAM_GOOGLE_CHAT_HOME_CHANNEL:-}"
-  # Seeded from the environment so the non-interactive path can carry the
-  # Slack settings: prompt_read keeps a non-empty current value there.
+  # Seeded from the environment so the non-interactive path can carry the Slack
+  # settings: prompt_read keeps a non-empty current value there.
   local slack_bot_token="${SLACK_BOT_TOKEN:-}"
   local slack_app_token="${SLACK_APP_TOKEN:-}"
   local slack_allowed_users="${SLACK_ALLOWED_USERS:-}"
@@ -4470,7 +4473,8 @@ main() {
     # Same shape as allowed_users_hint above: an empty list has to read as a
     # deliberate choice rather than as a missing default.
     [ -z "$slack_allowed_users" ] && slack_allowed_hint="empty list"
-    prompt_read "Slack Bot Token (xoxb-...)" slack_bot_token "$slack_bot_token" true "$bot_hint"
+    prompt_read "Slack Bot Tokens (xoxb-..., comma-separated for several workspaces)" \
+      slack_bot_token "$slack_bot_token" true "$bot_hint"
     prompt_read "Slack App Token (xapp-...)" slack_app_token "$slack_app_token" true "$app_hint"
     prompt_read "Allowed Slack User IDs / Emails (comma-separated)" \
       slack_allowed_users "$slack_allowed_users" false "$slack_allowed_hint"
@@ -4548,7 +4552,7 @@ main() {
   # DEFAULT_VERTEX_LOCATION in scripts/installer/installer_common.sh.
   local vertex_project_id="${PARAM_VERTEX_PROJECT_ID:-$project_id}"
   local vertex_location="${PARAM_VERTEX_LOCATION:-$DEFAULT_VERTEX_LOCATION}"
-  # Loud like --gvisor and --enable-web-ui, not lenient like the chat booleans:
+  # Loud like --enable-gvisor and --enable-hermes-dashboard, not lenient like the chat booleans:
   # a typo read as false would silently skip the two serving-project resources,
   # and the first sign would be the gateway's 403 on its first model call.
   local vertex_manage_serving_project="${PARAM_VERTEX_MANAGE_SERVING_PROJECT:-$DEFAULT_VERTEX_MANAGE_SERVING_PROJECT}"
@@ -5178,8 +5182,7 @@ main() {
   # uninstall.sh leaves this unset too — it would be repointing the operator's
   # kubeconfig at the cluster it is about to destroy — and upgrade.sh has
   # already fetched its own by the time it generates.
-  KUBE_AGENTS_GENERATE_API_SERVER_KEY=true \
-    KUBE_AGENTS_FETCH_CLUSTER_CREDENTIALS=true \
+  KUBE_AGENTS_GENERATE_API_SERVER_KEY=true KUBE_AGENTS_FETCH_CLUSTER_CREDENTIALS=true \
     write_tfvars_from_state "$tfvars_file" "$image_tag"
   print_success "Terraform input saved to: $tfvars_file"
 
